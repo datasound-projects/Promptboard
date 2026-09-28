@@ -1,0 +1,25 @@
+{
+  "name": "ai-prompt-engineer-ste",
+  "version": "0.3.0",
+  "description": "Turn rough ideas into clear coding prompts with STE writing principles and your own AI CLI.",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "ste-prompt": "bin/ste.mjs"
+  },
+  "scripts": {
+    "start": "node bin/ste.mjs --gui",
+    "start:no-open": "node bin/ste.mjs --gui --no-open",
+    "test": "node --test tests/*.test.mjs",
+    "check": "node scripts/check.mjs",
+    "eval:live": "node scripts/evaluate.mjs",
+    "bench": "node scripts/benchmark.mjs"
+  },
+  "devDependencies": {
+    "jsdom": "26.1.0"
+  }
+}
