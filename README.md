@@ -1,63 +1,140 @@
-<p align="center"><img src="public/nerd.png" width="150" alt="The black and white nerd mascot"></p>
+<p align="center">
+  <img src="public/nerd.png" width="150" alt="AI Prompt Engineer mascot">
+</p>
 
 <h1 align="center">AI Prompt Engineer</h1>
-<p align="center"><strong>Based on ASD-STE100 Simplified Technical English (STE)</strong></p>
-<p align="center">Turn rough ideas into clear coding prompts with your own AI CLI.</p>
-<p align="center">Black & white UI · Model selection · Prompt history · MIT</p>
 
-## Start in three steps
+<p align="center">
+  Turn rough ideas into clear, structured prompts for AI coding agents.
+</p>
 
-1. Install **Node.js 22+** and one CLI below. Sign in to the CLI in your terminal.
-2. Extract **`ai-prompt-engineer-ste-0.3.0.zip`**. Open a terminal in the extracted folder.
-3. Run **`npm start`**. Open [127.0.0.1:4318](http://127.0.0.1:4318) if the browser does not open.
+<p align="center">
+  ASD-STE100 writing principles · Your own AI CLI · Built-in checks · MIT license
+</p>
 
-No `npm install` is needed to run the app. It uses your CLI's sign-in, access, and billing.
+## What is it?
 
-| Supported CLI | Setup |
+AI Prompt Engineer helps you describe coding tasks clearly before you send them to an AI agent.
+
+Write your request in your own words. Choose your model and preferences. The app creates a structured prompt, checks it, and shows the result for you to review and copy.
+
+It works through your installed **Codex, Claude Code, Antigravity, or Gemini CLI**, using your existing sign-in.
+
+## Why use it?
+
+A coding agent needs a clear goal, relevant context, and precise constraints. This app helps you prepare those instructions without rebuilding a prompt from scratch every time.
+
+- **Clarify the task.** Organize the goal, requirements, constraints, and expected result.
+- **Protect technical details.** Check that recognized code, quoted text, URLs, and paths remain unchanged.
+- **Find potential problems.** Review missing requirements, conflicting instructions, and unsupported additions.
+- **Control the output.** Choose the model, supported effort level, language, task, and amount of detail.
+- **Reuse your work.** Keep prompt history and copy or export results and check reports.
+
+The writing rules draw on **ASD-STE100 Simplified Technical English**: short sentences, direct instructions, and consistent terms.
+
+## Installation
+
+### 1. Install the requirements
+
+You need **Node.js 22 or later** and at least one supported CLI.
+
+| CLI | Official setup |
 | --- | --- |
-| OpenAI Codex | [Official instructions](https://developers.openai.com/codex/cli) |
-| Claude Code | [Official instructions](https://code.claude.com/docs/en/quickstart) |
-| Google Antigravity (`agy`) | [Official instructions](https://antigravity.google/docs/getting-started?tab=cli) |
-| Gemini CLI | [Official instructions](https://geminicli.com/docs/get-started/installation/) |
+| OpenAI Codex | [Install Codex](https://developers.openai.com/codex/cli) |
+| Claude Code | [Install Claude Code](https://code.claude.com/docs/en/quickstart) |
+| Google Antigravity (`agy`) | [Install Antigravity CLI](https://antigravity.google/docs/getting-started?tab=cli) |
+| Gemini CLI | [Install Gemini CLI](https://geminicli.com/docs/get-started/installation/) |
 
-Keep the app and CLI in the same environment. For Windows CLI setups that need WSL2, run both there. See [CLI details](docs/cli-adapters.md).
+Sign in to your chosen CLI and confirm that it works in your terminal.
 
-## Make a prompt
+### 2. Download the project
 
-- Select your **provider, model, and supported effort level**. Model lists come from your installed CLI; account access varies. **Refresh models** updates the list. Gemini keeps its CLI thinking settings.
-- Choose **English**, **Deutsch**, or **Polski**. English is the default. German and Polish use clear technical language; STE is an English standard.
-- Choose the task and detail level. Add planning, acceptance checks, edge cases, or security checks when useful.
-- Enter your request. Click **“Okay , Lets Goooo!”**. Review the result and its checks, then copy or export it.
+Download and extract the release ZIP, then open a terminal in the extracted folder.
 
-The app rewrites your request. It does not carry out the coding task.
+### 3. Start the app
 
-## What makes the result more reliable?
+```bash
+npm start
+```
 
-**Reviewed** is the default. The app drafts a prompt, checks detectable exact text and English writing rules, and asks the selected model to review meaning and requirements. If issues remain, it attempts one repair and checks again. This uses **2–4 model calls**.
+Open **http://127.0.0.1:4318** if your browser does not open automatically.
 
-**Fast** uses **one model call** and automatic checks only. It costs less time and usage, but skips the model review.
+**No `npm install` is needed to run the app.** No separate API key is required by the app. Your CLI’s access requirements, usage limits, and charges still apply.
 
-The report distinguishes automatic checks from model review. A passing result means the implemented checks passed—not that every requirement is correct. The reviewer uses the **same selected model** and can miss errors. Read the result before using it.
+Keep the app and CLI in the same environment. If your Windows CLI setup requires WSL2, run both inside WSL2.
 
-This is **not a full or certified STE checker**. It does not include the complete official dictionary or replace technical and human review. ASD and STEMG do not endorse it. Read [the method and sources](docs/ste-method.md) and [verification details](docs/verification.md).
+## How to use it
+
+1. **Choose a provider and model.** Select an effort level when supported.
+2. **Choose the language.** English is the default; German and Polish are also available.
+3. **Set the task and detail.** Use Build, Debug, Refactor, Review, Architecture, Agent Workflow, or Research.
+4. **Enter your request.** Include important constraints and any exact technical text.
+5. Click **“Okay , Lets Goooo!”**
+6. **Review the prompt and findings**, then copy it into your coding agent.
+
+Optional controls add planning, acceptance checks, edge cases, or security review.
+
+Model choices come from your installed CLI. Availability depends on your account and CLI version. Gemini uses its CLI thinking settings.
+
+## How it works
+
+| Mode | Process | Model calls |
+| --- | --- | --- |
+| **Reviewed — default** | Draft → automatic checks → model review → one repair and another review when needed | 2–4 |
+| **Fast** | Draft → automatic checks | 1 |
+
+Automatic checks compare recognized technical text and flag selected English writing issues. The model review assesses meaning, requirements, scope, conflicts, and clarity.
+
+The report shows findings and any failed or unavailable checks. Put important exact text in backticks or double quotes to make its boundaries explicit.
+
+The app generates instructions for a coding agent. It does not perform the coding task.
+
+## What the checks mean
+
+A passing report means the implemented checks found no remaining issue. **Always review the final prompt.** The reviewer uses the same selected model and can miss mistakes.
+
+This is an independent writing aid, **not a full or certified STE checker**. German and Polish use clear technical language rather than English STE. ASD and STEMG do not endorse the project.
+
+See [the method and sources](docs/ste-method.md) and [verification details](docs/verification.md).
 
 ## Terminal use
 
 ```bash
+# Create a reviewed prompt
 node bin/ste.mjs --provider codex < request.txt > prompt.md
+
+# Use Fast mode with German output
 node bin/ste.mjs --provider claude --language de --quality fast < request.txt
+
+# Export the prompt and verification report
 node bin/ste.mjs --provider agy --json < request.txt > result.json
 ```
 
-By default, a flagged draft is withheld from stdout and returns exit code **2**. Use `--json` for the draft and report, or `--allow-draft` to inspect draft text; both keep exit code 2 when flagged. Use `--instructions` for a rewrite brief without a model call. See `--help` for options.
+Flagged drafts return exit code `2` and are withheld from plain output. Use `--json` to inspect the full result, or `--allow-draft` to output draft text.
 
-## Local data and troubleshooting
+Run `node bin/ste.mjs --help` for all options.
 
-The server listens on your computer only. History stays in your browser. Your selected CLI sends the request to its provider and can keep its own logs. The app has no analytics. See [security and privacy](SECURITY.md).
+## Data and troubleshooting
 
-- **Port already in use?** Open the running app, or use `npm start -- --port 4320`.
-- **Wrong version?** Run `node bin/ste.mjs --version`; this release is **0.3.0**.
-- **CLI missing?** Run `node bin/ste.mjs --doctor`.
-- **Publish your copy:** follow the [GitHub guide](docs/publishing.md).
+The app runs on your computer. History stays in your browser. Your CLI sends requests to its provider and may retain its own logs. The app includes no analytics.
 
-For development and tests only: `npm ci`, then `npm run check` and `npm test`. See [contributing](CONTRIBUTING.md).
+| Problem | Action |
+| --- | --- |
+| Port already in use | Run `npm start -- --port 4320` |
+| CLI not detected | Run `node bin/ste.mjs --doctor` |
+| Check the installed app version | Run `node bin/ste.mjs --version` |
+| Model unavailable | Check CLI sign-in and model access, then refresh the model list |
+
+Read [security notes](SECURITY.md) and [CLI details](docs/cli-adapters.md).
+
+## Development
+
+```bash
+npm ci
+npm run check
+npm test
+```
+
+See [contributing](CONTRIBUTING.md), [evaluation guidance](evals/README.md), and [GitHub publishing instructions](docs/publishing.md).
+
+Released under the [MIT license](LICENSE).
