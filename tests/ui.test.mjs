@@ -411,20 +411,20 @@ test('saved theme and sidebar state apply before app code runs, persist, and sur
 });
 
 test('long history lists every entry, restores a selection, deletes one, and filters by search', async t => {
-  const storage = Array.from({ length: 40 }, (_, index) => ({ id: `entry-${index}`, input: `Request number ${index}`, prompt: `Prompt ${index}`, createdAt: 1790000000000 - index, provider: 'codex' }));
+  const storage = Array.from({ length: 501 }, (_, index) => ({ id: `entry-${index}`, input: `Request number ${index}`, prompt: `Prompt ${index}`, createdAt: 1790000000000 - index, provider: 'codex' }));
   const { $, win } = await setup(t, { storage });
-  assert.equal($('#history-list').children.length, 40);
-  assert.equal($('#history-count').textContent, '40');
+  assert.equal($('#history-list').children.length, 500, 'History keeps the newest 500 prompts.');
+  assert.equal($('#history-count').textContent, '500');
   assert.equal($('#history-empty').hidden, true);
   win.document.querySelectorAll('.history-restore')[5].click();
   await until(() => !$('#model').disabled, 'restored entry');
   assert.equal($('#prompt-input').value, 'Request number 5');
   assert.equal($('.history-item.active .history-restore').getAttribute('aria-current'), 'true');
   $('.history-item.active .history-delete').click();
-  assert.equal($('#history-list').children.length, 39);
+  assert.equal($('#history-list').children.length, 499);
   assert.equal($('.history-item.active'), null);
   const stored = JSON.parse(win.localStorage.getItem('ste-prompt-engineer.history.v1'));
-  assert.equal(stored.length, 39);
+  assert.equal(stored.length, 499);
   assert.ok(!stored.some(entry => entry.id === 'entry-5'));
   $('#history-search').value = 'no such request';
   $('#history-search').dispatchEvent(new win.Event('input'));
@@ -1220,4 +1220,21 @@ test('a folder that is not a Git repository is set up only after confirmation; i
   assert.equal(git('log', '-1', '--format=%s'), 'Initial commit');
   assert.equal(git('ls-tree', '-r', '--name-only', 'HEAD'), '', 'The first commit is empty.');
   assert.equal(git('status', '--porcelain'), '?? notes.txt', 'User files stay untracked.');
+});
+
+test('when browser storage is full, the oldest prompts are dropped so the newest one is still saved', async t => {
+  const storage = Array.from({ length: 30 }, (_, index) => ({ id: `old-${index}`, input: `Old request ${index} ${'x'.repeat(200)}`, prompt: `Old prompt ${index}`, createdAt: 1790000000000 - index, provider: 'codex' }));
+  const { $, win, submit, requests } = await setup(t, { storage, generationResponse: { prompt: 'Add a test.', verification: report() } });
+  const setItem = win.Storage.prototype.setItem;
+  // Room for about ten entries.
+  win.Storage.prototype.setItem = function (key, value) { if (key === 'ste-prompt-engineer.history.v1' && value.length > 3500) throw new win.DOMException('Storage is full.', 'QuotaExceededError'); return setItem.call(this, key, value); };
+  $('#prompt-input').value = 'Add a test.'; submit();
+  await until(() => !$('#generate-button').disabled && requests.length === 1, 'result');
+  const saved = JSON.parse(win.localStorage.getItem('ste-prompt-engineer.history.v1'));
+  assert.ok(saved.length > 1 && saved.length < 31, `Some older prompts were dropped (${saved.length} kept).`);
+  assert.equal(saved[0].prompt, 'Add a test.', 'The newest prompt is kept.');
+  assert.equal(saved.at(-1).id, `old-${saved.length - 2}`, 'The oldest prompts go first.');
+  assert.equal($('#storage-warning').hidden, true);
+  assert.match($('#announcement').textContent, new RegExp(`the ${31 - saved.length} oldest prompts were removed from history`));
+  assert.equal($('#history-list').children.length, saved.length);
 });

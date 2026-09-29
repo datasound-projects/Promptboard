@@ -6,7 +6,7 @@ const THEME_KEY = 'ste-prompt-engineer.theme'; // Also read by prefs.js before f
 const SIDEBAR_KEY = 'ste-prompt-engineer.sidebar';
 const SETTINGS_KEY = 'ste-prompt-engineer.settings';
 const PROJECT_PANEL_KEY = 'promptboard.project-panel';
-const HISTORY_LIMIT = 40;
+const HISTORY_LIMIT = 500;
 const MAX_PROMPT_BYTES = 2 * 1024 * 1024;
 const KNOWN_PROVIDERS = ['codex', 'claude', 'gemini', 'agy'];
 const KNOWN_DETAILS = ['super-short', 'concise', 'detailed', 'extremely-detailed'];
@@ -112,15 +112,24 @@ function normalizeVerification(value) {
 
 function announce(message) { $('#announcement').textContent = message; }
 
+// When the browser's storage is full, the oldest prompts are dropped until the rest fit. The newest
+// entry is never dropped; if even that does not fit, nothing changes and a warning stays visible.
+let droppedFromHistory = 0;
 function persistHistory() {
-  try {
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
-    $('#storage-warning').hidden = true;
-    return true;
-  } catch {
-    $('#storage-warning').hidden = false;
-    return false;
+  droppedFromHistory = 0;
+  for (let keep = history.length; keep >= Math.min(1, history.length); keep = keep > 20 ? Math.floor(keep * 0.9) : keep - 1) {
+    try {
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(history.slice(0, keep)));
+      droppedFromHistory = history.length - keep;
+      history = history.slice(0, keep);
+      $('#storage-warning').hidden = true;
+      return true;
+    } catch (error) {
+      if (error?.name !== 'QuotaExceededError' && error?.code !== 22) break;
+    }
   }
+  $('#storage-warning').hidden = false;
+  return false;
 }
 
 function renderHistory() {
@@ -652,7 +661,8 @@ async function generate(event) {
     const saved = persistHistory();
     showResult(entry);
     const resultMessage = entry.verification?.status === 'checks-passed' ? 'Checks complete. Review the prompt before use.' : 'Draft returned. Review the prompt and its check report before use.';
-    announce(`${resultMessage}${saved ? '' : ' Browser history was not saved. Copy or export this prompt and its check report to keep them.'}`);
+    const dropped = droppedFromHistory ? ` Browser storage was full, so the ${plural(droppedFromHistory, 'oldest prompt')} ${droppedFromHistory === 1 ? 'was' : 'were'} removed from history.` : '';
+    announce(`${resultMessage}${saved ? dropped : ' Browser history was not saved. Copy or export this prompt and its check report to keep them.'}`);
     $('#output-card').scrollIntoView({ behavior: scrollBehavior(), block: 'nearest' });
   } catch (error) {
     if (sequence !== generationSequence) return;
@@ -840,7 +850,7 @@ function openHelp(privacy = false) {
   $('#dialog-heading').textContent = privacy ? 'Your work. Your browser. Your CLI.' : 'A small tool. A straightforward setup.';
   if (privacy) {
     content.append(
-      paragraph('This app saves your last 40 finished prompts in this browser’s local storage. You can delete them in the sidebar. The Kanban board is saved by the local app in its data folder on this computer, not in the browser.'),
+      paragraph('This app saves your last 500 finished prompts in this browser’s local storage. If the browser runs out of space, the oldest ones are removed first. You can delete them in the sidebar. The Kanban board is saved by the local app in its data folder on this computer, not in the browser.'),
       paragraph('The Kanban page stores, moves, and copies cards. It does not send cards to a CLI or model; agent runs are not active yet.'),
       paragraph('When you generate a prompt, your text goes to the local server, then to your selected CLI. That CLI may send it to its model provider under your account and that provider’s policies. Do not include secrets or private information that you cannot share with that provider.'),
       paragraph('The app does not need a separate API key. The CLI must be installed and signed in. Its account limits and applicable usage costs still apply.'),
