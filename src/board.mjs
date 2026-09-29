@@ -11,6 +11,7 @@ import { access, mkdir, realpath } from 'node:fs/promises';
 import { join, relative, isAbsolute } from 'node:path';
 import { Store } from './store.mjs';
 import { branchExists, commitExists, git, GitError, listWorktrees, validateRepository } from './git.mjs';
+import { resolveConfig } from './agents.mjs';
 
 export const COLUMNS = Object.freeze([
   { id: 'todo', title: 'To Do', agent: false },
@@ -29,6 +30,11 @@ const RUN_NEXT = { queued: ['running', 'cancelled', 'failed', 'interrupted'], ru
   waiting_for_input: ['running', 'succeeded', 'cancelled', 'failed', 'interrupted'] };
 // Stages the PB-02 executor implements. Code Review, Testing, and Merge arrive in PB-04.
 const EXECUTABLE_STAGES = new Set(['planning', 'executing']);
+// Per-stage workflow settings. Projects store overrides; defaults apply otherwise.
+// To Do, Merge, and Done have no run policy: To Do and Done never run, and a merge always needs confirmation.
+export const WORKFLOW_STAGES = Object.freeze(['planning', 'executing', 'code_review', 'testing']);
+const POLICIES = ['manual', 'ask', 'start'];
+export const DEFAULT_STAGE_SETTINGS = Object.freeze({ policy: 'ask', provider: 'claude', model: '', effort: '', permissionMode: '', instructions: '' });
 const RUN_FIELDS = ['startedAt', 'endedAt', 'providerSessionId', 'waitingReason', 'errorCode', 'exitCode', 'hasPlan', 'planExcerpt', 'turns', 'lifecycle'];
 // Stages whose first authorized run may create the task branch and worktree.
 const WORKSPACE_STAGES = new Set(['planning', 'executing']);
@@ -100,7 +106,8 @@ function parseBackupData(data) {
       id: unique(project.id, label), name, createdAt: time(project.createdAt),
       repositoryPath: v2 && typeof project.repository?.path === 'string' ? project.repository.path.slice(0, 4096) : null,
       targetBranch: v2 && typeof project.targetBranch?.name === 'string' ? project.targetBranch.name.slice(0, 255) : null,
-      automation: v2 && project.automation && typeof project.automation === 'object' ? { autoRun: project.automation.autoRun === true } : null,
+      // Imported workflow settings (including legacy automation) are kept for confirmation only.
+      workflow: v2 && project.workflow && typeof project.workflow === 'object' ? project.workflow : v2 && project.automation?.autoRun === true ? { executing: { policy: 'start' } } : null,
       tasks: cards.map((card, cardIndex) => {
         const cardLabel = `${label}, card ${cardIndex + 1}`;
         if (!card || typeof card !== 'object') throw new BoardError(`${cardLabel} is not valid.`, 'INVALID_BACKUP');
@@ -114,11 +121,39 @@ function parseBackupData(data) {
 }
 
 function newProject({ id = randomUUID(), name, createdAt = Date.now() }) {
-  return { id, name, createdAt, revision: 1, repository: null, targetBranch: null, automation: { autoRun: false }, pendingImport: null, tasks: [] };
+  return { id, name, createdAt, revision: 1, repository: null, targetBranch: null, workflow: {}, pendingImport: null, tasks: [] };
 }
 function newTask({ id = randomUUID(), title, prompt, source = null, checksOutdated = false, createdAt = Date.now(), updatedAt = createdAt, column = 'todo' }) {
   // contentRevision changes only when the title or prompt changes; plan approvals refer to it.
   return { id, title, prompt, source, checksOutdated, createdAt, updatedAt, column, revision: 1, contentRevision: 1, planApproval: null, workspace: null, retainedBranches: [], transitions: [] };
+}
+
+/** Validate workflow overrides. Unknown stages and fields are dropped; invalid values are refused. */
+export function normalizeWorkflow(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new BoardError('Send workflow settings as an object.', 'INVALID_WORKFLOW');
+  const result = {};
+  for (const stage of WORKFLOW_STAGES) {
+    const value = input[stage];
+    if (!value || typeof value !== 'object') continue;
+    const settings = { ...DEFAULT_STAGE_SETTINGS, ...value };
+    if (!POLICIES.includes(settings.policy)) throw new BoardError('Choose Manual, Ask on entry, or Start on entry.', 'INVALID_WORKFLOW');
+    if (typeof settings.instructions !== 'string' || settings.instructions.length > 4000) throw new BoardError('Stage instructions can have at most 4,000 characters.', 'INVALID_WORKFLOW');
+    const entry = { policy: settings.policy, instructions: settings.instructions };
+    if (EXECUTABLE_STAGES.has(stage)) {
+      try { Object.assign(entry, resolveConfig(stage, settings)); }
+      catch (error) { throw new BoardError(error.message, 'INVALID_WORKFLOW'); }
+    }
+    result[stage] = entry;
+  }
+  return result;
+}
+
+/** Defaults merged with a project's overrides. */
+export function effectiveWorkflow(project) {
+  return Object.fromEntries(WORKFLOW_STAGES.map(stage => {
+    const base = { ...DEFAULT_STAGE_SETTINGS, ...(EXECUTABLE_STAGES.has(stage) ? resolveConfig(stage, {}) : {}) };
+    return [stage, { ...base, ...(project?.workflow?.[stage] || {}) }];
+  }));
 }
 
 /** Allowed column moves. Reordering inside a column is always allowed. */
@@ -176,7 +211,8 @@ export class Board {
 
   async view() {
     const state = await this.state();
-    return { revision: state.revision, columns: COLUMNS, settings: state.settings, projects: state.projects, runs: state.runs.slice(-500),
+    return { revision: state.revision, columns: COLUMNS, settings: state.settings, runs: state.runs.slice(-500),
+      projects: state.projects.map(project => ({ ...project, effectiveWorkflow: effectiveWorkflow(project) })),
       execution: this.executor?.describe ? await this.executor.describe() : { available: Boolean(this.executor) }, recovery: this.store.recovery };
   }
 
@@ -251,6 +287,37 @@ export class Board {
     });
   }
 
+  async setWorkflow(id, { workflow, expectedRevision }) {
+    const clean = normalizeWorkflow(workflow);
+    return this.store.update(state => {
+      const project = this.#project(state, id);
+      checkRevision(project, expectedRevision, 'This project');
+      project.workflow = clean; // Applies to future runs only; active runs keep their snapshot.
+      project.revision++;
+      return project;
+    });
+  }
+
+  /**
+   * The shared move path for drag-and-drop and keyboard moves. The move is recorded first.
+   * Only then, for a Planning or Executing column set to "Start on entry", a run is
+   * requested as a separate, recorded event. "Ask on entry" returns a question for the UI.
+   */
+  async transition(id, { column, index, expectedRevision }) {
+    const before = this.#task(await this.state(), id);
+    const from = before.task.column;
+    const task = await this.moveTask(id, { column, index, expectedRevision });
+    const result = { task };
+    if (from === column || !EXECUTABLE_STAGES.has(column)) return result;
+    const settings = effectiveWorkflow(before.project)[column];
+    if (settings.policy === 'ask') result.ask = { stage: column };
+    if (settings.policy === 'start') {
+      try { result.run = await this.requestRun(id, { stage: column, consent: true, trigger: 'automation' }); }
+      catch (error) { result.automation = { started: false, code: error.code || 'FAILED', message: error.message }; }
+    }
+    return result;
+  }
+
   /** Re-read the linked repository's local branches. */
   async listProjectBranches(id) {
     const project = this.#project(await this.state(), id);
@@ -290,7 +357,7 @@ export class Board {
           const branch = repository.branches.find(item => item.name === pending.targetBranch);
           project.targetBranch = branch ? { name: branch.name, commit: branch.commit, root: repository.root, recordedAt: Date.now() } : null;
         }
-        if (pending.automation) project.automation = { ...pending.automation };
+        if (pending.workflow) project.workflow = normalizeWorkflow(pending.workflow);
       }
       project.pendingImport = null;
       project.revision++;
@@ -415,7 +482,7 @@ export class Board {
     return { application: 'Promptboard', kind: 'promptboard-backup', version: 2, exportedAt: new Date().toISOString(),
       projects: state.projects.map(project => ({ id: project.id, name: project.name, createdAt: project.createdAt,
         repository: project.repository ? { path: project.repository.path } : null, targetBranch: project.targetBranch ? { name: project.targetBranch.name } : null,
-        automation: project.automation,
+        workflow: project.workflow || {},
         // Workspaces and runs are machine-specific and are not exported.
         tasks: project.tasks.map(task => ({ id: task.id, title: task.title, prompt: task.prompt, source: task.source, checksOutdated: task.checksOutdated,
           createdAt: task.createdAt, updatedAt: task.updatedAt, column: task.column })) })) };
@@ -433,8 +500,8 @@ export class Board {
       state.projects = parsed.projects.map(incoming => {
         const project = newProject(incoming);
         project.tasks = incoming.tasks.map(task => newTask(task));
-        if (incoming.repositoryPath || incoming.targetBranch || incoming.automation?.autoRun) {
-          project.pendingImport = { repositoryPath: incoming.repositoryPath, targetBranch: incoming.targetBranch, automation: incoming.automation };
+        if (incoming.repositoryPath || incoming.targetBranch || incoming.workflow) {
+          project.pendingImport = { repositoryPath: incoming.repositoryPath, targetBranch: incoming.targetBranch, workflow: incoming.workflow };
         }
         return project;
       });
@@ -545,7 +612,7 @@ export class Board {
    * explicit consent. The first Planning or Executing run allocates the task worktree;
    * later runs reuse it. Duplicate requests are serialized per task and get one run.
    */
-  requestRun(taskId, { stage, consent = false, config = {} } = {}) {
+  requestRun(taskId, { stage, consent = false, config = {}, trigger = 'user' } = {}) {
     return this.#locked(`run:${taskId}`, async () => {
       const state = await this.state();
       const { project, task } = this.#task(state, taskId);
@@ -559,7 +626,14 @@ export class Board {
       if (!project.targetBranch) throw new BoardError('Choose the local target branch first.', 'TARGET_BRANCH_REQUIRED', 409);
       if (!this.executor) throw new BoardError('Agent execution is not available. Cards can be planned and moved, but no agent runs.', 'EXECUTION_UNAVAILABLE', 503);
       if (!EXECUTABLE_STAGES.has(stage)) throw conflict(`${column.title} runs are not available yet.`, 'STAGE_NOT_IMPLEMENTED');
-      const resolved = await this.executor.validate({ stage, config });
+      // Explicit request values override the project's workflow settings for this run only.
+      const settings = effectiveWorkflow(project)[stage];
+      const requested = Object.fromEntries(Object.entries(config || {}).filter(([key, value]) => ['provider', 'model', 'effort', 'permissionMode', 'instructions'].includes(key) && value !== undefined && value !== null));
+      // Model, effort, and permission mode belong to one provider; a different provider starts from its own defaults.
+      const inherited = requested.provider && requested.provider !== settings.provider ? { policy: settings.policy, instructions: settings.instructions, provider: requested.provider } : settings;
+      const merged = { ...inherited, ...requested };
+      if (typeof merged.instructions !== 'string' || merged.instructions.length > 4000) throw new BoardError('Stage instructions can have at most 4,000 characters.', 'INVALID_WORKFLOW');
+      const resolved = { ...(await this.executor.validate({ stage, config: merged })), instructions: merged.instructions };
       if (!WORKSPACE_STAGES.has(stage) && task.workspace?.status !== 'ready') throw new BoardError('Run Planning or Executing first to create the task worktree.', 'WORKSPACE_REQUIRED', 409);
       const workspace = await this.ensureTaskWorktree(taskId);
       const plan = stage === 'executing' ? this.#approvedPlan(state, task) : null;
@@ -568,7 +642,7 @@ export class Board {
         const now = Date.now();
         const id = randomUUID();
         const record = { id, taskId, projectId: project.id, stage, status: 'queued', createdAt: now, updatedAt: now,
-          promptRevision: task.contentRevision ?? 1, config: resolved, trigger: 'user', workspacePath: workspace.path, branch: workspace.branch,
+          promptRevision: task.contentRevision ?? 1, config: resolved, trigger: trigger === 'automation' ? 'automation' : 'user', workspacePath: workspace.path, branch: workspace.branch,
           planRunId: plan?.runId || null, artifactsDir: join('runs', id), turns: 0 };
         draft.runs.push(record);
         return record;

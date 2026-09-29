@@ -64,7 +64,9 @@ async function setup(t, { catalogReader = async id => ({ provider: id, ...catalo
   Object.defineProperty(win.navigator, 'clipboard', { value: { writeText: async text => { copied = text; } } });
   // Same order as the page: prefs.js runs in <head>, app.js is deferred.
   win.eval(await readFile(new URL('../public/prefs.js', import.meta.url), 'utf8'));
-  win.eval(await readFile(new URL('../public/app.js', import.meta.url), 'utf8'));
+  // Browsers share one global scope across classic scripts; jsdom's eval does not, so evaluate them together.
+  // Test-only export appended by the harness (not part of the app): reload the board and read the token.
+  win.eval(`${await readFile(new URL('../public/app.js', import.meta.url), 'utf8')}\n${await readFile(new URL('../public/dock.js', import.meta.url), 'utf8')}\nwindow.__pbTest = { loadBoard, get token() { return token; } };`);
   t.after(async () => {
     // A request can still be in flight when a test ends (for example a model refresh). Its handler
     // would then touch a closed window. Wait until the page is idle for a few ticks, then close.
@@ -779,17 +781,18 @@ test('backups: export round-trips, import validates, asks before replacing, and 
   assert.equal(exported.projects[0].tasks[0].prompt, exact);
   // A version 2 backup with a repository path and automation waits for confirmation.
   exported.projects[0].repository = { path: '/nowhere/repo' };
-  exported.projects[0].automation = { autoRun: true };
+  exported.projects[0].workflow = { executing: { policy: 'start' } };
   const fresh = await setup(t);
   await goTo(fresh, '#/kanban');
   await importFile(fresh, JSON.stringify(exported));
-  assert.match(fresh.$('#project-detail').textContent, /Backup imported: 2 projects, 1 card\. No agent runs were started\. Imported repository paths and automation settings wait for your confirmation/);
+  assert.match(fresh.$('#project-detail').textContent, /Backup imported: 2 projects, 1 card\. No agent runs were started\. Imported repository paths and workflow settings wait for your confirmation/);
   fresh.choose('#project-select', 'p1');
   assert.equal(fresh.$('#import-pending').hidden, false);
-  assert.match(fresh.$('#import-pending-text').textContent, /repository \/nowhere\/repo, automatic runs/);
+  assert.match(fresh.$('#import-pending-text').textContent, /repository \/nowhere\/repo, workflow settings \(automatic runs in Executing\)/);
   const project = (await serverBoard(fresh)).projects.find(item => item.id === 'p1');
   assert.equal(project.repository, null);
-  assert.deepEqual(project.automation, { autoRun: false });
+  assert.deepEqual(project.workflow, {});
+  assert.equal(project.effectiveWorkflow.executing.policy, 'ask');
   await click(fresh, fresh.$('#import-confirm'));
   assert.equal(fresh.$('#repo-message').textContent, 'This folder does not exist.');
   await click(fresh, fresh.$('#import-dismiss'));
@@ -883,4 +886,184 @@ test('missing agent terminal support shows setup steps; the prompt editor still 
   assert.match($('#execution-status').textContent, /Agent runs are unavailable\. Agent terminals need the node-pty package\. Run npm install/);
   await newProject(ctx, 'Setup');
   assert.match($('#kanban-columns [data-column="executing"] .kanban-column-note').textContent, /not set up/);
+});
+
+// ---- PB-03: transitions, workflow settings, consent, and task details ----
+
+function fakeExecutor() {
+  const providers = {
+    claude: { name: 'Claude Code', planning: { supported: true, how: 'Plan mode, read-only tools.' }, execution: { supported: true, how: 'Edits in the task worktree.' }, permissionModes: ['acceptEdits', 'default'] },
+    codex: { name: 'Codex CLI', planning: { supported: true, how: 'Read-only sandbox.' }, execution: { supported: true, how: 'Workspace-write sandbox.' }, permissionModes: ['workspace-write'] },
+  };
+  const executor = {
+    started: [],
+    describe: async () => ({ available: true, setupMessage: '', providers }),
+    validate: async ({ stage, config }) => ({ provider: config.provider || 'claude', model: config.model || '', effort: config.effort || '', permissionMode: stage === 'planning' ? 'plan' : config.permissionMode || providers[config.provider || 'claude'].permissionModes[0] }),
+    start: async ({ run }) => { executor.started.push(run); },
+    activeCount: () => 0,
+    subscribe: () => null,
+    async confirm(runId) { const run = await executor.board.run(runId); if (run.stage === 'planning') await executor.board.approvePlan(run.taskId, { runId }); await executor.board.updateRun(runId, { status: 'succeeded' }); },
+    async cancel(runId) { await executor.board.updateRun(runId, { status: 'cancelled' }); },
+    artifact: async () => 'PLAN\n1. Change the parser.',
+  };
+  return executor;
+}
+async function linkedKanban(t, options = {}) {
+  const executor = fakeExecutor();
+  const ctx = await setup(t, { executor, hash: '#/kanban', ...options });
+  executor.board = ctx.app.board;
+  const repo = await gitRepo(t);
+  await ctx.idle();
+  await newProject(ctx, 'Flow');
+  const project = (await serverBoard(ctx)).projects[0];
+  return { ...ctx, executor, repo, project };
+}
+async function link(ctx) {
+  await ctx.app.board.linkRepository(ctx.project.id, { path: ctx.repo, expectedRevision: 1 });
+  await ctx.app.board.setTargetBranch(ctx.project.id, { branch: 'trunk', expectedRevision: 2 });
+  await ctx.win.__pbTest.loadBoard(); await ctx.idle();
+}
+const moveBy = async (ctx, title, column) => { const menu = cardItem(ctx, title).querySelector('.kanban-move-to'); menu.value = column; menu.dispatchEvent(new ctx.win.Event('change')); };
+
+test('drag-and-drop and keyboard moves use the same transition; rejected moves roll back visibly with the reason', { skip: process.platform === 'win32' }, async t => {
+  const ctx = await linkedKanban(t);
+  const { $, win } = ctx;
+  await newCard(ctx, 'Keyboard', 'Move me with the menu.');
+  await newCard(ctx, 'Dragged', 'Move me with the mouse.');
+  // Keyboard: the card moves at once and shows as pending, then rolls back with the server's reason.
+  await moveBy(ctx, 'Keyboard', 'planning');
+  assert.ok(cardItem(ctx, 'Keyboard').classList.contains('pending'), 'A move shows as pending until the server confirms it.');
+  assert.deepEqual(titles($, 'planning'), ['Keyboard']);
+  await ctx.idle();
+  assert.deepEqual(titles($, 'todo'), ['Keyboard', 'Dragged'], 'The rejected move is rolled back.');
+  assert.ok(cardItem(ctx, 'Keyboard').classList.contains('rejected'));
+  assert.match($('#project-detail').textContent, /“Keyboard” stayed in To Do\. Link this project to a Git repository before cards leave To Do/);
+  // Drag-and-drop onto the empty Planning column: the same transition and the same rejection.
+  cardItem(ctx, 'Dragged').dispatchEvent(new win.Event('dragstart', { bubbles: true }));
+  const planning = column($, 'planning');
+  const over = new win.Event('dragover', { bubbles: true, cancelable: true });
+  planning.dispatchEvent(over);
+  assert.equal(over.defaultPrevented, true);
+  planning.dispatchEvent(new win.Event('drop', { bubbles: true, cancelable: true }));
+  await ctx.idle();
+  assert.deepEqual(titles($, 'todo'), ['Keyboard', 'Dragged']);
+  assert.match($('#project-detail').textContent, /“Dragged” stayed in To Do\. Link this project/);
+  // After linking, both paths succeed and record the same kind of transition.
+  await link(ctx);
+  await moveBy(ctx, 'Keyboard', 'executing'); await ctx.idle();
+  cardItem(ctx, 'Dragged').dispatchEvent(new win.Event('dragstart', { bubbles: true }));
+  column($, 'executing').dispatchEvent(new win.Event('drop', { bubbles: true, cancelable: true }));
+  await ctx.idle();
+  assert.deepEqual(titles($, 'executing'), ['Keyboard', 'Dragged']);
+  const tasks = await serverTasks(ctx);
+  assert.deepEqual(tasks.map(task => task.transitions.map(({ from, to, by }) => [from, to, by])), [[['todo', 'executing', 'user']], [['todo', 'executing', 'user']]]);
+  // A move the rules forbid is refused the same way, with a clear reason.
+  cardItem(ctx, 'Dragged').dispatchEvent(new win.Event('dragstart', { bubbles: true }));
+  column($, 'done').dispatchEvent(new win.Event('drop', { bubbles: true, cancelable: true }));
+  await ctx.idle();
+  assert.deepEqual(titles($, 'done'), []);
+  assert.match($('#project-detail').textContent, /cannot move from Executing to Done/);
+  assert.equal(ctx.executor.started.length, 0, 'Moves under the default Ask setting start nothing.');
+});
+
+test('workflow settings: Ask by default, Manual does nothing, Start runs as a separate recorded event; To Do stays inert', { skip: process.platform === 'win32' }, async t => {
+  const ctx = await linkedKanban(t);
+  const { $, win } = ctx;
+  await link(ctx);
+  await newCard(ctx, 'Alpha', 'First task.');
+  await newCard(ctx, 'Beta', 'Second task.');
+  assert.match($('#workflow-summary').textContent, /Planning: Ask on entry · Executing: Ask on entry/);
+  $('#workflow-open').click();
+  const stages = [...$('#workflow-stages').querySelectorAll('.workflow-stage')];
+  assert.deepEqual(stages.map(box => box.dataset.stage), ['planning', 'executing', 'code_review', 'testing'], 'To Do, Merge, and Done have no run setting.');
+  assert.ok(stages.every(box => box.querySelector('input[value="ask"]').checked), 'Ask on entry is the default.');
+  assert.match(stages[0].querySelector('.workflow-preview').textContent, /asks whether to start/);
+  assert.match($('#workflow-stages').textContent, /To Do and Done never run agents\. Merge always needs your explicit confirmation/);
+  $('#workflow-cancel').click();
+  // Ask on entry: a question appears; nothing starts until the user agrees.
+  await moveBy(ctx, 'Alpha', 'planning'); await ctx.idle();
+  assert.equal($('#ask-panel').hidden, false);
+  assert.match($('#ask-panel').textContent, /“Alpha” is now in Planning\. Start the agent for this stage\? Nothing starts until you confirm/);
+  assert.equal(ctx.executor.started.length, 0);
+  byText($('#ask-panel'), 'Not now').click();
+  assert.equal($('#ask-panel').hidden, true);
+  // Start on entry for Executing; Manual for Planning.
+  $('#workflow-open').click();
+  const executing = $('#workflow-stages [data-stage="executing"]');
+  executing.querySelector('input[value="start"]').checked = true;
+  executing.dispatchEvent(new win.Event('change', { bubbles: true }));
+  assert.match(executing.querySelector('.workflow-preview').textContent, /starts at once/);
+  $('#workflow-stages [data-stage="planning"] input[value="manual"]').checked = true;
+  submitForm(ctx, '#workflow-form'); await ctx.idle();
+  assert.equal($('#workflow-dialog').open, false);
+  let project = (await serverBoard(ctx)).projects[0];
+  assert.deepEqual([project.workflow.planning.policy, project.workflow.executing.policy], ['manual', 'start']);
+  await moveBy(ctx, 'Beta', 'planning'); await ctx.idle();
+  assert.equal($('#ask-panel').hidden, true, 'Manual asks nothing.');
+  assert.equal(ctx.executor.started.length, 0);
+  await moveBy(ctx, 'Alpha', 'executing'); await ctx.idle();
+  assert.equal(ctx.executor.started.length, 1, 'Start on entry started one run.');
+  const run = ctx.executor.started[0];
+  assert.equal(run.trigger, 'automation');
+  const alpha = (await serverTasks(ctx)).find(task => task.title === 'Alpha');
+  assert.deepEqual(alpha.transitions.map(item => item.to), ['planning', 'executing'], 'The move is recorded as a transition; the run is a separate record.');
+  // Settings changes apply to future runs only.
+  $('#workflow-open').click();
+  const exec = $('#workflow-stages [data-stage="executing"]');
+  exec.querySelector('[data-field="provider"]').value = 'codex';
+  submitForm(ctx, '#workflow-form'); await ctx.idle();
+  assert.equal((await ctx.app.board.run(run.id)).config.provider, 'claude', 'The active run keeps its configuration snapshot.');
+  // To Do stays inert under every setting, and cannot be targeted by a run.
+  await ctx.app.board.updateRun(run.id, { status: 'cancelled' }); await win.__pbTest.loadBoard(); await ctx.idle();
+  await moveBy(ctx, 'Alpha', 'todo'); await ctx.idle();
+  assert.equal(ctx.executor.started.length, 1);
+  const refused = await fetch(`${ctx.app.url}/api/tasks/${alpha.id}/runs`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-ste-token': win.__pbTest.token }, body: JSON.stringify({ stage: 'todo', consent: true }) });
+  assert.equal((await refused.json()).code, 'STAGE_NOT_RUNNABLE');
+});
+
+test('starting a run needs consent and an acknowledgment for unverified prompts; details show prompt, plan, approval, and history', { skip: process.platform === 'win32' }, async t => {
+  const ctx = await linkedKanban(t);
+  const { $, win } = ctx;
+  await link(ctx);
+  const created = await ctx.app.board.createTask({ projectId: ctx.project.id, title: 'Parser', prompt: 'Fix the parser.', source: { provider: 'codex', verification: 'needs-review', quality: 'reviewed' } });
+  await ctx.app.board.moveTask(created.id, { column: 'planning', expectedRevision: 1 });
+  await win.__pbTest.loadBoard(); await ctx.idle();
+  cardItem(ctx, 'Parser').querySelector('.kanban-start').click();
+  assert.equal($('#run-dialog').open, true);
+  assert.match($('#run-dialog-summary').textContent, /cannot change files/);
+  assert.equal($('#run-ack-field').hidden, false, 'An unverified prompt needs an acknowledgment.');
+  assert.deepEqual(Array.from($('#run-permission').options, item => item.value), ['plan']);
+  submitForm(ctx, '#run-form'); await ctx.idle();
+  assert.match($('#run-error').textContent, /Confirm that you reviewed this prompt/);
+  assert.equal(ctx.executor.started.length, 0);
+  $('#run-ack').checked = true;
+  submitForm(ctx, '#run-form'); await ctx.idle();
+  assert.equal($('#run-dialog').open, false);
+  assert.equal(ctx.executor.started.length, 1);
+  const run = ctx.executor.started[0];
+  assert.equal(run.trigger, 'user');
+  // Simulate the plan turn the real supervisor records from provider events.
+  await ctx.app.board.updateRun(run.id, { status: 'running' });
+  await ctx.app.board.updateRun(run.id, { status: 'waiting_for_input', turns: 1, hasPlan: true, planExcerpt: 'PLAN' });
+  await win.__pbTest.loadBoard(); await ctx.idle();
+  assert.match(cardItem(ctx, 'Parser').querySelector('.run-badge').textContent, /Plan waiting for input/);
+  cardItem(ctx, 'Parser').querySelector('.kanban-confirm-run').click(); await ctx.idle();
+  assert.equal($('#task-dialog').open, true);
+  const details = $('#task-details').textContent;
+  assert.match(details, /Draft—review needed\. Task text revision 1/);
+  assert.match(details, /Fix the parser\./);
+  assert.match(details, /PLAN\n1\. Change the parser\./);
+  assert.match(details, /Claude Code · CLI default/);
+  assert.match(details, /waiting for input/);
+  await click(ctx, byText($('#task-details'), 'Approve plan'));
+  const approved = (await serverTasks(ctx))[0];
+  assert.equal(approved.planApproval.runId, run.id);
+  assert.equal((await ctx.app.board.run(run.id)).status, 'succeeded');
+  // Editing the task text makes the approval stale, and details say so.
+  cardItem(ctx, 'Parser').querySelector('.kanban-open').click();
+  $('#card-prompt').value = 'Fix the parser and the lexer.';
+  submitForm(ctx, '#card-form'); await ctx.idle();
+  cardItem(ctx, 'Parser').querySelector('.kanban-details').click(); await ctx.idle();
+  assert.match($('#task-details').textContent, /Task text revision 2/);
+  assert.match($('#task-details').textContent, /approval is stale: the task changed/);
 });

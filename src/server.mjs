@@ -23,6 +23,16 @@ const assets = new Map([
   ['/prefs.js', ['prefs.js', 'text/javascript; charset=utf-8']],
   ['/nerd.png', ['nerd.png', 'image/png']],
   ['/kanban-mascot.png', ['kanban-mascot.png', 'image/png']],
+  ['/dock.js', ['dock.js', 'text/javascript; charset=utf-8']],
+]);
+// Pinned terminal assets, served from the installed packages by exact path only (no CDN,
+// no directory browsing). Missing files (no npm install) return 404 and the dock falls back.
+const vendorDir = fileURLToPath(new URL('../node_modules/@xterm/', import.meta.url));
+const vendor = new Map([
+  ['/vendor/xterm.js', ['xterm/lib/xterm.js', 'text/javascript; charset=utf-8']],
+  ['/vendor/xterm.css', ['xterm/css/xterm.css', 'text/css; charset=utf-8']],
+  ['/vendor/addon-fit.js', ['addon-fit/lib/addon-fit.js', 'text/javascript; charset=utf-8']],
+  ['/vendor/addon-webgl.js', ['addon-webgl/lib/addon-webgl.js', 'text/javascript; charset=utf-8']],
 ]);
 
 function send(res, code, body) {
@@ -106,6 +116,7 @@ async function boardRoute(board, req, res, pathname, searchParams) {
     if (method === 'DELETE' && !action) return view({ deleted: await board.deleteProject(id, { expectedRevision: expected() }) ?? true });
     if (method === 'POST' && action === 'repository') return view(await board.linkRepository(id, await body()));
     if (method === 'GET' && action === 'branches') return send(res, 200, { repository: await board.listProjectBranches(id) });
+    if (method === 'PATCH' && action === 'workflow') return view({ project: await board.setWorkflow(id, await body()) });
     if (method === 'POST' && action === 'target-branch') return view({ project: await board.setTargetBranch(id, await body()) });
     if (method === 'POST' && action === 'confirm-import') return view({ project: await board.confirmImport(id, await body()) });
   } else if (kind === 'runs') {
@@ -126,7 +137,7 @@ async function boardRoute(board, req, res, pathname, searchParams) {
   } else {
     if (method === 'PATCH' && !action) return view(await board.updateTask(id, await body()));
     if (method === 'DELETE' && !action) return view({ deleted: await board.deleteTask(id, { expectedRevision: expected() }) ?? true });
-    if (method === 'POST' && action === 'move') return view({ task: await board.moveTask(id, await body()) });
+    if (method === 'POST' && action === 'move') return view(await board.transition(id, await body()));
     if (method === 'POST' && action === 'duplicate') { await body(); return view({ task: await board.duplicateTask(id) }); }
     if (method === 'POST' && action === 'runs') return view({ run: await board.requestRun(id, await body()) });
     if (method === 'DELETE' && action === 'worktree') return view({ task: await board.removeTaskWorktree(id) });
@@ -315,9 +326,9 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
       }
       return send(res, 404, { error: 'This route does not exist.' });
     }
-    if (req.method === 'GET' && assets.has(pathname)) {
-      const [name, mime] = assets.get(pathname);
-      try { const file = await readFile(join(publicDir, name)); res.writeHead(200, { 'Content-Type': mime }); res.end(file); }
+    if (req.method === 'GET' && (assets.has(pathname) || vendor.has(pathname))) {
+      const [name, mime] = assets.get(pathname) || vendor.get(pathname);
+      try { const file = await readFile(join(assets.has(pathname) ? publicDir : vendorDir, name)); res.writeHead(200, { 'Content-Type': mime }); res.end(file); }
       catch { send(res, 404, { error: 'The file is not available.' }); }
       return;
     }

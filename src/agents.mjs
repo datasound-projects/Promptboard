@@ -96,8 +96,8 @@ export function resolveConfig(stage, config = {}) {
 }
 
 /** Compose the first message: stage instructions, the exact task text, and an approved plan. */
-export function composeMessage(stage, prompt, plan = null) {
-  const parts = [STAGE_INSTRUCTIONS[stage], '', '=== TASK (exact text from the card) ===', prompt, '=== END TASK ==='];
+export function composeMessage(stage, prompt, plan = null, instructions = '') {
+  const parts = [STAGE_INSTRUCTIONS[stage], ...(instructions ? ['', '=== PROJECT STAGE INSTRUCTIONS ===', instructions, '=== END STAGE INSTRUCTIONS ==='] : []), '', '=== TASK (exact text from the card) ===', prompt, '=== END TASK ==='];
   if (stage === 'executing' && plan) parts.push('', '=== APPROVED PLAN ===', plan, '=== END PLAN ===');
   return parts.join('\n');
 }

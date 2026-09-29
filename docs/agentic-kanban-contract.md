@@ -135,6 +135,12 @@ A stage becomes `succeeded` only through `POST /api/runs/:id/confirm` after a fi
 
 **Setup.** `node-pty` is an optional dependency. If it is missing, `execution.available` is false and `setupMessage` explains how to install it. The prompt editor and board keep working. On macOS, the app restores the execute bit on node-pty's prebuilt `spawn-helper` if an install lost it.
 
+## Board interface (PB-03)
+
+- Every move uses `POST /api/tasks/:id/move`, which records the transition first. Then, for Planning or Executing, it applies the project's workflow policy: `ask` returns a question, `start` requests a run with `trigger: "automation"`, and `manual` does nothing. `PATCH /api/projects/:id/workflow` stores overrides; runs keep a snapshot of their settings.
+- Terminal output is rendered only by xterm (WebGL renderer, because the CSP blocks xterm's inline `<style>` elements) or through `textContent`. Links are never opened automatically.
+- Not tested: Safari, Firefox, Windows, and browsers without WebGL (they use a plain-text fallback). Under software rendering (no GPU), creating each terminal takes several seconds.
+
 ## Integration points for later work
 
 - **PB-03 (review, testing, merge):** these stages reuse the task worktree (`WORKSPACE_REQUIRED` until one exists). Merging into the target branch must be an explicit, confirmed action that never force-updates a branch.

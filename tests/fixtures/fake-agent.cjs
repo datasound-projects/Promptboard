@@ -42,6 +42,10 @@ if (provider === 'claude') {
 }
 
 process.stdout.write(`fake ${provider} started in ${process.cwd()}\r\n`);
+// Report terminal size changes so tests can see resizes reach the process.
+process.on('SIGWINCH', () => process.stdout.write(`size ${process.stdout.columns}x${process.stdout.rows}\r\n`));
+if (prompt.includes('FLOOD')) { for (let i = 0; i < 40000; i++) process.stdout.write(`flood line ${i} ${'x'.repeat(80)}\r\n`); }
+if (prompt.includes('HTML_PAYLOAD')) process.stdout.write('<img src=x onerror="window.__pwned=1"><script>window.__pwned=2</script>\r\n');
 emit('SessionStart');
 function turn(text) {
   emit('UserPromptSubmit');

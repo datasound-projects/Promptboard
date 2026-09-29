@@ -8,8 +8,13 @@
     <title>AI Prompt Engineer · STE</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='10' fill='%23181919'/%3E%3Ctext x='20' y='27' text-anchor='middle' font-family='monospace' font-weight='bold' font-size='22' fill='white'%3ES%3C/text%3E%3C/svg%3E">
     <script src="/prefs.js"></script>
+    <link rel="stylesheet" href="/vendor/xterm.css">
     <link rel="stylesheet" href="/styles.css">
+    <script src="/vendor/xterm.js" defer></script>
+    <script src="/vendor/addon-fit.js" defer></script>
+    <script src="/vendor/addon-webgl.js" defer></script>
     <script src="/app.js" defer></script>
+    <script src="/dock.js" defer></script>
   </head>
   <body>
     <a class="skip-link" href="#prompt-input" id="skip-link">Skip to main content</a>
@@ -160,10 +165,10 @@
     </main>
 
     <main class="workspace" id="kanban-view" tabindex="-1" hidden>
-      <section class="intro" aria-labelledby="kanban-title">
+      <section class="intro intro-compact" aria-labelledby="kanban-title">
         <div>
           <h1 id="kanban-title">Plan the work. <span>Brief your agent one card at a time.</span></h1>
-          <p class="intro-description">Move each task from To Do to Done. Link a project to its Git repository so each task can get its own branch. No agent runs from this board yet; copy a card when you are ready.</p>
+          <p class="intro-description">Move each task from To Do to Done. Agents run only in Planning and Executing, only in the task's own worktree, and only after you confirm.</p>
         </div>
         <figure class="mascot"><img src="/kanban-mascot.png" alt="A black and white cartoon girl taking a bite out of a pixel-art creature" width="112" height="112"><figcaption>One bite at a time.</figcaption></figure>
       </section>
@@ -171,10 +176,27 @@
       <p class="storage-warning" id="execution-status" role="status" hidden></p>
       <p class="storage-warning board-warning" role="alert" hidden></p>
       <section class="card kanban-projects" aria-labelledby="projects-heading">
-        <div class="card-heading"><div><h2 id="projects-heading">Projects</h2></div><div class="output-actions"><button class="secondary-button" id="import-board" type="button" title="Restore a board backup (JSON)" aria-label="Import board backup"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M12 15V3m-5 5 5-5 5 5M5 16v5h14v-5"/></svg><span>Import</span></button><button class="secondary-button" id="export-board" type="button" title="Download a board backup (JSON)" aria-label="Export board backup"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 16v5h14v-5"/></svg><span>Export</span></button><input type="file" id="import-file" accept=".json,application/json" hidden></div></div>
-        <div class="kanban-project-bar">
-          <label class="field-label" for="project-select">Current project<select id="project-select"></select></label>
-          <div class="kanban-project-actions"><button type="button" class="text-button" id="project-new"><span aria-hidden="true">＋</span> New project</button><button type="button" class="text-button" id="project-rename" aria-label="Rename project">Rename</button><button type="button" class="text-button" id="project-delete" aria-label="Delete project">Delete</button></div>
+        <h2 class="sr-only" id="projects-heading">Project settings</h2>
+        <div class="kanban-toolbar">
+          <div class="toolbar-cell">
+            <label class="field-label" for="project-select">Project<select id="project-select"></select></label>
+            <div class="kanban-project-actions"><button type="button" class="text-button" id="project-new"><span aria-hidden="true">＋</span> New project</button><button type="button" class="text-button" id="project-rename" aria-label="Rename project">Rename</button><button type="button" class="text-button" id="project-delete" aria-label="Delete project">Delete</button></div>
+          </div>
+          <div class="toolbar-cell">
+            <span class="field-label" id="repo-label">Repository</span>
+            <p class="toolbar-value" id="repo-summary">Not linked</p>
+            <button type="button" class="text-button" id="repo-edit" aria-controls="repo-panel" aria-expanded="false">Link or change</button>
+          </div>
+          <div class="toolbar-cell" id="branch-field" hidden>
+            <label class="field-label" for="target-branch">Target branch<select id="target-branch"></select></label>
+            <div class="kanban-project-actions"><button type="button" class="text-button" id="branch-save">Use this branch</button><button type="button" class="text-button" id="branch-refresh">Refresh</button></div>
+          </div>
+          <div class="toolbar-cell">
+            <span class="field-label">Workflow</span>
+            <p class="toolbar-value" id="workflow-summary">Planning: Ask · Executing: Ask</p>
+            <button type="button" class="text-button" id="workflow-open">Workflow settings</button>
+          </div>
+          <div class="toolbar-cell toolbar-end"><button class="secondary-button" id="import-board" type="button" title="Restore a board backup (JSON)" aria-label="Import board backup"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M12 15V3m-5 5 5-5 5 5M5 16v5h14v-5"/></svg><span>Import</span></button><button class="secondary-button" id="export-board" type="button" title="Download a board backup (JSON)" aria-label="Export board backup"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 16v5h14v-5"/></svg><span>Export</span></button><input type="file" id="import-file" accept=".json,application/json" hidden></div>
         </div>
         <form class="kanban-project-form" id="project-form" novalidate hidden>
           <label class="field-label" for="project-name"><span id="project-form-label">New project name</span><input id="project-name" type="text" maxlength="80" autocomplete="off" required></label>
@@ -188,21 +210,39 @@
             <div class="kanban-form-actions"><button type="submit" class="secondary-button" id="repo-link">Check and link</button><button type="button" class="text-button" id="repo-unlink" hidden>Unlink</button></div>
           </form>
           <p class="note" id="repo-state" role="status"></p>
-          <div class="kanban-repo-row" id="branch-field" hidden>
-            <label class="field-label" for="target-branch">Target branch<select id="target-branch"></select></label>
-            <div class="kanban-form-actions"><button type="button" class="secondary-button" id="branch-save">Use this branch</button><button type="button" class="text-button" id="branch-refresh">Refresh branches</button></div>
-          </div>
           <p class="note" id="branch-state"></p>
           <p class="inline-error" id="repo-message" role="alert" hidden></p>
           <div class="connection-detail" id="import-pending" hidden><p id="import-pending-text"></p><div class="detail-actions"><button type="button" class="danger" id="import-confirm">Check and apply</button><button type="button" id="import-dismiss">Dismiss</button></div></div>
         </div>
+        <div class="connection-detail kanban-ask" id="ask-panel" role="status" hidden></div>
       </section>
       <section class="card kanban-board" aria-labelledby="board-heading">
         <div class="card-heading"><div><h2 id="board-heading">Board</h2><span class="kanban-count" id="board-count" aria-label="Cards">00</span></div><button class="copy-button" id="card-new" type="button"><span aria-hidden="true">＋</span> New card</button></div>
         <div class="output-empty" id="board-empty"><p><span id="board-empty-text">Create a project to start planning.</span><small id="board-empty-note">Each project gets its own board, from To Do to Done.</small><a class="kanban-empty-link" id="empty-prompt-link" href="#/" hidden>Engineer a prompt <span aria-hidden="true">↗</span></a></p></div>
         <div class="kanban-columns" id="kanban-columns" hidden></div>
       </section>
-      <footer class="main-footer"><span>PREPARED FOR AGENTS. NO AGENT RUNS FROM THIS BOARD YET.</span><span>Saved by the local app <span aria-hidden="true">·</span> Human review required</span></footer>
+      <footer class="main-footer"><span>PREPARED FOR AGENTS. RUNS NEED YOUR CONFIRMATION.</span><span>Saved by the local app <span aria-hidden="true">·</span> Human review required</span></footer>
+      <section class="dock" id="dock" aria-labelledby="dock-heading" data-state="collapsed">
+        <div class="dock-divider" id="dock-divider" role="separator" aria-orientation="horizontal" aria-label="Resize the agent sessions panel" tabindex="0" aria-valuemin="120" aria-valuemax="900" aria-valuenow="320"></div>
+        <div class="dock-bar">
+          <h2 class="sr-only" id="dock-heading">Agent sessions</h2>
+          <div class="dock-tabs" role="tablist" aria-label="Agent sessions" id="dock-tabs">
+            <button type="button" role="tab" class="dock-tab" id="dock-tab-activity" aria-selected="true" aria-controls="dock-activity">Activity</button>
+          </div>
+          <span class="dock-indicator" id="dock-indicator" aria-live="polite"></span>
+          <div class="dock-actions">
+            <button type="button" class="text-button" id="dock-copy" hidden>Copy selection</button>
+            <button type="button" class="text-button" id="dock-stop" hidden>Stop…</button>
+            <button type="button" class="text-button" id="dock-max" aria-pressed="false">Maximize</button>
+            <button type="button" class="text-button" id="dock-toggle" aria-expanded="false" aria-controls="dock-body">Expand</button>
+          </div>
+        </div>
+        <div class="dock-body" id="dock-body" hidden>
+          <div class="dock-panel" id="dock-activity" role="tabpanel" aria-labelledby="dock-tab-activity"><p class="dock-empty" id="dock-empty">No agent sessions yet. Start Planning or Executing from a card.</p><ol class="dock-activity" id="dock-activity-list"></ol></div>
+          <div class="dock-terminals" id="dock-terminals"></div>
+          <p class="note dock-note" id="dock-note" role="status" hidden></p>
+        </div>
+      </section>
     </main>
 
     <dialog id="help-dialog" aria-labelledby="dialog-heading"><button class="dialog-close icon-button" id="close-dialog" type="button" aria-label="Close help">×</button><p class="eyebrow">YOUR CLI. A CLEARER BRIEF.</p><h2 id="dialog-heading">A small tool.<br>A straightforward setup.</h2><div id="dialog-content"></div><button class="dialog-done" id="dialog-done" type="button">Got it <span aria-hidden="true">↗</span></button></dialog>
@@ -226,6 +266,34 @@
         <pre class="kanban-snapshot" id="add-preview" tabindex="0" aria-label="Prompt to copy into the card"></pre>
         <p class="inline-error" id="add-error" role="alert" hidden></p>
         <div class="kanban-dialog-actions"><button type="button" class="secondary-button" id="add-cancel">Cancel</button><button type="submit" class="dialog-done">Add card <span aria-hidden="true">↗</span></button></div>
+      </form>
+    </dialog>
+    <dialog id="run-dialog" class="kanban-dialog" aria-labelledby="run-dialog-heading"><button class="dialog-close icon-button" id="run-dialog-close" type="button" aria-label="Close">×</button><p class="eyebrow" id="run-dialog-stage">START AN AGENT</p><h2 id="run-dialog-heading">Start the agent?</h2>
+      <form id="run-form" novalidate>
+        <p class="note" id="run-dialog-summary"></p>
+        <div class="select-grid">
+          <label class="field-label" for="run-provider">Provider<select id="run-provider"></select></label>
+          <label class="field-label" for="run-model">Model<input id="run-model" type="text" maxlength="100" autocomplete="off" placeholder="CLI default"></label>
+          <label class="field-label" for="run-effort">Effort<select id="run-effort"></select></label>
+          <label class="field-label" for="run-permission">Permissions<select id="run-permission"></select></label>
+        </div>
+        <p class="note" id="run-dialog-how"></p>
+        <p class="note" id="run-dialog-plan"></p>
+        <label class="check-option" id="run-ack-field" hidden><input type="checkbox" id="run-ack"><span><strong id="run-ack-title">I reviewed this prompt</strong><small id="run-ack-note"></small></span></label>
+        <p class="inline-error" id="run-error" role="alert" hidden></p>
+        <div class="kanban-dialog-actions"><button type="button" class="secondary-button" id="run-cancel">Cancel</button><button type="submit" class="dialog-done" id="run-start">Start agent <span aria-hidden="true">↗</span></button></div>
+      </form>
+    </dialog>
+    <dialog id="task-dialog" class="kanban-dialog task-dialog" aria-labelledby="task-dialog-heading"><button class="dialog-close icon-button" id="task-dialog-close" type="button" aria-label="Close">×</button><p class="eyebrow" id="task-dialog-stage">TASK</p><h2 id="task-dialog-heading">Task details</h2>
+      <div class="task-details" id="task-details"></div>
+      <div class="kanban-dialog-actions"><button type="button" class="secondary-button" id="task-dialog-done">Close</button></div>
+    </dialog>
+    <dialog id="workflow-dialog" class="kanban-dialog workflow-dialog" aria-labelledby="workflow-dialog-heading"><button class="dialog-close icon-button" id="workflow-dialog-close" type="button" aria-label="Close">×</button><p class="eyebrow" id="workflow-dialog-project">WORKFLOW</p><h2 id="workflow-dialog-heading">Workflow settings</h2>
+      <form id="workflow-form" novalidate>
+        <p class="note">What happens when a card enters each column. Changes apply to future runs, not to runs that are already active.</p>
+        <div class="workflow-stages" id="workflow-stages"></div>
+        <p class="inline-error" id="workflow-error" role="alert" hidden></p>
+        <div class="kanban-dialog-actions"><button type="button" class="secondary-button" id="workflow-cancel">Cancel</button><button type="submit" class="dialog-done">Save settings <span aria-hidden="true">↗</span></button></div>
       </form>
     </dialog>
     <div id="announcement" class="sr-only" aria-live="polite"></div>

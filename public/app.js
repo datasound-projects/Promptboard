@@ -902,6 +902,8 @@ let projectFormMode = 'new';
 let dragId = null;
 let repoFormFor = null;
 const repositories = new Map(); // projectId -> last branch list from the server.
+const pendingMoves = new Set(); // Cards moved locally while the server confirms the move.
+let repoPanelOpen = false;
 
 function normalizeSource(source) {
   if (!source || typeof source !== 'object') return null;
@@ -1034,6 +1036,7 @@ function renderBoard() {
   $('#execution-status').textContent = board?.execution?.setupMessage ? `Agent runs are unavailable. ${board.execution.setupMessage}` : '';
   $('#kanban-columns').replaceChildren(...(project ? board.columns.map(column => renderColumn(column, tasks.filter(task => task.column === column.id))) : []));
   renderRepository(project);
+  window.PromptboardDock?.sync();
 }
 
 function renderColumn(column, tasks) {
@@ -1100,8 +1103,10 @@ function renderCard(card, index, count) {
   const details = [card.source ? sourceSummary(card.source) : 'Written by you'];
   if (card.workspace) details.push(`Branch ${card.workspace.branch}${card.workspace.status === 'ready' ? '' : ` (${card.workspace.status})`}`);
   const run = latestRun(card.id);
-  if (run) details.push(`Last run: ${run.stage.replace('_', ' ')} · ${run.status.replaceAll('_', ' ')}`);
-  item.append(badge, heading, paragraph(card.prompt.slice(0, 400).replace(/\s+/g, ' ').trim(), 'kanban-preview'), paragraph(details.join(' · '), 'kanban-meta'), actions);
+  item.append(badge, heading, paragraph(card.prompt.slice(0, 400).replace(/\s+/g, ' ').trim(), 'kanban-preview'), paragraph(details.join(' · '), 'kanban-meta'), renderRunControls(card, run), actions);
+  if (pendingMoves.has(card.id)) item.classList.add('pending');
+  // Selecting a card reveals its agent session, if it has one.
+  item.addEventListener('click', event => { if (!event.target.closest('button, select, a')) window.PromptboardDock?.reveal(card.id); });
   // Pointer drag-and-drop. The ↑/↓ buttons and the stage menu are the keyboard equivalent.
   item.addEventListener('dragstart', event => {
     dragId = card.id;
@@ -1130,17 +1135,60 @@ function showBoardError(error) {
   announce(error.message);
 }
 
-/** Move a card to a column position. `index` counts the other cards in that column; null means the end. */
+/**
+ * Move a card to a column position. Drag-and-drop, the ↑/↓ buttons, and the stage menu all use
+ * this one path and the same server transition. The card moves at once and shows as pending;
+ * a rejected move is rolled back visibly with the reason. `index` counts the other cards in
+ * that column; null means the end.
+ */
 async function placeCard(id, column, index) {
   const card = findTask(id);
-  if (!card) return false;
-  const others = currentProject().tasks.filter(task => task.column === column && task.id !== id);
+  if (!card || pendingMoves.has(id)) return false;
+  const project = currentProject();
+  const others = project.tasks.filter(task => task.column === column && task.id !== id);
   const position = index === null ? others.length : Math.min(index, others.length);
+  const snapshot = project.tasks.slice();
+  const rest = project.tasks.filter(task => task.id !== id);
+  const before = rest.filter(task => task.column === column)[position];
+  const at = before ? rest.indexOf(before) : (others.length ? rest.indexOf(others.at(-1)) + 1 : rest.length);
+  rest.splice(at, 0, { ...card, column });
+  project.tasks = rest;
+  pendingMoves.add(id);
+  renderBoard();
+  let result;
   try {
-    await boardCall('POST', `/api/tasks/${encodeURIComponent(id)}/move`, { column, index: position, expectedRevision: card.revision });
-  } catch (error) { showBoardError(error); return false; }
+    result = await boardCall('POST', `/api/tasks/${encodeURIComponent(id)}/move`, { column, index: position, expectedRevision: card.revision });
+  } catch (error) {
+    pendingMoves.delete(id);
+    if (currentProject()?.id === project.id && error.code !== 'REVISION_CONFLICT' && error.code !== 'NOT_FOUND') { currentProject().tasks = snapshot; renderBoard(); }
+    cardElement(id)?.classList.add('rejected');
+    showMoveError(card, column, error);
+    return false;
+  }
+  pendingMoves.delete(id);
+  renderBoard();
   announce(column === card.column ? `Moved “${card.title}” to position ${position + 1} of ${others.length + 1}.` : `Moved “${card.title}” to ${columnTitle(column)}. Moving a card does not run or approve that stage.`);
+  if (result.run) { announce(`Moved “${card.title}” to ${columnTitle(column)}. The workflow setting started an agent run.`); window.PromptboardDock?.open(result.run.id); }
+  if (result.automation) showProjectDetail(paragraph(`Moved to ${columnTitle(column)}, but the automatic start did not happen: ${result.automation.message}`, 'kanban-error'));
+  if (result.ask) askToStart(findTask(id), result.ask.stage);
   return true;
+}
+
+function showMoveError(card, column, error) {
+  const message = `“${card.title}” stayed in ${columnTitle(card.column)}. ${error.message}`;
+  if (error.code !== 'RUN_ACTIVE') { showBoardError(Object.assign(new Error(message), { code: error.code })); return; }
+  // Moving an active card needs the run stopped first, with confirmation.
+  const run = activeRun(card.id);
+  const stop = detailButton('Stop the agent and move', async () => {
+    try { await boardCall('POST', `/api/runs/${encodeURIComponent(run.id)}/cancel`, { confirm: true }); }
+    catch (failure) { showBoardError(failure); return; }
+    showProjectDetail(paragraph('Stopping the agent…'));
+    for (let tries = 0; tries < 50 && activeRun(card.id); tries++) { await new Promise(resolve => setTimeout(resolve, 200)); await loadBoard(); }
+    showProjectDetail();
+    placeCard(card.id, column, null);
+  }, 'danger');
+  showProjectDetail(paragraph(message), detailActions(stop, detailButton('Keep it running', () => showProjectDetail())));
+  announce(message);
 }
 
 async function moveWithin(id, step) {
@@ -1326,11 +1374,267 @@ async function deleteProject(project) {
   $(board.projects.length ? '#project-select' : '#project-new').focus();
 }
 
+// ---- Agent runs (PB-03): controls, consent, confirmation, details, workflow ----
+
+const RUN_LIVE = ['queued', 'running', 'waiting_for_input'];
+const STAGE_VERBS = { planning: 'Start planning', executing: 'Start executing' };
+const POLICY_LABELS = { manual: 'Manual', ask: 'Ask on entry', start: 'Start on entry' };
+let runDialogContext = null;
+
+function activeRun(taskId) { return board?.runs.find(run => run.taskId === taskId && RUN_LIVE.includes(run.status)) || null; }
+function elapsed(run) {
+  const end = RUN_LIVE.includes(run.status) ? Date.now() : run.endedAt || run.updatedAt;
+  const seconds = Math.max(0, Math.round((end - (run.startedAt || run.createdAt)) / 1000));
+  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+function providerName(id) { return board?.execution?.providers?.[id]?.name || providerInfo[id]?.name || id; }
+
+function renderRunControls(card, run) {
+  const box = document.createElement('div');
+  box.className = 'kanban-run';
+  const active = run && RUN_LIVE.includes(run.status) ? run : null;
+  if (run) {
+    const badge = document.createElement('span');
+    badge.className = `run-badge${active ? (run.status === 'waiting_for_input' ? ' waiting' : ' running') : ''}`;
+    badge.textContent = `${run.stage === 'planning' ? 'Plan' : 'Run'} ${run.status.replaceAll('_', ' ')} · ${elapsed(run)}`;
+    badge.title = [providerName(run.config?.provider), run.config?.model || 'CLI default model', run.waitingReason || run.reason].filter(Boolean).join(' · ');
+    box.append(badge);
+  }
+  const labelled = (button, label) => { button.setAttribute('aria-label', `${label}: ${card.title}`); return button; };
+  if (active) {
+    box.append(labelled(detailButton('Terminal', () => window.PromptboardDock?.open(active.id), 'kanban-terminal'), 'Show terminal'));
+    if (active.status === 'waiting_for_input' && active.turns > 0) {
+      const planning = active.stage === 'planning';
+      const button = labelled(detailButton(planning ? 'Approve plan…' : 'Confirm stage…', () => openTaskDetails(card.id), 'primary kanban-confirm-run'), planning ? 'Review and approve the plan' : 'Review and confirm the stage');
+      box.append(button);
+    }
+  } else if (['planning', 'executing'].includes(card.column)) {
+    const start = labelled(detailButton(`${STAGE_VERBS[card.column]}…`, () => openRunDialog(card.id, card.column), 'primary kanban-start'), STAGE_VERBS[card.column]);
+    start.disabled = !board?.execution?.available || !currentProject()?.repository || !currentProject()?.targetBranch;
+    if (start.disabled) start.title = !board?.execution?.available ? 'Agent terminals are not set up.' : 'Link a repository and choose a target branch first.';
+    box.append(start);
+  }
+  box.append(labelled(detailButton('Details', () => openTaskDetails(card.id), 'kanban-details'), 'Task details'));
+  return box;
+}
+
+function askToStart(card, stage) {
+  if (!card) return;
+  const panel = $('#ask-panel');
+  const yes = detailButton(`${STAGE_VERBS[stage]}…`, () => { panel.hidden = true; openRunDialog(card.id, stage); }, 'danger');
+  const no = detailButton('Not now', () => { panel.hidden = true; announce('No agent was started.'); });
+  panel.replaceChildren(paragraph(`“${card.title}” is now in ${columnTitle(stage)}. Start the agent for this stage? Nothing starts until you confirm.`), detailActions(yes, no));
+  panel.hidden = false;
+  yes.focus();
+}
+
+function fillSelect(select, values, labels = {}) { select.replaceChildren(...values.map(value => option(value, labels[value] ?? (value || 'CLI default')))); }
+
+function renderRunFields(provider, stage, settings = {}) {
+  const providers = board?.execution?.providers || {};
+  const supported = Object.keys(providers).filter(id => providers[id][stage === 'planning' ? 'planning' : 'execution']?.supported);
+  fillSelect($('#run-provider'), supported, Object.fromEntries(supported.map(id => [id, providers[id].name])));
+  $('#run-provider').value = supported.includes(provider) ? provider : supported[0] || '';
+  const chosen = $('#run-provider').value;
+  const efforts = { codex: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'], claude: ['low', 'medium', 'high', 'xhigh', 'max'], gemini: [] }[chosen] || [];
+  fillSelect($('#run-effort'), ['', ...efforts]);
+  $('#run-effort').value = efforts.includes(settings.effort) ? settings.effort : '';
+  $('#run-effort').disabled = !efforts.length;
+  const modes = stage === 'planning' ? ['plan'] : providers[chosen]?.permissionModes || [];
+  fillSelect($('#run-permission'), modes, { plan: 'Read-only planning', acceptEdits: 'Accept edits in the worktree', default: 'Ask before every change', 'workspace-write': 'Write in the worktree, ask for more', auto_edit: 'Accept edits, ask for tools' });
+  $('#run-permission').value = modes.includes(settings.permissionMode) ? settings.permissionMode : modes[0] || '';
+  $('#run-permission').disabled = modes.length < 2;
+  $('#run-model').value = chosen === settings.provider ? settings.model || '' : '';
+  $('#run-dialog-how').textContent = providers[chosen]?.[stage === 'planning' ? 'planning' : 'execution']?.how || '';
+}
+
+function openRunDialog(taskId, stage) {
+  const project = currentProject();
+  const card = findTask(taskId);
+  if (!card || !project) return;
+  const settings = project.effectiveWorkflow?.[stage] || {};
+  runDialogContext = { taskId, stage };
+  $('#run-dialog-stage').textContent = `${project.name} · ${columnTitle(stage)}`.toUpperCase();
+  $('#run-dialog-heading').textContent = `${STAGE_VERBS[stage]} for “${card.title}”?`;
+  $('#run-dialog-summary').textContent = stage === 'planning'
+    ? 'The agent inspects the repository in the task worktree and writes a plan. It cannot change files. You approve the plan before anything is implemented.'
+    : `The agent works in the task worktree on branch ${card.workspace?.branch || '(created when the run starts)'}. It does not touch your main checkout. You confirm the stage when you are satisfied.`;
+  const approval = card.planApproval;
+  $('#run-dialog-plan').textContent = stage !== 'executing' ? '' : !approval ? 'No approved plan: the agent receives the task text only.'
+    : approval.contentRevision === (card.contentRevision ?? 1) ? 'The approved plan is included with the task text.' : 'The task changed after its plan was approved, so the old plan is not included.';
+  const status = cardStatus(card);
+  $('#run-ack-field').hidden = !status.flag;
+  $('#run-ack').checked = false;
+  $('#run-ack-note').textContent = status.flag ? `${status.text}. Confirm that you reviewed the prompt before an agent acts on it.` : '';
+  $('#run-error').hidden = true;
+  renderRunFields(settings.provider, stage, settings);
+  $('#run-dialog').showModal();
+  $('#run-start').focus();
+}
+
+async function submitRun(event) {
+  event.preventDefault();
+  const context = runDialogContext;
+  const card = context && findTask(context.taskId);
+  if (!card) return;
+  const showError = message => { $('#run-error').textContent = message; $('#run-error').hidden = false; };
+  if (!$('#run-ack-field').hidden && !$('#run-ack').checked) { showError('Confirm that you reviewed this prompt first.'); return; }
+  const config = { provider: $('#run-provider').value, model: $('#run-model').value.trim(), effort: $('#run-effort').value, permissionMode: $('#run-permission').value };
+  $('#run-start').disabled = true;
+  try {
+    const { run } = await boardCall('POST', `/api/tasks/${encodeURIComponent(card.id)}/runs`, { stage: context.stage, consent: true, config }, 120000);
+    $('#run-dialog').close();
+    announce(`${STAGE_VERBS[context.stage]} for “${card.title}”. The terminal is below.`);
+    window.PromptboardDock?.open(run.id);
+  } catch (error) { showError(error.message); }
+  finally { $('#run-start').disabled = false; }
+}
+
+async function confirmRun(run) {
+  try { await boardCall('POST', `/api/runs/${encodeURIComponent(run.id)}/confirm`, {}); }
+  catch (error) { showBoardError(error); return; }
+  $('#task-dialog').close();
+  announce(run.stage === 'planning' ? 'Plan approved. The agent session ended; the plan is saved with the task.' : 'Stage confirmed. The agent session ended; the worktree keeps the changes.');
+}
+
+async function openTaskDetails(taskId) {
+  const card = findTask(taskId);
+  if (!card) return;
+  const project = currentProject();
+  const runs = board.runs.filter(run => run.taskId === taskId);
+  const status = cardStatus(card);
+  const section = (title, ...nodes) => { const box = document.createElement('section'); const heading = document.createElement('h3'); heading.textContent = title; box.append(heading, ...nodes); return box; };
+  const pre = text => { const block = document.createElement('pre'); block.textContent = text; return block; };
+  $('#task-dialog-stage').textContent = `${project.name} · ${columnTitle(card.column)}`.toUpperCase();
+  $('#task-dialog-heading').textContent = card.title;
+  const nodes = [
+    section('Status', paragraph(`${status.text}. Task text revision ${card.contentRevision ?? 1}.${status.flag ? ' Review the prompt before you run an agent on it.' : ''}`)),
+    section('Original prompt', pre(card.prompt)),
+    section('Branch and worktree', paragraph(card.workspace ? `Branch ${card.workspace.branch} from ${card.workspace.targetBranch} at ${String(card.workspace.baseCommit).slice(0, 12)}. Worktree: ${card.workspace.path}` : 'No worktree yet. It is created when the first Planning or Executing run starts.')),
+  ];
+  const planRun = [...runs].reverse().find(run => run.stage === 'planning' && run.hasPlan);
+  if (planRun) {
+    const approved = card.planApproval?.runId === planRun.id && card.planApproval.contentRevision === (card.contentRevision ?? 1);
+    const planText = pre('Loading the plan…');
+    nodes.push(section(`Plan${approved ? ' (approved)' : card.planApproval?.runId === planRun.id ? ' (approval is stale: the task changed)' : ''}`, planText));
+    api(`/api/runs/${encodeURIComponent(planRun.id)}/plan`, { timeoutMs: 15000 }).then(({ data }) => { planText.textContent = data.text || planRun.planExcerpt || 'The plan text is not available.'; }).catch(() => { planText.textContent = planRun.planExcerpt || 'The plan text is not available.'; });
+  }
+  const waiting = runs.find(run => run.status === 'waiting_for_input' && run.turns > 0);
+  if (waiting) {
+    const planning = waiting.stage === 'planning';
+    nodes.push(section(planning ? 'Approve the plan' : 'Confirm the stage',
+      paragraph(planning ? 'Approving saves this plan for this exact task text and ends the planning session. Implementation starts only when you start Executing.' : 'Confirming records this stage as done and ends the agent session. The changes stay in the task worktree. Promptboard does not judge the work for you.'),
+      detailActions(detailButton(planning ? 'Approve plan' : 'Confirm stage', () => confirmRun(waiting), 'danger'), detailButton('Open terminal', () => { $('#task-dialog').close(); window.PromptboardDock?.open(waiting.id); }))));
+  }
+  const table = document.createElement('table');
+  const head = document.createElement('tr');
+  for (const label of ['Stage', 'Provider and model', 'Status', 'Time', 'Notes']) { const th = document.createElement('th'); th.textContent = label; head.append(th); }
+  table.append(head);
+  for (const run of [...runs].reverse()) {
+    const row = document.createElement('tr');
+    for (const value of [columnTitle(run.stage), `${providerName(run.config?.provider)} · ${run.config?.model || 'CLI default'}${run.config?.effort ? ` · ${run.config.effort}` : ''}`, run.status.replaceAll('_', ' ') + (run.trigger === 'automation' ? ' (started by workflow)' : ''), elapsed(run), run.waitingReason || run.reason || '']) {
+      const td = document.createElement('td'); td.textContent = value; row.append(td);
+    }
+    table.append(row);
+  }
+  nodes.push(section('Run history', runs.length ? table : paragraph('No runs yet.')));
+  $('#task-details').replaceChildren(...nodes);
+  if (!$('#task-dialog').open) $('#task-dialog').showModal();
+}
+
+function workflowSummary(project) {
+  const flow = project.effectiveWorkflow || {};
+  return ['planning', 'executing'].map(stage => `${columnTitle(stage)}: ${POLICY_LABELS[flow[stage]?.policy] || 'Ask on entry'}`).join(' · ');
+}
+
+function workflowPreview(stage, settings) {
+  const provider = providerName(settings.provider);
+  if (stage === 'code_review' || stage === 'testing') return `${POLICY_LABELS[settings.policy]}. ${columnTitle(stage)} runs are not available yet; nothing starts here.`;
+  const what = stage === 'planning' ? `${provider} writes a read-only plan` : `${provider} works in the task worktree`;
+  return settings.policy === 'manual' ? `Moving a card here does nothing. You start ${columnTitle(stage)} from the card when you want.`
+    : settings.policy === 'ask' ? `Moving a card here asks whether to start. If you agree, ${what}.`
+    : `Moving a card here starts at once: ${what}. The run is recorded as started by this setting.`;
+}
+
+function openWorkflowDialog() {
+  const project = currentProject();
+  if (!project) return;
+  $('#workflow-dialog-project').textContent = `${project.name} · WORKFLOW`;
+  const stages = [];
+  for (const stage of ['planning', 'executing', 'code_review', 'testing']) {
+    const settings = project.effectiveWorkflow?.[stage] || {};
+    const box = document.createElement('fieldset');
+    box.className = 'workflow-stage';
+    box.dataset.stage = stage;
+    const legend = document.createElement('legend'); legend.textContent = columnTitle(stage);
+    const policy = document.createElement('div'); policy.className = 'segmented';
+    for (const value of ['manual', 'ask', 'start']) {
+      const label = document.createElement('label');
+      const input = document.createElement('input'); input.type = 'radio'; input.name = `policy-${stage}`; input.value = value; input.checked = settings.policy === value;
+      const span = document.createElement('span'); span.textContent = POLICY_LABELS[value];
+      label.append(input, span); policy.append(label);
+    }
+    const preview = paragraph(workflowPreview(stage, settings), 'workflow-preview');
+    const children = [legend, policy];
+    if (['planning', 'executing'].includes(stage)) {
+      const grid = document.createElement('div'); grid.className = 'select-grid';
+      const providers = board?.execution?.providers || {};
+      const supported = Object.keys(providers).filter(id => providers[id][stage === 'planning' ? 'planning' : 'execution']?.supported);
+      const providerField = document.createElement('label'); providerField.className = 'field-label'; providerField.textContent = 'Provider';
+      const providerSelect = document.createElement('select'); providerSelect.dataset.field = 'provider';
+      fillSelect(providerSelect, supported.length ? supported : ['claude'], Object.fromEntries(Object.entries(providers).map(([id, item]) => [id, item.name])));
+      providerSelect.value = settings.provider || 'claude';
+      providerField.append(providerSelect);
+      const modelField = document.createElement('label'); modelField.className = 'field-label'; modelField.textContent = 'Model';
+      const model = document.createElement('input'); model.type = 'text'; model.maxLength = 100; model.placeholder = 'CLI default'; model.value = settings.model || ''; model.dataset.field = 'model';
+      modelField.append(model);
+      grid.append(providerField, modelField);
+      children.push(grid);
+    }
+    const instructionsField = document.createElement('label'); instructionsField.className = 'field-label'; instructionsField.textContent = 'Stage instructions (optional, added before the task text)';
+    const instructions = document.createElement('textarea'); instructions.maxLength = 4000; instructions.value = settings.instructions || ''; instructions.dataset.field = 'instructions';
+    instructionsField.append(instructions);
+    children.push(instructionsField, preview);
+    box.append(...children);
+    box.addEventListener('change', () => { preview.textContent = workflowPreview(stage, readWorkflowStage(box)); });
+    stages.push(box);
+  }
+  const fixed = paragraph('To Do and Done never run agents. Merge always needs your explicit confirmation.', 'workflow-preview');
+  $('#workflow-stages').replaceChildren(...stages, fixed);
+  $('#workflow-error').hidden = true;
+  $('#workflow-dialog').showModal();
+}
+
+function readWorkflowStage(box) {
+  const value = field => box.querySelector(`[data-field="${field}"]`)?.value;
+  const result = { policy: box.querySelector('input[type="radio"]:checked')?.value || 'ask', instructions: value('instructions') || '' };
+  if (value('provider')) Object.assign(result, { provider: value('provider'), model: (value('model') || '').trim() });
+  return result;
+}
+
+async function saveWorkflow(event) {
+  event.preventDefault();
+  const project = currentProject();
+  if (!project) return;
+  const workflow = Object.fromEntries([...$('#workflow-stages').querySelectorAll('.workflow-stage')].map(box => [box.dataset.stage, readWorkflowStage(box)]));
+  try { await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/workflow`, { workflow, expectedRevision: project.revision }); }
+  catch (error) { $('#workflow-error').textContent = error.message; $('#workflow-error').hidden = false; return; }
+  $('#workflow-dialog').close();
+  announce(`Workflow settings saved for “${project.name}”. They apply to future runs.`);
+}
+
 // ---- Repository link and target branch ----
 
 function renderRepository(project) {
-  $('#repo-panel').hidden = !project;
-  if (!project) return;
+  // The repository form opens when the project is not linked, or when the user asks for it.
+  $('#repo-panel').hidden = !project || (Boolean(project.repository) && !repoPanelOpen && !project.pendingImport);
+  $('#repo-edit').setAttribute('aria-expanded', String(!$('#repo-panel').hidden));
+  $('#repo-summary').textContent = !project ? '—' : project.repository ? project.repository.root : 'Not linked';
+  $('#repo-summary').title = project?.repository?.root || '';
+  $('#workflow-summary').textContent = project ? workflowSummary(project) : '—';
+  $('#workflow-open').disabled = !project;
+  $('#repo-edit').disabled = !project;
+  if (!project) { $('#branch-field').hidden = true; return; }
   if (repoFormFor !== project.id) {
     repoFormFor = project.id;
     $('#repo-path').value = project.repository?.path || '';
@@ -1354,7 +1658,9 @@ function renderRepository(project) {
   const pending = project.pendingImport;
   $('#import-pending').hidden = !pending;
   if (pending) {
-    const parts = [pending.repositoryPath && `repository ${pending.repositoryPath}`, pending.targetBranch && `target branch ${pending.targetBranch}`, pending.automation?.autoRun && 'automatic runs'].filter(Boolean);
+    const automatic = Object.entries(pending.workflow || {}).filter(([, settings]) => settings?.policy === 'start').map(([stage]) => columnTitle(stage));
+    const parts = [pending.repositoryPath && `repository ${pending.repositoryPath}`, pending.targetBranch && `target branch ${pending.targetBranch}`,
+      pending.workflow && `workflow settings${automatic.length ? ` (automatic runs in ${automatic.join(' and ')})` : ''}`].filter(Boolean);
     $('#import-pending-text').textContent = `The imported backup suggests ${parts.join(', ')}. Nothing is applied until you confirm.`;
   }
 }
@@ -1443,7 +1749,7 @@ async function importBoard() {
     catch (error) { failed(error.message); return; }
     savePref(SELECTED_PROJECT_KEY, board.projects.find(project => project.id === data.selectedProjectId)?.id || board.projects[0]?.id || '');
     renderBoard();
-    const message = `Backup imported: ${boardCounts(board.projects)}. No agent runs were started.${board.projects.some(project => project.pendingImport) ? ' Imported repository paths and automation settings wait for your confirmation.' : ''}`;
+    const message = `Backup imported: ${boardCounts(board.projects)}. No agent runs were started.${board.projects.some(project => project.pendingImport) ? ' Imported repository paths and workflow settings wait for your confirmation.' : ''}`;
     showProjectDetail(paragraph(message));
     announce(message);
   };
@@ -1521,6 +1827,17 @@ $('#repo-form').addEventListener('submit', event => { event.preventDefault(); li
 $('#repo-unlink').addEventListener('click', () => linkRepository(null));
 $('#branch-save').addEventListener('click', saveTargetBranch);
 $('#branch-refresh').addEventListener('click', () => { const project = currentProject(); if (project?.repository) { repositories.delete(project.id); renderRepository(project); } });
+$('#repo-edit').addEventListener('click', () => { repoPanelOpen = $('#repo-panel').hidden; renderRepository(currentProject()); if (repoPanelOpen) $('#repo-path').focus(); });
+$('#workflow-open').addEventListener('click', openWorkflowDialog);
+$('#workflow-form').addEventListener('submit', saveWorkflow);
+$('#workflow-cancel').addEventListener('click', () => $('#workflow-dialog').close());
+$('#workflow-dialog-close').addEventListener('click', () => $('#workflow-dialog').close());
+$('#run-form').addEventListener('submit', submitRun);
+$('#run-provider').addEventListener('change', () => renderRunFields($('#run-provider').value, runDialogContext?.stage, {}));
+$('#run-cancel').addEventListener('click', () => $('#run-dialog').close());
+$('#run-dialog-close').addEventListener('click', () => $('#run-dialog').close());
+$('#task-dialog-close').addEventListener('click', () => $('#task-dialog').close());
+$('#task-dialog-done').addEventListener('click', () => $('#task-dialog').close());
 $('#import-confirm').addEventListener('click', () => confirmImported(true));
 $('#import-dismiss').addEventListener('click', () => confirmImported(false));
 $('#card-new').addEventListener('click', () => openCard());

@@ -108,7 +108,7 @@ export class Supervisor {
     const runDir = join(this.dataDir, run.artifactsDir);
     await mkdir(runDir, { recursive: true, mode: 0o700 });
     const plan = planRunId ? await readFile(join(this.dataDir, 'runs', planRunId, 'plan.md'), 'utf8').catch(() => null) : null;
-    const message = composeMessage(run.stage, task.prompt, plan);
+    const message = composeMessage(run.stage, task.prompt, plan, run.config.instructions || '');
     // Stage instructions, the exact task text, and the plan are stored with the run.
     await writeFile(join(runDir, 'prompt.md'), message, { mode: 0o600 });
     await writeFile(join(runDir, 'task-prompt.txt'), task.prompt, { mode: 0o600 });

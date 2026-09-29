@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Board interface (PB-03): toolbar (project, repository, target branch, workflow settings), compact cards with run badges, optimistic moves that roll back with a reason, a consent dialog, task details with the plan and run history, and per-project workflow settings (Manual, Ask on entry (default), Start on entry).
+  - A resizable, collapsible terminal dock (xterm with the WebGL renderer, pinned local assets, strict CSP unchanged) with one tab per session. It reconnects after a reload and never restarts a run.
 - Agent execution (PB-02): Planning and Executing run Claude Code, Codex, or Gemini CLI in an interactive terminal inside the task worktree, after your explicit confirmation.
   - Planning uses each CLI's read-only boundary. The plan is saved outside the worktree, and approving it is tied to the task text.
   - Completion comes from provider hooks or notify events, never from silence or exit codes. You confirm each stage.

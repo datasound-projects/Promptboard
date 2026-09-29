@@ -275,15 +275,16 @@ test('import keeps execution inactive and waits for confirmation of paths and au
   assert.equal(backup.kind, 'promptboard-backup');
   assert.equal(backup.projects[0].repository.path, root);
   assert.equal(JSON.stringify(backup).includes('workspace'), false);
-  backup.projects[0].automation = { autoRun: true };
+  backup.projects[0].workflow = { executing: { policy: 'start', provider: 'codex' } };
   const other = new Board({ dataDir: await temp(t, 'pb-data-') });
   await other.createProject({ name: 'Existing' });
   await assert.rejects(other.importBackup(backup), { code: 'CONFIRMATION_REQUIRED' });
   await other.importBackup(backup, { replace: true });
   let project = (await other.view()).projects[0];
   assert.equal(project.repository, null, 'Imported paths are not linked automatically.');
-  assert.deepEqual(project.automation, { autoRun: false });
-  assert.deepEqual(project.pendingImport, { repositoryPath: root, targetBranch: 'trunk', automation: { autoRun: true } });
+  assert.deepEqual(project.workflow, {}, 'Imported automation is not active.');
+  assert.equal(project.effectiveWorkflow.executing.policy, 'ask');
+  assert.deepEqual(project.pendingImport, { repositoryPath: root, targetBranch: 'trunk', workflow: { executing: { policy: 'start', provider: 'codex' } } });
   assert.equal(project.tasks[0].column, 'planning');
   assert.equal(project.tasks[0].prompt, 'Exact\r\ntext');
   assert.deepEqual((await other.view()).runs, []);
@@ -292,6 +293,8 @@ test('import keeps execution inactive and waits for confirmation of paths and au
   assert.equal(project.repository.root, root);
   assert.equal(project.targetBranch.name, 'trunk');
   assert.equal(project.pendingImport, null);
+  assert.equal(project.workflow.executing.policy, 'start', 'Confirmed workflow settings apply.');
+  assert.equal(project.workflow.executing.permissionMode, 'workspace-write');
   // A board whose tasks own worktrees cannot be replaced.
   await board.ensureTaskWorktree(task.id);
   await assert.rejects(board.importBackup(backup, { replace: true }), { code: 'WORKSPACES_EXIST' });
