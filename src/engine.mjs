@@ -40,7 +40,7 @@ export function validateRequest(body) {
     if (!FIELDS.has(field)) fail('The request contains an unknown field.');
   }
   if (typeof body.input !== 'string' || !body.input.trim()) fail('Enter a prompt.');
-  if (body.input.length > 24_000) fail('The prompt must contain at most 24,000 characters.');
+  if (body.input.length > 100_000) fail('The prompt must contain at most 100,000 characters.');
   if (body.input.includes('\u0000')) fail('The prompt must not contain a null character.');
 
   const model = body.model === undefined ? '' : body.model;

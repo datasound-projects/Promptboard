@@ -145,12 +145,12 @@ test('repair feedback stays within transport limits for thousands of missing lit
   const draft = 'Use the fields.';
   const review = { status: 'unavailable', requirements: [], criteria: [], issues: [] };
   const prompt = buildRepairPrompt(buildPrompt(req), draft, verifyPrompt(input, draft), lintPrompt(draft), review);
-  assert.ok(Buffer.byteLength(prompt) < 256 * 1024);
+  assert.ok(Buffer.byteLength(prompt) < 2 * 1024 * 1024);
   assert.match(prompt, /automaticCount/);
   assert.match(prompt, /recheck the entire original source/);
 });
 
 test('review input does not duplicate the entire source', () => {
-  const req = validateRequest({ input: '界'.repeat(24000) });
-  assert.ok(Buffer.byteLength(buildReviewPrompt(req, '界'.repeat(32000))) < 256 * 1024);
+  const req = validateRequest({ input: '界'.repeat(100000) });
+  assert.ok(Buffer.byteLength(buildReviewPrompt(req, '界'.repeat(32000))) < 2 * 1024 * 1024);
 });

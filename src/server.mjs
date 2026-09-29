@@ -31,7 +31,7 @@ async function jsonBody(req) {
   const chunks = [];
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > 128_000) throw Object.assign(new Error('The request is too large.'), { status: 413 });
+    if (size > 1_048_576) throw Object.assign(new Error('The request is too large.'), { status: 413 });
     chunks.push(chunk);
   }
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); }

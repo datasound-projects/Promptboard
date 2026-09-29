@@ -33,7 +33,7 @@ function readHistory() {
   try {
     const stored = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
     if (!Array.isArray(stored)) return [];
-    return stored.filter((entry) => entry && typeof entry.id === 'string' && typeof entry.prompt === 'string' && typeof entry.input === 'string' && entry.input.length <= 24000 && entry.prompt.length <= MAX_PROMPT_BYTES)
+    return stored.filter((entry) => entry && typeof entry.id === 'string' && typeof entry.prompt === 'string' && typeof entry.input === 'string' && entry.input.length <= 100000 && entry.prompt.length <= MAX_PROMPT_BYTES)
       .slice(0, HISTORY_LIMIT).map((entry) => ({
         id: safeText(entry.id, 80), input: entry.input, prompt: entry.prompt,
         createdAt: Number.isFinite(entry.createdAt) ? entry.createdAt : Date.now(),
@@ -156,7 +156,7 @@ function renderHistory() {
 }
 
 function updateCount() {
-  $('#character-count').textContent = `${$('#prompt-input').value.length.toLocaleString()} / 24,000`;
+  $('#character-count').textContent = `${$('#prompt-input').value.length.toLocaleString()} / 100,000`;
 }
 
 function setSidebar(open) {

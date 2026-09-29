@@ -175,8 +175,8 @@ test('invalid outputs fail deterministically and are not scanned for protected l
 
 test('source size, type and null-character bounds are enforced before extraction', () => {
   assert.deepEqual(extractProtectedLiterals(''), []);
-  assert.deepEqual(extractProtectedLiterals('a'.repeat(24_000)), []);
-  assert.throws(() => extractProtectedLiterals('a'.repeat(24_001)), /24,000/);
+  assert.deepEqual(extractProtectedLiterals('a'.repeat(100_000)), []);
+  assert.throws(() => extractProtectedLiterals('a'.repeat(100_001)), /100,000/);
   for (const input of [null, {}, 12, '\0']) assert.throws(() => extractProtectedLiterals(input), TypeError);
 });
 
@@ -190,8 +190,8 @@ test('literal issue excerpts are bounded and do not execute untrusted source pat
 });
 
 test('worst-shape bounded source inputs finish without pathological delimiter backtracking', () => {
-  const cases = ['“'.repeat(24_000), 'https://example.test/' + ')]}'.repeat(7_990), 'a'.repeat(24_000)];
+  const cases = ['“'.repeat(100_000), 'https://example.test/' + ')]}'.repeat(7_990), 'a'.repeat(100_000)];
   const started = performance.now();
-  for (const input of cases) extractProtectedLiterals(input.slice(0, 24_000));
-  assert.ok(performance.now() - started < 5_000, '24k source parsing must stay bounded');
+  for (const input of cases) extractProtectedLiterals(input.slice(0, 100_000));
+  assert.ok(performance.now() - started < 5_000, '100k source parsing must stay bounded');
 });

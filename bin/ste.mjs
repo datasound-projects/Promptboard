@@ -86,7 +86,7 @@ async function main() {
   let input = '';
   for await (const chunk of process.stdin) {
     input += chunk.toString();
-    if (input.length > 24_000) throw new Error('Use at most 24,000 characters.');
+    if (input.length > 100_000) throw new Error('Use at most 100,000 characters.');
   }
   const request = validateRequest({ input, provider: options.provider || 'codex', model: options.model || '',
     effort: options.effort || '', language: options.language || 'en', quality: options.quality || 'reviewed',

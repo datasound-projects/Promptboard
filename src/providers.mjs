@@ -10,7 +10,7 @@ const PROVIDERS = Object.freeze({
   agy: { name: 'Antigravity CLI', packageEntry: [] },
   gemini: { name: 'Gemini CLI', packageEntry: ['@google', 'gemini-cli', 'dist', 'index.js'] },
 });
-const MAX_INPUT = 256 * 1024;
+const MAX_INPUT = 2 * 1024 * 1024;
 const MAX_STDOUT = 2 * 1024 * 1024;
 const MAX_STDERR = 64 * 1024;
 const GEMINI_POLICY = '[[rule]]\ntoolName = "*"\ndecision = "deny"\npriority = 999\n\n[[rule]]\ntoolName = "*"\nmcpName = "*"\ndecision = "deny"\npriority = 999\n';
@@ -198,7 +198,7 @@ export async function runProvider({ provider, model, effort = '', prompt, cwd, s
   model = validateModel(model);
   validateEffort(provider, effort);
   if (typeof prompt !== 'string' || !prompt.trim() || Buffer.byteLength(prompt) > MAX_INPUT) {
-    throw new ProviderError('Provide a non-empty prompt below 256 KiB.', 'INVALID_INPUT');
+    throw new ProviderError('Provide a non-empty prompt at most 2 MiB.', 'INVALID_INPUT');
   }
   if (typeof cwd !== 'string' || !isAbsolute(cwd)) throw new ProviderError('Use an isolated absolute working directory.', 'INVALID_CWD');
   if (!Number.isInteger(timeoutMs) || timeoutMs < 10 || timeoutMs > 600000) throw new ProviderError('Timeout must be 10–600000 milliseconds.', 'INVALID_TIMEOUT');

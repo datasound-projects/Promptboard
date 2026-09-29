@@ -1,3 +1,4 @@
+import { realpath as resolveRealPath } from 'node:fs/promises';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -97,7 +98,7 @@ else {
         } else if (provider === 'agy') assert.equal(JSON.parse(data.input).message.content, prompt);
         else assert.equal(data.input, prompt);
         if (provider === 'claude') assert.equal(data.effortEnv, 'high');
-        assert.equal(data.cwd, dir);
+        assert.equal(await resolveRealPath(data.cwd), await resolveRealPath(dir));
         assert.ok(!data.args.includes(prompt));
         if (provider === 'gemini') {
           assert.match(data.policy, /toolName = "\*"/);
@@ -131,7 +132,7 @@ else {
 });
 
 test('rejects oversized prompts and unsafe working directories before launch', async () => {
-  await assert.rejects(runProvider({ provider: 'codex', prompt: 'x'.repeat(300000), cwd: tmpdir() }), { code: 'INVALID_INPUT' });
+  await assert.rejects(runProvider({ provider: 'codex', prompt: 'x'.repeat(2 * 1024 * 1024 + 1), cwd: tmpdir() }), { code: 'INVALID_INPUT' });
   await assert.rejects(runProvider({ provider: 'codex', prompt: 'x', cwd: '.' }), { code: 'INVALID_CWD' });
   await assert.rejects(runProvider({ provider: 'codex', prompt: 'x', cwd: tmpdir(), timeoutMs: NaN }), { code: 'INVALID_TIMEOUT' });
 });

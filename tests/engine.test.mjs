@@ -47,8 +47,8 @@ test('invalid request and option shapes fail with a client error', () => {
 });
 
 test('text size boundaries are enforced', () => {
-  assert.equal(validateRequest({ input: 'a'.repeat(24_000) }).input.length, 24_000);
-  assert.throws(() => validateRequest({ input: 'a'.repeat(24_001) }), /24,000/);
+  assert.equal(validateRequest({ input: 'a'.repeat(100_000) }).input.length, 100_000);
+  assert.throws(() => validateRequest({ input: 'a'.repeat(100_001) }), /100,000/);
   assert.equal(validateRequest({ input: 'x', terminology: 'a'.repeat(2_000) }).terminology.length, 2_000);
   assert.throws(() => validateRequest({ input: 'x', terminology: 'a'.repeat(2_001) }), /2,000/);
 });

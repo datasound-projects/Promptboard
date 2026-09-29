@@ -74,7 +74,7 @@ export function parseReview(text, request, draft) {
     criteriaSeen.add(row.criterion);
   }
   for (const issue of data.issues) {
-    if (!exactKeys(issue, ['category', 'message', 'sourceQuote', 'promptQuote']) || !REVIEW_CRITERIA.includes(issue.category) || !short(issue.message) || !issue.message.trim() || !short(issue.sourceQuote, 24_000) || !short(issue.promptQuote, 32_000)) throw new Error('Invalid review issue.');
+    if (!exactKeys(issue, ['category', 'message', 'sourceQuote', 'promptQuote']) || !REVIEW_CRITERIA.includes(issue.category) || !short(issue.message) || !issue.message.trim() || !short(issue.sourceQuote, 100_000) || !short(issue.promptQuote, 32_000)) throw new Error('Invalid review issue.');
     if ((issue.sourceQuote && !request.input.includes(issue.sourceQuote)) || (issue.promptQuote && !draft.includes(issue.promptQuote))) throw new Error('Invalid issue evidence.');
   }
   const status = requirements.every(row => row.status === 'covered') && data.criteria.every(row => row.status === 'pass') && !data.issues.length ? 'pass' : 'issues';
