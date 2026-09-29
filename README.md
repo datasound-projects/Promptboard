@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/demo.gif" width="820" alt="The Kanban board with coloured stages and a project sidebar: a card starts an agent, its terminal streams in the dock, the board scrolls across to Done, and switching projects keeps the agent running.">
+  <img src="docs/kanban-demo.gif" width="820" alt="The Kanban board with coloured stages and a project sidebar: a card starts an agent, its terminal streams in the dock, the board scrolls across to Done, and switching projects keeps the agent running.">
   <br><sub>Demo recorded with a simulated agent CLI.</sub>
 </p>
 
