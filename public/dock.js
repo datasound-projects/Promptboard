@@ -235,6 +235,7 @@ function renderActivity() {
     const item = document.createElement('li');
     const when = new Date(run.updatedAt || run.createdAt).toLocaleTimeString();
     item.textContent = `${when} · ${titles.get(run.taskId) || 'Deleted task'} · ${run.stage} · ${run.status.replaceAll('_', ' ')}${run.reason ? ` · ${run.reason}` : ''}`;
+    if (['failed', 'interrupted'].includes(run.status)) item.className = 'run-failed';
     return item;
   }));
   $('#dock-empty').hidden = runs.length > 0 || dock.sessions.size > 0;

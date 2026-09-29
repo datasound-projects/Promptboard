@@ -776,7 +776,7 @@ async function signIn(method) {
     let operation = data.operation;
     if (!response.ok || !operation) {
       finished = true;
-      showAuthDetail(paragraph(operation?.code === 'UNSUPPORTED' ? 'This CLI does not support sign-in from this app.' : failureMessage(data, 'The CLI could not start sign-in. Try the terminal command instead.')),
+      showAuthDetail(paragraph(operation?.code === 'UNSUPPORTED' ? 'This CLI does not support sign-in from this app.' : failureMessage(data, 'The CLI could not start sign-in. Try the terminal command instead.'), 'kanban-error'),
         ...(caps.loginCommand ? [codeBlock(method === 'device' ? caps.deviceCommand || caps.loginCommand : caps.loginCommand)] : []));
       await afterAuthChange();
       return;
@@ -799,10 +799,10 @@ async function signIn(method) {
     finished = true;
     const state = operation?.state;
     showAuthDetail(paragraph(state === 'succeeded' ? `${name} confirmed the sign-in.` : state === 'cancelled' ? 'Sign-in was cancelled. Your previous sign-in state is unchanged.'
-      : operation?.code === 'TIMEOUT' ? 'Sign-in timed out. Try again.' : 'Sign-in did not complete. Try again, or use the terminal command.'));
+      : operation?.code === 'TIMEOUT' ? 'Sign-in timed out. Try again.' : 'Sign-in did not complete. Try again, or use the terminal command.', state === 'succeeded' || state === 'cancelled' ? '' : 'kanban-error'));
     await afterAuthChange(state === 'succeeded' ? 'Signed in. Model list refreshed.' : '');
   } catch {
-    if (!finished) { showAuthDetail(paragraph('The local server did not respond. Check that the app is still running.')); await afterAuthChange(); }
+    if (!finished) { showAuthDetail(paragraph('The local server did not respond. Check that the app is still running.', 'kanban-error')); await afterAuthChange(); }
   }
 }
 
@@ -828,10 +828,10 @@ function signOut() {
     showAuthDetail(paragraph('Signing out…'));
     try {
       const { response, data } = await api('/api/auth/logout', { method: 'POST', body: { provider, confirm: true }, timeoutMs: 30000 });
-      showAuthDetail(paragraph(response.ok ? `${name} is signed out.` : failureMessage(data, 'The CLI could not sign out. Use its terminal command.')));
+      showAuthDetail(response.ok ? paragraph(`${name} is signed out.`) : paragraph(failureMessage(data, 'The CLI could not sign out. Use its terminal command.'), 'kanban-error'));
       await afterAuthChange(response.ok ? `${name} signed out.` : '');
     } catch {
-      showAuthDetail(paragraph('The local server did not respond. Check that the app is still running.'));
+      showAuthDetail(paragraph('The local server did not respond. Check that the app is still running.', 'kanban-error'));
       await afterAuthChange();
     }
   }
@@ -1483,7 +1483,7 @@ function renderRunControls(card, run) {
   const active = run && RUN_LIVE.includes(run.status) ? run : null;
   if (run) {
     const badge = document.createElement('span');
-    badge.className = `run-badge${active ? (run.status === 'waiting_for_input' ? ' waiting' : ' running') : ''}`;
+    badge.className = `run-badge${active ? (run.status === 'waiting_for_input' ? ' waiting' : ' running') : ['failed', 'interrupted'].includes(run.status) ? ' failed' : ''}`;
     badge.textContent = `${run.stage === 'planning' ? 'Plan' : 'Run'} ${run.status.replaceAll('_', ' ')} · ${elapsed(run)}`;
     badge.title = [providerName(run.config?.provider), run.config?.model || 'CLI default model', run.waitingReason || run.reason].filter(Boolean).join(' · ');
     box.append(badge);
@@ -1665,6 +1665,7 @@ async function openTaskDetails(taskId) {
     for (const value of [columnTitle(run.stage), `${providerName(run.config?.provider)} · ${run.config?.model || 'CLI default'}${run.config?.effort ? ` · ${run.config.effort}` : ''}`, run.status.replaceAll('_', ' ') + (run.trigger === 'automation' ? ' (started by workflow)' : ''), elapsed(run), run.waitingReason || run.reason || '']) {
       const td = document.createElement('td'); td.textContent = value; row.append(td);
     }
+    if (['failed', 'interrupted'].includes(run.status)) row.className = 'run-failed';
     table.append(row);
   }
   nodes.push(section('Run history', runs.length ? table : paragraph('No runs yet.')));

@@ -4,6 +4,7 @@
   --bg: #f6f6f4; --surface: #ffffff; --surface-2: #f0f0ed; --surface-3: #e6e6e2;
   --ink: #161616; --text: #262626; --muted: #4f4f4f; --subtle: #6b6b6b;
   --line: #e0e0dc; --line-strong: #858585; --focus: #161616;
+  --error: #c2410c; /* Orange, the one colour: every error message uses it. */
   --primary: #161616; --on-primary: #ffffff; --primary-hover: #3a3a3a;
   --shadow: 0 1px 2px rgb(0 0 0 / .04), 0 6px 20px rgb(0 0 0 / .04);
   --topbar: 60px; --sidebar: 272px; --radius: 10px;
@@ -15,6 +16,7 @@
   --bg: #101010; --surface: #191919; --surface-2: #212121; --surface-3: #2b2b2b;
   --ink: #f3f3f3; --text: #e6e6e6; --muted: #c2c2c2; --subtle: #a3a3a3;
   --line: #2e2e2e; --line-strong: #7a7a7a; --focus: #f3f3f3;
+  --error: #fb923c;
   --primary: #f3f3f3; --on-primary: #111111; --primary-hover: #d4d4d4;
   --shadow: none;
 }
@@ -190,7 +192,7 @@ kbd { font: 11px/1.4 var(--mono); padding: 1px 5px; border: 1px solid var(--line
 .generate-button svg { width: 18px; height: 18px; }
 .cancel-button { min-height: 46px; padding: 0 18px; }
 .shortcut-hint { margin: 0; color: var(--subtle); font-size: 12px; }
-.inline-error, .storage-warning { margin: 0 0 18px; padding: 12px 16px; border: 1px solid var(--line-strong); border-left: 4px solid var(--ink); border-radius: 8px; background: var(--surface); color: var(--text); font-size: 13px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.inline-error, .storage-warning { margin: 0 0 18px; padding: 12px 16px; border: 1px solid var(--error); border-left: 4px solid var(--error); border-radius: 8px; background: var(--surface); color: var(--error); font-size: 13px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* Review and copy. */
 .output-actions { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
@@ -433,6 +435,9 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
 .run-badge.running::before { background: var(--ink); animation: pb-pulse 1.2s ease-in-out infinite; }
 .run-badge.waiting { background: var(--primary); color: var(--on-primary); border-color: var(--primary); }
 .run-badge.waiting::before { background: var(--on-primary); }
+.run-badge.failed { color: var(--error); border-color: var(--error); }
+.run-badge.failed::before { background: var(--error); }
+.kanban-error, .run-failed { color: var(--error); }
 @keyframes pb-pulse { 50% { opacity: .25; } }
 .kanban-run button { padding: 3px 8px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--surface); color: var(--ink); font-size: 12px; }
 .kanban-run button.primary { background: var(--primary); color: var(--on-primary); border-color: var(--primary); }
