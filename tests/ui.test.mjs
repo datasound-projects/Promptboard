@@ -769,7 +769,7 @@ test('a linked repository enables stage moves; invalid folders explain the probl
   assert.equal(board.execution.available, true);
   assert.match($('#kanban-columns [data-column="executing"] .kanban-column-note').textContent, /starts only when you choose/);
   assert.match($('#kanban-columns [data-column="code_review"] .kanban-column-note').textContent, /starts only when you choose/);
-  assert.match($('#kanban-columns [data-column="merge"] .kanban-column-note').textContent, /never pushed/);
+  assert.match($('#kanban-columns [data-column="merge"] .kanban-column-note').textContent, /fast-forward or pull request/);
   // Project settings collapse to a one-line summary and remember the choice.
   $('#project-toggle').click();
   assert.equal($('#project-body').hidden, true);
@@ -1295,4 +1295,48 @@ test('without a system folder picker, Open folder… asks for the path instead',
   await until(() => $('#workspace-list').querySelectorAll('.workspace-item').length === 1, 'project from typed path');
   assert.equal($('#workspace-path-form').hidden, true);
   await until(() => $('#repo-state').textContent.includes(`Linked to ${repo}`), 'linked from typed path');
+});
+
+test('Testing and Merge cards offer an agent next to their own action; the agent writes in the worktree; Merge offers a pull request', { skip: process.platform === 'win32' }, async t => {
+  const ctx = await linkedKanban(t);
+  const { $, win, choose } = ctx;
+  await link(ctx);
+  const board = ctx.app.board;
+  const created = await board.createTask({ projectId: ctx.project.id, title: 'Checked', prompt: 'Add input checks.' });
+  await board.moveTask(created.id, { column: 'executing', expectedRevision: 1 });
+  const ws = (await board.ensureTaskWorktree(created.id)).path;
+  await writeFile(join(ws, 'checks.txt'), 'checks\n');
+  await board.delivery.commit(created.id, { message: 'checks', confirm: true });
+  const current = async () => (await serverBoard(ctx)).projects[0].tasks.find(task => task.id === created.id);
+  await board.moveTask(created.id, { column: 'code_review', expectedRevision: (await current()).revision });
+  // Ask on entry (the default) for Testing asks to run the tests, not to start an agent.
+  await win.__pbTest.loadBoard(); await ctx.idle();
+  await moveBy(ctx, 'Checked', 'testing');
+  await until(() => !$('#ask-panel').hidden, 'ask panel');
+  assert.match($('#ask-panel').textContent, /Run tests now\?/);
+  assert.ok([...$('#ask-panel').querySelectorAll('button')].some(button => button.textContent === 'Run tests…'));
+  assert.ok(![...$('#ask-panel').querySelectorAll('button')].some(button => /undefined/.test(button.textContent)));
+  // The card keeps "Run tests…" and adds the testing agent.
+  const card = () => cardItem(ctx, 'Checked');
+  assert.equal(card().querySelector('.kanban-deliver').textContent, 'Run tests…');
+  assert.equal(card().querySelector('.kanban-start').textContent, 'Start testing agent…');
+  card().querySelector('.kanban-start').click(); await ctx.idle();
+  assert.equal($('#run-dialog').open, true);
+  assert.match($('#run-dialog-summary').textContent, /only by Promptboard’s own test run/);
+  assert.deepEqual(Array.from($('#run-permission').options, item => item.value), ['acceptEdits', 'default'], 'The testing agent can edit in the worktree.');
+  choose('#run-provider', 'claude');
+  submitForm(ctx, '#run-form'); await ctx.idle();
+  assert.equal(ctx.executor.started.at(-1).stage, 'testing');
+  assert.equal(ctx.executor.started.at(-1).config.permissionMode, 'acceptEdits');
+  await board.updateRun(ctx.executor.started.at(-1).id, { status: 'running' });
+  await ctx.executor.cancel(ctx.executor.started.at(-1).id);
+  // Merge: the merge agent and the pull request option.
+  await board.moveTask(created.id, { column: 'merge', expectedRevision: (await current()).revision });
+  await win.__pbTest.loadBoard(); await ctx.idle();
+  assert.equal(card().querySelector('.kanban-deliver').textContent, 'Merge…');
+  assert.equal(card().querySelector('.kanban-start').textContent, 'Start merge agent…');
+  card().querySelector('.kanban-details').click();
+  await until(() => [...$('#task-details').querySelectorAll('button')].some(button => button.textContent === 'Open pull request…'), 'pull request action');
+  assert.match($('#task-details').textContent, /never with --force/);
+  assert.match($('#task-details').textContent, /the task prompt is not included unless you add it/);
 });

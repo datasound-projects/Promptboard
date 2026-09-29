@@ -62,7 +62,7 @@ Open **http://127.0.0.1:4318** if the browser does not open. Use `npm start -- -
 ## Run tasks on the board
 
 1. **Pick or create a project** in the sidebar, or choose **Open folder…** to turn a folder on your computer into a project (named after the folder and linked to it). Each project has its own board and repository; agents keep running when you switch. The ⋯ next to a project renames it, links or changes its repository, opens its workflow settings, or deletes it.
-2. **Link a repository.** Choose a local Git repository and a target branch. If the folder is not a Git repository yet (or does not exist), Promptboard offers to set it up: after you confirm, it runs `git init` and makes one empty first commit. It never adds your files. Promptboard does not create repositories, commit on your behalf without asking, or push.
+2. **Link a repository.** Choose a local Git repository and a target branch. If the folder is not a Git repository yet (or does not exist), Promptboard offers to set it up: after you confirm, it runs `git init` and makes one empty first commit. It never adds your files. Promptboard does not create repositories, commit, or push without asking.
 3. **Add a card.** Write a task or add a prompt from Compose. The card keeps an exact copy.
 4. **Move it through the stages.**
 
@@ -72,9 +72,9 @@ Open **http://127.0.0.1:4318** if the browser does not open. Use `npm start -- -
 | Planning | Optional. The agent plans in read-only mode. You approve the plan. |
 | Executing | The agent edits files in the task's own worktree and branch. You confirm when it is done. |
 | Code Review | You commit the changes, then an agent reviews the diff read-only and lists findings. You accept them or send the task back. |
-| Testing | Your test commands run in the worktree, without a shell. Only exit codes count. |
-| Merge | You confirm a fast-forward merge into the target branch, or turn on **Merge automatically**: then a card merges on entry only if its accepted review and passing tests belong to exactly the current commits. Nothing is pushed. |
-| Done | Reached only by a verified merge or an explicit "no changes required". |
+| Testing | Your test commands run in the worktree, without a shell. Only exit codes count. Optionally, a **testing agent** runs the tests, fixes failures, and adds focused tests (you commit its changes). |
+| Merge | You confirm a fast-forward merge into the target branch, or turn on **Merge automatically**: then a card merges on entry only if its accepted review and passing tests belong to exactly the current commits. If the target has moved on, a **merge agent** resolves the conflicts after Promptboard starts the merge; you commit the result. Or choose **Open pull request**: after you confirm, the task branch is pushed (never forced) and a GitHub pull request is opened with `gh`; when it is merged there, the card moves to Done. |
+| Done | Reached only by a verified merge, a merged pull request, or an explicit "no changes required". |
 
 Each project chooses what happens when a card enters a stage: **Manual**, **Ask** (default), or **Start automatically**. Starting an agent by hand always shows a consent dialog; automatic start is a setting you turn on per project and stage. Terminals open in the dock at the bottom of the page. You can collapse the dock, reload the page, or run several tasks at once (one by default, up to four). Promptboard never passes a bypass or "yolo" permission flag, never pre-trusts a folder for a CLI, and never force-resets or stashes your work.
 

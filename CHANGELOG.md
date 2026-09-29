@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Kanban: **Testing and Merge agents.** A testing agent runs your tests in the worktree, fixes failures, and can add focused tests; only Promptboard's own test run decides whether tests pass. A merge agent resolves conflicts after Promptboard starts merging the target branch into the task branch (`git merge --no-commit`); you commit the result, or abort it.
+- Kanban: **Open pull request.** After you confirm, the task branch is pushed (never forced) and a GitHub pull request is opened with `gh`; a merged pull request moves the card to Done.
+- Fix: files that still contain conflict markers can no longer be committed (Commit used to stage them as resolved).
+- Fix: a failed branch update that was not caused by conflicts (for example a missing Git identity) no longer reports conflicts.
+
 - Kanban: the Model field when starting an agent (and in Workflow settings) is a list of the models your CLI reports, with “CLI default” and “Custom model ID…”, instead of a free-text box.
 
 - Kanban: **Open folder…** in the workspace sidebar opens the system folder picker and turns the folder into a linked project (or offers Git setup when needed). A folder already used by a project selects that project. **Browse…** next to the repository path uses the same picker. Without a system picker, you type the path.

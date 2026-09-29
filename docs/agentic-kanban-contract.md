@@ -104,7 +104,7 @@ Execution is a separate subsystem (`src/agents.mjs`, `src/supervisor.mjs`, `src/
 - `workspacePath`, `branch`, and `planRunId`;
 - timestamps and the outcome fields `errorCode`, `exitCode`, and `reason`.
 
-Code Review, Testing, and Merge runs return `STAGE_NOT_IMPLEMENTED` until PB-04.
+Every stage from Planning to Merge can run an agent; To Do and Done never do (`STAGE_NOT_RUNNABLE`).
 
 **Supervisor.**
 - **Queue:** runs start in FIFO order, up to `settings.maxConcurrentRuns` (default 1, at most 4). Requests return at once.
@@ -163,8 +163,16 @@ Everything in this section lives in `src/delivery.mjs`. Evidence is tied to the 
   - Merges are serialized per repository and everything is rechecked immediately before.
   - If the target branch is checked out, that checkout runs `git merge --ff-only`. Otherwise `git update-ref` moves the branch with an old-value check. No branch is switched, nothing is pushed, and the result is verified before the card moves to Done.
   - If the target has advanced, `update-branch { confirm }` merges it into the task branch. Conflicts are aborted and reported, never resolved. Review and tests must then run again.
+- **Testing and Merge agents:**
+  - Testing and Merge can run an agent (`requestRun` with `stage: testing | merge`) with the Executing permissions: it writes only in the task worktree. The stage policies keep their meaning (Testing: run the commands; Merge: merge automatically); agents in these stages start from the card.
+  - A Testing run receives the configured test commands. Its claims never count as evidence; only Promptboard's own test run does.
+  - Before a Merge run, Promptboard runs `git merge --no-ff --no-commit <target>` in the worktree when the target has advanced, and passes the conflicted files and test commands to the agent. The agent resolves conflicts in files; it is told not to run Git commands that change history.
+  - `revision` reports `merging`, `conflicts`, and `unresolved` (every file the merge changes that still has `<<<<<<<` or `>>>>>>>` markers, staged or not). `commit` refuses with `CONFLICT_MARKERS` while any remain, then creates the merge commit. `abort-merge { confirm }` runs `git merge --abort`. Review and tests are then stale and must run again.
+- **Pull requests:**
+  - `POST /api/tasks/:id/pull-request { confirm, title, body }` needs a clean, committed task branch ahead of the target. It pushes only `refs/heads/<task branch>` to `origin` (or the only remote) without `--force`, then runs `gh pr create --base <target> --head <task branch>` (or reuses an open pull request). No shell; `gh` prompts are disabled. The body is the user's; the task prompt is not sent unless they add it.
+  - `POST /api/tasks/:id/pull-request-status` reads the state with `gh pr view`. A merged pull request completes the task (`completion.kind = pull_request`).
 - **Done:**
-  - Only `completeTask` enters Done: through a verified merge (`completion.kind = merged`), or through `complete-no-changes`, allowed only when the branch has no changes (`kind = no_changes`; never described as merged).
+  - Only `completeTask` enters Done: through a verified merge (`completion.kind = merged`), a merged pull request (`kind = pull_request`), or through `complete-no-changes`, allowed only when the branch has no changes (`kind = no_changes`; never described as merged).
   - Moving a card to Done returns `DONE_REQUIRES_MERGE`. Reopening clears the completion.
   - Worktree cleanup stays optional and ownership-checked.
 - **Automation:** "Start on entry" for Code Review starts a review run. For Testing it runs the configured commands. Merge is Manual by default. With "Merge automatically" a card entering Merge is merged by Promptboard itself (no agent) through the same gate as a confirmed merge: accepted review and passing tests for the current task and target commits, fast-forward only, clean target checkout. If any check fails, nothing is merged and the reason is returned. The completion records `trigger: "automation"`. Automatic stage advancement does not exist.

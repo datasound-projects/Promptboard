@@ -158,6 +158,9 @@ async function boardRoute(board, req, res, pathname, searchParams) {
     if (method === 'POST' && action === 'tests') return view({ tests: await delivery.runTests(id, await body()) });
     if (method === 'POST' && action === 'merge') { const { confirm, taskCommit, targetCommit } = await body(); return view({ task: await delivery.merge(id, { confirm, taskCommit, targetCommit }) }); }
     if (method === 'POST' && action === 'update-branch') return view({ revision: await delivery.updateBranch(id, await body()) });
+    if (method === 'POST' && action === 'abort-merge') return view({ revision: await delivery.abortMerge(id, await body()) });
+    if (method === 'POST' && action === 'pull-request') { const { confirm, title, body: text } = await body(); return view({ task: await delivery.openPullRequest(id, { confirm, title, body: text }) }); }
+    if (method === 'POST' && action === 'pull-request-status') { await body(); return view({ task: await delivery.pullRequestStatus(id) }); }
     if (method === 'POST' && action === 'complete-no-changes') return view({ task: await delivery.completeNoChanges(id, await body()) });
   }
   return false;

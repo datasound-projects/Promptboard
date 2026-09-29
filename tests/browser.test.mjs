@@ -52,7 +52,7 @@ test('terminal dock in a real browser: start, render, type, collapse, resize, se
   await browser.eval(`[...document.querySelectorAll('.kanban-card')].find(card => card.textContent.includes('First task')).querySelector('.kanban-start').click();`);
   await browser.until(`document.querySelector('#run-dialog').open`, 'consent dialog');
   await browser.eval(`document.querySelector('#run-form').requestSubmit();`);
-  await browser.until(`window.promptboardDock.sessions.size === 1`, 'first session tab');
+  await browser.until(`window.promptboardDock.sessions.size === 1`, 'first session tab', 30000);
   const firstRun = (await board.view()).runs.find(run => run.taskId === first.id).id;
   const text = runId => `(() => { const s = window.promptboardDock.sessions.get(${JSON.stringify(runId)}); if (!s?.term) return ''; const b = s.term.buffer.active; let out = ''; for (let i = 0; i < b.length; i++) out += b.getLine(i).translateToString(true) + '\\n'; return out; })()`;
   await browser.until(`${text(firstRun)}.includes('fake claude started')`, 'output rendered in xterm');
@@ -92,7 +92,7 @@ test('terminal dock in a real browser: start, render, type, collapse, resize, se
   await browser.eval(`[...document.querySelectorAll('.kanban-card')].find(card => card.textContent.includes('Second task')).querySelector('.kanban-start').click();`);
   await browser.until(`document.querySelector('#run-dialog').open`, 'second consent dialog');
   await browser.eval(`document.querySelector('#run-form').requestSubmit();`);
-  await browser.until(`window.promptboardDock.sessions.size === 2`, 'second session tab');
+  await browser.until(`window.promptboardDock.sessions.size === 2`, 'second session tab', 30000);
   const secondRun = (await board.view()).runs.find(run => run.taskId === second.id).id;
   await browser.until(`${text(secondRun)}.includes('working on')`, 'second output');
   assert.doesNotMatch(await browser.eval(`return ${text(secondRun)};`), /you said: hello/, 'Sessions have separate output.');

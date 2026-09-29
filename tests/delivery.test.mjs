@@ -312,3 +312,104 @@ test('automatic merge: only when the project turns it on and every check holds f
   assert.equal(git(w.root, 'rev-parse', 'trunk'), merged.task.completion.mergedCommit);
   assert.equal(git(w.remote, 'rev-parse', 'trunk'), before, 'Nothing is pushed.');
 });
+
+test('Testing and Merge agents: test commands in context, conflicts left for the agent, markers block the commit, abort restores the branch', { skip, timeout: 120000 }, async t => {
+  const w = await world(t);
+  const revision = async () => (await w.board.view()).projects[0].revision;
+  await w.delivery.setTestCommands(w.project.id, { commands: [{ command: `${process.execPath} -e "process.exit(0)"` }], expectedRevision: await revision() });
+  const task = await w.task('Conflict', 'Change the feature line.');
+  const ws = await w.workspace(task.id);
+  await writeFile(join(ws, 'feature.txt'), 'task version\n');
+  await w.delivery.commit(task.id, { message: 'task change', confirm: true });
+  // Testing agent: the prompt lists the configured test commands.
+  await w.move(task.id, 'code_review'); await w.move(task.id, 'testing');
+  const testRun = await w.board.requestRun(task.id, { stage: 'testing', consent: true, config: { provider: 'claude' } });
+  await until(async () => (await w.board.run(testRun.id)).status === 'waiting_for_input', 'testing turn');
+  const testPrompt = await readFile(join((await w.board.view()).runs.find(run => run.id === testRun.id) && join(w.board.dataDir, 'runs', testRun.id), 'prompt.md'), 'utf8');
+  assert.match(testPrompt, /Test the task below/);
+  assert.match(testPrompt, /=== TEST COMMANDS CONFIGURED IN PROMPTBOARD ===\n- .*process\.exit\(0\)/);
+  await w.supervisor.confirm(testRun.id);
+  assert.equal((await w.board.run(testRun.id)).status, 'succeeded');
+  // The target branch moves on with a conflicting change.
+  await writeFile(join(w.root, 'feature.txt'), 'target version\n'); git(w.root, 'commit', '-qam', 'target change');
+  await w.move(task.id, 'merge');
+  const mergeRun = await w.board.requestRun(task.id, { stage: 'merge', consent: true, config: { provider: 'claude' } });
+  await until(async () => (await w.board.run(mergeRun.id)).status === 'waiting_for_input', 'merge turn');
+  const mergePrompt = await readFile(join(w.board.dataDir, 'runs', mergeRun.id, 'prompt.md'), 'utf8');
+  assert.match(mergePrompt, /Promptboard ran git merge --no-ff --no-commit trunk/);
+  assert.match(mergePrompt, /Conflicted files to resolve:\n- feature\.txt/);
+  let rev = await w.delivery.revision(task.id);
+  assert.equal(rev.merging, true);
+  assert.deepEqual(rev.unresolved, ['feature.txt']);
+  await assert.rejects(w.delivery.commit(task.id, { message: 'merge', confirm: true }), { code: 'CONFLICT_MARKERS' });
+  // Staging the file does not hide its markers.
+  git(ws, 'add', 'feature.txt');
+  assert.deepEqual((await w.delivery.revision(task.id)).unresolved, ['feature.txt']);
+  await assert.rejects(w.delivery.commit(task.id, { message: 'merge', confirm: true }), { code: 'CONFLICT_MARKERS' });
+  const preview = await w.delivery.mergePreview(task.id);
+  assert.equal(preview.eligible, false);
+  assert.match(preview.problems.join(' '), /merge of trunk into the task branch is in progress with 1 unresolved file/);
+  await w.supervisor.confirm(mergeRun.id);
+  // Abort restores the task branch exactly.
+  const before = git(ws, 'rev-parse', 'HEAD');
+  await assert.rejects(w.delivery.abortMerge(task.id, {}), { code: 'CONFIRMATION_REQUIRED' });
+  rev = await w.delivery.abortMerge(task.id, { confirm: true });
+  assert.equal(rev.merging, false);
+  assert.equal(rev.clean, true);
+  assert.equal(git(ws, 'rev-parse', 'HEAD'), before);
+  assert.equal(await readFile(join(ws, 'feature.txt'), 'utf8'), 'task version\n');
+  // Again, and this time the conflict is resolved (as the agent would), then committed as a merge.
+  const second = await w.board.requestRun(task.id, { stage: 'merge', consent: true, config: { provider: 'claude' } });
+  await until(async () => (await w.board.run(second.id)).status === 'waiting_for_input', 'second merge turn');
+  await w.supervisor.confirm(second.id);
+  await writeFile(join(ws, 'feature.txt'), 'task version\ntarget version\n');
+  await w.delivery.commit(task.id, { message: 'Merge trunk into the task branch', confirm: true });
+  assert.equal(git(ws, 'rev-list', '--parents', '-n', '1', 'HEAD').split(' ').length, 3, 'A merge commit with two parents.');
+  const after = await w.delivery.mergePreview(task.id);
+  assert.equal(after.fastForward, true, 'The task branch now contains the target.');
+  assert.equal(after.eligible, false, 'Review and tests are for older commits, so they must run again.');
+  assert.match(after.problems.join(' '), /older task commit|required/);
+  assert.equal(git(w.remote, 'rev-parse', 'trunk'), git(w.remote, 'rev-parse', 'trunk'), 'Nothing is pushed.');
+});
+
+test('pull request: pushes the task branch without force, opens it with gh, and a merged pull request completes the task', { skip, timeout: 60000 }, async t => {
+  const w = await world(t);
+  const bin = await temp(t, 'pb-gh-bin-');
+  const stateFile = join(bin, 'pr.json');
+  await writeFile(join(bin, 'gh'), `#!${process.execPath}
+const fs = require('fs'); const a = process.argv.slice(2); const file = ${JSON.stringify(stateFile)};
+fs.appendFileSync(file + '.log', JSON.stringify(a) + '\\n');
+const read = () => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } };
+if (a[0] === '--version') { console.log('gh version 2.0.0'); process.exit(0); }
+if (a[0] === 'pr' && a[1] === 'view') { const s = read(); if (!s) { console.error('no pull requests found'); process.exit(1); } console.log(JSON.stringify(s)); process.exit(0); }
+if (a[0] === 'pr' && a[1] === 'create') { const s = { url: 'https://github.com/example/repo/pull/7', number: 7, state: 'OPEN' }; fs.writeFileSync(file, JSON.stringify(s)); console.log(s.url); process.exit(0); }
+process.exit(2);
+`);
+  await chmod(join(bin, 'gh'), 0o755);
+  const oldPath = process.env.PATH;
+  process.env.PATH = `${bin}:${oldPath}`;
+  t.after(() => { process.env.PATH = oldPath; });
+  const task = await w.task('Proposal', 'SECRET PROMPT TEXT');
+  await assert.rejects(w.delivery.openPullRequest(task.id, { confirm: true, title: 'Add proposal' }), { code: 'NO_CHANGES' });
+  await writeFile(join(await w.workspace(task.id), 'p.txt'), 'p\n');
+  await assert.rejects(w.delivery.openPullRequest(task.id, { confirm: true, title: 'Add proposal' }), { code: 'UNCOMMITTED_CHANGES' });
+  await w.delivery.commit(task.id, { message: 'proposal', confirm: true });
+  await assert.rejects(w.delivery.openPullRequest(task.id, { title: 'Add proposal' }), { code: 'CONFIRMATION_REQUIRED' });
+  const branch = (await w.current(task.id)).workspace.branch;
+  const opened = await w.delivery.openPullRequest(task.id, { confirm: true, title: 'Add proposal', body: 'Tests passed.' });
+  assert.equal(opened.evidence.pullRequest.url, 'https://github.com/example/repo/pull/7');
+  assert.equal(opened.evidence.pullRequest.state, 'OPEN');
+  assert.equal(git(w.remote, 'rev-parse', branch), git(await w.workspace(task.id), 'rev-parse', 'HEAD'), 'The task branch is on the remote.');
+  const calls = (await readFile(`${stateFile}.log`, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+  const create = calls.find(args => args[1] === 'create');
+  assert.deepEqual(create.slice(0, 8), ['pr', 'create', '--base', 'trunk', '--head', branch, '--title', 'Add proposal']);
+  assert.ok(!calls.flat().some(arg => arg.includes('SECRET PROMPT TEXT')), 'The task prompt is not sent.');
+  assert.equal(opened.column, 'executing', 'Opening a pull request does not complete the task.');
+  // Still open: nothing changes. Merged on GitHub: the task is Done.
+  assert.equal((await w.delivery.pullRequestStatus(task.id)).column, 'executing');
+  await writeFile(stateFile, JSON.stringify({ url: 'https://github.com/example/repo/pull/7', number: 7, state: 'MERGED', mergedAt: '2026-09-29T12:00:00Z' }));
+  const done = await w.delivery.pullRequestStatus(task.id);
+  assert.equal(done.column, 'done');
+  assert.equal(done.completion.kind, 'pull_request');
+  assert.equal(done.completion.url, 'https://github.com/example/repo/pull/7');
+});

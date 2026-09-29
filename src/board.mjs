@@ -29,8 +29,8 @@ export const ACTIVE_RUN_STATUSES = Object.freeze(['queued', 'running', 'waiting_
 // Succeeded is reached only through an explicit user confirmation (supervisor.confirm).
 const RUN_NEXT = { queued: ['running', 'cancelled', 'failed', 'interrupted'], running: ['waiting_for_input', 'succeeded', 'failed', 'cancelled', 'interrupted'],
   waiting_for_input: ['running', 'succeeded', 'cancelled', 'failed', 'interrupted'] };
-// Stages the PB-02 executor implements. Code Review, Testing, and Merge arrive in PB-04.
-const EXECUTABLE_STAGES = new Set(['planning', 'executing', 'code_review']);
+// Stages that can run an agent. To Do and Done never do.
+const EXECUTABLE_STAGES = new Set(['planning', 'executing', 'code_review', 'testing', 'merge']);
 // Per-stage workflow settings. Projects store overrides; defaults apply otherwise.
 // To Do, Merge, and Done have no run policy: To Do and Done never run, and a merge always needs confirmation.
 export const WORKFLOW_STAGES = Object.freeze(['planning', 'executing', 'code_review', 'testing', 'merge']);
@@ -702,7 +702,11 @@ export class Board {
       const plan = stage === 'executing' ? this.#approvedPlan(state, task) : null;
       // Review reads the actual diff of a clean, committed revision. Executing gets requested fixes.
       const review = stage === 'code_review' ? await this.delivery.reviewContext(taskId) : null;
-      const extra = review ? review.text : stage === 'executing' && task.reworkNotes ? `=== REVIEW FINDINGS TO FIX ===\n${task.reworkNotes}\n=== END FINDINGS ===` : '';
+      // Testing gets the configured test commands; Merge first brings the target branch in
+      // (git merge --no-commit), leaving any conflicts for the agent to resolve.
+      const merge = stage === 'merge' ? await this.delivery.prepareMergeRun(taskId) : null;
+      const testing = stage === 'testing' ? await this.delivery.testingContext(taskId) : '';
+      const extra = review ? review.text : merge ? merge.text : testing || (stage === 'executing' && task.reworkNotes ? `=== REVIEW FINDINGS TO FIX ===\n${task.reworkNotes}\n=== END FINDINGS ===` : '');
       const run = await this.store.update(draft => {
         if (this.#activeRun(draft, taskId)) throw conflict('This card already has an active run.', 'RUN_ACTIVE');
         const now = Date.now();

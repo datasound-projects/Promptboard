@@ -550,3 +550,4 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
 .workspace-path .inline-error { margin: 0; overflow-wrap: anywhere; }
 .model-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .model-field > input { width: 100%; }
+.pr-fields { display: flex; flex-direction: column; gap: 8px; margin: 8px 0; } .pr-fields input, .pr-fields textarea { width: 100%; margin-top: 4px; } .pr-fields textarea { height: 110px; resize: vertical; }

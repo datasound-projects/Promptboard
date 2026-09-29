@@ -36,3 +36,14 @@ Same environment. `scripts/live-flow.mjs` drives one task through every stage wi
 Both complete flows (Claude Code and Codex CLI) were repeated on the release code (`37f5020`, version 0.4.0) and passed again.
 
 Not verified live: Gemini CLI (sign-in refused by the provider, see above; the run dialog labels it "not verified live") and anything on Windows (CI runs the prompt-editor tests there; terminal, Git, and browser tests are skipped).
+
+## 29 September 2026 — Testing and Merge agents
+
+Disposable repository; the task changed `greet.js`, which made the existing test fail, and then the target branch received a conflicting edit to the same line.
+
+| Provider | Testing agent | Merge agent | Result |
+| --- | --- | --- | --- |
+| Claude Code (`haiku`) | Fixed the test, kept the task change; Promptboard's test run then passed (exit 0). | Resolved the conflict by combining both edits (`name.trim() + '!'`), no markers left; merge commit with two parents; tests passed; fast-forward possible. | Pass |
+| Codex CLI | Same. | Same result. Codex staged the resolved file itself, which led to the marker check now covering every changed file, not only unmerged ones. | Pass |
+
+Not verified live: **Open pull request** against GitHub (covered by tests with a real bare remote and a simulated `gh`), and Gemini CLI.

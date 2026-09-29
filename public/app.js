@@ -1110,7 +1110,7 @@ function renderColumn(column, tasks) {
   header.className = 'kanban-column-heading';
   header.append(heading, count);
   const note = paragraph(!column.agent ? (column.id === 'todo' ? 'Never runs an agent' : 'Finished · never runs an agent')
-    : !board.execution?.available ? 'Agent stage · agent terminals not set up' : { testing: 'Your test commands · only exit codes count', merge: 'Fast-forward only · never pushed' }[column.id] || 'Agent stage · starts only when you choose', 'kanban-column-note');
+    : !board.execution?.available ? 'Agent stage · agent terminals not set up' : { testing: 'Agent optional · exit codes decide', merge: 'Agent optional · fast-forward or pull request' }[column.id] || 'Agent stage · starts only when you choose', 'kanban-column-note');
   const list = document.createElement('ol');
   list.className = 'kanban-cards';
   list.dataset.column = column.id;
@@ -1452,7 +1452,10 @@ async function deleteProject(project) {
 // ---- Agent runs (PB-03): controls, consent, confirmation, details, workflow ----
 
 const RUN_LIVE = ['queued', 'running', 'waiting_for_input'];
-const STAGE_VERBS = { planning: 'Start planning', executing: 'Start executing', code_review: 'Start review' };
+const STAGE_VERBS = { planning: 'Start planning', executing: 'Start executing', code_review: 'Start review', testing: 'Start testing agent', merge: 'Start merge agent' };
+// Stages whose agents are read-only (plan mode, read-only sandbox). The others write in the worktree.
+const READ_ONLY_STAGES = ['planning', 'code_review'];
+const capabilityFor = stage => READ_ONLY_STAGES.includes(stage) ? 'planning' : 'execution';
 const POLICY_LABELS = { manual: 'Manual', ask: 'Ask on entry', start: 'Start on entry' };
 let runDialogContext = null;
 
@@ -1483,10 +1486,10 @@ function renderRunControls(card, run) {
       const button = labelled(detailButton(planning ? 'Approve plan…' : active.stage === 'code_review' ? 'Record review…' : 'Confirm stage…', () => openTaskDetails(card.id), 'primary kanban-confirm-run'), planning ? 'Review and approve the plan' : 'Review and confirm the stage');
       box.append(button);
     }
-  } else if (card.column === 'testing' || card.column === 'merge') {
-    box.append(labelled(detailButton(card.column === 'testing' ? 'Run tests…' : 'Merge…', () => openTaskDetails(card.id), 'primary kanban-deliver'), card.column === 'testing' ? 'Run tests' : 'Review the merge'));
-  } else if (['planning', 'executing', 'code_review'].includes(card.column)) {
-    const start = labelled(detailButton(`${STAGE_VERBS[card.column]}…`, () => openRunDialog(card.id, card.column), 'primary kanban-start'), STAGE_VERBS[card.column]);
+  } else if (STAGE_VERBS[card.column]) {
+    // Testing and Merge also keep their own action: run the configured tests, or review the merge.
+    if (card.column === 'testing' || card.column === 'merge') box.append(labelled(detailButton(card.column === 'testing' ? 'Run tests…' : 'Merge…', () => openTaskDetails(card.id), 'primary kanban-deliver'), card.column === 'testing' ? 'Run tests' : 'Review the merge'));
+    const start = labelled(detailButton(`${STAGE_VERBS[card.column]}…`, () => openRunDialog(card.id, card.column), `${card.column === 'testing' || card.column === 'merge' ? '' : 'primary '}kanban-start`), STAGE_VERBS[card.column]);
     start.disabled = !board?.execution?.available || !currentProject()?.repository || !currentProject()?.targetBranch;
     if (start.disabled) start.title = !board?.execution?.available ? 'Agent terminals are not set up.' : 'Link a repository and choose a target branch first.';
     box.append(start);
@@ -1499,7 +1502,7 @@ function askToStart(card, stage) {
   if (!card) return;
   const panel = $('#ask-panel');
   // Testing and Merge open task details, where tests run and the merge preview is confirmed.
-  const agent = Boolean(STAGE_VERBS[stage]);
+  const agent = ['planning', 'executing', 'code_review'].includes(stage);
   const verb = agent ? STAGE_VERBS[stage] : stage === 'testing' ? 'Run tests' : 'Review the merge';
   const yes = detailButton(`${verb}…`, () => { panel.hidden = true; agent ? openRunDialog(card.id, stage) : openTaskDetails(card.id); }, 'danger');
   const no = detailButton('Not now', () => { panel.hidden = true; announce(agent ? 'No agent was started.' : 'Nothing was started.'); });
@@ -1541,7 +1544,7 @@ function fillSelect(select, values, labels = {}) { select.replaceChildren(...val
 
 function renderRunFields(provider, stage, settings = {}) {
   const providers = board?.execution?.providers || {};
-  const supported = Object.keys(providers).filter(id => providers[id][stage === 'executing' ? 'execution' : 'planning']?.supported);
+  const supported = Object.keys(providers).filter(id => providers[id][capabilityFor(stage)]?.supported);
   fillSelect($('#run-provider'), supported, Object.fromEntries(supported.map(id => [id, providers[id].notLiveVerified ? `${providers[id].name} (not verified live)` : providers[id].name])));
   $('#run-provider').value = supported.includes(provider) ? provider : supported[0] || '';
   const chosen = $('#run-provider').value;
@@ -1556,7 +1559,7 @@ function renderRunFields(provider, stage, settings = {}) {
   $('#run-model').dataset.provider = chosen;
   $('#run-model-custom').value = '';
   loadModelSelect($('#run-model'), $('#run-model-custom'), chosen, chosen === settings.provider ? settings.model || '' : '');
-  $('#run-dialog-how').textContent = providers[chosen]?.[stage === 'executing' ? 'execution' : 'planning']?.how || '';
+  $('#run-dialog-how').textContent = providers[chosen]?.[capabilityFor(stage)]?.how || '';
 }
 
 function openRunDialog(taskId, stage) {
@@ -1570,6 +1573,8 @@ function openRunDialog(taskId, stage) {
   $('#run-dialog-summary').textContent = stage === 'planning'
     ? 'The agent inspects the repository in the task worktree and writes a plan. It cannot change files. You approve the plan before anything is implemented.'
     : stage === 'code_review' ? 'The agent reviews the committed task diff against the target branch and reports findings. It cannot change files. Completing a review is not accepting it; you decide.'
+    : stage === 'testing' ? 'The agent runs your test commands in the task worktree, fixes failures, and can add focused tests. It does not commit. Whether tests pass is decided only by Promptboard’s own test run (exit codes).'
+    : stage === 'merge' ? `If ${currentProject()?.targetBranch?.name || 'the target branch'} has moved on, Promptboard first merges it into the task branch without committing, and the agent resolves any conflicts and runs the tests. It never commits, merges into the target, or pushes: you commit the result, then merge or open a pull request.`
     : `The agent works in the task worktree on branch ${card.workspace?.branch || '(created when the run starts)'}. It does not touch your main checkout. You confirm the stage when you are satisfied.`;
   const approval = card.planApproval;
   $('#run-dialog-plan').textContent = stage !== 'executing' ? '' : !approval ? 'No approved plan: the agent receives the task text only.'
@@ -1668,15 +1673,16 @@ function workflowSummary(project) {
 }
 
 function workflowPreview(stage, settings) {
-  if (stage === 'merge') return settings.policy === 'manual' ? 'Moving a card here does nothing. You review the merge preview and confirm it.'
+  const agentNote = stage === 'testing' || stage === 'merge' ? ` The ${stage === 'testing' ? 'testing' : 'merge'} agent below starts only from the card.` : '';
+  if (stage === 'merge') return (settings.policy === 'manual' ? 'Moving a card here does nothing. You review the merge preview and confirm it.'
     : settings.policy === 'ask' ? 'Moving a card here asks whether to open the merge preview. You still confirm the merge.'
-    : 'Moving a card here merges it at once, but only if the code review was accepted and the tests passed for exactly the current task and target commits, the merge is a fast-forward, and the target checkout is clean. Otherwise nothing is merged and the reason is shown. Nothing is pushed.';
+    : 'Moving a card here merges it at once, but only if the code review was accepted and the tests passed for exactly the current task and target commits, the merge is a fast-forward, and the target checkout is clean. Otherwise nothing is merged and the reason is shown. Nothing is pushed.') + agentNote;
   const provider = providerName(settings.provider);
   const what = stage === 'planning' ? `${provider} writes a read-only plan` : stage === 'code_review' ? `${provider} reviews the committed diff read-only`
     : stage === 'testing' ? 'your configured test commands run in the task worktree' : `${provider} works in the task worktree`;
-  return settings.policy === 'manual' ? `Moving a card here does nothing. You start ${columnTitle(stage)} from the card when you want.`
+  return (settings.policy === 'manual' ? `Moving a card here does nothing. You start ${columnTitle(stage)} from the card when you want.`
     : settings.policy === 'ask' ? `Moving a card here asks whether to start. If you agree, ${what}.`
-    : `Moving a card here starts at once: ${what}. The run is recorded as started by this setting.`;
+    : `Moving a card here starts at once: ${what}. The run is recorded as started by this setting.`) + agentNote;
 }
 
 function openWorkflowDialog() {
@@ -1699,10 +1705,10 @@ function openWorkflowDialog() {
     }
     const preview = paragraph(workflowPreview(stage, settings), 'workflow-preview');
     const children = [legend, policy];
-    if (['planning', 'executing', 'code_review'].includes(stage)) {
+    if (STAGE_VERBS[stage]) {
       const grid = document.createElement('div'); grid.className = 'select-grid';
       const providers = board?.execution?.providers || {};
-      const supported = Object.keys(providers).filter(id => providers[id][stage === 'executing' ? 'execution' : 'planning']?.supported);
+      const supported = Object.keys(providers).filter(id => providers[id][capabilityFor(stage)]?.supported);
       const providerField = document.createElement('label'); providerField.className = 'field-label'; providerField.textContent = 'Provider';
       const providerSelect = document.createElement('select'); providerSelect.dataset.field = 'provider';
       fillSelect(providerSelect, supported.length ? supported : ['claude'], Object.fromEntries(Object.entries(providers).map(([id, item]) => [id, item.name])));
@@ -1792,6 +1798,7 @@ async function renderDelivery(card, container, section, pre) {
     const done = card.completion;
     nodes.push(section('Completed', paragraph(done.kind === 'merged'
       ? `Merged${done.trigger === 'automation' ? ' automatically (project workflow setting)' : ''} into ${done.targetBranch}: ${short(done.previousTarget)} → ${short(done.mergedCommit)} (${done.method}). Nothing was pushed.`
+      : done.kind === 'pull_request' ? `Pull request ${done.number ? `#${done.number} ` : ''}merged on GitHub into ${done.base || 'the target branch'}. Pull ${done.base || 'the target branch'} to update your local checkout.`
       : 'Reviewed: no changes required. Nothing was merged.')));
   }
   if (card.workspace?.status !== 'ready') {
@@ -1814,13 +1821,24 @@ async function renderDelivery(card, container, section, pre) {
   // Task revision and commit.
   const revision = section('Task revision', paragraph(`Commit ${short(rev.taskCommit)} on ${rev.branch || 'a detached HEAD'} · ${plural(rev.ahead, 'commit')} ahead of ${rev.targetBranch} (${short(rev.targetCommit)}) · ${rev.clean ? 'no uncommitted changes' : plural(rev.changes.length, 'uncommitted change')}.`));
   if (!rev.branchOk) revision.append(paragraph('The worktree is not on its task branch. Promptboard will not commit, review, test, or merge until it is.', 'kanban-error'));
+  if (rev.merging) {
+    // A merge of the target branch (started for the merge agent) is waiting to be committed or aborted.
+    revision.append(paragraph(rev.unresolved.length
+      ? `A merge of ${rev.targetBranch} into the task branch is in progress. Still conflicted: ${rev.unresolved.join(', ')}. Resolve these (or let the merge agent do it) before you commit.`
+      : `A merge of ${rev.targetBranch} into the task branch is in progress${rev.conflicts.length ? `; the conflicts in ${rev.conflicts.join(', ')} have no markers left` : ''}. Check the result, then commit it. Review and tests must run again afterwards.`, rev.unresolved.length ? 'kanban-error' : ''));
+    const abort = document.createElement('div');
+    abort.append(detailActions(detailButton('Abort merge…', () => confirmStep(abort, `Abort the merge? The task branch returns to ${short(rev.taskCommit)} and every change made during the merge, including conflict resolutions, is discarded.`, 'Abort merge', () => deliveryAction(card, 'POST', 'abort-merge', { confirm: true }, 'Merge aborted; the task branch is unchanged.')))));
+    revision.append(abort);
+  }
   if (!rev.clean && rev.branchOk) {
     const diff = pre('Loading the changes…');
     const label = document.createElement('label'); label.className = 'field-label'; label.textContent = 'Commit message';
-    const input = document.createElement('input'); input.type = 'text'; input.maxLength = 2000; input.value = card.title; input.id = 'commit-message';
+    const input = document.createElement('input'); input.type = 'text'; input.maxLength = 2000; input.value = rev.merging ? `Merge ${rev.targetBranch} into ${rev.branch}` : card.title; input.id = 'commit-message';
     label.append(input);
     const box = document.createElement('div');
-    box.append(detailActions(detailButton('Commit task changes…', () => confirmStep(box, `Commit all ${plural(rev.changes.length, 'change')} shown above on ${rev.branch} with your existing Git identity?`, 'Commit', () => deliveryAction(card, 'POST', 'commit', { message: input.value, confirm: true }, 'Task changes committed.')))));
+    const commit = detailButton(rev.merging ? 'Commit merge…' : 'Commit task changes…', () => confirmStep(box, `Commit all ${plural(rev.changes.length, 'change')} shown above on ${rev.branch} with your existing Git identity?`, 'Commit', () => deliveryAction(card, 'POST', 'commit', { message: input.value, confirm: true }, rev.merging ? 'Merge committed. Review and test the task again.' : 'Task changes committed.')));
+    commit.disabled = rev.unresolved.length > 0;
+    box.append(detailActions(commit));
     revision.append(paragraph('Review and testing need a committed revision. Check the changes first:'), diff, label, box);
     api(`/api/tasks/${encodeURIComponent(card.id)}/uncommitted`, { timeoutMs: 20000 }).then(({ data }) => {
       diff.textContent = `${(data.changes || []).join('\n')}\n\n${data.diff || ''}${data.truncated ? '\n[The diff is longer; the rest is in the worktree.]' : ''}`;
@@ -1890,6 +1908,33 @@ async function renderDelivery(card, container, section, pre) {
       if (actions.length) parts.push(detailActions(...actions));
       box.replaceChildren(section('Merge').firstChild, ...parts);
     }).catch(() => { box.replaceChildren(paragraph('The merge preview failed.', 'kanban-error')); });
+  }
+  // Pull request: push the task branch (never forced) and open it on GitHub with gh.
+  const pr = card.evidence?.pullRequest;
+  if (card.column === 'merge' || pr) {
+    const box = section('Pull request');
+    if (pr) {
+      const line = paragraph(`${pr.state === 'MERGED' ? 'Merged' : pr.state === 'CLOSED' ? 'Closed' : 'Open'} · ${pr.branch} → ${pr.base} on ${pr.remote} · for commit ${short(pr.taskCommit)}${pr.taskCommit === rev.taskCommit ? '' : ' (newer commits are not pushed yet)'}. `);
+      if (pr.url) line.append(externalLink(pr.url, pr.number ? `#${pr.number}` : 'Open on GitHub'));
+      box.append(line);
+    } else box.append(paragraph(`Instead of merging locally, push ${rev.branch} and open a pull request into ${rev.targetBranch} with the GitHub CLI (gh). Nothing is pushed until you confirm, and never with --force.`));
+    const actions = [];
+    if (card.column === 'merge' && rev.clean && rev.ahead && !rev.merging && pr?.state !== 'MERGED') {
+      const review = card.evidence?.review, tests = card.evidence?.tests;
+      const title = document.createElement('input'); title.type = 'text'; title.maxLength = 256; title.value = card.title; title.setAttribute('aria-label', 'Pull request title');
+      const body = document.createElement('textarea'); body.maxLength = 20000; body.setAttribute('aria-label', 'Pull request description');
+      body.value = [`Task: ${card.title}`, '', `Code review: ${review ? `${review.status.replaceAll('_', ' ')} (${review.verdict.replaceAll('_', ' ')}) for ${short(review.taskCommit)}` : 'none'}`,
+        `Tests: ${tests ? `${tests.status} for ${short(tests.taskCommit)}` : 'not run'}`, '', 'Opened with Promptboard.'].join('\n');
+      const form = document.createElement('div'); form.className = 'pr-fields';
+      const titleLabel = document.createElement('label'); titleLabel.className = 'field-label'; titleLabel.textContent = 'Title'; titleLabel.append(title);
+      const bodyLabel = document.createElement('label'); bodyLabel.className = 'field-label'; bodyLabel.textContent = 'Description (sent to GitHub; the task prompt is not included unless you add it)'; bodyLabel.append(body);
+      form.append(titleLabel, bodyLabel);
+      box.append(form);
+      actions.push(detailButton(pr?.state === 'OPEN' ? 'Push new commits…' : 'Open pull request…', () => confirmStep(box, `Push ${rev.branch} to the repository's remote and ${pr?.state === 'OPEN' ? 'update the open pull request' : `open a pull request into ${rev.targetBranch}`}? This publishes the task branch. It is never force-pushed.`, pr?.state === 'OPEN' ? 'Push' : 'Push and open', () => deliveryAction(card, 'POST', 'pull-request', { confirm: true, title: title.value, body: body.value }, 'Pull request ready on GitHub.')), 'danger'));
+    }
+    if (pr?.url && pr.state !== 'MERGED') actions.push(detailButton('Check pull request', () => deliveryAction(card, 'POST', 'pull-request-status', {}, 'Pull request status updated. A merged pull request moves the card to Done.')));
+    if (actions.length) box.append(detailActions(...actions));
+    nodes.push(box);
   }
   // No-change completion and cleanup.
   if (rev.clean && !rev.ahead && !['todo', 'done'].includes(card.column)) {

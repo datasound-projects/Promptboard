@@ -14,7 +14,7 @@ Report problems privately through GitHub: **Security → Report a vulnerability*
 
 **Agents stay in their worktree.** Each task gets its own Git worktree and branch outside your checkout. Planning and Code Review use each CLI's read-only mode (Claude Code plan mode with read tools only, Codex `--sandbox read-only`, Gemini plan mode plus a deny policy). Executing uses the CLI's normal approval mode. Promptboard never passes bypass, "yolo", or full-access flags, never pre-trusts a folder, and never edits your CLI configuration.
 
-**You confirm the important steps.** Runs start only when you start them or turn on automatic start for a stage. A stage succeeds only when you confirm it. Commits and branch updates need confirmation. Merges need confirmation unless you turn on **Merge automatically** for a project; even then Promptboard merges only when the accepted review and passing tests belong to exactly the current task and target commits. Merges are fast-forward only and are never pushed. Setting up Git in a new folder (`git init` plus one empty commit) happens only after you confirm it, and never adds your files. Promptboard never force-resets, stashes, or deletes a dirty worktree.
+**You confirm the important steps.** Runs start only when you start them or turn on automatic start for a stage. A stage succeeds only when you confirm it. Commits and branch updates need confirmation. Merges need confirmation unless you turn on **Merge automatically** for a project; even then Promptboard merges only when the accepted review and passing tests belong to exactly the current task and target commits. Merges are fast-forward only. The only push is **Open pull request**: after you confirm, the task branch (never another branch) is pushed without `--force` and a pull request is opened with the GitHub CLI; its description is yours, and the task prompt is not sent unless you add it. Testing and Merge agents write only in the task worktree; they are told not to commit, merge, rebase, reset, or push, and Promptboard refuses to commit files that still contain conflict markers. Setting up Git in a new folder (`git init` plus one empty commit) happens only after you confirm it, and never adds your files. Promptboard never force-resets, stashes, or deletes a dirty worktree.
 
 **Processes are owned.** Stopping a run, or Promptboard itself, stops only the process groups it started.
 
@@ -36,4 +36,4 @@ Report problems privately through GitHub: **Security → Report a vulnerability*
 - HTTP binding, token and origin checks, static routes, and the content security policy.
 - Anything that renders agent output (it must stay text, never HTML).
 
-Do not add automatic approval bypass, shell interpolation, remote binding, auto-push, or automatic conflict resolution.
+Do not add automatic approval bypass, shell interpolation, remote binding, force-push, pushing without confirmation, or conflict resolution that skips the marker check and the user's commit.
