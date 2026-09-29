@@ -10,6 +10,8 @@ import { AUTH_CAPABILITIES, logout, readAuthStatus, startLogin } from './auth.mj
 import { Board, BoardError } from './board.mjs';
 import { GitError } from './git.mjs';
 import { defaultDataDir, StoreError } from './store.mjs';
+import { Supervisor } from './supervisor.mjs';
+import { AgentError } from './agents.mjs';
 import { discoverModels, checkModelEffort } from './models.mjs';
 
 const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
@@ -85,7 +87,7 @@ const BOARD_BODY_LIMIT = 48 * 1024 * 1024;
 /** Kanban routes. IDs come from the URL; every filesystem path is resolved on the server. */
 async function boardRoute(board, req, res, pathname, searchParams) {
   const method = req.method;
-  const match = pathname.match(/^\/api\/(projects|tasks)\/([A-Za-z0-9_-]{1,100})(?:\/([a-z-]+))?$/);
+  const match = pathname.match(/^\/api\/(projects|tasks|runs)\/([A-Za-z0-9_-]{1,100})(?:\/([a-z-]+))?$/);
   const body = async (limit = TASK_BODY_LIMIT) => { const value = await jsonBody(req, limit); if (!value || typeof value !== 'object' || Array.isArray(value)) throw Object.assign(new Error('Send a JSON object.'), { status: 400 }); return value; };
   const view = async extra => send(res, 200, { ...extra, board: await board.view() });
   if (method === 'GET' && pathname === '/api/board') return view();
@@ -95,6 +97,7 @@ async function boardRoute(board, req, res, pathname, searchParams) {
   if (method === 'POST' && pathname === '/api/projects') return view({ project: await board.createProject(await body()) });
   if (method === 'POST' && pathname === '/api/repository/validate') return send(res, 200, { repository: await board.validateRepository((await body()).path) });
   if (method === 'POST' && pathname === '/api/tasks') return view({ task: await board.createTask(await body()) });
+  if (method === 'PATCH' && pathname === '/api/settings') return view({ settings: await board.setSettings(await body()) });
   if (!match) return false;
   const [, kind, id, action = ''] = match;
   const expected = () => Number(searchParams.get('expectedRevision'));
@@ -105,6 +108,21 @@ async function boardRoute(board, req, res, pathname, searchParams) {
     if (method === 'GET' && action === 'branches') return send(res, 200, { repository: await board.listProjectBranches(id) });
     if (method === 'POST' && action === 'target-branch') return view({ project: await board.setTargetBranch(id, await body()) });
     if (method === 'POST' && action === 'confirm-import') return view({ project: await board.confirmImport(id, await body()) });
+  } else if (kind === 'runs') {
+    const supervisor = board.executor;
+    await board.run(id); // 404 for an unknown run.
+    if (!supervisor) throw new BoardError('Agent execution is not available.', 'EXECUTION_UNAVAILABLE', 503);
+    if (method === 'GET' && !action) return send(res, 200, { run: await board.run(id) });
+    if (method === 'GET' && action === 'stream') return streamRun(supervisor, req, res, id, Number(searchParams.get('after') || 0));
+    if (method === 'GET' && ['plan', 'last-message', 'output'].includes(action)) return send(res, 200, { name: action, text: await supervisor.artifact(id, action) });
+    if (method === 'POST' && action === 'input') { supervisor.input(id, (await body(128 * 1024)).data); return send(res, 200, { ok: true }); }
+    if (method === 'POST' && action === 'resize') { const size = await body(); supervisor.resize(id, size.cols, size.rows); return send(res, 200, { ok: true }); }
+    if (method === 'POST' && action === 'cancel') {
+      if ((await body()).confirm !== true) throw new BoardError('Confirm that you want to stop this agent session.', 'CONFIRMATION_REQUIRED');
+      await supervisor.cancel(id);
+      return view({ run: await board.run(id) });
+    }
+    if (method === 'POST' && action === 'confirm') { await body(); await supervisor.confirm(id); return view({ run: await board.run(id) }); }
   } else {
     if (method === 'PATCH' && !action) return view(await board.updateTask(id, await body()));
     if (method === 'DELETE' && !action) return view({ deleted: await board.deleteTask(id, { expectedRevision: expected() }) ?? true });
@@ -116,9 +134,24 @@ async function boardRoute(board, req, res, pathname, searchParams) {
   return false;
 }
 
-export async function startServer({ port = 4318, runner = runProvider, detector = detectProviders, catalogReader = discoverModels, authAdapter = auth, dataDir = defaultDataDir(), executor = null } = {}) {
+/** NDJSON output stream for one run. The page reads it with fetch, so the token stays in a header. */
+function streamRun(supervisor, req, res, runId, after) {
+  res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' });
+  const ping = setInterval(() => res.write('{"ping":true}\n'), 15000);
+  const finish = () => { clearInterval(ping); if (!res.writableEnded) res.end(); };
+  const unsubscribe = supervisor.subscribe(runId, after, {
+    write: item => res.write(`${JSON.stringify(item)}\n`),
+    onDrain: resume => res.once('drain', resume),
+    end: finish,
+  });
+  if (!unsubscribe) { res.write(`${JSON.stringify({ ended: true, missing: true })}\n`); finish(); return; }
+  req.on('close', () => { clearInterval(ping); unsubscribe(); });
+}
+
+export async function startServer({ port = 4318, runner = runProvider, detector = detectProviders, catalogReader = discoverModels, authAdapter = auth, dataDir = defaultDataDir(), executor = 'auto' } = {}) {
   // The board loads lazily, so starting the server never reads or writes board files.
-  const board = new Board({ dataDir, executor });
+  const board = new Board({ dataDir });
+  board.executor = executor === 'auto' ? new Supervisor({ board, dataDir }) : executor;
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('The port must be 0–65535.');
   const token = randomBytes(32).toString('hex');
   const catalogAbort = new AbortController();
@@ -145,6 +178,8 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
   const claim = async (kind, provider) => {
     // A just-cancelled generation may still be stopping its CLI. Wait briefly for it.
     if (busy?.controller.signal.aborted) await Promise.race([busy.done, new Promise(resolve => setTimeout(resolve, 5000).unref())]);
+    // Changing sign-in under a running agent session would break it.
+    if (kind === 'auth' && board.executor?.activeCount?.() > 0) throw Object.assign(new ProviderError('Agent sessions are running. Stop them before you change sign-in.', 'RUNS_ACTIVE'), { status: 409 });
     if (busy) {
       throw Object.assign(new ProviderError(busy.kind === 'auth' ? 'A sign-in change is in progress. Finish or cancel it first.' : 'A prompt is already in progress. Wait or cancel that prompt.', busy.kind === 'auth' ? 'AUTH_IN_PROGRESS' : 'BUSY'), { status: 409 });
     }
@@ -270,11 +305,11 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
       }
       return;
     }
-    if (pathname.startsWith('/api/board') || pathname.startsWith('/api/projects') || pathname.startsWith('/api/tasks') || pathname === '/api/repository/validate') {
+    if (/^\/api\/(board|projects|tasks|runs)(\/|$)/.test(pathname) || pathname === '/api/repository/validate' || pathname === '/api/settings') {
       try { if ((await boardRoute(board, req, res, pathname, requestUrl.searchParams)) !== false) return; }
       catch (error) {
         // Board, store, and Git errors carry fixed messages; raw Git output is never returned.
-        const known = error instanceof BoardError || error instanceof GitError || error instanceof StoreError;
+        const known = error instanceof BoardError || error instanceof GitError || error instanceof StoreError || error instanceof AgentError;
         const status = known || error.status < 500 ? error.status || 500 : 500;
         return send(res, status, known || status < 500 ? { error: error.message, code: error.code || 'INVALID_REQUEST' } : { error: 'The board request failed.', code: 'BOARD_FAILED' });
       }
@@ -304,7 +339,9 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
     busy?.controller.abort();
     catalogAbort.abort();
     server.closeIdleConnections();
-    const settle = Promise.allSettled([...tasks, ...lookups.values(), busy?.done].filter(Boolean));
+    // Agent sessions: stop owned process groups, record runs as interrupted, end streams.
+    const agents = board.executor?.shutdown ? board.executor.shutdown(Math.min(3000, graceMs)) : null;
+    const settle = Promise.allSettled([...tasks, ...lookups.values(), busy?.done, agents].filter(Boolean));
     await Promise.race([settle, new Promise(resolve => setTimeout(resolve, graceMs).unref())]);
     killOwnedProcesses('SIGKILL');
     server.closeAllConnections();

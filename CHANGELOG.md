@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Agent execution (PB-02): Planning and Executing run Claude Code, Codex, or Gemini CLI in an interactive terminal inside the task worktree, after your explicit confirmation.
+  - Planning uses each CLI's read-only boundary. The plan is saved outside the worktree, and approving it is tied to the task text.
+  - Completion comes from provider hooks or notify events, never from silence or exit codes. You confirm each stage.
+  - Runs are queued (one at a time by default, up to 4), stream to the browser with the token in a header, and stop independently.
+  - `npm install` is now required for agent terminals (`node-pty`). The prompt editor works without it.
+  - Antigravity stays prompt-only. See `docs/live-verification.md` for which providers were checked live.
 - Kanban (PB-01): seven fixed stages from To Do to Done, with validated moves. Planning is optional. To Do and Done never run agents, and the server enforces this.
   - The app now saves the board in its data folder as versioned JSON, with atomic writes, a backup copy, recovery, and revision checks. The browser board migrates once, keeping exact text and IDs.
   - Projects link to a Git repository (linked worktrees accepted; bare repositories refused) and a chosen local target branch.

@@ -102,9 +102,18 @@ export function trackChild(child) {
   child.once('error', () => ownedChildren.delete(child));
   return child;
 }
+// Terminal sessions (node-pty) are tracked by process ID; each runs in its own session/group.
+const ownedPids = new Set();
+export function trackPid(pid) { if (Number.isInteger(pid) && pid > 0) ownedPids.add(pid); }
+export function untrackPid(pid) { ownedPids.delete(pid); }
+export function killPidGroup(pid, signal = 'SIGTERM') {
+  try { process.kill(process.platform === 'win32' ? pid : -pid, signal); }
+  catch { try { process.kill(pid, signal); } catch {} }
+}
 export function killOwnedProcesses(signal = 'SIGKILL') {
   for (const child of ownedChildren) stopProcess(child, signal);
-  return ownedChildren.size;
+  for (const pid of ownedPids) killPidGroup(pid, signal);
+  return ownedChildren.size + ownedPids.size;
 }
 export async function makeTempDir(prefix) {
   const path = await mkdtemp(join(tmpdir(), prefix));

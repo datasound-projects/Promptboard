@@ -24,12 +24,12 @@ function fakeAuth(overrides = {}) {
     login: async (provider, options) => { log.push(['login', provider, options.method]); options.onUpdate({ authUrl: 'https://auth.example/start' }); return { state: 'signed-in' }; },
     logout: async provider => { log.push(['logout', provider]); return { state: 'signed-out' }; }, ...overrides };
 }
-async function setup(t, { catalogReader = async id => ({ provider: id, ...catalogs[id], note: 'Native model options.' }), storage, prefs = {}, kanban, hash = '', generationResponse, authAdapter = fakeAuth(), runner, dataDir } = {}) {
+async function setup(t, { catalogReader = async id => ({ provider: id, ...catalogs[id], note: 'Native model options.' }), storage, prefs = {}, kanban, hash = '', generationResponse, authAdapter = fakeAuth(), runner, dataDir, executor = 'auto' } = {}) {
   // Every page gets a private board folder unless a test shares one to simulate a reload.
   if (!dataDir) { dataDir = await mkdtemp(join(tmpdir(), 'pb-ui-')); t.after(() => rm(dataDir, { recursive: true, force: true })); }
   const calls = [];
   const requests = [];
-  const app = await startServer({ port: 0, dataDir, authAdapter, detector: async () => Object.keys(catalogs).map(id => ({ id, available: true })), catalogReader,
+  const app = await startServer({ port: 0, dataDir, executor, authAdapter, detector: async () => Object.keys(catalogs).map(id => ({ id, available: true })), catalogReader,
     runner: runner ? async request => { calls.push(request); return runner(request); } : async request => { calls.push(request); return { text: request.prompt.includes('prose in Polish') ? 'Dodaj test.' : request.prompt.includes('prose in German') ? 'Füge einen Test hinzu.' : 'Add a test.', reportedModels: ['actual-model'], durationMs: 3 }; } });
   const dom = new JSDOM(await readFile(new URL('../public/index.html', import.meta.url), 'utf8'), { url: app.url + hash, runScripts: 'outside-only' });
   const win = dom.window;
@@ -725,8 +725,9 @@ test('a linked repository enables stage moves; invalid folders explain the probl
   assert.equal(board.projects[0].tasks[0].column, 'executing');
   assert.equal(board.projects[0].tasks[0].workspace, null);
   assert.deepEqual(board.runs, []);
-  assert.equal(board.execution.available, false);
-  assert.match($('#kanban-columns [data-column="executing"] .kanban-column-note').textContent, /runs not active yet/);
+  assert.equal(board.execution.available, true);
+  assert.match($('#kanban-columns [data-column="executing"] .kanban-column-note').textContent, /runs start only when you confirm/);
+  assert.match($('#kanban-columns [data-column="code_review"] .kanban-column-note').textContent, /later version/);
 });
 
 test('backups: export round-trips, import validates, asks before replacing, and keeps imported settings pending', async t => {
@@ -868,4 +869,18 @@ test('the Kanban page shows its own mascot next to the heading', async t => {
   const served = await fetch(new URL('/kanban-mascot.png', $('#kanban-view').ownerDocument.location.href));
   assert.equal(served.status, 200);
   assert.equal(served.headers.get('content-type'), 'image/png');
+});
+
+test('missing agent terminal support shows setup steps; the prompt editor still works', async t => {
+  const executor = { describe: async () => ({ available: false, setupMessage: 'Agent terminals need the node-pty package. Run npm install in the Promptboard folder, then restart.' }), activeCount: () => 0 };
+  const ctx = await setup(t, { executor, generationResponse: { prompt: 'Add a test.', verification: report() } });
+  const { $, submit, requests } = ctx;
+  $('#prompt-input').value = 'Still works.'; submit();
+  await until(() => requests.length === 1 && !$('#generate-button').disabled, 'prompt result');
+  assert.equal($('#prompt-output').textContent, 'Add a test.');
+  await goTo(ctx, '#/kanban');
+  assert.equal($('#execution-status').hidden, false);
+  assert.match($('#execution-status').textContent, /Agent runs are unavailable\. Agent terminals need the node-pty package\. Run npm install/);
+  await newProject(ctx, 'Setup');
+  assert.match($('#kanban-columns [data-column="executing"] .kanban-column-note').textContent, /not set up/);
 });

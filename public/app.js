@@ -1029,6 +1029,9 @@ function renderBoard() {
   $('#board-empty-note').textContent = project ? 'Choose New card, or add a generated prompt from the Compose page. New cards start in To Do.' : 'Each project gets its own board, from To Do to Done.';
   $('#empty-prompt-link').hidden = !project;
   $('#kanban-columns').hidden = !project;
+  // Missing terminal support never blocks the board or the prompt editor; it only disables runs.
+  $('#execution-status').hidden = !board || board.execution?.available !== false || !board.execution.setupMessage;
+  $('#execution-status').textContent = board?.execution?.setupMessage ? `Agent runs are unavailable. ${board.execution.setupMessage}` : '';
   $('#kanban-columns').replaceChildren(...(project ? board.columns.map(column => renderColumn(column, tasks.filter(task => task.column === column.id))) : []));
   renderRepository(project);
 }
@@ -1046,7 +1049,8 @@ function renderColumn(column, tasks) {
   const header = document.createElement('div');
   header.className = 'kanban-column-heading';
   header.append(heading, count);
-  const note = paragraph(column.agent ? 'Agent stage · runs not active yet' : column.id === 'todo' ? 'Never runs an agent' : 'Finished · never runs an agent', 'kanban-column-note');
+  const note = paragraph(!column.agent ? (column.id === 'todo' ? 'Never runs an agent' : 'Finished · never runs an agent')
+    : !board.execution?.available ? 'Agent stage · agent terminals not set up' : ['planning', 'executing'].includes(column.id) ? 'Agent stage · runs start only when you confirm' : 'Agent stage · runs arrive in a later version', 'kanban-column-note');
   const list = document.createElement('ol');
   list.className = 'kanban-cards';
   list.dataset.column = column.id;

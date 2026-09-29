@@ -37,7 +37,7 @@ The writing rules draw on **ASD-STE100 Simplified Technical English**: short sen
 
 ### 1. Install the requirements
 
-You need **Node.js 22 or later** and at least one supported CLI.
+You need **Node.js 22 or later**, **Git**, and at least one supported CLI.
 
 | CLI | Official setup |
 | --- | --- |
@@ -52,15 +52,18 @@ Sign in to your chosen CLI and confirm that it works in your terminal.
 
 Download and extract the release ZIP, then open a terminal in the extracted folder.
 
-### 3. Start the app
+### 3. Install and start the app
 
 ```bash
+npm install
 npm start
 ```
 
 Open **http://127.0.0.1:4318** if your browser does not open automatically.
 
-**No `npm install` is needed to run the app.** No separate API key is required by the app. Your CLI’s access requirements, usage limits, and charges still apply.
+`npm install` adds the agent-terminal packages (`node-pty`, `@xterm/xterm`). Prompt engineering works without them; agent runs on the Kanban board need them. On macOS and Windows, `node-pty` ships prebuilt binaries. On Linux it is compiled during install and needs `python3`, `make`, and a C++ compiler. If it cannot be installed, the board says so and the rest of the app keeps working.
+
+No separate API key is required by the app. Your CLI’s access requirements, usage limits, and charges still apply.
 
 Keep the app and CLI in the same environment. If your Windows CLI setup requires WSL2, run both inside WSL2.
 

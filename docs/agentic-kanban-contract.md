@@ -1,6 +1,6 @@
-# Agentic Kanban contract (PB-01)
+# Agentic Kanban contract
 
-This file records the board's state model, safety rules, persistence format, and service interfaces. PB-01 builds the foundation. **No agent runs yet:** no executor is registered, so every run request is refused before any worktree is created. PB-02 to PB-04 add execution on top of these rules without weakening them.
+This file records the board's state model, safety rules, persistence format, and service interfaces. PB-01 built the foundation. PB-02 added agent execution for Planning and Executing (see [Agent execution](#agent-execution-pb-02)). Later stages keep these rules.
 
 Kangentic was used as a behavior reference only. No code was copied.
 
@@ -9,11 +9,11 @@ Kangentic was used as a behavior reference only. No code was copied.
 | ID | Title | Runs an agent |
 | --- | --- | --- |
 | `todo` | To Do | Never |
-| `planning` | Planning | Yes (PB-02) |
-| `executing` | Executing | Yes (PB-02) |
-| `code_review` | Code Review | Yes (PB-02) |
-| `testing` | Testing | Yes (PB-02) |
-| `merge` | Merge | Yes (PB-02) |
+| `planning` | Planning | Yes, after explicit consent |
+| `executing` | Executing | Yes, after explicit consent |
+| `code_review` | Code Review | PB-04 |
+| `testing` | Testing | PB-04 (commands) |
+| `merge` | Merge | Never (Git operation, PB-04) |
 | `done` | Done | Never |
 
 The columns are fixed in `src/board.mjs` (`COLUMNS`). **The backend enforces "never"**: `requestRun` rejects `todo` and `done` with `STAGE_NOT_RUNNABLE`, whatever the UI shows.
@@ -42,7 +42,7 @@ A card cannot leave To Do until its project has a linked repository. A card with
 - Writes go through one queue (`Store.update`). Each write goes to a temporary file, is fsynced, the previous good file is copied to `state.json.bak`, and the temporary file is renamed over `state.json`. A failed change or write leaves memory and disk unchanged (`STATE_WRITE_FAILED`).
 - Recovery: an unreadable `state.json` is renamed `state.corrupt-<time>.json`, and the backup is loaded. If there is no good backup, the board starts empty and the damaged file is kept. The UI reports both cases. A file from a newer version is refused and left untouched.
 - Revisions: projects and tasks carry `revision`. Every change sends `expectedRevision`; a stale value returns `409 REVISION_CONFLICT`. The global `revision` counts saved writes.
-- Logs and artifacts are not stored in `state.json`. Runs carry a relative `logDir` (`runs/<taskId>`) for PB-02.
+- Logs and artifacts are not stored in `state.json`. Each run has `artifactsDir` = `runs/<runId>`, holding `prompt.md`, `task-prompt.txt`, `events.jsonl`, `output.log`, and `plan.md` or `last-message.md`.
 - The browser no longer holds the board. It keeps only per-viewer preferences, such as the selected project.
 
 ## Migration, import, export
@@ -81,9 +81,62 @@ HTTP routes (`src/server.mjs`) take IDs only and resolve every execution path on
 
 `GET /api/board` · `GET /api/board/export` · `POST /api/board/migrate` · `POST /api/board/import` · `POST /api/projects` · `PATCH|DELETE /api/projects/:id` · `POST /api/projects/:id/repository` · `GET /api/projects/:id/branches` · `POST /api/projects/:id/target-branch` · `POST /api/projects/:id/confirm-import` · `POST /api/repository/validate` · `POST /api/tasks` · `PATCH|DELETE /api/tasks/:id` · `POST /api/tasks/:id/move` · `POST /api/tasks/:id/duplicate` · `POST /api/tasks/:id/runs` · `DELETE /api/tasks/:id/worktree`
 
+## Agent execution (PB-02)
+
+Execution is a separate subsystem (`src/agents.mjs`, `src/supervisor.mjs`, `src/agent-hook.mjs`). The restricted prompt adapters in `src/providers.mjs` are unchanged and still used only for prompt generation.
+
+**Adapters and capabilities.** These come from the installed CLIs' documented options and were checked live where possible (see `docs/live-verification.md`).
+
+| Provider | Planning | Execution | Lifecycle events | Waiting events |
+| --- | --- | --- | --- | --- |
+| Claude Code | `--permission-mode plan`, `--tools Read,Grep,Glob`, `--disallowedTools Edit,Write,NotebookEdit,Bash,ExitPlanMode`, no MCP | `--permission-mode acceptEdits` (default) or `default` | Hooks via `--settings`, exec form (no shell) | `PermissionRequest`, permission notifications |
+| Codex CLI | `--sandbox read-only --ask-for-approval never` (no plan flag; the sandbox is the boundary) | `--sandbox workspace-write --ask-for-approval on-request` | `notify` program (argv array): `agent-turn-complete`; title-only turns ignored | None (approvals are visible in the terminal only) |
+| Gemini CLI | `--approval-mode plan` (`experimental.plan` set for the session) plus a deny policy for write, shell, plan exit, skills, and MCP | `--approval-mode auto_edit` (default) or `default` | Hooks from a merged copy of the system settings (`GEMINI_CLI_SYSTEM_SETTINGS_PATH`) | `Notification` `ToolPermission` |
+| Antigravity CLI | Not enabled | Not enabled | Not verified | — |
+
+`bypassPermissions`, `--dangerously-*`, `yolo`, and `danger-full-access` are never used. Unsupported combinations return `STAGE_UNSUPPORTED_BY_PROVIDER` or `INVALID_PERMISSION_MODE`; the adapter never substitutes a broader mode.
+
+**Input.** The first message is the stage instructions plus the exact card text, in markers, plus the approved plan for Executing. It is one argv element up to 100,000 bytes. Longer messages are typed into the terminal with bracketed paste. Gemini receives the message JSON-encoded with `@` escaped, as the prompt adapter does. Task text never reaches a shell. The only shell string is Gemini's hook command, built from app-controlled paths with POSIX single-quote escaping.
+
+**Runs.** `requestRun(taskId, { stage, consent: true, config })` needs `consent: true`, allows one active run per task, and records:
+- the configuration snapshot (`provider`, `model`, `effort`, `permissionMode`);
+- `promptRevision` (the task's `contentRevision`);
+- `workspacePath`, `branch`, and `planRunId`;
+- timestamps and the outcome fields `errorCode`, `exitCode`, and `reason`.
+
+Code Review, Testing, and Merge runs return `STAGE_NOT_IMPLEMENTED` until PB-04.
+
+**Supervisor.**
+- **Queue:** runs start in FIFO order, up to `settings.maxConcurrentRuns` (default 1, at most 4). Requests return at once.
+- **Sessions:** each session is a `node-pty` process in the task worktree, in its own process group, tracked for shutdown.
+- **Output:** each chunk gets an ordered sequence number. It goes to a 1 MiB ring buffer (the reconnect scrollback) and to a 20 MiB `output.log`.
+- **Streaming:** `GET /api/runs/:id/stream?after=N` returns NDJSON with the token in a header, never the URL. A slow reader pauses on `drain`; if it falls behind the ring buffer, it gets a `gap` marker instead of unbounded memory use.
+- **Separation:** prompt generation keeps its single-job rule, and board runs never use it. Cancelling one run signals only that run's process group. Sign-in changes are refused while agent sessions run.
+
+**Lifecycle.** Only provider events change a run's state:
+- A finished turn → `waiting_for_input`. The last message is saved as `plan.md` (Planning) or `last-message.md` (Executing).
+- A permission prompt → `waiting_for_input`, with a reason.
+- A structured failure → `failed`, with a stable code. There is no automatic retry.
+
+A stage becomes `succeeded` only through `POST /api/runs/:id/confirm` after a finished turn. For Planning, that also records the plan approval. Process exit is never success: an exit without confirmation becomes `interrupted`. If no event arrives within 10 seconds, the run keeps `running` and says the CLI may be asking a startup question, such as folder trust. The hook bridge writes only lifecycle fields; it never prints output that could steer the agent.
+
+**Plan approval.** Plan approval is stored as `task.planApproval = { runId, contentRevision }`. Editing the title or prompt increments `contentRevision`, so the old approval no longer applies and later Executing runs get no plan. Planning is optional: Executing can start directly from To Do.
+
+**Endpoints.** These need the page token, local Host and Origin, and bounded payloads (input 64 KiB, resize 20–500 × 5–300):
+- `GET /api/runs/:id`, `/stream`, `/plan`, `/last-message`, `/output`
+- `POST /api/runs/:id/input`, `/resize`, `/cancel` (needs `confirm: true`), `/confirm`
+- `PATCH /api/settings`
+
+**Recovery and shutdown.**
+- Restart marks unfinished runs `interrupted` and replays nothing.
+- Shutdown stops owned sessions (TERM, then KILL after a bounded wait), records them `interrupted`, ends streams, and then releases the port.
+- Worktrees and artifacts are kept after failures.
+- A card with an active run cannot change column until the run is stopped (`RUN_ACTIVE`).
+
+**Setup.** `node-pty` is an optional dependency. If it is missing, `execution.available` is false and `setupMessage` explains how to install it. The prompt editor and board keep working. On macOS, the app restores the execute bit on node-pty's prebuilt `spawn-helper` if an install lost it.
+
 ## Integration points for later work
 
-- **PB-02 (execution):** pass `executor` to `startServer`/`Board`. `executor.start({ run, task, workspace })` must launch the CLI in `workspace.path` only, write logs under `<dataDir>/runs/<taskId>/`, and report progress through `updateRun`. It must keep the prompt-generation restrictions: no permission-bypass flags and no added tools, shell, MCP, or network access beyond what PB-02 explicitly specifies. Cancellation and shutdown must use the owned-process cleanup in `providers.mjs`.
 - **PB-03 (review, testing, merge):** these stages reuse the task worktree (`WORKSPACE_REQUIRED` until one exists). Merging into the target branch must be an explicit, confirmed action that never force-updates a branch.
 - **PB-04 (automation):** `project.automation.autoRun` exists and is always off. Any automatic start must still go through `requestRun` and its checks, and must never fire on import, migration, reload, or card creation.
 
@@ -92,4 +145,6 @@ HTTP routes (`src/server.mjs`) take IDs only and resolve every execution path on
 - A crash between saving the ownership record and `git worktree add` finishing leaves `status: "creating"`, reported as `WORKTREE_INCOMPLETE`. It is not fixed automatically; check `git worktree list`.
 - The transition history keeps the last 100 moves per task.
 - The locks work within one app process. Run one Promptboard instance per data folder.
+- Codex approval prompts and CLI startup prompts (folder trust, hook review) have no lifecycle event; the user answers them in the terminal.
+- Gemini CLI plan and turn events were not verified against a live account (see `docs/live-verification.md`).
 - Windows paths and Git behavior are not tested.

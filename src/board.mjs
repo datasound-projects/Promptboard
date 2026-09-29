@@ -24,7 +24,12 @@ export const COLUMNS = Object.freeze([
 const COLUMN_IDS = COLUMNS.map(column => column.id);
 export const RUN_STATUSES = Object.freeze(['queued', 'running', 'waiting_for_input', 'succeeded', 'failed', 'cancelled', 'interrupted']);
 export const ACTIVE_RUN_STATUSES = Object.freeze(['queued', 'running', 'waiting_for_input']);
-const RUN_NEXT = { queued: ['running', 'cancelled', 'failed'], running: ['waiting_for_input', 'succeeded', 'failed', 'cancelled'], waiting_for_input: ['running', 'cancelled', 'failed'] };
+// Succeeded is reached only through an explicit user confirmation (supervisor.confirm).
+const RUN_NEXT = { queued: ['running', 'cancelled', 'failed', 'interrupted'], running: ['waiting_for_input', 'succeeded', 'failed', 'cancelled', 'interrupted'],
+  waiting_for_input: ['running', 'succeeded', 'cancelled', 'failed', 'interrupted'] };
+// Stages the PB-02 executor implements. Code Review, Testing, and Merge arrive in PB-04.
+const EXECUTABLE_STAGES = new Set(['planning', 'executing']);
+const RUN_FIELDS = ['startedAt', 'endedAt', 'providerSessionId', 'waitingReason', 'errorCode', 'exitCode', 'hasPlan', 'planExcerpt', 'turns', 'lifecycle'];
 // Stages whose first authorized run may create the task branch and worktree.
 const WORKSPACE_STAGES = new Set(['planning', 'executing']);
 
@@ -112,7 +117,8 @@ function newProject({ id = randomUUID(), name, createdAt = Date.now() }) {
   return { id, name, createdAt, revision: 1, repository: null, targetBranch: null, automation: { autoRun: false }, pendingImport: null, tasks: [] };
 }
 function newTask({ id = randomUUID(), title, prompt, source = null, checksOutdated = false, createdAt = Date.now(), updatedAt = createdAt, column = 'todo' }) {
-  return { id, title, prompt, source, checksOutdated, createdAt, updatedAt, column, revision: 1, workspace: null, retainedBranches: [], transitions: [] };
+  // contentRevision changes only when the title or prompt changes; plan approvals refer to it.
+  return { id, title, prompt, source, checksOutdated, createdAt, updatedAt, column, revision: 1, contentRevision: 1, planApproval: null, workspace: null, retainedBranches: [], transitions: [] };
 }
 
 /** Allowed column moves. Reordering inside a column is always allowed. */
@@ -171,7 +177,7 @@ export class Board {
   async view() {
     const state = await this.state();
     return { revision: state.revision, columns: COLUMNS, settings: state.settings, projects: state.projects, runs: state.runs.slice(-500),
-      execution: { available: Boolean(this.executor) }, recovery: this.store.recovery };
+      execution: this.executor?.describe ? await this.executor.describe() : { available: Boolean(this.executor) }, recovery: this.store.recovery };
   }
 
   #project(state, id) {
@@ -312,7 +318,8 @@ export class Board {
       const nextPrompt = prompt === undefined ? task.prompt : promptText(prompt, 'The task');
       if (nextTitle === task.title && nextPrompt === task.prompt) return { task, changed: false };
       // Checks from generation apply only to the original text.
-      Object.assign(task, { title: nextTitle, prompt: nextPrompt, updatedAt: Date.now(), checksOutdated: task.checksOutdated || Boolean(task.source), revision: task.revision + 1 });
+      // A content change also makes any earlier plan approval stale.
+      Object.assign(task, { title: nextTitle, prompt: nextPrompt, updatedAt: Date.now(), checksOutdated: task.checksOutdated || Boolean(task.source), revision: task.revision + 1, contentRevision: (task.contentRevision ?? 1) + 1 });
       return { task, changed: true };
     });
   }
@@ -531,13 +538,14 @@ export class Board {
     });
   }
 
-  // ---- Runs (records only; PB-02 supplies the executor) ----
+  // ---- Runs ----
 
   /**
-   * Authorize a run of the task's current stage. To Do and Done never run. The first
-   * Planning or Executing run allocates the task worktree; later stages reuse it.
+   * Authorize a run of the task's current stage. To Do and Done never run. A run needs
+   * explicit consent. The first Planning or Executing run allocates the task worktree;
+   * later runs reuse it. Duplicate requests are serialized per task and get one run.
    */
-  requestRun(taskId, { stage }) {
+  requestRun(taskId, { stage, consent = false, config = {} } = {}) {
     return this.#locked(`run:${taskId}`, async () => {
       const state = await this.state();
       const { project, task } = this.#task(state, taskId);
@@ -546,32 +554,71 @@ export class Board {
       if (!column.agent) throw new BoardError(`${column.title} never runs an agent.`, 'STAGE_NOT_RUNNABLE');
       if (task.column !== stage) throw conflict(`The card is in ${title(task.column)}, not ${column.title}.`, 'STAGE_MISMATCH');
       if (this.#activeRun(state, taskId)) throw conflict('This card already has an active run.', 'RUN_ACTIVE');
+      if (consent !== true) throw new BoardError('Starting an agent needs your explicit confirmation.', 'CONSENT_REQUIRED');
       if (!project.repository) throw new BoardError('Link this project to a Git repository first.', 'REPOSITORY_REQUIRED', 409);
       if (!project.targetBranch) throw new BoardError('Choose the local target branch first.', 'TARGET_BRANCH_REQUIRED', 409);
-      if (!this.executor) throw new BoardError('Agent execution is not available yet. Cards can be planned and moved, but no agent runs.', 'EXECUTION_UNAVAILABLE', 503);
+      if (!this.executor) throw new BoardError('Agent execution is not available. Cards can be planned and moved, but no agent runs.', 'EXECUTION_UNAVAILABLE', 503);
+      if (!EXECUTABLE_STAGES.has(stage)) throw conflict(`${column.title} runs are not available yet.`, 'STAGE_NOT_IMPLEMENTED');
+      const resolved = await this.executor.validate({ stage, config });
       if (!WORKSPACE_STAGES.has(stage) && task.workspace?.status !== 'ready') throw new BoardError('Run Planning or Executing first to create the task worktree.', 'WORKSPACE_REQUIRED', 409);
       const workspace = await this.ensureTaskWorktree(taskId);
+      const plan = stage === 'executing' ? this.#approvedPlan(state, task) : null;
       const run = await this.store.update(draft => {
         if (this.#activeRun(draft, taskId)) throw conflict('This card already has an active run.', 'RUN_ACTIVE');
         const now = Date.now();
-        const record = { id: randomUUID(), taskId, projectId: project.id, stage, status: 'queued', createdAt: now, updatedAt: now, logDir: join('runs', taskId) };
+        const id = randomUUID();
+        const record = { id, taskId, projectId: project.id, stage, status: 'queued', createdAt: now, updatedAt: now,
+          promptRevision: task.contentRevision ?? 1, config: resolved, trigger: 'user', workspacePath: workspace.path, branch: workspace.branch,
+          planRunId: plan?.runId || null, artifactsDir: join('runs', id), turns: 0 };
         draft.runs.push(record);
         return record;
       });
-      await this.executor.start({ run, task: { id: task.id, title: task.title, prompt: task.prompt }, workspace });
+      await this.executor.start({ run, task: { id: task.id, title: task.title, prompt: task.prompt }, workspace, planRunId: plan?.runId || null });
       return run;
     });
   }
 
-  /** Executors report status changes here. Only forward transitions are accepted. */
-  async updateRun(runId, { status, reason = '' }) {
+  #approvedPlan(state, task) {
+    const approval = task.planApproval;
+    // An approval counts only for the task text it was given for.
+    if (!approval || approval.contentRevision !== (task.contentRevision ?? 1)) return null;
+    return state.runs.find(run => run.id === approval.runId && run.hasPlan) ? approval : null;
+  }
+
+  /** Record plan approval against the current task content. */
+  async approvePlan(taskId, { runId }) {
+    return this.store.update(state => {
+      const { task } = this.#task(state, taskId);
+      const run = state.runs.find(item => item.id === runId && item.taskId === taskId && item.stage === 'planning');
+      if (!run?.hasPlan) throw new BoardError('This planning run has no plan to approve.', 'PLAN_MISSING', 409);
+      if (run.promptRevision !== (task.contentRevision ?? 1)) throw conflict('The task changed after this plan was written. Run Planning again.', 'PLAN_STALE');
+      task.planApproval = { runId, contentRevision: task.contentRevision ?? 1, approvedAt: Date.now() };
+      task.revision++;
+      return task;
+    });
+  }
+
+  /** The supervisor reports status and lifecycle facts here. Only allowed transitions apply. */
+  async updateRun(runId, { status, reason = '', ...fields } = {}) {
     return this.store.update(state => {
       const run = state.runs.find(item => item.id === runId);
       if (!run) throw new BoardError('This run does not exist.', 'NOT_FOUND', 404);
-      if (!RUN_NEXT[run.status]?.includes(status)) throw conflict(`A ${run.status} run cannot become ${status}.`, 'RUN_TRANSITION_NOT_ALLOWED');
-      Object.assign(run, { status, updatedAt: Date.now(), ...(reason ? { reason: clip(reason, 500) } : {}) });
+      if (status && status !== run.status && !RUN_NEXT[run.status]?.includes(status)) throw conflict(`A ${run.status} run cannot become ${status}.`, 'RUN_TRANSITION_NOT_ALLOWED');
+      for (const key of RUN_FIELDS) if (fields[key] !== undefined) run[key] = typeof fields[key] === 'string' ? clip(fields[key], key === 'planExcerpt' ? 4000 : 500) : fields[key];
+      Object.assign(run, { ...(status ? { status } : {}), updatedAt: Date.now(), ...(reason ? { reason: clip(reason, 500) } : {}) });
       return run;
     });
+  }
+
+  async setSettings({ maxConcurrentRuns }) {
+    if (!Number.isInteger(maxConcurrentRuns) || maxConcurrentRuns < 1 || maxConcurrentRuns > 4) throw new BoardError('Allow 1 to 4 agent sessions at the same time.', 'INVALID_INPUT');
+    return this.store.update(state => { state.settings = { ...state.settings, maxConcurrentRuns }; return state.settings; });
+  }
+
+  async run(runId) {
+    const run = (await this.state()).runs.find(item => item.id === runId);
+    if (!run) throw new BoardError('This run does not exist.', 'NOT_FOUND', 404);
+    return run;
   }
 }
 

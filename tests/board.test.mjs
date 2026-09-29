@@ -160,42 +160,68 @@ test('worktree cleanup refuses dirty and unowned worktrees and never deletes the
   assert.equal(run(root, 'branch', '--list', workspace.branch).replace('*', '').trim(), workspace.branch);
 });
 
-test('runs: To Do and Done never run; without an executor nothing is created; stages reuse one worktree', { skip: process.platform === 'win32' }, async t => {
+test('runs: To Do and Done never run; consent is required; without an executor nothing is created; runs reuse one worktree', { skip: process.platform === 'win32' }, async t => {
   const inactive = await linkedBoard(t);
   const idle = await inactive.board.createTask({ projectId: inactive.projectId, title: 'Idle', prompt: 'x' });
-  await assert.rejects(inactive.board.requestRun(idle.id, { stage: 'todo' }), { code: 'STAGE_NOT_RUNNABLE' });
+  await assert.rejects(inactive.board.requestRun(idle.id, { stage: 'todo', consent: true }), { code: 'STAGE_NOT_RUNNABLE' });
   await inactive.board.moveTask(idle.id, { column: 'planning', expectedRevision: 1 });
-  await assert.rejects(inactive.board.requestRun(idle.id, { stage: 'planning' }), { code: 'EXECUTION_UNAVAILABLE' });
+  await assert.rejects(inactive.board.requestRun(idle.id, { stage: 'planning', consent: true }), { code: 'EXECUTION_UNAVAILABLE' });
   assert.equal((await taskIn(inactive.board, idle.id)).workspace, null, 'No worktree without an executor.');
   assert.deepEqual((await inactive.board.view()).runs, []);
 
   const started = [];
-  const { board, projectId, dataDir } = await linkedBoard(t, { executor: { start: async context => { started.push(context); } } });
+  const executor = { validate: async ({ config }) => ({ provider: 'claude', model: '', effort: '', permissionMode: 'acceptEdits', ...config }), start: async context => { started.push(context); } };
+  const { board, projectId, dataDir } = await linkedBoard(t, { executor });
   const task = await board.createTask({ projectId, title: 'Feature', prompt: 'Build it.' });
-  await assert.rejects(board.requestRun(task.id, { stage: 'todo' }), { code: 'STAGE_NOT_RUNNABLE' });
+  await assert.rejects(board.requestRun(task.id, { stage: 'todo', consent: true }), { code: 'STAGE_NOT_RUNNABLE' });
   let revision = (await taskIn(board, task.id)).revision;
   await board.moveTask(task.id, { column: 'executing', expectedRevision: revision }); // Planning is optional.
-  await assert.rejects(board.requestRun(task.id, { stage: 'planning' }), { code: 'STAGE_MISMATCH' });
-  const first = await board.requestRun(task.id, { stage: 'executing' });
+  await assert.rejects(board.requestRun(task.id, { stage: 'planning', consent: true }), { code: 'STAGE_MISMATCH' });
+  await assert.rejects(board.requestRun(task.id, { stage: 'executing' }), { code: 'CONSENT_REQUIRED' });
+  assert.equal((await taskIn(board, task.id)).workspace, null, 'A refused request creates nothing.');
+  // Duplicate requests create one run.
+  const results = await Promise.allSettled([1, 2, 3].map(() => board.requestRun(task.id, { stage: 'executing', consent: true })));
+  assert.equal(results.filter(result => result.status === 'fulfilled').length, 1);
+  assert.ok(results.filter(result => result.status === 'rejected').every(result => result.reason.code === 'RUN_ACTIVE'));
+  const first = results.find(result => result.status === 'fulfilled').value;
   assert.equal(first.status, 'queued');
-  await assert.rejects(board.requestRun(task.id, { stage: 'executing' }), { code: 'RUN_ACTIVE' });
+  assert.equal(first.promptRevision, 1);
+  assert.equal(first.workspacePath, started[0].workspace.path);
   revision = (await taskIn(board, task.id)).revision;
   await assert.rejects(board.moveTask(task.id, { column: 'code_review', expectedRevision: revision }), { code: 'RUN_ACTIVE' });
   await board.updateRun(first.id, { status: 'running' });
   await assert.rejects(board.updateRun(first.id, { status: 'queued' }), { code: 'RUN_TRANSITION_NOT_ALLOWED' });
   await board.updateRun(first.id, { status: 'succeeded' });
-  const moved = await board.moveTask(task.id, { column: 'code_review', expectedRevision: (await taskIn(board, task.id)).revision });
-  assert.equal(moved.transitions.at(-1).to, 'code_review');
-  const second = await board.requestRun(task.id, { stage: 'code_review' });
+  const second = await board.requestRun(task.id, { stage: 'executing', consent: true });
   assert.equal(started.length, 2);
   assert.equal(started[1].workspace.path, started[0].workspace.path);
   assert.equal(started[1].workspace.branch, started[0].workspace.branch);
-  await assert.rejects(board.moveTask(task.id, { column: 'testing', expectedRevision: (await taskIn(board, task.id)).revision }), { code: 'RUN_ACTIVE' });
+  await board.updateRun(second.id, { status: 'cancelled' });
+  await board.moveTask(task.id, { column: 'code_review', expectedRevision: (await taskIn(board, task.id)).revision });
+  await assert.rejects(board.requestRun(task.id, { stage: 'code_review', consent: true }), { code: 'STAGE_NOT_IMPLEMENTED' });
   // A restart marks active runs interrupted and never calls the executor again.
+  const third = await board.store.update(state => { const run = { ...state.runs[0], id: 'active-run', status: 'running' }; state.runs.push(run); return run; });
   const restarted = new Board({ dataDir, executor: { start: () => assert.fail('A restart must not start runs.') } });
   const runs = (await restarted.view()).runs;
-  assert.equal(runs.find(item => item.id === second.id).status, 'interrupted');
+  assert.equal(runs.find(item => item.id === third.id).status, 'interrupted');
   assert.equal(runs.find(item => item.id === first.id).status, 'succeeded');
+});
+
+test('plan approval is tied to the task text; editing the task makes it stale', async t => {
+  const dataDir = await temp(t, 'pb-data-');
+  const board = new Board({ dataDir });
+  const project = await board.createProject({ name: 'Plans' });
+  const task = await board.createTask({ projectId: project.id, title: 'T', prompt: 'Original.' });
+  await board.store.update(state => { state.runs.push({ id: 'plan-1', taskId: task.id, projectId: project.id, stage: 'planning', status: 'waiting_for_input', promptRevision: 1, hasPlan: true, turns: 1 }); });
+  await assert.rejects(board.approvePlan(task.id, { runId: 'missing' }), { code: 'PLAN_MISSING' });
+  const approved = await board.approvePlan(task.id, { runId: 'plan-1' });
+  assert.deepEqual([approved.planApproval.runId, approved.planApproval.contentRevision], ['plan-1', 1]);
+  const moved = await board.updateTask(task.id, { title: 'T', prompt: 'Original.', expectedRevision: approved.revision });
+  assert.equal(moved.changed, false);
+  const edited = await board.updateTask(task.id, { prompt: 'Changed.', expectedRevision: approved.revision });
+  assert.equal(edited.task.contentRevision, 2);
+  assert.notEqual(edited.task.planApproval.contentRevision, edited.task.contentRevision, 'The old approval no longer matches the task text.');
+  await assert.rejects(board.approvePlan(task.id, { runId: 'plan-1' }), { code: 'PLAN_STALE' });
 });
 
 test('card moves are validated, need a linked project, use revisions, and never create runs', async t => {
@@ -274,7 +300,7 @@ test('import keeps execution inactive and waits for confirmation of paths and au
 test('board HTTP routes need the page token, resolve paths on the server, and never start agents', { skip: process.platform === 'win32' }, async t => {
   const dataDir = await temp(t, 'pb-data-');
   const root = await repo(t);
-  const app = await startServer({ port: 0, dataDir, detector: async () => [] });
+  const app = await startServer({ port: 0, dataDir, detector: async () => [], executor: null });
   t.after(() => app.close());
   const { token } = await fetch(app.url + '/api/session').then(r => r.json());
   const call = (method, path, body) => fetch(app.url + path, { method, headers: { 'x-ste-token': token, 'content-type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) }).then(async r => ({ status: r.status, data: await r.json() }));
@@ -297,7 +323,7 @@ test('board HTTP routes need the page token, resolve paths on the server, and ne
   assert.equal(moved.data.task.column, 'executing');
   const stale = await call('POST', `/api/tasks/${task.id}/move`, { column: 'todo', expectedRevision: 1 });
   assert.equal(stale.status, 409);
-  const refused = await call('POST', `/api/tasks/${task.id}/runs`, { stage: 'executing' });
+  const refused = await call('POST', `/api/tasks/${task.id}/runs`, { stage: 'executing', consent: true });
   assert.equal(refused.status, 503);
   assert.equal(refused.data.code, 'EXECUTION_UNAVAILABLE');
   const view = (await call('GET', '/api/board')).data.board;
