@@ -1936,6 +1936,7 @@ function renderWorkspace(current) {
   $('#workspace-count').textContent = String(projects.length).padStart(2, '0');
   $('#workspace-empty').hidden = projects.length > 0;
   $('#workspace-new').disabled = !board;
+  $('#workspace-open').disabled = !board;
   $('#workspace-list').replaceChildren(...projects.map(project => {
     const ids = new Set(project.tasks.map(task => task.id));
     const live = (board.runs || []).filter(run => ids.has(run.taskId) && RUN_LIVE.includes(run.status));
@@ -2197,6 +2198,52 @@ function selectProject(id) {
 }
 $('#project-select').addEventListener('change', () => selectProject($('#project-select').value));
 $('#workspace-new').addEventListener('click', () => { setSidebar(false); openProjectForm('new'); });
+
+// Open a folder as a project. The system folder picker supplies the absolute path (a browser page
+// cannot); without a picker, the path is typed. A folder that a project already uses is selected.
+async function pickFolder() {
+  try { const result = await boardCall('POST', '/api/folder/choose', {}, 11 * 60 * 1000); return result.cancelled ? null : result.path; }
+  catch (error) {
+    if (error.code === 'PICKER_UNAVAILABLE') return undefined;
+    showBoardError(error);
+    return null;
+  }
+}
+function uniqueProjectName(base) {
+  const name = (base || 'Project').slice(0, 72);
+  for (let n = 1; ; n++) { const candidate = n === 1 ? name : `${name} ${n}`; if (!projectNameError(candidate)) return candidate; }
+}
+async function openFolderAsProject(path) {
+  path = String(path || '').trim();
+  const pathError = message => { $('#workspace-path-form').hidden = false; $('#workspace-path').value = path; $('#workspace-path-error').textContent = message; $('#workspace-path-error').hidden = false; $('#workspace-path').focus(); };
+  if (!path.startsWith('/') && !/^[A-Za-z]:[\\/]/.test(path)) { pathError('Enter the absolute path of the project folder.'); return; }
+  const clean = path.length > 1 ? path.replace(/[\\/]+$/, '') : path;
+  const existing = board.projects.find(project => project.repository && [project.repository.path, project.repository.root].map(item => item.replace(/[\\/]+$/, '')).includes(clean));
+  $('#workspace-path-form').hidden = true;
+  setSidebar(false);
+  if (existing) { selectProject(existing.id); announce(`“${existing.name}” already uses this folder. Showing its board.`); return; }
+  let created;
+  try { created = (await boardCall('POST', '/api/projects', { name: uniqueProjectName(clean.split(/[\\/]/).pop()) })).project; }
+  catch (error) { pathError(error.message); return; }
+  selectProject(created.id);
+  setProjectCollapsed(false, false);
+  $('#repo-path').value = clean;
+  await linkRepository(clean);
+  announce(currentProject()?.repository ? `Opened ${clean} as “${created.name}”. Choose the target branch next.` : `Created “${created.name}” for ${clean}. The folder needs Git set up first; see the repository section.`);
+}
+$('#workspace-open').addEventListener('click', async () => {
+  $('#workspace-path-error').hidden = true;
+  const path = await pickFolder();
+  if (path === undefined) { $('#workspace-path-form').hidden = false; $('#workspace-path').focus(); return; }
+  if (path) await openFolderAsProject(path);
+});
+$('#workspace-path-form').addEventListener('submit', event => { event.preventDefault(); openFolderAsProject($('#workspace-path').value); });
+$('#workspace-path-cancel').addEventListener('click', () => { $('#workspace-path-form').hidden = true; $('#workspace-path-error').hidden = true; });
+$('#repo-browse').addEventListener('click', async () => {
+  const path = await pickFolder();
+  if (path === undefined) { repoMessage('This computer has no folder picker Promptboard can use. Type or paste the folder path instead.'); $('#repo-path').focus(); return; }
+  if (path) { $('#repo-path').value = path; linkRepository(path); }
+});
 $('#project-new').addEventListener('click', () => openProjectForm('new'));
 $('#project-rename').addEventListener('click', () => openProjectForm('rename'));
 $('#project-delete').addEventListener('click', confirmProjectDelete);

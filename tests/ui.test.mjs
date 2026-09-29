@@ -25,12 +25,12 @@ function fakeAuth(overrides = {}) {
     login: async (provider, options) => { log.push(['login', provider, options.method]); options.onUpdate({ authUrl: 'https://auth.example/start' }); return { state: 'signed-in' }; },
     logout: async provider => { log.push(['logout', provider]); return { state: 'signed-out' }; }, ...overrides };
 }
-async function setup(t, { catalogReader = async id => ({ provider: id, ...catalogs[id], note: 'Native model options.' }), storage, prefs = {}, kanban, hash = '', generationResponse, authAdapter = fakeAuth(), runner, dataDir, executor = 'auto' } = {}) {
+async function setup(t, { catalogReader = async id => ({ provider: id, ...catalogs[id], note: 'Native model options.' }), storage, prefs = {}, kanban, hash = '', generationResponse, authAdapter = fakeAuth(), runner, dataDir, executor = 'auto', folderPicker } = {}) {
   // Every page gets a private board folder unless a test shares one to simulate a reload.
   if (!dataDir) { dataDir = await mkdtemp(join(tmpdir(), 'pb-ui-')); t.after(() => rm(dataDir, { recursive: true, force: true })); }
   const calls = [];
   const requests = [];
-  const app = await startServer({ port: 0, dataDir, executor, authAdapter, detector: async () => Object.keys(catalogs).map(id => ({ id, available: true })), catalogReader,
+  const app = await startServer({ port: 0, dataDir, executor, authAdapter, ...(folderPicker ? { folderPicker } : {}), detector: async () => Object.keys(catalogs).map(id => ({ id, available: true })), catalogReader,
     runner: runner ? async request => { calls.push(request); return runner(request); } : async request => { calls.push(request); return { text: request.prompt.includes('prose in Polish') ? 'Dodaj test.' : request.prompt.includes('prose in German') ? 'Füge einen Test hinzu.' : 'Add a test.', reportedModels: ['actual-model'], durationMs: 3 }; } });
   const dom = new JSDOM(await readFile(new URL('../public/index.html', import.meta.url), 'utf8'), { url: app.url + hash, runScripts: 'outside-only' });
   const win = dom.window;
@@ -1237,4 +1237,50 @@ test('when browser storage is full, the oldest prompts are dropped so the newest
   assert.equal($('#storage-warning').hidden, true);
   assert.match($('#announcement').textContent, new RegExp(`the ${31 - saved.length} oldest prompts were removed from history`));
   assert.equal($('#history-list').children.length, saved.length);
+});
+
+test('Open folder… turns a chosen folder into a linked project, offers Git setup, and reuses a known folder', { skip: process.platform === 'win32' }, async t => {
+  const repo = await gitRepo(t);
+  const plain = await realpath(await mkdtemp(join(tmpdir(), 'pb-ui-open-')));
+  t.after(() => rm(plain, { recursive: true, force: true }));
+  const picks = [{ path: `${repo}/` }, { path: plain }, { cancelled: true }, { path: repo }];
+  const ctx = await setup(t, { folderPicker: async () => picks.shift() });
+  const { $, win } = ctx;
+  await goTo(ctx, '#/kanban');
+  const names = () => [...$('#workspace-list').querySelectorAll('.workspace-name')].map(item => item.textContent);
+  // A Git repository becomes a linked project named after its folder.
+  await click(ctx, $('#workspace-open'));
+  await until(() => $('#repo-state').textContent.includes(`Linked to ${repo}`), 'project created and linked');
+  const repoName = repo.split('/').pop();
+  assert.deepEqual(names(), [repoName]);
+  // A folder without Git becomes a project too, with the Git setup offered (not done).
+  await click(ctx, $('#workspace-open'));
+  await until(() => names().length === 2 && !$('#repo-setup').hidden, 'second project with the Git setup offer');
+  assert.equal($('#project-select').selectedOptions[0].textContent, plain.split('/').pop());
+  assert.equal($('#repo-path').value, plain);
+  assert.equal($('#repo-setup').hidden, false);
+  await assert.rejects(readFile(join(plain, '.git', 'HEAD')));
+  // Cancelling the picker changes nothing; a folder that a project already uses is selected, not duplicated.
+  await click(ctx, $('#workspace-open'));
+  assert.equal(names().length, 2);
+  await click(ctx, $('#workspace-open'));
+  await until(() => $('#project-select').selectedOptions[0].textContent === repoName, 'existing project selected');
+  assert.equal(names().length, 2);
+  assert.match($('#announcement').textContent, /already uses this folder/);
+});
+
+test('without a system folder picker, Open folder… asks for the path instead', { skip: process.platform === 'win32' }, async t => {
+  const repo = await gitRepo(t);
+  const { BoardError } = await import('../src/board.mjs');
+  const ctx = await setup(t, { folderPicker: async () => { throw new BoardError('No picker.', 'PICKER_UNAVAILABLE', 501); } });
+  const { $ } = ctx;
+  await goTo(ctx, '#/kanban');
+  await click(ctx, $('#workspace-open'));
+  assert.equal($('#workspace-path-form').hidden, false);
+  $('#workspace-path').value = 'relative/path'; submitForm(ctx, '#workspace-path-form'); await ctx.idle();
+  assert.match($('#workspace-path-error').textContent, /absolute path/);
+  $('#workspace-path').value = repo; submitForm(ctx, '#workspace-path-form');
+  await until(() => $('#workspace-list').querySelectorAll('.workspace-item').length === 1, 'project from typed path');
+  assert.equal($('#workspace-path-form').hidden, true);
+  await until(() => $('#repo-state').textContent.includes(`Linked to ${repo}`), 'linked from typed path');
 });

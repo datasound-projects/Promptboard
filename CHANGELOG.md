@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Kanban: **Open folder…** in the workspace sidebar opens the system folder picker and turns the folder into a linked project (or offers Git setup when needed). A folder already used by a project selects that project. **Browse…** next to the repository path uses the same picker. Without a system picker, you type the path.
+
 - Compose: prompt history keeps the last 500 prompts (was 40). If the browser's storage is full, the oldest prompts are dropped first and the app says how many; the newest prompt is always kept.
 
 - Kanban: manage projects from the sidebar (⋯ menu: rename inline, link or change the repository, workflow settings, delete with inline confirmation).

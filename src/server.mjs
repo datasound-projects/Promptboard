@@ -14,6 +14,7 @@ import { Supervisor } from './supervisor.mjs';
 import { AgentError } from './agents.mjs';
 import { DeliveryError } from './delivery.mjs';
 import { discoverModels, checkModelEffort } from './models.mjs';
+import { chooseFolder } from './folder.mjs';
 
 const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
 const assets = new Map([
@@ -106,6 +107,7 @@ async function boardRoute(board, req, res, pathname, searchParams) {
   if (method === 'POST' && pathname === '/api/board/migrate') return view({ migrated: await board.migrateBrowserBoard((await body(BOARD_BODY_LIMIT)).board) });
   if (method === 'POST' && pathname === '/api/board/import') { const data = await body(BOARD_BODY_LIMIT); return view({ imported: await board.importBackup(data.backup, { replace: data.replace === true }) }); }
   if (method === 'POST' && pathname === '/api/projects') return view({ project: await board.createProject(await body()) });
+  if (method === 'POST' && pathname === '/api/folder/choose') return send(res, 200, await board.folderPicker());
   if (method === 'POST' && pathname === '/api/repository/validate') return send(res, 200, { repository: await board.validateRepository((await body()).path) });
   if (method === 'POST' && pathname === '/api/tasks') return view({ task: await board.createTask(await body()) });
   if (method === 'PATCH' && pathname === '/api/settings') return view({ settings: await board.setSettings(await body()) });
@@ -175,10 +177,11 @@ function streamRun(supervisor, req, res, runId, after) {
   req.on('close', () => { clearInterval(ping); unsubscribe(); });
 }
 
-export async function startServer({ port = 4318, runner = runProvider, detector = detectProviders, catalogReader = discoverModels, authAdapter = auth, dataDir = defaultDataDir(), executor = 'auto' } = {}) {
+export async function startServer({ port = 4318, runner = runProvider, detector = detectProviders, catalogReader = discoverModels, authAdapter = auth, dataDir = defaultDataDir(), executor = 'auto', folderPicker = chooseFolder } = {}) {
   // The board loads lazily, so starting the server never reads or writes board files.
   const board = new Board({ dataDir });
   board.executor = executor === 'auto' ? new Supervisor({ board, dataDir }) : executor;
+  board.folderPicker = folderPicker;
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('The port must be 0–65535.');
   const token = randomBytes(32).toString('hex');
   const catalogAbort = new AbortController();
@@ -332,7 +335,7 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
       }
       return;
     }
-    if (/^\/api\/(board|projects|tasks|runs)(\/|$)/.test(pathname) || pathname === '/api/repository/validate' || pathname === '/api/settings') {
+    if (/^\/api\/(board|projects|tasks|runs)(\/|$)/.test(pathname) || pathname === '/api/repository/validate' || pathname === '/api/folder/choose' || pathname === '/api/settings') {
       try { if ((await boardRoute(board, req, res, pathname, requestUrl.searchParams)) !== false) return; }
       catch (error) {
         // Board, store, and Git errors carry fixed messages; raw Git output is never returned.

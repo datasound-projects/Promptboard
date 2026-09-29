@@ -45,6 +45,12 @@
       </div>
       <div class="sidebar-panel" id="workspace-panel" hidden>
         <button class="new-prompt" id="workspace-new" type="button"><span aria-hidden="true">＋</span> New project</button>
+        <button class="secondary-button workspace-open" id="workspace-open" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/></svg><span>Open folder…</span></button>
+        <form class="workspace-path" id="workspace-path-form" novalidate hidden>
+          <label class="field-label" for="workspace-path">Project folder<input id="workspace-path" type="text" maxlength="4096" autocomplete="off" spellcheck="false" placeholder="/Users/you/code/project"></label>
+          <div class="detail-actions"><button type="submit" class="danger">Open</button><button type="button" id="workspace-path-cancel">Cancel</button></div>
+          <p class="inline-error" id="workspace-path-error" role="alert" hidden></p>
+        </form>
         <div class="history-label"><span>WORKSPACE</span><span id="workspace-count">00</span></div>
         <ul class="workspace-list" id="workspace-list" aria-label="Projects"></ul>
         <div class="history-empty" id="workspace-empty" hidden><p>No projects yet.</p><small>Each project gets its own board and repository.</small></div>
@@ -215,7 +221,7 @@
         <div class="kanban-repo" id="repo-panel" hidden>
           <form class="kanban-repo-row" id="repo-form" novalidate>
             <label class="field-label" for="repo-path">Git repository folder<input id="repo-path" type="text" maxlength="4096" autocomplete="off" spellcheck="false" placeholder="/Users/you/code/project"></label>
-            <div class="kanban-form-actions"><button type="submit" class="secondary-button" id="repo-link">Check and link</button><button type="button" class="text-button" id="repo-unlink" hidden>Unlink</button></div>
+            <div class="kanban-form-actions"><button type="button" class="secondary-button" id="repo-browse">Browse…</button><button type="submit" class="secondary-button" id="repo-link">Check and link</button><button type="button" class="text-button" id="repo-unlink" hidden>Unlink</button></div>
           </form>
           <p class="note" id="repo-state" role="status"></p>
           <p class="note" id="branch-state"></p>
