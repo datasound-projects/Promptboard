@@ -61,8 +61,8 @@ Open **http://127.0.0.1:4318** if the browser does not open. Use `npm start -- -
 
 ## Run tasks on the board
 
-1. **Pick or create a project** in the sidebar. Each project has its own board and repository; agents keep running when you switch.
-2. **Link a repository.** Choose a local Git repository and a target branch. Promptboard does not create repositories, commit on your behalf without asking, or push.
+1. **Pick or create a project** in the sidebar. Each project has its own board and repository; agents keep running when you switch. The ⋯ next to a project renames it, links or changes its repository, opens its workflow settings, or deletes it.
+2. **Link a repository.** Choose a local Git repository and a target branch. If the folder is not a Git repository yet (or does not exist), Promptboard offers to set it up: after you confirm, it runs `git init` and makes one empty first commit. It never adds your files. Promptboard does not create repositories, commit on your behalf without asking, or push.
 3. **Add a card.** Write a task or add a prompt from Compose. The card keeps an exact copy.
 4. **Move it through the stages.**
 

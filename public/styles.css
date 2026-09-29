@@ -524,3 +524,21 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
 .workspace-live.waiting::before { background: #f59e0b; animation: none; }
 @keyframes pb-pulse { 50% { opacity: .35; } }
 @media (prefers-reduced-motion: reduce) { .workspace-live::before { animation: none; } }
+/* Project management from the sidebar: a ⋯ button per project and an inline menu. */
+.workspace-entry { position: relative; margin: 2px 0; }
+.workspace-entry .workspace-item { margin: 0; padding-right: 40px; }
+.workspace-menu-toggle { position: absolute; top: 8px; right: 6px; width: 28px; height: 28px; padding: 0; border: 1px solid transparent; border-radius: 6px; background: none; color: var(--muted); font-size: 16px; line-height: 1; letter-spacing: 1px; opacity: 0; }
+.workspace-entry:hover .workspace-menu-toggle, .workspace-entry:focus-within .workspace-menu-toggle, .workspace-entry.current .workspace-menu-toggle, .workspace-entry.menu-open .workspace-menu-toggle { opacity: 1; }
+.workspace-menu-toggle:hover, .workspace-menu-toggle[aria-expanded="true"] { border-color: var(--line-strong); background: var(--surface); color: var(--ink); }
+@media (hover: none) { .workspace-menu-toggle { opacity: 1; } }
+.workspace-entry .workspace-live { margin-right: 4px; }
+.workspace-menu { display: flex; flex-direction: column; gap: 2px; margin: 4px 0 8px; padding: 6px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface); box-shadow: var(--shadow); }
+.workspace-menu > button { padding: 7px 10px; border: 0; border-radius: 6px; background: none; color: var(--ink); font-size: 13px; text-align: left; }
+.workspace-menu > button:hover, .workspace-menu > button:focus-visible { background: var(--surface-2); }
+.workspace-menu > .workspace-delete { color: var(--danger, #c0392b); }
+.workspace-menu > p { margin: 4px 6px 8px; font-size: 12.5px; color: var(--text); }
+.workspace-menu .detail-actions { padding: 0 4px 4px; }
+.workspace-rename { display: flex; flex-direction: column; gap: 8px; padding: 4px; }
+.workspace-rename input { width: 100%; padding: 7px 9px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--surface); color: var(--ink); font-size: 13px; }
+.workspace-rename .detail-actions { padding: 0; }
+.workspace-menu .kanban-error { margin: 2px 6px 6px; font-size: 12px; }

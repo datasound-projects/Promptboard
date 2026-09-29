@@ -1869,8 +1869,60 @@ function pollTests(taskId) {
 
 // Kanban sidebar: one entry per project, each with its own board. Selecting one only changes
 // which board is shown; runs belong to the server and continue in every project.
+// Each entry has a ⋯ menu: rename (inline), repository, workflow settings, delete (inline confirm).
+let workspaceMenu = null; // { id, mode: 'menu' | 'rename' | 'delete', draft, error }
+function setWorkspaceMenu(value) { workspaceMenu = value; renderWorkspace(currentProject()); }
+function openProjectSection(id, then) {
+  if (id !== currentProject()?.id) selectProject(id);
+  setWorkspaceMenu(null);
+  setSidebar(false);
+  setProjectCollapsed(false, false);
+  then();
+}
+async function renameFromSidebar(project, name) {
+  const error = projectNameError(name.trim(), project.id);
+  if (error) { setWorkspaceMenu({ ...workspaceMenu, error }); return; }
+  try { await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}`, { name: name.trim(), expectedRevision: project.revision }); }
+  catch (failure) { setWorkspaceMenu({ ...workspaceMenu, error: failure.message }); return; }
+  setWorkspaceMenu(null);
+  announce(`Renamed “${project.name}” to “${name.trim()}”.`);
+}
+function workspaceMenuFor(project, card) {
+  const box = document.createElement('div');
+  box.className = 'workspace-menu';
+  box.id = `workspace-menu-${project.id}`;
+  const mode = workspaceMenu.mode;
+  if (mode === 'rename') {
+    const form = document.createElement('form');
+    form.className = 'workspace-rename';
+    const input = document.createElement('input');
+    input.type = 'text'; input.maxLength = 80; input.value = workspaceMenu.draft ?? project.name; input.setAttribute('aria-label', `New name for ${project.name}`);
+    input.addEventListener('input', () => { workspaceMenu.draft = input.value; });
+    input.addEventListener('keydown', event => { if (event.key === 'Escape') { event.stopPropagation(); setWorkspaceMenu(null); card.focus(); } });
+    form.addEventListener('submit', event => { event.preventDefault(); renameFromSidebar(project, input.value); });
+    const save = document.createElement('button'); save.type = 'submit'; save.textContent = 'Save'; save.className = 'danger';
+    form.append(input, detailActions(save, detailButton('Cancel', () => setWorkspaceMenu(null))));
+    box.append(form);
+    if (workspaceMenu.error) box.append(paragraph(workspaceMenu.error, 'kanban-error'));
+    setTimeout(() => { if (!document.activeElement || document.activeElement === document.body || document.activeElement.closest?.('.workspace-menu-toggle, .workspace-menu, .workspace-rename')) input.focus(); });
+  } else if (mode === 'delete') {
+    box.append(paragraph(`Delete “${project.name}” and its ${plural(project.tasks.length, 'card')}? This cannot be undone. Export a backup first if you want to keep them.`),
+      detailActions(detailButton('Delete project', () => { setWorkspaceMenu(null); deleteProject(project); }, 'danger'), detailButton('Keep', () => setWorkspaceMenu(null))));
+  } else {
+    const item = (label, action, className = '') => { const button = detailButton(label, action, className); button.setAttribute('role', 'menuitem'); return button; };
+    box.setAttribute('role', 'menu');
+    box.setAttribute('aria-label', `Manage ${project.name}`);
+    box.append(
+      item('Rename', () => setWorkspaceMenu({ id: project.id, mode: 'rename' })),
+      item(project.repository ? 'Change repository…' : 'Link repository…', () => openProjectSection(project.id, () => { repoPanelOpen = true; renderRepository(currentProject()); $('#repo-path').focus(); })),
+      item('Workflow settings…', () => openProjectSection(project.id, openWorkflowDialog)),
+      item('Delete…', () => setWorkspaceMenu({ id: project.id, mode: 'delete' }), 'workspace-delete'));
+  }
+  return box;
+}
 function renderWorkspace(current) {
   const projects = board?.projects || [];
+  if (workspaceMenu && !projects.some(project => project.id === workspaceMenu.id)) workspaceMenu = null;
   $('#workspace-count').textContent = String(projects.length).padStart(2, '0');
   $('#workspace-empty').hidden = projects.length > 0;
   $('#workspace-new').disabled = !board;
@@ -1879,10 +1931,11 @@ function renderWorkspace(current) {
     const live = (board.runs || []).filter(run => ids.has(run.taskId) && RUN_LIVE.includes(run.status));
     const waiting = live.filter(run => run.status === 'waiting_for_input').length;
     const item = document.createElement('li');
+    item.className = 'workspace-entry';
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'workspace-item';
-    if (project.id === current?.id) button.setAttribute('aria-current', 'true');
+    if (project.id === current?.id) { button.setAttribute('aria-current', 'true'); item.classList.add('current'); }
     const name = document.createElement('span'); name.className = 'workspace-name'; name.textContent = project.name;
     const repo = project.repository ? project.repository.root.split(/[\\/]/).pop() + (project.targetBranch ? ` → ${project.targetBranch.name}` : '') : 'Not linked';
     const meta = document.createElement('span'); meta.className = 'workspace-meta';
@@ -1896,7 +1949,14 @@ function renderWorkspace(current) {
     }
     button.title = [project.name, project.repository?.root, live.length ? `${live.length} active agent ${live.length === 1 ? 'run' : 'runs'}` : ''].filter(Boolean).join('\n');
     button.addEventListener('click', () => { if (project.id !== current?.id) selectProject(project.id); setSidebar(false); });
-    item.append(button);
+    const open = workspaceMenu?.id === project.id;
+    const toggle = detailButton('⋯', () => setWorkspaceMenu(open ? null : { id: project.id, mode: 'menu' }), 'workspace-menu-toggle');
+    toggle.setAttribute('aria-label', `Manage project: ${project.name}`);
+    toggle.title = 'Rename, repository, workflow, delete';
+    toggle.setAttribute('aria-expanded', String(open));
+    toggle.setAttribute('aria-controls', `workspace-menu-${project.id}`);
+    item.append(button, toggle);
+    if (open) { item.classList.add('menu-open'); item.append(workspaceMenuFor(project, button)); }
     return item;
   }));
 }
@@ -1915,6 +1975,7 @@ function renderRepository(project) {
     repoFormFor = project.id;
     $('#repo-path').value = project.repository?.path || '';
     $('#repo-message').hidden = true;
+    $('#repo-setup').hidden = true;
   }
   const repository = project.repository;
   $('#repo-state').textContent = repository
@@ -1957,17 +2018,46 @@ async function refreshBranches(projectId) {
 
 function repoMessage(message) { $('#repo-message').textContent = message; $('#repo-message').hidden = !message; }
 
+// A folder that is not a repository yet (or has no commits, or does not exist) can be set up
+// from here, but only after the user confirms exactly what will happen.
+const GIT_SETUP_STEPS = { PATH_NOT_FOUND: ['create this folder', 'run git init'], NOT_A_REPOSITORY: ['run git init'], NO_COMMITS: [] };
+function offerGitSetup(path, code) {
+  const box = $('#repo-setup');
+  const steps = GIT_SETUP_STEPS[code];
+  if (!steps || !path) { box.hidden = true; return; }
+  const all = [...steps, 'make one empty commit named “Initial commit”'];
+  const text = all.length > 2 ? `${all.slice(0, -1).join(', ')}, and ${all.at(-1)}` : all.join(' and ');
+  const go = detailButton('Set up Git here', () => setUpRepository(path), 'danger');
+  box.replaceChildren(paragraph(`Set up Git in ${path}? Promptboard will ${text}, then link the project. Your files are not added or committed.`),
+    detailActions(go, detailButton('Cancel', () => { box.hidden = true; $('#repo-path').focus(); })));
+  box.hidden = false;
+}
+
+async function setUpRepository(path) {
+  const project = currentProject();
+  if (!project) return;
+  repoMessage('');
+  try {
+    const result = await boardCall('POST', `/api/projects/${encodeURIComponent(project.id)}/init-repository`, { path, confirm: true, expectedRevision: project.revision }, 60000);
+    $('#repo-setup').hidden = true;
+    if (result.repository) repositories.set(project.id, result.repository);
+    renderRepository(currentProject());
+    announce(`${result.setup?.createdFolder ? 'Created the folder, initialized Git' : result.setup?.initialized ? 'Initialized Git' : 'Added an empty first commit'} and linked “${project.name}”. Choose the target branch next.`);
+  } catch (error) { repoMessage(error.message); }
+}
+
 async function linkRepository(path) {
   const project = currentProject();
   if (!project) return;
   repoMessage('');
+  $('#repo-setup').hidden = true;
   $('#repo-link').disabled = true;
   try {
     const result = await boardCall('POST', `/api/projects/${encodeURIComponent(project.id)}/repository`, { path, expectedRevision: project.revision }, 60000);
     if (result.repository) repositories.set(project.id, result.repository); else repositories.delete(project.id);
     renderRepository(currentProject());
     announce(path === null ? `Unlinked “${project.name}”.` : `Linked “${project.name}” to ${result.repository.root}. Choose the target branch next.`);
-  } catch (error) { repoMessage(error.message); }
+  } catch (error) { repoMessage(error.message); offerGitSetup(path?.trim(), error.code); }
   finally { $('#repo-link').disabled = false; }
 }
 

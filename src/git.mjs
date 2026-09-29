@@ -1,11 +1,11 @@
 /**
  * Git access for project linking and task worktrees. Commands run without a shell, with
  * no terminal prompts, and without inherited GIT_DIR-style variables that could redirect
- * them to another repository. This module never runs init, commit, reset, stash, clean,
- * or any --force operation.
+ * them to another repository. It never runs reset, stash, clean, or any --force operation.
+ * `initRepository` (init plus one empty commit) runs only on the user's explicit confirmation.
  */
 import { execFile } from 'node:child_process';
-import { realpath, stat } from 'node:fs/promises';
+import { mkdir, realpath, stat } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
 
 export class GitError extends Error {
@@ -17,10 +17,13 @@ export const GIT_MESSAGES = Object.freeze({
   PATH_NOT_FOUND: 'This folder does not exist.',
   NOT_A_DIRECTORY: 'This path is a file, not a folder.',
   GIT_MISSING: 'Git was not found. Install Git and make sure the git command is on PATH, then try again.',
-  NOT_A_REPOSITORY: 'This folder is not inside a Git repository. Promptboard does not create repositories; run git init there yourself if you want one.',
+  NOT_A_REPOSITORY: 'This folder is not a Git repository yet. Promptboard does not create repositories on its own: choose “Set up Git here” to initialize it, or pick another folder.',
   BARE_REPOSITORY: 'This is a bare repository. It has no working folder, so agents cannot run in it. Choose a normal checkout or a linked worktree.',
   NOT_A_WORKTREE: 'This folder is inside Git\'s internal directory. Choose the project\'s working folder instead.',
-  NO_COMMITS: 'This repository has no commits yet. Create an initial commit yourself; Promptboard does not create commits.',
+  NO_COMMITS: 'This repository has no commits yet, so task branches have nothing to start from. Promptboard does not create commits on its own: choose “Set up Git here” to add an empty first commit, or commit something yourself.',
+  ALREADY_A_REPOSITORY: 'This folder is already a Git repository with commits. Link it instead.',
+  IDENTITY_REQUIRED: 'Git needs your name and email for the first commit. Run git config --global user.name "Your Name" and git config --global user.email you@example.com, then try again. Git was initialized; nothing else changed.',
+  INIT_FAILED: 'Git could not initialize this folder. Check that you can write to it, then try again.',
   GIT_FAILED: 'Git could not read this repository. Run git status in that folder to see the problem.',
 });
 
@@ -72,6 +75,26 @@ export async function validateRepository(input) {
   let currentBranch = null;
   try { currentBranch = lines(await git(['symbolic-ref', '--quiet', '--short', 'HEAD'], { cwd: root }))[0] || null; } catch {}
   return { root, commonDir, gitDir, linkedWorktree: gitDir !== commonDir, currentBranch, branches };
+}
+
+/**
+ * Set up a folder for linking, on the user's explicit confirmation only: create the folder if it
+ * does not exist, run git init if it is not a repository, and add one empty first commit so task
+ * branches have a base. No files are added, staged, or committed.
+ */
+export async function initRepository(input) {
+  if (typeof input !== 'string' || !input.trim() || input.length > 4096 || input.includes('\0') || !isAbsolute(input.trim())) throw fail('INVALID_PATH');
+  const path = input.trim();
+  let state = 'missing';
+  try { await validateRepository(path); state = 'ready'; }
+  catch (error) { if (!['PATH_NOT_FOUND', 'NOT_A_REPOSITORY', 'NO_COMMITS'].includes(error.code)) throw error; state = error.code; }
+  if (state === 'ready') throw fail('ALREADY_A_REPOSITORY');
+  const created = state === 'PATH_NOT_FOUND';
+  if (created) { try { await mkdir(path, { recursive: true }); } catch { throw fail('INIT_FAILED'); } }
+  if (state !== 'NO_COMMITS') { try { await git(['init'], { cwd: path }); } catch { throw fail('INIT_FAILED'); } }
+  try { await git(['commit', '--allow-empty', '--no-verify', '-m', 'Initial commit'], { cwd: path }); }
+  catch (error) { throw fail(/tell me who you are|user\.(name|email)|identity/i.test(error.stderr || '') ? 'IDENTITY_REQUIRED' : 'INIT_FAILED'); }
+  return { createdFolder: created, initialized: state !== 'NO_COMMITS' };
 }
 
 export async function listBranches(root) {

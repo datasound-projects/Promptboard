@@ -10,7 +10,7 @@ import { randomUUID } from 'node:crypto';
 import { access, mkdir, realpath } from 'node:fs/promises';
 import { join, relative, isAbsolute } from 'node:path';
 import { Store } from './store.mjs';
-import { branchExists, commitExists, git, GitError, listWorktrees, validateRepository } from './git.mjs';
+import { branchExists, commitExists, git, GitError, initRepository, listWorktrees, validateRepository } from './git.mjs';
 import { resolveConfig } from './agents.mjs';
 import { Delivery } from './delivery.mjs';
 
@@ -277,6 +277,17 @@ export class Board {
 
   /** Validate a repository path without saving it. */
   validateRepository(path) { return validateRepository(path); }
+
+  /** Confirmed: make the folder a repository with an empty first commit, then link it. */
+  async initAndLinkRepository(id, { path, confirm, expectedRevision }) {
+    if (confirm !== true) throw new BoardError('Confirm the Git setup first.', 'CONFIRMATION_REQUIRED');
+    // Check what linking will check before anything changes on disk.
+    const project = this.#project(await this.state(), id);
+    checkRevision(project, expectedRevision, 'This project');
+    if (project.tasks.some(task => task.workspace)) throw conflict('Tasks in this project have worktrees in the current repository. Remove them before you change the link.', 'WORKSPACES_EXIST');
+    const setup = await initRepository(path);
+    return { ...(await this.linkRepository(id, { path, expectedRevision })), setup };
+  }
 
   async linkRepository(id, { path, expectedRevision }) {
     const repository = path === null ? null : await validateRepository(path);

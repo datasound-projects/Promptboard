@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Kanban: manage projects from the sidebar (⋯ menu: rename inline, link or change the repository, workflow settings, delete with inline confirmation).
+- Kanban: a folder that is not a Git repository yet, has no commits, or does not exist can be set up after an explicit confirmation: create the folder, `git init`, and one empty "Initial commit". Files are never added or committed.
+
 - Kanban: the sidebar becomes a project workspace on the Kanban page. Each project keeps its own board; switching never stops agents, and each project shows how many agents are running or waiting.
 
 - Kanban: optional **Merge automatically** workflow setting. A card entering Merge is merged only when its accepted review and passing tests belong to exactly the current task and target commits; otherwise nothing is merged and the reason is shown. Manual stays the default.

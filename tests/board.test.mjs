@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Board, canTransition, COLUMNS } from '../src/board.mjs';
 import { Store } from '../src/store.mjs';
-import { validateRepository } from '../src/git.mjs';
+import { initRepository, validateRepository } from '../src/git.mjs';
 import { startServer } from '../src/server.mjs';
 
 const run = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } }).trim();
@@ -80,13 +80,26 @@ test('repository validation explains each invalid case and accepts linked worktr
   await assert.rejects(validateRepository(join(outside, 'missing')), { code: 'PATH_NOT_FOUND' });
   await writeFile(join(outside, 'file.txt'), 'x');
   await assert.rejects(validateRepository(join(outside, 'file.txt')), { code: 'NOT_A_DIRECTORY' });
-  await assert.rejects(validateRepository(outside), { code: 'NOT_A_REPOSITORY', message: /does not create repositories/ });
+  await assert.rejects(validateRepository(outside), { code: 'NOT_A_REPOSITORY', message: /does not create repositories on its own/ });
   const bare = await temp(t, 'pb-bare-');
   run(bare, 'init', '-q', '--bare');
   await assert.rejects(validateRepository(bare), { code: 'BARE_REPOSITORY' });
   const empty = await temp(t, 'pb-empty-');
   run(empty, 'init', '-q');
-  await assert.rejects(validateRepository(empty), { code: 'NO_COMMITS', message: /does not create commits/ });
+  await assert.rejects(validateRepository(empty), { code: 'NO_COMMITS', message: /does not create commits on its own/ });
+  // Explicit setup: an empty first commit for a repository without commits, a new folder when it is
+  // missing, and a refusal for a repository that already has commits.
+  const identity = { GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@e', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@e' };
+  const saved = Object.fromEntries(Object.keys(identity).map(key => [key, process.env[key]]));
+  Object.assign(process.env, identity);
+  try {
+    assert.deepEqual(await initRepository(empty), { createdFolder: false, initialized: false });
+    assert.equal((await validateRepository(empty)).root, await realpath(empty));
+    await assert.rejects(initRepository(empty), { code: 'ALREADY_A_REPOSITORY' });
+    const fresh = join(outside, 'new', 'project');
+    assert.deepEqual(await initRepository(fresh), { createdFolder: true, initialized: true });
+    assert.ok((await validateRepository(fresh)).branches.length === 1);
+  } finally { for (const [key, value] of Object.entries(saved)) if (value === undefined) delete process.env[key]; else process.env[key] = value; }
   await assert.rejects(validateRepository(join(root, '.git')), { code: 'NOT_A_WORKTREE' });
   const valid = await validateRepository(join(root, '.'));
   assert.equal(valid.root, root);
