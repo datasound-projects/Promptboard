@@ -246,7 +246,7 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
 .dialog-note { font-size: 13px; }
 .reload-button { margin-top: 12px; }
 
-/* Kanban page: the same tokens and components as the prompt studio. */
+/* Kanban page: the same tokens and components as the Compose page. */
 .kanban-project-bar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 22px; padding: 18px 20px; }
 .kanban-project-bar .field-label, .kanban-project-form .field-label { flex: 1 1 240px; max-width: 420px; }
 .kanban-project-actions { display: flex; flex-wrap: wrap; gap: 6px 16px; padding-bottom: 8px; }

@@ -73,7 +73,7 @@ Keep the app and CLI in the same environment. If your Windows CLI setup requires
 
 **More settings** holds the less-used controls. The connection group can start sign-in, check again, and sign out (after confirmation) using the CLI's own commands. The status chips under the CLI selector show whether it is installed and signed in. See [sign-in controls](docs/cli-adapters.md#sign-in-controls). Brief options add planning, acceptance checks, edge cases, security review, and terms to keep.
 
-The top bar switches between the Studio and Kanban pages and toggles the history sidebar and dark mode. The sidebar and theme choices are saved in this browser.
+The top bar switches between the Compose and Kanban pages and toggles the history sidebar and dark mode. The sidebar and theme choices are saved in this browser.
 
 Model choices come from your installed CLI. Availability depends on your account and CLI version. Gemini uses its CLI thinking settings.
 

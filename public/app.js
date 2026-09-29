@@ -1000,7 +1000,7 @@ function renderBoard() {
   $('#todo-count').textContent = String(cards.length).padStart(2, '0');
   $('#board-empty').hidden = cards.length > 0;
   $('#board-empty-text').textContent = project ? 'No tasks yet.' : 'Create a project to start planning.';
-  $('#board-empty-note').textContent = project ? 'Choose New card, or add a generated prompt from the Studio page.' : 'Each project gets its own board with one To do column.';
+  $('#board-empty-note').textContent = project ? 'Choose New card, or add a generated prompt from the Compose page.' : 'Each project gets its own board with one To do column.';
   $('#empty-prompt-link').hidden = !project;
   $('#card-list').replaceChildren(...cards.map((card, index) => renderCard(card, index, cards.length)));
 }
