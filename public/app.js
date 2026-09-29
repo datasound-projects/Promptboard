@@ -1439,7 +1439,7 @@ function fillSelect(select, values, labels = {}) { select.replaceChildren(...val
 function renderRunFields(provider, stage, settings = {}) {
   const providers = board?.execution?.providers || {};
   const supported = Object.keys(providers).filter(id => providers[id][stage === 'executing' ? 'execution' : 'planning']?.supported);
-  fillSelect($('#run-provider'), supported, Object.fromEntries(supported.map(id => [id, providers[id].name])));
+  fillSelect($('#run-provider'), supported, Object.fromEntries(supported.map(id => [id, providers[id].notLiveVerified ? `${providers[id].name} (not verified live)` : providers[id].name])));
   $('#run-provider').value = supported.includes(provider) ? provider : supported[0] || '';
   const chosen = $('#run-provider').value;
   const efforts = { codex: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'], claude: ['low', 'medium', 'high', 'xhigh', 'max'], gemini: [] }[chosen] || [];

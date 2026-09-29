@@ -52,7 +52,7 @@ export class Supervisor {
 
   async describe() {
     const { pty, message } = await this.pty();
-    return { available: Boolean(pty), setupMessage: message, providers: Object.fromEntries(Object.entries(ADAPTERS).map(([id, adapter]) => [id, { name: adapter.name, ...adapter.capabilities, permissionModes: adapter.permissionModes }])) };
+    return { available: Boolean(pty), setupMessage: message, providers: Object.fromEntries(Object.entries(ADAPTERS).map(([id, adapter]) => [id, { name: adapter.name, notLiveVerified: Boolean(adapter.notLiveVerified), ...adapter.capabilities, permissionModes: adapter.permissionModes }])) };
   }
 
   async validate({ stage, config }) {

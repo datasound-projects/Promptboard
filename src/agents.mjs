@@ -54,6 +54,8 @@ export const ADAPTERS = Object.freeze({
   },
   gemini: {
     name: 'Gemini CLI',
+    // Covered by simulated tests only: a live sign-in was refused by the provider (docs/live-verification.md).
+    notLiveVerified: true,
     capabilities: {
       planning: { supported: true, how: 'Native plan approval mode (experimental in Gemini CLI 0.30; enabled for the planning session only) plus a Promptboard policy that denies file-writing tools, shell commands, plan exit, and MCP tools, so the session cannot start implementation.' },
       execution: { supported: true, how: 'Approval mode auto_edit (default) or default (ask for every tool).' },
