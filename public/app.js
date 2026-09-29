@@ -5,6 +5,7 @@ const HISTORY_KEY = 'ste-prompt-engineer.history.v1';
 const THEME_KEY = 'ste-prompt-engineer.theme'; // Also read by prefs.js before first paint.
 const SIDEBAR_KEY = 'ste-prompt-engineer.sidebar';
 const SETTINGS_KEY = 'ste-prompt-engineer.settings';
+const PROJECT_PANEL_KEY = 'promptboard.project-panel';
 const HISTORY_LIMIT = 40;
 const MAX_PROMPT_BYTES = 2 * 1024 * 1024;
 const KNOWN_PROVIDERS = ['codex', 'claude', 'gemini', 'agy'];
@@ -178,6 +179,18 @@ function setSettingsCollapsed(collapsed, save = true) {
   $('#settings-toggle').title = collapsed ? 'Expand settings' : 'Collapse settings';
   $('#settings-toggle span').textContent = collapsed ? '+' : '−';
   if (save) savePref(SETTINGS_KEY, collapsed ? 'collapsed' : 'expanded');
+}
+// Collapse the Kanban project settings to give the board more room. Remembered in this browser.
+function setProjectCollapsed(collapsed, save = true) {
+  $('#project-body').hidden = collapsed;
+  $('.kanban-projects').classList.toggle('collapsed', collapsed);
+  const label = collapsed ? 'Expand project settings' : 'Collapse project settings';
+  $('#project-toggle').setAttribute('aria-expanded', String(!collapsed));
+  $('#project-toggle').setAttribute('aria-label', label);
+  $('#project-toggle').title = label;
+  $('#project-toggle span').textContent = collapsed ? '+' : '−';
+  $('#project-summary').hidden = !collapsed;
+  if (save) savePref(PROJECT_PANEL_KEY, collapsed ? 'collapsed' : 'expanded');
 }
 function scrollBehavior() { return window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches ? 'auto' : 'smooth'; }
 function renderTheme() { $('#theme-toggle').setAttribute('aria-pressed', String(document.documentElement.dataset.theme === 'dark')); }
@@ -1037,6 +1050,11 @@ function renderBoard() {
   $('#execution-status').textContent = board?.execution?.setupMessage ? `Agent runs are unavailable. ${board.execution.setupMessage}` : '';
   $('#kanban-columns').replaceChildren(...(project ? board.columns.map(column => renderColumn(column, tasks.filter(task => task.column === column.id))) : []));
   renderRepository(project);
+  const branch = project?.targetBranch?.name;
+  $('#project-summary').textContent = project ? [project.name, project.repository ? project.repository.root.split(/[\\/]/).pop() + (branch ? ` → ${branch}` : '') : 'Not linked', workflowSummary(project)].join(' · ') : '';
+  $('#project-summary').title = $('#project-summary').textContent;
+  // Without a project the settings are the only way forward, so they stay open.
+  if (!project && $('#project-body').hidden) setProjectCollapsed(false, false);
   window.PromptboardDock?.sync();
 }
 
@@ -1054,7 +1072,7 @@ function renderColumn(column, tasks) {
   header.className = 'kanban-column-heading';
   header.append(heading, count);
   const note = paragraph(!column.agent ? (column.id === 'todo' ? 'Never runs an agent' : 'Finished · never runs an agent')
-    : !board.execution?.available ? 'Agent stage · agent terminals not set up' : { testing: 'Your test commands · only exit codes count', merge: 'Fast-forward only · after you confirm · never pushed' }[column.id] || 'Agent stage · runs only when you start it or allow auto-start', 'kanban-column-note');
+    : !board.execution?.available ? 'Agent stage · agent terminals not set up' : { testing: 'Your test commands · only exit codes count', merge: 'Fast-forward only · after you confirm · never pushed' }[column.id] || 'Agent stage · starts only when you choose', 'kanban-column-note');
   const list = document.createElement('ol');
   list.className = 'kanban-cards';
   list.dataset.column = column.id;
@@ -1096,15 +1114,27 @@ function renderCard(card, index, count) {
   moveTo.append(option('', 'Move to…'), ...board.columns.filter(column => canMove(card.column, column.id)).map(column => option(column.id, column.title)));
   moveTo.addEventListener('change', () => { if (moveTo.value) placeCard(card.id, moveTo.value, null); });
   const copy = labelled(detailButton('Copy prompt', () => copyCard(card, copy), 'kanban-copy'), `Copy prompt: ${card.title}`);
-  const actions = document.createElement('div');
-  actions.className = 'kanban-actions';
-  actions.append(up, down, moveTo, copy,
+  // Less frequent actions sit behind "⋯" so each card stays short and a column shows more cards.
+  const more = document.createElement('div');
+  more.className = 'kanban-more';
+  more.id = `card-more-${card.id}`;
+  more.hidden = true;
+  more.append(copy,
     labelled(detailButton('Duplicate', () => duplicateCard(card.id), 'kanban-duplicate'), `Duplicate: ${card.title}`),
     labelled(detailButton('Delete', () => confirmCardDelete(item, card), 'kanban-delete'), `Delete: ${card.title}`));
+  const toggle = labelled(detailButton('⋯', () => { more.hidden = !more.hidden; toggle.setAttribute('aria-expanded', String(!more.hidden)); }, 'kanban-more-toggle'), `More actions: ${card.title}`);
+  toggle.title = 'Copy, duplicate, or delete';
+  toggle.setAttribute('aria-expanded', 'false');
+  toggle.setAttribute('aria-controls', more.id);
+  const actions = document.createElement('div');
+  actions.className = 'kanban-actions';
+  actions.append(up, down, moveTo, toggle);
   const details = [card.source ? sourceSummary(card.source) : 'Written by you'];
   if (card.workspace) details.push(`Branch ${card.workspace.branch}${card.workspace.status === 'ready' ? '' : ` (${card.workspace.status})`}`);
   const run = latestRun(card.id);
-  item.append(badge, heading, paragraph(card.prompt.slice(0, 400).replace(/\s+/g, ' ').trim(), 'kanban-preview'), paragraph(details.join(' · '), 'kanban-meta'), renderRunControls(card, run), actions);
+  const meta = paragraph(details.join(' · '), 'kanban-meta');
+  meta.title = meta.textContent;
+  item.append(badge, heading, paragraph(card.prompt.slice(0, 400).replace(/\s+/g, ' ').trim(), 'kanban-preview'), meta, renderRunControls(card, run), actions, more);
   if (pendingMoves.has(card.id)) item.classList.add('pending');
   // Selecting a card reveals its agent session, if it has one.
   item.addEventListener('click', event => { if (!event.target.closest('button, select, a')) window.PromptboardDock?.reveal(card.id); });
@@ -1229,11 +1259,12 @@ async function duplicateCard(id) {
 }
 
 function confirmCardDelete(item, card) {
-  const keep = detailButton('Keep card', () => { renderBoard(); cardElement(card.id)?.querySelector('.kanban-delete').focus(); });
+  const keep = detailButton('Keep card', () => { renderBoard(); cardElement(card.id)?.querySelector('.kanban-more-toggle').focus(); });
   const confirm = document.createElement('div');
   confirm.className = 'connection-detail kanban-confirm';
   const note = card.workspace ? ' Its worktree is removed only if it has no uncommitted changes; its branch is kept.' : '';
   confirm.append(paragraph(`Delete “${card.title}”? This cannot be undone.${note}`), detailActions(detailButton('Delete card', () => deleteCard(card.id), 'danger'), keep));
+  item.querySelector('.kanban-more').remove();
   item.querySelector('.kanban-actions').replaceWith(confirm);
   keep.focus();
 }
@@ -1329,6 +1360,7 @@ function openProjectForm(mode) {
   $('#project-name').value = mode === 'rename' ? currentProject()?.name || '' : '';
   $('#project-error').hidden = true;
   $('#project-form').hidden = false;
+  setProjectCollapsed(false, false);
   $('#project-name').focus();
 }
 
@@ -2127,6 +2159,8 @@ updateQuality();
 showPage();
 loadProviders();
 $('#settings-toggle').addEventListener('click', () => setSettingsCollapsed(!$('#settings-body').hidden));
+$('#project-toggle').addEventListener('click', () => setProjectCollapsed(!$('#project-body').hidden));
 try { if (localStorage.getItem(SETTINGS_KEY) === 'collapsed') setSettingsCollapsed(true, false); } catch {}
+try { if (localStorage.getItem(PROJECT_PANEL_KEY) === 'collapsed') setProjectCollapsed(true, false); } catch {}
 // A required field inside a collapsed card would block submit without a visible message. Reopen it.
 $('#settings-body').addEventListener('invalid', () => setSettingsCollapsed(false, false), true);

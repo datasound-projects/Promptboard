@@ -382,12 +382,29 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
 .toolbar-value { margin: 6px 0 2px; overflow: hidden; color: var(--ink); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .toolbar-end { display: flex; gap: 8px; justify-content: flex-end; }
 .kanban-ask { margin: 0 18px 14px; }
-.kanban-columns { grid-auto-columns: minmax(230px, 1fr); max-height: min(70vh, 720px); }
-.kanban-column { max-height: calc(min(70vh, 720px) - 28px); }
-.kanban-column .kanban-cards { overflow-y: auto; overscroll-behavior: contain; }
+/* The board fills the window down to the terminal dock; each column scrolls on its own. */
+.kanban-columns { grid-auto-columns: minmax(272px, 1fr); height: clamp(440px, calc(100vh - var(--dock-height) - 150px), 1600px); height: clamp(440px, calc(100dvh - var(--dock-height) - 150px), 1600px); max-height: none; }
+.kanban-column { min-height: 0; }
+.kanban-column .kanban-cards { overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
 .kanban-card { padding: 10px 12px; }
-.kanban-card h4 { margin: 6px 0 2px; font-size: 13px; }
-.kanban-preview { -webkit-line-clamp: 2; line-clamp: 2; }
+.kanban-card h4 { margin: 6px 0 2px; font-size: 13px; line-height: 1.35; }
+.kanban-preview { font-family: inherit; font-size: 12.5px; line-height: 1.45; -webkit-line-clamp: 2; line-clamp: 2; }
+.kanban-meta { margin-top: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; overflow-wrap: normal; }
+.kanban-card .kanban-actions { gap: 6px; margin-top: 8px; padding-top: 8px; }
+.kanban-actions .kanban-move + .kanban-move { margin-left: 0; }
+.kanban-actions .kanban-more-toggle { width: 30px; height: 28px; margin-left: auto; padding: 0; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); font-size: 16px; line-height: 1; letter-spacing: 1px; }
+.kanban-actions .kanban-more-toggle[aria-expanded="true"] { border-color: var(--line-strong); background: var(--surface-2); color: var(--ink); }
+.kanban-more { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 8px; padding: 6px 10px; border-radius: 6px; background: var(--surface-2); }
+.kanban-more button { padding: 3px 0; border: 0; background: none; color: var(--muted); font-size: 12.5px; }
+.kanban-more button:hover { color: var(--ink); }
+.kanban-more .kanban-delete:hover { text-decoration: underline; text-underline-offset: 3px; }
+/* Project settings collapse to one summary line. */
+.project-heading { padding-top: 10px; padding-bottom: 10px; }
+.project-heading > div:first-child { min-width: 0; flex: 1; }
+.project-heading h2 { flex: none; font-size: 14px; }
+.project-summary { min-width: 0; overflow: hidden; color: var(--muted); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.kanban-projects.collapsed .project-heading { flex-wrap: nowrap; border-bottom: 0; }
+.kanban-projects.collapsed .kanban-detail, .kanban-projects.collapsed .kanban-ask { margin-top: 2px; }
 .kanban-card.pending { opacity: .6; outline: 1px dashed var(--line-strong); }
 .kanban-card.rejected { outline: 2px solid var(--ink); animation: pb-shake .3s ease-in-out 2; }
 @keyframes pb-shake { 50% { transform: translateX(3px); } }

@@ -729,9 +729,23 @@ test('a linked repository enables stage moves; invalid folders explain the probl
   assert.equal(board.projects[0].tasks[0].workspace, null);
   assert.deepEqual(board.runs, []);
   assert.equal(board.execution.available, true);
-  assert.match($('#kanban-columns [data-column="executing"] .kanban-column-note').textContent, /runs only when you start it/);
-  assert.match($('#kanban-columns [data-column="code_review"] .kanban-column-note').textContent, /runs only when you start it/);
+  assert.match($('#kanban-columns [data-column="executing"] .kanban-column-note').textContent, /starts only when you choose/);
+  assert.match($('#kanban-columns [data-column="code_review"] .kanban-column-note').textContent, /starts only when you choose/);
   assert.match($('#kanban-columns [data-column="merge"] .kanban-column-note').textContent, /never pushed/);
+  // Project settings collapse to a one-line summary and remember the choice.
+  $('#project-toggle').click();
+  assert.equal($('#project-body').hidden, true);
+  assert.equal($('#project-toggle').getAttribute('aria-expanded'), 'false');
+  assert.match($('#project-summary').textContent, /Not linked|→/);
+  assert.equal(ctx.win.localStorage.getItem('promptboard.project-panel'), 'collapsed');
+  $('#project-toggle').click();
+  assert.equal($('#project-body').hidden, false);
+  // Copy, duplicate, and delete sit behind the card's "⋯" button.
+  const card = $('#kanban-columns .kanban-card');
+  assert.equal(card.querySelector('.kanban-more').hidden, true);
+  card.querySelector('.kanban-more-toggle').click();
+  assert.equal(card.querySelector('.kanban-more').hidden, false);
+  assert.equal(card.querySelector('.kanban-more-toggle').getAttribute('aria-expanded'), 'true');
 });
 
 test('backups: export round-trips, import validates, asks before replacing, and keeps imported settings pending', async t => {

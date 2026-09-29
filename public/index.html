@@ -176,7 +176,8 @@
       <p class="storage-warning" id="execution-status" role="status" hidden></p>
       <p class="storage-warning board-warning" role="alert" hidden></p>
       <section class="card kanban-projects" aria-labelledby="projects-heading">
-        <h2 class="sr-only" id="projects-heading">Project settings</h2>
+        <div class="card-heading project-heading"><div><h2 id="projects-heading">Project settings</h2><span class="project-summary" id="project-summary" hidden></span></div><button type="button" class="icon-button collapse-toggle" id="project-toggle" aria-expanded="true" aria-controls="project-body" aria-label="Collapse project settings" title="Collapse project settings"><span aria-hidden="true">−</span></button></div>
+        <div id="project-body">
         <div class="kanban-toolbar">
           <div class="toolbar-cell">
             <label class="field-label" for="project-select">Project<select id="project-select"></select></label>
@@ -203,7 +204,6 @@
           <div class="kanban-form-actions"><button type="submit" class="copy-button">Save project</button><button type="button" class="secondary-button" id="project-cancel">Cancel</button></div>
           <p class="inline-error" id="project-error" role="alert" hidden></p>
         </form>
-        <div class="connection-detail kanban-detail" id="project-detail" role="status" hidden></div>
         <div class="kanban-repo" id="repo-panel" hidden>
           <form class="kanban-repo-row" id="repo-form" novalidate>
             <label class="field-label" for="repo-path">Git repository folder<input id="repo-path" type="text" maxlength="4096" autocomplete="off" spellcheck="false" placeholder="/Users/you/code/project"></label>
@@ -214,6 +214,8 @@
           <p class="inline-error" id="repo-message" role="alert" hidden></p>
           <div class="connection-detail" id="import-pending" hidden><p id="import-pending-text"></p><div class="detail-actions"><button type="button" class="danger" id="import-confirm">Check and apply</button><button type="button" id="import-dismiss">Dismiss</button></div></div>
         </div>
+        </div>
+        <div class="connection-detail kanban-detail" id="project-detail" role="status" hidden></div>
         <div class="connection-detail kanban-ask" id="ask-panel" role="status" hidden></div>
       </section>
       <section class="card kanban-board" aria-labelledby="board-heading">
