@@ -21,7 +21,7 @@ function fakeAuth(overrides = {}) {
     login: async (provider, options) => { log.push(['login', provider, options.method]); options.onUpdate({ authUrl: 'https://auth.example/start' }); return { state: 'signed-in' }; },
     logout: async provider => { log.push(['logout', provider]); return { state: 'signed-out' }; }, ...overrides };
 }
-async function setup(t, { catalogReader = async id => ({ provider: id, ...catalogs[id], note: 'Native model options.' }), storage, generationResponse, authAdapter = fakeAuth(), runner } = {}) {
+async function setup(t, { catalogReader = async id => ({ provider: id, ...catalogs[id], note: 'Native model options.' }), storage, prefs = {}, generationResponse, authAdapter = fakeAuth(), runner } = {}) {
   const calls = [];
   const requests = [];
   const app = await startServer({ port: 0, authAdapter, detector: async () => Object.keys(catalogs).map(id => ({ id, available: true })), catalogReader,
@@ -46,8 +46,11 @@ async function setup(t, { catalogReader = async id => ({ provider: id, ...catalo
   win.URL.revokeObjectURL = () => {};
   win.HTMLAnchorElement.prototype.click = function () { downloads.push(this.download); };
   if (storage) win.localStorage.setItem('ste-prompt-engineer.history.v1', JSON.stringify(storage));
+  for (const [key, value] of Object.entries(prefs)) win.localStorage.setItem(key, value);
   let copied;
   Object.defineProperty(win.navigator, 'clipboard', { value: { writeText: async text => { copied = text; } } });
+  // Same order as the page: prefs.js runs in <head>, app.js is deferred.
+  win.eval(await readFile(new URL('../public/prefs.js', import.meta.url), 'utf8'));
   win.eval(await readFile(new URL('../public/app.js', import.meta.url), 'utf8'));
   t.after(async () => { win.close(); await app.close(); });
   const $ = selector => win.document.querySelector(selector);
@@ -75,6 +78,7 @@ test('UI sends selected model, effort, and language through HTTP, then restores 
   assert.equal($('#prompt-output').textContent, 'Dodaj test.');
   assert.match($('#output-meta').textContent, /actual-model/);
   $('#copy-button').click(); await until(() => copied(), 'copy'); assert.equal(copied(), 'Dodaj test.');
+  await until(() => !$('#copy-cheer').hidden, 'copy cheer');
   $('#new-prompt').click(); assert.equal($('input[name="language"]:checked').value, 'en');
   assert.equal($('input[name="quality"]:checked').value, 'reviewed');
   $('.history-restore').click();
@@ -299,6 +303,7 @@ test('provider failures show a stable message with a supplied reset time, keep i
   assert.match($('#generation-error').textContent, /temporarily limiting/);
   assert.match($('#generation-error').textContent, /reset at/);
   assert.doesNotMatch($('#generation-error').textContent, /SECRET|exhausted/i);
+  assert.doesNotMatch($('#generation-error').textContent, /nerd|glasses|tidy|goooo/i);
   assert.equal($('#prompt-input').value, 'Keep this request.');
   fail = false;
   submit();
@@ -348,4 +353,59 @@ test('connection panel separates install and sign-in, hands off terminal sign-in
   $('#auth-logout').click();
   assert.match($('#auth-detail').textContent, /not available here/);
   assert.equal(authAdapter.log.filter(entry => entry[0] === 'logout').length, 1);
+});
+
+test('saved theme and sidebar state apply before app code runs, persist, and survive storage failures', async t => {
+  const { $, win } = await setup(t, { prefs: { 'ste-prompt-engineer.theme': 'dark', 'ste-prompt-engineer.sidebar': 'collapsed' } });
+  const root = win.document.documentElement;
+  assert.equal(root.dataset.theme, 'dark');
+  assert.equal($('meta[name="color-scheme"]').content, 'dark');
+  assert.equal($('#theme-toggle').getAttribute('aria-pressed'), 'true');
+  assert.equal(root.dataset.sidebar, 'collapsed');
+  assert.equal($('#menu-toggle').getAttribute('aria-expanded'), 'false');
+  assert.equal($('#menu-toggle').getAttribute('aria-label'), 'Show prompt history');
+  $('#theme-toggle').click();
+  assert.equal(root.dataset.theme, 'light');
+  assert.equal($('#theme-toggle').getAttribute('aria-pressed'), 'false');
+  assert.equal(win.localStorage.getItem('ste-prompt-engineer.theme'), 'light');
+  $('#menu-toggle').click();
+  assert.equal(root.dataset.sidebar, 'expanded');
+  assert.equal($('#menu-toggle').getAttribute('aria-expanded'), 'true');
+  assert.equal(win.localStorage.getItem('ste-prompt-engineer.sidebar'), 'expanded');
+  win.Storage.prototype.setItem = () => { throw new win.DOMException('Storage is full.', 'QuotaExceededError'); };
+  $('#theme-toggle').click();
+  assert.equal(root.dataset.theme, 'dark');
+  // Narrow screens: the same toggle opens a drawer; Escape closes it and returns focus to the toggle.
+  Object.defineProperty(win, 'innerWidth', { value: 375, configurable: true });
+  $('#menu-toggle').click();
+  assert.ok($('#sidebar').classList.contains('open'));
+  assert.equal($('#sidebar-scrim').hidden, false);
+  assert.equal($('#menu-toggle').getAttribute('aria-expanded'), 'true');
+  win.document.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  assert.ok(!$('#sidebar').classList.contains('open'));
+  assert.equal($('#sidebar-scrim').hidden, true);
+  assert.equal(win.document.activeElement, $('#menu-toggle'));
+});
+
+test('long history lists every entry, restores a selection, deletes one, and filters by search', async t => {
+  const storage = Array.from({ length: 40 }, (_, index) => ({ id: `entry-${index}`, input: `Request number ${index}`, prompt: `Prompt ${index}`, createdAt: 1790000000000 - index, provider: 'codex' }));
+  const { $, win } = await setup(t, { storage });
+  assert.equal($('#history-list').children.length, 40);
+  assert.equal($('#history-count').textContent, '40');
+  assert.equal($('#history-empty').hidden, true);
+  win.document.querySelectorAll('.history-restore')[5].click();
+  await until(() => !$('#model').disabled, 'restored entry');
+  assert.equal($('#prompt-input').value, 'Request number 5');
+  assert.equal($('.history-item.active .history-restore').getAttribute('aria-current'), 'true');
+  $('.history-item.active .history-delete').click();
+  assert.equal($('#history-list').children.length, 39);
+  assert.equal($('.history-item.active'), null);
+  const stored = JSON.parse(win.localStorage.getItem('ste-prompt-engineer.history.v1'));
+  assert.equal(stored.length, 39);
+  assert.ok(!stored.some(entry => entry.id === 'entry-5'));
+  $('#history-search').value = 'no such request';
+  $('#history-search').dispatchEvent(new win.Event('input'));
+  assert.equal($('#history-list').children.length, 0);
+  assert.equal($('#history-empty').hidden, false);
+  assert.match($('#history-empty small').textContent, /Try another word/);
 });

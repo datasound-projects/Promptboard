@@ -65,16 +65,14 @@ Keep the app and CLI in the same environment. If your Windows CLI setup requires
 
 ## How to use it
 
-1. **Choose a provider and model.** Select an effort level when supported.
-2. **Choose the language.** English is the default; German and Polish are also available.
-3. **Set the task and detail.** Use Build, Debug, Refactor, Review, Architecture, Agent Workflow, or Research.
-4. **Enter your request.** Include important constraints and any exact technical text.
-5. Click **“Okay , Lets Goooo!”**
-6. **Review the prompt and findings**, then copy it into your coding agent.
+1. **Describe the task.** Include important constraints and any exact technical text.
+2. **Choose settings.** Pick the job (Build, Debug, Refactor, Review, Architecture, Agent Workflow, or Research), the CLI, the model and effort, the detail level, the output language (English, German, or Polish), and Reviewed or Fast checks.
+3. Click **“Okay, let's goooo!”** or press ⌘/Ctrl+Enter.
+4. **Review the prompt and findings**, then copy it into your coding agent.
 
-Optional controls add planning, acceptance checks, edge cases, or security review.
+**More settings** holds the less-used controls. The connection group can start sign-in, check again, and sign out (after confirmation) using the CLI's own commands. The status chips under the CLI selector show whether it is installed and signed in. See [sign-in controls](docs/cli-adapters.md#sign-in-controls). Brief options add planning, acceptance checks, edge cases, security review, and terms to keep.
 
-The connection panel shows whether the CLI is installed and signed in. It can start sign-in, refresh models, and sign out (after confirmation) using the CLI's own commands. See [sign-in controls](docs/cli-adapters.md#sign-in-controls).
+The top bar toggles the history sidebar and dark mode. Both choices are saved in this browser.
 
 Model choices come from your installed CLI. Availability depends on your account and CLI version. Gemini uses its CLI thinking settings.
 

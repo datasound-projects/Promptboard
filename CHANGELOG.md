@@ -7,6 +7,10 @@
 - No repair call after an account-level failure. A busy server returns `409 BUSY`, not `429`.
 - Connection panel: install and sign-in status, native Codex sign-in, terminal handoff for other CLIs, refresh models, and confirmed sign-out.
 - Clean shutdown on SIGINT, SIGTERM, and SIGHUP. Owned CLI processes and temporary folders are removed, and the port is released.
+- Simpler web layout in four numbered steps: describe, choose settings, generate, review and copy. Sign-in controls and brief options move into a labelled **More settings** section.
+- Optional dark mode and a collapsible history sidebar. Both are saved in the browser and applied before the first paint.
+- History scrolls on its own; the editor stays in place. The top bar reserves a place for a future Kanban page.
+- Readable text sizes and contrast in both themes, visible focus, a skip link, a drawer on narrow screens, and reduced-motion support.
 
 ## 0.3.0 — 28 September 2026
 

@@ -1,0 +1,10 @@
+'use strict';
+// Loads before the stylesheet, so a saved dark theme or collapsed sidebar applies on the first paint.
+try {
+  const root = document.documentElement;
+  if (localStorage.getItem('ste-prompt-engineer.theme') === 'dark') {
+    root.dataset.theme = 'dark';
+    document.querySelector('meta[name="color-scheme"]')?.setAttribute('content', 'dark');
+  }
+  if (localStorage.getItem('ste-prompt-engineer.sidebar') === 'collapsed') root.dataset.sidebar = 'collapsed';
+} catch {}
