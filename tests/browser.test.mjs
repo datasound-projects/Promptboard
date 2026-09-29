@@ -82,9 +82,10 @@ test('terminal dock in a real browser: start, render, type, collapse, resize, se
   // Resize the browser window: the terminal refits and the process sees the new size.
   await browser.resize(900, 800);
   await browser.until(`window.promptboardDock.sessions.get(${JSON.stringify(firstRun)}).term.cols !== ${colsBefore}`, 'terminal refit');
-  const cols = await browser.eval(`return window.promptboardDock.sessions.get(${JSON.stringify(firstRun)}).term.cols;`);
-  // The agent reports SIGWINCH; the last reported width must match the refitted terminal.
-  await browser.until(`[...${text(firstRun)}.matchAll(/size (\\d+)x/g)].at(-1)?.[1] === '${cols}'`, 'resize reached the agent process', 30000);
+  // The agent reports SIGWINCH; its last reported width must match the terminal's current width
+  // (layout can refit more than once while the window settles).
+  await browser.until(`[...${text(firstRun)}.matchAll(/size (\\d+)x/g)].at(-1)?.[1] === String(window.promptboardDock.sessions.get(${JSON.stringify(firstRun)}).term.cols)`, 'resize reached the agent process', 30000)
+    .catch(async error => { throw new Error(`${error.message}: terminal ${await browser.eval(`return window.promptboardDock.sessions.get(${JSON.stringify(firstRun)}).term.cols;`)} cols, agent reported ${JSON.stringify(await browser.eval(`return ${text(firstRun)}.match(/size \\d+x\\d+/g);`))}`); });
   await browser.resize(1280, 900);
 
   // A second task gets its own tab, process, and output.
