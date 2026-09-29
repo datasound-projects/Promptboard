@@ -1059,21 +1059,40 @@ function renderBoard() {
   window.PromptboardDock?.sync();
 }
 
+// Stage icons (24×24 outline paths). Each column's colour comes from CSS (--stage).
+const STAGE_ICONS = {
+  todo: ['M12 3 3 8l9 5 9-5-9-5Z', 'm3 12.5 9 5 9-5', 'm3 17 9 5 9-5'],
+  planning: ['M9 4 3 6v14l6-2 6 2 6-2V4l-6 2-6-2Z', 'M9 4v14', 'M15 6v14'],
+  executing: ['M4 4h16a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Z', 'm7 9 3 3-3 3', 'M13 15h4'],
+  code_review: ['m8 7-5 5 5 5', 'm16 7 5 5-5 5', 'm13.5 4-3 16'],
+  testing: ['M9 3h6', 'M10 3v6l-5 9a2 2 0 0 0 1.7 3h10.6a2 2 0 0 0 1.7-3l-5-9V3', 'M7.5 15h9'],
+  merge: ['M7 7v14', 'M7 9c0 3.3 2.7 6 6 6h2', 'M9 5a2 2 0 1 1-4 0 2 2 0 0 1 4 0Z', 'M19 15a2 2 0 1 1-4 0 2 2 0 0 1 4 0Z'],
+  done: ['M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z', 'm8 12 3 3 5-6'],
+};
+function stageIcon(id) {
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  for (const [name, value] of Object.entries({ viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '1.8', 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true', class: 'kanban-stage-icon' })) svg.setAttribute(name, value);
+  for (const d of STAGE_ICONS[id] || []) { const path = document.createElementNS(ns, 'path'); path.setAttribute('d', d); svg.append(path); }
+  return svg;
+}
+
 function renderColumn(column, tasks) {
   const section = document.createElement('section');
   section.className = 'kanban-column';
   section.dataset.column = column.id;
   const heading = document.createElement('h3');
   heading.id = `column-${column.id}`;
-  heading.textContent = column.title;
+  heading.append(stageIcon(column.id), column.title);
   const count = document.createElement('span');
-  count.className = 'kanban-count';
-  count.textContent = String(tasks.length).padStart(2, '0');
+  count.className = 'kanban-count kanban-column-count';
+  count.textContent = String(tasks.length);
+  count.setAttribute('aria-label', `${tasks.length} ${tasks.length === 1 ? 'card' : 'cards'}`);
   const header = document.createElement('div');
   header.className = 'kanban-column-heading';
   header.append(heading, count);
   const note = paragraph(!column.agent ? (column.id === 'todo' ? 'Never runs an agent' : 'Finished · never runs an agent')
-    : !board.execution?.available ? 'Agent stage · agent terminals not set up' : { testing: 'Your test commands · only exit codes count', merge: 'Fast-forward only · after you confirm · never pushed' }[column.id] || 'Agent stage · starts only when you choose', 'kanban-column-note');
+    : !board.execution?.available ? 'Agent stage · agent terminals not set up' : { testing: 'Your test commands · only exit codes count', merge: 'Fast-forward only · never pushed' }[column.id] || 'Agent stage · starts only when you choose', 'kanban-column-note');
   const list = document.createElement('ol');
   list.className = 'kanban-cards';
   list.dataset.column = column.id;

@@ -486,3 +486,26 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
   .dock-actions { gap: 8px; margin-left: auto; overflow-x: auto; }
 }
 .workflow-stage textarea { min-height: 0; height: 92px; resize: vertical; }
+
+/* ---- Kanban lanes: a colour per stage, tinted lanes, white cards ---- */
+.kanban-column[data-column="todo"] { --stage: #6b7280; }
+.kanban-column[data-column="planning"] { --stage: #8b5cf6; }
+.kanban-column[data-column="executing"] { --stage: #3b82f6; }
+.kanban-column[data-column="code_review"] { --stage: #f59e0b; }
+.kanban-column[data-column="testing"] { --stage: #06b6d4; }
+.kanban-column[data-column="merge"] { --stage: #f97316; }
+.kanban-column[data-column="done"] { --stage: #10b981; }
+.kanban-columns { gap: 12px; }
+.kanban-column { border: 1px solid color-mix(in srgb, var(--stage) 18%, var(--line)); border-top: 3px solid var(--stage); border-radius: 12px; background: color-mix(in srgb, var(--stage) 5%, var(--surface-2)); }
+.kanban-column-heading { align-items: center; padding: 12px 14px 0; }
+.kanban-column h3 { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 14px; }
+.kanban-stage-icon { flex: none; width: 17px; height: 17px; color: var(--stage); }
+.kanban-column-count { min-width: 24px; padding: 1px 8px; border-radius: 999px; background: color-mix(in srgb, var(--stage) 16%, transparent); color: var(--ink); font: 600 12px/1.6 var(--mono); text-align: center; }
+.kanban-column-note { margin: 3px 14px 10px 39px; }
+.kanban-column .kanban-cards, .kanban-column .kanban-cards:empty { gap: 10px; padding: 10px; border-top: 1px solid color-mix(in srgb, var(--stage) 14%, var(--line)); }
+.kanban-column .kanban-cards:empty::after { content: "Drop cards here"; display: flex; align-items: center; justify-content: center; height: 72px; border: 1.5px dashed color-mix(in srgb, var(--stage) 35%, var(--line)); border-radius: 10px; color: var(--subtle); font-size: 12px; }
+.kanban-column .kanban-cards.drop-target { outline: 2px dashed var(--stage); background: color-mix(in srgb, var(--stage) 8%, transparent); }
+.kanban-columns .kanban-card { border-radius: 10px; border-color: color-mix(in srgb, var(--stage) 12%, var(--line)); box-shadow: 0 1px 2px rgb(0 0 0 / .05); transition: box-shadow .15s, transform .15s, border-color .15s; }
+.kanban-columns .kanban-card:hover { border-color: color-mix(in srgb, var(--stage) 45%, var(--line)); box-shadow: 0 6px 16px rgb(0 0 0 / .08); transform: translateY(-1px); }
+.kanban-columns .kanban-card.needs-review { border-left-color: var(--stage); }
+@media (prefers-reduced-motion: reduce) { .kanban-columns .kanban-card { transition: none; } .kanban-columns .kanban-card:hover { transform: none; } }
