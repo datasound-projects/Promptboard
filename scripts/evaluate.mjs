@@ -7,7 +7,7 @@ import { validateRequest } from '../src/engine.mjs';
 import { generate } from '../src/server.mjs';
 import { VERSION } from '../src/version.mjs';
 
-export const help = `Live prompt evaluation · AI Prompt Engineer ${VERSION}
+export const help = `Live prompt evaluation · Promptboard ${VERSION}
 
 This command makes model calls only when you explicitly select a provider.
 Your CLI sign-in, model access, usage limits, and charges apply.

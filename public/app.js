@@ -882,7 +882,7 @@ function showPage() {
     if ((link.getAttribute('href') === '#/kanban') === kanban) link.setAttribute('aria-current', 'page');
     else link.removeAttribute('aria-current');
   }
-  document.title = kanban ? 'Kanban · AI Prompt Engineer' : 'AI Prompt Engineer · STE';
+  document.title = kanban ? 'Kanban · Promptboard' : 'Compose · Promptboard';
   if (kanban) renderBoard();
   setSidebar(false);
   window.scrollTo(0, 0);
@@ -2091,7 +2091,7 @@ $('#export-button').addEventListener('click', () => {
 $('#report-button').addEventListener('click', () => {
   if (!currentResult?.verification) return;
   const { input, provider, model, effort, language, quality, detail, task, options, terminology, prompt, reportedModels, verification, lint } = currentResult;
-  const report = { application: 'AI Prompt Engineer', request: { input, provider, model, effort, language, quality, detail, task, options, terminology }, prompt, reportedModels, verification, lint };
+  const report = { application: 'Promptboard', request: { input, provider, model, effort, language, quality, detail, task, options, terminology }, prompt, reportedModels, verification, lint };
   downloadFile(`${JSON.stringify(report, null, 2)}\n`, 'application/json;charset=utf-8', `ste-check-report-${exportDate()}.json`);
   announce('Check report exported as JSON. It includes your request and the prompt.');
 });

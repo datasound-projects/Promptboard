@@ -5,7 +5,7 @@ import { buildPrompt, validateRequest } from '../src/engine.mjs';
 import { detectProviders, killOwnedProcesses, removeOwnedTempDirsSync } from '../src/providers.mjs';
 import { VERSION } from '../src/version.mjs';
 
-const help = `AI Prompt Engineer ${VERSION} · STE
+const help = `Promptboard ${VERSION}
 
 Open the app:       npm start
 Use the terminal:  node bin/ste.mjs --provider codex < request.txt
@@ -64,18 +64,18 @@ async function main() {
       app = await startServer({ port });
     } catch (error) {
       if (error.code === 'EADDRINUSE') {
-        throw new Error(`Port ${port} is already in use. If AI Prompt Engineer is already running, open http://127.0.0.1:${port}.\nOr start on another port: npm start -- --port ${port === 4320 ? 4321 : 4320}`);
+        throw new Error(`Port ${port} is already in use. If Promptboard is already running, open http://127.0.0.1:${port}.\nOr start on another port: npm start -- --port ${port === 4320 ? 4321 : 4320}`);
       }
       throw error;
     }
-    console.log(`\nAI Prompt Engineer ${VERSION} · STE\n${app.url}\n\nPress Ctrl+C to stop.\n`);
+    console.log(`\nPromptboard ${VERSION}\n${app.url}\n\nPress Ctrl+C to stop.\n`);
     // Idempotent shutdown. The first signal cancels work and closes the port with a
     // bounded grace period; a second signal exits at once. SIGKILL cannot be handled.
     let stopping = false;
     const stop = async signal => {
       if (stopping) { killOwnedProcesses('SIGKILL'); removeOwnedTempDirsSync(); process.exit(130); }
       stopping = true;
-      console.log(`\n${signal} received. Stopping AI Prompt Engineer…`);
+      console.log(`\n${signal} received. Stopping Promptboard…`);
       const force = setTimeout(() => { killOwnedProcesses('SIGKILL'); removeOwnedTempDirsSync(); process.exit(1); }, 8000);
       force.unref();
       try { await app.close(); } catch {}
