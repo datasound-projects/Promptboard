@@ -60,7 +60,11 @@ function turn(text) {
   }
   if (text.includes('EXIT_NOW')) process.exit(0);
   const plan = args.includes('plan') || args.includes('read-only');
-  emit('Stop', { last_assistant_message: plan ? `PLAN\n1. Change the code.\nsaw ${text.length} chars` : 'Implemented the change.' });
+  // Review requests carry the diff; answer with the findings format the review stage asks for.
+  const review = text.includes('=== DIFF:') ? '```json\n' + JSON.stringify(text.includes('REVIEW_FAIL')
+    ? { verdict: 'changes_required', findings: [{ severity: 'high', file: 'feature.txt', line: 1, explanation: 'The value is wrong.' }] }
+    : { verdict: 'no_issues', findings: [] }) + '\n```' : null;
+  emit('Stop', { last_assistant_message: review || (plan ? `PLAN\n1. Change the code.\nsaw ${text.length} chars` : 'Implemented the change.') });
   process.stdout.write('turn complete\r\n');
 }
 if (prompt.includes('ASK_PERMISSION')) {

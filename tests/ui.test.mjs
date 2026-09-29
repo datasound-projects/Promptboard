@@ -1067,3 +1067,73 @@ test('starting a run needs consent and an acknowledgment for unverified prompts;
   assert.match($('#task-details').textContent, /Task text revision 2/);
   assert.match($('#task-details').textContent, /approval is stale: the task changed/);
 });
+
+test('PB-04 in the UI: commit, configured tests, accepted review, merge preview, confirmed merge; Done only through merge', { skip: process.platform === 'win32', timeout: 60000 }, async t => {
+  const ctx = await linkedKanban(t);
+  const { $, win } = ctx;
+  await link(ctx);
+  const created = await ctx.app.board.createTask({ projectId: ctx.project.id, title: 'Ship it', prompt: 'Add a file.' });
+  const task = await ctx.app.board.moveTask(created.id, { column: 'executing', expectedRevision: 1 });
+  const workspace = await ctx.app.board.ensureTaskWorktree(task.id);
+  await writeFile(join(workspace.path, 'shipped.txt'), 'shipped\n');
+  await ctx.win.__pbTest.loadBoard(); await ctx.idle();
+  const openDetails = async () => { cardItem(ctx, 'Ship it').querySelector('.kanban-details').click(); await until(() => !/Reading the task branch/.test($('#task-details').textContent) && /Task revision/.test($('#task-details').textContent), 'delivery details'); await ctx.idle(); };
+  // Commit through the details view, with a diff preview and an inline confirmation.
+  await openDetails();
+  await until(() => /\+shipped/.test($('#task-details').textContent), 'diff preview');
+  assert.match($('#task-details').textContent, /1 uncommitted change/);
+  byText($('#task-details'), 'Commit task changes…').click();
+  assert.match($('#task-details').textContent, /with your existing Git identity\?/);
+  await click(ctx, byText($('#task-details'), 'Commit'));
+  await until(() => /1 commit ahead of trunk/.test($('#task-details').textContent), 'committed');
+  $('#task-dialog').close();
+  // Test commands come from Workflow settings only.
+  $('#workflow-open').click();
+  $('#test-commands').value = `${process.execPath} -e "process.exit(0)"`;
+  submitForm(ctx, '#workflow-form'); await ctx.idle();
+  assert.deepEqual((await serverBoard(ctx)).projects[0].testCommands[0].argv, [process.execPath, '-e', 'process.exit(0)']);
+  // Review evidence (recorded as the supervisor does after a confirmed review run), accepted in the UI.
+  const tasks = () => serverTasks(ctx);
+  await moveBy(ctx, 'Ship it', 'code_review'); await ctx.idle();
+  $('#ask-panel').hidden = true;
+  cardItem(ctx, 'Ship it').querySelector('.kanban-start').click();
+  submitForm(ctx, '#run-form'); await ctx.idle();
+  const reviewRun = ctx.executor.started.at(-1);
+  assert.equal(reviewRun.stage, 'code_review');
+  assert.equal(reviewRun.config.permissionMode, 'plan', 'Review is read-only.');
+  await ctx.app.board.updateRun(reviewRun.id, { status: 'running' });
+  await ctx.app.board.updateRun(reviewRun.id, { status: 'succeeded' });
+  await ctx.app.board.delivery.recordReview(reviewRun, '```json\n{"verdict":"no_issues","findings":[]}\n```');
+  await ctx.win.__pbTest.loadBoard(); await ctx.idle();
+  await openDetails();
+  assert.match($('#task-details').textContent, /Review completed · verdict no issues/);
+  await click(ctx, byText($('#task-details'), 'Accept review'));
+  await until(async () => (await tasks())[0].evidence.review.status === 'accepted', 'accepted');
+  $('#task-dialog').close();
+  // Tests in Testing: only exit codes decide.
+  await moveBy(ctx, 'Ship it', 'testing'); await ctx.idle();
+  $('#ask-panel').hidden = true;
+  cardItem(ctx, 'Ship it').querySelector('.kanban-deliver').click();
+  await until(() => byText($('#task-details'), 'Run tests…'), 'run tests button');
+  byText($('#task-details'), 'Run tests…').click();
+  await click(ctx, byText($('#task-details'), 'Run tests'));
+  await until(async () => (await tasks())[0].evidence.tests?.status === 'passed', 'tests passed', 15000);
+  $('#task-dialog').close();
+  // Merge: the menu never offers Done; the preview shows the plan; the merge needs confirmation.
+  await moveBy(ctx, 'Ship it', 'merge'); await ctx.idle();
+  assert.ok(!Array.from(cardItem(ctx, 'Ship it').querySelectorAll('.kanban-move-to option'), item => item.value).includes('done'));
+  cardItem(ctx, 'Ship it').querySelector('.kanban-deliver').click();
+  await until(() => byText($('#task-details'), 'Confirm merge…'), 'merge preview', 15000);
+  assert.match($('#task-details').textContent, /→ trunk:/);
+  assert.match($('#task-details').textContent, /A\tshipped\.txt/);
+  assert.match($('#task-details').textContent, /Nothing is pushed/);
+  byText($('#task-details'), 'Confirm merge…').click();
+  assert.match($('#task-details').textContent, /It is not pushed/);
+  await click(ctx, byText($('#task-details'), 'Confirm merge'));
+  await until(async () => (await tasks())[0].column === 'done', 'merged into Done');
+  const done = (await tasks())[0];
+  assert.equal(done.completion.kind, 'merged');
+  assert.equal(execFileSync('git', ['rev-parse', 'trunk'], { cwd: ctx.repo, encoding: 'utf8' }).trim(), done.completion.mergedCommit);
+  assert.deepEqual(titles($, 'done'), ['Ship it']);
+  assert.ok(win.document.querySelector('#announcement').textContent.includes('Merged into trunk and verified'));
+});

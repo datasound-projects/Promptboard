@@ -21,6 +21,7 @@ const readOnlyPlanning = 'Plan only. Inspect the repository as needed, but do no
 
 export const STAGE_INSTRUCTIONS = Object.freeze({
   planning: `${readOnlyPlanning} Promptboard shows your final message to the user as the plan; the user must approve it before any implementation starts.`,
+  code_review: `Review only. ${readOnlyPlanning.replace('Plan only. ', '').replace(' End with a numbered implementation plan, the files you expect to change, and how the result should be verified.', '')} Compare the diff below with the task requirements and acceptance criteria. Do not fix anything. End with one fenced json block: {"verdict": "no_issues" | "changes_required", "findings": [{"severity": "critical" | "high" | "medium" | "low", "file": "path", "line": 1, "explanation": "what is wrong and why"}]}.`,
   executing: 'Implement the task below in this working directory only. It is a dedicated Git worktree on the task branch. Do not change files outside it, do not push, and do not rewrite Git history. When you finish, summarize what changed and how you verified it. The user confirms completion in Promptboard.',
 });
 
@@ -84,21 +85,23 @@ export function resolveConfig(stage, config = {}) {
   const provider = config.provider || 'claude';
   const adapter = ADAPTERS[provider];
   if (!adapter) throw new AgentError('Choose Claude Code, Codex, or Gemini CLI.', 'INVALID_PROVIDER');
-  const capability = adapter.capabilities[stage === 'planning' ? 'planning' : 'execution'];
+  const readOnly = stage === 'planning' || stage === 'code_review';
+  const capability = adapter.capabilities[readOnly ? 'planning' : 'execution'];
   if (!capability?.supported) throw new AgentError(`${adapter.name}: ${capability?.how || 'This stage is not supported.'}`, 'STAGE_UNSUPPORTED_BY_PROVIDER');
   const model = config.model ? String(config.model) : '';
   if (model && !SAFE_MODEL.test(model)) throw new AgentError('Use a model ID with no spaces or command flags.', 'INVALID_MODEL');
   const effort = config.effort ? String(config.effort) : '';
   try { validateEffort(provider, effort); } catch { throw new AgentError('This CLI does not support that effort setting.', 'INVALID_EFFORT'); }
-  const permissionMode = stage === 'planning' ? 'plan' : (config.permissionMode || adapter.permissionModes[0]);
-  if (stage !== 'planning' && !adapter.permissionModes.includes(permissionMode)) throw new AgentError(`${adapter.name} execution supports these permission modes only: ${adapter.permissionModes.join(', ')}.`, 'INVALID_PERMISSION_MODE');
+  const permissionMode = readOnly ? 'plan' : (config.permissionMode || adapter.permissionModes[0]);
+  if (!readOnly && !adapter.permissionModes.includes(permissionMode)) throw new AgentError(`${adapter.name} execution supports these permission modes only: ${adapter.permissionModes.join(', ')}.`, 'INVALID_PERMISSION_MODE');
   return { provider, model, effort, permissionMode };
 }
 
 /** Compose the first message: stage instructions, the exact task text, and an approved plan. */
-export function composeMessage(stage, prompt, plan = null, instructions = '') {
+export function composeMessage(stage, prompt, plan = null, instructions = '', extra = '') {
   const parts = [STAGE_INSTRUCTIONS[stage], ...(instructions ? ['', '=== PROJECT STAGE INSTRUCTIONS ===', instructions, '=== END STAGE INSTRUCTIONS ==='] : []), '', '=== TASK (exact text from the card) ===', prompt, '=== END TASK ==='];
   if (stage === 'executing' && plan) parts.push('', '=== APPROVED PLAN ===', plan, '=== END PLAN ===');
+  if (extra) parts.push('', extra);
   return parts.join('\n');
 }
 
@@ -138,6 +141,7 @@ priority = 999
  * `paste` is the message to type into the terminal when it is too long for argv.
  */
 export async function buildSession({ provider, stage, config, message, runDir, eventsFile, sessionId, nodePath = process.execPath }) {
+  const readOnly = stage === 'planning' || stage === 'code_review';
   const inArgv = Buffer.byteLength(message) <= ARGV_PROMPT_LIMIT;
   const env = { TERM: 'xterm-256color', PROMPTBOARD_RUN: '1' };
   let args;
@@ -145,22 +149,22 @@ export async function buildSession({ provider, stage, config, message, runDir, e
     const hook = { type: 'command', command: nodePath, args: [HOOK_SCRIPT, eventsFile, 'claude'] };
     const hooks = Object.fromEntries(['SessionStart', 'UserPromptSubmit', 'PermissionRequest', 'Notification', 'Stop', 'StopFailure', 'SessionEnd'].map(event => [event, [{ hooks: [hook] }]]));
     args = ['--session-id', sessionId, '--settings', JSON.stringify({ hooks }), '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}'];
-    if (stage === 'planning') args.push('--permission-mode', 'plan', '--tools', 'Read,Grep,Glob', '--disallowedTools', 'Edit,Write,NotebookEdit,Bash,ExitPlanMode');
+    if (readOnly) args.push('--permission-mode', 'plan', '--tools', 'Read,Grep,Glob', '--disallowedTools', 'Edit,Write,NotebookEdit,Bash,ExitPlanMode');
     else args.push('--permission-mode', config.permissionMode);
     if (config.model) args.push('--model', config.model);
     if (config.effort) { args.push('--effort', config.effort); env.CLAUDE_CODE_EFFORT_LEVEL = config.effort; }
     if (inArgv) args.push(message);
   } else if (provider === 'codex') {
     args = ['-c', `notify=[${[nodePath, HOOK_SCRIPT, eventsFile, 'codex'].map(tomlString).join(',')}]`, '--no-alt-screen'];
-    if (stage === 'planning') args.push('--sandbox', 'read-only', '--ask-for-approval', 'never');
+    if (readOnly) args.push('--sandbox', 'read-only', '--ask-for-approval', 'never');
     else args.push('--sandbox', 'workspace-write', '--ask-for-approval', 'on-request');
     if (config.model) args.push('--model', config.model);
     if (config.effort) args.push('-c', `model_reasoning_effort=${tomlString(config.effort)}`);
     if (inArgv) args.push(message);
   } else if (provider === 'gemini') {
-    env.GEMINI_CLI_SYSTEM_SETTINGS_PATH = await geminiSystemSettings(runDir, [nodePath, HOOK_SCRIPT, eventsFile, 'gemini'].map(shQuote).join(' '), { plan: stage === 'planning' });
+    env.GEMINI_CLI_SYSTEM_SETTINGS_PATH = await geminiSystemSettings(runDir, [nodePath, HOOK_SCRIPT, eventsFile, 'gemini'].map(shQuote).join(' '), { plan: readOnly });
     args = ['--extensions', 'none', '--allowed-mcp-server-names', ''];
-    if (stage === 'planning') {
+    if (readOnly) {
       const policy = `${runDir}/plan-policy.toml`;
       await writeFile(policy, GEMINI_PLAN_POLICY, { mode: 0o600 });
       args.push('--approval-mode', 'plan', '--policy', policy);

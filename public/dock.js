@@ -43,7 +43,7 @@ function stripTerminal(text) {
 
 function createSession(run) {
   const task = board?.projects.flatMap(project => project.tasks).find(item => item.id === run.taskId);
-  const title = `${task?.title || 'Task'} · ${run.stage === 'planning' ? 'Planning' : 'Executing'}`;
+  const title = `${task?.title || 'Task'} · ${{ planning: 'Planning', executing: 'Executing', code_review: 'Code Review' }[run.stage] || run.stage}`;
   const panel = document.createElement('div');
   panel.className = 'dock-terminal';
   panel.id = `dock-panel-${run.id}`;

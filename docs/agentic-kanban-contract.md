@@ -11,9 +11,9 @@ Kangentic was used as a behavior reference only. No code was copied.
 | `todo` | To Do | Never |
 | `planning` | Planning | Yes, after explicit consent |
 | `executing` | Executing | Yes, after explicit consent |
-| `code_review` | Code Review | PB-04 |
-| `testing` | Testing | PB-04 (commands) |
-| `merge` | Merge | Never (Git operation, PB-04) |
+| `code_review` | Code Review | Yes, read-only review after explicit consent |
+| `testing` | Testing | No agent: runs the project's approved test commands |
+| `merge` | Merge | Never: a confirmed Git fast-forward |
 | `done` | Done | Never |
 
 The columns are fixed in `src/board.mjs` (`COLUMNS`). **The backend enforces "never"**: `requestRun` rejects `todo` and `done` with `STAGE_NOT_RUNNABLE`, whatever the UI shows.
@@ -140,6 +140,34 @@ A stage becomes `succeeded` only through `POST /api/runs/:id/confirm` after a fi
 - Every move uses `POST /api/tasks/:id/move`, which records the transition first. Then, for Planning or Executing, it applies the project's workflow policy: `ask` returns a question, `start` requests a run with `trigger: "automation"`, and `manual` does nothing. `PATCH /api/projects/:id/workflow` stores overrides; runs keep a snapshot of their settings.
 - Terminal output is rendered only by xterm (WebGL renderer, because the CSP blocks xterm's inline `<style>` elements) or through `textContent`. Links are never opened automatically.
 - Not tested: Safari, Firefox, Windows, and browsers without WebGL (they use a plain-text fallback). Under software rendering (no GPU), creating each terminal takes several seconds.
+
+## Review, testing, merge, and Done (PB-04)
+
+Everything in this section lives in `src/delivery.mjs`. Evidence is tied to the task commit, the target commit, and the prompt revision. A new commit or an advanced target makes older evidence stale automatically.
+
+- **Commit:** `GET /api/tasks/:id/uncommitted` previews all uncommitted work, including new files, which are read without staging. `POST /api/tasks/:id/commit { message, confirm }` stages everything and commits on the task branch with the repository's existing Git identity and hooks. A missing identity returns `IDENTITY_REQUIRED`; Git configuration is never changed.
+- **Code Review:**
+  - A review is an agent run of stage `code_review`. It uses the same read-only boundary as Planning, and the committed diff against the target is part of its message.
+  - It needs a clean revision with commits ahead of the target (`UNCOMMITTED_CHANGES`, `NO_CHANGES`).
+  - Confirming the run records the findings (`evidence.review.status = completed`), parsed from a ```json block. Accepting them is a separate decision (`accept-review`), valid only for the reviewed commit.
+  - `send-back` moves the card to Executing, and the next Executing run receives the findings.
+- **Testing:**
+  - Test commands are set by the user (`PATCH /api/projects/:id/tests`). Each is stored as argv, parsed without a shell, and runs in the task worktree with a timeout.
+  - Imported commands wait in `pendingImport` until confirmed.
+  - `POST /api/tasks/:id/tests { confirm }` runs them in the background. For each command it records the command, working directory, exit code, duration, output tail, and a log.
+  - Only all-zero exit codes make `passed`. A missing command, timeout, or failure never passes.
+  - If the task commit changes during the run, the result becomes `invalid`.
+- **Merge:**
+  - `GET /api/tasks/:id/merge-preview` lists branches, commits, files, whether a fast-forward is possible, the target checkout, and each eligibility problem.
+  - `POST /api/tasks/:id/merge { confirm, taskCommit, targetCommit }` requires all of these: an accepted review for the current task commit, passing tests for the current task and target commits, a fast-forward, a task branch that still points at the previewed commit, and a clean target checkout (tracked files).
+  - Merges are serialized per repository and everything is rechecked immediately before.
+  - If the target branch is checked out, that checkout runs `git merge --ff-only`. Otherwise `git update-ref` moves the branch with an old-value check. No branch is switched, nothing is pushed, and the result is verified before the card moves to Done.
+  - If the target has advanced, `update-branch { confirm }` merges it into the task branch. Conflicts are aborted and reported, never resolved. Review and tests must then run again.
+- **Done:**
+  - Only `completeTask` enters Done: through a verified merge (`completion.kind = merged`), or through `complete-no-changes`, allowed only when the branch has no changes (`kind = no_changes`; never described as merged).
+  - Moving a card to Done returns `DONE_REQUIRES_MERGE`. Reopening clears the completion.
+  - Worktree cleanup stays optional and ownership-checked.
+- **Automation:** "Start on entry" for Code Review starts a review run. For Testing it runs the configured commands. Merge always needs confirmation, and automatic stage advancement does not exist.
 
 ## Integration points for later work
 

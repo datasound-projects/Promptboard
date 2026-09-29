@@ -68,8 +68,8 @@ export class Supervisor {
   async limit() { return (await this.board.state()).settings.maxConcurrentRuns || 1; }
 
   /** Queue a run. Returns at once; the run starts when a slot is free. */
-  async start({ run, task, planRunId }) {
-    this.queue.push({ runId: run.id, task, planRunId });
+  async start({ run, task, planRunId, extra = '' }) {
+    this.queue.push({ runId: run.id, task, planRunId, extra });
     this.#pump();
   }
 
@@ -98,7 +98,7 @@ export class Supervisor {
     await this.board.updateRun(runId, { status: 'failed', errorCode: code, reason, endedAt: Date.now() }).catch(() => {});
   }
 
-  async #launch({ runId, task, planRunId }) {
+  async #launch({ runId, task, planRunId, extra }) {
     const run = await this.board.run(runId);
     if (run.status !== 'queued') { this.#endPending(runId); return; } // Cancelled while queued.
     const { pty, message: setup } = await this.pty();
@@ -108,7 +108,7 @@ export class Supervisor {
     const runDir = join(this.dataDir, run.artifactsDir);
     await mkdir(runDir, { recursive: true, mode: 0o700 });
     const plan = planRunId ? await readFile(join(this.dataDir, 'runs', planRunId, 'plan.md'), 'utf8').catch(() => null) : null;
-    const message = composeMessage(run.stage, task.prompt, plan, run.config.instructions || '');
+    const message = composeMessage(run.stage, task.prompt, plan, run.config.instructions || '', extra || '');
     // Stage instructions, the exact task text, and the plan are stored with the run.
     await writeFile(join(runDir, 'prompt.md'), message, { mode: 0o600 });
     await writeFile(join(runDir, 'task-prompt.txt'), task.prompt, { mode: 0o600 });
@@ -212,11 +212,12 @@ export class Supervisor {
       await this.#setStatus(session, 'waiting_for_input', { waitingReason: signal.reason });
     } else if (signal.kind === 'turn_complete') {
       session.turns++;
-      const planning = session.stage === 'planning';
-      if (signal.message) await writeFile(join(session.runDir, planning ? 'plan.md' : 'last-message.md'), signal.message, { mode: 0o600 });
+      const planning = session.stage === 'planning', reviewing = session.stage === 'code_review';
+      if (signal.message) await writeFile(join(session.runDir, planning ? 'plan.md' : reviewing ? 'review.md' : 'last-message.md'), signal.message, { mode: 0o600 });
       await this.#setStatus(session, 'waiting_for_input', {
-        turns: session.turns, ...(planning && signal.message ? { hasPlan: true, planExcerpt: signal.message } : {}),
+        turns: session.turns, ...(planning && signal.message ? { hasPlan: true, planExcerpt: signal.message } : {}), ...(reviewing && signal.message ? { hasReview: true } : {}),
         waitingReason: planning ? (signal.message ? 'The plan is ready. Review it, continue in the terminal, or approve it.' : 'The agent finished its turn without a plan message. Continue in the terminal.')
+          : reviewing ? 'The review is ready. Check the findings, then confirm to record them.'
           : 'The agent finished its turn. Review the work, continue in the terminal, or confirm the stage.',
       });
     } else if (signal.kind === 'failed') {
@@ -307,7 +308,9 @@ export class Supervisor {
     const run = await this.board.run(runId);
     if (run.status !== 'waiting_for_input' || !run.turns) throw new AgentError('Confirm after the agent has finished a turn and is waiting.', 'NOT_CONFIRMABLE', 409);
     if (run.stage === 'planning') await this.board.approvePlan(run.taskId, { runId });
-    await this.board.updateRun(runId, { status: 'succeeded', reason: run.stage === 'planning' ? 'Plan approved by you.' : 'Stage confirmed by you.', endedAt: Date.now() });
+    // A confirmed review records its findings for the reviewed commits; accepting it is a separate step.
+    if (run.stage === 'code_review') await this.board.delivery.recordReview(run, await readFile(join(this.dataDir, run.artifactsDir, 'review.md'), 'utf8').catch(() => ''));
+    await this.board.updateRun(runId, { status: 'succeeded', reason: run.stage === 'planning' ? 'Plan approved by you.' : run.stage === 'code_review' ? 'Review completed; accept it or send it back.' : 'Stage confirmed by you.', endedAt: Date.now() });
     const session = this.sessions.get(runId);
     if (session?.proc) { session.confirmed = true; this.#push(session, { status: 'succeeded' }); this.#kill(session); }
   }
@@ -315,7 +318,7 @@ export class Supervisor {
   /** Read a run artifact (plan, last message, or the tail of the output log). */
   async artifact(runId, name) {
     const run = await this.board.run(runId);
-    const file = { plan: 'plan.md', 'last-message': 'last-message.md', output: 'output.log' }[name];
+    const file = { plan: 'plan.md', review: 'review.md', 'last-message': 'last-message.md', output: 'output.log' }[name];
     const path = join(this.dataDir, run.artifactsDir, file);
     const handle = await open(path, 'r').catch(() => null);
     if (!handle) return '';

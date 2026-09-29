@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Review, testing, and merge (PB-04): commit task changes with a diff preview. Code reviews are read-only and record findings; accepting a review is a separate step, and findings can be sent back to Executing. Test commands are yours, run without a shell, and only exit codes count. Merging is a confirmed, verified, fast-forward-only local merge (never pushed), with a confirmed update when the target moved. Done requires a merge or "Reviewed: no changes required".
 - Board interface (PB-03): toolbar (project, repository, target branch, workflow settings), compact cards with run badges, optimistic moves that roll back with a reason, a consent dialog, task details with the plan and run history, and per-project workflow settings (Manual, Ask on entry (default), Start on entry).
   - A resizable, collapsible terminal dock (xterm with the WebGL renderer, pinned local assets, strict CSP unchanged) with one tab per session. It reconnects after a reload and never restarts a run.
 - Agent execution (PB-02): Planning and Executing run Claude Code, Codex, or Gemini CLI in an interactive terminal inside the task worktree, after your explicit confirmation.

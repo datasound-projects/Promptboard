@@ -949,6 +949,7 @@ function canMove(from, to) {
   const a = ids.indexOf(from), b = ids.indexOf(to);
   if (a < 0 || b < 0 || a === b) return false;
   if (from === 'done') return to === 'todo';
+  if (to === 'done') return false; // Reached only through a merge or an explicit no-change completion.
   return b === a + 1 || (from === 'todo' && to === 'executing') || b < a;
 }
 
@@ -1141,7 +1142,7 @@ function showBoardError(error) {
  * a rejected move is rolled back visibly with the reason. `index` counts the other cards in
  * that column; null means the end.
  */
-async function placeCard(id, column, index) {
+async function placeCard(id, column, index, retried = false) {
   const card = findTask(id);
   if (!card || pendingMoves.has(id)) return false;
   const project = currentProject();
@@ -1160,6 +1161,9 @@ async function placeCard(id, column, index) {
     result = await boardCall('POST', `/api/tasks/${encodeURIComponent(id)}/move`, { column, index: position, expectedRevision: card.revision });
   } catch (error) {
     pendingMoves.delete(id);
+    // Background work (for example test results) can change a card's revision. If the card is still
+    // where the user saw it, the move they asked for is unchanged: reload and try once more.
+    if (error.code === 'REVISION_CONFLICT' && !retried && findTask(id)?.column === card.column) return placeCard(id, column, index, true);
     if (currentProject()?.id === project.id && error.code !== 'REVISION_CONFLICT' && error.code !== 'NOT_FOUND') { currentProject().tasks = snapshot; renderBoard(); }
     cardElement(id)?.classList.add('rejected');
     showMoveError(card, column, error);
@@ -1377,7 +1381,7 @@ async function deleteProject(project) {
 // ---- Agent runs (PB-03): controls, consent, confirmation, details, workflow ----
 
 const RUN_LIVE = ['queued', 'running', 'waiting_for_input'];
-const STAGE_VERBS = { planning: 'Start planning', executing: 'Start executing' };
+const STAGE_VERBS = { planning: 'Start planning', executing: 'Start executing', code_review: 'Start review' };
 const POLICY_LABELS = { manual: 'Manual', ask: 'Ask on entry', start: 'Start on entry' };
 let runDialogContext = null;
 
@@ -1405,10 +1409,12 @@ function renderRunControls(card, run) {
     box.append(labelled(detailButton('Terminal', () => window.PromptboardDock?.open(active.id), 'kanban-terminal'), 'Show terminal'));
     if (active.status === 'waiting_for_input' && active.turns > 0) {
       const planning = active.stage === 'planning';
-      const button = labelled(detailButton(planning ? 'Approve plan…' : 'Confirm stage…', () => openTaskDetails(card.id), 'primary kanban-confirm-run'), planning ? 'Review and approve the plan' : 'Review and confirm the stage');
+      const button = labelled(detailButton(planning ? 'Approve plan…' : active.stage === 'code_review' ? 'Record review…' : 'Confirm stage…', () => openTaskDetails(card.id), 'primary kanban-confirm-run'), planning ? 'Review and approve the plan' : 'Review and confirm the stage');
       box.append(button);
     }
-  } else if (['planning', 'executing'].includes(card.column)) {
+  } else if (card.column === 'testing' || card.column === 'merge') {
+    box.append(labelled(detailButton(card.column === 'testing' ? 'Run tests…' : 'Merge…', () => openTaskDetails(card.id), 'primary kanban-deliver'), card.column === 'testing' ? 'Run tests' : 'Review the merge'));
+  } else if (['planning', 'executing', 'code_review'].includes(card.column)) {
     const start = labelled(detailButton(`${STAGE_VERBS[card.column]}…`, () => openRunDialog(card.id, card.column), 'primary kanban-start'), STAGE_VERBS[card.column]);
     start.disabled = !board?.execution?.available || !currentProject()?.repository || !currentProject()?.targetBranch;
     if (start.disabled) start.title = !board?.execution?.available ? 'Agent terminals are not set up.' : 'Link a repository and choose a target branch first.';
@@ -1432,7 +1438,7 @@ function fillSelect(select, values, labels = {}) { select.replaceChildren(...val
 
 function renderRunFields(provider, stage, settings = {}) {
   const providers = board?.execution?.providers || {};
-  const supported = Object.keys(providers).filter(id => providers[id][stage === 'planning' ? 'planning' : 'execution']?.supported);
+  const supported = Object.keys(providers).filter(id => providers[id][stage === 'executing' ? 'execution' : 'planning']?.supported);
   fillSelect($('#run-provider'), supported, Object.fromEntries(supported.map(id => [id, providers[id].name])));
   $('#run-provider').value = supported.includes(provider) ? provider : supported[0] || '';
   const chosen = $('#run-provider').value;
@@ -1440,12 +1446,12 @@ function renderRunFields(provider, stage, settings = {}) {
   fillSelect($('#run-effort'), ['', ...efforts]);
   $('#run-effort').value = efforts.includes(settings.effort) ? settings.effort : '';
   $('#run-effort').disabled = !efforts.length;
-  const modes = stage === 'planning' ? ['plan'] : providers[chosen]?.permissionModes || [];
+  const modes = stage === 'planning' || stage === 'code_review' ? ['plan'] : providers[chosen]?.permissionModes || [];
   fillSelect($('#run-permission'), modes, { plan: 'Read-only planning', acceptEdits: 'Accept edits in the worktree', default: 'Ask before every change', 'workspace-write': 'Write in the worktree, ask for more', auto_edit: 'Accept edits, ask for tools' });
   $('#run-permission').value = modes.includes(settings.permissionMode) ? settings.permissionMode : modes[0] || '';
   $('#run-permission').disabled = modes.length < 2;
   $('#run-model').value = chosen === settings.provider ? settings.model || '' : '';
-  $('#run-dialog-how').textContent = providers[chosen]?.[stage === 'planning' ? 'planning' : 'execution']?.how || '';
+  $('#run-dialog-how').textContent = providers[chosen]?.[stage === 'executing' ? 'execution' : 'planning']?.how || '';
 }
 
 function openRunDialog(taskId, stage) {
@@ -1458,6 +1464,7 @@ function openRunDialog(taskId, stage) {
   $('#run-dialog-heading').textContent = `${STAGE_VERBS[stage]} for “${card.title}”?`;
   $('#run-dialog-summary').textContent = stage === 'planning'
     ? 'The agent inspects the repository in the task worktree and writes a plan. It cannot change files. You approve the plan before anything is implemented.'
+    : stage === 'code_review' ? 'The agent reviews the committed task diff against the target branch and reports findings. It cannot change files. Completing a review is not accepting it; you decide.'
     : `The agent works in the task worktree on branch ${card.workspace?.branch || '(created when the run starts)'}. It does not touch your main checkout. You confirm the stage when you are satisfied.`;
   const approval = card.planApproval;
   $('#run-dialog-plan').textContent = stage !== 'executing' ? '' : !approval ? 'No approved plan: the agent receives the task text only.'
@@ -1521,10 +1528,12 @@ async function openTaskDetails(taskId) {
   }
   const waiting = runs.find(run => run.status === 'waiting_for_input' && run.turns > 0);
   if (waiting) {
-    const planning = waiting.stage === 'planning';
-    nodes.push(section(planning ? 'Approve the plan' : 'Confirm the stage',
-      paragraph(planning ? 'Approving saves this plan for this exact task text and ends the planning session. Implementation starts only when you start Executing.' : 'Confirming records this stage as done and ends the agent session. The changes stay in the task worktree. Promptboard does not judge the work for you.'),
-      detailActions(detailButton(planning ? 'Approve plan' : 'Confirm stage', () => confirmRun(waiting), 'danger'), detailButton('Open terminal', () => { $('#task-dialog').close(); window.PromptboardDock?.open(waiting.id); }))));
+    const planning = waiting.stage === 'planning', reviewing = waiting.stage === 'code_review';
+    nodes.push(section(planning ? 'Approve the plan' : reviewing ? 'Record the review' : 'Confirm the stage',
+      paragraph(planning ? 'Approving saves this plan for this exact task text and ends the planning session. Implementation starts only when you start Executing.'
+        : reviewing ? 'Recording saves the findings for the reviewed commit and ends the review session. Accepting the review is a separate decision.'
+        : 'Confirming records this stage as done and ends the agent session. The changes stay in the task worktree. Promptboard does not judge the work for you.'),
+      detailActions(detailButton(planning ? 'Approve plan' : reviewing ? 'Record review' : 'Confirm stage', () => confirmRun(waiting), 'danger'), detailButton('Open terminal', () => { $('#task-dialog').close(); window.PromptboardDock?.open(waiting.id); }))));
   }
   const table = document.createElement('table');
   const head = document.createElement('tr');
@@ -1538,7 +1547,11 @@ async function openTaskDetails(taskId) {
     table.append(row);
   }
   nodes.push(section('Run history', runs.length ? table : paragraph('No runs yet.')));
+  const delivery = document.createElement('div');
+  delivery.className = 'task-delivery';
+  nodes.splice(3, 0, delivery);
   $('#task-details').replaceChildren(...nodes);
+  renderDelivery(card, delivery, section, pre);
   if (!$('#task-dialog').open) $('#task-dialog').showModal();
 }
 
@@ -1549,8 +1562,8 @@ function workflowSummary(project) {
 
 function workflowPreview(stage, settings) {
   const provider = providerName(settings.provider);
-  if (stage === 'code_review' || stage === 'testing') return `${POLICY_LABELS[settings.policy]}. ${columnTitle(stage)} runs are not available yet; nothing starts here.`;
-  const what = stage === 'planning' ? `${provider} writes a read-only plan` : `${provider} works in the task worktree`;
+  const what = stage === 'planning' ? `${provider} writes a read-only plan` : stage === 'code_review' ? `${provider} reviews the committed diff read-only`
+    : stage === 'testing' ? 'your configured test commands run in the task worktree' : `${provider} works in the task worktree`;
   return settings.policy === 'manual' ? `Moving a card here does nothing. You start ${columnTitle(stage)} from the card when you want.`
     : settings.policy === 'ask' ? `Moving a card here asks whether to start. If you agree, ${what}.`
     : `Moving a card here starts at once: ${what}. The run is recorded as started by this setting.`;
@@ -1576,10 +1589,10 @@ function openWorkflowDialog() {
     }
     const preview = paragraph(workflowPreview(stage, settings), 'workflow-preview');
     const children = [legend, policy];
-    if (['planning', 'executing'].includes(stage)) {
+    if (['planning', 'executing', 'code_review'].includes(stage)) {
       const grid = document.createElement('div'); grid.className = 'select-grid';
       const providers = board?.execution?.providers || {};
-      const supported = Object.keys(providers).filter(id => providers[id][stage === 'planning' ? 'planning' : 'execution']?.supported);
+      const supported = Object.keys(providers).filter(id => providers[id][stage === 'executing' ? 'execution' : 'planning']?.supported);
       const providerField = document.createElement('label'); providerField.className = 'field-label'; providerField.textContent = 'Provider';
       const providerSelect = document.createElement('select'); providerSelect.dataset.field = 'provider';
       fillSelect(providerSelect, supported.length ? supported : ['claude'], Object.fromEntries(Object.entries(providers).map(([id, item]) => [id, item.name])));
@@ -1594,12 +1607,20 @@ function openWorkflowDialog() {
     const instructionsField = document.createElement('label'); instructionsField.className = 'field-label'; instructionsField.textContent = 'Stage instructions (optional, added before the task text)';
     const instructions = document.createElement('textarea'); instructions.maxLength = 4000; instructions.value = settings.instructions || ''; instructions.dataset.field = 'instructions';
     instructionsField.append(instructions);
-    children.push(instructionsField, preview);
+    if (stage === 'testing') {
+      const commandsField = document.createElement('label'); commandsField.className = 'field-label'; commandsField.textContent = 'Test commands (one per line; run without a shell, in the task worktree)';
+      const commands = document.createElement('textarea'); commands.id = 'test-commands'; commands.value = (project.testCommands || []).map(item => item.argv.map(arg => /[\s"']/.test(arg) ? JSON.stringify(arg) : arg).join(' ')).join('\n');
+      commands.placeholder = 'npm test';
+      commandsField.append(commands);
+      children.push(commandsField);
+    }
+    if (stage !== 'testing') children.push(instructionsField);
+    children.push(preview);
     box.append(...children);
     box.addEventListener('change', () => { preview.textContent = workflowPreview(stage, readWorkflowStage(box)); });
     stages.push(box);
   }
-  const fixed = paragraph('To Do and Done never run agents. Merge always needs your explicit confirmation.', 'workflow-preview');
+  const fixed = paragraph('To Do and Done never run agents. Merge always needs your explicit confirmation, and only a verified merge or “Reviewed: no changes required” reaches Done.', 'workflow-preview');
   $('#workflow-stages').replaceChildren(...stages, fixed);
   $('#workflow-error').hidden = true;
   $('#workflow-dialog').showModal();
@@ -1617,10 +1638,163 @@ async function saveWorkflow(event) {
   const project = currentProject();
   if (!project) return;
   const workflow = Object.fromEntries([...$('#workflow-stages').querySelectorAll('.workflow-stage')].map(box => [box.dataset.stage, readWorkflowStage(box)]));
-  try { await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/workflow`, { workflow, expectedRevision: project.revision }); }
-  catch (error) { $('#workflow-error').textContent = error.message; $('#workflow-error').hidden = false; return; }
+  const lines = ($('#test-commands')?.value || '').split('\n').map(line => line.trim()).filter(Boolean);
+  try {
+    await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/workflow`, { workflow, expectedRevision: project.revision });
+    const changed = JSON.stringify(lines) !== JSON.stringify((project.testCommands || []).map(item => item.argv.map(arg => /[\s"']/.test(arg) ? JSON.stringify(arg) : arg).join(' ')));
+    if (changed) await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/tests`, { commands: lines.map(command => ({ command })), expectedRevision: currentProject().revision });
+  } catch (error) { $('#workflow-error').textContent = error.message; $('#workflow-error').hidden = false; return; }
   $('#workflow-dialog').close();
   announce(`Workflow settings saved for “${project.name}”. They apply to future runs.`);
+}
+
+// ---- Review, testing, merge, and completion (PB-04) in task details ----
+
+const short = sha => String(sha || '').slice(0, 12);
+
+async function deliveryAction(card, method, action, body, message) {
+  try { await boardCall(method, `/api/tasks/${encodeURIComponent(card.id)}/${action}`, body, 120000); }
+  catch (error) { showBoardError(error); if ($('#task-dialog').open) openTaskDetails(card.id); return false; }
+  if (message) announce(message);
+  if ($('#task-dialog').open && findTask(card.id)) openTaskDetails(card.id);
+  return true;
+}
+
+function confirmStep(box, text, label, action) {
+  // Git-changing actions always ask once more, inline.
+  const yes = detailButton(label, action, 'danger');
+  const no = detailButton('Cancel', () => box.replaceChildren(...box.previous));
+  box.previous = [...box.childNodes];
+  box.replaceChildren(paragraph(text), detailActions(yes, no));
+  yes.focus();
+}
+
+async function renderDelivery(card, container, section, pre) {
+  const nodes = [];
+  if (card.completion) {
+    const done = card.completion;
+    nodes.push(section('Completed', paragraph(done.kind === 'merged'
+      ? `Merged into ${done.targetBranch}: ${short(done.previousTarget)} → ${short(done.mergedCommit)} (${done.method}). Nothing was pushed.`
+      : 'Reviewed: no changes required. Nothing was merged.')));
+  }
+  if (card.workspace?.status !== 'ready') {
+    if (!['todo', 'done'].includes(card.column)) {
+      const box = section('Finish without changes', paragraph('If review shows that no code change is needed, complete the task without a merge.'));
+      box.append(detailActions(detailButton('Reviewed: no changes required…', () => confirmStep(box, 'Complete this task as “no changes required”? It moves to Done and is not described as merged.', 'Complete with no changes', () => deliveryAction(card, 'POST', 'complete-no-changes', { confirm: true }, 'Completed with no changes required.')))));
+      nodes.push(box);
+    }
+    container.replaceChildren(...nodes);
+    return;
+  }
+  const loading = paragraph('Reading the task branch…');
+  container.replaceChildren(...nodes, loading);
+  let rev;
+  try {
+    const { response, data } = await api(`/api/tasks/${encodeURIComponent(card.id)}/revision`, { timeoutMs: 20000 });
+    if (!response.ok) throw new Error(data.error || 'The task branch could not be read.');
+    rev = data.revision;
+  } catch (error) { loading.textContent = error.message; return; }
+  // Task revision and commit.
+  const revision = section('Task revision', paragraph(`Commit ${short(rev.taskCommit)} on ${rev.branch || 'a detached HEAD'} · ${plural(rev.ahead, 'commit')} ahead of ${rev.targetBranch} (${short(rev.targetCommit)}) · ${rev.clean ? 'no uncommitted changes' : plural(rev.changes.length, 'uncommitted change')}.`));
+  if (!rev.branchOk) revision.append(paragraph('The worktree is not on its task branch. Promptboard will not commit, review, test, or merge until it is.', 'kanban-error'));
+  if (!rev.clean && rev.branchOk) {
+    const diff = pre('Loading the changes…');
+    const label = document.createElement('label'); label.className = 'field-label'; label.textContent = 'Commit message';
+    const input = document.createElement('input'); input.type = 'text'; input.maxLength = 2000; input.value = card.title; input.id = 'commit-message';
+    label.append(input);
+    const box = document.createElement('div');
+    box.append(detailActions(detailButton('Commit task changes…', () => confirmStep(box, `Commit all ${plural(rev.changes.length, 'change')} shown above on ${rev.branch} with your existing Git identity?`, 'Commit', () => deliveryAction(card, 'POST', 'commit', { message: input.value, confirm: true }, 'Task changes committed.')))));
+    revision.append(paragraph('Review and testing need a committed revision. Check the changes first:'), diff, label, box);
+    api(`/api/tasks/${encodeURIComponent(card.id)}/uncommitted`, { timeoutMs: 20000 }).then(({ data }) => {
+      diff.textContent = `${(data.changes || []).join('\n')}\n\n${data.diff || ''}${data.truncated ? '\n[The diff is longer; the rest is in the worktree.]' : ''}`;
+    }).catch(() => { diff.textContent = 'The changes could not be read.'; });
+  }
+  nodes.push(revision);
+  // Code review evidence.
+  const review = card.evidence?.review;
+  if (review) {
+    const current = review.taskCommit === rev.taskCommit && rev.clean;
+    const box = section('Code review', paragraph(`Review ${review.status.replaceAll('_', ' ')} · verdict ${review.verdict.replaceAll('_', ' ')} · for commit ${short(review.taskCommit)}${current ? '' : ' (stale: the task changed; review again)'}.${review.parsed === false ? ' The findings could not be read in the requested format; see the full text.' : ''}`));
+    if (review.findings?.length) {
+      const table = document.createElement('table');
+      for (const finding of review.findings) {
+        const row = document.createElement('tr');
+        for (const value of [finding.severity, `${finding.file}${finding.line ? `:${finding.line}` : ''}`, finding.explanation]) { const td = document.createElement('td'); td.textContent = value; row.append(td); }
+        table.append(row);
+      }
+      box.append(table);
+    } else if (review.text) box.append(pre(review.text));
+    const actions = [];
+    if (review.status === 'completed' && current) actions.push(detailButton('Accept review', () => deliveryAction(card, 'POST', 'accept-review', {}, 'Review accepted for this commit.'), 'danger'));
+    if (['completed', 'accepted'].includes(review.status) && card.column === 'code_review') actions.push(detailButton('Send back to Executing', () => deliveryAction(card, 'POST', 'send-back', { expectedRevision: card.revision }, 'Sent back to Executing with the findings.')));
+    if (actions.length) box.append(detailActions(...actions));
+    nodes.push(box);
+  } else if (['code_review', 'testing', 'merge'].includes(card.column)) nodes.push(section('Code review', paragraph('No review yet. In Code Review, start a review of the committed diff.')));
+  // Tests: only command results decide.
+  const project = currentProject();
+  const tests = card.evidence?.tests;
+  if (['testing', 'merge'].includes(card.column) || tests) {
+    const commands = project.testCommands || [];
+    const box = section('Tests', paragraph(commands.length ? `Configured: ${commands.map(item => item.argv.join(' ')).join(' · ')}` : 'No test commands yet. Add them in Workflow settings. Promptboard runs only commands you configure.'));
+    if (tests) {
+      const current = tests.taskCommit === rev.taskCommit && tests.targetCommit === rev.targetCommit;
+      box.append(paragraph(`Last run: ${tests.status}${tests.note ? ` (${tests.note})` : ''} · for commit ${short(tests.taskCommit)} against ${short(tests.targetCommit)}${current ? '' : ' (stale: run again)'}.`));
+      const table = document.createElement('table');
+      for (const result of tests.results || []) {
+        const row = document.createElement('tr');
+        for (const value of [result.label, result.status, result.exitCode ?? '—', `${(result.durationMs / 1000).toFixed(1)}s`, result.reason || '']) { const td = document.createElement('td'); td.textContent = String(value); row.append(td); }
+        table.append(row);
+      }
+      if (tests.results?.length) box.append(table);
+      const failed = (tests.results || []).find(result => result.status !== 'passed' && result.tail);
+      if (failed) box.append(pre(failed.tail));
+    }
+    if (commands.length && tests?.status !== 'running') {
+      box.append(detailActions(detailButton('Run tests…', () => confirmStep(box, `Run ${plural(commands.length, 'command')} in the task worktree? Only exit codes decide whether tests passed.`, 'Run tests', async () => {
+        if (await deliveryAction(card, 'POST', 'tests', { confirm: true }, 'Tests started.')) pollTests(card.id);
+      }))));
+    }
+    if (tests?.status === 'running') pollTests(card.id);
+    nodes.push(box);
+  }
+  // Merge preview and confirmation.
+  if (card.column === 'merge') {
+    const box = section('Merge', paragraph('Checking whether a fast-forward merge is possible…'));
+    nodes.push(box);
+    api(`/api/tasks/${encodeURIComponent(card.id)}/merge-preview`, { timeoutMs: 30000 }).then(({ response, data }) => {
+      if (!response.ok) { box.replaceChildren(paragraph(data.error || 'The merge preview failed.', 'kanban-error')); return; }
+      const preview = data.preview;
+      const parts = [paragraph(`${preview.sourceBranch} → ${preview.targetBranch}: ${short(preview.targetCommit)} → ${short(preview.taskCommit)}. ${preview.targetCheckout ? `The checkout at ${preview.targetCheckout.path} is fast-forwarded.` : 'The branch reference is fast-forwarded; no checkout is switched.'} Nothing is pushed.`)];
+      parts.push(pre([`Commits (${preview.commits.length}):`, ...preview.commits.map(commit => `  ${short(commit.sha)} ${commit.subject}`), `Files (${preview.files.length}):`, ...preview.files.map(file => `  ${file}`)].join('\n')));
+      if (preview.problems.length) { const list = document.createElement('ul'); for (const problem of preview.problems) { const item = document.createElement('li'); item.textContent = problem; list.append(item); } parts.push(list); }
+      const actions = [];
+      if (preview.eligible) actions.push(detailButton('Confirm merge…', () => confirmStep(box, `Fast-forward ${preview.targetBranch} to ${short(preview.taskCommit)}? This changes your local ${preview.targetBranch}. It is not pushed.`, 'Confirm merge', () => deliveryAction(card, 'POST', 'merge', { confirm: true, taskCommit: preview.taskCommit, targetCommit: preview.targetCommit }, `Merged into ${preview.targetBranch} and verified. The card is in Done.`)), 'danger'));
+      if (!preview.fastForward) actions.push(detailButton('Update task branch…', () => confirmStep(box, `Merge the current ${preview.targetBranch} into the task branch? Conflicts are not resolved automatically; the update is then aborted. Review and tests must run again.`, 'Update task branch', () => deliveryAction(card, 'POST', 'update-branch', { confirm: true }, 'Task branch updated. Review and test it again.'))));
+      if (actions.length) parts.push(detailActions(...actions));
+      box.replaceChildren(section('Merge').firstChild, ...parts);
+    }).catch(() => { box.replaceChildren(paragraph('The merge preview failed.', 'kanban-error')); });
+  }
+  // No-change completion and cleanup.
+  if (rev.clean && !rev.ahead && !['todo', 'done'].includes(card.column)) {
+    const box = section('Finish without changes', paragraph('The task branch has no changes. If none are needed, complete the task without a merge.'));
+    box.append(detailActions(detailButton('Reviewed: no changes required…', () => confirmStep(box, 'Complete this task as “no changes required”? It is not described as merged.', 'Complete with no changes', () => deliveryAction(card, 'POST', 'complete-no-changes', { confirm: true }, 'Completed with no changes required.')))));
+    nodes.push(box);
+  }
+  if (card.column === 'done') {
+    const box = section('Worktree', paragraph(`The worktree at ${card.workspace.path} is no longer needed. Removing it keeps the branch ${card.workspace.branch}. A worktree with uncommitted changes is never removed.`));
+    box.append(detailActions(detailButton('Remove worktree…', () => confirmStep(box, 'Remove this task worktree? The branch stays.', 'Remove worktree', () => deliveryAction(card, 'DELETE', 'worktree', undefined, 'Worktree removed; the branch was kept.')))));
+    nodes.push(box);
+  }
+  container.replaceChildren(...nodes);
+}
+
+function pollTests(taskId) {
+  clearTimeout(pollTests.timer);
+  pollTests.timer = setTimeout(async () => {
+    await loadBoard();
+    const card = findTask(taskId);
+    if ($('#task-dialog').open && card) openTaskDetails(taskId);
+  }, 1500);
 }
 
 // ---- Repository link and target branch ----
@@ -1660,7 +1834,7 @@ function renderRepository(project) {
   if (pending) {
     const automatic = Object.entries(pending.workflow || {}).filter(([, settings]) => settings?.policy === 'start').map(([stage]) => columnTitle(stage));
     const parts = [pending.repositoryPath && `repository ${pending.repositoryPath}`, pending.targetBranch && `target branch ${pending.targetBranch}`,
-      pending.workflow && `workflow settings${automatic.length ? ` (automatic runs in ${automatic.join(' and ')})` : ''}`].filter(Boolean);
+      pending.workflow && `workflow settings${automatic.length ? ` (automatic runs in ${automatic.join(' and ')})` : ''}`, pending.testCommands?.length && `${plural(pending.testCommands.length, 'test command')}`].filter(Boolean);
     $('#import-pending-text').textContent = `The imported backup suggests ${parts.join(', ')}. Nothing is applied until you confirm.`;
   }
 }

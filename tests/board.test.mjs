@@ -198,7 +198,7 @@ test('runs: To Do and Done never run; consent is required; without an executor n
   assert.equal(started[1].workspace.branch, started[0].workspace.branch);
   await board.updateRun(second.id, { status: 'cancelled' });
   await board.moveTask(task.id, { column: 'code_review', expectedRevision: (await taskIn(board, task.id)).revision });
-  await assert.rejects(board.requestRun(task.id, { stage: 'code_review', consent: true }), { code: 'STAGE_NOT_IMPLEMENTED' });
+  await assert.rejects(board.requestRun(task.id, { stage: 'code_review', consent: true }), { code: 'NO_CHANGES' }, 'Review needs committed changes to review.');
   // A restart marks active runs interrupted and never calls the executor again.
   const third = await board.store.update(state => { const run = { ...state.runs[0], id: 'active-run', status: 'running' }; state.runs.push(run); return run; });
   const restarted = new Board({ dataDir, executor: { start: () => assert.fail('A restart must not start runs.') } });
@@ -284,7 +284,7 @@ test('import keeps execution inactive and waits for confirmation of paths and au
   assert.equal(project.repository, null, 'Imported paths are not linked automatically.');
   assert.deepEqual(project.workflow, {}, 'Imported automation is not active.');
   assert.equal(project.effectiveWorkflow.executing.policy, 'ask');
-  assert.deepEqual(project.pendingImport, { repositoryPath: root, targetBranch: 'trunk', workflow: { executing: { policy: 'start', provider: 'codex' } } });
+  assert.deepEqual(project.pendingImport, { repositoryPath: root, targetBranch: 'trunk', workflow: { executing: { policy: 'start', provider: 'codex' } }, testCommands: null });
   assert.equal(project.tasks[0].column, 'planning');
   assert.equal(project.tasks[0].prompt, 'Exact\r\ntext');
   assert.deepEqual((await other.view()).runs, []);

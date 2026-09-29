@@ -12,6 +12,7 @@ import { join, relative, isAbsolute } from 'node:path';
 import { Store } from './store.mjs';
 import { branchExists, commitExists, git, GitError, listWorktrees, validateRepository } from './git.mjs';
 import { resolveConfig } from './agents.mjs';
+import { Delivery } from './delivery.mjs';
 
 export const COLUMNS = Object.freeze([
   { id: 'todo', title: 'To Do', agent: false },
@@ -29,13 +30,13 @@ export const ACTIVE_RUN_STATUSES = Object.freeze(['queued', 'running', 'waiting_
 const RUN_NEXT = { queued: ['running', 'cancelled', 'failed', 'interrupted'], running: ['waiting_for_input', 'succeeded', 'failed', 'cancelled', 'interrupted'],
   waiting_for_input: ['running', 'succeeded', 'cancelled', 'failed', 'interrupted'] };
 // Stages the PB-02 executor implements. Code Review, Testing, and Merge arrive in PB-04.
-const EXECUTABLE_STAGES = new Set(['planning', 'executing']);
+const EXECUTABLE_STAGES = new Set(['planning', 'executing', 'code_review']);
 // Per-stage workflow settings. Projects store overrides; defaults apply otherwise.
 // To Do, Merge, and Done have no run policy: To Do and Done never run, and a merge always needs confirmation.
 export const WORKFLOW_STAGES = Object.freeze(['planning', 'executing', 'code_review', 'testing']);
 const POLICIES = ['manual', 'ask', 'start'];
 export const DEFAULT_STAGE_SETTINGS = Object.freeze({ policy: 'ask', provider: 'claude', model: '', effort: '', permissionMode: '', instructions: '' });
-const RUN_FIELDS = ['startedAt', 'endedAt', 'providerSessionId', 'waitingReason', 'errorCode', 'exitCode', 'hasPlan', 'planExcerpt', 'turns', 'lifecycle'];
+const RUN_FIELDS = ['hasReview', 'startedAt', 'endedAt', 'providerSessionId', 'waitingReason', 'errorCode', 'exitCode', 'hasPlan', 'planExcerpt', 'turns', 'lifecycle'];
 // Stages whose first authorized run may create the task branch and worktree.
 const WORKSPACE_STAGES = new Set(['planning', 'executing']);
 
@@ -108,6 +109,8 @@ function parseBackupData(data) {
       targetBranch: v2 && typeof project.targetBranch?.name === 'string' ? project.targetBranch.name.slice(0, 255) : null,
       // Imported workflow settings (including legacy automation) are kept for confirmation only.
       workflow: v2 && project.workflow && typeof project.workflow === 'object' ? project.workflow : v2 && project.automation?.autoRun === true ? { executing: { policy: 'start' } } : null,
+      // Imported test commands never run until the user confirms them.
+      testCommands: v2 && Array.isArray(project.testCommands) && project.testCommands.length ? project.testCommands.slice(0, 20) : null,
       tasks: cards.map((card, cardIndex) => {
         const cardLabel = `${label}, card ${cardIndex + 1}`;
         if (!card || typeof card !== 'object') throw new BoardError(`${cardLabel} is not valid.`, 'INVALID_BACKUP');
@@ -184,6 +187,7 @@ export class Board {
     this.executor = executor; // PB-02 registers one. Null means execution is inactive.
     this.locks = new Map();
     this.recovered = false;
+    this.delivery = new Delivery(this);
   }
 
   /** Serialize work per key (task or repository) inside this process. */
@@ -308,14 +312,51 @@ export class Board {
     const from = before.task.column;
     const task = await this.moveTask(id, { column, index, expectedRevision });
     const result = { task };
-    if (from === column || !EXECUTABLE_STAGES.has(column)) return result;
+    if (from === column || !WORKFLOW_STAGES.includes(column)) return result;
     const settings = effectiveWorkflow(before.project)[column];
     if (settings.policy === 'ask') result.ask = { stage: column };
     if (settings.policy === 'start') {
-      try { result.run = await this.requestRun(id, { stage: column, consent: true, trigger: 'automation' }); }
-      catch (error) { result.automation = { started: false, code: error.code || 'FAILED', message: error.message }; }
+      // Testing runs the project's approved commands; the agent stages request a run.
+      try {
+        if (column === 'testing') result.tests = await this.delivery.runTests(id, { confirm: true });
+        else result.run = await this.requestRun(id, { stage: column, consent: true, trigger: 'automation' });
+      } catch (error) { result.automation = { started: false, code: error.code || 'FAILED', message: error.message }; }
     }
     return result;
+  }
+
+  /** Change a task's evidence or notes in one serialized write. */
+  async updateTaskEvidence(taskId, change) {
+    return this.store.update(async state => {
+      const { task } = this.#task(state, taskId);
+      await change(task);
+      task.revision++;
+      return task;
+    });
+  }
+
+  async setTestCommands(id, { commands, expectedRevision }) {
+    return this.store.update(state => {
+      const project = this.#project(state, id);
+      checkRevision(project, expectedRevision, 'This project');
+      project.testCommands = commands;
+      project.revision++;
+      return project;
+    });
+  }
+
+  /** The only path into Done: a verified merge or an explicit no-change completion. */
+  async completeTask(id, { kind, details }) {
+    return this.store.update(state => {
+      const { project, task } = this.#task(state, id);
+      if (this.#activeRun(state, id)) throw conflict('This card has an active run.', 'RUN_ACTIVE');
+      task.completion = { kind, at: Date.now(), ...details };
+      task.transitions = [...task.transitions, { at: Date.now(), from: task.column, to: 'done', by: kind }].slice(-TRANSITION_LOG_LIMIT);
+      task.column = 'done';
+      project.tasks = [...project.tasks.filter(item => item !== task), task];
+      task.revision++;
+      return task;
+    });
   }
 
   /** Re-read the linked repository's local branches. */
@@ -358,6 +399,7 @@ export class Board {
           project.targetBranch = branch ? { name: branch.name, commit: branch.commit, root: repository.root, recordedAt: Date.now() } : null;
         }
         if (pending.workflow) project.workflow = normalizeWorkflow(pending.workflow);
+        if (pending.testCommands) project.testCommands = pending.testCommands.filter(item => Array.isArray(item?.argv) && item.argv.length && item.argv.every(arg => typeof arg === 'string' && arg.length <= 1000 && !arg.includes('\0'))).slice(0, 20).map(item => ({ label: String(item.label || item.argv.join(' ')).slice(0, 80), argv: item.argv.slice(0, 50), timeoutSec: Number.isInteger(item.timeoutSec) && item.timeoutSec >= 1 && item.timeoutSec <= 3600 ? item.timeoutSec : 600 }));
       }
       project.pendingImport = null;
       project.revision++;
@@ -413,6 +455,9 @@ export class Board {
       if (!canTransition(task.column, column)) throw new BoardError(`A card cannot move from ${title(task.column)} to ${title(column)}.`, 'TRANSITION_NOT_ALLOWED');
       if (task.column !== column && this.#activeRun(state, id)) throw conflict('This card has an active run. Wait for it to finish or cancel it first.', 'RUN_ACTIVE');
       if (task.column === 'todo' && column !== 'todo' && !project.repository) throw new BoardError('Link this project to a Git repository before cards leave To Do.', 'REPOSITORY_REQUIRED');
+      // Done means merged and verified, or explicitly completed with no changes. A drag cannot skip that.
+      if (column === 'done' && task.column !== 'done') throw new BoardError('A card reaches Done only through a confirmed merge or “Reviewed: no changes required”.', 'DONE_REQUIRES_MERGE');
+      if (task.column === 'done' && column !== 'done' && task.completion) { task.previousCompletions = [...(task.previousCompletions || []), task.completion].slice(-10); task.completion = null; }
       const others = project.tasks.filter(item => item !== task);
       const inColumn = others.filter(item => item.column === column);
       const position = Number.isInteger(index) ? Math.max(0, Math.min(index, inColumn.length)) : inColumn.length;
@@ -482,7 +527,7 @@ export class Board {
     return { application: 'Promptboard', kind: 'promptboard-backup', version: 2, exportedAt: new Date().toISOString(),
       projects: state.projects.map(project => ({ id: project.id, name: project.name, createdAt: project.createdAt,
         repository: project.repository ? { path: project.repository.path } : null, targetBranch: project.targetBranch ? { name: project.targetBranch.name } : null,
-        workflow: project.workflow || {},
+        workflow: project.workflow || {}, testCommands: project.testCommands || [],
         // Workspaces and runs are machine-specific and are not exported.
         tasks: project.tasks.map(task => ({ id: task.id, title: task.title, prompt: task.prompt, source: task.source, checksOutdated: task.checksOutdated,
           createdAt: task.createdAt, updatedAt: task.updatedAt, column: task.column })) })) };
@@ -500,8 +545,8 @@ export class Board {
       state.projects = parsed.projects.map(incoming => {
         const project = newProject(incoming);
         project.tasks = incoming.tasks.map(task => newTask(task));
-        if (incoming.repositoryPath || incoming.targetBranch || incoming.workflow) {
-          project.pendingImport = { repositoryPath: incoming.repositoryPath, targetBranch: incoming.targetBranch, workflow: incoming.workflow };
+        if (incoming.repositoryPath || incoming.targetBranch || incoming.workflow || incoming.testCommands) {
+          project.pendingImport = { repositoryPath: incoming.repositoryPath, targetBranch: incoming.targetBranch, workflow: incoming.workflow, testCommands: incoming.testCommands };
         }
         return project;
       });
@@ -637,17 +682,20 @@ export class Board {
       if (!WORKSPACE_STAGES.has(stage) && task.workspace?.status !== 'ready') throw new BoardError('Run Planning or Executing first to create the task worktree.', 'WORKSPACE_REQUIRED', 409);
       const workspace = await this.ensureTaskWorktree(taskId);
       const plan = stage === 'executing' ? this.#approvedPlan(state, task) : null;
+      // Review reads the actual diff of a clean, committed revision. Executing gets requested fixes.
+      const review = stage === 'code_review' ? await this.delivery.reviewContext(taskId) : null;
+      const extra = review ? review.text : stage === 'executing' && task.reworkNotes ? `=== REVIEW FINDINGS TO FIX ===\n${task.reworkNotes}\n=== END FINDINGS ===` : '';
       const run = await this.store.update(draft => {
         if (this.#activeRun(draft, taskId)) throw conflict('This card already has an active run.', 'RUN_ACTIVE');
         const now = Date.now();
         const id = randomUUID();
         const record = { id, taskId, projectId: project.id, stage, status: 'queued', createdAt: now, updatedAt: now,
           promptRevision: task.contentRevision ?? 1, config: resolved, trigger: trigger === 'automation' ? 'automation' : 'user', workspacePath: workspace.path, branch: workspace.branch,
-          planRunId: plan?.runId || null, artifactsDir: join('runs', id), turns: 0 };
+          planRunId: plan?.runId || null, artifactsDir: join('runs', id), turns: 0, ...(review ? { review: { taskCommit: review.taskCommit, targetCommit: review.targetCommit } } : {}) };
         draft.runs.push(record);
         return record;
       });
-      await this.executor.start({ run, task: { id: task.id, title: task.title, prompt: task.prompt }, workspace, planRunId: plan?.runId || null });
+      await this.executor.start({ run, task: { id: task.id, title: task.title, prompt: task.prompt }, workspace, planRunId: plan?.runId || null, extra });
       return run;
     });
   }

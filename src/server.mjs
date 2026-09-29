@@ -12,6 +12,7 @@ import { GitError } from './git.mjs';
 import { defaultDataDir, StoreError } from './store.mjs';
 import { Supervisor } from './supervisor.mjs';
 import { AgentError } from './agents.mjs';
+import { DeliveryError } from './delivery.mjs';
 import { discoverModels, checkModelEffort } from './models.mjs';
 
 const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
@@ -117,6 +118,7 @@ async function boardRoute(board, req, res, pathname, searchParams) {
     if (method === 'POST' && action === 'repository') return view(await board.linkRepository(id, await body()));
     if (method === 'GET' && action === 'branches') return send(res, 200, { repository: await board.listProjectBranches(id) });
     if (method === 'PATCH' && action === 'workflow') return view({ project: await board.setWorkflow(id, await body()) });
+    if (method === 'PATCH' && action === 'tests') return view({ project: await board.delivery.setTestCommands(id, await body()) });
     if (method === 'POST' && action === 'target-branch') return view({ project: await board.setTargetBranch(id, await body()) });
     if (method === 'POST' && action === 'confirm-import') return view({ project: await board.confirmImport(id, await body()) });
   } else if (kind === 'runs') {
@@ -141,6 +143,19 @@ async function boardRoute(board, req, res, pathname, searchParams) {
     if (method === 'POST' && action === 'duplicate') { await body(); return view({ task: await board.duplicateTask(id) }); }
     if (method === 'POST' && action === 'runs') return view({ run: await board.requestRun(id, await body()) });
     if (method === 'DELETE' && action === 'worktree') return view({ task: await board.removeTaskWorktree(id) });
+    // Review, testing, merge, and completion (PB-04). Every change needs an explicit confirm flag.
+    const delivery = board.delivery;
+    if (method === 'GET' && action === 'revision') return send(res, 200, { revision: await delivery.revision(id) });
+    if (method === 'GET' && action === 'uncommitted') return send(res, 200, await delivery.uncommitted(id));
+    if (method === 'GET' && action === 'merge-preview') return send(res, 200, { preview: await delivery.mergePreview(id) });
+    if (method === 'GET' && action === 'test-log') return send(res, 200, { text: await delivery.testLog(id, Number(searchParams.get('index'))) });
+    if (method === 'POST' && action === 'commit') return view({ revision: await delivery.commit(id, await body()) });
+    if (method === 'POST' && action === 'accept-review') { await body(); return view({ task: await delivery.acceptReview(id) }); }
+    if (method === 'POST' && action === 'send-back') return view(await delivery.sendBack(id, await body()));
+    if (method === 'POST' && action === 'tests') return view({ tests: await delivery.runTests(id, await body()) });
+    if (method === 'POST' && action === 'merge') return view({ task: await delivery.merge(id, await body()) });
+    if (method === 'POST' && action === 'update-branch') return view({ revision: await delivery.updateBranch(id, await body()) });
+    if (method === 'POST' && action === 'complete-no-changes') return view({ task: await delivery.completeNoChanges(id, await body()) });
   }
   return false;
 }
@@ -320,7 +335,7 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
       try { if ((await boardRoute(board, req, res, pathname, requestUrl.searchParams)) !== false) return; }
       catch (error) {
         // Board, store, and Git errors carry fixed messages; raw Git output is never returned.
-        const known = error instanceof BoardError || error instanceof GitError || error instanceof StoreError || error instanceof AgentError;
+        const known = error instanceof BoardError || error instanceof GitError || error instanceof StoreError || error instanceof AgentError || error instanceof DeliveryError;
         const status = known || error.status < 500 ? error.status || 500 : 500;
         return send(res, status, known || status < 500 ? { error: error.message, code: error.code || 'INVALID_REQUEST' } : { error: 'The board request failed.', code: 'BOARD_FAILED' });
       }
@@ -352,6 +367,7 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
     server.closeIdleConnections();
     // Agent sessions: stop owned process groups, record runs as interrupted, end streams.
     const agents = board.executor?.shutdown ? board.executor.shutdown(Math.min(3000, graceMs)) : null;
+    board.delivery.stopAllTests();
     const settle = Promise.allSettled([...tasks, ...lookups.values(), busy?.done, agents].filter(Boolean));
     await Promise.race([settle, new Promise(resolve => setTimeout(resolve, graceMs).unref())]);
     killOwnedProcesses('SIGKILL');

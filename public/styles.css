@@ -444,3 +444,8 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
 @media (max-width: 1100px) { .kanban-toolbar { grid-template-columns: 1fr 1fr; } .toolbar-end { justify-content: flex-start; } }
 @media (max-width: 730px) { .dock { left: 0; } .kanban-toolbar { grid-template-columns: 1fr; } .dock-actions .text-button { font-size: 12px; } }
 @media (prefers-reduced-motion: reduce) { .run-badge.running::before, .dock-tab.live .tab-dot, .kanban-card.rejected { animation: none; } }
+@media (max-width: 730px) {
+  .dock-bar { flex-wrap: wrap; row-gap: 2px; padding: 4px 8px; }
+  .dock-tabs { order: 2; flex-basis: 100%; }
+  .dock-actions { gap: 8px; margin-left: auto; overflow-x: auto; }
+}
