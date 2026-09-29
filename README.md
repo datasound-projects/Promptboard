@@ -29,6 +29,7 @@ A coding agent needs a clear goal, relevant context, and precise constraints. Th
 - **Find potential problems.** Review missing requirements, conflicting instructions, and unsupported additions.
 - **Control the output.** Choose the model, supported effort level, language, task, and amount of detail.
 - **Reuse your work.** Keep prompt history and copy or export results and check reports.
+- **Plan agent tasks.** Add prompts to a project's Kanban board. It has one To do column, and each card keeps an exact copy of its prompt. Nothing runs from the board. Copy a card into your coding agent when you are ready.
 
 The writing rules draw on **ASD-STE100 Simplified Technical English**: short sentences, direct instructions, and consistent terms.
 

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Kanban page: projects with one To do column of task cards. You can add a generated prompt as an exact snapshot, or write a card yourself.
+  - Source details and review status stay with each card. An edit marks the previous checks as outdated.
+  - Reorder cards with the move buttons or drag-and-drop.
+  - The board is saved in the browser, and you can export or import a validated JSON backup.
+  - Nothing runs from the board.
 - Generation always ends in a clear state: stage and elapsed time, cancel in every stage, a bounded client and server timeout, and input kept on failure.
 - Stable error codes that separate exhausted quota, temporary rate limits, sign-in, model, network, policy, and timeouts. Unknown failures stay unknown.
 - No repair call after an account-level failure. A busy server returns `409 BUSY`, not `429`.
