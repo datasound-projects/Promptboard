@@ -247,6 +247,7 @@ async function loadProviders() {
     }
     updateProviderState();
     loadAuth();
+    loadBoard();
     await loadModels({ model: chosenModel(), effort: $('#effort').value });
   } catch (error) {
     token = '';
@@ -825,8 +826,8 @@ function openHelp(privacy = false) {
   $('#dialog-heading').textContent = privacy ? 'Your work. Your browser. Your CLI.' : 'A small tool. A straightforward setup.';
   if (privacy) {
     content.append(
-      paragraph('This app saves your last 40 finished prompts and your Kanban board in this browser’s local storage. You can delete prompts in the sidebar and projects or cards on the Kanban page. Clearing this site’s browser data also removes them.'),
-      paragraph('The Kanban page only stores and copies text. It never sends cards to a CLI or model.'),
+      paragraph('This app saves your last 40 finished prompts in this browser’s local storage. You can delete them in the sidebar. The Kanban board is saved by the local app in its data folder on this computer, not in the browser.'),
+      paragraph('The Kanban page stores, moves, and copies cards. It does not send cards to a CLI or model; agent runs are not active yet.'),
       paragraph('When you generate a prompt, your text goes to the local server, then to your selected CLI. That CLI may send it to its model provider under your account and that provider’s policies. Do not include secrets or private information that you cannot share with that provider.'),
       paragraph('The app does not need a separate API key. The CLI must be installed and signed in. Its account limits and applicable usage costs still apply.'),
       paragraph('Reviewed mode usually makes 2 CLI calls and can make up to 4 after one repair. Fast mode makes 1 call. The check report and original request stay with the prompt in browser history.'),
@@ -888,68 +889,19 @@ function showPage() {
 }
 function showPromptPage() { if (location.hash === '#/kanban') location.hash = '#/'; }
 
-// Kanban: projects, each with one "To do" column of task cards for a coding agent.
-// A card stores its own copy of the prompt. Nothing here runs a CLI or a model.
-const KANBAN_KEY = 'ste-prompt-engineer.kanban.v1';
-const PROJECT_LIMIT = 200;
-const CARD_LIMIT = 1000;
+// Kanban (PB-01): the local app stores the board in its data folder. Seven fixed stages;
+// cards move through transitions the server validates. Nothing on this page starts an agent.
+const KANBAN_KEY = 'ste-prompt-engineer.kanban.v1'; // Earlier browser-only board. Moved to the app once and kept here.
+const MIGRATED_KEY = `${KANBAN_KEY}.migrated`;
+const SELECTED_PROJECT_KEY = 'promptboard.kanban.project';
 const IMPORT_LIMIT_BYTES = 20 * 1024 * 1024;
-let board = readBoard();
+let board = null; // The server's board view.
+let boardLoading = null;
 let editingCardId = null;
 let projectFormMode = 'new';
 let dragId = null;
-
-function emptyBoard() { return { version: 1, selectedProjectId: null, projects: [] }; }
-
-function readBoard() {
-  let raw = null;
-  try { raw = localStorage.getItem(KANBAN_KEY); } catch { return emptyBoard(); }
-  if (raw === null) return emptyBoard();
-  try { return parseBoard(JSON.parse(raw)); } catch {
-    // Keep the unreadable value before any later save replaces it.
-    let kept = false;
-    try { localStorage.setItem(`${KANBAN_KEY}.unreadable`, raw); kept = true; } catch {}
-    $('#kanban-load-warning').textContent = kept
-      ? `The saved Kanban board could not be read, so the board starts empty. The unreadable data is kept in this browser under “${KANBAN_KEY}.unreadable”.`
-      : 'The saved Kanban board could not be read, so the board starts empty. The unreadable data could not be kept and is replaced when you change the board.';
-    $('#kanban-load-warning').hidden = false;
-    return emptyBoard();
-  }
-}
-
-function requiredText(value, max, label) {
-  const text = typeof value === 'string' ? value.trim() : '';
-  if (!text || text.length > max) throw new Error(`${label} needs 1 to ${max} characters.`);
-  return text;
-}
-
-// One strict check for stored boards and imported backups. Prompt text is kept exactly as it is.
-function parseBoard(data) {
-  if (!data || typeof data !== 'object' || data.version !== 1 || !Array.isArray(data.projects)) throw new Error('The data is not a version 1 Kanban board.');
-  if (data.projects.length > PROJECT_LIMIT) throw new Error(`A board can have at most ${PROJECT_LIMIT} projects.`);
-  const ids = new Set();
-  const uniqueId = (value, label) => {
-    if (typeof value !== 'string' || !value || value.length > 100 || ids.has(value)) throw new Error(`${label} needs a unique ID.`);
-    ids.add(value);
-    return value;
-  };
-  const time = value => Number.isFinite(value) ? value : Date.now();
-  const projects = data.projects.map((project, index) => {
-    const label = `Project ${index + 1}`;
-    if (!project || typeof project !== 'object') throw new Error(`${label} is not valid.`);
-    if (!Array.isArray(project.cards) || project.cards.length > CARD_LIMIT) throw new Error(`${label} needs a card list with at most ${CARD_LIMIT} cards.`);
-    return { id: uniqueId(project.id, label), name: requiredText(project.name, 80, `${label} name`), createdAt: time(project.createdAt),
-      cards: project.cards.map((card, cardIndex) => {
-        const cardLabel = `${label}, card ${cardIndex + 1}`;
-        if (!card || typeof card !== 'object') throw new Error(`${cardLabel} is not valid.`);
-        if (typeof card.prompt !== 'string' || !card.prompt.trim() || card.prompt.length > MAX_PROMPT_BYTES) throw new Error(`${cardLabel} needs a prompt of 1 to ${MAX_PROMPT_BYTES.toLocaleString()} characters.`);
-        return { id: uniqueId(card.id, cardLabel), title: requiredText(card.title, 120, `${cardLabel} title`), prompt: card.prompt,
-          createdAt: time(card.createdAt), updatedAt: time(card.updatedAt ?? card.createdAt), checksOutdated: card.checksOutdated === true, source: normalizeSource(card.source) };
-      }) };
-  });
-  const selectedProjectId = projects.some(project => project.id === data.selectedProjectId) ? data.selectedProjectId : projects[0]?.id ?? null;
-  return { version: 1, selectedProjectId, projects };
-}
+let repoFormFor = null;
+const repositories = new Map(); // projectId -> last branch list from the server.
 
 function normalizeSource(source) {
   if (!source || typeof source !== 'object') return null;
@@ -982,38 +934,138 @@ function sourceSummary(source) {
 }
 
 function plural(count, word) { return `${count} ${word}${count === 1 ? '' : 's'}`; }
-function boardCounts(value) { return `${plural(value.projects.length, 'project')}, ${plural(value.projects.reduce((sum, project) => sum + project.cards.length, 0), 'card')}`; }
-function currentProject() { return board.projects.find(project => project.id === board.selectedProjectId) || null; }
+function countCards(projects, key = 'tasks') { return projects.reduce((sum, project) => sum + (Array.isArray(project[key]) ? project[key].length : 0), 0); }
+function boardCounts(projects, key) { return `${plural(projects.length, 'project')}, ${plural(countCards(projects, key), 'card')}`; }
+function columnTitle(id) { return board?.columns.find(column => column.id === id)?.title || id; }
+function selectedProjectId() { try { return localStorage.getItem(SELECTED_PROJECT_KEY); } catch { return null; } }
+function currentProject() { return board?.projects.find(project => project.id === selectedProjectId()) || board?.projects[0] || null; }
+function findTask(id) { return currentProject()?.tasks.find(task => task.id === id) || null; }
 
-function persistBoard() {
-  let saved = true;
-  try { localStorage.setItem(KANBAN_KEY, JSON.stringify(board)); } catch { saved = false; }
-  for (const warning of document.querySelectorAll('.board-warning')) warning.hidden = saved;
-  return saved;
+// Mirrors the server rule so the menu offers only valid moves. The server still decides.
+function canMove(from, to) {
+  const ids = board.columns.map(column => column.id);
+  const a = ids.indexOf(from), b = ids.indexOf(to);
+  if (a < 0 || b < 0 || a === b) return false;
+  if (from === 'done') return to === 'todo';
+  return b === a + 1 || (from === 'todo' && to === 'executing') || b < a;
 }
 
-function commitBoard(message) {
-  const saved = persistBoard();
+function setBoardWarning(message) {
+  for (const warning of document.querySelectorAll('.board-warning')) { warning.textContent = message; warning.hidden = !message; }
+}
+
+/** One board request. On success the server returns the whole board, which replaces ours. */
+async function boardCall(method, path, body, timeoutMs = 60000) {
+  let result;
+  try { result = await api(path, { method, body, timeoutMs }); }
+  catch { setBoardWarning('The app did not answer, so the change was not saved. Check that Promptboard is still running.'); throw new Error('The app did not answer. The change was not saved.'); }
+  const { response, data } = result;
+  if (data.board) board = data.board;
+  if (!response.ok) {
+    const error = Object.assign(new Error(typeof data.error === 'string' ? data.error : 'The board request failed.'), { code: data.code, status: response.status });
+    if (data.code === 'STATE_WRITE_FAILED') setBoardWarning(data.error);
+    if (data.code === 'REVISION_CONFLICT' || data.code === 'NOT_FOUND') await loadBoard();
+    throw error;
+  }
+  setBoardWarning('');
   renderBoard();
-  announce(saved ? message : `${message} Board changes were not saved in this browser.`);
-  return saved;
+  return data;
+}
+
+async function loadBoard() {
+  if (!token) return;
+  boardLoading ??= (async () => {
+    try {
+      const { response, data } = await api('/api/board', { timeoutMs: 30000 });
+      if (!response.ok || !data.board) throw new Error(typeof data.error === 'string' ? data.error : 'The app could not read the board.');
+      board = data.board;
+      $('#kanban-load-warning').hidden = true;
+      if (board.recovery) showLoadWarning(board.recovery.restoredFromBackup
+        ? 'The board file was damaged, so the last good copy was restored. The damaged file was kept in the app data folder.'
+        : 'The board file was damaged and no good copy was found, so the board starts empty. The damaged file was kept in the app data folder.');
+      await migrateBrowserBoard();
+    } catch (error) {
+      showLoadWarning(`The board could not be loaded. ${error.message}`);
+    } finally { boardLoading = null; renderBoard(); }
+  })();
+  return boardLoading;
+}
+
+function showLoadWarning(message) { $('#kanban-load-warning').textContent = message; $('#kanban-load-warning').hidden = false; }
+
+/** Move the earlier browser-only board into the app once. The browser copy is kept. */
+async function migrateBrowserBoard() {
+  let raw;
+  try { raw = localStorage.getItem(KANBAN_KEY); if (raw === null || localStorage.getItem(MIGRATED_KEY)) return; } catch { return; }
+  let data;
+  try { data = JSON.parse(raw); } catch {
+    let kept = false;
+    try { localStorage.setItem(`${KANBAN_KEY}.unreadable`, raw); kept = true; } catch {}
+    showLoadWarning(`The Kanban board saved in this browser could not be read, so it was not moved into the app. It stays in this browser${kept ? `, with a copy under “${KANBAN_KEY}.unreadable”` : ''}.`);
+    return;
+  }
+  try {
+    const { migrated } = await boardCall('POST', '/api/board/migrate', { board: data }, 120000);
+    savePref(MIGRATED_KEY, new Date().toISOString());
+    if (typeof data.selectedProjectId === 'string' && !selectedProjectId()) savePref(SELECTED_PROJECT_KEY, data.selectedProjectId);
+    if (migrated.cards || migrated.projects) announce(`Moved ${plural(migrated.projects, 'project')} and ${plural(migrated.cards, 'card')} from this browser into the app. The browser copy is kept.`);
+  } catch (error) {
+    showLoadWarning(`Cards saved in this browser were not moved into the app yet. They stay in this browser. ${error.message}`);
+  }
 }
 
 function renderBoard() {
   const project = currentProject();
-  const cards = project?.cards || [];
-  $('#project-select').replaceChildren(...board.projects.map(item => option(item.id, item.name)));
-  if (!project) $('#project-select').append(option('', 'No projects yet'));
+  const tasks = project?.tasks || [];
+  $('#project-select').replaceChildren(...(board?.projects || []).map(item => option(item.id, item.name)));
+  if (!project) $('#project-select').append(option('', board ? 'No projects yet' : 'Loading…'));
   $('#project-select').value = project?.id || '';
   $('#project-select').disabled = !project;
+  $('#project-new').disabled = !board;
   for (const id of ['#project-rename', '#project-delete', '#card-new']) $(id).disabled = !project;
-  $('#todo-count').textContent = String(cards.length).padStart(2, '0');
-  $('#board-empty').hidden = cards.length > 0;
-  $('#board-empty-text').textContent = project ? 'No tasks yet.' : 'Create a project to start planning.';
-  $('#board-empty-note').textContent = project ? 'Choose New card, or add a generated prompt from the Compose page.' : 'Each project gets its own board with one To do column.';
+  $('#board-count').textContent = String(tasks.length).padStart(2, '0');
+  $('#board-empty').hidden = tasks.length > 0;
+  $('#board-empty-text').textContent = !board ? 'Loading the board…' : project ? 'No tasks yet.' : 'Create a project to start planning.';
+  $('#board-empty-note').textContent = project ? 'Choose New card, or add a generated prompt from the Compose page. New cards start in To Do.' : 'Each project gets its own board, from To Do to Done.';
   $('#empty-prompt-link').hidden = !project;
-  $('#card-list').replaceChildren(...cards.map((card, index) => renderCard(card, index, cards.length)));
+  $('#kanban-columns').hidden = !project;
+  $('#kanban-columns').replaceChildren(...(project ? board.columns.map(column => renderColumn(column, tasks.filter(task => task.column === column.id))) : []));
+  renderRepository(project);
 }
+
+function renderColumn(column, tasks) {
+  const section = document.createElement('section');
+  section.className = 'kanban-column';
+  section.dataset.column = column.id;
+  const heading = document.createElement('h3');
+  heading.id = `column-${column.id}`;
+  heading.textContent = column.title;
+  const count = document.createElement('span');
+  count.className = 'kanban-count';
+  count.textContent = String(tasks.length).padStart(2, '0');
+  const header = document.createElement('div');
+  header.className = 'kanban-column-heading';
+  header.append(heading, count);
+  const note = paragraph(column.agent ? 'Agent stage · runs not active yet' : column.id === 'todo' ? 'Never runs an agent' : 'Finished · never runs an agent', 'kanban-column-note');
+  const list = document.createElement('ol');
+  list.className = 'kanban-cards';
+  list.dataset.column = column.id;
+  list.setAttribute('aria-labelledby', heading.id);
+  list.append(...tasks.map((task, index) => renderCard(task, index, tasks.length)));
+  // Dropping on empty column space puts the card at the end of that column.
+  list.addEventListener('dragover', event => { if (dragId && event.target === list) { event.preventDefault(); list.classList.add('drop-target'); } });
+  list.addEventListener('dragleave', () => list.classList.remove('drop-target'));
+  list.addEventListener('drop', event => {
+    if (event.target !== list || !dragId) return;
+    event.preventDefault();
+    const id = dragId; dragId = null;
+    placeCard(id, column.id, tasks.filter(task => task.id !== id).length);
+  });
+  section.append(header, note, list);
+  return section;
+}
+
+function latestRun(taskId) { return board.runs.filter(run => run.taskId === taskId).at(-1) || null; }
 
 function renderCard(card, index, count) {
   const status = cardStatus(card);
@@ -1024,22 +1076,29 @@ function renderCard(card, index, count) {
   const badge = document.createElement('span');
   badge.className = 'kanban-status';
   badge.textContent = status.text;
-  const heading = document.createElement('h3');
+  const heading = document.createElement('h4');
   heading.append(detailButton(card.title, () => openCard(card.id), 'kanban-open'));
-  const labelled = (button, label) => { button.setAttribute('aria-label', label); return button; };
-  const up = labelled(detailButton('↑', () => moveCard(card.id, -1), 'kanban-move kanban-move-up'), `Move up: ${card.title}`);
-  const down = labelled(detailButton('↓', () => moveCard(card.id, 1), 'kanban-move kanban-move-down'), `Move down: ${card.title}`);
+  const labelled = (element, label) => { element.setAttribute('aria-label', label); return element; };
+  const up = labelled(detailButton('↑', () => moveWithin(card.id, -1), 'kanban-move kanban-move-up'), `Move up: ${card.title}`);
+  const down = labelled(detailButton('↓', () => moveWithin(card.id, 1), 'kanban-move kanban-move-down'), `Move down: ${card.title}`);
   up.disabled = index === 0;
   down.disabled = index === count - 1;
+  const moveTo = labelled(document.createElement('select'), `Move to stage: ${card.title}`);
+  moveTo.className = 'kanban-move-to';
+  moveTo.append(option('', 'Move to…'), ...board.columns.filter(column => canMove(card.column, column.id)).map(column => option(column.id, column.title)));
+  moveTo.addEventListener('change', () => { if (moveTo.value) placeCard(card.id, moveTo.value, null); });
   const copy = labelled(detailButton('Copy prompt', () => copyCard(card, copy), 'kanban-copy'), `Copy prompt: ${card.title}`);
   const actions = document.createElement('div');
   actions.className = 'kanban-actions';
-  actions.append(up, down, copy,
+  actions.append(up, down, moveTo, copy,
     labelled(detailButton('Duplicate', () => duplicateCard(card.id), 'kanban-duplicate'), `Duplicate: ${card.title}`),
     labelled(detailButton('Delete', () => confirmCardDelete(item, card), 'kanban-delete'), `Delete: ${card.title}`));
-  item.append(badge, heading, paragraph(card.prompt.slice(0, 400).replace(/\s+/g, ' ').trim(), 'kanban-preview'),
-    paragraph(card.source ? sourceSummary(card.source) : 'Written by you', 'kanban-meta'), actions);
-  // Pointer drag-and-drop. The ↑ and ↓ buttons are the keyboard equivalent.
+  const details = [card.source ? sourceSummary(card.source) : 'Written by you'];
+  if (card.workspace) details.push(`Branch ${card.workspace.branch}${card.workspace.status === 'ready' ? '' : ` (${card.workspace.status})`}`);
+  const run = latestRun(card.id);
+  if (run) details.push(`Last run: ${run.stage.replace('_', ' ')} · ${run.status.replaceAll('_', ' ')}`);
+  item.append(badge, heading, paragraph(card.prompt.slice(0, 400).replace(/\s+/g, ' ').trim(), 'kanban-preview'), paragraph(details.join(' · '), 'kanban-meta'), actions);
+  // Pointer drag-and-drop. The ↑/↓ buttons and the stage menu are the keyboard equivalent.
   item.addEventListener('dragstart', event => {
     dragId = card.id;
     if (event.dataTransfer) { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', card.title); }
@@ -1047,29 +1106,44 @@ function renderCard(card, index, count) {
   });
   item.addEventListener('dragend', () => {
     dragId = null;
-    for (const element of document.querySelectorAll('.kanban-card.dragging, .kanban-card.drop-target')) element.classList.remove('dragging', 'drop-target');
+    for (const element of document.querySelectorAll('.kanban-card.dragging, .drop-target')) element.classList.remove('dragging', 'drop-target');
   });
   item.addEventListener('dragover', event => { if (!dragId || dragId === card.id) return; event.preventDefault(); item.classList.add('drop-target'); });
   item.addEventListener('dragleave', () => item.classList.remove('drop-target'));
-  item.addEventListener('drop', event => { event.preventDefault(); if (dragId && dragId !== card.id) placeCard(dragId, index); dragId = null; });
+  item.addEventListener('drop', event => {
+    event.preventDefault();
+    event.stopPropagation();
+    const id = dragId; dragId = null;
+    if (id && id !== card.id) placeCard(id, card.column, index);
+  });
   return item;
 }
 
-function cardElement(id) { return Array.from($('#card-list').children).find(item => item.dataset.id === id); }
+function cardElement(id) { return Array.from($('#kanban-columns').querySelectorAll('.kanban-card')).find(item => item.dataset.id === id); }
 
-function placeCard(id, target) {
-  const cards = currentProject()?.cards || [];
-  const from = cards.findIndex(card => card.id === id);
-  if (from < 0 || target < 0 || target >= cards.length || target === from) return false;
-  const [card] = cards.splice(from, 1);
-  cards.splice(target, 0, card);
-  commitBoard(`Moved “${card.title}” to position ${target + 1} of ${cards.length}.`);
+function showBoardError(error) {
+  showProjectDetail(paragraph(error.message, 'kanban-error'));
+  announce(error.message);
+}
+
+/** Move a card to a column position. `index` counts the other cards in that column; null means the end. */
+async function placeCard(id, column, index) {
+  const card = findTask(id);
+  if (!card) return false;
+  const others = currentProject().tasks.filter(task => task.column === column && task.id !== id);
+  const position = index === null ? others.length : Math.min(index, others.length);
+  try {
+    await boardCall('POST', `/api/tasks/${encodeURIComponent(id)}/move`, { column, index: position, expectedRevision: card.revision });
+  } catch (error) { showBoardError(error); return false; }
+  announce(column === card.column ? `Moved “${card.title}” to position ${position + 1} of ${others.length + 1}.` : `Moved “${card.title}” to ${columnTitle(column)}. Moving a card does not run or approve that stage.`);
   return true;
 }
 
-function moveCard(id, step) {
-  const cards = currentProject()?.cards || [];
-  if (!placeCard(id, cards.findIndex(card => card.id === id) + step)) return;
+async function moveWithin(id, step) {
+  const card = findTask(id);
+  if (!card) return;
+  const column = currentProject().tasks.filter(task => task.column === card.column);
+  if (!await placeCard(id, card.column, column.indexOf(card) + step)) return;
   // Keep keyboard focus on the moved card. At either end, use the button that still works.
   const item = cardElement(id);
   const same = item?.querySelector(step < 0 ? '.kanban-move-up' : '.kanban-move-down');
@@ -1090,43 +1164,39 @@ async function copyCard(card, button) {
   }
 }
 
-function duplicateCard(id) {
-  const cards = currentProject().cards;
-  const index = cards.findIndex(card => card.id === id);
-  if (index < 0) return;
-  if (cards.length >= CARD_LIMIT) { announce(`A project can have at most ${CARD_LIMIT} cards.`); return; }
-  const card = cards[index];
-  const now = Date.now();
-  const copy = { ...card, id: crypto.randomUUID(), title: `${card.title.slice(0, 113)} (copy)`, createdAt: now, updatedAt: now, source: card.source && { ...card.source, reportedModels: [...card.source.reportedModels] } };
-  cards.splice(index + 1, 0, copy);
-  commitBoard(`Duplicated “${card.title}”.`);
-  cardElement(copy.id)?.querySelector('.kanban-open').focus();
+async function duplicateCard(id) {
+  try {
+    const { task } = await boardCall('POST', `/api/tasks/${encodeURIComponent(id)}/duplicate`, {});
+    announce(`Duplicated “${findTask(id)?.title || task.title}” into To Do.`);
+    cardElement(task.id)?.querySelector('.kanban-open').focus();
+  } catch (error) { showBoardError(error); }
 }
 
 function confirmCardDelete(item, card) {
   const keep = detailButton('Keep card', () => { renderBoard(); cardElement(card.id)?.querySelector('.kanban-delete').focus(); });
   const confirm = document.createElement('div');
   confirm.className = 'connection-detail kanban-confirm';
-  confirm.append(paragraph(`Delete “${card.title}”? This cannot be undone.`), detailActions(detailButton('Delete card', () => deleteCard(card.id), 'danger'), keep));
+  const note = card.workspace ? ' Its worktree is removed only if it has no uncommitted changes; its branch is kept.' : '';
+  confirm.append(paragraph(`Delete “${card.title}”? This cannot be undone.${note}`), detailActions(detailButton('Delete card', () => deleteCard(card.id), 'danger'), keep));
   item.querySelector('.kanban-actions').replaceWith(confirm);
   keep.focus();
 }
 
-function deleteCard(id) {
-  const cards = currentProject().cards;
-  const index = cards.findIndex(card => card.id === id);
-  if (index < 0) return;
-  const [card] = cards.splice(index, 1);
-  commitBoard(`Deleted “${card.title}”.`);
-  (cardElement(cards[Math.min(index, cards.length - 1)]?.id)?.querySelector('.kanban-open') || $('#card-new')).focus();
+async function deleteCard(id) {
+  const card = findTask(id);
+  if (!card) return;
+  try { await boardCall('DELETE', `/api/tasks/${encodeURIComponent(id)}?expectedRevision=${card.revision}`); }
+  catch (error) { renderBoard(); showBoardError(error); return; }
+  announce(`Deleted “${card.title}”.`);
+  ($('#kanban-columns .kanban-open') || $('#card-new')).focus();
 }
 
 function openCard(id = null) {
   const project = currentProject();
   if (!project) return;
-  const card = id ? project.cards.find(item => item.id === id) : null;
+  const card = id ? project.tasks.find(item => item.id === id) : null;
   editingCardId = card?.id || null;
-  $('#card-dialog-project').textContent = `${project.name} · To do`;
+  $('#card-dialog-project').textContent = `${project.name} · ${columnTitle(card?.column || 'todo')}`;
   $('#card-dialog-heading').textContent = card ? 'Edit card' : 'New card';
   $('#card-title').value = card?.title || '';
   $('#card-prompt').value = card?.prompt || '';
@@ -1136,7 +1206,7 @@ function openCard(id = null) {
   $('#card-status').classList.toggle('needs-review', Boolean(status?.flag));
   $('#card-note').textContent = !card?.source ? 'Write the task as your coding agent should receive it. Copy prompt copies this text exactly.'
     : card.checksOutdated ? 'This prompt was edited. The checks from generation apply to the original text only. Your prompt history is unchanged.'
-    : 'Imported from Prompt Engineer. Saving changes marks the previous checks as outdated. Your prompt history is unchanged.';
+    : 'Imported from Compose. Saving changes marks the previous checks as outdated. Your prompt history is unchanged.';
   $('#card-source').hidden = !card?.source;
   $('#card-source').open = false;
   $('#card-source-list').replaceChildren();
@@ -1156,50 +1226,39 @@ function openCard(id = null) {
   $('#card-title').focus();
 }
 
-function saveCard(event) {
+async function saveCard(event) {
   event.preventDefault();
   const project = currentProject();
   if (!project) return;
-  const card = editingCardId ? project.cards.find(item => item.id === editingCardId) : null;
+  const card = editingCardId ? project.tasks.find(item => item.id === editingCardId) : null;
   const title = $('#card-title').value.trim();
   const typed = $('#card-prompt').value;
   const error = !title ? 'Enter a short title.' : title.length > 120 ? 'Use a title of at most 120 characters.'
-    : !typed.trim() ? 'Enter the prompt for this task.' : typed.length > MAX_PROMPT_BYTES ? 'The prompt exceeds the 2 MiB limit.'
-    : !card && project.cards.length >= CARD_LIMIT ? `A project can have at most ${CARD_LIMIT} cards.` : '';
+    : !typed.trim() ? 'Enter the prompt for this task.' : typed.length > MAX_PROMPT_BYTES ? 'The prompt exceeds the 2 MiB limit.' : '';
   if (error) { $('#card-error').textContent = error; $('#card-error').hidden = false; return; }
-  const now = Date.now();
-  let saved = card;
-  let message;
-  if (card) {
-    // A textarea turns \r\n into \n. Keep the stored text when nothing else changed.
-    const prompt = typed === card.prompt.replace(/\r\n?/g, '\n') ? card.prompt : typed;
-    if (title === card.title && prompt === card.prompt) message = 'No changes to save.';
-    else {
-      Object.assign(card, { title, prompt, updatedAt: now, checksOutdated: Boolean(card.source) });
-      message = card.source ? `Saved “${title}”. The previous checks are now marked as outdated.` : `Saved “${title}”.`;
+  let saved, message;
+  try {
+    if (card) {
+      // A textarea turns \r\n into \n. Keep the stored text when nothing else changed.
+      const prompt = typed === card.prompt.replace(/\r\n?/g, '\n') ? card.prompt : typed;
+      const result = await boardCall('PATCH', `/api/tasks/${encodeURIComponent(card.id)}`, { title, prompt, expectedRevision: card.revision });
+      saved = result.task;
+      message = !result.changed ? 'No changes to save.' : saved.checksOutdated && card.source ? `Saved “${title}”. The previous checks are now marked as outdated.` : `Saved “${title}”.`;
+    } else {
+      saved = (await boardCall('POST', '/api/tasks', { projectId: project.id, title, prompt: typed })).task;
+      message = `Added “${title}” to To Do.`;
     }
-  } else {
-    saved = { id: crypto.randomUUID(), title, prompt: typed, createdAt: now, updatedAt: now, checksOutdated: false, source: null };
-    project.cards.push(saved);
-    message = `Added “${title}” to To do.`;
-  }
+  } catch (failure) { $('#card-error').textContent = failure.message; $('#card-error').hidden = false; return; }
   $('#card-dialog').close();
-  commitBoard(message);
+  announce(message);
   cardElement(saved.id)?.querySelector('.kanban-open').focus();
 }
 
 function projectNameError(name, exceptId = null) {
   if (!name) return 'Enter a project name.';
   if (name.length > 80) return 'Use a project name of at most 80 characters.';
-  if (board.projects.some(project => project.id !== exceptId && project.name.toLowerCase() === name.toLowerCase())) return 'A project with this name already exists.';
+  if (board?.projects.some(project => project.id !== exceptId && project.name.toLowerCase() === name.toLowerCase())) return 'A project with this name already exists.';
   return '';
-}
-
-function createProject(name) {
-  const project = { id: crypto.randomUUID(), name, createdAt: Date.now(), cards: [] };
-  board.projects.push(project);
-  board.selectedProjectId = project.id;
-  return project;
 }
 
 function showProjectDetail(...nodes) {
@@ -1219,21 +1278,25 @@ function openProjectForm(mode) {
 
 function closeProjectForm() { $('#project-form').hidden = true; $('#project-error').hidden = true; }
 
-function saveProject(event) {
+async function saveProject(event) {
   event.preventDefault();
   const name = $('#project-name').value.trim();
   const project = projectFormMode === 'rename' ? currentProject() : null;
-  const error = !project && board.projects.length >= PROJECT_LIMIT ? `A board can have at most ${PROJECT_LIMIT} projects.` : projectNameError(name, project?.id);
-  if (error) { $('#project-error').textContent = error; $('#project-error').hidden = false; $('#project-name').focus(); return; }
+  const showError = message => { $('#project-error').textContent = message; $('#project-error').hidden = false; $('#project-name').focus(); };
+  const error = projectNameError(name, project?.id);
+  if (error) { showError(error); return; }
+  try {
+    if (project) {
+      await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}`, { name, expectedRevision: project.revision });
+      announce(`Renamed “${project.name}” to “${name}”.`);
+    } else {
+      const created = (await boardCall('POST', '/api/projects', { name })).project;
+      savePref(SELECTED_PROJECT_KEY, created.id);
+      renderBoard();
+      announce(`Created project “${name}”.`);
+    }
+  } catch (failure) { showError(failure.message); return; }
   closeProjectForm();
-  if (project) {
-    const previous = project.name;
-    project.name = name;
-    commitBoard(`Renamed “${previous}” to “${name}”.`);
-  } else {
-    createProject(name);
-    commitBoard(`Created project “${name}”.`);
-  }
   $('#project-select').focus();
 }
 
@@ -1243,97 +1306,193 @@ function confirmProjectDelete() {
   closeProjectForm();
   const keep = detailButton('Keep project', () => { showProjectDetail(); $('#project-delete').focus(); });
   showProjectDetail(
-    paragraph(`Delete “${project.name}” and its ${plural(project.cards.length, 'card')}? This cannot be undone. Export a backup first if you want to keep them.`),
-    detailActions(detailButton('Delete project', () => deleteProject(project.id), 'danger'), keep),
+    paragraph(`Delete “${project.name}” and its ${plural(project.tasks.length, 'card')}? This cannot be undone. Export a backup first if you want to keep them.`),
+    detailActions(detailButton('Delete project', () => deleteProject(project), 'danger'), keep),
   );
   keep.focus();
 }
 
-function deleteProject(id) {
-  const project = board.projects.find(item => item.id === id);
-  if (!project) return;
-  board.projects = board.projects.filter(item => item.id !== id);
-  if (board.selectedProjectId === id) board.selectedProjectId = board.projects[0]?.id ?? null;
+async function deleteProject(project) {
+  try { await boardCall('DELETE', `/api/projects/${encodeURIComponent(project.id)}?expectedRevision=${project.revision}`); }
+  catch (error) { showBoardError(error); return; }
   showProjectDetail();
-  commitBoard(`Deleted project “${project.name}”.`);
+  savePref(SELECTED_PROJECT_KEY, board.projects[0]?.id || '');
+  renderBoard();
+  announce(`Deleted project “${project.name}”.`);
   $(board.projects.length ? '#project-select' : '#project-new').focus();
 }
 
-function exportBoard() {
-  const backup = { application: 'AI Prompt Engineer', kind: 'kanban-backup', version: 1, exportedAt: new Date().toISOString(), selectedProjectId: board.selectedProjectId, projects: board.projects };
-  downloadFile(`${JSON.stringify(backup, null, 2)}\n`, 'application/json;charset=utf-8', `ste-kanban-backup-${new Date().toISOString().slice(0, 10)}.json`);
-  announce(`Board backup exported: ${boardCounts(board)}.`);
+// ---- Repository link and target branch ----
+
+function renderRepository(project) {
+  $('#repo-panel').hidden = !project;
+  if (!project) return;
+  if (repoFormFor !== project.id) {
+    repoFormFor = project.id;
+    $('#repo-path').value = project.repository?.path || '';
+    $('#repo-message').hidden = true;
+  }
+  const repository = project.repository;
+  $('#repo-state').textContent = repository
+    ? `Linked to ${repository.root}${repository.linkedWorktree ? ' (a linked worktree)' : ''}.`
+    : 'Not linked. Cards can wait in To Do, but they cannot move on or run agents until the project is linked to a Git repository.';
+  $('#repo-unlink').hidden = !repository;
+  $('#branch-field').hidden = !repository;
+  const known = repositories.get(project.id);
+  const branches = known?.branches || (project.targetBranch ? [{ name: project.targetBranch.name }] : []);
+  $('#target-branch').replaceChildren(option('', branches.length ? 'Choose a local branch…' : 'Reading branches…'), ...branches.map(branch => option(branch.name, branch.name)));
+  $('#target-branch').value = project.targetBranch?.name || '';
+  $('#branch-save').disabled = !repository;
+  $('#branch-state').textContent = project.targetBranch
+    ? `Target branch: ${project.targetBranch.name} at ${project.targetBranch.commit.slice(0, 12)}. Task worktrees start from this recorded commit.`
+    : 'No target branch yet. Choose the local branch that task branches start from.';
+  if (repository && !known) refreshBranches(project.id);
+  const pending = project.pendingImport;
+  $('#import-pending').hidden = !pending;
+  if (pending) {
+    const parts = [pending.repositoryPath && `repository ${pending.repositoryPath}`, pending.targetBranch && `target branch ${pending.targetBranch}`, pending.automation?.autoRun && 'automatic runs'].filter(Boolean);
+    $('#import-pending-text').textContent = `The imported backup suggests ${parts.join(', ')}. Nothing is applied until you confirm.`;
+  }
+}
+
+async function refreshBranches(projectId) {
+  repositories.set(projectId, { branches: [] });
+  try {
+    const { response, data } = await api(`/api/projects/${encodeURIComponent(projectId)}/branches`, { timeoutMs: 30000 });
+    if (!response.ok) throw new Error(data.error || 'The branches could not be read.');
+    repositories.set(projectId, data.repository);
+  } catch (error) {
+    repositories.delete(projectId);
+    if (currentProject()?.id === projectId) repoMessage(error.message);
+    return;
+  }
+  if (currentProject()?.id === projectId) renderRepository(currentProject());
+}
+
+function repoMessage(message) { $('#repo-message').textContent = message; $('#repo-message').hidden = !message; }
+
+async function linkRepository(path) {
+  const project = currentProject();
+  if (!project) return;
+  repoMessage('');
+  $('#repo-link').disabled = true;
+  try {
+    const result = await boardCall('POST', `/api/projects/${encodeURIComponent(project.id)}/repository`, { path, expectedRevision: project.revision }, 60000);
+    if (result.repository) repositories.set(project.id, result.repository); else repositories.delete(project.id);
+    renderRepository(currentProject());
+    announce(path === null ? `Unlinked “${project.name}”.` : `Linked “${project.name}” to ${result.repository.root}. Choose the target branch next.`);
+  } catch (error) { repoMessage(error.message); }
+  finally { $('#repo-link').disabled = false; }
+}
+
+async function saveTargetBranch() {
+  const project = currentProject();
+  const branch = $('#target-branch').value;
+  if (!project || !branch) { repoMessage('Choose a local branch.'); return; }
+  try {
+    await boardCall('POST', `/api/projects/${encodeURIComponent(project.id)}/target-branch`, { branch, expectedRevision: project.revision });
+    repoMessage('');
+    announce(`Target branch set to ${branch}.`);
+  } catch (error) { repoMessage(error.message); }
+}
+
+async function confirmImported(accept) {
+  const project = currentProject();
+  if (!project) return;
+  try {
+    await boardCall('POST', `/api/projects/${encodeURIComponent(project.id)}/confirm-import`, { accept, expectedRevision: project.revision }, 60000);
+    repositories.delete(project.id);
+    renderRepository(currentProject());
+    announce(accept ? 'Imported settings confirmed.' : 'Imported settings dismissed.');
+  } catch (error) { repoMessage(error.message); }
+}
+
+// ---- Backup ----
+
+async function exportBoard() {
+  let backup;
+  try {
+    const { response, data } = await api('/api/board/export', { timeoutMs: 60000 });
+    if (!response.ok) throw new Error(data.error || 'The board could not be exported.');
+    backup = data;
+  } catch (error) { showBoardError(error); return; }
+  downloadFile(`${JSON.stringify(backup, null, 2)}\n`, 'application/json;charset=utf-8', `promptboard-backup-${new Date().toISOString().slice(0, 10)}.json`);
+  announce(`Board backup exported: ${boardCounts(backup.projects)}.`);
 }
 
 async function importBoard() {
   const file = $('#import-file').files?.[0];
   $('#import-file').value = '';
-  if (!file) return;
+  if (!file || !board) return;
   closeProjectForm();
-  let imported;
-  try {
-    if (file.size > IMPORT_LIMIT_BYTES) throw new Error('The file is larger than 20 MB.');
-    let data;
-    try { data = JSON.parse(await file.text()); } catch { throw new Error('The file is not valid JSON.'); }
-    if (data?.kind !== 'kanban-backup') throw new Error('The file is not a Kanban backup from AI Prompt Engineer.');
-    imported = parseBoard(data);
-  } catch (error) {
-    showProjectDetail(paragraph(`Import failed. Your board is unchanged. ${error.message}`, 'kanban-error'));
-    announce(`Import failed. Your board is unchanged. ${error.message}`);
-    return;
-  }
-  const replace = () => {
-    board = imported;
-    showProjectDetail(paragraph(`Backup imported: ${boardCounts(imported)}.`));
-    commitBoard(`Backup imported: ${boardCounts(imported)}.`);
+  const failed = message => {
+    showProjectDetail(paragraph(`Import failed. Your board is unchanged. ${message}`, 'kanban-error'));
+    announce(`Import failed. Your board is unchanged. ${message}`);
   };
-  if (!board.projects.length) { replace(); return; }
+  let data;
+  if (file.size > IMPORT_LIMIT_BYTES) { failed('The file is larger than 20 MB.'); return; }
+  try { data = JSON.parse(await file.text()); } catch { failed('The file is not valid JSON.'); return; }
+  if (!['kanban-backup', 'promptboard-backup'].includes(data?.kind)) { failed('The file is not a Promptboard or Kanban backup.'); return; }
+  const counts = boardCounts(Array.isArray(data.projects) ? data.projects : [], data.kind === 'kanban-backup' ? 'cards' : 'tasks');
+  const replace = async confirmed => {
+    try { await boardCall('POST', '/api/board/import', { backup: data, replace: confirmed }, 120000); }
+    catch (error) { failed(error.message); return; }
+    savePref(SELECTED_PROJECT_KEY, board.projects.find(project => project.id === data.selectedProjectId)?.id || board.projects[0]?.id || '');
+    renderBoard();
+    const message = `Backup imported: ${boardCounts(board.projects)}. No agent runs were started.${board.projects.some(project => project.pendingImport) ? ' Imported repository paths and automation settings wait for your confirmation.' : ''}`;
+    showProjectDetail(paragraph(message));
+    announce(message);
+  };
+  if (!board.projects.length) { await replace(false); return; }
   const keep = detailButton('Keep current board', () => { showProjectDetail(); announce('Import canceled. Your board is unchanged.'); });
   showProjectDetail(
-    paragraph(`Replace the current board (${boardCounts(board)}) with this backup (${boardCounts(imported)})? The current board is removed. Export it first if you want to keep it.`),
-    detailActions(detailButton('Replace board', replace, 'danger'), keep),
+    paragraph(`Replace the current board (${boardCounts(board.projects)}) with this backup (${counts})? The current board is removed. Export it first if you want to keep it.`),
+    detailActions(detailButton('Replace board', () => replace(true), 'danger'), keep),
   );
   keep.focus();
 }
 
+// ---- Add to Kanban from Compose ----
+
 function openAddToKanban() {
   if (!currentResult || running) return;
   const source = snapshotSource(currentResult);
-  $('#add-project').replaceChildren(...board.projects.map(project => option(project.id, project.name)), option('', 'New project…'));
+  const projects = board?.projects || [];
+  $('#add-project').replaceChildren(...projects.map(project => option(project.id, project.name)), option('', 'New project…'));
   $('#add-project').value = currentProject()?.id || '';
   $('#add-project-name').value = '';
   $('#add-project-name-field').hidden = Boolean($('#add-project').value);
   $('#add-title').value = currentResult.input.replace(/\s+/g, ' ').trim().slice(0, 80) || 'Generated prompt';
   $('#add-preview').textContent = currentResult.prompt;
-  $('#add-note').textContent = `The exact prompt below is copied into the card (${currentResult.prompt.length.toLocaleString()} characters). Later card edits do not change your prompt history. Source: ${sourceSummary(source)} · ${cardStatus({ source, checksOutdated: false }).text}.`;
+  $('#add-note').textContent = `The exact prompt below is copied into a To Do card (${currentResult.prompt.length.toLocaleString()} characters). Later card edits do not change your prompt history. Source: ${sourceSummary(source)} · ${cardStatus({ source, checksOutdated: false }).text}.`;
   $('#add-error').hidden = true;
   $('#add-dialog').showModal();
-  $(board.projects.length ? '#add-title' : '#add-project-name').focus();
+  $(projects.length ? '#add-title' : '#add-project-name').focus();
 }
 
-function addToKanban(event) {
+async function addToKanban(event) {
   event.preventDefault();
+  if (!board) await (boardLoading || loadBoard());
   const result = currentResult;
   const title = $('#add-title').value.trim();
   const name = $('#add-project-name').value.trim();
-  let project = board.projects.find(item => item.id === $('#add-project').value);
-  const error = !result || !result.prompt.trim() ? 'There is no prompt to add.' : !title ? 'Enter a short card title.' : title.length > 120 ? 'Use a title of at most 120 characters.'
-    : project ? (project.cards.length >= CARD_LIMIT ? `This project already has ${CARD_LIMIT} cards.` : '')
-    : board.projects.length >= PROJECT_LIMIT ? `A board can have at most ${PROJECT_LIMIT} projects.` : projectNameError(name);
-  if (error) { $('#add-error').textContent = error; $('#add-error').hidden = false; return; }
-  project ||= createProject(name);
-  board.selectedProjectId = project.id;
-  const now = Date.now();
-  project.cards.push({ id: crypto.randomUUID(), title, prompt: result.prompt, createdAt: now, updatedAt: now, checksOutdated: false, source: snapshotSource(result) });
+  let project = board?.projects.find(item => item.id === $('#add-project').value);
+  const error = !board ? 'The board is not loaded. Check that the app is running, then try again.'
+    : !result || !result.prompt.trim() ? 'There is no prompt to add.' : !title ? 'Enter a short card title.' : title.length > 120 ? 'Use a title of at most 120 characters.'
+    : project ? '' : projectNameError(name);
+  const showError = message => { $('#add-error').textContent = message; $('#add-error').hidden = false; };
+  if (error) { showError(error); return; }
+  try {
+    project ||= (await boardCall('POST', '/api/projects', { name })).project;
+    savePref(SELECTED_PROJECT_KEY, project.id);
+    await boardCall('POST', '/api/tasks', { projectId: project.id, title, prompt: result.prompt, source: snapshotSource(result) });
+  } catch (failure) { showError(failure.message); return; }
   $('#add-dialog').close();
-  const saved = persistBoard();
-  renderBoard();
-  announce(saved ? `Added “${title}” to ${project.name}.` : `Added “${title}” to ${project.name} for this session only. Board changes were not saved in this browser.`);
+  announce(`Added “${title}” to To Do in ${project.name}.`);
   $('#kanban-label').textContent = 'Added!';
   setTimeout(() => { $('#kanban-label').textContent = 'Add to Kanban'; }, 1800);
   $('#kanban-button').focus();
 }
-
 window.addEventListener('hashchange', showPage);
 // The skip link must not change the hash, which selects the page.
 $('#skip-link').addEventListener('click', event => { event.preventDefault(); ($('#kanban-view').hidden ? $('#prompt-input') : $('#kanban-view')).focus(); });
@@ -1343,16 +1502,23 @@ $('#add-project').addEventListener('change', () => { $('#add-project-name-field'
 $('#add-cancel').addEventListener('click', () => $('#add-dialog').close());
 $('#add-dialog-close').addEventListener('click', () => $('#add-dialog').close());
 $('#project-select').addEventListener('change', () => {
-  board.selectedProjectId = $('#project-select').value;
+  savePref(SELECTED_PROJECT_KEY, $('#project-select').value);
   closeProjectForm();
   showProjectDetail();
-  commitBoard(`Showing project “${currentProject()?.name}”.`);
+  renderBoard();
+  announce(`Showing project “${currentProject()?.name}”.`);
 });
 $('#project-new').addEventListener('click', () => openProjectForm('new'));
 $('#project-rename').addEventListener('click', () => openProjectForm('rename'));
 $('#project-delete').addEventListener('click', confirmProjectDelete);
 $('#project-form').addEventListener('submit', saveProject);
 $('#project-cancel').addEventListener('click', closeProjectForm);
+$('#repo-form').addEventListener('submit', event => { event.preventDefault(); linkRepository($('#repo-path').value); });
+$('#repo-unlink').addEventListener('click', () => linkRepository(null));
+$('#branch-save').addEventListener('click', saveTargetBranch);
+$('#branch-refresh').addEventListener('click', () => { const project = currentProject(); if (project?.repository) { repositories.delete(project.id); renderRepository(project); } });
+$('#import-confirm').addEventListener('click', () => confirmImported(true));
+$('#import-dismiss').addEventListener('click', () => confirmImported(false));
 $('#card-new').addEventListener('click', () => openCard());
 $('#card-form').addEventListener('submit', saveCard);
 $('#card-cancel').addEventListener('click', () => $('#card-dialog').close());

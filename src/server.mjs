@@ -7,6 +7,9 @@ import { validateRequest } from './engine.mjs';
 import { runPipeline } from './pipeline.mjs';
 import { detectProviders, FAILURE_MESSAGES, killOwnedProcesses, ProviderError, resolveExecutable, runProvider, validateEffort } from './providers.mjs';
 import { AUTH_CAPABILITIES, logout, readAuthStatus, startLogin } from './auth.mjs';
+import { Board, BoardError } from './board.mjs';
+import { GitError } from './git.mjs';
+import { defaultDataDir, StoreError } from './store.mjs';
 import { discoverModels, checkModelEffort } from './models.mjs';
 
 const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
@@ -26,7 +29,7 @@ function send(res, code, body) {
   res.end(JSON.stringify(body));
 }
 
-async function jsonBody(req) {
+async function jsonBody(req, limit = 1_048_576) {
   if (!/^application\/json(?:;|$)/i.test(req.headers['content-type'] || '')) {
     throw Object.assign(new Error('Send JSON with Content-Type: application/json.'), { status: 415 });
   }
@@ -34,7 +37,7 @@ async function jsonBody(req) {
   const chunks = [];
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > 1_048_576) throw Object.assign(new Error('The request is too large.'), { status: 413 });
+    if (size > limit) throw Object.assign(new Error('The request is too large.'), { status: 413 });
     chunks.push(chunk);
   }
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); }
@@ -75,7 +78,47 @@ function failureBody(error, fallback) {
 
 const auth = { installed: async provider => Boolean(await resolveExecutable(provider)), status: readAuthStatus, login: startLogin, logout };
 
-export async function startServer({ port = 4318, runner = runProvider, detector = detectProviders, catalogReader = discoverModels, authAdapter = auth } = {}) {
+// Board payloads carry full prompts (up to 2 MiB each); migration and import carry whole boards.
+const TASK_BODY_LIMIT = 8 * 1024 * 1024;
+const BOARD_BODY_LIMIT = 48 * 1024 * 1024;
+
+/** Kanban routes. IDs come from the URL; every filesystem path is resolved on the server. */
+async function boardRoute(board, req, res, pathname, searchParams) {
+  const method = req.method;
+  const match = pathname.match(/^\/api\/(projects|tasks)\/([A-Za-z0-9_-]{1,100})(?:\/([a-z-]+))?$/);
+  const body = async (limit = TASK_BODY_LIMIT) => { const value = await jsonBody(req, limit); if (!value || typeof value !== 'object' || Array.isArray(value)) throw Object.assign(new Error('Send a JSON object.'), { status: 400 }); return value; };
+  const view = async extra => send(res, 200, { ...extra, board: await board.view() });
+  if (method === 'GET' && pathname === '/api/board') return view();
+  if (method === 'GET' && pathname === '/api/board/export') return send(res, 200, await board.exportBackup());
+  if (method === 'POST' && pathname === '/api/board/migrate') return view({ migrated: await board.migrateBrowserBoard((await body(BOARD_BODY_LIMIT)).board) });
+  if (method === 'POST' && pathname === '/api/board/import') { const data = await body(BOARD_BODY_LIMIT); return view({ imported: await board.importBackup(data.backup, { replace: data.replace === true }) }); }
+  if (method === 'POST' && pathname === '/api/projects') return view({ project: await board.createProject(await body()) });
+  if (method === 'POST' && pathname === '/api/repository/validate') return send(res, 200, { repository: await board.validateRepository((await body()).path) });
+  if (method === 'POST' && pathname === '/api/tasks') return view({ task: await board.createTask(await body()) });
+  if (!match) return false;
+  const [, kind, id, action = ''] = match;
+  const expected = () => Number(searchParams.get('expectedRevision'));
+  if (kind === 'projects') {
+    if (method === 'PATCH' && !action) return view({ project: await board.renameProject(id, await body()) });
+    if (method === 'DELETE' && !action) return view({ deleted: await board.deleteProject(id, { expectedRevision: expected() }) ?? true });
+    if (method === 'POST' && action === 'repository') return view(await board.linkRepository(id, await body()));
+    if (method === 'GET' && action === 'branches') return send(res, 200, { repository: await board.listProjectBranches(id) });
+    if (method === 'POST' && action === 'target-branch') return view({ project: await board.setTargetBranch(id, await body()) });
+    if (method === 'POST' && action === 'confirm-import') return view({ project: await board.confirmImport(id, await body()) });
+  } else {
+    if (method === 'PATCH' && !action) return view(await board.updateTask(id, await body()));
+    if (method === 'DELETE' && !action) return view({ deleted: await board.deleteTask(id, { expectedRevision: expected() }) ?? true });
+    if (method === 'POST' && action === 'move') return view({ task: await board.moveTask(id, await body()) });
+    if (method === 'POST' && action === 'duplicate') { await body(); return view({ task: await board.duplicateTask(id) }); }
+    if (method === 'POST' && action === 'runs') return view({ run: await board.requestRun(id, await body()) });
+    if (method === 'DELETE' && action === 'worktree') return view({ task: await board.removeTaskWorktree(id) });
+  }
+  return false;
+}
+
+export async function startServer({ port = 4318, runner = runProvider, detector = detectProviders, catalogReader = discoverModels, authAdapter = auth, dataDir = defaultDataDir(), executor = null } = {}) {
+  // The board loads lazily, so starting the server never reads or writes board files.
+  const board = new Board({ dataDir, executor });
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('The port must be 0–65535.');
   const token = randomBytes(32).toString('hex');
   const catalogAbort = new AbortController();
@@ -227,6 +270,16 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
       }
       return;
     }
+    if (pathname.startsWith('/api/board') || pathname.startsWith('/api/projects') || pathname.startsWith('/api/tasks') || pathname === '/api/repository/validate') {
+      try { if ((await boardRoute(board, req, res, pathname, requestUrl.searchParams)) !== false) return; }
+      catch (error) {
+        // Board, store, and Git errors carry fixed messages; raw Git output is never returned.
+        const known = error instanceof BoardError || error instanceof GitError || error instanceof StoreError;
+        const status = known || error.status < 500 ? error.status || 500 : 500;
+        return send(res, status, known || status < 500 ? { error: error.message, code: error.code || 'INVALID_REQUEST' } : { error: 'The board request failed.', code: 'BOARD_FAILED' });
+      }
+      return send(res, 404, { error: 'This route does not exist.' });
+    }
     if (req.method === 'GET' && assets.has(pathname)) {
       const [name, mime] = assets.get(pathname);
       try { const file = await readFile(join(publicDir, name)); res.writeHead(200, { 'Content-Type': mime }); res.end(file); }
@@ -257,5 +310,5 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
     server.closeAllConnections();
     await listening;
   })();
-  return { server, url: `http://127.0.0.1:${server.address().port}`, close };
+  return { server, url: `http://127.0.0.1:${server.address().port}`, close, board };
 }

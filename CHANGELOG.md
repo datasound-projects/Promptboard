@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Kanban (PB-01): seven fixed stages from To Do to Done, with validated moves. Planning is optional. To Do and Done never run agents, and the server enforces this.
+  - The app now saves the board in its data folder as versioned JSON, with atomic writes, a backup copy, recovery, and revision checks. The browser board migrates once, keeping exact text and IDs.
+  - Projects link to a Git repository (linked worktrees accepted; bare repositories refused) and a chosen local target branch.
+  - Task runs are records separate from card position. Worktrees are created once per task, from the recorded target commit, outside your checkout.
+  - Execution stays off until PB-02. See `docs/agentic-kanban-contract.md`.
 - Kanban page: projects with one To do column of task cards. You can add a generated prompt as an exact snapshot, or write a card yourself.
   - Source details and review status stay with each card. An edit marks the previous checks as outdated.
   - Reorder cards with the move buttons or drag-and-drop.

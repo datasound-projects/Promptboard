@@ -29,7 +29,7 @@ A coding agent needs a clear goal, relevant context, and precise constraints. Th
 - **Find potential problems.** Review missing requirements, conflicting instructions, and unsupported additions.
 - **Control the output.** Choose the model, supported effort level, language, task, and amount of detail.
 - **Reuse your work.** Keep prompt history and copy or export results and check reports.
-- **Plan agent tasks.** Add prompts to a project's Kanban board. It has one To do column, and each card keeps an exact copy of its prompt. Nothing runs from the board. Copy a card into your coding agent when you are ready.
+- **Plan agent tasks.** Add prompts to a project's Kanban board. Cards move through seven stages: To Do, Planning, Executing, Code Review, Testing, Merge, and Done. Each card keeps an exact copy of its prompt. Link a project to its Git repository and choose a target branch; each task later gets its own branch and worktree. No agent runs from the board yet. Copy a card into your coding agent when you are ready.
 
 The writing rules draw on **ASD-STE100 Simplified Technical English**: short sentences, direct instructions, and consistent terms.
 
@@ -117,7 +117,7 @@ Run `node bin/ste.mjs --help` for all options.
 
 ## Data and troubleshooting
 
-The app runs on your computer. History stays in your browser. Your CLI sends requests to its provider and may retain its own logs. The app includes no analytics.
+The app runs on your computer. Prompt history stays in your browser. The Kanban board is saved by the app in `~/Library/Application Support/Promptboard` (macOS), `%APPDATA%\Promptboard` (Windows), or `~/.local/share/promptboard` (Linux); set `PROMPTBOARD_DATA_DIR` to use another folder. Run one app instance per data folder. A board kept in this browser by an earlier version moves into the app automatically, and the browser copy is kept. Your CLI sends requests to its provider and may retain its own logs. The app includes no analytics.
 
 | Problem | Action |
 | --- | --- |
@@ -130,7 +130,7 @@ The app runs on your computer. History stays in your browser. Your CLI sends req
 
 Press **Ctrl+C** once to stop: the app cancels running CLI work, removes its temporary folders, and frees the port within a few seconds. Press it again to exit at once. `SIGKILL` (`kill -9`) cannot run cleanup handlers, so avoid it.
 
-Read [security notes](SECURITY.md) and [CLI details](docs/cli-adapters.md).
+Read [security notes](SECURITY.md), [CLI details](docs/cli-adapters.md), and the [Kanban contract](docs/agentic-kanban-contract.md).
 
 ## Development
 

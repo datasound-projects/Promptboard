@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { JSDOM } from 'jsdom';
 import { startServer } from '../src/server.mjs';
 
@@ -21,10 +24,12 @@ function fakeAuth(overrides = {}) {
     login: async (provider, options) => { log.push(['login', provider, options.method]); options.onUpdate({ authUrl: 'https://auth.example/start' }); return { state: 'signed-in' }; },
     logout: async provider => { log.push(['logout', provider]); return { state: 'signed-out' }; }, ...overrides };
 }
-async function setup(t, { catalogReader = async id => ({ provider: id, ...catalogs[id], note: 'Native model options.' }), storage, prefs = {}, kanban, hash = '', generationResponse, authAdapter = fakeAuth(), runner } = {}) {
+async function setup(t, { catalogReader = async id => ({ provider: id, ...catalogs[id], note: 'Native model options.' }), storage, prefs = {}, kanban, hash = '', generationResponse, authAdapter = fakeAuth(), runner, dataDir } = {}) {
+  // Every page gets a private board folder unless a test shares one to simulate a reload.
+  if (!dataDir) { dataDir = await mkdtemp(join(tmpdir(), 'pb-ui-')); t.after(() => rm(dataDir, { recursive: true, force: true })); }
   const calls = [];
   const requests = [];
-  const app = await startServer({ port: 0, authAdapter, detector: async () => Object.keys(catalogs).map(id => ({ id, available: true })), catalogReader,
+  const app = await startServer({ port: 0, dataDir, authAdapter, detector: async () => Object.keys(catalogs).map(id => ({ id, available: true })), catalogReader,
     runner: runner ? async request => { calls.push(request); return runner(request); } : async request => { calls.push(request); return { text: request.prompt.includes('prose in Polish') ? 'Dodaj test.' : request.prompt.includes('prose in German') ? 'Füge einen Test hinzu.' : 'Add a test.', reportedModels: ['actual-model'], durationMs: 3 }; } });
   const dom = new JSDOM(await readFile(new URL('../public/index.html', import.meta.url), 'utf8'), { url: app.url + hash, runScripts: 'outside-only' });
   const win = dom.window;
@@ -72,7 +77,9 @@ async function setup(t, { catalogReader = async id => ({ provider: id, ...catalo
   const submit = () => $('#prompt-form').dispatchEvent(new win.Event('submit', { bubbles: true, cancelable: true }));
   await until(() => !$('#generate-button').disabled, 'initial model discovery');
   const quality = value => { $(`input[name="quality"][value="${value}"]`).checked = true; $(`input[name="quality"][value="${value}"]`).dispatchEvent(new win.Event('change')); };
-  return { win, $, choose, radio, quality, submit, calls, requests, downloads, blobs, copied: () => copied, authAdapter, app };
+  // Resolves when no request from the page is in flight.
+  const idle = async () => { for (let quiet = 0, end = Date.now() + 5000; quiet < 3 && Date.now() < end;) { await new Promise(resolve => setTimeout(resolve, 10)); quiet = pending ? 0 : quiet + 1; } };
+  return { win, $, choose, radio, quality, submit, calls, requests, downloads, blobs, copied: () => copied, authAdapter, app, dataDir, idle };
 }
 
 test('UI sends selected model, effort, and language through HTTP, then restores history and copies output', async t => {
@@ -437,25 +444,39 @@ test('the skip link focuses the visible page and never changes the page', async 
   assert.equal(win.location.hash, '#/');
 });
 
-// Kanban page.
+// Kanban page. The board lives on the server; the browser only shows it.
 const HISTORY_KEY = 'ste-prompt-engineer.history.v1';
 const KANBAN_KEY = 'ste-prompt-engineer.kanban.v1';
-const storedBoard = win => JSON.parse(win.localStorage.getItem(KANBAN_KEY));
-const titles = $ => Array.from($('#card-list').querySelectorAll('.kanban-open'), button => button.textContent);
+const serverBoard = ctx => ctx.app.board.view();
+const serverTasks = async (ctx, name) => (await serverBoard(ctx)).projects.find(project => !name || project.name === name).tasks;
+const column = ($, id) => $(`#kanban-columns .kanban-cards[data-column="${id}"]`);
+const titles = ($, id = 'todo') => Array.from(column($, id)?.querySelectorAll('.kanban-open') || [], button => button.textContent);
 const byText = (root, text) => Array.from(root.querySelectorAll('button')).find(button => button.textContent === text);
 const submitForm = ({ $, win }, selector) => $(selector).dispatchEvent(new win.Event('submit', { bubbles: true, cancelable: true }));
-const cardItem = ({ $ }, title) => Array.from($('#card-list').children).find(item => item.querySelector('.kanban-open').textContent === title);
-async function goTo({ $, win }, hash) {
+const cardItem = ({ $ }, title) => Array.from($('#kanban-columns').querySelectorAll('.kanban-card')).find(item => item.querySelector('.kanban-open').textContent === title);
+async function goTo({ $, win, idle }, hash) {
   win.location.hash = hash;
   await until(() => $('#kanban-view').hidden === (hash !== '#/kanban'), `page ${hash}`);
+  await idle();
 }
-function newProject(ctx, name) { ctx.$('#project-new').click(); ctx.$('#project-name').value = name; submitForm(ctx, '#project-form'); }
-function newCard(ctx, title, prompt) { ctx.$('#card-new').click(); ctx.$('#card-title').value = title; ctx.$('#card-prompt').value = prompt; submitForm(ctx, '#card-form'); }
-async function importFile({ $, win }, text) {
+async function newProject(ctx, name) { ctx.$('#project-new').click(); ctx.$('#project-name').value = name; submitForm(ctx, '#project-form'); await ctx.idle(); }
+async function newCard(ctx, title, prompt) { ctx.$('#card-new').click(); ctx.$('#card-title').value = title; ctx.$('#card-prompt').value = prompt; submitForm(ctx, '#card-form'); await ctx.idle(); }
+async function click(ctx, element) { element.click(); await ctx.idle(); }
+async function importFile(ctx, text) {
+  const { $, win } = ctx;
   $('#project-detail').replaceChildren(); $('#project-detail').hidden = true;
   Object.defineProperty($('#import-file'), 'files', { value: [new File([text], 'backup.json', { type: 'application/json' })], configurable: true });
   $('#import-file').dispatchEvent(new win.Event('change'));
   await until(() => !$('#project-detail').hidden, 'import result');
+  await ctx.idle();
+}
+async function gitRepo(t) {
+  const dir = await realpath(await mkdtemp(join(tmpdir(), 'pb-ui-repo-')));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const git = (...args) => execFileSync('git', args, { cwd: dir, env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } });
+  git('init', '-q', '-b', 'trunk'); git('config', 'user.email', 't@example.com'); git('config', 'user.name', 'T');
+  await writeFile(join(dir, 'a.txt'), 'a\n'); git('add', '.'); git('commit', '-q', '-m', 'init');
+  return dir;
 }
 
 test('page navigation keeps unsaved prompt input, settings, and the current result', async t => {
@@ -472,7 +493,7 @@ test('page navigation keeps unsaved prompt input, settings, and the current resu
   assert.equal($('.page-nav a[href="#/kanban"]').getAttribute('aria-current'), 'page');
   assert.equal($('.page-nav a[href="#/"]').hasAttribute('aria-current'), false);
   assert.match(win.document.title, /Kanban/);
-  newProject(ctx, 'Alpha');
+  await newProject(ctx, 'Alpha');
   $('#card-new').click();
   // Shortcuts from Kanban fields never start a generation or clear the prompt form.
   $('#card-prompt').dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true }));
@@ -484,13 +505,14 @@ test('page navigation keeps unsaved prompt input, settings, and the current resu
   assert.equal($('#prompt-input').value, 'Unsaved next idea.');
   assert.equal($('#terminology').value, 'FastAPI');
   assert.equal($('#prompt-output').textContent, 'Add a test.');
-  // A reload on the Kanban address opens the Kanban page.
-  const reloaded = await setup(t, { hash: '#/kanban', kanban: win.localStorage.getItem(KANBAN_KEY) });
+  // A reload on the Kanban address opens the Kanban page with the server's board.
+  const reloaded = await setup(t, { hash: '#/kanban', dataDir: ctx.dataDir });
+  await reloaded.idle();
   assert.equal(reloaded.$('#kanban-view').hidden, false);
   assert.equal(reloaded.$('#project-select').selectedOptions[0].textContent, 'Alpha');
 });
 
-test('Add to Kanban stores an exact prompt snapshot with secondary metadata; card edits never change history', async t => {
+test('Add to Kanban stores an exact prompt snapshot in To Do; card edits never change history', async t => {
   const exact = '  Leading spaces stay.\r\nCRLF line.\n\n\tTabbed <script>alert(1)</script> — ünïcødé ✓ 🚀\n' + 'Long line. '.repeat(80) + '\n  trailing  \n';
   let result = { prompt: exact, provider: 'codex', reportedModels: ['actual-model'], verification: report({ status: 'needs-review' }) };
   const ctx = await setup(t, { generationResponse: () => result });
@@ -498,8 +520,7 @@ test('Add to Kanban stores an exact prompt snapshot with secondary metadata; car
   choose('#model', 'codex-one'); choose('#effort', 'high'); radio('de');
   $('#prompt-input').value = 'Build   the\nexport endpoint with tests.'; submit();
   await until(() => requests.length === 1 && !$('#generate-button').disabled, 'result');
-  const historyBefore = win.localStorage.getItem(HISTORY_KEY);
-  const entry = JSON.parse(historyBefore)[0];
+  const entry = JSON.parse(win.localStorage.getItem(HISTORY_KEY))[0];
   $('#kanban-button').click();
   assert.equal($('#add-dialog').open, true);
   assert.equal($('#add-project').value, '');
@@ -507,57 +528,55 @@ test('Add to Kanban stores an exact prompt snapshot with secondary metadata; car
   assert.equal($('#add-title').value, 'Build the export endpoint with tests.');
   assert.equal($('#add-preview').textContent, exact);
   assert.match($('#add-note').textContent, /exact prompt/);
-  submitForm(ctx, '#add-form');
+  submitForm(ctx, '#add-form'); await ctx.idle();
   assert.match($('#add-error').textContent, /project name/);
-  assert.equal(win.localStorage.getItem(KANBAN_KEY), null);
+  assert.equal((await serverBoard(ctx)).projects.length, 0);
   $('#add-project-name').value = 'Alpha';
-  submitForm(ctx, '#add-form');
+  submitForm(ctx, '#add-form'); await ctx.idle();
   assert.equal($('#add-dialog').open, false);
-  const card = storedBoard(win).projects[0].cards[0];
+  const [card] = await serverTasks(ctx);
   assert.equal(card.prompt, exact);
+  assert.equal(card.column, 'todo');
   assert.equal(card.title, 'Build the export endpoint with tests.');
   assert.deepEqual(card.source, { historyId: entry.id, provider: 'codex', model: 'codex-one', effort: 'high', reportedModels: ['actual-model'], language: 'de', quality: 'reviewed', verification: 'needs-review', generatedAt: entry.createdAt });
   assert.equal(card.checksOutdated, false);
-  // A second prompt with passed checks goes to the preselected existing project.
+  assert.equal(win.localStorage.getItem(KANBAN_KEY), null, 'The browser no longer stores the board.');
+  // A second prompt goes to the preselected existing project.
   result = { prompt: 'Second prompt.', provider: 'codex', verification: report() };
   submit(); await until(() => requests.length === 2 && !$('#generate-button').disabled, 'second result');
   $('#kanban-button').click();
-  assert.equal($('#add-project').value, storedBoard(win).projects[0].id);
+  assert.equal($('#add-project').value, (await serverBoard(ctx)).projects[0].id);
   assert.equal($('#add-project-name-field').hidden, true);
-  submitForm(ctx, '#add-form');
-  assert.equal(storedBoard(win).projects.length, 1);
+  submitForm(ctx, '#add-form'); await ctx.idle();
+  assert.equal((await serverBoard(ctx)).projects.length, 1);
+  assert.deepEqual((await serverBoard(ctx)).runs, [], 'Adding a card never starts a run.');
   await goTo(ctx, '#/kanban');
-  const [draft, passed] = $('#card-list').children;
+  const [draft, passed] = column($, 'todo').children;
   assert.ok(draft.classList.contains('needs-review'));
   assert.equal(draft.querySelector('.kanban-status').textContent, 'Draft—review needed');
   assert.equal(draft.querySelector('.kanban-meta').textContent, 'Codex · codex-one · Deutsch');
   assert.ok(draft.querySelector('.kanban-preview').textContent.length <= 400);
-  assert.equal($('#card-list script'), null);
-  assert.ok(!passed.classList.contains('needs-review'));
+  assert.equal($('#kanban-columns script'), null);
   assert.equal(passed.querySelector('.kanban-status').textContent, 'Checks complete—review before use');
   draft.querySelector('.kanban-copy').click();
   await until(() => copied() === exact, 'exact copy');
   // Open and save without changes: the stored text and status stay the same.
   draft.querySelector('.kanban-open').click();
-  assert.equal($('#card-dialog').open, true);
   assert.match($('#card-note').textContent, /marks the previous checks as outdated/);
   assert.match($('#card-source-list').textContent, /Models reported: actual-model/);
-  submitForm(ctx, '#card-form');
-  assert.equal(storedBoard(win).projects[0].cards[0].prompt, exact);
-  assert.equal(storedBoard(win).projects[0].cards[0].checksOutdated, false);
+  submitForm(ctx, '#card-form'); await ctx.idle();
+  assert.equal((await serverTasks(ctx))[0].prompt, exact);
+  assert.equal((await serverTasks(ctx))[0].checksOutdated, false);
   // A real edit marks the old checks as outdated and leaves history alone.
-  $('#card-list .kanban-open').click();
+  column($, 'todo').querySelector('.kanban-open').click();
   $('#card-prompt').value = 'Edited prompt.';
-  submitForm(ctx, '#card-form');
-  const edited = storedBoard(win).projects[0].cards[0];
+  submitForm(ctx, '#card-form'); await ctx.idle();
+  const edited = (await serverTasks(ctx))[0];
   assert.equal(edited.prompt, 'Edited prompt.');
   assert.equal(edited.checksOutdated, true);
   assert.equal(edited.source.verification, 'needs-review');
-  assert.equal($('#card-list .kanban-status').textContent, 'Edited—previous checks outdated');
+  assert.equal(column($, 'todo').querySelector('.kanban-status').textContent, 'Edited—previous checks outdated');
   assert.deepEqual(JSON.parse(win.localStorage.getItem(HISTORY_KEY)).find(item => item.id === entry.id), entry);
-  Array.from($('#history-list').querySelectorAll('.history-restore')).at(-1).click();
-  await until(() => !$('#prompt-view').hidden, 'restored on prompt page');
-  assert.equal($('#prompt-output').textContent, exact);
 });
 
 test('projects keep separate boards; names are validated; deletion needs confirmation', async t => {
@@ -568,69 +587,73 @@ test('projects keep separate boards; names are validated; deletion needs confirm
   assert.match($('#board-empty').textContent, /Create a project to start planning/);
   assert.equal($('#card-new').disabled, true);
   assert.equal($('#project-delete').disabled, true);
-  newProject(ctx, 'Alpha');
-  const alpha = storedBoard(win).selectedProjectId;
-  newCard(ctx, 'A1', 'Prompt A1'); newCard(ctx, 'A2', 'Prompt A2');
-  newProject(ctx, 'Beta');
+  assert.equal($('#kanban-columns').hidden, true);
+  await newProject(ctx, 'Alpha');
+  const alpha = $('#project-select').value;
+  await newCard(ctx, 'A1', 'Prompt A1'); await newCard(ctx, 'A2', 'Prompt A2');
+  await newProject(ctx, 'Beta');
   assert.notEqual($('#project-select').value, alpha);
   assert.deepEqual(titles($), []);
   assert.match($('#board-empty').textContent, /No tasks yet/);
-  newCard(ctx, 'B1', 'Prompt B1');
+  await newCard(ctx, 'B1', 'Prompt B1');
   choose('#project-select', alpha);
   assert.deepEqual(titles($), ['A1', 'A2']);
-  assert.equal($('#todo-count').textContent, '02');
-  $('#project-new').click(); $('#project-name').value = ' beta '; submitForm(ctx, '#project-form');
+  assert.equal($('#board-count').textContent, '02');
+  $('#project-new').click(); $('#project-name').value = ' beta '; submitForm(ctx, '#project-form'); await ctx.idle();
   assert.match($('#project-error').textContent, /already exists/);
   $('#project-name').value = '   '; submitForm(ctx, '#project-form');
   assert.match($('#project-error').textContent, /Enter a project name/);
   $('#project-cancel').click();
-  assert.equal(storedBoard(win).projects.length, 2);
+  assert.equal((await serverBoard(ctx)).projects.length, 2);
   $('#project-rename').click();
   assert.equal($('#project-name').value, 'Alpha');
-  $('#project-name').value = 'Alpha renamed'; submitForm(ctx, '#project-form');
+  $('#project-name').value = 'Alpha renamed'; submitForm(ctx, '#project-form'); await ctx.idle();
   assert.equal($('#project-select').selectedOptions[0].textContent, 'Alpha renamed');
   $('#project-delete').click();
   assert.match($('#project-detail').textContent, /Delete “Alpha renamed” and its 2 cards\? This cannot be undone/);
   byText($('#project-detail'), 'Keep project').click();
   assert.equal($('#project-detail').hidden, true);
-  assert.equal(storedBoard(win).projects.length, 2);
+  assert.equal((await serverBoard(ctx)).projects.length, 2);
   $('#project-delete').click();
-  byText($('#project-detail'), 'Delete project').click();
-  const board = storedBoard(win);
+  await click(ctx, byText($('#project-detail'), 'Delete project'));
+  const board = await serverBoard(ctx);
   assert.deepEqual(board.projects.map(project => project.name), ['Beta']);
-  assert.deepEqual(board.projects[0].cards.map(card => card.title), ['B1']);
-  assert.equal(board.selectedProjectId, board.projects[0].id);
+  assert.deepEqual(board.projects[0].tasks.map(card => card.title), ['B1']);
   assert.deepEqual(titles($), ['B1']);
   assert.equal(win.localStorage.getItem(HISTORY_KEY), JSON.stringify(history));
 });
 
-test('cards are created, edited, duplicated, deleted, and reordered by keyboard or drag-and-drop; the order persists', async t => {
+test('seven stages render; cards are created, edited, duplicated, deleted, and reordered; the order persists', async t => {
   const ctx = await setup(t);
   const { $, win, copied } = ctx;
   await goTo(ctx, '#/kanban');
-  newProject(ctx, 'Work');
+  await newProject(ctx, 'Work');
+  assert.deepEqual(Array.from($('#kanban-columns').querySelectorAll('h3'), heading => heading.textContent), ['To Do', 'Planning', 'Executing', 'Code Review', 'Testing', 'Merge', 'Done']);
+  assert.match($('#kanban-columns [data-column="todo"] .kanban-column-note').textContent, /Never runs an agent/);
+  assert.match($('#kanban-columns [data-column="done"] .kanban-column-note').textContent, /never runs an agent/);
   $('#card-new').click(); submitForm(ctx, '#card-form');
   assert.match($('#card-error').textContent, /title/);
   $('#card-title').value = 'Only a title'; submitForm(ctx, '#card-form');
   assert.match($('#card-error').textContent, /prompt/);
   $('#card-cancel').click();
-  assert.equal(storedBoard(win).projects[0].cards.length, 0);
-  newCard(ctx, 'One', 'Prompt one'); newCard(ctx, 'Two', 'Prompt two'); newCard(ctx, 'Three', 'Prompt three');
+  assert.equal((await serverTasks(ctx)).length, 0);
+  await newCard(ctx, 'One', 'Prompt one'); await newCard(ctx, 'Two', 'Prompt two'); await newCard(ctx, 'Three', 'Prompt three');
   assert.deepEqual(titles($), ['One', 'Two', 'Three']);
   assert.equal(cardItem(ctx, 'One').querySelector('.kanban-status').textContent, 'Manual card—not checked');
-  assert.ok(!cardItem(ctx, 'One').classList.contains('needs-review'));
   assert.equal(cardItem(ctx, 'One').querySelector('.kanban-move-up').disabled, true);
   assert.equal(cardItem(ctx, 'Three').querySelector('.kanban-move-down').disabled, true);
   assert.equal(cardItem(ctx, 'One').querySelector('.kanban-move-down').getAttribute('aria-label'), 'Move down: One');
+  // The stage menu offers only valid moves: Planning, or Executing directly.
+  assert.deepEqual(Array.from(cardItem(ctx, 'One').querySelectorAll('.kanban-move-to option'), item => item.value), ['', 'planning', 'executing']);
   // Keyboard reorder keeps focus on the moved card.
-  cardItem(ctx, 'One').querySelector('.kanban-move-down').click();
+  await click(ctx, cardItem(ctx, 'One').querySelector('.kanban-move-down'));
   assert.deepEqual(titles($), ['Two', 'One', 'Three']);
   assert.equal(win.document.activeElement, cardItem(ctx, 'One').querySelector('.kanban-move-down'));
   assert.match($('#announcement').textContent, /Moved “One” to position 2 of 3/);
-  cardItem(ctx, 'One').querySelector('.kanban-move-down').click();
+  await click(ctx, cardItem(ctx, 'One').querySelector('.kanban-move-down'));
   assert.deepEqual(titles($), ['Two', 'Three', 'One']);
   assert.equal(win.document.activeElement, cardItem(ctx, 'One').querySelector('.kanban-move-up'));
-  cardItem(ctx, 'One').querySelector('.kanban-move-up').click();
+  await click(ctx, cardItem(ctx, 'One').querySelector('.kanban-move-up'));
   assert.deepEqual(titles($), ['Two', 'One', 'Three']);
   // Drag-and-drop: drop "Three" on "Two".
   cardItem(ctx, 'Three').dispatchEvent(new win.Event('dragstart', { bubbles: true }));
@@ -638,124 +661,181 @@ test('cards are created, edited, duplicated, deleted, and reordered by keyboard 
   cardItem(ctx, 'Two').dispatchEvent(over);
   assert.equal(over.defaultPrevented, true);
   cardItem(ctx, 'Two').dispatchEvent(new win.Event('drop', { bubbles: true, cancelable: true }));
+  await ctx.idle();
   assert.deepEqual(titles($), ['Three', 'Two', 'One']);
-  assert.deepEqual(storedBoard(win).projects[0].cards.map(card => card.title), ['Three', 'Two', 'One']);
+  assert.deepEqual((await serverTasks(ctx)).map(card => card.title), ['Three', 'Two', 'One']);
+  // An unlinked project keeps cards in To Do and explains why.
+  const menu = cardItem(ctx, 'One').querySelector('.kanban-move-to');
+  menu.value = 'planning'; menu.dispatchEvent(new win.Event('change')); await ctx.idle();
+  assert.match($('#project-detail').textContent, /Link this project to a Git repository/);
+  assert.deepEqual(titles($), ['Three', 'Two', 'One']);
   // Edit a manual card.
   cardItem(ctx, 'Two').querySelector('.kanban-open').click();
   assert.equal($('#card-prompt').value, 'Prompt two');
   $('#card-title').value = 'Two edited'; $('#card-prompt').value = 'Prompt two, edited.';
-  submitForm(ctx, '#card-form');
-  const editedCard = storedBoard(win).projects[0].cards[1];
+  submitForm(ctx, '#card-form'); await ctx.idle();
+  const editedCard = (await serverTasks(ctx))[1];
   assert.equal(editedCard.title, 'Two edited'); assert.equal(editedCard.prompt, 'Prompt two, edited.'); assert.equal(editedCard.checksOutdated, false);
   // Duplicate goes right after the original.
-  cardItem(ctx, 'Two edited').querySelector('.kanban-duplicate').click();
+  await click(ctx, cardItem(ctx, 'Two edited').querySelector('.kanban-duplicate'));
   assert.deepEqual(titles($), ['Three', 'Two edited', 'Two edited (copy)', 'One']);
-  const cards = storedBoard(win).projects[0].cards;
+  const cards = await serverTasks(ctx);
   assert.notEqual(cards[2].id, cards[1].id);
   assert.equal(cards[2].prompt, cards[1].prompt);
   // Delete needs a confirmation.
   cardItem(ctx, 'Two edited (copy)').querySelector('.kanban-delete').click();
-  assert.match($('#card-list').textContent, /Delete “Two edited \(copy\)”\? This cannot be undone/);
-  byText($('#card-list'), 'Keep card').click();
-  assert.equal(storedBoard(win).projects[0].cards.length, 4);
+  assert.match($('#kanban-columns').textContent, /Delete “Two edited \(copy\)”\? This cannot be undone/);
+  byText($('#kanban-columns'), 'Keep card').click();
+  assert.equal((await serverTasks(ctx)).length, 4);
   cardItem(ctx, 'Two edited (copy)').querySelector('.kanban-delete').click();
-  byText($('#card-list'), 'Delete card').click();
+  await click(ctx, byText($('#kanban-columns'), 'Delete card'));
   assert.deepEqual(titles($), ['Three', 'Two edited', 'One']);
   cardItem(ctx, 'One').querySelector('.kanban-copy').click();
   await until(() => copied() === 'Prompt one', 'copy');
-  // Reload: projects, order, and selection come back.
-  const reloaded = await setup(t, { kanban: win.localStorage.getItem(KANBAN_KEY) });
+  // Reload: projects and order come back from the app, not the browser.
+  const reloaded = await setup(t, { dataDir: ctx.dataDir });
   await goTo(reloaded, '#/kanban');
   assert.deepEqual(titles(reloaded.$), ['Three', 'Two edited', 'One']);
   assert.equal(reloaded.$('#project-select').selectedOptions[0].textContent, 'Work');
 });
 
-test('board export round-trips; import validates the whole file and asks before it replaces the board', async t => {
+test('a linked repository enables stage moves; invalid folders explain the problem; nothing runs', { skip: process.platform === 'win32' }, async t => {
+  const ctx = await setup(t);
+  const { $, win } = ctx;
+  const repo = await gitRepo(t);
+  await goTo(ctx, '#/kanban');
+  await newProject(ctx, 'Linked');
+  await newCard(ctx, 'Feature', 'Build the feature.');
+  assert.match($('#repo-state').textContent, /Not linked/);
+  $('#repo-path').value = join(repo, 'missing'); submitForm(ctx, '#repo-form'); await ctx.idle();
+  assert.equal($('#repo-message').textContent, 'This folder does not exist.');
+  $('#repo-path').value = tmpdir(); submitForm(ctx, '#repo-form'); await ctx.idle();
+  assert.match($('#repo-message').textContent, /not inside a Git repository/);
+  $('#repo-path').value = repo; submitForm(ctx, '#repo-form'); await ctx.idle();
+  assert.match($('#repo-state').textContent, new RegExp(`Linked to ${repo}`));
+  assert.deepEqual(Array.from($('#target-branch').options, item => item.value), ['', 'trunk']);
+  $('#target-branch').value = 'trunk';
+  await click(ctx, $('#branch-save'));
+  assert.match($('#branch-state').textContent, /Target branch: trunk at [0-9a-f]{12}/);
+  const menu = cardItem(ctx, 'Feature').querySelector('.kanban-move-to');
+  menu.value = 'executing'; menu.dispatchEvent(new win.Event('change')); await ctx.idle();
+  assert.deepEqual(titles($, 'executing'), ['Feature']);
+  assert.match($('#announcement').textContent, /does not run or approve that stage/);
+  const board = await serverBoard(ctx);
+  assert.equal(board.projects[0].tasks[0].column, 'executing');
+  assert.equal(board.projects[0].tasks[0].workspace, null);
+  assert.deepEqual(board.runs, []);
+  assert.equal(board.execution.available, false);
+  assert.match($('#kanban-columns [data-column="executing"] .kanban-column-note').textContent, /runs not active yet/);
+});
+
+test('backups: export round-trips, import validates, asks before replacing, and keeps imported settings pending', async t => {
   const exact = 'Line 1\r\n  indented <b>x</b>\n';
-  const backup = { application: 'AI Prompt Engineer', kind: 'kanban-backup', version: 1, selectedProjectId: 'p2', projects: [
+  const legacy = { application: 'AI Prompt Engineer', kind: 'kanban-backup', version: 1, selectedProjectId: 'p2', projects: [
     { id: 'p1', name: 'One', createdAt: 1, cards: [{ id: 'c1', title: 'Card 1', prompt: exact, createdAt: 1, updatedAt: 1, checksOutdated: false,
       source: { historyId: 'h', provider: 'claude', model: 'opus', effort: '', reportedModels: [], language: 'pl', quality: 'fast', verification: 'checks-passed', generatedAt: 1 } }] },
     { id: 'p2', name: 'Two', createdAt: 2, cards: [] },
   ] };
-  const current = { version: 1, selectedProjectId: 'x', projects: [{ id: 'x', name: 'Current', createdAt: 1, cards: [{ id: 'y', title: 'Keep me', prompt: 'Keep.', createdAt: 1, updatedAt: 1, checksOutdated: false, source: null }] }] };
-  const ctx = await setup(t, { kanban: current });
-  const { $, win, choose, downloads, blobs } = ctx;
+  const ctx = await setup(t);
+  const { $, choose, downloads, blobs } = ctx;
   await goTo(ctx, '#/kanban');
-  const before = win.localStorage.getItem(KANBAN_KEY);
-  const withCard = changes => JSON.stringify({ ...backup, projects: [{ ...backup.projects[0], cards: [{ ...backup.projects[0].cards[0], ...changes }] }] });
+  await newProject(ctx, 'Current');
+  await newCard(ctx, 'Keep me', 'Keep.');
+  const before = JSON.stringify((await serverBoard(ctx)).projects);
+  const withCard = changes => JSON.stringify({ ...legacy, projects: [{ ...legacy.projects[0], cards: [{ ...legacy.projects[0].cards[0], ...changes }] }] });
   for (const [text, message] of [
     ['not json', /not valid JSON/],
-    [JSON.stringify({ ...backup, kind: 'other' }), /not a Kanban backup/],
-    [JSON.stringify({ ...backup, version: 2 }), /version 1/],
+    [JSON.stringify({ ...legacy, kind: 'other' }), /not a Promptboard or Kanban backup/],
+    [JSON.stringify({ ...legacy, version: 3 }), /not a Promptboard or version 1 Kanban board/],
     [withCard({ prompt: '' }), /card 1 needs a prompt/],
     [withCard({ title: 'x'.repeat(121) }), /title needs 1 to 120/],
-    [JSON.stringify({ ...backup, projects: [backup.projects[0], { ...backup.projects[1], id: 'p1' }] }), /unique ID/],
+    [JSON.stringify({ ...legacy, projects: [legacy.projects[0], { ...legacy.projects[1], id: 'p1' }] }), /unique ID/],
   ]) {
     await importFile(ctx, text);
+    if (/Replace the current board/.test($('#project-detail').textContent)) await click(ctx, byText($('#project-detail'), 'Replace board'));
     assert.match($('#project-detail').textContent, /Import failed\. Your board is unchanged\./);
     assert.match($('#project-detail').textContent, message);
-    assert.equal(win.localStorage.getItem(KANBAN_KEY), before);
+    assert.equal(JSON.stringify((await serverBoard(ctx)).projects), before);
   }
-  await importFile(ctx, JSON.stringify(backup));
+  await importFile(ctx, JSON.stringify(legacy));
   assert.match($('#project-detail').textContent, /Replace the current board \(1 project, 1 card\) with this backup \(2 projects, 1 card\)\?/);
   byText($('#project-detail'), 'Keep current board').click();
-  assert.equal(win.localStorage.getItem(KANBAN_KEY), before);
-  assert.deepEqual(titles($), ['Keep me']);
-  await importFile(ctx, JSON.stringify(backup));
-  byText($('#project-detail'), 'Replace board').click();
-  const board = storedBoard(win);
+  assert.equal(JSON.stringify((await serverBoard(ctx)).projects), before);
+  await importFile(ctx, JSON.stringify(legacy));
+  await click(ctx, byText($('#project-detail'), 'Replace board'));
+  assert.match($('#project-detail').textContent, /No agent runs were started/);
+  const board = await serverBoard(ctx);
   assert.deepEqual(board.projects.map(project => project.name), ['One', 'Two']);
-  assert.equal(board.selectedProjectId, 'p2');
-  assert.equal(board.projects[0].cards[0].prompt, exact);
+  assert.equal($('#project-select').value, 'p2');
+  assert.equal(board.projects[0].tasks[0].prompt, exact);
   choose('#project-select', 'p1');
-  assert.equal($('#card-list .kanban-status').textContent, 'Automatic checks only—review before use');
-  assert.equal($('#card-list .kanban-meta').textContent, 'Claude Code · opus · Polski');
-  $('#export-board').click();
-  assert.match(downloads.at(-1), /^ste-kanban-backup-\d{4}-\d\d-\d\d\.json$/);
-  const exportedText = await blobs.at(-1).text();
-  const exported = JSON.parse(exportedText);
-  assert.equal(exported.kind, 'kanban-backup');
-  assert.deepEqual(exported.projects, storedBoard(win).projects);
-  // An empty board imports without a confirmation.
+  assert.equal(column($, 'todo').querySelector('.kanban-status').textContent, 'Automatic checks only—review before use');
+  assert.equal(column($, 'todo').querySelector('.kanban-meta').textContent, 'Claude Code · opus · Polski');
+  await click(ctx, $('#export-board'));
+  assert.match(downloads.at(-1), /^promptboard-backup-\d{4}-\d\d-\d\d\.json$/);
+  const exported = JSON.parse(await blobs.at(-1).text());
+  assert.equal(exported.kind, 'promptboard-backup');
+  assert.equal(exported.projects[0].tasks[0].prompt, exact);
+  // A version 2 backup with a repository path and automation waits for confirmation.
+  exported.projects[0].repository = { path: '/nowhere/repo' };
+  exported.projects[0].automation = { autoRun: true };
   const fresh = await setup(t);
   await goTo(fresh, '#/kanban');
-  await importFile(fresh, exportedText);
-  assert.match(fresh.$('#project-detail').textContent, /Backup imported: 2 projects, 1 card/);
-  assert.deepEqual(storedBoard(fresh.win).projects, exported.projects);
-  assert.equal(storedBoard(fresh.win).selectedProjectId, 'p1');
+  await importFile(fresh, JSON.stringify(exported));
+  assert.match(fresh.$('#project-detail').textContent, /Backup imported: 2 projects, 1 card\. No agent runs were started\. Imported repository paths and automation settings wait for your confirmation/);
+  fresh.choose('#project-select', 'p1');
+  assert.equal(fresh.$('#import-pending').hidden, false);
+  assert.match(fresh.$('#import-pending-text').textContent, /repository \/nowhere\/repo, automatic runs/);
+  const project = (await serverBoard(fresh)).projects.find(item => item.id === 'p1');
+  assert.equal(project.repository, null);
+  assert.deepEqual(project.automation, { autoRun: false });
+  await click(fresh, fresh.$('#import-confirm'));
+  assert.equal(fresh.$('#repo-message').textContent, 'This folder does not exist.');
+  await click(fresh, fresh.$('#import-dismiss'));
+  assert.equal(fresh.$('#import-pending').hidden, true);
+  assert.deepEqual((await serverBoard(fresh)).runs, []);
 });
 
-test('Kanban storage failures stay visible, keep the board usable, and keep unreadable saved data', async t => {
-  const ctx = await setup(t, { generationResponse: { prompt: 'Add a test.', verification: report() } });
-  const { $, win, submit, requests, downloads } = ctx;
-  $('#prompt-input').value = 'Add a test.'; submit();
-  await until(() => requests.length === 1 && !$('#generate-button').disabled, 'result');
-  const setItem = win.Storage.prototype.setItem;
-  win.Storage.prototype.setItem = () => { throw new win.DOMException('Storage is full.', 'QuotaExceededError'); };
-  $('#kanban-button').click();
-  $('#add-project-name').value = 'Alpha';
-  submitForm(ctx, '#add-form');
-  assert.equal($('#prompt-view .board-warning').hidden, false);
-  assert.match($('#announcement').textContent, /for this session only/);
-  assert.equal(win.localStorage.getItem(KANBAN_KEY), null);
-  await goTo(ctx, '#/kanban');
-  assert.equal($('#kanban-view .board-warning').hidden, false);
-  assert.match($('#kanban-view .board-warning').textContent, /Export a backup/);
-  newCard(ctx, 'Manual', 'Manual prompt.');
-  assert.deepEqual(titles($), ['Add a test.', 'Manual']);
-  $('#export-board').click();
-  assert.equal(downloads.length, 1);
-  win.Storage.prototype.setItem = setItem;
-  cardItem(ctx, 'Manual').querySelector('.kanban-move-up').click();
-  assert.equal($('#kanban-view .board-warning').hidden, true);
-  assert.deepEqual(storedBoard(win).projects[0].cards.map(card => card.title), ['Manual', 'Add a test.']);
-  // Unreadable saved data is reported and kept, not silently replaced.
+test('the browser board migrates once with exact text; unreadable data and failed saves stay visible', { skip: process.platform === 'win32' }, async t => {
+  const exact = '  Spaces\r\nCRLF 🚀\n';
+  const browser = { version: 1, selectedProjectId: 'b', projects: [
+    { id: 'a', name: 'Alpha', createdAt: 1, cards: [{ id: 'c1', title: 'First', prompt: exact, createdAt: 1, updatedAt: 2, checksOutdated: true, source: { provider: 'codex', verification: 'checks-passed', quality: 'reviewed' } }, { id: 'c2', title: 'Second', prompt: 'Two', createdAt: 3, updatedAt: 3 }] },
+    { id: 'b', name: 'Beta', createdAt: 2, cards: [] },
+  ] };
+  const ctx = await setup(t, { kanban: browser, hash: '#/kanban' });
+  await ctx.idle();
+  let board = await serverBoard(ctx);
+  assert.deepEqual(board.projects.map(project => project.id), ['a', 'b']);
+  assert.deepEqual(board.projects[0].tasks.map(task => [task.id, task.prompt, task.checksOutdated, task.column]), [['c1', exact, true, 'todo'], ['c2', 'Two', false, 'todo']]);
+  assert.equal(ctx.$('#project-select').value, 'b');
+  assert.equal(ctx.win.localStorage.getItem(KANBAN_KEY), JSON.stringify(browser), 'The browser copy is kept.');
+  assert.ok(ctx.win.localStorage.getItem(`${KANBAN_KEY}.migrated`));
+  assert.match(ctx.$('#announcement').textContent, /Moved 2 projects and 2 cards/);
+  // The same browser data on a fresh page (marker cleared) adds no duplicates.
+  const again = await setup(t, { kanban: browser, hash: '#/kanban', dataDir: ctx.dataDir });
+  await again.idle();
+  board = await serverBoard(again);
+  assert.equal(board.projects.length, 2);
+  assert.equal(board.projects[0].tasks.length, 2);
+  // Unreadable browser data is reported, kept, and not sent anywhere.
   const raw = '{"version":1,"projects":[{"id":"p"';
-  const broken = await setup(t, { kanban: raw });
+  const broken = await setup(t, { kanban: raw, hash: '#/kanban' });
+  await broken.idle();
   assert.equal(broken.$('#kanban-load-warning').hidden, false);
-  assert.match(broken.$('#kanban-load-warning').textContent, /could not be read/);
+  assert.match(broken.$('#kanban-load-warning').textContent, /could not be read, so it was not moved/);
   assert.equal(broken.win.localStorage.getItem(`${KANBAN_KEY}.unreadable`), raw);
   assert.equal(broken.win.localStorage.getItem(KANBAN_KEY), raw);
+  assert.equal((await serverBoard(broken)).projects.length, 0);
+  // A failed server write is visible and the board keeps its last saved state.
+  await chmod(ctx.dataDir, 0o500);
+  t.after(() => chmod(ctx.dataDir, 0o700).catch(() => {}));
+  await goTo(ctx, '#/kanban');
+  ctx.choose('#project-select', 'a');
+  await newCard(ctx, 'Unsaved', 'Not written.');
+  assert.match(ctx.$('#card-error').textContent, /could not be saved/);
+  assert.equal(ctx.$('#kanban-view .board-warning').hidden, false);
+  assert.deepEqual(titles(ctx.$), ['First', 'Second']);
+  await chmod(ctx.dataDir, 0o700);
 });
 
 test('the settings step collapses and expands, is remembered, and reopens for an invalid field', async t => {
@@ -784,7 +864,7 @@ test('the Kanban page shows its own mascot next to the heading', async t => {
   assert.equal(image.getAttribute('src'), '/kanban-mascot.png');
   assert.match(image.getAttribute('alt'), /pixel-art creature/);
   assert.equal($('#kanban-view .intro figcaption').textContent, 'One bite at a time.');
-  assert.equal($('#board-empty img'), null, 'The empty To do column has no image.');
+  assert.equal($('#board-empty img'), null, 'The empty board has no image.');
   const served = await fetch(new URL('/kanban-mascot.png', $('#kanban-view').ownerDocument.location.href));
   assert.equal(served.status, 200);
   assert.equal(served.headers.get('content-type'), 'image/png');

@@ -136,7 +136,7 @@
       </form>
 
       <p class="storage-warning" id="storage-warning" role="alert" hidden>History changes were not saved. Export any prompts and check reports you want to keep before you close or reload this page.</p>
-      <p class="storage-warning board-warning" role="alert" hidden>Kanban board changes were not saved in this browser. Open Kanban and export a backup before you close or reload this page.</p>
+      <p class="storage-warning board-warning" role="alert" hidden></p>
       <section class="card output-card" aria-labelledby="output-heading" aria-busy="false" id="output-card">
         <div class="card-heading"><div><span class="step" aria-hidden="true">3</span><h2 id="output-heading">Review and copy</h2></div><div class="output-actions"><span class="copy-cheer" id="copy-cheer" aria-hidden="true" hidden>*pushes glasses up*</span><button class="secondary-button" id="kanban-button" type="button" disabled title="Save this prompt as a task card" aria-label="Add to Kanban"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M12 8v8M8 12h8"/></svg><span id="kanban-label">Add to Kanban</span></button><button class="secondary-button" id="export-button" type="button" disabled title="Download as Markdown"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 16v5h14v-5"/></svg><span>Export</span></button><button class="copy-button" id="copy-button" type="button" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V4H4v12h4"/></svg><span id="copy-label">Copy prompt</span></button></div></div>
         <div class="output-empty" id="output-empty"><img src="/nerd.png" alt="" width="48" height="48"><p>Nothing to review yet. The nerd is polishing their glasses.<small>Your engineered prompt will appear here.</small></p></div>
@@ -163,12 +163,12 @@
       <section class="intro" aria-labelledby="kanban-title">
         <div>
           <h1 id="kanban-title">Plan the work. <span>Brief your agent one card at a time.</span></h1>
-          <p class="intro-description">Prepare tasks for your coding agent. Nothing runs from this board. Copy a card when you are ready.</p>
+          <p class="intro-description">Move each task from To Do to Done. Link a project to its Git repository so each task can get its own branch. No agent runs from this board yet; copy a card when you are ready.</p>
         </div>
         <figure class="mascot"><img src="/kanban-mascot.png" alt="A black and white cartoon girl taking a bite out of a pixel-art creature" width="112" height="112"><figcaption>One bite at a time.</figcaption></figure>
       </section>
       <p class="storage-warning" id="kanban-load-warning" role="alert" hidden></p>
-      <p class="storage-warning board-warning" role="alert" hidden>Board changes were not saved in this browser. Export a backup before you close or reload this page.</p>
+      <p class="storage-warning board-warning" role="alert" hidden></p>
       <section class="card kanban-projects" aria-labelledby="projects-heading">
         <div class="card-heading"><div><h2 id="projects-heading">Projects</h2></div><div class="output-actions"><button class="secondary-button" id="import-board" type="button" title="Restore a board backup (JSON)" aria-label="Import board backup"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M12 15V3m-5 5 5-5 5 5M5 16v5h14v-5"/></svg><span>Import</span></button><button class="secondary-button" id="export-board" type="button" title="Download a board backup (JSON)" aria-label="Export board backup"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 16v5h14v-5"/></svg><span>Export</span></button><input type="file" id="import-file" accept=".json,application/json" hidden></div></div>
         <div class="kanban-project-bar">
@@ -181,13 +181,27 @@
           <p class="inline-error" id="project-error" role="alert" hidden></p>
         </form>
         <div class="connection-detail kanban-detail" id="project-detail" role="status" hidden></div>
+        <div class="kanban-repo" id="repo-panel" hidden>
+          <form class="kanban-repo-row" id="repo-form" novalidate>
+            <label class="field-label" for="repo-path">Git repository folder<input id="repo-path" type="text" maxlength="4096" autocomplete="off" spellcheck="false" placeholder="/Users/you/code/project"></label>
+            <div class="kanban-form-actions"><button type="submit" class="secondary-button" id="repo-link">Check and link</button><button type="button" class="text-button" id="repo-unlink" hidden>Unlink</button></div>
+          </form>
+          <p class="note" id="repo-state" role="status"></p>
+          <div class="kanban-repo-row" id="branch-field" hidden>
+            <label class="field-label" for="target-branch">Target branch<select id="target-branch"></select></label>
+            <div class="kanban-form-actions"><button type="button" class="secondary-button" id="branch-save">Use this branch</button><button type="button" class="text-button" id="branch-refresh">Refresh branches</button></div>
+          </div>
+          <p class="note" id="branch-state"></p>
+          <p class="inline-error" id="repo-message" role="alert" hidden></p>
+          <div class="connection-detail" id="import-pending" hidden><p id="import-pending-text"></p><div class="detail-actions"><button type="button" class="danger" id="import-confirm">Check and apply</button><button type="button" id="import-dismiss">Dismiss</button></div></div>
+        </div>
       </section>
-      <section class="card kanban-board" aria-labelledby="todo-heading">
-        <div class="card-heading"><div><h2 id="todo-heading">To do</h2><span class="kanban-count" id="todo-count" aria-label="Cards">00</span></div><button class="copy-button" id="card-new" type="button"><span aria-hidden="true">＋</span> New card</button></div>
-        <div class="output-empty" id="board-empty"><p><span id="board-empty-text">Create a project to start planning.</span><small id="board-empty-note">Each project gets its own board with one To do column.</small><a class="kanban-empty-link" id="empty-prompt-link" href="#/" hidden>Engineer a prompt <span aria-hidden="true">↗</span></a></p></div>
-        <ol class="kanban-cards" id="card-list" aria-labelledby="todo-heading"></ol>
+      <section class="card kanban-board" aria-labelledby="board-heading">
+        <div class="card-heading"><div><h2 id="board-heading">Board</h2><span class="kanban-count" id="board-count" aria-label="Cards">00</span></div><button class="copy-button" id="card-new" type="button"><span aria-hidden="true">＋</span> New card</button></div>
+        <div class="output-empty" id="board-empty"><p><span id="board-empty-text">Create a project to start planning.</span><small id="board-empty-note">Each project gets its own board, from To Do to Done.</small><a class="kanban-empty-link" id="empty-prompt-link" href="#/" hidden>Engineer a prompt <span aria-hidden="true">↗</span></a></p></div>
+        <div class="kanban-columns" id="kanban-columns" hidden></div>
       </section>
-      <footer class="main-footer"><span>PREPARED FOR AGENTS. NOTHING RUNS FROM THIS BOARD.</span><span>Cards stay in this browser <span aria-hidden="true">·</span> Human review required</span></footer>
+      <footer class="main-footer"><span>PREPARED FOR AGENTS. NO AGENT RUNS FROM THIS BOARD YET.</span><span>Saved by the local app <span aria-hidden="true">·</span> Human review required</span></footer>
     </main>
 
     <dialog id="help-dialog" aria-labelledby="dialog-heading"><button class="dialog-close icon-button" id="close-dialog" type="button" aria-label="Close help">×</button><p class="eyebrow">YOUR CLI. A CLEARER BRIEF.</p><h2 id="dialog-heading">A small tool.<br>A straightforward setup.</h2><div id="dialog-content"></div><button class="dialog-done" id="dialog-done" type="button">Got it <span aria-hidden="true">↗</span></button></dialog>

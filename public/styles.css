@@ -264,6 +264,20 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
 .kanban-empty-link { display: inline-block; margin-top: 8px; color: var(--ink); font-size: 13px; text-underline-offset: 3px; }
 .kanban-cards { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 14px; list-style: none; background: var(--surface-2); }
 .kanban-cards:empty { display: none; }
+/* Seven fixed stages side by side; the row scrolls sideways on narrow screens. */
+.kanban-columns { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(250px, 1fr); gap: 10px; overflow-x: auto; padding: 14px; background: var(--surface-2); }
+.kanban-column { display: flex; flex-direction: column; min-width: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.kanban-column-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 10px 12px 0; }
+.kanban-column h3 { margin: 0; font-size: 13px; font-weight: 650; }
+.kanban-column-note { margin: 2px 12px 8px; color: var(--subtle); font-size: 11px; }
+.kanban-column .kanban-cards, .kanban-column .kanban-cards:empty { display: flex; flex: 1; min-height: 80px; padding: 8px; border-top: 1px solid var(--line); background: none; }
+.kanban-column .kanban-cards.drop-target { outline: 2px dashed var(--line-strong); outline-offset: -4px; }
+.kanban-card h4 { margin: 8px 0 4px; font-size: 14px; font-weight: 600; }
+.kanban-move-to { max-width: 120px; padding: 3px 6px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--surface); color: var(--muted); font-size: 12px; }
+.kanban-repo { display: flex; flex-direction: column; gap: 8px; padding: 0 20px 18px; }
+.kanban-repo-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 14px; }
+.kanban-repo-row .field-label { flex: 1 1 280px; max-width: 560px; }
+.kanban-repo .note, .kanban-repo .inline-error { margin: 0; overflow-wrap: anywhere; }
 .kanban-card { padding: 13px 15px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: var(--shadow); cursor: grab; }
 .kanban-card.needs-review { padding-left: 12px; border-left: 4px solid var(--ink); }
 .kanban-card.dragging { opacity: .45; }
@@ -325,6 +339,7 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
   .kanban-project-form { padding: 0 16px 16px; }
   .kanban-detail { margin: 0 16px 16px; }
   .kanban-cards { padding: 10px; }
+  .kanban-repo { padding: 0 16px 16px; }
 }
 @media (max-width: 560px) {
   .help-pill { justify-content: center; width: 34px; padding: 0; }
