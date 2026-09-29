@@ -602,6 +602,20 @@ test('projects keep separate boards; names are validated; deletion needs confirm
   choose('#project-select', alpha);
   assert.deepEqual(titles($), ['A1', 'A2']);
   assert.equal($('#board-count').textContent, '02');
+  // On Kanban the sidebar is the project workspace, not prompt history; it switches boards too.
+  assert.equal($('#history-panel').hidden, true);
+  assert.equal($('#workspace-panel').hidden, false);
+  assert.equal($('#sidebar').getAttribute('aria-label'), 'Projects');
+  const items = () => [...$('#workspace-list').querySelectorAll('.workspace-item')];
+  assert.deepEqual(items().map(item => item.querySelector('.workspace-name').textContent), ['Alpha', 'Beta']);
+  assert.match(items()[0].querySelector('.workspace-meta').textContent, /Not linked · 2 cards/);
+  assert.equal(items()[0].getAttribute('aria-current'), 'true');
+  items()[1].click(); await ctx.idle();
+  assert.deepEqual(titles($), ['B1']);
+  assert.equal($('#project-select').selectedOptions[0].textContent, 'Beta');
+  assert.equal(items()[1].getAttribute('aria-current'), 'true');
+  items()[0].click(); await ctx.idle();
+  assert.deepEqual(titles($), ['A1', 'A2']);
   $('#project-new').click(); $('#project-name').value = ' beta '; submitForm(ctx, '#project-form'); await ctx.idle();
   assert.match($('#project-error').textContent, /already exists/);
   $('#project-name').value = '   '; submitForm(ctx, '#project-form');
@@ -1067,6 +1081,7 @@ test('starting a run needs consent and an acknowledgment for unverified prompts;
   await ctx.app.board.updateRun(run.id, { status: 'waiting_for_input', turns: 1, hasPlan: true, planExcerpt: 'PLAN' });
   await win.__pbTest.loadBoard(); await ctx.idle();
   assert.match(cardItem(ctx, 'Parser').querySelector('.run-badge').textContent, /Plan waiting for input/);
+  assert.equal($('#workspace-list .workspace-live.waiting').textContent, '1 waiting', 'The sidebar shows which project needs attention.');
   cardItem(ctx, 'Parser').querySelector('.kanban-confirm-run').click(); await ctx.idle();
   assert.equal($('#task-dialog').open, true);
   const details = $('#task-details').textContent;

@@ -206,7 +206,8 @@ function isMobile() { return window.innerWidth <= 730; }
 function syncSidebarToggle() {
   const expanded = isMobile() ? $('#sidebar').classList.contains('open') : document.documentElement.dataset.sidebar !== 'collapsed';
   $('#menu-toggle').setAttribute('aria-expanded', String(expanded));
-  $('#menu-toggle').setAttribute('aria-label', expanded ? 'Hide prompt history' : 'Show prompt history');
+  const what = location.hash === '#/kanban' ? 'projects' : 'prompt history';
+  $('#menu-toggle').setAttribute('aria-label', expanded ? `Hide ${what}` : `Show ${what}`);
 }
 function setSidebar(open) {
   $('#sidebar').classList.toggle('open', open);
@@ -217,7 +218,7 @@ function toggleSidebar() {
   if (isMobile()) {
     const open = !$('#sidebar').classList.contains('open');
     setSidebar(open);
-    if (open) $('#new-prompt').focus();
+    if (open) (location.hash === '#/kanban' ? $('#workspace-new') : $('#new-prompt')).focus();
     return;
   }
   const collapsed = document.documentElement.dataset.sidebar !== 'collapsed';
@@ -896,6 +897,12 @@ function showPage() {
     else link.removeAttribute('aria-current');
   }
   document.title = kanban ? 'Kanban · Promptboard' : 'Compose · Promptboard';
+  // The sidebar follows the page: prompt history on Compose, the project workspace on Kanban.
+  $('#history-panel').hidden = kanban;
+  $('#workspace-panel').hidden = !kanban;
+  $('#sidebar').setAttribute('aria-label', kanban ? 'Projects' : 'Prompt history');
+  $('#sidebar-scrim').setAttribute('aria-label', kanban ? 'Close projects' : 'Close history');
+  $('#sidebar-note').textContent = kanban ? 'Each project has its own board. Agents keep running when you switch projects.' : 'History stays in this browser. Your CLI handles the model.';
   if (kanban) renderBoard();
   setSidebar(false);
   window.scrollTo(0, 0);
@@ -1055,6 +1062,7 @@ function renderBoard() {
   $('#project-summary').title = $('#project-summary').textContent;
   // Without a project the settings are the only way forward, so they stay open.
   if (!project && $('#project-body').hidden) setProjectCollapsed(false, false);
+  renderWorkspace(project);
   updateBoardScroll();
   window.PromptboardDock?.sync();
 }
@@ -1859,6 +1867,40 @@ function pollTests(taskId) {
 
 // ---- Repository link and target branch ----
 
+// Kanban sidebar: one entry per project, each with its own board. Selecting one only changes
+// which board is shown; runs belong to the server and continue in every project.
+function renderWorkspace(current) {
+  const projects = board?.projects || [];
+  $('#workspace-count').textContent = String(projects.length).padStart(2, '0');
+  $('#workspace-empty').hidden = projects.length > 0;
+  $('#workspace-new').disabled = !board;
+  $('#workspace-list').replaceChildren(...projects.map(project => {
+    const ids = new Set(project.tasks.map(task => task.id));
+    const live = (board.runs || []).filter(run => ids.has(run.taskId) && RUN_LIVE.includes(run.status));
+    const waiting = live.filter(run => run.status === 'waiting_for_input').length;
+    const item = document.createElement('li');
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'workspace-item';
+    if (project.id === current?.id) button.setAttribute('aria-current', 'true');
+    const name = document.createElement('span'); name.className = 'workspace-name'; name.textContent = project.name;
+    const repo = project.repository ? project.repository.root.split(/[\\/]/).pop() + (project.targetBranch ? ` → ${project.targetBranch.name}` : '') : 'Not linked';
+    const meta = document.createElement('span'); meta.className = 'workspace-meta';
+    meta.textContent = `${repo} · ${project.tasks.length} ${project.tasks.length === 1 ? 'card' : 'cards'}`;
+    button.append(name, meta);
+    if (live.length) {
+      const status = document.createElement('span');
+      status.className = `workspace-live${waiting ? ' waiting' : ''}`;
+      status.textContent = waiting ? `${waiting} waiting` : `${live.length} running`;
+      button.append(status);
+    }
+    button.title = [project.name, project.repository?.root, live.length ? `${live.length} active agent ${live.length === 1 ? 'run' : 'runs'}` : ''].filter(Boolean).join('\n');
+    button.addEventListener('click', () => { if (project.id !== current?.id) selectProject(project.id); setSidebar(false); });
+    item.append(button);
+    return item;
+  }));
+}
+
 function renderRepository(project) {
   // The repository form opens when the project is not linked, or when the user asks for it.
   $('#repo-panel').hidden = !project || (Boolean(project.repository) && !repoPanelOpen && !project.pendingImport);
@@ -2045,13 +2087,16 @@ $('#add-form').addEventListener('submit', addToKanban);
 $('#add-project').addEventListener('change', () => { $('#add-project-name-field').hidden = Boolean($('#add-project').value); });
 $('#add-cancel').addEventListener('click', () => $('#add-dialog').close());
 $('#add-dialog-close').addEventListener('click', () => $('#add-dialog').close());
-$('#project-select').addEventListener('change', () => {
-  savePref(SELECTED_PROJECT_KEY, $('#project-select').value);
+function selectProject(id) {
+  savePref(SELECTED_PROJECT_KEY, id);
   closeProjectForm();
   showProjectDetail();
+  $('#ask-panel').hidden = true;
   renderBoard();
-  announce(`Showing project “${currentProject()?.name}”.`);
-});
+  announce(`Showing project “${currentProject()?.name}”. Agents in other projects keep running.`);
+}
+$('#project-select').addEventListener('change', () => selectProject($('#project-select').value));
+$('#workspace-new').addEventListener('click', () => { setSidebar(false); openProjectForm('new'); });
 $('#project-new').addEventListener('click', () => openProjectForm('new'));
 $('#project-rename').addEventListener('click', () => openProjectForm('rename'));
 $('#project-delete').addEventListener('click', confirmProjectDelete);
