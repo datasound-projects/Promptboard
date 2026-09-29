@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  ASD-STE100 writing principles · Your own AI CLI · Built-in checks · MIT license
+  ASD-STE100 writing principles · Your own AI CLI · Built-in checks and verification
 </p>
 
 ## What is it?
