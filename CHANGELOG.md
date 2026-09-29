@@ -2,34 +2,47 @@
 
 ## Unreleased
 
-- Review, testing, and merge (PB-04): commit task changes with a diff preview. Code reviews are read-only and record findings; accepting a review is a separate step, and findings can be sent back to Executing. Test commands are yours, run without a shell, and only exit codes count. Merging is a confirmed, verified, fast-forward-only local merge (never pushed), with a confirmed update when the target moved. Done requires a merge or "Reviewed: no changes required".
-- Board interface (PB-03): toolbar (project, repository, target branch, workflow settings), compact cards with run badges, optimistic moves that roll back with a reason, a consent dialog, task details with the plan and run history, and per-project workflow settings (Manual, Ask on entry (default), Start on entry).
-  - A resizable, collapsible terminal dock (xterm with the WebGL renderer, pinned local assets, strict CSP unchanged) with one tab per session. It reconnects after a reload and never restarts a run.
-- Agent execution (PB-02): Planning and Executing run Claude Code, Codex, or Gemini CLI in an interactive terminal inside the task worktree, after your explicit confirmation.
-  - Planning uses each CLI's read-only boundary. The plan is saved outside the worktree, and approving it is tied to the task text.
-  - Completion comes from provider hooks or notify events, never from silence or exit codes. You confirm each stage.
-  - Runs are queued (one at a time by default, up to 4), stream to the browser with the token in a header, and stop independently.
-  - `npm install` is now required for agent terminals (`node-pty`). The prompt editor works without it.
-  - Antigravity stays prompt-only. See `docs/live-verification.md` for which providers were checked live.
-- Kanban (PB-01): seven fixed stages from To Do to Done, with validated moves. Planning is optional. To Do and Done never run agents, and the server enforces this.
-  - The app now saves the board in its data folder as versioned JSON, with atomic writes, a backup copy, recovery, and revision checks. The browser board migrates once, keeping exact text and IDs.
-  - Projects link to a Git repository (linked worktrees accepted; bare repositories refused) and a chosen local target branch.
-  - Task runs are records separate from card position. Worktrees are created once per task, from the recorded target commit, outside your checkout.
-  - Execution stays off until PB-02. See `docs/agentic-kanban-contract.md`.
-- Kanban page: projects with one To do column of task cards. You can add a generated prompt as an exact snapshot, or write a card yourself.
-  - Source details and review status stay with each card. An edit marks the previous checks as outdated.
-  - Reorder cards with the move buttons or drag-and-drop.
-  - The board is saved in the browser, and you can export or import a validated JSON backup.
-  - Nothing runs from the board.
-- Generation always ends in a clear state: stage and elapsed time, cancel in every stage, a bounded client and server timeout, and input kept on failure.
-- Stable error codes that separate exhausted quota, temporary rate limits, sign-in, model, network, policy, and timeouts. Unknown failures stay unknown.
-- No repair call after an account-level failure. A busy server returns `409 BUSY`, not `429`.
-- Connection panel: install and sign-in status, native Codex sign-in, terminal handoff for other CLIs, refresh models, and confirmed sign-out.
-- Clean shutdown on SIGINT, SIGTERM, and SIGHUP. Owned CLI processes and temporary folders are removed, and the port is released.
-- Simpler web layout in four numbered steps: describe, choose settings, generate, review and copy. Sign-in controls and brief options move into a labelled **More settings** section.
-- Optional dark mode and a collapsible history sidebar. Both are saved in the browser and applied before the first paint.
-- History scrolls on its own; the editor stays in place. The top bar links the Studio and Kanban pages, and the Kanban page uses the same themes and components.
-- Readable text sizes and contrast in both themes, visible focus, a skip link, a drawer on narrow screens, and reduced-motion support.
+## 0.4.0 — 29 September 2026
+
+The app is now **Promptboard**: prompt writing (Compose) plus a local Kanban board that runs your own coding-agent CLI. See `RELEASE-VERIFICATION.md` for what was verified and on which systems.
+
+### Kanban board
+
+- Seven fixed stages: To Do, Planning, Executing, Code Review, Testing, Merge, Done. To Do and Done never run agents; the server enforces the rules.
+- Projects link to a local Git repository and target branch. Each task gets its own branch and worktree, created from the recorded target commit, outside your checkout.
+- The board is saved by the app as versioned JSON with atomic writes, a backup copy, recovery, and revision checks. A board kept in the browser by an earlier version moves over once, with exact text and IDs.
+- Per-project workflow settings for each stage: Manual, Ask on entry (default), or Start automatically.
+
+### Agent runs
+
+- Planning, Executing, and Code Review run Claude Code, Codex CLI, or Gemini CLI in an interactive terminal inside the task worktree. Planning and Code Review use each CLI's read-only mode. No bypass or full-access flags.
+- Completion comes from provider hooks or notify events, never from silence or exit codes. You confirm each stage. Plans and reviews are saved outside the worktree.
+- A resizable, collapsible terminal dock (xterm, WebGL renderer, local pinned assets, strict CSP) with one tab per session. It reconnects after a reload and never restarts a run.
+- Runs are queued (one at a time by default, up to four), stream with the token in a header, and stop independently. A restart marks active runs as interrupted.
+- Gemini CLI board runs are labelled "not verified live". Antigravity stays prompt-only.
+
+### Review, testing, and merge
+
+- Commit task changes after a diff preview. Code review findings are recorded; you accept them or send the task back to Executing.
+- Your test commands run in the worktree without a shell. Only exit codes count, and results go stale when the code changes.
+- Merge is a confirmed, verified, fast-forward-only local merge, never pushed. A moved target branch needs a confirmed update; conflicts are never resolved automatically.
+- Done requires a merge or an explicit "Reviewed: no changes required".
+
+### Compose and app
+
+- Clear end states for generation: stage and elapsed time, cancel in every stage, bounded timeouts, input kept on failure.
+- Stable error codes that separate exhausted quota, rate limits, sign-in, model, network, policy, and timeouts.
+- Connection panel with install and sign-in status, native Codex sign-in, terminal handoff for other CLIs, and confirmed sign-out.
+- Clean shutdown on SIGINT, SIGTERM, and SIGHUP: owned processes stop, temporary folders are removed, and the port is released.
+- Simpler layout with numbered steps, a collapsible settings step, optional dark mode, a collapsible history sidebar, and better contrast, focus, and narrow-screen support.
+
+### Fixes found during release verification
+
+- Early terminal output from a fast CLI could be lost. Listeners now attach before any other work.
+
+### Project
+
+- Rewritten README, SECURITY, and CONTRIBUTING; third-party notices; issue templates; Dependabot; CI on Linux, macOS, and Windows with Node.js 22 and 24, pinned actions, a dependency audit, and a tag-driven release workflow. The package is marked private and is not published to npm.
 
 ## 0.3.0 — 28 September 2026
 

@@ -1,139 +1,109 @@
-<p align="center">
-  <img src="public/nerd.png" width="150" alt="AI Prompt Engineer mascot">
-</p>
-
-<h1 align="center">AI Prompt Engineer</h1>
+<h1 align="center">Promptboard</h1>
 
 <p align="center">
-  Turn rough ideas into clear, structured prompts for AI coding agents.
+  Write clear prompts for AI coding agents, then run them on a local Kanban board.<br>
+  Your own CLI · Your own repository · Nothing merges without you.
 </p>
 
 <p align="center">
-  ASD-STE100 writing principles · Your own AI CLI · Built-in checks and verification
+  <img src="docs/demo.gif" width="820" alt="A task card starts an agent; its terminal opens in the dock at the bottom of the board.">
+  <br><sub>Demo recorded with a simulated agent CLI.</sub>
 </p>
 
-## What is it?
+## What it does
 
-AI Prompt Engineer helps you describe coding tasks clearly before you send them to an AI agent.
+Promptboard is a local web app with two pages.
 
-Write your request in your own words. Choose your model and preferences. The app creates a structured prompt, checks it, and shows the result for you to review and copy.
+- **Compose** turns a rough request into a structured prompt for a coding agent. It checks that code, quoted text, URLs, and paths stay unchanged, and flags missing or conflicting requirements. The writing rules draw on ASD-STE100 Simplified Technical English.
+- **Kanban** runs each task through seven stages: To Do, Planning, Executing, Code Review, Testing, Merge, and Done. Agents work in a separate Git worktree for each task, in a terminal you can watch and type into.
 
-It works through your installed **Codex, Claude Code, Antigravity, or Gemini CLI**, using your existing sign-in.
+Promptboard uses the CLIs you already have (**Claude Code, Codex CLI, Gemini CLI**, and **Antigravity** for prompts) with your existing sign-in. It has no API keys, no accounts, and no analytics.
 
-## Why use it?
+## Requirements
 
-A coding agent needs a clear goal, relevant context, and precise constraints. This app helps you prepare those instructions without rebuilding a prompt from scratch every time.
+- Node.js 22 or later, and Git.
+- At least one supported CLI, installed and signed in:
 
-- **Clarify the task.** Organize the goal, requirements, constraints, and expected result.
-- **Protect technical details.** Check that recognized code, quoted text, URLs, and paths remain unchanged.
-- **Find potential problems.** Review missing requirements, conflicting instructions, and unsupported additions.
-- **Control the output.** Choose the model, supported effort level, language, task, and amount of detail.
-- **Reuse your work.** Keep prompt history and copy or export results and check reports.
-- **Plan agent tasks.** Add prompts to a project's Kanban board. Cards move through seven stages: To Do, Planning, Executing, Code Review, Testing, Merge, and Done. Each card keeps an exact copy of its prompt. Link a project to its Git repository and choose a target branch; each task later gets its own branch and worktree. No agent runs from the board yet. Copy a card into your coding agent when you are ready.
+| CLI | Compose | Kanban agent runs | Setup |
+| --- | --- | --- | --- |
+| Claude Code | Yes | Yes | [Install](https://code.claude.com/docs/en/quickstart) |
+| OpenAI Codex CLI | Yes | Yes | [Install](https://developers.openai.com/codex/cli) |
+| Gemini CLI | Yes | Yes, not verified live | [Install](https://geminicli.com/docs/get-started/installation/) |
+| Google Antigravity (`agy`) | Yes | No | [Install](https://antigravity.google/docs/getting-started?tab=cli) |
 
-The writing rules draw on **ASD-STE100 Simplified Technical English**: short sentences, direct instructions, and consistent terms.
+Kanban agent runs are verified on macOS and Linux. They are not verified on Windows or WSL2. See [what was verified](RELEASE-VERIFICATION.md).
 
-## Installation
-
-### 1. Install the requirements
-
-You need **Node.js 22 or later**, **Git**, and at least one supported CLI.
-
-| CLI | Official setup |
-| --- | --- |
-| OpenAI Codex | [Install Codex](https://developers.openai.com/codex/cli) |
-| Claude Code | [Install Claude Code](https://code.claude.com/docs/en/quickstart) |
-| Google Antigravity (`agy`) | [Install Antigravity CLI](https://antigravity.google/docs/getting-started?tab=cli) |
-| Gemini CLI | [Install Gemini CLI](https://geminicli.com/docs/get-started/installation/) |
-
-Sign in to your chosen CLI and confirm that it works in your terminal.
-
-### 2. Download the project
-
-Download and extract the release ZIP, then open a terminal in the extracted folder.
-
-### 3. Install and start the app
+## Install and start
 
 ```bash
+git clone https://github.com/datasound-projects/ai-prompt-engineer-ste.git promptboard
+cd promptboard
 npm install
 npm start
 ```
 
-Open **http://127.0.0.1:4318** if your browser does not open automatically.
+Open **http://127.0.0.1:4318** if the browser does not open. Use `npm start -- --port 4320` for another port. Press **Ctrl+C** once to stop: Promptboard stops its agents, removes temporary folders, and frees the port.
 
-`npm install` adds the agent-terminal packages (`node-pty`, `@xterm/xterm`). Prompt engineering works without them; agent runs on the Kanban board need them. On macOS and Windows, `node-pty` ships prebuilt binaries. On Linux it is compiled during install and needs `python3`, `make`, and a C++ compiler. If it cannot be installed, the board says so and the rest of the app keeps working.
+`npm install` adds the terminal packages (`node-pty` and `xterm`). On macOS and Windows, `node-pty` ships prebuilt binaries. On Linux it compiles during install and needs `python3`, `make`, and a C++ compiler. Without it, Compose still works and the board tells you what is missing.
 
-No separate API key is required by the app. Your CLI’s access requirements, usage limits, and charges still apply.
+## Compose a prompt
 
-Keep the app and CLI in the same environment. If your Windows CLI setup requires WSL2, run both inside WSL2.
+1. Describe the task in your own words. Put exact text in backticks or double quotes.
+2. Choose the job, the CLI, the model and effort, the detail level, and the language (English, German, or Polish).
+3. Click **Okay, let's goooo!** or press ⌘/Ctrl+Enter.
+4. Read the prompt and the findings, then copy it or add it to the board.
 
-## How to use it
+**Reviewed** mode (default) drafts, checks, asks the model to review, and repairs once if needed (2–4 model calls). **Fast** mode drafts and checks (1 call). A passing report means the implemented checks found nothing. Always read the prompt yourself. This is a writing aid, not a certified STE checker. See [the method](docs/ste-method.md) and [verification](docs/verification.md).
 
-1. **Describe the task.** Include important constraints and any exact technical text.
-2. **Choose settings.** Pick the job (Build, Debug, Refactor, Review, Architecture, Agent Workflow, or Research), the CLI, the model and effort, the detail level, the output language (English, German, or Polish), and Reviewed or Fast checks.
-3. Click **“Okay, let's goooo!”** or press ⌘/Ctrl+Enter.
-4. **Review the prompt and findings**, then copy it into your coding agent.
+## Run tasks on the board
 
-**More settings** holds the less-used controls. The connection group can start sign-in, check again, and sign out (after confirmation) using the CLI's own commands. The status chips under the CLI selector show whether it is installed and signed in. See [sign-in controls](docs/cli-adapters.md#sign-in-controls). Brief options add planning, acceptance checks, edge cases, security review, and terms to keep.
+1. **Link a repository.** Choose a local Git repository and a target branch. Promptboard does not create repositories, commit on your behalf without asking, or push.
+2. **Add a card.** Write a task or add a prompt from Compose. The card keeps an exact copy.
+3. **Move it through the stages.**
 
-The top bar switches between the Compose and Kanban pages and toggles the history sidebar and dark mode. The sidebar and theme choices are saved in this browser.
+| Stage | What happens |
+| --- | --- |
+| To Do | Nothing runs. |
+| Planning | Optional. The agent plans in read-only mode. You approve the plan. |
+| Executing | The agent edits files in the task's own worktree and branch. You confirm when it is done. |
+| Code Review | You commit the changes, then an agent reviews the diff read-only and lists findings. You accept them or send the task back. |
+| Testing | Your test commands run in the worktree, without a shell. Only exit codes count. |
+| Merge | You confirm a fast-forward merge into the target branch. Nothing is pushed. |
+| Done | Reached only by a verified merge or an explicit "no changes required". |
 
-Model choices come from your installed CLI. Availability depends on your account and CLI version. Gemini uses its CLI thinking settings.
+Each project chooses what happens when a card enters a stage: **Manual**, **Ask** (default), or **Start automatically**. Starting an agent by hand always shows a consent dialog; automatic start is a setting you turn on per project and stage. Terminals open in the dock at the bottom of the page. You can collapse the dock, reload the page, or run several tasks at once (one by default, up to four). Promptboard never passes a bypass or "yolo" permission flag, never pre-trusts a folder for a CLI, and never force-resets or stashes your work.
 
-## How it works
+The full behaviour is in the [Kanban contract](docs/agentic-kanban-contract.md).
 
-| Mode | Process | Model calls |
-| --- | --- | --- |
-| **Reviewed — default** | Draft → automatic checks → model review → one repair and another review when needed | 2–4 |
-| **Fast** | Draft → automatic checks | 1 |
+## Privacy and data
 
-Automatic checks compare recognized technical text and flag selected English writing issues. The model review assesses meaning, requirements, scope, conflicts, and clarity.
+- **Do not put API keys, tokens, passwords, or private code you cannot share with your AI provider into prompts or tasks.** Text you send goes to the provider through its CLI, and the CLI may keep its own logs.
+- Promptboard runs only on `127.0.0.1` and sends nothing anywhere itself. It has no analytics and no telemetry.
+- Prompt history stays in your browser. The board, run logs, and task worktrees are saved in `~/Library/Application Support/Promptboard` (macOS), `%APPDATA%\Promptboard` (Windows), or `~/.local/share/promptboard` (Linux). Set `PROMPTBOARD_DATA_DIR` to use another folder. Run one instance per data folder.
+- Promptboard never reads or copies CLI credential files.
 
-The report shows findings and any failed or unavailable checks. Put important exact text in backticks or double quotes to make its boundaries explicit.
-
-The app generates instructions for a coding agent. It does not perform the coding task.
-
-## What the checks mean
-
-A passing report means the implemented checks found no remaining issue. **Always review the final prompt.** The reviewer uses the same selected model and can miss mistakes.
-
-This is an independent writing aid, **not a full or certified STE checker**. German and Polish use clear technical language rather than English STE. ASD and STEMG do not endorse the project.
-
-See [the method and sources](docs/ste-method.md) and [verification details](docs/verification.md).
+Read [SECURITY.md](SECURITY.md) before you use it with sensitive repositories.
 
 ## Terminal use
 
 ```bash
-# Create a reviewed prompt
 node bin/ste.mjs --provider codex < request.txt > prompt.md
-
-# Use Fast mode with German output
 node bin/ste.mjs --provider claude --language de --quality fast < request.txt
-
-# Export the prompt and verification report
 node bin/ste.mjs --provider agy --json < request.txt > result.json
 ```
 
-Flagged drafts return exit code `2` and are withheld from plain output. Use `--json` to inspect the full result, or `--allow-draft` to output draft text.
+Flagged drafts exit with code `2` and are withheld; use `--json` or `--allow-draft` to see them. Run `node bin/ste.mjs --help` for all options.
 
-Run `node bin/ste.mjs --help` for all options.
-
-## Data and troubleshooting
-
-The app runs on your computer. Prompt history stays in your browser. The Kanban board is saved by the app in `~/Library/Application Support/Promptboard` (macOS), `%APPDATA%\Promptboard` (Windows), or `~/.local/share/promptboard` (Linux); set `PROMPTBOARD_DATA_DIR` to use another folder. Run one app instance per data folder. A board kept in this browser by an earlier version moves into the app automatically, and the browser copy is kept. Your CLI sends requests to its provider and may retain its own logs. The app includes no analytics.
+## Troubleshooting
 
 | Problem | Action |
 | --- | --- |
-| Port already in use | Run `npm start -- --port 4320` |
-| CLI not detected | Run `node bin/ste.mjs --doctor` |
-| Check the installed app version | Run `node bin/ste.mjs --version` |
-| Model unavailable | Check CLI sign-in and model access, then refresh the model list |
-| Signed out or expired | Use **Connect / Sign in** in the connection panel, or run the shown terminal command, then **Check again** |
-| Usage limit or rate limit | The error says which one the provider reported, with a reset time only when supplied |
-
-Press **Ctrl+C** once to stop: the app cancels running CLI work, removes its temporary folders, and frees the port within a few seconds. Press it again to exit at once. `SIGKILL` (`kill -9`) cannot run cleanup handlers, so avoid it.
-
-Read [security notes](SECURITY.md), [CLI details](docs/cli-adapters.md), and the [Kanban contract](docs/agentic-kanban-contract.md).
+| Port already in use | `npm start -- --port 4320` |
+| CLI not detected | `node bin/ste.mjs --doctor` |
+| Agent seems stuck at the start | Open its terminal. The CLI may ask whether to trust the folder. Answer there. |
+| Signed out or expired | Use **Connect / Sign in** under **More settings**, or run the shown command, then **Check again**. |
+| Usage or rate limit | The error names the one your provider reported, with a reset time only when the provider gives one. |
+| Board terminals unavailable | Run `npm install`. On Linux install `python3`, `make`, and a C++ compiler first. |
 
 ## Development
 
@@ -143,6 +113,6 @@ npm run check
 npm test
 ```
 
-See [contributing](CONTRIBUTING.md), [evaluation guidance](evals/README.md), and [GitHub publishing instructions](docs/publishing.md).
+`scripts/live-flow.mjs` and `scripts/live-agents.mjs` run real CLIs in disposable repositories. They use your provider quota, so they never run in CI. See [CONTRIBUTING.md](CONTRIBUTING.md), [the changelog](CHANGELOG.md), and [live verification](docs/live-verification.md).
 
-Released under the [MIT license](LICENSE).
+Released under the [MIT license](LICENSE). Third-party licences are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). ASD and STEMG do not endorse this project.

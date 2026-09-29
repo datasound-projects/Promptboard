@@ -5,6 +5,7 @@
  */
 import { execute, makeTempDir, removeTempDir, resolveExecutable, ProviderError } from './providers.mjs';
 import { metadataSession } from './models.mjs';
+import { VERSION } from './version.mjs';
 
 // login/logout: 'native' = this app runs the CLI's own flow; 'terminal' = the user runs
 // the shown command; 'unsupported' = no documented command. Commands are display text only.
@@ -32,7 +33,7 @@ async function codexSession(found, transact, options) {
   const cwd = await makeTempDir('ste-auth-');
   try {
     return await metadataSession(found, ['app-server'], cwd, async session => {
-      await session.request('initialize', { clientInfo: { name: 'ste_prompt_engineer', version: '0.3.0' } });
+      await session.request('initialize', { clientInfo: { name: 'promptboard', version: VERSION } });
       session.send({ method: 'initialized', params: {} });
       return transact(session);
     }, options);

@@ -1,29 +1,39 @@
 # Security
 
-This is a local, single-user prompt editor. Do not expose its HTTP port through a proxy or public tunnel.
+Promptboard is a local, single-user app. It starts AI coding agents that can edit files in your repositories, so read this before you use it with sensitive code.
 
-The server binds to `127.0.0.1`. It checks the Host, Origin, and fetch-site headers.
-POST requests require a per-process token. Static responses use a restrictive content security policy.
-User text is passed through stdin to a fixed executable with `shell: false`.
-No browser request can select an executable, a working directory, or arbitrary CLI arguments.
-Requests and output are bounded. Only one pipeline runs at a time, with at most four model calls.
-Each stage has a fresh temporary working folder. Review and repair text remain untrusted model output.
-JSON and evidence checks do not prevent every prompt injection or establish semantic correctness.
+## Reporting a vulnerability
 
-These controls do not defend against software that already runs as your local user.
-Prompt boundaries are guidance, not proof against prompt injection.
-Some CLI integrations and managed settings can remain active. Review `docs/cli-adapters.md` before use with sensitive text.
-CLI credentials stay in the CLI's own configuration. The app does not read or copy credential files.
+Report problems privately through GitHub: **Security → Report a vulnerability** on this repository. Do not open a public issue, and do not attach credentials, private code, or prompt history.
 
-Avoid secrets in requests. Browser history, exported verification reports, and CLI logs can contain prompt text and review excerpts.
-Never attach credentials or private prompt history to a public issue.
-Use the repository's private vulnerability report feature when its owner enables it.
+## What the app does to protect you
 
-## Changes that need review
+**Local only.** The server binds to `127.0.0.1` and checks the Host, Origin, and fetch-site headers. Every API request needs a per-process token, sent in a header and never in a URL. Pages use a strict content security policy with no inline scripts or styles. Do not expose the port through a proxy or tunnel.
 
-- CLI flags, model arguments, executable lookup, and policy handling.
-- Process cancellation, time limits, or maximum output size.
-- HTTP binding, origin checks, static routes, or content security policy.
-- History storage and model output display.
+**No shell.** CLIs, Git, and your test commands start through `execFile`/`spawn` without a shell. Task text is passed as one argument or pasted into the terminal, never interpolated into a command. The browser cannot choose an executable, a working directory, or CLI flags.
 
-Do not add automatic approval bypass, shell interpolation, remote binding, or tool fallback on policy errors.
+**Agents stay in their worktree.** Each task gets its own Git worktree and branch outside your checkout. Planning and Code Review use each CLI's read-only mode (Claude Code plan mode with read tools only, Codex `--sandbox read-only`, Gemini plan mode plus a deny policy). Executing uses the CLI's normal approval mode. Promptboard never passes bypass, "yolo", or full-access flags, never pre-trusts a folder, and never edits your CLI configuration.
+
+**You confirm the important steps.** Runs start only when you start them or turn on automatic start for a stage. A stage succeeds only when you confirm it. Commits, merges, and branch updates need confirmation. Merges are fast-forward only and are never pushed. Promptboard never force-resets, stashes, or deletes a dirty worktree.
+
+**Processes are owned.** Stopping a run, or Promptboard itself, stops only the process groups it started.
+
+**Credentials stay with the CLI.** Promptboard never reads, copies, or logs CLI credential files, and does not copy them into worktrees.
+
+## Limits
+
+- An agent in Executing can run any command its CLI allows in the task worktree, with your user's permissions. Review what it asks to do.
+- Worktrees are created with Git hooks disabled. Commits and merges you confirm run your repository's normal Git hooks, like any commit you make yourself. The agent's own commands and your test commands also run normally.
+- These controls do not protect against other software that already runs as your user.
+- Prompt boundaries and read-only modes are enforced by each CLI, not by an operating-system sandbox. A CLI bug can weaken them.
+- Prompt text, run output, and plans are stored unencrypted in the data folder and sent to your provider through its CLI. **Do not put API keys, tokens, passwords, or private code you cannot share with your provider into prompts or tasks.**
+
+## Changes that need extra review
+
+- CLI flags, permission modes, hook or notify handling, and executable lookup.
+- Git worktree, commit, merge, and cleanup code.
+- Process start, stop, time limits, and output limits.
+- HTTP binding, token and origin checks, static routes, and the content security policy.
+- Anything that renders agent output (it must stay text, never HTML).
+
+Do not add automatic approval bypass, shell interpolation, remote binding, auto-push, or automatic conflict resolution.

@@ -40,7 +40,7 @@ Final verification of Promptboard before its first open-source release (PB-05), 
 
 - **Lost early agent output (product bug).** The PTY output and exit listeners were attached after an `await`, so the first output of a fast CLI could be dropped (seen once on macOS CI). They are now attached immediately after spawn, and an exit during startup no longer leaves a polling timer behind.
 - **Flaky CI tests.** The resize check now waits for the last reported size; the flood check tolerates one software-rendering stall but still fails on sustained lag; a process that disappears while `/proc` is read counts as gone. CI no longer cancels other jobs on the first failure, stops a hung test after 3 minutes, and limits each job to 15 minutes.
-- **Outdated text.** The CLI banner, page titles, and licence still used the old name; the Kanban intro said agents ran only in Planning and Executing (Code Review also runs one).
+- **Outdated text.** The CLI banner, page titles, and licence still used the old name; the Kanban intro said agents ran only in Planning and Executing (Code Review also runs one); the Code Review, Testing, and Merge columns still said their runs would "arrive in a later version". The README described an older app and a ZIP download.
 
 ## Known limitations
 
@@ -50,6 +50,11 @@ Final verification of Promptboard before its first open-source release (PB-05), 
 - The browser console shows CSP reports when a terminal opens: xterm tries to add inline styles before the WebGL renderer takes over. The CSP blocks them by design; rendering is unaffected.
 - Without a GPU (for example headless CI), WebGL runs in software and the page can pause briefly while a terminal is created or floods.
 - If Promptboard is started from inside a Claude Code session, Claude runs inherit that session's environment marker and show "Transcript saving is off". Start Promptboard from a normal terminal.
+
+## Owner actions
+
+- Turn on **private vulnerability reporting** (Settings → Code security). `SECURITY.md` and the issue form point to it; it is off today.
+- Confirm that you may publish `public/kanban-mascot.png` under this repository's licence. Its source is not recorded, unlike `public/nerd.png` (see `docs/logo-prompt.md`).
 
 ## Security concerns
 

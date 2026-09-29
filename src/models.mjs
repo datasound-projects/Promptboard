@@ -2,6 +2,7 @@
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { buildCommand, closedWithin, execute, makeTempDir, removeTempDir, resolveExecutable, spawnOwned, stopProcess, validateEffort, ProviderError } from './providers.mjs';
+import { VERSION } from './version.mjs';
 
 const IDS = ['codex', 'claude', 'gemini', 'agy'];
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9_.:/@+\[\]-]{0,99}$/;
@@ -109,7 +110,7 @@ export async function discoverModels(provider, { signal } = {}) {
       models = parseAgyModels(result.stdout);
     } else if (provider === 'codex') {
       await metadataSession(executable, ['app-server'], cwd, async ({ request, send }) => {
-        await request('initialize', { clientInfo: { name: 'ste_prompt_engineer', version: '0.2.0' } });
+        await request('initialize', { clientInfo: { name: 'promptboard', version: VERSION } });
         send({ method: 'initialized', params: {} });
         let cursor;
         const seen = new Set();
@@ -141,7 +142,7 @@ export async function discoverModels(provider, { signal } = {}) {
       args.splice(args.indexOf('--output-format'), 2);
       args.push('--experimental-acp');
       const result = await metadataSession(executable, args, cwd, async ({ request }) => {
-        await request('initialize', { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: 'ste_prompt_engineer', version: '0.2.0' } });
+        await request('initialize', { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: 'promptboard', version: VERSION } });
         return request('session/new', { cwd, mcpServers: [] });
       }, { signal });
       models = normalizeModels(provider, result?.models?.availableModels);

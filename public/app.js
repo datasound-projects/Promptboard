@@ -1054,7 +1054,7 @@ function renderColumn(column, tasks) {
   header.className = 'kanban-column-heading';
   header.append(heading, count);
   const note = paragraph(!column.agent ? (column.id === 'todo' ? 'Never runs an agent' : 'Finished · never runs an agent')
-    : !board.execution?.available ? 'Agent stage · agent terminals not set up' : ['planning', 'executing'].includes(column.id) ? 'Agent stage · runs start only when you confirm' : 'Agent stage · runs arrive in a later version', 'kanban-column-note');
+    : !board.execution?.available ? 'Agent stage · agent terminals not set up' : { testing: 'Your test commands · only exit codes count', merge: 'Fast-forward only · after you confirm · never pushed' }[column.id] || 'Agent stage · runs only when you start it or allow auto-start', 'kanban-column-note');
   const list = document.createElement('ol');
   list.className = 'kanban-cards';
   list.dataset.column = column.id;

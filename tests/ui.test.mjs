@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { JSDOM } from 'jsdom';
 import { startServer } from '../src/server.mjs';
+import { VERSION } from '../src/version.mjs';
 
 const catalogs = {
   codex: { source: 'cli', defaultModel: 'codex-one', defaultEffort: 'medium', models: [{ id: 'codex-one', name: 'Codex One', efforts: ['low', 'medium', 'high', 'xhigh'] }, { id: 'codex-two', name: 'Codex Two', efforts: ['low'] }] },
@@ -172,7 +173,7 @@ test('reviewed mode shows bounded usage, report evidence, JSON export, and resto
   const verification = report();
   const { $, submit, requests, downloads, blobs, win, copied } = await setup(t, { generationResponse: { prompt: 'Add a test.', provider: 'codex', verification } });
   assert.match($('#quality-note').textContent, /2 CLI calls; up to 4/);
-  assert.match($('.sidebar-footer').textContent, /v0\.3\.0/);
+  assert.ok($('.sidebar-footer').textContent.endsWith(`v${VERSION}`), 'The footer shows the package version.');
   $('#prompt-input').value = 'Add a test.';
   submit();
   await until(() => !$('#generate-button').disabled && requests.length === 1, 'reviewed result');
@@ -728,8 +729,9 @@ test('a linked repository enables stage moves; invalid folders explain the probl
   assert.equal(board.projects[0].tasks[0].workspace, null);
   assert.deepEqual(board.runs, []);
   assert.equal(board.execution.available, true);
-  assert.match($('#kanban-columns [data-column="executing"] .kanban-column-note').textContent, /runs start only when you confirm/);
-  assert.match($('#kanban-columns [data-column="code_review"] .kanban-column-note').textContent, /later version/);
+  assert.match($('#kanban-columns [data-column="executing"] .kanban-column-note').textContent, /runs only when you start it/);
+  assert.match($('#kanban-columns [data-column="code_review"] .kanban-column-note').textContent, /runs only when you start it/);
+  assert.match($('#kanban-columns [data-column="merge"] .kanban-column-note').textContent, /never pushed/);
 });
 
 test('backups: export round-trips, import validates, asks before replacing, and keeps imported settings pending', async t => {
