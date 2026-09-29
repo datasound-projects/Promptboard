@@ -385,6 +385,23 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
 /* The board fills the window down to the terminal dock; each column scrolls on its own. */
 .kanban-columns { grid-auto-columns: minmax(272px, 1fr); height: clamp(440px, calc(100vh - var(--dock-height) - 150px), 1600px); height: clamp(440px, calc(100dvh - var(--dock-height) - 150px), 1600px); max-height: none; }
 .kanban-column { min-height: 0; }
+.kanban-columns { scroll-snap-type: x proximity; scroll-padding-inline: 14px; cursor: grab; scrollbar-width: auto; scrollbar-color: var(--line-strong) transparent; }
+.kanban-columns.panning { cursor: grabbing; scroll-snap-type: none; user-select: none; }
+.kanban-columns .kanban-card { cursor: grab; }
+.kanban-column { scroll-snap-align: start; cursor: default; }
+/* Always-visible horizontal scrollbar (macOS hides overlay scrollbars otherwise). */
+.kanban-columns::-webkit-scrollbar { height: 12px; }
+.kanban-columns::-webkit-scrollbar-track { background: transparent; }
+.kanban-columns::-webkit-scrollbar-thumb { border: 3px solid var(--surface-2); border-radius: 999px; background: var(--line-strong); }
+.kanban-columns::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+/* Fades hint that more stages sit beyond the edge. */
+.kanban-columns.more-right { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent); }
+.kanban-columns.more-left { -webkit-mask-image: linear-gradient(to right, transparent, #000 36px); mask-image: linear-gradient(to right, transparent, #000 36px); }
+.kanban-columns.more-left.more-right { -webkit-mask-image: linear-gradient(to right, transparent, #000 36px, #000 calc(100% - 36px), transparent); mask-image: linear-gradient(to right, transparent, #000 36px, #000 calc(100% - 36px), transparent); }
+.board-actions { display: flex; align-items: center; gap: 6px; }
+.board-scroll { width: 34px; height: 34px; border: 1px solid var(--line-strong); border-radius: 8px; font-size: 20px; line-height: 1; color: var(--ink); }
+.board-scroll:disabled { opacity: .35; cursor: default; }
+.board-actions .copy-button { margin-left: 6px; }
 .kanban-column .kanban-cards { overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
 .kanban-card { padding: 10px 12px; }
 .kanban-card h4 { margin: 6px 0 2px; font-size: 13px; line-height: 1.35; }

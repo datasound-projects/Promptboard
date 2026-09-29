@@ -1055,6 +1055,7 @@ function renderBoard() {
   $('#project-summary').title = $('#project-summary').textContent;
   // Without a project the settings are the only way forward, so they stay open.
   if (!project && $('#project-body').hidden) setProjectCollapsed(false, false);
+  updateBoardScroll();
   window.PromptboardDock?.sync();
 }
 
@@ -2160,6 +2161,46 @@ showPage();
 loadProviders();
 $('#settings-toggle').addEventListener('click', () => setSettingsCollapsed(!$('#settings-body').hidden));
 $('#project-toggle').addEventListener('click', () => setProjectCollapsed(!$('#project-body').hidden));
+
+// Sideways movement on a board wider than the window: ‹ › buttons, a visible scrollbar,
+// swipes and Shift+wheel (native), and dragging on empty board space with a mouse.
+function updateBoardScroll() {
+  const columns = $('#kanban-columns');
+  const max = columns.scrollWidth - columns.clientWidth;
+  const left = columns.scrollLeft > 2, right = columns.scrollLeft < max - 2;
+  $('#board-left').disabled = !left;
+  $('#board-right').disabled = !right;
+  $('#board-left').hidden = $('#board-right').hidden = columns.hidden || max <= 2;
+  columns.classList.toggle('more-left', left);
+  columns.classList.toggle('more-right', right);
+}
+function scrollBoard(direction) {
+  const columns = $('#kanban-columns');
+  const step = columns.querySelector('.kanban-column')?.getBoundingClientRect().width || 280;
+  columns.scrollBy({ left: direction * (step + 10), behavior: scrollBehavior() });
+}
+$('#board-left').addEventListener('click', () => scrollBoard(-1));
+$('#board-right').addEventListener('click', () => scrollBoard(1));
+$('#kanban-columns').addEventListener('scroll', updateBoardScroll, { passive: true });
+window.addEventListener('resize', updateBoardScroll);
+{
+  let pan = null;
+  const columns = $('#kanban-columns');
+  columns.addEventListener('pointerdown', event => {
+    if (event.pointerType !== 'mouse' || event.button !== 0 || event.target.closest('.kanban-card, button, select, input, textarea, a')) return;
+    pan = { x: event.clientX, left: columns.scrollLeft, id: event.pointerId, moved: false };
+  });
+  columns.addEventListener('pointermove', event => {
+    if (!pan || event.pointerId !== pan.id) return;
+    const dx = event.clientX - pan.x;
+    if (!pan.moved && Math.abs(dx) < 4) return;
+    if (!pan.moved) { pan.moved = true; columns.setPointerCapture(pan.id); columns.classList.add('panning'); }
+    columns.scrollLeft = pan.left - dx;
+  });
+  const stop = () => { if (pan?.moved) columns.classList.remove('panning'); pan = null; };
+  columns.addEventListener('pointerup', stop);
+  columns.addEventListener('pointercancel', stop);
+}
 try { if (localStorage.getItem(SETTINGS_KEY) === 'collapsed') setSettingsCollapsed(true, false); } catch {}
 try { if (localStorage.getItem(PROJECT_PANEL_KEY) === 'collapsed') setProjectCollapsed(true, false); } catch {}
 // A required field inside a collapsed card would block submit without a visible message. Reopen it.

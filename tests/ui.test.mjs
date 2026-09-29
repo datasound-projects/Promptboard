@@ -746,6 +746,8 @@ test('a linked repository enables stage moves; invalid folders explain the probl
   card.querySelector('.kanban-more-toggle').click();
   assert.equal(card.querySelector('.kanban-more').hidden, false);
   assert.equal(card.querySelector('.kanban-more-toggle').getAttribute('aria-expanded'), 'true');
+  // The ‹ › board buttons only appear when the stages overflow the window (never in jsdom, which has no layout).
+  assert.equal($('#board-left').hidden && $('#board-right').hidden, true);
 });
 
 test('backups: export round-trips, import validates, asks before replacing, and keeps imported settings pending', async t => {
