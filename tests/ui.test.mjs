@@ -164,7 +164,7 @@ function report(overrides = {}) {
     automatic: { status: 'pass', checks: [{ id: 'protected-literals', status: 'pass', count: 1 }], issues: [], protectedCount: 1, matchedCount: 1, reviewRequired: true },
     review: { status: 'pass', requirements: [{ id: 'S1', sourceQuote: 'Add a test.', promptQuote: 'Add a test.', status: 'covered', note: 'The requirement is preserved.' }], criteria: ['meaning', 'constraints', 'no-invention', 'conflicts', 'language', 'scope', 'clarity'].map(criterion => ({ criterion, status: 'pass', note: 'No issue found.' })), issues: [] },
     repaired: false, repairFailed: false, calls: 2, engineVersion: '0.3.0', promptHash: 'prompt-hash', inputHash: 'input-hash', instructionsHash: 'instructions-hash',
-    stages: [{ stage: 'draft', reportedModels: ['model-one'], durationMs: 250, status: 'complete' }, { stage: 'review', reportedModels: ['model-one'], durationMs: 250, status: 'complete' }],
+    repairReasons: [], stages: [{ stage: 'draft', reportedModels: ['model-one'], durationMs: 250, status: 'complete', inputBytes: 5000, outputBytes: 300 }, { stage: 'review', reportedModels: ['model-one'], durationMs: 250, status: 'complete', inputBytes: 2048, outputBytes: 200 }],
     timings: { totalMs: 530, modelMs: 500, checksMs: 30 }, reviewRequired: true, ...overrides,
   };
 }
@@ -188,6 +188,7 @@ test('reviewed mode shows bounded usage, report evidence, JSON export, and resto
   assert.equal($('#review-criteria').children.length, 7);
   assert.match($('#review-criteria').textContent, /no invention: pass/);
   assert.match($('#verification-stages').textContent, /models reported: model-one/);
+  assert.match($('#verification-stages').textContent, /review: complete · 0\.3s · in 2\.0 KB, out 0\.2 KB/);
   assert.match($('#verification-overview').textContent, /1 of 1 detected protected items matched/);
   $('#copy-button').click(); await until(() => copied(), 'copy without report');
   assert.equal(copied(), 'Add a test.');
@@ -301,7 +302,7 @@ test('progress shows the stage and elapsed time; cancel restores the form and ke
   await until(() => calls.length === 1, 'generation started');
   assert.equal($('#generate-button').disabled, true);
   assert.equal($('#cancel-button').hidden, false);
-  await until(() => $('#progress-stage').textContent === 'Drafting', 'stage label');
+  await until(() => $('#progress-stage').textContent === 'Drafting prompt', 'stage label');
   assert.match($('#progress-elapsed').textContent, /^\d+:\d\d$/);
   submit(); // A duplicate submit while running is ignored.
   $('#cancel-button').click();

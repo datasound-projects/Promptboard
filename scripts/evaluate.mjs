@@ -23,7 +23,7 @@ Options:
   --quality reviewed|fast           Default: reviewed
   --help                            Print help without model calls
 
-Cases run sequentially. Reviewed mode can use up to four calls per case.
+Cases run sequentially. Reviewed mode uses two calls per case, or four after a repair of confirmed findings.
 The JSON report is written to stdout. Redirect it to a file if needed.
 Human review is required. Check counts are not an overall quality score.
 Exit codes: 0 completed, 1 configuration or generation errors, 130 interrupted.

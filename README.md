@@ -57,7 +57,7 @@ Open **http://127.0.0.1:4318** if the browser does not open. Use `npm start -- -
 3. Click **Okay, let's goooo!** or press ⌘/Ctrl+Enter.
 4. Read the prompt and the findings, then copy it or add it to the board.
 
-**Reviewed** mode (default) drafts, checks, asks the model to review, and repairs once if needed (2–4 model calls). **Fast** mode drafts and checks (1 call). A passing report means the implemented checks found nothing. Always read the prompt yourself. This is a writing aid, not a certified STE checker. See [the method](docs/ste-method.md) and [verification](docs/verification.md).
+**Reviewed** mode (default) drafts, checks, and asks the model for a compact review (2 model calls). It repairs once, with a fresh review (4 calls), only when a check confirms a lost literal or a missing or changed requirement; style notes and reviewer uncertainty are reported, not repaired. **Fast** mode drafts and checks (1 call). A passing report means the implemented checks found nothing. Always read the prompt yourself. This is a writing aid, not a certified STE checker. See [the method](docs/ste-method.md) and [verification](docs/verification.md).
 
 ## Run tasks on the board
 

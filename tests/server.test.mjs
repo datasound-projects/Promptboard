@@ -144,4 +144,10 @@ test('model lookup is token protected, cached, and validates requested effort be
   assert.deepEqual(result.reportedModels, ['resolved-test-model']);
   assert.equal(result.lint.warnings[0].rule, 'language-review');
   assert.equal(lookups, 2);
+  // Generate reuses the catalog the UI already loaded, even after the 60 s list refresh window.
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() + 10 * 60_000 });
+  assert.equal((await post('high')).status, 200);
+  assert.equal(lookups, 2);
+  await fetch(app.url + '/api/models?provider=codex', { headers });
+  assert.equal(lookups, 3);
 });

@@ -36,7 +36,8 @@
     "test": "node --test --test-timeout=180000 --test-force-exit tests/*.test.mjs",
     "check": "node scripts/check.mjs",
     "eval:live": "node scripts/evaluate.mjs",
-    "bench": "node scripts/benchmark.mjs"
+    "bench": "node scripts/benchmark.mjs",
+    "bench:pipeline": "node scripts/pipeline-bench.mjs"
   },
   "devDependencies": {
     "jsdom": "26.1.0"

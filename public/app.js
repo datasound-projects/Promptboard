@@ -37,7 +37,7 @@ let authInfo = null;
 let authBusy = false;
 let authSequence = 0;
 const GENERATION_CEILING_MS = 7.5 * 60 * 1000; // Above the server's 6-minute pipeline deadline.
-const STAGE_LABELS = { starting: 'Starting', models: 'Checking model options', draft: 'Drafting', review: 'Reviewing', repair: 'Repairing', 'repair-review': 'Reviewing the repair' };
+const STAGE_LABELS = { starting: 'Starting', models: 'Checking model options', draft: 'Drafting prompt', review: 'Reviewing requirements', repair: 'Repairing confirmed issues', 'repair-review': 'Verifying repaired prompt' };
 
 function safeText(value, max = MAX_PROMPT_BYTES) { return typeof value === 'string' ? value.slice(0, max) : ''; }
 
@@ -83,7 +83,7 @@ function normalizeVerification(value) {
   const nonnegative = number => Number.isFinite(number) && number >= 0 ? number : 0;
   const list = (items, convert) => Array.isArray(items) ? items.filter(item => item && typeof item === 'object').map(convert) : [];
   const automaticStatus = automatic.status === 'pass' ? 'pass' : 'issues';
-  const reviewStatus = ['pass', 'issues', 'unavailable', 'skipped'].includes(review.status) ? review.status : 'unavailable';
+  const reviewStatus = ['pass', 'issues', 'uncertain', 'unavailable', 'skipped'].includes(review.status) ? review.status : 'unavailable';
   const semanticPass = reviewStatus === 'pass' && !review.issues?.length
     && Array.isArray(review.requirements) && review.requirements.length > 0 && review.requirements.every(item => item?.status === 'covered')
     && Array.isArray(review.criteria) && review.criteria.length > 0 && review.criteria.every(item => item?.status === 'pass');
@@ -102,8 +102,8 @@ function normalizeVerification(value) {
       criteria: list(review.criteria, item => ({ criterion: safeText(item.criterion, 100), status: ['pass', 'issues', 'uncertain'].includes(item.status) ? item.status : 'uncertain', note: safeText(item.note) })),
       issues: list(review.issues, item => ({ category: safeText(item.category, 100), message: safeText(item.message), ...(typeof item.sourceQuote === 'string' ? { sourceQuote: safeText(item.sourceQuote) } : {}), ...(typeof item.promptQuote === 'string' ? { promptQuote: safeText(item.promptQuote) } : {}) })),
     },
-    repaired: value.repaired === true, repairFailed: value.repairFailed === true, calls: nonnegative(value.calls), engineVersion: safeText(value.engineVersion, 100),
-    stages: list(value.stages, item => ({ stage: safeText(item.stage, 100), reportedModels: Array.isArray(item.reportedModels) ? item.reportedModels.filter(model => typeof model === 'string').map(model => safeText(model, 100)) : [], durationMs: nonnegative(item.durationMs), status: safeText(item.status, 100) })),
+    repaired: value.repaired === true, repairFailed: value.repairFailed === true, repairReasons: Array.isArray(value.repairReasons) ? value.repairReasons.filter(item => typeof item === 'string').map(item => safeText(item, 100)) : [], calls: nonnegative(value.calls), engineVersion: safeText(value.engineVersion, 100),
+    stages: list(value.stages, item => ({ stage: safeText(item.stage, 100), reportedModels: Array.isArray(item.reportedModels) ? item.reportedModels.filter(model => typeof model === 'string').map(model => safeText(model, 100)) : [], durationMs: nonnegative(item.durationMs), status: safeText(item.status, 100), inputBytes: nonnegative(item.inputBytes), outputBytes: nonnegative(item.outputBytes) })),
     promptHash: safeText(value.promptHash, 200), inputHash: safeText(value.inputHash, 200), instructionsHash: safeText(value.instructionsHash, 200),
     timings: { totalMs: nonnegative(value.timings?.totalMs), modelMs: nonnegative(value.timings?.modelMs), checksMs: nonnegative(value.timings?.checksMs) },
     reviewRequired: true,
@@ -292,7 +292,7 @@ function updateLanguage() {
 function updateQuality() {
   const reviewed = $('input[name="quality"]:checked').value === 'reviewed';
   $('#quality-note').textContent = reviewed
-    ? 'Automatic checks and a separate model review. Usually 2 CLI calls; up to 4 if one repair is needed. Uses more time and CLI allowance.'
+    ? 'Automatic checks and a separate model review. Usually 2 CLI calls; up to 4 only when a check confirms a lost or changed requirement. Uses more time and CLI allowance.'
     : '1 CLI call, then automatic checks. No model review or repair. Check the meaning and every requirement yourself.';
   $('#progress-note').textContent = reviewed ? 'Your CLI writes, reviews, and may revise the prompt. This can take a few minutes.' : 'Your CLI writes the prompt. Automatic checks follow.';
 }
@@ -489,7 +489,7 @@ function showVerification(value, lint) {
   status.textContent = report.status !== 'checks-passed' ? 'Draft—review needed'
     : report.mode === 'fast' ? 'Automatic checks complete—model review skipped. Review before use.'
     : 'Checks complete—review before use';
-  $('#verification-summary').textContent = `${report.calls} CLI ${report.calls === 1 ? 'call' : 'calls'}${report.repaired ? ' · one repair' : ''}`;
+  $('#verification-summary').textContent = `${report.calls} CLI ${report.calls === 1 ? 'call' : 'calls'}${report.repaired ? ` · one repair (${report.repairReasons.join(', ') || 'confirmed findings'})` : ''}`;
   const seconds = value => `${(value / 1000).toFixed(1)}s`;
   $('#verification-overview').textContent = `${report.automatic.matchedCount} of ${report.automatic.protectedCount} detected protected items matched. ${report.mode === 'reviewed' ? 'Reviewed' : 'Fast'} mode · Engine ${report.engineVersion || 'not reported'} · Total ${seconds(report.timings.totalMs)}, CLI ${seconds(report.timings.modelMs)}, checks ${seconds(report.timings.checksMs)}.`;
   $('#automatic-checks').replaceChildren();
@@ -527,6 +527,7 @@ function showVerification(value, lint) {
   if (!$('#verification-issues').children.length) {
     const item = document.createElement('li');
     item.textContent = report.review.status === 'unavailable' ? 'Model review was unavailable. Check every requirement yourself.'
+      : report.review.status === 'uncertain' ? 'The model review was uncertain about some items. No repair was made. Check the uncertain items yourself.'
       : report.status === 'needs-review' ? 'The checks did not establish a complete pass. Review the draft and the check statuses.'
       : 'No issues reported by these checks. This does not prove the prompt is correct.';
     $('#verification-issues').append(item);
@@ -548,7 +549,8 @@ function showVerification(value, lint) {
   $('#verification-stages').replaceChildren();
   for (const stage of report.stages) {
     const item = document.createElement('li');
-    item.textContent = `${stage.stage.replace(/[-_]/g, ' ')}: ${stage.status} · ${seconds(stage.durationMs)} · ${stage.reportedModels.length ? `models reported: ${stage.reportedModels.join(', ')}` : 'actual model not reported by CLI'}`;
+    const kb = bytes => `${(bytes / 1024).toFixed(1)} KB`;
+    item.textContent = `${stage.stage.replace(/[-_]/g, ' ')}: ${stage.status} · ${seconds(stage.durationMs)}${stage.inputBytes ? ` · in ${kb(stage.inputBytes)}, out ${kb(stage.outputBytes)}` : ''} · ${stage.reportedModels.length ? `models reported: ${stage.reportedModels.join(', ')}` : 'actual model not reported by CLI'}`;
     $('#verification-stages').append(item);
   }
   if (!report.stages.length) {
@@ -854,7 +856,7 @@ function openHelp(privacy = false) {
       paragraph('The Kanban page stores, moves, and copies cards. It does not send cards to a CLI or model; agent runs are not active yet.'),
       paragraph('When you generate a prompt, your text goes to the local server, then to your selected CLI. That CLI may send it to its model provider under your account and that provider’s policies. Do not include secrets or private information that you cannot share with that provider.'),
       paragraph('The app does not need a separate API key. The CLI must be installed and signed in. Its account limits and applicable usage costs still apply.'),
-      paragraph('Reviewed mode usually makes 2 CLI calls and can make up to 4 after one repair. Fast mode makes 1 call. The check report and original request stay with the prompt in browser history.'),
+      paragraph('Reviewed mode usually makes 2 CLI calls. It repairs once (up to 4 calls) only for a confirmed lost literal, missing or changed requirement, or specific review defect. Fast mode makes 1 call. The check report and original request stay with the prompt in browser history.'),
       paragraph('Automatic checks cover specific rules. Model review is fallible. This app does not include the ASD-STE100 dictionary and does not certify STE compliance.', 'dialog-note'),
     );
   } else {

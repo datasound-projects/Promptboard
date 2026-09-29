@@ -195,10 +195,12 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
   const token = randomBytes(32).toString('hex');
   const catalogAbort = new AbortController();
   const catalogs = new Map(), lookups = new Map();
-  const getCatalog = (provider, { refresh = false } = {}) => {
+  // The model list view refreshes after 60 s. Effort validation for a prompt reuses any
+  // list this server already read, so Generate does not start another discovery CLI.
+  const getCatalog = (provider, { refresh = false, maxAgeMs = 60000 } = {}) => {
     if (!['codex', 'claude', 'gemini', 'agy'].includes(provider)) throw Object.assign(new Error('Choose a valid provider.'), { status: 400 });
     const cached = catalogs.get(provider);
-    if (!refresh && cached && Date.now() - cached.time < 60000) return Promise.resolve(cached.value);
+    if (!refresh && cached && Date.now() - cached.time < maxAgeMs) return Promise.resolve(cached.value);
     if (lookups.has(provider)) return lookups.get(provider);
     const pending = Promise.resolve().then(() => catalogReader(provider, { signal: catalogAbort.signal }))
       .then(value => { catalogs.set(provider, { value, time: Date.now() }); return value; })
@@ -331,7 +333,7 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
         try { value = validateRequest(body); }
         catch (error) { throw Object.assign(error, { status: 400 }); }
         job.provider = value.provider;
-        const result = await track(generate(value, { runner, signal: job.controller.signal, catalogReader: provider => getCatalog(provider),
+        const result = await track(generate(value, { runner, signal: job.controller.signal, catalogReader: provider => getCatalog(provider, { maxAgeMs: Infinity }),
           onStage: stage => { job.stage = stage; } }));
         send(res, 200, result);
       } catch (error) {

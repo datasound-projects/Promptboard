@@ -8,12 +8,13 @@ Source review date: 28 September 2026. This is a source release, not a certifica
 2. Build the versioned rewrite brief. It separates instructions from source data and includes small preservation examples.
 3. Ask the selected CLI to produce a draft in a new temporary working folder.
 4. Compare recognizable source literals with the draft. Check output bounds and run advisory English prose checks.
-5. In **Reviewed** mode, ask the same selected model to review the draft in a fresh CLI call and a new folder. The source is divided into at most 64 coverage units. Every nonblank source line occurs in a unit.
-6. Validate the review JSON in JavaScript. Require every unit, seven review criteria, valid statuses, and evidence actually present in the supplied text. Missing, malformed, or failed reviews never count as a pass.
-7. If concrete local or review findings exist, attempt one repair. Repeat local checks and model review on the new draft. Never reuse the old review for a changed draft.
+5. In **Reviewed** mode, ask the same selected model to review the draft in a fresh CLI call and a new folder. The source is divided into at most 128 coverage units: one per sentence or list item, with fenced code kept whole. Every nonblank source line occurs in a unit. Long sources group several sentences per unit, so a unit is not always one requirement.
+6. Validate the review JSON in JavaScript. The format is compact: covered unit IDs are listed without text; only missing, changed, or uncertain units carry a note and draft evidence. Require every unit exactly once, no unknown or duplicate IDs, all seven criteria with valid statuses, a nonempty note for each finding, a draft quote for each changed unit, an issue entry for each failed criterion, and evidence actually present in the supplied text. Missing, malformed, oversized, or failed reviews never count as a pass.
+7. Repair once only for **blocking** findings: a detected protected literal is lost, a unit is missing or changed, or the reviewer names a specific defect. The repair call receives only these confirmed findings. Then repeat local checks and a full compact model review on the new draft. Never reuse the old review for a changed draft. The reasons are recorded in `repairReasons`.
+   **Advisory** findings never start a repair on their own: prose lint (sentence and paragraph length, contractions, vague wording) and reviewer uncertainty. They stay in the report, and the result is marked for review. A review with only uncertain items has status `uncertain`.
 8. Return the draft and its report. Keep unresolved findings visible. A failed repair retains the previous draft. A failed initial generation returns an error.
 
-Reviewed mode uses two calls normally and at most four. An unavailable review alone does not trigger a blind retry. Fast mode uses one call and skips model review and repair. The pipeline has a six-minute total deadline and a three-minute maximum per CLI call. Cancellation applies across stages. Model discovery happens before this pipeline and has its own timeout.
+Reviewed mode uses two calls normally and four only after a repair of confirmed findings. An unavailable review alone does not trigger a blind retry. Account-level failures (quota, rate limit, sign-in, account, policy, unavailable model) stop the pipeline without later calls. Fast mode uses one call and skips model review and repair. The pipeline has a six-minute total deadline and a three-minute maximum per CLI call. Cancellation applies across stages. Model discovery happens before this pipeline and has its own timeout. Effort validation for a prompt reuses the model list that the server already read, so Generate starts a discovery CLI only when no list was read yet.
 
 The requested provider, model, and effort are retained across calls. CLI defaults can route to different models; reported model IDs are listed per stage when the CLI supplies them. A fresh call is not an independent evaluator: the same model can repeat its errors, and global CLI configuration still applies.
 
@@ -32,9 +33,12 @@ The browser shows flagged drafts for inspection. Plain terminal output withholds
 
 ## Audit and privacy
 
-The report includes the engine version, stage count, requested and reported models, findings, quoted evidence, repair status, timings, and SHA-256 hashes of input, output, and rewrite instructions. Hashes identify content; they are not signatures or proof of correctness. History and exported reports can contain source text and should be treated like the original request.
+The report includes the engine version, stage count, requested and reported models, findings, quoted evidence, repair status and reasons, per-stage duration and input/output size in bytes, timings, and SHA-256 hashes of input, output, and rewrite instructions. Hashes identify content; they are not signatures or proof of correctness. History and exported reports can contain source text and should be treated like the original request.
 
 ## Tests and measurements
+
+`npm run bench:pipeline` runs the Composer pipeline with a deterministic fake provider and a simulated cost model (process start, input read, output generation). It reports calls, stages, bytes, and repair occurrence per case. The times are simulated, not measured model latency. Against the previous pipeline, the advisory-lint, uncertain-review, and long-input cases went from 4 calls to 2; a clean review's output shrank by about 70% (by about 96% for a 300-line source).
+
 
 All **87 offline tests passed** on Linux with Node.js 24.19.0 for this release. Syntax checks passed.
 
