@@ -12,13 +12,13 @@
     <script src="/app.js" defer></script>
   </head>
   <body>
-    <a class="skip-link" href="#prompt-input">Skip to the prompt editor</a>
+    <a class="skip-link" href="#prompt-input" id="skip-link">Skip to main content</a>
     <header class="topbar">
       <button class="icon-button" id="menu-toggle" type="button" aria-controls="sidebar" aria-expanded="true" aria-label="Hide prompt history"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M9.5 4.5v15"/></svg></button>
-      <a class="brand" href="/" aria-label="AI Prompt Engineer home"><span class="brand-mark" aria-hidden="true">p<span>↗</span></span><span class="brand-name">Prompt Engineer<small>THE STE EDITION</small></span></a>
-      <nav class="app-nav" aria-label="Pages">
-        <a href="/" aria-current="page">Studio</a>
-        <span class="nav-soon" aria-disabled="true" title="The Kanban board is coming soon">Kanban <small>Soon</small></span>
+      <a class="brand" href="#/" aria-label="AI Prompt Engineer home"><span class="brand-mark" aria-hidden="true">p<span>↗</span></span><span class="brand-name">Prompt Engineer<small>THE STE EDITION</small></span></a>
+      <nav class="page-nav" aria-label="Pages">
+        <a href="#/" aria-current="page">Studio</a>
+        <a href="#/kanban">Kanban</a>
       </nav>
       <div class="topbar-actions">
         <button class="help-pill" id="setup-help" type="button"><span class="status-dot" id="cli-status-dot"></span><span id="cli-status-label">Checking your CLIs</span></button>
@@ -43,7 +43,7 @@
       </div>
     </aside>
 
-    <main class="workspace" id="main">
+    <main class="workspace" id="prompt-view">
       <section class="intro" aria-labelledby="page-title">
         <div>
           <h1 id="page-title">Big ideas. <span>Ridiculously clear prompts.</span></h1>
@@ -137,8 +137,9 @@
       </form>
 
       <p class="storage-warning" id="storage-warning" role="alert" hidden>History changes were not saved. Export any prompts and check reports you want to keep before you close or reload this page.</p>
+      <p class="storage-warning board-warning" role="alert" hidden>Kanban board changes were not saved in this browser. Open Kanban and export a backup before you close or reload this page.</p>
       <section class="card output-card" aria-labelledby="output-heading" aria-busy="false" id="output-card">
-        <div class="card-heading"><div><span class="step" aria-hidden="true">4</span><h2 id="output-heading">Review and copy</h2></div><div class="output-actions"><span class="copy-cheer" id="copy-cheer" aria-hidden="true" hidden>*pushes glasses up*</span><button class="secondary-button" id="export-button" type="button" disabled title="Download as Markdown"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 16v5h14v-5"/></svg><span>Export</span></button><button class="copy-button" id="copy-button" type="button" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V4H4v12h4"/></svg><span id="copy-label">Copy prompt</span></button></div></div>
+        <div class="card-heading"><div><span class="step" aria-hidden="true">4</span><h2 id="output-heading">Review and copy</h2></div><div class="output-actions"><span class="copy-cheer" id="copy-cheer" aria-hidden="true" hidden>*pushes glasses up*</span><button class="secondary-button" id="kanban-button" type="button" disabled title="Save this prompt as a task card" aria-label="Add to Kanban"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M12 8v8M8 12h8"/></svg><span id="kanban-label">Add to Kanban</span></button><button class="secondary-button" id="export-button" type="button" disabled title="Download as Markdown"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 16v5h14v-5"/></svg><span>Export</span></button><button class="copy-button" id="copy-button" type="button" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V4H4v12h4"/></svg><span id="copy-label">Copy prompt</span></button></div></div>
         <div class="output-empty" id="output-empty"><img src="/nerd.png" alt="" width="48" height="48"><p>Nothing to review yet. The nerd is polishing their glasses.<small>Your engineered prompt will appear here.</small></p></div>
         <div class="generation-progress" id="generation-progress" role="status" hidden><span class="spinner" aria-hidden="true"></span><div><strong><span id="progress-stage">Starting</span> · <span id="progress-elapsed">0:00</span></strong><span id="progress-note">Your CLI is working. This may take a moment.</span></div></div>
         <div class="verification-status" id="verification-status" role="status" hidden></div>
@@ -159,7 +160,59 @@
       <footer class="main-footer"><span>BASED ON ASD-STE100 SIMPLIFIED TECHNICAL ENGLISH</span><span>STE-informed <span aria-hidden="true">·</span> Human review required</span></footer>
     </main>
 
+    <main class="workspace" id="kanban-view" tabindex="-1" hidden>
+      <section class="intro" aria-labelledby="kanban-title">
+        <div>
+          <h1 id="kanban-title">Plan the work. <span>Brief your agent one card at a time.</span></h1>
+          <p class="intro-description">Prepare tasks for your coding agent. Nothing runs from this board. Copy a card when you are ready.</p>
+        </div>
+      </section>
+      <p class="storage-warning" id="kanban-load-warning" role="alert" hidden></p>
+      <p class="storage-warning board-warning" role="alert" hidden>Board changes were not saved in this browser. Export a backup before you close or reload this page.</p>
+      <section class="card kanban-projects" aria-labelledby="projects-heading">
+        <div class="card-heading"><div><h2 id="projects-heading">Projects</h2></div><div class="output-actions"><button class="secondary-button" id="import-board" type="button" title="Restore a board backup (JSON)" aria-label="Import board backup"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M12 15V3m-5 5 5-5 5 5M5 16v5h14v-5"/></svg><span>Import</span></button><button class="secondary-button" id="export-board" type="button" title="Download a board backup (JSON)" aria-label="Export board backup"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 16v5h14v-5"/></svg><span>Export</span></button><input type="file" id="import-file" accept=".json,application/json" hidden></div></div>
+        <div class="kanban-project-bar">
+          <label class="field-label" for="project-select">Current project<select id="project-select"></select></label>
+          <div class="kanban-project-actions"><button type="button" class="text-button" id="project-new"><span aria-hidden="true">＋</span> New project</button><button type="button" class="text-button" id="project-rename">Rename</button><button type="button" class="text-button" id="project-delete">Delete</button></div>
+        </div>
+        <form class="kanban-project-form" id="project-form" novalidate hidden>
+          <label class="field-label" for="project-name"><span id="project-form-label">New project name</span><input id="project-name" type="text" maxlength="80" autocomplete="off" required></label>
+          <div class="kanban-form-actions"><button type="submit" class="copy-button">Save project</button><button type="button" class="secondary-button" id="project-cancel">Cancel</button></div>
+          <p class="inline-error" id="project-error" role="alert" hidden></p>
+        </form>
+        <div class="connection-detail kanban-detail" id="project-detail" role="status" hidden></div>
+      </section>
+      <section class="card kanban-board" aria-labelledby="todo-heading">
+        <div class="card-heading"><div><h2 id="todo-heading">To do</h2><span class="kanban-count" id="todo-count" aria-label="Cards">00</span></div><button class="copy-button" id="card-new" type="button"><span aria-hidden="true">＋</span> New card</button></div>
+        <div class="output-empty" id="board-empty"><img src="/nerd.png" alt="" width="48" height="48"><p><span id="board-empty-text">Create a project to start planning.</span><small id="board-empty-note">Each project gets its own board with one To do column.</small><a class="kanban-empty-link" id="empty-prompt-link" href="#/" hidden>Engineer a prompt <span aria-hidden="true">↗</span></a></p></div>
+        <ol class="kanban-cards" id="card-list" aria-labelledby="todo-heading"></ol>
+      </section>
+      <footer class="main-footer"><span>PREPARED FOR AGENTS. NOTHING RUNS FROM THIS BOARD.</span><span>Cards stay in this browser <span aria-hidden="true">·</span> Human review required</span></footer>
+    </main>
+
     <dialog id="help-dialog" aria-labelledby="dialog-heading"><button class="dialog-close icon-button" id="close-dialog" type="button" aria-label="Close help">×</button><p class="eyebrow">YOUR CLI. A CLEARER BRIEF.</p><h2 id="dialog-heading">A small tool.<br>A straightforward setup.</h2><div id="dialog-content"></div><button class="dialog-done" id="dialog-done" type="button">Got it <span aria-hidden="true">↗</span></button></dialog>
+    <dialog id="card-dialog" class="kanban-dialog" aria-labelledby="card-dialog-heading"><button class="dialog-close icon-button" id="card-dialog-close" type="button" aria-label="Close card">×</button><p class="eyebrow" id="card-dialog-project">TO DO</p><h2 id="card-dialog-heading">New card</h2>
+      <form id="card-form" novalidate>
+        <p class="verification-status" id="card-status" hidden></p>
+        <label class="field-label" for="card-title">Title<input id="card-title" type="text" maxlength="120" autocomplete="off" required></label>
+        <label class="field-label" for="card-prompt">Prompt<textarea id="card-prompt" spellcheck="false" required></textarea></label>
+        <p class="note" id="card-note"></p>
+        <details class="kanban-source" id="card-source" hidden><summary>Source details</summary><ul id="card-source-list"></ul></details>
+        <p class="inline-error" id="card-error" role="alert" hidden></p>
+        <div class="kanban-dialog-actions"><button type="button" class="secondary-button" id="card-cancel">Cancel</button><button type="submit" class="dialog-done" id="card-save">Save card <span aria-hidden="true">↗</span></button></div>
+      </form>
+    </dialog>
+    <dialog id="add-dialog" class="kanban-dialog" aria-labelledby="add-dialog-heading"><button class="dialog-close icon-button" id="add-dialog-close" type="button" aria-label="Close">×</button><p class="eyebrow">PREPARE THE TASK</p><h2 id="add-dialog-heading">Add to Kanban</h2>
+      <form id="add-form" novalidate>
+        <label class="field-label" for="add-project">Project<select id="add-project"></select></label>
+        <label class="field-label" for="add-project-name" id="add-project-name-field">New project name<input id="add-project-name" type="text" maxlength="80" autocomplete="off"></label>
+        <label class="field-label" for="add-title">Card title<input id="add-title" type="text" maxlength="120" autocomplete="off" required></label>
+        <p class="note" id="add-note"></p>
+        <pre class="kanban-snapshot" id="add-preview" tabindex="0" aria-label="Prompt to copy into the card"></pre>
+        <p class="inline-error" id="add-error" role="alert" hidden></p>
+        <div class="kanban-dialog-actions"><button type="button" class="secondary-button" id="add-cancel">Cancel</button><button type="submit" class="dialog-done">Add card <span aria-hidden="true">↗</span></button></div>
+      </form>
+    </dialog>
     <div id="announcement" class="sr-only" aria-live="polite"></div>
   </body>
 </html>

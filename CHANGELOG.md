@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Kanban page: projects with one To do column of task cards. You can add a generated prompt as an exact snapshot, or write a card yourself.
+  - Source details and review status stay with each card. An edit marks the previous checks as outdated.
+  - Reorder cards with the move buttons or drag-and-drop.
+  - The board is saved in the browser, and you can export or import a validated JSON backup.
+  - Nothing runs from the board.
 - Generation always ends in a clear state: stage and elapsed time, cancel in every stage, a bounded client and server timeout, and input kept on failure.
 - Stable error codes that separate exhausted quota, temporary rate limits, sign-in, model, network, policy, and timeouts. Unknown failures stay unknown.
 - No repair call after an account-level failure. A busy server returns `409 BUSY`, not `429`.
@@ -9,7 +14,7 @@
 - Clean shutdown on SIGINT, SIGTERM, and SIGHUP. Owned CLI processes and temporary folders are removed, and the port is released.
 - Simpler web layout in four numbered steps: describe, choose settings, generate, review and copy. Sign-in controls and brief options move into a labelled **More settings** section.
 - Optional dark mode and a collapsible history sidebar. Both are saved in the browser and applied before the first paint.
-- History scrolls on its own; the editor stays in place. The top bar reserves a place for a future Kanban page.
+- History scrolls on its own; the editor stays in place. The top bar links the Studio and Kanban pages, and the Kanban page uses the same themes and components.
 - Readable text sizes and contrast in both themes, visible focus, a skip link, a drawer on narrow screens, and reduced-motion support.
 
 ## 0.3.0 — 28 September 2026

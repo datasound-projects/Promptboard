@@ -9,6 +9,7 @@ const MAX_PROMPT_BYTES = 2 * 1024 * 1024;
 const KNOWN_PROVIDERS = ['codex', 'claude', 'gemini', 'agy'];
 const KNOWN_DETAILS = ['super-short', 'concise', 'detailed', 'extremely-detailed'];
 const KNOWN_TASKS = ['build', 'debug', 'refactor', 'review', 'architecture', 'agent-workflow', 'research'];
+const LANGUAGE_NAMES = { en: 'English', de: 'Deutsch', pl: 'Polski' };
 const providerInfo = {
   codex: { name: 'Codex', install: 'npm install -g @openai/codex', url: 'https://developers.openai.com/codex/cli/', signIn: 'Run codex and sign in.' },
   claude: { name: 'Claude Code', install: 'npm install -g @anthropic-ai/claude-code', url: 'https://code.claude.com/docs/en/setup', signIn: 'Run claude and sign in.' },
@@ -336,6 +337,7 @@ function setRunning(value) {
   for (const input of $('#prompt-form').querySelectorAll('input,select,textarea')) input.disabled = value;
   $('#copy-button').disabled = value || !currentResult;
   $('#export-button').disabled = value || !currentResult;
+  $('#kanban-button').disabled = value || !currentResult;
   $('#report-button').disabled = value || !currentResult?.verification;
   $('#refresh-models').disabled = value || authBusy || modelsLoading;
   $('#model').disabled = value || modelsLoading;
@@ -395,6 +397,7 @@ function clearOutput() {
   $('#verification-report').hidden = true;
   $('#copy-button').disabled = true;
   $('#export-button').disabled = true;
+  $('#kanban-button').disabled = true;
   $('#report-button').disabled = true;
   $('#generation-error').hidden = true;
 }
@@ -411,7 +414,7 @@ function showResult(result) {
     `Model requested: ${result.model || 'CLI default'}`,
     result.reportedModels?.length ? `Models reported: ${result.reportedModels.join(', ')}` : 'Actual model not reported by CLI',
     `Effort requested: ${result.effort || 'CLI default'} (effective level not reported)`,
-    { en: 'English', de: 'Deutsch', pl: 'Polski' }[result.language || 'en'], result.durationMs ? `${(result.durationMs / 1000).toFixed(1)}s` : '', 'Human review required'];
+    LANGUAGE_NAMES[result.language || 'en'], result.durationMs ? `${(result.durationMs / 1000).toFixed(1)}s` : '', 'Human review required'];
   for (const part of parts.filter(Boolean)) {
     const span = document.createElement('span');
     span.textContent = part;
@@ -435,6 +438,7 @@ function showResult(result) {
   showVerification(result.verification, lint);
   $('#copy-button').disabled = running;
   $('#export-button').disabled = running;
+  $('#kanban-button').disabled = running;
 }
 
 function showVerification(value, lint) {
@@ -532,6 +536,7 @@ function quotedEvidence(label, text) {
 
 function restoreEntry(entry) {
   if (running) return;
+  showPromptPage();
   currentId = entry.id;
   $('#prompt-input').value = entry.input;
   $('#provider').value = entry.provider;
@@ -558,6 +563,7 @@ function restoreEntry(entry) {
 
 function newPrompt() {
   if (running) return;
+  showPromptPage();
   currentId = null;
   $('#prompt-input').value = '';
   $('input[name="language"][value="en"]').checked = true;
@@ -809,7 +815,8 @@ function openHelp(privacy = false) {
   $('#dialog-heading').textContent = privacy ? 'Your work. Your browser. Your CLI.' : 'A small tool. A straightforward setup.';
   if (privacy) {
     content.append(
-      paragraph('This app saves your last 40 finished prompts in this browser’s local storage. You can delete them in the sidebar. Clearing this site’s browser data also removes them.'),
+      paragraph('This app saves your last 40 finished prompts and your Kanban board in this browser’s local storage. You can delete prompts in the sidebar and projects or cards on the Kanban page. Clearing this site’s browser data also removes them.'),
+      paragraph('The Kanban page only stores and copies text. It never sends cards to a CLI or model.'),
       paragraph('When you generate a prompt, your text goes to the local server, then to your selected CLI. That CLI may send it to its model provider under your account and that provider’s policies. Do not include secrets or private information that you cannot share with that provider.'),
       paragraph('The app does not need a separate API key. The CLI must be installed and signed in. Its account limits and applicable usage costs still apply.'),
       paragraph('Reviewed mode usually makes 2 CLI calls and can make up to 4 after one repair. Fast mode makes 1 call. The check report and original request stay with the prompt in browser history.'),
@@ -854,6 +861,495 @@ function openHelp(privacy = false) {
   }
   if (!$('#help-dialog').open) $('#help-dialog').showModal();
 }
+
+// Pages. Both views stay in the document, so switching never clears the prompt form.
+function showPage() {
+  const kanban = location.hash === '#/kanban';
+  $('#prompt-view').hidden = kanban;
+  $('#kanban-view').hidden = !kanban;
+  for (const link of document.querySelectorAll('.page-nav a')) {
+    if ((link.getAttribute('href') === '#/kanban') === kanban) link.setAttribute('aria-current', 'page');
+    else link.removeAttribute('aria-current');
+  }
+  document.title = kanban ? 'Kanban · AI Prompt Engineer' : 'AI Prompt Engineer · STE';
+  if (kanban) renderBoard();
+  setSidebar(false);
+  window.scrollTo(0, 0);
+}
+function showPromptPage() { if (location.hash === '#/kanban') location.hash = '#/'; }
+
+// Kanban: projects, each with one "To do" column of task cards for a coding agent.
+// A card stores its own copy of the prompt. Nothing here runs a CLI or a model.
+const KANBAN_KEY = 'ste-prompt-engineer.kanban.v1';
+const PROJECT_LIMIT = 200;
+const CARD_LIMIT = 1000;
+const IMPORT_LIMIT_BYTES = 20 * 1024 * 1024;
+let board = readBoard();
+let editingCardId = null;
+let projectFormMode = 'new';
+let dragId = null;
+
+function emptyBoard() { return { version: 1, selectedProjectId: null, projects: [] }; }
+
+function readBoard() {
+  let raw = null;
+  try { raw = localStorage.getItem(KANBAN_KEY); } catch { return emptyBoard(); }
+  if (raw === null) return emptyBoard();
+  try { return parseBoard(JSON.parse(raw)); } catch {
+    // Keep the unreadable value before any later save replaces it.
+    let kept = false;
+    try { localStorage.setItem(`${KANBAN_KEY}.unreadable`, raw); kept = true; } catch {}
+    $('#kanban-load-warning').textContent = kept
+      ? `The saved Kanban board could not be read, so the board starts empty. The unreadable data is kept in this browser under “${KANBAN_KEY}.unreadable”.`
+      : 'The saved Kanban board could not be read, so the board starts empty. The unreadable data could not be kept and is replaced when you change the board.';
+    $('#kanban-load-warning').hidden = false;
+    return emptyBoard();
+  }
+}
+
+function requiredText(value, max, label) {
+  const text = typeof value === 'string' ? value.trim() : '';
+  if (!text || text.length > max) throw new Error(`${label} needs 1 to ${max} characters.`);
+  return text;
+}
+
+// One strict check for stored boards and imported backups. Prompt text is kept exactly as it is.
+function parseBoard(data) {
+  if (!data || typeof data !== 'object' || data.version !== 1 || !Array.isArray(data.projects)) throw new Error('The data is not a version 1 Kanban board.');
+  if (data.projects.length > PROJECT_LIMIT) throw new Error(`A board can have at most ${PROJECT_LIMIT} projects.`);
+  const ids = new Set();
+  const uniqueId = (value, label) => {
+    if (typeof value !== 'string' || !value || value.length > 100 || ids.has(value)) throw new Error(`${label} needs a unique ID.`);
+    ids.add(value);
+    return value;
+  };
+  const time = value => Number.isFinite(value) ? value : Date.now();
+  const projects = data.projects.map((project, index) => {
+    const label = `Project ${index + 1}`;
+    if (!project || typeof project !== 'object') throw new Error(`${label} is not valid.`);
+    if (!Array.isArray(project.cards) || project.cards.length > CARD_LIMIT) throw new Error(`${label} needs a card list with at most ${CARD_LIMIT} cards.`);
+    return { id: uniqueId(project.id, label), name: requiredText(project.name, 80, `${label} name`), createdAt: time(project.createdAt),
+      cards: project.cards.map((card, cardIndex) => {
+        const cardLabel = `${label}, card ${cardIndex + 1}`;
+        if (!card || typeof card !== 'object') throw new Error(`${cardLabel} is not valid.`);
+        if (typeof card.prompt !== 'string' || !card.prompt.trim() || card.prompt.length > MAX_PROMPT_BYTES) throw new Error(`${cardLabel} needs a prompt of 1 to ${MAX_PROMPT_BYTES.toLocaleString()} characters.`);
+        return { id: uniqueId(card.id, cardLabel), title: requiredText(card.title, 120, `${cardLabel} title`), prompt: card.prompt,
+          createdAt: time(card.createdAt), updatedAt: time(card.updatedAt ?? card.createdAt), checksOutdated: card.checksOutdated === true, source: normalizeSource(card.source) };
+      }) };
+  });
+  const selectedProjectId = projects.some(project => project.id === data.selectedProjectId) ? data.selectedProjectId : projects[0]?.id ?? null;
+  return { version: 1, selectedProjectId, projects };
+}
+
+function normalizeSource(source) {
+  if (!source || typeof source !== 'object') return null;
+  return {
+    historyId: safeText(source.historyId, 80), provider: KNOWN_PROVIDERS.includes(source.provider) ? source.provider : '',
+    model: safeText(source.model, 100), effort: safeText(source.effort, 20),
+    reportedModels: Array.isArray(source.reportedModels) ? source.reportedModels.filter(model => typeof model === 'string').map(model => model.slice(0, 100)).slice(0, 20) : [],
+    language: ['en', 'de', 'pl'].includes(source.language) ? source.language : '', quality: ['reviewed', 'fast'].includes(source.quality) ? source.quality : '',
+    verification: ['checks-passed', 'needs-review'].includes(source.verification) ? source.verification : 'none',
+    generatedAt: Number.isFinite(source.generatedAt) ? source.generatedAt : null,
+  };
+}
+
+// A detached snapshot: later card edits never touch the history entry.
+function snapshotSource(result) {
+  return normalizeSource({ historyId: result.id, provider: result.provider, model: result.model, effort: result.effort, reportedModels: result.reportedModels,
+    language: result.language, quality: result.verification?.mode || result.quality, verification: result.verification?.status, generatedAt: result.createdAt });
+}
+
+function cardStatus(card) {
+  const source = card.source;
+  if (!source) return { text: 'Manual card—not checked', flag: false };
+  if (card.checksOutdated) return { text: 'Edited—previous checks outdated', flag: true };
+  if (source.verification === 'checks-passed') return { text: source.quality === 'fast' ? 'Automatic checks only—review before use' : 'Checks complete—review before use', flag: false };
+  return { text: source.verification === 'needs-review' ? 'Draft—review needed' : 'Draft—no verification report', flag: true };
+}
+
+function sourceSummary(source) {
+  return [providerInfo[source.provider]?.name, source.model || 'CLI default model', LANGUAGE_NAMES[source.language]].filter(Boolean).join(' · ');
+}
+
+function plural(count, word) { return `${count} ${word}${count === 1 ? '' : 's'}`; }
+function boardCounts(value) { return `${plural(value.projects.length, 'project')}, ${plural(value.projects.reduce((sum, project) => sum + project.cards.length, 0), 'card')}`; }
+function currentProject() { return board.projects.find(project => project.id === board.selectedProjectId) || null; }
+
+function persistBoard() {
+  let saved = true;
+  try { localStorage.setItem(KANBAN_KEY, JSON.stringify(board)); } catch { saved = false; }
+  for (const warning of document.querySelectorAll('.board-warning')) warning.hidden = saved;
+  return saved;
+}
+
+function commitBoard(message) {
+  const saved = persistBoard();
+  renderBoard();
+  announce(saved ? message : `${message} Board changes were not saved in this browser.`);
+  return saved;
+}
+
+function renderBoard() {
+  const project = currentProject();
+  const cards = project?.cards || [];
+  $('#project-select').replaceChildren(...board.projects.map(item => option(item.id, item.name)));
+  if (!project) $('#project-select').append(option('', 'No projects yet'));
+  $('#project-select').value = project?.id || '';
+  $('#project-select').disabled = !project;
+  for (const id of ['#project-rename', '#project-delete', '#card-new']) $(id).disabled = !project;
+  $('#todo-count').textContent = String(cards.length).padStart(2, '0');
+  $('#board-empty').hidden = cards.length > 0;
+  $('#board-empty-text').textContent = project ? 'No tasks yet.' : 'Create a project to start planning.';
+  $('#board-empty-note').textContent = project ? 'Choose New card, or add a generated prompt from the Studio page.' : 'Each project gets its own board with one To do column.';
+  $('#empty-prompt-link').hidden = !project;
+  $('#card-list').replaceChildren(...cards.map((card, index) => renderCard(card, index, cards.length)));
+}
+
+function renderCard(card, index, count) {
+  const status = cardStatus(card);
+  const item = document.createElement('li');
+  item.className = `kanban-card${status.flag ? ' needs-review' : ''}`;
+  item.dataset.id = card.id;
+  item.draggable = true;
+  const badge = document.createElement('span');
+  badge.className = 'kanban-status';
+  badge.textContent = status.text;
+  const heading = document.createElement('h3');
+  heading.append(detailButton(card.title, () => openCard(card.id), 'kanban-open'));
+  const labelled = (button, label) => { button.setAttribute('aria-label', label); return button; };
+  const up = labelled(detailButton('↑', () => moveCard(card.id, -1), 'kanban-move kanban-move-up'), `Move up: ${card.title}`);
+  const down = labelled(detailButton('↓', () => moveCard(card.id, 1), 'kanban-move kanban-move-down'), `Move down: ${card.title}`);
+  up.disabled = index === 0;
+  down.disabled = index === count - 1;
+  const copy = labelled(detailButton('Copy prompt', () => copyCard(card, copy), 'kanban-copy'), `Copy prompt: ${card.title}`);
+  const actions = document.createElement('div');
+  actions.className = 'kanban-actions';
+  actions.append(up, down, copy,
+    labelled(detailButton('Duplicate', () => duplicateCard(card.id), 'kanban-duplicate'), `Duplicate: ${card.title}`),
+    labelled(detailButton('Delete', () => confirmCardDelete(item, card), 'kanban-delete'), `Delete: ${card.title}`));
+  item.append(badge, heading, paragraph(card.prompt.slice(0, 400).replace(/\s+/g, ' ').trim(), 'kanban-preview'),
+    paragraph(card.source ? sourceSummary(card.source) : 'Written by you', 'kanban-meta'), actions);
+  // Pointer drag-and-drop. The ↑ and ↓ buttons are the keyboard equivalent.
+  item.addEventListener('dragstart', event => {
+    dragId = card.id;
+    if (event.dataTransfer) { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', card.title); }
+    item.classList.add('dragging');
+  });
+  item.addEventListener('dragend', () => {
+    dragId = null;
+    for (const element of document.querySelectorAll('.kanban-card.dragging, .kanban-card.drop-target')) element.classList.remove('dragging', 'drop-target');
+  });
+  item.addEventListener('dragover', event => { if (!dragId || dragId === card.id) return; event.preventDefault(); item.classList.add('drop-target'); });
+  item.addEventListener('dragleave', () => item.classList.remove('drop-target'));
+  item.addEventListener('drop', event => { event.preventDefault(); if (dragId && dragId !== card.id) placeCard(dragId, index); dragId = null; });
+  return item;
+}
+
+function cardElement(id) { return Array.from($('#card-list').children).find(item => item.dataset.id === id); }
+
+function placeCard(id, target) {
+  const cards = currentProject()?.cards || [];
+  const from = cards.findIndex(card => card.id === id);
+  if (from < 0 || target < 0 || target >= cards.length || target === from) return false;
+  const [card] = cards.splice(from, 1);
+  cards.splice(target, 0, card);
+  commitBoard(`Moved “${card.title}” to position ${target + 1} of ${cards.length}.`);
+  return true;
+}
+
+function moveCard(id, step) {
+  const cards = currentProject()?.cards || [];
+  if (!placeCard(id, cards.findIndex(card => card.id === id) + step)) return;
+  // Keep keyboard focus on the moved card. At either end, use the button that still works.
+  const item = cardElement(id);
+  const same = item?.querySelector(step < 0 ? '.kanban-move-up' : '.kanban-move-down');
+  (same?.disabled ? item.querySelector(step < 0 ? '.kanban-move-down' : '.kanban-move-up') : same)?.focus();
+}
+
+async function copyCard(card, button) {
+  try {
+    await navigator.clipboard.writeText(card.prompt);
+    button.textContent = 'Copied!';
+    setTimeout(() => { button.textContent = 'Copy prompt'; }, 1800);
+    announce(`Prompt copied: ${card.title}. Paste it into your coding agent.`);
+  } catch {
+    openCard(card.id);
+    $('#card-prompt').select();
+    $('#card-error').textContent = 'Clipboard access is unavailable. The prompt is selected. Press Command+C or Control+C to copy it.';
+    $('#card-error').hidden = false;
+  }
+}
+
+function duplicateCard(id) {
+  const cards = currentProject().cards;
+  const index = cards.findIndex(card => card.id === id);
+  if (index < 0) return;
+  if (cards.length >= CARD_LIMIT) { announce(`A project can have at most ${CARD_LIMIT} cards.`); return; }
+  const card = cards[index];
+  const now = Date.now();
+  const copy = { ...card, id: crypto.randomUUID(), title: `${card.title.slice(0, 113)} (copy)`, createdAt: now, updatedAt: now, source: card.source && { ...card.source, reportedModels: [...card.source.reportedModels] } };
+  cards.splice(index + 1, 0, copy);
+  commitBoard(`Duplicated “${card.title}”.`);
+  cardElement(copy.id)?.querySelector('.kanban-open').focus();
+}
+
+function confirmCardDelete(item, card) {
+  const keep = detailButton('Keep card', () => { renderBoard(); cardElement(card.id)?.querySelector('.kanban-delete').focus(); });
+  const confirm = document.createElement('div');
+  confirm.className = 'connection-detail kanban-confirm';
+  confirm.append(paragraph(`Delete “${card.title}”? This cannot be undone.`), detailActions(detailButton('Delete card', () => deleteCard(card.id), 'danger'), keep));
+  item.querySelector('.kanban-actions').replaceWith(confirm);
+  keep.focus();
+}
+
+function deleteCard(id) {
+  const cards = currentProject().cards;
+  const index = cards.findIndex(card => card.id === id);
+  if (index < 0) return;
+  const [card] = cards.splice(index, 1);
+  commitBoard(`Deleted “${card.title}”.`);
+  (cardElement(cards[Math.min(index, cards.length - 1)]?.id)?.querySelector('.kanban-open') || $('#card-new')).focus();
+}
+
+function openCard(id = null) {
+  const project = currentProject();
+  if (!project) return;
+  const card = id ? project.cards.find(item => item.id === id) : null;
+  editingCardId = card?.id || null;
+  $('#card-dialog-project').textContent = `${project.name} · To do`;
+  $('#card-dialog-heading').textContent = card ? 'Edit card' : 'New card';
+  $('#card-title').value = card?.title || '';
+  $('#card-prompt').value = card?.prompt || '';
+  const status = card && cardStatus(card);
+  $('#card-status').hidden = !card;
+  $('#card-status').textContent = status?.text || '';
+  $('#card-status').classList.toggle('needs-review', Boolean(status?.flag));
+  $('#card-note').textContent = !card?.source ? 'Write the task as your coding agent should receive it. Copy prompt copies this text exactly.'
+    : card.checksOutdated ? 'This prompt was edited. The checks from generation apply to the original text only. Your prompt history is unchanged.'
+    : 'Imported from Prompt Engineer. Saving changes marks the previous checks as outdated. Your prompt history is unchanged.';
+  $('#card-source').hidden = !card?.source;
+  $('#card-source').open = false;
+  $('#card-source-list').replaceChildren();
+  if (card?.source) {
+    const source = card.source;
+    const rows = [
+      `Provider: ${providerInfo[source.provider]?.name || 'not recorded'}`, `Model requested: ${source.model || 'CLI default'}`,
+      `Models reported: ${source.reportedModels.length ? source.reportedModels.join(', ') : 'not reported by CLI'}`, `Effort requested: ${source.effort || 'CLI default'}`,
+      `Language: ${LANGUAGE_NAMES[source.language] || 'not recorded'}`, `Check mode: ${source.quality === 'fast' ? 'Fast' : source.quality === 'reviewed' ? 'Reviewed' : 'not recorded'}`,
+      `Status at generation: ${{ 'checks-passed': 'checks complete', 'needs-review': 'review needed', none: 'no verification report' }[source.verification]}`,
+      `Generated: ${source.generatedAt ? new Date(source.generatedAt).toLocaleString() : 'not recorded'}`,
+    ];
+    for (const row of rows) { const item = document.createElement('li'); item.textContent = row; $('#card-source-list').append(item); }
+  }
+  $('#card-error').hidden = true;
+  if (!$('#card-dialog').open) $('#card-dialog').showModal();
+  $('#card-title').focus();
+}
+
+function saveCard(event) {
+  event.preventDefault();
+  const project = currentProject();
+  if (!project) return;
+  const card = editingCardId ? project.cards.find(item => item.id === editingCardId) : null;
+  const title = $('#card-title').value.trim();
+  const typed = $('#card-prompt').value;
+  const error = !title ? 'Enter a short title.' : title.length > 120 ? 'Use a title of at most 120 characters.'
+    : !typed.trim() ? 'Enter the prompt for this task.' : typed.length > MAX_PROMPT_BYTES ? 'The prompt exceeds the 2 MiB limit.'
+    : !card && project.cards.length >= CARD_LIMIT ? `A project can have at most ${CARD_LIMIT} cards.` : '';
+  if (error) { $('#card-error').textContent = error; $('#card-error').hidden = false; return; }
+  const now = Date.now();
+  let saved = card;
+  let message;
+  if (card) {
+    // A textarea turns \r\n into \n. Keep the stored text when nothing else changed.
+    const prompt = typed === card.prompt.replace(/\r\n?/g, '\n') ? card.prompt : typed;
+    if (title === card.title && prompt === card.prompt) message = 'No changes to save.';
+    else {
+      Object.assign(card, { title, prompt, updatedAt: now, checksOutdated: Boolean(card.source) });
+      message = card.source ? `Saved “${title}”. The previous checks are now marked as outdated.` : `Saved “${title}”.`;
+    }
+  } else {
+    saved = { id: crypto.randomUUID(), title, prompt: typed, createdAt: now, updatedAt: now, checksOutdated: false, source: null };
+    project.cards.push(saved);
+    message = `Added “${title}” to To do.`;
+  }
+  $('#card-dialog').close();
+  commitBoard(message);
+  cardElement(saved.id)?.querySelector('.kanban-open').focus();
+}
+
+function projectNameError(name, exceptId = null) {
+  if (!name) return 'Enter a project name.';
+  if (name.length > 80) return 'Use a project name of at most 80 characters.';
+  if (board.projects.some(project => project.id !== exceptId && project.name.toLowerCase() === name.toLowerCase())) return 'A project with this name already exists.';
+  return '';
+}
+
+function createProject(name) {
+  const project = { id: crypto.randomUUID(), name, createdAt: Date.now(), cards: [] };
+  board.projects.push(project);
+  board.selectedProjectId = project.id;
+  return project;
+}
+
+function showProjectDetail(...nodes) {
+  $('#project-detail').replaceChildren(...nodes);
+  $('#project-detail').hidden = nodes.length === 0;
+}
+
+function openProjectForm(mode) {
+  projectFormMode = mode;
+  showProjectDetail();
+  $('#project-form-label').textContent = mode === 'rename' ? 'Rename project' : 'New project name';
+  $('#project-name').value = mode === 'rename' ? currentProject()?.name || '' : '';
+  $('#project-error').hidden = true;
+  $('#project-form').hidden = false;
+  $('#project-name').focus();
+}
+
+function closeProjectForm() { $('#project-form').hidden = true; $('#project-error').hidden = true; }
+
+function saveProject(event) {
+  event.preventDefault();
+  const name = $('#project-name').value.trim();
+  const project = projectFormMode === 'rename' ? currentProject() : null;
+  const error = !project && board.projects.length >= PROJECT_LIMIT ? `A board can have at most ${PROJECT_LIMIT} projects.` : projectNameError(name, project?.id);
+  if (error) { $('#project-error').textContent = error; $('#project-error').hidden = false; $('#project-name').focus(); return; }
+  closeProjectForm();
+  if (project) {
+    const previous = project.name;
+    project.name = name;
+    commitBoard(`Renamed “${previous}” to “${name}”.`);
+  } else {
+    createProject(name);
+    commitBoard(`Created project “${name}”.`);
+  }
+  $('#project-select').focus();
+}
+
+function confirmProjectDelete() {
+  const project = currentProject();
+  if (!project) return;
+  closeProjectForm();
+  const keep = detailButton('Keep project', () => { showProjectDetail(); $('#project-delete').focus(); });
+  showProjectDetail(
+    paragraph(`Delete “${project.name}” and its ${plural(project.cards.length, 'card')}? This cannot be undone. Export a backup first if you want to keep them.`),
+    detailActions(detailButton('Delete project', () => deleteProject(project.id), 'danger'), keep),
+  );
+  keep.focus();
+}
+
+function deleteProject(id) {
+  const project = board.projects.find(item => item.id === id);
+  if (!project) return;
+  board.projects = board.projects.filter(item => item.id !== id);
+  if (board.selectedProjectId === id) board.selectedProjectId = board.projects[0]?.id ?? null;
+  showProjectDetail();
+  commitBoard(`Deleted project “${project.name}”.`);
+  $(board.projects.length ? '#project-select' : '#project-new').focus();
+}
+
+function exportBoard() {
+  const backup = { application: 'AI Prompt Engineer', kind: 'kanban-backup', version: 1, exportedAt: new Date().toISOString(), selectedProjectId: board.selectedProjectId, projects: board.projects };
+  downloadFile(`${JSON.stringify(backup, null, 2)}\n`, 'application/json;charset=utf-8', `ste-kanban-backup-${new Date().toISOString().slice(0, 10)}.json`);
+  announce(`Board backup exported: ${boardCounts(board)}.`);
+}
+
+async function importBoard() {
+  const file = $('#import-file').files?.[0];
+  $('#import-file').value = '';
+  if (!file) return;
+  closeProjectForm();
+  let imported;
+  try {
+    if (file.size > IMPORT_LIMIT_BYTES) throw new Error('The file is larger than 20 MB.');
+    let data;
+    try { data = JSON.parse(await file.text()); } catch { throw new Error('The file is not valid JSON.'); }
+    if (data?.kind !== 'kanban-backup') throw new Error('The file is not a Kanban backup from AI Prompt Engineer.');
+    imported = parseBoard(data);
+  } catch (error) {
+    showProjectDetail(paragraph(`Import failed. Your board is unchanged. ${error.message}`, 'kanban-error'));
+    announce(`Import failed. Your board is unchanged. ${error.message}`);
+    return;
+  }
+  const replace = () => {
+    board = imported;
+    showProjectDetail(paragraph(`Backup imported: ${boardCounts(imported)}.`));
+    commitBoard(`Backup imported: ${boardCounts(imported)}.`);
+  };
+  if (!board.projects.length) { replace(); return; }
+  const keep = detailButton('Keep current board', () => { showProjectDetail(); announce('Import canceled. Your board is unchanged.'); });
+  showProjectDetail(
+    paragraph(`Replace the current board (${boardCounts(board)}) with this backup (${boardCounts(imported)})? The current board is removed. Export it first if you want to keep it.`),
+    detailActions(detailButton('Replace board', replace, 'danger'), keep),
+  );
+  keep.focus();
+}
+
+function openAddToKanban() {
+  if (!currentResult || running) return;
+  const source = snapshotSource(currentResult);
+  $('#add-project').replaceChildren(...board.projects.map(project => option(project.id, project.name)), option('', 'New project…'));
+  $('#add-project').value = currentProject()?.id || '';
+  $('#add-project-name').value = '';
+  $('#add-project-name-field').hidden = Boolean($('#add-project').value);
+  $('#add-title').value = currentResult.input.replace(/\s+/g, ' ').trim().slice(0, 80) || 'Generated prompt';
+  $('#add-preview').textContent = currentResult.prompt;
+  $('#add-note').textContent = `The exact prompt below is copied into the card (${currentResult.prompt.length.toLocaleString()} characters). Later card edits do not change your prompt history. Source: ${sourceSummary(source)} · ${cardStatus({ source, checksOutdated: false }).text}.`;
+  $('#add-error').hidden = true;
+  $('#add-dialog').showModal();
+  $(board.projects.length ? '#add-title' : '#add-project-name').focus();
+}
+
+function addToKanban(event) {
+  event.preventDefault();
+  const result = currentResult;
+  const title = $('#add-title').value.trim();
+  const name = $('#add-project-name').value.trim();
+  let project = board.projects.find(item => item.id === $('#add-project').value);
+  const error = !result || !result.prompt.trim() ? 'There is no prompt to add.' : !title ? 'Enter a short card title.' : title.length > 120 ? 'Use a title of at most 120 characters.'
+    : project ? (project.cards.length >= CARD_LIMIT ? `This project already has ${CARD_LIMIT} cards.` : '')
+    : board.projects.length >= PROJECT_LIMIT ? `A board can have at most ${PROJECT_LIMIT} projects.` : projectNameError(name);
+  if (error) { $('#add-error').textContent = error; $('#add-error').hidden = false; return; }
+  project ||= createProject(name);
+  board.selectedProjectId = project.id;
+  const now = Date.now();
+  project.cards.push({ id: crypto.randomUUID(), title, prompt: result.prompt, createdAt: now, updatedAt: now, checksOutdated: false, source: snapshotSource(result) });
+  $('#add-dialog').close();
+  const saved = persistBoard();
+  renderBoard();
+  announce(saved ? `Added “${title}” to ${project.name}.` : `Added “${title}” to ${project.name} for this session only. Board changes were not saved in this browser.`);
+  $('#kanban-label').textContent = 'Added!';
+  setTimeout(() => { $('#kanban-label').textContent = 'Add to Kanban'; }, 1800);
+  $('#kanban-button').focus();
+}
+
+window.addEventListener('hashchange', showPage);
+// The skip link must not change the hash, which selects the page.
+$('#skip-link').addEventListener('click', event => { event.preventDefault(); ($('#kanban-view').hidden ? $('#prompt-input') : $('#kanban-view')).focus(); });
+$('#kanban-button').addEventListener('click', openAddToKanban);
+$('#add-form').addEventListener('submit', addToKanban);
+$('#add-project').addEventListener('change', () => { $('#add-project-name-field').hidden = Boolean($('#add-project').value); });
+$('#add-cancel').addEventListener('click', () => $('#add-dialog').close());
+$('#add-dialog-close').addEventListener('click', () => $('#add-dialog').close());
+$('#project-select').addEventListener('change', () => {
+  board.selectedProjectId = $('#project-select').value;
+  closeProjectForm();
+  showProjectDetail();
+  commitBoard(`Showing project “${currentProject()?.name}”.`);
+});
+$('#project-new').addEventListener('click', () => openProjectForm('new'));
+$('#project-rename').addEventListener('click', () => openProjectForm('rename'));
+$('#project-delete').addEventListener('click', confirmProjectDelete);
+$('#project-form').addEventListener('submit', saveProject);
+$('#project-cancel').addEventListener('click', closeProjectForm);
+$('#card-new').addEventListener('click', () => openCard());
+$('#card-form').addEventListener('submit', saveCard);
+$('#card-cancel').addEventListener('click', () => $('#card-dialog').close());
+$('#card-dialog-close').addEventListener('click', () => $('#card-dialog').close());
+$('#export-board').addEventListener('click', exportBoard);
+$('#import-board').addEventListener('click', () => $('#import-file').click());
+$('#import-file').addEventListener('change', importBoard);
 
 $('#prompt-form').addEventListener('submit', generate);
 $('#prompt-input').addEventListener('input', updateCount);
@@ -941,12 +1437,12 @@ function downloadFile(content, type, filename) {
 }
 document.addEventListener('keydown', (event) => {
   const isEditing = /^(INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName) || event.target.isContentEditable;
-  if (event.key.toLowerCase() === 'n' && !isEditing && !event.metaKey && !event.ctrlKey && !event.altKey && !$('#help-dialog').open) {
+  if (event.key.toLowerCase() === 'n' && !isEditing && !event.metaKey && !event.ctrlKey && !event.altKey && !document.querySelector('dialog[open]')) {
     event.preventDefault();
     newPrompt();
   }
   if (event.key === 'Escape' && $('#sidebar').classList.contains('open')) { setSidebar(false); $('#menu-toggle').focus(); }
-  if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && isEditing && !running && !$('#generate-button').disabled) {
+  if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && isEditing && $('#prompt-form').contains(event.target) && !running && !$('#generate-button').disabled) {
     event.preventDefault();
     $('#prompt-form').requestSubmit();
   }
@@ -957,4 +1453,5 @@ syncSidebarToggle();
 renderHistory();
 updateCount();
 updateQuality();
+showPage();
 loadProviders();

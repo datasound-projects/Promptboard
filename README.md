@@ -29,6 +29,7 @@ A coding agent needs a clear goal, relevant context, and precise constraints. Th
 - **Find potential problems.** Review missing requirements, conflicting instructions, and unsupported additions.
 - **Control the output.** Choose the model, supported effort level, language, task, and amount of detail.
 - **Reuse your work.** Keep prompt history and copy or export results and check reports.
+- **Plan agent tasks.** Add prompts to a project's Kanban board. It has one To do column, and each card keeps an exact copy of its prompt. Nothing runs from the board. Copy a card into your coding agent when you are ready.
 
 The writing rules draw on **ASD-STE100 Simplified Technical English**: short sentences, direct instructions, and consistent terms.
 
@@ -72,7 +73,7 @@ Keep the app and CLI in the same environment. If your Windows CLI setup requires
 
 **More settings** holds the less-used controls. The connection group can start sign-in, check again, and sign out (after confirmation) using the CLI's own commands. The status chips under the CLI selector show whether it is installed and signed in. See [sign-in controls](docs/cli-adapters.md#sign-in-controls). Brief options add planning, acceptance checks, edge cases, security review, and terms to keep.
 
-The top bar toggles the history sidebar and dark mode. Both choices are saved in this browser.
+The top bar switches between the Studio and Kanban pages and toggles the history sidebar and dark mode. The sidebar and theme choices are saved in this browser.
 
 Model choices come from your installed CLI. Availability depends on your account and CLI version. Gemini uses its CLI thinking settings.
 
