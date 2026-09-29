@@ -4,6 +4,7 @@ const $ = (selector) => document.querySelector(selector);
 const HISTORY_KEY = 'ste-prompt-engineer.history.v1';
 const THEME_KEY = 'ste-prompt-engineer.theme'; // Also read by prefs.js before first paint.
 const SIDEBAR_KEY = 'ste-prompt-engineer.sidebar';
+const SETTINGS_KEY = 'ste-prompt-engineer.settings';
 const HISTORY_LIMIT = 40;
 const MAX_PROMPT_BYTES = 2 * 1024 * 1024;
 const KNOWN_PROVIDERS = ['codex', 'claude', 'gemini', 'agy'];
@@ -169,6 +170,15 @@ function updateCount() {
 }
 
 function savePref(key, value) { try { localStorage.setItem(key, value); } catch {} }
+// Collapse step 2 to focus on the request. The choice is remembered in this browser.
+function setSettingsCollapsed(collapsed, save = true) {
+  $('#settings-body').hidden = collapsed;
+  $('#settings-toggle').setAttribute('aria-expanded', String(!collapsed));
+  $('#settings-toggle').setAttribute('aria-label', collapsed ? 'Expand settings' : 'Collapse settings');
+  $('#settings-toggle').title = collapsed ? 'Expand settings' : 'Collapse settings';
+  $('#settings-toggle span').textContent = collapsed ? '+' : '−';
+  if (save) savePref(SETTINGS_KEY, collapsed ? 'collapsed' : 'expanded');
+}
 function scrollBehavior() { return window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches ? 'auto' : 'smooth'; }
 function renderTheme() { $('#theme-toggle').setAttribute('aria-pressed', String(document.documentElement.dataset.theme === 'dark')); }
 function toggleTheme() {
@@ -1455,3 +1465,7 @@ updateCount();
 updateQuality();
 showPage();
 loadProviders();
+$('#settings-toggle').addEventListener('click', () => setSettingsCollapsed(!$('#settings-body').hidden));
+try { if (localStorage.getItem(SETTINGS_KEY) === 'collapsed') setSettingsCollapsed(true, false); } catch {}
+// A required field inside a collapsed card would block submit without a visible message. Reopen it.
+$('#settings-body').addEventListener('invalid', () => setSettingsCollapsed(false, false), true);

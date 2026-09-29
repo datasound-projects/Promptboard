@@ -757,3 +757,23 @@ test('Kanban storage failures stay visible, keep the board usable, and keep unre
   assert.equal(broken.win.localStorage.getItem(`${KANBAN_KEY}.unreadable`), raw);
   assert.equal(broken.win.localStorage.getItem(KANBAN_KEY), raw);
 });
+
+test('the settings step collapses and expands, is remembered, and reopens for an invalid field', async t => {
+  const { $, win } = await setup(t);
+  const toggle = $('#settings-toggle');
+  assert.equal(toggle.getAttribute('aria-expanded'), 'true');
+  assert.equal(toggle.textContent, '−');
+  toggle.click();
+  assert.equal($('#settings-body').hidden, true);
+  assert.equal(toggle.getAttribute('aria-expanded'), 'false');
+  assert.equal(toggle.textContent, '+');
+  assert.equal(toggle.getAttribute('aria-label'), 'Expand settings');
+  assert.equal(win.localStorage.getItem('ste-prompt-engineer.settings'), 'collapsed');
+  const restored = await setup(t, {});
+  assert.equal(restored.$('#settings-body').hidden, false, 'A fresh browser storage starts expanded.');
+  $('#custom-model').dispatchEvent(new win.Event('invalid', { cancelable: true }));
+  assert.equal($('#settings-body').hidden, false);
+  toggle.click(); toggle.click();
+  assert.equal($('#settings-body').hidden, false);
+  assert.equal(win.localStorage.getItem('ste-prompt-engineer.settings'), 'expanded');
+});
