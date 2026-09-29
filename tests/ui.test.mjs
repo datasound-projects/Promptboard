@@ -784,7 +784,7 @@ test('the Kanban page shows its own mascot next to the heading', async t => {
   assert.equal(image.getAttribute('src'), '/kanban-mascot.png');
   assert.match(image.getAttribute('alt'), /pixel-art creature/);
   assert.equal($('#kanban-view .intro figcaption').textContent, 'One bite at a time.');
-  assert.equal($('#board-empty img').getAttribute('src'), '/kanban-mascot.png');
+  assert.equal($('#board-empty img'), null, 'The empty To do column has no image.');
   const served = await fetch(new URL('/kanban-mascot.png', $('#kanban-view').ownerDocument.location.href));
   assert.equal(served.status, 200);
   assert.equal(served.headers.get('content-type'), 'image/png');
