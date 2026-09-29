@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { constants } from 'node:fs';
+import { constants, rmSync } from 'node:fs';
 import { access, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { delimiter, isAbsolute, join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -42,7 +42,8 @@ export function buildCommand({ provider, model, effort = '', policyPath } = {}) 
       '--config', 'approval_policy="never"', '--config', 'web_search="disabled"',
       '--disable', 'shell_tool', '--disable', 'unified_exec', '--json'];
   } else if (provider === 'claude') {
-    args = ['--print', '--output-format', 'json', '--tools', '', '--disallowedTools', '*',
+    // stream-json exposes documented rate_limit_event and assistant error codes.
+    args = ['--print', '--output-format', 'stream-json', '--verbose', '--tools', '', '--disallowedTools', '*',
       '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--disable-slash-commands',
       '--no-session-persistence', '--max-turns', '1'];
   } else if (provider === 'agy') {
@@ -91,23 +92,76 @@ export function stopProcess(child, signal = 'SIGTERM') {
   } catch (error) { if (error.code !== 'ESRCH') { try { child.kill(signal); } catch {} } }
 }
 
+// Only processes and folders created by this app are tracked, so shutdown never
+// signals an unrelated process (for example, one that holds the same port).
+const ownedChildren = new Set();
+const ownedDirs = new Set();
+export function trackChild(child) {
+  ownedChildren.add(child);
+  child.once('exit', () => ownedChildren.delete(child));
+  child.once('error', () => ownedChildren.delete(child));
+  return child;
+}
+export function killOwnedProcesses(signal = 'SIGKILL') {
+  for (const child of ownedChildren) stopProcess(child, signal);
+  return ownedChildren.size;
+}
+export async function makeTempDir(prefix) {
+  const path = await mkdtemp(join(tmpdir(), prefix));
+  ownedDirs.add(path);
+  return path;
+}
+export async function removeTempDir(path) {
+  await rm(path, { recursive: true, force: true });
+  ownedDirs.delete(path);
+}
+export function removeOwnedTempDirsSync() {
+  for (const path of ownedDirs) { try { rmSync(path, { recursive: true, force: true }); } catch {} }
+  ownedDirs.clear();
+}
+
+/** Spawn a tracked CLI process in its own process group (POSIX). */
+export function spawnOwned(command, args, { cwd, env = {} } = {}) {
+  return trackChild(spawn(command, args, { cwd, shell: false, windowsHide: true, detached: process.platform !== 'win32',
+    stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...env, NO_COLOR: '1', FORCE_COLOR: '0' } }));
+}
+
+/**
+ * Resolve once the child's stdio closes. A descendant outside the process group can
+ * keep a pipe open after the child exits; destroy the pipes after a short grace period.
+ */
+export function closedWithin(child, graceMs = 2000) {
+  return new Promise(resolve => {
+    if (child.exitCode !== null && child.stdout?.destroyed !== false && child.stderr?.destroyed !== false) { resolve(); return; }
+    let timer;
+    const done = () => { clearTimeout(timer); resolve(); };
+    child.once('close', done);
+    child.once('error', done);
+    const destroy = () => { for (const stream of [child.stdin, child.stdout, child.stderr]) stream?.destroy(); setImmediate(done); };
+    const arm = () => { timer = setTimeout(destroy, graceMs); timer.unref(); };
+    if (child.exitCode !== null || child.signalCode !== null) arm(); else child.once('exit', arm);
+  });
+}
+
 export function execute({ command, args, cwd, input = '', signal, timeoutMs, maxStdout = MAX_STDOUT, maxStderr = MAX_STDERR, env = {} }) {
   if (signal?.aborted) return Promise.reject(new ProviderError('Generation was cancelled.', 'ABORTED'));
   return new Promise((resolve, reject) => {
     let child;
     try {
-      child = spawn(command, args, { cwd, shell: false, windowsHide: true, detached: process.platform !== 'win32',
-        stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...env, NO_COLOR: '1', FORCE_COLOR: '0' } });
+      child = spawnOwned(command, args, { cwd, env });
     } catch { reject(new ProviderError('The CLI could not start. Check its installation.', 'SPAWN_FAILED')); return; }
     const out = [], err = [];
-    let outSize = 0, errSize = 0, failure, killTimer, settled = false;
-    const cleanup = () => { clearTimeout(timer); clearTimeout(killTimer); signal?.removeEventListener('abort', abort); };
+    let outSize = 0, errSize = 0, failure, killTimer, hardTimer, settled = false;
+    const cleanup = () => { clearTimeout(timer); clearTimeout(killTimer); clearTimeout(hardTimer); signal?.removeEventListener('abort', abort); };
     const fail = (error) => {
       if (failure || settled) return;
       failure = error;
       stopProcess(child);
       killTimer = setTimeout(() => stopProcess(child, 'SIGKILL'), 1000);
       killTimer.unref();
+      // If a pipe stays open after SIGKILL, settle anyway so the caller is never stuck.
+      hardTimer = setTimeout(() => { for (const stream of [child.stdin, child.stdout, child.stderr]) stream?.destroy(); finish(null); }, 3000);
+      hardTimer.unref();
     };
     const abort = () => fail(new ProviderError('Generation was cancelled.', 'ABORTED'));
     const timer = setTimeout(() => fail(new ProviderError('The CLI took too long. Try again or use a faster model.', 'TIMEOUT')), timeoutMs);
@@ -128,20 +182,28 @@ export function execute({ command, args, cwd, input = '', signal, timeoutMs, max
       settled = true; cleanup();
       reject(failure || new ProviderError('The CLI could not start. Check its installation.', 'SPAWN_FAILED'));
     });
-    child.on('close', (code) => {
+    const finish = (code) => {
       if (settled) return;
       // A child can exit on TERM before its descendants do. Complete group cleanup
       // before clearing the grace timer and returning cancellation to the caller.
       if (failure && process.platform !== 'win32') stopProcess(child, 'SIGKILL');
       settled = true; cleanup();
       if (failure) { reject(failure); return; }
+      const stdout = Buffer.concat(out).toString('utf8'), stderr = Buffer.concat(err).toString('utf8');
       if (code !== 0) {
         // Do not send raw diagnostics (which can include secrets or request text) to the browser.
-        reject(new ProviderError(`The CLI exited with code ${code ?? 'unknown'}. Check login, model access, CLI version, and policy in your terminal.`, 'CLI_FAILED'));
+        // The private details are kept off the enumerable fields for local classification only.
+        const error = new ProviderError(`The CLI exited with code ${code ?? 'unknown'}. Check login, model access, CLI version, and policy in your terminal.`, 'CLI_FAILED');
+        Object.defineProperty(error, 'details', { value: { stdout, stderr, exitCode: code }, enumerable: false });
+        reject(error);
         return;
       }
-      resolve({ stdout: Buffer.concat(out).toString('utf8'), stderr: Buffer.concat(err).toString('utf8') });
-    });
+      resolve({ stdout, stderr });
+    };
+    child.on('close', finish);
+    // A descendant that escaped the process group can hold stdout open after the
+    // CLI exits. Do not wait for it indefinitely.
+    child.once('exit', () => { const timer = setTimeout(() => { for (const stream of [child.stdout, child.stderr]) stream?.destroy(); }, 2000); timer.unref(); child.once('close', () => clearTimeout(timer)); });
     child.stdin.on('error', (error) => {
       // A CLI can exit before consuming stdin. Its exit code is the useful error.
       if (error.code !== 'EPIPE' && error.code !== 'ERR_STREAM_DESTROYED') fail(new ProviderError('The CLI could not read the request.', 'INPUT_FAILED'));
@@ -164,17 +226,21 @@ export async function detectProviders() {
   }));
 }
 
+const jsonLines = stdout => stdout.split(/\r?\n/).filter(line => line.trim()).map(line => JSON.parse(line));
+// Claude uses stream-json; accept one JSON result object from older fixtures too.
+const claudeResult = stdout => { const trimmed = stdout.trim(); return trimmed.startsWith('{') && !trimmed.includes('\n') ? JSON.parse(trimmed) : jsonLines(stdout).filter(e => e.type === 'result' || (e.type === undefined && 'result' in e)).at(-1); };
+
 export function parseProviderOutput(provider, stdout) {
   validateProvider(provider);
   let text;
   try {
     if (provider === 'codex') {
-      const events = stdout.split(/\r?\n/).filter(line => line.trim()).map(line => JSON.parse(line));
+      const events = jsonLines(stdout);
       if (events.some(event => event.type === 'error' || event.type === 'turn.failed')) throw new Error('CLI error');
       const messages = events.filter(event => event.type === 'item.completed' && event.item?.type === 'agent_message');
       text = messages.at(-1)?.item?.text;
     } else {
-      const result = provider === 'agy' ? stdout.split(/\r?\n/).filter(line => line.trim()).map(line => JSON.parse(line)).filter(e => e.event === 'result').at(-1)?.result : JSON.parse(stdout);
+      const result = provider === 'agy' ? jsonLines(stdout).filter(e => e.event === 'result').at(-1)?.result : provider === 'claude' ? claudeResult(stdout) : JSON.parse(stdout);
       if (!result || (provider === 'agy' && result.status !== 'SUCCESS')) throw new Error('Incomplete result');
       if (result.error || result.is_error) throw new Error('CLI error');
       text = provider === 'claude' ? result.result : result.response;
@@ -182,6 +248,90 @@ export function parseProviderOutput(provider, stdout) {
     if (typeof text !== 'string' || !text.trim()) throw new Error('Missing response');
     return text.trim();
   } catch { throw new ProviderError('The CLI did not return a valid final answer. Check its version and try again.', 'INVALID_OUTPUT'); }
+}
+
+/**
+ * Stable, user-facing failure codes. Messages are fixed text: provider output is
+ * inspected locally for structured fields but never returned to the browser.
+ */
+export const FAILURE_MESSAGES = Object.freeze({
+  QUOTA_EXHAUSTED: 'Your CLI account reports that its included usage is used up. Check your plan or add usage in the provider account, then try again.',
+  RATE_LIMITED: 'The provider is temporarily limiting requests for this account. Wait, then try again.',
+  AUTH_REQUIRED: 'The CLI is not signed in, or its sign-in expired. Use Connect / Sign in, then try again.',
+  MODEL_UNAVAILABLE: 'The selected model is not available to this CLI account. Refresh models or choose another model.',
+  PROVIDER_UNAVAILABLE: 'The provider service is overloaded or unavailable. Try again later.',
+  NETWORK_ERROR: 'The CLI could not reach its provider. Check your network connection, then try again.',
+  POLICY_DENIED: 'A CLI, sandbox, or organization policy blocked this request.',
+  ACCOUNT_UNAVAILABLE: 'The provider reports a billing or account problem. Check the account in the provider console.',
+  TIMEOUT: 'The CLI took too long. Try again or use a faster model.',
+  ABORTED: 'Generation was cancelled.',
+  CLI_FAILED: 'The CLI failed for an unrecognized reason. Run the CLI in your terminal to see its diagnostics.',
+});
+
+const failure = (code, extra = {}) => Object.assign(new ProviderError(FAILURE_MESSAGES[code], code), extra);
+// Provider reset times are epoch seconds (Claude) or milliseconds; return ISO or nothing.
+const resetTime = value => {
+  if (!Number.isFinite(value) || value <= 0) return undefined;
+  const date = new Date(value < 1e12 ? value * 1000 : value);
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+};
+const safeLines = text => { try { return jsonLines(text); } catch { return text.split(/\r?\n/).flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } }); } };
+const firstJson = text => { const trimmed = text.trim(); try { return JSON.parse(trimmed); } catch {} const at = trimmed.indexOf('{'); try { return at >= 0 ? JSON.parse(trimmed.slice(at)) : undefined; } catch { return undefined; } };
+
+const CLAUDE_ERRORS = { authentication_failed: 'AUTH_REQUIRED', cloud_credential_error: 'AUTH_REQUIRED', oauth_org_not_allowed: 'POLICY_DENIED',
+  account_on_hold: 'ACCOUNT_UNAVAILABLE', billing_error: 'ACCOUNT_UNAVAILABLE', rate_limit: 'RATE_LIMITED', overloaded: 'PROVIDER_UNAVAILABLE',
+  server_error: 'PROVIDER_UNAVAILABLE', model_not_found: 'MODEL_UNAVAILABLE' };
+const GEMINI_ERRORS = { TerminalQuotaError: 'QUOTA_EXHAUSTED', RetryableQuotaError: 'RATE_LIMITED', FatalAuthenticationError: 'AUTH_REQUIRED',
+  UnauthorizedError: 'AUTH_REQUIRED', ForbiddenError: 'POLICY_DENIED', ModelNotFoundError: 'MODEL_UNAVAILABLE', FatalSandboxError: 'POLICY_DENIED', FetchError: 'NETWORK_ERROR' };
+const httpCode = status => status === 401 ? 'AUTH_REQUIRED' : status === 403 ? 'POLICY_DENIED' : status === 429 ? 'RATE_LIMITED'
+  : status === 529 || (status >= 500 && status < 600) ? 'PROVIDER_UNAVAILABLE' : undefined;
+
+/**
+ * Classify a failed run from structured provider fields first. Text patterns are
+ * used only where the CLI documents no structured code (Codex exec, Antigravity).
+ * Returns null when the failure is not recognized.
+ */
+export function classifyProviderFailure(provider, { stdout = '', stderr = '', exitCode } = {}) {
+  if (provider === 'claude') {
+    const events = safeLines(stdout);
+    const rejected = events.filter(e => e.type === 'rate_limit_event' && e.rate_limit_info?.status === 'rejected').at(-1)?.rate_limit_info;
+    if (rejected) {
+      // credits_required is Claude's documented signal that included subscription usage is exhausted.
+      return failure(rejected.errorCode === 'credits_required' ? 'QUOTA_EXHAUSTED' : 'RATE_LIMITED', { resetsAt: resetTime(rejected.resetsAt) });
+    }
+    const assistantError = events.filter(e => e.type === 'assistant' && typeof e.error === 'string').at(-1)?.error;
+    if (CLAUDE_ERRORS[assistantError]) return failure(CLAUDE_ERRORS[assistantError]);
+    const result = events.filter(e => e.type === 'result').at(-1) || firstJson(stdout);
+    const code = httpCode(result?.api_error_status);
+    return code ? failure(code) : null;
+  }
+  if (provider === 'gemini') {
+    for (const text of [stdout, stderr]) {
+      const type = firstJson(text)?.error?.type;
+      if (GEMINI_ERRORS[type]) return failure(GEMINI_ERRORS[type]);
+    }
+    if (exitCode === 41) return failure('AUTH_REQUIRED'); // Documented FATAL_AUTHENTICATION_ERROR exit code.
+    if (exitCode === 44) return failure('POLICY_DENIED'); // Documented sandbox error exit code.
+    return null;
+  }
+  if (provider === 'codex') {
+    // `codex exec --json` reports only a message string for errors. Match known CLI texts narrowly.
+    const messages = safeLines(stdout).flatMap(e => e.type === 'error' ? [e.message] : e.type === 'turn.failed' ? [e.error?.message] : [])
+      .filter(x => typeof x === 'string').concat(stderr).join('\n');
+    if (/you['’]ve hit your usage limit/i.test(messages)) return failure('QUOTA_EXHAUSTED');
+    if (/(?:last status|unexpected status):? 429\b|429 Too Many Requests/i.test(messages)) return failure('RATE_LIMITED');
+    if (/(?:last status|unexpected status):? 401\b|\bNot logged in\b/i.test(messages)) return failure('AUTH_REQUIRED');
+    if (/(?:last status|unexpected status):? 5\d\d\b/i.test(messages)) return failure('PROVIDER_UNAVAILABLE');
+    if (/stream disconnected before completion|error sending request/i.test(messages)) return failure('NETWORK_ERROR');
+    return null;
+  }
+  if (provider === 'agy') {
+    // Antigravity documents this text for an unauthenticated non-interactive run.
+    const status = safeLines(stdout).filter(e => e.event === 'result').at(-1)?.result;
+    if (/authentication required/i.test(`${JSON.stringify(status?.error ?? '')}\n${stderr}`)) return failure('AUTH_REQUIRED');
+    return null;
+  }
+  return null;
 }
 
 function prepareInput(provider, prompt) {
@@ -210,14 +360,22 @@ export async function runProvider({ provider, model, effort = '', prompt, cwd, s
   try {
     let policyPath;
     if (provider === 'gemini') {
-      policyDir = await mkdtemp(join(tmpdir(), 'ste-policy-'));
+      policyDir = await makeTempDir('ste-policy-');
       policyPath = join(policyDir, 'deny-tools.toml');
       await writeFile(policyPath, GEMINI_POLICY, { mode: 0o600 });
     }
     const { args } = buildCommand({ provider, model, effort, policyPath });
-    const result = await execute({ command: executable.command, args: [...executable.prefix, ...args], cwd, input: prepareInput(provider, prompt), signal, timeoutMs, env: provider === 'claude' && effort ? { CLAUDE_CODE_EFFORT_LEVEL: effort } : {} });
-    return { text: parseProviderOutput(provider, result.stdout), provider, model: model || '', effort, ...parseRunMetadata(provider, result.stdout), durationMs: Date.now() - started };
-  } finally { if (policyDir) await rm(policyDir, { recursive: true, force: true }); }
+    let result;
+    try {
+      result = await execute({ command: executable.command, args: [...executable.prefix, ...args], cwd, input: prepareInput(provider, prompt), signal, timeoutMs, env: provider === 'claude' && effort ? { CLAUDE_CODE_EFFORT_LEVEL: effort } : {} });
+    } catch (error) {
+      throw (error.code === 'CLI_FAILED' && classifyProviderFailure(provider, error.details)) || error;
+    }
+    let text;
+    try { text = parseProviderOutput(provider, result.stdout); }
+    catch (error) { throw classifyProviderFailure(provider, { ...result, exitCode: 0 }) || error; }
+    return { text, provider, model: model || '', effort, ...parseRunMetadata(provider, result.stdout), durationMs: Date.now() - started };
+  } finally { if (policyDir) await removeTempDir(policyDir); }
 }
 
 export function validateEffort(provider, effort = '') {
@@ -227,10 +385,7 @@ export function validateEffort(provider, effort = '') {
 
 export function parseRunMetadata(provider, stdout) {
   try {
-    if (provider === 'claude') {
-      const result = JSON.parse(stdout);
-      return { reportedModels: Object.keys(result.modelUsage || {}) };
-    }
+    if (provider === 'claude') return { reportedModels: Object.keys(claudeResult(stdout)?.modelUsage || {}) };
     if (provider === 'gemini') return { reportedModels: Object.keys(JSON.parse(stdout).stats?.models || {}) };
   } catch {}
   return { reportedModels: [] };

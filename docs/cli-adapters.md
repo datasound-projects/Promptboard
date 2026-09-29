@@ -5,11 +5,11 @@ The app calls an installed CLI. Sign in to that CLI first. It uses the CLI's acc
 | Adapter | Command contract | Restrictions added by this app |
 | --- | --- | --- |
 | Codex CLI | `codex exec … --json -` with the prompt on stdin | Read-only sandbox; no approval escalation; shell tools and web search disabled; ephemeral session. |
-| Claude Code | `claude --print --output-format json …` with the prompt on stdin | Empty built-in tool list; deny all tools; empty strict MCP configuration; slash commands disabled; one turn; no session persistence. |
+| Claude Code | `claude --print --output-format stream-json --verbose …` with the prompt on stdin | Empty built-in tool list; deny all tools; empty strict MCP configuration; slash commands disabled; one turn; no session persistence. |
 | Antigravity CLI (`agy`) | `agy --input-format stream-json --output-format stream-json --sandbox …`; one JSON user event on stdin | Native terminal sandbox; existing tool permissions and managed settings stay in place. |
 | Gemini CLI | `gemini --output-format json …` in a non-TTY process with the prompt on stdin | Plan mode; extensions disabled; empty MCP allow list; a temporary wildcard deny policy. |
 
-The app uses argument arrays and `shell: false`. Request text never becomes a shell command or command argument. The adapter caps input at 256 KiB, stdout at 2 MiB, and stderr at 64 KiB. The app limits the user's input to 24,000 characters. The adapter default timeout is two minutes; the app supplies a three-minute timeout. Cancellation terminates the child process group on POSIX. On Windows, termination targets the direct child. Raw error logs are not sent to the browser.
+The app uses argument arrays and `shell: false`. Request text never becomes a shell command or command argument. The adapter caps input at 256 KiB, stdout at 2 MiB, and stderr at 64 KiB. The app limits the user's input to 100,000 characters. The adapter default timeout is two minutes; the app supplies a three-minute timeout. Cancellation terminates the child process group on POSIX. On Windows, termination targets the direct child. If a descendant keeps a pipe open after the CLI exits, the adapter stops waiting after 2 seconds. Raw error logs are not sent to the browser.
 
 Gemini processes `@file` references before the model call, even in headless mode. Its adapter sends a JSON string with `@` encoded as `\u0040`. A fixed instruction tells the model to decode the string. This prevents request text from causing implicit file inclusion. It also prevents a leading slash command from being interpreted by the CLI.
 
@@ -29,6 +29,34 @@ Gemini ACP may create local session metadata. It does not receive a `session/pro
 Explicit Codex and Claude model choices are checked against discovered effort capabilities. Claude's environment setting can outrank its flag, so the selected effort is also supplied in that child process's environment. Global settings are not edited. Managed caps still apply. `ultracode` changes the agent workflow and is not treated as an effort enum.
 
 Generation returns the requested `model`, `effort`, and `language`, plus `reportedModels` from Claude's `modelUsage` or Gemini's `stats.models`. Those reported IDs can include auxiliary models. Codex exec and Antigravity's final envelope do not consistently report a resolved model or effective effort. The UI explicitly marks unreported values and never equates requested effort with measured effort.
+
+## Error classification
+
+Failures return a stable `code` and a fixed message. Structured provider fields are used first; raw stderr, tokens, and paths are never returned.
+
+| Code | Evidence used |
+| --- | --- |
+| `QUOTA_EXHAUSTED` | Claude `rate_limit_event` rejected with `errorCode: "credits_required"`; Gemini `TerminalQuotaError`; Codex text `You've hit your usage limit` (verified in the installed binary) |
+| `RATE_LIMITED` | Other Claude rejections, assistant error `rate_limit`, or HTTP 429; Gemini `RetryableQuotaError`; Codex `last status: 429` |
+| `AUTH_REQUIRED` | Claude `authentication_failed` or HTTP 401; Gemini `FatalAuthenticationError` or exit code 41; Codex status 401; Antigravity `authentication required` |
+| `MODEL_UNAVAILABLE`, `PROVIDER_UNAVAILABLE`, `NETWORK_ERROR`, `POLICY_DENIED`, `ACCOUNT_UNAVAILABLE` | Documented Claude assistant error codes, Gemini error types, and HTTP status classes |
+| `TIMEOUT`, `ABORTED` | App timers and cancellation |
+| `CLI_FAILED` / `UNKNOWN` | Anything else. It is not guessed. |
+
+An HTTP 429 alone is a temporary rate limit, not exhausted quota. A reset time is shown only when the provider supplies one (Claude `resetsAt`). The app never switches model or provider. After an account-level failure in review, it makes no repair call.
+
+## Sign-in controls
+
+The connection panel shows installation and sign-in separately. Failed model discovery never counts as "signed out". The app runs only these allowlisted, CLI-managed operations; it stores no credentials.
+
+| CLI | Status | Sign in | Sign out |
+| --- | --- | --- | --- |
+| Codex | App-server `account/read` | Native: app-server `account/login/start` (`chatgpt` browser or `chatgptDeviceCode`); the CLI replaces credentials only on success | `codex logout`, after confirmation |
+| Claude Code | `claude auth status --json` (exit 0/1) | Terminal handoff: `claude auth login` | `claude auth logout`, after confirmation |
+| Gemini CLI | Not reported (no documented command) | Terminal handoff: `gemini`, then "Sign in with Google" | Not available (no documented command) |
+| Antigravity | Not reported | Terminal handoff: `agy` | Terminal handoff: `/logout` inside `agy` |
+
+Claude sign-in is a terminal handoff because non-TTY behavior of `claude auth login` was not verified. Reauthentication never signs out first. Sign-out requires confirmation because it affects every tool that shares that CLI configuration. Auth endpoints require the page token, a local host/origin, and JSON. Auth changes and generation cannot overlap. A completed change clears the model cache.
 
 ## Security boundary
 

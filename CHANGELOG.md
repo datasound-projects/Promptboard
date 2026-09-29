@@ -1,5 +1,13 @@
 # Changes
 
+## Unreleased
+
+- Generation always ends in a clear state: stage and elapsed time, cancel in every stage, a bounded client and server timeout, and input kept on failure.
+- Stable error codes that separate exhausted quota, temporary rate limits, sign-in, model, network, policy, and timeouts. Unknown failures stay unknown.
+- No repair call after an account-level failure. A busy server returns `409 BUSY`, not `429`.
+- Connection panel: install and sign-in status, native Codex sign-in, terminal handoff for other CLIs, refresh models, and confirmed sign-out.
+- Clean shutdown on SIGINT, SIGTERM, and SIGHUP. Owned CLI processes and temporary folders are removed, and the port is released.
+
 ## 0.3.0 — 28 September 2026
 
 - Reviewed mode: draft, local checks, a fresh model review, and at most one repair with a new review.

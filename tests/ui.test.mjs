@@ -10,15 +10,22 @@ const catalogs = {
   gemini: { source: 'cli', models: [{ id: 'gemini-one', name: 'Gemini One', efforts: [] }] },
   agy: { source: 'cli', models: [{ id: 'gemini-agy', name: 'Gemini AGY', efforts: ['low', 'medium', 'high'] }] },
 };
-async function until(fn, label) {
-  const deadline = Date.now() + 3000;
+async function until(fn, label, ms = 3000) {
+  const deadline = Date.now() + ms;
   while (!fn()) { if (Date.now() > deadline) assert.fail(`Timed out: ${label}`); await new Promise(resolve => setTimeout(resolve, 10)); }
 }
-async function setup(t, { catalogReader = async id => ({ provider: id, ...catalogs[id], note: 'Native model options.' }), storage, generationResponse } = {}) {
+// Fixture auth adapter: never runs a real CLI, and records every mutation.
+function fakeAuth(overrides = {}) {
+  const log = [];
+  return { log, installed: async () => true, status: async provider => { log.push(['status', provider]); return { state: 'signed-in', method: 'fixture' }; },
+    login: async (provider, options) => { log.push(['login', provider, options.method]); options.onUpdate({ authUrl: 'https://auth.example/start' }); return { state: 'signed-in' }; },
+    logout: async provider => { log.push(['logout', provider]); return { state: 'signed-out' }; }, ...overrides };
+}
+async function setup(t, { catalogReader = async id => ({ provider: id, ...catalogs[id], note: 'Native model options.' }), storage, generationResponse, authAdapter = fakeAuth(), runner } = {}) {
   const calls = [];
   const requests = [];
-  const app = await startServer({ port: 0, detector: async () => Object.keys(catalogs).map(id => ({ id, available: true })), catalogReader,
-    runner: async request => { calls.push(request); return { text: request.prompt.includes('prose in Polish') ? 'Dodaj test.' : request.prompt.includes('prose in German') ? 'Füge einen Test hinzu.' : 'Add a test.', reportedModels: ['actual-model'], durationMs: 3 }; } });
+  const app = await startServer({ port: 0, authAdapter, detector: async () => Object.keys(catalogs).map(id => ({ id, available: true })), catalogReader,
+    runner: runner ? async request => { calls.push(request); return runner(request); } : async request => { calls.push(request); return { text: request.prompt.includes('prose in Polish') ? 'Dodaj test.' : request.prompt.includes('prose in German') ? 'Füge einen Test hinzu.' : 'Add a test.', reportedModels: ['actual-model'], durationMs: 3 }; } });
   const dom = new JSDOM(await readFile(new URL('../public/index.html', import.meta.url), 'utf8'), { url: app.url, runScripts: 'outside-only' });
   const win = dom.window;
   win.fetch = (url, options) => {
@@ -49,7 +56,7 @@ async function setup(t, { catalogReader = async id => ({ provider: id, ...catalo
   const submit = () => $('#prompt-form').dispatchEvent(new win.Event('submit', { bubbles: true, cancelable: true }));
   await until(() => !$('#generate-button').disabled, 'initial model discovery');
   const quality = value => { $(`input[name="quality"][value="${value}"]`).checked = true; $(`input[name="quality"][value="${value}"]`).dispatchEvent(new win.Event('change')); };
-  return { win, $, choose, radio, quality, submit, calls, requests, downloads, blobs, copied: () => copied };
+  return { win, $, choose, radio, quality, submit, calls, requests, downloads, blobs, copied: () => copied, authAdapter, app };
 }
 
 test('UI sends selected model, effort, and language through HTTP, then restores history and copies output', async t => {
@@ -254,4 +261,91 @@ test('full browser storage keeps the result usable and shows a persistent unsave
   $('#new-prompt').click();
   assert.equal($('#storage-warning').hidden, false);
   assert.equal($('#history-list').children.length, 1);
+});
+
+test('progress shows the stage and elapsed time; cancel restores the form and keeps the input', async t => {
+  let release;
+  const { $, submit, calls } = await setup(t, { runner: ({ signal }) => new Promise((resolve, reject) => {
+    release = () => resolve({ text: 'Add a test.' });
+    signal.addEventListener('abort', () => reject(new Error('cancelled')), { once: true });
+  }) });
+  $('#prompt-input').value = 'Keep this request.';
+  submit();
+  await until(() => calls.length === 1, 'generation started');
+  assert.equal($('#generate-button').disabled, true);
+  assert.equal($('#cancel-button').hidden, false);
+  await until(() => $('#progress-stage').textContent === 'Drafting', 'stage label');
+  assert.match($('#progress-elapsed').textContent, /^\d+:\d\d$/);
+  submit(); // A duplicate submit while running is ignored.
+  $('#cancel-button').click();
+  await until(() => !$('#generate-button').disabled, 'form restored after cancel');
+  assert.equal($('#cancel-button').hidden, true);
+  assert.equal($('#prompt-input').value, 'Keep this request.');
+  assert.match($('#announcement').textContent, /canceled/i);
+  assert.equal(calls.length, 1);
+});
+
+test('provider failures show a stable message with a supplied reset time, keep input, and allow a retry', async t => {
+  const { ProviderError } = await import('../src/providers.mjs');
+  let fail = true;
+  const { $, submit, calls, quality } = await setup(t, { runner: async () => {
+    if (fail) throw Object.assign(new ProviderError('raw SECRET', 'RATE_LIMITED'), { resetsAt: '2026-10-01T12:00:00.000Z' });
+    return { text: 'Add a test.' };
+  } });
+  quality('fast');
+  $('#prompt-input').value = 'Keep this request.';
+  submit();
+  await until(() => !$('#generation-error').hidden && !$('#generate-button').disabled, 'error shown');
+  assert.match($('#generation-error').textContent, /temporarily limiting/);
+  assert.match($('#generation-error').textContent, /reset at/);
+  assert.doesNotMatch($('#generation-error').textContent, /SECRET|exhausted/i);
+  assert.equal($('#prompt-input').value, 'Keep this request.');
+  fail = false;
+  submit();
+  await until(() => calls.length === 2 && !$('#generate-button').disabled, 'retry result');
+  assert.equal($('#prompt-output').textContent, 'Add a test.');
+  assert.equal($('#generation-error').hidden, true);
+});
+
+test('connection panel separates install and sign-in, hands off terminal sign-in, and confirms sign-out', async t => {
+  const authAdapter = fakeAuth({ status: async provider => (provider === 'codex' ? { state: 'signed-in', method: 'chatgpt' } : provider === 'claude' ? { state: 'signed-out' } : { state: 'unknown' }) });
+  let lookups = 0;
+  const { $, choose, win } = await setup(t, { authAdapter, catalogReader: async id => { lookups++; return { provider: id, ...catalogs[id] }; } });
+  await until(() => /Signed in/.test($('#connection-auth').textContent), 'codex status');
+  assert.match($('#connection-install').textContent, /CLI installed/);
+  assert.equal($('#connection-auth').textContent, 'Signed in (chatgpt)');
+  assert.equal($('#auth-login').textContent, 'Reauthenticate');
+  assert.equal($('#auth-device').hidden, false);
+  // Native sign-in: a link to the CLI's https page, then a refresh of state and models.
+  const before = lookups;
+  $('#auth-login').click();
+  await until(() => authAdapter.log.some(entry => entry[0] === 'login'), 'login started');
+  await until(() => /confirmed the sign-in/.test($('#auth-detail').textContent), 'login completion', 6000);
+  await until(() => lookups > before, 'model refresh after sign-in');
+  assert.ok(!authAdapter.log.some(entry => entry[0] === 'logout'), 'Reauthentication never signs out first.');
+  // Terminal handoff for Claude, with the verified command.
+  choose('#provider', 'claude');
+  await until(() => $('#connection-auth').textContent === 'Signed out', 'claude status');
+  assert.equal($('#auth-login').textContent, 'Connect / Sign in');
+  assert.equal($('#auth-device').hidden, true);
+  $('#auth-login').click();
+  assert.equal($('#auth-detail code').textContent, 'claude auth login');
+  assert.match($('#auth-detail').textContent, /Check again/);
+  // Sign-out requires an explicit confirmation that explains shared sessions.
+  $('#auth-logout').click();
+  assert.match($('#auth-detail').textContent, /Other terminals, editors, and apps/);
+  assert.ok(!authAdapter.log.some(entry => entry[0] === 'logout'));
+  Array.from(win.document.querySelectorAll('#auth-detail button')).find(b => b.textContent === 'Keep me signed in').click();
+  assert.equal($('#auth-detail').hidden, true);
+  assert.ok(!authAdapter.log.some(entry => entry[0] === 'logout'));
+  $('#auth-logout').click();
+  Array.from(win.document.querySelectorAll('#auth-detail button')).find(b => b.textContent === 'Sign out').click();
+  await until(() => authAdapter.log.some(entry => entry[0] === 'logout'), 'logout after confirmation');
+  assert.deepEqual(authAdapter.log.filter(entry => entry[0] === 'logout'), [['logout', 'claude']]);
+  // Gemini: status and sign-out are labelled as unsupported, not simulated.
+  choose('#provider', 'gemini');
+  await until(() => /not reported by this CLI/.test($('#connection-auth').textContent), 'gemini status');
+  $('#auth-logout').click();
+  assert.match($('#auth-detail').textContent, /not available here/);
+  assert.equal(authAdapter.log.filter(entry => entry[0] === 'logout').length, 1);
 });

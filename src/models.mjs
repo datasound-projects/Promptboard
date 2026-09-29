@@ -1,9 +1,7 @@
 /** Query installed CLI metadata. No user prompt or inference turn is sent. */
-import { spawn } from 'node:child_process';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { buildCommand, execute, resolveExecutable, stopProcess, validateEffort, ProviderError } from './providers.mjs';
+import { buildCommand, closedWithin, execute, makeTempDir, removeTempDir, resolveExecutable, spawnOwned, stopProcess, validateEffort, ProviderError } from './providers.mjs';
 
 const IDS = ['codex', 'claude', 'gemini', 'agy'];
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9_.:/@+\[\]-]{0,99}$/;
@@ -35,19 +33,21 @@ export function parseAgyModels(stdout) {
 }
 
 /** Bounded JSON-lines transaction. Closing it terminates the process group. */
-export async function metadataSession(executable, args, cwd, transact, { signal, timeoutMs = 12000 } = {}) {
+export async function metadataSession(executable, args, cwd, transact, { signal, timeoutMs = 12000, onNotification } = {}) {
   if (signal?.aborted) throw new ProviderError('Model lookup cancelled.', 'ABORTED');
-  const child = spawn(executable.command, [...executable.prefix, ...args], {
-    cwd, shell: false, windowsHide: true, detached: process.platform !== 'win32',
-    stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, NO_COLOR: '1', FORCE_COLOR: '0' },
-  });
+  const child = spawnOwned(executable.command, [...executable.prefix, ...args], { cwd });
   let buffer = '', size = 0, nextId = 0, closed = false, failure;
   const pending = new Map();
-  const fail = error => { failure = error; for (const { reject } of pending.values()) reject(error); pending.clear(); stopProcess(child, 'SIGKILL'); };
+  let rejectFailed;
+  // Rejects when the session fails for any reason, so long waits (such as sign-in) end too.
+  const failed = new Promise((_, reject) => { rejectFailed = reject; });
+  failed.catch(() => {});
+  const fail = error => { if (!failure) { failure = error; rejectFailed(error); } for (const { reject } of pending.values()) reject(error); pending.clear(); stopProcess(child, 'SIGKILL'); };
   const timer = setTimeout(() => fail(new ProviderError('Model lookup timed out.', 'TIMEOUT')), timeoutMs);
   const abort = () => fail(new ProviderError('Model lookup cancelled.', 'ABORTED'));
   signal?.addEventListener('abort', abort, { once: true });
-  const ended = new Promise(resolve => child.once('close', () => { closed = true; fail(new ProviderError('Model metadata is unavailable.', 'CATALOG_FAILED')); resolve(); }));
+  child.once('close', () => { closed = true; fail(new ProviderError('Model metadata is unavailable.', 'CATALOG_FAILED')); });
+  const ended = closedWithin(child);
   child.on('error', () => fail(new ProviderError('Could not start model lookup.', 'CATALOG_FAILED')));
   child.stdin.on('error', () => fail(new ProviderError('Model lookup input failed.', 'CATALOG_FAILED')));
   const send = message => { if (failure) throw failure; child.stdin.write(JSON.stringify(message) + '\n'); };
@@ -71,6 +71,8 @@ export async function metadataSession(executable, args, cwd, transact, { signal,
       } else if (event.method && event.id !== undefined) {
         // Do not grant filesystem, tool, authentication, or permission requests.
         try { send({ jsonrpc: '2.0', id: event.id, error: { code: -32601, message: 'This client only reads model metadata.' } }); } catch {}
+      } else if (event.method && event.id === undefined) {
+        try { onNotification?.(event.method, event.params); } catch {}
       } else if (event.type === 'control_request') {
         try { send({ type: 'control_response', response: { subtype: 'error', request_id: event.request_id, error: 'No tools are allowed during model discovery.' } }); } catch {}
       }
@@ -85,7 +87,7 @@ export async function metadataSession(executable, args, cwd, transact, { signal,
   });
   try {
     if (signal?.aborted) abort();
-    return await transact({ request, send });
+    return await transact({ request, send, failed });
   } finally {
     clearTimeout(timer); signal?.removeEventListener('abort', abort);
     if (!closed) { child.stdin.end(); stopProcess(child, 'SIGKILL'); }
@@ -99,7 +101,7 @@ export async function discoverModels(provider, { signal } = {}) {
     note: 'Could not read models from this CLI. Check sign-in, update the CLI, then refresh. You can use its default or enter a custom model ID.' };
   const executable = await resolveExecutable(provider);
   if (!executable) return { ...fallback, note: 'Install and sign in to this CLI, then refresh the model list.' };
-  const cwd = await mkdtemp(join(tmpdir(), 'ste-models-'));
+  const cwd = await makeTempDir('ste-models-');
   try {
     let models = [], defaultModel = '', defaultEffort = '';
     if (provider === 'agy') {
@@ -128,7 +130,7 @@ export async function discoverModels(provider, { signal } = {}) {
     } else if (provider === 'claude') {
       const { args } = buildCommand({ provider });
       args[args.indexOf('--output-format') + 1] = 'stream-json';
-      args.push('--input-format', 'stream-json', '--verbose');
+      args.push('--input-format', 'stream-json');
       const result = await metadataSession(executable, args, cwd, ({ request }) => request('initialize', { hooks: null }, true), { signal });
       models = normalizeModels(provider, result?.models);
       defaultModel = text(result?.model, 100);
@@ -152,7 +154,7 @@ export async function discoverModels(provider, { signal } = {}) {
   } catch (error) {
     if (signal?.aborted) throw error;
     return fallback;
-  } finally { await rm(cwd, { recursive: true, force: true }); }
+  } finally { await removeTempDir(cwd); }
 }
 
 export function checkModelEffort(provider, model, effort, catalog) {

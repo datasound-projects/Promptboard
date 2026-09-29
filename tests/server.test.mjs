@@ -73,7 +73,10 @@ test('only one generation can run at a time', async t => {
   const app = await open(t, async () => { entered(); await gate; return { text: 'Write one prompt.' }; });
   const first = app.post({ input: 'A request.' });
   await started;
-  assert.equal((await app.post({ input: 'A second request.' })).status, 429);
+  // 409, not 429: a local busy state must not look like a provider rate limit.
+  const second = await app.post({ input: 'A second request.' });
+  assert.equal(second.status, 409);
+  assert.equal((await second.json()).code, 'BUSY');
   release();
   assert.equal((await first).status, 200);
 });

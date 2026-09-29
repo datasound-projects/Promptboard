@@ -26,6 +26,13 @@ let catalog = null;
 let modelsLoading = false;
 let modelSequence = 0;
 let invalidEffort = false;
+let generationSequence = 0;
+let progressTimer = null;
+let authInfo = null;
+let authBusy = false;
+let authSequence = 0;
+const GENERATION_CEILING_MS = 7.5 * 60 * 1000; // Above the server's 6-minute pipeline deadline.
+const STAGE_LABELS = { starting: 'Starting', models: 'Checking model options', draft: 'Drafting', review: 'Reviewing', repair: 'Repairing', 'repair-review': 'Reviewing the repair' };
 
 function safeText(value, max = MAX_PROMPT_BYTES) { return typeof value === 'string' ? value.slice(0, max) : ''; }
 
@@ -171,7 +178,7 @@ function updateProviderState() {
   const provider = selectedProvider();
   const available = Boolean(provider?.available);
   const availableCount = providers.filter((item) => item.available).length;
-  $('#generate-button').disabled = running || modelsLoading || invalidEffort || !available || !token;
+  $('#generate-button').disabled = running || authBusy || modelsLoading || invalidEffort || !available || !token;
   $('#cli-status-dot').classList.toggle('ready', availableCount > 0);
   $('#cli-status-label').textContent = availableCount ? `${availableCount} CLI${availableCount === 1 ? '' : 's'} connected` : 'Connect a CLI';
   $('#provider-note').classList.toggle('unavailable', !available);
@@ -198,6 +205,7 @@ async function loadProviders() {
       if (firstAvailable) $('#provider').value = firstAvailable.id;
     }
     updateProviderState();
+    loadAuth();
     await loadModels({ model: chosenModel(), effort: $('#effort').value });
   } catch (error) {
     token = '';
@@ -254,7 +262,7 @@ function renderModels(model = '', effort = '') {
   $('#model').value = model ? found ? model : '__custom__' : '';
   $('#custom-model').value = found ? '' : model;
   $('#model').disabled = running || modelsLoading;
-  $('#refresh-models').disabled = running || modelsLoading || !token;
+  $('#refresh-models').disabled = running || authBusy || modelsLoading || !token;
   $('#model-note').textContent = modelsLoading ? 'Reading model options from your CLI…' : catalog?.note || 'Use CLI default or enter a custom model ID.';
   updateEffort(effort);
 }
@@ -265,9 +273,8 @@ async function loadModels({ model = '', effort = '', refresh = false } = {}) {
   renderModels(model, effort);
   try {
     if (!token || !selectedProvider()?.available) throw new Error('Install and sign in to this CLI, then refresh models.');
-    const response = await fetch(`/api/models?provider=${encodeURIComponent(provider)}${refresh ? '&refresh=1' : ''}`, { cache: 'no-store', headers: { 'X-STE-Token': token } });
+    const { response, data } = await api(`/api/models?provider=${encodeURIComponent(provider)}${refresh ? '&refresh=1' : ''}`, { timeoutMs: 20000 });
     if (!response.ok) throw new Error('Cannot read model options. Check your CLI, then refresh.');
-    const data = await response.json();
     if (sequence !== modelSequence || provider !== $('#provider').value) return;
     catalog = data;
   } catch (error) {
@@ -293,16 +300,58 @@ function setRunning(value) {
   $('#generation-progress').hidden = !value;
   $('#cancel-button').hidden = !value;
   $('#generate-label').textContent = value ? 'Writing and checking…' : 'Okay , Lets Goooo!';
+  $('#cancel-button').disabled = false;
   $('#new-prompt').disabled = value;
   $('#load-example').disabled = value;
   for (const input of $('#prompt-form').querySelectorAll('input,select,textarea')) input.disabled = value;
   $('#copy-button').disabled = value || !currentResult;
   $('#export-button').disabled = value || !currentResult;
   $('#report-button').disabled = value || !currentResult?.verification;
-  $('#refresh-models').disabled = value || modelsLoading;
+  $('#refresh-models').disabled = value || authBusy || modelsLoading;
   $('#model').disabled = value || modelsLoading;
   updateEffort($('#effort').value);
   renderHistory();
+  renderAuth();
+}
+
+async function api(path, { method = 'GET', body, timeoutMs = 20000, signal } = {}) {
+  // A plain controller keeps this compatible with every fetch implementation; the timer bounds every request.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const forward = () => controller.abort();
+  signal?.addEventListener('abort', forward, { once: true });
+  try {
+    const response = await fetch(path, { method, cache: 'no-store', signal: controller.signal,
+      headers: { 'X-STE-Token': token, ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+    let data = {};
+    try { data = await response.json(); } catch {}
+    return { response, data: data && typeof data === 'object' ? data : {} };
+  } finally { clearTimeout(timer); signal?.removeEventListener('abort', forward); }
+}
+
+function formatElapsed(ms) { const total = Math.max(0, Math.floor(ms / 1000)); return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`; }
+function startProgress() {
+  const started = Date.now();
+  let polling = false;
+  $('#progress-stage').textContent = STAGE_LABELS.starting;
+  $('#progress-elapsed').textContent = '0:00';
+  stopProgress();
+  progressTimer = setInterval(async () => {
+    $('#progress-elapsed').textContent = formatElapsed(Date.now() - started);
+    if (polling) return;
+    polling = true;
+    try {
+      const { data } = await api('/api/status', { timeoutMs: 3000 });
+      if (progressTimer && data.busy?.kind === 'generate') $('#progress-stage').textContent = STAGE_LABELS[data.busy.stage] || 'Working';
+    } catch {} finally { polling = false; }
+  }, 1000);
+}
+function stopProgress() { clearInterval(progressTimer); progressTimer = null; }
+
+function failureMessage(data, fallback) {
+  const message = typeof data.error === 'string' ? data.error : fallback;
+  const reset = typeof data.resetsAt === 'string' && !Number.isNaN(Date.parse(data.resetsAt)) ? ` The provider reports a reset at ${new Date(data.resetsAt).toLocaleString()}.` : '';
+  return message + reset;
 }
 
 function clearOutput() {
@@ -495,7 +544,7 @@ function newPrompt() {
 
 async function generate(event) {
   event.preventDefault();
-  if (running || modelsLoading || invalidEffort || !token || !selectedProvider()?.available) return;
+  if (running || authBusy || modelsLoading || invalidEffort || !token || !selectedProvider()?.available) return;
   const request = settings();
   if (!request.input.trim()) { $('#prompt-input').focus(); return; }
   const previousResult = currentResult;
@@ -506,17 +555,28 @@ async function generate(event) {
   $('#lint-review').hidden = true;
   $('#verification-status').hidden = true;
   $('#verification-report').hidden = true;
-  controller = new AbortController();
+  const sequence = ++generationSequence;
+  const ownController = new AbortController();
+  controller = ownController;
+  let timedOut = false;
+  const ceiling = setTimeout(() => { timedOut = true; ownController.abort(); }, GENERATION_CEILING_MS);
   setRunning(true);
+  startProgress();
   announce('Your CLI is engineering the prompt.');
+  let failureCode = '';
   try {
     const response = await fetch('/api/generate', {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'X-STE-Token': token },
-      body: JSON.stringify(request), signal: controller.signal,
+      body: JSON.stringify(request), signal: ownController.signal,
     });
     let data;
-    try { data = await response.json(); } catch { throw new Error('The server returned an unreadable response. Please try again.'); }
-    if (!response.ok) throw new Error(typeof data.error === 'string' ? data.error : 'The CLI could not complete this prompt.');
+    try { data = await response.json(); } catch { throw new Error('The server returned an unreadable response. Your input is kept. Please try again.'); }
+    // Ignore a response that belongs to an older submission.
+    if (sequence !== generationSequence) return;
+    if (!response.ok) {
+      failureCode = typeof data.code === 'string' ? data.code : '';
+      throw new Error(failureMessage(data, 'The CLI could not complete this prompt.'));
+    }
     if (typeof data.prompt !== 'string' || !data.prompt.trim()) throw new Error('Your CLI returned an empty prompt. Check its sign-in and model, then try again.');
     if (new TextEncoder().encode(data.prompt).byteLength > MAX_PROMPT_BYTES) throw new Error('The result exceeds the 2 MiB output limit. Choose a shorter detail level and try again.');
     const entry = {
@@ -534,17 +594,175 @@ async function generate(event) {
     announce(`${resultMessage}${saved ? '' : ' Browser history was not saved. Copy or export this prompt and its check report to keep them.'}`);
     $('#output-card').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   } catch (error) {
+    if (sequence !== generationSequence) return;
     if (previousResult) showResult(previousResult);
     else { currentResult = null; $('#output-empty').hidden = false; }
-    if (error.name === 'AbortError') announce('Generation canceled.');
-    else {
-      $('#generation-error').textContent = error.message || 'Generation failed. Please try again.';
+    // The request text stays in the input box on every failure path.
+    if (timedOut) {
+      $('#generation-error').textContent = 'The request took too long and was stopped. Your input is kept. Try again or use Fast mode.';
       $('#generation-error').hidden = false;
-      if (/token|session|403/i.test(error.message || '')) await loadProviders();
+    } else if (error.name === 'AbortError' || failureCode === 'ABORTED') announce('Generation canceled. Your input is kept.');
+    else {
+      $('#generation-error').textContent = error.message || 'Generation failed. Your input is kept. Please try again.';
+      $('#generation-error').hidden = false;
+      if (failureCode === 'AUTH_REQUIRED') loadAuth();
+      if (!failureCode && /token|session|403/i.test(error.message || '')) await loadProviders();
     }
   } finally {
-    controller = null;
-    setRunning(false);
+    clearTimeout(ceiling);
+    if (sequence === generationSequence) {
+      stopProgress();
+      controller = null;
+      setRunning(false);
+      updateProviderState();
+    }
+  }
+}
+
+// CLI connection panel. Installation and sign-in are reported separately; sign-in
+// actions use each CLI's own documented flow. No credentials pass through this page.
+async function loadAuth() {
+  const sequence = ++authSequence;
+  const provider = $('#provider').value;
+  if (!token) return;
+  try {
+    const { response, data } = await api(`/api/auth?provider=${encodeURIComponent(provider)}`, { timeoutMs: 20000 });
+    if (sequence !== authSequence || provider !== $('#provider').value) return;
+    authInfo = response.ok ? data : { provider, installed: Boolean(selectedProvider()?.available), state: 'unknown', capabilities: null };
+  } catch {
+    if (sequence !== authSequence) return;
+    authInfo = { provider, installed: Boolean(selectedProvider()?.available), state: 'unknown', capabilities: null };
+  }
+  renderAuth();
+}
+
+function renderAuth() {
+  const provider = $('#provider').value;
+  const info = authInfo?.provider === provider ? authInfo : null;
+  const detected = selectedProvider();
+  const installed = info ? info.installed === true : Boolean(detected?.available);
+  const caps = info?.capabilities || {};
+  $('#connection-install').textContent = !detected && !info ? 'Checking CLI…' : installed ? `CLI installed${detected?.version ? ` · ${safeText(detected.version, 60)}` : ''}` : 'CLI not installed';
+  const method = typeof info?.method === 'string' && info.method ? ` (${safeText(info.method, 40)})` : '';
+  $('#connection-auth').textContent = !info ? 'Sign-in: checking…'
+    : !installed ? 'Sign-in: not available'
+    : info.state === 'signed-in' ? `Signed in${method}${info.stale ? ' · last check' : ''}`
+    : info.state === 'signed-out' ? `Signed out${info.stale ? ' · last check' : ''}`
+    : caps.status === 'unsupported' ? 'Sign-in status: not reported by this CLI' : 'Sign-in status: unknown';
+  const blocked = running || authBusy || !token || !installed;
+  $('#auth-login').textContent = info?.state === 'signed-in' ? 'Reauthenticate' : 'Connect / Sign in';
+  $('#auth-login').disabled = blocked || !info;
+  $('#auth-device').hidden = !caps.device;
+  $('#auth-device').disabled = blocked;
+  $('#auth-logout').disabled = blocked || !info;
+  $('#auth-check').disabled = running || authBusy || !token;
+  $('#refresh-models').disabled = running || authBusy || modelsLoading || !token;
+}
+
+function showAuthDetail(...nodes) {
+  $('#auth-detail').replaceChildren(...nodes);
+  $('#auth-detail').hidden = nodes.length === 0;
+}
+function codeBlock(text, className = '') { const code = document.createElement('code'); code.textContent = text; if (className) code.className = className; return code; }
+function detailButton(label, onClick, className = '') {
+  const button = document.createElement('button'); button.type = 'button'; button.textContent = label; if (className) button.className = className;
+  button.addEventListener('click', onClick); return button;
+}
+function detailActions(...buttons) { const row = document.createElement('div'); row.className = 'detail-actions'; row.append(...buttons); return row; }
+function externalLink(href, label) {
+  const link = document.createElement('a'); link.href = href; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.textContent = label; return link;
+}
+
+function setAuthBusy(value) { authBusy = value; renderAuth(); updateProviderState(); }
+
+async function afterAuthChange(message) {
+  setAuthBusy(false);
+  await loadAuth();
+  loadModels({ model: chosenModel(), effort: $('#effort').value, refresh: true });
+  if (message) announce(message);
+}
+
+async function signIn(method) {
+  const provider = $('#provider').value;
+  const caps = authInfo?.capabilities || {};
+  const name = providerInfo[provider]?.name || 'This CLI';
+  if (caps.login !== 'native') {
+    // Terminal handoff: the CLI needs its own interactive terminal. Existing sign-in is not removed first.
+    showAuthDetail(
+      paragraph(`${name} signs in through its own interactive terminal flow. Run this command in a terminal on this computer and finish the sign-in it starts. Your current sign-in is not removed first.`),
+      codeBlock(caps.loginCommand || provider),
+      ...(caps.loginNote ? [paragraph(caps.loginNote)] : []),
+      paragraph('Then choose Check again.'),
+      detailActions(detailButton('Check again', () => { showAuthDetail(); loadAuth(); loadModels({ model: chosenModel(), effort: $('#effort').value, refresh: true }); })),
+    );
+    return;
+  }
+  setAuthBusy(true);
+  showAuthDetail(paragraph('Starting the sign-in flow in your CLI…'));
+  let finished = false;
+  try {
+    const { response, data } = await api('/api/auth/login', { method: 'POST', body: { provider, method }, timeoutMs: 30000 });
+    let operation = data.operation;
+    if (!response.ok || !operation) {
+      finished = true;
+      showAuthDetail(paragraph(operation?.code === 'UNSUPPORTED' ? 'This CLI does not support sign-in from this app.' : failureMessage(data, 'The CLI could not start sign-in. Try the terminal command instead.')),
+        ...(caps.loginCommand ? [codeBlock(method === 'device' ? caps.deviceCommand || caps.loginCommand : caps.loginCommand)] : []));
+      await afterAuthChange();
+      return;
+    }
+    const cancel = detailButton('Cancel sign-in', () => api('/api/auth/cancel', { method: 'POST', body: {} }).catch(() => {}));
+    if (operation.userCode && operation.verificationUrl) {
+      showAuthDetail(paragraph('Open this page, sign in, and enter the one-time code. Keep this code private.'),
+        externalLink(operation.verificationUrl, 'Open the device sign-in page ↗'), codeBlock(operation.userCode, 'auth-code'), detailActions(cancel));
+    } else if (operation.authUrl) {
+      showAuthDetail(paragraph('Open the sign-in page in your browser and complete sign-in. This panel updates when your CLI confirms it.'),
+        externalLink(operation.authUrl, 'Open the sign-in page ↗'), detailActions(cancel));
+    }
+    // Poll the public operation state. The CLI owns the credentials.
+    const id = operation.id;
+    while (['waiting', 'starting'].includes(operation?.state)) {
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      try { ({ data: { auth: operation } } = await api('/api/status', { timeoutMs: 5000 })); } catch { continue; }
+      if (operation?.id !== id) operation = { state: 'failed' };
+    }
+    finished = true;
+    const state = operation?.state;
+    showAuthDetail(paragraph(state === 'succeeded' ? `${name} confirmed the sign-in.` : state === 'cancelled' ? 'Sign-in was cancelled. Your previous sign-in state is unchanged.'
+      : operation?.code === 'TIMEOUT' ? 'Sign-in timed out. Try again.' : 'Sign-in did not complete. Try again, or use the terminal command.'));
+    await afterAuthChange(state === 'succeeded' ? 'Signed in. Model list refreshed.' : '');
+  } catch {
+    if (!finished) { showAuthDetail(paragraph('The local server did not respond. Check that the app is still running.')); await afterAuthChange(); }
+  }
+}
+
+function signOut() {
+  const provider = $('#provider').value;
+  const caps = authInfo?.capabilities || {};
+  const name = providerInfo[provider]?.name || 'This CLI';
+  if (caps.logout === 'terminal') {
+    showAuthDetail(paragraph(caps.logoutNote || `Sign out from ${name} in a terminal.`), codeBlock(caps.logoutCommand || ''));
+    return;
+  }
+  if (caps.logout !== 'native') {
+    showAuthDetail(paragraph(`${name} documents no sign-out command that this app can run. Sign-out is not available here.`));
+    return;
+  }
+  // Explicit confirmation. Sign-out is shared with every tool that uses this CLI's configuration.
+  showAuthDetail(
+    paragraph(`Sign out of ${name}? The CLI removes its stored sign-in on this computer. Other terminals, editors, and apps that use the same ${name} configuration will also be signed out.`),
+    detailActions(detailButton('Sign out', confirmSignOut, 'danger'), detailButton('Keep me signed in', () => showAuthDetail())),
+  );
+  async function confirmSignOut() {
+    setAuthBusy(true);
+    showAuthDetail(paragraph('Signing out…'));
+    try {
+      const { response, data } = await api('/api/auth/logout', { method: 'POST', body: { provider, confirm: true }, timeoutMs: 30000 });
+      showAuthDetail(paragraph(response.ok ? `${name} is signed out.` : failureMessage(data, 'The CLI could not sign out. Use its terminal command.')));
+      await afterAuthChange(response.ok ? `${name} signed out.` : '');
+    } catch {
+      showAuthDetail(paragraph('The local server did not respond. Check that the app is still running.'));
+      await afterAuthChange();
+    }
   }
 }
 
@@ -609,7 +827,7 @@ function openHelp(privacy = false) {
 
 $('#prompt-form').addEventListener('submit', generate);
 $('#prompt-input').addEventListener('input', updateCount);
-$('#provider').addEventListener('change', () => { updateProviderState(); loadModels(); });
+$('#provider').addEventListener('change', () => { updateProviderState(); authInfo = null; loadAuth(); loadModels(); });
 $('#model').addEventListener('change', () => updateEffort());
 $('#custom-model').addEventListener('input', () => updateEffort($('#effort').value));
 $('#effort').addEventListener('change', () => updateEffort($('#effort').value));
@@ -629,7 +847,11 @@ $('#help-dialog').addEventListener('click', (event) => {
   const box = $('#help-dialog').getBoundingClientRect();
   if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) $('#help-dialog').close();
 });
-$('#cancel-button').addEventListener('click', () => controller?.abort());
+$('#cancel-button').addEventListener('click', () => { if (!controller) return; $('#cancel-button').disabled = true; announce('Cancelling…'); controller.abort(); });
+$('#auth-login').addEventListener('click', () => signIn('browser'));
+$('#auth-device').addEventListener('click', () => signIn('device'));
+$('#auth-logout').addEventListener('click', signOut);
+$('#auth-check').addEventListener('click', () => { loadAuth(); loadModels({ model: chosenModel(), effort: $('#effort').value, refresh: true }); });
 $('#load-example').addEventListener('click', () => {
   if (running) return;
   currentId = null;

@@ -44,9 +44,22 @@ Run `npm run bench` for a local microbenchmark. On the release environment (Linu
 
 See [the evaluation corpus](../evals/README.md) for development and held-out cases. Live evaluations are explicit opt-in and consume CLI usage. Their reports require human calibration; mechanical pass rates and model judgments are not accuracy benchmarks by themselves.
 
+### Reliability, errors, sign-in, and shutdown (29 September 2026)
+
+On macOS (Darwin 25.6, Node.js 24.14.1), `npm ci`, `npm run check`, and `npm test` passed: **116 offline tests**. New tests cover:
+
+- Provider error fixtures: quota versus temporary rate limits, auth, model, and unknown failures, with no diagnostic leaks.
+- Timeout, cancellation followed by an immediate new request, duplicate submissions, stage reporting, and cancellation during a slow model lookup.
+- Sign-in with fake CLIs: status, native Codex browser and device login, cancellation, timeout, unsafe URLs, and exact sign-out commands.
+- Auth endpoint protection, unsupported capabilities, blocked auth/generation overlap, and model-cache refresh after auth changes.
+- Real `bin/ste.mjs` processes stopped with SIGINT during generation, SIGTERM during model discovery, and SIGHUP while idle. Each check confirms that owned processes stopped, temporary folders were removed, and the same port could be bound again. A port held by another process is reported and that process is left alone.
+
+The browser UI was exercised in Chrome. It showed install and sign-in state for the installed Codex 0.156.1 and Claude Code 2.1.284, and the labels for Gemini and Antigravity. The terminal handoff and sign-out confirmation appeared, and "Keep me signed in" was chosen. Progress, cancel, and a quota error were checked with a fake Codex CLI. No sign-in, sign-out, or inference call was made against a real provider.
+
 ### Not verified in this environment
 
-- Authenticated live calls to Codex, Claude Code, Antigravity, or Gemini. No signed-in CLI was available.
+- Authenticated live generation calls to Codex, Claude Code, Antigravity, or Gemini. Live provider error payloads (real quota or rate-limit responses) were not observed; classification uses documented fields and fixtures.
+- A completed real sign-in or sign-out. Claude `auth login` without a terminal was not tested, so it is offered as a terminal handoff.
 - End-to-end prompt quality, full STE compliance, token savings, or improved coding results.
 - Real desktop/mobile rendering, clipboard, and browser downloads. UI logic is tested in jsdom with controlled fixtures.
 - Native macOS/Windows execution or the included GitHub Actions matrix (Node.js 22 and 24).

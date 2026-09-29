@@ -2,7 +2,7 @@
 import { spawn } from 'node:child_process';
 import { startServer, generate } from '../src/server.mjs';
 import { buildPrompt, validateRequest } from '../src/engine.mjs';
-import { detectProviders } from '../src/providers.mjs';
+import { detectProviders, killOwnedProcesses, removeOwnedTempDirsSync } from '../src/providers.mjs';
 import { VERSION } from '../src/version.mjs';
 
 const help = `AI Prompt Engineer ${VERSION} · STE
@@ -69,9 +69,20 @@ async function main() {
       throw error;
     }
     console.log(`\nAI Prompt Engineer ${VERSION} · STE\n${app.url}\n\nPress Ctrl+C to stop.\n`);
-    const stop = async () => { await app.close(); process.exit(0); };
-    process.once('SIGINT', stop);
-    process.once('SIGTERM', stop);
+    // Idempotent shutdown. The first signal cancels work and closes the port with a
+    // bounded grace period; a second signal exits at once. SIGKILL cannot be handled.
+    let stopping = false;
+    const stop = async signal => {
+      if (stopping) { killOwnedProcesses('SIGKILL'); removeOwnedTempDirsSync(); process.exit(130); }
+      stopping = true;
+      console.log(`\n${signal} received. Stopping AI Prompt Engineer…`);
+      const force = setTimeout(() => { killOwnedProcesses('SIGKILL'); removeOwnedTempDirsSync(); process.exit(1); }, 8000);
+      force.unref();
+      try { await app.close(); } catch {}
+      removeOwnedTempDirsSync();
+      process.exit(0);
+    };
+    for (const signal of ['SIGINT', 'SIGTERM', ...(process.platform === 'win32' ? [] : ['SIGHUP'])]) process.on(signal, () => stop(signal));
     if (!options['no-open']) {
       const browser = process.platform === 'darwin' ? ['open', app.url]
         : process.platform === 'win32' ? ['explorer.exe', app.url] : ['xdg-open', app.url];
@@ -128,4 +139,6 @@ async function main() {
   }
 }
 
+// Last line of defense on any exit path: stop owned CLI process groups and remove owned temp folders.
+process.on('exit', () => { killOwnedProcesses('SIGKILL'); removeOwnedTempDirsSync(); });
 main().catch(error => { console.error(error.message); process.exitCode = 1; });

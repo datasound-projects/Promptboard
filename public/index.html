@@ -62,12 +62,23 @@
                 <label class="field-label" for="task">WHAT'S THE JOB?<select id="task" name="task"><option value="build">Build something</option><option value="debug">Debug a problem</option><option value="refactor">Refactor code</option><option value="review">Review code</option><option value="architecture">Design architecture</option><option value="agent-workflow">Create an agent workflow</option><option value="research">Research an approach</option></select></label>
               </div>
               <p class="provider-note" id="provider-note">Uses your installed CLI and its current account.</p>
+              <section class="connection-panel" id="connection-panel" aria-labelledby="connection-heading">
+                <div class="connection-status"><span class="field-label" id="connection-heading">CONNECTION</span><span class="connection-chip" id="connection-install">Checking CLI…</span><span class="connection-chip" id="connection-auth">Sign-in: checking…</span></div>
+                <div class="connection-actions">
+                  <button type="button" class="example-button" id="auth-login">Connect / Sign in</button>
+                  <button type="button" class="example-button" id="auth-device" hidden>Use a device code</button>
+                  <button type="button" class="example-button" id="refresh-models">↻ Refresh models</button>
+                  <button type="button" class="example-button" id="auth-check">Check again</button>
+                  <button type="button" class="example-button" id="auth-logout">Sign out</button>
+                </div>
+                <div class="connection-detail" id="auth-detail" role="status" hidden></div>
+              </section>
               <div class="select-grid model-grid">
                 <label class="field-label" for="model">MODEL<select id="model" aria-describedby="model-note"><option value="">CLI configured default</option><option value="__custom__">Custom model ID…</option></select></label>
                 <label class="field-label" for="effort">REASONING EFFORT<select id="effort" aria-describedby="effort-note"><option value="">CLI default</option></select></label>
               </div>
               <label class="field-label" id="custom-model-field" for="custom-model" hidden>CUSTOM MODEL ID<input id="custom-model" type="text" maxlength="100" autocomplete="off" placeholder="Exact model ID from your CLI"></label>
-              <div class="catalog-status"><p class="provider-note" id="model-note" role="status">Reading your CLI model list…</p><button type="button" class="example-button" id="refresh-models">↻ Refresh models</button></div>
+              <div class="catalog-status"><p class="provider-note" id="model-note" role="status">Reading your CLI model list…</p></div>
               <p class="provider-note effort-note" id="effort-note">Select a model to see its effort levels.</p>
               <fieldset class="detail-control language-control"><legend>OUTPUT LANGUAGE</legend><div class="segmented">
                 <label><input type="radio" name="language" value="en" checked><span>English</span></label>
@@ -97,7 +108,7 @@
         <section class="output-card" aria-labelledby="output-heading" aria-busy="false" id="output-card">
           <div class="card-heading"><div><span class="section-number">02</span><h2 id="output-heading">Your engineered prompt.</h2></div><div class="output-actions"><button class="icon-text-button" id="export-button" type="button" disabled title="Download as Markdown"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 16v5h14v-5"/></svg><span>Export</span></button><button class="copy-button" id="copy-button" type="button" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V4H4v12h4"/></svg><span id="copy-label">Copy prompt</span></button></div></div>
           <div class="output-empty" id="output-empty"><span class="output-empty-mark" aria-hidden="true">⌘</span><p>A good prompt starts with a rough idea.<small>Your engineered prompt will appear here.</small></p></div>
-          <div class="generation-progress" id="generation-progress" role="status" hidden><span class="spinner" aria-hidden="true"></span><div><strong>Writing and checking…</strong><span id="progress-note">Your CLI is working. This may take a moment.</span></div></div>
+          <div class="generation-progress" id="generation-progress" role="status" hidden><span class="spinner" aria-hidden="true"></span><div><strong><span id="progress-stage">Starting</span> · <span id="progress-elapsed">0:00</span></strong><span id="progress-note">Your CLI is working. This may take a moment.</span></div></div>
           <div class="verification-status" id="verification-status" role="status" hidden></div>
           <pre id="prompt-output" tabindex="0" aria-label="Engineered prompt" hidden></pre>
           <div class="output-meta" id="output-meta" hidden></div>

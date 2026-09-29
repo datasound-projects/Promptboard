@@ -74,6 +74,8 @@ Keep the app and CLI in the same environment. If your Windows CLI setup requires
 
 Optional controls add planning, acceptance checks, edge cases, or security review.
 
+The connection panel shows whether the CLI is installed and signed in. It can start sign-in, refresh models, and sign out (after confirmation) using the CLI's own commands. See [sign-in controls](docs/cli-adapters.md#sign-in-controls).
+
 Model choices come from your installed CLI. Availability depends on your account and CLI version. Gemini uses its CLI thinking settings.
 
 ## How it works
@@ -124,6 +126,10 @@ The app runs on your computer. History stays in your browser. Your CLI sends req
 | CLI not detected | Run `node bin/ste.mjs --doctor` |
 | Check the installed app version | Run `node bin/ste.mjs --version` |
 | Model unavailable | Check CLI sign-in and model access, then refresh the model list |
+| Signed out or expired | Use **Connect / Sign in** in the connection panel, or run the shown terminal command, then **Check again** |
+| Usage limit or rate limit | The error says which one the provider reported, with a reset time only when supplied |
+
+Press **Ctrl+C** once to stop: the app cancels running CLI work, removes its temporary folders, and frees the port within a few seconds. Press it again to exit at once. `SIGKILL` (`kill -9`) cannot run cleanup handlers, so avoid it.
 
 Read [security notes](SECURITY.md) and [CLI details](docs/cli-adapters.md).
 
