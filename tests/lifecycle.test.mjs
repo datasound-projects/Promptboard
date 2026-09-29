@@ -38,7 +38,11 @@ test('a timeout reaches a terminal state with a stable code, and the next reques
 test('the pipeline deadline is reported as a timeout, not an unknown error', async t => {
   // AbortSignal.timeout rejects with a TimeoutError DOMException when the six-minute deadline passes.
   await assert.rejects(runPipeline(validateRequest({ input: 'Add a test.', quality: 'fast' }), {
-    runner: ({ signal }) => new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true })), timeoutMs: 30,
+    // Like a real CLI process, keep the event loop alive: AbortSignal.timeout alone does not, and Node can exit first.
+    runner: ({ signal }) => new Promise((_, reject) => {
+      const keepAlive = setTimeout(() => {}, 1000);
+      signal.addEventListener('abort', () => { clearTimeout(keepAlive); reject(signal.reason); }, { once: true });
+    }), timeoutMs: 30,
   }), { name: 'TimeoutError' });
   const app = await open(t, async () => { throw new DOMException('The operation timed out.', 'TimeoutError'); });
   const response = await app.post();
