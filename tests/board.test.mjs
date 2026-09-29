@@ -220,6 +220,22 @@ test('runs: To Do and Done never run; consent is required; without an executor n
   assert.equal(runs.find(item => item.id === first.id).status, 'succeeded');
 });
 
+test('linking defaults the target branch to the checked-out branch; projects without one still start agents', { skip: process.platform === 'win32' }, async t => {
+  const dataDir = await temp(t, 'pb-data-');
+  const root = await repo(t);
+  const executor = { validate: async ({ config }) => ({ provider: 'claude', model: '', effort: '', permissionMode: 'plan', ...config }), start: async () => {} };
+  const board = new Board({ dataDir, executor });
+  const project = await board.createProject({ name: 'App' });
+  const { project: linked } = await board.linkRepository(project.id, { path: root, expectedRevision: 1 });
+  assert.equal(linked.targetBranch.name, 'trunk');
+  // A project linked before the default existed has no target branch.
+  await board.store.update(state => { state.projects.find(item => item.id === project.id).targetBranch = null; });
+  const task = await board.createTask({ projectId: project.id, title: 'Plan it', prompt: 'x' });
+  await board.moveTask(task.id, { column: 'planning', expectedRevision: 1 });
+  assert.equal((await board.requestRun(task.id, { stage: 'planning', consent: true })).status, 'queued');
+  assert.equal((await board.view()).projects[0].targetBranch.name, 'trunk');
+});
+
 test('plan approval is tied to the task text; editing the task makes it stale', async t => {
   const dataDir = await temp(t, 'pb-data-');
   const board = new Board({ dataDir });

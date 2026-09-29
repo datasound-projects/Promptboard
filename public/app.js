@@ -1500,8 +1500,8 @@ function renderRunControls(card, run) {
     // Testing and Merge also keep their own action: run the configured tests, or review the merge.
     if (card.column === 'testing' || card.column === 'merge') box.append(labelled(detailButton(card.column === 'testing' ? 'Run tests…' : 'Merge…', () => openTaskDetails(card.id), 'primary kanban-deliver'), card.column === 'testing' ? 'Run tests' : 'Review the merge'));
     const start = labelled(detailButton(`${STAGE_VERBS[card.column]}…`, () => openRunDialog(card.id, card.column), `${card.column === 'testing' || card.column === 'merge' ? '' : 'primary '}kanban-start`), STAGE_VERBS[card.column]);
-    start.disabled = !board?.execution?.available || !currentProject()?.repository || !currentProject()?.targetBranch;
-    if (start.disabled) start.title = !board?.execution?.available ? 'Agent terminals are not set up.' : 'Link a repository and choose a target branch first.';
+    start.disabled = !board?.execution?.available || !currentProject()?.repository;
+    if (start.disabled) start.title = !board?.execution?.available ? 'Agent terminals are not set up.' : 'Link a repository first.';
     box.append(start);
   }
   box.append(labelled(detailButton('Details', () => openTaskDetails(card.id), 'kanban-details'), 'Task details'));

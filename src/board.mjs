@@ -309,6 +309,9 @@ export class Board {
       project.repository = repository && { path: path.trim(), root: repository.root, commonDir: repository.commonDir, linkedWorktree: repository.linkedWorktree, validatedAt: Date.now() };
       // A different repository makes the recorded target branch meaningless.
       if (!repository || project.targetBranch?.root !== repository.root) project.targetBranch = null;
+      // Default to the checked-out branch so agents can start right away; the user can change it.
+      const current = !project.targetBranch && repository?.branches.find(item => item.name === repository.currentBranch);
+      if (current) project.targetBranch = { name: current.name, commit: current.commit, root: repository.root, recordedAt: Date.now() };
       project.revision++;
       return { project, repository };
     });
@@ -456,6 +459,14 @@ export class Board {
     const project = this.#project(await this.state(), id);
     if (!project.repository) throw new BoardError('Link a Git repository first.', 'REPOSITORY_REQUIRED');
     return validateRepository(project.repository.root);
+  }
+
+  /** A linked project without a target branch (linked before the default existed) uses the checked-out branch. */
+  async #defaultTargetBranch(taskId) {
+    const { project } = this.#task(await this.state(), taskId);
+    if (!project.repository || project.targetBranch) return;
+    const { currentBranch } = await validateRepository(project.repository.root).catch(() => ({}));
+    if (currentBranch) await this.setTargetBranch(project.id, { branch: currentBranch, expectedRevision: project.revision }).catch(() => {});
   }
 
   /** Select the local target branch and record its current commit. Any branch name is allowed. */
@@ -751,6 +762,7 @@ export class Board {
    */
   requestRun(taskId, { stage, consent = false, config = {}, trigger = 'user' } = {}) {
     return this.#locked(`run:${taskId}`, async () => {
+      await this.#defaultTargetBranch(taskId);
       const state = await this.state();
       const { project, task } = this.#task(state, taskId);
       const column = COLUMNS.find(item => item.id === stage);
