@@ -271,3 +271,44 @@ test('Done: only a merge or an explicit no-change completion; cleanup is optiona
   finally { if (saved === undefined) delete process.env.GIT_CONFIG_GLOBAL; else process.env.GIT_CONFIG_GLOBAL = saved; }
   assert.equal(await readFile(join(w.root, '.git', 'config'), 'utf8'), configBefore);
 });
+
+test('automatic merge: only when the project turns it on and every check holds for the current commits', { skip, timeout: 120000 }, async t => {
+  const w = await world(t);
+  const revision = async () => (await w.board.view()).projects[0].revision;
+  await w.delivery.setTestCommands(w.project.id, { commands: [{ command: `${process.execPath} -e "process.exit(0)"` }], expectedRevision: await revision() });
+  const transition = async (id, column) => w.board.transition(id, { column, expectedRevision: (await w.current(id)).revision });
+  const ready = async title => {
+    const task = await w.task(title, 'Change the feature.');
+    await writeFile(join(await w.workspace(task.id), `${title}.txt`), 'x\n');
+    await w.delivery.commit(task.id, { message: title, confirm: true });
+    await w.move(task.id, 'code_review');
+    return task;
+  };
+  // Default: entering Merge does nothing, even when everything passed.
+  assert.equal((await w.board.view()).projects[0].effectiveWorkflow.merge.policy, 'manual');
+  const first = await ready('first');
+  await w.review(first.id); await w.delivery.acceptReview(first.id);
+  await w.move(first.id, 'testing'); await w.tests(first.id);
+  const manual = await transition(first.id, 'merge');
+  assert.equal(manual.task.column, 'merge');
+  assert.equal(manual.merged, undefined);
+  // Turned on: a card without an accepted review is not merged, and the reason is returned.
+  await w.board.setWorkflow(w.project.id, { workflow: { merge: { policy: 'start' } }, expectedRevision: await revision() });
+  const unreviewed = await ready('unreviewed');
+  await w.move(unreviewed.id, 'testing');
+  const refused = await transition(unreviewed.id, 'merge');
+  assert.equal(refused.task.column, 'merge');
+  assert.equal(refused.automation.code, 'MERGE_NOT_ELIGIBLE');
+  assert.match(refused.automation.message, /accepted code review/);
+  // Turned on and every check passed for the current commits: fast-forward merge, recorded as automatic.
+  const second = await ready('second');
+  await w.review(second.id); await w.delivery.acceptReview(second.id);
+  await w.move(second.id, 'testing'); await w.tests(second.id);
+  const before = git(w.remote, 'rev-parse', 'trunk');
+  const merged = await transition(second.id, 'merge');
+  assert.equal(merged.merged, true);
+  assert.equal(merged.task.column, 'done');
+  assert.equal(merged.task.completion.trigger, 'automation');
+  assert.equal(git(w.root, 'rev-parse', 'trunk'), merged.task.completion.mergedCommit);
+  assert.equal(git(w.remote, 'rev-parse', 'trunk'), before, 'Nothing is pushed.');
+});

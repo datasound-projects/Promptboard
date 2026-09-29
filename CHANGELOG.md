@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Kanban: optional **Merge automatically** workflow setting. A card entering Merge is merged only when its accepted review and passing tests belong to exactly the current task and target commits; otherwise nothing is merged and the reason is shown. Manual stays the default.
+- Kanban: collapsible project settings, a board that fills the window, wider columns, compact cards with a ⋯ menu, and easy sideways movement (trackpad swipes over cards, ‹ › buttons, a visible scrollbar, drag to pan).
+- Fix: "Ask on entry" for Testing showed an undefined button and opened the agent dialog.
+
 ## 0.4.0 — 29 September 2026
 
 The app is now **Promptboard**: prompt writing (Compose) plus a local Kanban board that runs your own coding-agent CLI. See `RELEASE-VERIFICATION.md` for what was verified and on which systems.

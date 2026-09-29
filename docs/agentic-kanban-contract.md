@@ -13,7 +13,7 @@ Kangentic was used as a behavior reference only. No code was copied.
 | `executing` | Executing | Yes, after explicit consent |
 | `code_review` | Code Review | Yes, read-only review after explicit consent |
 | `testing` | Testing | No agent: runs the project's approved test commands |
-| `merge` | Merge | Never: a confirmed Git fast-forward |
+| `merge` | Merge | Never: a Git fast-forward, confirmed by you or by the project's "Merge automatically" setting |
 | `done` | Done | Never |
 
 The columns are fixed in `src/board.mjs` (`COLUMNS`). **The backend enforces "never"**: `requestRun` rejects `todo` and `done` with `STAGE_NOT_RUNNABLE`, whatever the UI shows.
@@ -167,7 +167,7 @@ Everything in this section lives in `src/delivery.mjs`. Evidence is tied to the 
   - Only `completeTask` enters Done: through a verified merge (`completion.kind = merged`), or through `complete-no-changes`, allowed only when the branch has no changes (`kind = no_changes`; never described as merged).
   - Moving a card to Done returns `DONE_REQUIRES_MERGE`. Reopening clears the completion.
   - Worktree cleanup stays optional and ownership-checked.
-- **Automation:** "Start on entry" for Code Review starts a review run. For Testing it runs the configured commands. Merge always needs confirmation, and automatic stage advancement does not exist.
+- **Automation:** "Start on entry" for Code Review starts a review run. For Testing it runs the configured commands. Merge is Manual by default. With "Merge automatically" a card entering Merge is merged by Promptboard itself (no agent) through the same gate as a confirmed merge: accepted review and passing tests for the current task and target commits, fast-forward only, clean target checkout. If any check fails, nothing is merged and the reason is returned. The completion records `trigger: "automation"`. Automatic stage advancement does not exist.
 
 ## Integration points for later work
 

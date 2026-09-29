@@ -385,10 +385,11 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
 /* The board fills the window down to the terminal dock; each column scrolls on its own. */
 .kanban-columns { grid-auto-columns: minmax(272px, 1fr); height: clamp(440px, calc(100vh - var(--dock-height) - 150px), 1600px); height: clamp(440px, calc(100dvh - var(--dock-height) - 150px), 1600px); max-height: none; }
 .kanban-column { min-height: 0; }
-.kanban-columns { scroll-snap-type: x proximity; scroll-padding-inline: 14px; cursor: grab; scrollbar-width: auto; scrollbar-color: var(--line-strong) transparent; }
-.kanban-columns.panning { cursor: grabbing; scroll-snap-type: none; user-select: none; }
+/* overscroll-behavior-x stops a swipe at the last stage from triggering the browser's back gesture. */
+.kanban-columns { overscroll-behavior-x: contain; cursor: grab; scrollbar-width: auto; scrollbar-color: var(--line-strong) transparent; }
+.kanban-columns.panning { cursor: grabbing; user-select: none; }
 .kanban-columns .kanban-card { cursor: grab; }
-.kanban-column { scroll-snap-align: start; cursor: default; }
+.kanban-column { cursor: default; }
 /* Always-visible horizontal scrollbar (macOS hides overlay scrollbars otherwise). */
 .kanban-columns::-webkit-scrollbar { height: 12px; }
 .kanban-columns::-webkit-scrollbar-track { background: transparent; }
@@ -402,7 +403,8 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
 .board-scroll { width: 34px; height: 34px; border: 1px solid var(--line-strong); border-radius: 8px; font-size: 20px; line-height: 1; color: var(--ink); }
 .board-scroll:disabled { opacity: .35; cursor: default; }
 .board-actions .copy-button { margin-left: 6px; }
-.kanban-column .kanban-cards { overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+/* Vertical scrolling stays in the column; sideways swipes pass through to the board. */
+.kanban-column .kanban-cards { overflow-x: hidden; overflow-y: auto; overscroll-behavior-x: auto; overscroll-behavior-y: contain; scrollbar-gutter: stable; }
 .kanban-card { padding: 10px 12px; }
 .kanban-card h4 { margin: 6px 0 2px; font-size: 13px; line-height: 1.35; }
 .kanban-preview { font-family: inherit; font-size: 12.5px; line-height: 1.45; -webkit-line-clamp: 2; line-clamp: 2; }
@@ -483,3 +485,4 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
   .dock-tabs { order: 2; flex-basis: 100%; }
   .dock-actions { gap: 8px; margin-left: auto; overflow-x: auto; }
 }
+.workflow-stage textarea { min-height: 0; height: 92px; resize: vertical; }

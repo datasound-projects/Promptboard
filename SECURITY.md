@@ -14,7 +14,7 @@ Report problems privately through GitHub: **Security → Report a vulnerability*
 
 **Agents stay in their worktree.** Each task gets its own Git worktree and branch outside your checkout. Planning and Code Review use each CLI's read-only mode (Claude Code plan mode with read tools only, Codex `--sandbox read-only`, Gemini plan mode plus a deny policy). Executing uses the CLI's normal approval mode. Promptboard never passes bypass, "yolo", or full-access flags, never pre-trusts a folder, and never edits your CLI configuration.
 
-**You confirm the important steps.** Runs start only when you start them or turn on automatic start for a stage. A stage succeeds only when you confirm it. Commits, merges, and branch updates need confirmation. Merges are fast-forward only and are never pushed. Promptboard never force-resets, stashes, or deletes a dirty worktree.
+**You confirm the important steps.** Runs start only when you start them or turn on automatic start for a stage. A stage succeeds only when you confirm it. Commits and branch updates need confirmation. Merges need confirmation unless you turn on **Merge automatically** for a project; even then Promptboard merges only when the accepted review and passing tests belong to exactly the current task and target commits. Merges are fast-forward only and are never pushed. Promptboard never force-resets, stashes, or deletes a dirty worktree.
 
 **Processes are owned.** Stopping a run, or Promptboard itself, stops only the process groups it started.
 

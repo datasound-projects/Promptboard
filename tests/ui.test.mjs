@@ -993,10 +993,12 @@ test('workflow settings: Ask by default, Manual does nothing, Start runs as a se
   assert.match($('#workflow-summary').textContent, /Planning: Ask on entry · Executing: Ask on entry/);
   $('#workflow-open').click();
   const stages = [...$('#workflow-stages').querySelectorAll('.workflow-stage')];
-  assert.deepEqual(stages.map(box => box.dataset.stage), ['planning', 'executing', 'code_review', 'testing'], 'To Do, Merge, and Done have no run setting.');
-  assert.ok(stages.every(box => box.querySelector('input[value="ask"]').checked), 'Ask on entry is the default.');
+  assert.deepEqual(stages.map(box => box.dataset.stage), ['planning', 'executing', 'code_review', 'testing', 'merge'], 'To Do and Done have no workflow setting.');
+  assert.match(stages.at(-1).textContent, /Merge automatically/);
+  assert.equal(stages.at(-1).querySelector('input[value="manual"]').checked, true, 'Merge is manual by default.');
+  assert.ok(stages.slice(0, -1).every(box => box.querySelector('input[value="ask"]').checked), 'Ask on entry is the default for the run stages.');
   assert.match(stages[0].querySelector('.workflow-preview').textContent, /asks whether to start/);
-  assert.match($('#workflow-stages').textContent, /To Do and Done never run agents\. Merge always needs your explicit confirmation/);
+  assert.match($('#workflow-stages').textContent, /To Do and Done never run agents\. Merges are fast-forward only and never pushed/);
   $('#workflow-cancel').click();
   // Ask on entry: a question appears; nothing starts until the user agrees.
   await moveBy(ctx, 'Alpha', 'planning'); await ctx.idle();

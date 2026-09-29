@@ -1204,7 +1204,8 @@ async function placeCard(id, column, index, retried = false) {
   renderBoard();
   announce(column === card.column ? `Moved “${card.title}” to position ${position + 1} of ${others.length + 1}.` : `Moved “${card.title}” to ${columnTitle(column)}. Moving a card does not run or approve that stage.`);
   if (result.run) { announce(`Moved “${card.title}” to ${columnTitle(column)}. The workflow setting started an agent run.`); window.PromptboardDock?.open(result.run.id); }
-  if (result.automation) showProjectDetail(paragraph(`Moved to ${columnTitle(column)}, but the automatic start did not happen: ${result.automation.message}`, 'kanban-error'));
+  if (result.merged) announce(`“${card.title}” passed every check and was merged automatically into ${result.task?.completion?.targetBranch || 'the target branch'}. Nothing was pushed.`);
+  if (result.automation) showProjectDetail(paragraph(column === 'merge' ? `Moved to Merge. ${result.automation.message}` : `Moved to ${columnTitle(column)}, but the automatic start did not happen: ${result.automation.message}`, 'kanban-error'));
   if (result.ask) askToStart(findTask(id), result.ask.stage);
   return true;
 }
@@ -1460,9 +1461,12 @@ function renderRunControls(card, run) {
 function askToStart(card, stage) {
   if (!card) return;
   const panel = $('#ask-panel');
-  const yes = detailButton(`${STAGE_VERBS[stage]}…`, () => { panel.hidden = true; openRunDialog(card.id, stage); }, 'danger');
-  const no = detailButton('Not now', () => { panel.hidden = true; announce('No agent was started.'); });
-  panel.replaceChildren(paragraph(`“${card.title}” is now in ${columnTitle(stage)}. Start the agent for this stage? Nothing starts until you confirm.`), detailActions(yes, no));
+  // Testing and Merge open task details, where tests run and the merge preview is confirmed.
+  const agent = Boolean(STAGE_VERBS[stage]);
+  const verb = agent ? STAGE_VERBS[stage] : stage === 'testing' ? 'Run tests' : 'Review the merge';
+  const yes = detailButton(`${verb}…`, () => { panel.hidden = true; agent ? openRunDialog(card.id, stage) : openTaskDetails(card.id); }, 'danger');
+  const no = detailButton('Not now', () => { panel.hidden = true; announce(agent ? 'No agent was started.' : 'Nothing was started.'); });
+  panel.replaceChildren(paragraph(`“${card.title}” is now in ${columnTitle(stage)}. ${agent ? 'Start the agent for this stage?' : `${verb} now?`} Nothing starts until you confirm.`), detailActions(yes, no));
   panel.hidden = false;
   yes.focus();
 }
@@ -1590,10 +1594,14 @@ async function openTaskDetails(taskId) {
 
 function workflowSummary(project) {
   const flow = project.effectiveWorkflow || {};
-  return ['planning', 'executing'].map(stage => `${columnTitle(stage)}: ${POLICY_LABELS[flow[stage]?.policy] || 'Ask on entry'}`).join(' · ');
+  return [...['planning', 'executing'].map(stage => `${columnTitle(stage)}: ${POLICY_LABELS[flow[stage]?.policy] || 'Ask on entry'}`),
+    ...(flow.merge?.policy === 'start' ? ['Merge: automatic'] : [])].join(' · ');
 }
 
 function workflowPreview(stage, settings) {
+  if (stage === 'merge') return settings.policy === 'manual' ? 'Moving a card here does nothing. You review the merge preview and confirm it.'
+    : settings.policy === 'ask' ? 'Moving a card here asks whether to open the merge preview. You still confirm the merge.'
+    : 'Moving a card here merges it at once, but only if the code review was accepted and the tests passed for exactly the current task and target commits, the merge is a fast-forward, and the target checkout is clean. Otherwise nothing is merged and the reason is shown. Nothing is pushed.';
   const provider = providerName(settings.provider);
   const what = stage === 'planning' ? `${provider} writes a read-only plan` : stage === 'code_review' ? `${provider} reviews the committed diff read-only`
     : stage === 'testing' ? 'your configured test commands run in the task worktree' : `${provider} works in the task worktree`;
@@ -1607,7 +1615,7 @@ function openWorkflowDialog() {
   if (!project) return;
   $('#workflow-dialog-project').textContent = `${project.name} · WORKFLOW`;
   const stages = [];
-  for (const stage of ['planning', 'executing', 'code_review', 'testing']) {
+  for (const stage of ['planning', 'executing', 'code_review', 'testing', 'merge']) {
     const settings = project.effectiveWorkflow?.[stage] || {};
     const box = document.createElement('fieldset');
     box.className = 'workflow-stage';
@@ -1617,7 +1625,7 @@ function openWorkflowDialog() {
     for (const value of ['manual', 'ask', 'start']) {
       const label = document.createElement('label');
       const input = document.createElement('input'); input.type = 'radio'; input.name = `policy-${stage}`; input.value = value; input.checked = settings.policy === value;
-      const span = document.createElement('span'); span.textContent = POLICY_LABELS[value];
+      const span = document.createElement('span'); span.textContent = stage === 'merge' && value === 'start' ? 'Merge automatically' : POLICY_LABELS[value];
       label.append(input, span); policy.append(label);
     }
     const preview = paragraph(workflowPreview(stage, settings), 'workflow-preview');
@@ -1647,13 +1655,13 @@ function openWorkflowDialog() {
       commandsField.append(commands);
       children.push(commandsField);
     }
-    if (stage !== 'testing') children.push(instructionsField);
+    if (stage !== 'testing' && stage !== 'merge') children.push(instructionsField);
     children.push(preview);
     box.append(...children);
     box.addEventListener('change', () => { preview.textContent = workflowPreview(stage, readWorkflowStage(box)); });
     stages.push(box);
   }
-  const fixed = paragraph('To Do and Done never run agents. Merge always needs your explicit confirmation, and only a verified merge or “Reviewed: no changes required” reaches Done.', 'workflow-preview');
+  const fixed = paragraph('To Do and Done never run agents. Merges are fast-forward only and never pushed; only a verified merge or “Reviewed: no changes required” reaches Done.', 'workflow-preview');
   $('#workflow-stages').replaceChildren(...stages, fixed);
   $('#workflow-error').hidden = true;
   $('#workflow-dialog').showModal();
@@ -1707,7 +1715,7 @@ async function renderDelivery(card, container, section, pre) {
   if (card.completion) {
     const done = card.completion;
     nodes.push(section('Completed', paragraph(done.kind === 'merged'
-      ? `Merged into ${done.targetBranch}: ${short(done.previousTarget)} → ${short(done.mergedCommit)} (${done.method}). Nothing was pushed.`
+      ? `Merged${done.trigger === 'automation' ? ' automatically (project workflow setting)' : ''} into ${done.targetBranch}: ${short(done.previousTarget)} → ${short(done.mergedCommit)} (${done.method}). Nothing was pushed.`
       : 'Reviewed: no changes required. Nothing was merged.')));
   }
   if (card.workspace?.status !== 'ready') {

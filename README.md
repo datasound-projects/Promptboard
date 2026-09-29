@@ -72,7 +72,7 @@ Open **http://127.0.0.1:4318** if the browser does not open. Use `npm start -- -
 | Executing | The agent edits files in the task's own worktree and branch. You confirm when it is done. |
 | Code Review | You commit the changes, then an agent reviews the diff read-only and lists findings. You accept them or send the task back. |
 | Testing | Your test commands run in the worktree, without a shell. Only exit codes count. |
-| Merge | You confirm a fast-forward merge into the target branch. Nothing is pushed. |
+| Merge | You confirm a fast-forward merge into the target branch, or turn on **Merge automatically**: then a card merges on entry only if its accepted review and passing tests belong to exactly the current commits. Nothing is pushed. |
 | Done | Reached only by a verified merge or an explicit "no changes required". |
 
 Each project chooses what happens when a card enters a stage: **Manual**, **Ask** (default), or **Start automatically**. Starting an agent by hand always shows a consent dialog; automatic start is a setting you turn on per project and stage. Terminals open in the dock at the bottom of the page. You can collapse the dock, reload the page, or run several tasks at once (one by default, up to four). Promptboard never passes a bypass or "yolo" permission flag, never pre-trusts a folder for a CLI, and never force-resets or stashes your work.

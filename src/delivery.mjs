@@ -294,7 +294,7 @@ export class Delivery {
   }
 
   /** Confirmed fast-forward-only merge, serialized per repository, rechecked immediately before. */
-  async merge(taskId, { confirm, taskCommit, targetCommit }) {
+  async merge(taskId, { confirm, taskCommit, targetCommit, trigger = 'user' }) {
     if (confirm !== true) throw fail('Confirm the merge first.', 'CONFIRMATION_REQUIRED', 400);
     const { ws, target } = await this.#context(taskId);
     return this.#locked(`repo:${ws.commonDir}`, async () => {
@@ -317,7 +317,7 @@ export class Delivery {
       }
       const result = await this.#rev(ws.repositoryRoot, `refs/heads/${target}`);
       if (result !== taskCommit) throw fail(`The merge could not be verified: ${target} is at ${result.slice(0, 12)}.`, 'MERGE_UNVERIFIED', 500);
-      return this.board.completeTask(taskId, { kind: 'merged', details: { targetBranch: target, previousTarget: targetCommit, mergedCommit: result, method, commits: preview.commits.length } });
+      return this.board.completeTask(taskId, { kind: 'merged', details: { targetBranch: target, previousTarget: targetCommit, mergedCommit: result, method, commits: preview.commits.length, trigger } });
     });
   }
 

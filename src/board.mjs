@@ -33,7 +33,7 @@ const RUN_NEXT = { queued: ['running', 'cancelled', 'failed', 'interrupted'], ru
 const EXECUTABLE_STAGES = new Set(['planning', 'executing', 'code_review']);
 // Per-stage workflow settings. Projects store overrides; defaults apply otherwise.
 // To Do, Merge, and Done have no run policy: To Do and Done never run, and a merge always needs confirmation.
-export const WORKFLOW_STAGES = Object.freeze(['planning', 'executing', 'code_review', 'testing']);
+export const WORKFLOW_STAGES = Object.freeze(['planning', 'executing', 'code_review', 'testing', 'merge']);
 const POLICIES = ['manual', 'ask', 'start'];
 export const DEFAULT_STAGE_SETTINGS = Object.freeze({ policy: 'ask', provider: 'claude', model: '', effort: '', permissionMode: '', instructions: '' });
 const RUN_FIELDS = ['hasReview', 'startedAt', 'endedAt', 'providerSessionId', 'waitingReason', 'errorCode', 'exitCode', 'hasPlan', 'planExcerpt', 'turns', 'lifecycle'];
@@ -154,7 +154,8 @@ export function normalizeWorkflow(input) {
 /** Defaults merged with a project's overrides. */
 export function effectiveWorkflow(project) {
   return Object.fromEntries(WORKFLOW_STAGES.map(stage => {
-    const base = { ...DEFAULT_STAGE_SETTINGS, ...(EXECUTABLE_STAGES.has(stage) ? resolveConfig(stage, {}) : {}) };
+    // Merge stays manual unless a project turns on automatic merging.
+    const base = { ...DEFAULT_STAGE_SETTINGS, ...(stage === 'merge' ? { policy: 'manual' } : {}), ...(EXECUTABLE_STAGES.has(stage) ? resolveConfig(stage, {}) : {}) };
     return [stage, { ...base, ...(project?.workflow?.[stage] || {}) }];
   }));
 }
@@ -316,10 +317,16 @@ export class Board {
     const settings = effectiveWorkflow(before.project)[column];
     if (settings.policy === 'ask') result.ask = { stage: column };
     if (settings.policy === 'start') {
-      // Testing runs the project's approved commands; the agent stages request a run.
+      // Testing runs the project's approved commands; Merge merges only when every check holds for
+      // the current commits (the same gate as a confirmed merge); the agent stages request a run.
       try {
         if (column === 'testing') result.tests = await this.delivery.runTests(id, { confirm: true });
-        else result.run = await this.requestRun(id, { stage: column, consent: true, trigger: 'automation' });
+        else if (column === 'merge') {
+          const preview = await this.delivery.mergePreview(id);
+          if (!preview.eligible) throw new BoardError(`Not merged automatically: ${preview.problems.join(' ')}`, 'MERGE_NOT_ELIGIBLE');
+          result.task = await this.delivery.merge(id, { confirm: true, taskCommit: preview.taskCommit, targetCommit: preview.targetCommit, trigger: 'automation' });
+          result.merged = true;
+        } else result.run = await this.requestRun(id, { stage: column, consent: true, trigger: 'automation' });
       } catch (error) { result.automation = { started: false, code: error.code || 'FAILED', message: error.message }; }
     }
     return result;
