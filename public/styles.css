@@ -40,7 +40,6 @@ kbd { font: 11px/1.4 var(--mono); padding: 1px 5px; border: 1px solid var(--line
 .icon-button:hover { background: var(--surface-2); border-color: var(--line); }
 .icon-button svg { width: 20px; height: 20px; }
 .brand { display: flex; align-items: center; gap: 10px; flex: none; text-decoration: none; color: var(--ink); font-size: 14px; font-weight: 700; letter-spacing: -.3px; line-height: 1.2; }
-.brand small { display: block; margin-top: 2px; font: 600 10px/1.3 var(--mono); letter-spacing: 1.2px; color: var(--subtle); }
 .page-nav { display: flex; align-items: center; gap: 4px; margin-left: 12px; padding-left: 12px; border-left: 1px solid var(--line); }
 .page-nav a { display: inline-flex; align-items: center; gap: 6px; padding: 7px 11px; border-radius: 7px; font-size: 13px; font-weight: 500; text-decoration: none; color: var(--muted); white-space: nowrap; }
 .page-nav a:hover { color: var(--ink); background: var(--surface-2); }
@@ -295,9 +294,6 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
 @media (max-width: 1100px) {
   :root { --sidebar: 240px; }
   .workspace { padding: 26px 28px 24px; }
-}
-@media (max-width: 900px) {
-  .brand small { display: none; }
 }
 @media (max-width: 730px) {
   .workspace { margin-left: 0; padding: 22px 16px 20px; }
