@@ -179,7 +179,7 @@ setInterval(() => {}, 1000);
       catch (error) { if (error.code === 'ESRCH') alive = false; else throw error; }
       if (alive && process.platform === 'linux') {
         try { alive = !/^[^\n]+\) Z /.test(await readFile(`/proc/${report.pid}/stat`, 'utf8')); }
-        catch (error) { if (error.code === 'ENOENT') alive = false; else throw error; }
+        catch (error) { if (error.code === 'ENOENT' || error.code === 'ESRCH') alive = false; else throw error; }
       }
       if (alive) await new Promise(resolve => setTimeout(resolve, 10));
     }
