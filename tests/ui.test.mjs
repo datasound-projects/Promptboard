@@ -1081,7 +1081,7 @@ test('workflow settings: Ask by default, Manual does nothing, Start runs as a se
 
 test('starting a run needs consent and an acknowledgment for unverified prompts; details show prompt, plan, approval, and history', { skip: process.platform === 'win32' }, async t => {
   const ctx = await linkedKanban(t);
-  const { $, win } = ctx;
+  const { $, win, choose } = ctx;
   await link(ctx);
   const created = await ctx.app.board.createTask({ projectId: ctx.project.id, title: 'Parser', prompt: 'Fix the parser.', source: { provider: 'codex', verification: 'needs-review', quality: 'reviewed' } });
   await ctx.app.board.moveTask(created.id, { column: 'planning', expectedRevision: 1 });
@@ -1091,6 +1091,17 @@ test('starting a run needs consent and an acknowledgment for unverified prompts;
   assert.match($('#run-dialog-summary').textContent, /cannot change files/);
   assert.equal($('#run-ack-field').hidden, false, 'An unverified prompt needs an acknowledgment.');
   assert.deepEqual(Array.from($('#run-permission').options, item => item.value), ['plan']);
+  // The model list comes from the installed CLI; a custom ID is still possible.
+  await until(() => $('#run-model').options.length > 2, 'model list');
+  assert.deepEqual(Array.from($('#run-model').options, item => item.value), ['', 'opus', 'haiku', '__custom__']);
+  assert.equal($('#run-model-custom').hidden, true);
+  choose('#run-model', '__custom__');
+  assert.equal($('#run-model-custom').hidden, false);
+  $('#run-ack').checked = true;
+  submitForm(ctx, '#run-form'); await ctx.idle();
+  assert.match($('#run-error').textContent, /Enter the custom model ID/);
+  $('#run-ack').checked = false;
+  choose('#run-model', 'haiku');
   submitForm(ctx, '#run-form'); await ctx.idle();
   assert.match($('#run-error').textContent, /Confirm that you reviewed this prompt/);
   assert.equal(ctx.executor.started.length, 0);
@@ -1100,6 +1111,7 @@ test('starting a run needs consent and an acknowledgment for unverified prompts;
   assert.equal(ctx.executor.started.length, 1);
   const run = ctx.executor.started[0];
   assert.equal(run.trigger, 'user');
+  assert.equal(run.config.model, 'haiku', 'The selected model is used.');
   // Simulate the plan turn the real supervisor records from provider events.
   await ctx.app.board.updateRun(run.id, { status: 'running' });
   await ctx.app.board.updateRun(run.id, { status: 'waiting_for_input', turns: 1, hasPlan: true, planExcerpt: 'PLAN' });
@@ -1112,7 +1124,7 @@ test('starting a run needs consent and an acknowledgment for unverified prompts;
   assert.match(details, /Draft—review needed\. Task text revision 1/);
   assert.match(details, /Fix the parser\./);
   assert.match(details, /PLAN\n1\. Change the parser\./);
-  assert.match(details, /Claude Code · CLI default/);
+  assert.match(details, /Claude Code · haiku/);
   assert.match(details, /waiting for input/);
   await click(ctx, byText($('#task-details'), 'Approve plan'));
   const approved = (await serverTasks(ctx))[0];

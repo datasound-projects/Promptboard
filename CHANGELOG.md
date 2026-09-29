@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Kanban: the Model field when starting an agent (and in Workflow settings) is a list of the models your CLI reports, with “CLI default” and “Custom model ID…”, instead of a free-text box.
+
 - Kanban: **Open folder…** in the workspace sidebar opens the system folder picker and turns the folder into a linked project (or offers Git setup when needed). A folder already used by a project selects that project. **Browse…** next to the repository path uses the same picker. Without a system picker, you type the path.
 
 - Compose: prompt history keeps the last 500 prompts (was 40). If the browser's storage is full, the oldest prompts are dropped first and the app says how many; the newest prompt is always kept.

@@ -1508,6 +1508,35 @@ function askToStart(card, stage) {
   yes.focus();
 }
 
+// Model choices for agent runs come from the installed CLI (the same list Compose shows, cached by
+// the server). "Custom model ID…" keeps any other ID possible; the CLI still validates it.
+const runCatalogs = new Map();
+function modelCatalog(provider) {
+  if (!runCatalogs.has(provider)) {
+    runCatalogs.set(provider, api(`/api/models?provider=${encodeURIComponent(provider)}`, { timeoutMs: 20000 })
+      .then(({ response, data }) => response.ok ? data : null).catch(() => null)
+      .then(data => { if (!data?.models?.length) runCatalogs.delete(provider); return data || { models: [] }; }));
+  }
+  return runCatalogs.get(provider);
+}
+function fillModelSelect(select, custom, catalog, value = '', loading = false) {
+  const models = catalog?.models || [];
+  const known = !value || models.some(item => item.id === value);
+  select.replaceChildren(option('', loading ? 'Reading models from your CLI…' : catalog?.defaultModel ? `CLI default (${catalog.defaultModel})` : 'CLI default'),
+    ...models.map(item => option(item.id, item.name && item.name !== item.id ? `${item.name} · ${item.id}` : item.id)),
+    option('__custom__', 'Custom model ID…'));
+  // While the list loads, a saved model stays selected as a custom ID so it is never lost.
+  select.value = known ? value : '__custom__';
+  if (!known) custom.value = value;
+  custom.hidden = select.value !== '__custom__';
+}
+async function loadModelSelect(select, custom, provider, value) {
+  fillModelSelect(select, custom, null, value, true);
+  const catalog = await modelCatalog(provider);
+  if (select.dataset.provider === provider) fillModelSelect(select, custom, catalog, select.value === '__custom__' ? custom.value.trim() : select.value || value);
+}
+function chosenModelFrom(select, custom) { return select.value === '__custom__' ? custom.value.trim() : select.value; }
+
 function fillSelect(select, values, labels = {}) { select.replaceChildren(...values.map(value => option(value, labels[value] ?? (value || 'CLI default')))); }
 
 function renderRunFields(provider, stage, settings = {}) {
@@ -1524,7 +1553,9 @@ function renderRunFields(provider, stage, settings = {}) {
   fillSelect($('#run-permission'), modes, { plan: 'Read-only planning', acceptEdits: 'Accept edits in the worktree', default: 'Ask before every change', 'workspace-write': 'Write in the worktree, ask for more', auto_edit: 'Accept edits, ask for tools' });
   $('#run-permission').value = modes.includes(settings.permissionMode) ? settings.permissionMode : modes[0] || '';
   $('#run-permission').disabled = modes.length < 2;
-  $('#run-model').value = chosen === settings.provider ? settings.model || '' : '';
+  $('#run-model').dataset.provider = chosen;
+  $('#run-model-custom').value = '';
+  loadModelSelect($('#run-model'), $('#run-model-custom'), chosen, chosen === settings.provider ? settings.model || '' : '');
   $('#run-dialog-how').textContent = providers[chosen]?.[stage === 'executing' ? 'execution' : 'planning']?.how || '';
 }
 
@@ -1560,7 +1591,8 @@ async function submitRun(event) {
   if (!card) return;
   const showError = message => { $('#run-error').textContent = message; $('#run-error').hidden = false; };
   if (!$('#run-ack-field').hidden && !$('#run-ack').checked) { showError('Confirm that you reviewed this prompt first.'); return; }
-  const config = { provider: $('#run-provider').value, model: $('#run-model').value.trim(), effort: $('#run-effort').value, permissionMode: $('#run-permission').value };
+  if ($('#run-model').value === '__custom__' && !$('#run-model-custom').value.trim()) { showError('Enter the custom model ID, or choose a model from the list.'); $('#run-model-custom').focus(); return; }
+  const config = { provider: $('#run-provider').value, model: chosenModelFrom($('#run-model'), $('#run-model-custom')), effort: $('#run-effort').value, permissionMode: $('#run-permission').value };
   $('#run-start').disabled = true;
   try {
     const { run } = await boardCall('POST', `/api/tasks/${encodeURIComponent(card.id)}/runs`, { stage: context.stage, consent: true, config }, 120000);
@@ -1676,10 +1708,17 @@ function openWorkflowDialog() {
       fillSelect(providerSelect, supported.length ? supported : ['claude'], Object.fromEntries(Object.entries(providers).map(([id, item]) => [id, item.name])));
       providerSelect.value = settings.provider || 'claude';
       providerField.append(providerSelect);
+      const modelBox = document.createElement('div'); modelBox.className = 'model-field';
       const modelField = document.createElement('label'); modelField.className = 'field-label'; modelField.textContent = 'Model';
-      const model = document.createElement('input'); model.type = 'text'; model.maxLength = 100; model.placeholder = 'CLI default'; model.value = settings.model || ''; model.dataset.field = 'model';
+      const model = document.createElement('select'); model.dataset.field = 'model';
+      const custom = document.createElement('input'); custom.type = 'text'; custom.maxLength = 100; custom.placeholder = 'Custom model ID'; custom.spellcheck = false; custom.dataset.field = 'model-custom'; custom.setAttribute('aria-label', `Custom model ID for ${columnTitle(stage)}`);
       modelField.append(model);
-      grid.append(providerField, modelField);
+      modelBox.append(modelField, custom);
+      const reload = value => { model.dataset.provider = providerSelect.value; loadModelSelect(model, custom, providerSelect.value, value); };
+      reload(settings.model || '');
+      providerSelect.addEventListener('change', () => { custom.value = ''; reload(''); });
+      model.addEventListener('change', () => { custom.hidden = model.value !== '__custom__'; if (!custom.hidden) custom.focus(); });
+      grid.append(providerField, modelBox);
       children.push(grid);
     }
     const instructionsField = document.createElement('label'); instructionsField.className = 'field-label'; instructionsField.textContent = 'Stage instructions (optional, added before the task text)';
@@ -1707,7 +1746,7 @@ function openWorkflowDialog() {
 function readWorkflowStage(box) {
   const value = field => box.querySelector(`[data-field="${field}"]`)?.value;
   const result = { policy: box.querySelector('input[type="radio"]:checked')?.value || 'ask', instructions: value('instructions') || '' };
-  if (value('provider')) Object.assign(result, { provider: value('provider'), model: (value('model') || '').trim() });
+  if (value('provider')) Object.assign(result, { provider: value('provider'), model: (value('model') === '__custom__' ? value('model-custom') || '' : value('model') || '').trim() });
   return result;
 }
 
@@ -2260,6 +2299,7 @@ $('#workflow-cancel').addEventListener('click', () => $('#workflow-dialog').clos
 $('#workflow-dialog-close').addEventListener('click', () => $('#workflow-dialog').close());
 $('#run-form').addEventListener('submit', submitRun);
 $('#run-provider').addEventListener('change', () => renderRunFields($('#run-provider').value, runDialogContext?.stage, {}));
+$('#run-model').addEventListener('change', () => { $('#run-model-custom').hidden = $('#run-model').value !== '__custom__'; if (!$('#run-model-custom').hidden) $('#run-model-custom').focus(); });
 $('#run-cancel').addEventListener('click', () => $('#run-dialog').close());
 $('#run-dialog-close').addEventListener('click', () => $('#run-dialog').close());
 $('#task-dialog-close').addEventListener('click', () => $('#task-dialog').close());
