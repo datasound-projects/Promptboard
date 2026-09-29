@@ -28,13 +28,17 @@ async function setup(t, { catalogReader = async id => ({ provider: id, ...catalo
     runner: runner ? async request => { calls.push(request); return runner(request); } : async request => { calls.push(request); return { text: request.prompt.includes('prose in Polish') ? 'Dodaj test.' : request.prompt.includes('prose in German') ? 'Füge einen Test hinzu.' : 'Add a test.', reportedModels: ['actual-model'], durationMs: 3 }; } });
   const dom = new JSDOM(await readFile(new URL('../public/index.html', import.meta.url), 'utf8'), { url: app.url + hash, runScripts: 'outside-only' });
   const win = dom.window;
+  let pending = 0;
   win.fetch = (url, options) => {
+    pending++;
+    const done = response => { pending--; return response; };
+    const fail = error => { pending--; throw error; };
     if (url === '/api/generate') {
       const request = JSON.parse(options.body);
       requests.push(request);
-      if (generationResponse) return Promise.resolve(Response.json(typeof generationResponse === 'function' ? generationResponse(request) : generationResponse));
+      if (generationResponse) return Promise.resolve(Response.json(typeof generationResponse === 'function' ? generationResponse(request) : generationResponse)).then(done, fail);
     }
-    return fetch(new URL(url, app.url), options);
+    return fetch(new URL(url, app.url), options).then(done, fail);
   };
   win.TextEncoder = TextEncoder;
   win.AbortController = AbortController;
@@ -56,7 +60,12 @@ async function setup(t, { catalogReader = async id => ({ provider: id, ...catalo
   // Same order as the page: prefs.js runs in <head>, app.js is deferred.
   win.eval(await readFile(new URL('../public/prefs.js', import.meta.url), 'utf8'));
   win.eval(await readFile(new URL('../public/app.js', import.meta.url), 'utf8'));
-  t.after(async () => { win.close(); await app.close(); });
+  t.after(async () => {
+    // A request can still be in flight when a test ends (for example a model refresh). Its handler
+    // would then touch a closed window. Wait until the page is idle for a few ticks, then close.
+    for (let idle = 0, end = Date.now() + 3000; idle < 3 && Date.now() < end;) { await new Promise(resolve => setTimeout(resolve, 10)); idle = pending ? 0 : idle + 1; }
+    win.close(); await app.close();
+  });
   const $ = selector => win.document.querySelector(selector);
   const choose = (id, value) => { $(id).value = value; $(id).dispatchEvent(new win.Event('change', { bubbles: true })); };
   const radio = language => { $(`input[name="language"][value="${language}"]`).checked = true; $(`input[name="language"][value="${language}"]`).dispatchEvent(new win.Event('change')); };
