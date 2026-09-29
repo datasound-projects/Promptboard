@@ -38,7 +38,7 @@ The report includes the engine version, stage count, requested and reported mode
 
 All **87 offline tests passed** on Linux with Node.js 24.19.0 for this release. Syntax checks passed.
 
-Run `npm ci`, `npm run check`, and `npm test` for the offline software checks. They cover validation, literal loss, review schema and evidence, bounded repair, invalid reviews, cancellation, cleanup, CLI output gating, process limits, HTTP boundaries, model discovery, and UI controls/history/report rendering. Fake CLI executables and synthetic model replies test the software without calling a paid model.
+Run `npm ci`, `npm run check`, and `npm test` for the offline software checks. They cover validation, literal loss, review schema and evidence, bounded repair, invalid reviews, cancellation, cleanup, CLI output gating, process limits, HTTP boundaries, model discovery, UI controls/history/report rendering, and the Kanban board (exact prompt snapshots, project isolation, ordering, persistence, import/export, and storage failures). Fake CLI executables and synthetic model replies test the software without calling a paid model.
 
 Run `npm run bench` for a local microbenchmark. On the release environment (Linux, Node.js 24.19.0), a 24,000-character synthetic request took **12.94 ms median / 17.00 ms p95** for prompt construction, literal comparison, and prose lint after warm-up (100 measured iterations). This is one machine and repeated synthetic text, not model latency or an end-to-end speed guarantee. Node.js is JavaScript, not Java; these measurements do not justify a Rust rewrite.
 
