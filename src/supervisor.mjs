@@ -125,13 +125,15 @@ export class Supervisor {
     const session = { runId, taskId: run.taskId, stage: run.stage, provider: run.config.provider, proc, seq: 0, ring: [], ringBytes: 0,
       subscribers: new Set(), log, logBytes: 0, eventsFile, eventsOffset: 0, runDir, paste: built.paste, turns: 0, status: 'running', startedAt: Date.now() };
     this.sessions.set(runId, session);
+    // Listen before any await so early output and fast exits are never lost.
+    proc.onData(data => this.#output(session, data));
+    proc.onExit(({ exitCode, signal }) => { this.#exited(session, exitCode, signal).catch(() => {}); });
     // Streams opened while the run was queued attach now.
     for (const waiter of this.pending.get(runId) || []) waiter.attach();
     this.pending.delete(runId);
     await this.board.updateRun(runId, { status: 'running', startedAt: session.startedAt, providerSessionId: run.config.provider === 'claude' ? sessionId : undefined, lifecycle: 'waiting-for-first-event' });
+    if (!session.proc) return; // Exited during the update: #exited owns the outcome.
     this.#push(session, { status: 'running' });
-    proc.onData(data => this.#output(session, data));
-    proc.onExit(({ exitCode, signal }) => { this.#exited(session, exitCode, signal).catch(() => {}); });
     session.poll = setInterval(() => this.#readEvents(session).catch(() => {}), 250);
     // No event yet usually means the CLI is asking a startup question (such as folder trust).
     // Say so without claiming anything: the status stays running.
