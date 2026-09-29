@@ -14,13 +14,13 @@
     "git-worktree",
     "local-first"
   ],
-  "homepage": "https://github.com/datasound-projects/ai-prompt-engineer-ste#readme",
+  "homepage": "https://github.com/datasound-projects/Promptboard#readme",
   "bugs": {
-    "url": "https://github.com/datasound-projects/ai-prompt-engineer-ste/issues"
+    "url": "https://github.com/datasound-projects/Promptboard/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/datasound-projects/ai-prompt-engineer-ste.git"
+    "url": "git+https://github.com/datasound-projects/Promptboard.git"
   },
   "license": "MIT",
   "type": "module",

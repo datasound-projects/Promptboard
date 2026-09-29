@@ -40,8 +40,8 @@ Kanban agent runs are verified on macOS and Linux. They are not verified on Wind
 ## Install and start
 
 ```bash
-git clone https://github.com/datasound-projects/ai-prompt-engineer-ste.git promptboard
-cd promptboard
+git clone https://github.com/datasound-projects/Promptboard.git
+cd Promptboard
 npm install
 npm start
 ```
