@@ -1,6 +1,6 @@
 # Release verification
 
-Final verification of Promptboard before its first open-source release (PB-05), done on 29 September 2026.
+Final verification of Promptboard 0.4.0 before its first open-source release (PB-05), done on 29 September 2026. Code verified at commit `37f5020`.
 
 ## Environment
 
@@ -22,11 +22,11 @@ Final verification of Promptboard before its first open-source release (PB-05), 
 | --- | --- | --- |
 | Syntax check | PASS | `npm run check`: all JavaScript files pass. |
 | Full regression (local) | PASS | `npm test`: 159 tests, 159 pass, 0 fail, 0 skipped (macOS, Node 24). |
-| Full regression (CI) | PASS | Linux and macOS, Node 22 and 24: 159 of 159 pass. Windows, Node 22 and 24: 118 pass, 36 skipped (terminal, Git worktree, and browser tests need a POSIX PTY or shebang fixtures), 0 fail. The final commit ran green three times in a row after the flaky tests below were fixed. |
+| Full regression (CI) | PASS | Linux and macOS, Node 22 and 24: 159 of 159 pass. Windows, Node 22 and 24: 118 pass, 36 skipped (terminal, Git worktree, and browser tests need a POSIX PTY or shebang fixtures), 0 fail. Run 36531831358 on `37f5020` passed all six jobs three times in a row, including `npm audit` of runtime dependencies. |
 | Benchmark | PASS | `npm run bench`: median 23.05 ms, p95 25.95 ms for local prompt construction and checks (24,000 characters, 100 iterations, no model calls). |
-| Clean install | PASS | Fresh `git clone` from GitHub → `npm ci` (44 packages, 2 s) → `npm test` 159/159 → `npm start`: page, pinned xterm assets, and `/dock.js` served; port released after Ctrl+C. |
-| Live complete flow: Claude Code | PASS | `scripts/live-flow.mjs --provider claude --model haiku`: To Do refused to run → Executing → commit → read-only Code Review (parsed JSON verdict) → accept → Testing (exit code 0) → confirmed fast-forward Merge → Done. See `docs/live-verification.md`. |
-| Live complete flow: Codex CLI | PASS | Same flow with `--provider codex`. Folder-trust and hook-review prompts answered as a user. |
+| Clean install | PASS | Following the README on `37f5020`: fresh `git clone` from GitHub → `npm install` (44 packages, 2 s) → `npm run check` → `npm test` 159/159 → `--version` prints 0.4.0. An earlier clean clone also started the server: page, pinned xterm assets, and `/dock.js` served; port released after Ctrl+C. |
+| Live complete flow: Claude Code | PASS | `scripts/live-flow.mjs --provider claude --model haiku`: To Do refused to run → Executing → commit → read-only Code Review (parsed JSON verdict) → accept → Testing (exit code 0) → confirmed fast-forward Merge → Done. Repeated on `37f5020`: pass. See `docs/live-verification.md`. |
+| Live complete flow: Codex CLI | PASS | Same flow with `--provider codex`. Folder-trust and hook-review prompts answered as a user. Repeated on `37f5020`: pass. |
 | Live UI flow | PASS | Real Claude session started from a card in headless Chrome, rendered in the dock, trust prompt answered with key presses in xterm, stage confirmed in task details. |
 | Live Gemini CLI | NOT RUN | Blocked by the provider account ("This client is no longer supported for Gemini Code Assist for individuals"). Gemini board runs are covered by simulated tests only and labelled "not verified live" in the run dialog. |
 | Terminal and session recovery | PASS | Browser reload reconnects to the same runs without starting new ones (browser test). Graceful stop marks runs interrupted (execution test). Hard crash (`SIGKILL` of the server with a live Claude session): the agent ended with its terminal, restart showed the run as interrupted, worktree kept. |
@@ -39,7 +39,7 @@ Final verification of Promptboard before its first open-source release (PB-05), 
 ## Bugs found and fixed during verification
 
 - **Lost early agent output (product bug).** The PTY output and exit listeners were attached after an `await`, so the first output of a fast CLI could be dropped (seen once on macOS CI). They are now attached immediately after spawn, and an exit during startup no longer leaves a polling timer behind.
-- **Flaky CI tests.** The resize check now waits for the last reported size; the flood check tolerates one software-rendering stall but still fails on sustained lag; a process that disappears while `/proc` is read counts as gone. CI no longer cancels other jobs on the first failure, stops a hung test after 3 minutes, and limits each job to 15 minutes.
+- **Flaky CI tests.** The resize check now compares the agent's last reported size with the terminal's current width (layout can refit twice); the flood check tolerates one software-rendering stall but still fails on sustained lag; a process that disappears while `/proc` is read counts as gone. CI no longer cancels other jobs on the first failure, stops a hung test after 3 minutes, and limits each job to 15 minutes.
 - **Outdated text.** The CLI banner, page titles, and licence still used the old name; the Kanban intro said agents ran only in Planning and Executing (Code Review also runs one); the Code Review, Testing, and Merge columns still said their runs would "arrive in a later version". The README described an older app and a ZIP download.
 
 ## Known limitations

@@ -33,4 +33,6 @@ Same environment. `scripts/live-flow.mjs` drives one task through every stage wi
 | Claude Code (`haiku`), real browser | Start from the card → consent dialog → terminal dock → trust prompt answered with key presses in xterm → Confirm stage in task details | Pass | Headless Chrome through the real UI with a disposable data folder. Output rendered by the WebGL renderer. Change in the worktree only. Run recorded as succeeded only after the confirm click. |
 | Claude Code (`haiku`), hard crash | Server killed with `SIGKILL` while the agent ran | Pass | The agent process ended with its terminal. On restart the run showed `interrupted` ("The app stopped while this run was active."). Worktree and user checkout kept. |
 
+Both complete flows (Claude Code and Codex CLI) were repeated on the release code (`37f5020`, version 0.4.0) and passed again.
+
 Not verified live: Gemini CLI (sign-in refused by the provider, see above; the run dialog labels it "not verified live") and anything on Windows (CI runs the prompt-editor tests there; terminal, Git, and browser tests are skipped).
