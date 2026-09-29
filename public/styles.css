@@ -177,13 +177,19 @@ kbd { font: 11px/1.4 var(--mono); padding: 1px 5px; border: 1px solid var(--line
 .check-option small { display: block; color: var(--subtle); font-size: 12px; }
 
 /* Generate. */
-.action-row { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin: 4px 0 18px; }
+/* Equal side columns keep the generate button in the exact center of the row. */
+.action-row { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 12px; margin: 4px 0 18px; }
+.action-row > * { grid-row: 1; }
+.action-row .generate-button { grid-column: 2; }
+.action-row .cancel-button { grid-column: 3; justify-self: start; }
+.action-row .shortcut-hint { grid-column: 3; justify-self: end; }
+.action-row:has(.cancel-button:not([hidden])) .shortcut-hint { visibility: hidden; }
 .generate-button { display: inline-flex; align-items: center; gap: 18px; min-height: 46px; padding: 0 18px; border: 1px solid var(--primary); border-radius: 10px; background: var(--primary); color: var(--on-primary); font-size: 15px; font-weight: 650; transition: background .15s, transform .15s; }
 .generate-button:hover:enabled { background: var(--primary-hover); transform: translateY(-1px); }
 .generate-button:disabled { opacity: .5; }
 .generate-button svg { width: 18px; height: 18px; }
 .cancel-button { min-height: 46px; padding: 0 18px; }
-.shortcut-hint { margin: 0 0 0 auto; color: var(--subtle); font-size: 12px; }
+.shortcut-hint { margin: 0; color: var(--subtle); font-size: 12px; }
 .inline-error, .storage-warning { margin: 0 0 18px; padding: 12px 16px; border: 1px solid var(--line-strong); border-left: 4px solid var(--ink); border-radius: 8px; background: var(--surface); color: var(--text); font-size: 13px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* Review and copy. */
@@ -332,6 +338,7 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
   .mascot { max-width: 112px; }
   .mascot img { width: 64px; height: 64px; }
   .card-heading .small-label { display: none; }
+  .action-row { display: flex; }
   .generate-button { flex: 1; justify-content: space-between; }
   :is(#kanban-button, #export-button, #import-board, #export-board) span { display: none; }
   .kanban-dialog-actions > button { flex: 1; }
