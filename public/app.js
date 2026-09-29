@@ -973,14 +973,10 @@ function selectedProjectId() { try { return localStorage.getItem(SELECTED_PROJEC
 function currentProject() { return board?.projects.find(project => project.id === selectedProjectId()) || board?.projects[0] || null; }
 function findTask(id) { return currentProject()?.tasks.find(task => task.id === id) || null; }
 
-// Mirrors the server rule so the menu offers only valid moves. The server still decides.
+// Mirrors the server rule: any column to any other. Only the destination column's stage may run.
 function canMove(from, to) {
   const ids = board.columns.map(column => column.id);
-  const a = ids.indexOf(from), b = ids.indexOf(to);
-  if (a < 0 || b < 0 || a === b) return false;
-  if (from === 'done') return to === 'todo';
-  if (to === 'done') return false; // Reached only through a merge or an explicit no-change completion.
-  return b === a + 1 || (from === 'todo' && to === 'executing') || b < a;
+  return from !== to && ids.includes(from) && ids.includes(to);
 }
 
 function setBoardWarning(message) {
@@ -1087,6 +1083,10 @@ const STAGE_ICONS = {
   testing: ['M9 3h6', 'M10 3v6l-5 9a2 2 0 0 0 1.7 3h10.6a2 2 0 0 0 1.7-3l-5-9V3', 'M7.5 15h9'],
   merge: ['M7 7v14', 'M7 9c0 3.3 2.7 6 6 6h2', 'M9 5a2 2 0 1 1-4 0 2 2 0 0 1 4 0Z', 'M19 15a2 2 0 1 1-4 0 2 2 0 0 1 4 0Z'],
   done: ['M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z', 'm8 12 3 3 5-6'],
+  // Done column parts.
+  drop: ['M12 3v12', 'm7 10 5 5 5-5', 'M5 21h14'],
+  completed: ['M9 3h6v4H9z', 'M9 5H6v16h12V5h-3', 'M9 12h6', 'M9 16h4'],
+  expand: ['M15 3h6v6', 'm21 3-7 7', 'M9 21H3v-6', 'm3 21 7-7'],
 };
 function stageIcon(id) {
   const ns = 'http://www.w3.org/2000/svg';
@@ -1116,18 +1116,96 @@ function renderColumn(column, tasks) {
   list.className = 'kanban-cards';
   list.dataset.column = column.id;
   list.setAttribute('aria-labelledby', heading.id);
-  list.append(...tasks.map((task, index) => renderCard(task, index, tasks.length)));
-  // Dropping on empty column space puts the card at the end of that column.
-  list.addEventListener('dragover', event => { if (dragId && event.target === list) { event.preventDefault(); list.classList.add('drop-target'); } });
-  list.addEventListener('dragleave', () => list.classList.remove('drop-target'));
+  const done = column.id === 'done';
+  list.append(...(done ? renderDoneList(tasks) : tasks.map((task, index) => renderCard(task, index, tasks.length))));
+  // Dropping on empty column space puts the card at the end of that column. All of Done is one drop zone.
+  const accepts = event => dragId && (done || event.target === list);
+  list.addEventListener('dragover', event => { if (accepts(event)) { event.preventDefault(); list.classList.add('drop-target'); } });
+  list.addEventListener('dragleave', event => { if (!list.contains(event.relatedTarget)) list.classList.remove('drop-target'); });
   list.addEventListener('drop', event => {
-    if (event.target !== list || !dragId) return;
+    if (!accepts(event)) return;
     event.preventDefault();
     const id = dragId; dragId = null;
     placeCard(id, column.id, tasks.filter(task => task.id !== id).length);
   });
   section.append(header, note, list);
   return section;
+}
+
+// Done: a drop zone, then the most recently completed cards in a compact form.
+const DONE_PREVIEW = 5;
+const relativeTime = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
+function timeAgo(at) {
+  const seconds = (at - Date.now()) / 1000;
+  for (const [unit, size] of [['year', 31536000], ['month', 2592000], ['week', 604800], ['day', 86400], ['hour', 3600], ['minute', 60]]) {
+    if (Math.abs(seconds) >= size) return relativeTime.format(Math.round(seconds / size), unit);
+  }
+  return 'just now';
+}
+function renderDoneList(tasks) {
+  const zone = document.createElement('li');
+  zone.className = 'kanban-done-drop';
+  zone.append(stageIcon('drop'), paragraph('Drop here to complete'));
+  if (!tasks.length) return [zone];
+  // Card numbers follow creation order within the project, so they stay stable.
+  const numbers = new Map([...currentProject().tasks].sort((a, b) => a.createdAt - b.createdAt).map((task, index) => [task.id, index + 1]));
+  const finished = task => task.completion?.at || task.updatedAt || 0;
+  const recent = [...tasks].sort((a, b) => finished(b) - finished(a));
+  const viewAll = () => openDoneDialog(recent, numbers);
+  const head = document.createElement('li');
+  head.className = 'kanban-done-head';
+  const expand = detailButton('', viewAll, 'kanban-done-expand');
+  expand.append(stageIcon('expand'));
+  expand.setAttribute('aria-label', `View all ${tasks.length} completed cards`);
+  head.append(stageIcon('completed'), document.createTextNode(`Completed (${tasks.length})`), expand);
+  const all = document.createElement('li');
+  const button = detailButton('View all', viewAll, 'kanban-done-all');
+  const count = document.createElement('span');
+  count.className = 'kanban-done-all-count';
+  count.textContent = String(tasks.length);
+  button.prepend(stageIcon('expand'));
+  button.append(count);
+  button.setAttribute('aria-label', `View all ${tasks.length} completed cards`);
+  all.append(button);
+  return [zone, head, ...recent.slice(0, DONE_PREVIEW).map(task => renderDoneCard(task, numbers.get(task.id))), all];
+}
+function openDoneDialog(recent, numbers) {
+  $('#done-dialog-project').textContent = `${currentProject()?.name || ''} · Done`.toUpperCase();
+  $('#done-dialog-heading').textContent = `Completed (${recent.length})`;
+  $('#done-dialog-list').replaceChildren(...recent.map(task => renderDoneCard(task, numbers.get(task.id), false)));
+  $('#done-dialog').showModal();
+}
+function renderDoneCard(card, number, draggable = true) {
+  const item = document.createElement('li');
+  item.className = 'kanban-card kanban-done-card';
+  item.dataset.id = card.id;
+  const title = document.createElement('div');
+  title.className = 'kanban-done-title';
+  const open = detailButton(card.title, () => { $('#done-dialog').close(); openCard(card.id); }, 'kanban-open');
+  open.title = card.title;
+  const tag = document.createElement('span');
+  tag.className = 'kanban-done-number';
+  tag.textContent = `#${number}`;
+  title.append(open, tag);
+  const when = card.completion?.at || card.updatedAt;
+  const time = paragraph(when ? timeAgo(when) : '', 'kanban-done-time');
+  if (when) time.title = new Date(when).toLocaleString();
+  item.append(title, paragraph(card.prompt.slice(0, 200).replace(/\s+/g, ' ').trim(), 'kanban-done-preview'), time);
+  if (draggable) makeDraggable(item, card);
+  return item;
+}
+
+function makeDraggable(item, card) {
+  item.draggable = true;
+  item.addEventListener('dragstart', event => {
+    dragId = card.id;
+    if (event.dataTransfer) { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', card.title); }
+    item.classList.add('dragging');
+  });
+  item.addEventListener('dragend', () => {
+    dragId = null;
+    for (const element of document.querySelectorAll('.kanban-card.dragging, .drop-target')) element.classList.remove('dragging', 'drop-target');
+  });
 }
 
 function latestRun(taskId) { return board.runs.filter(run => run.taskId === taskId).at(-1) || null; }
@@ -1137,7 +1215,6 @@ function renderCard(card, index, count) {
   const item = document.createElement('li');
   item.className = `kanban-card${status.flag ? ' needs-review' : ''}`;
   item.dataset.id = card.id;
-  item.draggable = true;
   const badge = document.createElement('span');
   badge.className = 'kanban-status';
   badge.textContent = status.text;
@@ -1187,15 +1264,7 @@ function renderCard(card, index, count) {
   // Selecting a card reveals its agent session, if it has one.
   item.addEventListener('click', event => { if (!event.target.closest('button, select, a')) window.PromptboardDock?.reveal(card.id); });
   // Pointer drag-and-drop. The ↑/↓ buttons and the stage menu are the keyboard equivalent.
-  item.addEventListener('dragstart', event => {
-    dragId = card.id;
-    if (event.dataTransfer) { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', card.title); }
-    item.classList.add('dragging');
-  });
-  item.addEventListener('dragend', () => {
-    dragId = null;
-    for (const element of document.querySelectorAll('.kanban-card.dragging, .drop-target')) element.classList.remove('dragging', 'drop-target');
-  });
+  makeDraggable(item, card);
   item.addEventListener('dragover', event => { if (!dragId || dragId === card.id) return; event.preventDefault(); item.classList.add('drop-target'); });
   item.addEventListener('dragleave', () => item.classList.remove('drop-target'));
   item.addEventListener('drop', event => {
@@ -1249,7 +1318,8 @@ async function placeCard(id, column, index, retried = false) {
   }
   pendingMoves.delete(id);
   renderBoard();
-  announce(column === card.column ? `Moved “${card.title}” to position ${position + 1} of ${others.length + 1}.` : `Moved “${card.title}” to ${columnTitle(column)}. Moving a card does not run or approve that stage.`);
+  if (column === 'done' && card.column !== 'done') announce(`Completed “${card.title}”. Nothing was merged, pushed, or started.`);
+  else announce(column === card.column ? `Moved “${card.title}” to position ${position + 1} of ${others.length + 1}.` : `Moved “${card.title}” to ${columnTitle(column)}. Moving a card does not run or approve that stage.`);
   if (result.run) { announce(`Moved “${card.title}” to ${columnTitle(column)}. The workflow setting started an agent run.`); window.PromptboardDock?.open(result.run.id); }
   if (result.merged) announce(`“${card.title}” passed every check and was merged automatically into ${result.task?.completion?.targetBranch || 'the target branch'}. Nothing was pushed.`);
   if (result.automation) showProjectDetail(paragraph(column === 'merge' ? `Moved to Merge. ${result.automation.message}` : `Moved to ${columnTitle(column)}, but the automatic start did not happen: ${result.automation.message}`, 'kanban-error'));
@@ -1754,7 +1824,7 @@ function openWorkflowDialog() {
     box.addEventListener('change', () => { preview.textContent = workflowPreview(stage, readWorkflowStage(box)); });
     stages.push(box);
   }
-  const fixed = paragraph('To Do and Done never run agents. Merges are fast-forward only and never pushed; only a verified merge or “Reviewed: no changes required” reaches Done.', 'workflow-preview');
+  const fixed = paragraph('To Do and Done never run agents. Merges are fast-forward only and never pushed; dropping a card on Done closes it without merging. Each column runs only its own stage.', 'workflow-preview');
   $('#workflow-stages').replaceChildren(...stages, fixed);
   $('#workflow-error').hidden = true;
   $('#workflow-dialog').showModal();
@@ -1810,6 +1880,7 @@ async function renderDelivery(card, container, section, pre) {
     nodes.push(section('Completed', paragraph(done.kind === 'merged'
       ? `Merged${done.trigger === 'automation' ? ' automatically (project workflow setting)' : ''} into ${done.targetBranch}: ${short(done.previousTarget)} → ${short(done.mergedCommit)} (${done.method}). Nothing was pushed.`
       : done.kind === 'pull_request' ? `Pull request ${done.number ? `#${done.number} ` : ''}merged on GitHub into ${done.base || 'the target branch'}. Pull ${done.base || 'the target branch'} to update your local checkout.`
+      : done.kind === 'closed' ? 'Closed on the board. Nothing was merged or pushed; the task branch and worktree are kept.'
       : 'Reviewed: no changes required. Nothing was merged.')));
   }
   if (card.workspace?.status !== 'ready') {
@@ -2366,6 +2437,7 @@ $('#card-new').addEventListener('click', () => openCard());
 $('#card-form').addEventListener('submit', saveCard);
 $('#card-cancel').addEventListener('click', () => $('#card-dialog').close());
 $('#card-dialog-close').addEventListener('click', () => $('#card-dialog').close());
+$('#done-dialog-close').addEventListener('click', () => $('#done-dialog').close());
 $('#export-board').addEventListener('click', exportBoard);
 $('#import-board').addEventListener('click', () => $('#import-file').click());
 $('#import-file').addEventListener('change', importBoard);

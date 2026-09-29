@@ -9,7 +9,6 @@
  * resumes, skips the card, or stops. One card at a time, so each merge lands before the next
  * card starts from the target branch.
  */
-import { ROUTE_STAGES } from './board.mjs';
 
 const TICK_MS = 1000;
 const done = new Set(['failed', 'cancelled', 'interrupted']);
@@ -77,16 +76,9 @@ export class Autopilot {
     return this.set(project.id, (a, log) => { a.current = { taskId: task.id, stage: null, step: 'start', attempts: 0, runId: null, testsId: null }; log(`Started “${task.title}” (route: ${this.route(a, task.id).map(title).join(' → ')}).`); });
   }
 
-  /** Move a card forward one allowed step at a time (skipped stages are passed through, nothing runs there). */
+  /** Move the card straight to the route's next stage. Stages the route skips are never entered. */
   async enter(projectId, task, stage, from) {
-    const order = ['todo', ...ROUTE_STAGES];
-    let column = from;
-    let revision = task.revision;
-    while (column !== stage) {
-      const next = column === 'todo' && stage !== 'planning' ? 'executing' : order[order.indexOf(column) + 1];
-      const moved = await this.board.moveTask(task.id, { column: next, expectedRevision: revision });
-      revision = moved.revision; column = next;
-    }
+    if (from !== stage) await this.board.moveTask(task.id, { column: stage, expectedRevision: task.revision });
     return this.set(projectId, (a, log) => { a.current = { ...a.current, stage, step: 'start', runId: null, testsId: null }; log(`“${task.title}” → ${title(stage)}.`); });
   }
 

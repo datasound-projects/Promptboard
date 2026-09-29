@@ -37,13 +37,14 @@ async function linkedBoard(t, options = {}) {
 }
 const taskIn = async (board, id) => (await board.view()).projects.flatMap(project => project.tasks).find(task => task.id === id);
 
-test('the seven fixed columns and validated transitions', () => {
+test('the seven fixed columns; a card may move from any column to any other', () => {
   assert.deepEqual(COLUMNS.map(column => column.title), ['To Do', 'Planning', 'Executing', 'Code Review', 'Testing', 'Merge', 'Done']);
   assert.deepEqual(COLUMNS.filter(column => !column.agent).map(column => column.id), ['todo', 'done']);
   for (const [from, to, allowed] of [
     ['todo', 'planning', true], ['todo', 'executing', true], ['planning', 'executing', true], ['executing', 'code_review', true],
     ['code_review', 'testing', true], ['testing', 'merge', true], ['merge', 'done', true], ['code_review', 'executing', true],
-    ['todo', 'code_review', false], ['todo', 'done', false], ['executing', 'done', false], ['done', 'executing', false], ['done', 'todo', true],
+    ['todo', 'code_review', true], ['todo', 'merge', true], ['todo', 'done', true], ['executing', 'done', true], ['planning', 'testing', true], ['done', 'executing', true], ['done', 'todo', true],
+    ['todo', 'nowhere', false], ['nowhere', 'todo', false],
   ]) assert.equal(canTransition(from, to), allowed, `${from} -> ${to}`);
 });
 
@@ -259,7 +260,8 @@ test('card moves are validated, need a linked project, use revisions, and never 
   const project = await board.createProject({ name: 'Unlinked' });
   const task = await board.createTask({ projectId: project.id, title: 'T', prompt: 'P' });
   await assert.rejects(board.moveTask(task.id, { column: 'planning', expectedRevision: 1 }), { code: 'REPOSITORY_REQUIRED' });
-  await assert.rejects(board.moveTask(task.id, { column: 'code_review', expectedRevision: 1 }), { code: 'TRANSITION_NOT_ALLOWED' });
+  await assert.rejects(board.moveTask(task.id, { column: 'code_review', expectedRevision: 1 }), { code: 'REPOSITORY_REQUIRED' });
+  await assert.rejects(board.moveTask(task.id, { column: 'nowhere', expectedRevision: 1 }), { code: 'INVALID_COLUMN' });
   await assert.rejects(board.updateTask(task.id, { title: 'New', expectedRevision: 7 }), { code: 'REVISION_CONFLICT' });
   await assert.rejects(board.updateTask(task.id, { title: 'New' }), { code: 'REVISION_REQUIRED' });
   const second = await board.createTask({ projectId: project.id, title: 'U', prompt: 'Q' });

@@ -171,15 +171,13 @@ export function effectiveWorkflow(project) {
   }));
 }
 
-/** Allowed column moves. Reordering inside a column is always allowed. */
+/**
+ * Allowed column moves: any column to any other. The destination alone decides what may run
+ * (see transition); skipped columns never run, and no column is a prerequisite of another.
+ * A stage that needs earlier work (Review needs a commit) refuses with the reason instead.
+ */
 export function canTransition(from, to) {
-  const a = COLUMN_IDS.indexOf(from), b = COLUMN_IDS.indexOf(to);
-  if (a < 0 || b < 0) return false;
-  if (a === b) return true;
-  if (from === 'done') return to === 'todo'; // Reopen only.
-  if (b === a + 1) return true; // Forward one stage.
-  if (from === 'todo' && to === 'executing') return true; // Planning is optional.
-  return b < a; // Send back for rework.
+  return COLUMN_IDS.includes(from) && COLUMN_IDS.includes(to);
 }
 
 function checkRevision(entity, expected, label) {
@@ -440,7 +438,7 @@ export class Board {
     });
   }
 
-  /** The only path into Done: a verified merge or an explicit no-change completion. */
+  /** Into Done through a verified merge, a merged pull request, or an explicit no-change completion. */
   async completeTask(id, { kind, details }) {
     return this.store.update(state => {
       const { project, task } = this.#task(state, id);
@@ -558,9 +556,9 @@ export class Board {
       if (!canTransition(task.column, column)) throw new BoardError(`A card cannot move from ${title(task.column)} to ${title(column)}.`, 'TRANSITION_NOT_ALLOWED');
       if (task.column !== column && this.#activeRun(state, id)) throw conflict('This card has an active run. Wait for it to finish or cancel it first.', 'RUN_ACTIVE');
       if (task.column === 'todo' && column !== 'todo' && !project.repository) throw new BoardError('Link this project to a Git repository before cards leave To Do.', 'REPOSITORY_REQUIRED');
-      // Done means merged and verified, or explicitly completed with no changes. A drag cannot skip that.
-      if (column === 'done' && task.column !== 'done') throw new BoardError('A card reaches Done only through a confirmed merge or “Reviewed: no changes required”.', 'DONE_REQUIRES_MERGE');
       if (task.column === 'done' && column !== 'done' && task.completion) { task.previousCompletions = [...(task.previousCompletions || []), task.completion].slice(-10); task.completion = null; }
+      // Dropping a card on Done closes it: nothing is merged, pushed, or started. Merges record their own completion.
+      if (column === 'done' && task.column !== 'done') task.completion = { kind: 'closed', at: Date.now() };
       const others = project.tasks.filter(item => item !== task);
       const inColumn = others.filter(item => item.column === column);
       const position = Number.isInteger(index) ? Math.max(0, Math.min(index, inColumn.length)) : inColumn.length;
