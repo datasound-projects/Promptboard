@@ -684,7 +684,7 @@ test('seven stages render; cards are created, edited, duplicated, deleted, and r
   assert.equal(cardItem(ctx, 'Three').querySelector('.kanban-move-down').disabled, true);
   assert.equal(cardItem(ctx, 'One').querySelector('.kanban-move-down').getAttribute('aria-label'), 'Move down: One');
   // The stage menu offers only valid moves: Planning, or Executing directly.
-  assert.deepEqual(Array.from(cardItem(ctx, 'One').querySelectorAll('.kanban-move-to option'), item => item.value), ['', 'planning', 'executing']);
+  assert.deepEqual(Array.from(cardItem(ctx, 'One').querySelectorAll('.kanban-move-to option'), item => item.value), ['', 'planning', 'executing', 'code_review', 'testing', 'merge', 'done']);
   // Keyboard reorder keeps focus on the moved card.
   await click(ctx, cardItem(ctx, 'One').querySelector('.kanban-move-down'));
   assert.deepEqual(titles($), ['Two', 'One', 'Three']);
@@ -1013,12 +1013,21 @@ test('drag-and-drop and keyboard moves use the same transition; rejected moves r
   assert.deepEqual(titles($, 'executing'), ['Keyboard', 'Dragged']);
   const tasks = await serverTasks(ctx);
   assert.deepEqual(tasks.map(task => task.transitions.map(({ from, to, by }) => [from, to, by])), [[['todo', 'executing', 'user']], [['todo', 'executing', 'user']]]);
-  // A move the rules forbid is refused the same way, with a clear reason.
+  // Done is one drop zone: dropping anywhere on it completes the card and starts nothing.
+  assert.match(column($, 'done').querySelector('.kanban-done-drop').textContent, /Drop here to complete/);
   cardItem(ctx, 'Dragged').dispatchEvent(new win.Event('dragstart', { bubbles: true }));
-  column($, 'done').dispatchEvent(new win.Event('drop', { bubbles: true, cancelable: true }));
+  column($, 'done').querySelector('.kanban-done-drop').dispatchEvent(new win.Event('drop', { bubbles: true, cancelable: true }));
   await ctx.idle();
-  assert.deepEqual(titles($, 'done'), []);
-  assert.match($('#project-detail').textContent, /cannot move from Executing to Done/);
+  assert.deepEqual(titles($, 'done'), ['Dragged']);
+  assert.match(column($, 'done').textContent, /Completed \(1\)/);
+  assert.match(column($, 'done').querySelector('.kanban-done-card').textContent, /#\d+.*just now/s);
+  assert.equal((await serverTasks(ctx)).find(task => task.title === 'Dragged').completion.kind, 'closed');
+  // View all lists every completed card in a dialog.
+  column($, 'done').querySelector('.kanban-done-all').click();
+  assert.equal($('#done-dialog').open, true);
+  assert.match($('#done-dialog-heading').textContent, /Completed \(1\)/);
+  assert.deepEqual(Array.from($('#done-dialog-list').querySelectorAll('.kanban-open'), button => button.textContent), ['Dragged']);
+  $('#done-dialog').close();
   assert.equal(ctx.executor.started.length, 0, 'Moves under the default Ask setting start nothing.');
 });
 
@@ -1190,9 +1199,9 @@ test('PB-04 in the UI: commit, configured tests, accepted review, merge preview,
   await click(ctx, byText($('#task-details'), 'Run tests'));
   await until(async () => (await tasks())[0].evidence.tests?.status === 'passed', 'tests passed', 15000);
   $('#task-dialog').close();
-  // Merge: the menu never offers Done; the preview shows the plan; the merge needs confirmation.
+  // Merge: the preview shows the plan; the merge needs confirmation. (Done in the menu closes without merging.)
   await moveBy(ctx, 'Ship it', 'merge'); await ctx.idle();
-  assert.ok(!Array.from(cardItem(ctx, 'Ship it').querySelectorAll('.kanban-move-to option'), item => item.value).includes('done'));
+  assert.ok(Array.from(cardItem(ctx, 'Ship it').querySelectorAll('.kanban-move-to option'), item => item.value).includes('done'));
   cardItem(ctx, 'Ship it').querySelector('.kanban-deliver').click();
   await until(() => byText($('#task-details'), 'Confirm merge…'), 'merge preview', 15000);
   assert.match($('#task-details').textContent, /→ trunk:/);

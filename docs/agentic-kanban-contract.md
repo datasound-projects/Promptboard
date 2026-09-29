@@ -28,10 +28,10 @@ A **task** has a position: `column`, plus its order in the project's task list. 
 
 Allowed moves (`canTransition`):
 
-- Reordering within a column is always allowed.
-- A card can move forward one stage, and To Do → Executing is allowed (Planning is optional).
-- A card can move back to any earlier stage, for rework.
-- Done can only reopen to To Do.
+- A card can move from any column to any other, forward or back, and reorder within a column.
+- The destination column alone decides what may run (see Automation): only that column's stage, once, for that move. Skipped columns never run, and no column is a prerequisite that runs implicitly. A stage that needs earlier work refuses with the reason instead (for example Code Review needs a committed revision: `WORKSPACE_REQUIRED`, `UNCOMMITTED_CHANGES`, or `NO_CHANGES`).
+- Only the Planning column plans. Executing, Testing, and Merge sessions are told to start their own work without a plan or approval step, even when the card text asks for one, and Claude Code runs them with `EnterPlanMode` and `ExitPlanMode` disallowed.
+- Dropping a card on Done closes it (`completion.kind = closed`): nothing is merged, pushed, or started. Moving it out of Done reopens it.
 
 A card cannot leave To Do until its project has a linked repository. A card with an active run cannot change columns.
 
@@ -172,8 +172,8 @@ Everything in this section lives in `src/delivery.mjs`. Evidence is tied to the 
   - `POST /api/tasks/:id/pull-request { confirm, title, body }` needs a clean, committed task branch ahead of the target. It pushes only `refs/heads/<task branch>` to `origin` (or the only remote) without `--force`, then runs `gh pr create --base <target> --head <task branch>` (or reuses an open pull request). No shell; `gh` prompts are disabled. The body is the user's; the task prompt is not sent unless they add it.
   - `POST /api/tasks/:id/pull-request-status` reads the state with `gh pr view`. A merged pull request completes the task (`completion.kind = pull_request`).
 - **Done:**
-  - Only `completeTask` enters Done: through a verified merge (`completion.kind = merged`), a merged pull request (`kind = pull_request`), or through `complete-no-changes`, allowed only when the branch has no changes (`kind = no_changes`; never described as merged).
-  - Moving a card to Done returns `DONE_REQUIRES_MERGE`. Reopening clears the completion.
+  - A verified merge (`completion.kind = merged`), a merged pull request (`kind = pull_request`), or `complete-no-changes`, allowed only when the branch has no changes (`kind = no_changes`; never described as merged), completes a task through `completeTask`.
+  - Dropping a card on Done closes it (`kind = closed`; never described as merged). Reopening clears the completion and keeps it in `previousCompletions`.
   - Worktree cleanup stays optional and ownership-checked.
 - **Automation:** "Start on entry" for Code Review starts a review run. For Testing it runs the configured commands. Merge is Manual by default. With "Merge automatically" a card entering Merge is merged by Promptboard itself (no agent) through the same gate as a confirmed merge: accepted review and passing tests for the current task and target commits, fast-forward only, clean target checkout. If any check fails, nothing is merged and the reason is returned. The completion records `trigger: "automation"`. Automatic stage advancement does not exist.
 

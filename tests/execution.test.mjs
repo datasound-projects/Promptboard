@@ -61,6 +61,13 @@ test('session arguments: planning is read-only per provider; execution never byp
     assert.ok(!args.filter(arg => arg !== message && !arg.startsWith('Decode the JSON')).some(arg => /dangerously|bypassPermissions|yolo|danger-full-access/.test(arg)), provider);
   }
   assert.deepEqual((await build('codex', 'executing')).args.slice(-5, -1), ['--sandbox', 'workspace-write', '--ask-for-approval', 'on-request']);
+  // Only Planning plans: writing stages cannot switch Claude Code into plan mode and are told to start their own work.
+  for (const stage of ['executing', 'testing', 'merge']) {
+    const { args } = await build('claude', stage);
+    assert.equal(args[args.indexOf('--disallowedTools') + 1], 'EnterPlanMode,ExitPlanMode', stage);
+    assert.match(composeMessage(stage, 'Plan first.'), /do not enter plan mode: planning happens only in the Planning column/, stage);
+  }
+  assert.match(composeMessage('executing', 'x'), /^Start implementing the task below now\./);
   // A prompt too long for one argv element is pasted into the terminal instead.
   const long = composeMessage('executing', 'x'.repeat(ARGV_PROMPT_LIMIT + 10));
   const pasted = await buildSession({ provider: 'claude', stage: 'executing', config: resolveConfig('executing', {}), message: long, runDir, eventsFile: 'e', sessionId: 's' });

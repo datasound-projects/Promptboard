@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Kanban: **the destination column alone decides what runs.** A card can move from any column to any other; only that column's stage runs, and skipped columns never do. To Do → Executing starts implementing at once: Executing (and Testing and Merge) sessions are told not to plan or ask for plan approval, even when the card text asks for a plan first, and Claude Code cannot switch them into plan mode. Only Planning plans.
+- Kanban: **Done** shows a “Drop here to complete” zone, then “Completed (N)” with compact cards (title, #number, one-line preview, how long ago) and **View all N**. Dropping a card on Done closes it without merging, pushing, or starting anything.
+- Every error message is shown in orange.
+- Fix: agents start on projects that have no target branch chosen yet: linking a repository records the checked-out branch.
+
 - Kanban: **Autopilot** (optional, per project). Queue To Do cards in any order, choose a default route and per-card routes, and Autopilot takes one card at a time through them: agent stages, commits, accepted clean reviews, your tests, and a local merge or a pull request, with bounded rework and a pause (with the reason) on anything unexpected.
 
 - Kanban: **Testing and Merge agents.** A testing agent runs your tests in the worktree, fixes failures, and can add focused tests; only Promptboard's own test run decides whether tests pass. A merge agent resolves conflicts after Promptboard starts merging the target branch into the task branch (`git merge --no-commit`); you commit the result, or abort it.

@@ -508,6 +508,27 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
 .kanban-column-count { min-width: 24px; padding: 1px 8px; border-radius: 999px; background: color-mix(in srgb, var(--stage) 16%, transparent); color: var(--ink); font: 600 12px/1.6 var(--mono); text-align: center; }
 .kanban-column-note { margin: 3px 14px 10px 39px; }
 .kanban-column .kanban-cards, .kanban-column .kanban-cards:empty { gap: 10px; padding: 10px; border-top: 1px solid color-mix(in srgb, var(--stage) 14%, var(--line)); }
+/* Done: a dashed drop zone, a "Completed (N)" header, compact cards, and "View all". */
+.kanban-done-drop { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; min-height: 150px; padding: 16px; border: 2px dashed color-mix(in srgb, var(--stage) 22%, var(--line-strong)); border-radius: 12px; color: var(--subtle); font-size: 13px; text-align: center; }
+.kanban-done-drop p { margin: 0; }
+.kanban-done-drop .kanban-stage-icon { width: 26px; height: 26px; color: var(--subtle); }
+.kanban-cards.drop-target .kanban-done-drop { border-color: var(--stage); background: color-mix(in srgb, var(--stage) 8%, transparent); color: var(--ink); }
+.kanban-column[data-column="done"] .kanban-cards.drop-target { outline: none; }
+.kanban-done-head { display: flex; align-items: center; gap: 8px; margin-top: 4px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--muted); font-size: 13px; font-weight: 600; }
+.kanban-done-head .kanban-stage-icon { color: var(--subtle); }
+.kanban-done-expand { display: inline-flex; margin-left: auto; padding: 2px; border: 0; background: none; color: var(--subtle); }
+.kanban-done-expand:hover { color: var(--ink); }
+.kanban-done-card { cursor: grab; }
+.kanban-done-title { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.kanban-done-title .kanban-open { flex: 1; min-width: 0; overflow: hidden; font-size: 13.5px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; overflow-wrap: normal; }
+.kanban-done-number { flex: none; color: var(--subtle); font: 12px var(--mono); }
+.kanban-done-preview, .kanban-done-time { margin: 6px 0 0; color: var(--subtle); font-size: 12px; }
+.kanban-done-preview { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kanban-done-all { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; padding: 9px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--muted); font-size: 13px; }
+.kanban-done-all:hover { color: var(--ink); border-color: var(--line-strong); }
+.kanban-done-all .kanban-stage-icon { color: var(--subtle); }
+.kanban-done-list { display: flex; flex-direction: column; gap: 10px; max-height: 60vh; margin: 16px 0 0; padding: 0; overflow-y: auto; list-style: none; }
+.kanban-done-all-count { min-width: 22px; padding: 0 7px; border-radius: 999px; background: var(--surface-3); color: var(--ink); font: 600 12px/1.7 var(--mono); }
 .kanban-column .kanban-cards:empty::after { content: "Drop cards here"; display: flex; align-items: center; justify-content: center; height: 72px; border: 1.5px dashed color-mix(in srgb, var(--stage) 35%, var(--line)); border-radius: 10px; color: var(--subtle); font-size: 12px; }
 .kanban-column .kanban-cards.drop-target { outline: 2px dashed var(--stage); background: color-mix(in srgb, var(--stage) 8%, transparent); }
 .kanban-columns .kanban-card { border-radius: 10px; border-color: color-mix(in srgb, var(--stage) 12%, var(--line)); box-shadow: 0 1px 2px rgb(0 0 0 / .05); transition: box-shadow .15s, transform .15s, border-color .15s; }
