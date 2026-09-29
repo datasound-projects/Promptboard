@@ -18,3 +18,7 @@ Composition/framing: square image, centered head, completely visible hair and ea
 Color palette: only pure black and white; real transparent background with alpha; white facial regions must stay solid white.
 Constraints: no lettering, no text, no watermark, no background, no objects, no frame, no gray shading, no gradients, no likeness of a known character or public figure.
 ```
+
+## GitHub logo
+
+`docs/logo.png` is the README logo on GitHub only; the app does not use it. It was created with ChatGPT image generation on 2026-09-29 and supplied by the project owner, resized to 480 px.

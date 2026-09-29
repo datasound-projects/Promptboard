@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/logo.png" width="180" alt="Promptboard mascot: a girl in glasses and a kimono giving a thumbs-up">
+</p>
+
 <h1 align="center">Promptboard</h1>
 
 <p align="center">
