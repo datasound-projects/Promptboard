@@ -1,0 +1,56 @@
+{
+  "version": 1,
+  "columns": [
+    {
+      "id": "83aaa56a-d4be-41d5-bb43-1c96df913b73",
+      "name": "To Do",
+      "role": "todo",
+      "icon": "layers",
+      "color": "#6b7280"
+    },
+    {
+      "id": "7bea2f5c-3e0f-4536-b258-8c4a249af238",
+      "name": "Planning",
+      "icon": "map",
+      "color": "#8b5cf6",
+      "autoSpawn": true,
+      "permissionMode": "plan",
+      "planExitTarget": "Executing"
+    },
+    {
+      "id": "81076e9b-1eb0-49b4-958f-0b66dfed5e49",
+      "name": "Executing",
+      "icon": "square-terminal",
+      "autoSpawn": true
+    },
+    {
+      "id": "5dd480ba-2045-473c-a8ac-50eef7bcba09",
+      "name": "Code Review",
+      "icon": "code",
+      "color": "#f59e0b",
+      "autoSpawn": true
+    },
+    {
+      "id": "43c8b9b7-8db0-4936-9ccc-f0088f3f8212",
+      "name": "Testing",
+      "icon": "flask-conical",
+      "color": "#06b6d4",
+      "autoSpawn": true
+    },
+    {
+      "id": "16c94809-bf6b-45b2-b924-527e7bc8f9cd",
+      "name": "Merge",
+      "icon": "merge",
+      "color": "#f97316",
+      "autoSpawn": true
+    },
+    {
+      "id": "42c9f28e-1e00-4958-b77e-4ab191faa969",
+      "name": "Done",
+      "role": "done",
+      "icon": "circle-check-big",
+      "color": "#10b981"
+    }
+  ],
+  "_modifiedBy": "e09728f7e4bc"
+}

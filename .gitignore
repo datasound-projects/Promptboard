@@ -8,3 +8,6 @@ coverage/
 test-results/
 playwright-report/
 
+.kangentic/
+.claude/settings.local.json
+kangentic.local.json
