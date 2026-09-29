@@ -209,15 +209,16 @@ export class Supervisor {
       if (signal.sessionId) await this.board.updateRun(session.runId, { providerSessionId: signal.sessionId }).catch(() => {});
       if (session.paste) setTimeout(() => this.#paste(session), 1500);
     } else if (signal.kind === 'running') {
-      if (session.status !== 'running') await this.#setStatus(session, 'running', { waitingReason: '' });
+      if (session.status !== 'running') await this.#setStatus(session, 'running', { waitingReason: '', turnComplete: false });
     } else if (signal.kind === 'waiting') {
-      await this.#setStatus(session, 'waiting_for_input', { waitingReason: signal.reason });
+      // A permission prompt or question: the turn is not finished (Autopilot must not advance).
+      await this.#setStatus(session, 'waiting_for_input', { waitingReason: signal.reason, turnComplete: false });
     } else if (signal.kind === 'turn_complete') {
       session.turns++;
       const planning = session.stage === 'planning', reviewing = session.stage === 'code_review';
       if (signal.message) await writeFile(join(session.runDir, planning ? 'plan.md' : reviewing ? 'review.md' : 'last-message.md'), signal.message, { mode: 0o600 });
       await this.#setStatus(session, 'waiting_for_input', {
-        turns: session.turns, ...(planning && signal.message ? { hasPlan: true, planExcerpt: signal.message } : {}), ...(reviewing && signal.message ? { hasReview: true } : {}),
+        turns: session.turns, turnComplete: true, ...(planning && signal.message ? { hasPlan: true, planExcerpt: signal.message } : {}), ...(reviewing && signal.message ? { hasReview: true } : {}),
         waitingReason: planning ? (signal.message ? 'The plan is ready. Review it, continue in the terminal, or approve it.' : 'The agent finished its turn without a plan message. Continue in the terminal.')
           : reviewing ? 'The review is ready. Check the findings, then confirm to record them.'
           : 'The agent finished its turn. Review the work, continue in the terminal, or confirm the stage.',

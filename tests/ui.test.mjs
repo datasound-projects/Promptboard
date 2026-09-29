@@ -1340,3 +1340,50 @@ test('Testing and Merge cards offer an agent next to their own action; the agent
   assert.match($('#task-details').textContent, /never with --force/);
   assert.match($('#task-details').textContent, /the task prompt is not included unless you add it/);
 });
+
+test('Autopilot dialog: queue order, which cards, per-card routes, consent to start, and a live status bar', { skip: process.platform === 'win32' }, async t => {
+  const ctx = await linkedKanban(t);
+  const { $, win } = ctx;
+  await link(ctx);
+  for (const title of ['Alpha', 'Beta', 'Gamma']) await ctx.app.board.createTask({ projectId: ctx.project.id, title, prompt: `Do ${title}.` });
+  await win.__pbTest.loadBoard(); await ctx.idle();
+  $('#autopilot-open').click(); await ctx.idle();
+  assert.equal($('#autopilot-dialog').open, true);
+  const items = () => [...$('#autopilot-queue').querySelectorAll('.autopilot-item')];
+  const names = () => items().map(item => item.querySelector('.autopilot-title').textContent);
+  assert.deepEqual(names(), ['Alpha', 'Beta', 'Gamma'], 'To Do cards in board order, all included the first time.');
+  // Gamma first; Beta left out; Alpha skips Planning and Testing via its own route (Merge becomes a pull request).
+  items()[2].querySelector('.autopilot-up').click(); items()[1].querySelector('.autopilot-up').click();
+  assert.deepEqual(names(), ['Gamma', 'Alpha', 'Beta']);
+  const beta = items()[2].querySelector('input[type="checkbox"]'); beta.checked = false; beta.dispatchEvent(new win.Event('change'));
+  $('#autopilot-finish').value = 'pull_request'; $('#autopilot-finish').dispatchEvent(new win.Event('change'));
+  for (const stage of ['planning', 'testing']) { const chip = items()[1].querySelector(`.route-chip[data-stage="${stage}"] input`); chip.checked = false; chip.dispatchEvent(new win.Event('change')); }
+  assert.equal(items()[1].querySelector('.autopilot-custom').textContent, 'Own route');
+  assert.equal(items()[0].querySelector('.route-chip[data-stage="executing"] input').disabled, true, 'Executing is always in the route.');
+  // Starting needs the explicit acknowledgment.
+  submitForm(ctx, '#autopilot-form'); await ctx.idle();
+  assert.match($('#autopilot-error').textContent, /Confirm that you understand/);
+  $('#autopilot-consent').checked = true;
+  submitForm(ctx, '#autopilot-form'); await ctx.idle();
+  assert.equal($('#autopilot-dialog').open, false);
+  const project = (await serverBoard(ctx)).projects[0];
+  const id = title => project.tasks.find(task => task.title === title).id;
+  assert.deepEqual(project.autopilot.queue, [id('Gamma'), id('Alpha')]);
+  assert.deepEqual(project.autopilot.routes, { [id('Alpha')]: ['executing', 'code_review', 'merge'] });
+  assert.equal(project.autopilot.finish, 'pull_request');
+  assert.equal(project.autopilot.status, 'running');
+  // The engine picks Gamma first; the bar and the card show it.
+  await win.__pbTest.loadBoard(); await ctx.idle();
+  for (const end = Date.now() + 10000; !/Autopilot is working on “Gamma”/.test($('#autopilot-bar').textContent);) {
+    if (Date.now() > end) assert.fail(`Timed out: status bar (${$('#autopilot-bar').textContent})`);
+    await new Promise(resolve => setTimeout(resolve, 200));
+    await win.__pbTest.loadBoard(); await ctx.idle();
+  }
+  assert.equal(cardItem(ctx, 'Gamma').querySelector('.autopilot-tag').textContent, 'Autopilot · now');
+  assert.equal(cardItem(ctx, 'Alpha').querySelector('.autopilot-tag').textContent, 'Autopilot · #1');
+  assert.equal(cardItem(ctx, 'Beta').querySelector('.autopilot-tag'), null);
+  // Pause from the bar; settings stay editable only while not running.
+  [...$('#autopilot-bar').querySelectorAll('button')].find(button => button.textContent === 'Pause').click(); await ctx.idle();
+  await until(() => /Autopilot paused: Paused by you/.test($('#autopilot-bar').textContent), 'paused bar');
+  assert.ok([...$('#autopilot-bar').querySelectorAll('button')].some(button => button.textContent === 'Resume'));
+});

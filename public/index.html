@@ -234,7 +234,8 @@
         <div class="connection-detail kanban-ask" id="ask-panel" role="status" hidden></div>
       </section>
       <section class="card kanban-board" aria-labelledby="board-heading">
-        <div class="card-heading"><div><h2 id="board-heading">Board</h2><span class="kanban-count" id="board-count" aria-label="Cards">00</span></div><div class="board-actions"><button class="icon-button board-scroll" id="board-left" type="button" aria-controls="kanban-columns" aria-label="Scroll the board left" title="Scroll left"><span aria-hidden="true">‹</span></button><button class="icon-button board-scroll" id="board-right" type="button" aria-controls="kanban-columns" aria-label="Scroll the board right" title="Scroll right"><span aria-hidden="true">›</span></button><button class="copy-button" id="card-new" type="button"><span aria-hidden="true">＋</span> New card</button></div></div>
+        <div class="card-heading"><div><h2 id="board-heading">Board</h2><span class="kanban-count" id="board-count" aria-label="Cards">00</span></div><div class="board-actions"><button class="secondary-button autopilot-open" id="autopilot-open" type="button" aria-haspopup="dialog"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h9m-4-4 4 4-4 4"/><path d="M15 5h4v14h-4"/></svg><span>Autopilot</span></button><button class="icon-button board-scroll" id="board-left" type="button" aria-controls="kanban-columns" aria-label="Scroll the board left" title="Scroll left"><span aria-hidden="true">‹</span></button><button class="icon-button board-scroll" id="board-right" type="button" aria-controls="kanban-columns" aria-label="Scroll the board right" title="Scroll right"><span aria-hidden="true">›</span></button><button class="copy-button" id="card-new" type="button"><span aria-hidden="true">＋</span> New card</button></div></div>
+        <div class="autopilot-bar" id="autopilot-bar" role="status" hidden></div>
         <div class="output-empty" id="board-empty"><p><span id="board-empty-text">Create a project to start planning.</span><small id="board-empty-note">Each project gets its own board, from To Do to Done.</small><a class="kanban-empty-link" id="empty-prompt-link" href="#/" hidden>Engineer a prompt <span aria-hidden="true">↗</span></a></p></div>
         <div class="kanban-columns" id="kanban-columns" hidden></div>
       </section>
@@ -311,6 +312,21 @@
         <div class="workflow-stages" id="workflow-stages"></div>
         <p class="inline-error" id="workflow-error" role="alert" hidden></p>
         <div class="kanban-dialog-actions"><button type="button" class="secondary-button" id="workflow-cancel">Cancel</button><button type="submit" class="dialog-done">Save settings <span aria-hidden="true">↗</span></button></div>
+      </form>
+    </dialog>
+    <dialog id="autopilot-dialog" class="kanban-dialog autopilot-dialog" aria-labelledby="autopilot-heading"><button class="dialog-close icon-button" id="autopilot-close" type="button" aria-label="Close">×</button><p class="eyebrow" id="autopilot-project">AUTOPILOT</p><h2 id="autopilot-heading">Autopilot</h2>
+      <form id="autopilot-form" novalidate>
+        <p class="note">Autopilot takes the queued To Do cards one at a time, in the order below, through the stages you choose. It confirms each finished agent turn, commits with your Git identity, accepts reviews that report no issues, runs your test commands, and sends a card back to Executing (with the findings or failing output) up to the rework limit. It pauses whenever an agent asks you something, a check fails, or something unexpected happens.</p>
+        <fieldset class="autopilot-route"><legend>Default route</legend><div class="route-chips" id="autopilot-route"></div></fieldset>
+        <div class="select-grid">
+          <label class="field-label" for="autopilot-finish">At Merge<select id="autopilot-finish"><option value="merge">Merge locally (fast-forward)</option><option value="pull_request">Open a pull request</option></select></label>
+          <label class="field-label" for="autopilot-rework">Automatic rework rounds<select id="autopilot-rework"><option value="0">None: pause at the first problem</option><option value="1">1 round</option><option value="2" selected>2 rounds</option><option value="3">3 rounds</option></select></label>
+        </div>
+        <fieldset class="autopilot-queue"><legend>Queue <span class="note" id="autopilot-queue-note"></span></legend><ol id="autopilot-queue"></ol></fieldset>
+        <label class="check-option"><input type="checkbox" id="autopilot-consent"><span><strong>I understand what Autopilot does for me</strong><small>It confirms stages, commits, accepts clean reviews, and merges into your local target branch or pushes the task branch for a pull request, without asking each time. It never force-pushes or bypasses agent permissions.</small></span></label>
+        <p class="inline-error" id="autopilot-error" role="alert" hidden></p>
+        <div class="kanban-dialog-actions"><button type="button" class="secondary-button" id="autopilot-save">Save settings</button><button type="submit" class="dialog-done" id="autopilot-start">Save and start <span aria-hidden="true">↗</span></button></div>
+        <details class="autopilot-log" id="autopilot-log-box"><summary>Activity</summary><ol id="autopilot-log"></ol></details>
       </form>
     </dialog>
     <div id="announcement" class="sr-only" aria-live="polite"></div>

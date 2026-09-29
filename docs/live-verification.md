@@ -47,3 +47,12 @@ Disposable repository; the task changed `greet.js`, which made the existing test
 | Codex CLI | Same. | Same result. Codex staged the resolved file itself, which led to the marker check now covering every changed file, not only unmerged ones. | Pass |
 
 Not verified live: **Open pull request** against GitHub (covered by tests with a real bare remote and a simulated `gh`), and Gemini CLI.
+
+## 29 September 2026 — Autopilot
+
+Disposable repository, two queued cards ("Add beta" to `notes.txt`, "Add a changelog"), route Executing → Code Review → Testing → Merge, local merge, test command checking `notes.txt`. The script only answered the CLIs' startup questions (folder trust, Codex hook review), as a user would in the terminal.
+
+| Provider | Result | Evidence |
+| --- | --- | --- |
+| Claude Code (`haiku`) | Pass (about 1 minute) | Both cards went through every stage by themselves and were merged into `trunk` by fast-forward, in queue order. The second card branched from `trunk` after the first merge. Every run was recorded as started by automation. |
+| Codex CLI | Pass (about 2 minutes) | Same. While Codex waited on its startup questions, Autopilot held the card and did not advance. |

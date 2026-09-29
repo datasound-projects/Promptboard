@@ -15,6 +15,7 @@ import { AgentError } from './agents.mjs';
 import { DeliveryError } from './delivery.mjs';
 import { discoverModels, checkModelEffort } from './models.mjs';
 import { chooseFolder } from './folder.mjs';
+import { Autopilot } from './autopilot.mjs';
 
 const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
 const assets = new Map([
@@ -120,6 +121,8 @@ async function boardRoute(board, req, res, pathname, searchParams) {
     if (method === 'POST' && action === 'repository') return view(await board.linkRepository(id, await body()));
     if (method === 'POST' && action === 'init-repository') return view(await board.initAndLinkRepository(id, await body()));
     if (method === 'GET' && action === 'branches') return send(res, 200, { repository: await board.listProjectBranches(id) });
+    if (method === 'PATCH' && action === 'autopilot') return view({ project: await board.setAutopilot(id, await body()) });
+    if (method === 'POST' && action === 'autopilot') { const { action: command, confirm } = await body(); return view({ project: await board.controlAutopilot(id, { action: command, confirm }) }); }
     if (method === 'PATCH' && action === 'workflow') return view({ project: await board.setWorkflow(id, await body()) });
     if (method === 'PATCH' && action === 'tests') return view({ project: await board.delivery.setTestCommands(id, await body()) });
     if (method === 'POST' && action === 'target-branch') return view({ project: await board.setTargetBranch(id, await body()) });
@@ -185,6 +188,9 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
   const board = new Board({ dataDir });
   board.executor = executor === 'auto' ? new Supervisor({ board, dataDir }) : executor;
   board.folderPicker = folderPicker;
+  // Autopilot runs only for projects where the user started it; otherwise each tick does nothing.
+  const autopilot = new Autopilot(board);
+  if (board.executor) autopilot.start();
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('The port must be 0–65535.');
   const token = randomBytes(32).toString('hex');
   const catalogAbort = new AbortController();
@@ -374,6 +380,7 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
     server.closeIdleConnections();
     // Agent sessions: stop owned process groups, record runs as interrupted, end streams.
     const agents = board.executor?.shutdown ? board.executor.shutdown(Math.min(3000, graceMs)) : null;
+    autopilot.stop();
     board.delivery.stopAllTests();
     const settle = Promise.allSettled([...tasks, ...lookups.values(), busy?.done, agents].filter(Boolean));
     await Promise.race([settle, new Promise(resolve => setTimeout(resolve, graceMs).unref())]);

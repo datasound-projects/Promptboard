@@ -78,6 +78,12 @@ Open **http://127.0.0.1:4318** if the browser does not open. Use `npm start -- -
 
 Each project chooses what happens when a card enters a stage: **Manual**, **Ask** (default), or **Start automatically**. Starting an agent by hand always shows a consent dialog; automatic start is a setting you turn on per project and stage. Terminals open in the dock at the bottom of the page. You can collapse the dock, reload the page, or run several tasks at once (one by default, up to four). Promptboard never passes a bypass or "yolo" permission flag, never pre-trusts a folder for a CLI, and never force-resets or stashes your work.
 
+### Autopilot (optional)
+
+Paste your subtasks as To Do cards, then choose **Autopilot** on the board. Pick which cards run and in which order, the default route (for example Executing → Code Review → Testing → Merge), and, per card, its own route. Autopilot then takes one card at a time through its route: it confirms each finished agent turn, commits with your Git identity, accepts reviews that report no issues, runs your test commands, and merges locally (fast-forward) or opens a pull request. Review findings and failing tests go back to Executing, up to the rework limit you set. When the target branch moved on, it is merged in (by the merge agent if there are conflicts) and the card is reviewed and tested again.
+
+Autopilot pauses, with the reason, whenever an agent asks you something in the terminal, a check fails beyond the rework limit, or anything unexpected happens. You resume, skip the card, or stop. It never force-pushes, never passes permission-bypass flags, and never touches cards outside its queue. It runs on the local server, so closing the page does not stop it; stopping Promptboard pauses it.
+
 The full behaviour is in the [Kanban contract](docs/agentic-kanban-contract.md).
 
 ## Privacy and data

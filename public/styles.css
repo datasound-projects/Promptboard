@@ -551,3 +551,35 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
 .model-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .model-field > input { width: 100%; }
 .pr-fields { display: flex; flex-direction: column; gap: 8px; margin: 8px 0; } .pr-fields input, .pr-fields textarea { width: 100%; margin-top: 4px; } .pr-fields textarea { height: 110px; resize: vertical; }
+
+/* ---- Autopilot ---- */
+.autopilot-open { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 12px; font-size: 13px; font-weight: 600; }
+.autopilot-open svg { width: 16px; height: 16px; }
+.autopilot-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; margin: 12px 14px 0; padding: 10px 14px; border: 1px solid var(--line-strong); border-left: 4px solid #3b82f6; border-radius: 10px; background: color-mix(in srgb, #3b82f6 7%, var(--surface)); }
+.autopilot-bar.paused { border-left-color: #f59e0b; background: color-mix(in srgb, #f59e0b 9%, var(--surface)); }
+.autopilot-bar.finished { border-left-color: #10b981; background: color-mix(in srgb, #10b981 8%, var(--surface)); }
+.autopilot-bar p { flex: 1 1 320px; margin: 0; color: var(--ink); font-size: 13px; }
+.autopilot-bar .detail-actions { padding: 0; }
+.autopilot-tag { display: inline-block; margin-left: 6px; padding: 2px 7px; border-radius: 5px; background: color-mix(in srgb, #3b82f6 14%, transparent); color: var(--ink); font: 600 11px/1.5 var(--mono); }
+.autopilot-tag.now { background: #3b82f6; color: #fff; }
+.autopilot-dialog { width: min(760px, calc(100vw - 32px)); }
+.autopilot-dialog fieldset { margin: 14px 0 0; padding: 0; border: 0; }
+.autopilot-dialog legend { margin-bottom: 8px; color: var(--ink); font-size: 13px; font-weight: 650; }
+.route-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.route-chip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border: 1px solid var(--line-strong); border-radius: 999px; background: var(--surface); color: var(--muted); font-size: 12.5px; cursor: pointer; }
+.route-chip:has(input:checked) { border-color: var(--ink); background: var(--ink); color: var(--surface); }
+.route-chip:has(input:disabled) { cursor: default; opacity: .85; }
+.route-chip input { position: absolute; opacity: 0; pointer-events: none; }
+.route-chip:has(input:focus-visible) { outline: 2px solid var(--ink); outline-offset: 2px; }
+.route-chips.compact .route-chip { padding: 2px 8px; font-size: 11.5px; }
+.autopilot-queue ol { display: flex; flex-direction: column; gap: 6px; max-height: 320px; margin: 0; padding: 0; overflow-y: auto; list-style: none; }
+.autopilot-item { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.autopilot-item.excluded { opacity: .55; }
+.autopilot-head { display: flex; align-items: center; gap: 8px; flex: 1 1 260px; min-width: 0; }
+.autopilot-title { flex: 1; min-width: 0; overflow: hidden; color: var(--ink); font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.autopilot-head button { width: 28px; height: 26px; padding: 0; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--surface); color: var(--ink); }
+.autopilot-head button:disabled { opacity: .35; }
+.autopilot-custom { color: var(--subtle); font-size: 11px; }
+.autopilot-log ol { max-height: 180px; margin: 6px 0 0; padding-left: 18px; overflow-y: auto; color: var(--muted); font-size: 12px; }
+.autopilot-dialog .check-option { margin-top: 14px; }
+.autopilot-bar.needs-you { border-left-color: #f59e0b; }

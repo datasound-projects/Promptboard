@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Kanban: **Autopilot** (optional, per project). Queue To Do cards in any order, choose a default route and per-card routes, and Autopilot takes one card at a time through them: agent stages, commits, accepted clean reviews, your tests, and a local merge or a pull request, with bounded rework and a pause (with the reason) on anything unexpected.
+
 - Kanban: **Testing and Merge agents.** A testing agent runs your tests in the worktree, fixes failures, and can add focused tests; only Promptboard's own test run decides whether tests pass. A merge agent resolves conflicts after Promptboard starts merging the target branch into the task branch (`git merge --no-commit`); you commit the result, or abort it.
 - Kanban: **Open pull request.** After you confirm, the task branch is pushed (never forced) and a GitHub pull request is opened with `gh`; a merged pull request moves the card to Done.
 - Fix: files that still contain conflict markers can no longer be committed (Commit used to stage them as resolved).

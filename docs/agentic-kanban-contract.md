@@ -177,6 +177,17 @@ Everything in this section lives in `src/delivery.mjs`. Evidence is tied to the 
   - Worktree cleanup stays optional and ownership-checked.
 - **Automation:** "Start on entry" for Code Review starts a review run. For Testing it runs the configured commands. Merge is Manual by default. With "Merge automatically" a card entering Merge is merged by Promptboard itself (no agent) through the same gate as a confirmed merge: accepted review and passing tests for the current task and target commits, fast-forward only, clean target checkout. If any check fails, nothing is merged and the reason is returned. The completion records `trigger: "automation"`. Automatic stage advancement does not exist.
 
+## Autopilot
+
+- Per project, `project.autopilot = { status: off | running | paused | finished, route, finish: merge | pull_request, maxRework (0-3), queue: [taskId], routes: { taskId: route }, current, done, reason, log }`.
+- `PATCH /api/projects/:id/autopilot { route, finish, maxRework, queue, routes, expectedRevision }` saves settings (refused while running). Routes list stages from Planning to Merge in board order; Executing is required; a local merge requires Code Review and Testing (the merge gate needs their evidence).
+- `POST /api/projects/:id/autopilot { action: start (confirm: true) | pause | resume | skip | stop }`.
+- The engine (`src/autopilot.mjs`) runs on the server and takes one queued To Do card at a time. Before a card starts, the recorded target commit is refreshed, so the card branches from the target as it is after earlier merges. Skipped stages are passed through without running.
+  - Planning, Executing, Code Review: `requestRun` (`trigger: automation`); the stage is confirmed only when the run reports a finished turn (`turnComplete`), never during a permission prompt. After Executing, uncommitted work is committed with the task title. A review with `no_issues` is accepted; `changes_required` sends the card back to Executing with the findings.
+  - Testing: Promptboard's own test run; a failure sends the card back to Executing with the failing output.
+  - Merge: the gated fast-forward merge, or `openPullRequest`. If the target moved, `update-branch` (or, on conflicts, a merge-agent run and a commit) brings it in, and the card returns to Code Review or Testing for the new commit.
+  - Rework is bounded by `maxRework`; after that, and on any error, Autopilot pauses with the reason. Cards outside the queue are never touched.
+
 ## Integration points for later work
 
 - **PB-03 (review, testing, merge):** these stages reuse the task worktree (`WORKSPACE_REQUIRED` until one exists). Merging into the target branch must be an explicit, confirmed action that never force-updates a branch.

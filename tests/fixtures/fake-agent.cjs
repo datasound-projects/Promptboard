@@ -56,7 +56,7 @@ function turn(text) {
   const readOnly = args.includes('plan') || args.includes('read-only');
   if (text.includes('WRITE_FILE')) {
     if (readOnly) process.stdout.write('write denied: read-only planning session\r\n');
-    else writeFileSync(join(process.cwd(), 'agent-output.txt'), 'written by the agent\n');
+    else writeFileSync(join(process.cwd(), (text.match(/WRITE_FILE:([\w.-]+)/) || [])[1] || 'agent-output.txt'), 'written by the agent\n');
   }
   if (text.includes('EXIT_NOW')) process.exit(0);
   const plan = args.includes('plan') || args.includes('read-only');

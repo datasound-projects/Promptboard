@@ -36,7 +36,7 @@ const EXECUTABLE_STAGES = new Set(['planning', 'executing', 'code_review', 'test
 export const WORKFLOW_STAGES = Object.freeze(['planning', 'executing', 'code_review', 'testing', 'merge']);
 const POLICIES = ['manual', 'ask', 'start'];
 export const DEFAULT_STAGE_SETTINGS = Object.freeze({ policy: 'ask', provider: 'claude', model: '', effort: '', permissionMode: '', instructions: '' });
-const RUN_FIELDS = ['hasReview', 'startedAt', 'endedAt', 'providerSessionId', 'waitingReason', 'errorCode', 'exitCode', 'hasPlan', 'planExcerpt', 'turns', 'lifecycle'];
+const RUN_FIELDS = ['hasReview', 'startedAt', 'endedAt', 'providerSessionId', 'waitingReason', 'errorCode', 'exitCode', 'hasPlan', 'planExcerpt', 'turns', 'lifecycle', 'turnComplete'];
 // Stages whose first authorized run may create the task branch and worktree.
 const WORKSPACE_STAGES = new Set(['planning', 'executing']);
 
@@ -129,6 +129,17 @@ function newProject({ id = randomUUID(), name, createdAt = Date.now() }) {
 function newTask({ id = randomUUID(), title, prompt, source = null, checksOutdated = false, createdAt = Date.now(), updatedAt = createdAt, column = 'todo' }) {
   // contentRevision changes only when the title or prompt changes; plan approvals refer to it.
   return { id, title, prompt, source, checksOutdated, createdAt, updatedAt, column, revision: 1, contentRevision: 1, planApproval: null, workspace: null, retainedBranches: [], transitions: [] };
+}
+
+// Autopilot routes: stages a card visits, in board order. Executing is required (it does the work).
+export const ROUTE_STAGES = Object.freeze(['planning', 'executing', 'code_review', 'testing', 'merge']);
+export function normalizeRoute(route, finish = 'merge') {
+  if (!Array.isArray(route) || route.some(stage => !ROUTE_STAGES.includes(stage))) throw new BoardError('A route lists stages from Planning to Merge.', 'INVALID_AUTOPILOT');
+  const clean = ROUTE_STAGES.filter(stage => route.includes(stage));
+  if (!clean.includes('executing')) throw new BoardError('A route must include Executing: that is where the agent does the work.', 'INVALID_AUTOPILOT');
+  // A local merge needs an accepted review and passing tests for the same commits.
+  if (clean.includes('merge') && finish === 'merge' && !(clean.includes('code_review') && clean.includes('testing'))) throw new BoardError('A route that merges locally must include Code Review and Testing: the merge needs an accepted review and passing tests. Choose a pull request instead, or add them.', 'INVALID_AUTOPILOT');
+  return clean;
 }
 
 /** Validate workflow overrides. Unknown stages and fields are dropped; invalid values are refused. */
@@ -300,6 +311,69 @@ export class Board {
       if (!repository || project.targetBranch?.root !== repository.root) project.targetBranch = null;
       project.revision++;
       return { project, repository };
+    });
+  }
+
+  /**
+   * Autopilot settings: which To Do cards run, in which order, and which stages each visits.
+   * Settings change only while Autopilot is not running.
+   */
+  async setAutopilot(id, { route, finish = 'merge', maxRework = 2, queue = [], routes = {}, expectedRevision }) {
+    const cleanRoute = normalizeRoute(route, finish);
+    if (!['merge', 'pull_request'].includes(finish)) throw new BoardError('Choose a local merge or a pull request.', 'INVALID_AUTOPILOT');
+    if (!Number.isInteger(maxRework) || maxRework < 0 || maxRework > 3) throw new BoardError('Allow 0 to 3 automatic rework rounds.', 'INVALID_AUTOPILOT');
+    if (!Array.isArray(queue) || queue.length > TASK_LIMIT || new Set(queue).size !== queue.length) throw new BoardError('The Autopilot queue must list each card once.', 'INVALID_AUTOPILOT');
+    if (!routes || typeof routes !== 'object' || Array.isArray(routes)) throw new BoardError('Send per-card routes as an object.', 'INVALID_AUTOPILOT');
+    return this.store.update(state => {
+      const project = this.#project(state, id);
+      checkRevision(project, expectedRevision, 'This project');
+      if (project.autopilot?.status === 'running') throw conflict('Pause or stop Autopilot before you change its settings.', 'AUTOPILOT_RUNNING');
+      const ids = new Set(project.tasks.map(task => task.id));
+      if (queue.some(taskId => !ids.has(taskId))) throw new BoardError('The Autopilot queue lists a card that is not in this project.', 'INVALID_AUTOPILOT');
+      const perCard = {};
+      for (const [taskId, value] of Object.entries(routes)) if (queue.includes(taskId) && value) perCard[taskId] = normalizeRoute(value, finish);
+      const previous = project.autopilot || {};
+      project.autopilot = { status: previous.status === 'paused' ? 'paused' : 'off', ...previous, route: cleanRoute, finish, maxRework, queue, routes: perCard, updatedAt: Date.now() };
+      project.revision++;
+      return project;
+    });
+  }
+
+  /** Start (confirmed), pause, resume, stop, or skip the current card. The engine does the work. */
+  async controlAutopilot(id, { action, confirm }) {
+    const project = this.#project(await this.state(), id);
+    if (action === 'start') {
+      if (confirm !== true) throw new BoardError('Confirm what Autopilot will do before you start it.', 'CONFIRMATION_REQUIRED');
+      if (!project.repository || !project.targetBranch) throw new BoardError('Link a repository and choose the target branch first.', 'REPOSITORY_REQUIRED', 409);
+      if (!this.executor) throw new BoardError('Agent execution is not available.', 'EXECUTION_UNAVAILABLE', 503);
+      if (!project.autopilot?.queue?.length) throw new BoardError('Choose at least one To Do card for the Autopilot queue.', 'AUTOPILOT_EMPTY');
+    }
+    return this.store.update(state => {
+      const current = this.#project(state, id);
+      const ap = current.autopilot;
+      if (!ap) throw new BoardError('Save the Autopilot settings first.', 'AUTOPILOT_EMPTY');
+      const log = text => { ap.log = [...(ap.log || []), { at: Date.now(), text: clip(text, 500) }].slice(-200); };
+      if (action === 'start') Object.assign(ap, { status: 'running', current: null, done: [], reason: '', startedAt: Date.now() }), log('Autopilot started by you.');
+      else if (action === 'pause') { if (ap.status !== 'running') throw conflict('Autopilot is not running.', 'AUTOPILOT_NOT_RUNNING'); ap.status = 'paused'; ap.reason = 'Paused by you.'; log('Paused by you.'); }
+      else if (action === 'resume') { if (ap.status !== 'paused') throw conflict('Autopilot is not paused.', 'AUTOPILOT_NOT_PAUSED'); ap.status = 'running'; ap.reason = ''; if (ap.current) ap.current.step = 'resume'; log('Resumed by you.'); }
+      else if (action === 'skip') {
+        if (!ap.current) throw conflict('No card is in progress.', 'AUTOPILOT_IDLE');
+        ap.done = [...(ap.done || []), ap.current.taskId]; log('Skipped the current card; it stays where it is.'); ap.current = null;
+        if (ap.status === 'paused') { ap.status = 'running'; ap.reason = ''; }
+      } else if (action === 'stop') { ap.status = 'off'; ap.current = null; ap.reason = ''; log('Stopped by you. Cards stay where they are.'); }
+      else throw new BoardError('Choose start, pause, resume, skip, or stop.', 'INVALID_AUTOPILOT');
+      current.revision++;
+      return current;
+    });
+  }
+
+  /** Engine-only change of the Autopilot state (status, current card, log). */
+  async updateAutopilot(id, change) {
+    return this.store.update(state => {
+      const project = this.#project(state, id);
+      if (!project.autopilot) return null;
+      change(project.autopilot, text => { project.autopilot.log = [...(project.autopilot.log || []), { at: Date.now(), text: clip(text, 500) }].slice(-200); }, project);
+      return project.autopilot;
     });
   }
 

@@ -1073,6 +1073,7 @@ function renderBoard() {
   // Without a project the settings are the only way forward, so they stay open.
   if (!project && $('#project-body').hidden) setProjectCollapsed(false, false);
   renderWorkspace(project);
+  renderAutopilotBar(project);
   updateBoardScroll();
   window.PromptboardDock?.sync();
 }
@@ -1170,9 +1171,18 @@ function renderCard(card, index, count) {
   const details = [card.source ? sourceSummary(card.source) : 'Written by you'];
   if (card.workspace) details.push(`Branch ${card.workspace.branch}${card.workspace.status === 'ready' ? '' : ` (${card.workspace.status})`}`);
   const run = latestRun(card.id);
+  const ap = currentProject()?.autopilot;
+  const tags = [];
+  if (ap && ap.status !== 'off' && (ap.current?.taskId === card.id || (ap.queue.includes(card.id) && !(ap.done || []).includes(card.id) && card.column === 'todo'))) {
+    const tag = document.createElement('span');
+    const waiting = ap.queue.filter(id => !(ap.done || []).includes(id) && id !== ap.current?.taskId);
+    tag.className = `autopilot-tag${ap.current?.taskId === card.id ? ' now' : ''}`;
+    tag.textContent = ap.current?.taskId === card.id ? 'Autopilot · now' : `Autopilot · #${waiting.indexOf(card.id) + 1}`;
+    tags.push(tag);
+  }
   const meta = paragraph(details.join(' · '), 'kanban-meta');
   meta.title = meta.textContent;
-  item.append(badge, heading, paragraph(card.prompt.slice(0, 400).replace(/\s+/g, ' ').trim(), 'kanban-preview'), meta, renderRunControls(card, run), actions, more);
+  item.append(badge, ...tags, heading, paragraph(card.prompt.slice(0, 400).replace(/\s+/g, ' ').trim(), 'kanban-preview'), meta, renderRunControls(card, run), actions, more);
   if (pendingMoves.has(card.id)) item.classList.add('pending');
   // Selecting a card reveals its agent session, if it has one.
   item.addEventListener('click', event => { if (!event.target.closest('button, select, a')) window.PromptboardDock?.reveal(card.id); });
@@ -2461,6 +2471,151 @@ syncSidebarToggle();
 renderHistory();
 updateCount();
 updateQuality();
+// ---- Autopilot: queued To Do cards go through their routes one at a time ----
+
+const ROUTE_ORDER = ['planning', 'executing', 'code_review', 'testing', 'merge'];
+const ROUTE_SHORT = { planning: 'Plan', executing: 'Execute', code_review: 'Review', testing: 'Test', merge: 'Merge' };
+let autopilotDraft = null;
+
+async function autopilotCall(action, extra = {}) {
+  const project = currentProject();
+  if (!project) return false;
+  try { await boardCall('POST', `/api/projects/${encodeURIComponent(project.id)}/autopilot`, { action, ...extra }); return true; }
+  catch (error) { showBoardError(error); return false; }
+}
+
+function renderAutopilotBar(project) {
+  const bar = $('#autopilot-bar');
+  const ap = project?.autopilot;
+  $('#autopilot-open').disabled = !project;
+  // Autopilot works on the server; while it runs, keep this page current.
+  clearTimeout(renderAutopilotBar.timer);
+  if (board?.projects.some(item => item.autopilot?.status === 'running')) renderAutopilotBar.timer = setTimeout(() => { if (!document.hidden && location.hash === '#/kanban') loadBoard().catch(() => {}); else renderAutopilotBar(currentProject()); }, 3000);
+  if (!ap || ap.status === 'off') { bar.hidden = true; return; }
+  const task = ap.current && project.tasks.find(item => item.id === ap.current.taskId);
+  const left = ap.queue.filter(id => !(ap.done || []).includes(id) && id !== ap.current?.taskId && project.tasks.some(item => item.id === id && item.column === 'todo')).length;
+  // A startup question or a permission prompt holds Autopilot until you answer it in the terminal.
+  const run = task && board.runs.filter(item => item.taskId === task.id && RUN_LIVE.includes(item.status)).at(-1);
+  const needsYou = run && ((run.status === 'waiting_for_input' && !run.turnComplete) || run.lifecycle === 'no-events-yet');
+  const text = ap.status === 'running' ? (task ? `Autopilot is working on “${task.title}” · ${columnTitle(ap.current.stage || 'todo')} · ${left} more queued${needsYou ? ' · the agent is waiting for your answer in the terminal' : ''}` : 'Autopilot is choosing the next card…')
+    : ap.status === 'paused' ? `Autopilot paused: ${ap.reason}`
+    : 'Autopilot finished: every queued card has been through its route.';
+  const buttons = [];
+  if (needsYou) buttons.push(detailButton('Open terminal', () => window.PromptboardDock?.open(run.id), 'danger'));
+  if (ap.status === 'running') buttons.push(detailButton('Pause', () => autopilotCall('pause')));
+  if (ap.status === 'paused') buttons.push(detailButton('Resume', () => autopilotCall('resume'), 'danger'));
+  if (ap.current && ap.status !== 'finished') buttons.push(detailButton('Skip card', () => autopilotCall('skip')));
+  buttons.push(detailButton(ap.status === 'finished' ? 'Close' : 'Stop', () => autopilotCall('stop')));
+  buttons.push(detailButton('Settings', openAutopilot));
+  bar.className = `autopilot-bar ${ap.status}${needsYou ? ' needs-you' : ''}`;
+  bar.replaceChildren(paragraph(text), detailActions(...buttons));
+  bar.hidden = false;
+}
+
+function openAutopilot() {
+  const project = currentProject();
+  if (!project) return;
+  const saved = project.autopilot;
+  const todo = project.tasks.filter(task => task.column === 'todo');
+  // Saved order first, then the rest of To Do in board order. New cards are included the first time.
+  const queued = (saved?.queue || []).filter(id => todo.some(task => task.id === id));
+  const order = [...queued, ...todo.map(task => task.id).filter(id => !queued.includes(id))];
+  autopilotDraft = {
+    route: saved?.route || [...ROUTE_ORDER], finish: saved?.finish || 'merge', maxRework: saved?.maxRework ?? 2,
+    order, included: new Set(saved ? queued : order), routes: { ...(saved?.routes || {}) },
+  };
+  $('#autopilot-project').textContent = `${project.name} · AUTOPILOT`;
+  $('#autopilot-consent').checked = false;
+  $('#autopilot-error').hidden = true;
+  renderAutopilotDialog();
+  if (!$('#autopilot-dialog').open) $('#autopilot-dialog').showModal();
+}
+
+function routeChips(route, onChange, { compact = false, disabled = false } = {}) {
+  const box = document.createElement('div');
+  box.className = `route-chips${compact ? ' compact' : ''}`;
+  for (const stage of ROUTE_ORDER) {
+    const label = document.createElement('label');
+    label.className = 'route-chip';
+    label.dataset.stage = stage;
+    const input = document.createElement('input');
+    input.type = 'checkbox'; input.checked = route.includes(stage); input.value = stage;
+    input.disabled = disabled || stage === 'executing';
+    input.setAttribute('aria-label', columnTitle(stage));
+    input.addEventListener('change', () => onChange(ROUTE_ORDER.filter(item => item === stage ? input.checked : route.includes(item))));
+    const span = document.createElement('span'); span.textContent = compact ? ROUTE_SHORT[stage] : columnTitle(stage);
+    label.append(input, span);
+    box.append(label);
+  }
+  return box;
+}
+
+function renderAutopilotDialog() {
+  const project = currentProject();
+  const draft = autopilotDraft;
+  if (!project || !draft) return;
+  const running = project.autopilot?.status === 'running';
+  $('#autopilot-route').replaceWith(Object.assign(routeChips(draft.route, route => { draft.route = route; renderAutopilotDialog(); }, { disabled: running }), { id: 'autopilot-route' }));
+  $('#autopilot-finish').value = draft.finish;
+  $('#autopilot-finish').disabled = running || !draft.route.includes('merge');
+  $('#autopilot-rework').value = String(draft.maxRework);
+  $('#autopilot-rework').disabled = running;
+  const tasks = new Map(project.tasks.map(task => [task.id, task]));
+  const included = draft.order.filter(id => draft.included.has(id));
+  $('#autopilot-queue-note').textContent = draft.order.length ? `${included.length} of ${draft.order.length} To Do cards · top runs first` : '';
+  const list = $('#autopilot-queue');
+  list.replaceChildren(...draft.order.map((id, index) => {
+    const task = tasks.get(id);
+    const item = document.createElement('li');
+    item.className = `autopilot-item${draft.included.has(id) ? '' : ' excluded'}`;
+    const check = document.createElement('input'); check.type = 'checkbox'; check.checked = draft.included.has(id); check.disabled = running;
+    check.setAttribute('aria-label', `Include “${task.title}” in Autopilot`);
+    check.addEventListener('change', () => { check.checked ? draft.included.add(id) : draft.included.delete(id); renderAutopilotDialog(); });
+    const name = document.createElement('span'); name.className = 'autopilot-title'; name.textContent = task.title;
+    const move = offset => () => { const to = index + offset; if (to < 0 || to >= draft.order.length) return; [draft.order[index], draft.order[to]] = [draft.order[to], draft.order[index]]; renderAutopilotDialog(); list.children[to]?.querySelector(offset < 0 ? '.autopilot-up' : '.autopilot-down')?.focus(); };
+    const up = detailButton('↑', move(-1), 'autopilot-up'); up.setAttribute('aria-label', `Move “${task.title}” up`); up.disabled = running || index === 0;
+    const down = detailButton('↓', move(1), 'autopilot-down'); down.setAttribute('aria-label', `Move “${task.title}” down`); down.disabled = running || index === draft.order.length - 1;
+    const own = draft.routes[id];
+    const chips = routeChips(own || draft.route, route => { if (JSON.stringify(route) === JSON.stringify(draft.route)) delete draft.routes[id]; else draft.routes[id] = route; renderAutopilotDialog(); }, { compact: true, disabled: running || !draft.included.has(id) });
+    const custom = document.createElement('small'); custom.className = 'autopilot-custom'; custom.textContent = own ? 'Own route' : 'Default route';
+    const head = document.createElement('div'); head.className = 'autopilot-head';
+    head.append(check, name, up, down);
+    item.append(head, chips, custom);
+    return item;
+  }));
+  if (!draft.order.length) list.replaceChildren(Object.assign(document.createElement('li'), { className: 'note', textContent: 'No cards in To Do. Add the tasks first (one card per subtask), then come back.' }));
+  $('#autopilot-save').disabled = running;
+  $('#autopilot-start').disabled = running || !included.length;
+  $('#autopilot-start').firstChild.textContent = project.autopilot?.status === 'paused' ? 'Save and restart ' : 'Save and start ';
+  const log = (project.autopilot?.log || []).slice(-30).reverse();
+  $('#autopilot-log-box').hidden = !log.length;
+  $('#autopilot-log').replaceChildren(...log.map(entry => { const li = document.createElement('li'); li.textContent = `${new Date(entry.at).toLocaleTimeString()} · ${entry.text}`; return li; }));
+}
+
+async function saveAutopilot(start) {
+  const project = currentProject();
+  const draft = autopilotDraft;
+  if (!project || !draft) return false;
+  const showError = message => { $('#autopilot-error').textContent = message; $('#autopilot-error').hidden = false; };
+  if (start && !$('#autopilot-consent').checked) { showError('Confirm that you understand what Autopilot does before you start it.'); $('#autopilot-consent').focus(); return false; }
+  const queue = draft.order.filter(id => draft.included.has(id));
+  const routes = Object.fromEntries(Object.entries(draft.routes).filter(([id]) => queue.includes(id)));
+  try {
+    await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/autopilot`, { route: draft.route, finish: draft.route.includes('merge') ? draft.finish : 'merge', maxRework: draft.maxRework, queue, routes, expectedRevision: project.revision });
+    if (start) await boardCall('POST', `/api/projects/${encodeURIComponent(project.id)}/autopilot`, { action: 'start', confirm: true });
+  } catch (error) { showError(error.message); return false; }
+  $('#autopilot-dialog').close();
+  announce(start ? `Autopilot started for “${project.name}” with ${plural(queue.length, 'card')}.` : 'Autopilot settings saved.');
+  return true;
+}
+
+$('#autopilot-open').addEventListener('click', openAutopilot);
+$('#autopilot-close').addEventListener('click', () => $('#autopilot-dialog').close());
+$('#autopilot-finish').addEventListener('change', () => { autopilotDraft.finish = $('#autopilot-finish').value; });
+$('#autopilot-rework').addEventListener('change', () => { autopilotDraft.maxRework = Number($('#autopilot-rework').value); });
+$('#autopilot-save').addEventListener('click', () => saveAutopilot(false));
+$('#autopilot-form').addEventListener('submit', event => { event.preventDefault(); saveAutopilot(true); });
+
 showPage();
 loadProviders();
 $('#settings-toggle').addEventListener('click', () => setSettingsCollapsed(!$('#settings-body').hidden));
