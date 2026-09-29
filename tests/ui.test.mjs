@@ -777,3 +777,14 @@ test('the settings step collapses and expands, is remembered, and reopens for an
   assert.equal($('#settings-body').hidden, false);
   assert.equal(win.localStorage.getItem('ste-prompt-engineer.settings'), 'expanded');
 });
+
+test('the Kanban page shows its own mascot next to the heading', async t => {
+  const { $ } = await setup(t);
+  const image = $('#kanban-view .intro .mascot img');
+  assert.equal(image.getAttribute('src'), '/kanban-mascot.png');
+  assert.match(image.getAttribute('alt'), /pixel-art creature/);
+  assert.equal($('#kanban-view .intro figcaption').textContent, 'One bite at a time.');
+  const served = await fetch(new URL('/kanban-mascot.png', $('#kanban-view').ownerDocument.location.href));
+  assert.equal(served.status, 200);
+  assert.equal(served.headers.get('content-type'), 'image/png');
+});

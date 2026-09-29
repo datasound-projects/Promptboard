@@ -17,6 +17,7 @@ const assets = new Map([
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
   ['/prefs.js', ['prefs.js', 'text/javascript; charset=utf-8']],
   ['/nerd.png', ['nerd.png', 'image/png']],
+  ['/kanban-mascot.png', ['kanban-mascot.png', 'image/png']],
 ]);
 
 function send(res, code, body) {
