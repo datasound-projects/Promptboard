@@ -7,176 +7,210 @@
     <meta name="description" content="Turn rough ideas into clear coding prompts with automatic checks and model review. Use your own Codex, Claude Code, Gemini, or Antigravity CLI.">
     <title>AI Prompt Engineer · STE</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='10' fill='%23181919'/%3E%3Ctext x='20' y='27' text-anchor='middle' font-family='monospace' font-weight='bold' font-size='22' fill='white'%3ES%3C/text%3E%3C/svg%3E">
+    <script src="/prefs.js"></script>
     <link rel="stylesheet" href="/styles.css">
     <script src="/app.js" defer></script>
   </head>
   <body>
-    <button class="sidebar-scrim" id="sidebar-scrim" aria-label="Close history" hidden></button>
+    <a class="skip-link" href="#prompt-input" id="skip-link">Skip to main content</a>
+    <header class="topbar">
+      <button class="icon-button" id="menu-toggle" type="button" aria-controls="sidebar" aria-expanded="true" aria-label="Hide prompt history"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M9.5 4.5v15"/></svg></button>
+      <a class="brand" href="#/" aria-label="AI Prompt Engineer home"><span class="brand-mark" aria-hidden="true">p<span>↗</span></span><span class="brand-name">Prompt Engineer<small>THE STE EDITION</small></span></a>
+      <nav class="page-nav" aria-label="Pages">
+        <a href="#/" aria-current="page">Studio</a>
+        <a href="#/kanban">Kanban</a>
+      </nav>
+      <div class="topbar-actions">
+        <button class="help-pill" id="setup-help" type="button"><span class="status-dot" id="cli-status-dot"></span><span id="cli-status-label">Checking your CLIs</span></button>
+        <button class="icon-button" id="theme-toggle" type="button" aria-pressed="false" aria-label="Dark mode" title="Dark mode"><svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M19.5 14.5A7.5 7.5 0 0 1 9.5 4.5a7.5 7.5 0 1 0 10 10Z"/></svg><svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/></svg></button>
+      </div>
+    </header>
+
+    <button class="sidebar-scrim" id="sidebar-scrim" type="button" aria-label="Close history" hidden></button>
     <aside class="sidebar" id="sidebar" aria-label="Prompt history">
-      <a class="brand" href="#/" aria-label="AI Prompt Engineer home">
-        <span class="brand-mark" aria-hidden="true">p<span>↗</span></span>
-        <span>Prompt Engineer<small>THE STE EDITION</small></span>
-      </a>
-      <button class="new-prompt" id="new-prompt"><span aria-hidden="true">＋</span> New prompt <kbd>N</kbd></button>
-      <div class="history-label"><span>YOUR WORKBENCH</span><span id="history-count">00</span></div>
+      <button class="new-prompt" id="new-prompt" type="button" aria-keyshortcuts="N"><span aria-hidden="true">＋</span> New prompt <kbd aria-hidden="true">N</kbd></button>
+      <div class="history-label"><span>HISTORY</span><span id="history-count">00</span></div>
       <label class="search-wrap">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.3"/><path d="m16 16 4 4"/></svg>
         <input id="history-search" type="search" placeholder="Find a prompt…" autocomplete="off" aria-label="Search prompt history">
       </label>
       <div class="history-list" id="history-list"></div>
-      <div class="history-empty" id="history-empty"><span class="empty-glyph" aria-hidden="true">↳</span><p>A little less chaos.<br>A place for every prompt.</p><small>Your finished prompts will appear here.</small></div>
+      <div class="history-empty" id="history-empty"><p>No prompts yet. Suspiciously tidy.</p><small>Your finished prompts will appear here.</small></div>
       <div class="sidebar-bottom">
-        <div class="local-note"><span class="status-dot"></span><span>A LOCAL WORKBENCH</span></div>
-        <p>History stays in this browser.<br>Your CLI handles the model.</p>
-        <button class="text-link" id="privacy-help">How your data is used <span aria-hidden="true">↗</span></button>
+        <p>History stays in this browser. Your CLI handles the model.</p>
+        <button class="text-link" id="privacy-help" type="button">How your data is used <span aria-hidden="true">↗</span></button>
         <div class="sidebar-footer"><span>LESS AMBIGUITY. MORE INTENT.</span><span>v0.3.0</span></div>
       </div>
     </aside>
 
-    <div class="workspace">
-      <header class="topbar">
-        <div class="breadcrumb"><button class="icon-button mobile-menu" id="menu-toggle" aria-label="Open prompt history" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button><span>WORKBENCH</span><span class="breadcrumb-slash">/</span><nav class="page-nav" aria-label="Pages"><a href="#/" aria-current="page">Prompt Engineer</a><a href="#/kanban">Kanban</a></nav></div>
-        <button class="help-pill" id="setup-help"><span class="status-dot" id="cli-status-dot"></span><span id="cli-status-label">Checking your CLIs</span><span aria-hidden="true">↗</span></button>
-      </header>
-      <main id="prompt-view">
-        <section class="intro" aria-labelledby="page-title">
-          <div class="intro-copy"><p class="eyebrow"><span class="small-square" aria-hidden="true"></span> SIMPLE WORDS. SERIOUS ENGINEERING.</p><h1 id="page-title">Big ideas.<br><span>Ridiculously clear prompts.</span></h1><p class="intro-description">Give your coding agent a better starting point.</p></div>
-          <figure class="mascot"><img src="/nerd.png" alt="A gloriously nerdy black and white cartoon prompt engineer" width="150" height="150"><figcaption>LESS GUESSWORK, PLEASE.</figcaption></figure>
+    <main class="workspace" id="prompt-view">
+      <section class="intro" aria-labelledby="page-title">
+        <div>
+          <h1 id="page-title">Big ideas. <span>Ridiculously clear prompts.</span></h1>
+          <p class="intro-description">Describe the task, choose settings, generate, then review and copy a clear prompt for your coding agent.</p>
+        </div>
+        <figure class="mascot"><img src="/nerd.png" alt="A gloriously nerdy black and white cartoon prompt engineer" width="112" height="112"><figcaption>Less guesswork, please.</figcaption></figure>
+      </section>
+
+      <form id="prompt-form">
+        <section class="card" aria-labelledby="input-heading">
+          <div class="card-heading"><div><span class="step" aria-hidden="true">1</span><h2 id="input-heading">Describe the task</h2></div><span class="small-label">Rough is fine</span></div>
+          <label for="prompt-input" class="sr-only">Describe the task you want your coding agent to do</label>
+          <textarea id="prompt-input" name="input" required maxlength="100000" placeholder="What do you want to build, fix, or figure out?&#10;&#10;Drop in a rough idea, a messy task, or a little context. Start anywhere." spellcheck="true"></textarea>
+          <div class="input-footer"><button type="button" class="text-button" id="load-example"><span aria-hidden="true">✳</span> Explore an example</button><span id="character-count" class="character-count">0 / 100,000</span></div>
         </section>
 
-        <form id="prompt-form">
-          <section class="input-card" aria-labelledby="input-heading">
-            <div class="card-heading"><div><span class="section-number">01</span><h2 id="input-heading">Your idea, unfiltered.</h2></div><span class="small-label">WE'LL BRING THE STRUCTURE.</span></div>
-            <label for="prompt-input" class="sr-only">Describe the task you want your coding agent to do</label>
-            <textarea id="prompt-input" name="input" required maxlength="100000" placeholder="What do you want to build, fix, or figure out?&#10;&#10;Drop in a rough idea, a messy task, or a little context. Start anywhere." spellcheck="true"></textarea>
-            <div class="input-footer"><button type="button" class="example-button" id="load-example"><span aria-hidden="true">✳</span> Explore an example</button><span id="character-count" class="character-count">0 / 100,000</span></div>
-            <div class="controls">
-              <fieldset class="detail-control"><legend>HOW MUCH DETAIL?</legend><div class="segmented" id="detail-options">
-                <label><input type="radio" name="detail" value="super-short"><span>Super short</span></label>
-                <label><input type="radio" name="detail" value="concise" checked><span>Concise</span></label>
-                <label><input type="radio" name="detail" value="detailed"><span>Detailed</span></label>
-                <label><input type="radio" name="detail" value="extremely-detailed"><span>Extremely detailed</span></label>
-              </div></fieldset>
-              <div class="select-grid">
-                <label class="field-label" for="provider">POWERED BY<select id="provider" name="provider" aria-describedby="provider-note"><option value="codex">Codex</option><option value="claude">Claude Code</option><option value="agy">Antigravity CLI (agy)</option><option value="gemini">Gemini CLI</option></select></label>
-                <label class="field-label" for="task">WHAT'S THE JOB?<select id="task" name="task"><option value="build">Build something</option><option value="debug">Debug a problem</option><option value="refactor">Refactor code</option><option value="review">Review code</option><option value="architecture">Design architecture</option><option value="agent-workflow">Create an agent workflow</option><option value="research">Research an approach</option></select></label>
+        <section class="card" aria-labelledby="settings-heading">
+          <div class="card-heading"><div><span class="step" aria-hidden="true">2</span><h2 id="settings-heading">Choose settings</h2></div></div>
+          <div class="card-body">
+            <div class="select-grid">
+              <label class="field-label" for="task">What's the job?<select id="task" name="task"><option value="build">Build something</option><option value="debug">Debug a problem</option><option value="refactor">Refactor code</option><option value="review">Review code</option><option value="architecture">Design architecture</option><option value="agent-workflow">Create an agent workflow</option><option value="research">Research an approach</option></select></label>
+              <div>
+                <label class="field-label" for="provider">CLI<select id="provider" name="provider" aria-describedby="provider-note"><option value="codex">Codex</option><option value="claude">Claude Code</option><option value="agy">Antigravity CLI (agy)</option><option value="gemini">Gemini CLI</option></select></label>
+                <div class="connection-status"><span class="connection-chip" id="connection-install">Checking CLI…</span><span class="connection-chip" id="connection-auth">Sign-in: checking…</span></div>
               </div>
-              <p class="provider-note" id="provider-note">Uses your installed CLI and its current account.</p>
-              <section class="connection-panel" id="connection-panel" aria-labelledby="connection-heading">
-                <div class="connection-status"><span class="field-label" id="connection-heading">CONNECTION</span><span class="connection-chip" id="connection-install">Checking CLI…</span><span class="connection-chip" id="connection-auth">Sign-in: checking…</span></div>
-                <div class="connection-actions">
-                  <button type="button" class="example-button" id="auth-login">Connect / Sign in</button>
-                  <button type="button" class="example-button" id="auth-device" hidden>Use a device code</button>
-                  <button type="button" class="example-button" id="refresh-models">↻ Refresh models</button>
-                  <button type="button" class="example-button" id="auth-check">Check again</button>
-                  <button type="button" class="example-button" id="auth-logout">Sign out</button>
-                </div>
-                <div class="connection-detail" id="auth-detail" role="status" hidden></div>
-              </section>
-              <div class="select-grid model-grid">
-                <label class="field-label" for="model">MODEL<select id="model" aria-describedby="model-note"><option value="">CLI configured default</option><option value="__custom__">Custom model ID…</option></select></label>
-                <label class="field-label" for="effort">REASONING EFFORT<select id="effort" aria-describedby="effort-note"><option value="">CLI default</option></select></label>
-              </div>
-              <label class="field-label" id="custom-model-field" for="custom-model" hidden>CUSTOM MODEL ID<input id="custom-model" type="text" maxlength="100" autocomplete="off" placeholder="Exact model ID from your CLI"></label>
-              <div class="catalog-status"><p class="provider-note" id="model-note" role="status">Reading your CLI model list…</p></div>
-              <p class="provider-note effort-note" id="effort-note">Select a model to see its effort levels.</p>
-              <fieldset class="detail-control language-control"><legend>OUTPUT LANGUAGE</legend><div class="segmented">
-                <label><input type="radio" name="language" value="en" checked><span>English</span></label>
-                <label><input type="radio" name="language" value="de"><span>Deutsch</span></label>
-                <label><input type="radio" name="language" value="pl"><span>Polski</span></label>
-              </div><p class="provider-note" id="language-note">English uses STE writing principles.</p></fieldset>
-              <fieldset class="detail-control quality-control"><legend>CHECK THE RESULT</legend><div class="segmented">
+            </div>
+            <p class="note" id="provider-note">Uses your installed CLI and its current account.</p>
+
+            <div class="select-grid">
+              <label class="field-label" for="model">Model<select id="model" aria-describedby="model-note"><option value="">CLI configured default</option><option value="__custom__">Custom model ID…</option></select></label>
+              <label class="field-label" for="effort">Reasoning effort<select id="effort" aria-describedby="effort-note"><option value="">CLI default</option></select></label>
+            </div>
+            <label class="field-label" id="custom-model-field" for="custom-model" hidden>Custom model ID<input id="custom-model" type="text" maxlength="100" autocomplete="off" placeholder="Exact model ID from your CLI"></label>
+            <div class="catalog-status"><p class="note" id="model-note" role="status">Reading your CLI model list…</p><button type="button" class="text-button" id="refresh-models">↻ Refresh models</button></div>
+            <p class="note" id="effort-note">Select a model to see its effort levels.</p>
+
+            <fieldset class="choice"><legend>Detail</legend><div class="segmented" id="detail-options">
+              <label><input type="radio" name="detail" value="super-short"><span>Super short</span></label>
+              <label><input type="radio" name="detail" value="concise" checked><span>Concise</span></label>
+              <label><input type="radio" name="detail" value="detailed"><span>Detailed</span></label>
+              <label><input type="radio" name="detail" value="extremely-detailed"><span>Extremely detailed</span></label>
+            </div></fieldset>
+
+            <div class="choice-row">
+              <fieldset class="choice"><legend>Output language</legend><div class="segmented">
+                <label><input type="radio" name="language" value="en" checked aria-describedby="language-note"><span>English</span></label>
+                <label><input type="radio" name="language" value="de" aria-describedby="language-note"><span>Deutsch</span></label>
+                <label><input type="radio" name="language" value="pl" aria-describedby="language-note"><span>Polski</span></label>
+              </div><p class="note" id="language-note">English uses STE writing principles.</p></fieldset>
+              <fieldset class="choice"><legend>Check the result</legend><div class="segmented">
                 <label><input type="radio" name="quality" value="reviewed" checked aria-describedby="quality-note"><span>Reviewed</span></label>
                 <label><input type="radio" name="quality" value="fast" aria-describedby="quality-note"><span>Fast</span></label>
-              </div><p class="provider-note" id="quality-note">Automatic checks and a separate model review. Usually 2 CLI calls; up to 4 if one repair is needed. Uses more time and CLI allowance.</p></fieldset>
-              <details class="advanced" id="advanced-options"><summary>Fine-tune the brief <span class="advanced-summary">Constraints &amp; checks</span><span class="details-plus" aria-hidden="true">＋</span></summary><div class="advanced-body">
-                <div class="check-grid">
-                  <label class="check-option"><input type="checkbox" id="acceptance-checks" checked><span><strong>Acceptance checks</strong><small>Define what “done” means.</small></span></label>
-                  <label class="check-option"><input type="checkbox" id="plan-first" checked><span><strong>Plan first</strong><small>Ask for a short action plan.</small></span></label>
-                  <label class="check-option"><input type="checkbox" id="edge-cases"><span><strong>Edge cases</strong><small>Consider failure paths.</small></span></label>
-                  <label class="check-option"><input type="checkbox" id="security-review"><span><strong>Security review</strong><small>Check trust and access.</small></span></label>
-                </div>
-                <label class="field-label" for="terminology">TERMS TO KEEP<input id="terminology" type="text" maxlength="2000" placeholder="e.g. FastAPI, MCP, customer_id"><small>Keep technical names, code, and identifiers unchanged.</small></label>
-              </div></details>
+              </div><p class="note" id="quality-note">Automatic checks and a separate model review. Usually 2 CLI calls; up to 4 if one repair is needed. Uses more time and CLI allowance.</p></fieldset>
             </div>
-          </section>
-          <div class="action-row"><p><span aria-hidden="true">↳</span> Clear language.<br><span class="action-note">Fewer things left to chance.</span></p><button class="generate-button" id="generate-button" type="submit" disabled><span id="generate-label">Okay , Lets Goooo!</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 12h15M13 5l7 7-7 7"/></svg></button><button type="button" class="cancel-button" id="cancel-button" hidden>Cancel</button></div>
-          <p class="inline-error" id="generation-error" role="alert" hidden></p>
-        </form>
 
-        <p class="storage-warning" id="storage-warning" role="alert" hidden>History changes were not saved. Export any prompts and check reports you want to keep before you close or reload this page.</p>
-        <p class="storage-warning board-warning" role="alert" hidden>Kanban board changes were not saved in this browser. Open Kanban and export a backup before you close or reload this page.</p>
-        <section class="output-card" aria-labelledby="output-heading" aria-busy="false" id="output-card">
-          <div class="card-heading"><div><span class="section-number">02</span><h2 id="output-heading">Your engineered prompt.</h2></div><div class="output-actions"><button class="icon-text-button" id="kanban-button" type="button" disabled title="Save this prompt as a task card" aria-label="Add to Kanban"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M12 8v8M8 12h8"/></svg><span id="kanban-label">Add to Kanban</span></button><button class="icon-text-button" id="export-button" type="button" disabled title="Download as Markdown"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 16v5h14v-5"/></svg><span>Export</span></button><button class="copy-button" id="copy-button" type="button" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V4H4v12h4"/></svg><span id="copy-label">Copy prompt</span></button></div></div>
-          <div class="output-empty" id="output-empty"><span class="output-empty-mark" aria-hidden="true">⌘</span><p>A good prompt starts with a rough idea.<small>Your engineered prompt will appear here.</small></p></div>
-          <div class="generation-progress" id="generation-progress" role="status" hidden><span class="spinner" aria-hidden="true"></span><div><strong><span id="progress-stage">Starting</span> · <span id="progress-elapsed">0:00</span></strong><span id="progress-note">Your CLI is working. This may take a moment.</span></div></div>
-          <div class="verification-status" id="verification-status" role="status" hidden></div>
-          <pre id="prompt-output" tabindex="0" aria-label="Engineered prompt" hidden></pre>
-          <div class="output-meta" id="output-meta" hidden></div>
-          <details class="verification-report" id="verification-report" hidden><summary>View the checks <span id="verification-summary"></span></summary><div class="verification-body">
-            <p id="verification-limits">Automatic checks cover specific rules. Model review can miss errors. Compare this prompt with your request before use. This is not a certified ASD-STE100 check.</p>
-            <p id="verification-overview"></p>
-            <h3>Automatic checks</h3><ul id="automatic-checks"></ul>
-            <h3>Issues to review</h3><ul id="verification-issues"></ul>
-            <h3>Model review criteria</h3><ul id="review-criteria"></ul>
-            <h3>Requirement review</h3><p id="requirement-note"></p><ol id="requirement-ledger"></ol>
-            <h3>CLI calls</h3><ul id="verification-stages"></ul>
-            <button class="report-download" id="report-button" type="button" disabled>Download check report (JSON)</button>
-          </div></details>
-          <details class="lint-review" id="lint-review" hidden><summary><span aria-hidden="true">↳</span> Review the language <span id="lint-count"></span></summary><p>These checks are advisory. They do not verify full ASD-STE100 compliance.</p><ul id="lint-warnings"></ul></details>
-        </section>
-        <footer class="main-footer"><span>BASED ON ASD-STE100 SIMPLIFIED TECHNICAL ENGLISH</span><span>STE-informed <span aria-hidden="true">·</span> Human review required</span></footer>
-      </main>
-
-      <main id="kanban-view" hidden>
-        <section class="intro kanban-intro" aria-labelledby="kanban-title">
-          <div class="intro-copy"><p class="eyebrow"><span class="small-square" aria-hidden="true"></span> ONE TASK PER CARD. ONE COLUMN.</p><h1 id="kanban-title">Plan the work.<br><span>Brief your agent one card at a time.</span></h1><p class="intro-description">Prepare tasks for your coding agent. Nothing runs from this board. Copy a card when you are ready.</p></div>
-        </section>
-        <p class="storage-warning" id="kanban-load-warning" role="alert" hidden></p>
-        <p class="storage-warning board-warning" role="alert" hidden>Board changes were not saved in this browser. Export a backup before you close or reload this page.</p>
-        <section class="input-card kanban-projects" aria-labelledby="projects-heading">
-          <div class="card-heading"><div><span class="section-number">01</span><h2 id="projects-heading">Projects</h2></div><div class="output-actions"><button class="icon-text-button" id="import-board" type="button" title="Restore a board backup (JSON)" aria-label="Import board backup"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M12 15V3m-5 5 5-5 5 5M5 16v5h14v-5"/></svg><span>Import</span></button><button class="icon-text-button" id="export-board" type="button" title="Download a board backup (JSON)" aria-label="Export board backup"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 16v5h14v-5"/></svg><span>Export</span></button><input type="file" id="import-file" accept=".json,application/json" hidden></div></div>
-          <div class="kanban-project-bar">
-            <label class="field-label" for="project-select">CURRENT PROJECT<select id="project-select"></select></label>
-            <div class="kanban-project-actions"><button type="button" class="example-button" id="project-new"><span aria-hidden="true">＋</span> New project</button><button type="button" class="example-button" id="project-rename">Rename</button><button type="button" class="example-button" id="project-delete">Delete</button></div>
+            <details class="advanced" id="advanced-options">
+              <summary><span>More settings</span><span class="advanced-summary">Sign-in, sign-out, and brief options</span><span class="details-plus" aria-hidden="true">＋</span></summary>
+              <div class="advanced-body">
+                <section class="settings-group" aria-labelledby="connection-heading">
+                  <h3 id="connection-heading">Connection</h3>
+                  <div class="connection-actions">
+                    <button type="button" class="secondary-button" id="auth-login">Connect / Sign in</button>
+                    <button type="button" class="secondary-button" id="auth-device" hidden>Use a device code</button>
+                    <button type="button" class="secondary-button" id="auth-check">Check again</button>
+                    <button type="button" class="secondary-button" id="auth-logout">Sign out</button>
+                  </div>
+                  <div class="connection-detail" id="auth-detail" role="status" hidden></div>
+                </section>
+                <section class="settings-group" aria-labelledby="brief-heading">
+                  <h3 id="brief-heading">Brief options</h3>
+                  <div class="check-grid">
+                    <label class="check-option"><input type="checkbox" id="acceptance-checks" checked><span><strong>Acceptance checks</strong><small>Define what “done” means.</small></span></label>
+                    <label class="check-option"><input type="checkbox" id="plan-first" checked><span><strong>Plan first</strong><small>Ask for a short action plan.</small></span></label>
+                    <label class="check-option"><input type="checkbox" id="edge-cases"><span><strong>Edge cases</strong><small>Consider failure paths.</small></span></label>
+                    <label class="check-option"><input type="checkbox" id="security-review"><span><strong>Security review</strong><small>Check trust and access.</small></span></label>
+                  </div>
+                  <label class="field-label" for="terminology">Terms to keep<input id="terminology" type="text" maxlength="2000" placeholder="e.g. FastAPI, MCP, customer_id"><small>Keep technical names, code, and identifiers unchanged.</small></label>
+                </section>
+              </div>
+            </details>
           </div>
-          <form class="kanban-project-form" id="project-form" novalidate hidden>
-            <label class="field-label" for="project-name"><span id="project-form-label">NEW PROJECT NAME</span><input id="project-name" type="text" maxlength="80" autocomplete="off" required></label>
-            <div class="kanban-form-actions"><button type="submit" class="mini-button dark">Save project</button><button type="button" class="mini-button" id="project-cancel">Cancel</button></div>
-            <p class="inline-error" id="project-error" role="alert" hidden></p>
-          </form>
-          <div class="connection-detail kanban-detail" id="project-detail" role="status" hidden></div>
         </section>
-        <section class="output-card kanban-board" aria-labelledby="todo-heading">
-          <div class="card-heading"><div><span class="section-number">02</span><h2 id="todo-heading">To do</h2><span class="kanban-count" id="todo-count" aria-label="Cards">00</span></div><button class="copy-button" id="card-new" type="button"><span aria-hidden="true">＋</span> New card</button></div>
-          <div class="output-empty" id="board-empty"><span class="output-empty-mark" aria-hidden="true">↳</span><p><span id="board-empty-text">Create a project to start planning.</span><small id="board-empty-note">Each project gets its own board with one To do column.</small><a class="kanban-empty-link" id="empty-prompt-link" href="#/" hidden>Engineer a prompt <span aria-hidden="true">↗</span></a></p></div>
-          <ol class="kanban-cards" id="card-list" aria-labelledby="todo-heading"></ol>
-        </section>
-        <footer class="main-footer"><span>PREPARED FOR AGENTS. NOTHING RUNS FROM THIS BOARD.</span><span>Cards stay in this browser <span aria-hidden="true">·</span> Human review required</span></footer>
-      </main>
-    </div>
 
-    <dialog id="help-dialog" aria-labelledby="dialog-heading"><button class="dialog-close icon-button" id="close-dialog" aria-label="Close help">×</button><p class="eyebrow">YOUR CLI. A CLEARER BRIEF.</p><h2 id="dialog-heading">A small tool.<br>A straightforward setup.</h2><div id="dialog-content"></div><button class="dialog-done" id="dialog-done">Got it <span aria-hidden="true">↗</span></button></dialog>
+        <div class="action-row">
+          <span class="step" aria-hidden="true">3</span>
+          <button class="generate-button" id="generate-button" type="submit" disabled><span id="generate-label">Okay, let's goooo!</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 12h15M13 5l7 7-7 7"/></svg></button>
+          <button type="button" class="secondary-button cancel-button" id="cancel-button" hidden>Cancel</button>
+          <p class="shortcut-hint"><kbd>⌘</kbd> / <kbd>Ctrl</kbd> + <kbd>Enter</kbd> to generate</p>
+        </div>
+        <p class="inline-error" id="generation-error" role="alert" hidden></p>
+      </form>
+
+      <p class="storage-warning" id="storage-warning" role="alert" hidden>History changes were not saved. Export any prompts and check reports you want to keep before you close or reload this page.</p>
+      <p class="storage-warning board-warning" role="alert" hidden>Kanban board changes were not saved in this browser. Open Kanban and export a backup before you close or reload this page.</p>
+      <section class="card output-card" aria-labelledby="output-heading" aria-busy="false" id="output-card">
+        <div class="card-heading"><div><span class="step" aria-hidden="true">4</span><h2 id="output-heading">Review and copy</h2></div><div class="output-actions"><span class="copy-cheer" id="copy-cheer" aria-hidden="true" hidden>*pushes glasses up*</span><button class="secondary-button" id="kanban-button" type="button" disabled title="Save this prompt as a task card" aria-label="Add to Kanban"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M12 8v8M8 12h8"/></svg><span id="kanban-label">Add to Kanban</span></button><button class="secondary-button" id="export-button" type="button" disabled title="Download as Markdown"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 16v5h14v-5"/></svg><span>Export</span></button><button class="copy-button" id="copy-button" type="button" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V4H4v12h4"/></svg><span id="copy-label">Copy prompt</span></button></div></div>
+        <div class="output-empty" id="output-empty"><img src="/nerd.png" alt="" width="48" height="48"><p>Nothing to review yet. The nerd is polishing their glasses.<small>Your engineered prompt will appear here.</small></p></div>
+        <div class="generation-progress" id="generation-progress" role="status" hidden><span class="spinner" aria-hidden="true"></span><div><strong><span id="progress-stage">Starting</span> · <span id="progress-elapsed">0:00</span></strong><span id="progress-note">Your CLI is working. This may take a moment.</span></div></div>
+        <div class="verification-status" id="verification-status" role="status" hidden></div>
+        <pre id="prompt-output" tabindex="0" aria-label="Engineered prompt" hidden></pre>
+        <div class="output-meta" id="output-meta" hidden></div>
+        <details class="verification-report" id="verification-report" hidden><summary>View the checks <span id="verification-summary"></span></summary><div class="verification-body">
+          <p id="verification-limits">Automatic checks cover specific rules. Model review can miss errors. Compare this prompt with your request before use. This is not a certified ASD-STE100 check.</p>
+          <p id="verification-overview"></p>
+          <h3>Automatic checks</h3><ul id="automatic-checks"></ul>
+          <h3>Issues to review</h3><ul id="verification-issues"></ul>
+          <h3>Model review criteria</h3><ul id="review-criteria"></ul>
+          <h3>Requirement review</h3><p id="requirement-note"></p><ol id="requirement-ledger"></ol>
+          <h3>CLI calls</h3><ul id="verification-stages"></ul>
+          <button class="secondary-button" id="report-button" type="button" disabled>Download check report (JSON)</button>
+        </div></details>
+        <details class="lint-review" id="lint-review" hidden><summary>Review the language <span id="lint-count"></span></summary><p>These checks are advisory. They do not verify full ASD-STE100 compliance.</p><ul id="lint-warnings"></ul></details>
+      </section>
+      <footer class="main-footer"><span>BASED ON ASD-STE100 SIMPLIFIED TECHNICAL ENGLISH</span><span>STE-informed <span aria-hidden="true">·</span> Human review required</span></footer>
+    </main>
+
+    <main class="workspace" id="kanban-view" tabindex="-1" hidden>
+      <section class="intro" aria-labelledby="kanban-title">
+        <div>
+          <h1 id="kanban-title">Plan the work. <span>Brief your agent one card at a time.</span></h1>
+          <p class="intro-description">Prepare tasks for your coding agent. Nothing runs from this board. Copy a card when you are ready.</p>
+        </div>
+      </section>
+      <p class="storage-warning" id="kanban-load-warning" role="alert" hidden></p>
+      <p class="storage-warning board-warning" role="alert" hidden>Board changes were not saved in this browser. Export a backup before you close or reload this page.</p>
+      <section class="card kanban-projects" aria-labelledby="projects-heading">
+        <div class="card-heading"><div><h2 id="projects-heading">Projects</h2></div><div class="output-actions"><button class="secondary-button" id="import-board" type="button" title="Restore a board backup (JSON)" aria-label="Import board backup"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M12 15V3m-5 5 5-5 5 5M5 16v5h14v-5"/></svg><span>Import</span></button><button class="secondary-button" id="export-board" type="button" title="Download a board backup (JSON)" aria-label="Export board backup"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 16v5h14v-5"/></svg><span>Export</span></button><input type="file" id="import-file" accept=".json,application/json" hidden></div></div>
+        <div class="kanban-project-bar">
+          <label class="field-label" for="project-select">Current project<select id="project-select"></select></label>
+          <div class="kanban-project-actions"><button type="button" class="text-button" id="project-new"><span aria-hidden="true">＋</span> New project</button><button type="button" class="text-button" id="project-rename" aria-label="Rename project">Rename</button><button type="button" class="text-button" id="project-delete" aria-label="Delete project">Delete</button></div>
+        </div>
+        <form class="kanban-project-form" id="project-form" novalidate hidden>
+          <label class="field-label" for="project-name"><span id="project-form-label">New project name</span><input id="project-name" type="text" maxlength="80" autocomplete="off" required></label>
+          <div class="kanban-form-actions"><button type="submit" class="copy-button">Save project</button><button type="button" class="secondary-button" id="project-cancel">Cancel</button></div>
+          <p class="inline-error" id="project-error" role="alert" hidden></p>
+        </form>
+        <div class="connection-detail kanban-detail" id="project-detail" role="status" hidden></div>
+      </section>
+      <section class="card kanban-board" aria-labelledby="todo-heading">
+        <div class="card-heading"><div><h2 id="todo-heading">To do</h2><span class="kanban-count" id="todo-count" aria-label="Cards">00</span></div><button class="copy-button" id="card-new" type="button"><span aria-hidden="true">＋</span> New card</button></div>
+        <div class="output-empty" id="board-empty"><img src="/nerd.png" alt="" width="48" height="48"><p><span id="board-empty-text">Create a project to start planning.</span><small id="board-empty-note">Each project gets its own board with one To do column.</small><a class="kanban-empty-link" id="empty-prompt-link" href="#/" hidden>Engineer a prompt <span aria-hidden="true">↗</span></a></p></div>
+        <ol class="kanban-cards" id="card-list" aria-labelledby="todo-heading"></ol>
+      </section>
+      <footer class="main-footer"><span>PREPARED FOR AGENTS. NOTHING RUNS FROM THIS BOARD.</span><span>Cards stay in this browser <span aria-hidden="true">·</span> Human review required</span></footer>
+    </main>
+
+    <dialog id="help-dialog" aria-labelledby="dialog-heading"><button class="dialog-close icon-button" id="close-dialog" type="button" aria-label="Close help">×</button><p class="eyebrow">YOUR CLI. A CLEARER BRIEF.</p><h2 id="dialog-heading">A small tool.<br>A straightforward setup.</h2><div id="dialog-content"></div><button class="dialog-done" id="dialog-done" type="button">Got it <span aria-hidden="true">↗</span></button></dialog>
     <dialog id="card-dialog" class="kanban-dialog" aria-labelledby="card-dialog-heading"><button class="dialog-close icon-button" id="card-dialog-close" type="button" aria-label="Close card">×</button><p class="eyebrow" id="card-dialog-project">TO DO</p><h2 id="card-dialog-heading">New card</h2>
       <form id="card-form" novalidate>
         <p class="verification-status" id="card-status" hidden></p>
-        <label class="field-label" for="card-title">TITLE<input id="card-title" type="text" maxlength="120" autocomplete="off" required></label>
-        <label class="field-label" for="card-prompt">PROMPT<textarea id="card-prompt" spellcheck="false" required></textarea></label>
-        <p class="provider-note" id="card-note"></p>
+        <label class="field-label" for="card-title">Title<input id="card-title" type="text" maxlength="120" autocomplete="off" required></label>
+        <label class="field-label" for="card-prompt">Prompt<textarea id="card-prompt" spellcheck="false" required></textarea></label>
+        <p class="note" id="card-note"></p>
         <details class="kanban-source" id="card-source" hidden><summary>Source details</summary><ul id="card-source-list"></ul></details>
         <p class="inline-error" id="card-error" role="alert" hidden></p>
-        <div class="kanban-dialog-actions"><button type="button" class="cancel-button" id="card-cancel">Cancel</button><button type="submit" class="dialog-done" id="card-save">Save card <span aria-hidden="true">↗</span></button></div>
+        <div class="kanban-dialog-actions"><button type="button" class="secondary-button" id="card-cancel">Cancel</button><button type="submit" class="dialog-done" id="card-save">Save card <span aria-hidden="true">↗</span></button></div>
       </form>
     </dialog>
     <dialog id="add-dialog" class="kanban-dialog" aria-labelledby="add-dialog-heading"><button class="dialog-close icon-button" id="add-dialog-close" type="button" aria-label="Close">×</button><p class="eyebrow">PREPARE THE TASK</p><h2 id="add-dialog-heading">Add to Kanban</h2>
       <form id="add-form" novalidate>
-        <label class="field-label" for="add-project">PROJECT<select id="add-project"></select></label>
-        <label class="field-label" for="add-project-name" id="add-project-name-field">NEW PROJECT NAME<input id="add-project-name" type="text" maxlength="80" autocomplete="off"></label>
-        <label class="field-label" for="add-title">CARD TITLE<input id="add-title" type="text" maxlength="120" autocomplete="off" required></label>
-        <p class="provider-note" id="add-note"></p>
+        <label class="field-label" for="add-project">Project<select id="add-project"></select></label>
+        <label class="field-label" for="add-project-name" id="add-project-name-field">New project name<input id="add-project-name" type="text" maxlength="80" autocomplete="off"></label>
+        <label class="field-label" for="add-title">Card title<input id="add-title" type="text" maxlength="120" autocomplete="off" required></label>
+        <p class="note" id="add-note"></p>
         <pre class="kanban-snapshot" id="add-preview" tabindex="0" aria-label="Prompt to copy into the card"></pre>
         <p class="inline-error" id="add-error" role="alert" hidden></p>
-        <div class="kanban-dialog-actions"><button type="button" class="cancel-button" id="add-cancel">Cancel</button><button type="submit" class="dialog-done">Add card <span aria-hidden="true">↗</span></button></div>
+        <div class="kanban-dialog-actions"><button type="button" class="secondary-button" id="add-cancel">Cancel</button><button type="submit" class="dialog-done">Add card <span aria-hidden="true">↗</span></button></div>
       </form>
     </dialog>
     <div id="announcement" class="sr-only" aria-live="polite"></div>

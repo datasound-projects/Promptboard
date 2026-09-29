@@ -107,6 +107,9 @@ test('static assets have local security headers and cannot expose source files',
   assert.match(response.headers.get('content-security-policy'), /frame-ancestors 'none'/);
   assert.equal(response.headers.get('cache-control'), 'no-store');
   assert.equal((await fetch(app.url + '/src/server.mjs')).status, 404);
+  const prefs = await fetch(app.url + '/prefs.js');
+  assert.equal(prefs.status, 200);
+  assert.match(prefs.headers.get('content-type'), /^text\/javascript/);
   const providers = await fetch(app.url + '/api/providers').then(r => r.json());
   assert.equal(providers.providers[0].available, true);
 });

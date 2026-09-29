@@ -2,6 +2,8 @@
 
 const $ = (selector) => document.querySelector(selector);
 const HISTORY_KEY = 'ste-prompt-engineer.history.v1';
+const THEME_KEY = 'ste-prompt-engineer.theme'; // Also read by prefs.js before first paint.
+const SIDEBAR_KEY = 'ste-prompt-engineer.sidebar';
 const HISTORY_LIMIT = 40;
 const MAX_PROMPT_BYTES = 2 * 1024 * 1024;
 const KNOWN_PROVIDERS = ['codex', 'claude', 'gemini', 'agy'];
@@ -125,8 +127,7 @@ function renderHistory() {
   $('#history-list').replaceChildren();
   $('#history-count').textContent = String(history.length).padStart(2, '0');
   $('#history-empty').hidden = filtered.length > 0;
-  $('#history-empty p').textContent = query ? 'No matching prompts.' : 'A little less chaos.\nA place for every prompt.';
-  $('#history-empty p').style.whiteSpace = 'pre-line';
+  $('#history-empty p').textContent = query ? 'No matches. The nerd checked twice.' : 'No prompts yet. Suspiciously tidy.';
   $('#history-empty small').textContent = query ? 'Try another word or clear the search.' : 'Your finished prompts will appear here.';
   for (const entry of filtered) {
     const row = document.createElement('div');
@@ -167,10 +168,39 @@ function updateCount() {
   $('#character-count').textContent = `${$('#prompt-input').value.length.toLocaleString()} / 100,000`;
 }
 
+function savePref(key, value) { try { localStorage.setItem(key, value); } catch {} }
+function scrollBehavior() { return window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches ? 'auto' : 'smooth'; }
+function renderTheme() { $('#theme-toggle').setAttribute('aria-pressed', String(document.documentElement.dataset.theme === 'dark')); }
+function toggleTheme() {
+  const dark = document.documentElement.dataset.theme !== 'dark';
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  savePref(THEME_KEY, dark ? 'dark' : 'light');
+  renderTheme();
+}
+
+// Narrow screens show history as a drawer (.open); wider screens collapse it in place (data-sidebar).
+function isMobile() { return window.innerWidth <= 730; }
+function syncSidebarToggle() {
+  const expanded = isMobile() ? $('#sidebar').classList.contains('open') : document.documentElement.dataset.sidebar !== 'collapsed';
+  $('#menu-toggle').setAttribute('aria-expanded', String(expanded));
+  $('#menu-toggle').setAttribute('aria-label', expanded ? 'Hide prompt history' : 'Show prompt history');
+}
 function setSidebar(open) {
   $('#sidebar').classList.toggle('open', open);
   $('#sidebar-scrim').hidden = !open;
-  $('#menu-toggle').setAttribute('aria-expanded', String(open));
+  syncSidebarToggle();
+}
+function toggleSidebar() {
+  if (isMobile()) {
+    const open = !$('#sidebar').classList.contains('open');
+    setSidebar(open);
+    if (open) $('#new-prompt').focus();
+    return;
+  }
+  const collapsed = document.documentElement.dataset.sidebar !== 'collapsed';
+  document.documentElement.dataset.sidebar = collapsed ? 'collapsed' : 'expanded';
+  savePref(SIDEBAR_KEY, collapsed ? 'collapsed' : 'expanded');
+  syncSidebarToggle();
 }
 
 function selectedProvider() { return providers.find((provider) => provider.id === $('#provider').value); }
@@ -300,7 +330,7 @@ function setRunning(value) {
   $('#output-card').setAttribute('aria-busy', String(value));
   $('#generation-progress').hidden = !value;
   $('#cancel-button').hidden = !value;
-  $('#generate-label').textContent = value ? 'Writing and checking…' : 'Okay , Lets Goooo!';
+  $('#generate-label').textContent = value ? 'Writing and checking…' : "Okay, let's goooo!";
   $('#cancel-button').disabled = false;
   $('#new-prompt').disabled = value;
   $('#load-example').disabled = value;
@@ -545,7 +575,7 @@ function newPrompt() {
   renderHistory();
   setSidebar(false);
   $('#prompt-input').focus();
-  window.scrollTo({ top: 0, behavior: 'smooth' });
+  window.scrollTo({ top: 0, behavior: scrollBehavior() });
 }
 
 async function generate(event) {
@@ -598,7 +628,7 @@ async function generate(event) {
     showResult(entry);
     const resultMessage = entry.verification?.status === 'checks-passed' ? 'Checks complete. Review the prompt before use.' : 'Draft returned. Review the prompt and its check report before use.';
     announce(`${resultMessage}${saved ? '' : ' Browser history was not saved. Copy or export this prompt and its check report to keep them.'}`);
-    $('#output-card').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    $('#output-card').scrollIntoView({ behavior: scrollBehavior(), block: 'nearest' });
   } catch (error) {
     if (sequence !== generationSequence) return;
     if (previousResult) showResult(previousResult);
@@ -970,7 +1000,7 @@ function renderBoard() {
   $('#todo-count').textContent = String(cards.length).padStart(2, '0');
   $('#board-empty').hidden = cards.length > 0;
   $('#board-empty-text').textContent = project ? 'No tasks yet.' : 'Create a project to start planning.';
-  $('#board-empty-note').textContent = project ? 'Choose New card, or add a generated prompt from Prompt Engineer.' : 'Each project gets its own board with one To do column.';
+  $('#board-empty-note').textContent = project ? 'Choose New card, or add a generated prompt from the Studio page.' : 'Each project gets its own board with one To do column.';
   $('#empty-prompt-link').hidden = !project;
   $('#card-list').replaceChildren(...cards.map((card, index) => renderCard(card, index, cards.length)));
 }
@@ -1170,7 +1200,7 @@ function showProjectDetail(...nodes) {
 function openProjectForm(mode) {
   projectFormMode = mode;
   showProjectDetail();
-  $('#project-form-label').textContent = mode === 'rename' ? 'RENAME PROJECT' : 'NEW PROJECT NAME';
+  $('#project-form-label').textContent = mode === 'rename' ? 'Rename project' : 'New project name';
   $('#project-name').value = mode === 'rename' ? currentProject()?.name || '' : '';
   $('#project-error').hidden = true;
   $('#project-form').hidden = false;
@@ -1295,6 +1325,8 @@ function addToKanban(event) {
 }
 
 window.addEventListener('hashchange', showPage);
+// The skip link must not change the hash, which selects the page.
+$('#skip-link').addEventListener('click', event => { event.preventDefault(); ($('#kanban-view').hidden ? $('#prompt-input') : $('#kanban-view')).focus(); });
 $('#kanban-button').addEventListener('click', openAddToKanban);
 $('#add-form').addEventListener('submit', addToKanban);
 $('#add-project').addEventListener('change', () => { $('#add-project-name-field').hidden = Boolean($('#add-project').value); });
@@ -1330,7 +1362,9 @@ for (const button of document.querySelectorAll('input[name="language"]')) button
 for (const button of document.querySelectorAll('input[name="quality"]')) button.addEventListener('change', updateQuality);
 $('#history-search').addEventListener('input', renderHistory);
 $('#new-prompt').addEventListener('click', newPrompt);
-$('#menu-toggle').addEventListener('click', () => setSidebar(!$('#sidebar').classList.contains('open')));
+$('#menu-toggle').addEventListener('click', toggleSidebar);
+$('#theme-toggle').addEventListener('click', toggleTheme);
+window.addEventListener('resize', () => setSidebar(isMobile() && $('#sidebar').classList.contains('open')));
 $('#sidebar-scrim').addEventListener('click', () => setSidebar(false));
 $('#setup-help').addEventListener('click', () => openHelp());
 $('#privacy-help').addEventListener('click', () => openHelp(true));
@@ -1363,9 +1397,10 @@ $('#copy-button').addEventListener('click', async () => {
   try {
     await navigator.clipboard.writeText(currentResult.prompt);
     $('#copy-label').textContent = 'Copied!';
+    $('#copy-cheer').hidden = false;
     announce('Prompt copied to your clipboard.');
     clearTimeout(copyTimer);
-    copyTimer = setTimeout(() => { $('#copy-label').textContent = 'Copy prompt'; }, 1800);
+    copyTimer = setTimeout(() => { $('#copy-label').textContent = 'Copy prompt'; $('#copy-cheer').hidden = true; }, 1800);
   } catch {
     const selection = window.getSelection();
     const range = document.createRange();
@@ -1406,13 +1441,15 @@ document.addEventListener('keydown', (event) => {
     event.preventDefault();
     newPrompt();
   }
-  if (event.key === 'Escape') setSidebar(false);
+  if (event.key === 'Escape' && $('#sidebar').classList.contains('open')) { setSidebar(false); $('#menu-toggle').focus(); }
   if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && isEditing && $('#prompt-form').contains(event.target) && !running && !$('#generate-button').disabled) {
     event.preventDefault();
     $('#prompt-form').requestSubmit();
   }
 });
 
+renderTheme();
+syncSidebarToggle();
 renderHistory();
 updateCount();
 updateQuality();
