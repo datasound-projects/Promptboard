@@ -1749,3 +1749,13 @@ test('rapid drops and repeated clicks start exactly one run; the approval starts
   assert.deepEqual(titles($, 'planning'), ['Asked']);
   assert.match($('#announcement').textContent, /Moved “Asked” to Planning and started the Planning agent/);
 });
+
+test('“How your data is used” describes the current app in four short sections', async t => {
+  const { $ } = await setup(t);
+  $('#privacy-help').click();
+  assert.equal($('#help-dialog').open, true);
+  assert.deepEqual(Array.from($('#dialog-content').querySelectorAll('h3'), heading => heading.textContent), ['Saved on this computer', 'Sent to your AI provider', 'Accounts and costs', 'What Promptboard does not do']);
+  const text = $('#dialog-content').textContent;
+  assert.match(text, /when you approve a stage \(or it starts automatically\), the agent CLI gets the card text/);
+  assert.doesNotMatch(text, /not active yet|does not send cards/, 'No outdated statement about agent runs.');
+});

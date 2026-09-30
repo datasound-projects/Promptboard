@@ -696,3 +696,8 @@ button.timeline-task:hover { text-decoration: underline; }
 .run-override .select-grid { margin-top: 10px; }
 .kanban-card.moving { opacity: .6; }
 .kanban-card .moving-to { margin: 0 0 4px; color: var(--muted); font: 600 11px var(--mono); }
+
+/* Help dialog sections. */
+.dialog-subhead { margin: 16px 0 4px; color: var(--ink); font-size: 14px; }
+.dialog-list { margin: 0; padding-left: 18px; color: var(--muted); font-size: 13.5px; line-height: 1.6; }
+.dialog-list li { margin: 2px 0; }

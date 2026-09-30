@@ -854,13 +854,33 @@ function openHelp(privacy = false) {
   content.replaceChildren();
   $('#dialog-heading').textContent = privacy ? 'Your work. Your browser. Your CLI.' : 'A small tool. A straightforward setup.';
   if (privacy) {
+    // Facts about the current version only. Keep this in step with README "Privacy and data" and SECURITY.md.
+    const section = (title, items) => {
+      const heading = document.createElement('h3'); heading.className = 'dialog-subhead'; heading.textContent = title;
+      const list = document.createElement('ul'); list.className = 'dialog-list';
+      list.append(...items.map(text => { const item = document.createElement('li'); item.textContent = text; return item; }));
+      return [heading, list];
+    };
     content.append(
-      paragraph('This app saves your last 500 finished prompts in this browser’s local storage. If the browser runs out of space, the oldest ones are removed first. You can delete them in the sidebar. The Kanban board is saved by the local app in its data folder on this computer, not in the browser.'),
-      paragraph('The Kanban page stores, moves, and copies cards. It does not send cards to a CLI or model; agent runs are not active yet.'),
-      paragraph('When you generate a prompt, your text goes to the local server, then to your selected CLI. That CLI may send it to its model provider under your account and that provider’s policies. Do not include secrets or private information that you cannot share with that provider.'),
-      paragraph('The app does not need a separate API key. The CLI must be installed and signed in. Its account limits and applicable usage costs still apply.'),
-      paragraph('Reviewed mode usually makes 2 CLI calls. It repairs once (up to 4 calls) only for a confirmed lost literal, missing or changed requirement, or specific review defect. Fast mode makes 1 call. The check report and original request stay with the prompt in browser history.'),
-      paragraph('Automatic checks cover specific rules. Model review is fallible. This app does not include the ASD-STE100 dictionary and does not certify STE compliance.', 'dialog-note'),
+      ...section('Saved on this computer', [
+        'In this browser: your last 500 prompts and your view settings. Delete prompts in the sidebar.',
+        'In the Promptboard data folder: projects, cards, agent runs and their terminal output, plans, reviews, test results, timeline notes, task worktrees, and GitHub clones.',
+      ]),
+      ...section('Sent to your AI provider', [
+        'Compose: your request goes to the CLI you selected, which sends it to its provider.',
+        'Kanban: when you approve a stage (or it starts automatically), the agent CLI gets the card text, and the plan, diff, or test commands for that stage. It works in the task worktree and sends what it reads to its provider.',
+        'Do not put secrets or private data in prompts or cards that you cannot share with that provider.',
+      ]),
+      ...section('Accounts and costs', [
+        'No API key is needed. Each CLI uses its own sign-in, limits, and costs. GitHub uses the GitHub CLI sign-in.',
+        'Promptboard never stores these tokens. It only reads usage numbers that the CLIs record.',
+        'Compose calls: Fast 1, Reviewed 2, or 4 when a confirmed problem is repaired.',
+      ]),
+      ...section('What Promptboard does not do', [
+        'It runs only on this computer (127.0.0.1) and has no analytics or telemetry.',
+        'It pushes to GitHub only when you open or update a pull request, yourself or through an Autopilot you started.',
+        'It does not include the ASD-STE100 dictionary or certify STE compliance. Checks and model reviews can be wrong, so read the result.',
+      ]),
     );
   } else {
     content.append(paragraph('Install one supported CLI on the same computer, then sign in through its terminal. The workbench uses that CLI’s configured model unless you select a model. Choose a supported effort and an output language before you generate.'));
