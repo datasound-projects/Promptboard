@@ -1573,6 +1573,17 @@ function agentActivity(run) {
   if (state === 'active') return run.lifecycle === 'no-events-yet' ? 'Working… no lifecycle event yet; check the terminal.' : 'Working…';
   return run?.reason || '';
 }
+const tokens = value => value >= 1_000_000 ? `${(value / 1_000_000).toFixed(1)}M` : value >= 1000 ? `${Math.round(value / 1000)}k` : String(value);
+/** Usage as the CLI reported it, or nothing. Context is the size of the latest request, not task progress. */
+function usageText(run) {
+  const usage = run?.usage;
+  if (!usage || typeof usage !== 'object') return '';
+  const parts = [`Input ${tokens(usage.inputTokens || 0)}`, `Cached ${tokens(usage.cachedTokens || 0)}`, `Output ${tokens(usage.outputTokens || 0)}`];
+  if (usage.contextTokens) parts.push(usage.contextWindow ? `Context ${Math.round(usage.contextTokens / usage.contextWindow * 100)}% (${tokens(usage.contextTokens)} of ${tokens(usage.contextWindow)})` : `Context ${tokens(usage.contextTokens)} tokens`);
+  if (usage.model && usage.model !== run.config?.model) parts.push(`Reported model ${usage.model}`);
+  if (usage.rateLimit) parts.push(`Plan usage ${Math.round(usage.rateLimit.usedPercent)}%${usage.rateLimit.resetsAt ? `, resets ${new Date(usage.rateLimit.resetsAt).toLocaleString()}` : ''}`);
+  return parts.join(' · ');
+}
 function elapsedSpan(run) {
   const span = document.createElement('span');
   span.dataset.elapsedRun = run.id;

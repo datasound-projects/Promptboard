@@ -22,6 +22,10 @@ Report problems privately through GitHub: **Security → Report a vulnerability*
 
 **Credentials stay with the CLI.** Promptboard never reads, copies, or logs CLI credential files, and does not copy them into worktrees.
 
+**GitHub through the GitHub CLI.** Sign-in runs the official `gh auth login --web`; Promptboard reads only the one-time code that gh prints for you and declines gh's global Git credential setup. Tokens stay in gh's keychain storage and never reach the board, the browser, logs, URLs, process arguments, or Git remotes. A managed clone lives in the data folder; for an HTTPS remote it gets `gh auth git-credential` as a credential helper in that clone's own config only. Fetch never changes a branch; updating the target branch is a confirmed fast-forward. Disconnecting a project never signs gh out.
+
+**Usage data.** Token counts come from the CLIs' own session files (Claude Code's transcript for the session Promptboard started; Codex's rollout file for the run's thread). Only numbers and model IDs are read; message text is not stored.
+
 ## Limits
 
 - An agent in Executing can run any command its CLI allows in the task worktree, with your user's permissions. Review what it asks to do.

@@ -22,6 +22,7 @@ try {
       notification: pick(data.notification_type) || pick(data.notificationType),
       tool: pick(data.tool_name),
       error: pick(data.error),
+      transcriptPath: pick(data.transcript_path),
       message: pick(data.last_assistant_message) || pick(data['last-assistant-message']) || pick(data.prompt_response),
     };
     appendFileSync(eventsFile, `${JSON.stringify(event)}\n`, { mode: 0o600 });

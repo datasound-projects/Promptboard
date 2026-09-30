@@ -13,6 +13,7 @@ import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { ADAPTERS, AgentError, buildSession, composeMessage, HOOK_ERRORS, interpretEvent, resolveConfig } from './agents.mjs';
 import { FAILURE_MESSAGES, killPidGroup, resolveExecutable, trackPid, untrackPid } from './providers.mjs';
+import { addClaudeRecord, addCodexRecord, claudeTranscript, findCodexRollout, newUsage, readNewLines, usageSummary } from './usage.mjs';
 
 const RING_BYTES = 1024 * 1024; // Live scrollback kept per run for reconnects.
 const LOG_BYTES = 20 * 1024 * 1024; // Output log file cap per run.
@@ -123,7 +124,7 @@ export class Supervisor {
     });
     trackPid(proc.pid);
     const session = { runId, taskId: run.taskId, stage: run.stage, provider: run.config.provider, proc, seq: 0, ring: [], ringBytes: 0,
-      subscribers: new Set(), log, logBytes: 0, eventsFile, eventsOffset: 0, runDir, paste: built.paste, turns: 0, status: 'running', startedAt: Date.now() };
+      subscribers: new Set(), log, logBytes: 0, eventsFile, eventsOffset: 0, runDir, paste: built.paste, turns: 0, status: 'running', startedAt: Date.now(), sessionId };
     this.sessions.set(runId, session);
     // Listen before any await so early output and fast exits are never lost.
     proc.onData(data => this.#output(session, data));
@@ -135,6 +136,8 @@ export class Supervisor {
     if (!session.proc) return; // Exited during the update: #exited owns the outcome.
     this.#push(session, { status: 'running' });
     session.poll = setInterval(() => this.#readEvents(session).catch(() => {}), 250);
+    session.usagePoll = setInterval(() => this.#readUsage(session).catch(() => {}), 3000);
+    session.usagePoll.unref();
     // No event yet usually means the CLI is asking a startup question (such as folder trust).
     // Say so without claiming anything: the status stays running.
     session.watchdog = setTimeout(() => {
@@ -190,10 +193,36 @@ export class Supervisor {
         session.eventsOffset += Buffer.byteLength(text.slice(0, end + 1));
         for (const line of text.slice(0, end).split('\n')) {
           let event; try { event = JSON.parse(line); } catch { continue; }
+          await this.#locateUsage(session, event);
           await this.#signal(session, interpretEvent(session.provider, event));
         }
       } finally { await handle.close(); }
     } finally { session.reading = false; }
+  }
+
+  /** Find the CLI's own session file once: Claude names it in hook payloads, Codex by thread ID. */
+  async #locateUsage(session, event) {
+    if (session.usage) return;
+    let path = null;
+    if (session.provider === 'claude') path = claudeTranscript(event.transcriptPath, session.sessionId);
+    else if (session.provider === 'codex' && event.sessionId) path = await findCodexRollout(event.sessionId, session.startedAt);
+    if (path) session.usage = { tail: { path, offset: 0 }, acc: newUsage(session.provider === 'claude' ? 'claude-transcript' : 'codex-rollout'), last: '' };
+  }
+
+  /** Read new usage records; store and stream them only when the numbers changed. */
+  async #readUsage(session) {
+    if (!session.usage || session.readingUsage) return;
+    session.readingUsage = true;
+    try {
+      const { usage } = session;
+      for (const record of await readNewLines(usage.tail)) (session.provider === 'claude' ? addClaudeRecord : addCodexRecord)(usage.acc, record);
+      const summary = usageSummary(usage.acc);
+      const key = JSON.stringify({ ...summary, updatedAt: 0 });
+      if (key === usage.last || (!summary.inputTokens && !summary.outputTokens)) return;
+      usage.last = key;
+      await this.board.updateRun(session.runId, { usage: summary }).catch(() => {});
+      this.#push(session, { usage: summary });
+    } finally { session.readingUsage = false; }
   }
 
   async #setStatus(session, status, fields = {}) {
@@ -215,6 +244,7 @@ export class Supervisor {
       await this.#setStatus(session, 'waiting_for_input', { waitingReason: signal.reason, turnComplete: false });
     } else if (signal.kind === 'turn_complete') {
       session.turns++;
+      await this.#readUsage(session).catch(() => {});
       const planning = session.stage === 'planning', reviewing = session.stage === 'code_review';
       if (signal.message) await writeFile(join(session.runDir, planning ? 'plan.md' : reviewing ? 'review.md' : 'last-message.md'), signal.message, { mode: 0o600 });
       await this.#setStatus(session, 'waiting_for_input', {
@@ -241,9 +271,10 @@ export class Supervisor {
   }
 
   async #exited(session, exitCode, signal) {
-    clearInterval(session.poll); clearTimeout(session.pasteTimer); clearTimeout(session.watchdog);
-    // Read the last lifecycle events (for example a final Stop) before the session closes.
+    clearInterval(session.poll); clearInterval(session.usagePoll); clearTimeout(session.pasteTimer); clearTimeout(session.watchdog);
+    // Read the last lifecycle events (for example a final Stop) and usage before the session closes.
     await this.#readEvents(session).catch(() => {});
+    await this.#readUsage(session).catch(() => {});
     untrackPid(session.proc.pid);
     session.proc = null;
     clearTimeout(session.killTimer);

@@ -1605,3 +1605,18 @@ test('GitHub in Settings: status, repository search, connect a managed clone, fe
   assert.match($('#set-github-group').textContent, /Status: Not connected/);
   assert.equal(win.localStorage.length >= 0 && Object.keys(win.localStorage).some(key => /github|token/i.test(win.localStorage.getItem(key) || '')), false, 'Nothing about GitHub is kept in browser storage.');
 });
+
+test('the dock shows usage only as the CLI reported it; context is labelled as context, not progress', { skip: process.platform === 'win32' }, async t => {
+  const ctx = await agentFixture(t);
+  const { $, win } = ctx;
+  win.PromptboardDock.open('run-a'); await ctx.idle();
+  assert.match($('#dock-details').textContent, /Usage: not reported yet/);
+  assert.doesNotMatch($('#dock-details').textContent, /%/, 'No percentage without a real number.');
+  await ctx.app.board.updateRun('run-a', { usage: { source: 'claude-transcript', model: 'claude-opus-5-5', inputTokens: 124000, cachedTokens: 80000, outputTokens: 19000, contextTokens: 42000, contextWindow: 0, updatedAt: Date.now() } });
+  await ctx.app.board.updateRun('run-b', { usage: { source: 'codex-rollout', model: 'gpt-5.5', inputTokens: 8000, cachedTokens: 7000, outputTokens: 99, contextTokens: 15000, contextWindow: 200000, rateLimit: { usedPercent: 40 }, updatedAt: Date.now() } });
+  await win.__pbTest.loadBoard(); await ctx.idle();
+  assert.match($('#dock-details').textContent, /Input 124k · Cached 80k · Output 19k · Context 42k tokens · Reported model claude-opus-5-5/);
+  win.PromptboardDock.open('run-b'); await ctx.idle();
+  assert.match($('#dock-details').textContent, /Context 8% \(15k of 200k\) · Plan usage 40%/);
+  assert.doesNotMatch($('#dock-details').textContent, /Reported model/, 'The reported model equals the requested one.');
+});

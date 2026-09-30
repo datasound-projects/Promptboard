@@ -178,6 +178,7 @@ function handleItem(session, item) {
   if (item.gap) write(session, '\r\n[Promptboard: earlier output was dropped because the view fell behind]\r\n');
   if (Number.isInteger(item.seq)) session.lastSeq = item.seq;
   if (typeof item.data === 'string') write(session, item.data);
+  if (item.usage && typeof item.usage === 'object') { session.run = { ...session.run, usage: item.usage }; if (dock.selected === session.runId) renderDockDetails(session); }
   if (item.status) { session.run = { ...session.run, status: item.status, waitingReason: item.reason || '' }; updateSessionTab(session); updateDockIndicator(); scheduleBoardRefresh(); }
   if (item.ended || item.missing) markEnded(session);
 }
@@ -217,7 +218,8 @@ function renderDockDetails(session) {
   const run = session.run; // Merged from the board in syncDock and from stream status items.
   const shown = session.ended && DOCK_LIVE.has(run.status) ? { ...run, status: 'interrupted' } : run;
   details.replaceChildren(`${agentModel(run)} · ${columnTitle(run.stage)} · ${agentStateText(shown)} · `, elapsedSpan(run),
-    run.branch ? ` · Branch ${run.branch}` : '', run.workspacePath ? ` · Worktree ${run.workspacePath}` : '');
+    run.branch ? ` · Branch ${run.branch}` : '', run.workspacePath ? ` · Worktree ${run.workspacePath}` : '',
+    ` · ${usageText(run) || (run.config?.provider === 'gemini' ? 'Usage: not reported by Gemini CLI' : 'Usage: not reported yet')}`);
   details.title = details.textContent;
 }
 

@@ -78,6 +78,41 @@ Open **http://127.0.0.1:4318** if the browser does not open. Use `npm start -- -
 
 Each project chooses what happens when a card enters a stage: **Manual**, **Ask** (default), or **Start automatically**. Starting an agent by hand always shows a consent dialog; automatic start is a setting you turn on per project and stage. Terminals open in the dock at the bottom of the page. You can collapse the dock, reload the page, or run several tasks at once (one by default, up to four). Promptboard never passes a bypass or "yolo" permission flag, never pre-trusts a folder for a CLI, and never force-resets or stashes your work.
 
+### Agents, tabs, and usage
+
+The Kanban sidebar lists **Agents** under Workspace: every running run, plus each task's latest run from the last 30 minutes, for this project or all projects. Each row shows the task, the provider, model, and effort, the stage, the state, and the elapsed time. Selecting one opens its project, card, and existing terminal. It never starts a run.
+
+States come from the run itself (provider lifecycle events), not from the column:
+
+| State | Meaning |
+|---|---|
+| ● Active | The agent is working. |
+| ○ On hold | Queued until an agent slot is free. |
+| ! Awaits you | A permission prompt, question, or finished turn needs you. |
+| – Inactive | Succeeded, failed, cancelled, or interrupted. |
+
+The dock has one tab per run. Switching tabs never restarts anything. Closing a tab only hides it: the agent keeps running and its history stays. The line above the terminal shows provider, model, effort, stage, state, time, branch, worktree, and usage.
+
+**Usage** is read from the CLI's own session file and never estimated. Claude Code: input, cached, and output tokens, the context of the latest request in tokens, and the model it reported (from the session transcript). Codex CLI: the same, plus the context as a share of the model's context window and the plan usage limit (from the session rollout file). Gemini CLI reports no usage, so none is shown. Context is the size of the conversation, not task progress. Promptboard shows no completion percentage.
+
+### Settings
+
+The gear in the top bar opens **Settings**:
+
+- **General:** theme (System, Light, Dark) and start page (Compose or Kanban).
+- **Agents:** default provider and model for every stage that a project did not set itself, agents at the same time (1–4), open the terminal when a run starts, keep tabs of finished runs.
+- **Kanban:** opens the current project's workflow and Autopilot. Those settings belong to that project only.
+- **GitHub:** see below.
+- **Terminal:** font size, dock state when the page opens, close finished tabs.
+
+Browser preferences stay in this browser. Agent defaults and the agent limit are saved with the board.
+
+### GitHub repositories
+
+A project uses a **local folder** or a **GitHub repository**. For GitHub, install the [GitHub CLI](https://cli.github.com), then choose **Settings → GitHub → Connect GitHub**. Promptboard runs the official `gh auth login --web` and shows the one-time code; you finish the sign-in on github.com. The GitHub CLI keeps the token in your system keychain. Promptboard never sees, stores, or logs it.
+
+Then search your repositories and choose **Connect repository**. Promptboard clones it once into its data folder (`clones/<owner>/<name>`) and links that **managed clone** to the project. Agents work in task worktrees of the clone, as with a local folder, and **Open pull request** pushes the task branch (never forced) and reuses an open pull request for the same branch. **Fetch** shows whether the target branch is up to date, behind, or ahead of GitHub. **Update** is a confirmed fast-forward only. **Disconnect** forgets the GitHub link but keeps the clone and all work, and never signs the GitHub CLI out. To sign out, run `gh auth logout` yourself.
+
 ### Autopilot (optional)
 
 Paste your subtasks as To Do cards, then choose **Autopilot** on the board. Pick which cards run and in which order, the default route (for example Executing → Code Review → Testing → Merge), and, per card, its own route. Autopilot then takes one card at a time through its route: it confirms each finished agent turn, commits with your Git identity, accepts reviews that report no issues, runs your test commands, and merges locally (fast-forward) or opens a pull request. Review findings and failing tests go back to Executing, up to the rework limit you set. When the target branch moved on, it is merged in (by the merge agent if there are conflicts) and the card is reviewed and tested again.
@@ -87,6 +122,8 @@ Autopilot pauses, with the reason, whenever an agent asks you something in the t
 The full behaviour is in the [Kanban contract](docs/agentic-kanban-contract.md).
 
 ## Privacy and data
+
+- GitHub sign-in stays with the GitHub CLI. Promptboard stores only repository metadata (owner, name, URL, default branch, clone folder, last fetch), never a token.
 
 - **Do not put API keys, tokens, passwords, or private code you cannot share with your AI provider into prompts or tasks.** Text you send goes to the provider through its CLI, and the CLI may keep its own logs.
 - Promptboard runs only on `127.0.0.1` and sends nothing anywhere itself. It has no analytics and no telemetry.

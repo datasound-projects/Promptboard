@@ -46,6 +46,23 @@ process.stdout.write(`fake ${provider} started in ${process.cwd()}\r\n`);
 process.on('SIGWINCH', () => process.stdout.write(`size ${process.stdout.columns}x${process.stdout.rows}\r\n`));
 if (prompt.includes('FLOOD')) { for (let i = 0; i < 40000; i++) process.stdout.write(`flood line ${i} ${'x'.repeat(80)}\r\n`); }
 if (prompt.includes('HTML_PAYLOAD')) process.stdout.write('<img src=x onerror="window.__pwned=1"><script>window.__pwned=2</script>\r\n');
+// USAGE: write the CLI's own session file (Claude transcript / Codex rollout) with token counts.
+let transcript;
+if (prompt.includes('USAGE') && provider === 'claude') {
+  transcript = join(process.env.FAKE_CLAUDE_PROJECTS, `${flag('--session-id')}.jsonl`);
+  const line = (id, input, read, write, output) => JSON.stringify({ type: 'assistant', message: { id, model: 'claude-test-model', usage: { input_tokens: input, cache_read_input_tokens: read, cache_creation_input_tokens: write, output_tokens: output } } });
+  // The same message appears twice (streamed blocks): it must count once.
+  writeFileSync(transcript, [line('m1', 10, 1000, 200, 50), line('m1', 10, 1000, 200, 50), line('m2', 5, 1200, 0, 70), JSON.stringify({ type: 'user', message: { content: 'secret text' } })].join('\n') + '\n');
+}
+if (prompt.includes('USAGE') && provider === 'codex') {
+  const d = new Date();
+  const dir = join(process.env.CODEX_HOME, 'sessions', String(d.getFullYear()), String(d.getMonth() + 1).padStart(2, '0'), String(d.getDate()).padStart(2, '0'));
+  require('node:fs').mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'rollout-2026-01-01T00-00-00-thread-1.jsonl'), [JSON.stringify({ type: 'turn_context', payload: { model: 'gpt-test', effort: 'low' } }),
+    JSON.stringify({ type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: { input_tokens: 15000, cached_input_tokens: 7000, output_tokens: 100 }, last_token_usage: { input_tokens: 15000, output_tokens: 100 }, model_context_window: 200000 }, rate_limits: { primary: { used_percent: 40, resets_at: 1791048036 } } } })].join('\n') + '\n');
+}
+const baseEmit = emit;
+emit = (name, extra = {}) => baseEmit(name, transcript ? { transcript_path: transcript, ...extra } : extra);
 emit('SessionStart');
 function turn(text) {
   emit('UserPromptSubmit');
