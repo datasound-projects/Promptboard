@@ -5,7 +5,8 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { validateRequest } from './engine.mjs';
 import { runPipeline } from './pipeline.mjs';
-import { detectProviders, FAILURE_MESSAGES, killOwnedProcesses, ProviderError, resolveExecutable, runProvider, validateEffort } from './providers.mjs';
+import { buildSplitPrompt, parseSplit, splitCoverage } from './split.mjs';
+import { detectProviders, FAILURE_MESSAGES, killOwnedProcesses, makeTempDir, ProviderError, removeTempDir, resolveExecutable, runProvider, validateEffort } from './providers.mjs';
 import { AUTH_CAPABILITIES, logout, readAuthStatus, startLogin } from './auth.mjs';
 import { Board, BoardError } from './board.mjs';
 import { GitError } from './git.mjs';
@@ -358,6 +359,38 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
         const { status, body } = failureBody(error, 'The CLI could not sign out. Run its sign-out command in your terminal.');
         return send(res, status, body);
       } finally { claimed?.release(); }
+    }
+    if (req.method === 'POST' && pathname === '/api/split') {
+      // Optional: one CLI call splits an engineered prompt into tasks. Shares the one-job slot with Generate.
+      let claimed;
+      const abort = () => { if (!res.writableEnded) claimed?.job.controller.abort(); };
+      res.once('close', abort);
+      try {
+        claimed = await claim('generate', null);
+        const { job } = claimed;
+        const body = await jsonBody(req);
+        let value;
+        try { value = validateRequest({ input: body?.prompt, provider: body?.provider, model: body?.model, effort: body?.effort, language: body?.language }); validateEffort(value.provider, value.effort); }
+        catch (error) { throw Object.assign(error, { status: 400 }); }
+        if (value.input.length > 32_000) throw Object.assign(new Error('The prompt is too long to split. Use at most 32,000 characters.'), { status: 400 });
+        Object.assign(job, { provider: value.provider, stage: 'split' });
+        const cwd = await makeTempDir('ste-split-');
+        const started = Date.now();
+        let result;
+        // The folder is removed before the answer is sent, so the job slot is free when the page gets it.
+        try { result = await track(runner({ provider: value.provider, model: value.model, effort: value.effort, prompt: buildSplitPrompt(value.input, value.language), cwd, signal: job.controller.signal, timeoutMs: 180_000 })); }
+        finally { await removeTempDir(cwd); }
+        let tasks;
+        try { tasks = parseSplit(result.text); } catch (error) { throw Object.assign(error, { status: 502, code: 'INVALID_OUTPUT' }); }
+        send(res, 200, { tasks, coverage: splitCoverage(value.input, tasks, value.language), reportedModels: result.reportedModels || [], durationMs: Date.now() - started });
+      } catch (error) {
+        if (error?.code === 'INVALID_OUTPUT' && error.status === 502) send(res, 502, { error: `${error.message} Try again, or add the prompt as one card.`, code: 'INVALID_OUTPUT' });
+        else { const { status, body } = failureBody(error, FAILURE_MESSAGES.CLI_FAILED); send(res, status, body); }
+      } finally {
+        res.off('close', abort);
+        claimed?.release();
+      }
+      return;
     }
     if (req.method === 'POST' && pathname === '/api/generate') {
       let claimed;

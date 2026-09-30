@@ -59,6 +59,10 @@ Open **http://127.0.0.1:4318** if the browser does not open. Use `npm start -- -
 
 **Reviewed** mode (default) drafts, checks, and asks the model for a compact review (2 model calls). It repairs once, with a fresh review (4 calls), only when a check confirms a lost literal or a missing or changed requirement; style notes and reviewer uncertainty are reported, not repaired. **Fast** mode drafts and checks (1 call). A passing report means the implemented checks found nothing. Always read the prompt yourself. This is a writing aid, not a certified STE checker. See [the method](docs/ste-method.md) and [verification](docs/verification.md).
 
+### Split into tasks (optional)
+
+After a prompt is ready, **Split into tasks** asks your CLI once to break it into 2–8 smaller, ordered tasks. You can edit titles and prompts, reorder them, or leave some out. They become To Do cards in that order. If you like, Autopilot then opens with those cards first, so you can review the order and start it. Promptboard warns you when an exact text from the prompt (a path, code, or quoted text) is in no task.
+
 ## Run tasks on the board
 
 1. **Pick or create a project** in the sidebar. **New project** creates its own folder in `~/Promptboard Projects` (or `PROMPTBOARD_PROJECTS_DIR`) with a Git repository, ready for agents. **Open folder…** turns a folder on your computer into a project; if it is not a Git repository yet, Promptboard runs `git init` and makes one empty first commit (your files are not added). Each project has its own board and repository; agents keep running when you switch. The ⋯ next to a project renames it, links or changes its repository, opens its workflow settings, or deletes it.

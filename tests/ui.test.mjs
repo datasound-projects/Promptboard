@@ -1774,3 +1774,35 @@ test('“How your data is used” describes the current app in four short sectio
   assert.match(text, /when you approve a stage \(or it starts automatically\), the agent CLI gets the card text/);
   assert.doesNotMatch(text, /not active yet|does not send cards/, 'No outdated statement about agent runs.');
 });
+
+test('Split into tasks (optional): ordered, editable tasks become To Do cards, then Autopilot opens with them first', { skip: process.platform === 'win32' }, async t => {
+  const tasks = [{ title: 'Add the parser', prompt: 'Add `src/parser.ts`.' }, { title: 'Test the parser', prompt: 'Test `src/parser.ts`.' }, { title: 'Write docs', prompt: 'Document the parser.' }];
+  const ctx = await linkedKanban(t, { hash: '', runner: request => ({ text: request.prompt.startsWith('# Task split') ? JSON.stringify({ tasks }) : 'Add, test, and document `src/parser.ts`.', reportedModels: ['m'] }) });
+  const { $, win, submit, calls } = ctx;
+  await goTo(ctx, '#/');
+  $('#prompt-input').value = 'Build a parser with tests and docs.'; submit();
+  await until(() => $('#prompt-output').textContent.includes('src/parser.ts') && !$('#split-button').disabled, 'prompt');
+  $('#split-button').click();
+  await until(() => $('#split-list').children.length === 3, 'task list');
+  assert.equal(calls.filter(call => call.prompt.startsWith('# Task split')).length, 1, 'One CLI call.');
+  assert.match($('#split-status').textContent, /3 tasks, in the order they run/);
+  // Reorder: "Write docs" first; leave out "Test the parser"; edit a title.
+  $('#split-list').children[2].querySelector('.split-up').click();
+  $('#split-list').children[1].querySelector('.split-up').click();
+  const items = () => [...$('#split-list').children];
+  assert.deepEqual(items().map(item => item.querySelector('.split-title').value), ['Write docs', 'Add the parser', 'Test the parser']);
+  const exclude = items()[2].querySelector('input[type="checkbox"]'); exclude.checked = false; exclude.dispatchEvent(new win.Event('change'));
+  const title = items()[1].querySelector('.split-title'); title.value = 'Add the parser module'; title.dispatchEvent(new win.Event('input'));
+  assert.match($('#split-add').textContent, /Add 2 cards to To Do/);
+  submitForm(ctx, '#split-form');
+  await until(() => $('#autopilot-dialog').open, 'Autopilot opened');
+  const cards = (await serverTasks(ctx)).filter(task => task.column === 'todo');
+  assert.deepEqual(cards.map(card => card.title), ['Write docs', 'Add the parser module']);
+  assert.equal(cards[1].prompt, 'Add `src/parser.ts`.');
+  assert.equal(cards[0].source.provider, 'codex', 'Each card keeps its Compose source.');
+  // Autopilot lists the new cards first, included, in that order; nothing starts without consent.
+  const queue = [...$('#autopilot-queue').querySelectorAll('.autopilot-item')];
+  assert.deepEqual(queue.map(item => item.querySelector('.autopilot-title').textContent).slice(0, 2), ['Write docs', 'Add the parser module']);
+  assert.ok(queue.slice(0, 2).every(item => item.querySelector('input[type="checkbox"]').checked));
+  assert.equal((await serverBoard(ctx)).projects[0].autopilot?.status ?? 'off', 'off');
+});

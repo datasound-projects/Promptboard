@@ -375,6 +375,7 @@ function setRunning(value) {
   $('#copy-button').disabled = value || !currentResult;
   $('#export-button').disabled = value || !currentResult;
   $('#kanban-button').disabled = value || !currentResult;
+  $('#split-button').disabled = value || !currentResult;
   $('#report-button').disabled = value || !currentResult?.verification;
   $('#refresh-models').disabled = value || authBusy || modelsLoading;
   $('#model').disabled = value || modelsLoading;
@@ -435,6 +436,7 @@ function clearOutput() {
   $('#copy-button').disabled = true;
   $('#export-button').disabled = true;
   $('#kanban-button').disabled = true;
+  $('#split-button').disabled = true;
   $('#report-button').disabled = true;
   $('#generation-error').hidden = true;
 }
@@ -476,6 +478,7 @@ function showResult(result) {
   $('#copy-button').disabled = running;
   $('#export-button').disabled = running;
   $('#kanban-button').disabled = running;
+  $('#split-button').disabled = running;
 }
 
 function showVerification(value, lint) {
@@ -2624,6 +2627,95 @@ window.addEventListener('hashchange', showPage);
 // The skip link must not change the hash, which selects the page.
 $('#skip-link').addEventListener('click', event => { event.preventDefault(); ($('#kanban-view').hidden ? $('#prompt-input') : $('#kanban-view')).focus(); });
 $('#kanban-button').addEventListener('click', openAddToKanban);
+
+// ---- Split into tasks (optional) ----
+// One CLI call proposes smaller tasks; nothing is saved until you add them. The cards keep the order
+// shown, and Autopilot can take them in that order after you review and start it.
+const split = { tasks: [], controller: null };
+function renderSplit() {
+  const list = $('#split-list');
+  list.replaceChildren(...split.tasks.map((task, index) => {
+    const item = document.createElement('li');
+    item.className = `split-item${task.included ? '' : ' excluded'}`;
+    const include = document.createElement('input'); include.type = 'checkbox'; include.checked = task.included; include.setAttribute('aria-label', `Include task ${index + 1}`);
+    include.addEventListener('change', () => { task.included = include.checked; renderSplit(); });
+    const title = document.createElement('input'); title.className = 'split-title'; title.maxLength = 120; title.value = task.title; title.setAttribute('aria-label', `Title of task ${index + 1}`);
+    title.addEventListener('input', () => { task.title = title.value; });
+    const move = (step, label) => { const button = detailButton(step < 0 ? '↑' : '↓', () => { const [moved] = split.tasks.splice(index, 1); split.tasks.splice(index + step, 0, moved); renderSplit(); list.children[index + step]?.querySelector(step < 0 ? '.split-up' : '.split-down')?.focus(); }, `icon-button ${step < 0 ? 'split-up' : 'split-down'}`); button.setAttribute('aria-label', `${label}: task ${index + 1}`); button.disabled = step < 0 ? index === 0 : index === split.tasks.length - 1; return button; };
+    const tools = document.createElement('div'); tools.className = 'split-tools'; tools.append(include, move(-1, 'Move up'), move(1, 'Move down'));
+    const details = document.createElement('details');
+    const summary = document.createElement('summary'); summary.textContent = `Task prompt (${task.prompt.length.toLocaleString()} characters)`;
+    const text = document.createElement('textarea'); text.value = task.prompt; text.setAttribute('aria-label', `Prompt of task ${index + 1}`);
+    text.addEventListener('input', () => { task.prompt = text.value; });
+    details.append(summary, text);
+    item.append(tools, title, document.createElement('span'), details);
+    return item;
+  }));
+  const count = split.tasks.filter(task => task.included).length;
+  $('#split-add').disabled = !count;
+  $('#split-add').firstChild.textContent = `Add ${plural(count, 'card')} to To Do `;
+}
+async function openSplit() {
+  if (!currentResult || running) return;
+  if (!board) await (boardLoading || loadBoard()).catch(() => {});
+  const result = currentResult;
+  split.tasks = []; split.result = result;
+  $('#split-list').replaceChildren();
+  $('#split-error').hidden = true; $('#split-coverage').hidden = true; $('#split-target').hidden = true; $('#split-autopilot-field').hidden = true;
+  $('#split-add').disabled = true;
+  $('#split-status').textContent = `${providerInfo[result.provider]?.name || result.provider} is splitting the prompt into tasks… This is one CLI call.`;
+  $('#split-dialog').showModal();
+  split.controller = new AbortController();
+  let answer;
+  try { answer = await api('/api/split', { method: 'POST', body: { prompt: result.prompt, provider: result.provider, model: result.model || '', effort: result.effort || '', language: result.language || 'en' }, timeoutMs: 200000, signal: split.controller.signal }); }
+  catch { if (!split.controller.signal.aborted) $('#split-status').textContent = 'The app did not answer. Check that Promptboard is still running.'; return; }
+  if (split.controller.signal.aborted || !$('#split-dialog').open) return;
+  const { response, data } = answer;
+  if (!response.ok) { $('#split-status').textContent = ''; $('#split-error').textContent = data.error || 'The prompt could not be split.'; $('#split-error').hidden = false; return; }
+  split.tasks = data.tasks.map(task => ({ ...task, included: true }));
+  $('#split-status').textContent = `${plural(split.tasks.length, 'task')}, in the order they run. Edit, reorder, or leave out tasks, then add them as To Do cards.`;
+  const coverage = data.coverage;
+  if (coverage?.issues?.length) {
+    $('#split-coverage').textContent = `Check before adding: ${coverage.issues.length === 1 ? 'this exact text from your prompt is' : 'these exact texts from your prompt are'} in no task: ${coverage.issues.map(issue => issue.excerpt || issue.message).slice(0, 5).join(' · ')}`;
+    $('#split-coverage').className = 'note kanban-error'; $('#split-coverage').hidden = false;
+  } else if (coverage?.protectedCount) { $('#split-coverage').textContent = `All ${coverage.protectedCount} exact texts found in your prompt (paths, code, quotes) appear in the tasks.`; $('#split-coverage').className = 'note'; $('#split-coverage').hidden = false; }
+  const projects = board?.projects || [];
+  $('#split-project').replaceChildren(...projects.map(project => option(project.id, project.name)), option('', 'New project…'));
+  $('#split-project').value = currentProject()?.id || '';
+  $('#split-project-name-field').hidden = Boolean($('#split-project').value);
+  $('#split-target').hidden = false; $('#split-autopilot-field').hidden = false;
+  renderSplit();
+  $('#split-add').focus();
+}
+async function addSplitCards(event) {
+  event.preventDefault();
+  const chosen = split.tasks.filter(task => task.included);
+  const showError = message => { $('#split-error').textContent = message; $('#split-error').hidden = false; };
+  const bad = chosen.findIndex(task => !task.title.trim() || task.title.length > 120 || !task.prompt.trim());
+  if (bad >= 0) { showError(`Task ${split.tasks.indexOf(chosen[bad]) + 1} needs a title (at most 120 characters) and a prompt.`); return; }
+  let project = board?.projects.find(item => item.id === $('#split-project').value);
+  const name = $('#split-project-name').value.trim();
+  if (!project) { const error = projectNameError(name); if (error) { showError(error); return; } }
+  $('#split-add').disabled = true;
+  const ids = [];
+  try {
+    project ||= (await boardCall('POST', '/api/projects', { name })).project;
+    savePref(SELECTED_PROJECT_KEY, project.id);
+    for (const task of chosen) ids.push((await boardCall('POST', '/api/tasks', { projectId: project.id, title: task.title.trim(), prompt: task.prompt, source: snapshotSource(split.result) })).task.id);
+  } catch (failure) { showError(`${failure.message}${ids.length ? ` ${plural(ids.length, 'card')} were added before this error.` : ''}`); $('#split-add').disabled = false; return; }
+  $('#split-dialog').close();
+  announce(`Added ${plural(ids.length, 'card')} to To Do in ${project.name}, in order.`);
+  if ($('#split-autopilot').checked) {
+    if (location.hash !== '#/kanban') location.hash = '#/kanban';
+    await loadBoard();
+    openAutopilot({ first: ids });
+  }
+}
+$('#split-button').addEventListener('click', openSplit);
+$('#split-form').addEventListener('submit', addSplitCards);
+$('#split-project').addEventListener('change', () => { $('#split-project-name-field').hidden = Boolean($('#split-project').value); });
+for (const id of ['#split-cancel', '#split-close']) $(id).addEventListener('click', () => { split.controller?.abort(); $('#split-dialog').close(); });
+$('#split-dialog').addEventListener('close', () => split.controller?.abort());
 $('#add-form').addEventListener('submit', addToKanban);
 $('#add-project').addEventListener('change', () => { $('#add-project-name-field').hidden = Boolean($('#add-project').value); });
 $('#add-cancel').addEventListener('click', () => $('#add-dialog').close());
@@ -2857,17 +2949,19 @@ function renderAutopilotBar(project) {
   bar.hidden = false;
 }
 
-function openAutopilot() {
+/** `first`: cards to put first and include, in this order (for example the cards just made by a split). */
+function openAutopilot({ first = [] } = {}) {
   const project = currentProject();
   if (!project) return;
   const saved = project.autopilot;
   const todo = project.tasks.filter(task => task.column === 'todo');
   // Saved order first, then the rest of To Do in board order. New cards are included the first time.
-  const queued = (saved?.queue || []).filter(id => todo.some(task => task.id === id));
-  const order = [...queued, ...todo.map(task => task.id).filter(id => !queued.includes(id))];
+  const lead = first.filter(id => todo.some(task => task.id === id));
+  const queued = (saved?.queue || []).filter(id => todo.some(task => task.id === id) && !lead.includes(id));
+  const order = [...lead, ...queued, ...todo.map(task => task.id).filter(id => !queued.includes(id) && !lead.includes(id))];
   autopilotDraft = {
     route: saved?.route || [...ROUTE_ORDER], finish: saved?.finish || 'merge', maxRework: saved?.maxRework ?? 2,
-    order, included: new Set(saved ? queued : order), routes: { ...(saved?.routes || {}) },
+    order, included: new Set(lead.length ? lead : saved ? queued : order), routes: { ...(saved?.routes || {}) },
   };
   $('#autopilot-project').textContent = `${project.name} · AUTOPILOT`;
   $('#autopilot-consent').checked = false;
