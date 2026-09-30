@@ -55,6 +55,16 @@ Every move, from drag-and-drop, the stage menu, a task-details button, or Autopi
 
 Stage policies keep their meaning. **Manual** moves only. **Ask** returns one approval (Move and start, Move only, or Cancel). **Start on entry** prepares and starts at once; the run is recorded with `trigger: "automation"`. A stage whose agent cannot start refuses an automatic start; with Ask, the card can still move without starting.
 
+### Custom columns (Column Manager)
+
+Each project can change its columns (`PATCH /api/projects/:id/columns`, stored as `columnLayout`):
+
+- **Built-in stages** keep their order, because the evidence gates depend on it. They can be renamed and recoloured, and Planning can be hidden (then To Do goes straight to Executing).
+- **Custom columns** (at most 12) go anywhere between To Do and Done. Each one is attached to the built-in stage on its left (its anchor). A card moves from the anchor to the custom column, and from the custom column back to the anchor, along the anchor's moves, or to another custom column with the same anchor. `projectTransitions` builds the project's table; the board view sends it to the UI.
+- A custom column can start an agent (Ask, Start on entry, or from the card only) with its own instructions. The agent comes from the project default or global default, writes only in the card's own worktree, and never commits. Leaving the column hands off its finished turn and commits its changes like any other stage, and the evidence gates still apply to every stage the card enters, so code changed there cannot skip Code Review or Testing.
+- A column that still holds cards cannot be removed or hidden (`COLUMN_NOT_EMPTY`). Planning cannot be hidden while an Autopilot route uses it. Autopilot routes use built-in stages only.
+- Column layouts are exported and imported with board backups.
+
 ### Agent settings
 
 Each stage's agent comes from the most specific level that names a provider: the stage override (Workflow settings), else the project default agent (Workflow settings), else the global default (Settings), else Claude Code with its CLI defaults. Model and effort come from the same level. `effectiveWorkflow` reports `agentSource` (`stage`, `project`, `global`, or `default`). A run can override the agent for itself only.

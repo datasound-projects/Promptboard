@@ -240,7 +240,7 @@
         <div class="connection-detail kanban-detail" id="project-detail" role="status" hidden></div>
       </section>
       <section class="card kanban-board" aria-labelledby="board-heading">
-        <div class="card-heading"><div><h2 id="board-heading" class="sr-only">Project views</h2><div class="view-switch" role="tablist" aria-label="Project views"><button type="button" role="tab" id="view-board" aria-selected="true" aria-controls="board-view-panel">Board</button><button type="button" role="tab" id="view-timeline" aria-selected="false" aria-controls="timeline">Timeline</button></div><span class="kanban-count" id="board-count" aria-label="Cards">00</span></div><div class="board-actions" id="board-actions"><button class="secondary-button autopilot-open" id="autopilot-open" type="button" aria-haspopup="dialog"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h9m-4-4 4 4-4 4"/><path d="M15 5h4v14h-4"/></svg><span>Autopilot</span></button><button class="icon-button board-scroll" id="board-left" type="button" aria-controls="kanban-columns" aria-label="Scroll the board left" title="Scroll left"><span aria-hidden="true">‹</span></button><button class="icon-button board-scroll" id="board-right" type="button" aria-controls="kanban-columns" aria-label="Scroll the board right" title="Scroll right"><span aria-hidden="true">›</span></button><button class="copy-button" id="card-new" type="button"><span aria-hidden="true">＋</span> New card</button></div></div>
+        <div class="card-heading"><div><h2 id="board-heading" class="sr-only">Project views</h2><div class="view-switch" role="tablist" aria-label="Project views"><button type="button" role="tab" id="view-board" aria-selected="true" aria-controls="board-view-panel">Board</button><button type="button" role="tab" id="view-timeline" aria-selected="false" aria-controls="timeline">Timeline</button></div><span class="kanban-count" id="board-count" aria-label="Cards">00</span></div><div class="board-actions" id="board-actions"><button class="secondary-button" id="columns-open" type="button" aria-haspopup="dialog"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><rect x="3.5" y="4.5" width="5" height="15" rx="1"/><rect x="9.5" y="4.5" width="5" height="15" rx="1"/><rect x="15.5" y="4.5" width="5" height="15" rx="1"/></svg><span>Columns</span></button><button class="secondary-button autopilot-open" id="autopilot-open" type="button" aria-haspopup="dialog"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h9m-4-4 4 4-4 4"/><path d="M15 5h4v14h-4"/></svg><span>Autopilot</span></button><button class="icon-button board-scroll" id="board-left" type="button" aria-controls="kanban-columns" aria-label="Scroll the board left" title="Scroll left"><span aria-hidden="true">‹</span></button><button class="icon-button board-scroll" id="board-right" type="button" aria-controls="kanban-columns" aria-label="Scroll the board right" title="Scroll right"><span aria-hidden="true">›</span></button><button class="copy-button" id="card-new" type="button"><span aria-hidden="true">＋</span> New card</button></div></div>
         <div class="autopilot-bar" id="autopilot-bar" role="status" hidden></div>
         <div class="output-empty" id="board-empty"><p><span id="board-empty-text">Create a project to start planning.</span><small id="board-empty-note">Each project gets its own board, from To Do to Done.</small><a class="kanban-empty-link" id="empty-prompt-link" href="#/" hidden>Engineer a prompt <span aria-hidden="true">↗</span></a></p></div>
         <div class="kanban-columns" id="kanban-columns" hidden></div>
@@ -340,6 +340,20 @@
         <label class="check-row" id="split-autopilot-field" hidden><input type="checkbox" id="split-autopilot" checked> Then open Autopilot with these cards in this order (you review and start it)</label>
         <p class="inline-error" id="split-error" role="alert" hidden></p>
         <div class="kanban-dialog-actions"><button type="button" class="secondary-button" id="split-cancel">Cancel</button><button type="submit" class="dialog-done" id="split-add" disabled>Add cards to To Do <span aria-hidden="true">↗</span></button></div>
+      </form>
+    </dialog>
+    <dialog id="columns-dialog" class="kanban-dialog columns-dialog" aria-labelledby="columns-heading"><button class="dialog-close icon-button" id="columns-close" type="button" aria-label="Close">×</button><p class="eyebrow" id="columns-project">COLUMNS</p><h2 id="columns-heading">Column Manager</h2>
+      <form id="columns-form" novalidate>
+        <div class="columns-layout">
+          <div class="columns-side">
+            <p class="history-label"><span>COLUMNS</span></p>
+            <ol class="columns-list" id="columns-list" aria-label="Columns, left to right"></ol>
+            <button type="button" class="secondary-button columns-add" id="columns-add">＋ Add column</button>
+          </div>
+          <div class="columns-editor" id="columns-editor"></div>
+        </div>
+        <p class="inline-error" id="columns-error" role="alert" hidden></p>
+        <div class="kanban-dialog-actions"><button type="button" class="text-button columns-remove" id="columns-remove">Remove column</button><button type="button" class="secondary-button" id="columns-cancel">Cancel</button><button type="submit" class="dialog-done">Save <span aria-hidden="true">↗</span></button></div>
       </form>
     </dialog>
     <dialog id="add-dialog" class="kanban-dialog" aria-labelledby="add-dialog-heading"><button class="dialog-close icon-button" id="add-dialog-close" type="button" aria-label="Close">×</button><p class="eyebrow">PREPARE THE TASK</p><h2 id="add-dialog-heading">Add to Kanban</h2>

@@ -997,14 +997,16 @@ function sourceSummary(source) {
 function plural(count, word) { return `${count} ${word}${count === 1 ? '' : 's'}`; }
 function countCards(projects, key = 'tasks') { return projects.reduce((sum, project) => sum + (Array.isArray(project[key]) ? project[key].length : 0), 0); }
 function boardCounts(projects, key) { return `${plural(projects.length, 'project')}, ${plural(countCards(projects, key), 'card')}`; }
-function columnTitle(id) { return board?.columns.find(column => column.id === id)?.title || id; }
+// Each project has its own columns (built-in stages plus custom ones) and its own move table.
+function projectColumnsOf(project = currentProject()) { return project?.columns || board?.columns || []; }
+function columnTitle(id, project = currentProject()) { return projectColumnsOf(project).find(column => column.id === id)?.title || board?.columns?.find(column => column.id === id)?.title || id; }
 function selectedProjectId() { try { return localStorage.getItem(SELECTED_PROJECT_KEY); } catch { return null; } }
 function currentProject() { return board?.projects.find(project => project.id === selectedProjectId()) || board?.projects[0] || null; }
 function findTask(id) { return currentProject()?.tasks.find(task => task.id === id) || null; }
 
 // Mirrors the server rule: any column to any other. Only the destination column's stage may run.
 // The server's transition table (TRANSITIONS in board.mjs). The UI offers only these moves.
-function canMove(from, to) { return from !== to && Boolean(board?.transitions?.[from]?.includes(to)); }
+function canMove(from, to) { return from !== to && Boolean((currentProject()?.transitions || board?.transitions)?.[from]?.includes(to)); }
 
 function setBoardWarning(message) {
   for (const warning of document.querySelectorAll('.board-warning')) { warning.textContent = message; warning.hidden = !message; }
@@ -1094,11 +1096,12 @@ function renderBoard() {
   $('#view-board').setAttribute('aria-selected', String(!timelineView));
   $('#view-timeline').setAttribute('aria-selected', String(timelineView));
   $('#view-timeline').disabled = !project;
-  for (const id of ['#autopilot-open', '#board-left', '#board-right', '#card-new']) $(id).hidden = timelineView;
+  for (const id of ['#autopilot-open', '#columns-open', '#board-left', '#board-right', '#card-new']) $(id).hidden = timelineView;
+  $('#columns-open').disabled = !project;
   // Missing terminal support never blocks the board or the prompt editor; it only disables runs.
   $('#execution-status').hidden = !board || board.execution?.available !== false || !board.execution.setupMessage;
   $('#execution-status').textContent = board?.execution?.setupMessage ? `Agent runs are unavailable. ${board.execution.setupMessage}` : '';
-  $('#kanban-columns').replaceChildren(...(project ? board.columns.map(column => renderColumn(column, tasks.filter(task => task.column === column.id))) : []));
+  $('#kanban-columns').replaceChildren(...(project ? projectColumnsOf(project).map(column => renderColumn(column, tasks.filter(task => task.column === column.id))) : []));
   renderRepository(project);
   const branch = project?.targetBranch?.name;
   $('#project-summary').textContent = project ? [project.name, project.repository ? project.repository.root.split(/[\\/]/).pop() + (branch ? ` → ${branch}` : '') : 'Not linked', workflowSummary(project)].join(' · ') : '';
@@ -1126,18 +1129,19 @@ const STAGE_ICONS = {
   drop: ['M12 3v12', 'm7 10 5 5 5-5', 'M5 21h14'],
   completed: ['M9 3h6v4H9z', 'M9 5H6v16h12V5h-3', 'M9 12h6', 'M9 16h4'],
   expand: ['M15 3h6v6', 'm21 3-7 7', 'M9 21H3v-6', 'm3 21 7-7'],
+  custom: ['M4 6h16', 'M4 12h16', 'M4 18h10']
 };
 function stageIcon(id) {
   const ns = 'http://www.w3.org/2000/svg';
   const svg = document.createElementNS(ns, 'svg');
   for (const [name, value] of Object.entries({ viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '1.8', 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true', class: 'kanban-stage-icon' })) svg.setAttribute(name, value);
-  for (const d of STAGE_ICONS[id] || []) { const path = document.createElementNS(ns, 'path'); path.setAttribute('d', d); svg.append(path); }
+  for (const d of STAGE_ICONS[id] || STAGE_ICONS.custom) { const path = document.createElementNS(ns, 'path'); path.setAttribute('d', d); svg.append(path); }
   return svg;
 }
 
 function renderColumn(column, tasks) {
   const section = document.createElement('section');
-  section.className = 'kanban-column';
+  section.className = `kanban-column${column.custom ? ' custom' : ''}${column.color ? ` col-${column.color}` : ''}`;
   section.dataset.column = column.id;
   const heading = document.createElement('h3');
   heading.id = `column-${column.id}`;
@@ -1149,7 +1153,7 @@ function renderColumn(column, tasks) {
   const header = document.createElement('div');
   header.className = 'kanban-column-heading';
   header.append(heading, count);
-  const note = paragraph(!column.agent ? (column.id === 'todo' ? 'Never runs an agent' : 'Finished · never runs an agent')
+  const note = paragraph(column.custom ? (column.description || (column.agent ? 'Custom column · starts an agent' : 'Custom column · never runs an agent')) : !column.agent ? (column.id === 'todo' ? 'Never runs an agent' : 'Finished · never runs an agent')
     : !board.execution?.available ? 'Agent stage · agent terminals not set up' : { testing: 'Agent optional · exit codes decide', merge: 'Agent optional · fast-forward or pull request' }[column.id] || 'Agent stage · starts only when you choose', 'kanban-column-note');
   const list = document.createElement('ol');
   list.className = 'kanban-cards';
@@ -1276,7 +1280,7 @@ function renderCard(card, index, count) {
   down.disabled = index === count - 1;
   const moveTo = labelled(document.createElement('select'), `Move to stage: ${card.title}`);
   moveTo.className = 'kanban-move-to';
-  moveTo.append(option('', 'Move to…'), ...board.columns.filter(column => canMove(card.column, column.id)).map(column => option(column.id, column.title)));
+  moveTo.append(option('', 'Move to…'), ...projectColumnsOf().filter(column => canMove(card.column, column.id)).map(column => option(column.id, column.title)));
   moveTo.addEventListener('change', () => { if (moveTo.value) placeCard(card.id, moveTo.value, null); });
   const copy = labelled(detailButton('Copy prompt', () => copyCard(card, copy), 'kanban-copy'), `Copy prompt: ${card.title}`);
   // Less frequent actions sit behind "⋯" so each card stays short and a column shows more cards.
@@ -1357,7 +1361,7 @@ async function placeCard(id, column, index, retried = false) {
   const position = index === null ? others.length : Math.min(index, others.length);
   const reorder = column === card.column;
   if (!reorder && !canMove(card.column, column)) {
-    showMoveError(card, column, Object.assign(new Error(card.column === 'done' ? 'A card in Done moves only with Reopen.' : `Allowed from ${columnTitle(card.column)}: ${(board.transitions?.[card.column] || []).map(columnTitle).join(', ') || 'none'}.`), { code: 'TRANSITION_NOT_ALLOWED' }));
+    showMoveError(card, column, Object.assign(new Error(card.column === 'done' ? 'A card in Done moves only with Reopen.' : `Allowed from ${columnTitle(card.column)}: ${((currentProject()?.transitions || {})[card.column] || []).map(id => columnTitle(id)).join(', ') || 'none'}.`), { code: 'TRANSITION_NOT_ALLOWED' }));
     return false;
   }
   const snapshot = project.tasks.slice();
@@ -1609,6 +1613,8 @@ async function deleteProject(project) {
 
 const RUN_LIVE = ['queued', 'running', 'waiting_for_input'];
 const STAGE_VERBS = { planning: 'Start planning', executing: 'Start executing', code_review: 'Start review', testing: 'Start testing agent', merge: 'Start merge agent' };
+/** The Start button label; a custom column has one only when it runs an agent. */
+function stageVerb(stage) { return STAGE_VERBS[stage] || (projectColumnsOf().find(column => column.id === stage)?.agent ? 'Start agent' : ''); }
 // Stages whose agents are read-only (plan mode, read-only sandbox). The others write in the worktree.
 const READ_ONLY_STAGES = ['planning', 'code_review'];
 const capabilityFor = stage => READ_ONLY_STAGES.includes(stage) ? 'planning' : 'execution';
@@ -1704,7 +1710,7 @@ function renderAgents(current) {
     const model = document.createElement('span'); model.className = 'agent-meta'; model.textContent = agentModel(run);
     const status = document.createElement('span'); status.className = 'agent-meta';
     const stateText = document.createElement('span'); stateText.className = 'agent-state'; stateText.textContent = agentStateText(run);
-    status.append(`${columnTitle(run.stage)} · `, stateText, ' · ', elapsedSpan(run));
+    status.append(`${columnTitle(run.stage, project)} · `, stateText, ' · ', elapsedSpan(run));
     button.append(icon, name, model, status);
     const other = project.id !== current?.id;
     if (other) { const where = document.createElement('span'); where.className = 'agent-meta'; where.textContent = `Project: ${project.name}`; button.append(where); }
@@ -1756,10 +1762,10 @@ function renderRunControls(card, run) {
       const button = labelled(detailButton(planning ? 'Approve plan…' : active.stage === 'code_review' ? 'Record review…' : 'Confirm stage…', () => openTaskDetails(card.id), 'primary kanban-confirm-run'), planning ? 'Review and approve the plan' : 'Review and confirm the stage');
       box.append(button);
     }
-  } else if (STAGE_VERBS[card.column]) {
+  } else if (stageVerb(card.column)) {
     // Testing and Merge also keep their own action: run the configured tests, or review the merge.
     if (card.column === 'testing' || card.column === 'merge') box.append(labelled(detailButton(card.column === 'testing' ? 'Run tests…' : 'Merge…', () => openTaskDetails(card.id), 'primary kanban-deliver'), card.column === 'testing' ? 'Run tests' : 'Review the merge'));
-    const start = labelled(detailButton(`${STAGE_VERBS[card.column]}…`, () => openRunDialog(card.id, card.column), `${card.column === 'testing' || card.column === 'merge' ? '' : 'primary '}kanban-start`), STAGE_VERBS[card.column]);
+    const start = labelled(detailButton(`${stageVerb(card.column)}…`, () => openRunDialog(card.id, card.column), `${card.column === 'testing' || card.column === 'merge' ? '' : 'primary '}kanban-start`), STAGE_VERBS[card.column]);
     start.disabled = !board?.execution?.available || !currentProject()?.repository;
     if (start.disabled) start.title = !board?.execution?.available ? 'Agent terminals are not set up.' : 'Link a repository first.';
     box.append(start);
@@ -1885,7 +1891,7 @@ function showRunDialog(ctx) {
   runDialogContext = ctx;
   const { stage, action, agent } = ctx;
   $('#run-dialog-stage').textContent = `${project.name} · ${ctx.mode === 'transition' ? `${columnTitle(ctx.approval.from)} → ${columnTitle(stage)}` : columnTitle(stage)}`.toUpperCase();
-  $('#run-dialog-heading').textContent = ctx.mode === 'run' ? `${STAGE_VERBS[stage]} for “${card.title}”?` : stage === 'done' ? `Complete “${card.title}”?` : `Move “${card.title}” to ${columnTitle(stage)}?`;
+  $('#run-dialog-heading').textContent = ctx.mode === 'run' ? `${stageVerb(stage)} for “${card.title}”?` : stage === 'done' ? `Complete “${card.title}”?` : `Move “${card.title}” to ${columnTitle(stage)}?`;
   $('#run-dialog-summary').textContent = action === 'agent' ? stageSummary(stage, card) : '';
   const steps = [];
   const approval = ctx.approval;
@@ -1961,7 +1967,7 @@ async function submitRun(event, decision = 'start') {
     if (ctx.mode === 'run') {
       const { run } = await boardCall('POST', `/api/tasks/${encodeURIComponent(card.id)}/runs`, { stage: ctx.stage, consent: true, config }, 180000);
       $('#run-dialog').close();
-      announce(`${STAGE_VERBS[ctx.stage]} for “${card.title}”. ${uiPref('openTerminal') === '1' ? 'The terminal is below.' : 'Its tab is in the dock below.'}`);
+      announce(`${stageVerb(ctx.stage)} for “${card.title}”. ${uiPref('openTerminal') === '1' ? 'The terminal is below.' : 'Its tab is in the dock below.'}`);
       showStartedRun(run.id);
     } else {
       const { approval } = ctx;
@@ -3049,6 +3055,138 @@ async function saveAutopilot(start) {
 }
 
 $('#autopilot-open').addEventListener('click', openAutopilot);
+
+// ---- Column Manager ----
+// Built-in stages keep their order and rules (rename, recolour; Planning can be hidden). Custom columns
+// go anywhere between To Do and Done and are attached to the built-in stage on their left.
+const COLUMN_COLOR_NAMES = { gray: 'Gray', red: 'Red', orange: 'Orange', amber: 'Amber', green: 'Green', teal: 'Teal', blue: 'Blue', violet: 'Violet', pink: 'Pink' };
+const BUILTIN_DEFAULT_COLORS = { todo: 'gray', planning: 'violet', executing: 'blue', code_review: 'amber', testing: 'teal', merge: 'orange', done: 'green' };
+const columnsDraft = { list: [], selected: null, project: null };
+const builtinTitle = id => board?.columns?.find(column => column.id === id)?.title || id;
+function openColumns() {
+  const project = currentProject();
+  if (!project) return;
+  const layout = project.columnLayout?.length ? project.columnLayout : (board?.columns || []).map(column => ({ id: column.id }));
+  columnsDraft.project = project.id;
+  columnsDraft.list = JSON.parse(JSON.stringify(layout)); // Plain data: an independent draft copy.
+  columnsDraft.selected = columnsDraft.list.find(entry => entry.custom)?.id || 'executing';
+  $('#columns-project').textContent = `${project.name} · COLUMNS`;
+  $('#columns-error').hidden = true;
+  renderColumns();
+  $('#columns-dialog').showModal();
+}
+const draftAnchor = entry => { let anchor = 'todo'; for (const item of columnsDraft.list) { if (item === entry) return anchor; if (!item.custom && !item.hidden) anchor = item.id; } return anchor; };
+function renderColumns() {
+  const list = columnsDraft.list;
+  $('#columns-list').replaceChildren(...list.map((entry, index) => {
+    const row = document.createElement('li'); row.className = 'columns-row';
+    const button = document.createElement('button'); button.type = 'button';
+    button.className = `columns-item${entry.hidden ? ' hidden-column' : ''}`;
+    if (entry.id === columnsDraft.selected) button.setAttribute('aria-current', 'true');
+    const dot = document.createElement('i'); dot.className = `columns-dot dot-${entry.color || BUILTIN_DEFAULT_COLORS[entry.id] || 'gray'}`; dot.setAttribute('aria-hidden', 'true');
+    const name = document.createElement('span'); name.textContent = `${entry.title || builtinTitle(entry.id)}${entry.hidden ? ' (hidden)' : ''}`;
+    button.append(dot, name);
+    if (!entry.custom) { const lock = document.createElement('small'); lock.className = 'columns-lock'; lock.textContent = 'fixed'; button.append(lock); }
+    button.addEventListener('click', () => { columnsDraft.selected = entry.id; renderColumns(); });
+    row.append(button);
+    if (entry.custom) {
+      const move = (step, label) => { const b = detailButton(step < 0 ? '↑' : '↓', () => { list.splice(index, 1); list.splice(index + step, 0, entry); renderColumns(); $(`#columns-list [data-move="${entry.id}${step}"]`)?.focus(); }, 'icon-button'); b.dataset.move = `${entry.id}${step}`; b.setAttribute('aria-label', `${label}: ${entry.title}`); b.disabled = step < 0 ? index <= 1 : index >= list.length - 2; return b; };
+      row.append(move(-1, 'Move left'), move(1, 'Move right'));
+    }
+    return row;
+  }));
+  renderColumnEditor();
+}
+function renderColumnEditor() {
+  const entry = columnsDraft.list.find(item => item.id === columnsDraft.selected);
+  const editor = $('#columns-editor');
+  $('#columns-remove').hidden = !entry?.custom;
+  if (!entry) { editor.replaceChildren(); return; }
+  const group = (legendText, ...children) => { const box = document.createElement('fieldset'); box.className = 'settings-group'; const legend = document.createElement('legend'); legend.textContent = legendText; box.append(legend, ...children); return box; };
+  const field = (labelText, control) => { const label = document.createElement('label'); label.className = 'field-label'; label.append(labelText, control); return label; };
+  const name = document.createElement('input'); name.type = 'text'; name.maxLength = 40; name.id = 'column-name'; name.value = entry.title || builtinTitle(entry.id);
+  name.addEventListener('input', () => { entry.title = name.value; const current = $('#columns-list [aria-current="true"] span'); if (current) current.textContent = name.value; });
+  const swatches = document.createElement('div'); swatches.className = 'color-swatches'; swatches.setAttribute('role', 'radiogroup'); swatches.setAttribute('aria-label', 'Colour');
+  for (const [color, label] of Object.entries(COLUMN_COLOR_NAMES)) {
+    const option = document.createElement('label'); option.title = label;
+    const input = document.createElement('input'); input.type = 'radio'; input.name = 'column-color'; input.value = color; input.setAttribute('aria-label', label);
+    input.checked = (entry.color || BUILTIN_DEFAULT_COLORS[entry.id] || 'gray') === color;
+    input.addEventListener('change', () => { entry.color = color; renderColumns(); });
+    const dot = document.createElement('span'); dot.className = `dot-${color}`;
+    option.append(input, dot); swatches.append(option);
+  }
+  const general = [field('Name', name)];
+  if (entry.custom) {
+    const description = document.createElement('textarea'); description.maxLength = 200; description.id = 'column-description'; description.placeholder = 'What is this column for?'; description.value = entry.description || '';
+    description.addEventListener('input', () => { entry.description = description.value; });
+    general.push(field('Description', description));
+  }
+  general.push(field('Colour', swatches));
+  const nodes = [group('General', ...general)];
+  if (!entry.custom) {
+    const notes = [paragraph(`${builtinTitle(entry.id)} is a built-in stage. Its place and rules stay fixed, because review, tests, and merges depend on them. You can rename and recolour it.`, 'note')];
+    if (entry.id === 'planning') {
+      const show = document.createElement('label'); show.className = 'check-row';
+      const box = document.createElement('input'); box.type = 'checkbox'; box.id = 'column-show'; box.checked = !entry.hidden;
+      box.addEventListener('change', () => { entry.hidden = !box.checked || undefined; renderColumns(); });
+      show.append(box, ' Show this column (cards can go from To Do straight to Executing either way)');
+      notes.push(show);
+    }
+    nodes.push(group('Stage', ...notes));
+  } else {
+    entry.agent ||= { enabled: false };
+    const enabled = document.createElement('label'); enabled.className = 'check-row';
+    const toggle = document.createElement('input'); toggle.type = 'checkbox'; toggle.id = 'column-agent'; toggle.checked = entry.agent.enabled;
+    enabled.append(toggle, ' Start an agent here');
+    const detail = document.createElement('div'); detail.className = 'columns-agent'; detail.hidden = !entry.agent.enabled;
+    const policy = document.createElement('div'); policy.className = 'segmented';
+    for (const [value, label] of [['ask', 'Ask on entry'], ['start', 'Start on entry'], ['manual', 'From the card only']]) {
+      const option = document.createElement('label'); const input = document.createElement('input'); input.type = 'radio'; input.name = 'column-policy'; input.value = value; input.checked = (entry.agent.policy || 'ask') === value;
+      input.addEventListener('change', () => { entry.agent.policy = value; });
+      const span = document.createElement('span'); span.textContent = label; option.append(input, span); policy.append(option);
+    }
+    const instructions = document.createElement('textarea'); instructions.maxLength = 4000; instructions.id = 'column-instructions'; instructions.placeholder = 'What should the agent do in this column?'; instructions.value = entry.agent.instructions || '';
+    instructions.addEventListener('input', () => { entry.agent.instructions = instructions.value; });
+    detail.append(policy, field('Instructions for the agent', instructions), paragraph('The agent works in the card’s own worktree with the project’s default agent, and never commits. Changed code still goes through Code Review and Testing before it can merge.', 'note'));
+    toggle.addEventListener('change', () => { entry.agent.enabled = toggle.checked; entry.agent.policy ||= 'ask'; detail.hidden = !toggle.checked; });
+    const anchor = draftAnchor(entry);
+    nodes.push(group('Agent', enabled, detail), group('Moves', paragraph(`Cards reach this column from ${builtinTitle(anchor)} and leave it along ${builtinTitle(anchor)}’s moves (or to another custom column next to it). Move the column to attach it to another stage.`, 'note')));
+  }
+  editor.replaceChildren(...nodes);
+}
+function addColumn() {
+  const list = columnsDraft.list;
+  const at = Math.min(Math.max(list.findIndex(entry => entry.id === columnsDraft.selected) + 1, 1), list.length - 1);
+  const taken = new Set(list.map(entry => (entry.title || builtinTitle(entry.id)).toLowerCase()));
+  let title = 'New column';
+  for (let n = 2; taken.has(title.toLowerCase()); n++) title = `New column ${n}`;
+  const id = `c_${(globalThis.crypto?.randomUUID?.() || `${Date.now()}${Math.random()}`).replace(/[^a-z0-9]/g, '').slice(0, 12).padEnd(8, '0')}`;
+  list.splice(at, 0, { id, custom: true, title, color: 'blue', description: '', agent: { enabled: false } });
+  columnsDraft.selected = id;
+  renderColumns();
+  $('#column-name')?.select();
+}
+async function saveColumns(event) {
+  event.preventDefault();
+  const project = board?.projects.find(item => item.id === columnsDraft.project);
+  if (!project) return;
+  const columns = columnsDraft.list.map(entry => entry.custom ? entry : { id: entry.id, ...(entry.title && entry.title !== builtinTitle(entry.id) ? { title: entry.title } : {}), ...(entry.color && entry.color !== BUILTIN_DEFAULT_COLORS[entry.id] ? { color: entry.color } : {}), ...(entry.hidden ? { hidden: true } : {}) });
+  try { await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/columns`, { columns, expectedRevision: project.revision }); }
+  catch (error) { $('#columns-error').textContent = error.message; $('#columns-error').hidden = false; return; }
+  $('#columns-dialog').close();
+  announce('Columns saved.');
+}
+$('#columns-open').addEventListener('click', openColumns);
+$('#columns-add').addEventListener('click', addColumn);
+$('#columns-form').addEventListener('submit', saveColumns);
+$('#columns-remove').addEventListener('click', () => {
+  const index = columnsDraft.list.findIndex(entry => entry.id === columnsDraft.selected);
+  if (index < 0 || !columnsDraft.list[index].custom) return;
+  columnsDraft.list.splice(index, 1);
+  columnsDraft.selected = columnsDraft.list[Math.max(1, index - 1)].id;
+  renderColumns();
+});
+for (const id of ['#columns-cancel', '#columns-close']) $(id).addEventListener('click', () => $('#columns-dialog').close());
 
 // ---- Timeline ----
 // One project's history from the server: recorded moves, runs, evidence, completions, Git commits,

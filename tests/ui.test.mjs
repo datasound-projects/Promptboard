@@ -1806,3 +1806,52 @@ test('Split into tasks (optional): ordered, editable tasks become To Do cards, t
   assert.ok(queue.slice(0, 2).every(item => item.querySelector('input[type="checkbox"]').checked));
   assert.equal((await serverBoard(ctx)).projects[0].autopilot?.status ?? 'off', 'off');
 });
+
+test('Column Manager: add, name, colour, reorder, and remove custom columns; built-in stages stay fixed; the board and moves follow', { skip: process.platform === 'win32' }, async t => {
+  const ctx = await linkedKanban(t);
+  const { $, win } = ctx;
+  await link(ctx);
+  await newCard(ctx, 'Card', 'Do it.');
+  await click(ctx, $('#columns-open'));
+  assert.equal($('#columns-dialog').open, true);
+  const rows = () => [...$('#columns-list').querySelectorAll('.columns-item span')].map(item => item.textContent);
+  assert.deepEqual(rows(), ['To Do', 'Planning', 'Executing', 'Code Review', 'Testing', 'Merge', 'Done']);
+  assert.equal($('#columns-list').querySelectorAll('.columns-lock').length, 7, 'Built-in stages are fixed.');
+  // Select Executing, add a column after it, name it, pick a colour, turn on its agent.
+  [...$('#columns-list').querySelectorAll('.columns-item')][2].click();
+  $('#columns-add').click();
+  const name = $('#column-name'); name.value = 'Blocked'; name.dispatchEvent(new win.Event('input'));
+  const red = $('#columns-editor input[value="red"]'); red.checked = true; red.dispatchEvent(new win.Event('change'));
+  assert.match($('#columns-editor').textContent, /Cards reach this column from Executing/);
+  $('#columns-add').click();
+  const second = $('#column-name'); second.value = 'Docs'; second.dispatchEvent(new win.Event('input'));
+  const agent = $('#column-agent'); agent.checked = true; agent.dispatchEvent(new win.Event('change'));
+  const instructions = $('#column-instructions'); instructions.value = 'Update the docs.'; instructions.dispatchEvent(new win.Event('input'));
+  assert.deepEqual(rows(), ['To Do', 'Planning', 'Executing', 'Blocked', 'Docs', 'Code Review', 'Testing', 'Merge', 'Done']);
+  // Reorder: Docs to the left of Blocked. Hide Planning.
+  [...$('#columns-list').querySelectorAll('.columns-row')][4].querySelector('button[aria-label^="Move left"]').click();
+  assert.deepEqual(rows().slice(3, 5), ['Docs', 'Blocked']);
+  [...$('#columns-list').querySelectorAll('.columns-item')][1].click();
+  const show = $('#column-show'); show.checked = false; show.dispatchEvent(new win.Event('change'));
+  submitForm(ctx, '#columns-form'); await ctx.idle();
+  assert.equal($('#columns-dialog').open, false);
+  const project = (await serverBoard(ctx)).projects[0];
+  assert.deepEqual(project.columns.map(column => column.title), ['To Do', 'Executing', 'Docs', 'Blocked', 'Code Review', 'Testing', 'Merge', 'Done']);
+  assert.deepEqual([...$('#kanban-columns').querySelectorAll('.kanban-column')].map(column => column.querySelector('h3').textContent), ['To Do', 'Executing', 'Docs', 'Blocked', 'Code Review', 'Testing', 'Merge', 'Done']);
+  assert.ok([...$('#kanban-columns').querySelectorAll('.kanban-column')][3].classList.contains('col-red'));
+  // The stage menu follows the moves: from To Do only Executing (Planning is hidden).
+  assert.deepEqual(Array.from(cardItem(ctx, 'Card').querySelectorAll('.kanban-move-to option'), item => item.textContent), ['Move to…', 'Executing']);
+  // Removing a column that holds a card is refused with the reason.
+  const card = (await serverTasks(ctx))[0];
+  await ctx.app.board.moveTask(card.id, { column: 'executing', expectedRevision: card.revision });
+  const blocked = project.columns.find(column => column.title === 'Blocked').id;
+  const moved = (await serverTasks(ctx))[0];
+  await ctx.app.board.moveTask(moved.id, { column: blocked, expectedRevision: moved.revision });
+  await win.__pbTest.loadBoard(); await ctx.idle();
+  await click(ctx, $('#columns-open'));
+  [...$('#columns-list').querySelectorAll('.columns-item')].find(item => item.textContent.startsWith('Blocked')).click();
+  $('#columns-remove').click();
+  submitForm(ctx, '#columns-form'); await ctx.idle();
+  assert.match($('#columns-error').textContent, /Move the cards out first \(1 in Blocked\)/);
+  assert.equal($('#columns-dialog').open, true);
+});

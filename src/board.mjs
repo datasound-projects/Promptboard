@@ -106,8 +106,11 @@ function parseBackupData(data) {
     const name = text(project.name, 80, `${label} name`);
     if (names.has(name.toLowerCase())) throw new BoardError(`${label} repeats the project name “${name}”.`, 'INVALID_BACKUP');
     names.add(name.toLowerCase());
+    const columnLayout = v2 && Array.isArray(project.columnLayout) && project.columnLayout.length ? normalizeColumns(project.columnLayout) : null;
+    const columnIds = new Set([...COLUMN_IDS, ...(columnLayout || []).filter(entry => entry.custom).map(entry => entry.id)]);
     return {
       id: unique(project.id, label), name, createdAt: time(project.createdAt),
+      columnLayout,
       repositoryPath: v2 && typeof project.repository?.path === 'string' ? project.repository.path.slice(0, 4096) : null,
       targetBranch: v2 && typeof project.targetBranch?.name === 'string' ? project.targetBranch.name.slice(0, 255) : null,
       // Imported workflow settings (including legacy automation) are kept for confirmation only.
@@ -122,7 +125,7 @@ function parseBackupData(data) {
         if (!card || typeof card !== 'object') throw new BoardError(`${cardLabel} is not valid.`, 'INVALID_BACKUP');
         return { id: unique(card.id, cardLabel), title: text(card.title, 120, `${cardLabel} title`), prompt: promptText(card.prompt, cardLabel),
           createdAt: time(card.createdAt), updatedAt: time(card.updatedAt ?? card.createdAt), checksOutdated: card.checksOutdated === true,
-          source: normalizeSource(card.source), column: v2 && COLUMN_IDS.includes(card.column) ? card.column : 'todo' };
+          source: normalizeSource(card.source), column: v2 && columnIds.has(card.column) ? card.column : 'todo' };
       }),
     };
   });
@@ -198,7 +201,13 @@ export function effectiveWorkflow(project, globalAgent = null) {
     // An effort the stage's provider does not accept is dropped rather than failing every run.
     try { resolved = resolveConfig(stage, picked); } catch { try { resolved = resolveConfig(stage, { ...picked, effort: '', permissionMode: '' }); } catch {} }
     return [stage, { ...base, policy: own.policy || base.policy, instructions: own.instructions || '', ...resolved, agentSource }];
-  }));
+  }).concat((project?.columnLayout || []).filter(entry => entry.custom).map(entry => {
+    // A custom column's agent writes in the task worktree (like Executing) with the column's instructions.
+    const [agentSource, agent] = [['project', project?.agentDefaults], ['global', globalAgent]].find(([, value]) => value?.provider) || ['default', {}];
+    let resolved = { provider: agent.provider || 'claude', model: agent.model || '', effort: agent.effort || '' };
+    try { resolved = resolveConfig(entry.id, resolved); } catch { try { resolved = resolveConfig(entry.id, { ...resolved, effort: '' }); } catch {} }
+    return [entry.id, { ...DEFAULT_STAGE_SETTINGS, policy: entry.agent?.enabled ? entry.agent.policy : 'manual', instructions: entry.agent?.instructions || '', ...resolved, agentSource, custom: true }];
+  })));
 }
 
 /**
@@ -218,6 +227,77 @@ export const TRANSITIONS = Object.freeze({
 export function canTransition(from, to) {
   return Boolean(TRANSITIONS[from]?.includes(to));
 }
+
+// ---- Column layout per project ----
+// Built-in stages keep their order (the transition contract and its evidence gates depend on it);
+// they can be renamed and coloured, and Planning can be hidden. Custom columns go anywhere between
+// To Do and Done. Each custom column is attached to the built-in stage on its left (its anchor):
+// a card reaches it from that stage and leaves it along that stage's moves. The evidence gates still
+// apply to every stage a card enters, so work done in a custom column cannot skip review or tests.
+export const COLUMN_COLORS = Object.freeze(['gray', 'red', 'orange', 'amber', 'green', 'teal', 'blue', 'violet', 'pink']);
+const CUSTOM_ID = /^c_[a-z0-9]{6,24}$/;
+const CUSTOM_LIMIT = 12;
+
+export function normalizeColumns(input) {
+  if (!Array.isArray(input) || input.length > COLUMNS.length + CUSTOM_LIMIT) throw new BoardError(`A board can have at most ${CUSTOM_LIMIT} custom columns.`, 'INVALID_COLUMNS');
+  const seen = new Set(), names = new Set(), out = [];
+  for (const entry of input) {
+    if (!entry || typeof entry !== 'object' || typeof entry.id !== 'string' || seen.has(entry.id)) throw new BoardError('Each column must appear once.', 'INVALID_COLUMNS');
+    seen.add(entry.id);
+    const color = entry.color || '';
+    if (color && !COLUMN_COLORS.includes(color)) throw new BoardError('Choose a colour from the list.', 'INVALID_COLUMNS');
+    const name = entry.title ? text(entry.title, 40, 'A column name') : '';
+    const base = COLUMNS.find(column => column.id === entry.id);
+    if (base) {
+      if (!(entry.hidden === true && entry.id === 'planning')) names.add((name || base.title).toLowerCase());
+      out.push({ id: entry.id, ...(name && name !== base.title ? { title: name } : {}), ...(color ? { color } : {}), ...(entry.id === 'planning' && entry.hidden === true ? { hidden: true } : {}) });
+      continue;
+    }
+    if (!CUSTOM_ID.test(entry.id)) throw new BoardError('A custom column has an invalid ID.', 'INVALID_COLUMNS');
+    if (!name) throw new BoardError('A custom column needs a name.', 'INVALID_COLUMNS');
+    if (names.has(name.toLowerCase())) throw new BoardError(`Two columns are called “${name}”. Use different names.`, 'INVALID_COLUMNS');
+    names.add(name.toLowerCase());
+    const agent = entry.agent?.enabled === true ? { enabled: true, policy: POLICIES.includes(entry.agent.policy) ? entry.agent.policy : 'ask',
+      instructions: typeof entry.agent.instructions === 'string' ? entry.agent.instructions.slice(0, 4000) : '' } : { enabled: false };
+    out.push({ id: entry.id, custom: true, title: name, color, description: typeof entry.description === 'string' ? entry.description.trim().slice(0, 200) : '', agent });
+  }
+  if (out.filter(entry => !entry.custom).map(entry => entry.id).join() !== COLUMN_IDS.join()) throw new BoardError('The built-in stages keep their order: To Do, Planning, Executing, Code Review, Testing, Merge, Done.', 'INVALID_COLUMNS');
+  if (out[0].id !== 'todo' || out.at(-1).id !== 'done') throw new BoardError('Custom columns go between To Do and Done.', 'INVALID_COLUMNS');
+  if (out.filter(entry => entry.custom).length > CUSTOM_LIMIT) throw new BoardError(`A board can have at most ${CUSTOM_LIMIT} custom columns.`, 'INVALID_COLUMNS');
+  return out;
+}
+
+/** The columns a project shows, in order. A custom column records its anchor stage. */
+export function projectColumns(project) {
+  const layout = project?.columnLayout?.length ? project.columnLayout : COLUMN_IDS.map(id => ({ id }));
+  let anchor = 'todo';
+  const result = [];
+  for (const entry of layout) {
+    const base = COLUMNS.find(column => column.id === entry.id);
+    if (base) {
+      if (entry.hidden) continue;
+      anchor = entry.id;
+      result.push({ ...base, title: entry.title || base.title, color: entry.color || '', builtin: true });
+    } else result.push({ id: entry.id, title: entry.title, agent: Boolean(entry.agent?.enabled), custom: true, color: entry.color || '', description: entry.description || '', anchor });
+  }
+  return result;
+}
+
+/** The transition table of one project: TRANSITIONS without hidden stages, plus each custom column's moves. */
+export function projectTransitions(project) {
+  const columns = projectColumns(project);
+  const visible = new Set(columns.map(column => column.id));
+  const table = {};
+  for (const [from, targets] of Object.entries(TRANSITIONS)) if (visible.has(from)) table[from] = targets.filter(to => visible.has(to));
+  const customs = columns.filter(column => column.custom);
+  for (const column of customs) {
+    table[column.anchor].push(column.id);
+    table[column.id] = [column.anchor, ...table[column.anchor].filter(to => !customs.some(other => other.id === to)), ...customs.filter(other => other.anchor === column.anchor && other.id !== column.id).map(other => other.id)];
+  }
+  return table;
+}
+
+const columnTitleIn = (project, id) => projectColumns(project).find(column => column.id === id)?.title || title(id);
 
 function checkRevision(entity, expected, label) {
   if (!Number.isInteger(expected)) throw new BoardError('Include the expected revision.', 'REVISION_REQUIRED');
@@ -266,7 +346,7 @@ export class Board {
   async view() {
     const state = await this.state();
     return { revision: state.revision, columns: COLUMNS, transitions: TRANSITIONS, settings: state.settings, runs: state.runs.slice(-500),
-      projects: state.projects.map(project => ({ ...project, effectiveWorkflow: effectiveWorkflow(project, state.settings.defaultAgent) })),
+      projects: state.projects.map(project => ({ ...project, columns: projectColumns(project), transitions: projectTransitions(project), effectiveWorkflow: effectiveWorkflow(project, state.settings.defaultAgent) })),
       execution: this.executor?.describe ? await this.executor.describe() : { available: Boolean(this.executor) }, recovery: this.store.recovery };
   }
 
@@ -528,6 +608,7 @@ export class Board {
       if (queue.some(taskId => !ids.has(taskId))) throw new BoardError('The Autopilot queue lists a card that is not in this project.', 'INVALID_AUTOPILOT');
       const perCard = {};
       for (const [taskId, value] of Object.entries(routes)) if (queue.includes(taskId) && value) perCard[taskId] = normalizeRoute(value, finish);
+      if (!projectColumns(project).some(column => column.id === 'planning') && [cleanRoute, ...Object.values(perCard)].some(item => item.includes('planning'))) throw new BoardError('Planning is hidden on this board. Take it out of the route, or show it in Columns.', 'INVALID_AUTOPILOT');
       const previous = project.autopilot || {};
       project.autopilot = { status: previous.status === 'paused' ? 'paused' : 'off', ...previous, route: cleanRoute, finish, maxRework, queue, routes: perCard, updatedAt: Date.now() };
       project.revision++;
@@ -577,6 +658,26 @@ export class Board {
     });
   }
 
+  /** Save the column layout. A column that still holds cards cannot be removed or hidden. */
+  async setColumns(id, { columns, expectedRevision }) {
+    const layout = normalizeColumns(columns);
+    return this.store.update(state => {
+      const project = this.#project(state, id);
+      checkRevision(project, expectedRevision, 'This project');
+      const visible = new Set(projectColumns({ columnLayout: layout }).map(column => column.id));
+      const stranded = [...new Set(project.tasks.filter(task => !visible.has(task.column)).map(task => task.column))];
+      if (stranded.length) {
+        const where = stranded.map(column => `${project.tasks.filter(task => task.column === column).length} in ${columnTitleIn(project, column)}`).join(', ');
+        throw conflict(`Move the cards out first (${where}). A column is removed or hidden only when it is empty.`, 'COLUMN_NOT_EMPTY');
+      }
+      const ap = project.autopilot;
+      if (ap && !visible.has('planning') && [ap.route, ...Object.values(ap.routes || {})].some(route => route?.includes('planning'))) throw conflict('Autopilot’s route uses Planning. Take Planning out of the route first.', 'AUTOPILOT_ROUTE');
+      project.columnLayout = layout;
+      project.revision++;
+      return project;
+    });
+  }
+
   async setWorkflow(id, { workflow, agentDefaults, expectedRevision }) {
     const clean = normalizeWorkflow(workflow);
     const defaults = agentDefaults === undefined ? undefined : normalizeAgent(agentDefaults);
@@ -617,12 +718,14 @@ export class Board {
       return { task, duplicate: true, ...(task.lastTransition.runId ? { run: state.runs.find(run => run.id === task.lastTransition.runId) } : {}) };
     }
     checkRevision(task, expectedRevision, 'This card');
-    if (!COLUMN_IDS.includes(column)) throw new BoardError('Choose a valid column.', 'INVALID_COLUMN');
+    const table = projectTransitions(project);
+    if (!Object.hasOwn(table, column)) throw new BoardError('Choose a valid column.', 'INVALID_COLUMN');
     const from = task.column;
     if (from === column) return { task: await this.#placeStored(id, { from, column, index }) }; // Reorder only.
-    if (!canTransition(from, column)) {
+    const name = value => columnTitleIn(project, value);
+    if (!table[from]?.includes(column)) {
       throw new BoardError(from === 'done' ? `“${task.title}” is done. Use Reopen to start a new cycle; its history stays.`
-        : `A card cannot move from ${title(from)} to ${title(column)}. Allowed from ${title(from)}: ${TRANSITIONS[from].map(title).join(', ')}.`, 'TRANSITION_NOT_ALLOWED');
+        : `A card cannot move from ${name(from)} to ${name(column)}. Allowed from ${name(from)}: ${(table[from] || []).map(name).join(', ') || 'none'}.`, 'TRANSITION_NOT_ALLOWED');
     }
     if (from === 'todo' && !project.repository) throw new BoardError('Link this project to a Git repository before cards leave To Do.', 'REPOSITORY_REQUIRED');
     const plan = await this.#prepareTransition(state, project, task, column);
@@ -693,7 +796,7 @@ export class Board {
       if (!finished || to === 'todo') throw conflict('This card has an active run. Wait for it to finish or cancel it first.', 'RUN_ACTIVE');
       handoff = active;
     }
-    const settings = WORKFLOW_STAGES.includes(to) ? effectiveWorkflow(project, state.settings.defaultAgent)[to] : null;
+    const settings = effectiveWorkflow(project, state.settings.defaultAgent)[to] || null;
     const plan = { from, to, handoff, commit: null, notes: null, action: null, confirmAction: false, policy: settings?.policy || 'manual', settings };
     const hasWorkspace = task.workspace?.status === 'ready';
     if (hasWorkspace) await this.ensureTaskWorktree(task.id); // Verifies the worktree and branch, and repairs a deleted folder.
@@ -730,7 +833,7 @@ export class Board {
       return plan;
     }
     // The stage action, by project policy. Manual moves only.
-    if (['planning', 'executing', 'code_review'].includes(to)) plan.action = plan.policy === 'manual' ? null : 'agent';
+    if (['planning', 'executing', 'code_review'].includes(to) || settings?.custom) plan.action = plan.policy === 'manual' ? null : 'agent';
     else if (to === 'testing') plan.action = plan.policy === 'manual' ? null : (project.testCommands || []).length ? 'tests' : 'agent';
     else if (to === 'merge') plan.action = plan.policy === 'start' ? 'auto-merge' : null;
     if (plan.action === 'agent') {
@@ -1024,6 +1127,7 @@ export class Board {
           for (let n = 2; state.projects.some(item => item.name.toLowerCase() === name.toLowerCase()); n++) name = `${incoming.name.slice(0, 74)} (${n})`;
           project = newProject({ id: incoming.id, name, createdAt: incoming.createdAt });
           project.timelineNotes = incoming.timelineNotes;
+          if (incoming.columnLayout) project.columnLayout = incoming.columnLayout;
           state.projects.push(project);
           projects++;
         }
@@ -1045,7 +1149,7 @@ export class Board {
     return { application: 'Promptboard', kind: 'promptboard-backup', version: 2, exportedAt: new Date().toISOString(),
       projects: state.projects.map(project => ({ id: project.id, name: project.name, createdAt: project.createdAt,
         repository: project.repository ? { path: project.repository.path } : null, targetBranch: project.targetBranch ? { name: project.targetBranch.name } : null,
-        workflow: project.workflow || {}, testCommands: project.testCommands || [], timelineNotes: project.timelineNotes || [],
+        workflow: project.workflow || {}, testCommands: project.testCommands || [], timelineNotes: project.timelineNotes || [], columnLayout: project.columnLayout || [],
         // Workspaces and runs are machine-specific and are not exported.
         tasks: project.tasks.map(task => ({ id: task.id, title: task.title, prompt: task.prompt, source: task.source, checksOutdated: task.checksOutdated,
           createdAt: task.createdAt, updatedAt: task.updatedAt, column: task.column })) })) };
@@ -1063,6 +1167,7 @@ export class Board {
       state.projects = parsed.projects.map(incoming => {
         const project = newProject(incoming);
         project.tasks = incoming.tasks.map(task => newTask(task));
+        if (incoming.columnLayout) project.columnLayout = incoming.columnLayout;
         project.timelineNotes = incoming.timelineNotes.map(note => ({ ...note, taskId: project.tasks.some(task => task.id === note.taskId) ? note.taskId : null }));
         if (incoming.repositoryPath || incoming.targetBranch || incoming.workflow || incoming.testCommands) {
           project.pendingImport = { repositoryPath: incoming.repositoryPath, targetBranch: incoming.targetBranch, workflow: incoming.workflow, testCommands: incoming.testCommands };
@@ -1208,7 +1313,7 @@ export class Board {
       await this.#defaultTargetBranch(taskId);
       const state = await this.state();
       const { project, task } = this.#task(state, taskId);
-      const column = COLUMNS.find(item => item.id === stage);
+      const column = projectColumns(project).find(item => item.id === stage);
       if (!column) throw new BoardError('Choose a valid stage.', 'INVALID_COLUMN');
       if (!column.agent) throw new BoardError(`${column.title} never runs an agent.`, 'STAGE_NOT_RUNNABLE');
       if (!move && task.column !== stage) throw conflict(`The card is in ${title(task.column)}, not ${column.title}.`, 'STAGE_MISMATCH');
@@ -1217,7 +1322,7 @@ export class Board {
       if (!project.repository) throw new BoardError('Link this project to a Git repository first.', 'REPOSITORY_REQUIRED', 409);
       if (!project.targetBranch) throw new BoardError('Choose the local target branch first.', 'TARGET_BRANCH_REQUIRED', 409);
       if (!this.executor) throw new BoardError('Agent execution is not available. Cards can be planned and moved, but no agent runs.', 'EXECUTION_UNAVAILABLE', 503);
-      if (!EXECUTABLE_STAGES.has(stage)) throw conflict(`${column.title} runs are not available yet.`, 'STAGE_NOT_IMPLEMENTED');
+      if (!EXECUTABLE_STAGES.has(stage) && !column.custom) throw conflict(`${column.title} runs are not available yet.`, 'STAGE_NOT_IMPLEMENTED');
       // Explicit request values override the project's workflow settings for this run only.
       const settings = effectiveWorkflow(project, state.settings.defaultAgent)[stage];
       const requested = Object.fromEntries(Object.entries(config || {}).filter(([key, value]) => ['provider', 'model', 'effort', 'permissionMode', 'instructions'].includes(key) && value !== undefined && value !== null));
@@ -1226,7 +1331,7 @@ export class Board {
       const merged = { ...inherited, ...requested };
       if (typeof merged.instructions !== 'string' || merged.instructions.length > 4000) throw new BoardError('Stage instructions can have at most 4,000 characters.', 'INVALID_WORKFLOW');
       const resolved = { ...(await this.executor.validate({ stage, config: merged })), instructions: merged.instructions };
-      if (!WORKSPACE_STAGES.has(stage) && task.workspace?.status !== 'ready') throw new BoardError('Run Planning or Executing first to create the task worktree.', 'WORKSPACE_REQUIRED', 409);
+      if (!WORKSPACE_STAGES.has(stage) && !column.custom && task.workspace?.status !== 'ready') throw new BoardError('Run Planning or Executing first to create the task worktree.', 'WORKSPACE_REQUIRED', 409);
       const workspace = await this.ensureTaskWorktree(taskId);
       const plan = stage === 'executing' ? this.#approvedPlan(state, task) : null;
       // Review reads the actual diff of a clean, committed revision. Executing gets requested fixes.
