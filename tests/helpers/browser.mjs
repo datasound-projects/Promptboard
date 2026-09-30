@@ -50,6 +50,8 @@ export async function launch({ width = 1280, height = 900 } = {}) {
   });
   const browser = {
     send, consoleMessages,
+    /** Listen to DevTools events (for example Page.screencastFrame). Returns a function that stops listening. */
+    on(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     async goto(url) {
       const loaded = new Promise(resolve => { const listener = message => { if (message.method === 'Page.loadEventFired') { listeners.delete(listener); resolve(); } }; listeners.add(listener); });
       await send('Page.navigate', { url });

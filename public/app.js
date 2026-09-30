@@ -2654,7 +2654,7 @@ function renderSplit() {
     const text = document.createElement('textarea'); text.value = task.prompt; text.setAttribute('aria-label', `Prompt of task ${index + 1}`);
     text.addEventListener('input', () => { task.prompt = text.value; });
     details.append(summary, text);
-    item.append(tools, title, document.createElement('span'), details);
+    item.append(tools, title, details);
     return item;
   }));
   const count = split.tasks.filter(task => task.included).length;

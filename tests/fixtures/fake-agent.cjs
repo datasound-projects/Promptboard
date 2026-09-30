@@ -71,6 +71,8 @@ function turn(text) {
   // Real CLIs enforce read-only planning (plan mode, read-only tools or sandbox, deny policy).
   // The fake models that: it only writes when no read-only flag was passed.
   const readOnly = args.includes('plan') || args.includes('read-only');
+  // FAKE_AGENT_WRITE=1 (demo recordings): every writing session adds its own file, named after the worktree.
+  if (process.env.FAKE_AGENT_WRITE === '1' && !readOnly && !text.includes('=== DIFF:')) writeFileSync(join(process.cwd(), `work-${basename(process.cwd()).slice(0, 8)}.txt`), `${text.split('\n').find(line => line.trim() && !line.startsWith('==='))?.slice(0, 80) || 'work'}\n`, { flag: 'a' });
   if (text.includes('WRITE_FILE')) {
     if (readOnly) process.stdout.write('write denied: read-only planning session\r\n');
     else writeFileSync(join(process.cwd(), (text.match(/WRITE_FILE:([\w.-]+)/) || [])[1] || 'agent-output.txt'), 'written by the agent\n');
