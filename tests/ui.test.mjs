@@ -1620,3 +1620,60 @@ test('the dock shows usage only as the CLI reported it; context is labelled as c
   assert.match($('#dock-details').textContent, /Context 8% \(15k of 200k\) · Plan usage 40%/);
   assert.doesNotMatch($('#dock-details').textContent, /Reported model/, 'The reported model equals the requested one.');
 });
+
+test('Timeline view: one project, real events grouped by day, completed order, open the task, and add, edit, and remove notes', { skip: process.platform === 'win32' }, async t => {
+  const ctx = await agentFixture(t);
+  const { $, win } = ctx;
+  const board = ctx.app.board;
+  await board.updateRun('run-b', { status: 'cancelled', endedAt: Date.now() });
+  await board.completeTask(ctx.tasks.b, { kind: 'no_changes', details: {} });
+  await win.__pbTest.loadBoard(); await ctx.idle();
+  $('#view-timeline').click();
+  await until(() => $('#timeline-track .timeline-event'), 'timeline events');
+  assert.equal($('#timeline').hidden, false);
+  assert.equal($('#kanban-columns').hidden, true);
+  assert.equal($('#view-timeline').getAttribute('aria-selected'), 'true');
+  assert.equal($('#card-new').hidden, true);
+  const text = $('#timeline-track').textContent;
+  assert.match(text, /Auth middleware/);
+  assert.doesNotMatch(text, /Review docs/, 'Another project’s tasks never appear.');
+  assert.match(text, /Executing · Agent run/);
+  assert.match(text, /Claude Code · opus · high/);
+  assert.match(text, /Completed: no changes required/);
+  assert.equal($('#timeline-track .timeline-order').textContent, '#1');
+  assert.match($('#timeline-summary').textContent, /2 tasks · 1 completed · 2 agent runs · 0 commits/);
+  assert.ok($('#timeline-track .timeline-date'));
+  // Completed only.
+  $('#timeline-filter').value = 'completed'; $('#timeline-filter').dispatchEvent(new win.Event('change'));
+  assert.equal($('#timeline-track').querySelectorAll('.timeline-event').length, 1);
+  $('#timeline-filter').value = 'key'; $('#timeline-filter').dispatchEvent(new win.Event('change'));
+  // Open the related task.
+  byText($('#timeline-track'), 'API tests').click(); await ctx.idle();
+  assert.equal($('#task-dialog').open, true);
+  $('#task-dialog').close();
+  // Add a note linked to a task, edit it, remove it.
+  $('#timeline-note-new').click();
+  $('#note-title').value = 'Design review';
+  $('#note-text').value = 'Agreed on the API.';
+  $('#note-task').value = ctx.tasks.a;
+  submitForm(ctx, '#timeline-note-form');
+  await until(() => /Design review/.test($('#timeline-track').textContent), 'note shown');
+  const noteCard = () => Array.from($('#timeline-track').querySelectorAll('.timeline-event[data-kind="note"]'))[0];
+  assert.match(noteCard().textContent, /Auth middleware/);
+  byText(noteCard(), 'Edit').click();
+  assert.equal($('#note-title').value, 'Design review');
+  $('#note-title').value = 'Design review, final';
+  submitForm(ctx, '#timeline-note-form');
+  await until(() => /Design review, final/.test($('#timeline-track').textContent), 'note edited');
+  byText(noteCard(), 'Remove').click();
+  byText(noteCard(), 'Remove note').click();
+  await until(() => !noteCard(), 'note removed');
+  assert.equal((await board.state()).projects[0].timelineNotes.length, 0);
+  // System events cannot be edited.
+  assert.equal(byText($('#timeline-track'), 'Edit'), undefined);
+  // The view choice persists; Board brings the columns back.
+  assert.equal(win.localStorage.getItem('promptboard.project-view'), 'timeline');
+  $('#view-board').click();
+  assert.equal($('#kanban-columns').hidden, false);
+  assert.equal($('#timeline').hidden, true);
+});

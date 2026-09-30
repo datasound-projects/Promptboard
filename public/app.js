@@ -1062,7 +1062,14 @@ function renderBoard() {
   $('#board-empty-text').textContent = !board ? 'Loading the board…' : project ? 'No tasks yet.' : 'Create a project to start planning.';
   $('#board-empty-note').textContent = project ? 'Choose New card, or add a generated prompt from the Compose page. New cards start in To Do.' : 'Each project gets its own board, from To Do to Done.';
   $('#empty-prompt-link').hidden = !project;
-  $('#kanban-columns').hidden = !project;
+  const timelineView = Boolean(project) && projectView() === 'timeline';
+  $('#kanban-columns').hidden = !project || timelineView;
+  if (timelineView) $('#board-empty').hidden = true;
+  $('#timeline').hidden = !timelineView;
+  $('#view-board').setAttribute('aria-selected', String(!timelineView));
+  $('#view-timeline').setAttribute('aria-selected', String(timelineView));
+  $('#view-timeline').disabled = !project;
+  for (const id of ['#autopilot-open', '#board-left', '#board-right', '#card-new']) $(id).hidden = timelineView;
   // Missing terminal support never blocks the board or the prompt editor; it only disables runs.
   $('#execution-status').hidden = !board || board.execution?.available !== false || !board.execution.setupMessage;
   $('#execution-status').textContent = board?.execution?.setupMessage ? `Agent runs are unavailable. ${board.execution.setupMessage}` : '';
@@ -1076,6 +1083,7 @@ function renderBoard() {
   renderWorkspace(project);
   renderAgents(project);
   renderAutopilotBar(project);
+  if (timelineView) { $('#autopilot-bar').hidden = true; refreshTimeline(project); }
   updateBoardScroll();
   window.PromptboardDock?.sync();
 }
@@ -2805,6 +2813,155 @@ async function saveAutopilot(start) {
 }
 
 $('#autopilot-open').addEventListener('click', openAutopilot);
+
+// ---- Timeline ----
+// One project's history from the server: recorded moves, runs, evidence, completions, Git commits,
+// and the user's notes. The page never adds events of its own.
+const PROJECT_VIEW_KEY = 'promptboard.project-view';
+const timeline = { projectId: null, events: [], loadedAt: 0, loading: null, editing: null, scrolledFor: null };
+const EVENT_LABELS = { created: 'Created', moved: 'Moved', run: 'Agent run', review: 'Review', tests: 'Tests', pull_request: 'Pull request', completed: 'Completed', commit: 'Commit', note: 'Note' };
+function projectView() { try { return localStorage.getItem(PROJECT_VIEW_KEY) === 'timeline' ? 'timeline' : 'board'; } catch { return 'board'; } }
+function setProjectView(view) { savePref(PROJECT_VIEW_KEY, view); timeline.loadedAt = 0; renderBoard(); if (view === 'timeline') $('#timeline-track').focus({ preventScroll: true }); }
+$('#view-board').addEventListener('click', () => setProjectView('board'));
+$('#view-timeline').addEventListener('click', () => setProjectView('timeline'));
+$('#timeline-filter').addEventListener('change', () => renderTimeline(currentProject()));
+
+/** Reload at most every 2 seconds while the timeline is shown; board refreshes call this often. */
+function refreshTimeline(project) {
+  if (timeline.projectId !== project.id) Object.assign(timeline, { projectId: project.id, events: [], loadedAt: 0, editing: null });
+  renderTimeline(project);
+  if (timeline.loading || Date.now() - timeline.loadedAt < 2000) return;
+  timeline.loading = (async () => {
+    try {
+      const { response, data } = await api(`/api/projects/${encodeURIComponent(project.id)}/timeline`, { timeoutMs: 30000 });
+      if (!response.ok) throw new Error(typeof data.error === 'string' ? data.error : 'The timeline could not be loaded.');
+      if (timeline.projectId === project.id) { timeline.events = Array.isArray(data.events) ? data.events : []; timeline.error = ''; }
+    } catch (error) { timeline.error = error.message; }
+    finally { timeline.loadedAt = Date.now(); timeline.loading = null; if (currentProject()?.id === project.id) renderTimeline(project); }
+  })();
+}
+
+const dayKey = at => { const d = new Date(at); return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`; };
+const clock = at => new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+const duration = ms => { const s = Math.max(0, Math.round(ms / 1000)); return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.floor(s % 3600 / 60)}m`; };
+
+function timelineEvent(event, order, project) {
+  const item = document.createElement('li');
+  item.className = 'timeline-event';
+  item.dataset.kind = event.kind; item.dataset.status = event.status || '';
+  item.dataset.id = event.id;
+  const head = document.createElement('div'); head.className = 'timeline-head';
+  const kind = document.createElement('span'); kind.className = 'timeline-kind'; kind.textContent = EVENT_LABELS[event.kind] || event.kind;
+  if (order) { const badge = document.createElement('span'); badge.className = 'timeline-order'; badge.textContent = `#${order}`; badge.title = `Completed work #${order} in this project`; kind.append(badge); }
+  head.append(kind, clock(event.at));
+  item.append(head);
+  const exists = event.taskId && project.tasks.some(task => task.id === event.taskId);
+  if (event.taskTitle) {
+    const task = exists ? detailButton(event.taskTitle, () => openTaskDetails(event.taskId), 'timeline-task') : Object.assign(document.createElement('span'), { className: 'timeline-task', textContent: event.taskTitle });
+    if (exists) task.setAttribute('aria-label', `Open task: ${event.taskTitle}`);
+    item.append(task);
+  }
+  const title = event.kind === 'moved' ? `Moved to ${columnTitle(event.stage)}` : event.kind === 'run' ? `${columnTitle(event.stage)} · ${event.title}` : event.title;
+  item.append(paragraph(title, 'timeline-title'));
+  const meta = [];
+  if (event.kind === 'moved' && event.from) meta.push(`From ${columnTitle(event.from)}`);
+  else if (event.detail) meta.push(event.detail);
+  if (event.status) meta.push(event.kind === 'run' && event.endAt ? `${event.status.replaceAll('_', ' ')} after ${duration(event.endAt - event.at)}` : event.status.replaceAll('_', ' '));
+  if (event.agent) meta.push(`${providerName(event.agent.provider)} · ${event.agent.model || 'CLI default model'}${event.agent.effort ? ` · ${event.agent.effort}` : ''}`);
+  for (const line of meta) { const p = paragraph(line, 'timeline-meta'); p.title = line; item.append(p); }
+  if (event.commit || event.pr) {
+    const refs = document.createElement('p'); refs.className = 'timeline-meta';
+    if (event.commit) { const code = document.createElement('code'); code.textContent = event.commit.slice(0, 10); code.title = event.commit; refs.append('Commit ', code); }
+    if (event.pr?.url) { if (event.commit) refs.append(' · '); refs.append(externalLink(event.pr.url, `PR ${event.pr.number ? `#${event.pr.number}` : ''} · ${String(event.pr.state || '').toUpperCase()}`)); }
+    item.append(refs);
+  }
+  const actions = [];
+  if (event.kind === 'run' && event.runId) actions.push(detailButton('Output', () => window.PromptboardDock?.open(event.runId)));
+  if (event.editable) {
+    actions.push(detailButton('Edit', () => openNoteForm(event)));
+    const remove = detailButton('Remove', () => {
+      const box = item.querySelector('.timeline-actions');
+      const yes = detailButton('Remove note', () => deleteNote(event.noteId)), no = detailButton('Keep', () => renderTimeline(currentProject()));
+      box.replaceChildren(yes, no); yes.focus();
+    });
+    actions.push(remove);
+  }
+  if (actions.length) { const row = document.createElement('div'); row.className = 'timeline-actions'; row.append(...actions); item.append(row); }
+  return item;
+}
+
+function renderTimeline(project) {
+  const filter = $('#timeline-filter').value;
+  const all = timeline.projectId === project.id ? timeline.events : [];
+  const completed = all.filter(event => event.kind === 'completed');
+  const order = new Map(completed.map((event, index) => [event.id, index + 1]));
+  const shown = all.filter(event => filter === 'all' || (filter === 'completed' ? event.kind === 'completed' : event.kind !== 'moved'));
+  const runs = all.filter(event => event.kind === 'run').length, commits = all.filter(event => event.kind === 'commit').length;
+  $('#timeline-summary').textContent = all.length
+    ? `${plural(project.tasks.length, 'task')} · ${completed.length} completed · ${plural(runs, 'agent run')} · ${plural(commits, 'commit')} · ${new Date(all[0].at).toLocaleDateString()} – ${new Date(all.at(-1).at).toLocaleDateString()}`
+    : '';
+  $('#timeline-empty').hidden = shown.length > 0 && !timeline.error;
+  $('#timeline-empty').textContent = timeline.error || (timeline.loadedAt ? (all.length ? 'No events match this filter.' : 'No history yet. Events appear when cards move, agents run, and work is committed or merged.') : 'Loading the timeline…');
+  $('#timeline-empty').classList.toggle('inline-error', Boolean(timeline.error));
+  const days = [];
+  for (const event of shown) { if (days.at(-1)?.key !== dayKey(event.at)) days.push({ key: dayKey(event.at), at: event.at, events: [] }); days.at(-1).events.push(event); }
+  const track = $('#timeline-track');
+  const keepScroll = timeline.scrolledFor === project.id ? track.scrollLeft : null;
+  track.replaceChildren(...days.map(day => {
+    const column = document.createElement('section'); column.className = 'timeline-day';
+    const date = document.createElement('h3'); date.className = 'timeline-date';
+    date.append(new Date(day.at).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' }));
+    const count = document.createElement('small'); count.textContent = plural(day.events.length, 'event'); date.append(count);
+    const list = document.createElement('ol'); list.className = 'timeline-events';
+    list.append(...day.events.map(event => timelineEvent(event, order.get(event.id), project)));
+    column.append(date, list);
+    return column;
+  }));
+  // Open at the latest work; later refreshes keep the user's scroll position.
+  if (keepScroll === null) { if (days.length) { track.scrollLeft = track.scrollWidth; timeline.scrolledFor = project.id; } }
+  else track.scrollLeft = keepScroll;
+}
+
+const localInput = at => new Date(at - new Date(at).getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+function openNoteForm(event = null) {
+  const project = currentProject();
+  if (!project) return;
+  timeline.editing = event?.noteId || null;
+  $('#note-title').value = event?.title || '';
+  $('#note-text').value = event?.detail || '';
+  $('#note-at').value = localInput(event?.at || Date.now());
+  $('#note-task').replaceChildren(option('', 'No task'), ...project.tasks.map(task => option(task.id, task.title)));
+  $('#note-task').value = event?.taskId || '';
+  $('#note-save').textContent = event ? 'Save changes' : 'Save note';
+  $('#note-error').hidden = true;
+  $('#timeline-note-form').hidden = false;
+  $('#note-title').focus();
+}
+async function saveNote(event) {
+  event.preventDefault();
+  const project = currentProject();
+  const at = new Date($('#note-at').value).getTime();
+  const body = { title: $('#note-title').value.trim(), text: $('#note-text').value, at, taskId: $('#note-task').value || null };
+  const showError = message => { $('#note-error').textContent = message; $('#note-error').hidden = false; };
+  if (!body.title) { showError('Enter a note title.'); $('#note-title').focus(); return; }
+  if (!Number.isFinite(at)) { showError('Choose a date and time.'); return; }
+  const path = `/api/projects/${encodeURIComponent(project.id)}/timeline${timeline.editing ? `/${encodeURIComponent(timeline.editing)}` : ''}`;
+  const { response, data } = await api(path, { method: timeline.editing ? 'PATCH' : 'POST', body, timeoutMs: 30000 }).catch(() => ({ response: { ok: false }, data: {} }));
+  if (!response.ok) { showError(data.error || 'The note was not saved. Check that Promptboard is running.'); return; }
+  $('#timeline-note-form').hidden = true;
+  announce(timeline.editing ? 'The note was updated.' : 'The note was added to the timeline.');
+  timeline.editing = null; timeline.loadedAt = 0; refreshTimeline(project);
+}
+async function deleteNote(noteId) {
+  const project = currentProject();
+  const { response, data } = await api(`/api/projects/${encodeURIComponent(project.id)}/timeline/${encodeURIComponent(noteId)}`, { method: 'DELETE', timeoutMs: 30000 }).catch(() => ({ response: { ok: false }, data: {} }));
+  if (!response.ok) { $('#timeline-empty').hidden = false; $('#timeline-empty').textContent = data.error || 'The note was not removed.'; return; }
+  announce('The note was removed.');
+  timeline.loadedAt = 0; refreshTimeline(project);
+}
+$('#timeline-note-new').addEventListener('click', () => openNoteForm());
+$('#note-cancel').addEventListener('click', () => { $('#timeline-note-form').hidden = true; timeline.editing = null; });
+$('#timeline-note-form').addEventListener('submit', saveNote);
 
 // ---- Settings ----
 // Browser preferences (this browser only) and global server settings (every project). Project

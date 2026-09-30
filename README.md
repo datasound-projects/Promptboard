@@ -95,6 +95,12 @@ The dock has one tab per run. Switching tabs never restarts anything. Closing a 
 
 **Usage** is read from the CLI's own session file and never estimated. Claude Code: input, cached, and output tokens, the context of the latest request in tokens, and the model it reported (from the session transcript). Codex CLI: the same, plus the context as a share of the model's context window and the plan usage limit (from the session rollout file). Gemini CLI reports no usage, so none is shown. Context is the size of the conversation, not task progress. Promptboard shows no completion percentage.
 
+### Timeline
+
+Each project has two views: **Board | Timeline**. The Timeline shows the project's history from left (oldest) to right (newest), grouped by day. It is built only from what Promptboard recorded: tasks created and moved, agent runs (stage, provider, model, effort, result, duration), reviews, test runs, pull requests, merges and other completions, and the Git commits of each task branch or merge. Completed work is numbered in the order it finished. Choose a task name to open that task, or **Output** on a run to see its terminal. Filter by key events, all events (with column moves), or completed work only.
+
+You can add **notes** (for example a release or a decision) with a date and an optional task. Notes are the only entries you can edit or remove; recorded events cannot be changed. Notes are included in board backups.
+
 ### Settings
 
 The gear in the top bar opens **Settings**:

@@ -240,10 +240,28 @@
         <div class="connection-detail kanban-ask" id="ask-panel" role="status" hidden></div>
       </section>
       <section class="card kanban-board" aria-labelledby="board-heading">
-        <div class="card-heading"><div><h2 id="board-heading">Board</h2><span class="kanban-count" id="board-count" aria-label="Cards">00</span></div><div class="board-actions"><button class="secondary-button autopilot-open" id="autopilot-open" type="button" aria-haspopup="dialog"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h9m-4-4 4 4-4 4"/><path d="M15 5h4v14h-4"/></svg><span>Autopilot</span></button><button class="icon-button board-scroll" id="board-left" type="button" aria-controls="kanban-columns" aria-label="Scroll the board left" title="Scroll left"><span aria-hidden="true">‹</span></button><button class="icon-button board-scroll" id="board-right" type="button" aria-controls="kanban-columns" aria-label="Scroll the board right" title="Scroll right"><span aria-hidden="true">›</span></button><button class="copy-button" id="card-new" type="button"><span aria-hidden="true">＋</span> New card</button></div></div>
+        <div class="card-heading"><div><h2 id="board-heading" class="sr-only">Project views</h2><div class="view-switch" role="tablist" aria-label="Project views"><button type="button" role="tab" id="view-board" aria-selected="true" aria-controls="board-view-panel">Board</button><button type="button" role="tab" id="view-timeline" aria-selected="false" aria-controls="timeline">Timeline</button></div><span class="kanban-count" id="board-count" aria-label="Cards">00</span></div><div class="board-actions" id="board-actions"><button class="secondary-button autopilot-open" id="autopilot-open" type="button" aria-haspopup="dialog"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h9m-4-4 4 4-4 4"/><path d="M15 5h4v14h-4"/></svg><span>Autopilot</span></button><button class="icon-button board-scroll" id="board-left" type="button" aria-controls="kanban-columns" aria-label="Scroll the board left" title="Scroll left"><span aria-hidden="true">‹</span></button><button class="icon-button board-scroll" id="board-right" type="button" aria-controls="kanban-columns" aria-label="Scroll the board right" title="Scroll right"><span aria-hidden="true">›</span></button><button class="copy-button" id="card-new" type="button"><span aria-hidden="true">＋</span> New card</button></div></div>
         <div class="autopilot-bar" id="autopilot-bar" role="status" hidden></div>
         <div class="output-empty" id="board-empty"><p><span id="board-empty-text">Create a project to start planning.</span><small id="board-empty-note">Each project gets its own board, from To Do to Done.</small><a class="kanban-empty-link" id="empty-prompt-link" href="#/" hidden>Engineer a prompt <span aria-hidden="true">↗</span></a></p></div>
         <div class="kanban-columns" id="kanban-columns" hidden></div>
+        <div class="timeline" id="timeline" role="tabpanel" aria-labelledby="view-timeline" hidden>
+          <div class="timeline-toolbar">
+            <p class="timeline-summary" id="timeline-summary"></p>
+            <label class="field-label timeline-filter">Show<select id="timeline-filter"><option value="key">Key events</option><option value="all">All events, with column moves</option><option value="completed">Completed work only</option></select></label>
+            <button type="button" class="secondary-button" id="timeline-note-new">＋ Add note</button>
+          </div>
+          <form class="timeline-note-form" id="timeline-note-form" novalidate hidden>
+            <label class="field-label">Note title<input id="note-title" maxlength="120" required></label>
+            <label class="field-label">Date and time<input id="note-at" type="datetime-local" required></label>
+            <label class="field-label">Task (optional)<select id="note-task"></select></label>
+            <label class="field-label note-text">Text<textarea id="note-text" maxlength="2000" rows="2"></textarea></label>
+            <div class="detail-actions"><button type="submit" class="danger" id="note-save">Save note</button><button type="button" id="note-cancel">Cancel</button></div>
+            <p class="inline-error" id="note-error" role="alert" hidden></p>
+          </form>
+          <p class="timeline-empty" id="timeline-empty" hidden></p>
+          <div class="timeline-track" id="timeline-track" tabindex="0" aria-label="Project timeline, oldest on the left"></div>
+          <p class="note">Built from recorded task moves, agent runs, reviews, tests, pull requests, merges, and the Git commits of each task. Only notes can be edited or removed.</p>
+        </div>
       </section>
       <footer class="main-footer"><span>PREPARED FOR AGENTS. RUNS NEED YOUR CONFIRMATION.</span><span>Saved by the local app <span aria-hidden="true">·</span> Human review required</span></footer>
       <section class="dock" id="dock" aria-labelledby="dock-heading" data-state="collapsed">

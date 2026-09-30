@@ -14,6 +14,7 @@ import { branchExists, commitExists, git, GitError, initRepository, listWorktree
 import { resolveConfig } from './agents.mjs';
 import { Delivery } from './delivery.mjs';
 import { ensureClone, fastForward, fetchAndCompare, viewRepository } from './github.mjs';
+import { buildTimeline } from './timeline.mjs';
 
 export const COLUMNS = Object.freeze([
   { id: 'todo', title: 'To Do', agent: false },
@@ -112,6 +113,9 @@ function parseBackupData(data) {
       workflow: v2 && project.workflow && typeof project.workflow === 'object' ? project.workflow : v2 && project.automation?.autoRun === true ? { executing: { policy: 'start' } } : null,
       // Imported test commands never run until the user confirms them.
       testCommands: v2 && Array.isArray(project.testCommands) && project.testCommands.length ? project.testCommands.slice(0, 20) : null,
+      // The user's timeline notes. Malformed entries are dropped; system events are rebuilt from the board.
+      timelineNotes: v2 && Array.isArray(project.timelineNotes) ? project.timelineNotes.slice(0, 500).flatMap(note => note && typeof note.title === 'string' && note.title.trim() && Number.isFinite(note.at)
+        ? [{ id: typeof note.id === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(note.id) ? note.id : randomUUID(), title: note.title.trim().slice(0, 120), text: typeof note.text === 'string' ? note.text.slice(0, 2000) : '', at: note.at, taskId: typeof note.taskId === 'string' ? note.taskId : null, createdAt: time(note.createdAt) }] : []) : [],
       tasks: cards.map((card, cardIndex) => {
         const cardLabel = `${label}, card ${cardIndex + 1}`;
         if (!card || typeof card !== 'object') throw new BoardError(`${cardLabel} is not valid.`, 'INVALID_BACKUP');
@@ -314,6 +318,53 @@ export class Board {
       if (current) project.targetBranch = { name: current.name, commit: current.commit, root: repository.root, recordedAt: Date.now() };
       project.revision++;
       return { project, repository };
+    });
+  }
+
+  // ---- Timeline ----
+
+  async timeline(id) {
+    const state = await this.state();
+    const project = this.#project(state, id);
+    return buildTimeline(project, state.runs.filter(run => run.projectId === id));
+  }
+
+  #note(input, project) {
+    const title = text(input?.title, 120, 'The note title');
+    const body = typeof input?.text === 'string' ? input.text.trim().slice(0, 2000) : '';
+    const at = input?.at === undefined ? Date.now() : input.at;
+    if (!Number.isFinite(at) || at < 0 || at > Date.now() + 366 * 86400000) throw new BoardError('Choose a valid date and time for the note.', 'INVALID_INPUT');
+    const taskId = input?.taskId || null;
+    if (taskId !== null && !project.tasks.some(task => task.id === taskId)) throw new BoardError('The linked task is not in this project.', 'INVALID_INPUT');
+    return { title, text: body, at: Math.round(at), taskId };
+  }
+
+  /** Notes are the only timeline entries a user writes, edits, or removes. */
+  async addTimelineNote(id, input) {
+    return this.store.update(state => {
+      const project = this.#project(state, id);
+      const notes = project.timelineNotes || [];
+      if (notes.length >= 500) throw new BoardError('A project can have at most 500 timeline notes.', 'LIMIT');
+      const note = { id: randomUUID(), ...this.#note(input, project), createdAt: Date.now() };
+      project.timelineNotes = [...notes, note];
+      return note;
+    });
+  }
+  async updateTimelineNote(id, noteId, input) {
+    return this.store.update(state => {
+      const project = this.#project(state, id);
+      const note = (project.timelineNotes || []).find(item => item.id === noteId);
+      if (!note) throw new BoardError('This note does not exist. Reload the timeline.', 'NOT_FOUND', 404);
+      Object.assign(note, this.#note({ ...note, ...input }, project), { updatedAt: Date.now() });
+      return note;
+    });
+  }
+  async deleteTimelineNote(id, noteId) {
+    return this.store.update(state => {
+      const project = this.#project(state, id);
+      const before = (project.timelineNotes || []).length;
+      project.timelineNotes = (project.timelineNotes || []).filter(item => item.id !== noteId);
+      if (project.timelineNotes.length === before) throw new BoardError('This note does not exist. Reload the timeline.', 'NOT_FOUND', 404);
     });
   }
 
@@ -676,6 +727,7 @@ export class Board {
           let name = incoming.name;
           for (let n = 2; state.projects.some(item => item.name.toLowerCase() === name.toLowerCase()); n++) name = `${incoming.name.slice(0, 74)} (${n})`;
           project = newProject({ id: incoming.id, name, createdAt: incoming.createdAt });
+          project.timelineNotes = incoming.timelineNotes;
           state.projects.push(project);
           projects++;
         }
@@ -697,7 +749,7 @@ export class Board {
     return { application: 'Promptboard', kind: 'promptboard-backup', version: 2, exportedAt: new Date().toISOString(),
       projects: state.projects.map(project => ({ id: project.id, name: project.name, createdAt: project.createdAt,
         repository: project.repository ? { path: project.repository.path } : null, targetBranch: project.targetBranch ? { name: project.targetBranch.name } : null,
-        workflow: project.workflow || {}, testCommands: project.testCommands || [],
+        workflow: project.workflow || {}, testCommands: project.testCommands || [], timelineNotes: project.timelineNotes || [],
         // Workspaces and runs are machine-specific and are not exported.
         tasks: project.tasks.map(task => ({ id: task.id, title: task.title, prompt: task.prompt, source: task.source, checksOutdated: task.checksOutdated,
           createdAt: task.createdAt, updatedAt: task.updatedAt, column: task.column })) })) };
@@ -715,6 +767,7 @@ export class Board {
       state.projects = parsed.projects.map(incoming => {
         const project = newProject(incoming);
         project.tasks = incoming.tasks.map(task => newTask(task));
+        project.timelineNotes = incoming.timelineNotes.map(note => ({ ...note, taskId: project.tasks.some(task => task.id === note.taskId) ? note.taskId : null }));
         if (incoming.repositoryPath || incoming.targetBranch || incoming.workflow || incoming.testCommands) {
           project.pendingImport = { repositoryPath: incoming.repositoryPath, targetBranch: incoming.targetBranch, workflow: incoming.workflow, testCommands: incoming.testCommands };
         }

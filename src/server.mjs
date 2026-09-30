@@ -114,6 +114,9 @@ async function boardRoute(board, req, res, pathname, searchParams) {
   if (method === 'POST' && pathname === '/api/tasks') return view({ task: await board.createTask(await body()) });
   if (pathname.startsWith('/api/github/')) return githubRoute(board, req, res, pathname, searchParams, body);
   if (method === 'PATCH' && pathname === '/api/settings') return view({ settings: await board.setSettings(await body()) });
+  const note = pathname.match(/^\/api\/projects\/([A-Za-z0-9_-]{1,100})\/timeline\/([A-Za-z0-9_-]{1,100})$/);
+  if (note && method === 'PATCH') return send(res, 200, { note: await board.updateTimelineNote(note[1], note[2], await body()) });
+  if (note && method === 'DELETE') return send(res, 200, { deleted: await board.deleteTimelineNote(note[1], note[2]) ?? true });
   if (!match) return false;
   const [, kind, id, action = ''] = match;
   const expected = () => Number(searchParams.get('expectedRevision'));
@@ -128,6 +131,8 @@ async function boardRoute(board, req, res, pathname, searchParams) {
     if (method === 'PATCH' && action === 'workflow') return view({ project: await board.setWorkflow(id, await body()) });
     if (method === 'PATCH' && action === 'tests') return view({ project: await board.delivery.setTestCommands(id, await body()) });
     if (method === 'POST' && action === 'target-branch') return view({ project: await board.setTargetBranch(id, await body()) });
+    if (method === 'GET' && action === 'timeline') return send(res, 200, { events: await board.timeline(id) });
+    if (method === 'POST' && action === 'timeline') return send(res, 200, { note: await board.addTimelineNote(id, await body()) });
     if (method === 'POST' && action === 'github') return view({ project: await board.connectGitHub(id, await body()) });
     if (method === 'DELETE' && action === 'github') return view({ project: await board.disconnectGitHub(id, { expectedRevision: expected() }) });
     if (method === 'POST' && action === 'github-fetch') return view({ project: await board.fetchGitHub(id) });
