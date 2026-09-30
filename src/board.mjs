@@ -208,7 +208,7 @@ export function effectiveWorkflow(project, globalAgent = null) {
     const [agentSource, agent] = [['project', project?.agentDefaults], ['global', globalAgent]].find(([, value]) => value?.provider) || ['default', {}];
     let resolved = { provider: agent.provider || 'claude', model: agent.model || '', effort: agent.effort || '' };
     try { resolved = resolveConfig(entry.id, resolved); } catch { try { resolved = resolveConfig(entry.id, { ...resolved, effort: '' }); } catch {} }
-    return [entry.id, { ...DEFAULT_STAGE_SETTINGS, policy: entry.agent?.enabled ? (entry.agent.policy === 'ask' ? 'start' : entry.agent.policy) : 'manual', instructions: entry.agent?.instructions || '', ...resolved, agentSource, custom: true }];
+    return [entry.id, { ...DEFAULT_STAGE_SETTINGS, policy: entry.agent?.enabled ? (entry.agent.policy === 'ask' ? 'start' : entry.agent.policy) : 'manual', instructions: entry.agent?.instructions || '', ...resolved, agentSource, custom: true, agentEnabled: entry.agent?.enabled === true }];
   })));
 }
 
@@ -946,9 +946,9 @@ export class Board {
       }
       return plan;
     }
-    // The stage action, by project policy. Manual moves only.
-    if (['planning', 'executing', 'code_review'].includes(to) || settings?.custom) plan.action = plan.policy === 'manual' ? null : 'agent';
-    else if (to === 'testing') plan.action = plan.policy === 'manual' ? null : (project.testCommands || []).length ? 'tests' : 'agent';
+    // The stage's action. Whether it runs is decided in #transition: the policy (Manual only moves), or an explicit decision.
+    if (['planning', 'executing', 'code_review'].includes(to) || settings?.agentEnabled) plan.action = 'agent';
+    else if (to === 'testing') plan.action = (project.testCommands || []).length ? 'tests' : 'agent';
     else if (to === 'merge') plan.action = 'merge-prepare';
     if (plan.action === 'agent') {
       // No agent runtime at all (terminal support missing): the card moves and the reason is shown.
@@ -1011,6 +1011,72 @@ export class Board {
       task = await this.delivery.merge(id, { confirm: true, taskCommit: plan.merge.taskCommit, targetCommit: plan.merge.targetCommit, trigger: move.by === 'automation' ? 'automation' : 'user' });
     }
     return { task: await this.store.update(state => { const { task: current } = this.#task(state, id); current.lastTransition = { id: move.transitionId, to: 'done', at: Date.now() }; return current; }), merged: plan.action === 'merge' };
+  }
+
+  /**
+   * Start over: retire the current attempt and run the same task again from a fresh branch.
+   * The old branch is kept exactly as it is (never deleted, renamed, reset, or pushed); uncommitted
+   * work is committed to it first. The clean worktree is removed, the attempt (branch, head, review,
+   * tests, pull request, reason) is recorded in `previousAttempts`, and the card returns to To Do.
+   * The next Planning or Executing run creates a new branch from the target branch's current tip and
+   * gets the reason. With `startExecuting`, the normal To Do → Executing transition follows.
+   */
+  startOver(id, { expectedRevision, reason = '', startExecuting = false } = {}) {
+    if (typeof reason !== 'string' || reason.length > 4000) throw new BoardError('The reason can have at most 4,000 characters.', 'INVALID_INPUT');
+    return this.#locked(`transition:${id}`, async () => {
+      const state = await this.state();
+      const { project, task } = this.#task(state, id);
+      checkRevision(task, expectedRevision, 'This card');
+      if (task.column === 'done') throw conflict('This card is done. Reopen it first; then you can start over.', 'NOT_ALLOWED_IN_DONE');
+      if (task.workspace?.status !== 'ready') throw conflict('This card has no task branch yet, so there is nothing to start over.', 'NOTHING_TO_START_OVER');
+      if (this.#activeRun(state, id)) throw conflict('An agent is still working on this card. Stop it first.', 'RUN_ACTIVE');
+      if (this.delivery.testsRunning.has(id)) throw conflict('Tests are running for this card. Wait for them to finish.', 'TESTS_RUNNING');
+      if (project.autopilot?.status === 'running' && project.autopilot.current?.taskId === id) throw conflict('Autopilot is working on this card. Pause Autopilot or skip the card first.', 'AUTOPILOT_ACTIVE');
+      const workspace = await this.ensureTaskWorktree(id); // Verifies the worktree (and rebuilds a deleted folder).
+      let rev = await this.delivery.revision(id);
+      if (rev.merging) throw conflict('A merge is in progress in the task worktree. Abort it in the task details first.', 'MERGE_IN_PROGRESS');
+      if (!rev.branchOk) throw conflict(`The task worktree is not on its branch ${workspace.branch}. Switch it back first.`, 'BRANCH_MISMATCH');
+      // Keep uncommitted work on the old branch (never discarded).
+      let savedChanges = 0;
+      if (!rev.clean) {
+        savedChanges = rev.changes.length;
+        rev = await this.delivery.commit(id, { message: 'Start over: keep uncommitted work', confirm: true });
+      }
+      const before = this.#task(await this.state(), id).task;
+      const attempt = { branch: workspace.branch, head: rev.taskCommit, baseCommit: workspace.baseCommit, targetBranch: workspace.targetBranch, archivedAt: Date.now(),
+        reason: reason.trim(), fromColumn: before.column, savedChanges, commitsAhead: rev.ahead,
+        review: before.evidence?.review ? { status: before.evidence.review.status, verdict: before.evidence.review.verdict || '', taskCommit: before.evidence.review.taskCommit, findings: (before.evidence.review.findings || []).slice(0, 20) } : null,
+        tests: before.evidence?.tests ? { status: before.evidence.tests.status, taskCommit: before.evidence.tests.taskCommit } : null,
+        pullRequest: before.evidence?.pullRequest ? { url: before.evidence.pullRequest.url, number: before.evidence.pullRequest.number ?? null, state: before.evidence.pullRequest.state } : null };
+      // The worktree is clean now; removing it keeps the branch (removeTaskWorktree never removes dirty ones).
+      await this.removeTaskWorktree(id);
+      // The next attempt branches from the target branch as it is now.
+      const fresh = this.#project(await this.state(), project.id);
+      if (fresh.targetBranch) await this.setTargetBranch(project.id, { branch: fresh.targetBranch.name, expectedRevision: fresh.revision }).catch(() => {});
+      const findings = attempt.review?.findings?.length ? attempt.review.findings.map(item => `- [${item.severity}] ${item.file}${item.line ? `:${item.line}` : ''} ${item.explanation}`).join('\n') : '';
+      const task2 = await this.store.update(draft => {
+        const { project: owner, task: current } = this.#task(draft, id);
+        current.previousAttempts = [...(current.previousAttempts || []), attempt].slice(-10);
+        current.restartNote = [attempt.reason && `Reason: ${attempt.reason}`, findings && `Review findings on the discarded attempt:\n${findings}`,
+          `The discarded attempt is kept on branch ${attempt.branch} (${attempt.head.slice(0, 12)}). Start again from the current target branch; do not copy that attempt unless the reason says so.`].filter(Boolean).join('\n\n');
+        Object.assign(current, { evidence: {}, flow: null, reworkNotes: '', lastTransition: null });
+        if (current.column !== 'todo') {
+          current.transitions = [...current.transitions, { at: Date.now(), from: current.column, to: 'todo', by: 'start-over', ...(attempt.reason ? { reason: clip(attempt.reason, 300) } : {}) }].slice(-TRANSITION_LOG_LIMIT);
+          current.column = 'todo';
+          owner.tasks = [...owner.tasks.filter(item => item !== current)];
+          const firstLater = owner.tasks.findIndex(item => item.column !== 'todo');
+          owner.tasks.splice(firstLater < 0 ? owner.tasks.length : firstLater, 0, current); // Last card of To Do.
+        }
+        current.revision++;
+        return current;
+      });
+      const result = { task: task2, attempt };
+      if (startExecuting) {
+        const started = await this.#transition(id, { column: 'executing', expectedRevision: task2.revision, decision: 'start' });
+        Object.assign(result, { task: started.task, run: started.run });
+      }
+      return result;
+    });
   }
 
   /** Done → To Do: a new cycle. Earlier completions, commits, evidence, and runs are kept. */
@@ -1441,7 +1507,8 @@ export class Board {
       // (git merge --no-commit), leaving any conflicts for the agent to resolve.
       const merge = stage === 'merge' ? await this.delivery.prepareMergeRun(taskId) : null;
       const testing = stage === 'testing' ? await this.delivery.testingContext(taskId) : '';
-      const extra = [review ? review.text : merge ? merge.text : testing || (stage === 'executing' && task.reworkNotes ? `=== REVIEW FINDINGS TO FIX ===\n${task.reworkNotes}\n=== END FINDINGS ===` : ''), note].filter(Boolean).join('\n\n');
+      const restart = ['planning', 'executing'].includes(stage) && task.restartNote ? `=== WHY THE PREVIOUS ATTEMPT WAS DISCARDED ===\n${task.restartNote}\n=== END ===` : '';
+      const extra = [review ? review.text : merge ? merge.text : testing || (stage === 'executing' && task.reworkNotes ? `=== REVIEW FINDINGS TO FIX ===\n${task.reworkNotes}\n=== END FINDINGS ===` : ''), restart, note].filter(Boolean).join('\n\n');
       const run = await this.store.update(draft => {
         if (this.#activeRun(draft, taskId)) throw conflict('This card already has an active run.', 'RUN_ACTIVE');
         const now = Date.now();
@@ -1452,6 +1519,8 @@ export class Board {
           ...(move ? { transition: { id: move.transitionId, from: move.from } } : {}) };
         if (move) this.#place(draft, taskId, { ...move, runId: id });
         draft.runs.push(record);
+        // The reason for a start over goes to the new attempt's first Executing run only.
+        if (stage === 'executing' && restart) this.#task(draft, taskId).task.restartNote = '';
         return record;
       });
       await this.executor.start({ run, task: { id: task.id, title: task.title, prompt: task.prompt }, workspace, planRunId: plan?.runId || null, extra });

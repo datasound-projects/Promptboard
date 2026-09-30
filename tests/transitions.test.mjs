@@ -297,7 +297,10 @@ test('Merge with a conflicting target: the merge agent starts by itself, its res
   assert.deepEqual([back.column, back.flow], ['code_review', null], 'Resolving changed code, so it is reviewed again.');
   assert.equal(git(ws, 'log', '-1', '--format=%s'), 'Merge trunk into ' + back.workspace.branch);
   assert.equal(git(ws, 'status', '--porcelain'), '');
-  // The old review never authorizes the merge commit: Testing needs a new review.
+  // A new review of the merge commit starts by itself; the old review never authorizes it.
+  const review = (await w.board.view()).runs.filter(run => run.taskId === task.id && run.stage === 'code_review').at(-1);
+  assert.deepEqual([review.trigger, review.review.taskCommit], ['automation', git(ws, 'rev-parse', 'HEAD')]);
+  await w.board.updateRun(review.id, { status: 'cancelled' });
   await assert.rejects(w.go(task.id, 'testing'), { message: /older commit/ });
 });
 
@@ -319,4 +322,84 @@ test('Testing: the optional testing agent starts by itself when the project test
   assert.equal(run.trigger, 'automation');
   await w.turn(run.id);
   assert.match(await readFile(promptFile, 'utf8'), /=== FAILED TESTS TO FIX ===[\s\S]*expected 2, got 3/);
+});
+
+test('Start over: the old attempt is kept on its branch (dirty work committed), the card returns to To Do, and the next run gets a fresh branch from the current target with the reason', { skip, timeout: 90000 }, async t => {
+  const w = await world(t);
+  await w.board.setWorkflow(w.project.id, { workflow: { code_review: { policy: 'manual' } }, expectedRevision: await w.revision() });
+  const task = await w.board.createTask({ projectId: w.project.id, title: 'Retry me', prompt: 'Change it. REVIEW_FAIL' });
+  const first = await w.go(task.id, 'executing');
+  await w.turn(first.run.id);
+  const old = (await w.current(task.id)).workspace;
+  await writeFile(join(old.path, 'feature.txt'), 'first attempt\n');
+  await w.go(task.id, 'code_review'); // Commits the first attempt.
+  const committed = git(old.path, 'rev-parse', 'HEAD');
+  await w.board.delivery.recordReview({ id: 'r1', taskId: task.id, review: { taskCommit: committed }, promptRevision: 1 }, '```json\n{"verdict":"changes_required","findings":[{"severity":"high","file":"feature.txt","line":1,"explanation":"Wrong approach."}]}\n```');
+  await writeFile(join(old.path, 'scratch.txt'), 'uncommitted idea\n');
+  // Refusals change nothing.
+  await assert.rejects(w.board.startOver(task.id, { expectedRevision: 1 }), { code: 'REVISION_CONFLICT' });
+  const running = await w.board.requestRun(task.id, { stage: 'code_review', consent: true }).catch(error => error);
+  assert.equal(running.code, 'UNCOMMITTED_CHANGES', 'A dirty worktree cannot be reviewed; the review run is not started.');
+  // The target branch moves on meanwhile: the next attempt must start from it.
+  await writeFile(join(w.root, 'upstream.txt'), 'u\n'); git(w.root, 'add', '.'); git(w.root, 'commit', '-q', '-m', 'Upstream');
+  const tip = git(w.root, 'rev-parse', 'trunk');
+  const result = await w.board.startOver(task.id, { expectedRevision: (await w.current(task.id)).revision, reason: 'Use a lookup table instead.' });
+  // The old branch: untouched history plus one commit that keeps the uncommitted work.
+  assert.equal(git(w.root, 'rev-parse', `${old.branch}^`), committed);
+  assert.equal(git(w.root, 'log', '-1', '--format=%s', old.branch), 'Start over: keep uncommitted work');
+  assert.equal(git(w.root, 'show', `${old.branch}:scratch.txt`), 'uncommitted idea');
+  assert.ok(!git(w.root, 'worktree', 'list').includes(old.path), 'The clean worktree folder is removed.');
+  const card = result.task;
+  assert.deepEqual([card.column, card.workspace, card.evidence, card.flow], ['todo', null, {}, null]);
+  assert.equal(card.transitions.at(-1).by, 'start-over');
+  const attempt = card.previousAttempts.at(-1);
+  assert.deepEqual([attempt.branch, attempt.head, attempt.reason, attempt.savedChanges, attempt.review.verdict, attempt.fromColumn], [old.branch, git(w.root, 'rev-parse', old.branch), 'Use a lookup table instead.', 1, 'changes_required', 'code_review']);
+  // The next run: a new branch from the current target tip, with the reason and the old findings.
+  const promptFile = join(w.dataDir, 'restart-prompt.txt');
+  process.env.FAKE_AGENT_PROMPT_FILE = promptFile;
+  t.after(() => { delete process.env.FAKE_AGENT_PROMPT_FILE; });
+  const again = await w.go(task.id, 'executing');
+  await w.turn(again.run.id);
+  const fresh = (await w.current(task.id)).workspace;
+  assert.notEqual(fresh.branch, old.branch);
+  assert.notEqual(fresh.path === old.path && fresh.branch === old.branch, true);
+  assert.equal(fresh.baseCommit, tip, 'The new branch starts from the current target tip.');
+  const seen = await readFile(promptFile, 'utf8');
+  assert.match(seen, /=== WHY THE PREVIOUS ATTEMPT WAS DISCARDED ===\nReason: Use a lookup table instead\./);
+  assert.match(seen, /\[high\] feature\.txt:1 Wrong approach\./);
+  assert.equal((await w.current(task.id)).restartNote, '', 'The reason goes to the first Executing run only.');
+  // Timeline shows the start over.
+  const event = (await w.board.timeline(w.project.id)).find(item => item.kind === 'restart');
+  assert.match(event.detail, /Use a lookup table instead\. · Previous attempt kept on promptboard\//);
+  // Refusals: an active run, Done, no worktree.
+  await assert.rejects(w.board.startOver(task.id, { expectedRevision: (await w.current(task.id)).revision }), { code: 'RUN_ACTIVE' });
+  const blank = await w.board.createTask({ projectId: w.project.id, title: 'Blank', prompt: 'x' });
+  await assert.rejects(w.board.startOver(blank.id, { expectedRevision: 1 }), { code: 'NOTHING_TO_START_OVER' });
+});
+
+test('Start over with “Start Executing right away” starts exactly one run; a merge in progress and Autopilot on the card refuse; an open pull request is kept in the history', { skip, timeout: 90000 }, async t => {
+  const w = await world(t);
+  await w.board.setWorkflow(w.project.id, { workflow: { executing: { policy: 'manual' }, code_review: { policy: 'manual' } }, expectedRevision: await w.revision() });
+  const task = await w.board.createTask({ projectId: w.project.id, title: 'Again', prompt: 'x' });
+  await w.go(task.id, 'executing');
+  const ws = (await w.board.ensureTaskWorktree(task.id)).path;
+  await writeFile(join(ws, 'feature.txt'), 'task\n');
+  await w.board.delivery.commit(task.id, { message: 'task', confirm: true });
+  // A pull request exists (as openPullRequest records it); start over keeps it in the attempt, never closes it.
+  await w.board.updateTaskEvidence(task.id, current => { current.evidence = { pullRequest: { url: 'https://github.com/example/repo/pull/9', number: 9, state: 'OPEN' } }; });
+  // Merge in progress: refused.
+  await writeFile(join(w.root, 'feature.txt'), 'target\n'); git(w.root, 'commit', '-qam', 'target');
+  try { git(ws, 'merge', '--no-ff', '--no-commit', 'trunk'); } catch {}
+  await assert.rejects(w.board.startOver(task.id, { expectedRevision: (await w.current(task.id)).revision }), { code: 'MERGE_IN_PROGRESS' });
+  git(ws, 'merge', '--abort');
+  // Autopilot working on this card: refused.
+  await w.board.store.update(state => { state.projects[0].autopilot = { status: 'running', current: { taskId: task.id }, queue: [task.id], route: ['executing'], routes: {} }; });
+  await assert.rejects(w.board.startOver(task.id, { expectedRevision: (await w.current(task.id)).revision }), { code: 'AUTOPILOT_ACTIVE' });
+  await w.board.store.update(state => { state.projects[0].autopilot.status = 'off'; });
+  const runsBefore = (await w.board.view()).runs.length;
+  const result = await w.board.startOver(task.id, { expectedRevision: (await w.current(task.id)).revision, startExecuting: true });
+  assert.deepEqual([result.task.column, result.run.stage, (await w.board.view()).runs.length], ['executing', 'executing', runsBefore + 1]);
+  assert.equal(result.attempt.pullRequest.state, 'OPEN');
+  assert.equal(result.task.evidence.pullRequest, undefined, 'The new attempt opens its own pull request later.');
+  assert.notEqual(result.run.branch, result.attempt.branch);
 });

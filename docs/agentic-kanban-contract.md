@@ -56,6 +56,16 @@ Every move, from drag-and-drop, the stage menu, a task-details button, or Autopi
 
 Stage policies: **Start automatically** (default) starts the stage when a card arrives; **Manual** only moves (start from the card's button). Settings saved as "Ask" by an earlier version mean Start. A stage whose agent cannot start (not installed, not signed in) refuses the drag with the reason; a Manual stage still moves. Without agent terminal support at all, the card moves and the reason is shown.
 
+### Start over
+
+`POST /api/tasks/:id/start-over { expectedRevision, reason?, startExecuting? }` retires the current attempt of a card that has a task worktree (not in Done; Reopen first). It is refused while an agent runs on the card, tests run, a merge is in progress in the worktree, or Autopilot works on the card.
+
+- Uncommitted work is committed to the old branch ("Start over: keep uncommitted work"). The old branch is never deleted, renamed, reset, or pushed; an open pull request is never closed by Promptboard.
+- The clean worktree is removed. The attempt (branch, head, base, reason, review, tests, pull request) is recorded in `task.previousAttempts` (last 10) and shown on the Timeline.
+- The card's evidence, rework notes, and Merge follow-up are cleared; the task text, plan approval, and run history stay. The card goes to To Do (`by: "start-over"`).
+- The target branch's current tip is recorded, so the next Planning or Executing run creates a new branch (`…-2`) from it. The reason and the discarded attempt's review findings go to that run (`=== WHY THE PREVIOUS ATTEMPT WAS DISCARDED ===`), until the first Executing run of the new attempt.
+- With `startExecuting`, the normal To Do → Executing transition follows at once.
+
 ### Custom columns (Column Manager)
 
 Each project can change its columns (`PATCH /api/projects/:id/columns`, stored as `columnLayout`):

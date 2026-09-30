@@ -1784,3 +1784,32 @@ test('Column Manager: add, name, colour, reorder, and remove custom columns; bui
   assert.match($('#columns-error').textContent, /Move the cards out first \(1 in Blocked\)/);
   assert.equal($('#columns-dialog').open, true);
 });
+
+test('Start over in task details: says exactly what happens, takes a reason, and can start Executing at once', { skip: process.platform === 'win32' }, async t => {
+  const ctx = await linkedKanban(t);
+  const { $ } = ctx;
+  await link(ctx);
+  const board = ctx.app.board;
+  await board.setWorkflow(ctx.project.id, { workflow: { executing: { policy: 'manual' } }, expectedRevision: (await serverBoard(ctx)).projects[0].revision });
+  const created = await board.createTask({ projectId: ctx.project.id, title: 'Redo', prompt: 'Do it again.' });
+  await board.moveTask(created.id, { column: 'executing', expectedRevision: 1 });
+  const ws = await board.ensureTaskWorktree(created.id);
+  await writeFile(join(ws.path, 'a.txt'), 'first try\n');
+  await ctx.win.__pbTest.loadBoard(); await ctx.idle();
+  cardItem(ctx, 'Redo').querySelector('.kanban-details').click();
+  await until(() => $('#task-details .start-over-open'), 'Start over section');
+  await click(ctx, $('#task-details .start-over-open'));
+  const text = $('#task-details').textContent;
+  assert.match(text, new RegExp(`The branch ${ws.branch.replace(/[/.]/g, '\\$&')} stays exactly as it is \\(0 commits\\)\\. It is not deleted, reset, or pushed\\.`));
+  assert.match(text, /1 uncommitted change will be committed to that branch first, so nothing is lost\./);
+  assert.match(text, /The card goes to To Do\. Its next run starts a new branch from the current trunk\./);
+  $('#start-over-reason').value = 'Wrong file.';
+  $('#start-over-now').checked = true;
+  await click(ctx, $('#task-details .start-over-confirm'));
+  await until(() => !$('#task-dialog').open, 'dialog closed');
+  const card = (await serverTasks(ctx))[0];
+  assert.deepEqual([card.column, card.previousAttempts[0].reason, card.previousAttempts[0].branch], ['executing', 'Wrong file.', ws.branch]);
+  assert.equal(ctx.executor.started.length, 1, 'Start Executing right away started one run.');
+  assert.notEqual(ctx.executor.started[0].branch, ws.branch);
+  assert.match($('#announcement').textContent, /Started “Redo” over\. Executing started on a fresh branch/);
+});

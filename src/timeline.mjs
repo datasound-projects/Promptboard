@@ -46,6 +46,11 @@ export async function buildTimeline(project, runs) {
       commit: SHA.test(evidence.tests.taskCommit || '') ? evidence.tests.taskCommit : null });
     if (evidence.pullRequest?.at) add({ ...base, id: `pr:${task.id}`, at: evidence.pullRequest.at, kind: 'pull_request', stage: 'merge', title: 'Pull request opened', status: String(evidence.pullRequest.state || '').toLowerCase(),
       pr: { number: evidence.pullRequest.number ?? null, url: evidence.pullRequest.url || '', state: evidence.pullRequest.state || '' }, detail: `${evidence.pullRequest.branch || ''} → ${evidence.pullRequest.base || ''}` });
+    for (const [index, attempt] of (task.previousAttempts || []).entries()) {
+      add({ ...base, id: `restart:${task.id}:${index}`, at: attempt.archivedAt, kind: 'restart', stage: 'todo', title: 'Started over',
+        detail: [attempt.reason, `Previous attempt kept on ${attempt.branch}`].filter(Boolean).join(' · '), commit: attempt.head,
+        status: attempt.pullRequest?.state === 'OPEN' ? 'pull request still open' : '', pr: attempt.pullRequest?.url ? { number: attempt.pullRequest.number, url: attempt.pullRequest.url, state: attempt.pullRequest.state } : null });
+    }
     for (const [index, completion] of [...(task.previousCompletions || []), ...(task.completion ? [task.completion] : [])].entries()) {
       const merged = completion.kind === 'merged', pr = completion.kind === 'pull_request';
       add({ ...base, id: `done:${task.id}:${index}`, at: completion.at, kind: 'completed', stage: 'done', status: completion.kind,

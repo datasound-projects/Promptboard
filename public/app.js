@@ -2053,6 +2053,39 @@ async function deliveryAction(card, method, action, body, message) {
   return true;
 }
 
+function startOverSection(card, section, rev) {
+  const target = currentProject()?.targetBranch?.name || 'the target branch';
+  const pr = card.evidence?.pullRequest;
+  const box = section('Start over', paragraph(`Not happy with this attempt? Start the same task again from a fresh branch of ${target}. Nothing is deleted.`));
+  const open = () => {
+    const reason = document.createElement('textarea'); reason.id = 'start-over-reason'; reason.maxLength = 4000; reason.rows = 3; reason.placeholder = 'Why? (optional: the next run gets this)';
+    const now = document.createElement('label'); now.className = 'check-row';
+    const startNow = document.createElement('input'); startNow.type = 'checkbox'; startNow.id = 'start-over-now';
+    now.append(startNow, ' Start Executing right away');
+    const facts = document.createElement('ul'); facts.className = 'dialog-list';
+    for (const line of [
+      `The branch ${card.workspace.branch} stays exactly as it is (${plural(rev.ahead, 'commit')}). It is not deleted, reset, or pushed.`,
+      ...(rev.clean ? [] : [`${plural(rev.changes.length, 'uncommitted change')} will be committed to that branch first, so nothing is lost.`]),
+      'The task worktree folder is removed. Review and test results move to the card’s history.',
+      `The card goes to To Do. Its next run starts a new branch from the current ${target}.`,
+      ...(pr?.url && pr.state === 'OPEN' ? [`Pull request #${pr.number ?? ''} stays open on GitHub. Close it there if you no longer want it.`] : []),
+    ]) { const li = document.createElement('li'); li.textContent = line; facts.append(li); }
+    const go = detailButton('Start over', async () => {
+      go.disabled = true;
+      try {
+        const result = await boardCall('POST', `/api/tasks/${encodeURIComponent(card.id)}/start-over`, { expectedRevision: card.revision, reason: reason.value.trim(), startExecuting: startNow.checked }, 180000);
+        $('#task-dialog').close();
+        announce(result.run ? `Started “${card.title}” over. Executing started on a fresh branch; the old attempt is kept on ${result.attempt.branch}.` : `Started “${card.title}” over. It is in To Do; the old attempt is kept on ${result.attempt.branch}.`);
+        if (result.run) showStartedRun(result.run.id);
+      } catch (error) { go.disabled = false; showBoardError(error); }
+    }, 'danger start-over-confirm');
+    box.replaceChildren(box.firstChild, box.children[1], facts, reason, now, detailActions(go, detailButton('Cancel', () => openTaskDetails(card.id))));
+    reason.focus();
+  };
+  box.append(detailActions(detailButton('Start over…', open, 'start-over-open')));
+  return box;
+}
+
 function confirmStep(box, text, label, action) {
   // Git-changing actions always ask once more, inline.
   const yes = detailButton(label, action, 'danger');
@@ -2213,6 +2246,8 @@ async function renderDelivery(card, container, section, pre) {
     box.append(detailActions(detailButton('Reviewed: no changes required…', () => confirmStep(box, 'Complete this task as “no changes required”? It is not described as merged.', 'Complete with no changes', () => deliveryAction(card, 'POST', 'complete-no-changes', { confirm: true }, 'Completed with no changes required.')))));
     nodes.push(box);
   }
+  // Start over: retire this attempt (its branch stays untouched) and run the task again from a fresh branch.
+  if (card.workspace?.status === 'ready' && card.column !== 'done') nodes.push(startOverSection(card, section, rev));
   if (card.column === 'done') {
     const box = section('Worktree', paragraph(`The worktree at ${card.workspace.path} is no longer needed. Removing it keeps the branch ${card.workspace.branch}. A worktree with uncommitted changes is never removed.`));
     box.append(detailActions(detailButton('Remove worktree…', () => confirmStep(box, 'Remove this task worktree? The branch stays.', 'Remove worktree', () => deliveryAction(card, 'DELETE', 'worktree', undefined, 'Worktree removed; the branch was kept.')))));
@@ -3093,7 +3128,7 @@ for (const id of ['#columns-cancel', '#columns-close']) $(id).addEventListener('
 // and the user's notes. The page never adds events of its own.
 const PROJECT_VIEW_KEY = 'promptboard.project-view';
 const timeline = { projectId: null, events: [], loadedAt: 0, loading: null, editing: null, scrolledFor: null };
-const EVENT_LABELS = { created: 'Created', moved: 'Moved', run: 'Agent run', review: 'Review', tests: 'Tests', pull_request: 'Pull request', completed: 'Completed', commit: 'Commit', note: 'Note' };
+const EVENT_LABELS = { restart: 'Started over', created: 'Created', moved: 'Moved', run: 'Agent run', review: 'Review', tests: 'Tests', pull_request: 'Pull request', completed: 'Completed', commit: 'Commit', note: 'Note' };
 function projectView() { try { return localStorage.getItem(PROJECT_VIEW_KEY) === 'timeline' ? 'timeline' : 'board'; } catch { return 'board'; } }
 function setProjectView(view) { savePref(PROJECT_VIEW_KEY, view); timeline.loadedAt = 0; renderBoard(); if (view === 'timeline') $('#timeline-track').focus({ preventScroll: true }); }
 $('#view-board').addEventListener('click', () => setProjectView('board'));

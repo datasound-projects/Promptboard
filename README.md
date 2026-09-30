@@ -81,6 +81,7 @@ Your browser opens **http://127.0.0.1:4318**. Press **Ctrl+C** to stop. No API k
 - Code Review → Testing needs a review of the current commit. Testing → Merge also needs passing tests for it.
 - Sending a card back to Executing gives the next run the review findings or the failing test output.
 - Done needs a verified merge, a merged pull request, or "no changes required". **Reopen** starts a new cycle.
+- Not happy with an attempt? **Start over** (task details) keeps the old branch exactly as it is, removes the worktree, and sends the card back to To Do. The next run starts a new branch from the current target and gets your reason. Nothing is deleted or force-pushed.
 - The agent for a stage comes from the stage setting, else the project default, else the global default in **Settings**.
 
 Full rules: [Kanban contract](docs/agentic-kanban-contract.md).

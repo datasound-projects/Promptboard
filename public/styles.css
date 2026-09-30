@@ -747,3 +747,4 @@ button.timeline-task:hover { text-decoration: underline; }
 .columns-remove { margin-right: auto; color: var(--error); }
 .dot-gray { --dot: #6b7280; } .dot-red { --dot: #ef4444; } .dot-orange { --dot: #f97316; } .dot-amber { --dot: #f59e0b; } .dot-green { --dot: #10b981; }
 .dot-teal { --dot: #06b6d4; } .dot-blue { --dot: #3b82f6; } .dot-violet { --dot: #8b5cf6; } .dot-pink { --dot: #ec4899; }
+#start-over-reason { display: block; width: 100%; margin: 8px 0; padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface); font: 13.5px var(--sans); }
