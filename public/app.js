@@ -1071,6 +1071,7 @@ function renderBoard() {
   // Without a project the settings are the only way forward, so they stay open.
   if (!project && $('#project-body').hidden) setProjectCollapsed(false, false);
   renderWorkspace(project);
+  renderAgents(project);
   renderAutopilotBar(project);
   updateBoardScroll();
   window.PromptboardDock?.sync();
@@ -1549,16 +1550,119 @@ function elapsed(run) {
 }
 function providerName(id) { return board?.execution?.providers?.[id]?.name || providerInfo[id]?.name || id; }
 
+// One agent status model for the sidebar, cards, and dock. It comes from the run's real status
+// (reported by the supervisor from provider events), never from the card's column.
+const AGENT_STATES = { queued: 'on_hold', running: 'active', waiting_for_input: 'awaits_you' };
+const AGENT_STATE_TEXT = { active: 'Active', on_hold: 'On hold', awaits_you: 'Awaits you', inactive: 'Inactive' };
+const AGENT_STATE_ICON = { active: '●', on_hold: '○', awaits_you: '!', inactive: '–' };
+function agentState(run) { return AGENT_STATES[run?.status] || 'inactive'; }
+function agentStateText(run) {
+  const state = agentState(run);
+  return state === 'inactive' && run?.status ? `Inactive · ${run.status.replaceAll('_', ' ')}` : AGENT_STATE_TEXT[state];
+}
+function agentModel(run) { return `${providerName(run.config?.provider)} · ${run.config?.model || 'CLI default model'}${run.config?.effort ? ` · ${run.config.effort}` : ''}`; }
+function agentActivity(run) {
+  const state = agentState(run);
+  if (state === 'awaits_you') return run.waitingReason || 'Waiting for you in the terminal.';
+  if (state === 'on_hold') return 'Queued until an agent slot is free.';
+  if (state === 'active') return run.lifecycle === 'no-events-yet' ? 'Working… no lifecycle event yet; check the terminal.' : 'Working…';
+  return run?.reason || '';
+}
+function elapsedSpan(run) {
+  const span = document.createElement('span');
+  span.dataset.elapsedRun = run.id;
+  span.textContent = elapsed(run);
+  return span;
+}
+// Live elapsed times tick without re-rendering the board.
+function tickElapsed() {
+  if (!board || document.hidden) return;
+  for (const element of document.querySelectorAll('[data-elapsed-run]')) {
+    const run = board.runs.find(item => item.id === element.dataset.elapsedRun);
+    if (run && RUN_LIVE.includes(run.status)) element.textContent = elapsed(run);
+  }
+}
+setInterval(tickElapsed, 1000);
+
+const AGENTS_FILTER_KEY = 'promptboard.agents.filter';
+const AGENT_RECENT_MS = 30 * 60 * 1000;
+const AGENT_ORDER = { awaits_you: 0, active: 1, on_hold: 2, inactive: 3 };
+/** Live runs, plus each task's latest run if it ended in the last 30 minutes. */
+function agentRuns(filter, current) {
+  const owners = new Map((board?.projects || []).flatMap(project => project.tasks.map(task => [task.id, { task, project }])));
+  const latest = new Map();
+  for (const run of board?.runs || []) latest.set(run.taskId, run);
+  const now = Date.now();
+  return (board?.runs || []).filter(run => {
+    const owner = owners.get(run.taskId);
+    if (!owner || (filter !== 'all' && owner.project.id !== current?.id)) return false;
+    return RUN_LIVE.includes(run.status) || (latest.get(run.taskId) === run && now - (run.endedAt || run.updatedAt || 0) < AGENT_RECENT_MS);
+  }).map(run => ({ run, ...owners.get(run.taskId) }))
+    .sort((a, b) => AGENT_ORDER[agentState(a.run)] - AGENT_ORDER[agentState(b.run)] || (b.run.updatedAt || 0) - (a.run.updatedAt || 0)).slice(0, 50);
+}
+
+function renderAgents(current) {
+  let filter = 'project';
+  try { filter = localStorage.getItem(AGENTS_FILTER_KEY) === 'all' ? 'all' : 'project'; } catch {}
+  $('#agents-filter').value = filter;
+  const rows = agentRuns(filter, current);
+  $('#agents-count').textContent = String(rows.filter(row => RUN_LIVE.includes(row.run.status)).length).padStart(2, '0');
+  $('#agents-empty').hidden = rows.length > 0;
+  $('#agents-list').replaceChildren(...rows.map(({ run, task, project }) => {
+    const state = agentState(run);
+    const item = document.createElement('li');
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `agent-item ${state}`;
+    button.dataset.runId = run.id;
+    const icon = document.createElement('span'); icon.className = `agent-icon ${state}`; icon.setAttribute('aria-hidden', 'true'); icon.textContent = AGENT_STATE_ICON[state];
+    const name = document.createElement('span'); name.className = 'agent-title'; name.textContent = task.title;
+    const model = document.createElement('span'); model.className = 'agent-meta'; model.textContent = agentModel(run);
+    const status = document.createElement('span'); status.className = 'agent-meta';
+    const stateText = document.createElement('span'); stateText.className = 'agent-state'; stateText.textContent = agentStateText(run);
+    status.append(`${columnTitle(run.stage)} · `, stateText, ' · ', elapsedSpan(run));
+    button.append(icon, name, model, status);
+    const other = project.id !== current?.id;
+    if (other) { const where = document.createElement('span'); where.className = 'agent-meta'; where.textContent = `Project: ${project.name}`; button.append(where); }
+    button.setAttribute('aria-label', `${task.title}: ${agentStateText(run)}. ${columnTitle(run.stage)}. ${agentModel(run)}.${other ? ` Project ${project.name}.` : ''}`);
+    button.title = [task.title, agentActivity(run), run.branch ? `Branch ${run.branch}` : ''].filter(Boolean).join('\n');
+    button.addEventListener('click', () => selectAgent(run.id));
+    item.append(button);
+    return item;
+  }));
+}
+
+/** Show an agent's project, card, and existing terminal. Never starts a run. */
+function selectAgent(runId) {
+  const run = board?.runs.find(item => item.id === runId);
+  const owner = run && board.projects.find(project => project.tasks.some(task => task.id === run.taskId));
+  if (!owner) return;
+  if (owner.id !== currentProject()?.id) selectProject(owner.id);
+  setSidebar(false);
+  window.PromptboardDock?.open(run.id);
+  const card = cardElement(run.taskId);
+  if (card) {
+    for (const other of document.querySelectorAll('.kanban-card.agent-focus')) other.classList.remove('agent-focus');
+    card.classList.add('agent-focus');
+    card.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+    card.querySelector('.kanban-open')?.focus({ preventScroll: true });
+  }
+}
+$('#agents-filter').addEventListener('change', () => { savePref(AGENTS_FILTER_KEY, $('#agents-filter').value); renderAgents(currentProject()); });
+
 function renderRunControls(card, run) {
   const box = document.createElement('div');
   box.className = 'kanban-run';
   const active = run && RUN_LIVE.includes(run.status) ? run : null;
   if (run) {
     const badge = document.createElement('span');
-    badge.className = `run-badge${active ? (run.status === 'waiting_for_input' ? ' waiting' : ' running') : ['failed', 'interrupted'].includes(run.status) ? ' failed' : ''}`;
-    badge.textContent = `${run.stage === 'planning' ? 'Plan' : 'Run'} ${run.status.replaceAll('_', ' ')} · ${elapsed(run)}`;
-    badge.title = [providerName(run.config?.provider), run.config?.model || 'CLI default model', run.waitingReason || run.reason].filter(Boolean).join(' · ');
-    box.append(badge);
+    const state = agentState(run);
+    badge.className = `run-badge${state === 'awaits_you' ? ' waiting awaits' : state === 'active' ? ' running' : ['failed', 'interrupted'].includes(run.status) ? ' failed' : ''}`;
+    badge.append(`${columnTitle(run.stage)} · ${state === 'awaits_you' ? 'AWAITS YOU' : agentStateText(run)} · `, elapsedSpan(run));
+    badge.title = [agentModel(run), run.waitingReason || run.reason].filter(Boolean).join(' · ');
+    box.append(badge, paragraph(agentModel(run), 'run-agent'));
+    const activity = active ? agentActivity(run) : '';
+    if (activity) { const line = paragraph(activity, 'run-activity'); line.title = activity; box.append(line); }
   }
   const labelled = (button, label) => { button.setAttribute('aria-label', `${label}: ${card.title}`); return button; };
   if (active) {

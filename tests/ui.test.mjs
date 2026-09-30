@@ -1126,7 +1126,7 @@ test('starting a run needs consent and an acknowledgment for unverified prompts;
   await ctx.app.board.updateRun(run.id, { status: 'running' });
   await ctx.app.board.updateRun(run.id, { status: 'waiting_for_input', turns: 1, hasPlan: true, planExcerpt: 'PLAN' });
   await win.__pbTest.loadBoard(); await ctx.idle();
-  assert.match(cardItem(ctx, 'Parser').querySelector('.run-badge').textContent, /Plan waiting for input/);
+  assert.match(cardItem(ctx, 'Parser').querySelector('.run-badge').textContent, /Planning · AWAITS YOU/);
   assert.equal($('#workspace-list .workspace-live.waiting').textContent, '1 waiting', 'The sidebar shows which project needs attention.');
   cardItem(ctx, 'Parser').querySelector('.kanban-confirm-run').click(); await ctx.idle();
   assert.equal($('#task-dialog').open, true);
@@ -1396,4 +1396,102 @@ test('Autopilot dialog: queue order, which cards, per-card routes, consent to st
   [...$('#autopilot-bar').querySelectorAll('button')].find(button => button.textContent === 'Pause').click(); await ctx.idle();
   await until(() => /Autopilot paused: Paused by you/.test($('#autopilot-bar').textContent), 'paused bar');
   assert.ok([...$('#autopilot-bar').querySelectorAll('button')].some(button => button.textContent === 'Resume'));
+});
+
+// ---- Agents sidebar and dock tabs ----
+
+async function agentFixture(t) {
+  const ctx = await linkedKanban(t);
+  ctx.executor.subscribe = () => () => {}; // Live streams stay open, as for a real running session.
+  await newProject(ctx, 'Other');
+  const board = ctx.app.board;
+  const [flow, other] = (await serverBoard(ctx)).projects;
+  const task = async (project, title) => (await board.createTask({ projectId: project.id, title, prompt: `Do ${title}.` })).id;
+  const tasks = { a: await task(flow, 'Auth middleware'), b: await task(flow, 'API tests'), c: await task(other, 'Review docs') };
+  const now = Date.now();
+  const run = (id, taskId, projectId, stage, status, config) => ({ id, taskId, projectId, stage, status, createdAt: now - 5000, updatedAt: now, startedAt: now - 5000, turns: 0,
+    config, branch: `promptboard/${id}`, workspacePath: `/tmp/wt-${id}`, artifactsDir: `runs/${id}` });
+  await board.store.update(draft => {
+    draft.runs.push(run('run-a', tasks.a, flow.id, 'executing', 'running', { provider: 'claude', model: 'opus', effort: 'high' }),
+      run('run-b', tasks.b, flow.id, 'code_review', 'waiting_for_input', { provider: 'codex', model: 'gpt-5.5', effort: '' }),
+      run('run-c', tasks.c, other.id, 'planning', 'queued', { provider: 'claude', model: '', effort: '' }));
+  });
+  // Show the Flow project.
+  ctx.win.localStorage.setItem('promptboard.kanban.project', flow.id);
+  await ctx.win.__pbTest.loadBoard(); await ctx.idle();
+  return { ...ctx, tasks, flow, other };
+}
+const agentRows = ({ $ }) => Array.from($('#agents-list').querySelectorAll('.agent-item'));
+
+test('the Agents sidebar shows real runs with provider, model, stage, and state; selecting one opens its project, card, and terminal', { skip: process.platform === 'win32' }, async t => {
+  const ctx = await agentFixture(t);
+  const { $, win } = ctx;
+  assert.equal($('#workspace-panel').hidden, false);
+  assert.equal($('#history-panel').hidden, true, 'Agents belong to the Kanban sidebar only.');
+  // This project: the waiting agent first, then the active one.
+  let rows = agentRows(ctx);
+  assert.deepEqual(rows.map(row => row.querySelector('.agent-title').textContent), ['API tests', 'Auth middleware']);
+  assert.match(rows[0].textContent, /Codex CLI · gpt-5\.5/);
+  assert.match(rows[0].textContent, /Code Review · Awaits you/);
+  assert.equal(rows[0].querySelector('.agent-icon').textContent, '!');
+  assert.match(rows[0].getAttribute('aria-label'), /Awaits you/, 'State is in text and the accessible name, not colour alone.');
+  assert.match(rows[1].textContent, /Claude Code · opus · high/);
+  assert.match(rows[1].textContent, /Executing · Active/);
+  assert.equal($('#agents-count').textContent, '02');
+  assert.match(cardItem(ctx, 'API tests').textContent, /Code Review · AWAITS YOU/);
+  assert.match(cardItem(ctx, 'Auth middleware').textContent, /Claude Code · opus · high/);
+  assert.match(cardItem(ctx, 'Auth middleware').textContent, /Working…/);
+  // All projects: the queued run of the other project is On hold and names its project.
+  $('#agents-filter').value = 'all'; $('#agents-filter').dispatchEvent(new win.Event('change'));
+  rows = agentRows(ctx);
+  assert.equal(rows.length, 3);
+  const queued = rows.find(row => row.dataset.runId === 'run-c');
+  assert.match(queued.textContent, /Planning · On hold/);
+  assert.match(queued.textContent, /Claude Code · CLI default model/);
+  assert.match(queued.textContent, /Project: Other/);
+  assert.equal(win.localStorage.getItem('promptboard.agents.filter'), 'all');
+  // Selecting it switches project and opens its existing run in the dock. No run starts.
+  queued.click(); await ctx.idle();
+  assert.equal($('#project-select').value, ctx.other.id);
+  assert.ok(cardItem(ctx, 'Review docs').classList.contains('agent-focus'));
+  assert.equal(win.promptboardDock.selected, 'run-c');
+  assert.equal(ctx.executor.started.length, 0, 'Selecting an agent never starts a run.');
+  // A finished run becomes Inactive; a reload shows each run once.
+  await ctx.app.board.updateRun('run-a', { status: 'succeeded', endedAt: Date.now() });
+  await win.__pbTest.loadBoard(); await ctx.idle();
+  await win.__pbTest.loadBoard(); await ctx.idle();
+  rows = agentRows(ctx);
+  assert.equal(rows.length, 3);
+  assert.match(rows.find(row => row.dataset.runId === 'run-a').textContent, /Inactive · succeeded/);
+  assert.equal($('#agents-count').textContent, '02');
+});
+
+test('dock tabs: one per run with state and model; switching never restarts; closing a tab never stops the agent', { skip: process.platform === 'win32' }, async t => {
+  const ctx = await agentFixture(t);
+  const { $, win } = ctx;
+  const tabs = () => Array.from($('#dock-tabs').querySelectorAll('.dock-tab:not(#dock-tab-activity)'));
+  assert.deepEqual(tabs().map(tab => tab.id).sort(), ['dock-tab-run-a', 'dock-tab-run-b', 'dock-tab-run-c']);
+  const b = $('#dock-tab-run-b');
+  assert.match(b.textContent, /API tests · gpt-5\.5/);
+  assert.equal(b.dataset.state, 'awaits_you');
+  assert.match(b.getAttribute('aria-label'), /Codex CLI · gpt-5\.5: Awaits you/);
+  assert.equal($('#dock-tab-run-a').dataset.state, 'active');
+  assert.equal($('#dock-tab-run-c').dataset.state, 'on_hold');
+  const sessionA = win.promptboardDock.sessions.get('run-a');
+  $('#dock-tab-run-b').click(); $('#dock-tab-run-a').click(); await ctx.idle();
+  assert.equal(win.promptboardDock.sessions.get('run-a'), sessionA, 'Switching tabs keeps the same session.');
+  assert.match($('#dock-details').textContent, /Claude Code · opus · high · Executing · Active · .* · Branch promptboard\/run-a · Worktree \/tmp\/wt-run-a/);
+  assert.equal($('#dock-indicator').textContent, '1 waiting for you');
+  // Close the active tab: the run keeps its status, the indicator still counts it, a reload does not reopen it.
+  $('#dock-tab-run-a .tab-close').click(); await ctx.idle();
+  assert.equal($('#dock-tab-run-a'), null);
+  assert.equal((await ctx.app.board.run('run-a')).status, 'running', 'Closing a tab does not stop the agent.');
+  await win.__pbTest.loadBoard(); await ctx.idle();
+  assert.equal($('#dock-tab-run-a'), null);
+  assert.equal(tabs().length, 2, 'Reloading the board does not duplicate tabs.');
+  // Selecting the agent again reopens its tab.
+  $('#agents-list [data-run-id="run-a"]').click(); await ctx.idle();
+  assert.ok($('#dock-tab-run-a'));
+  assert.equal(win.promptboardDock.selected, 'run-a');
+  assert.equal(ctx.executor.started.length, 0);
 });

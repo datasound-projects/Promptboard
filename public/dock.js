@@ -8,7 +8,7 @@ const DOCK_HEIGHT_KEY = 'promptboard.dock.height';
 const DOCK_STATE_KEY = 'promptboard.dock.state';
 const DOCK_LIVE = new Set(['queued', 'running', 'waiting_for_input']);
 const DOCK_PLAIN_LIMIT = 400_000;
-const dock = { sessions: new Map(), selected: 'activity', state: 'collapsed', height: 320, stopFor: null };
+const dock = { sessions: new Map(), selected: 'activity', state: 'collapsed', height: 320, stopFor: null, dismissed: new Set() };
 window.promptboardDock = dock; // Read-only handle for tests.
 
 const nextFrame = fn => (typeof requestAnimationFrame === 'function' ? requestAnimationFrame(fn) : setTimeout(fn, 0));
@@ -43,7 +43,7 @@ function stripTerminal(text) {
 
 function createSession(run) {
   const task = board?.projects.flatMap(project => project.tasks).find(item => item.id === run.taskId);
-  const title = `${task?.title || 'Task'} · ${{ planning: 'Planning', executing: 'Executing', code_review: 'Code Review' }[run.stage] || run.stage}`;
+  const title = `${task?.title || 'Task'} · ${columnTitle(run.stage)}`;
   const panel = document.createElement('div');
   panel.className = 'dock-terminal';
   panel.id = `dock-panel-${run.id}`;
@@ -57,20 +57,41 @@ function createSession(run) {
   tab.setAttribute('aria-selected', 'false');
   tab.setAttribute('aria-controls', panel.id);
   panel.setAttribute('aria-labelledby', tab.id);
-  const dot = document.createElement('i'); dot.className = 'tab-dot'; dot.setAttribute('aria-hidden', 'true');
-  const label = document.createElement('span'); label.textContent = title;
-  tab.append(dot, label);
-  tab.title = title;
+  const icon = document.createElement('span'); icon.className = 'tab-state'; icon.setAttribute('aria-hidden', 'true');
+  const short = (task?.title || 'Task').length > 24 ? `${(task?.title || 'Task').slice(0, 23)}…` : task?.title || 'Task';
+  const label = document.createElement('span'); label.textContent = `${short} · ${run.config?.model || providerName(run.config?.provider)}`;
+  // Closing a tab only hides it here. The agent keeps running; its run history stays.
+  const close = document.createElement('span'); close.className = 'tab-close'; close.textContent = '×'; close.setAttribute('aria-hidden', 'true');
+  close.title = 'Close this tab (the agent keeps running)';
+  close.addEventListener('click', event => { event.stopPropagation(); closeSession(run.id); });
+  tab.append(icon, label, close);
   tab.addEventListener('click', () => selectDockTab(run.id, true));
+  tab.addEventListener('keydown', event => { if (event.key === 'Delete') { event.preventDefault(); closeSession(run.id); } });
   $('#dock-tabs').append(tab);
   $('#dock-terminals').append(panel);
-  const session = { runId: run.id, taskId: run.taskId, run, title, panel, tab, label, lastSeq: 0, pending: 0, input: '', ended: !DOCK_LIVE.has(run.status), closed: false, cols: 0, rows: 0 };
+  const session = { runId: run.id, taskId: run.taskId, run, title, panel, tab, label, icon, lastSeq: 0, pending: 0, input: '', ended: !DOCK_LIVE.has(run.status), closed: false, cols: 0, rows: 0 };
   attachRenderer(session);
   dock.sessions.set(run.id, session);
   updateSessionTab(session);
   streamSession(session); // Live runs stream; ended runs replay their kept output, then stop.
-  if (typeof ResizeObserver === 'function') new ResizeObserver(() => fitSession(session)).observe(panel);
+  if (typeof ResizeObserver === 'function') (session.observer = new ResizeObserver(() => fitSession(session))).observe(panel);
   return session;
+}
+
+/** Remove a tab and its terminal view. Never stops the process or deletes run history. */
+function closeSession(runId) {
+  const session = dock.sessions.get(runId);
+  if (!session) return;
+  session.closed = true;
+  session.abort?.abort();
+  session.observer?.disconnect();
+  session.term?.dispose();
+  session.tab.remove(); session.panel.remove();
+  dock.sessions.delete(runId);
+  dock.dismissed.add(runId);
+  if (dock.selected === runId) selectDockTab('activity');
+  updateDockIndicator();
+  announce(`Closed the tab for ${session.title}.${DOCK_LIVE.has(session.run.status) ? ' The agent keeps running.' : ''}`);
 }
 
 function attachRenderer(session) {
@@ -177,16 +198,33 @@ function markEnded(session) {
 
 function updateSessionTab(session) {
   const live = !session.ended && DOCK_LIVE.has(session.run.status);
-  const waiting = live && session.run.status === 'waiting_for_input';
-  session.tab.classList.toggle('live', live);
-  session.tab.classList.toggle('waiting', waiting);
-  session.tab.setAttribute('aria-label', `${session.title}: ${waiting ? 'waiting for you' : live ? 'running' : 'ended'}`);
-  if (dock.selected === session.runId) { $('#dock-stop').hidden = !live; $('#dock-copy').hidden = !session.term; }
+  const run = live ? session.run : { ...session.run, status: DOCK_LIVE.has(session.run.status) ? 'interrupted' : session.run.status };
+  const state = agentState(run);
+  session.tab.classList.toggle('live', state === 'active');
+  session.tab.classList.toggle('waiting', state === 'awaits_you');
+  session.tab.dataset.state = state;
+  session.icon.textContent = AGENT_STATE_ICON[state];
+  session.tab.setAttribute('aria-label', `${session.title}, ${agentModel(session.run)}: ${agentStateText(run)}`);
+  session.tab.title = `${session.title}\n${agentModel(session.run)}\n${agentStateText(run)}${run.waitingReason ? `\n${run.waitingReason}` : ''}`;
+  if (dock.selected === session.runId) { $('#dock-stop').hidden = !live; $('#dock-copy').hidden = !session.term; renderDockDetails(session); }
+}
+
+/** Facts about the selected run, from the board's run record only. */
+function renderDockDetails(session) {
+  const details = $('#dock-details');
+  details.hidden = !session;
+  if (!session) return;
+  const run = session.run; // Merged from the board in syncDock and from stream status items.
+  const shown = session.ended && DOCK_LIVE.has(run.status) ? { ...run, status: 'interrupted' } : run;
+  details.replaceChildren(`${agentModel(run)} · ${columnTitle(run.stage)} · ${agentStateText(shown)} · `, elapsedSpan(run),
+    run.branch ? ` · Branch ${run.branch}` : '', run.workspacePath ? ` · Worktree ${run.workspacePath}` : '');
+  details.title = details.textContent;
 }
 
 function updateDockIndicator() {
-  const live = [...dock.sessions.values()].filter(session => !session.ended && DOCK_LIVE.has(session.run.status));
-  const waiting = live.filter(session => session.run.status === 'waiting_for_input');
+  // Counts every live run on the board, including runs whose tab was closed.
+  const live = (board?.runs || []).filter(run => DOCK_LIVE.has(run.status));
+  const waiting = live.filter(run => run.status === 'waiting_for_input');
   const indicator = $('#dock-indicator');
   indicator.textContent = waiting.length ? `${waiting.length} waiting for you` : live.length ? `${live.length} running` : '';
   indicator.classList.toggle('waiting', waiting.length > 0);
@@ -223,6 +261,7 @@ function selectDockTab(id, focus = false) {
   const session = dock.sessions.get(id);
   $('#dock-stop').hidden = !session || session.ended || !DOCK_LIVE.has(session.run.status);
   $('#dock-copy').hidden = !session?.term;
+  renderDockDetails(session);
   dock.stopFor = null;
   if (session) nextFrame(() => { fitSession(session); if (focus) session.term?.focus(); });
 }
@@ -250,7 +289,7 @@ function syncDock() {
       session.run = { ...session.run, ...run };
       if (!DOCK_LIVE.has(run.status)) session.ended = true;
       updateSessionTab(session);
-    } else if (DOCK_LIVE.has(run.status)) createSession(run);
+    } else if (DOCK_LIVE.has(run.status) && !dock.dismissed.has(run.id)) createSession(run);
   }
   renderActivity();
   updateDockIndicator();
@@ -265,6 +304,7 @@ function syncDock() {
 function openRun(runId) {
   const run = board?.runs.find(item => item.id === runId);
   if (!run) return;
+  dock.dismissed.delete(runId);
   if (!dock.sessions.has(runId)) createSession(run);
   if (dock.state === 'collapsed') setDockState('open');
   selectDockTab(runId);

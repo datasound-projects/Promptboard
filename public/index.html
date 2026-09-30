@@ -54,6 +54,11 @@
         <div class="history-label"><span>WORKSPACE</span><span id="workspace-count">00</span></div>
         <ul class="workspace-list" id="workspace-list" aria-label="Projects"></ul>
         <div class="history-empty" id="workspace-empty" hidden><p>No projects yet.</p><small>Each project gets its own board and repository.</small></div>
+        <section class="agents-section" aria-labelledby="agents-heading">
+          <div class="history-label agents-label"><span id="agents-heading">AGENTS</span><span class="agents-head"><select id="agents-filter" aria-label="Show agents from"><option value="project">This project</option><option value="all">All projects</option></select><span id="agents-count">00</span></span></div>
+          <ul class="agents-list" id="agents-list" aria-labelledby="agents-heading"></ul>
+          <p class="agents-empty" id="agents-empty">No agents in the last 30 minutes.</p>
+        </section>
       </div>
       <div class="sidebar-bottom">
         <p id="sidebar-note">History stays in this browser. Your CLI handles the model.</p>
@@ -256,6 +261,7 @@
           </div>
         </div>
         <div class="dock-body" id="dock-body" hidden>
+          <p class="dock-details" id="dock-details" hidden></p>
           <div class="dock-panel" id="dock-activity" role="tabpanel" aria-labelledby="dock-tab-activity"><p class="dock-empty" id="dock-empty">No agent sessions yet. Start Planning or Executing from a card.</p><ol class="dock-activity" id="dock-activity-list"></ol></div>
           <div class="dock-terminals" id="dock-terminals"></div>
           <p class="note dock-note" id="dock-note" role="status" hidden></p>
