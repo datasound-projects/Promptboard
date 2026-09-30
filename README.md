@@ -14,7 +14,10 @@
   <br><sub><b>Compose</b>: a rough request becomes a clear prompt, then optional smaller tasks.</sub>
 </p>
 
-
+<p align="center">
+  <img src="docs/kanban-demo.gif" width="820" alt="Kanban: Autopilot takes three cards one after another from To Do through Executing, Code Review, Testing, and Merge to Done, with the agents sidebar and terminal tabs.">
+  <br><sub><b>Kanban</b>: Autopilot takes three cards from To Do to Done, each in its own Git worktree.</sub>
+</p>
 
 ## Install
 
