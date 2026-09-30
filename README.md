@@ -54,10 +54,11 @@ Your browser opens **http://127.0.0.1:4318**. Press **Ctrl+C** to stop. No API k
 **Kanban**
 - Move each task through To Do → Planning → Executing → Code Review → Testing → Merge → Done.
 - Each card gets its own Git branch and worktree. Your main checkout is never touched.
-- Drag a card to a stage: Promptboard asks once, then starts the right agent with the right model.
+- **Drag = start.** Drop a card on a stage and its work starts at once: planning, the coding agent, the review, or your tests.
 - Watch and type into each agent's terminal in the dock at the bottom.
 - See every agent in the sidebar: Active, On hold, Awaits you, or Inactive, with model and time.
-- Reviews and tests must match the exact commit before a merge. Merges are fast-forward only.
+- **Merge** is the one place you approve: one click on **Merge main** merges a verified card and moves it to Done.
+- Reviews and tests must match the exact commit before a merge. If `main` moved on, it is brought in first; conflicts go to the merge agent.
 - **Autopilot** runs queued cards one at a time through their route, from To Do to Done.
 - **Columns**: add your own columns, rename or recolour stages, and hide Planning.
 - **Timeline**: see the history of a project: moves, agent runs, reviews, tests, commits, and merges.
@@ -74,8 +75,9 @@ Your browser opens **http://127.0.0.1:4318**. Press **Ctrl+C** to stop. No API k
 
 - Cards move only along the workflow. The board offers only the allowed moves.
 - A card enters a column only when the move worked. If a stage cannot start, the card stays and shows why.
-- Each stage can be **Manual** (move only), **Ask** (one approval), or **Start automatically**. Set this in **Workflow settings**.
-- The approval shows everything the move does: confirm the agent's finished turn, commit its work with your message, and start the next stage.
+- Dropping a card starts its stage. Set a stage to **Manual** in **Workflow settings** to only move cards there.
+- Moving on from a stage confirms the agent's finished turn and commits its work in the task worktree.
+- In **Merge**, the card shows **Merge main** (one click) and **Open pull request**. **Merge automatically** merges as soon as the card is verified.
 - Code Review → Testing needs a review of the current commit. Testing → Merge also needs passing tests for it.
 - Sending a card back to Executing gives the next run the review findings or the failing test output.
 - Done needs a verified merge, a merged pull request, or "no changes required". **Reopen** starts a new cycle.

@@ -316,7 +316,7 @@ test('import keeps execution inactive and waits for confirmation of paths and au
   let project = (await other.view()).projects[0];
   assert.equal(project.repository, null, 'Imported paths are not linked automatically.');
   assert.deepEqual(project.workflow, {}, 'Imported automation is not active.');
-  assert.equal(project.effectiveWorkflow.executing.policy, 'ask');
+  assert.equal(project.effectiveWorkflow.executing.policy, 'start', 'The default: dragging starts the stage. Imported settings wait.');
   assert.deepEqual(project.pendingImport, { repositoryPath: root, targetBranch: 'trunk', workflow: { executing: { policy: 'start', provider: 'codex' } }, testCommands: null });
   assert.equal(project.tasks[0].column, 'planning');
   assert.equal(project.tasks[0].prompt, 'Exact\r\ntext');

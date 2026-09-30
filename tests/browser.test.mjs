@@ -48,10 +48,8 @@ test('terminal dock in a real browser: start, render, type, collapse, resize, se
   await browser.until(`document.querySelector('#kanban-columns [data-column="executing"] .kanban-start')`, 'start buttons');
   assert.equal(await browser.eval(`return typeof Terminal === 'function' && typeof WebglAddon === 'object';`), true, 'Pinned xterm assets load from the app.');
 
-  // Start the first run through the UI: card button, consent dialog, Start agent.
+  // Start the first run through the UI: one click on the card's Start button (no dialog).
   await browser.eval(`[...document.querySelectorAll('.kanban-card')].find(card => card.textContent.includes('First task')).querySelector('.kanban-start').click();`);
-  await browser.until(`document.querySelector('#run-dialog').open`, 'consent dialog');
-  await browser.eval(`document.querySelector('#run-form').requestSubmit();`);
   await browser.until(`window.promptboardDock.sessions.size === 1`, 'first session tab', 30000);
   const firstRun = (await board.view()).runs.find(run => run.taskId === first.id).id;
   const text = runId => `(() => { const s = window.promptboardDock.sessions.get(${JSON.stringify(runId)}); if (!s?.term) return ''; const b = s.term.buffer.active; let out = ''; for (let i = 0; i < b.length; i++) out += b.getLine(i).translateToString(true) + '\\n'; return out; })()`;
@@ -90,8 +88,6 @@ test('terminal dock in a real browser: start, render, type, collapse, resize, se
 
   // A second task gets its own tab, process, and output.
   await browser.eval(`[...document.querySelectorAll('.kanban-card')].find(card => card.textContent.includes('Second task')).querySelector('.kanban-start').click();`);
-  await browser.until(`document.querySelector('#run-dialog').open`, 'second consent dialog');
-  await browser.eval(`document.querySelector('#run-form').requestSubmit();`);
   await browser.until(`window.promptboardDock.sessions.size === 2`, 'second session tab', 30000);
   const secondRun = (await board.view()).runs.find(run => run.taskId === second.id).id;
   await browser.until(`${text(secondRun)}.includes('working on')`, 'second output');
@@ -109,8 +105,6 @@ test('terminal dock in a real browser: start, render, type, collapse, resize, se
 
   // Sustained output: a third agent prints about 4 MB while the board stays responsive.
   await browser.eval(`[...document.querySelectorAll('.kanban-card')].find(card => card.textContent.includes('Flood task')).querySelector('.kanban-start').click();`);
-  await browser.until(`document.querySelector('#run-dialog').open`, 'flood consent dialog');
-  await browser.eval(`document.querySelector('#run-form').requestSubmit();`);
   const floodRun = await (async () => { for (;;) { const run = (await board.view()).runs.find(item => item.taskId === flood.id); if (run) return run.id; await new Promise(r => setTimeout(r, 50)); } })();
   // Measure while output streams, after the terminal exists: creating a WebGL context is a one-off
   // cost that takes seconds under the software renderer headless Chrome uses without a GPU.

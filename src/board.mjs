@@ -37,7 +37,7 @@ const EXECUTABLE_STAGES = new Set(['planning', 'executing', 'code_review', 'test
 // To Do, Merge, and Done have no run policy: To Do and Done never run, and a merge always needs confirmation.
 export const WORKFLOW_STAGES = Object.freeze(['planning', 'executing', 'code_review', 'testing', 'merge']);
 const POLICIES = ['manual', 'ask', 'start'];
-export const DEFAULT_STAGE_SETTINGS = Object.freeze({ policy: 'ask', provider: 'claude', model: '', effort: '', permissionMode: '', instructions: '' });
+export const DEFAULT_STAGE_SETTINGS = Object.freeze({ policy: 'start', provider: 'claude', model: '', effort: '', permissionMode: '', instructions: '' });
 const RUN_FIELDS = ['hasReview', 'startedAt', 'endedAt', 'providerSessionId', 'waitingReason', 'errorCode', 'exitCode', 'hasPlan', 'planExcerpt', 'turns', 'lifecycle', 'turnComplete', 'usage'];
 // Stages whose first authorized run may create the task branch and worktree.
 const WORKSPACE_STAGES = new Set(['planning', 'executing']);
@@ -163,9 +163,10 @@ export function normalizeWorkflow(input) {
     const settings = { ...DEFAULT_STAGE_SETTINGS, ...value };
     if (!POLICIES.includes(settings.policy)) throw new BoardError('Choose Manual, Ask on entry, or Start on entry.', 'INVALID_WORKFLOW');
     if (typeof settings.instructions !== 'string' || settings.instructions.length > 4000) throw new BoardError('Stage instructions can have at most 4,000 characters.', 'INVALID_WORKFLOW');
-    const entry = { policy: settings.policy, instructions: settings.instructions };
+    // "Ask" from earlier versions is "Start": dragging a card is the instruction.
+    const entry = { policy: settings.policy === 'ask' ? 'start' : settings.policy, instructions: settings.instructions, ...(stage === 'testing' && settings.agentOnFailure === true ? { agentOnFailure: true } : {}) };
     // A stage stores an agent only when it overrides the project and global defaults.
-    if (EXECUTABLE_STAGES.has(stage) && settings.provider) {
+    if (EXECUTABLE_STAGES.has(stage) && value.provider) { // Only a provider the request names; the defaults never pin one.
       try { Object.assign(entry, resolveConfig(stage, settings)); }
       catch (error) { throw new BoardError(error.message, 'INVALID_WORKFLOW'); }
     }
@@ -200,13 +201,14 @@ export function effectiveWorkflow(project, globalAgent = null) {
     let resolved = picked;
     // An effort the stage's provider does not accept is dropped rather than failing every run.
     try { resolved = resolveConfig(stage, picked); } catch { try { resolved = resolveConfig(stage, { ...picked, effort: '', permissionMode: '' }); } catch {} }
-    return [stage, { ...base, policy: own.policy || base.policy, instructions: own.instructions || '', ...resolved, agentSource }];
+    const policy = own.policy === 'ask' ? 'start' : own.policy || base.policy;
+    return [stage, { ...base, policy, instructions: own.instructions || '', ...resolved, agentSource, ...(stage === 'testing' ? { agentOnFailure: own.agentOnFailure === true } : {}) }];
   }).concat((project?.columnLayout || []).filter(entry => entry.custom).map(entry => {
     // A custom column's agent writes in the task worktree (like Executing) with the column's instructions.
     const [agentSource, agent] = [['project', project?.agentDefaults], ['global', globalAgent]].find(([, value]) => value?.provider) || ['default', {}];
     let resolved = { provider: agent.provider || 'claude', model: agent.model || '', effort: agent.effort || '' };
     try { resolved = resolveConfig(entry.id, resolved); } catch { try { resolved = resolveConfig(entry.id, { ...resolved, effort: '' }); } catch {} }
-    return [entry.id, { ...DEFAULT_STAGE_SETTINGS, policy: entry.agent?.enabled ? entry.agent.policy : 'manual', instructions: entry.agent?.instructions || '', ...resolved, agentSource, custom: true }];
+    return [entry.id, { ...DEFAULT_STAGE_SETTINGS, policy: entry.agent?.enabled ? (entry.agent.policy === 'ask' ? 'start' : entry.agent.policy) : 'manual', instructions: entry.agent?.instructions || '', ...resolved, agentSource, custom: true }];
   })));
 }
 
@@ -257,7 +259,7 @@ export function normalizeColumns(input) {
     if (!name) throw new BoardError('A custom column needs a name.', 'INVALID_COLUMNS');
     if (names.has(name.toLowerCase())) throw new BoardError(`Two columns are called “${name}”. Use different names.`, 'INVALID_COLUMNS');
     names.add(name.toLowerCase());
-    const agent = entry.agent?.enabled === true ? { enabled: true, policy: POLICIES.includes(entry.agent.policy) ? entry.agent.policy : 'ask',
+    const agent = entry.agent?.enabled === true ? { enabled: true, policy: entry.agent.policy === 'manual' ? 'manual' : 'start',
       instructions: typeof entry.agent.instructions === 'string' ? entry.agent.instructions.slice(0, 4000) : '' } : { enabled: false };
     out.push({ id: entry.id, custom: true, title: name, color, description: typeof entry.description === 'string' ? entry.description.trim().slice(0, 200) : '', agent });
   }
@@ -699,9 +701,11 @@ export class Board {
    * new column only when the stage action succeeded (or when no action is due), in the same write
    * that records the run. A refused or failed move leaves the card where it was.
    *
-   * `decision` is absent for a first request: the answer can be `{ approval }` instead of a move.
-   * With `decision: 'start'` or `'move'` the user approved that approval (`handoffRunId` and
-   * `commitMessage` repeat what it asked for). `transitionId` makes a repeated request idempotent.
+   * The drag is the instruction: there is no approval step. The destination's stage starts when its
+   * policy is Start (the default); Manual only moves. `decision: 'move'` (Autopilot, scripts) only moves;
+   * `decision: 'start'` starts even under Manual. A finished agent turn in the stage the card leaves is
+   * confirmed, and its uncommitted work is committed with `commitMessage` (default: the card title).
+   * `transitionId` makes a repeated request idempotent.
    */
   transition(id, request = {}) {
     return this.#locked(`transition:${id}`, () => this.#transition(id, request));
@@ -730,18 +734,15 @@ export class Board {
     if (from === 'todo' && !project.repository) throw new BoardError('Link this project to a Git repository before cards leave To Do.', 'REPOSITORY_REQUIRED');
     const plan = await this.#prepareTransition(state, project, task, column);
     const id2 = transitionId || randomUUID();
-    const needsApproval = !automation && decision === undefined && Boolean(plan.handoff || plan.commit || plan.confirmAction || (plan.policy === 'ask' && plan.action));
-    if (needsApproval) return { approval: this.#approvalView(project, task, plan, id2) };
-    if (plan.handoff && handoffRunId !== plan.handoff.id) throw conflict('The agent session of this card changed. Drag the card again to see the current state.', 'TRANSITION_STALE');
-    if (plan.commit && !(typeof commitMessage === 'string' && commitMessage.trim())) throw conflict(`The task worktree has ${plan.commit.changes.length} uncommitted ${plan.commit.changes.length === 1 ? 'change' : 'changes'}. Commit them first, or move with the approval that commits them.`, 'UNCOMMITTED_CHANGES');
-    if (column === 'done' && decision !== 'start') throw new BoardError('Done needs the verified merge. Choose Merge and complete.', 'CONFIRMATION_REQUIRED');
-    // "Move only" never starts anything; otherwise the policy or the approval decides.
-    const startAction = Boolean(plan.action) && decision !== 'move' && (plan.policy === 'start' || decision === 'start' || plan.confirmAction);
+    // "Move only" never merges: Done is reached only by performing the verified merge (or a merged pull request).
+    if (column === 'done' && decision === 'move') throw new BoardError('Done needs the verified merge. Drag the card to Done, or use the Merge button.', 'MERGE_REQUIRED', 409);
+    // Done always performs its verified completion; Merge always prepares the merge; other stages follow their policy.
+    const startAction = Boolean(plan.action) && decision !== 'move' && (decision === 'start' || plan.policy !== 'manual' || plan.action === 'merge-prepare' || column === 'done');
     if (startAction && plan.agentError) throw new BoardError(plan.agentError.message, plan.agentError.code, 409);
 
-    // Hand off: confirm the finished turn (this approves a plan or records a review), then commit.
+    // Hand off: confirm the finished turn (this approves a plan or records a review), then commit its work.
     if (plan.handoff) await this.executor.confirm(plan.handoff.id);
-    if (plan.commit) await this.delivery.commit(id, { message: commitMessage.trim(), confirm: true });
+    if (plan.commit) await this.delivery.commit(id, { message: (typeof commitMessage === 'string' && commitMessage.trim()) || plan.commit.message, confirm: true });
     // Evidence gates run on the state after the hand-off: a review or test for another commit never counts.
     const gate = await this.#evidenceGate(id, column);
     if (gate.problems.length) throw new BoardError(`${title(column)} is not ready: ${gate.problems.join(' ')}`, 'STAGE_NOT_READY', 409);
@@ -755,27 +756,140 @@ export class Board {
     const move = { from, column, index, transitionId: id2, by: automation ? 'automation' : 'user' };
     if (column === 'done') return this.#completeByTransition(id, plan, move);
     if (startAction && plan.action === 'agent') {
-      // A run started by the "Start on entry" setting is recorded as automatic; an approved one as the user's.
-      const runTrigger = automation || (plan.policy === 'start' && decision !== 'start') ? 'automation' : 'user';
-      const run = await this.#locked(`run:${id}`, () => this.#startRun(id, { stage: column, consent: true, config, trigger: runTrigger, move }));
+      const run = await this.#locked(`run:${id}`, () => this.#startRun(id, { stage: column, consent: true, config, trigger: automation ? 'automation' : 'user', move }));
       return { task: await this.#taskNow(id), run };
     }
     const placed = await this.#placeStored(id, move);
-    const result = { task: placed };
-    if (!startAction || !plan.action) return result;
+    const result = { task: placed, ...(plan.notice && decision !== 'move' ? { notice: plan.notice } : {}) };
+    if (!startAction) return result;
     if (plan.action === 'tests') {
       try { result.tests = await this.delivery.runTests(id, { confirm: true }); }
       catch (error) { await this.#placeStored(id, { from: column, column: from, transitionId: `${id2}-undo`, by: 'system', reason: error.message }); throw error; }
-    } else if (plan.action === 'auto-merge') {
-      // Merge automatically: only when every check holds for the current commits (the same gate as a confirmed merge).
-      try {
-        const preview = await this.delivery.mergePreview(id);
-        if (!preview.eligible) throw new BoardError(`Not merged automatically: ${preview.problems.join(' ')}`, 'MERGE_NOT_ELIGIBLE');
-        result.task = await this.delivery.merge(id, { confirm: true, taskCommit: preview.taskCommit, targetCommit: preview.targetCommit, trigger: 'automation' });
-        result.merged = true;
-      } catch (error) { result.automation = { started: false, code: error.code || 'FAILED', message: error.message }; }
+      // Optional: the testing agent starts on failed tests (#advanceFlows).
+      if (plan.settings?.agentOnFailure) await this.#setFlow(id, { kind: 'testing-agent', testsId: result.tests.id });
+    } else if (plan.action === 'merge-prepare') {
+      result.merge = await this.#prepareMerge(id, { auto: plan.policy === 'start' });
+      if (result.merge.state === 'merged') { result.task = result.merge.task; result.merged = true; }
     }
     return result;
+  }
+
+  // ---- Merge preparation and follow-up (the Merge stage) ----
+
+  async #setFlow(id, flow) {
+    return this.store.update(state => { const { task } = this.#task(state, id); task.flow = flow ? { ...flow, at: Date.now() } : null; return task; });
+  }
+
+  /**
+   * Bring the card to a verified merge state: the accepted review and passing tests belong to the task
+   * commit, the task branch contains the target, and the target checkout is clean. Then merge when `auto`.
+   * - The target moved and merges in cleanly: the merge commit keeps the review (a clean merge adds no
+   *   task changes) and the tests run again on it.
+   * - It conflicts: the merge agent starts in the task worktree (#advanceFlows commits its result and sends
+   *   the card back to Code Review, because resolving conflicts changes code).
+   * Returns { state: merged | ready | testing | resolving | blocked, message }.
+   */
+  async #prepareMerge(id, { auto = false } = {}) {
+    const { task } = this.#task(await this.state(), id);
+    const rev = await this.delivery.revision(id);
+    const review = task.evidence?.review, tests = task.evidence?.tests;
+    const blocked = async message => { await this.#setFlow(id, { kind: 'blocked', reason: message }); return { state: 'blocked', message }; };
+    if (!rev.clean || rev.merging) return blocked(rev.merging ? 'A merge is in progress in the task worktree. Let the merge agent finish, or abort it in the task details.' : 'The task worktree has uncommitted changes. Send the card back to Executing so they are reviewed and tested.');
+    if (review?.status !== 'accepted' || review.taskCommit !== rev.taskCommit) return blocked('The accepted code review is not for the current commit. Send the card back to Code Review.');
+    if (tests?.status === 'running') return { state: 'testing', message: 'Tests are running.' };
+    if (tests?.status !== 'passed' || tests.taskCommit !== rev.taskCommit) return blocked('Passing tests for the current commit are required. Send the card back to Testing.');
+    let preview = await this.delivery.mergePreview(id);
+    if (!preview.fastForward) {
+      try { await this.delivery.updateBranch(id, { confirm: true }); }
+      catch (error) {
+        if (error.code !== 'MERGE_CONFLICT') return blocked(error.message);
+        if (!this.executor) return blocked(`${preview.targetBranch} conflicts with the task, and no merge agent can run here. Resolve the conflicts in the task worktree.`);
+        const run = await this.#locked(`run:${id}`, () => this.#startRun(id, { stage: 'merge', consent: true, trigger: 'automation' }));
+        await this.#setFlow(id, { kind: 'merge-resolve', runId: run.id, auto });
+        return { state: 'resolving', message: `${preview.targetBranch} conflicts with the task. The merge agent is resolving the conflicts.`, run };
+      }
+      // A clean merge of the target adds no task changes: the review carries over to the merge commit.
+      const merged = await this.delivery.revision(id);
+      await this.updateTaskEvidence(id, current => { current.evidence.review = { ...current.evidence.review, taskCommit: merged.taskCommit, carriedFrom: rev.taskCommit, carriedReason: `clean merge of ${preview.targetBranch}` }; });
+    }
+    preview = await this.delivery.mergePreview(id);
+    const current = this.#task(await this.state(), id).task.evidence?.tests;
+    if (current?.taskCommit !== preview.taskCommit || current?.targetCommit !== preview.targetCommit) {
+      const started = await this.delivery.runTests(id, { confirm: true }).catch(error => ({ error }));
+      if (started.error) return blocked(started.error.message);
+      await this.#setFlow(id, { kind: 'merge-tests', testsId: started.id, auto });
+      return { state: 'testing', message: `The task branch now contains the current ${preview.targetBranch}. The tests are running again on it.` };
+    }
+    if (!preview.eligible) return blocked(preview.problems.join(' '));
+    if (!auto) { await this.#setFlow(id, { kind: 'ready', targetBranch: preview.targetBranch }); return { state: 'ready', message: `Ready to merge into ${preview.targetBranch}.` }; }
+    const done = await this.delivery.merge(id, { confirm: true, taskCommit: preview.taskCommit, targetCommit: preview.targetCommit, trigger: 'automation' });
+    return { state: 'merged', message: `Merged into ${preview.targetBranch}.`, task: done };
+  }
+
+  /** The Merge button: one click merges a verified card (preparing it first when the target moved). */
+  mergeNow(id) {
+    return this.#locked(`transition:${id}`, async () => {
+      const { task } = this.#task(await this.state(), id);
+      if (task.column !== 'merge') throw conflict('Move the card to Merge first.', 'STAGE_MISMATCH');
+      if (this.#activeRun(await this.state(), id)) throw conflict('An agent is still working on this card.', 'RUN_ACTIVE');
+      const preview = await this.delivery.mergePreview(id);
+      if (preview.eligible) return { task: await this.delivery.merge(id, { confirm: true, taskCommit: preview.taskCommit, targetCommit: preview.targetCommit, trigger: 'user' }), merged: true };
+      const merge = await this.#prepareMerge(id, { auto: true });
+      if (merge.state === 'blocked') throw conflict(merge.message, 'MERGE_NOT_READY');
+      return { task: merge.task || await this.#taskNow(id), merged: merge.state === 'merged', merge };
+    });
+  }
+
+  /**
+   * Follow-up work the board does by itself (called every second): tests that finished during a merge
+   * preparation, a merge agent that finished resolving, the optional testing agent, and open pull
+   * requests (checked once a minute). Each card is handled under its transition lock.
+   */
+  async advanceFlows() {
+    const state = await this.state();
+    for (const project of state.projects) {
+      const autopilotCard = project.autopilot?.status === 'running' ? project.autopilot.current?.taskId : null;
+      for (const task of project.tasks) {
+        if (task.id === autopilotCard) continue; // Autopilot drives its own card.
+        const flow = task.flow;
+        const pr = task.evidence?.pullRequest;
+        const polling = task.column === 'merge' && pr?.url && pr.state === 'OPEN' && Date.now() - (this.prChecks?.get(task.id) || 0) > 60000;
+        if (!['merge-tests', 'merge-resolve', 'testing-agent'].includes(flow?.kind) && !polling) continue;
+        await this.#locked(`transition:${task.id}`, () => this.#advanceFlow(task.id, polling)).catch(error => this.#setFlow(task.id, { kind: 'blocked', reason: error.message }).catch(() => {}));
+      }
+    }
+  }
+
+  async #advanceFlow(id, polling) {
+    const state = await this.state();
+    const { task } = this.#task(state, id);
+    if (polling) { (this.prChecks ??= new Map()).set(id, Date.now()); await this.delivery.pullRequestStatus(id).catch(() => {}); }
+    const flow = task.flow, tests = task.evidence?.tests;
+    if (flow?.kind === 'merge-tests' || flow?.kind === 'testing-agent') {
+      if (tests?.id !== flow.testsId) return this.#setFlow(id, null);
+      if (tests.status === 'running') { if (!this.delivery.testsRunning.has(id)) await this.#setFlow(id, { kind: 'blocked', reason: 'The test run stopped (the app restarted). Move the card again to run them.' }); return; }
+      if (flow.kind === 'testing-agent') {
+        await this.#setFlow(id, null);
+        if (tests.status === 'passed' || task.column !== 'testing' || !this.executor) return;
+        const output = (tests.results || []).filter(result => result.status !== 'passed').map(result => `$ ${result.argv.join(' ')}\n${result.reason || `exit ${result.exitCode}`}\n${(result.tail || '').slice(-4000)}`).join('\n\n');
+        return this.#locked(`run:${id}`, () => this.#startRun(id, { stage: 'testing', consent: true, trigger: 'automation', note: `=== FAILED TESTS TO FIX ===\n${output}\n=== END FAILED TESTS ===` }));
+      }
+      if (tests.status !== 'passed') return this.#setFlow(id, { kind: 'blocked', reason: `The tests failed on the task branch with the current target. Send the card back to Executing; the failing output goes with it.` });
+      return this.#prepareMerge(id, { auto: flow.auto });
+    }
+    if (flow?.kind === 'merge-resolve') {
+      const run = state.runs.find(item => item.id === flow.runId);
+      if (!run || ['failed', 'cancelled', 'interrupted'].includes(run.status)) return this.#setFlow(id, { kind: 'blocked', reason: `The merge agent ${run?.status || 'stopped'}${run?.reason ? `: ${run.reason}` : ''}. Resolve the conflicts in the task worktree, or send the card back to Executing.` });
+      if (run.status === 'waiting_for_input' && run.turnComplete && run.turns > 0) await this.executor.confirm(run.id);
+      else if (run.status !== 'succeeded') return;
+      const rev = await this.delivery.revision(id);
+      if (rev.unresolved.length) return this.#setFlow(id, { kind: 'blocked', reason: `Conflict markers remain in ${rev.unresolved.slice(0, 10).join(', ')}. Resolve them in the task worktree, or send the card back to Executing.` });
+      if (rev.merging || !rev.clean) await this.delivery.commit(id, { message: `Merge ${rev.targetBranch} into ${rev.branch}`, confirm: true });
+      await this.#setFlow(id, null);
+      // Resolving conflicts changed code: it is reviewed again (the review starts on entry).
+      const fresh = this.#task(await this.state(), id).task;
+      return this.#transition(id, { column: 'code_review', expectedRevision: fresh.revision, decision: 'start', trigger: 'automation' });
+    }
   }
 
   /** A move that never starts a stage action, with every check of transition() (for scripts and tests). */
@@ -797,7 +911,7 @@ export class Board {
       handoff = active;
     }
     const settings = effectiveWorkflow(project, state.settings.defaultAgent)[to] || null;
-    const plan = { from, to, handoff, commit: null, notes: null, action: null, confirmAction: false, policy: settings?.policy || 'manual', settings };
+    const plan = { from, to, handoff, commit: null, notes: null, action: null, policy: settings?.policy || 'manual', settings };
     const hasWorkspace = task.workspace?.status === 'ready';
     if (hasWorkspace) await this.ensureTaskWorktree(task.id); // Verifies the worktree and branch, and repairs a deleted folder.
     const rev = hasWorkspace ? await this.delivery.revision(task.id) : null;
@@ -824,27 +938,25 @@ export class Board {
     if (to === 'done') {
       needWorkspace();
       const pr = task.evidence?.pullRequest;
-      if (pr?.url) { plan.action = 'pull-request'; plan.confirmAction = true; plan.pullRequest = pr; }
+      if (pr?.url) { plan.action = 'pull-request'; plan.pullRequest = pr; }
       else {
         const preview = await this.delivery.mergePreview(task.id);
-        if (!preview.eligible) throw new BoardError(`Not ready to merge: ${preview.problems.join(' ')}`, 'MERGE_NOT_ELIGIBLE', 409);
-        Object.assign(plan, { action: 'merge', confirmAction: true, merge: { targetBranch: preview.targetBranch, taskCommit: preview.taskCommit, targetCommit: preview.targetCommit, commits: preview.commits.length } });
+        if (!preview.eligible) throw new BoardError(`Not ready to merge: ${preview.problems.join(' ')} Use the Merge button on the card; it brings in the target branch first when it moved.`, 'MERGE_NOT_ELIGIBLE', 409);
+        Object.assign(plan, { action: 'merge', merge: { targetBranch: preview.targetBranch, taskCommit: preview.taskCommit, targetCommit: preview.targetCommit, commits: preview.commits.length } });
       }
       return plan;
     }
     // The stage action, by project policy. Manual moves only.
     if (['planning', 'executing', 'code_review'].includes(to) || settings?.custom) plan.action = plan.policy === 'manual' ? null : 'agent';
     else if (to === 'testing') plan.action = plan.policy === 'manual' ? null : (project.testCommands || []).length ? 'tests' : 'agent';
-    else if (to === 'merge') plan.action = plan.policy === 'start' ? 'auto-merge' : null;
+    else if (to === 'merge') plan.action = 'merge-prepare';
     if (plan.action === 'agent') {
-      if (!this.executor) { if (plan.policy === 'start') throw new BoardError('Agent execution is not available, so this stage cannot start automatically. Set it to Manual or Ask.', 'EXECUTION_UNAVAILABLE', 503); plan.action = null; }
+      // No agent runtime at all (terminal support missing): the card moves and the reason is shown.
+      if (!this.executor) { plan.action = null; plan.notice = 'Agent terminals are not set up, so no agent started. Run npm install, then restart Promptboard.'; }
       else {
-        // An agent that cannot start blocks an automatic start; with Ask, the card can still just move.
+        // An agent that cannot start (not installed, not signed in) is a real blocker for starting; a plain move still works.
         try { plan.config = await this.executor.validate({ stage: to, config: settings }); }
-        catch (error) {
-          if (plan.policy === 'start') throw new BoardError(`${title(to)} cannot start automatically: ${error.message}`, error.code || 'AGENT_UNAVAILABLE', 409);
-          plan.agentError = { message: error.message, code: error.code || 'AGENT_UNAVAILABLE' };
-        }
+        catch (error) { plan.agentError = { message: `${title(to)} cannot start: ${error.message}`, code: error.code || 'AGENT_UNAVAILABLE' }; }
       }
       if (plan.action && to === 'executing') plan.approvedPlan = Boolean(this.#approvedPlan(state, task));
     }
@@ -887,18 +999,6 @@ export class Board {
       else if (tests?.status !== 'passed' || tests.taskCommit !== rev.taskCommit) problems.push(tests?.status === 'passed' ? 'The passing tests are for an older commit. Run the tests again.' : 'Passing tests for the current commit are required.');
     }
     return { problems, acceptReview };
-  }
-
-  /** The approval the UI shows: one decision with everything the move will do. */
-  #approvalView(project, task, plan, transitionId) {
-    const config = plan.config || (plan.settings && { provider: plan.settings.provider, model: plan.settings.model, effort: plan.settings.effort, permissionMode: plan.settings.permissionMode });
-    return { transitionId, taskId: task.id, from: plan.from, to: plan.to, policy: plan.policy, action: plan.action,
-      agent: plan.action === 'agent' ? { ...config, source: plan.settings?.agentSource || 'default' } : null,
-      handoff: plan.handoff ? { runId: plan.handoff.id, stage: plan.handoff.stage } : null, agentError: plan.agentError?.message || null,
-      commit: plan.commit ? { changes: plan.commit.changes.slice(0, 50), count: plan.commit.changes.length, message: plan.commit.message.slice(0, 200) } : null,
-      notes: plan.notesKind || null,
-      approvedPlan: plan.approvedPlan ?? null, merge: plan.merge || null, pullRequest: plan.pullRequest ? { url: plan.pullRequest.url, number: plan.pullRequest.number } : null,
-      canMoveOnly: plan.to !== 'done' && !plan.confirmAction, branch: task.workspace?.branch || null, expectedRevision: task.revision };
   }
 
   /** Merge → Done: the verified fast-forward merge, or a merged pull request. */
@@ -1083,6 +1183,7 @@ export class Board {
     const before = inColumn[position];
     const at = before ? others.indexOf(before) : (inColumn.length ? others.indexOf(inColumn.at(-1)) + 1 : others.length);
     if (task.column !== column) {
+      task.flow = null; // A follow-up belongs to the stage the card leaves.
       task.transitions = [...task.transitions, { at: Date.now(), from: task.column, to: column, by, ...(reason ? { reason } : {}) }].slice(-TRANSITION_LOG_LIMIT);
       task.column = column;
       if (transitionId) task.lastTransition = { id: transitionId, to: column, at: Date.now(), ...(runId ? { runId } : {}) };
@@ -1308,7 +1409,7 @@ export class Board {
   }
 
   /** With `move`, the card enters the stage in the same write that records the run (see transition). */
-  async #startRun(taskId, { stage, consent = false, config = {}, trigger = 'user', move = null } = {}) {
+  async #startRun(taskId, { stage, consent = false, config = {}, trigger = 'user', move = null, note = '' } = {}) {
     {
       await this.#defaultTargetBranch(taskId);
       const state = await this.state();
@@ -1340,7 +1441,7 @@ export class Board {
       // (git merge --no-commit), leaving any conflicts for the agent to resolve.
       const merge = stage === 'merge' ? await this.delivery.prepareMergeRun(taskId) : null;
       const testing = stage === 'testing' ? await this.delivery.testingContext(taskId) : '';
-      const extra = review ? review.text : merge ? merge.text : testing || (stage === 'executing' && task.reworkNotes ? `=== REVIEW FINDINGS TO FIX ===\n${task.reworkNotes}\n=== END FINDINGS ===` : '');
+      const extra = [review ? review.text : merge ? merge.text : testing || (stage === 'executing' && task.reworkNotes ? `=== REVIEW FINDINGS TO FIX ===\n${task.reworkNotes}\n=== END FINDINGS ===` : ''), note].filter(Boolean).join('\n\n');
       const run = await this.store.update(draft => {
         if (this.#activeRun(draft, taskId)) throw conflict('This card already has an active run.', 'RUN_ACTIVE');
         const now = Date.now();

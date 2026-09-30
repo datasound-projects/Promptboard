@@ -24,6 +24,7 @@ export class Autopilot {
     if (this.busy) return;
     this.busy = true;
     try {
+      await this.board.advanceFlows?.().catch(() => {});
       const state = await this.board.state();
       for (const project of state.projects) {
         if (project.autopilot?.status !== 'running') continue;

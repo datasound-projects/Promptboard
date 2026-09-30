@@ -167,6 +167,7 @@ async function boardRoute(board, req, res, pathname, searchParams) {
       const { column, index, expectedRevision, transitionId, decision, commitMessage, config, handoffRunId } = await body();
       return view(await board.transition(id, { column, index, expectedRevision, transitionId, decision, commitMessage, config, handoffRunId }));
     }
+    if (method === 'POST' && action === 'merge-now') { await body(); return view(await board.mergeNow(id)); }
     if (method === 'POST' && action === 'reopen') return view({ task: await board.reopenTask(id, await body()) });
     if (method === 'POST' && action === 'duplicate') { await body(); return view({ task: await board.duplicateTask(id) }); }
     if (method === 'POST' && action === 'runs') return view({ run: await board.requestRun(id, await body()) });

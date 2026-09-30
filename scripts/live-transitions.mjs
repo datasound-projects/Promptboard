@@ -4,7 +4,7 @@
  * board uses (approval, hand-off, commit, start). A disposable repository and data folder only.
  *   node scripts/live-transitions.mjs --provider claude --model haiku [--timeout 300] [--keep]
  * Route: To Do → Planning → Executing → Code Review → Executing (rework) → Code Review
- *        → (app restart) → Code Review again → Testing → Merge → Done.
+ *        → (app restart) → Code Review again → Testing → Merge (one click) → Done. No confirmation dialogs.
  */
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -51,18 +51,14 @@ async function waitTurn(runId, stage) {
   }
 }
 
-/** Drag: the first request returns the approval; one "start" answers it. */
-async function drag(column, { commitMessage, expectApproval = true } = {}) {
+/** Drag: one request moves the card and starts the stage. The same drop again starts nothing. */
+async function drag(column) {
   const card = await task();
-  const first = await board.transition(card.id, { column, expectedRevision: card.revision });
-  if (!first.approval) { if (expectApproval) throw new Error(`Expected an approval for ${column}.`); return first; }
-  const approval = first.approval;
-  const answer = { column, expectedRevision: approval.expectedRevision, transitionId: approval.transitionId, handoffRunId: approval.handoff?.runId || null, decision: 'start', ...(approval.commit ? { commitMessage: commitMessage || approval.commit.message } : {}) };
-  const result = await board.transition(card.id, answer);
-  // The same approved request again (a double click, a retried request) must not start a second run.
-  const repeat = await board.transition(card.id, answer);
-  if (!repeat.duplicate) throw new Error('A repeated approval was not recognized as a duplicate.');
-  step(`drag → ${column}`, { from: approval.from, handoff: approval.handoff?.stage || null, commit: approval.commit?.count || 0, agent: approval.agent && `${approval.agent.provider} · ${approval.agent.model || 'default'} (${approval.agent.source})`, run: result.run?.stage || null, column: result.task?.column });
+  const request = { column, expectedRevision: card.revision, transitionId: `live-${column}-${Date.now()}` };
+  const result = await board.transition(card.id, request);
+  const repeat = await board.transition(card.id, request);
+  if (!repeat.duplicate) throw new Error('A repeated drop was not recognized as a duplicate.');
+  step(`drag → ${column}`, { run: result.run ? `${result.run.stage} (${result.run.config.provider}/${result.run.config.model || 'default'})` : null, tests: result.tests?.id || null, merge: result.merge?.state || null, column: result.task?.column });
   return result;
 }
 
@@ -82,12 +78,12 @@ try {
   await waitTurn(executing.run.id, 'executing');
   const ws = (await task()).workspace;
   step('work in the task worktree only', { worktree: git(ws.path, 'status', '--porcelain'), mainCheckout: git(root, 'status', '--porcelain') || '(clean)' });
-  const review = await drag('code_review', { commitMessage: 'Append beta to notes' }); // Confirms the turn, commits, starts the review.
+  const review = await drag('code_review'); // Confirms the turn, commits (card title), starts the review.
   await waitTurn(review.run.id, 'code_review');
   // Rework: back to Executing with the review, then review the result again.
   const rework = await drag('executing');
   await waitTurn(rework.run.id, 'executing (rework)');
-  const review2 = await drag('code_review', { commitMessage: 'Rework after review' });
+  const review2 = await drag('code_review');
   await waitTurn(review2.run.id, 'code_review (again)');
 
   // App restart while the review agent waits: the run is interrupted; card, worktree, and commits stay.
@@ -112,17 +108,19 @@ try {
   }
   let tests;
   for (let i = 0; i < 120 && (tests = (await task()).evidence?.tests)?.status !== 'passed' && tests?.status !== 'failed'; i++) await new Promise(r => setTimeout(r, 500));
-  step('tests', { status: tests?.status });
+  step('tests (started by the drag)', { status: tests?.status });
   if (tests?.status !== 'passed') throw new Error('The tests did not pass.');
-  await drag('merge', { expectApproval: false }); // Merge is manual: the card moves; nothing starts.
-  const done = await drag('done');
+  const entered = await drag('merge'); // Verifies review and tests for the current commit; shows one button.
+  if (entered.merge?.state !== 'ready') throw new Error(`Merge was not ready: ${entered.merge?.message}`);
+  const done = await board.mergeNow((await task()).id); // The one click.
+  step('one-click merge', { merged: done.merged, column: done.task.column, worktreeRemoved: done.task.workspace === null });
   const runs = (await board.view()).runs;
   const finalCard = await task();
   step('done', {
     column: finalCard.column, completion: finalCard.completion.kind, trunkHasBeta: (await readFile(join(root, 'notes.txt'), 'utf8')).includes('beta'),
     runs: runs.map(run => `${run.stage}:${run.status}`), oneBranch: new Set(runs.map(run => run.branch)).size === 1, oneWorktree: new Set(runs.map(run => run.workspacePath)).size === 1,
     models: [...new Set(runs.map(run => `${run.config.provider}/${run.config.model || 'default'}`))], liveProcesses: [...supervisor.sessions.values()].filter(session => session.proc).length,
-    path: finalCard.transitions.map(move => move.to).join(' → '), merged: done.merged,
+    path: finalCard.transitions.map(move => move.to).join(' → '),
   });
   if (runs.filter(run => run.status === 'queued' || run.status === 'running').length) throw new Error('A run is still active.');
 } catch (error) {

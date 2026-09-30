@@ -325,7 +325,9 @@ export class Delivery {
       }
       const result = await this.#rev(ws.repositoryRoot, `refs/heads/${target}`);
       if (result !== taskCommit) throw fail(`The merge could not be verified: ${target} is at ${result.slice(0, 12)}.`, 'MERGE_UNVERIFIED', 500);
-      return this.board.completeTask(taskId, { kind: 'merged', details: { targetBranch: target, previousTarget: targetCommit, mergedCommit: result, method, commits: preview.commits.length, trigger } });
+      const done = await this.board.completeTask(taskId, { kind: 'merged', details: { targetBranch: target, previousTarget: targetCommit, mergedCommit: result, method, commits: preview.commits.length, trigger } });
+      // The work is on the target branch now. Remove the clean task worktree; the task branch stays.
+      return (await this.board.removeTaskWorktree(taskId).catch(() => null)) || done;
     });
   }
 

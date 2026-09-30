@@ -1153,8 +1153,12 @@ function renderColumn(column, tasks) {
   const header = document.createElement('div');
   header.className = 'kanban-column-heading';
   header.append(heading, count);
-  const note = paragraph(column.custom ? (column.description || (column.agent ? 'Custom column · starts an agent' : 'Custom column · never runs an agent')) : !column.agent ? (column.id === 'todo' ? 'Never runs an agent' : 'Finished · never runs an agent')
-    : !board.execution?.available ? 'Agent stage · agent terminals not set up' : { testing: 'Agent optional · exit codes decide', merge: 'Agent optional · fast-forward or pull request' }[column.id] || 'Agent stage · starts only when you choose', 'kanban-column-note');
+  const policy = currentProject()?.effectiveWorkflow?.[column.id]?.policy;
+  const note = paragraph(column.custom ? (column.description || (column.agent ? (policy === 'manual' ? 'Custom column · agent from the card' : 'Custom column · agent starts on arrival') : 'Custom column · never runs an agent'))
+    : !column.agent ? (column.id === 'todo' ? 'Never runs an agent' : 'Finished · never runs an agent')
+    : !board.execution?.available ? 'Agent stage · agent terminals not set up'
+    : column.id === 'merge' ? (policy === 'start' ? 'Merges automatically when verified' : 'One click merges when verified')
+    : policy === 'manual' ? 'Manual · start from the card' : column.id === 'testing' ? 'Runs your tests on arrival' : 'Starts when a card arrives', 'kanban-column-note');
   const list = document.createElement('ol');
   list.className = 'kanban-cards';
   list.dataset.column = column.id;
@@ -1390,7 +1394,6 @@ async function placeCard(id, column, index, retried = false) {
   }
   pendingMoves.delete(id); movingTo.delete(id);
   renderBoard();
-  if (result.approval) { openApproval(result.approval, position); return true; }
   movedAnnouncement(card, column, result, reorder ? `position ${position + 1} of ${others.length + 1}` : '');
   return true;
 }
@@ -1400,9 +1403,9 @@ function movedAnnouncement(card, column, result, position = '') {
   if (result.duplicate) return;
   if (result.run) { announce(`Moved “${card.title}” to ${columnTitle(column)} and started the ${columnTitle(column)} agent.`); showStartedRun(result.run.id); }
   else if (result.tests) { announce(`Moved “${card.title}” to Testing. The project's tests are running.`); pollTests(card.id); }
-  else if (result.task?.column === 'done') announce(`“${card.title}” is done: ${result.merged ? `merged into ${result.task.completion?.targetBranch || 'the target branch'}` : 'its pull request was merged'}. Nothing was pushed by this step.`);
+  else if (result.merge && !result.merged) announce(`Moved “${card.title}” to Merge. ${result.merge.message}`);
+  else if (result.task?.column === 'done') announce(`“${card.title}” is done: ${result.merged ? `merged into ${result.task.completion?.targetBranch || 'the target branch'}` : 'its pull request was merged'}.`);
   else announce(`Moved “${card.title}” to ${columnTitle(column)}. Nothing was started.`);
-  if (result.automation) showProjectDetail(paragraph(`Moved to Merge. ${result.automation.message}`, 'kanban-error'));
 }
 
 function showMoveError(card, column, error) {
@@ -1618,8 +1621,7 @@ function stageVerb(stage) { return STAGE_VERBS[stage] || (projectColumnsOf().fin
 // Stages whose agents are read-only (plan mode, read-only sandbox). The others write in the worktree.
 const READ_ONLY_STAGES = ['planning', 'code_review'];
 const capabilityFor = stage => READ_ONLY_STAGES.includes(stage) ? 'planning' : 'execution';
-const POLICY_LABELS = { manual: 'Manual', ask: 'Ask on entry', start: 'Start on entry' };
-let runDialogContext = null;
+const POLICY_LABELS = { manual: 'Manual', start: 'Start automatically' };
 
 function activeRun(taskId) { return board?.runs.find(run => run.taskId === taskId && RUN_LIVE.includes(run.status)) || null; }
 function elapsed(run) {
@@ -1755,17 +1757,21 @@ function renderRunControls(card, run) {
     if (activity) { const line = paragraph(activity, 'run-activity'); line.title = activity; box.append(line); }
   }
   const labelled = (button, label) => { button.setAttribute('aria-label', `${label}: ${card.title}`); return button; };
+  // The Merge stage's own work (preparing, merge agent, readiness, or the blocker) is shown on the card.
+  const flow = card.flow;
+  const flowText = { 'merge-tests': 'Bringing in the target branch: tests are running again…', 'merge-resolve': 'The merge agent is resolving conflicts…', ready: `Ready to merge into ${flow?.targetBranch || 'the target branch'}.`, 'testing-agent': 'The testing agent starts if the tests fail.', blocked: flow?.reason }[flow?.kind];
+  if (flowText) box.append(paragraph(flowText, `run-activity flow-${flow.kind}${flow.kind === 'blocked' ? ' kanban-error' : ''}`));
   if (active) {
     box.append(labelled(detailButton('Terminal', () => window.PromptboardDock?.open(active.id), 'kanban-terminal'), 'Show terminal'));
-    if (active.status === 'waiting_for_input' && active.turns > 0) {
-      const planning = active.stage === 'planning';
-      const button = labelled(detailButton(planning ? 'Approve plan…' : active.stage === 'code_review' ? 'Record review…' : 'Confirm stage…', () => openTaskDetails(card.id), 'primary kanban-confirm-run'), planning ? 'Review and approve the plan' : 'Review and confirm the stage');
-      box.append(button);
-    }
+    // Plan approval stays available; moving the card to Executing also approves the plan.
+    if (active.stage === 'planning' && active.status === 'waiting_for_input' && active.turns > 0) box.append(labelled(detailButton('Approve plan', () => openTaskDetails(card.id), 'kanban-confirm-run'), 'Review and approve the plan'));
+  } else if (card.column === 'merge') {
+    const target = currentProject()?.targetBranch?.name || 'target';
+    box.append(labelled(detailButton(`Merge ${target}`, () => mergeCard(card), 'primary kanban-merge'), `Merge into ${target}`));
+    box.append(labelled(detailButton(card.evidence?.pullRequest?.state === 'OPEN' ? 'Update pull request' : 'Open pull request', () => pullRequestCard(card), 'kanban-pr'), 'Open a pull request'));
   } else if (stageVerb(card.column)) {
-    // Testing and Merge also keep their own action: run the configured tests, or review the merge.
-    if (card.column === 'testing' || card.column === 'merge') box.append(labelled(detailButton(card.column === 'testing' ? 'Run tests…' : 'Merge…', () => openTaskDetails(card.id), 'primary kanban-deliver'), card.column === 'testing' ? 'Run tests' : 'Review the merge'));
-    const start = labelled(detailButton(`${stageVerb(card.column)}…`, () => openRunDialog(card.id, card.column), `${card.column === 'testing' || card.column === 'merge' ? '' : 'primary '}kanban-start`), STAGE_VERBS[card.column]);
+    if (card.column === 'testing') box.append(labelled(detailButton(card.evidence?.tests ? 'Run tests again' : 'Run tests', () => runTestsCard(card), 'primary kanban-deliver'), 'Run tests'));
+    const start = labelled(detailButton(stageVerb(card.column), () => startStage(card, card.column), `${card.column === 'testing' ? '' : 'primary '}kanban-start`), stageVerb(card.column));
     start.disabled = !board?.execution?.available || !currentProject()?.repository;
     if (start.disabled) start.title = !board?.execution?.available ? 'Agent terminals are not set up.' : 'Link a repository first.';
     box.append(start);
@@ -1849,139 +1855,35 @@ function readAgentFields(root) {
 }
 const agentText = agent => agent?.provider ? `${providerName(agent.provider)} · ${agent.model || 'CLI default model'}${agent.effort ? ` · ${agent.effort}` : ''}` : '';
 
-function renderRunFields(provider, stage, settings = {}) {
-  const providers = board?.execution?.providers || {};
-  const supported = Object.keys(providers).filter(id => providers[id][capabilityFor(stage)]?.supported);
-  fillSelect($('#run-provider'), supported, Object.fromEntries(supported.map(id => [id, providers[id].notLiveVerified ? `${providers[id].name} (not verified live)` : providers[id].name])));
-  $('#run-provider').value = supported.includes(provider) ? provider : supported[0] || '';
-  const chosen = $('#run-provider').value;
-  const efforts = effortsFor(chosen);
-  fillSelect($('#run-effort'), ['', ...efforts]);
-  $('#run-effort').value = efforts.includes(settings.effort) ? settings.effort : '';
-  $('#run-effort').disabled = !efforts.length;
-  const modes = stage === 'planning' || stage === 'code_review' ? ['plan'] : providers[chosen]?.permissionModes || [];
-  fillSelect($('#run-permission'), modes, { plan: 'Read-only planning', acceptEdits: 'Accept edits in the worktree', default: 'Ask before every change', 'workspace-write': 'Write in the worktree, ask for more', auto_edit: 'Accept edits, ask for tools' });
-  $('#run-permission').value = modes.includes(settings.permissionMode) ? settings.permissionMode : modes[0] || '';
-  $('#run-permission').disabled = modes.length < 2;
-  $('#run-model').dataset.provider = chosen;
-  $('#run-model-custom').value = '';
-  loadModelSelect($('#run-model'), $('#run-model-custom'), chosen, chosen === settings.provider ? settings.model || '' : '');
-  $('#run-dialog-how').textContent = providers[chosen]?.[capabilityFor(stage)]?.how || '';
-}
 
-const AGENT_SOURCES = { stage: 'stage setting', project: 'project default', global: 'global default', default: 'built-in default' };
-function stageSummary(stage, card) {
-  return stage === 'planning' ? 'The agent inspects the repository in the task worktree and writes a plan. It cannot change files. You approve the plan before anything is implemented.'
-    : stage === 'code_review' ? 'The agent reviews the committed task diff against the target branch and reports findings. It cannot change files.'
-    : stage === 'testing' ? 'The agent runs your test commands in the task worktree, fixes failures, and can add focused tests. It does not commit. Only Promptboard’s own test run (exit codes) decides whether tests pass.'
-    : stage === 'merge' ? `If ${currentProject()?.targetBranch?.name || 'the target branch'} has moved on, Promptboard first merges it into the task branch without committing, and the agent resolves any conflicts. It never commits, merges into the target, or pushes.`
-    : `The agent works in the task worktree on branch ${card.workspace?.branch || '(created when the run starts)'}. It does not touch your main checkout.`;
-}
-const HANDOFF_TEXT = { planning: 'Approve the plan and end the Planning session.', code_review: 'Record the review and end the Code Review session.' };
-const NOTES_TEXT = { review: 'Pass the review findings to the Executing agent.', tests: 'Pass the failing test output to the Executing agent.', merge: 'Pass the merge conflicts to the Executing agent.' };
-
-/**
- * One dialog for one decision. `ctx.mode` is 'transition' (the server returned an approval for a
- * move) or 'run' (the card's own Start button, for a card already in its stage).
- */
-function showRunDialog(ctx) {
-  const card = findTask(ctx.taskId);
-  const project = currentProject();
-  if (!card || !project) return;
-  runDialogContext = ctx;
-  const { stage, action, agent } = ctx;
-  $('#run-dialog-stage').textContent = `${project.name} · ${ctx.mode === 'transition' ? `${columnTitle(ctx.approval.from)} → ${columnTitle(stage)}` : columnTitle(stage)}`.toUpperCase();
-  $('#run-dialog-heading').textContent = ctx.mode === 'run' ? `${stageVerb(stage)} for “${card.title}”?` : stage === 'done' ? `Complete “${card.title}”?` : `Move “${card.title}” to ${columnTitle(stage)}?`;
-  $('#run-dialog-summary').textContent = action === 'agent' ? stageSummary(stage, card) : '';
-  const steps = [];
-  const approval = ctx.approval;
-  if (approval?.handoff) steps.push(HANDOFF_TEXT[approval.handoff.stage] || `Confirm the ${columnTitle(approval.handoff.stage)} turn and end its session.`);
-  if (approval?.commit) steps.push(`Commit ${plural(approval.commit.count, 'change')} on ${approval.branch || 'the task branch'} with your Git identity.`);
-  if (approval?.notes) steps.push(NOTES_TEXT[approval.notes]);
-  if (ctx.mode === 'transition' && stage !== 'done') steps.push(`Move the card to ${columnTitle(stage)}.`);
-  if (action === 'agent') steps.push(`Start the ${columnTitle(stage)} agent in the task worktree${card.workspace?.branch ? ` (${card.workspace.branch})` : ''}.`);
-  if (action === 'tests') steps.push(`Run the project's ${plural((project.testCommands || []).length, 'test command')} in the task worktree.`);
-  if (action === 'merge') steps.push(`Fast-forward ${approval.merge.targetBranch} to ${short(approval.merge.taskCommit)} (${plural(approval.merge.commits, 'commit')}) and complete the task. Nothing is pushed.`);
-  if (action === 'pull-request') steps.push(`Check pull request${approval.pullRequest.number ? ` #${approval.pullRequest.number}` : ''}. The card moves to Done only if it is merged.`);
-  $('#run-steps').replaceChildren(...steps.map(text => { const li = document.createElement('li'); li.textContent = text; return li; }));
-  $('#run-commit').hidden = !approval?.commit;
-  if (approval?.commit) {
-    $('#run-commit-message').value = approval.commit.message;
-    $('#run-commit-count').textContent = `${plural(approval.commit.count, 'changed file')}`;
-    $('#run-commit-files').replaceChildren(...approval.commit.changes.map(line => { const li = document.createElement('li'); li.textContent = line; return li; }));
-  }
-  const showAgent = action === 'agent' && agent;
-  $('#run-agent-line').hidden = !showAgent;
-  if (showAgent) {
-    $('#run-agent-line').replaceChildren(`${providerName(agent.provider)} · ${agent.model || 'CLI default model'} · ${agent.effort ? `${agent.effort} effort` : 'default effort'} `);
-    const from = document.createElement('small'); from.textContent = `(${AGENT_SOURCES[agent.source] || 'resolved'})`; $('#run-agent-line').append(from);
-  }
-  $('#run-override').hidden = !showAgent;
-  $('#run-override').open = false;
-  if (showAgent) renderRunFields(agent.provider, stage, agent);
-  $('#run-dialog-how').textContent = showAgent ? board?.execution?.providers?.[agent.provider]?.[capabilityFor(stage)]?.how || '' : '';
-  $('#run-dialog-plan').textContent = stage !== 'executing' || action !== 'agent' ? ''
-    : approval?.handoff?.stage === 'planning' || card.planApproval?.contentRevision === (card.contentRevision ?? 1) ? 'The approved plan is included with the task text.'
-    : card.planApproval ? 'The task changed after its plan was approved, so the old plan is not included.' : 'No approved plan: the agent receives the task text only.';
-  const status = cardStatus(card);
-  $('#run-ack-field').hidden = !(action === 'agent' && status.flag);
-  $('#run-ack').checked = false;
-  $('#run-ack-note').textContent = status.flag ? `${status.text}. Confirm that you reviewed the prompt before an agent acts on it.` : '';
-  const primary = ctx.mode === 'run' ? 'Start agent' : action === 'agent' ? `Move and start ${columnTitle(stage)}` : action === 'tests' ? 'Move and run tests'
-    : action === 'merge' ? 'Merge and complete' : action === 'pull-request' ? 'Check pull request' : approval?.commit ? 'Commit and move' : approval?.handoff ? 'Confirm and move' : 'Move';
-  $('#run-start').replaceChildren(`${primary} `, Object.assign(document.createElement('span'), { textContent: '↗', ariaHidden: 'true' }));
-  $('#run-start').hidden = Boolean(approval?.agentError);
-  $('#run-move-only').hidden = !(approval?.canMoveOnly && action);
-  $('#run-error').textContent = approval?.agentError ? `The agent cannot start: ${approval.agentError} You can still move the card.` : '';
-  $('#run-error').hidden = !approval?.agentError;
-  if (!$('#run-dialog').open) $('#run-dialog').showModal();
-  ($('#run-start').hidden ? $('#run-move-only') : $('#run-start')).focus();
-}
-
-/** The server needs one approval for this move. Nothing has changed yet. */
-function openApproval(approval, index) {
-  showRunDialog({ mode: 'transition', taskId: approval.taskId, stage: approval.to, action: approval.action, agent: approval.agent, approval, index });
-}
-
-function openRunDialog(taskId, stage) {
-  const settings = currentProject()?.effectiveWorkflow?.[stage] || {};
-  showRunDialog({ mode: 'run', taskId, stage, action: 'agent', agent: { provider: settings.provider, model: settings.model, effort: settings.effort, permissionMode: settings.permissionMode, source: settings.agentSource } });
-}
-
-async function submitRun(event, decision = 'start') {
-  event?.preventDefault();
-  const ctx = runDialogContext;
-  const card = ctx && findTask(ctx.taskId);
-  if (!card || ctx.busy) return;
-  const showError = message => { $('#run-error').textContent = message; $('#run-error').hidden = false; };
-  const starting = decision === 'start' && ctx.action === 'agent';
-  if (starting && !$('#run-ack-field').hidden && !$('#run-ack').checked) { showError('Confirm that you reviewed this prompt first.'); return; }
-  const override = starting && $('#run-override').open;
-  if (override && $('#run-model').value === '__custom__' && !$('#run-model-custom').value.trim()) { showError('Enter the custom model ID, or choose a model from the list.'); $('#run-model-custom').focus(); return; }
-  if (ctx.approval?.commit && !$('#run-commit-message').value.trim()) { showError('Enter a commit message.'); $('#run-commit-message').focus(); return; }
-  // Without a change, the server resolves the agent itself (stage → project → global default).
-  const config = override ? { provider: $('#run-provider').value, model: chosenModelFrom($('#run-model'), $('#run-model-custom')), effort: $('#run-effort').value, permissionMode: $('#run-permission').value } : {};
-  ctx.busy = true;
-  for (const id of ['#run-start', '#run-move-only']) $(id).disabled = true;
+/** Start the card's stage agent now (the card is already in that stage). No dialog: the click is the instruction. */
+async function startStage(card, stage) {
   try {
-    if (ctx.mode === 'run') {
-      const { run } = await boardCall('POST', `/api/tasks/${encodeURIComponent(card.id)}/runs`, { stage: ctx.stage, consent: true, config }, 180000);
-      $('#run-dialog').close();
-      announce(`${stageVerb(ctx.stage)} for “${card.title}”. ${uiPref('openTerminal') === '1' ? 'The terminal is below.' : 'Its tab is in the dock below.'}`);
-      showStartedRun(run.id);
-    } else {
-      const { approval } = ctx;
-      movingTo.set(card.id, ctx.stage); renderBoard();
-      let result;
-      try {
-        result = await boardCall('POST', `/api/tasks/${encodeURIComponent(card.id)}/move`, { column: ctx.stage, index: ctx.index, expectedRevision: approval.expectedRevision, transitionId: approval.transitionId,
-          decision, config, handoffRunId: approval.handoff?.runId || null, ...(approval.commit ? { commitMessage: $('#run-commit-message').value.trim() } : {}) }, 180000);
-      } finally { movingTo.delete(card.id); renderBoard(); }
-      $('#run-dialog').close();
-      movedAnnouncement(card, ctx.stage, result);
-    }
-  } catch (error) { showError(`${error.message}${ctx.mode === 'transition' ? ` “${card.title}” stayed in ${columnTitle(findTask(card.id)?.column || card.column)}.` : ''}`); }
-  finally { ctx.busy = false; for (const id of ['#run-start', '#run-move-only']) $(id).disabled = false; }
+    const { run } = await boardCall('POST', `/api/tasks/${encodeURIComponent(card.id)}/runs`, { stage, consent: true }, 180000);
+    announce(`${stageVerb(stage)} for “${card.title}”.`);
+    showStartedRun(run.id);
+  } catch (error) { showBoardError(error); }
+}
+async function runTestsCard(card) {
+  try { await boardCall('POST', `/api/tasks/${encodeURIComponent(card.id)}/tests`, { confirm: true }); announce(`Tests started for “${card.title}”.`); pollTests(card.id); }
+  catch (error) { showBoardError(error); }
+}
+/** One click merges a verified card (the server brings in a moved target first). */
+async function mergeCard(card) {
+  try {
+    const result = await boardCall('POST', `/api/tasks/${encodeURIComponent(card.id)}/merge-now`, {}, 300000);
+    announce(result.merged ? `Merged “${card.title}” into ${result.task?.completion?.targetBranch || 'the target branch'}. The card is Done.` : `“${card.title}”: ${result.merge?.message || 'the merge is being prepared.'}`);
+  } catch (error) { showBoardError(error); }
+}
+/** One click pushes the task branch (never forced) and opens or updates its pull request. */
+async function pullRequestCard(card) {
+  const review = card.evidence?.review, tests = card.evidence?.tests;
+  const body = [card.prompt.slice(0, 4000), '', '---', `Code review: ${review ? `${review.status}${review.verdict ? ` (${review.verdict.replaceAll('_', ' ')})` : ''} for ${short(review.taskCommit)}` : 'none'}`,
+    `Tests: ${tests ? `${tests.status} (${(tests.results || []).length} commands) for ${short(tests.taskCommit)}` : 'none'}`, '', 'Opened by Promptboard.'].join('\n');
+  try {
+    const { task } = await boardCall('POST', `/api/tasks/${encodeURIComponent(card.id)}/pull-request`, { confirm: true, title: card.title, body }, 300000);
+    announce(`Pull request ${task.evidence?.pullRequest?.number ? `#${task.evidence.pullRequest.number} ` : ''}is open for “${card.title}”. The card moves to Done when it is merged.`);
+  } catch (error) { showBoardError(error); }
 }
 
 async function confirmRun(run) {
@@ -2045,20 +1947,18 @@ async function openTaskDetails(taskId) {
 
 function workflowSummary(project) {
   const flow = project.effectiveWorkflow || {};
-  return [...['planning', 'executing'].map(stage => `${columnTitle(stage)}: ${POLICY_LABELS[flow[stage]?.policy] || 'Ask on entry'}`),
+  return [...['planning', 'executing'].map(stage => `${columnTitle(stage)}: ${POLICY_LABELS[flow[stage]?.policy === 'manual' ? 'manual' : 'start']}`),
     ...(flow.merge?.policy === 'start' ? ['Merge: automatic'] : [])].join(' · ');
 }
 
 function workflowPreview(stage, settings) {
-  const agentNote = stage === 'testing' || stage === 'merge' ? ` The ${stage === 'testing' ? 'testing' : 'merge'} agent below starts only from the card.` : '';
-  if (stage === 'merge') return (settings.policy !== 'start' ? 'Moving a card here starts nothing. Drag it to Done to confirm the merge, or use the task details.'
-    : 'Moving a card here merges it at once, but only if the code review was accepted and the tests passed for exactly the current task and target commits, the merge is a fast-forward, and the target checkout is clean. Otherwise nothing is merged and the reason is shown. Nothing is pushed.') + agentNote;
+  const manual = settings.policy === 'manual';
+  if (stage === 'merge') return manual ? 'Entering Merge checks the review and tests for the current commit and brings in a moved target branch. Then the card shows one button: Merge. One click merges; nothing is pushed.'
+    : 'Entering Merge merges at once when the review and tests passed for the current commit and the merge is a fast-forward. A moved target branch is brought in first; conflicts go to the merge agent.';
   const provider = settings.provider ? providerName(settings.provider) : 'The inherited agent';
   const what = stage === 'planning' ? `${provider} writes a read-only plan` : stage === 'code_review' ? `${provider} reviews the committed diff read-only`
-    : stage === 'testing' ? 'your configured test commands run in the task worktree' : `${provider} works in the task worktree`;
-  return (settings.policy === 'manual' ? `Moving a card here does nothing. You start ${columnTitle(stage)} from the card when you want.`
-    : settings.policy === 'ask' ? `Moving a card here asks once. If you agree, ${what}.`
-    : `Moving a card here starts at once: ${what}. The run is recorded as started by this setting.`) + agentNote;
+    : stage === 'testing' ? 'your test commands run in the task worktree' : `${provider} works in the task worktree`;
+  return manual ? `Moving a card here only moves it. Start ${columnTitle(stage)} from the card.` : `Moving a card here starts it: ${what}.`;
 }
 
 function openWorkflowDialog() {
@@ -2073,10 +1973,10 @@ function openWorkflowDialog() {
     box.dataset.stage = stage;
     const legend = document.createElement('legend'); legend.textContent = columnTitle(stage);
     const policy = document.createElement('div'); policy.className = 'segmented';
-    for (const value of stage === 'merge' ? ['manual', 'start'] : ['manual', 'ask', 'start']) {
+    for (const value of ['start', 'manual']) {
       const label = document.createElement('label');
-      const input = document.createElement('input'); input.type = 'radio'; input.name = `policy-${stage}`; input.value = value; input.checked = settings.policy === value || (stage === 'merge' && value === 'manual' && settings.policy !== 'start');
-      const span = document.createElement('span'); span.textContent = stage === 'merge' && value === 'start' ? 'Merge automatically' : POLICY_LABELS[value];
+      const input = document.createElement('input'); input.type = 'radio'; input.name = `policy-${stage}`; input.value = value; input.checked = (settings.policy === 'manual' ? 'manual' : 'start') === value;
+      const span = document.createElement('span'); span.textContent = stage === 'merge' ? (value === 'start' ? 'Merge automatically' : 'Merge button') : POLICY_LABELS[value];
       label.append(input, span); policy.append(label);
     }
     const preview = paragraph(workflowPreview(stage, settings), 'workflow-preview');
@@ -2090,6 +1990,10 @@ function openWorkflowDialog() {
     const instructions = document.createElement('textarea'); instructions.maxLength = 4000; instructions.value = settings.instructions || ''; instructions.dataset.field = 'instructions';
     instructionsField.append(instructions);
     if (stage === 'testing') {
+      const agentOption = document.createElement('label'); agentOption.className = 'check-row';
+      const agentBox = document.createElement('input'); agentBox.type = 'checkbox'; agentBox.dataset.field = 'agentOnFailure'; agentBox.checked = settings.agentOnFailure === true;
+      agentOption.append(agentBox, ' Start the testing agent when tests fail (it fixes the cause in the task worktree)');
+      children.push(agentOption);
       const commandsField = document.createElement('label'); commandsField.className = 'field-label'; commandsField.textContent = 'Test commands (one per line; run without a shell, in the task worktree)';
       const commands = document.createElement('textarea'); commands.id = 'test-commands'; commands.value = (project.testCommands || []).map(item => item.argv.map(arg => /[\s"']/.test(arg) ? JSON.stringify(arg) : arg).join(' ')).join('\n');
       commands.placeholder = 'npm test';
@@ -2102,7 +2006,7 @@ function openWorkflowDialog() {
     box.addEventListener('change', () => { preview.textContent = workflowPreview(stage, readWorkflowStage(box)); });
     stages.push(box);
   }
-  const fixed = paragraph('To Do and Done never run agents. A card reaches Done only through a verified merge, a merged pull request, or “no changes required”; Reopen starts a new cycle. Merges are fast-forward only and never pushed. Each column runs only its own stage.', 'workflow-preview');
+  const fixed = paragraph('Dragging a card is the instruction: its stage starts at once. To Do and Done never run agents. A card reaches Done only through a verified merge, a merged pull request, or “no changes required”; Reopen starts a new cycle. Each column runs only its own stage.', 'workflow-preview');
   // Agent hierarchy: a stage setting, else this project default, else the global default in Settings.
   const defaults = document.createElement('fieldset');
   defaults.className = 'workflow-stage workflow-defaults';
@@ -2115,7 +2019,9 @@ function openWorkflowDialog() {
 }
 
 function readWorkflowStage(box) {
-  const result = { policy: box.querySelector('input[type="radio"]:checked')?.value || 'ask', instructions: box.querySelector('[data-field="instructions"]')?.value || '' };
+  const result = { policy: box.querySelector('input[type="radio"]:checked')?.value || 'start', instructions: box.querySelector('[data-field="instructions"]')?.value || '' };
+  const agentOnFailure = box.querySelector('[data-field="agentOnFailure"]');
+  if (agentOnFailure) result.agentOnFailure = agentOnFailure.checked;
   const agent = readAgentFields(box);
   return agent ? { ...result, ...agent } : result;
 }
@@ -2793,12 +2699,6 @@ $('#workflow-open').addEventListener('click', openWorkflowDialog);
 $('#workflow-form').addEventListener('submit', saveWorkflow);
 $('#workflow-cancel').addEventListener('click', () => $('#workflow-dialog').close());
 $('#workflow-dialog-close').addEventListener('click', () => $('#workflow-dialog').close());
-$('#run-form').addEventListener('submit', submitRun);
-$('#run-move-only').addEventListener('click', () => submitRun(null, 'move'));
-$('#run-provider').addEventListener('change', () => renderRunFields($('#run-provider').value, runDialogContext?.stage, {}));
-$('#run-model').addEventListener('change', () => { $('#run-model-custom').hidden = $('#run-model').value !== '__custom__'; if (!$('#run-model-custom').hidden) $('#run-model-custom').focus(); });
-$('#run-cancel').addEventListener('click', () => $('#run-dialog').close());
-$('#run-dialog-close').addEventListener('click', () => $('#run-dialog').close());
 $('#task-dialog-close').addEventListener('click', () => $('#task-dialog').close());
 $('#task-dialog-done').addEventListener('click', () => $('#task-dialog').close());
 $('#import-confirm').addEventListener('click', () => confirmImported(true));
@@ -3140,15 +3040,15 @@ function renderColumnEditor() {
     enabled.append(toggle, ' Start an agent here');
     const detail = document.createElement('div'); detail.className = 'columns-agent'; detail.hidden = !entry.agent.enabled;
     const policy = document.createElement('div'); policy.className = 'segmented';
-    for (const [value, label] of [['ask', 'Ask on entry'], ['start', 'Start on entry'], ['manual', 'From the card only']]) {
-      const option = document.createElement('label'); const input = document.createElement('input'); input.type = 'radio'; input.name = 'column-policy'; input.value = value; input.checked = (entry.agent.policy || 'ask') === value;
+    for (const [value, label] of [['start', 'Start automatically'], ['manual', 'From the card only']]) {
+      const option = document.createElement('label'); const input = document.createElement('input'); input.type = 'radio'; input.name = 'column-policy'; input.value = value; input.checked = (entry.agent.policy === 'manual' ? 'manual' : 'start') === value;
       input.addEventListener('change', () => { entry.agent.policy = value; });
       const span = document.createElement('span'); span.textContent = label; option.append(input, span); policy.append(option);
     }
     const instructions = document.createElement('textarea'); instructions.maxLength = 4000; instructions.id = 'column-instructions'; instructions.placeholder = 'What should the agent do in this column?'; instructions.value = entry.agent.instructions || '';
     instructions.addEventListener('input', () => { entry.agent.instructions = instructions.value; });
     detail.append(policy, field('Instructions for the agent', instructions), paragraph('The agent works in the card’s own worktree with the project’s default agent, and never commits. Changed code still goes through Code Review and Testing before it can merge.', 'note'));
-    toggle.addEventListener('change', () => { entry.agent.enabled = toggle.checked; entry.agent.policy ||= 'ask'; detail.hidden = !toggle.checked; });
+    toggle.addEventListener('change', () => { entry.agent.enabled = toggle.checked; entry.agent.policy ||= 'start'; detail.hidden = !toggle.checked; });
     const anchor = draftAnchor(entry);
     nodes.push(group('Agent', enabled, detail), group('Moves', paragraph(`Cards reach this column from ${builtinTitle(anchor)} and leave it along ${builtinTitle(anchor)}’s moves (or to another custom column next to it). Move the column to attach it to another stage.`, 'note')));
   }
