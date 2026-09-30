@@ -620,7 +620,6 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
 .agent-title { overflow: hidden; color: var(--ink); font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .agent-meta { overflow: hidden; color: var(--subtle); font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; }
 .agent-item.awaits_you .agent-state { color: var(--ink); font-weight: 700; }
-.agents-empty { margin: 0 2px 8px; color: var(--subtle); font-size: 12px; }
 .kanban-card.agent-focus { outline: 2px solid var(--focus); outline-offset: 2px; }
 .run-agent { margin: 2px 0 0; color: var(--subtle); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .run-activity { margin: 0; color: var(--muted); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

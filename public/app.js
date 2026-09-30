@@ -940,7 +940,6 @@ function showPage() {
   $('#workspace-panel').hidden = !kanban;
   $('#sidebar').setAttribute('aria-label', kanban ? 'Projects' : 'Prompt history');
   $('#sidebar-scrim').setAttribute('aria-label', kanban ? 'Close projects' : 'Close history');
-  $('#sidebar-note').textContent = kanban ? 'Each project has its own board. Agents keep running when you switch projects.' : 'History stays in this browser. Your CLI handles the model.';
   if (kanban) renderBoard();
   setSidebar(false);
   window.scrollTo(0, 0);
@@ -1699,7 +1698,6 @@ function renderAgents(current) {
   $('#agents-filter').value = filter;
   const rows = agentRuns(filter, current);
   $('#agents-count').textContent = String(rows.filter(row => RUN_LIVE.includes(row.run.status)).length).padStart(2, '0');
-  $('#agents-empty').hidden = rows.length > 0;
   $('#agents-list').replaceChildren(...rows.map(({ run, task, project }) => {
     const state = agentState(run);
     const item = document.createElement('li');
