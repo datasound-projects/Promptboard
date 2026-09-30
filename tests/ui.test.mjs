@@ -7,6 +7,8 @@ import { join } from 'node:path';
 import { JSDOM } from 'jsdom';
 import { startServer } from '../src/server.mjs';
 import { fakeGh } from './fixtures/fake-gh.mjs';
+// Git output for assertions (the file's local helpers take other argument shapes).
+const gitIn = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
 import { VERSION } from '../src/version.mjs';
 
 const catalogs = {
@@ -610,7 +612,7 @@ test('projects keep separate boards; names are validated; deletion needs confirm
   assert.equal($('#sidebar').getAttribute('aria-label'), 'Projects');
   const items = () => [...$('#workspace-list').querySelectorAll('.workspace-item')];
   assert.deepEqual(items().map(item => item.querySelector('.workspace-name').textContent), ['Alpha', 'Beta']);
-  assert.match(items()[0].querySelector('.workspace-meta').textContent, /Not linked · 2 cards/);
+  assert.match(items()[0].querySelector('.workspace-meta').textContent, /^Alpha → \S+ · 2 cards$/, 'A new project has its own Git repository.');
   assert.equal(items()[0].getAttribute('aria-current'), 'true');
   items()[1].click(); await ctx.idle();
   assert.deepEqual(titles($), ['B1']);
@@ -633,7 +635,7 @@ test('projects keep separate boards; names are validated; deletion needs confirm
   assert.match(entry('Beta two').querySelector('.workspace-menu').textContent, /Delete “Beta two” and its 1 card\? This cannot be undone/);
   [...entry('Beta two').querySelectorAll('.workspace-menu button')].find(button => button.textContent === 'Keep').click(); await ctx.idle();
   assert.equal(entry('Beta two').querySelector('.workspace-menu'), null);
-  await menu('Beta two', 'Link repository…');
+  await menu('Beta two', 'Change repository…'); // A new project already has its own repository.
   assert.equal($('#project-select').selectedOptions[0].textContent, 'Beta two', 'The action selects that project.');
   assert.equal($('#repo-panel').hidden, false);
   assert.equal($('#project-body').hidden, false);
@@ -707,6 +709,7 @@ test('seven stages render; cards are created, edited, duplicated, deleted, and r
   assert.deepEqual(titles($), ['Three', 'Two', 'One']);
   assert.deepEqual((await serverTasks(ctx)).map(card => card.title), ['Three', 'Two', 'One']);
   // An unlinked project keeps cards in To Do and explains why.
+  await unlink(ctx);
   const menu = cardItem(ctx, 'One').querySelector('.kanban-move-to');
   menu.value = 'planning'; menu.dispatchEvent(new win.Event('change')); await ctx.idle();
   assert.match($('#project-detail').textContent, /Link this project to a Git repository/);
@@ -748,7 +751,9 @@ test('a linked repository enables stage moves; invalid folders explain the probl
   await goTo(ctx, '#/kanban');
   await newProject(ctx, 'Linked');
   await newCard(ctx, 'Feature', 'Build the feature.');
-  assert.match($('#repo-state').textContent, /Not linked/);
+  // The new project comes with its own Git repository in the projects folder.
+  assert.match($('#repo-state').textContent, /Linked to \S+\/projects\/Linked\./);
+  assert.equal(gitIn((await serverBoard(ctx)).projects[0].repository.root, 'log', '--format=%s'), 'Initial commit');
   $('#repo-path').value = join(repo, 'missing'); submitForm(ctx, '#repo-form'); await ctx.idle();
   assert.equal($('#repo-message').textContent, 'This folder does not exist.');
   $('#repo-path').value = tmpdir(); submitForm(ctx, '#repo-form'); await ctx.idle();
@@ -980,9 +985,17 @@ async function linkedKanban(t, options = {}) {
   const project = (await serverBoard(ctx)).projects[0];
   return { ...ctx, executor, repo, project };
 }
+/** Remove the repository link of the selected project, to test what an unlinked project does. */
+async function unlink(ctx) {
+  const id = ctx.$('#project-select').value;
+  await ctx.app.board.linkRepository(id, { path: null, expectedRevision: (await ctx.app.board.state()).projects.find(project => project.id === id).revision });
+  await ctx.win.__pbTest.loadBoard(); await ctx.idle();
+}
 async function link(ctx) {
-  await ctx.app.board.linkRepository(ctx.project.id, { path: ctx.repo, expectedRevision: 1 });
-  await ctx.app.board.setTargetBranch(ctx.project.id, { branch: 'trunk', expectedRevision: 2 });
+  // New projects already have their own repository; these tests link a prepared one with a "trunk" branch.
+  const revision = async () => (await ctx.app.board.state()).projects.find(project => project.id === ctx.project.id).revision;
+  await ctx.app.board.linkRepository(ctx.project.id, { path: ctx.repo, expectedRevision: await revision() });
+  await ctx.app.board.setTargetBranch(ctx.project.id, { branch: 'trunk', expectedRevision: await revision() });
   await ctx.win.__pbTest.loadBoard(); await ctx.idle();
 }
 const moveBy = async (ctx, title, column) => { const menu = cardItem(ctx, title).querySelector('.kanban-move-to'); menu.value = column; menu.dispatchEvent(new ctx.win.Event('change')); };
@@ -993,6 +1006,7 @@ test('drag-and-drop and keyboard moves use the same transition; rejected moves r
   await newCard(ctx, 'Keyboard', 'Move me with the menu.');
   await newCard(ctx, 'Dragged', 'Move me with the mouse.');
   // Keyboard: the card stays in its column, marked "Moving to …", until the server answers; it never jumps first.
+  await unlink(ctx);
   await moveBy(ctx, 'Keyboard', 'planning');
   assert.ok(cardItem(ctx, 'Keyboard').classList.contains('moving'), 'A move shows as pending until the server answers.');
   assert.match(cardItem(ctx, 'Keyboard').textContent, /Moving to Planning…/);
@@ -1288,10 +1302,11 @@ test('when browser storage is full, the oldest prompts are dropped so the newest
   assert.equal($('#history-list').children.length, saved.length);
 });
 
-test('Open folder… turns a chosen folder into a linked project, offers Git setup, and reuses a known folder', { skip: process.platform === 'win32' }, async t => {
+test('Open folder… turns a chosen folder into a linked project, sets up Git when needed without adding files, and reuses a known folder', { skip: process.platform === 'win32' }, async t => {
   const repo = await gitRepo(t);
   const plain = await realpath(await mkdtemp(join(tmpdir(), 'pb-ui-open-')));
   t.after(() => rm(plain, { recursive: true, force: true }));
+  await writeFile(join(plain, 'mine.txt'), 'my file\n');
   const picks = [{ path: `${repo}/` }, { path: plain }, { cancelled: true }, { path: repo }];
   const ctx = await setup(t, { folderPicker: async () => picks.shift() });
   const { $, win } = ctx;
@@ -1302,13 +1317,13 @@ test('Open folder… turns a chosen folder into a linked project, offers Git set
   await until(() => $('#repo-state').textContent.includes(`Linked to ${repo}`), 'project created and linked');
   const repoName = repo.split('/').pop();
   assert.deepEqual(names(), [repoName]);
-  // A folder without Git becomes a project too, with the Git setup offered (not done).
+  // A folder without Git becomes a linked project too: git init and one empty first commit. Its files are not added.
   await click(ctx, $('#workspace-open'));
-  await until(() => names().length === 2 && !$('#repo-setup').hidden, 'second project with the Git setup offer');
+  await until(() => names().length === 2 && $('#repo-state').textContent.includes(`Linked to ${plain}`), 'second project, Git set up');
   assert.equal($('#project-select').selectedOptions[0].textContent, plain.split('/').pop());
-  assert.equal($('#repo-path').value, plain);
-  assert.equal($('#repo-setup').hidden, false);
-  await assert.rejects(readFile(join(plain, '.git', 'HEAD')));
+  assert.equal(gitIn(plain, 'log', '--format=%s'), 'Initial commit');
+  assert.equal(gitIn(plain, 'status', '--porcelain'), '?? mine.txt', 'The user\'s file is not committed.');
+  assert.match($('#announcement').textContent, /Git was set up there with an empty first commit; your files were not added/);
   // Cancelling the picker changes nothing; a folder that a project already uses is selected, not duplicated.
   await click(ctx, $('#workspace-open'));
   assert.equal(names().length, 2);

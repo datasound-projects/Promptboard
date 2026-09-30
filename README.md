@@ -61,8 +61,8 @@ Open **http://127.0.0.1:4318** if the browser does not open. Use `npm start -- -
 
 ## Run tasks on the board
 
-1. **Pick or create a project** in the sidebar, or choose **Open folder…** to turn a folder on your computer into a project (named after the folder and linked to it). Each project has its own board and repository; agents keep running when you switch. The ⋯ next to a project renames it, links or changes its repository, opens its workflow settings, or deletes it.
-2. **Link a repository.** Choose a local Git repository and a target branch. If the folder is not a Git repository yet (or does not exist), Promptboard offers to set it up: after you confirm, it runs `git init` and makes one empty first commit. It never adds your files. Promptboard does not create repositories, commit, or push without asking.
+1. **Pick or create a project** in the sidebar. **New project** creates its own folder in `~/Promptboard Projects` (or `PROMPTBOARD_PROJECTS_DIR`) with a Git repository, ready for agents. **Open folder…** turns a folder on your computer into a project; if it is not a Git repository yet, Promptboard runs `git init` and makes one empty first commit (your files are not added). Each project has its own board and repository; agents keep running when you switch. The ⋯ next to a project renames it, links or changes its repository, opens its workflow settings, or deletes it.
+2. **Check the repository.** The project's target branch is the checked-out branch; you can change it or link another repository. When Promptboard sets up Git, it never adds your files; if Git has no name and email yet, that one empty commit is made as “Promptboard” and your Git settings stay unchanged. Task commits always use your own Git identity.
 3. **Add a card.** Write a task or add a prompt from Compose. The card keeps an exact copy.
 4. **Move it through the stages.**
 

@@ -7,7 +7,7 @@
  * requests are refused before any worktree is created.
  */
 import { randomUUID } from 'node:crypto';
-import { access, mkdir, realpath } from 'node:fs/promises';
+import { access, mkdir, readdir, realpath, rm, stat } from 'node:fs/promises';
 import { join, relative, isAbsolute } from 'node:path';
 import { Store } from './store.mjs';
 import { branchExists, commitExists, git, GitError, initRepository, listWorktrees, validateRepository } from './git.mjs';
@@ -228,8 +228,9 @@ const inside = (parent, child) => { const rel = relative(parent, child); return 
 const slug = value => value.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'task';
 
 export class Board {
-  constructor({ dataDir, executor = null }) {
+  constructor({ dataDir, executor = null, projectsDir = join(dataDir, 'projects') }) {
     this.dataDir = dataDir;
+    this.projectsDir = projectsDir; // Where "New project" creates each project's own Git repository.
     this.store = new Store(dataDir);
     this.worktreeRoot = join(dataDir, 'worktrees');
     this.hooksDir = join(dataDir, 'no-hooks'); // Empty: git worktree add runs no repository hooks.
@@ -300,6 +301,48 @@ export class Board {
       state.projects.push(project);
       return project;
     });
+  }
+
+  /**
+   * A project that is ready for agents: every project made in the app has a Git repository.
+   * `folder: 'new'` creates a folder in the projects folder; an absolute path uses that existing
+   * folder. A folder that is not a repository yet gets `git init` and one empty first commit
+   * (its files are never added). Then the project is linked to it.
+   */
+  async createProjectWithRepository({ name, folder }) {
+    const clean = text(name, 80, 'Project name');
+    this.#nameError(await this.state(), clean);
+    let path, created = false;
+    if (folder === 'new') {
+      await mkdir(this.projectsDir, { recursive: true });
+      const base = clean.normalize('NFC').replace(/[\\/:*?"<>|\u0000-\u001f]+/g, '-').replace(/^[.\s-]+|[.\s]+$/g, '').slice(0, 80) || 'project';
+      for (let n = 1; ; n++) {
+        if (n > 100) throw new BoardError('Could not find a free folder name for this project.', 'FOLDER_UNAVAILABLE', 409);
+        path = join(await realpath(this.projectsDir), n === 1 ? base : `${base} ${n}`);
+        if (!(await access(path).then(() => true, () => false))) break;
+      }
+      await mkdir(path);
+      created = true;
+    } else {
+      if (typeof folder !== 'string' || !isAbsolute(folder.trim())) throw new BoardError('Choose the absolute path of the project folder.', 'INVALID_PATH');
+      path = folder.trim();
+      const info = await stat(path).catch(() => null);
+      if (!info?.isDirectory()) throw new BoardError(info ? 'This path is a file, not a folder.' : 'This folder does not exist.', info ? 'NOT_A_DIRECTORY' : 'PATH_NOT_FOUND');
+    }
+    try {
+      const repository = await validateRepository(path).catch(async error => {
+        if (!['NOT_A_REPOSITORY', 'NO_COMMITS'].includes(error.code)) throw error;
+        await initRepository(path, { fallbackIdentity: true });
+        return null;
+      });
+      const project = await this.createProject({ name: clean });
+      const linked = await this.linkRepository(project.id, { path, expectedRevision: project.revision });
+      return { project: linked.project, folder: path, initialized: !repository, createdFolder: created };
+    } catch (error) {
+      // Remove only a folder this call created, and only while it holds nothing but its new repository.
+      if (created && (await readdir(path).catch(() => [])).every(entry => entry === '.git')) await rm(path, { recursive: true, force: true }).catch(() => {});
+      throw error;
+    }
   }
 
   async renameProject(id, { name, expectedRevision }) {

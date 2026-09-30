@@ -345,14 +345,19 @@ test('board HTTP routes need the page token, resolve paths on the server, and ne
   const created = await call('POST', '/api/projects', { name: 'Web' });
   assert.equal(created.status, 200);
   const project = created.data.project;
-  const invalid = await call('POST', `/api/projects/${project.id}/repository`, { path: join(root, 'missing'), expectedRevision: 1 });
+  // A project made in the app gets its own folder with a Git repository, inside the projects folder.
+  assert.equal(created.data.folder, join(await realpath(app.board.projectsDir), 'Web'));
+  assert.equal(created.data.initialized, true);
+  assert.ok(project.repository && project.targetBranch, 'Linked with a target branch at once.');
+  const invalid = await call('POST', `/api/projects/${project.id}/repository`, { path: join(root, 'missing'), expectedRevision: project.revision });
   assert.equal(invalid.status, 400);
   assert.equal(invalid.data.code, 'PATH_NOT_FOUND');
-  const linked = await call('POST', `/api/projects/${project.id}/repository`, { path: root, expectedRevision: 1 });
+  const linked = await call('POST', `/api/projects/${project.id}/repository`, { path: root, expectedRevision: project.revision });
   assert.equal(linked.status, 200);
   assert.deepEqual(linked.data.repository.branches.map(branch => branch.name), ['trunk']);
-  assert.equal((await call('POST', `/api/projects/${project.id}/target-branch`, { branch: 'main', expectedRevision: 2 })).data.code, 'BRANCH_NOT_FOUND');
-  assert.equal((await call('POST', `/api/projects/${project.id}/target-branch`, { branch: 'trunk', expectedRevision: 2 })).status, 200);
+  const revision = linked.data.project.revision;
+  assert.equal((await call('POST', `/api/projects/${project.id}/target-branch`, { branch: 'main', expectedRevision: revision })).data.code, 'BRANCH_NOT_FOUND');
+  assert.equal((await call('POST', `/api/projects/${project.id}/target-branch`, { branch: 'trunk', expectedRevision: revision })).status, 200);
   const task = (await call('POST', '/api/tasks', { projectId: project.id, title: 'T', prompt: 'P' })).data.task;
   assert.equal(task.column, 'todo');
   const moved = await call('POST', `/api/tasks/${task.id}/move`, { column: 'executing', expectedRevision: 1 });
@@ -375,4 +380,38 @@ test('starting the server does not create or touch board files', async t => {
   await app.close();
   assert.equal(await exists(dataDir), false);
   await mkdir(dataDir);
+});
+
+test('every project made in the app has a Git repository: new folders, existing folders, no identity, and safe clean-up', { skip: process.platform === 'win32' }, async t => {
+  const dataDir = await temp(t, 'pb-data-');
+  const projectsDir = join(dataDir, 'My Projects');
+  const board = new Board({ dataDir, projectsDir });
+  // No Git identity anywhere: the empty first commit still works; Git configuration is not changed.
+  // user.useConfigOnly stops Git from guessing a name from the operating-system account.
+  const env = { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'user.useConfigOnly', GIT_CONFIG_VALUE_0: 'true' };
+  const saved = Object.fromEntries(Object.keys(env).map(key => [key, process.env[key]]));
+  Object.assign(process.env, env);
+  t.after(() => { for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } });
+  const first = await board.createProjectWithRepository({ name: 'Web: App/1', folder: 'new' });
+  assert.equal(first.folder, join(await realpath(projectsDir), 'Web- App-1'), 'Unsafe folder characters are replaced.');
+  assert.equal(execFileSync('git', ['log', '--format=%s %an'], { cwd: first.folder, encoding: 'utf8' }).trim(), 'Initial commit Promptboard');
+  // `git config --get-regexp` exits with status 1 when nothing matches: no identity was written.
+  assert.throws(() => execFileSync('git', ['config', '--local', '--get-regexp', '^user\\.'], { cwd: first.folder, stdio: 'pipe' }), { status: 1 });
+  assert.ok(first.project.repository && first.project.targetBranch);
+  // A folder with that name already exists: the next project gets its own folder.
+  await mkdir(join(projectsDir, 'Two'));
+  const second = await board.createProjectWithRepository({ name: 'Two', folder: 'new' });
+  assert.equal(second.folder, join(await realpath(projectsDir), 'Two 2'));
+  // A taken project name fails before any folder is made.
+  await assert.rejects(board.createProjectWithRepository({ name: 'two', folder: 'new' }), { code: 'NAME_TAKEN' });
+  assert.deepEqual((await readdir(projectsDir)).sort(), ['Two', 'Two 2', 'Web- App-1']);
+  // An existing folder: git init and one empty commit; the user's files are not added.
+  const existing = join(dataDir, 'existing');
+  await mkdir(existing);
+  await writeFile(join(existing, 'notes.txt'), 'mine\n');
+  const opened = await board.createProjectWithRepository({ name: 'Existing', folder: existing });
+  assert.equal(opened.initialized, true);
+  assert.equal(execFileSync('git', ['status', '--porcelain'], { cwd: existing, encoding: 'utf8' }).trim(), '?? notes.txt');
+  await assert.rejects(board.createProjectWithRepository({ name: 'Missing', folder: join(dataDir, 'nope') }), { code: 'PATH_NOT_FOUND' });
+  await assert.rejects(board.createProjectWithRepository({ name: 'Relative', folder: 'relative/path' }), { code: 'INVALID_PATH' });
 });

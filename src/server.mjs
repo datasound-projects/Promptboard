@@ -108,7 +108,11 @@ async function boardRoute(board, req, res, pathname, searchParams) {
   if (method === 'GET' && pathname === '/api/board/export') return send(res, 200, await board.exportBackup());
   if (method === 'POST' && pathname === '/api/board/migrate') return view({ migrated: await board.migrateBrowserBoard((await body(BOARD_BODY_LIMIT)).board) });
   if (method === 'POST' && pathname === '/api/board/import') { const data = await body(BOARD_BODY_LIMIT); return view({ imported: await board.importBackup(data.backup, { replace: data.replace === true }) }); }
-  if (method === 'POST' && pathname === '/api/projects') return view({ project: await board.createProject(await body()) });
+  if (method === 'POST' && pathname === '/api/projects') {
+    const { name, folder } = await body();
+    // Every project made in the app gets a Git repository: a new folder, or the chosen one.
+    return view(await board.createProjectWithRepository({ name, folder: folder === undefined ? 'new' : folder }));
+  }
   if (method === 'POST' && pathname === '/api/folder/choose') return send(res, 200, await board.folderPicker());
   if (method === 'POST' && pathname === '/api/repository/validate') return send(res, 200, { repository: await board.validateRepository((await body()).path) });
   if (method === 'POST' && pathname === '/api/tasks') return view({ task: await board.createTask(await body()) });
@@ -216,9 +220,9 @@ function streamRun(supervisor, req, res, runId, after) {
   req.on('close', () => { clearInterval(ping); unsubscribe(); });
 }
 
-export async function startServer({ port = 4318, runner = runProvider, detector = detectProviders, catalogReader = discoverModels, authAdapter = auth, dataDir = defaultDataDir(), executor = 'auto', folderPicker = chooseFolder, githubPty = loadPty } = {}) {
+export async function startServer({ port = 4318, runner = runProvider, detector = detectProviders, catalogReader = discoverModels, authAdapter = auth, dataDir = defaultDataDir(), projectsDir, executor = 'auto', folderPicker = chooseFolder, githubPty = loadPty } = {}) {
   // The board loads lazily, so starting the server never reads or writes board files.
-  const board = new Board({ dataDir });
+  const board = new Board({ dataDir, ...(projectsDir ? { projectsDir } : {}) });
   board.executor = executor === 'auto' ? new Supervisor({ board, dataDir }) : executor;
   board.folderPicker = folderPicker;
   board.githubLogin = new GitHubLogin({ ptyLoader: githubPty });

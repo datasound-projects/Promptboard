@@ -82,7 +82,12 @@ export async function validateRepository(input) {
  * does not exist, run git init if it is not a repository, and add one empty first commit so task
  * branches have a base. No files are added, staged, or committed.
  */
-export async function initRepository(input) {
+/**
+ * `git init` plus one empty first commit, so task branches have a base. With `fallbackIdentity`,
+ * a missing Git identity uses "Promptboard" for this one empty commit only; Git configuration
+ * is never changed, and later task commits still use the user's own identity.
+ */
+export async function initRepository(input, { fallbackIdentity = false } = {}) {
   if (typeof input !== 'string' || !input.trim() || input.length > 4096 || input.includes('\0') || !isAbsolute(input.trim())) throw fail('INVALID_PATH');
   const path = input.trim();
   let state = 'missing';
@@ -92,8 +97,14 @@ export async function initRepository(input) {
   const created = state === 'PATH_NOT_FOUND';
   if (created) { try { await mkdir(path, { recursive: true }); } catch { throw fail('INIT_FAILED'); } }
   if (state !== 'NO_COMMITS') { try { await git(['init'], { cwd: path }); } catch { throw fail('INIT_FAILED'); } }
-  try { await git(['commit', '--allow-empty', '--no-verify', '-m', 'Initial commit'], { cwd: path }); }
-  catch (error) { throw fail(/tell me who you are|user\.(name|email)|identity/i.test(error.stderr || '') ? 'IDENTITY_REQUIRED' : 'INIT_FAILED'); }
+  const commit = config => git(['commit', '--allow-empty', '--no-verify', '-m', 'Initial commit'], { cwd: path, config });
+  try { await commit([]); }
+  catch (error) {
+    const identity = /tell me who you are|user\.(name|email)|identity/i.test(error.stderr || '');
+    if (!identity) throw fail('INIT_FAILED');
+    if (!fallbackIdentity) throw fail('IDENTITY_REQUIRED');
+    try { await commit(['user.name=Promptboard', 'user.email=promptboard@localhost']); } catch { throw fail('INIT_FAILED'); }
+  }
   return { createdFolder: created, initialized: state !== 'NO_COMMITS' };
 }
 

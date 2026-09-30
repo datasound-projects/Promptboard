@@ -1547,6 +1547,7 @@ function openProjectForm(mode) {
   projectFormMode = mode;
   showProjectDetail();
   $('#project-form-label').textContent = mode === 'rename' ? 'Rename project' : 'New project name';
+  $('#project-form-note').hidden = mode === 'rename';
   $('#project-name').value = mode === 'rename' ? currentProject()?.name || '' : '';
   $('#project-error').hidden = true;
   $('#project-form').hidden = false;
@@ -1568,10 +1569,11 @@ async function saveProject(event) {
       await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}`, { name, expectedRevision: project.revision });
       announce(`Renamed “${project.name}” to “${name}”.`);
     } else {
-      const created = (await boardCall('POST', '/api/projects', { name })).project;
-      savePref(SELECTED_PROJECT_KEY, created.id);
+      // The server creates the project's own folder with a Git repository and links it.
+      const result = await boardCall('POST', '/api/projects', { name, folder: 'new' });
+      savePref(SELECTED_PROJECT_KEY, result.project.id);
       renderBoard();
-      announce(`Created project “${name}”.`);
+      announce(`Created project “${name}” with a Git repository in ${result.folder}.`);
     }
   } catch (failure) { showError(failure.message); return; }
   closeProjectForm();
@@ -2659,14 +2661,12 @@ async function openFolderAsProject(path) {
   $('#workspace-path-form').hidden = true;
   setSidebar(false);
   if (existing) { selectProject(existing.id); announce(`“${existing.name}” already uses this folder. Showing its board.`); return; }
-  let created;
-  try { created = (await boardCall('POST', '/api/projects', { name: uniqueProjectName(clean.split(/[\\/]/).pop()) })).project; }
+  // A folder that is not a Git repository yet gets git init and an empty first commit (its files are not added).
+  let result;
+  try { result = await boardCall('POST', '/api/projects', { name: uniqueProjectName(clean.split(/[\\/]/).pop()), folder: clean }); }
   catch (error) { pathError(error.message); return; }
-  selectProject(created.id);
-  setProjectCollapsed(false, false);
-  $('#repo-path').value = clean;
-  await linkRepository(clean);
-  announce(currentProject()?.repository ? `Opened ${clean} as “${created.name}”. Choose the target branch next.` : `Created “${created.name}” for ${clean}. The folder needs Git set up first; see the repository section.`);
+  selectProject(result.project.id);
+  announce(`Opened ${clean} as “${result.project.name}”${result.initialized ? '. Git was set up there with an empty first commit; your files were not added' : ''}. Target branch: ${result.project.targetBranch?.name || 'choose one in the repository section'}.`);
 }
 $('#workspace-open').addEventListener('click', async () => {
   $('#workspace-path-error').hidden = true;
