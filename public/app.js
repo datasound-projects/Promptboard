@@ -1253,6 +1253,8 @@ function renderCard(card, index, count) {
   actions.append(up, down, moveTo, toggle);
   const details = [card.source ? sourceSummary(card.source) : 'Written by you'];
   if (card.workspace) details.push(`Branch ${card.workspace.branch}${card.workspace.status === 'ready' ? '' : ` (${card.workspace.status})`}`);
+  const pullRequest = card.evidence?.pullRequest;
+  if (pullRequest?.url) details.push(`PR ${pullRequest.number ? `#${pullRequest.number}` : ''} · ${String(pullRequest.state || 'open').toUpperCase()}`);
   const run = latestRun(card.id);
   const ap = currentProject()?.autopilot;
   const tags = [];
@@ -2848,6 +2850,111 @@ $('#set-max-runs').addEventListener('change', () => saveServerSettings({ maxConc
 const saveDefaultAgent = () => saveServerSettings({ defaultAgent: { provider: $('#set-agent-provider').value, model: $('#set-agent-model').value.trim() } });
 $('#set-agent-provider').addEventListener('change', () => { $('#set-agent-model').value = ''; saveDefaultAgent(); });
 $('#set-agent-model').addEventListener('change', saveDefaultAgent);
+// GitHub: sign-in through the GitHub CLI (gh keeps the token), and a repository for the current project.
+// The page receives only the user name, the one-time device code, and repository metadata.
+const github = { status: null, login: null, results: [], chosen: null, busy: false, message: '' };
+const SYNC_TEXT = { up_to_date: 'Up to date', behind: 'Behind', ahead: 'Ahead', needs_attention: 'Needs attention' };
+async function githubCall(method, path, body) {
+  const { response, data } = await api(path, { method, body, timeoutMs: 600000 });
+  if (!response.ok) throw new Error(typeof data.error === 'string' ? data.error : 'The GitHub request failed.');
+  if (data.board) { board = data.board; renderBoard(); }
+  return data;
+}
+async function githubAction(work) {
+  github.busy = true; github.message = ''; renderGitHub();
+  try { await work(); } catch (error) { github.message = error.message; }
+  finally { github.busy = false; renderGitHub(); }
+}
+const checkGitHub = () => githubAction(async () => { const data = await githubCall('GET', '/api/github/status'); github.status = data.github; github.login = data.login; });
+function pollLogin() {
+  clearTimeout(pollLogin.timer);
+  if (!['starting', 'waiting'].includes(github.login?.status)) return;
+  pollLogin.timer = setTimeout(async () => {
+    try { github.login = (await githubCall('GET', '/api/github/login')).login; } catch { return; }
+    renderGitHub();
+    if (github.login.status === 'done') checkGitHub(); else pollLogin();
+  }, 2000);
+}
+function renderGitHub() {
+  const box = $('#set-github-group');
+  const legend = box.querySelector('legend');
+  const nodes = [];
+  const st = github.status;
+  const state = !st ? 'Not checked yet' : !st.installed ? 'GitHub CLI not installed' : st.state === 'connected' ? `Connected as @${st.user}` : st.state === 'needs_attention' ? 'Needs attention' : 'Not connected';
+  nodes.push(paragraph(`Status: ${state}${st?.message ? `. ${st.message}` : ''}`, 'github-status'));
+  const buttons = [detailButton(github.busy ? 'Checking…' : 'Check connection', checkGitHub, 'secondary-button')];
+  const login = github.login;
+  if (st?.installed && st.state !== 'connected' && !['starting', 'waiting'].includes(login?.status)) {
+    buttons.push(detailButton('Connect GitHub', () => githubAction(async () => { github.login = (await githubCall('POST', '/api/github/login', {})).login; pollLogin(); }), 'danger'));
+  }
+  nodes.push(detailActions(...buttons));
+  if (['starting', 'waiting'].includes(login?.status)) {
+    const code = document.createElement('code'); code.className = 'github-code'; code.textContent = login.code || '…';
+    const p = document.createElement('p'); p.className = 'note';
+    p.append('Enter this one-time code on GitHub: ', code, ' ', externalLink(login.url, 'Open github.com/login/device'), '. The GitHub CLI keeps the sign-in; Promptboard never sees a token.');
+    nodes.push(p, detailActions(detailButton('Cancel sign-in', () => githubAction(async () => { github.login = (await githubCall('POST', '/api/github/login/cancel', {})).login; }))));
+  } else if (['failed', 'cancelled'].includes(login?.status) && login.message) nodes.push(paragraph(login.message, 'inline-error'));
+  if (!st?.installed && st) nodes.push(paragraph('Install the GitHub CLI from cli.github.com, then choose Check connection.', 'note'));
+  nodes.push(paragraph('To sign the GitHub CLI out everywhere, run gh auth logout in your terminal. Disconnecting a repository below never signs you out.', 'note'));
+  const project = currentProject();
+  if (project) nodes.push(renderProjectGitHub(project));
+  if (github.message) nodes.push(paragraph(github.message, 'inline-error'));
+  box.replaceChildren(legend, ...nodes);
+  for (const button of box.querySelectorAll('button')) button.disabled ||= github.busy;
+  // Results re-render the section; keep typing in the search field.
+  if (github.typing && $('#github-search')) { const input = $('#github-search'); input.focus(); input.setSelectionRange?.(input.value.length, input.value.length); }
+}
+function renderProjectGitHub(project) {
+  const section = document.createElement('div');
+  section.className = 'github-project';
+  const title = document.createElement('p'); title.className = 'field-label'; title.textContent = `Repository for ${project.name}`;
+  section.append(title);
+  const gh = project.github;
+  if (gh) {
+    const sync = gh.sync ? `${SYNC_TEXT[gh.sync.sync] || 'Unknown'}${gh.sync.behind ? ` ${gh.sync.behind}` : ''}${gh.sync.sync === 'ahead' ? ` ${gh.sync.ahead}` : ''}` : 'Not fetched yet';
+    section.append(paragraph(`GitHub: ${gh.nameWithOwner}${gh.private ? ' (private)' : ' (public)'} · Target: ${project.targetBranch?.name || 'not set'} · Remote: ${gh.remote} · Sync: ${sync}${gh.lastFetchAt ? ` · Fetched ${timeAgo(gh.lastFetchAt)}` : ''}`, 'github-repo'));
+    if (gh.sync?.message) section.append(paragraph(gh.sync.message, 'note'));
+    section.append(paragraph(`Managed clone: ${gh.clonePath}`, 'note'));
+    const row = detailActions(
+      detailButton('Fetch', () => githubAction(() => githubCall('POST', `/api/projects/${encodeURIComponent(project.id)}/github-fetch`, {}))),
+      ...(gh.sync?.sync === 'behind' ? [detailButton(`Update ${project.targetBranch?.name}…`, () => confirmStep(row, `Fast-forward ${project.targetBranch?.name} to origin? Only a fast-forward is allowed; nothing is merged, reset, or discarded.`, 'Update', () => githubAction(() => githubCall('POST', `/api/projects/${encodeURIComponent(project.id)}/github-update`, { confirm: true }))))] : []),
+      externalLink(gh.url, 'Open on GitHub'),
+      detailButton('Disconnect…', () => confirmStep(row, 'Disconnect this project from GitHub? The managed clone, its worktrees, and all local work stay. The GitHub CLI stays signed in.', 'Disconnect', () => githubAction(() => githubCall('DELETE', `/api/projects/${encodeURIComponent(project.id)}/github?expectedRevision=${project.revision}`)))));
+    section.append(row);
+    return section;
+  }
+  if (github.status?.state !== 'connected') { section.append(paragraph('Connect GitHub first to use a GitHub repository. Local folders work without GitHub.', 'note')); return section; }
+  const label = document.createElement('label'); label.className = 'field-label'; label.textContent = 'Search your repositories';
+  const search = document.createElement('input'); search.type = 'search'; search.id = 'github-search'; search.maxLength = 100; search.placeholder = 'owner/name'; search.autocomplete = 'off';
+  search.value = github.query || '';
+  label.append(search);
+  const list = document.createElement('ul'); list.className = 'github-results';
+  for (const repo of github.results) {
+    const item = document.createElement('li');
+    const pick = detailButton(`${repo.nameWithOwner} · ${repo.private ? 'private' : 'public'} · ${repo.defaultBranch || 'no default branch'}`, () => { github.chosen = repo; github.branch = repo.defaultBranch; renderGitHub(); }, 'github-result');
+    pick.setAttribute('aria-pressed', String(github.chosen?.nameWithOwner === repo.nameWithOwner));
+    item.append(pick); list.append(item);
+  }
+  let timer;
+  search.addEventListener('blur', () => { github.typing = false; });
+  search.addEventListener('input', () => { github.typing = true; clearTimeout(timer); timer = setTimeout(() => { github.query = search.value.trim(); githubAction(async () => { github.results = (await githubCall('GET', `/api/github/repos?q=${encodeURIComponent(github.query)}`)).repositories; }); }, 300); });
+  section.append(label, list);
+  if (github.chosen) {
+    const branchLabel = document.createElement('label'); branchLabel.className = 'field-label'; branchLabel.textContent = 'Target branch';
+    const branch = document.createElement('input'); branch.id = 'github-branch'; branch.maxLength = 255; branch.value = github.branch || '';
+    branch.addEventListener('input', () => { github.branch = branch.value.trim(); });
+    branchLabel.append(branch);
+    section.append(branchLabel, paragraph(`Promptboard clones ${github.chosen.nameWithOwner} into its data folder and links that clone to this project. Agents work in task worktrees of the clone. ${project.repository ? 'This replaces the current repository link.' : ''}`, 'note'),
+      detailActions(detailButton('Connect repository', () => githubAction(async () => {
+        await githubCall('POST', `/api/projects/${encodeURIComponent(project.id)}/github`, { repository: github.chosen.nameWithOwner, branch: github.branch || '', expectedRevision: project.revision });
+        github.chosen = null; github.results = []; github.query = '';
+        announce('The GitHub repository is connected.');
+      }), 'danger')));
+  }
+  return section;
+}
+window.PromptboardGitHub = { render: () => { renderGitHub(); if (!github.status && !github.busy) checkGitHub(); } };
+
 $('#set-workflow').addEventListener('click', () => { $('#app-settings').close(); if (location.hash !== '#/kanban') location.hash = '#/kanban'; openWorkflowDialog(); });
 $('#set-autopilot').addEventListener('click', () => { $('#app-settings').close(); if (location.hash !== '#/kanban') location.hash = '#/kanban'; openAutopilot(); });
 $('#autopilot-close').addEventListener('click', () => $('#autopilot-dialog').close());

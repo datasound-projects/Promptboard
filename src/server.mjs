@@ -10,12 +10,13 @@ import { AUTH_CAPABILITIES, logout, readAuthStatus, startLogin } from './auth.mj
 import { Board, BoardError } from './board.mjs';
 import { GitError } from './git.mjs';
 import { defaultDataDir, StoreError } from './store.mjs';
-import { Supervisor } from './supervisor.mjs';
+import { loadPty, Supervisor } from './supervisor.mjs';
 import { AgentError } from './agents.mjs';
 import { DeliveryError } from './delivery.mjs';
 import { discoverModels, checkModelEffort } from './models.mjs';
 import { chooseFolder } from './folder.mjs';
 import { Autopilot } from './autopilot.mjs';
+import { GitHubError, GitHubLogin, githubStatus, listRepositories } from './github.mjs';
 
 const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
 const assets = new Map([
@@ -111,6 +112,7 @@ async function boardRoute(board, req, res, pathname, searchParams) {
   if (method === 'POST' && pathname === '/api/folder/choose') return send(res, 200, await board.folderPicker());
   if (method === 'POST' && pathname === '/api/repository/validate') return send(res, 200, { repository: await board.validateRepository((await body()).path) });
   if (method === 'POST' && pathname === '/api/tasks') return view({ task: await board.createTask(await body()) });
+  if (pathname.startsWith('/api/github/')) return githubRoute(board, req, res, pathname, searchParams, body);
   if (method === 'PATCH' && pathname === '/api/settings') return view({ settings: await board.setSettings(await body()) });
   if (!match) return false;
   const [, kind, id, action = ''] = match;
@@ -126,6 +128,10 @@ async function boardRoute(board, req, res, pathname, searchParams) {
     if (method === 'PATCH' && action === 'workflow') return view({ project: await board.setWorkflow(id, await body()) });
     if (method === 'PATCH' && action === 'tests') return view({ project: await board.delivery.setTestCommands(id, await body()) });
     if (method === 'POST' && action === 'target-branch') return view({ project: await board.setTargetBranch(id, await body()) });
+    if (method === 'POST' && action === 'github') return view({ project: await board.connectGitHub(id, await body()) });
+    if (method === 'DELETE' && action === 'github') return view({ project: await board.disconnectGitHub(id, { expectedRevision: expected() }) });
+    if (method === 'POST' && action === 'github-fetch') return view({ project: await board.fetchGitHub(id) });
+    if (method === 'POST' && action === 'github-update') return view({ project: await board.updateTargetFromGitHub(id, await body()) });
     if (method === 'POST' && action === 'confirm-import') return view({ project: await board.confirmImport(id, await body()) });
   } else if (kind === 'runs') {
     const supervisor = board.executor;
@@ -169,6 +175,24 @@ async function boardRoute(board, req, res, pathname, searchParams) {
   return false;
 }
 
+/** GitHub CLI status, browser sign-in, and repository search. No route returns a token. */
+async function githubRoute(board, req, res, pathname, searchParams, body) {
+  const method = req.method;
+  if (method === 'GET' && pathname === '/api/github/status') return send(res, 200, { github: await githubStatus(), login: board.githubLogin.snapshot() });
+  if (method === 'POST' && pathname === '/api/github/login') { await body(); return send(res, 200, { login: await board.githubLogin.start() }); }
+  if (method === 'GET' && pathname === '/api/github/login') return send(res, 200, { login: board.githubLogin.snapshot() });
+  if (method === 'POST' && pathname === '/api/github/login/cancel') return send(res, 200, { login: board.githubLogin.cancel() });
+  if (method === 'GET' && pathname === '/api/github/repos') {
+    // One listing per minute at most; the search filters it locally.
+    const cache = board.githubRepos;
+    if (searchParams.get('refresh') === '1' || !cache || Date.now() - cache.at > 60000) board.githubRepos = { at: Date.now(), rows: await listRepositories() };
+    const query = String(searchParams.get('q') || '').toLowerCase().slice(0, 100);
+    const rows = board.githubRepos.rows.filter(row => !query || row.nameWithOwner.toLowerCase().includes(query));
+    return send(res, 200, { repositories: rows.slice(0, 50), total: rows.length });
+  }
+  return send(res, 404, { error: 'This route does not exist.' });
+}
+
 /** NDJSON output stream for one run. The page reads it with fetch, so the token stays in a header. */
 function streamRun(supervisor, req, res, runId, after) {
   res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' });
@@ -183,11 +207,12 @@ function streamRun(supervisor, req, res, runId, after) {
   req.on('close', () => { clearInterval(ping); unsubscribe(); });
 }
 
-export async function startServer({ port = 4318, runner = runProvider, detector = detectProviders, catalogReader = discoverModels, authAdapter = auth, dataDir = defaultDataDir(), executor = 'auto', folderPicker = chooseFolder } = {}) {
+export async function startServer({ port = 4318, runner = runProvider, detector = detectProviders, catalogReader = discoverModels, authAdapter = auth, dataDir = defaultDataDir(), executor = 'auto', folderPicker = chooseFolder, githubPty = loadPty } = {}) {
   // The board loads lazily, so starting the server never reads or writes board files.
   const board = new Board({ dataDir });
   board.executor = executor === 'auto' ? new Supervisor({ board, dataDir }) : executor;
   board.folderPicker = folderPicker;
+  board.githubLogin = new GitHubLogin({ ptyLoader: githubPty });
   // Autopilot runs only for projects where the user started it; otherwise each tick does nothing.
   const autopilot = new Autopilot(board);
   if (board.executor) autopilot.start();
@@ -346,11 +371,11 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
       }
       return;
     }
-    if (/^\/api\/(board|projects|tasks|runs)(\/|$)/.test(pathname) || pathname === '/api/repository/validate' || pathname === '/api/folder/choose' || pathname === '/api/settings') {
+    if (/^\/api\/(board|projects|tasks|runs|github)(\/|$)/.test(pathname) || pathname === '/api/repository/validate' || pathname === '/api/folder/choose' || pathname === '/api/settings') {
       try { if ((await boardRoute(board, req, res, pathname, requestUrl.searchParams)) !== false) return; }
       catch (error) {
         // Board, store, and Git errors carry fixed messages; raw Git output is never returned.
-        const known = error instanceof BoardError || error instanceof GitError || error instanceof StoreError || error instanceof AgentError || error instanceof DeliveryError;
+        const known = error instanceof BoardError || error instanceof GitHubError || error instanceof GitError || error instanceof StoreError || error instanceof AgentError || error instanceof DeliveryError;
         const status = known || error.status < 500 ? error.status || 500 : 500;
         return send(res, status, known || status < 500 ? { error: error.message, code: error.code || 'INVALID_REQUEST' } : { error: 'The board request failed.', code: 'BOARD_FAILED' });
       }
@@ -383,6 +408,7 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
     // Agent sessions: stop owned process groups, record runs as interrupted, end streams.
     const agents = board.executor?.shutdown ? board.executor.shutdown(Math.min(3000, graceMs)) : null;
     autopilot.stop();
+    board.githubLogin.cancel('The app stopped.');
     board.delivery.stopAllTests();
     const settle = Promise.allSettled([...tasks, ...lookups.values(), busy?.done, agents].filter(Boolean));
     await Promise.race([settle, new Promise(resolve => setTimeout(resolve, graceMs).unref())]);

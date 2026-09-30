@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { JSDOM } from 'jsdom';
 import { startServer } from '../src/server.mjs';
+import { fakeGh } from './fixtures/fake-gh.mjs';
 import { VERSION } from '../src/version.mjs';
 
 const catalogs = {
@@ -1571,4 +1572,36 @@ test('stored settings apply on the next page load: start page, dock state, and o
   assert.equal(ctx.executor.started.length, 1);
   await until(() => $(`#dock-tab-${ctx.executor.started[0].id}`), 'tab for the new run');
   assert.equal(win.promptboardDock.state, 'collapsed', 'With "open terminal" off, the dock stays collapsed.');
+});
+
+test('GitHub in Settings: status, repository search, connect a managed clone, fetch, and disconnect without signing out', { skip: process.platform === 'win32' }, async t => {
+  const gh = await fakeGh(t);
+  const ctx = await linkedKanban(t);
+  const { $, win } = ctx;
+  $('#app-settings-open').click();
+  await until(() => /Connected as @octo/.test($('#set-github-group').textContent), 'GitHub status');
+  assert.doesNotMatch($('#set-github-group').textContent, /Connect GitHub/, 'No sign-in button while connected.');
+  const search = $('#github-search');
+  search.value = 'app'; search.dispatchEvent(new win.Event('input'));
+  await until(() => $('#set-github-group .github-result'), 'search results');
+  assert.deepEqual(Array.from($('#set-github-group').querySelectorAll('.github-result'), b => b.textContent), ['acme/app · private · main']);
+  $('#set-github-group .github-result').click();
+  assert.equal($('#github-branch').value, 'main');
+  byText($('#set-github-group'), 'Connect repository').click();
+  await until(() => /GitHub: acme\/app \(private\) · Target: main · Remote: origin · Sync: Not fetched yet/.test($('#set-github-group').textContent), 'connected repository');
+  const project = (await serverBoard(ctx)).projects[0];
+  assert.match(project.repository.root, /\/clones\/acme\/app$/);
+  byText($('#set-github-group'), 'Fetch').click();
+  await until(() => /Sync: Up to date/.test($('#set-github-group').textContent), 'fetched');
+  byText($('#set-github-group'), 'Disconnect…').click();
+  byText($('#set-github-group'), 'Disconnect').click();
+  await until(() => $('#github-search'), 'disconnected');
+  assert.equal((await serverBoard(ctx)).projects[0].github, null);
+  assert.ok(!(await gh.log()).some(args => args.includes('logout')));
+  // Signed out: the sign-in button appears. Without a terminal library here, it explains the terminal command.
+  await gh.setMode('none');
+  byText($('#set-github-group'), 'Check connection').click();
+  await until(() => byText($('#set-github-group'), 'Connect GitHub'), 'connect button');
+  assert.match($('#set-github-group').textContent, /Status: Not connected/);
+  assert.equal(win.localStorage.length >= 0 && Object.keys(win.localStorage).some(key => /github|token/i.test(win.localStorage.getItem(key) || '')), false, 'Nothing about GitHub is kept in browser storage.');
 });

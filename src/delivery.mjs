@@ -7,6 +7,7 @@
  * the confirmed "Open pull request" action, which pushes the task branch without --force.
  */
 import { execFile, spawn } from 'node:child_process';
+import { gh } from './github.mjs';
 import { createWriteStream } from 'node:fs';
 import { mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -21,14 +22,6 @@ export class DeliveryError extends Error {
   constructor(message, code, status = 409) { super(message); this.code = code; this.status = status; }
 }
 const fail = (message, code, status) => new DeliveryError(message, code, status);
-
-/** GitHub CLI without a shell or prompts. Rejects with { missing } when gh is not installed. */
-function gh(args, cwd) {
-  return new Promise((resolve, reject) => {
-    execFile('gh', args, { cwd, shell: false, windowsHide: true, timeout: 120000, maxBuffer: 1024 * 1024, env: { ...process.env, GH_PROMPT_DISABLED: '1', GH_NO_UPDATE_NOTIFIER: '1', NO_COLOR: '1', GIT_TERMINAL_PROMPT: '0' } },
-      (error, stdout, stderr) => error ? reject(Object.assign(new Error('gh failed'), { missing: error.code === 'ENOENT', stderr: String(stderr) })) : resolve(String(stdout)));
-  });
-}
 
 /** Split a command line into argv without a shell: spaces separate, quotes group, no expansion. */
 export function parseCommand(input) {

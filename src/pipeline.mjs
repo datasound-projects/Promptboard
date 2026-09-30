@@ -151,8 +151,10 @@ export async function runPipeline(request, { runner, signal, timeoutMs = 360_000
     try { onStage(stage); } catch {}
     const cwd = await makeTempDir('ste-prompt-');
     const callStarted = performance.now();
-    calls++;
     try {
+      // The deadline or a cancel can land while the folder is created: never start the CLI then.
+      runSignal.throwIfAborted();
+      calls++;
       const result = await runner({ provider: request.provider, model: request.model, effort: request.effort, prompt, cwd, signal: runSignal,
         timeoutMs: Math.max(10, Math.floor(Math.min(180_000, timeoutMs - (performance.now() - started)))) });
       runSignal.throwIfAborted();

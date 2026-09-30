@@ -13,6 +13,7 @@ import { Store } from './store.mjs';
 import { branchExists, commitExists, git, GitError, initRepository, listWorktrees, validateRepository } from './git.mjs';
 import { resolveConfig } from './agents.mjs';
 import { Delivery } from './delivery.mjs';
+import { ensureClone, fastForward, fetchAndCompare, viewRepository } from './github.mjs';
 
 export const COLUMNS = Object.freeze([
   { id: 'todo', title: 'To Do', agent: false },
@@ -314,6 +315,72 @@ export class Board {
       project.revision++;
       return { project, repository };
     });
+  }
+
+  // ---- GitHub (managed clone) ----
+
+  /**
+   * Connect a GitHub repository: clone it once into the data folder, link that clone as this
+   * project's repository, and select the target branch. Credentials stay with the GitHub CLI.
+   */
+  async connectGitHub(id, { repository, branch = '', expectedRevision }) {
+    const project = this.#project(await this.state(), id);
+    checkRevision(project, expectedRevision, 'This project');
+    if (project.tasks.some(task => task.workspace)) throw conflict('Tasks in this project have worktrees in the current repository. Remove them before you change the repository.', 'WORKSPACES_EXIST');
+    const repo = await viewRepository(typeof repository === 'string' ? repository.trim() : '');
+    const clone = await this.#locked(`clone:${repo.nameWithOwner.toLowerCase()}`, () => ensureClone(this.dataDir, repo));
+    const target = branch || repo.defaultBranch;
+    const linked = await this.linkRepository(id, { path: clone.path, expectedRevision });
+    if (target && linked.project.targetBranch?.name !== target) await this.setTargetBranch(id, { branch: target, expectedRevision: linked.project.revision });
+    return this.store.update(state => {
+      const current = this.#project(state, id);
+      const [owner, name] = repo.nameWithOwner.split('/');
+      current.github = { owner, name, nameWithOwner: repo.nameWithOwner, url: repo.url, private: repo.private, defaultBranch: repo.defaultBranch,
+        clonePath: clone.path, remote: 'origin', connectedAt: Date.now(), lastFetchAt: null, sync: null };
+      current.revision++;
+      return current;
+    });
+  }
+
+  /** Forget the GitHub link. The clone, its repository link, and all local work stay. gh stays signed in. */
+  async disconnectGitHub(id, { expectedRevision }) {
+    return this.store.update(state => {
+      const project = this.#project(state, id);
+      checkRevision(project, expectedRevision, 'This project');
+      project.github = null;
+      project.revision++;
+      return project;
+    });
+  }
+
+  async #github(id) {
+    const project = this.#project(await this.state(), id);
+    if (!project.github) throw new BoardError('This project is not connected to GitHub.', 'GITHUB_NOT_CONNECTED', 409);
+    if (!project.targetBranch) throw new BoardError('Choose the target branch first.', 'TARGET_BRANCH_REQUIRED', 409);
+    return project;
+  }
+  async #recordSync(id, sync, fetched) {
+    return this.store.update(state => {
+      const project = this.#project(state, id);
+      if (project.github) project.github = { ...project.github, sync, ...(fetched ? { lastFetchAt: Date.now() } : {}) };
+      return project;
+    });
+  }
+
+  /** Fetch origin and report whether the target branch is up to date, behind, or ahead. */
+  async fetchGitHub(id) {
+    const project = await this.#github(id);
+    const sync = await this.#locked(`repo:${project.repository.commonDir}`, () => fetchAndCompare(project.repository.root, project.targetBranch.name));
+    return this.#recordSync(id, sync, true);
+  }
+
+  /** Fast-forward the local target branch to origin's. Never a merge, reset, or force. */
+  async updateTargetFromGitHub(id, { confirm }) {
+    if (confirm !== true) throw new BoardError('Confirm the update of the target branch first.', 'CONFIRMATION_REQUIRED');
+    const project = await this.#github(id);
+    const sync = await this.#locked(`repo:${project.repository.commonDir}`, () => fastForward(project.repository.root, project.targetBranch.name));
+    const updated = await this.#recordSync(id, sync, false);
+    return this.setTargetBranch(id, { branch: project.targetBranch.name, expectedRevision: updated.revision });
   }
 
   /**
