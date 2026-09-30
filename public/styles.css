@@ -632,3 +632,10 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
 .dock-tab .tab-close:hover { background: var(--surface-3); opacity: 1; }
 .dock-details { margin: 0; padding: 4px 12px; border-bottom: 1px solid var(--line); color: var(--muted); font: 11.5px var(--mono); overflow-x: auto; white-space: nowrap; }
 @media (prefers-reduced-motion: reduce) { .agent-icon.active, .dock-tab.live .tab-state { animation: none; } }
+
+/* Settings dialog. */
+.app-settings { max-width: 560px; }
+.settings-group { display: grid; gap: 10px; margin: 0 0 14px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 10px; }
+.settings-group legend { padding: 0 6px; color: var(--ink); font: 600 11px var(--mono); letter-spacing: 1.2px; text-transform: uppercase; }
+.settings-group .note { margin: 0; font-size: 12.5px; }
+.check-row { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: 13.5px; }

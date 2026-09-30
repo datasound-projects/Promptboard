@@ -69,7 +69,7 @@ function createSession(run) {
   tab.addEventListener('keydown', event => { if (event.key === 'Delete') { event.preventDefault(); closeSession(run.id); } });
   $('#dock-tabs').append(tab);
   $('#dock-terminals').append(panel);
-  const session = { runId: run.id, taskId: run.taskId, run, title, panel, tab, label, icon, lastSeq: 0, pending: 0, input: '', ended: !DOCK_LIVE.has(run.status), closed: false, cols: 0, rows: 0 };
+  const session = { runId: run.id, taskId: run.taskId, run, title, panel, tab, label, icon, wasLive: DOCK_LIVE.has(run.status), lastSeq: 0, pending: 0, input: '', ended: !DOCK_LIVE.has(run.status), closed: false, cols: 0, rows: 0 };
   attachRenderer(session);
   dock.sessions.set(run.id, session);
   updateSessionTab(session);
@@ -79,7 +79,7 @@ function createSession(run) {
 }
 
 /** Remove a tab and its terminal view. Never stops the process or deletes run history. */
-function closeSession(runId) {
+function closeSession(runId, quiet = false) {
   const session = dock.sessions.get(runId);
   if (!session) return;
   session.closed = true;
@@ -91,14 +91,14 @@ function closeSession(runId) {
   dock.dismissed.add(runId);
   if (dock.selected === runId) selectDockTab('activity');
   updateDockIndicator();
-  announce(`Closed the tab for ${session.title}.${DOCK_LIVE.has(session.run.status) ? ' The agent keeps running.' : ''}`);
+  if (!quiet) announce(`Closed the tab for ${session.title}.${DOCK_LIVE.has(session.run.status) ? ' The agent keeps running.' : ''}`);
 }
 
 function attachRenderer(session) {
   const { panel } = session;
   if (typeof Terminal === 'function') {
     try {
-      const term = new Terminal({ scrollback: 5000, fontSize: 12, fontFamily: 'ui-monospace, "SFMono-Regular", Consolas, monospace', cursorBlink: false, convertEol: false,
+      const term = new Terminal({ scrollback: 5000, fontSize: Number(uiPref('termFont')) || 12, fontFamily: 'ui-monospace, "SFMono-Regular", Consolas, monospace', cursorBlink: false, convertEol: false,
         theme: { background: '#111111', foreground: '#eeeeee' },
         // Links in agent output are shown, never opened automatically.
         linkHandler: { activate: (_event, uri) => dockNote(`Link not opened automatically: ${uri}`), allowNonHttpProtocols: false } });
@@ -289,6 +289,8 @@ function syncDock() {
       session.run = { ...session.run, ...run };
       if (!DOCK_LIVE.has(run.status)) session.ended = true;
       updateSessionTab(session);
+      // Settings: "Keep tabs of finished runs" off closes a tab once its run ends (unless it is shown).
+      if (session.ended && session.wasLive && uiPref('keepTabs') !== '1' && dock.selected !== run.id) closeSession(run.id, true);
     } else if (DOCK_LIVE.has(run.status) && !dock.dismissed.has(run.id)) createSession(run);
   }
   renderActivity();
@@ -296,7 +298,8 @@ function syncDock() {
   // An empty dock stays collapsed. After a reload, reopen it only if live sessions exist.
   if (!dock.restored) {
     dock.restored = true;
-    if (dockPref(DOCK_STATE_KEY, 'collapsed') === 'open' && board.runs.some(run => DOCK_LIVE.has(run.status))) setDockState('open', false);
+    const start = uiPref('dockStart');
+    if (start === 'open' || (start === 'last' && dockPref(DOCK_STATE_KEY, 'collapsed') === 'open' && board.runs.some(run => DOCK_LIVE.has(run.status)))) setDockState('open', false);
   }
 }
 
@@ -370,7 +373,9 @@ function startDividerDrag(event) {
     const next = tabs[(tabs.indexOf(document.activeElement) + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length];
     next?.focus(); next?.click();
   });
-  window.PromptboardDock = { sync: syncDock, open: openRun, reveal: revealTask, setState: setDockState };
+  const setFontSize = size => { for (const session of dock.sessions.values()) if (session.term) { session.term.options.fontSize = size; fitSession(session); } };
+  const closeFinished = () => { const ended = [...dock.sessions.values()].filter(session => session.ended); for (const session of ended) closeSession(session.runId, true); return ended.length; };
+  window.PromptboardDock = { sync: syncDock, open: openRun, reveal: revealTask, setState: setDockState, setFontSize, closeFinished };
   setDockState('collapsed', false);
   syncDock();
 })();

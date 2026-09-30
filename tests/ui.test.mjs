@@ -1495,3 +1495,80 @@ test('dock tabs: one per run with state and model; switching never restarts; clo
   assert.equal(win.promptboardDock.selected, 'run-a');
   assert.equal(ctx.executor.started.length, 0);
 });
+
+// ---- Settings ----
+
+test('every visible setting is stored and changes the app; global settings stay separate from project workflow', { skip: process.platform === 'win32' }, async t => {
+  const ctx = await agentFixture(t);
+  const { $, win } = ctx;
+  const change = (id, value) => { const el = $(id); if (el.type === 'checkbox') el.checked = value; else el.value = value; el.dispatchEvent(new win.Event('change')); };
+  assert.equal($('#app-settings-open').getAttribute('aria-label'), 'Settings');
+  $('#app-settings-open').click(); await ctx.idle();
+  assert.equal($('#app-settings').open, true);
+  assert.equal($('#set-project-name').textContent, 'Flow');
+  // Theme.
+  change('#set-theme', 'dark');
+  assert.equal(win.document.documentElement.dataset.theme, 'dark');
+  assert.equal(win.localStorage.getItem('ste-prompt-engineer.theme'), 'dark');
+  change('#set-theme', 'light');
+  assert.equal(win.document.documentElement.dataset.theme, 'light');
+  // Global server settings.
+  change('#set-max-runs', '3'); await ctx.idle();
+  assert.equal((await ctx.app.board.state()).settings.maxConcurrentRuns, 3);
+  // The default agent fills stages without their own provider, in every project, but never a stage a project set.
+  await ctx.app.board.setWorkflow(ctx.other.id, { workflow: { executing: { policy: 'ask', provider: 'claude', model: 'haiku' } }, expectedRevision: (await ctx.app.board.state()).projects[1].revision });
+  change('#set-agent-provider', 'codex'); change('#set-agent-model', 'gpt-test'); await ctx.idle();
+  const view = await ctx.app.board.view();
+  assert.deepEqual((await ctx.app.board.state()).settings.defaultAgent, { provider: 'codex', model: 'gpt-test' });
+  assert.equal(view.projects[0].effectiveWorkflow.executing.provider, 'codex');
+  assert.equal(view.projects[0].effectiveWorkflow.planning.model, 'gpt-test');
+  assert.equal(view.projects[1].effectiveWorkflow.executing.provider, 'claude', 'A project stage keeps its own agent.');
+  assert.equal(view.projects[1].effectiveWorkflow.executing.model, 'haiku');
+  assert.equal(view.projects[1].effectiveWorkflow.planning.provider, 'codex');
+  change('#set-agent-model', 'bad model'); await ctx.idle();
+  assert.match($('#app-settings-error').textContent, /model ID/);
+  assert.equal((await ctx.app.board.state()).settings.defaultAgent.model, 'gpt-test', 'An invalid value is refused and not stored.');
+  // Browser preferences.
+  change('#set-start', 'kanban'); change('#set-open-terminal', false); change('#set-keep-tabs', false); change('#set-term-font', '14'); change('#set-dock-start', 'open');
+  assert.equal(win.localStorage.getItem('promptboard.settings.start-page'), 'kanban');
+  assert.equal(win.localStorage.getItem('promptboard.settings.terminal-font'), '14');
+  // Keep tabs off: a run that ends closes its tab (the run history stays on the board).
+  win.promptboardDock.selected = 'activity';
+  await ctx.app.board.updateRun('run-a', { status: 'succeeded', endedAt: Date.now() });
+  await win.__pbTest.loadBoard(); await ctx.idle();
+  assert.equal($('#dock-tab-run-a'), null);
+  assert.equal((await ctx.app.board.run('run-a')).status, 'succeeded');
+  // Close finished tabs.
+  change('#set-keep-tabs', true);
+  await ctx.app.board.updateRun('run-b', { status: 'cancelled' });
+  await win.__pbTest.loadBoard(); await ctx.idle();
+  assert.ok($('#dock-tab-run-b'));
+  $('#set-clear-tabs').click();
+  assert.equal($('#dock-tab-run-b'), null);
+  assert.ok($('#dock-tab-run-c'), 'Live runs keep their tab.');
+  // Project settings open for the current project only.
+  $('#set-workflow').click(); await ctx.idle();
+  assert.equal($('#app-settings').open, false);
+  assert.equal($('#workflow-dialog').open, true);
+  assert.match($('#workflow-dialog-project').textContent, /Flow/i);
+});
+
+test('stored settings apply on the next page load: start page, dock state, and open-terminal on run start', { skip: process.platform === 'win32' }, async t => {
+  const ctx = await linkedKanban(t, { hash: '', prefs: { 'promptboard.settings.start-page': 'kanban', 'promptboard.settings.dock-start': 'open', 'promptboard.settings.open-terminal': '0' } });
+  const { $, win } = ctx;
+  assert.equal($('#kanban-view').hidden, false, 'The start page is Kanban.');
+  assert.equal(win.location.hash, '#/kanban');
+  assert.equal(win.promptboardDock.state, 'open', 'The dock opens as set.');
+  await link(ctx);
+  await newCard(ctx, 'Parser', 'Fix the parser.');
+  win.PromptboardDock.setState('collapsed');
+  const card = (await serverTasks(ctx))[0];
+  await ctx.app.board.moveTask(card.id, { column: 'executing', expectedRevision: card.revision });
+  await win.__pbTest.loadBoard(); await ctx.idle();
+  cardItem(ctx, 'Parser').querySelector('.kanban-start').click(); await ctx.idle();
+  $('#run-ack').checked = true;
+  submitForm(ctx, '#run-form'); await ctx.idle();
+  assert.equal(ctx.executor.started.length, 1);
+  await until(() => $(`#dock-tab-${ctx.executor.started[0].id}`), 'tab for the new run');
+  assert.equal(win.promptboardDock.state, 'collapsed', 'With "open terminal" off, the dock stays collapsed.');
+});

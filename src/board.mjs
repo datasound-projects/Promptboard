@@ -162,11 +162,12 @@ export function normalizeWorkflow(input) {
   return result;
 }
 
-/** Defaults merged with a project's overrides. */
-export function effectiveWorkflow(project) {
+/** Defaults merged with a project's overrides. `defaultAgent` is the global default from Settings. */
+export function effectiveWorkflow(project, defaultAgent = null) {
+  const agent = defaultAgent?.provider ? { provider: defaultAgent.provider, model: defaultAgent.model || '' } : {};
   return Object.fromEntries(WORKFLOW_STAGES.map(stage => {
     // Merge stays manual unless a project turns on automatic merging.
-    const base = { ...DEFAULT_STAGE_SETTINGS, ...(stage === 'merge' ? { policy: 'manual' } : {}), ...(EXECUTABLE_STAGES.has(stage) ? resolveConfig(stage, {}) : {}) };
+    const base = { ...DEFAULT_STAGE_SETTINGS, ...agent, ...(stage === 'merge' ? { policy: 'manual' } : {}), ...(EXECUTABLE_STAGES.has(stage) ? resolveConfig(stage, agent) : {}) };
     return [stage, { ...base, ...(project?.workflow?.[stage] || {}) }];
   }));
 }
@@ -226,7 +227,7 @@ export class Board {
   async view() {
     const state = await this.state();
     return { revision: state.revision, columns: COLUMNS, settings: state.settings, runs: state.runs.slice(-500),
-      projects: state.projects.map(project => ({ ...project, effectiveWorkflow: effectiveWorkflow(project) })),
+      projects: state.projects.map(project => ({ ...project, effectiveWorkflow: effectiveWorkflow(project, state.settings.defaultAgent) })),
       execution: this.executor?.describe ? await this.executor.describe() : { available: Boolean(this.executor) }, recovery: this.store.recovery };
   }
 
@@ -395,12 +396,13 @@ export class Board {
    * requested as a separate, recorded event. "Ask on entry" returns a question for the UI.
    */
   async transition(id, { column, index, expectedRevision }) {
-    const before = this.#task(await this.state(), id);
+    const current = await this.state();
+    const before = this.#task(current, id);
     const from = before.task.column;
     const task = await this.moveTask(id, { column, index, expectedRevision });
     const result = { task };
     if (from === column || !WORKFLOW_STAGES.includes(column)) return result;
-    const settings = effectiveWorkflow(before.project)[column];
+    const settings = effectiveWorkflow(before.project, current.settings.defaultAgent)[column];
     if (settings.policy === 'ask') result.ask = { stage: column };
     if (settings.policy === 'start') {
       // Testing runs the project's approved commands; Merge merges only when every check holds for
@@ -774,7 +776,7 @@ export class Board {
       if (!this.executor) throw new BoardError('Agent execution is not available. Cards can be planned and moved, but no agent runs.', 'EXECUTION_UNAVAILABLE', 503);
       if (!EXECUTABLE_STAGES.has(stage)) throw conflict(`${column.title} runs are not available yet.`, 'STAGE_NOT_IMPLEMENTED');
       // Explicit request values override the project's workflow settings for this run only.
-      const settings = effectiveWorkflow(project)[stage];
+      const settings = effectiveWorkflow(project, state.settings.defaultAgent)[stage];
       const requested = Object.fromEntries(Object.entries(config || {}).filter(([key, value]) => ['provider', 'model', 'effort', 'permissionMode', 'instructions'].includes(key) && value !== undefined && value !== null));
       // Model, effort, and permission mode belong to one provider; a different provider starts from its own defaults.
       const inherited = requested.provider && requested.provider !== settings.provider ? { policy: settings.policy, instructions: settings.instructions, provider: requested.provider } : settings;
@@ -838,9 +840,20 @@ export class Board {
     });
   }
 
-  async setSettings({ maxConcurrentRuns }) {
-    if (!Number.isInteger(maxConcurrentRuns) || maxConcurrentRuns < 1 || maxConcurrentRuns > 4) throw new BoardError('Allow 1 to 4 agent sessions at the same time.', 'INVALID_INPUT');
-    return this.store.update(state => { state.settings = { ...state.settings, maxConcurrentRuns }; return state.settings; });
+  /** Global settings. Each field is optional; project workflow settings stay with their project. */
+  async setSettings({ maxConcurrentRuns, defaultAgent } = {}) {
+    const change = {};
+    if (maxConcurrentRuns !== undefined) {
+      if (!Number.isInteger(maxConcurrentRuns) || maxConcurrentRuns < 1 || maxConcurrentRuns > 4) throw new BoardError('Allow 1 to 4 agent sessions at the same time.', 'INVALID_INPUT');
+      change.maxConcurrentRuns = maxConcurrentRuns;
+    }
+    if (defaultAgent !== undefined) {
+      if (!defaultAgent || typeof defaultAgent !== 'object' || Array.isArray(defaultAgent)) throw new BoardError('Send the default agent as an object.', 'INVALID_INPUT');
+      // The same validation as a stage setting: an installed-agent provider and a safe model ID.
+      try { const { provider, model } = resolveConfig('executing', { provider: defaultAgent.provider, model: defaultAgent.model }); change.defaultAgent = { provider, model }; }
+      catch (error) { throw new BoardError(error.message, 'INVALID_INPUT'); }
+    }
+    return this.store.update(state => { state.settings = { ...state.settings, ...change }; return state.settings; });
   }
 
   async run(runId) {

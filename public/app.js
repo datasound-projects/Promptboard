@@ -203,12 +203,15 @@ function setProjectCollapsed(collapsed, save = true) {
 }
 function scrollBehavior() { return window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches ? 'auto' : 'smooth'; }
 function renderTheme() { $('#theme-toggle').setAttribute('aria-pressed', String(document.documentElement.dataset.theme === 'dark')); }
-function toggleTheme() {
-  const dark = document.documentElement.dataset.theme !== 'dark';
+/** Theme: 'light', 'dark', or 'system' (follows the operating system). prefs.js applies it on first paint. */
+function applyTheme(theme) {
+  const dark = theme === 'dark' || (theme === 'system' && window.matchMedia?.('(prefers-color-scheme: dark)')?.matches === true);
   document.documentElement.dataset.theme = dark ? 'dark' : 'light';
-  savePref(THEME_KEY, dark ? 'dark' : 'light');
+  document.querySelector('meta[name="color-scheme"]')?.setAttribute('content', dark ? 'dark' : 'light');
+  savePref(THEME_KEY, theme);
   renderTheme();
 }
+function toggleTheme() { applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'); }
 
 // Narrow screens show history as a drawer (.open); wider screens collapse it in place (data-sidebar).
 function isMobile() { return window.innerWidth <= 730; }
@@ -1323,7 +1326,7 @@ async function placeCard(id, column, index, retried = false) {
   renderBoard();
   if (column === 'done' && card.column !== 'done') announce(`Completed “${card.title}”. Nothing was merged, pushed, or started.`);
   else announce(column === card.column ? `Moved “${card.title}” to position ${position + 1} of ${others.length + 1}.` : `Moved “${card.title}” to ${columnTitle(column)}. Moving a card does not run or approve that stage.`);
-  if (result.run) { announce(`Moved “${card.title}” to ${columnTitle(column)}. The workflow setting started an agent run.`); window.PromptboardDock?.open(result.run.id); }
+  if (result.run) { announce(`Moved “${card.title}” to ${columnTitle(column)}. The workflow setting started an agent run.`); showStartedRun(result.run.id); }
   if (result.merged) announce(`“${card.title}” passed every check and was merged automatically into ${result.task?.completion?.targetBranch || 'the target branch'}. Nothing was pushed.`);
   if (result.automation) showProjectDetail(paragraph(column === 'merge' ? `Moved to Merge. ${result.automation.message}` : `Moved to ${columnTitle(column)}, but the automatic start did not happen: ${result.automation.message}`, 'kanban-error'));
   if (result.ask) askToStart(findTask(id), result.ask.stage);
@@ -1788,8 +1791,8 @@ async function submitRun(event) {
   try {
     const { run } = await boardCall('POST', `/api/tasks/${encodeURIComponent(card.id)}/runs`, { stage: context.stage, consent: true, config }, 120000);
     $('#run-dialog').close();
-    announce(`${STAGE_VERBS[context.stage]} for “${card.title}”. The terminal is below.`);
-    window.PromptboardDock?.open(run.id);
+    announce(`${STAGE_VERBS[context.stage]} for “${card.title}”. ${uiPref('openTerminal') === '1' ? 'The terminal is below.' : 'Its tab is in the dock below.'}`);
+    showStartedRun(run.id);
   } catch (error) { showError(error.message); }
   finally { $('#run-start').disabled = false; }
 }
@@ -2789,12 +2792,72 @@ async function saveAutopilot(start) {
 }
 
 $('#autopilot-open').addEventListener('click', openAutopilot);
+
+// ---- Settings ----
+// Browser preferences (this browser only) and global server settings (every project). Project
+// workflow and Autopilot stay with their project and open in their own dialogs.
+const UI_PREFS = { startPage: ['promptboard.settings.start-page', 'compose'], openTerminal: ['promptboard.settings.open-terminal', '1'],
+  keepTabs: ['promptboard.settings.keep-tabs', '1'], termFont: ['promptboard.settings.terminal-font', '12'], dockStart: ['promptboard.settings.dock-start', 'last'] };
+function uiPref(name) { const [key, fallback] = UI_PREFS[name]; try { return localStorage.getItem(key) ?? fallback; } catch { return fallback; } }
+function setUiPref(name, value) { savePref(UI_PREFS[name][0], value); }
+function showStartedRun(runId) {
+  if (uiPref('openTerminal') === '1') window.PromptboardDock?.open(runId);
+  else loadBoard(); // The dock adds a tab for the live run without opening it.
+}
+function settingsError(message) { $('#app-settings-error').textContent = message; $('#app-settings-error').hidden = !message; }
+async function saveServerSettings(change) {
+  settingsError('');
+  try { const data = await boardCall('PATCH', '/api/settings', change); if (data.board) { board = data.board; renderBoard(); } }
+  catch (error) { settingsError(error.message); renderSettings(); }
+}
+function renderSettings() {
+  let theme = 'light'; try { theme = localStorage.getItem(THEME_KEY) || 'light'; } catch {}
+  $('#set-theme').value = ['system', 'light', 'dark'].includes(theme) ? theme : 'light';
+  $('#set-start').value = uiPref('startPage');
+  $('#set-open-terminal').checked = uiPref('openTerminal') === '1';
+  $('#set-keep-tabs').checked = uiPref('keepTabs') === '1';
+  $('#set-term-font').value = uiPref('termFont');
+  $('#set-dock-start').value = uiPref('dockStart');
+  const settings = board?.settings || {};
+  $('#set-max-runs').value = String(settings.maxConcurrentRuns || 1);
+  $('#set-agent-provider').value = settings.defaultAgent?.provider || 'claude';
+  $('#set-agent-model').value = settings.defaultAgent?.model || '';
+  for (const id of ['#set-max-runs', '#set-agent-provider', '#set-agent-model']) $(id).disabled = !board;
+  const project = currentProject();
+  $('#set-project-name').textContent = project?.name || 'no project';
+  $('#set-workflow').disabled = !project; $('#set-autopilot').disabled = !project;
+  window.PromptboardGitHub?.render();
+}
+async function openSettings() {
+  settingsError('');
+  if (!board) await loadBoard().catch(() => {});
+  renderSettings();
+  if (!$('#app-settings').open) $('#app-settings').showModal();
+}
+$('#app-settings-open').addEventListener('click', openSettings);
+$('#app-settings-close').addEventListener('click', () => $('#app-settings').close());
+$('#set-theme').addEventListener('change', () => applyTheme($('#set-theme').value));
+window.matchMedia?.('(prefers-color-scheme: dark)')?.addEventListener?.('change', () => { let theme = ''; try { theme = localStorage.getItem(THEME_KEY); } catch {} if (theme === 'system') applyTheme('system'); });
+$('#set-start').addEventListener('change', () => setUiPref('startPage', $('#set-start').value));
+$('#set-open-terminal').addEventListener('change', () => setUiPref('openTerminal', $('#set-open-terminal').checked ? '1' : '0'));
+$('#set-keep-tabs').addEventListener('change', () => { setUiPref('keepTabs', $('#set-keep-tabs').checked ? '1' : '0'); window.PromptboardDock?.sync(); });
+$('#set-term-font').addEventListener('change', () => { setUiPref('termFont', $('#set-term-font').value); window.PromptboardDock?.setFontSize(Number($('#set-term-font').value)); });
+$('#set-dock-start').addEventListener('change', () => setUiPref('dockStart', $('#set-dock-start').value));
+$('#set-clear-tabs').addEventListener('click', () => { const closed = window.PromptboardDock?.closeFinished() || 0; announce(`Closed ${closed} finished ${closed === 1 ? 'tab' : 'tabs'}. Run history is kept.`); });
+$('#set-max-runs').addEventListener('change', () => saveServerSettings({ maxConcurrentRuns: Number($('#set-max-runs').value) }));
+const saveDefaultAgent = () => saveServerSettings({ defaultAgent: { provider: $('#set-agent-provider').value, model: $('#set-agent-model').value.trim() } });
+$('#set-agent-provider').addEventListener('change', () => { $('#set-agent-model').value = ''; saveDefaultAgent(); });
+$('#set-agent-model').addEventListener('change', saveDefaultAgent);
+$('#set-workflow').addEventListener('click', () => { $('#app-settings').close(); if (location.hash !== '#/kanban') location.hash = '#/kanban'; openWorkflowDialog(); });
+$('#set-autopilot').addEventListener('click', () => { $('#app-settings').close(); if (location.hash !== '#/kanban') location.hash = '#/kanban'; openAutopilot(); });
 $('#autopilot-close').addEventListener('click', () => $('#autopilot-dialog').close());
 $('#autopilot-finish').addEventListener('change', () => { autopilotDraft.finish = $('#autopilot-finish').value; });
 $('#autopilot-rework').addEventListener('change', () => { autopilotDraft.maxRework = Number($('#autopilot-rework').value); });
 $('#autopilot-save').addEventListener('click', () => saveAutopilot(false));
 $('#autopilot-form').addEventListener('submit', event => { event.preventDefault(); saveAutopilot(true); });
 
+// Start page: applies when the app opens without a page in the address.
+if (!location.hash && uiPref('startPage') === 'kanban') location.hash = '#/kanban';
 showPage();
 loadProviders();
 $('#settings-toggle').addEventListener('click', () => setSettingsCollapsed(!$('#settings-body').hidden));
