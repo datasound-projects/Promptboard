@@ -937,7 +937,8 @@ let projectFormMode = 'new';
 let dragId = null;
 let repoFormFor = null;
 const repositories = new Map(); // projectId -> last branch list from the server.
-const pendingMoves = new Set(); // Cards moved locally while the server confirms the move.
+const pendingMoves = new Set(); // Cards reordered locally while the server confirms the new position.
+const movingTo = new Map(); // taskId -> column: a column change the server has not answered yet.
 let repoPanelOpen = false;
 
 function normalizeSource(source) {
@@ -979,10 +980,8 @@ function currentProject() { return board?.projects.find(project => project.id ==
 function findTask(id) { return currentProject()?.tasks.find(task => task.id === id) || null; }
 
 // Mirrors the server rule: any column to any other. Only the destination column's stage may run.
-function canMove(from, to) {
-  const ids = board.columns.map(column => column.id);
-  return from !== to && ids.includes(from) && ids.includes(to);
-}
+// The server's transition table (TRANSITIONS in board.mjs). The UI offers only these moves.
+function canMove(from, to) { return from !== to && Boolean(board?.transitions?.[from]?.includes(to)); }
 
 function setBoardWarning(message) {
   for (const warning of document.querySelectorAll('.board-warning')) { warning.textContent = message; warning.hidden = !message; }
@@ -994,7 +993,7 @@ async function boardCall(method, path, body, timeoutMs = 60000) {
   try { result = await api(path, { method, body, timeoutMs }); }
   catch { setBoardWarning('The app did not answer, so the change was not saved. Check that Promptboard is still running.'); throw new Error('The app did not answer. The change was not saved.'); }
   const { response, data } = result;
-  if (data.board) board = data.board;
+  if (data.board) acceptBoard(data.board);
   if (!response.ok) {
     const error = Object.assign(new Error(typeof data.error === 'string' ? data.error : 'The board request failed.'), { code: data.code, status: response.status });
     if (data.code === 'STATE_WRITE_FAILED') setBoardWarning(data.error);
@@ -1006,13 +1005,16 @@ async function boardCall(method, path, body, timeoutMs = 60000) {
   return data;
 }
 
+/** Every state write raises the board revision. A slow older answer never replaces a newer board. */
+function acceptBoard(next) { if (!board || !Number.isInteger(next?.revision) || next.revision >= board.revision) board = next; }
+
 async function loadBoard() {
   if (!token) return;
   boardLoading ??= (async () => {
     try {
       const { response, data } = await api('/api/board', { timeoutMs: 30000 });
       if (!response.ok || !data.board) throw new Error(typeof data.error === 'string' ? data.error : 'The app could not read the board.');
-      board = data.board;
+      acceptBoard(data.board);
       $('#kanban-load-warning').hidden = true;
       if (board.recovery) showLoadWarning(board.recovery.restoredFromBackup
         ? 'The board file was damaged, so the last good copy was restored. The damaged file was kept in the app data folder.'
@@ -1133,7 +1135,7 @@ function renderColumn(column, tasks) {
   const done = column.id === 'done';
   list.append(...(done ? renderDoneList(tasks) : tasks.map((task, index) => renderCard(task, index, tasks.length))));
   // Dropping on empty column space puts the card at the end of that column. All of Done is one drop zone.
-  const accepts = event => dragId && (done || event.target === list);
+  const accepts = event => dragId && (done || event.target === list) && (findTask(dragId)?.column === column.id || canMove(findTask(dragId)?.column, column.id));
   list.addEventListener('dragover', event => { if (accepts(event)) { event.preventDefault(); list.classList.add('drop-target'); } });
   list.addEventListener('dragleave', event => { if (!list.contains(event.relatedTarget)) list.classList.remove('drop-target'); });
   list.addEventListener('drop', event => {
@@ -1159,7 +1161,7 @@ function timeAgo(at) {
 function renderDoneList(tasks) {
   const zone = document.createElement('li');
   zone.className = 'kanban-done-drop';
-  zone.append(stageIcon('drop'), paragraph('Drop here to complete'));
+  zone.append(stageIcon('drop'), paragraph('Drop from Merge to merge and complete'));
   if (!tasks.length) return [zone];
   // Card numbers follow creation order within the project, so they stay stable.
   const numbers = new Map([...currentProject().tasks].sort((a, b) => a.createdAt - b.createdAt).map((task, index) => [task.id, index + 1]));
@@ -1204,9 +1206,19 @@ function renderDoneCard(card, number, draggable = true) {
   const when = card.completion?.at || card.updatedAt;
   const time = paragraph(when ? timeAgo(when) : '', 'kanban-done-time');
   if (when) time.title = new Date(when).toLocaleString();
-  item.append(title, paragraph(card.prompt.slice(0, 200).replace(/\s+/g, ' ').trim(), 'kanban-done-preview'), time);
-  if (draggable) makeDraggable(item, card);
+  const reopen = labelledButton(detailButton('Reopen', () => reopenCard(card), 'text-button kanban-reopen'), `Reopen: ${card.title}`);
+  reopen.title = 'Start a new cycle in To Do. The history, commits, and completion stay.';
+  item.append(title, paragraph(card.prompt.slice(0, 200).replace(/\s+/g, ' ').trim(), 'kanban-done-preview'), time, reopen);
   return item;
+}
+
+function labelledButton(button, label) { button.setAttribute('aria-label', label); return button; }
+/** Done → To Do. A new cycle; earlier completions, commits, reviews, tests, and runs are kept. */
+async function reopenCard(card) {
+  try { await boardCall('POST', `/api/tasks/${encodeURIComponent(card.id)}/reopen`, { expectedRevision: card.revision }); }
+  catch (error) { showBoardError(error); return; }
+  if ($('#done-dialog').open) $('#done-dialog').close();
+  announce(`Reopened “${card.title}” in To Do. Its history is kept.`);
 }
 
 function makeDraggable(item, card) {
@@ -1277,6 +1289,7 @@ function renderCard(card, index, count) {
   meta.title = meta.textContent;
   item.append(badge, ...tags, heading, paragraph(card.prompt.slice(0, 400).replace(/\s+/g, ' ').trim(), 'kanban-preview'), meta, renderRunControls(card, run), actions, more);
   if (pendingMoves.has(card.id)) item.classList.add('pending');
+  if (movingTo.has(card.id)) { item.classList.add('moving'); item.prepend(paragraph(`Moving to ${columnTitle(movingTo.get(card.id))}…`, 'moving-to')); }
   // Selecting a card reveals its agent session, if it has one.
   item.addEventListener('click', event => { if (!event.target.closest('button, select, a')) window.PromptboardDock?.reveal(card.id); });
   // Pointer drag-and-drop. The ↑/↓ buttons and the stage menu are the keyboard equivalent.
@@ -1305,42 +1318,64 @@ function showBoardError(error) {
  * a rejected move is rolled back visibly with the reason. `index` counts the other cards in
  * that column; null means the end.
  */
+const newTransitionId = () => globalThis.crypto?.randomUUID?.() || `t${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`;
+
+/**
+ * Move a card. Drag-and-drop, the stage menu, and the task-details buttons all use this.
+ * A column change shows the card as "Moving to …" in its current column until the server
+ * answers: the card enters the new column only when the server accepted the move (and the
+ * stage started), or the server asks for one approval first. Reordering within a column is shown at once.
+ */
 async function placeCard(id, column, index, retried = false) {
   const card = findTask(id);
-  if (!card || pendingMoves.has(id)) return false;
+  if (!card || pendingMoves.has(id) || movingTo.has(id)) return false;
   const project = currentProject();
   const others = project.tasks.filter(task => task.column === column && task.id !== id);
   const position = index === null ? others.length : Math.min(index, others.length);
+  const reorder = column === card.column;
+  if (!reorder && !canMove(card.column, column)) {
+    showMoveError(card, column, Object.assign(new Error(card.column === 'done' ? 'A card in Done moves only with Reopen.' : `Allowed from ${columnTitle(card.column)}: ${(board.transitions?.[card.column] || []).map(columnTitle).join(', ') || 'none'}.`), { code: 'TRANSITION_NOT_ALLOWED' }));
+    return false;
+  }
   const snapshot = project.tasks.slice();
-  const rest = project.tasks.filter(task => task.id !== id);
-  const before = rest.filter(task => task.column === column)[position];
-  const at = before ? rest.indexOf(before) : (others.length ? rest.indexOf(others.at(-1)) + 1 : rest.length);
-  rest.splice(at, 0, { ...card, column });
-  project.tasks = rest;
-  pendingMoves.add(id);
+  if (reorder) {
+    const rest = project.tasks.filter(task => task.id !== id);
+    const before = rest.filter(task => task.column === column)[position];
+    const at = before ? rest.indexOf(before) : (others.length ? rest.indexOf(others.at(-1)) + 1 : rest.length);
+    rest.splice(at, 0, card);
+    project.tasks = rest;
+    pendingMoves.add(id);
+  } else movingTo.set(id, column);
   renderBoard();
   let result;
   try {
-    result = await boardCall('POST', `/api/tasks/${encodeURIComponent(id)}/move`, { column, index: position, expectedRevision: card.revision });
+    result = await boardCall('POST', `/api/tasks/${encodeURIComponent(id)}/move`, { column, index: position, expectedRevision: card.revision, transitionId: newTransitionId() }, 180000);
   } catch (error) {
-    pendingMoves.delete(id);
+    pendingMoves.delete(id); movingTo.delete(id);
     // Background work (for example test results) can change a card's revision. If the card is still
     // where the user saw it, the move they asked for is unchanged: reload and try once more.
     if (error.code === 'REVISION_CONFLICT' && !retried && findTask(id)?.column === card.column) return placeCard(id, column, index, true);
-    if (currentProject()?.id === project.id && error.code !== 'REVISION_CONFLICT' && error.code !== 'NOT_FOUND') { currentProject().tasks = snapshot; renderBoard(); }
+    if (reorder && currentProject()?.id === project.id && error.code !== 'REVISION_CONFLICT' && error.code !== 'NOT_FOUND') currentProject().tasks = snapshot;
+    renderBoard();
     cardElement(id)?.classList.add('rejected');
     showMoveError(card, column, error);
     return false;
   }
-  pendingMoves.delete(id);
+  pendingMoves.delete(id); movingTo.delete(id);
   renderBoard();
-  if (column === 'done' && card.column !== 'done') announce(`Completed “${card.title}”. Nothing was merged, pushed, or started.`);
-  else announce(column === card.column ? `Moved “${card.title}” to position ${position + 1} of ${others.length + 1}.` : `Moved “${card.title}” to ${columnTitle(column)}. Moving a card does not run or approve that stage.`);
-  if (result.run) { announce(`Moved “${card.title}” to ${columnTitle(column)}. The workflow setting started an agent run.`); showStartedRun(result.run.id); }
-  if (result.merged) announce(`“${card.title}” passed every check and was merged automatically into ${result.task?.completion?.targetBranch || 'the target branch'}. Nothing was pushed.`);
-  if (result.automation) showProjectDetail(paragraph(column === 'merge' ? `Moved to Merge. ${result.automation.message}` : `Moved to ${columnTitle(column)}, but the automatic start did not happen: ${result.automation.message}`, 'kanban-error'));
-  if (result.ask) askToStart(findTask(id), result.ask.stage);
+  if (result.approval) { openApproval(result.approval, position); return true; }
+  movedAnnouncement(card, column, result, reorder ? `position ${position + 1} of ${others.length + 1}` : '');
   return true;
+}
+
+function movedAnnouncement(card, column, result, position = '') {
+  if (position) { announce(`Moved “${card.title}” to ${position}.`); return; }
+  if (result.duplicate) return;
+  if (result.run) { announce(`Moved “${card.title}” to ${columnTitle(column)} and started the ${columnTitle(column)} agent.`); showStartedRun(result.run.id); }
+  else if (result.tests) { announce(`Moved “${card.title}” to Testing. The project's tests are running.`); pollTests(card.id); }
+  else if (result.task?.column === 'done') announce(`“${card.title}” is done: ${result.merged ? `merged into ${result.task.completion?.targetBranch || 'the target branch'}` : 'its pull request was merged'}. Nothing was pushed by this step.`);
+  else announce(`Moved “${card.title}” to ${columnTitle(column)}. Nothing was started.`);
+  if (result.automation) showProjectDetail(paragraph(`Moved to Merge. ${result.automation.message}`, 'kanban-error'));
 }
 
 function showMoveError(card, column, error) {
@@ -1578,7 +1613,7 @@ function agentActivity(run) {
   const state = agentState(run);
   if (state === 'awaits_you') return run.waitingReason || 'Waiting for you in the terminal.';
   if (state === 'on_hold') return 'Queued until an agent slot is free.';
-  if (state === 'active') return run.lifecycle === 'no-events-yet' ? 'Working… no lifecycle event yet; check the terminal.' : 'Working…';
+  if (state === 'active') return run.lifecycle === 'waiting-for-first-event' ? 'Starting…' : run.lifecycle === 'no-events-yet' ? 'Working… no lifecycle event yet; check the terminal.' : 'Working…';
   return run?.reason || '';
 }
 const tokens = value => value >= 1_000_000 ? `${(value / 1_000_000).toFixed(1)}M` : value >= 1000 ? `${Math.round(value / 1000)}k` : String(value);
@@ -1708,19 +1743,6 @@ function renderRunControls(card, run) {
   return box;
 }
 
-function askToStart(card, stage) {
-  if (!card) return;
-  const panel = $('#ask-panel');
-  // Testing and Merge open task details, where tests run and the merge preview is confirmed.
-  const agent = ['planning', 'executing', 'code_review'].includes(stage);
-  const verb = agent ? STAGE_VERBS[stage] : stage === 'testing' ? 'Run tests' : 'Review the merge';
-  const yes = detailButton(`${verb}…`, () => { panel.hidden = true; agent ? openRunDialog(card.id, stage) : openTaskDetails(card.id); }, 'danger');
-  const no = detailButton('Not now', () => { panel.hidden = true; announce(agent ? 'No agent was started.' : 'Nothing was started.'); });
-  panel.replaceChildren(paragraph(`“${card.title}” is now in ${columnTitle(stage)}. ${agent ? 'Start the agent for this stage?' : `${verb} now?`} Nothing starts until you confirm.`), detailActions(yes, no));
-  panel.hidden = false;
-  yes.focus();
-}
-
 // Model choices for agent runs come from the installed CLI (the same list Compose shows, cached by
 // the server). "Custom model ID…" keeps any other ID possible; the CLI still validates it.
 const runCatalogs = new Map();
@@ -1752,13 +1774,57 @@ function chosenModelFrom(select, custom) { return select.value === '__custom__' 
 
 function fillSelect(select, values, labels = {}) { select.replaceChildren(...values.map(value => option(value, labels[value] ?? (value || 'CLI default')))); }
 
+const EFFORTS = { codex: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'], claude: ['low', 'medium', 'high', 'xhigh', 'max'], gemini: [] };
+function effortsFor(provider) { return EFFORTS[provider] || []; }
+
+/**
+ * Provider, model, and effort fields for one level of the agent hierarchy. `inherit` adds an
+ * empty provider choice that means "use the next level" (its label says which agent that is).
+ */
+function agentFields(value = {}, { inherit = '', stage = 'executing' } = {}) {
+  const grid = document.createElement('div'); grid.className = 'select-grid';
+  const providers = board?.execution?.providers || {};
+  const supported = Object.keys(providers).filter(id => providers[id][capabilityFor(stage)]?.supported);
+  const label = (text, control) => { const field = document.createElement('label'); field.className = 'field-label'; field.textContent = text; field.append(control); return field; };
+  const provider = document.createElement('select'); provider.dataset.field = 'provider';
+  fillSelect(provider, [...(inherit ? [''] : []), ...(supported.length ? supported : ['claude'])], { '': inherit, ...Object.fromEntries(Object.entries(providers).map(([id, item]) => [id, item.name])) });
+  provider.value = value.provider || '';
+  if (!inherit && !provider.value) provider.value = supported[0] || 'claude';
+  const model = document.createElement('select'); model.dataset.field = 'model';
+  const custom = document.createElement('input'); Object.assign(custom, { type: 'text', maxLength: 100, placeholder: 'Custom model ID', spellcheck: false }); custom.dataset.field = 'model-custom'; custom.setAttribute('aria-label', 'Custom model ID');
+  const effort = document.createElement('select'); effort.dataset.field = 'effort';
+  const modelBox = document.createElement('div'); modelBox.className = 'model-field'; modelBox.append(label('Model', model), custom);
+  const refresh = (keep = {}) => {
+    const chosen = provider.value;
+    modelBox.hidden = !chosen; effort.parentElement && (effort.parentElement.hidden = !chosen);
+    if (!chosen) return;
+    model.dataset.provider = chosen;
+    loadModelSelect(model, custom, chosen, keep.model || '');
+    const efforts = effortsFor(chosen);
+    fillSelect(effort, ['', ...efforts], { '': 'CLI default' });
+    effort.value = efforts.includes(keep.effort) ? keep.effort : '';
+    effort.disabled = !efforts.length;
+  };
+  provider.addEventListener('change', () => { custom.value = ''; refresh(); });
+  model.addEventListener('change', () => { custom.hidden = model.value !== '__custom__'; if (!custom.hidden) custom.focus(); });
+  grid.append(label('Provider', provider), modelBox, label('Effort', effort));
+  refresh(value);
+  return grid;
+}
+function readAgentFields(root) {
+  const value = field => root.querySelector(`[data-field="${field}"]`)?.value || '';
+  if (!value('provider')) return null;
+  return { provider: value('provider'), model: (value('model') === '__custom__' ? value('model-custom') : value('model')).trim(), effort: value('effort') };
+}
+const agentText = agent => agent?.provider ? `${providerName(agent.provider)} · ${agent.model || 'CLI default model'}${agent.effort ? ` · ${agent.effort}` : ''}` : '';
+
 function renderRunFields(provider, stage, settings = {}) {
   const providers = board?.execution?.providers || {};
   const supported = Object.keys(providers).filter(id => providers[id][capabilityFor(stage)]?.supported);
   fillSelect($('#run-provider'), supported, Object.fromEntries(supported.map(id => [id, providers[id].notLiveVerified ? `${providers[id].name} (not verified live)` : providers[id].name])));
   $('#run-provider').value = supported.includes(provider) ? provider : supported[0] || '';
   const chosen = $('#run-provider').value;
-  const efforts = { codex: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'], claude: ['low', 'medium', 'high', 'xhigh', 'max'], gemini: [] }[chosen] || [];
+  const efforts = effortsFor(chosen);
   fillSelect($('#run-effort'), ['', ...efforts]);
   $('#run-effort').value = efforts.includes(settings.effort) ? settings.effort : '';
   $('#run-effort').disabled = !efforts.length;
@@ -1772,50 +1838,119 @@ function renderRunFields(provider, stage, settings = {}) {
   $('#run-dialog-how').textContent = providers[chosen]?.[capabilityFor(stage)]?.how || '';
 }
 
-function openRunDialog(taskId, stage) {
+const AGENT_SOURCES = { stage: 'stage setting', project: 'project default', global: 'global default', default: 'built-in default' };
+function stageSummary(stage, card) {
+  return stage === 'planning' ? 'The agent inspects the repository in the task worktree and writes a plan. It cannot change files. You approve the plan before anything is implemented.'
+    : stage === 'code_review' ? 'The agent reviews the committed task diff against the target branch and reports findings. It cannot change files.'
+    : stage === 'testing' ? 'The agent runs your test commands in the task worktree, fixes failures, and can add focused tests. It does not commit. Only Promptboard’s own test run (exit codes) decides whether tests pass.'
+    : stage === 'merge' ? `If ${currentProject()?.targetBranch?.name || 'the target branch'} has moved on, Promptboard first merges it into the task branch without committing, and the agent resolves any conflicts. It never commits, merges into the target, or pushes.`
+    : `The agent works in the task worktree on branch ${card.workspace?.branch || '(created when the run starts)'}. It does not touch your main checkout.`;
+}
+const HANDOFF_TEXT = { planning: 'Approve the plan and end the Planning session.', code_review: 'Record the review and end the Code Review session.' };
+const NOTES_TEXT = { review: 'Pass the review findings to the Executing agent.', tests: 'Pass the failing test output to the Executing agent.', merge: 'Pass the merge conflicts to the Executing agent.' };
+
+/**
+ * One dialog for one decision. `ctx.mode` is 'transition' (the server returned an approval for a
+ * move) or 'run' (the card's own Start button, for a card already in its stage).
+ */
+function showRunDialog(ctx) {
+  const card = findTask(ctx.taskId);
   const project = currentProject();
-  const card = findTask(taskId);
   if (!card || !project) return;
-  const settings = project.effectiveWorkflow?.[stage] || {};
-  runDialogContext = { taskId, stage };
-  $('#run-dialog-stage').textContent = `${project.name} · ${columnTitle(stage)}`.toUpperCase();
-  $('#run-dialog-heading').textContent = `${STAGE_VERBS[stage]} for “${card.title}”?`;
-  $('#run-dialog-summary').textContent = stage === 'planning'
-    ? 'The agent inspects the repository in the task worktree and writes a plan. It cannot change files. You approve the plan before anything is implemented.'
-    : stage === 'code_review' ? 'The agent reviews the committed task diff against the target branch and reports findings. It cannot change files. Completing a review is not accepting it; you decide.'
-    : stage === 'testing' ? 'The agent runs your test commands in the task worktree, fixes failures, and can add focused tests. It does not commit. Whether tests pass is decided only by Promptboard’s own test run (exit codes).'
-    : stage === 'merge' ? `If ${currentProject()?.targetBranch?.name || 'the target branch'} has moved on, Promptboard first merges it into the task branch without committing, and the agent resolves any conflicts and runs the tests. It never commits, merges into the target, or pushes: you commit the result, then merge or open a pull request.`
-    : `The agent works in the task worktree on branch ${card.workspace?.branch || '(created when the run starts)'}. It does not touch your main checkout. You confirm the stage when you are satisfied.`;
-  const approval = card.planApproval;
-  $('#run-dialog-plan').textContent = stage !== 'executing' ? '' : !approval ? 'No approved plan: the agent receives the task text only.'
-    : approval.contentRevision === (card.contentRevision ?? 1) ? 'The approved plan is included with the task text.' : 'The task changed after its plan was approved, so the old plan is not included.';
+  runDialogContext = ctx;
+  const { stage, action, agent } = ctx;
+  $('#run-dialog-stage').textContent = `${project.name} · ${ctx.mode === 'transition' ? `${columnTitle(ctx.approval.from)} → ${columnTitle(stage)}` : columnTitle(stage)}`.toUpperCase();
+  $('#run-dialog-heading').textContent = ctx.mode === 'run' ? `${STAGE_VERBS[stage]} for “${card.title}”?` : stage === 'done' ? `Complete “${card.title}”?` : `Move “${card.title}” to ${columnTitle(stage)}?`;
+  $('#run-dialog-summary').textContent = action === 'agent' ? stageSummary(stage, card) : '';
+  const steps = [];
+  const approval = ctx.approval;
+  if (approval?.handoff) steps.push(HANDOFF_TEXT[approval.handoff.stage] || `Confirm the ${columnTitle(approval.handoff.stage)} turn and end its session.`);
+  if (approval?.commit) steps.push(`Commit ${plural(approval.commit.count, 'change')} on ${approval.branch || 'the task branch'} with your Git identity.`);
+  if (approval?.notes) steps.push(NOTES_TEXT[approval.notes]);
+  if (ctx.mode === 'transition' && stage !== 'done') steps.push(`Move the card to ${columnTitle(stage)}.`);
+  if (action === 'agent') steps.push(`Start the ${columnTitle(stage)} agent in the task worktree${card.workspace?.branch ? ` (${card.workspace.branch})` : ''}.`);
+  if (action === 'tests') steps.push(`Run the project's ${plural((project.testCommands || []).length, 'test command')} in the task worktree.`);
+  if (action === 'merge') steps.push(`Fast-forward ${approval.merge.targetBranch} to ${short(approval.merge.taskCommit)} (${plural(approval.merge.commits, 'commit')}) and complete the task. Nothing is pushed.`);
+  if (action === 'pull-request') steps.push(`Check pull request${approval.pullRequest.number ? ` #${approval.pullRequest.number}` : ''}. The card moves to Done only if it is merged.`);
+  $('#run-steps').replaceChildren(...steps.map(text => { const li = document.createElement('li'); li.textContent = text; return li; }));
+  $('#run-commit').hidden = !approval?.commit;
+  if (approval?.commit) {
+    $('#run-commit-message').value = approval.commit.message;
+    $('#run-commit-count').textContent = `${plural(approval.commit.count, 'changed file')}`;
+    $('#run-commit-files').replaceChildren(...approval.commit.changes.map(line => { const li = document.createElement('li'); li.textContent = line; return li; }));
+  }
+  const showAgent = action === 'agent' && agent;
+  $('#run-agent-line').hidden = !showAgent;
+  if (showAgent) {
+    $('#run-agent-line').replaceChildren(`${providerName(agent.provider)} · ${agent.model || 'CLI default model'} · ${agent.effort ? `${agent.effort} effort` : 'default effort'} `);
+    const from = document.createElement('small'); from.textContent = `(${AGENT_SOURCES[agent.source] || 'resolved'})`; $('#run-agent-line').append(from);
+  }
+  $('#run-override').hidden = !showAgent;
+  $('#run-override').open = false;
+  if (showAgent) renderRunFields(agent.provider, stage, agent);
+  $('#run-dialog-how').textContent = showAgent ? board?.execution?.providers?.[agent.provider]?.[capabilityFor(stage)]?.how || '' : '';
+  $('#run-dialog-plan').textContent = stage !== 'executing' || action !== 'agent' ? ''
+    : approval?.handoff?.stage === 'planning' || card.planApproval?.contentRevision === (card.contentRevision ?? 1) ? 'The approved plan is included with the task text.'
+    : card.planApproval ? 'The task changed after its plan was approved, so the old plan is not included.' : 'No approved plan: the agent receives the task text only.';
   const status = cardStatus(card);
-  $('#run-ack-field').hidden = !status.flag;
+  $('#run-ack-field').hidden = !(action === 'agent' && status.flag);
   $('#run-ack').checked = false;
   $('#run-ack-note').textContent = status.flag ? `${status.text}. Confirm that you reviewed the prompt before an agent acts on it.` : '';
-  $('#run-error').hidden = true;
-  renderRunFields(settings.provider, stage, settings);
-  $('#run-dialog').showModal();
-  $('#run-start').focus();
+  const primary = ctx.mode === 'run' ? 'Start agent' : action === 'agent' ? `Move and start ${columnTitle(stage)}` : action === 'tests' ? 'Move and run tests'
+    : action === 'merge' ? 'Merge and complete' : action === 'pull-request' ? 'Check pull request' : approval?.commit ? 'Commit and move' : approval?.handoff ? 'Confirm and move' : 'Move';
+  $('#run-start').replaceChildren(`${primary} `, Object.assign(document.createElement('span'), { textContent: '↗', ariaHidden: 'true' }));
+  $('#run-start').hidden = Boolean(approval?.agentError);
+  $('#run-move-only').hidden = !(approval?.canMoveOnly && action);
+  $('#run-error').textContent = approval?.agentError ? `The agent cannot start: ${approval.agentError} You can still move the card.` : '';
+  $('#run-error').hidden = !approval?.agentError;
+  if (!$('#run-dialog').open) $('#run-dialog').showModal();
+  ($('#run-start').hidden ? $('#run-move-only') : $('#run-start')).focus();
 }
 
-async function submitRun(event) {
-  event.preventDefault();
-  const context = runDialogContext;
-  const card = context && findTask(context.taskId);
-  if (!card) return;
+/** The server needs one approval for this move. Nothing has changed yet. */
+function openApproval(approval, index) {
+  showRunDialog({ mode: 'transition', taskId: approval.taskId, stage: approval.to, action: approval.action, agent: approval.agent, approval, index });
+}
+
+function openRunDialog(taskId, stage) {
+  const settings = currentProject()?.effectiveWorkflow?.[stage] || {};
+  showRunDialog({ mode: 'run', taskId, stage, action: 'agent', agent: { provider: settings.provider, model: settings.model, effort: settings.effort, permissionMode: settings.permissionMode, source: settings.agentSource } });
+}
+
+async function submitRun(event, decision = 'start') {
+  event?.preventDefault();
+  const ctx = runDialogContext;
+  const card = ctx && findTask(ctx.taskId);
+  if (!card || ctx.busy) return;
   const showError = message => { $('#run-error').textContent = message; $('#run-error').hidden = false; };
-  if (!$('#run-ack-field').hidden && !$('#run-ack').checked) { showError('Confirm that you reviewed this prompt first.'); return; }
-  if ($('#run-model').value === '__custom__' && !$('#run-model-custom').value.trim()) { showError('Enter the custom model ID, or choose a model from the list.'); $('#run-model-custom').focus(); return; }
-  const config = { provider: $('#run-provider').value, model: chosenModelFrom($('#run-model'), $('#run-model-custom')), effort: $('#run-effort').value, permissionMode: $('#run-permission').value };
-  $('#run-start').disabled = true;
+  const starting = decision === 'start' && ctx.action === 'agent';
+  if (starting && !$('#run-ack-field').hidden && !$('#run-ack').checked) { showError('Confirm that you reviewed this prompt first.'); return; }
+  const override = starting && $('#run-override').open;
+  if (override && $('#run-model').value === '__custom__' && !$('#run-model-custom').value.trim()) { showError('Enter the custom model ID, or choose a model from the list.'); $('#run-model-custom').focus(); return; }
+  if (ctx.approval?.commit && !$('#run-commit-message').value.trim()) { showError('Enter a commit message.'); $('#run-commit-message').focus(); return; }
+  // Without a change, the server resolves the agent itself (stage → project → global default).
+  const config = override ? { provider: $('#run-provider').value, model: chosenModelFrom($('#run-model'), $('#run-model-custom')), effort: $('#run-effort').value, permissionMode: $('#run-permission').value } : {};
+  ctx.busy = true;
+  for (const id of ['#run-start', '#run-move-only']) $(id).disabled = true;
   try {
-    const { run } = await boardCall('POST', `/api/tasks/${encodeURIComponent(card.id)}/runs`, { stage: context.stage, consent: true, config }, 120000);
-    $('#run-dialog').close();
-    announce(`${STAGE_VERBS[context.stage]} for “${card.title}”. ${uiPref('openTerminal') === '1' ? 'The terminal is below.' : 'Its tab is in the dock below.'}`);
-    showStartedRun(run.id);
-  } catch (error) { showError(error.message); }
-  finally { $('#run-start').disabled = false; }
+    if (ctx.mode === 'run') {
+      const { run } = await boardCall('POST', `/api/tasks/${encodeURIComponent(card.id)}/runs`, { stage: ctx.stage, consent: true, config }, 180000);
+      $('#run-dialog').close();
+      announce(`${STAGE_VERBS[ctx.stage]} for “${card.title}”. ${uiPref('openTerminal') === '1' ? 'The terminal is below.' : 'Its tab is in the dock below.'}`);
+      showStartedRun(run.id);
+    } else {
+      const { approval } = ctx;
+      movingTo.set(card.id, ctx.stage); renderBoard();
+      let result;
+      try {
+        result = await boardCall('POST', `/api/tasks/${encodeURIComponent(card.id)}/move`, { column: ctx.stage, index: ctx.index, expectedRevision: approval.expectedRevision, transitionId: approval.transitionId,
+          decision, config, handoffRunId: approval.handoff?.runId || null, ...(approval.commit ? { commitMessage: $('#run-commit-message').value.trim() } : {}) }, 180000);
+      } finally { movingTo.delete(card.id); renderBoard(); }
+      $('#run-dialog').close();
+      movedAnnouncement(card, ctx.stage, result);
+    }
+  } catch (error) { showError(`${error.message}${ctx.mode === 'transition' ? ` “${card.title}” stayed in ${columnTitle(findTask(card.id)?.column || card.column)}.` : ''}`); }
+  finally { ctx.busy = false; for (const id of ['#run-start', '#run-move-only']) $(id).disabled = false; }
 }
 
 async function confirmRun(run) {
@@ -1885,14 +2020,13 @@ function workflowSummary(project) {
 
 function workflowPreview(stage, settings) {
   const agentNote = stage === 'testing' || stage === 'merge' ? ` The ${stage === 'testing' ? 'testing' : 'merge'} agent below starts only from the card.` : '';
-  if (stage === 'merge') return (settings.policy === 'manual' ? 'Moving a card here does nothing. You review the merge preview and confirm it.'
-    : settings.policy === 'ask' ? 'Moving a card here asks whether to open the merge preview. You still confirm the merge.'
+  if (stage === 'merge') return (settings.policy !== 'start' ? 'Moving a card here starts nothing. Drag it to Done to confirm the merge, or use the task details.'
     : 'Moving a card here merges it at once, but only if the code review was accepted and the tests passed for exactly the current task and target commits, the merge is a fast-forward, and the target checkout is clean. Otherwise nothing is merged and the reason is shown. Nothing is pushed.') + agentNote;
-  const provider = providerName(settings.provider);
+  const provider = settings.provider ? providerName(settings.provider) : 'The inherited agent';
   const what = stage === 'planning' ? `${provider} writes a read-only plan` : stage === 'code_review' ? `${provider} reviews the committed diff read-only`
     : stage === 'testing' ? 'your configured test commands run in the task worktree' : `${provider} works in the task worktree`;
   return (settings.policy === 'manual' ? `Moving a card here does nothing. You start ${columnTitle(stage)} from the card when you want.`
-    : settings.policy === 'ask' ? `Moving a card here asks whether to start. If you agree, ${what}.`
+    : settings.policy === 'ask' ? `Moving a card here asks once. If you agree, ${what}.`
     : `Moving a card here starts at once: ${what}. The run is recorded as started by this setting.`) + agentNote;
 }
 
@@ -1908,35 +2042,18 @@ function openWorkflowDialog() {
     box.dataset.stage = stage;
     const legend = document.createElement('legend'); legend.textContent = columnTitle(stage);
     const policy = document.createElement('div'); policy.className = 'segmented';
-    for (const value of ['manual', 'ask', 'start']) {
+    for (const value of stage === 'merge' ? ['manual', 'start'] : ['manual', 'ask', 'start']) {
       const label = document.createElement('label');
-      const input = document.createElement('input'); input.type = 'radio'; input.name = `policy-${stage}`; input.value = value; input.checked = settings.policy === value;
+      const input = document.createElement('input'); input.type = 'radio'; input.name = `policy-${stage}`; input.value = value; input.checked = settings.policy === value || (stage === 'merge' && value === 'manual' && settings.policy !== 'start');
       const span = document.createElement('span'); span.textContent = stage === 'merge' && value === 'start' ? 'Merge automatically' : POLICY_LABELS[value];
       label.append(input, span); policy.append(label);
     }
     const preview = paragraph(workflowPreview(stage, settings), 'workflow-preview');
     const children = [legend, policy];
     if (STAGE_VERBS[stage]) {
-      const grid = document.createElement('div'); grid.className = 'select-grid';
-      const providers = board?.execution?.providers || {};
-      const supported = Object.keys(providers).filter(id => providers[id][capabilityFor(stage)]?.supported);
-      const providerField = document.createElement('label'); providerField.className = 'field-label'; providerField.textContent = 'Provider';
-      const providerSelect = document.createElement('select'); providerSelect.dataset.field = 'provider';
-      fillSelect(providerSelect, supported.length ? supported : ['claude'], Object.fromEntries(Object.entries(providers).map(([id, item]) => [id, item.name])));
-      providerSelect.value = settings.provider || 'claude';
-      providerField.append(providerSelect);
-      const modelBox = document.createElement('div'); modelBox.className = 'model-field';
-      const modelField = document.createElement('label'); modelField.className = 'field-label'; modelField.textContent = 'Model';
-      const model = document.createElement('select'); model.dataset.field = 'model';
-      const custom = document.createElement('input'); custom.type = 'text'; custom.maxLength = 100; custom.placeholder = 'Custom model ID'; custom.spellcheck = false; custom.dataset.field = 'model-custom'; custom.setAttribute('aria-label', `Custom model ID for ${columnTitle(stage)}`);
-      modelField.append(model);
-      modelBox.append(modelField, custom);
-      const reload = value => { model.dataset.provider = providerSelect.value; loadModelSelect(model, custom, providerSelect.value, value); };
-      reload(settings.model || '');
-      providerSelect.addEventListener('change', () => { custom.value = ''; reload(''); });
-      model.addEventListener('change', () => { custom.hidden = model.value !== '__custom__'; if (!custom.hidden) custom.focus(); });
-      grid.append(providerField, modelBox);
-      children.push(grid);
+      const own = project.workflow?.[stage]?.provider ? project.workflow[stage] : {};
+      const inherited = project.agentDefaults?.provider ? `Project default (${agentText(project.agentDefaults)})` : board?.settings?.defaultAgent?.provider ? `Global default (${agentText(board.settings.defaultAgent)})` : 'Default (Claude Code, CLI defaults)';
+      children.push(agentFields(own, { inherit: inherited, stage }));
     }
     const instructionsField = document.createElement('label'); instructionsField.className = 'field-label'; instructionsField.textContent = 'Stage instructions (optional, added before the task text)';
     const instructions = document.createElement('textarea'); instructions.maxLength = 4000; instructions.value = settings.instructions || ''; instructions.dataset.field = 'instructions';
@@ -1954,27 +2071,32 @@ function openWorkflowDialog() {
     box.addEventListener('change', () => { preview.textContent = workflowPreview(stage, readWorkflowStage(box)); });
     stages.push(box);
   }
-  const fixed = paragraph('To Do and Done never run agents. Merges are fast-forward only and never pushed; dropping a card on Done closes it without merging. Each column runs only its own stage.', 'workflow-preview');
-  $('#workflow-stages').replaceChildren(...stages, fixed);
+  const fixed = paragraph('To Do and Done never run agents. A card reaches Done only through a verified merge, a merged pull request, or “no changes required”; Reopen starts a new cycle. Merges are fast-forward only and never pushed. Each column runs only its own stage.', 'workflow-preview');
+  // Agent hierarchy: a stage setting, else this project default, else the global default in Settings.
+  const defaults = document.createElement('fieldset');
+  defaults.className = 'workflow-stage workflow-defaults';
+  const legend = document.createElement('legend'); legend.textContent = 'Project default agent';
+  const global = board?.settings?.defaultAgent?.provider ? `Global default (${agentText(board.settings.defaultAgent)})` : 'Global default (Claude Code, CLI defaults)';
+  defaults.append(legend, agentFields(project.agentDefaults || {}, { inherit: global }), paragraph('Every stage below uses this agent unless it names its own. Each card run uses it without asking again.', 'workflow-preview'));
+  $('#workflow-stages').replaceChildren(defaults, ...stages, fixed);
   $('#workflow-error').hidden = true;
   $('#workflow-dialog').showModal();
 }
 
 function readWorkflowStage(box) {
-  const value = field => box.querySelector(`[data-field="${field}"]`)?.value;
-  const result = { policy: box.querySelector('input[type="radio"]:checked')?.value || 'ask', instructions: value('instructions') || '' };
-  if (value('provider')) Object.assign(result, { provider: value('provider'), model: (value('model') === '__custom__' ? value('model-custom') || '' : value('model') || '').trim() });
-  return result;
+  const result = { policy: box.querySelector('input[type="radio"]:checked')?.value || 'ask', instructions: box.querySelector('[data-field="instructions"]')?.value || '' };
+  const agent = readAgentFields(box);
+  return agent ? { ...result, ...agent } : result;
 }
 
 async function saveWorkflow(event) {
   event.preventDefault();
   const project = currentProject();
   if (!project) return;
-  const workflow = Object.fromEntries([...$('#workflow-stages').querySelectorAll('.workflow-stage')].map(box => [box.dataset.stage, readWorkflowStage(box)]));
+  const workflow = Object.fromEntries([...$('#workflow-stages').querySelectorAll('.workflow-stage[data-stage]')].map(box => [box.dataset.stage, readWorkflowStage(box)]));
   const lines = ($('#test-commands')?.value || '').split('\n').map(line => line.trim()).filter(Boolean);
   try {
-    await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/workflow`, { workflow, expectedRevision: project.revision });
+    await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/workflow`, { workflow, agentDefaults: readAgentFields($('#workflow-stages .workflow-defaults')) || {}, expectedRevision: project.revision });
     const changed = JSON.stringify(lines) !== JSON.stringify((project.testCommands || []).map(item => item.argv.map(arg => /[\s"']/.test(arg) ? JSON.stringify(arg) : arg).join(' ')));
     if (changed) await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/tests`, { commands: lines.map(command => ({ command })), expectedRevision: currentProject().revision });
   } catch (error) { $('#workflow-error').textContent = error.message; $('#workflow-error').hidden = false; return; }
@@ -2073,7 +2195,7 @@ async function renderDelivery(card, container, section, pre) {
     } else if (review.text) box.append(pre(review.text));
     const actions = [];
     if (review.status === 'completed' && current) actions.push(detailButton('Accept review', () => deliveryAction(card, 'POST', 'accept-review', {}, 'Review accepted for this commit.'), 'danger'));
-    if (['completed', 'accepted'].includes(review.status) && card.column === 'code_review') actions.push(detailButton('Send back to Executing', () => deliveryAction(card, 'POST', 'send-back', { expectedRevision: card.revision }, 'Sent back to Executing with the findings.')));
+    if (['completed', 'accepted'].includes(review.status) && card.column === 'code_review') actions.push(detailButton('Send back to Executing', () => { $('#task-dialog').close(); placeCard(card.id, 'executing', null); }));
     if (actions.length) box.append(detailActions(...actions));
     nodes.push(box);
   } else if (['code_review', 'testing', 'merge'].includes(card.column)) nodes.push(section('Code review', paragraph('No review yet. In Code Review, start a review of the committed diff.')));
@@ -2488,7 +2610,6 @@ function selectProject(id) {
   savePref(SELECTED_PROJECT_KEY, id);
   closeProjectForm();
   showProjectDetail();
-  $('#ask-panel').hidden = true;
   renderBoard();
   announce(`Showing project “${currentProject()?.name}”. Agents in other projects keep running.`);
 }
@@ -2555,6 +2676,7 @@ $('#workflow-form').addEventListener('submit', saveWorkflow);
 $('#workflow-cancel').addEventListener('click', () => $('#workflow-dialog').close());
 $('#workflow-dialog-close').addEventListener('click', () => $('#workflow-dialog').close());
 $('#run-form').addEventListener('submit', submitRun);
+$('#run-move-only').addEventListener('click', () => submitRun(null, 'move'));
 $('#run-provider').addEventListener('change', () => renderRunFields($('#run-provider').value, runDialogContext?.stage, {}));
 $('#run-model').addEventListener('change', () => { $('#run-model-custom').hidden = $('#run-model').value !== '__custom__'; if (!$('#run-model-custom').hidden) $('#run-model-custom').focus(); });
 $('#run-cancel').addEventListener('click', () => $('#run-dialog').close());
@@ -2990,9 +3112,11 @@ function renderSettings() {
   $('#set-dock-start').value = uiPref('dockStart');
   const settings = board?.settings || {};
   $('#set-max-runs').value = String(settings.maxConcurrentRuns || 1);
-  $('#set-agent-provider').value = settings.defaultAgent?.provider || 'claude';
+  $('#set-agent-provider').value = settings.defaultAgent?.provider || '';
   $('#set-agent-model').value = settings.defaultAgent?.model || '';
-  for (const id of ['#set-max-runs', '#set-agent-provider', '#set-agent-model']) $(id).disabled = !board;
+  renderGlobalEffort(settings.defaultAgent?.effort || '');
+  for (const id of ['#set-max-runs', '#set-agent-provider']) $(id).disabled = !board;
+  for (const id of ['#set-agent-model', '#set-agent-effort']) $(id).disabled = !board || !$('#set-agent-provider').value;
   const project = currentProject();
   $('#set-project-name').textContent = project?.name || 'no project';
   $('#set-workflow').disabled = !project; $('#set-autopilot').disabled = !project;
@@ -3015,9 +3139,15 @@ $('#set-term-font').addEventListener('change', () => { setUiPref('termFont', $('
 $('#set-dock-start').addEventListener('change', () => setUiPref('dockStart', $('#set-dock-start').value));
 $('#set-clear-tabs').addEventListener('click', () => { const closed = window.PromptboardDock?.closeFinished() || 0; announce(`Closed ${closed} finished ${closed === 1 ? 'tab' : 'tabs'}. Run history is kept.`); });
 $('#set-max-runs').addEventListener('change', () => saveServerSettings({ maxConcurrentRuns: Number($('#set-max-runs').value) }));
-const saveDefaultAgent = () => saveServerSettings({ defaultAgent: { provider: $('#set-agent-provider').value, model: $('#set-agent-model').value.trim() } });
-$('#set-agent-provider').addEventListener('change', () => { $('#set-agent-model').value = ''; saveDefaultAgent(); });
+function renderGlobalEffort(value) {
+  const efforts = effortsFor($('#set-agent-provider').value);
+  fillSelect($('#set-agent-effort'), ['', ...efforts], { '': 'CLI default' });
+  $('#set-agent-effort').value = efforts.includes(value) ? value : '';
+}
+const saveDefaultAgent = () => saveServerSettings({ defaultAgent: $('#set-agent-provider').value ? { provider: $('#set-agent-provider').value, model: $('#set-agent-model').value.trim(), effort: $('#set-agent-effort').value } : null });
+$('#set-agent-provider').addEventListener('change', () => { $('#set-agent-model').value = ''; renderGlobalEffort(''); saveDefaultAgent(); });
 $('#set-agent-model').addEventListener('change', saveDefaultAgent);
+$('#set-agent-effort').addEventListener('change', saveDefaultAgent);
 // GitHub: sign-in through the GitHub CLI (gh keeps the token), and a repository for the current project.
 // The page receives only the user name, the one-time device code, and repository metadata.
 const github = { status: null, login: null, results: [], chosen: null, busy: false, message: '' };

@@ -156,7 +156,12 @@ async function boardRoute(board, req, res, pathname, searchParams) {
   } else {
     if (method === 'PATCH' && !action) return view(await board.updateTask(id, await body()));
     if (method === 'DELETE' && !action) return view({ deleted: await board.deleteTask(id, { expectedRevision: expected() }) ?? true });
-    if (method === 'POST' && action === 'move') return view(await board.transition(id, await body()));
+    if (method === 'POST' && action === 'move') {
+      // Only the fields a person can choose; the trigger is always the user here.
+      const { column, index, expectedRevision, transitionId, decision, commitMessage, config, handoffRunId } = await body();
+      return view(await board.transition(id, { column, index, expectedRevision, transitionId, decision, commitMessage, config, handoffRunId }));
+    }
+    if (method === 'POST' && action === 'reopen') return view({ task: await board.reopenTask(id, await body()) });
     if (method === 'POST' && action === 'duplicate') { await body(); return view({ task: await board.duplicateTask(id) }); }
     if (method === 'POST' && action === 'runs') return view({ run: await board.requestRun(id, await body()) });
     if (method === 'DELETE' && action === 'worktree') return view({ task: await board.removeTaskWorktree(id) });
@@ -168,7 +173,6 @@ async function boardRoute(board, req, res, pathname, searchParams) {
     if (method === 'GET' && action === 'test-log') return send(res, 200, { text: await delivery.testLog(id, Number(searchParams.get('index'))) });
     if (method === 'POST' && action === 'commit') return view({ revision: await delivery.commit(id, await body()) });
     if (method === 'POST' && action === 'accept-review') { await body(); return view({ task: await delivery.acceptReview(id) }); }
-    if (method === 'POST' && action === 'send-back') return view(await delivery.sendBack(id, await body()));
     if (method === 'POST' && action === 'tests') return view({ tests: await delivery.runTests(id, await body()) });
     if (method === 'POST' && action === 'merge') { const { confirm, taskCommit, targetCommit } = await body(); return view({ task: await delivery.merge(id, { confirm, taskCommit, targetCommit }) }); }
     if (method === 'POST' && action === 'update-branch') return view({ revision: await delivery.updateBranch(id, await body()) });

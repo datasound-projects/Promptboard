@@ -193,20 +193,6 @@ export class Delivery {
     });
   }
 
-  /** Send review findings back to Executing. The next Executing run receives them. */
-  async sendBack(taskId, { expectedRevision }) {
-    const { task } = await this.#context(taskId);
-    const review = task.evidence?.review;
-    if (!review) throw fail('There is no review to send back.', 'REVIEW_MISSING');
-    const notes = review.findings?.length ? review.findings.map(item => `- [${item.severity}] ${item.file}${item.line ? `:${item.line}` : ''} ${item.explanation}`).join('\n') : review.text;
-    await this.board.updateTaskEvidence(taskId, current => {
-      current.evidence.review = { ...current.evidence.review, status: 'changes_requested' };
-      current.reworkNotes = String(notes).slice(0, 20000);
-    });
-    const fresh = (await this.#context(taskId)).task;
-    return this.board.transition(taskId, { column: 'executing', expectedRevision: expectedRevision ?? fresh.revision });
-  }
-
   async setTestCommands(projectId, { commands, expectedRevision }) {
     if (!Array.isArray(commands) || commands.length > 20) throw fail('Configure at most 20 test commands.', 'INVALID_INPUT', 400);
     const clean = commands.map((item, index) => {

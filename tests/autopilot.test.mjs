@@ -39,11 +39,13 @@ async function world(t, testCommand = `${process.execPath} -e "process.exit(0)"`
   return { board, supervisor, autopilot, root, project, view, card };
 }
 
-test('routes: stages in board order, Executing required, a local merge needs review and tests', () => {
+test('routes: stages in board order, Executing required, and the stage contract: Testing needs Code Review, Merge needs both', () => {
   assert.deepEqual(normalizeRoute(['merge', 'executing', 'code_review', 'testing']), ['executing', 'code_review', 'testing', 'merge']);
   assert.throws(() => normalizeRoute(['planning', 'code_review']), { code: 'INVALID_AUTOPILOT', message: /must include Executing/ });
   assert.throws(() => normalizeRoute(['executing', 'merge'], 'merge'), { message: /must include Code Review and Testing/ });
-  assert.deepEqual(normalizeRoute(['executing', 'merge'], 'pull_request'), ['executing', 'merge']);
+  assert.throws(() => normalizeRoute(['executing', 'merge'], 'pull_request'), { message: /must include Code Review and Testing/ });
+  assert.throws(() => normalizeRoute(['executing', 'testing']), { message: /Testing must include Code Review/ });
+  assert.deepEqual(normalizeRoute(['executing', 'code_review']), ['executing', 'code_review']);
   assert.throws(() => normalizeRoute(['executing', 'done']), { code: 'INVALID_AUTOPILOT' });
 });
 
@@ -107,7 +109,7 @@ test('failing tests go back to Executing with the output, then Autopilot pauses 
 test('a permission prompt holds Autopilot until the agent finishes its turn', { skip, timeout: 120000 }, async t => {
   const w = await world(t);
   const task = await w.card('Asks', 'Please run a command. ASK_PERMISSION');
-  await w.board.setAutopilot(w.project.id, { route: ['executing', 'merge'], finish: 'pull_request', maxRework: 0, queue: [task], expectedRevision: (await w.view()).revision });
+  await w.board.setAutopilot(w.project.id, { route: ['executing'], finish: 'pull_request', maxRework: 0, queue: [task], expectedRevision: (await w.view()).revision });
   await w.board.controlAutopilot(w.project.id, { action: 'start', confirm: true });
   w.autopilot.start();
   const run = await until(async () => { const found = (await w.board.view()).runs.find(item => item.taskId === task); return found?.status === 'waiting_for_input' && found; }, 'waiting for permission');

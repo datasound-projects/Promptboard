@@ -26,14 +26,40 @@ A **task** has a position: `column`, plus its order in the project's task list. 
 - Run status is one of `queued`, `running`, `waiting_for_input`, `succeeded`, `failed`, `cancelled`, or `interrupted`. Only these forward changes are accepted: queued → running, cancelled, or failed; running → waiting_for_input, succeeded, failed, or cancelled; waiting_for_input → running, cancelled, or failed.
 - When a new process starts, any run still `queued`, `running`, or `waiting_for_input` becomes `interrupted`. It is never restarted.
 
-Allowed moves (`canTransition`):
+### Stage transitions
 
-- A card can move from any column to any other, forward or back, and reorder within a column.
-- The destination column alone decides what may run (see Automation): only that column's stage, once, for that move. Skipped columns never run, and no column is a prerequisite that runs implicitly. A stage that needs earlier work refuses with the reason instead (for example Code Review needs a committed revision: `WORKSPACE_REQUIRED`, `UNCOMMITTED_CHANGES`, or `NO_CHANGES`).
+`TRANSITIONS` in `src/board.mjs` is the only table of allowed column changes. The server enforces it, and the board view sends it to the UI, which offers only these moves (stage menu and drop targets):
+
+| From | To |
+| --- | --- |
+| To Do | Planning, Executing |
+| Planning | Executing, To Do |
+| Executing | Code Review, To Do |
+| Code Review | Testing, Executing |
+| Testing | Merge, Executing |
+| Merge | Done, Executing, Code Review |
+| Done | none (use **Reopen**, which starts a new cycle in To Do and keeps the history) |
+
+Every move, from drag-and-drop, the stage menu, a task-details button, or Autopilot, goes through `Board.transition`: **request → validate → prepare → approve if required → execute → persist**. Transitions for one card are serialized, and one `transitionId` gives one outcome: a repeated request returns the first result (`duplicate: true`) and starts nothing.
+
+- **The card enters a column only when the move succeeded.** When the destination starts an agent, the card's new column and the run record are saved in one write. A preparation failure leaves the card where it was, with the reason. If the session then fails before it begins (for example the CLI disappeared), the card returns to its previous column (`by: "system"`, with the reason). The browser shows "Moving to …" on the card in its old column until the server answers.
+- **Skipped stages never run.** Only the destination's own stage action can start.
+- **One approval.** When the move needs a decision, the first request changes nothing and returns `{ approval }`: the resolved agent (provider, model, effort, and which level they came from), any hand-off, any commit, and the stage action. Answering it with `decision: "start"` (or `"move"`, which never starts anything) repeats `transitionId`, `handoffRunId`, and `commitMessage`. A decision is needed when the stage is set to **Ask** and has an action, when a finished agent turn must be confirmed, when uncommitted work must be committed, and for Merge → Done.
+- **Hand-off.** An agent that finished its turn in the stage the card leaves is confirmed as part of the move. That approves a plan (Planning) or records a review (Code Review). An agent that is still working, or any active run when the card goes to To Do, refuses the move (`RUN_ACTIVE`); stopping it needs its own confirmation.
+- **Commits.** Executing (or Merge) → Code Review commits uncommitted work with the message from the approval, using the repository's Git identity. A plain move with uncommitted work is refused (`UNCOMMITTED_CHANGES`); work is never discarded, stashed, or reset.
+- **Evidence gates** (reviewed = tested = task HEAD). Code Review → Testing needs a review of the current commit that is accepted, or completed without findings (the move accepts it). Testing → Merge also needs passing tests for the current commit and a clean worktree. Changes made in Testing go back to Executing, then through Code Review and Testing again. These gates are checked after the hand-off, so a review recorded by the move counts.
+- **Rework.** Code Review → Executing passes the review findings (the review becomes `changes_requested`, and an old review never authorizes a newer commit). Testing → Executing passes the failing test output. Merge → Executing passes the conflicted files.
+- **Done** is reached only through a verified fast-forward merge (Merge → Done: one confirmation, then the gated merge), a merged pull request, or an explicit **no changes required** (task details, only when the branch has no changes). Merge automatically (policy Start) still merges on entry when every check holds.
+- **Worktree check before each stage.** The task worktree must exist, be registered with Git, and be on the task branch. A deleted folder is rebuilt from the task branch (`git worktree prune`, then `git worktree add <path> <branch>`; `workspace.recoveredAt` records it). A switched branch (`BRANCH_MISMATCH`) or a deleted branch (`WORKTREE_BRANCH_MISSING`) stops with the exact problem and the safe next action.
 - Only the Planning column plans. Executing, Testing, and Merge sessions are told to start their own work without a plan or approval step, even when the card text asks for one, and Claude Code runs them with `EnterPlanMode` and `ExitPlanMode` disallowed.
-- Dropping a card on Done closes it (`completion.kind = closed`): nothing is merged, pushed, or started. Moving it out of Done reopens it.
 
-A card cannot leave To Do until its project has a linked repository. A card with an active run cannot change columns.
+Stage policies keep their meaning. **Manual** moves only. **Ask** returns one approval (Move and start, Move only, or Cancel). **Start on entry** prepares and starts at once; the run is recorded with `trigger: "automation"`. A stage whose agent cannot start refuses an automatic start; with Ask, the card can still move without starting.
+
+### Agent settings
+
+Each stage's agent comes from the most specific level that names a provider: the stage override (Workflow settings), else the project default agent (Workflow settings), else the global default (Settings), else Claude Code with its CLI defaults. Model and effort come from the same level. `effectiveWorkflow` reports `agentSource` (`stage`, `project`, `global`, or `default`). A run can override the agent for itself only.
+
+A card cannot leave To Do until its project has a linked repository.
 
 ## Persistence
 
@@ -137,7 +163,8 @@ A stage becomes `succeeded` only through `POST /api/runs/:id/confirm` after a fi
 
 ## Board interface (PB-03)
 
-- Every move uses `POST /api/tasks/:id/move`, which records the transition first. Then, for Planning or Executing, it applies the project's workflow policy: `ask` returns a question, `start` requests a run with `trigger: "automation"`, and `manual` does nothing. `PATCH /api/projects/:id/workflow` stores overrides; runs keep a snapshot of their settings.
+- Every move uses `POST /api/tasks/:id/move { column, index, expectedRevision, transitionId, decision?, commitMessage?, handoffRunId?, config? }` (see [Stage transitions](#stage-transitions)). `POST /api/tasks/:id/reopen` reopens a card in Done. `PATCH /api/projects/:id/workflow { workflow, agentDefaults }` stores stage overrides and the project default agent; runs keep a snapshot of their settings.
+- The browser never replaces a newer board with an older answer: every state write raises `revision`, and older views are ignored.
 - Terminal output is rendered only by xterm (WebGL renderer, because the CSP blocks xterm's inline `<style>` elements) or through `textContent`. Links are never opened automatically.
 - Not tested: Safari, Firefox, Windows, and browsers without WebGL (they use a plain-text fallback). Under software rendering (no GPU), creating each terminal takes several seconds.
 
@@ -150,7 +177,7 @@ Everything in this section lives in `src/delivery.mjs`. Evidence is tied to the 
   - A review is an agent run of stage `code_review`. It uses the same read-only boundary as Planning, and the committed diff against the target is part of its message.
   - It needs a clean revision with commits ahead of the target (`UNCOMMITTED_CHANGES`, `NO_CHANGES`).
   - Confirming the run records the findings (`evidence.review.status = completed`), parsed from a ```json block. Accepting them is a separate decision (`accept-review`), valid only for the reviewed commit.
-  - `send-back` moves the card to Executing, and the next Executing run receives the findings.
+  - Moving the card from Code Review to Executing sends the findings back; the next Executing run receives them.
 - **Testing:**
   - Test commands are set by the user (`PATCH /api/projects/:id/tests`). Each is stored as argv, parsed without a shell, and runs in the task worktree with a timeout.
   - Imported commands wait in `pendingImport` until confirmed.
@@ -173,7 +200,7 @@ Everything in this section lives in `src/delivery.mjs`. Evidence is tied to the 
   - `POST /api/tasks/:id/pull-request-status` reads the state with `gh pr view`. A merged pull request completes the task (`completion.kind = pull_request`).
 - **Done:**
   - A verified merge (`completion.kind = merged`), a merged pull request (`kind = pull_request`), or `complete-no-changes`, allowed only when the branch has no changes (`kind = no_changes`; never described as merged), completes a task through `completeTask`.
-  - Dropping a card on Done closes it (`kind = closed`; never described as merged). Reopening clears the completion and keeps it in `previousCompletions`.
+  - No other move reaches Done. **Reopen** (`POST /api/tasks/:id/reopen`) moves the card to To Do, clears the completion, and keeps it in `previousCompletions`.
   - Worktree cleanup stays optional and ownership-checked.
 - **Automation:** "Start on entry" for Code Review starts a review run. For Testing it runs the configured commands. Merge is Manual by default. With "Merge automatically" a card entering Merge is merged by Promptboard itself (no agent) through the same gate as a confirmed merge: accepted review and passing tests for the current task and target commits, fast-forward only, clean target checkout. If any check fails, nothing is merged and the reason is returned. The completion records `trigger: "automation"`. Automatic stage advancement does not exist.
 

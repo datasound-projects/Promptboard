@@ -237,7 +237,6 @@
         </div>
         </div>
         <div class="connection-detail kanban-detail" id="project-detail" role="status" hidden></div>
-        <div class="connection-detail kanban-ask" id="ask-panel" role="status" hidden></div>
       </section>
       <section class="card kanban-board" aria-labelledby="board-heading">
         <div class="card-heading"><div><h2 id="board-heading" class="sr-only">Project views</h2><div class="view-switch" role="tablist" aria-label="Project views"><button type="button" role="tab" id="view-board" aria-selected="true" aria-controls="board-view-panel">Board</button><button type="button" role="tab" id="view-timeline" aria-selected="false" aria-controls="timeline">Timeline</button></div><span class="kanban-count" id="board-count" aria-label="Cards">00</span></div><div class="board-actions" id="board-actions"><button class="secondary-button autopilot-open" id="autopilot-open" type="button" aria-haspopup="dialog"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h9m-4-4 4 4-4 4"/><path d="M15 5h4v14h-4"/></svg><span>Autopilot</span></button><button class="icon-button board-scroll" id="board-left" type="button" aria-controls="kanban-columns" aria-label="Scroll the board left" title="Scroll left"><span aria-hidden="true">‹</span></button><button class="icon-button board-scroll" id="board-right" type="button" aria-controls="kanban-columns" aria-label="Scroll the board right" title="Scroll right"><span aria-hidden="true">›</span></button><button class="copy-button" id="card-new" type="button"><span aria-hidden="true">＋</span> New card</button></div></div>
@@ -295,9 +294,10 @@
         <label class="field-label">Start page<select id="set-start"><option value="compose">Compose</option><option value="kanban">Kanban</option></select></label>
       </fieldset>
       <fieldset class="settings-group"><legend>Agents</legend>
-        <label class="field-label">Default provider for new stages<select id="set-agent-provider"><option value="claude">Claude Code</option><option value="codex">Codex CLI</option><option value="gemini">Gemini CLI</option></select></label>
-        <label class="field-label">Default model<input id="set-agent-model" type="text" maxlength="100" autocomplete="off" spellcheck="false" placeholder="CLI default model"></label>
-        <p class="note">Used by every project stage that has no provider of its own. A stage set in a project's workflow keeps its own agent.</p>
+        <label class="field-label">Global default agent<select id="set-agent-provider"><option value="">None (Claude Code, CLI defaults)</option><option value="claude">Claude Code</option><option value="codex">Codex CLI</option><option value="gemini">Gemini CLI</option></select></label>
+        <label class="field-label">Model<input id="set-agent-model" type="text" maxlength="100" autocomplete="off" spellcheck="false" placeholder="CLI default model"></label>
+        <label class="field-label">Effort<select id="set-agent-effort"></select></label>
+        <p class="note">The agent comes from the stage setting, else the project default (Workflow settings), else this global default.</p>
         <label class="field-label">Agents at the same time<select id="set-max-runs"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option></select></label>
         <label class="check-row"><input type="checkbox" id="set-open-terminal"> Open the terminal when a run starts</label>
         <label class="check-row"><input type="checkbox" id="set-keep-tabs"> Keep tabs of finished runs</label>
@@ -341,17 +341,27 @@
     <dialog id="run-dialog" class="kanban-dialog" aria-labelledby="run-dialog-heading"><button class="dialog-close icon-button" id="run-dialog-close" type="button" aria-label="Close">×</button><p class="eyebrow" id="run-dialog-stage">START AN AGENT</p><h2 id="run-dialog-heading">Start the agent?</h2>
       <form id="run-form" novalidate>
         <p class="note" id="run-dialog-summary"></p>
-        <div class="select-grid">
-          <label class="field-label" for="run-provider">Provider<select id="run-provider"></select></label>
-          <div class="model-field"><label class="field-label" for="run-model">Model<select id="run-model"></select></label><input id="run-model-custom" type="text" maxlength="100" autocomplete="off" spellcheck="false" placeholder="Custom model ID" aria-label="Custom model ID" hidden></div>
-          <label class="field-label" for="run-effort">Effort<select id="run-effort"></select></label>
-          <label class="field-label" for="run-permission">Permissions<select id="run-permission"></select></label>
+        <ul class="run-steps" id="run-steps"></ul>
+        <div class="run-commit" id="run-commit" hidden>
+          <label class="field-label" for="run-commit-message">Commit message<input id="run-commit-message" type="text" maxlength="2000" autocomplete="off"></label>
+          <details><summary id="run-commit-count"></summary><ul class="run-commit-files" id="run-commit-files"></ul></details>
         </div>
+        <p class="run-agent-line" id="run-agent-line"></p>
+        <details class="run-override" id="run-override">
+          <summary>Change the agent for this run</summary>
+          <div class="select-grid">
+            <label class="field-label" for="run-provider">Provider<select id="run-provider"></select></label>
+            <div class="model-field"><label class="field-label" for="run-model">Model<select id="run-model"></select></label><input id="run-model-custom" type="text" maxlength="100" autocomplete="off" spellcheck="false" placeholder="Custom model ID" aria-label="Custom model ID" hidden></div>
+            <label class="field-label" for="run-effort">Effort<select id="run-effort"></select></label>
+            <label class="field-label" for="run-permission">Permissions<select id="run-permission"></select></label>
+          </div>
+          <p class="note">Only this run changes. Set the stage, project, or global default in Workflow settings or Settings.</p>
+        </details>
         <p class="note" id="run-dialog-how"></p>
         <p class="note" id="run-dialog-plan"></p>
         <label class="check-option" id="run-ack-field" hidden><input type="checkbox" id="run-ack"><span><strong id="run-ack-title">I reviewed this prompt</strong><small id="run-ack-note"></small></span></label>
         <p class="inline-error" id="run-error" role="alert" hidden></p>
-        <div class="kanban-dialog-actions"><button type="button" class="secondary-button" id="run-cancel">Cancel</button><button type="submit" class="dialog-done" id="run-start">Start agent <span aria-hidden="true">↗</span></button></div>
+        <div class="kanban-dialog-actions"><button type="button" class="secondary-button" id="run-cancel">Cancel</button><button type="button" class="secondary-button" id="run-move-only" hidden>Move only</button><button type="submit" class="dialog-done" id="run-start">Start agent <span aria-hidden="true">↗</span></button></div>
       </form>
     </dialog>
     <dialog id="task-dialog" class="kanban-dialog task-dialog" aria-labelledby="task-dialog-heading"><button class="dialog-close icon-button" id="task-dialog-close" type="button" aria-label="Close">×</button><p class="eyebrow" id="task-dialog-stage">TASK</p><h2 id="task-dialog-heading">Task details</h2>

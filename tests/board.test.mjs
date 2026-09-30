@@ -37,15 +37,15 @@ async function linkedBoard(t, options = {}) {
 }
 const taskIn = async (board, id) => (await board.view()).projects.flatMap(project => project.tasks).find(task => task.id === id);
 
-test('the seven fixed columns; a card may move from any column to any other', () => {
+test('the seven fixed columns and the transition matrix of the stage contract; every other pair is refused', () => {
   assert.deepEqual(COLUMNS.map(column => column.title), ['To Do', 'Planning', 'Executing', 'Code Review', 'Testing', 'Merge', 'Done']);
   assert.deepEqual(COLUMNS.filter(column => !column.agent).map(column => column.id), ['todo', 'done']);
-  for (const [from, to, allowed] of [
-    ['todo', 'planning', true], ['todo', 'executing', true], ['planning', 'executing', true], ['executing', 'code_review', true],
-    ['code_review', 'testing', true], ['testing', 'merge', true], ['merge', 'done', true], ['code_review', 'executing', true],
-    ['todo', 'code_review', true], ['todo', 'merge', true], ['todo', 'done', true], ['executing', 'done', true], ['planning', 'testing', true], ['done', 'executing', true], ['done', 'todo', true],
-    ['todo', 'nowhere', false], ['nowhere', 'todo', false],
-  ]) assert.equal(canTransition(from, to), allowed, `${from} -> ${to}`);
+  const allowed = new Set(['todo>planning', 'todo>executing', 'planning>executing', 'planning>todo', 'executing>code_review', 'executing>todo',
+    'code_review>testing', 'code_review>executing', 'testing>merge', 'testing>executing', 'merge>done', 'merge>executing', 'merge>code_review']);
+  const ids = COLUMNS.map(column => column.id);
+  for (const from of ids) for (const to of ids) if (from !== to) assert.equal(canTransition(from, to), allowed.has(`${from}>${to}`), `${from} -> ${to}`);
+  assert.equal(canTransition('todo', 'nowhere'), false);
+  assert.equal(canTransition('nowhere', 'todo'), false);
 });
 
 test('the store serializes writes, replaces the file atomically, and recovers from corruption', async t => {
@@ -211,8 +211,9 @@ test('runs: To Do and Done never run; consent is required; without an executor n
   assert.equal(started[1].workspace.path, started[0].workspace.path);
   assert.equal(started[1].workspace.branch, started[0].workspace.branch);
   await board.updateRun(second.id, { status: 'cancelled' });
-  await board.moveTask(task.id, { column: 'code_review', expectedRevision: (await taskIn(board, task.id)).revision });
-  await assert.rejects(board.requestRun(task.id, { stage: 'code_review', consent: true }), { code: 'NO_CHANGES' }, 'Review needs committed changes to review.');
+  await assert.rejects(board.moveTask(task.id, { column: 'code_review', expectedRevision: (await taskIn(board, task.id)).revision }), { code: 'NO_CHANGES' }, 'Review needs committed changes; the card stays.');
+  assert.equal((await taskIn(board, task.id)).column, 'executing');
+  await assert.rejects(board.requestRun(task.id, { stage: 'code_review', consent: true }), { code: 'STAGE_MISMATCH' });
   // A restart marks active runs interrupted and never calls the executor again.
   const third = await board.store.update(state => { const run = { ...state.runs[0], id: 'active-run', status: 'running' }; state.runs.push(run); return run; });
   const restarted = new Board({ dataDir, executor: { start: () => assert.fail('A restart must not start runs.') } });
@@ -260,7 +261,8 @@ test('card moves are validated, need a linked project, use revisions, and never 
   const project = await board.createProject({ name: 'Unlinked' });
   const task = await board.createTask({ projectId: project.id, title: 'T', prompt: 'P' });
   await assert.rejects(board.moveTask(task.id, { column: 'planning', expectedRevision: 1 }), { code: 'REPOSITORY_REQUIRED' });
-  await assert.rejects(board.moveTask(task.id, { column: 'code_review', expectedRevision: 1 }), { code: 'REPOSITORY_REQUIRED' });
+  await assert.rejects(board.moveTask(task.id, { column: 'code_review', expectedRevision: 1 }), { code: 'TRANSITION_NOT_ALLOWED', message: /Allowed from To Do: Planning, Executing/ });
+  await assert.rejects(board.moveTask(task.id, { column: 'done', expectedRevision: 1 }), { code: 'TRANSITION_NOT_ALLOWED' });
   await assert.rejects(board.moveTask(task.id, { column: 'nowhere', expectedRevision: 1 }), { code: 'INVALID_COLUMN' });
   await assert.rejects(board.updateTask(task.id, { title: 'New', expectedRevision: 7 }), { code: 'REVISION_CONFLICT' });
   await assert.rejects(board.updateTask(task.id, { title: 'New' }), { code: 'REVISION_REQUIRED' });

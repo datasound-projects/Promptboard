@@ -78,15 +78,20 @@ export class Autopilot {
 
   /** Move the card straight to the route's next stage. Stages the route skips are never entered. */
   async enter(projectId, task, stage, from) {
-    if (from !== stage) await this.board.moveTask(task.id, { column: stage, expectedRevision: task.revision });
+    if (from !== stage) await this.move(task, stage);
     return this.set(projectId, (a, log) => { a.current = { ...a.current, stage, step: 'start', runId: null, testsId: null }; log(`“${task.title}” → ${title(stage)}.`); });
   }
 
   async advance(projectId, task, stage, route) {
     const next = route[route.indexOf(stage) + 1];
     if (!next) return this.finish(projectId, task, `Route finished in ${title(stage)}.`);
-    const fresh = (await this.board.state()).projects.find(item => item.id === projectId).tasks.find(item => item.id === task.id);
-    return this.enter(projectId, fresh, next, stage);
+    return this.enter(projectId, task, next, stage);
+  }
+
+  /** The board's own transition, with its checks; Autopilot starts each stage's work itself. */
+  async move(task, column) {
+    const fresh = this.board.state().then(state => state.projects.flatMap(project => project.tasks).find(item => item.id === task.id));
+    return this.board.transition(task.id, { column, expectedRevision: (await fresh).revision, decision: 'move', trigger: 'automation' });
   }
 
   async finish(projectId, task, text) {
@@ -94,14 +99,10 @@ export class Autopilot {
   }
 
   /** Send the card back to Executing with notes, within the rework limit. */
-  async rework(projectId, task, cur, ap, notes, why) {
+  async rework(projectId, task, cur, ap, why) {
     if ((cur.attempts || 0) >= ap.maxRework) return this.pause(projectId, `“${task.title}”: ${why} after ${cur.attempts || 0} rework ${cur.attempts === 1 ? 'round' : 'rounds'}. Fix it by hand, then resume, or skip the card.`);
-    await this.board.updateTaskEvidence(task.id, current => {
-      current.reworkNotes = String(notes).slice(0, 20000);
-      if (current.evidence?.review && why.startsWith('the review')) current.evidence.review = { ...current.evidence.review, status: 'changes_requested' };
-    });
-    const fresh = (await this.board.state()).projects.find(item => item.id === projectId).tasks.find(item => item.id === task.id);
-    await this.board.moveTask(task.id, { column: 'executing', expectedRevision: fresh.revision });
+    // The move back records the findings or test output for the next Executing run (board.transition).
+    await this.move(task, 'executing');
     return this.set(projectId, (a, log) => { a.current = { ...a.current, stage: 'executing', step: 'start', runId: null, testsId: null, attempts: (a.current.attempts || 0) + 1 }; log(`“${task.title}”: ${why}; sent back to Executing (rework ${a.current.attempts}/${a.maxRework}).`); });
   }
 
@@ -132,8 +133,7 @@ export class Autopilot {
     if (stage === 'code_review') {
       const review = (await this.board.state()).projects.find(item => item.id === projectId).tasks.find(item => item.id === task.id).evidence?.review;
       if (review?.verdict === 'changes_required') {
-        const notes = review.findings?.length ? review.findings.map(item => `- [${item.severity}] ${item.file}${item.line ? `:${item.line}` : ''} ${item.explanation}`).join('\n') : review.text;
-        return this.rework(projectId, task, cur, ap, notes, 'the review asked for changes');
+        return this.rework(projectId, task, cur, ap, 'the review asked for changes');
       }
       if (review?.verdict !== 'no_issues') return this.pause(projectId, `The review of “${task.title}” could not be read as a clear verdict. Check it in the task details, then resume or skip.`);
       await delivery.acceptReview(task.id);
@@ -159,8 +159,7 @@ export class Autopilot {
       return;
     }
     if (tests.status === 'passed') return this.advance(projectId, task, 'testing', route);
-    const output = (tests.results || []).filter(result => result.status !== 'passed').map(result => `$ ${result.argv.join(' ')}\n${result.reason || `exit ${result.exitCode}`}\n${(result.tail || '').slice(-4000)}`).join('\n\n');
-    return this.rework(projectId, task, cur, project.autopilot, `The project's tests failed. Fix the cause (not the tests, unless they are wrong):\n${output || tests.note || tests.status}`, `the tests ${tests.status === 'invalid' ? 'were invalidated' : 'failed'}`);
+    return this.rework(projectId, task, cur, project.autopilot, `the tests ${tests.status === 'invalid' ? 'were invalidated' : 'failed'}`);
   }
 
   /** Merge: the gated fast-forward merge, or a pull request. A moved target is brought in first. */
@@ -206,9 +205,9 @@ export class Autopilot {
 
   /** After the task commit changed in Merge, review and tests must run again for the new commit. */
   async recheck(projectId, task, route, why) {
-    const back = route.find(stage => stage === 'code_review' || stage === 'testing');
-    const fresh = (await this.board.state()).projects.find(item => item.id === projectId).tasks.find(item => item.id === task.id);
-    await this.board.moveTask(task.id, { column: back, expectedRevision: fresh.revision });
+    // Merge → Code Review: a route that merges always includes Code Review (normalizeRoute).
+    const back = 'code_review';
+    await this.move(task, back);
     return this.set(projectId, (a, log) => { a.current = { ...a.current, stage: back, step: 'start', runId: null, testsId: null, attempts: (a.current.attempts || 0) + 1 }; log(`“${task.title}”: ${why}; back to ${title(back)} for the new commit.`); });
   }
 }

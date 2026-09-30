@@ -97,6 +97,8 @@ export class Supervisor {
     const code = typeof error?.code === 'string' ? error.code : 'CLI_FAILED';
     const reason = error instanceof AgentError ? error.message : FAILURE_MESSAGES[code] || 'The agent session could not start.';
     await this.board.updateRun(runId, { status: 'failed', errorCode: code, reason, endedAt: Date.now() }).catch(() => {});
+    // The card entered the stage with this run; the session never began, so it returns to its previous column.
+    await this.board.runFailedToStart?.(runId).catch(() => {});
   }
 
   async #launch({ runId, task, planRunId, extra }) {

@@ -686,7 +686,7 @@ test('seven stages render; cards are created, edited, duplicated, deleted, and r
   assert.equal(cardItem(ctx, 'Three').querySelector('.kanban-move-down').disabled, true);
   assert.equal(cardItem(ctx, 'One').querySelector('.kanban-move-down').getAttribute('aria-label'), 'Move down: One');
   // The stage menu offers only valid moves: Planning, or Executing directly.
-  assert.deepEqual(Array.from(cardItem(ctx, 'One').querySelectorAll('.kanban-move-to option'), item => item.value), ['', 'planning', 'executing', 'code_review', 'testing', 'merge', 'done']);
+  assert.deepEqual(Array.from(cardItem(ctx, 'One').querySelectorAll('.kanban-move-to option'), item => item.value), ['', 'planning', 'executing']);
   // Keyboard reorder keeps focus on the moved card.
   await click(ctx, cardItem(ctx, 'One').querySelector('.kanban-move-down'));
   assert.deepEqual(titles($), ['Two', 'One', 'Three']);
@@ -762,8 +762,12 @@ test('a linked repository enables stage moves; invalid folders explain the probl
   assert.match($('#branch-state').textContent, /Target branch: trunk at [0-9a-f]{12}/);
   const menu = cardItem(ctx, 'Feature').querySelector('.kanban-move-to');
   menu.value = 'executing'; menu.dispatchEvent(new win.Event('change')); await ctx.idle();
+  // Executing is "Ask" by default: one approval, and the card stays in To Do until it is answered.
+  await until(() => $('#run-dialog').open, 'approval');
+  assert.deepEqual(titles($, 'todo'), ['Feature']);
+  await click(ctx, $('#run-move-only'));
   assert.deepEqual(titles($, 'executing'), ['Feature']);
-  assert.match($('#announcement').textContent, /does not run or approve that stage/);
+  assert.match($('#announcement').textContent, /Moved “Feature” to Executing\. Nothing was started/);
   const board = await serverBoard(ctx);
   assert.equal(board.projects[0].tasks[0].column, 'executing');
   assert.equal(board.projects[0].tasks[0].workspace, null);
@@ -988,12 +992,13 @@ test('drag-and-drop and keyboard moves use the same transition; rejected moves r
   const { $, win } = ctx;
   await newCard(ctx, 'Keyboard', 'Move me with the menu.');
   await newCard(ctx, 'Dragged', 'Move me with the mouse.');
-  // Keyboard: the card moves at once and shows as pending, then rolls back with the server's reason.
+  // Keyboard: the card stays in its column, marked "Moving to …", until the server answers; it never jumps first.
   await moveBy(ctx, 'Keyboard', 'planning');
-  assert.ok(cardItem(ctx, 'Keyboard').classList.contains('pending'), 'A move shows as pending until the server confirms it.');
-  assert.deepEqual(titles($, 'planning'), ['Keyboard']);
+  assert.ok(cardItem(ctx, 'Keyboard').classList.contains('moving'), 'A move shows as pending until the server answers.');
+  assert.match(cardItem(ctx, 'Keyboard').textContent, /Moving to Planning…/);
+  assert.deepEqual(titles($, 'planning'), [], 'The card does not enter Planning before the server accepts the move.');
   await ctx.idle();
-  assert.deepEqual(titles($, 'todo'), ['Keyboard', 'Dragged'], 'The rejected move is rolled back.');
+  assert.deepEqual(titles($, 'todo'), ['Keyboard', 'Dragged'], 'The refused move leaves the card in place.');
   assert.ok(cardItem(ctx, 'Keyboard').classList.contains('rejected'));
   assert.match($('#project-detail').textContent, /“Keyboard” stayed in To Do\. Link this project to a Git repository before cards leave To Do/);
   // Drag-and-drop onto the empty Planning column: the same transition and the same rejection.
@@ -1006,30 +1011,42 @@ test('drag-and-drop and keyboard moves use the same transition; rejected moves r
   await ctx.idle();
   assert.deepEqual(titles($, 'todo'), ['Keyboard', 'Dragged']);
   assert.match($('#project-detail').textContent, /“Dragged” stayed in To Do\. Link this project/);
-  // After linking, both paths succeed and record the same kind of transition.
+  // After linking, both paths ask the same one question (Executing is "Ask"), and record the same transition.
   await link(ctx);
   await moveBy(ctx, 'Keyboard', 'executing'); await ctx.idle();
+  assert.equal($('#run-dialog').open, true);
+  await click(ctx, $('#run-move-only'));
   cardItem(ctx, 'Dragged').dispatchEvent(new win.Event('dragstart', { bubbles: true }));
   column($, 'executing').dispatchEvent(new win.Event('drop', { bubbles: true, cancelable: true }));
   await ctx.idle();
+  assert.equal($('#run-dialog').open, true);
+  await click(ctx, $('#run-move-only'));
   assert.deepEqual(titles($, 'executing'), ['Keyboard', 'Dragged']);
   const tasks = await serverTasks(ctx);
   assert.deepEqual(tasks.map(task => task.transitions.map(({ from, to, by }) => [from, to, by])), [[['todo', 'executing', 'user']], [['todo', 'executing', 'user']]]);
-  // Done is one drop zone: dropping anywhere on it completes the card and starts nothing.
-  assert.match(column($, 'done').querySelector('.kanban-done-drop').textContent, /Drop here to complete/);
+  // Done accepts a drop only from Merge (a verified merge). From Executing, the drop zone refuses the card.
+  assert.match(column($, 'done').querySelector('.kanban-done-drop').textContent, /Drop from Merge to merge and complete/);
   cardItem(ctx, 'Dragged').dispatchEvent(new win.Event('dragstart', { bubbles: true }));
+  const refused = new win.Event('dragover', { bubbles: true, cancelable: true });
+  column($, 'done').querySelector('.kanban-done-drop').dispatchEvent(refused);
+  assert.equal(refused.defaultPrevented, false, 'Done is not a drop target for a card in Executing.');
   column($, 'done').querySelector('.kanban-done-drop').dispatchEvent(new win.Event('drop', { bubbles: true, cancelable: true }));
   await ctx.idle();
-  assert.deepEqual(titles($, 'done'), ['Dragged']);
+  assert.deepEqual(titles($, 'executing'), ['Keyboard', 'Dragged']);
+  // A verified completion (here: no changes required) lists the card in Done; Reopen starts a new cycle.
+  const dragged = (await serverTasks(ctx)).find(task => task.title === 'Dragged');
+  await ctx.app.board.delivery.completeNoChanges(dragged.id, { confirm: true });
+  await win.__pbTest.loadBoard(); await ctx.idle();
   assert.match(column($, 'done').textContent, /Completed \(1\)/);
   assert.match(column($, 'done').querySelector('.kanban-done-card').textContent, /#\d+.*just now/s);
-  assert.equal((await serverTasks(ctx)).find(task => task.title === 'Dragged').completion.kind, 'closed');
-  // View all lists every completed card in a dialog.
   column($, 'done').querySelector('.kanban-done-all').click();
   assert.equal($('#done-dialog').open, true);
-  assert.match($('#done-dialog-heading').textContent, /Completed \(1\)/);
   assert.deepEqual(Array.from($('#done-dialog-list').querySelectorAll('.kanban-open'), button => button.textContent), ['Dragged']);
-  $('#done-dialog').close();
+  await click(ctx, $('#done-dialog-list .kanban-reopen'));
+  assert.equal($('#done-dialog').open, false);
+  assert.deepEqual(titles($, 'todo'), ['Dragged']);
+  const reopened = (await serverTasks(ctx)).find(task => task.title === 'Dragged');
+  assert.deepEqual([reopened.completion, reopened.previousCompletions.at(-1).kind, reopened.transitions.at(-1).by], [null, 'no_changes', 'reopen']);
   assert.equal(ctx.executor.started.length, 0, 'Moves under the default Ask setting start nothing.');
 });
 
@@ -1041,21 +1058,24 @@ test('workflow settings: Ask by default, Manual does nothing, Start runs as a se
   await newCard(ctx, 'Beta', 'Second task.');
   assert.match($('#workflow-summary').textContent, /Planning: Ask on entry · Executing: Ask on entry/);
   $('#workflow-open').click();
-  const stages = [...$('#workflow-stages').querySelectorAll('.workflow-stage')];
+  const stages = [...$('#workflow-stages').querySelectorAll('.workflow-stage[data-stage]')];
   assert.deepEqual(stages.map(box => box.dataset.stage), ['planning', 'executing', 'code_review', 'testing', 'merge'], 'To Do and Done have no workflow setting.');
   assert.match(stages.at(-1).textContent, /Merge automatically/);
   assert.equal(stages.at(-1).querySelector('input[value="manual"]').checked, true, 'Merge is manual by default.');
   assert.ok(stages.slice(0, -1).every(box => box.querySelector('input[value="ask"]').checked), 'Ask on entry is the default for the run stages.');
-  assert.match(stages[0].querySelector('.workflow-preview').textContent, /asks whether to start/);
-  assert.match($('#workflow-stages').textContent, /To Do and Done never run agents\. Merges are fast-forward only and never pushed/);
+  assert.match(stages[0].querySelector('.workflow-preview').textContent, /asks once/);
+  assert.match($('#workflow-stages').textContent, /To Do and Done never run agents\. A card reaches Done only through a verified merge/);
   $('#workflow-cancel').click();
-  // Ask on entry: a question appears; nothing starts until the user agrees.
+  // Ask on entry: one approval shows what will happen; nothing moves or starts until the user agrees.
   await moveBy(ctx, 'Alpha', 'planning'); await ctx.idle();
-  assert.equal($('#ask-panel').hidden, false);
-  assert.match($('#ask-panel').textContent, /“Alpha” is now in Planning\. Start the agent for this stage\? Nothing starts until you confirm/);
+  assert.equal($('#run-dialog').open, true);
+  assert.match($('#run-dialog-heading').textContent, /Move “Alpha” to Planning\?/);
+  assert.match($('#run-steps').textContent, /Move the card to Planning\.Start the Planning agent in the task worktree/);
+  assert.match($('#run-agent-line').textContent, /Claude Code · CLI default model · default effort \(built-in default\)/);
   assert.equal(ctx.executor.started.length, 0);
-  byText($('#ask-panel'), 'Not now').click();
-  assert.equal($('#ask-panel').hidden, true);
+  $('#run-cancel').click();
+  assert.equal($('#run-dialog').open, false);
+  assert.deepEqual(titles($, 'todo'), ['Alpha', 'Beta'], 'Cancel leaves the card where it was.');
   // Start on entry for Executing; Manual for Planning.
   $('#workflow-open').click();
   const executing = $('#workflow-stages [data-stage="executing"]');
@@ -1068,14 +1088,16 @@ test('workflow settings: Ask by default, Manual does nothing, Start runs as a se
   let project = (await serverBoard(ctx)).projects[0];
   assert.deepEqual([project.workflow.planning.policy, project.workflow.executing.policy], ['manual', 'start']);
   await moveBy(ctx, 'Beta', 'planning'); await ctx.idle();
-  assert.equal($('#ask-panel').hidden, true, 'Manual asks nothing.');
+  assert.equal($('#run-dialog').open, false, 'Manual asks nothing.');
+  assert.deepEqual(titles($, 'planning'), ['Beta']);
   assert.equal(ctx.executor.started.length, 0);
   await moveBy(ctx, 'Alpha', 'executing'); await ctx.idle();
   assert.equal(ctx.executor.started.length, 1, 'Start on entry started one run.');
   const run = ctx.executor.started[0];
   assert.equal(run.trigger, 'automation');
   const alpha = (await serverTasks(ctx)).find(task => task.title === 'Alpha');
-  assert.deepEqual(alpha.transitions.map(item => item.to), ['planning', 'executing'], 'The move is recorded as a transition; the run is a separate record.');
+  assert.deepEqual(alpha.transitions.map(item => item.to), ['executing'], 'The move is recorded as a transition; the run is a separate record.');
+  assert.deepEqual([alpha.column, alpha.lastTransition.runId], ['executing', run.id], 'The card and its run are saved together.');
   // Settings changes apply to future runs only.
   $('#workflow-open').click();
   const exec = $('#workflow-stages [data-stage="executing"]');
@@ -1102,6 +1124,10 @@ test('starting a run needs consent and an acknowledgment for unverified prompts;
   assert.match($('#run-dialog-summary').textContent, /cannot change files/);
   assert.equal($('#run-ack-field').hidden, false, 'An unverified prompt needs an acknowledgment.');
   assert.deepEqual(Array.from($('#run-permission').options, item => item.value), ['plan']);
+  // The resolved agent is shown; changing it for this run is optional and behind one disclosure.
+  assert.match($('#run-agent-line').textContent, /Claude Code · CLI default model · default effort/);
+  assert.equal($('#run-override').open, false);
+  $('#run-override').open = true;
   // The model list comes from the installed CLI; a custom ID is still possible.
   await until(() => $('#run-model').options.length > 2, 'model list');
   assert.deepEqual(Array.from($('#run-model').options, item => item.value), ['', 'opus', 'haiku', '__custom__']);
@@ -1177,7 +1203,7 @@ test('PB-04 in the UI: commit, configured tests, accepted review, merge preview,
   // Review evidence (recorded as the supervisor does after a confirmed review run), accepted in the UI.
   const tasks = () => serverTasks(ctx);
   await moveBy(ctx, 'Ship it', 'code_review'); await ctx.idle();
-  $('#ask-panel').hidden = true;
+  if ($('#run-dialog').open) await click(ctx, $('#run-move-only')); // Ask: move without starting.
   cardItem(ctx, 'Ship it').querySelector('.kanban-start').click();
   submitForm(ctx, '#run-form'); await ctx.idle();
   const reviewRun = ctx.executor.started.at(-1);
@@ -1194,7 +1220,7 @@ test('PB-04 in the UI: commit, configured tests, accepted review, merge preview,
   $('#task-dialog').close();
   // Tests in Testing: only exit codes decide.
   await moveBy(ctx, 'Ship it', 'testing'); await ctx.idle();
-  $('#ask-panel').hidden = true;
+  if ($('#run-dialog').open) await click(ctx, $('#run-move-only')); // Ask: move without starting.
   cardItem(ctx, 'Ship it').querySelector('.kanban-deliver').click();
   await until(() => byText($('#task-details'), 'Run tests…'), 'run tests button');
   byText($('#task-details'), 'Run tests…').click();
@@ -1320,20 +1346,25 @@ test('Testing and Merge cards offer an agent next to their own action; the agent
   await board.delivery.commit(created.id, { message: 'checks', confirm: true });
   const current = async () => (await serverBoard(ctx)).projects[0].tasks.find(task => task.id === created.id);
   await board.moveTask(created.id, { column: 'code_review', expectedRevision: (await current()).revision });
-  // Ask on entry (the default) for Testing asks to run the tests, not to start an agent.
+  // A review without findings for the current commit lets the card enter Testing.
+  const head = (await board.delivery.revision(created.id)).taskCommit;
+  await board.delivery.recordReview({ id: 'review-run', taskId: created.id, review: { taskCommit: head }, promptRevision: 1 }, '```json\n{"verdict":"no_issues","findings":[]}\n```');
+  await board.delivery.setTestCommands(ctx.project.id, { commands: [{ command: `${process.execPath} -e "0"` }], expectedRevision: (await serverBoard(ctx)).projects[0].revision });
+  // Ask on entry (the default) for Testing asks once: run the project's tests, not start an agent.
   await win.__pbTest.loadBoard(); await ctx.idle();
   await moveBy(ctx, 'Checked', 'testing');
-  await until(() => !$('#ask-panel').hidden, 'ask panel');
-  assert.match($('#ask-panel').textContent, /Run tests now\?/);
-  assert.ok([...$('#ask-panel').querySelectorAll('button')].some(button => button.textContent === 'Run tests…'));
-  assert.ok(![...$('#ask-panel').querySelectorAll('button')].some(button => /undefined/.test(button.textContent)));
+  await until(() => $('#run-dialog').open, 'approval');
+  assert.match($('#run-steps').textContent, /Run the project's 1 test command in the task worktree/);
+  assert.match($('#run-start').textContent, /Move and run tests/);
+  assert.doesNotMatch($('#run-dialog').textContent, /undefined/);
+  await click(ctx, $('#run-move-only'));
   // The card keeps "Run tests…" and adds the testing agent.
   const card = () => cardItem(ctx, 'Checked');
   assert.equal(card().querySelector('.kanban-deliver').textContent, 'Run tests…');
   assert.equal(card().querySelector('.kanban-start').textContent, 'Start testing agent…');
   card().querySelector('.kanban-start').click(); await ctx.idle();
   assert.equal($('#run-dialog').open, true);
-  assert.match($('#run-dialog-summary').textContent, /only by Promptboard’s own test run/);
+  assert.match($('#run-dialog-summary').textContent, /Only Promptboard’s own test run/);
   assert.deepEqual(Array.from($('#run-permission').options, item => item.value), ['acceptEdits', 'default'], 'The testing agent can edit in the worktree.');
   choose('#run-provider', 'claude');
   submitForm(ctx, '#run-form'); await ctx.idle();
@@ -1341,6 +1372,8 @@ test('Testing and Merge cards offer an agent next to their own action; the agent
   assert.equal(ctx.executor.started.at(-1).config.permissionMode, 'acceptEdits');
   await board.updateRun(ctx.executor.started.at(-1).id, { status: 'running' });
   await ctx.executor.cancel(ctx.executor.started.at(-1).id);
+  await board.delivery.runTests(created.id, { confirm: true });
+  await until(async () => (await current()).evidence?.tests?.status === 'passed', 'tests passed');
   // Merge: the merge agent and the pull request option.
   await board.moveTask(created.id, { column: 'merge', expectedRevision: (await current()).revision });
   await win.__pbTest.loadBoard(); await ctx.idle();
@@ -1375,12 +1408,17 @@ test('Autopilot dialog: queue order, which cards, per-card routes, consent to st
   submitForm(ctx, '#autopilot-form'); await ctx.idle();
   assert.match($('#autopilot-error').textContent, /Confirm that you understand/);
   $('#autopilot-consent').checked = true;
+  // A route that merges without Testing breaks the stage contract, so the server refuses it with the reason.
+  submitForm(ctx, '#autopilot-form'); await ctx.idle();
+  assert.match($('#autopilot-error').textContent, /Merge must include Code Review and Testing/);
+  assert.equal($('#autopilot-dialog').open, true);
+  for (const [stage, on] of [['testing', true], ['merge', false]]) { const chip = items()[1].querySelector(`.route-chip[data-stage="${stage}"] input`); chip.checked = on; chip.dispatchEvent(new win.Event('change')); }
   submitForm(ctx, '#autopilot-form'); await ctx.idle();
   assert.equal($('#autopilot-dialog').open, false);
   const project = (await serverBoard(ctx)).projects[0];
   const id = title => project.tasks.find(task => task.title === title).id;
   assert.deepEqual(project.autopilot.queue, [id('Gamma'), id('Alpha')]);
-  assert.deepEqual(project.autopilot.routes, { [id('Alpha')]: ['executing', 'code_review', 'merge'] });
+  assert.deepEqual(project.autopilot.routes, { [id('Alpha')]: ['executing', 'code_review', 'testing'] });
   assert.equal(project.autopilot.finish, 'pull_request');
   assert.equal(project.autopilot.status, 'running');
   // The engine picks Gamma first; the bar and the card show it.
@@ -1520,7 +1558,9 @@ test('every visible setting is stored and changes the app; global settings stay 
   await ctx.app.board.setWorkflow(ctx.other.id, { workflow: { executing: { policy: 'ask', provider: 'claude', model: 'haiku' } }, expectedRevision: (await ctx.app.board.state()).projects[1].revision });
   change('#set-agent-provider', 'codex'); change('#set-agent-model', 'gpt-test'); await ctx.idle();
   const view = await ctx.app.board.view();
-  assert.deepEqual((await ctx.app.board.state()).settings.defaultAgent, { provider: 'codex', model: 'gpt-test' });
+  assert.deepEqual((await ctx.app.board.state()).settings.defaultAgent, { provider: 'codex', model: 'gpt-test', effort: '' });
+  assert.equal(view.projects[0].effectiveWorkflow.executing.agentSource, 'global');
+  assert.equal(view.projects[1].effectiveWorkflow.executing.agentSource, 'stage');
   assert.equal(view.projects[0].effectiveWorkflow.executing.provider, 'codex');
   assert.equal(view.projects[0].effectiveWorkflow.planning.model, 'gpt-test');
   assert.equal(view.projects[1].effectiveWorkflow.executing.provider, 'claude', 'A project stage keeps its own agent.');
@@ -1676,4 +1716,36 @@ test('Timeline view: one project, real events grouped by day, completed order, o
   $('#view-board').click();
   assert.equal($('#kanban-columns').hidden, false);
   assert.equal($('#timeline').hidden, true);
+});
+
+test('rapid drops and repeated clicks start exactly one run; the approval starts the resolved agent with one click', { skip: process.platform === 'win32' }, async t => {
+  const ctx = await linkedKanban(t);
+  const { $, win } = ctx;
+  await link(ctx);
+  await newCard(ctx, 'Fast', 'Drop me twice.');
+  await newCard(ctx, 'Asked', 'Approve me once.');
+  // "Start on entry" for Executing: two drops of the same card send one move and start one run.
+  await ctx.app.board.setWorkflow(ctx.project.id, { workflow: { executing: { policy: 'start' } }, expectedRevision: (await serverBoard(ctx)).projects[0].revision });
+  await win.__pbTest.loadBoard(); await ctx.idle();
+  for (let i = 0; i < 2; i++) {
+    cardItem(ctx, 'Fast').dispatchEvent(new win.Event('dragstart', { bubbles: true }));
+    column($, 'executing').dispatchEvent(new win.Event('drop', { bubbles: true, cancelable: true }));
+  }
+  await ctx.idle();
+  assert.deepEqual(titles($, 'executing'), ['Fast']);
+  assert.equal(ctx.executor.started.length, 1);
+  const fast = (await serverTasks(ctx)).find(task => task.title === 'Fast');
+  assert.equal(fast.transitions.length, 1);
+  // "Ask" for Planning: the approval names the agent; two clicks on Start start one run.
+  await moveBy(ctx, 'Asked', 'planning'); await ctx.idle();
+  assert.equal($('#run-dialog').open, true);
+  assert.match($('#run-agent-line').textContent, /Claude Code/);
+  $('#run-start').click(); $('#run-start').click();
+  await ctx.idle();
+  assert.equal($('#run-dialog').open, false);
+  assert.equal(ctx.executor.started.length, 2);
+  assert.deepEqual(ctx.executor.started.map(run => run.stage), ['executing', 'planning']);
+  assert.equal(ctx.executor.started[1].trigger, 'user', 'An approved run is recorded as the user’s.');
+  assert.deepEqual(titles($, 'planning'), ['Asked']);
+  assert.match($('#announcement').textContent, /Moved “Asked” to Planning and started the Planning agent/);
 });

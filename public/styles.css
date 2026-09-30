@@ -383,7 +383,6 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
 .toolbar-cell .kanban-project-actions { padding: 6px 0 0; gap: 4px 12px; }
 .toolbar-value { margin: 6px 0 2px; overflow: hidden; color: var(--ink); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .toolbar-end { display: flex; gap: 8px; justify-content: flex-end; }
-.kanban-ask { margin: 0 18px 14px; }
 /* The board fills the window down to the terminal dock; each column scrolls on its own. */
 .kanban-columns { grid-auto-columns: minmax(272px, 1fr); height: clamp(440px, calc(100vh - var(--dock-height) - 150px), 1600px); height: clamp(440px, calc(100dvh - var(--dock-height) - 150px), 1600px); max-height: none; }
 .kanban-column { min-height: 0; }
@@ -425,7 +424,7 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
 .project-heading h2 { flex: none; font-size: 14px; }
 .project-summary { min-width: 0; overflow: hidden; color: var(--muted); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .kanban-projects.collapsed .project-heading { flex-wrap: nowrap; border-bottom: 0; }
-.kanban-projects.collapsed .kanban-detail, .kanban-projects.collapsed .kanban-ask { margin-top: 2px; }
+.kanban-projects.collapsed .kanban-detail { margin-top: 2px; }
 .kanban-card.pending { opacity: .6; outline: 1px dashed var(--line-strong); }
 .kanban-card.rejected { outline: 2px solid var(--ink); animation: pb-shake .3s ease-in-out 2; }
 @keyframes pb-shake { 50% { transform: translateX(3px); } }
@@ -684,3 +683,16 @@ button.timeline-task:hover { text-decoration: underline; }
 .timeline-order { margin-left: 4px; padding: 0 6px; border-radius: 999px; background: #16a34a; color: #fff; font: 700 10.5px var(--mono); }
 .timeline-actions { display: flex; gap: 8px; margin-top: 4px; }
 .timeline-actions button { padding: 0; border: 0; background: none; color: var(--muted); font-size: 11.5px; text-decoration: underline; }
+
+/* One approval for a move: the steps, an optional commit, and the resolved agent. */
+.run-steps { margin: 0 0 12px; padding-left: 18px; color: var(--text); font-size: 13.5px; }
+.run-steps li { margin: 3px 0; }
+.run-commit { display: grid; gap: 6px; margin-bottom: 12px; }
+.run-commit-files { max-height: 140px; margin: 4px 0 0; padding-left: 16px; overflow-y: auto; font: 12px var(--mono); }
+.run-agent-line { margin: 0 0 6px; color: var(--ink); font-weight: 600; font-size: 13.5px; }
+.run-agent-line small { color: var(--subtle); font-weight: 400; }
+.run-override { margin-bottom: 10px; }
+.run-override summary { color: var(--muted); font-size: 12.5px; cursor: pointer; }
+.run-override .select-grid { margin-top: 10px; }
+.kanban-card.moving { opacity: .6; }
+.kanban-card .moving-to { margin: 0 0 4px; color: var(--muted); font: 600 11px var(--mono); }
