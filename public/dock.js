@@ -468,8 +468,14 @@ function startDividerDrag(event) {
   $('#dock-copy').addEventListener('click', copySelection);
   $('#dock-divider').addEventListener('pointerdown', startDividerDrag);
   if (typeof ResizeObserver === 'function') {
-    const controls = new ResizeObserver(applyDockHeight);
+    const controls = new ResizeObserver(() => {
+      applyDockHeight();
+      const session = dock.sessions.get(dock.selected);
+      session?.tab.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+      fitSession(session);
+    });
     controls.observe($('#dock .dock-bar'));
+    controls.observe($('#dock-tabs'));
     controls.observe($('#dock-stop-prompt'));
   }
   window.addEventListener('resize', () => nextFrame(() => {
