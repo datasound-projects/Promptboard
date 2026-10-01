@@ -1620,6 +1620,22 @@ test('Stop stays visible from a collapsed dock, survives refresh and tab switche
   assert.equal(win.promptboardDock.sessions.get('run-a').ended, true);
 });
 
+test('Run details preserve immediate disclosure changes across refreshes and tab switches', { skip: process.platform === 'win32' }, async t => {
+  const ctx = await agentFixture(t);
+  const { $, win } = ctx;
+  $('#dock-tab-run-a').click();
+  $('#dock-details .dock-context').open = true;
+  win.PromptboardDock.sync(); // Native toggle events have not fired yet.
+  assert.equal($('#dock-details .dock-context').open, true);
+  $('#dock-tab-run-b').click();
+  assert.equal($('#dock-details .dock-context').open, false, 'Disclosure is per run.');
+  $('#dock-tab-run-a').click();
+  assert.equal($('#dock-details .dock-context').open, true);
+  $('#dock-details .dock-context').open = false;
+  win.PromptboardDock.sync();
+  assert.equal($('#dock-details .dock-context').open, false);
+});
+
 test('Kanban model selection keeps CLI default while discovery is pending and ignores replies after switching to inheritance', { skip: process.platform === 'win32' }, async t => {
   let release;
   const pending = new Promise(resolve => { release = resolve; });

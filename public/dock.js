@@ -263,6 +263,11 @@ function updateSessionTab(session) {
 /** Facts about the selected run, from the board's run record only. */
 function renderDockDetails(session) {
   const details = $('#dock-details');
+  // Native toggle events are asynchronous; capture the DOM before a refresh replaces it.
+  const previous = dock.sessions.get(details.dataset.runId);
+  const previousContext = details.querySelector('.dock-context');
+  if (previous && previousContext) previous.detailsOpen = previousContext.open;
+  details.dataset.runId = session?.runId || '';
   details.hidden = !session;
   if (!session) { $('#dock-connection').hidden = true; return; }
   const run = session.run; // Merged from the board in syncDock and from stream status items.
