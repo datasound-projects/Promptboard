@@ -193,6 +193,15 @@
       <p class="storage-warning" id="kanban-load-warning" role="alert" hidden></p>
       <p class="storage-warning" id="execution-status" role="status" hidden></p>
       <p class="storage-warning board-warning" role="alert" hidden></p>
+      <section class="card project-context" id="project-context" aria-labelledby="project-context-heading" hidden>
+        <div class="project-context-heading"><h2 id="project-context-heading">Project agent and files</h2><button type="button" class="text-button" id="project-stages-open">Agents per stage…</button></div>
+        <div id="project-location" class="project-location"></div>
+        <form id="project-agent-form">
+          <div id="project-agent-fields"></div>
+          <div class="project-agent-actions"><p class="note" id="project-agent-summary"></p><button type="submit" class="secondary-button" id="project-agent-save">Save project agent</button></div>
+          <p class="inline-error" id="project-agent-error" role="alert" hidden></p>
+        </form>
+      </section>
       <section class="card kanban-projects" aria-labelledby="projects-heading">
         <div class="card-heading project-heading"><div><h2 id="projects-heading">Project settings</h2><span class="project-summary" id="project-summary" hidden></span></div><button type="button" class="icon-button collapse-toggle" id="project-toggle" aria-expanded="true" aria-controls="project-body" aria-label="Collapse project settings" title="Collapse project settings"><span aria-hidden="true">−</span></button></div>
         <div id="project-body">
@@ -278,7 +287,8 @@
           </div>
         </div>
         <div class="dock-body" id="dock-body" hidden>
-          <p class="dock-details" id="dock-details" hidden></p>
+          <div class="dock-details" id="dock-details" hidden></div>
+          <p class="dock-connection" id="dock-connection" role="status" hidden></p>
           <div class="dock-panel" id="dock-activity" role="tabpanel" aria-labelledby="dock-tab-activity"><p class="dock-empty" id="dock-empty">No agent sessions yet. Start Planning or Executing from a card.</p><ol class="dock-activity" id="dock-activity-list"></ol></div>
           <div class="dock-terminals" id="dock-terminals"></div>
           <p class="note dock-note" id="dock-note" role="status" hidden></p>
@@ -302,7 +312,7 @@
         <label class="check-row"><input type="checkbox" id="set-keep-tabs"> Keep tabs of finished runs</label>
       </fieldset>
       <fieldset class="settings-group"><legend>Kanban · <span id="set-project-name">no project</span></legend>
-        <p class="note">Stage behavior (Manual, Ask on entry, Start on entry), agent per stage, and Autopilot are saved with the current project only.</p>
+        <p class="note">Project agent, agent per stage, stage behavior, and Autopilot are saved with the current project only. Compose settings apply to prompt writing.</p>
         <div class="detail-actions"><button type="button" class="secondary-button" id="set-workflow">Edit workflow…</button><button type="button" class="secondary-button" id="set-autopilot">Autopilot…</button></div>
       </fieldset>
       <fieldset class="settings-group" id="set-github-group"><legend>GitHub</legend></fieldset>

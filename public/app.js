@@ -1075,6 +1075,7 @@ async function migrateBrowserBoard() {
 }
 
 function renderBoard() {
+  renderProjectContext(currentProject());
   const project = currentProject();
   const tasks = project?.tasks || [];
   $('#project-select').replaceChildren(...(board?.projects || []).map(item => option(item.id, item.name)));
@@ -1152,6 +1153,13 @@ function renderColumn(column, tasks) {
   const header = document.createElement('div');
   header.className = 'kanban-column-heading';
   header.append(heading, count);
+  if (column.agent) {
+    const settings = currentProject()?.effectiveWorkflow?.[column.id];
+    const agent = detailButton(`Agent: ${agentText(settings)}`, () => openWorkflowDialog(column.custom ? null : column.id), 'column-agent');
+    agent.setAttribute('aria-label', `Choose provider and model for ${column.title}`);
+    agent.title = `${agentText(settings)} · ${settings?.agentSource || 'default'} setting`;
+    header.append(agent);
+  }
   const policy = currentProject()?.effectiveWorkflow?.[column.id]?.policy;
   const note = paragraph(column.custom ? (column.description || (column.agent ? (policy === 'manual' ? 'Custom column · agent from the card' : 'Custom column · agent starts on arrival') : 'Custom column · never runs an agent'))
     : !column.agent ? (column.id === 'todo' ? 'Never runs an agent' : 'Finished · never runs an agent')
@@ -1301,7 +1309,7 @@ function renderCard(card, index, count) {
   const actions = document.createElement('div');
   actions.className = 'kanban-actions';
   actions.append(up, down, moveTo, toggle);
-  const details = [card.source ? sourceSummary(card.source) : 'Written by you'];
+  const details = [card.source ? `Prompt source: ${sourceSummary(card.source)}` : 'Written by you'];
   if (card.workspace) details.push(`Branch ${card.workspace.branch}${card.workspace.status === 'ready' ? '' : ` (${card.workspace.status})`}`);
   const pullRequest = card.evidence?.pullRequest;
   if (pullRequest?.url) details.push(`PR ${pullRequest.number ? `#${pullRequest.number}` : ''} · ${String(pullRequest.state || 'open').toUpperCase()}`);
@@ -1318,6 +1326,12 @@ function renderCard(card, index, count) {
   const meta = paragraph(details.join(' · '), 'kanban-meta');
   meta.title = meta.textContent;
   item.append(badge, ...tags, heading, paragraph(card.prompt.slice(0, 400).replace(/\s+/g, ' ').trim(), 'kanban-preview'), meta, renderRunControls(card, run), actions, more);
+  if (card.workspace || card.completion?.kind === 'merged') {
+    const workspace = document.createElement('details'); workspace.className = 'card-workspace';
+    const summary = document.createElement('summary'); summary.textContent = 'Files and branch';
+    workspace.append(summary, taskLocation(card, currentProject()));
+    item.insertBefore(workspace, actions);
+  }
   if (pendingMoves.has(card.id)) item.classList.add('pending');
   if (movingTo.has(card.id)) { item.classList.add('moving'); item.prepend(paragraph(`Moving to ${columnTitle(movingTo.get(card.id))}…`, 'moving-to')); }
   // Selecting a card reveals its agent session, if it has one.
@@ -1643,7 +1657,7 @@ function agentStateText(run) {
 function agentModel(run) { return `${providerName(run.config?.provider)} · ${run.config?.model || 'CLI default model'}${run.config?.effort ? ` · ${run.config.effort}` : ''}`; }
 function agentActivity(run) {
   const state = agentState(run);
-  if (state === 'awaits_you') return run.waitingReason || 'Waiting for you in the terminal.';
+  if (state === 'awaits_you') return run.waitingReason || (run.turnComplete ? 'Turn finished. Review the changes or continue in the terminal.' : 'Permission or input needed. Open the terminal.');
   if (state === 'on_hold') return 'Queued until an agent slot is free.';
   if (state === 'active') return run.lifecycle === 'waiting-for-first-event' ? 'Starting…' : run.lifecycle === 'no-events-yet' ? 'Working… no lifecycle event yet; check the terminal.' : 'Working…';
   return run?.reason || '';
@@ -1672,6 +1686,7 @@ function tickElapsed() {
     const run = board.runs.find(item => item.id === element.dataset.elapsedRun);
     if (run && RUN_LIVE.includes(run.status)) element.textContent = elapsed(run);
   }
+  window.PromptboardDock?.tick();
 }
 setInterval(tickElapsed, 1000);
 
@@ -1750,7 +1765,7 @@ function renderRunControls(card, run) {
     badge.className = `run-badge${state === 'awaits_you' ? ' waiting awaits' : state === 'active' ? ' running' : ['failed', 'interrupted'].includes(run.status) ? ' failed' : ''}`;
     badge.append(`${columnTitle(run.stage)} · ${state === 'awaits_you' ? 'AWAITS YOU' : agentStateText(run)} · `, elapsedSpan(run));
     badge.title = [agentModel(run), run.waitingReason || run.reason].filter(Boolean).join(' · ');
-    box.append(badge, paragraph(agentModel(run), 'run-agent'));
+    box.append(badge, paragraph(`Run agent: ${agentModel(run)}`, 'run-agent'));
     const activity = active ? agentActivity(run) : '';
     if (activity) { const line = paragraph(activity, 'run-activity'); line.title = activity; box.append(line); }
   }
@@ -1773,7 +1788,10 @@ function renderRunControls(card, run) {
     start.disabled = !board?.execution?.available || !currentProject()?.repository;
     if (start.disabled) start.title = !board?.execution?.available ? 'Agent terminals are not set up.' : 'Link a repository first.';
     box.append(start);
+    const selected = currentProject()?.effectiveWorkflow?.[card.column];
+    box.append(paragraph(`Next run: ${agentText(selected)}`, 'run-agent'));
   }
+  if (run && !active) box.append(labelled(detailButton('View output', () => window.PromptboardDock?.open(run.id), 'kanban-terminal'), 'View saved agent output'));
   box.append(labelled(detailButton('Details', () => openTaskDetails(card.id), 'kanban-details'), 'Task details'));
   return box;
 }
@@ -1801,9 +1819,13 @@ function fillModelSelect(select, custom, catalog, value = '', loading = false) {
   custom.hidden = select.value !== '__custom__';
 }
 async function loadModelSelect(select, custom, provider, value) {
+  const request = String(Number(select.dataset.catalogRequest || 0) + 1);
+  select.dataset.catalogRequest = request;
   fillModelSelect(select, custom, null, value, true);
   const catalog = await modelCatalog(provider);
-  if (select.dataset.provider === provider) fillModelSelect(select, custom, catalog, select.value === '__custom__' ? custom.value.trim() : select.value || value);
+  if (select.dataset.provider !== provider || select.dataset.catalogRequest !== request) return null;
+  fillModelSelect(select, custom, catalog, select.value === '__custom__' ? custom.value.trim() : select.value);
+  return catalog;
 }
 function chosenModelFrom(select, custom) { return select.value === '__custom__' ? custom.value.trim() : select.value; }
 
@@ -1829,20 +1851,36 @@ function agentFields(value = {}, { inherit = '', stage = 'executing' } = {}) {
   const custom = document.createElement('input'); Object.assign(custom, { type: 'text', maxLength: 100, placeholder: 'Custom model ID', spellcheck: false }); custom.dataset.field = 'model-custom'; custom.setAttribute('aria-label', 'Custom model ID');
   const effort = document.createElement('select'); effort.dataset.field = 'effort';
   const modelBox = document.createElement('div'); modelBox.className = 'model-field'; modelBox.append(label('Model', model), custom);
-  const refresh = (keep = {}) => {
-    const chosen = provider.value;
-    modelBox.hidden = !chosen; effort.parentElement && (effort.parentElement.hidden = !chosen);
-    if (!chosen) return;
-    model.dataset.provider = chosen;
-    loadModelSelect(model, custom, chosen, keep.model || '');
-    const efforts = effortsFor(chosen);
+  const note = paragraph('', 'agent-model-note');
+  let nativeCatalog = null;
+  const refreshEffort = (keep = effort.value) => {
+    const chosenModel = chosenModelFrom(model, custom);
+    const metadata = nativeCatalog?.models?.find(item => item.id === (chosenModel || nativeCatalog.defaultModel));
+    const efforts = metadata ? metadata.efforts || [] : effortsFor(provider.value);
     fillSelect(effort, ['', ...efforts], { '': 'CLI default' });
-    effort.value = efforts.includes(keep.effort) ? keep.effort : '';
+    effort.value = efforts.includes(keep) ? keep : '';
     effort.disabled = !efforts.length;
   };
+  const refresh = (keep = {}) => {
+    const chosen = provider.value;
+    model.dataset.provider = chosen;
+    nativeCatalog = null;
+    modelBox.hidden = !chosen; effort.parentElement && (effort.parentElement.hidden = !chosen);
+    note.hidden = !chosen;
+    if (!chosen) return;
+    note.textContent = 'Reading models from your CLI…';
+    loadModelSelect(model, custom, chosen, keep.model || '').then(catalog => {
+      if (!catalog) return;
+      nativeCatalog = catalog;
+      refreshEffort();
+      note.textContent = catalog.models?.length ? 'Models reported by this CLI. You can also enter a custom model ID.' : catalog.note || 'Model list unavailable. Use CLI default or enter a custom model ID.';
+    });
+    refreshEffort(keep.effort || '');
+  };
   provider.addEventListener('change', () => { custom.value = ''; refresh(); });
-  model.addEventListener('change', () => { custom.hidden = model.value !== '__custom__'; if (!custom.hidden) custom.focus(); });
-  grid.append(label('Provider', provider), modelBox, label('Effort', effort));
+  model.addEventListener('change', () => { custom.hidden = model.value !== '__custom__'; refreshEffort(); if (!custom.hidden) custom.focus(); });
+  custom.addEventListener('input', () => refreshEffort());
+  grid.append(label('Provider', provider), modelBox, label('Effort', effort), note);
   refresh(value);
   return grid;
 }
@@ -1852,6 +1890,62 @@ function readAgentFields(root) {
   return { provider: value('provider'), model: (value('model') === '__custom__' ? value('model-custom') : value('model')).trim(), effort: value('effort') };
 }
 const agentText = agent => agent?.provider ? `${providerName(agent.provider)} · ${agent.model || 'CLI default model'}${agent.effort ? ` · ${agent.effort}` : ''}` : '';
+
+function locationFact(label, value) {
+  const row = document.createElement('div'); row.className = 'location-fact';
+  const name = document.createElement('strong'); name.textContent = label;
+  const text = document.createElement('code'); text.textContent = value || 'Not set';
+  row.append(name, text);
+  if (value) row.append(detailButton(`Copy ${label.toLowerCase()}`, async () => {
+    try { await navigator.clipboard.writeText(value); announce(`${label} copied.`); }
+    catch { announce(`Clipboard unavailable. Select and copy the ${label.toLowerCase()} shown here.`); }
+  }, 'text-button location-copy'));
+  return row;
+}
+
+function taskLocation(card, project) {
+  const facts = document.createElement('div'); facts.className = 'task-location';
+  const ws = card.workspace;
+  const completedBranch = card.completion?.kind === 'merged' ? card.completion.targetBranch : '';
+  facts.append(locationFact('Repository', ws?.repositoryRoot || project?.repository?.root), locationFact('Target branch', completedBranch || ws?.targetBranch || project?.targetBranch?.name));
+  if (ws) facts.append(locationFact('Task branch', ws.branch), locationFact('Worktree', ws.path), locationFact('Base commit', ws.baseCommit), paragraph(completedBranch ? `Changes were merged into ${completedBranch}. The task worktree is still available here.` : 'The agent edits files in this worktree. They reach the target branch after a merge.', 'note'));
+  else facts.append(paragraph(completedBranch ? `Changes were merged into ${completedBranch}. The task worktree has been removed; the task branch is kept in history.` : 'No worktree yet. The first Planning or Executing run creates a task branch and a separate folder.', 'note'));
+  if (!ws && card.retainedBranches?.length) facts.append(locationFact('Retained task branch', card.retainedBranches.at(-1).branch));
+  return facts;
+}
+
+let projectAgentFormKey = '';
+function renderProjectContext(project) {
+  $('#project-context').hidden = !project;
+  if (!project) { projectAgentFormKey = ''; return; }
+  $('#project-context-heading').textContent = `${project.name} · Agent and files`;
+  $('#project-location').replaceChildren(locationFact('Repository', project.repository?.root), locationFact('Target branch', project.targetBranch?.name));
+  const inherited = board?.settings?.defaultAgent || { provider: 'claude' };
+  const defaultAgent = project.agentDefaults?.provider ? project.agentDefaults : inherited;
+  const overrides = Object.entries(project.workflow || {}).filter(([, value]) => value.provider).map(([stage]) => columnTitle(stage));
+  $('#project-agent-summary').textContent = `Project agent: ${agentText(defaultAgent)}. ${overrides.length ? `Stage overrides: ${overrides.join(', ')}.` : 'Every stage inherits this agent.'} Compose uses its own settings. Changes apply to new runs.`;
+  const key = JSON.stringify([project.id, project.agentDefaults, board?.settings?.defaultAgent]);
+  if (key !== projectAgentFormKey) {
+    projectAgentFormKey = key;
+    $('#project-agent-fields').replaceChildren(agentFields(project.agentDefaults || {}, { inherit: `Use global default (${agentText(inherited)})` }));
+    $('#project-agent-error').hidden = true;
+  }
+}
+
+$('#project-agent-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  const project = currentProject();
+  if (!project) return;
+  const agentDefaults = readAgentFields($('#project-agent-fields')) || {};
+  const button = $('#project-agent-save'); button.disabled = true;
+  try {
+    await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/workflow`, { workflow: project.workflow || {}, agentDefaults, expectedRevision: project.revision });
+    $('#project-agent-error').hidden = true;
+    announce(`Project agent saved for “${project.name}”. Existing runs keep their agent; new runs use the saved settings.`);
+  } catch (error) { $('#project-agent-error').textContent = error.message; $('#project-agent-error').hidden = false; }
+  finally { button.disabled = false; }
+});
+$('#project-stages-open').addEventListener('click', () => openWorkflowDialog());
 
 
 /** Start the card's stage agent now (the card is already in that stage). No dialog: the click is the instruction. */
@@ -1904,7 +1998,7 @@ async function openTaskDetails(taskId) {
   const nodes = [
     section('Status', paragraph(`${status.text}. Task text revision ${card.contentRevision ?? 1}.${status.flag ? ' Review the prompt before you run an agent on it.' : ''}`)),
     section('Original prompt', pre(card.prompt)),
-    section('Branch and worktree', paragraph(card.workspace ? `Branch ${card.workspace.branch} from ${card.workspace.targetBranch} at ${String(card.workspace.baseCommit).slice(0, 12)}. Worktree: ${card.workspace.path}` : 'No worktree yet. It is created when the first Planning or Executing run starts.')),
+    section('Branch and worktree', taskLocation(card, project)),
   ];
   const planRun = [...runs].reverse().find(run => run.stage === 'planning' && run.hasPlan);
   if (planRun) {
@@ -1959,7 +2053,7 @@ function workflowPreview(stage, settings) {
   return manual ? `Moving a card here only moves it. Start ${columnTitle(stage)} from the card.` : `Moving a card here starts it: ${what}.`;
 }
 
-function openWorkflowDialog() {
+function openWorkflowDialog(focusStage = null) {
   const project = currentProject();
   if (!project) return;
   $('#workflow-dialog-project').textContent = `${project.name} · WORKFLOW`;
@@ -1998,7 +2092,7 @@ function openWorkflowDialog() {
       commandsField.append(commands);
       children.push(commandsField);
     }
-    if (stage !== 'testing' && stage !== 'merge') children.push(instructionsField);
+    children.push(instructionsField);
     children.push(preview);
     box.append(...children);
     box.addEventListener('change', () => { preview.textContent = workflowPreview(stage, readWorkflowStage(box)); });
@@ -2011,9 +2105,25 @@ function openWorkflowDialog() {
   const legend = document.createElement('legend'); legend.textContent = 'Project default agent';
   const global = board?.settings?.defaultAgent?.provider ? `Global default (${agentText(board.settings.defaultAgent)})` : 'Global default (Claude Code, CLI defaults)';
   defaults.append(legend, agentFields(project.agentDefaults || {}, { inherit: global }), paragraph('Every stage below uses this agent unless it names its own. Each card run uses it without asking again.', 'workflow-preview'));
+  const refreshInheritance = () => {
+    const inherited = readAgentFields(defaults) || board?.settings?.defaultAgent || { provider: 'claude' };
+    for (const box of stages) {
+      const provider = box.querySelector('[data-field="provider"]');
+      if (provider?.options[0]?.value === '') provider.options[0].textContent = `Use project agent (${agentText(inherited)})`;
+      box.querySelector('.workflow-preview').textContent = workflowPreview(box.dataset.stage, { ...inherited, ...readWorkflowStage(box) });
+    }
+  };
+  defaults.addEventListener('change', refreshInheritance);
+  for (const box of stages) box.addEventListener('change', refreshInheritance);
+  refreshInheritance();
   $('#workflow-stages').replaceChildren(defaults, ...stages, fixed);
   $('#workflow-error').hidden = true;
   $('#workflow-dialog').showModal();
+  if (typeof focusStage === 'string') {
+    const box = stages.find(box => box.dataset.stage === focusStage);
+    box?.scrollIntoView?.({ block: 'start' });
+    box?.querySelector('[data-field="provider"]')?.focus({ preventScroll: true });
+  }
 }
 
 function readWorkflowStage(box) {

@@ -58,8 +58,7 @@ function createSession(run) {
   tab.setAttribute('aria-controls', panel.id);
   panel.setAttribute('aria-labelledby', tab.id);
   const icon = document.createElement('span'); icon.className = 'tab-state'; icon.setAttribute('aria-hidden', 'true');
-  const short = (task?.title || 'Task').length > 24 ? `${(task?.title || 'Task').slice(0, 23)}…` : task?.title || 'Task';
-  const label = document.createElement('span'); label.textContent = `${short} · ${run.config?.model || providerName(run.config?.provider)}`;
+  const label = document.createElement('span');
   // Closing a tab only hides it here. The agent keeps running; its run history stays.
   const close = document.createElement('span'); close.className = 'tab-close'; close.textContent = '×'; close.setAttribute('aria-hidden', 'true');
   close.title = 'Close this tab (the agent keeps running)';
@@ -69,7 +68,7 @@ function createSession(run) {
   tab.addEventListener('keydown', event => { if (event.key === 'Delete') { event.preventDefault(); closeSession(run.id); } });
   $('#dock-tabs').append(tab);
   $('#dock-terminals').append(panel);
-  const session = { runId: run.id, taskId: run.taskId, run, title, panel, tab, label, icon, wasLive: DOCK_LIVE.has(run.status), lastSeq: 0, pending: 0, input: '', ended: !DOCK_LIVE.has(run.status), closed: false, cols: 0, rows: 0 };
+  const session = { runId: run.id, taskId: run.taskId, run, title, panel, tab, label, icon, wasLive: DOCK_LIVE.has(run.status), lastSeq: 0, pending: 0, input: '', ended: !DOCK_LIVE.has(run.status), closed: false, cols: 0, rows: 0, connection: 'connecting', lastOutputAt: null };
   attachRenderer(session);
   dock.sessions.set(run.id, session);
   updateSessionTab(session);
@@ -96,7 +95,9 @@ function closeSession(runId, quiet = false) {
 
 function attachRenderer(session) {
   const { panel } = session;
-  if (typeof Terminal === 'function') {
+  // The DOM renderer relies on inline styles blocked by our CSP. Without WebGL,
+  // use the readable text renderer rather than leaving an empty interactive terminal.
+  if (typeof Terminal === 'function' && typeof WebglAddon === 'object') {
     try {
       const term = new Terminal({ scrollback: 5000, fontSize: Number(uiPref('termFont')) || 12, fontFamily: 'ui-monospace, "SFMono-Regular", Consolas, monospace', cursorBlink: false, convertEol: false,
         theme: { background: '#111111', foreground: '#eeeeee' },
@@ -105,22 +106,39 @@ function attachRenderer(session) {
       const fit = typeof FitAddon === 'object' ? new FitAddon.FitAddon() : null;
       if (fit) term.loadAddon(fit);
       term.open(panel);
+      session.term = term;
       // The WebGL renderer draws to a canvas, so it works under the page's strict style policy.
-      if (typeof WebglAddon === 'object') {
-        const webgl = new WebglAddon.WebglAddon();
-        webgl.onContextLoss(() => { webgl.dispose(); dockNote('The terminal lost its graphics context. Reload the page to restore it; the agent keeps running.'); });
-        term.loadAddon(webgl);
-      } else dockNote('Terminal graphics are unavailable. Reinstall with npm install; output is still recorded.');
+      const webgl = new WebglAddon.WebglAddon();
+      webgl.onContextLoss(() => {
+        let text = '';
+        const buffer = term.buffer.active;
+        for (let i = 0; i < buffer.length; i++) text += `${buffer.getLine(i)?.translateToString(true) || ''}\n`;
+        attachPlainRenderer(session, text);
+        dockNote('Terminal graphics were lost. Live output is shown as text; the agent keeps running.');
+      });
+      term.loadAddon(webgl);
       term.onData(data => sendInput(session, data));
       Object.assign(session, { term, fit, write: (data, done) => term.write(data, done) });
       return;
     } catch {
+      session.term?.dispose();
       panel.replaceChildren();
     }
   }
+  attachPlainRenderer(session);
+  dockNote('Interactive terminal graphics are unavailable. Live output is shown as text.');
+}
+
+function attachPlainRenderer(session, text = '') {
+  const { panel } = session;
+  session.term?.dispose();
+  session.term = null; session.fit = null;
+  session.pending = 0; session.drained?.();
+  panel.replaceChildren();
   // Plain fallback: readable text through textContent, no input.
   const pre = document.createElement('pre');
   pre.setAttribute('aria-live', 'off');
+  pre.textContent = text.slice(-DOCK_PLAIN_LIMIT);
   panel.append(pre);
   session.pre = pre;
   session.write = (data, done) => {
@@ -128,7 +146,6 @@ function attachRenderer(session) {
     panel.scrollTop = panel.scrollHeight;
     done?.();
   };
-  if (typeof Terminal !== 'function') dockNote('The interactive terminal files are missing. Run npm install, then reload. Output is shown as plain text.');
 }
 
 function dockNote(message) { $('#dock-note').textContent = message; $('#dock-note').hidden = !message; }
@@ -136,18 +153,22 @@ function dockNote(message) { $('#dock-note').textContent = message; $('#dock-not
 function write(session, data) {
   // Client-side backpressure: stop reading while xterm has a large backlog to render.
   session.pending += data.length;
-  session.write(data, () => { session.pending -= data.length; if (session.pending < 256 * 1024) session.drained?.(); });
+  session.write(data, () => { session.pending = Math.max(0, session.pending - data.length); if (session.pending < 256 * 1024) session.drained?.(); });
 }
 
 async function streamSession(session) {
-  while (!session.closed) {
+  while (!session.closed && typeof document !== 'undefined') {
     const controller = new AbortController();
     session.abort = controller;
+    session.connection = session.lastSeq ? 'reconnecting' : 'connecting';
+    renderDockConnection(session);
     try {
       // fetch keeps the session token in a header; it never appears in a URL.
       const response = await fetch(`/api/runs/${encodeURIComponent(session.runId)}/stream?after=${session.lastSeq}`, { cache: 'no-store', headers: { 'X-STE-Token': token }, signal: controller.signal });
-      if (response.status === 404) { markEnded(session); return; }
+      if (response.status === 404) { await replayRecordedOutput(session); markEnded(session); return; }
       if (!response.ok || !response.body) throw new Error('stream');
+      session.connection = 'connected';
+      renderDockConnection(session);
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
@@ -163,21 +184,36 @@ async function streamSession(session) {
         while ((end = buffer.indexOf('\n')) >= 0) {
           const line = buffer.slice(0, end); buffer = buffer.slice(end + 1);
           let item; try { item = JSON.parse(line); } catch { continue; }
+          if (item.missing) await replayRecordedOutput(session);
           handleItem(session, item);
           if (session.pending > 2 * 1024 * 1024) await new Promise(resolve => { session.drained = resolve; });
         }
       }
-      if (session.ended) return;
+      if (session.ended) { session.connection = 'ended'; renderDockConnection(session); return; }
     } catch { if (session.closed) return; }
+    session.connection = 'reconnecting'; renderDockConnection(session);
     await new Promise(resolve => setTimeout(resolve, 1000)); // Reconnect to the same run; never restart it.
   }
+}
+
+async function replayRecordedOutput(session) {
+  if (session.replayedLog || session.closed) return;
+  session.replayedLog = true;
+  const { response, data } = await api(`/api/runs/${encodeURIComponent(session.runId)}/output`, { timeoutMs: 15000 }).catch(() => ({ response: { ok: false }, data: {} }));
+  if (session.closed) return;
+  // The server has no live session after a restart; read its bounded saved log.
+  // Replace reconnect scrollback so already-received chunks are not duplicated.
+  session.term?.reset();
+  if (session.pre) session.pre.textContent = '';
+  write(session, response.ok && data.text ? data.text : '\r\n[Promptboard: no recorded output is available for this run]\r\n');
+  session.savedOutput = true;
 }
 
 function handleItem(session, item) {
   if (item.ping) return;
   if (item.gap) write(session, '\r\n[Promptboard: earlier output was dropped because the view fell behind]\r\n');
   if (Number.isInteger(item.seq)) session.lastSeq = item.seq;
-  if (typeof item.data === 'string') write(session, item.data);
+  if (typeof item.data === 'string') { session.lastOutputAt = Date.now(); write(session, item.data); renderDockConnection(session); }
   if (item.usage && typeof item.usage === 'object') { session.run = { ...session.run, usage: item.usage }; if (dock.selected === session.runId) renderDockDetails(session); }
   if (item.status) { session.run = { ...session.run, status: item.status, waitingReason: item.reason || '' }; updateSessionTab(session); updateDockIndicator(); scheduleBoardRefresh(); }
   if (item.ended || item.missing) markEnded(session);
@@ -190,6 +226,8 @@ function scheduleBoardRefresh() {
 }
 
 function markEnded(session) {
+  session.connection = 'ended';
+  renderDockConnection(session);
   if (session.ended && !DOCK_LIVE.has(session.run.status)) return;
   session.ended = true;
   updateSessionTab(session);
@@ -201,6 +239,9 @@ function updateSessionTab(session) {
   const live = !session.ended && DOCK_LIVE.has(session.run.status);
   const run = live ? session.run : { ...session.run, status: DOCK_LIVE.has(session.run.status) ? 'interrupted' : session.run.status };
   const state = agentState(run);
+  const task = board?.projects.flatMap(project => project.tasks).find(task => task.id === session.taskId);
+  const title = task?.title || 'Task';
+  session.label.textContent = `${title.length > 20 ? `${title.slice(0, 19)}…` : title} · ${agentModel(session.run)}`;
   session.tab.classList.toggle('live', state === 'active');
   session.tab.classList.toggle('waiting', state === 'awaits_you');
   session.tab.dataset.state = state;
@@ -214,13 +255,30 @@ function updateSessionTab(session) {
 function renderDockDetails(session) {
   const details = $('#dock-details');
   details.hidden = !session;
-  if (!session) return;
+  if (!session) { $('#dock-connection').hidden = true; return; }
   const run = session.run; // Merged from the board in syncDock and from stream status items.
   const shown = session.ended && DOCK_LIVE.has(run.status) ? { ...run, status: 'interrupted' } : run;
-  details.replaceChildren(`${agentModel(run)} · ${columnTitle(run.stage)} · ${agentStateText(shown)} · `, elapsedSpan(run),
-    run.branch ? ` · Branch ${run.branch}` : '', run.workspacePath ? ` · Worktree ${run.workspacePath}` : '',
-    ` · ${usageText(run) || (run.config?.provider === 'gemini' ? 'Usage: not reported by Gemini CLI' : 'Usage: not reported yet')}`);
+  const project = board?.projects.find(project => project.id === run.projectId || project.tasks.some(task => task.id === run.taskId));
+  const summary = paragraph('', 'dock-run-summary');
+  summary.append(`${agentModel(run)} · ${columnTitle(run.stage, project)} · ${agentStateText(shown)} · `, elapsedSpan(run));
+  const location = document.createElement('div'); location.className = 'dock-location';
+  location.append(locationFact('Repository', project?.repository?.root), locationFact('Task branch', run.branch), locationFact('Worktree', run.workspacePath));
+  details.replaceChildren(summary, paragraph(agentActivity(shown), 'dock-run-activity'), location,
+    paragraph(usageText(run) || (run.config?.provider === 'gemini' ? 'Usage: not reported by Gemini CLI' : 'Usage: not reported yet'), 'dock-usage'));
   details.title = details.textContent;
+  renderDockConnection(session);
+}
+
+function renderDockConnection(session = dock.sessions.get(dock.selected)) {
+  if (!session || session.closed || session.runId !== dock.selected || typeof document === 'undefined') return;
+  const status = $('#dock-connection'); status.hidden = false;
+  status.classList.toggle('kanban-error', session.connection === 'reconnecting');
+  status.textContent = session.savedOutput ? 'Saved output · this session has ended.'
+    : session.connection === 'ended' ? 'Session ended · output remains available.'
+    : session.connection === 'connecting' ? 'Connecting to the agent terminal…'
+    : session.connection === 'reconnecting' ? 'Connection lost. Reconnecting to this agent…'
+    : session.lastOutputAt ? `Connected · last output ${Math.max(0, Math.floor((Date.now() - session.lastOutputAt) / 1000))}s ago.`
+    : session.run.status === 'queued' ? 'Connected · waiting for an agent slot.' : 'Connected · waiting for CLI output. Check the terminal for a startup or permission question.';
 }
 
 function updateDockIndicator() {
@@ -239,7 +297,9 @@ function sendInput(session, data) {
   clearTimeout(session.inputTimer);
   session.inputTimer = setTimeout(() => {
     const chunk = session.input; session.input = '';
-    if (chunk) api(`/api/runs/${encodeURIComponent(session.runId)}/input`, { method: 'POST', body: { data: chunk }, timeoutMs: 10000 }).catch(() => dockNote('Input was not delivered. Check that the app is running.'));
+    if (chunk) api(`/api/runs/${encodeURIComponent(session.runId)}/input`, { method: 'POST', body: { data: chunk }, timeoutMs: 10000 })
+      .then(({ response, data }) => { if (!response.ok) dockNote(data.error || 'Input was not delivered. Check the agent status.'); })
+      .catch(() => dockNote('Input was not delivered. Check that the app is running.'));
   }, 15);
 }
 
@@ -261,6 +321,7 @@ function selectDockTab(id, focus = false) {
   $('#dock-activity').hidden = id !== 'activity';
   for (const session of dock.sessions.values()) session.panel.hidden = session.runId !== id;
   const session = dock.sessions.get(id);
+  session?.tab.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
   $('#dock-stop').hidden = !session || session.ended || !DOCK_LIVE.has(session.run.status);
   $('#dock-copy').hidden = !session?.term;
   renderDockDetails(session);
@@ -297,6 +358,7 @@ function syncDock() {
   }
   renderActivity();
   updateDockIndicator();
+  renderDockDetails(dock.sessions.get(dock.selected));
   // An empty dock stays collapsed. After a reload, reopen it only if live sessions exist.
   if (!dock.restored) {
     dock.restored = true;
@@ -363,6 +425,11 @@ function startDividerDrag(event) {
   $('#dock-stop').addEventListener('click', stopSelected);
   $('#dock-copy').addEventListener('click', copySelection);
   $('#dock-divider').addEventListener('pointerdown', startDividerDrag);
+  window.addEventListener('resize', () => nextFrame(() => {
+    const session = dock.sessions.get(dock.selected);
+    session?.tab.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+    fitSession(session);
+  }));
   $('#dock-divider').addEventListener('keydown', event => {
     if (!['ArrowUp', 'ArrowDown'].includes(event.key)) return;
     event.preventDefault();
@@ -377,7 +444,7 @@ function startDividerDrag(event) {
   });
   const setFontSize = size => { for (const session of dock.sessions.values()) if (session.term) { session.term.options.fontSize = size; fitSession(session); } };
   const closeFinished = () => { const ended = [...dock.sessions.values()].filter(session => session.ended); for (const session of ended) closeSession(session.runId, true); return ended.length; };
-  window.PromptboardDock = { sync: syncDock, open: openRun, reveal: revealTask, setState: setDockState, setFontSize, closeFinished };
+  window.PromptboardDock = { sync: syncDock, open: openRun, reveal: revealTask, setState: setDockState, setFontSize, closeFinished, tick: renderDockConnection };
   setDockState('collapsed', false);
   syncDock();
 })();

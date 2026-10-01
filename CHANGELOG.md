@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Kanban: project provider, model, and effort are available directly above the board, even when Project settings is collapsed. Each agent column links to its stage settings and displays its resolved agent. Compose settings remain separate; changing settings affects future runs only.
+- Kanban: repository, target branch, task branch, and worktree paths are shown with copy actions on the board, cards, task details, and terminal dock. Prompt source and the actual run agent are labelled separately.
+- Fix: terminal details and connection feedback no longer overlap the CLI output. Tabs always show provider and model; model selection ignores stale discovery results and uses the selected model's reported effort options.
+- Fix: ended runs can replay their saved output after a restart. When WebGL terminal graphics are unavailable, readable text output is used instead of the CSP-blocked terminal renderer.
+
 - Kanban: **the destination column alone decides what runs.** A card can move from any column to any other; only that column's stage runs, and skipped columns never do. To Do → Executing starts implementing at once: Executing (and Testing and Merge) sessions are told not to plan or ask for plan approval, even when the card text asks for a plan first, and Claude Code cannot switch them into plan mode. Only Planning plans.
 - Kanban: **Done** shows a “Drop here to complete” zone, then “Completed (N)” with compact cards (title, #number, one-line preview, how long ago) and **View all N**. Dropping a card on Done closes it without merging, pushing, or starting anything.
 - Every error message is shown in orange.
