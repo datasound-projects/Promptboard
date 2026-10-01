@@ -19,7 +19,7 @@ const catalogs = {
 };
 async function until(fn, label, ms = 3000) {
   const deadline = Date.now() + ms;
-  while (!fn()) { if (Date.now() > deadline) assert.fail(`Timed out: ${label}`); await new Promise(resolve => setTimeout(resolve, 10)); }
+  while (!await fn()) { if (Date.now() > deadline) assert.fail(`Timed out: ${label}`); await new Promise(resolve => setTimeout(resolve, 10)); }
 }
 // Fixture auth adapter: never runs a real CLI, and records every mutation.
 function fakeAuth(overrides = {}) {
