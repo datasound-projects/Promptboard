@@ -1401,7 +1401,12 @@ test('Autopilot dialog: queue order, which cards, per-card routes, consent to st
 
 async function agentFixture(t) {
   const ctx = await linkedKanban(t);
-  ctx.executor.subscribe = () => () => {}; // Live streams stay open, as for a real running session.
+  ctx.executor.subscribe = (_runId, _after, sink) => {
+    // Keep the fake session live, but flush the response with a harmless heartbeat.
+    // Otherwise each fixture waits for the server's 15s keepalive before fetch resolves.
+    sink.write({ ping: true });
+    return () => {};
+  };
   await newProject(ctx, 'Other');
   const board = ctx.app.board;
   const [flow, other] = (await serverBoard(ctx)).projects;
