@@ -375,8 +375,10 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
 
 /* Kanban workspace (PB-03): full width, a compact toolbar, the board, and a terminal dock. */
 #kanban-view { --dock-height: 44px; grid-template-columns: minmax(0, 1fr); padding-bottom: calc(var(--dock-height) + 20px); }
-.intro-compact { margin-bottom: 14px; }
-.intro-compact .mascot img { width: 84px; height: 84px; }
+.intro-compact { margin-bottom: 12px; }
+.intro-compact h1 { font-size: 26px; letter-spacing: -.7px; }
+.intro-compact .intro-description { max-width: 680px; margin-top: 6px; font-size: 12px; }
+.intro-compact .mascot img { width: 64px; height: 64px; }
 .kanban-toolbar { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1fr) max-content; gap: 10px 18px; align-items: start; padding: 14px 18px; }
 .toolbar-cell { min-width: 0; }
 .toolbar-cell .field-label select { margin-top: 4px; }
@@ -457,14 +459,16 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
 .dock-indicator { flex: none; font: 11px var(--mono); color: var(--muted); }
 .dock-indicator.waiting { padding: 2px 8px; border-radius: 999px; background: var(--primary); color: var(--on-primary); }
 .dock-actions { display: flex; flex: none; gap: 10px; }
-.dock-body { position: relative; flex: 1; min-height: 0; }
-.dock-panel, .dock-terminal { position: absolute; inset: 0; overflow: auto; padding: 8px 12px; }
-.dock-terminal { padding: 6px 8px; background: #111; }
+.dock-body { position: relative; flex: 1; min-height: 0; display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; }
+.dock-terminals { grid-row: 3; position: relative; min-height: 0; min-width: 0; }
+.dock-panel, .dock-terminal { overflow: auto; padding: 8px 12px; }
+.dock-panel { grid-row: 3; position: relative; min-height: 0; }
+.dock-terminal { position: absolute; inset: 0; padding: 6px 8px; background: #111; }
 .dock-terminal .xterm { height: 100%; }
 .dock-terminal pre { margin: 0; color: #eee; font: 12px/1.45 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 .dock-empty { margin: 12px 4px; color: var(--muted); font-size: 13px; }
 .dock-activity { margin: 0; padding: 0 0 0 18px; font: 12px/1.8 var(--mono); color: var(--muted); }
-.dock-note { position: absolute; right: 12px; bottom: 8px; margin: 0; padding: 4px 8px; border-radius: 6px; background: var(--surface); }
+.dock-note { grid-row: 4; margin: 0; padding: 4px 12px; border-radius: 6px; background: var(--surface); }
 
 /* Dialogs for runs, task details, and workflow settings. */
 .task-dialog, .workflow-dialog { max-width: 820px; }
@@ -628,7 +632,38 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
 .dock-tab.live .tab-state { animation: pb-pulse 1.2s ease-in-out infinite; }
 .dock-tab .tab-close { flex: none; margin-left: 2px; padding: 0 3px; border-radius: 4px; color: inherit; font-size: 13px; line-height: 1; opacity: .7; }
 .dock-tab .tab-close:hover { background: var(--surface-3); opacity: 1; }
-.dock-details { margin: 0; padding: 4px 12px; border-bottom: 1px solid var(--line); color: var(--muted); font: 11.5px var(--mono); overflow-x: auto; white-space: nowrap; }
+.dock-details { grid-row: 1; margin: 0; padding: 5px 12px; border-bottom: 1px solid var(--line); color: var(--muted); font: 11.5px var(--mono); }
+.dock-run-summary, .dock-run-activity, .dock-usage { margin: 0; }
+.dock-location { display: flex; gap: 6px 16px; flex-wrap: wrap; max-height: 64px; overflow: auto; }
+.dock-location .location-fact { font-size: 11px; }
+.dock-connection { grid-row: 2; margin: 0; padding: 3px 12px; color: var(--muted); font-size: 11px; }
+.project-context { padding: 12px 18px; margin-bottom: 12px; }
+.project-context-heading, .project-agent-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.project-context-heading h2 { margin: 0; font-size: 14px; }
+.project-context .select-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, .7fr); gap: 6px 12px; margin-top: 8px; }
+.project-context .field-label { margin: 0; }
+.project-context .field-label select { min-width: 0; }
+.project-agent-actions .note { margin: 8px 0 0; font-size: 12px; }
+.project-agent-actions button { flex: none; }
+.agent-model-note { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: 11px; }
+.project-location, .task-location { display: grid; gap: 4px; margin-top: 6px; }
+.location-fact { display: flex; align-items: baseline; gap: 6px; min-width: 0; font-size: 12px; }
+.location-fact strong { flex: none; font-weight: 500; }
+.location-fact code { overflow-wrap: anywhere; min-width: 0; user-select: text; }
+.location-copy { flex: none; padding: 0; font-size: 11px; }
+.kanban-column-heading { flex-wrap: wrap; }
+.column-agent { flex-basis: 100%; padding: 0; border: 0; background: none; color: var(--muted); text-align: left; font-size: 11px; cursor: pointer; overflow-wrap: anywhere; }
+.column-agent:hover { color: var(--ink); text-decoration: underline; }
+.card-workspace { margin: 8px 0; font-size: 11px; }
+.card-workspace summary { cursor: pointer; }
+.card-workspace .location-fact { flex-wrap: wrap; }
+.card-workspace .note { font-size: 11px; }
+@media (max-width: 730px) {
+  .dock-details { max-height: 110px; overflow: auto; }
+  .project-context-heading, .project-agent-actions { align-items: flex-start; flex-direction: column; }
+  .project-location .location-fact { flex-wrap: wrap; }
+  .project-context .select-grid { grid-template-columns: 1fr; }
+}
 @media (prefers-reduced-motion: reduce) { .agent-icon.active, .dock-tab.live .tab-state { animation: none; } }
 
 /* Settings dialog. */

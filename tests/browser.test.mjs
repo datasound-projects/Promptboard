@@ -20,13 +20,15 @@ test('terminal dock in a real browser: start, render, type, collapse, resize, se
   const temp = async prefix => { const dir = await realpath(await mkdtemp(join(tmpdir(), prefix))); t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })); return dir; };
   const bin = await temp('pb-browser-bin-');
   await writeFile(join(bin, 'claude'), `#!${process.execPath}\nrequire(${JSON.stringify(fake)});\n`); await chmod(join(bin, 'claude'), 0o755);
+  await writeFile(join(bin, 'codex'), `#!${process.execPath}\nrequire(${JSON.stringify(fake)});\n`); await chmod(join(bin, 'codex'), 0o755);
   const oldPath = process.env.PATH;
   process.env.PATH = `${bin}:${oldPath}`;
   t.after(() => { process.env.PATH = oldPath; });
   const root = await temp('pb-browser-repo-');
   git(root, 'init', '-q', '-b', 'trunk'); git(root, 'config', 'user.email', 't@e'); git(root, 'config', 'user.name', 'T');
   await writeFile(join(root, 'a.txt'), 'a\n'); git(root, 'add', '.'); git(root, 'commit', '-q', '-m', 'init');
-  const app = await startServer({ port: 0, dataDir: await temp('pb-browser-data-'), detector: async () => [] });
+  const app = await startServer({ port: 0, dataDir: await temp('pb-browser-data-'), detector: async () => [],
+    catalogReader: async provider => ({ provider, defaultModel: `${provider}-test-model`, models: [{ id: `${provider}-test-model`, name: 'Test model', efforts: ['low', 'high'] }] }) });
   t.after(() => app.close());
   const board = app.board;
   const project = await board.createProject({ name: 'Browser' });
@@ -37,6 +39,7 @@ test('terminal dock in a real browser: start, render, type, collapse, resize, se
   const first = await makeTask('First task', 'Do the first thing. HTML_PAYLOAD');
   const second = await makeTask('Second task', 'Do the second thing.');
   const flood = await makeTask('Flood task', 'Print a lot. FLOOD');
+  const codexTask = await makeTask('Codex task', 'Implement the feature. WRITE_FILE:codex-result.txt');
 
   const browser = await launch({ width: 1280, height: 900 });
   if (!browser) { t.skip('Chrome did not start.'); return; }
@@ -133,6 +136,32 @@ test('terminal dock in a real browser: start, render, type, collapse, resize, se
   assert.equal((await board.run(firstRun)).status, 'cancelled');
   assert.ok(['running', 'waiting_for_input'].includes((await board.run(secondRun)).status), 'Stopping one session leaves the other running.');
   await shot('4-stopped-one');
+  // Set the project agent through the visible form, then start a real Codex PTY.
+  await browser.eval(`const provider = document.querySelector('#project-agent-fields [data-field="provider"]'); provider.value = 'codex'; provider.dispatchEvent(new Event('change', { bubbles: true }));`);
+  await browser.until(`document.querySelector('#project-agent-fields [data-field="model"] option[value="codex-test-model"]')`, 'Codex model choices');
+  await browser.eval(`const model = document.querySelector('#project-agent-fields [data-field="model"]'); model.value = 'codex-test-model'; model.dispatchEvent(new Event('change', { bubbles: true })); document.querySelector('#project-agent-save').click();`);
+  await browser.until(`document.querySelector('#kanban-columns [data-column="executing"] .column-agent').textContent.includes('Codex CLI')`, 'project agent saved');
+  await browser.eval(`document.querySelector('[data-id="${codexTask.id}"] .kanban-start').click();`);
+  const codexRun = await (async () => { for (const end = Date.now() + 15000; Date.now() < end;) { const run = (await board.view()).runs.find(run => run.taskId === codexTask.id); if (run) return run; await new Promise(resolve => setTimeout(resolve, 50)); } assert.fail('Codex run did not start'); })();
+  assert.deepEqual([codexRun.config.provider, codexRun.config.model], ['codex', 'codex-test-model']);
+  await browser.until(`${text(codexRun.id)}.includes('fake codex started') && ${text(codexRun.id)}.includes('working on')`, 'Codex activity rendered', 30000);
+  assert.match(await browser.eval(`return document.querySelector('#dock-tab-${codexRun.id}').textContent;`), /Codex CLI · codex-test-model/);
+  assert.equal(await browser.eval(`return window.promptboardDock.selected;`), codexRun.id);
+  const details = await browser.eval(`return document.querySelector('#dock-details').textContent;`);
+  assert.ok(details.includes(root)); assert.ok(details.includes(codexRun.branch)); assert.ok(details.includes(codexRun.workspacePath));
+  await browser.until(`document.querySelector('#dock-connection').textContent.includes('Connected')`, 'live connection feedback');
+  assert.equal(await browser.eval(`const terminal = document.querySelector('#dock-panel-${codexRun.id}').getBoundingClientRect(); const status = document.querySelector('#dock-connection').getBoundingClientRect(); return terminal.top >= status.bottom && terminal.height > 50;`), true, 'Run facts and connection feedback do not cover the terminal.');
+  const paths = await browser.eval(`return document.querySelector('[data-id="${codexTask.id}"] .task-location').textContent;`);
+  assert.ok(paths.includes(codexRun.branch)); assert.ok(paths.includes(codexRun.workspacePath));
+  await shot('5-codex-agent-and-workspace');
+  await browser.eval(`document.documentElement.dataset.theme = 'dark';`);
+  await shot('6-codex-dark');
+  await browser.resize(390, 844);
+  await browser.until(`getComputedStyle(document.querySelector('#sidebar')).visibility === 'hidden'`, 'narrow sidebar drawer closed');
+  assert.equal(await browser.eval(`return document.querySelector('#project-context').hidden;`), false);
+  await browser.until(`document.querySelector('#dock-panel-${codexRun.id}').getBoundingClientRect().height > 75`, 'readable narrow terminal');
+  assert.equal(await browser.eval(`const tab = document.querySelector('#dock-tab-${codexRun.id}').getBoundingClientRect(); const tabs = document.querySelector('#dock-tabs').getBoundingClientRect(); return tab.right <= tabs.right + 1 && tab.left >= tabs.left - 1;`), true, 'Selected agent remains visible after resizing.');
+  await shot('7-codex-narrow');
   const errors = browser.consoleMessages.filter(message => /EXCEPTION/.test(message));
   assert.deepEqual(errors, [], 'No uncaught page errors.');
 });

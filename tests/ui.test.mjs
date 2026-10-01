@@ -50,6 +50,7 @@ async function setup(t, { catalogReader = async id => ({ provider: id, ...catalo
     return fetch(new URL(url, app.url), options).then(done, fail);
   };
   win.TextEncoder = TextEncoder;
+  win.TextDecoder = TextDecoder;
   win.AbortController = AbortController;
   win.scrollTo = () => {};
   win.HTMLElement.prototype.scrollIntoView = () => {};
@@ -75,6 +76,7 @@ async function setup(t, { catalogReader = async id => ({ provider: id, ...catalo
     // A request can still be in flight when a test ends (for example a model refresh). Its handler
     // would then touch a closed window. Wait until the page is idle for a few ticks, then close.
     for (let idle = 0, end = Date.now() + 3000; idle < 3 && Date.now() < end;) { await new Promise(resolve => setTimeout(resolve, 10)); idle = pending ? 0 : idle + 1; }
+    for (const session of win.promptboardDock?.sessions.values() || []) { session.closed = true; session.abort?.abort(); }
     win.close(); await app.close();
   });
   const $ = selector => win.document.querySelector(selector);
@@ -561,7 +563,7 @@ test('Add to Kanban stores an exact prompt snapshot in To Do; card edits never c
   const [draft, passed] = column($, 'todo').children;
   assert.ok(draft.classList.contains('needs-review'));
   assert.equal(draft.querySelector('.kanban-status').textContent, 'Draft—review needed');
-  assert.equal(draft.querySelector('.kanban-meta').textContent, 'Codex · codex-one · Deutsch');
+  assert.equal(draft.querySelector('.kanban-meta').textContent, 'Prompt source: Codex · codex-one · Deutsch');
   assert.ok(draft.querySelector('.kanban-preview').textContent.length <= 400);
   assert.equal($('#kanban-columns script'), null);
   assert.equal(passed.querySelector('.kanban-status').textContent, 'Checks complete—review before use');
@@ -840,7 +842,7 @@ test('backups: export round-trips, import validates, asks before replacing, and 
   assert.equal(board.projects[0].tasks[0].prompt, exact);
   choose('#project-select', 'p1');
   assert.equal(column($, 'todo').querySelector('.kanban-status').textContent, 'Automatic checks only—review before use');
-  assert.equal(column($, 'todo').querySelector('.kanban-meta').textContent, 'Claude Code · opus · Polski');
+  assert.equal(column($, 'todo').querySelector('.kanban-meta').textContent, 'Prompt source: Claude Code · opus · Polski');
   await click(ctx, $('#export-board'));
   assert.match(downloads.at(-1), /^promptboard-backup-\d{4}-\d\d-\d\d\.json$/);
   const exported = JSON.parse(await blobs.at(-1).text());
@@ -1466,7 +1468,7 @@ test('dock tabs: one per run with state and model; switching never restarts; clo
   const tabs = () => Array.from($('#dock-tabs').querySelectorAll('.dock-tab:not(#dock-tab-activity)'));
   assert.deepEqual(tabs().map(tab => tab.id).sort(), ['dock-tab-run-a', 'dock-tab-run-b', 'dock-tab-run-c']);
   const b = $('#dock-tab-run-b');
-  assert.match(b.textContent, /API tests · gpt-5\.5/);
+  assert.match(b.textContent, /API tests · Codex CLI · gpt-5\.5/);
   assert.equal(b.dataset.state, 'awaits_you');
   assert.match(b.getAttribute('aria-label'), /Codex CLI · gpt-5\.5: Awaits you/);
   assert.equal($('#dock-tab-run-a').dataset.state, 'active');
@@ -1474,7 +1476,8 @@ test('dock tabs: one per run with state and model; switching never restarts; clo
   const sessionA = win.promptboardDock.sessions.get('run-a');
   $('#dock-tab-run-b').click(); $('#dock-tab-run-a').click(); await ctx.idle();
   assert.equal(win.promptboardDock.sessions.get('run-a'), sessionA, 'Switching tabs keeps the same session.');
-  assert.match($('#dock-details').textContent, /Claude Code · opus · high · Executing · Active · .* · Branch promptboard\/run-a · Worktree \/tmp\/wt-run-a/);
+  assert.match($('#dock-details .dock-run-summary').textContent, /Claude Code · opus · high · Executing · Active/);
+  assert.match($('#dock-details .dock-location').textContent, /Task branchpromptboard\/run-a.*Worktree\/tmp\/wt-run-a/);
   assert.equal($('#dock-indicator').textContent, '1 waiting for you');
   // Close the active tab: the run keeps its status, the indicator still counts it, a reload does not reopen it.
   $('#dock-tab-run-a .tab-close').click(); await ctx.idle();
@@ -1488,6 +1491,116 @@ test('dock tabs: one per run with state and model; switching never restarts; clo
   assert.ok($('#dock-tab-run-a'));
   assert.equal(win.promptboardDock.selected, 'run-a');
   assert.equal(ctx.executor.started.length, 0);
+});
+
+test('Kanban project and stage agent selection is visible, persists, and launches the selected provider independently of Compose', { skip: process.platform === 'win32' }, async t => {
+  const ctx = await linkedKanban(t);
+  const { $, win, choose } = ctx;
+  await link(ctx);
+  if (!$('#project-body').hidden) $('#project-toggle').click();
+  assert.equal($('#project-body').hidden, true);
+  assert.equal($('#project-context').hidden, false, 'Agent selection stays visible with project settings collapsed.');
+  assert.match($('#project-location').textContent, new RegExp(ctx.repo.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.match($('#project-location').textContent, /Target branchtrunk/);
+  choose('#project-agent-fields [data-field="provider"]', 'codex');
+  await ctx.idle();
+  choose('#project-agent-fields [data-field="model"]', 'codex-two');
+  assert.deepEqual(Array.from($('#project-agent-fields [data-field="effort"]').options, item => item.value), ['', 'low']);
+  choose('#project-agent-fields [data-field="effort"]', 'low');
+  await win.__pbTest.loadBoard();
+  assert.equal($('#project-agent-fields [data-field="model"]').value, 'codex-two', 'Background board refresh preserves unsaved selections.');
+  submitForm(ctx, '#project-agent-form'); await ctx.idle();
+  let project = (await serverBoard(ctx)).projects[0];
+  assert.deepEqual(project.agentDefaults, { provider: 'codex', model: 'codex-two', effort: 'low' });
+  assert.equal(project.effectiveWorkflow.executing.provider, 'codex');
+  assert.match($('#kanban-columns [data-column="executing"] .column-agent').textContent, /Codex CLI · codex-two · low/);
+  // Each stage has a direct settings shortcut, with an independent provider and model.
+  $('#kanban-columns [data-column="code_review"] .column-agent').click(); await ctx.idle();
+  const review = '#workflow-stages [data-stage="code_review"]';
+  assert.equal(win.document.activeElement, $(`${review} [data-field="provider"]`));
+  choose(`${review} [data-field="provider"]`, 'claude'); await ctx.idle();
+  choose(`${review} [data-field="model"]`, 'haiku');
+  assert.equal($(`${review} [data-field="effort"]`).disabled, true);
+  submitForm(ctx, '#workflow-form'); await ctx.idle();
+  project = (await serverBoard(ctx)).projects[0];
+  assert.equal(project.effectiveWorkflow.code_review.provider, 'claude');
+  assert.equal(project.effectiveWorkflow.code_review.model, 'haiku');
+  assert.equal(project.effectiveWorkflow.executing.provider, 'codex');
+  assert.match($('#project-agent-summary').textContent, /Stage overrides: Code Review/);
+  // Compose can select Claude without changing the project's Codex agent.
+  choose('#provider', 'claude'); await ctx.idle();
+  await newCard(ctx, 'Selected agent', 'Build the feature.');
+  await moveBy(ctx, 'Selected agent', 'executing'); await ctx.idle();
+  const run = ctx.executor.started.at(-1);
+  assert.deepEqual([run.config.provider, run.config.model, run.config.effort], ['codex', 'codex-two', 'low']);
+  assert.match(cardItem(ctx, 'Selected agent').querySelector('.run-agent').textContent, /Run agent: Codex CLI · codex-two/);
+  assert.match($(`#dock-tab-${run.id}`).textContent, /Codex CLI · codex-two/);
+  assert.match($('#dock-details').textContent, /Codex CLI · codex-two/);
+  assert.ok($('#dock-details').textContent.includes(ctx.repo));
+  assert.ok($('#dock-details').textContent.includes(run.branch));
+  assert.ok($('#dock-details').textContent.includes(run.workspacePath));
+  cardItem(ctx, 'Selected agent').querySelector('.card-workspace').open = true;
+  const facts = cardItem(ctx, 'Selected agent').querySelector('.task-location');
+  assert.ok(facts.textContent.includes(run.workspacePath));
+  const copy = [...facts.querySelectorAll('button')].find(button => button.textContent === 'Copy worktree');
+  copy.click(); await ctx.idle();
+  assert.equal(ctx.copied(), run.workspacePath);
+  // A new default affects future runs; the existing run still identifies Codex accurately.
+  choose('#project-agent-fields [data-field="provider"]', 'claude'); await ctx.idle();
+  submitForm(ctx, '#project-agent-form'); await ctx.idle();
+  assert.equal((await ctx.app.board.run(run.id)).config.provider, 'codex');
+  assert.match($(`#dock-tab-${run.id}`).textContent, /Codex CLI/);
+  const reload = await setup(t, { executor: ctx.executor, hash: '#/kanban', dataDir: ctx.dataDir }); await reload.idle();
+  assert.equal(reload.$('#project-agent-fields [data-field="provider"]').value, 'claude');
+  assert.match(reload.$('#kanban-columns [data-column="code_review"] .column-agent').textContent, /haiku/);
+});
+
+test('Kanban model selection keeps CLI default while discovery is pending and ignores replies after switching to inheritance', { skip: process.platform === 'win32' }, async t => {
+  let release;
+  const pending = new Promise(resolve => { release = resolve; });
+  const ctx = await linkedKanban(t, { catalogReader: async provider => {
+    if (provider === 'claude') await pending;
+    return { provider, ...catalogs[provider] };
+  } });
+  const { $, choose, win } = ctx;
+  t.after(() => release());
+  await ctx.app.board.setWorkflow(ctx.project.id, { workflow: {}, agentDefaults: { provider: 'claude', model: 'saved-model' }, expectedRevision: (await serverBoard(ctx)).projects[0].revision });
+  await win.__pbTest.loadBoard();
+  assert.equal($('#project-agent-fields [data-field="model"]').value, '__custom__');
+  choose('#project-agent-fields [data-field="model"]', '');
+  release(); await ctx.idle();
+  assert.equal($('#project-agent-fields [data-field="model"]').value, '', 'Discovery must not restore the saved model after the user chooses CLI default.');
+  choose('#project-agent-fields [data-field="provider"]', 'codex');
+  choose('#project-agent-fields [data-field="provider"]', '');
+  await ctx.idle();
+  assert.equal($('#project-agent-fields [data-field="provider"]').value, '');
+  assert.equal($('#project-agent-fields [data-field="model"]').value, '');
+  assert.equal($('#project-agent-fields .model-field').hidden, true);
+  assert.equal($('#project-agent-fields [data-field="model-custom"]').value, '', 'Switching provider clears its custom model.');
+});
+
+test('ended agent output is available after a restart and remains readable without terminal graphics', { skip: process.platform === 'win32' }, async t => {
+  const ctx = await linkedKanban(t);
+  const { $, win } = ctx;
+  await link(ctx);
+  // xterm exists, but its CSP-compatible renderer is unavailable: it must use text.
+  win.Terminal = class { constructor() { assert.fail('Do not use the invisible DOM renderer without WebGL.'); } };
+  const task = await ctx.app.board.createTask({ projectId: ctx.project.id, title: 'Old Codex run', prompt: 'Fix it.' });
+  const now = Date.now();
+  await ctx.app.board.store.update(state => state.runs.push({ id: 'old-codex', taskId: task.id, projectId: ctx.project.id, stage: 'executing', status: 'interrupted', createdAt: now, updatedAt: now,
+    config: { provider: 'codex', model: 'codex-one' }, branch: 'promptboard/old-task', workspacePath: '/tmp/old-worktree', artifactsDir: 'runs/old-codex' }));
+  ctx.executor.artifact = async () => 'Reading parser.mjs\nChanged parser.mjs\nTests passed\n<img src=x onerror="window.__pwned=1">';
+  await win.__pbTest.loadBoard(); await ctx.idle();
+  cardItem(ctx, 'Old Codex run').querySelector('.kanban-terminal').click(); await ctx.idle();
+  const session = win.promptboardDock.sessions.get('old-codex');
+  await until(() => session.pre?.textContent.includes('Changed parser.mjs'), 'saved output rendered');
+  assert.match($('#dock-details').textContent, /Codex CLI · codex-one/);
+  assert.match($('#dock-connection').textContent, /Saved output/);
+  assert.equal($('#dock-stop').hidden, true);
+  assert.equal($('#dock-copy').hidden, true);
+  assert.equal($('#dock-terminals img'), null);
+  assert.equal(win.__pwned, undefined);
+  assert.equal(ctx.executor.started.length, 0, 'Reading old output never restarts the agent.');
 });
 
 // ---- Settings ----

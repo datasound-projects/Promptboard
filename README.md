@@ -52,8 +52,11 @@ Your browser opens **http://127.0.0.1:4318**. Press **Ctrl+C** to stop. No API k
 **Kanban**
 - Move each task through To Do → Planning → Executing → Code Review → Testing → Merge → Done.
 - Each card gets its own Git branch and worktree. Your main checkout is never touched.
+- Choose the **project agent** (provider, model, and effort) directly above the board. Use **Agents per stage…**, or the agent label on a column, to override it for a stage. Compose has separate settings.
+- The project panel shows the local repository and target branch. **Files and branch** on a card shows where the agent edits files; paths and branch names can be copied.
 - **Drag = start.** Drop a card on a stage and its work starts at once: planning, the coding agent, the review, or your tests.
 - Watch and type into each agent's terminal in the dock at the bottom.
+- Terminal tabs identify the actual provider and model. Connection feedback shows whether output is live or reconnecting; **View output** also opens saved logs after a restart.
 - See every agent in the sidebar: Active, On hold, Awaits you, or Inactive, with model and time.
 - **Merge** is the one place you approve: one click on **Merge main** merges a verified card and moves it to Done.
 - Reviews and tests must match the exact commit before a merge. If `main` moved on, it is brought in first; conflicts go to the merge agent.

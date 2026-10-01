@@ -184,6 +184,10 @@ A stage becomes `succeeded` only through `POST /api/runs/:id/confirm` after a fi
 
 ## Board interface (PB-03)
 
+- The always-visible project context shows the repository and target branch, with provider/model/effort selection for the project's default agent. The stage agent label opens the matching Workflow section. Stage overrides take priority over the project default, then the global default; Compose provider choices do not change Kanban configuration. Saved changes apply to future runs.
+- Cards distinguish prompt-source metadata from the actual run provider. Workspace facts and copy actions are available on cards and in task details; the dock shows the selected run's provider, model, repository, branch, and worktree.
+- The dock reserves separate layout rows for run details, connection feedback, terminal output, and notices. A missing live session replays its bounded recorded log through the output endpoint. WebGL failures fall back to text output; no output is interpreted as HTML.
+
 - Every move uses `POST /api/tasks/:id/move { column, index, expectedRevision, transitionId, decision?, commitMessage?, handoffRunId?, config? }` (see [Stage transitions](#stage-transitions)). `POST /api/tasks/:id/reopen` reopens a card in Done. `PATCH /api/projects/:id/workflow { workflow, agentDefaults }` stores stage overrides and the project default agent; runs keep a snapshot of their settings.
 - The browser never replaces a newer board with an older answer: every state write raises `revision`, and older views are ignored.
 - Terminal output is rendered only by xterm (WebGL renderer, because the CSP blocks xterm's inline `<style>` elements) or through `textContent`. Links are never opened automatically.
