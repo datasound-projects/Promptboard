@@ -1195,6 +1195,9 @@ test('PB-04 in the UI: commit, configured tests, accepted review, merge preview,
   await until(async () => (await tasks())[0].evidence.tests?.status === 'passed', 'tests passed', 15000);
   // Merge: the task details also show the preview and can merge (the card has the one-click button).
   await moveBy(ctx, 'Ship it', 'merge'); await ctx.idle();
+  // A revision-conflict retry can begin after idle's short quiet window. Wait for
+  // the confirmed destination, not merely a gap between the asynchronous requests.
+  await until(() => column($, 'merge').querySelector(`[data-id="${task.id}"]`), 'confirmed Merge column', 15000);
   assert.ok(Array.from(cardItem(ctx, 'Ship it').querySelectorAll('.kanban-move-to option'), item => item.value).includes('done'));
   cardItem(ctx, 'Ship it').querySelector('.kanban-details').click();
   await until(() => byText($('#task-details'), 'Confirm merge…'), 'merge preview', 15000);
