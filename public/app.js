@@ -191,6 +191,9 @@ function setSettingsCollapsed(collapsed, save = true) {
 }
 // Collapse the Kanban project settings to give the board more room. Remembered in this browser.
 function setProjectCollapsed(collapsed, save = true) {
+  if (collapsed && $('#project-settings').contains(document.activeElement)) $('#project-toggle').focus();
+  $('#project-settings').hidden = collapsed;
+  $('.kanban-layout').classList.toggle('settings-open', !collapsed);
   $('#project-body').hidden = collapsed;
   $('.kanban-projects').classList.toggle('collapsed', collapsed);
   const label = collapsed ? 'Expand project settings' : 'Collapse project settings';
@@ -1594,6 +1597,7 @@ function projectNameError(name, exceptId = null) {
 function showProjectDetail(...nodes) {
   $('#project-detail').replaceChildren(...nodes);
   $('#project-detail').hidden = nodes.length === 0;
+  if (nodes.length) setProjectCollapsed(false, false);
 }
 
 function openProjectForm(mode) {
@@ -1965,6 +1969,7 @@ function taskLocation(card, project) {
 
 let projectAgentFormKey = '';
 function renderProjectContext(project) {
+  $('#kanban-title').textContent = project?.name || 'Project board';
   $('#project-context').hidden = !project;
   if (!project) { projectAgentFormKey = ''; return; }
   $('#project-context-heading').textContent = project.name;
@@ -2573,7 +2578,7 @@ function renderRepository(project) {
   if (pending) {
     const automatic = Object.entries(pending.workflow || {}).filter(([, settings]) => settings?.policy === 'start').map(([stage]) => columnTitle(stage));
     const parts = [pending.repositoryPath && `repository ${pending.repositoryPath}`, pending.targetBranch && `target branch ${pending.targetBranch}`,
-      pending.workflow && `workflow settings${automatic.length ? ` (automatic runs in ${automatic.join(' and ')})` : ''}`, pending.testCommands?.length && `${plural(pending.testCommands.length, 'test command')}`].filter(Boolean);
+      pending.agentDefaults && `project agent ${agentText(pending.agentDefaults)}`, pending.workflow && `workflow settings${automatic.length ? ` (automatic runs in ${automatic.join(' and ')})` : ''}`, pending.testCommands?.length && `${plural(pending.testCommands.length, 'test command')}`].filter(Boolean);
     $('#import-pending-text').textContent = `The imported backup suggests ${parts.join(', ')}. Nothing is applied until you confirm.`;
   }
 }
@@ -3629,6 +3634,10 @@ showPage();
 loadProviders();
 $('#settings-toggle').addEventListener('click', () => setSettingsCollapsed(!$('#settings-body').hidden));
 $('#project-toggle').addEventListener('click', () => setProjectCollapsed(!$('#project-body').hidden));
+$('#project-settings-close').addEventListener('click', () => setProjectCollapsed(true));
+$('#project-settings').addEventListener('keydown', event => {
+  if (event.key === 'Escape') { event.preventDefault(); setProjectCollapsed(true); }
+});
 
 // Sideways movement on a board wider than the window: ‹ › buttons, a visible scrollbar,
 // swipes and Shift+wheel (native), and dragging on empty board space with a mouse.
@@ -3675,7 +3684,7 @@ window.addEventListener('resize', fitBoardHeight);
 if (typeof ResizeObserver === 'function') {
   const observer = new ResizeObserver(fitBoardHeight);
   // Some browsers expose a resized dock's new geometry only after the layout commits.
-  for (const id of ['project-context', 'project-body', 'autopilot-bar', 'dock']) observer.observe($(`#${id}`));
+  for (const id of ['project-context', 'project-body', 'autopilot-bar', 'dock', 'kanban-columns']) observer.observe($(`#${id}`));
 }
 // A required field inside a collapsed card would block submit without a visible message. Reopen it.
 $('#settings-body').addEventListener('invalid', () => setSettingsCollapsed(false, false), true);

@@ -111,6 +111,7 @@ function parseBackupData(data) {
     return {
       id: unique(project.id, label), name, createdAt: time(project.createdAt),
       columnLayout,
+      agentDefaults: v2 && project.agentDefaults?.provider ? normalizeAgent(project.agentDefaults) : null,
       repositoryPath: v2 && typeof project.repository?.path === 'string' ? project.repository.path.slice(0, 4096) : null,
       targetBranch: v2 && typeof project.targetBranch?.name === 'string' ? project.targetBranch.name.slice(0, 255) : null,
       // Imported workflow settings (including legacy automation) are kept for confirmation only.
@@ -1194,6 +1195,7 @@ export class Board {
           project.targetBranch = branch ? { name: branch.name, commit: branch.commit, root: repository.root, recordedAt: Date.now() } : null;
         }
         if (pending.workflow) project.workflow = normalizeWorkflow(pending.workflow);
+        if (pending.agentDefaults) project.agentDefaults = normalizeAgent(pending.agentDefaults);
         if (pending.testCommands) project.testCommands = pending.testCommands.filter(item => Array.isArray(item?.argv) && item.argv.length && item.argv.every(arg => typeof arg === 'string' && arg.length <= 1000 && !arg.includes('\0'))).slice(0, 20).map(item => ({ label: String(item.label || item.argv.join(' ')).slice(0, 80), argv: item.argv.slice(0, 50), timeoutSec: Number.isInteger(item.timeoutSec) && item.timeoutSec >= 1 && item.timeoutSec <= 3600 ? item.timeoutSec : 600 }));
       }
       project.pendingImport = null;
@@ -1319,7 +1321,7 @@ export class Board {
     return { application: 'Promptboard', kind: 'promptboard-backup', version: 2, exportedAt: new Date().toISOString(),
       projects: state.projects.map(project => ({ id: project.id, name: project.name, createdAt: project.createdAt,
         repository: project.repository ? { path: project.repository.path } : null, targetBranch: project.targetBranch ? { name: project.targetBranch.name } : null,
-        workflow: project.workflow || {}, testCommands: project.testCommands || [], timelineNotes: project.timelineNotes || [], columnLayout: project.columnLayout || [],
+        agentDefaults: project.agentDefaults || null, workflow: project.workflow || {}, testCommands: project.testCommands || [], timelineNotes: project.timelineNotes || [], columnLayout: project.columnLayout || [],
         // Workspaces and runs are machine-specific and are not exported.
         tasks: project.tasks.map(task => ({ id: task.id, title: task.title, prompt: task.prompt, source: task.source, checksOutdated: task.checksOutdated,
           createdAt: task.createdAt, updatedAt: task.updatedAt, column: task.column })) })) };
@@ -1339,8 +1341,9 @@ export class Board {
         project.tasks = incoming.tasks.map(task => newTask(task));
         if (incoming.columnLayout) project.columnLayout = incoming.columnLayout;
         project.timelineNotes = incoming.timelineNotes.map(note => ({ ...note, taskId: project.tasks.some(task => task.id === note.taskId) ? note.taskId : null }));
-        if (incoming.repositoryPath || incoming.targetBranch || incoming.workflow || incoming.testCommands) {
+        if (incoming.repositoryPath || incoming.targetBranch || incoming.workflow || incoming.testCommands || incoming.agentDefaults) {
           project.pendingImport = { repositoryPath: incoming.repositoryPath, targetBranch: incoming.targetBranch, workflow: incoming.workflow, testCommands: incoming.testCommands };
+          if (incoming.agentDefaults) project.pendingImport.agentDefaults = incoming.agentDefaults;
         }
         return project;
       });

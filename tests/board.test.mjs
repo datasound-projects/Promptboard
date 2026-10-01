@@ -300,6 +300,33 @@ test('browser migration keeps IDs, order, exact text, sources, and flags, and is
   await assert.rejects(board.migrateBrowserBoard({ version: 1, projects: [{ id: 'x', name: 'X', cards: [{ id: 'y', title: 'T', prompt: '' }] }] }), { code: 'INVALID_BACKUP' });
 });
 
+test('created and imported projects keep independent agent defaults and column layouts', async t => {
+  const board = new Board({ dataDir: await temp(t, 'pb-isolation-') });
+  const first = await board.createProject({ name: 'First' });
+  const second = await board.createProject({ name: 'Second' });
+  await board.setWorkflow(first.id, { agentDefaults: { provider: 'codex', model: 'first-model' }, workflow: {}, expectedRevision: 1 });
+  await board.setWorkflow(second.id, { agentDefaults: { provider: 'claude', model: 'second-model' }, workflow: {}, expectedRevision: 1 });
+  const layout = COLUMNS.map(column => ({ id: column.id, title: column.id === 'todo' ? 'Ideas' : column.title }));
+  layout.splice(3, 0, { id: 'c_docs123', title: 'Documentation', color: 'blue' });
+  await board.setColumns(first.id, { columns: layout, expectedRevision: 2 });
+  let projects = (await board.view()).projects;
+  assert.equal(projects[0].columns[0].title, 'Ideas');
+  assert.equal(projects[1].columns[0].title, 'To Do');
+  assert.deepEqual(projects.map(project => project.columns.length), [8, 7]);
+  const imported = new Board({ dataDir: await temp(t, 'pb-isolation-import-') });
+  await imported.importBackup(await board.exportBackup());
+  projects = (await imported.view()).projects;
+  assert.equal(projects[0].agentDefaults?.provider, undefined);
+  assert.equal(projects[0].pendingImport.agentDefaults.model, 'first-model');
+  for (const project of projects) await imported.confirmImport(project.id, { accept: true, expectedRevision: project.revision });
+  projects = (await imported.view()).projects;
+  assert.deepEqual(projects.map(project => project.agentDefaults.model), ['first-model', 'second-model']);
+  assert.deepEqual(projects.map(project => project.columns[0].title), ['Ideas', 'To Do']);
+  assert.deepEqual(projects.map(project => project.columns.length), [8, 7]);
+  assert.equal(projects[0].columns[3].title, 'Documentation');
+  assert.deepEqual((await imported.view()).runs, []);
+});
+
 test('import keeps execution inactive and waits for confirmation of paths and automation', { skip: process.platform === 'win32' }, async t => {
   const { board, root, projectId } = await linkedBoard(t);
   const task = await board.createTask({ projectId, title: 'Exported', prompt: 'Exact\r\ntext' });

@@ -931,16 +931,16 @@ test('the settings step collapses and expands, is remembered, and reopens for an
   assert.equal(win.localStorage.getItem('ste-prompt-engineer.settings'), 'expanded');
 });
 
-test('the Kanban page shows its own mascot next to the heading', async t => {
+test('the Kanban header exposes a collapsible settings panel outside the board', async t => {
   const { $ } = await setup(t);
-  const image = $('#kanban-view .intro .mascot img');
-  assert.equal(image.getAttribute('src'), '/kanban-mascot.png');
-  assert.match(image.getAttribute('alt'), /pixel-art creature/);
-  assert.equal($('#kanban-view .intro figcaption').textContent, 'One bite at a time.');
-  assert.equal($('#board-empty img'), null, 'The empty board has no image.');
-  const served = await fetch(new URL('/kanban-mascot.png', $('#kanban-view').ownerDocument.location.href));
-  assert.equal(served.status, 200);
-  assert.equal(served.headers.get('content-type'), 'image/png');
+  assert.equal($('#project-toggle').getAttribute('aria-controls'), 'project-settings');
+  assert.ok($('#project-settings').contains($('#project-body')));
+  assert.equal($('.kanban-board').contains($('#project-settings')), false);
+  if ($('#project-settings').hidden) $('#project-toggle').click();
+  assert.equal($('#project-settings').hidden, false);
+  $('#project-settings-close').click();
+  assert.equal($('#project-settings').hidden, true);
+  assert.equal($('#project-toggle').getAttribute('aria-expanded'), 'false');
 });
 
 test('missing agent terminal support shows setup steps; the prompt editor still works', async t => {
@@ -1576,7 +1576,11 @@ test('Kanban project and stage agent selection is visible, persists, and launche
   await link(ctx);
   if (!$('#project-body').hidden) $('#project-toggle').click();
   assert.equal($('#project-body').hidden, true);
-  assert.equal($('#project-context').hidden, false, 'Agent selection stays visible with project settings collapsed.');
+  assert.equal($('#project-settings').hidden, true, 'All project controls collapse outside the board.');
+  $('#project-toggle').click();
+  assert.equal($('#project-settings').hidden, false);
+  assert.ok($('#project-settings').contains($('#project-agent-form')));
+  assert.ok(!$('.kanban-board').contains($('#project-settings')));
   assert.equal($('#project-agent-panel').hidden, true);
   assert.equal($('#project-location').hidden, true);
   $('#project-files-toggle').click();
