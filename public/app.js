@@ -211,7 +211,7 @@ function fitBoardHeight(immediate = false) {
     if ($('#kanban-view').hidden || columns.hidden) return;
     const dockHeight = $('#dock').getBoundingClientRect().height;
     const top = columns.getBoundingClientRect().top + window.scrollY;
-    columns.style.setProperty('--board-height', `${Math.max(120, window.innerHeight - top - dockHeight - 16)}px`);
+    columns.style.height = `${Math.max(120, window.innerHeight - top - dockHeight - 16)}px`;
   };
   // User resizing must take effect even when the browser throttles animation frames.
   if (immediate === true) { measure(); return; }
