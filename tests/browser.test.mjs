@@ -50,6 +50,17 @@ test('terminal dock in a real browser: start, render, type, collapse, resize, se
   await browser.goto(`${app.url}/#/kanban`);
   await browser.until(`document.querySelector('#kanban-columns [data-column="executing"] .kanban-start')`, 'start buttons');
   assert.equal(await browser.eval(`return typeof Terminal === 'function' && typeof WebglAddon === 'object';`), true, 'Pinned xterm assets load from the app.');
+  await browser.eval(`document.querySelector('#project-toggle').click();`);
+  await browser.until(`!document.querySelector('#project-settings').hidden`, 'settings expanded');
+  assert.equal(await browser.eval(`const panel = document.querySelector('#project-settings').getBoundingClientRect(); const board = document.querySelector('.kanban-board').getBoundingClientRect(); return panel.left >= board.right && Math.abs(panel.top - board.top) < 2;`), true, 'Desktop settings sit beside the board.');
+  await shot('0-settings-desktop');
+  await browser.resize(390, 844);
+  assert.equal(await browser.eval(`const panel = document.querySelector('#project-settings').getBoundingClientRect(); return panel.left >= 0 && panel.right <= innerWidth && panel.bottom <= innerHeight;`), true, 'Settings fit a phone viewport.');
+  await shot('0-settings-phone');
+  await browser.eval(`document.querySelector('#project-settings-close').focus(); document.querySelector('#project-settings-close').click();`);
+  assert.equal(await browser.eval(`return document.querySelector('#project-settings').hidden && document.activeElement.id === 'project-toggle';`), true, 'Closing restores focus to the settings toggle.');
+  await browser.resize(1280, 900);
+  await shot('0-board');
 
   // Start the first run through the UI: one click on the card's Start button (no dialog).
   await browser.eval(`[...document.querySelectorAll('.kanban-card')].find(card => card.textContent.includes('First task')).querySelector('.kanban-start').click();`);

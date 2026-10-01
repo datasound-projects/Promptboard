@@ -9,11 +9,11 @@ Kangentic was used as a behavior reference only. No code was copied.
 | ID | Title | Runs an agent |
 | --- | --- | --- |
 | `todo` | To Do | Never |
-| `planning` | Planning | Yes, after explicit consent |
+| `planning` | Planning | Yes, enforced Plan Mode (read-only) for every supported provider/model |
 | `executing` | Executing | Yes, after explicit consent |
 | `code_review` | Code Review | Yes, read-only review after explicit consent |
-| `testing` | Testing | No agent: runs the project's approved test commands |
-| `merge` | Merge | Never: a Git fast-forward, confirmed by you or by the project's "Merge automatically" setting |
+| `testing` | Testing | Yes, tests the same task's execution results; independent commands verify after confirmation |
+| `merge` | Merge | Conflict-resolution agent when needed; Git merge only with user approval or "Merge automatically" |
 | `done` | Done | Never |
 
 The columns are fixed in `src/board.mjs` (`COLUMNS`). **The backend enforces "never"**: `requestRun` rejects `todo` and `done` with `STAGE_NOT_RUNNABLE`, whatever the UI shows.
@@ -36,7 +36,7 @@ A **task** has a position: `column`, plus its order in the project's task list. 
 | Planning | Executing, To Do |
 | Executing | Code Review, To Do |
 | Code Review | Testing, Executing |
-| Testing | Merge, Executing |
+| Testing | Merge, Executing, Done (without merging) |
 | Merge | Done, Executing, Code Review |
 | Done | none (use **Reopen**, which starts a new cycle in To Do and keeps the history) |
 
@@ -44,13 +44,13 @@ Every move, from drag-and-drop, the stage menu, a task-details button, or Autopi
 
 - **The card enters a column only when the move succeeded.** When the destination starts an agent, the card's new column and the run record are saved in one write. A preparation failure leaves the card where it was, with the reason. If the session then fails before it begins (for example the CLI disappeared), the card returns to its previous column (`by: "system"`, with the reason). The browser shows "Moving to …" on the card in its old column until the server answers.
 - **Skipped stages never run.** Only the destination's own stage action can start.
-- **Drag = start.** When the card arrives, the destination's action starts at once: Planning (read-only plan), Executing (the agent in the task worktree), Code Review (read-only review of the committed diff), Testing (the project's test commands; optionally the testing agent when they fail, `agentOnFailure`), and custom agent columns. `decision: "move"` (used by Autopilot and scripts) only moves; `decision: "start"` starts even a Manual stage.
+- **Drag = start.** When the card arrives, the destination's action starts at once: Planning (read-only plan), Executing (the agent in the task worktree), Code Review (read-only review of the committed diff and same-task execution summary), Testing (the testing agent, followed by independent configured commands after confirmation), and custom agent columns. `decision: "move"` (used by Autopilot and scripts) only moves; `decision: "start"` starts even a Manual stage. Done only records completion.
 - **Hand-off.** An agent that finished its turn in the stage the card leaves is confirmed as part of the move. That approves a plan (Planning) or records a review (Code Review). An agent that is still working, or any active run when the card goes to To Do, refuses the move (`RUN_ACTIVE`); stopping it needs its own confirmation.
 - **Commits.** Leaving a writing stage for Code Review commits the uncommitted work in the task worktree (message: `commitMessage`, or the card title) with the repository's Git identity. Work is never discarded, stashed, or reset.
 - **Evidence gates** (reviewed = tested = task HEAD). Code Review → Testing needs a review of the current commit that is accepted, or completed without findings (the move accepts it). Testing → Merge also needs passing tests for the current commit and a clean worktree. Changes made in Testing go back to Executing, then through Code Review and Testing again. These gates are checked after the hand-off, so a review recorded by the move counts.
 - **Rework.** Code Review → Executing passes the review findings (the review becomes `changes_requested`, and an old review never authorizes a newer commit). Testing → Executing passes the failing test output. Merge → Executing passes the conflicted files.
 - **Merge** is the one human approval point. Entering Merge checks that the accepted review and passing tests belong to the current commit and that the target checkout is clean. If the target branch moved on, it is merged into the task branch: a clean merge keeps the review (it adds no task changes, `review.carriedFrom`) and reruns the tests on the merge commit; a conflict starts the merge agent in the task worktree, and its result is committed and sent back to Code Review (resolving conflicts changes code). Then the card shows **Merge `<target>`**: one click (`POST /api/tasks/:id/merge-now`) merges, records the result, removes the clean worktree (the branch stays), and moves the card to Done. With **Merge automatically** the merge happens as soon as the card is verified. **Open pull request** pushes without force and opens or updates the pull request; the board checks an open pull request of a card in Merge every minute and moves the card to Done when it is merged. The card shows what the Merge stage is doing (`task.flow`: `merge-tests`, `merge-resolve`, `ready`, or `blocked` with the reason).
-- **Done** is reached only through a verified merge (the Merge button, dragging from Merge to Done, or Merge automatically), a merged pull request, or an explicit **no changes required** (task details, only when the branch has no changes). A "move only" request never reaches Done (`MERGE_REQUIRED`).
+- **Done** saves the completed task without starting work or merging. Testing → Done and Merge → Done require accepted review and passing tests for the current clean task commit, and record `completion.kind = unmerged`, the branch/commit, and execution summary. The branch and worktree are retained. Only the Merge button or explicitly selected automatic merging changes the target branch; these record `kind = merged`. A merged pull request or explicit **no changes required** can also complete a task. Repeated completion transitions are idempotent.
 - **Worktree check before each stage.** The task worktree must exist, be registered with Git, and be on the task branch. A deleted folder is rebuilt from the task branch (`git worktree prune`, then `git worktree add <path> <branch>`; `workspace.recoveredAt` records it). A switched branch (`BRANCH_MISMATCH`) or a deleted branch (`WORKTREE_BRANCH_MISSING`) stops with the exact problem and the safe next action.
 - Only the Planning column plans. Executing, Testing, and Merge sessions are told to start their own work without a plan or approval step, even when the card text asks for one, and Claude Code runs them with `EnterPlanMode` and `ExitPlanMode` disallowed.
 
@@ -79,6 +79,10 @@ Each project can change its columns (`PATCH /api/projects/:id/columns`, stored a
 ### Agent settings
 
 Each stage's agent comes from the most specific level that names a provider: the stage override (Workflow settings), else the project default agent (Workflow settings), else the global default (Settings), else Claude Code with its CLI defaults. Model and effort come from the same level. `effectiveWorkflow` reports `agentSource` (`stage`, `project`, `global`, or `default`). A run can override the agent for itself only.
+
+Execution permissions inherit with that agent, with an optional stage or per-run override. **Auto** maps to Claude `acceptEdits`, Gemini `auto_edit`, and Codex `workspace-write` with approval `on-request`; **Approve edit** maps to Claude/Gemini `default`. Codex has no per-file approval mode: the UI explains this and unsupported requests are refused, not silently weakened. Planning and Code Review always force `plan`, regardless of model or execution permissions; Codex enforces this with `read-only` / `never` rather than a nonexistent plan-mode flag. Antigravity remains unavailable for board execution until its lifecycle and read-only boundaries can be verified.
+
+Confirmed execution and testing summaries are retained in `task.stageResults`, keyed by stage and run ID. Review and Testing receive only this task's current-prompt execution summary, alongside the actual committed diff or configured commands. A start-over clears those summaries for the new attempt; saved run artifacts remain.
 
 A card cannot leave To Do until its project has a linked repository.
 
@@ -206,6 +210,8 @@ Everything in this section lives in `src/delivery.mjs`. Evidence is tied to the 
   - Confirming the run records the findings (`evidence.review.status = completed`), parsed from a ```json block. Accepting them is a separate decision (`accept-review`), valid only for the reviewed commit.
   - Moving the card from Code Review to Executing sends the findings back; the next Executing run receives them.
 - **Testing:**
+  - Entering the column starts its configured/inherited agent. It tests this task's execution results and reports failures and coverage gaps; fixes belong in Execute, not Testing.
+  - Confirming its finished turn saves the summary and launches the configured commands independently. Without configured commands, the agent can investigate, but completion/merging remains blocked until command evidence is available.
   - Test commands are set by the user (`PATCH /api/projects/:id/tests`). Each is stored as argv, parsed without a shell, and runs in the task worktree with a timeout.
   - Imported commands wait in `pendingImport` until confirmed.
   - `POST /api/tasks/:id/tests { confirm }` runs them in the background. For each command it records the command, working directory, exit code, duration, output tail, and a log.
@@ -213,12 +219,12 @@ Everything in this section lives in `src/delivery.mjs`. Evidence is tied to the 
   - If the task commit changes during the run, the result becomes `invalid`.
 - **Merge:**
   - `GET /api/tasks/:id/merge-preview` lists branches, commits, files, whether a fast-forward is possible, the target checkout, and each eligibility problem.
-  - `POST /api/tasks/:id/merge { confirm, taskCommit, targetCommit }` requires all of these: an accepted review for the current task commit, passing tests for the current task and target commits, a fast-forward, a task branch that still points at the previewed commit, and a clean target checkout (tracked files).
+  - `POST /api/tasks/:id/merge { confirm, taskCommit, targetCommit }` requires all of these: an accepted `no_issues` review with no findings for the current task commit, passing tests for the current task and target commits, a fast-forward, a task branch that still points at the previewed commit, and a clean target checkout (tracked files). Accepting a review that detected issues does not authorize a merge.
   - Merges are serialized per repository and everything is rechecked immediately before.
   - If the target branch is checked out, that checkout runs `git merge --ff-only`. Otherwise `git update-ref` moves the branch with an old-value check. No branch is switched, nothing is pushed, and the result is verified before the card moves to Done.
   - If the target has advanced, `update-branch { confirm }` merges it into the task branch. Conflicts are aborted and reported, never resolved. Review and tests must then run again.
 - **Testing and Merge agents:**
-  - Testing and Merge can run an agent (`requestRun` with `stage: testing | merge`) with the Executing permissions: it writes only in the task worktree. The stage policies keep their meaning (Testing: run the commands; Merge: merge automatically); agents in these stages start from the card.
+  - Testing and Merge can run an agent (`requestRun` with `stage: testing | merge`) with the configured execution permissions in the task worktree. Testing starts on entry by default. Merge starts an agent when conflicts need resolution; this never bypasses the approval or evidence gates for merging into the target.
   - A Testing run receives the configured test commands. Its claims never count as evidence; only Promptboard's own test run does.
   - Before a Merge run, Promptboard runs `git merge --no-ff --no-commit <target>` in the worktree when the target has advanced, and passes the conflicted files and test commands to the agent. The agent resolves conflicts in files; it is told not to run Git commands that change history.
   - `revision` reports `merging`, `conflicts`, and `unresolved` (every file the merge changes that still has `<<<<<<<` or `>>>>>>>` markers, staged or not). `commit` refuses with `CONFLICT_MARKERS` while any remain, then creates the merge commit. `abort-merge { confirm }` runs `git merge --abort`. Review and tests are then stale and must run again.
@@ -227,9 +233,9 @@ Everything in this section lives in `src/delivery.mjs`. Evidence is tied to the 
   - `POST /api/tasks/:id/pull-request-status` reads the state with `gh pr view`. A merged pull request completes the task (`completion.kind = pull_request`).
 - **Done:**
   - A verified merge (`completion.kind = merged`), a merged pull request (`kind = pull_request`), or `complete-no-changes`, allowed only when the branch has no changes (`kind = no_changes`; never described as merged), completes a task through `completeTask`.
-  - No other move reaches Done. **Reopen** (`POST /api/tasks/:id/reopen`) moves the card to To Do, clears the completion, and keeps it in `previousCompletions`.
+  - Testing → Done and Merge → Done save an unmerged completion with the execution summary, without changing branches or starting additional work. **Reopen** (`POST /api/tasks/:id/reopen`) moves the card to To Do, clears the completion, and keeps it in `previousCompletions`.
   - Worktree cleanup stays optional and ownership-checked.
-- **Automation:** "Start on entry" for Code Review starts a review run. For Testing it runs the configured commands. Merge is Manual by default. With "Merge automatically" a card entering Merge is merged by Promptboard itself (no agent) through the same gate as a confirmed merge: accepted review and passing tests for the current task and target commits, fast-forward only, clean target checkout. If any check fails, nothing is merged and the reason is returned. The completion records `trigger: "automation"`. Automatic stage advancement does not exist.
+- **Automation:** "Start on entry" for Code Review starts a review run; for Testing it starts the testing agent. Merge is Manual by default. With "Merge automatically" a card entering Merge is merged through the same gate as a confirmed merge: accepted review without issues and passing tests for the current task and target commits, fast-forward only, clean target checkout. If any check fails, nothing is merged and the reason is returned. The completion records `trigger: "automation"`. Outside the optional Autopilot, stages do not automatically advance.
 
 ## Autopilot
 
@@ -238,7 +244,7 @@ Everything in this section lives in `src/delivery.mjs`. Evidence is tied to the 
 - `POST /api/projects/:id/autopilot { action: start (confirm: true) | pause | resume | skip | stop }`.
 - The engine (`src/autopilot.mjs`) runs on the server and takes one queued To Do card at a time. Before a card starts, the recorded target commit is refreshed, so the card branches from the target as it is after earlier merges. Skipped stages are passed through without running.
   - Planning, Executing, Code Review: `requestRun` (`trigger: automation`); the stage is confirmed only when the run reports a finished turn (`turnComplete`), never during a permission prompt. After Executing, uncommitted work is committed with the task title. A review with `no_issues` is accepted; `changes_required` sends the card back to Executing with the findings.
-  - Testing: Promptboard's own test run; a failure sends the card back to Executing with the failing output.
+  - Testing: its agent tests the results first; confirmation launches Promptboard's own test run. A failure sends the card back to Executing with the failing output. Changes left by the testing agent must be committed, reviewed, and tested again before merging.
   - Merge: the gated fast-forward merge, or `openPullRequest`. If the target moved, `update-branch` (or, on conflicts, a merge-agent run and a commit) brings it in, and the card returns to Code Review or Testing for the new commit.
   - Rework is bounded by `maxRework`; after that, and on any error, Autopilot pauses with the reason. Cards outside the queue are never touched.
 

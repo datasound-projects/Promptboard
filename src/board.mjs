@@ -111,6 +111,7 @@ function parseBackupData(data) {
     return {
       id: unique(project.id, label), name, createdAt: time(project.createdAt),
       columnLayout,
+      agentDefaults: v2 && project.agentDefaults?.provider ? normalizeAgent(project.agentDefaults) : null,
       repositoryPath: v2 && typeof project.repository?.path === 'string' ? project.repository.path.slice(0, 4096) : null,
       targetBranch: v2 && typeof project.targetBranch?.name === 'string' ? project.targetBranch.name.slice(0, 255) : null,
       // Imported workflow settings (including legacy automation) are kept for confirmation only.
@@ -164,7 +165,11 @@ export function normalizeWorkflow(input) {
     if (!POLICIES.includes(settings.policy)) throw new BoardError('Choose Manual, Ask on entry, or Start on entry.', 'INVALID_WORKFLOW');
     if (typeof settings.instructions !== 'string' || settings.instructions.length > 4000) throw new BoardError('Stage instructions can have at most 4,000 characters.', 'INVALID_WORKFLOW');
     // "Ask" from earlier versions is "Start": dragging a card is the instruction.
-    const entry = { policy: settings.policy === 'ask' ? 'start' : settings.policy, instructions: settings.instructions, ...(stage === 'testing' && settings.agentOnFailure === true ? { agentOnFailure: true } : {}) };
+    const entry = { policy: settings.policy === 'ask' ? 'start' : settings.policy, instructions: settings.instructions };
+    if (value.permissionMode) {
+      if (!['auto', 'approve_edit', 'acceptEdits', 'default', 'workspace-write', 'auto_edit', 'plan'].includes(value.permissionMode)) throw new BoardError('Choose a supported permission mode.', 'INVALID_WORKFLOW');
+      entry.permissionMode = value.permissionMode;
+    }
     // A stage stores an agent only when it overrides the project and global defaults.
     if (EXECUTABLE_STAGES.has(stage) && value.provider) { // Only a provider the request names; the defaults never pin one.
       try { Object.assign(entry, resolveConfig(stage, settings)); }
@@ -180,7 +185,7 @@ export function normalizeAgent(input) {
   if (input === null || input === undefined) return null;
   if (typeof input !== 'object' || Array.isArray(input)) throw new BoardError('Send the agent as an object.', 'INVALID_INPUT');
   if (!input.provider) return null;
-  try { const { provider, model, effort } = resolveConfig('executing', { provider: input.provider, model: input.model, effort: input.effort }); return { provider, model, effort }; }
+  try { const agent = resolveConfig('executing', input); return { provider: agent.provider, model: agent.model, effort: agent.effort, ...(input.permissionMode ? { permissionMode: agent.permissionMode } : {}) }; }
   catch (error) { throw new BoardError(error.message, 'INVALID_INPUT'); }
 }
 
@@ -197,16 +202,16 @@ export function effectiveWorkflow(project, globalAgent = null) {
     const [agentSource, agent] = levels.find(([, value]) => value?.provider) || ['default', {}];
     // Merge stays manual unless a project turns on automatic merging.
     const base = { ...DEFAULT_STAGE_SETTINGS, ...(stage === 'merge' ? { policy: 'manual' } : {}) };
-    const picked = { provider: agent.provider || 'claude', model: agent.model || '', effort: agent.effort || '', permissionMode: agentSource === 'stage' ? own.permissionMode || '' : '' };
+    const picked = { provider: agent.provider || 'claude', model: agent.model || '', effort: agent.effort || '', permissionMode: own.permissionMode || agent.permissionMode || '' };
     let resolved = picked;
     // An effort the stage's provider does not accept is dropped rather than failing every run.
-    try { resolved = resolveConfig(stage, picked); } catch { try { resolved = resolveConfig(stage, { ...picked, effort: '', permissionMode: '' }); } catch {} }
+    try { resolved = resolveConfig(stage, picked); } catch { try { resolved = resolveConfig(stage, { ...picked, effort: '' }); } catch {} }
     const policy = own.policy === 'ask' ? 'start' : own.policy || base.policy;
-    return [stage, { ...base, policy, instructions: own.instructions || '', ...resolved, agentSource, ...(stage === 'testing' ? { agentOnFailure: own.agentOnFailure === true } : {}) }];
+    return [stage, { ...base, policy, instructions: own.instructions || '', ...resolved, agentSource }];
   }).concat((project?.columnLayout || []).filter(entry => entry.custom).map(entry => {
     // A custom column's agent writes in the task worktree (like Executing) with the column's instructions.
     const [agentSource, agent] = [['project', project?.agentDefaults], ['global', globalAgent]].find(([, value]) => value?.provider) || ['default', {}];
-    let resolved = { provider: agent.provider || 'claude', model: agent.model || '', effort: agent.effort || '' };
+    let resolved = { provider: agent.provider || 'claude', model: agent.model || '', effort: agent.effort || '', permissionMode: agent.permissionMode || '' };
     try { resolved = resolveConfig(entry.id, resolved); } catch { try { resolved = resolveConfig(entry.id, { ...resolved, effort: '' }); } catch {} }
     return [entry.id, { ...DEFAULT_STAGE_SETTINGS, policy: entry.agent?.enabled ? (entry.agent.policy === 'ask' ? 'start' : entry.agent.policy) : 'manual', instructions: entry.agent?.instructions || '', ...resolved, agentSource, custom: true, agentEnabled: entry.agent?.enabled === true }];
   })));
@@ -222,7 +227,7 @@ export const TRANSITIONS = Object.freeze({
   planning: ['executing', 'todo'],
   executing: ['code_review', 'todo'],
   code_review: ['testing', 'executing'],
-  testing: ['merge', 'executing'],
+  testing: ['merge', 'executing', 'done'],
   merge: ['done', 'executing', 'code_review'],
   done: [],
 });
@@ -734,9 +739,7 @@ export class Board {
     if (from === 'todo' && !project.repository) throw new BoardError('Link this project to a Git repository before cards leave To Do.', 'REPOSITORY_REQUIRED');
     const plan = await this.#prepareTransition(state, project, task, column);
     const id2 = transitionId || randomUUID();
-    // "Move only" never merges: Done is reached only by performing the verified merge (or a merged pull request).
-    if (column === 'done' && decision === 'move') throw new BoardError('Done needs the verified merge. Drag the card to Done, or use the Merge button.', 'MERGE_REQUIRED', 409);
-    // Done always performs its verified completion; Merge always prepares the merge; other stages follow their policy.
+    // Done only saves a completion record. Merging is a separate, optional Merge-stage action.
     const startAction = Boolean(plan.action) && decision !== 'move' && (decision === 'start' || plan.policy !== 'manual' || plan.action === 'merge-prepare' || column === 'done');
     if (startAction && plan.agentError) throw new BoardError(plan.agentError.message, plan.agentError.code, 409);
 
@@ -754,7 +757,10 @@ export class Board {
     });
 
     const move = { from, column, index, transitionId: id2, by: automation ? 'automation' : 'user' };
-    if (column === 'done') return this.#completeByTransition(id, plan, move);
+    if (column === 'done') {
+      const saved = await this.completeTask(id, { kind: 'unmerged', details: { branch: task.workspace?.branch, taskCommit: plan.completionCommit }, transitionId: move.transitionId });
+      return { task: saved, merged: false };
+    }
     if (startAction && plan.action === 'agent') {
       const run = await this.#locked(`run:${id}`, () => this.#startRun(id, { stage: column, consent: true, config, trigger: automation ? 'automation' : 'user', move }));
       return { task: await this.#taskNow(id), run };
@@ -762,12 +768,7 @@ export class Board {
     const placed = await this.#placeStored(id, move);
     const result = { task: placed, ...(plan.notice && decision !== 'move' ? { notice: plan.notice } : {}) };
     if (!startAction) return result;
-    if (plan.action === 'tests') {
-      try { result.tests = await this.delivery.runTests(id, { confirm: true }); }
-      catch (error) { await this.#placeStored(id, { from: column, column: from, transitionId: `${id2}-undo`, by: 'system', reason: error.message }); throw error; }
-      // Optional: the testing agent starts on failed tests (#advanceFlows).
-      if (plan.settings?.agentOnFailure) await this.#setFlow(id, { kind: 'testing-agent', testsId: result.tests.id });
-    } else if (plan.action === 'merge-prepare') {
+    if (plan.action === 'merge-prepare') {
       result.merge = await this.#prepareMerge(id, { auto: plan.policy === 'start' });
       if (result.merge.state === 'merged') { result.task = result.merge.task; result.merged = true; }
     }
@@ -795,7 +796,7 @@ export class Board {
     const review = task.evidence?.review, tests = task.evidence?.tests;
     const blocked = async message => { await this.#setFlow(id, { kind: 'blocked', reason: message }); return { state: 'blocked', message }; };
     if (!rev.clean || rev.merging) return blocked(rev.merging ? 'A merge is in progress in the task worktree. Let the merge agent finish, or abort it in the task details.' : 'The task worktree has uncommitted changes. Send the card back to Executing so they are reviewed and tested.');
-    if (review?.status !== 'accepted' || review.taskCommit !== rev.taskCommit) return blocked('The accepted code review is not for the current commit. Send the card back to Code Review.');
+    if (review?.status !== 'accepted' || review.taskCommit !== rev.taskCommit || review.verdict !== 'no_issues' || review.findings?.length) return blocked('An accepted code review without issues for the current commit is required. Send the card back to Code Review.');
     if (tests?.status === 'running') return { state: 'testing', message: 'Tests are running.' };
     if (tests?.status !== 'passed' || tests.taskCommit !== rev.taskCommit) return blocked('Passing tests for the current commit are required. Send the card back to Testing.');
     let preview = await this.delivery.mergePreview(id);
@@ -913,7 +914,7 @@ export class Board {
     const settings = effectiveWorkflow(project, state.settings.defaultAgent)[to] || null;
     const plan = { from, to, handoff, commit: null, notes: null, action: null, policy: settings?.policy || 'manual', settings };
     const hasWorkspace = task.workspace?.status === 'ready';
-    if (hasWorkspace) await this.ensureTaskWorktree(task.id); // Verifies the worktree and branch, and repairs a deleted folder.
+    if (hasWorkspace && to !== 'done') await this.ensureTaskWorktree(task.id); // Done never repairs or starts task work.
     const rev = hasWorkspace ? await this.delivery.revision(task.id) : null;
     const needWorkspace = () => { if (!rev) throw new BoardError(`${title(to)} needs the task worktree. Run Planning or Executing first.`, 'WORKSPACE_REQUIRED', 409); };
     if (to === 'code_review') {
@@ -937,18 +938,11 @@ export class Board {
     }
     if (to === 'done') {
       needWorkspace();
-      const pr = task.evidence?.pullRequest;
-      if (pr?.url) { plan.action = 'pull-request'; plan.pullRequest = pr; }
-      else {
-        const preview = await this.delivery.mergePreview(task.id);
-        if (!preview.eligible) throw new BoardError(`Not ready to merge: ${preview.problems.join(' ')} Use the Merge button on the card; it brings in the target branch first when it moved.`, 'MERGE_NOT_ELIGIBLE', 409);
-        Object.assign(plan, { action: 'merge', merge: { targetBranch: preview.targetBranch, taskCommit: preview.taskCommit, targetCommit: preview.targetCommit, commits: preview.commits.length } });
-      }
+      plan.completionCommit = rev.taskCommit;
       return plan;
     }
     // The stage's action. Whether it runs is decided in #transition: the policy (Manual only moves), or an explicit decision.
-    if (['planning', 'executing', 'code_review'].includes(to) || settings?.agentEnabled) plan.action = 'agent';
-    else if (to === 'testing') plan.action = (project.testCommands || []).length ? 'tests' : 'agent';
+    if (['planning', 'executing', 'code_review', 'testing'].includes(to) || settings?.agentEnabled) plan.action = 'agent';
     else if (to === 'merge') plan.action = 'merge-prepare';
     if (plan.action === 'agent') {
       // No agent runtime at all (terminal support missing): the card moves and the reason is shown.
@@ -985,32 +979,22 @@ export class Board {
   async #evidenceGate(taskId, to) {
     const problems = [];
     let acceptReview = false;
-    if (to !== 'testing' && to !== 'merge') return { problems, acceptReview };
+    if (!['testing', 'merge', 'done'].includes(to)) return { problems, acceptReview };
     const { task } = this.#task(await this.state(), taskId);
     const rev = await this.delivery.revision(taskId);
     const review = task.evidence?.review, tests = task.evidence?.tests;
     if (!rev.clean) problems.push(to === 'merge' ? 'The task worktree has uncommitted changes (for example from the testing agent). Send the card back to Executing so they are committed, reviewed, and tested.' : 'The task worktree has uncommitted changes. Send the card back to Executing.');
     const reviewed = review && review.taskCommit === rev.taskCommit;
+    if (!rev.branchOk || rev.merging || rev.unresolved.length) problems.push('The task branch is incorrect or a merge is unresolved. Resolve it before advancing.');
     if (!reviewed) problems.push(review ? 'The code review is for an older commit. Run Code Review again.' : 'Run Code Review for the current commit first.');
     else if (review.status === 'completed' && review.verdict === 'no_issues' && to === 'testing') acceptReview = true;
     else if (review.status !== 'accepted') problems.push(review.status === 'changes_requested' || review.verdict === 'changes_required' ? 'The review asked for changes. Send the card back to Executing, or accept the review in the task details.' : 'Accept the review in the task details first.');
-    if (to === 'merge') {
+    if (to === 'merge' && (review?.verdict !== 'no_issues' || review?.findings?.length)) problems.push('The review detected issues. Resolve them and run Code Review again before merging.');
+    if (to === 'merge' || to === 'done') {
       if (tests?.status === 'running') problems.push('Tests are still running.');
       else if (tests?.status !== 'passed' || tests.taskCommit !== rev.taskCommit) problems.push(tests?.status === 'passed' ? 'The passing tests are for an older commit. Run the tests again.' : 'Passing tests for the current commit are required.');
     }
     return { problems, acceptReview };
-  }
-
-  /** Merge → Done: the verified fast-forward merge, or a merged pull request. */
-  async #completeByTransition(id, plan, move) {
-    let task;
-    if (plan.action === 'pull-request') {
-      task = await this.delivery.pullRequestStatus(id);
-      if (task.column !== 'done') throw conflict(`Pull request ${plan.pullRequest.number ? `#${plan.pullRequest.number} ` : ''}is ${String(task.evidence?.pullRequest?.state || 'open').toLowerCase()}. The card moves to Done when it is merged.`, 'PULL_REQUEST_NOT_MERGED');
-    } else {
-      task = await this.delivery.merge(id, { confirm: true, taskCommit: plan.merge.taskCommit, targetCommit: plan.merge.targetCommit, trigger: move.by === 'automation' ? 'automation' : 'user' });
-    }
-    return { task: await this.store.update(state => { const { task: current } = this.#task(state, id); current.lastTransition = { id: move.transitionId, to: 'done', at: Date.now() }; return current; }), merged: plan.action === 'merge' };
   }
 
   /**
@@ -1059,7 +1043,7 @@ export class Board {
         current.previousAttempts = [...(current.previousAttempts || []), attempt].slice(-10);
         current.restartNote = [attempt.reason && `Reason: ${attempt.reason}`, findings && `Review findings on the discarded attempt:\n${findings}`,
           `The discarded attempt is kept on branch ${attempt.branch} (${attempt.head.slice(0, 12)}). Start again from the current target branch; do not copy that attempt unless the reason says so.`].filter(Boolean).join('\n\n');
-        Object.assign(current, { evidence: {}, flow: null, reworkNotes: '', lastTransition: null });
+        Object.assign(current, { evidence: {}, stageResults: {}, flow: null, reworkNotes: '', lastTransition: null });
         if (current.column !== 'todo') {
           current.transitions = [...current.transitions, { at: Date.now(), from: current.column, to: 'todo', by: 'start-over', ...(attempt.reason ? { reason: clip(attempt.reason, 300) } : {}) }].slice(-TRANSITION_LOG_LIMIT);
           current.column = 'todo';
@@ -1129,18 +1113,38 @@ export class Board {
     });
   }
 
-  /** Into Done through a verified merge, a merged pull request, or an explicit no-change completion. */
-  async completeTask(id, { kind, details }) {
+  /** Save completion, optionally without merging; this method never starts task work. */
+  async completeTask(id, { kind, details, transitionId }) {
     return this.store.update(state => {
       const { project, task } = this.#task(state, id);
       if (this.#activeRun(state, id)) throw conflict('This card has an active run.', 'RUN_ACTIVE');
-      task.completion = { kind, at: Date.now(), ...details };
+      task.completion = { kind, at: Date.now(), summary: task.stageResults?.executing?.summary || '', executionRunId: task.stageResults?.executing?.runId || null, ...details };
+      task.flow = null;
+      if (transitionId) task.lastTransition = { id: transitionId, to: 'done', at: Date.now() };
       task.transitions = [...task.transitions, { at: Date.now(), from: task.column, to: 'done', by: kind }].slice(-TRANSITION_LOG_LIMIT);
       task.column = 'done';
       project.tasks = [...project.tasks.filter(item => item !== task), task];
       task.revision++;
       return task;
     });
+  }
+
+  /** Save same-task stage output. Testing agents do not self-certify: configured commands decide. */
+  async recordStageResult(run, summary) {
+    const recorded = await this.run(run.id);
+    if (recorded.taskId !== run.taskId || recorded.status !== 'succeeded' || !['executing', 'testing'].includes(recorded.stage)) throw conflict('Confirm the task’s finished stage before saving its results.', 'STAGE_NOT_CONFIRMED');
+    run = recorded;
+    await this.updateTaskEvidence(run.taskId, task => {
+      task.stageResults = { ...(task.stageResults || {}), [run.stage]: { runId: run.id, promptRevision: run.promptRevision, summary: String(summary || '').slice(0, 20000), at: Date.now() } };
+    });
+    if (run.stage !== 'testing') return;
+    const { project } = this.#task(await this.state(), run.taskId);
+    if (!(project.testCommands || []).length) {
+      await this.#setFlow(run.taskId, { kind: 'blocked', reason: 'Testing agent finished. Configure test commands to verify exit codes before merging or completing.' });
+      return;
+    }
+    try { await this.delivery.runTests(run.taskId, { confirm: true }); }
+    catch (error) { await this.#setFlow(run.taskId, { kind: 'blocked', reason: error.message }); }
   }
 
   /** Re-read the linked repository's local branches. */
@@ -1191,6 +1195,7 @@ export class Board {
           project.targetBranch = branch ? { name: branch.name, commit: branch.commit, root: repository.root, recordedAt: Date.now() } : null;
         }
         if (pending.workflow) project.workflow = normalizeWorkflow(pending.workflow);
+        if (pending.agentDefaults) project.agentDefaults = normalizeAgent(pending.agentDefaults);
         if (pending.testCommands) project.testCommands = pending.testCommands.filter(item => Array.isArray(item?.argv) && item.argv.length && item.argv.every(arg => typeof arg === 'string' && arg.length <= 1000 && !arg.includes('\0'))).slice(0, 20).map(item => ({ label: String(item.label || item.argv.join(' ')).slice(0, 80), argv: item.argv.slice(0, 50), timeoutSec: Number.isInteger(item.timeoutSec) && item.timeoutSec >= 1 && item.timeoutSec <= 3600 ? item.timeoutSec : 600 }));
       }
       project.pendingImport = null;
@@ -1316,7 +1321,7 @@ export class Board {
     return { application: 'Promptboard', kind: 'promptboard-backup', version: 2, exportedAt: new Date().toISOString(),
       projects: state.projects.map(project => ({ id: project.id, name: project.name, createdAt: project.createdAt,
         repository: project.repository ? { path: project.repository.path } : null, targetBranch: project.targetBranch ? { name: project.targetBranch.name } : null,
-        workflow: project.workflow || {}, testCommands: project.testCommands || [], timelineNotes: project.timelineNotes || [], columnLayout: project.columnLayout || [],
+        agentDefaults: project.agentDefaults || null, workflow: project.workflow || {}, testCommands: project.testCommands || [], timelineNotes: project.timelineNotes || [], columnLayout: project.columnLayout || [],
         // Workspaces and runs are machine-specific and are not exported.
         tasks: project.tasks.map(task => ({ id: task.id, title: task.title, prompt: task.prompt, source: task.source, checksOutdated: task.checksOutdated,
           createdAt: task.createdAt, updatedAt: task.updatedAt, column: task.column })) })) };
@@ -1336,8 +1341,9 @@ export class Board {
         project.tasks = incoming.tasks.map(task => newTask(task));
         if (incoming.columnLayout) project.columnLayout = incoming.columnLayout;
         project.timelineNotes = incoming.timelineNotes.map(note => ({ ...note, taskId: project.tasks.some(task => task.id === note.taskId) ? note.taskId : null }));
-        if (incoming.repositoryPath || incoming.targetBranch || incoming.workflow || incoming.testCommands) {
+        if (incoming.repositoryPath || incoming.targetBranch || incoming.workflow || incoming.testCommands || incoming.agentDefaults) {
           project.pendingImport = { repositoryPath: incoming.repositoryPath, targetBranch: incoming.targetBranch, workflow: incoming.workflow, testCommands: incoming.testCommands };
+          if (incoming.agentDefaults) project.pendingImport.agentDefaults = incoming.agentDefaults;
         }
         return project;
       });
@@ -1477,9 +1483,8 @@ export class Board {
   /** With `move`, the card enters the stage in the same write that records the run (see transition). */
   async #startRun(taskId, { stage, consent = false, config = {}, trigger = 'user', move = null, note = '' } = {}) {
     {
-      await this.#defaultTargetBranch(taskId);
-      const state = await this.state();
-      const { project, task } = this.#task(state, taskId);
+      let state = await this.state();
+      let { project, task } = this.#task(state, taskId);
       const column = projectColumns(project).find(item => item.id === stage);
       if (!column) throw new BoardError('Choose a valid stage.', 'INVALID_COLUMN');
       if (!column.agent) throw new BoardError(`${column.title} never runs an agent.`, 'STAGE_NOT_RUNNABLE');
@@ -1487,8 +1492,11 @@ export class Board {
       if (this.#activeRun(state, taskId)) throw conflict('This card already has an active run.', 'RUN_ACTIVE');
       if (consent !== true) throw new BoardError('Starting an agent needs your explicit confirmation.', 'CONSENT_REQUIRED');
       if (!project.repository) throw new BoardError('Link this project to a Git repository first.', 'REPOSITORY_REQUIRED', 409);
-      if (!project.targetBranch) throw new BoardError('Choose the local target branch first.', 'TARGET_BRANCH_REQUIRED', 409);
       if (!this.executor) throw new BoardError('Agent execution is not available. Cards can be planned and moved, but no agent runs.', 'EXECUTION_UNAVAILABLE', 503);
+      await this.#defaultTargetBranch(taskId);
+      state = await this.state();
+      ({ project, task } = this.#task(state, taskId));
+      if (!project.targetBranch) throw new BoardError('Choose the local target branch first.', 'TARGET_BRANCH_REQUIRED', 409);
       if (!EXECUTABLE_STAGES.has(stage) && !column.custom) throw conflict(`${column.title} runs are not available yet.`, 'STAGE_NOT_IMPLEMENTED');
       // Explicit request values override the project's workflow settings for this run only.
       const settings = effectiveWorkflow(project, state.settings.defaultAgent)[stage];
@@ -1508,7 +1516,10 @@ export class Board {
       const merge = stage === 'merge' ? await this.delivery.prepareMergeRun(taskId) : null;
       const testing = stage === 'testing' ? await this.delivery.testingContext(taskId) : '';
       const restart = ['planning', 'executing'].includes(stage) && task.restartNote ? `=== WHY THE PREVIOUS ATTEMPT WAS DISCARDED ===\n${task.restartNote}\n=== END ===` : '';
-      const extra = [review ? review.text : merge ? merge.text : testing || (stage === 'executing' && task.reworkNotes ? `=== REVIEW FINDINGS TO FIX ===\n${task.reworkNotes}\n=== END FINDINGS ===` : ''), restart, note].filter(Boolean).join('\n\n');
+      const result = task.stageResults?.executing;
+      const execution = ['code_review', 'testing'].includes(stage) && result?.promptRevision === (task.contentRevision ?? 1) && result;
+      const executionContext = execution ? `=== EXECUTION RESULTS FOR THIS TASK (${task.id}, run ${execution.runId}) ===\n${execution.summary}\n=== END EXECUTION RESULTS ===` : '';
+      const extra = [review ? review.text : merge ? merge.text : testing || (stage === 'executing' && task.reworkNotes ? `=== REVIEW FINDINGS TO FIX ===\n${task.reworkNotes}\n=== END FINDINGS ===` : ''), executionContext, restart, note].filter(Boolean).join('\n\n');
       const run = await this.store.update(draft => {
         if (this.#activeRun(draft, taskId)) throw conflict('This card already has an active run.', 'RUN_ACTIVE');
         const now = Date.now();
@@ -1532,7 +1543,7 @@ export class Board {
     const approval = task.planApproval;
     // An approval counts only for the task text it was given for.
     if (!approval || approval.contentRevision !== (task.contentRevision ?? 1)) return null;
-    return state.runs.find(run => run.id === approval.runId && run.hasPlan) ? approval : null;
+    return state.runs.find(run => run.id === approval.runId && run.taskId === task.id && run.promptRevision === (task.contentRevision ?? 1) && run.hasPlan) ? approval : null;
   }
 
   /** Record plan approval against the current task content. */

@@ -50,11 +50,11 @@ Your browser opens **http://127.0.0.1:4318**. Press **Ctrl+C** to stop. No API k
 - Keep your last 500 prompts in the sidebar; copy, export, or add them to the board.
 
 **Kanban**
-- Move each task through To Do → Planning → Executing → Code Review → Testing → Merge → Done.
+- Move each task through To Do → optional Planning → Executing → Code Review → Testing → optional Merge → Done. To Do and Done never run agents.
 - Each card gets its own Git branch and worktree. Your main checkout is never touched.
-- Click the **project agent** above the board to choose its provider, model, and effort. Use **Agents per stage…**, or the agent label on a column, to override it for a stage. Compose has separate settings.
+- Click the **project agent** above the board to choose its provider, model, effort, and execution permissions. Use **Agents per stage…**, or the agent label on a column, to override it for a stage. Planning always uses enforced read-only Plan Mode. Compose has separate settings.
 - The compact project bar shows the target branch; **Files** opens the local repository details. **Files and context** on a card shows where the agent edits files; paths and branch names can be copied.
-- **Drag = start.** Drop a card on a stage and its work starts at once: planning, the coding agent, the review, or your tests.
+- **Drag = start.** Drop a card on a working stage and its agent starts. Execute can start directly from To Do, or use the approved plan. Review and Testing assess the same task's execution results; configured test commands independently verify after the testing agent is confirmed.
 - Watch and type into each agent's terminal in the dock at the bottom.
 - Drag the terminal divider (or use its arrow keys) to resize it; the board adjusts to the space left. Expand **Run details** for paths and usage. Stop has a visible confirmation and waits for the selected agent to exit, keeping its files and logs.
 - Terminal tabs identify the actual provider and model. Connection feedback shows whether output is live or reconnecting; **View output** also opens saved logs after a restart.
@@ -82,7 +82,7 @@ Your browser opens **http://127.0.0.1:4318**. Press **Ctrl+C** to stop. No API k
 - In **Merge**, the card shows **Merge main** (one click) and **Open pull request**. **Merge automatically** merges as soon as the card is verified.
 - Code Review → Testing needs a review of the current commit. Testing → Merge also needs passing tests for it.
 - Sending a card back to Executing gives the next run the review findings or the failing test output.
-- Done needs a verified merge, a merged pull request, or "no changes required". **Reopen** starts a new cycle.
+- Testing → Done saves a reviewed/tested task without merging. Merge → Done also saves without merging; only the Merge button or explicitly selected automatic merging changes the target. Done retains the execution summary and branch history. **Reopen** starts a new cycle.
 - Not happy with an attempt? **Start over** (task details) keeps the old branch exactly as it is, removes the worktree, and sends the card back to To Do. The next run starts a new branch from the current target and gets your reason. Nothing is deleted or force-pushed.
 - The agent for a stage comes from the stage setting, else the project default, else the global default in **Settings**.
 

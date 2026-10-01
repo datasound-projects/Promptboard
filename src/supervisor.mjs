@@ -377,6 +377,7 @@ export class Supervisor {
     await this.board.updateRun(runId, { status: 'succeeded', reason: run.stage === 'planning' ? 'Plan approved by you.' : run.stage === 'code_review' ? 'Review completed; accept it or send it back.' : 'Stage confirmed by you.', endedAt: Date.now() });
     const session = this.sessions.get(runId);
     if (session?.proc) { session.confirmed = true; this.#push(session, { status: 'succeeded' }); this.#kill(session); }
+    if (['executing', 'testing'].includes(run.stage)) await this.board.recordStageResult(run, await readFile(join(this.dataDir, run.artifactsDir, 'last-message.md'), 'utf8').catch(() => ''));
   }
 
   /** Read a run artifact (plan, last message, or the tail of the output log). */

@@ -74,6 +74,51 @@ test('drag = start: To Do → Executing starts the agent at once; dragging on ha
   assert.deepEqual([view.projects[0].tasks[0].column, view.projects[0].tasks[0].workspace.path], ['code_review', ws.path]);
 });
 
+test('responsibilities: To Do is inert, execution defaults and summaries follow the same task through Review and Testing, Done never merges', { skip, timeout: 60000 }, async t => {
+  const w = await world(t);
+  await w.board.setWorkflow(w.project.id, { workflow: {}, agentDefaults: { provider: 'claude', model: 'haiku', permissionMode: 'approve_edit' }, expectedRevision: await w.revision() });
+  const task = await w.board.createTask({ projectId: w.project.id, title: 'Direct task', prompt: 'Implement it. WRITE_FILE:task.txt' });
+  const other = await w.board.createTask({ projectId: w.project.id, title: 'Other task', prompt: 'Do not run.' });
+  await w.board.updateTaskEvidence(other.id, card => { card.stageResults = { executing: { runId: 'other-execution', promptRevision: 1, summary: 'SECRET OTHER TASK SUMMARY' } }; });
+  assert.equal((await w.board.view()).runs.length, 0);
+  assert.equal((await w.current(task.id)).workspace, null);
+  const execute = await w.go(task.id, 'executing');
+  assert.equal(execute.run.config.model, 'haiku');
+  assert.equal(execute.run.config.permissionMode, 'default');
+  assert.equal(execute.run.planRunId, null);
+  await w.turn(execute.run.id);
+  const review = await w.go(task.id, 'code_review');
+  await w.turn(review.run.id);
+  const reviewPrompt = await readFile(join(w.dataDir, review.run.artifactsDir, 'prompt.md'), 'utf8');
+  assert.match(reviewPrompt, /EXECUTION RESULTS FOR THIS TASK[\s\S]*Implemented the change\./);
+  assert.ok(reviewPrompt.includes(task.id) && reviewPrompt.includes(execute.run.id));
+  assert.ok(!reviewPrompt.includes('SECRET OTHER TASK SUMMARY'));
+  assert.equal(review.run.review.taskCommit, git(review.run.workspacePath, 'rev-parse', 'HEAD'));
+  const testing = await w.go(task.id, 'testing');
+  await w.turn(testing.run.id);
+  assert.equal(testing.run.workspacePath, execute.run.workspacePath);
+  assert.equal(testing.run.config.model, 'haiku');
+  await w.supervisor.confirm(testing.run.id);
+  await until(async () => (await w.current(task.id)).evidence.tests?.status === 'passed', 'independent test verification');
+  const runCount = (await w.board.view()).runs.length;
+  const target = git(w.root, 'rev-parse', 'trunk');
+  const done = await w.go(task.id, 'done');
+  assert.deepEqual([done.task.column, done.task.completion.kind, done.merged], ['done', 'unmerged', false]);
+  assert.equal(done.task.completion.summary, 'Implemented the change.');
+  assert.equal(done.task.completion.executionRunId, execute.run.id);
+  assert.equal(done.task.workspace.status, 'ready', 'Unmerged work is retained, not discarded.');
+  assert.equal(git(w.root, 'rev-parse', 'trunk'), target);
+  assert.equal((await w.board.view()).runs.length, runCount);
+  await assert.rejects(w.board.requestRun(task.id, { stage: 'done', consent: true }), { code: 'STAGE_NOT_RUNNABLE' });
+  await assert.rejects(w.board.delivery.runTests(task.id, { confirm: true }), { code: 'STAGE_NOT_RUNNABLE' });
+  await assert.rejects(w.board.delivery.commit(task.id, { confirm: true, message: 'Do not commit in Done' }), { code: 'STAGE_NOT_RUNNABLE' });
+  const restored = new Board({ dataDir: w.dataDir });
+  const saved = (await restored.view()).projects[0].tasks.find(item => item.id === task.id);
+  assert.deepEqual(saved.completion, done.task.completion);
+  assert.equal((await w.current(other.id)).column, 'todo');
+  await assert.rejects(w.board.delivery.runTests(other.id, { confirm: true }), { code: 'STAGE_NOT_RUNNABLE' });
+});
+
 test('a stage that cannot start never shows the card in that stage; Manual only moves', { skip, timeout: 60000 }, async t => {
   // The CLI is found when the move is checked and the run is prepared (2 lookups), then is gone when the session starts.
   let lookups = 0;
@@ -137,14 +182,16 @@ test('evidence gates: reviewed = tested = HEAD; failed tests go back with their 
   await assert.rejects(w.go(task.id, 'merge'), { message: /uncommitted changes .* Send the card back to Executing/ });
   assert.equal(await readFile(join(ws, 'extra.txt'), 'utf8'), 'untested\n', 'The change is kept.');
   await rm(join(ws, 'extra.txt'));
-  // Merge: entering verifies the current commit; dragging on to Done performs the verified merge.
+  // Merge is optional: Done only records completion and does not touch the target branch.
   const verified = git(ws, 'rev-parse', 'HEAD');
+  const targetBefore = git(w.root, 'rev-parse', 'trunk');
   const entered = await w.go(task.id, 'merge');
   assert.equal(entered.merge.state, 'ready');
-  await assert.rejects(w.board.transition(task.id, { column: 'done', expectedRevision: (await w.current(task.id)).revision, decision: 'move' }), { code: 'MERGE_REQUIRED' });
-  const done = await w.go(task.id, 'done');
-  assert.deepEqual([done.task.column, done.task.completion.kind, done.merged], ['done', 'merged', true]);
-  assert.equal(git(w.root, 'rev-parse', 'trunk'), verified);
+  const done = await w.go(task.id, 'done', { decision: 'move', transitionId: 'finish-unmerged-01' });
+  assert.deepEqual([done.task.column, done.task.completion.kind, done.merged], ['done', 'unmerged', false]);
+  assert.equal(done.task.completion.taskCommit, verified);
+  assert.equal(git(w.root, 'rev-parse', 'trunk'), targetBefore);
+  assert.equal((await w.go(task.id, 'done', { transitionId: 'finish-unmerged-01' })).duplicate, true);
   card = await w.current(task.id);
   assert.deepEqual(card.transitions.map(move => move.to), ['executing', 'code_review', 'executing', 'code_review', 'testing', 'executing', 'code_review', 'testing', 'merge', 'done']);
 });
@@ -277,9 +324,11 @@ test('Merge with a conflicting target: the merge agent starts by itself, its res
   await writeFile(join(ws, 'feature.txt'), 'task version\n');
   await w.go(task.id, 'code_review'); // Commits the work itself (the card title).
   await w.board.delivery.recordReview({ id: 'r', taskId: task.id, review: { taskCommit: git(ws, 'rev-parse', 'HEAD') }, promptRevision: 1 }, '```json\n{"verdict":"no_issues","findings":[]}\n```');
-  const testing = await w.go(task.id, 'testing'); // Starts the tests at once.
-  assert.ok(testing.tests.id);
-  await until(async () => (await w.current(task.id)).evidence.tests.status === 'passed', 'tests passed');
+  const testing = await w.go(task.id, 'testing');
+  assert.equal(testing.run.stage, 'testing');
+  await w.turn(testing.run.id);
+  await w.supervisor.confirm(testing.run.id);
+  await until(async () => (await w.current(task.id)).evidence.tests?.status === 'passed', 'tests passed');
   // The target moves on with a conflicting change.
   await writeFile(join(w.root, 'feature.txt'), 'target version\n'); git(w.root, 'commit', '-qam', 'target change');
   const entered = await w.go(task.id, 'merge');
@@ -304,7 +353,7 @@ test('Merge with a conflicting target: the merge agent starts by itself, its res
   await assert.rejects(w.go(task.id, 'testing'), { message: /older commit/ });
 });
 
-test('Testing: the optional testing agent starts by itself when the project tests fail', { skip, timeout: 60000 }, async t => {
+test('Testing: its agent starts on entry, receives execution results and commands, and independent failures prevent merging', { skip, timeout: 60000 }, async t => {
   const w = await world(t);
   await w.board.setWorkflow(w.project.id, { workflow: { executing: { policy: 'manual' }, code_review: { policy: 'manual' }, testing: { policy: 'start', agentOnFailure: true } }, expectedRevision: await w.revision() });
   await w.board.delivery.setTestCommands(w.project.id, { commands: [{ command: `${process.execPath} -e "console.error('expected 2, got 3'); process.exit(1)"` }], expectedRevision: await w.revision() });
@@ -317,11 +366,18 @@ test('Testing: the optional testing agent starts by itself when the project test
   const promptFile = join(ws, '..', 'testing-prompt.txt');
   process.env.FAKE_AGENT_PROMPT_FILE = promptFile;
   t.after(() => { delete process.env.FAKE_AGENT_PROMPT_FILE; });
+  await w.board.updateTaskEvidence(task.id, card => { card.stageResults = { executing: { runId: 'execution-for-this-task', promptRevision: 1, summary: 'Added a.txt.' } }; });
   await w.go(task.id, 'testing');
   const run = await until(async () => { await w.board.advanceFlows(); return (await w.board.view()).runs.find(item => item.taskId === task.id && item.stage === 'testing'); }, 'testing agent started');
-  assert.equal(run.trigger, 'automation');
+  assert.equal(run.trigger, 'user');
   await w.turn(run.id);
-  assert.match(await readFile(promptFile, 'utf8'), /=== FAILED TESTS TO FIX ===[\s\S]*expected 2, got 3/);
+  const prompt = await readFile(promptFile, 'utf8');
+  assert.match(prompt, /=== TEST COMMANDS CONFIGURED IN PROMPTBOARD ===[\s\S]*expected 2, got 3/);
+  assert.match(prompt, /=== EXECUTION RESULTS FOR THIS TASK[\s\S]*Added a\.txt\./);
+  await w.supervisor.confirm(run.id);
+  await until(async () => (await w.current(task.id)).evidence.tests?.status === 'failed', 'independent test failure');
+  await assert.rejects(w.go(task.id, 'merge'), { code: 'STAGE_NOT_READY' });
+  await assert.rejects(w.go(task.id, 'done'), { code: 'STAGE_NOT_READY' });
 });
 
 test('Start over: the old attempt is kept on its branch (dirty work committed), the card returns to To Do, and the next run gets a fresh branch from the current target with the reason', { skip, timeout: 90000 }, async t => {

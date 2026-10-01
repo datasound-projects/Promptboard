@@ -150,6 +150,30 @@ test('full flow: commit, review, send back, fix, accept, test, and a confirmed f
   await assert.rejects(w.board.requestRun(task.id, { stage: 'done', consent: true }), { code: 'STAGE_NOT_RUNNABLE' });
 });
 
+test('even an accepted review with detected issues prevents automatic merging', { skip, timeout: 60000 }, async t => {
+  const w = await world(t);
+  const task = await w.task('Issue gate', 'Change the feature. REVIEW_FAIL');
+  const ws = await w.workspace(task.id);
+  await writeFile(join(ws, 'feature.txt'), 'changed\n');
+  await w.delivery.commit(task.id, { message: 'change', confirm: true });
+  await w.move(task.id, 'code_review');
+  await w.review(task.id);
+  await w.delivery.acceptReview(task.id);
+  assert.equal((await w.current(task.id)).evidence.review.verdict, 'changes_required');
+  await w.delivery.setTestCommands(w.project.id, { commands: [{ command: `${process.execPath} -e "0"` }], expectedRevision: (await w.board.view()).projects[0].revision });
+  await w.move(task.id, 'testing');
+  await w.tests(task.id);
+  await w.board.setWorkflow(w.project.id, { workflow: { merge: { policy: 'start' } }, expectedRevision: (await w.board.view()).projects[0].revision });
+  const before = git(w.root, 'rev-parse', 'trunk');
+  const preview = await w.delivery.mergePreview(task.id);
+  assert.equal(preview.eligible, false);
+  assert.match(preview.problems.join(' '), /detected issues/);
+  await assert.rejects(w.board.transition(task.id, { column: 'merge', expectedRevision: (await w.current(task.id)).revision }), { code: 'STAGE_NOT_READY', message: /detected issues/ });
+  await assert.rejects(w.delivery.merge(task.id, { confirm: true, taskCommit: preview.taskCommit, targetCommit: preview.targetCommit, trigger: 'automation' }), { code: 'MERGE_NOT_ELIGIBLE' });
+  assert.equal(git(w.root, 'rev-parse', 'trunk'), before);
+  assert.equal((await w.current(task.id)).column, 'testing');
+});
+
 test('failed tests, missing commands, and timeouts never pass; source changes make results stale', { skip, timeout: 120000 }, async t => {
   const w = await world(t);
   const task = await w.task('Tests', 'Test me.');
@@ -236,7 +260,7 @@ test('merge safety: dirty target checkout, advanced target, conflict-safe branch
   assert.equal(git(w.root, 'branch', '--show-current'), 'elsewhere', 'No checkout was switched.');
 });
 
-test('Done: only a verified merge or an explicit no-change completion; Done is final until Reopen; cleanup is optional and ownership-checked', { skip, timeout: 60000 }, async t => {
+test('Done: verified no-change completion, final until Reopen, optional ownership-checked cleanup', { skip, timeout: 60000 }, async t => {
   const w = await world(t);
   const task = await w.task('Nothing to do', 'Check whether a change is needed.');
   // No commits: nothing to review, and no column change reaches Done without verification.
@@ -318,7 +342,7 @@ test('Merge: entering prepares the card; one click merges and removes the clean 
   const done = await w.current(behind.id);
   assert.deepEqual([done.completion.kind, done.completion.trigger], ['merged', 'automation']);
   assert.equal(git(w.root, 'show', '--format=%s', '-s', 'trunk^1'), 'behind', 'The merge commit joins the task (first parent) with the moved target.');
-  // Testing refuses a card without a review for its current commit, and Done needs a merge.
+  // Testing refuses an unreviewed commit; Executing cannot skip verification to reach Done.
   const unreviewed = await w.task('unreviewed', 'x');
   await writeFile(join(await w.workspace(unreviewed.id), 'u.txt'), 'u\n');
   await w.delivery.commit(unreviewed.id, { message: 'u', confirm: true });
@@ -346,7 +370,7 @@ test('Testing and Merge agents: test commands in context, conflicts left for the
   await w.supervisor.confirm(testRun.id);
   assert.equal((await w.board.run(testRun.id)).status, 'succeeded');
   // The target branch moves on with a conflicting change.
-  await w.tests(task.id);
+  await until(async () => (await w.current(task.id)).evidence?.tests?.status === 'passed', 'independent tests after the testing agent');
   await writeFile(join(w.root, 'feature.txt'), 'target version\n'); git(w.root, 'commit', '-qam', 'target change');
   await w.move(task.id, 'merge');
   const mergeRun = await w.board.requestRun(task.id, { stage: 'merge', consent: true, config: { provider: 'claude' } });
@@ -462,13 +486,14 @@ test('the destination column alone decides what runs: skipped stages never run, 
   assert.match(started.at(-1).extra, /DIFF/);
   await w.delivery.recordReview(await w.board.run(result.run.id), '```json\n{"verdict":"no_issues","findings":[]}\n```');
   await end(result.run);
-  // Code Review -> Testing runs the project's tests at once, with no question. Nothing earlier reruns.
+  // Code Review -> Testing starts its agent first. Independent commands decide after confirmation.
   result = await go(direct.id, 'testing');
-  assert.deepEqual([result.task.column, Boolean(result.tests?.id), result.run], ['testing', true, undefined]);
-  await until(async () => (await w.current(direct.id)).evidence?.tests?.status === 'passed', 'tests passed');
-  const testing = await w.board.requestRun(direct.id, { stage: 'testing', consent: true });
+  assert.deepEqual([result.task.column, result.run.stage], ['testing', 'testing']);
   assert.match(started.at(-1).extra, /TEST COMMANDS/);
-  await end(testing);
+  await w.board.updateRun(result.run.id, { status: 'running' });
+  await w.board.updateRun(result.run.id, { status: 'succeeded' });
+  await w.board.recordStageResult(result.run, 'Tested task results.');
+  await until(async () => (await w.current(direct.id)).evidence?.tests?.status === 'passed', 'tests passed');
   result = await go(direct.id, 'merge');
   assert.deepEqual([result.run, result.merged], [undefined, undefined], 'Merge prepares; it does not merge until the button is clicked.');
   const merging = await w.board.requestRun(direct.id, { stage: 'merge', consent: true });

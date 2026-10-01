@@ -185,21 +185,24 @@
     <main class="workspace" id="kanban-view" tabindex="-1" hidden>
       <section class="intro intro-compact" aria-labelledby="kanban-title">
         <div>
-          <h1 id="kanban-title">Plan the work.</h1>
+          <h1 id="kanban-title">Project board</h1>
           <p class="intro-description">One task at a time. Plan, build, review, and merge.</p>
         </div>
-        <figure class="mascot"><img src="/kanban-mascot.png" alt="A black and white cartoon girl taking a bite out of a pixel-art creature" width="112" height="112"><figcaption>One bite at a time.</figcaption></figure>
+        <button type="button" class="secondary-button collapse-toggle" id="project-toggle" aria-expanded="false" aria-controls="project-settings" aria-label="Expand project settings">Settings <span aria-hidden="true">+</span></button>
       </section>
       <p class="storage-warning" id="kanban-load-warning" role="alert" hidden></p>
       <p class="storage-warning" id="execution-status" role="status" hidden></p>
       <p class="storage-warning board-warning" role="alert" hidden></p>
+      <div class="kanban-layout">
+      <aside id="project-settings" aria-label="Project settings" hidden>
+      <div class="settings-panel-heading"><h2>Project settings</h2><button type="button" class="text-button" id="project-settings-close" aria-label="Collapse project settings">Close</button></div>
+      <p class="note settings-panel-note">Agent choices and columns apply only to this project.</p>
       <section class="card project-context" id="project-context" aria-labelledby="project-context-heading" hidden>
         <div class="project-context-heading">
           <div class="project-identity"><h2 id="project-context-heading">Project</h2><span id="project-target" class="context-target"></span></div>
           <div class="project-context-actions">
             <button type="button" class="context-agent" id="project-agent-toggle" aria-expanded="false" aria-controls="project-agent-panel">Project agent</button>
             <button type="button" class="text-button" id="project-files-toggle" aria-expanded="false" aria-controls="project-location">Files</button>
-            <button type="button" class="text-button collapse-toggle" id="project-toggle" aria-expanded="false" aria-controls="project-body" aria-label="Expand project settings">Settings <span aria-hidden="true">+</span></button>
           </div>
         </div>
         <div id="project-location" class="project-location" hidden></div>
@@ -255,6 +258,7 @@
         </div>
         <div class="connection-detail kanban-detail" id="project-detail" role="status" hidden></div>
       </section>
+      </aside>
       <section class="card kanban-board" aria-labelledby="board-heading">
         <div class="card-heading"><div><h2 id="board-heading" class="sr-only">Project views</h2><div class="view-switch" role="tablist" aria-label="Project views"><button type="button" role="tab" id="view-board" aria-selected="true" aria-controls="board-view-panel">Board</button><button type="button" role="tab" id="view-timeline" aria-selected="false" aria-controls="timeline">Timeline</button></div><span class="kanban-count" id="board-count" aria-label="Cards">00</span></div><div class="board-actions" id="board-actions"><button class="secondary-button" id="columns-open" type="button" aria-haspopup="dialog"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><rect x="3.5" y="4.5" width="5" height="15" rx="1"/><rect x="9.5" y="4.5" width="5" height="15" rx="1"/><rect x="15.5" y="4.5" width="5" height="15" rx="1"/></svg><span>Columns</span></button><button class="secondary-button autopilot-open" id="autopilot-open" type="button" aria-haspopup="dialog"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h9m-4-4 4 4-4 4"/><path d="M15 5h4v14h-4"/></svg><span>Autopilot</span></button><button class="icon-button board-scroll" id="board-left" type="button" aria-controls="kanban-columns" aria-label="Scroll the board left" title="Scroll left"><span aria-hidden="true">‹</span></button><button class="icon-button board-scroll" id="board-right" type="button" aria-controls="kanban-columns" aria-label="Scroll the board right" title="Scroll right"><span aria-hidden="true">›</span></button><button class="copy-button" id="card-new" type="button"><span aria-hidden="true">＋</span> New card</button></div></div>
         <div class="autopilot-bar" id="autopilot-bar" role="status" hidden></div>
@@ -279,6 +283,7 @@
           <p class="note">Built from recorded task moves, agent runs, reviews, tests, pull requests, merges, and the Git commits of each task. Only notes can be edited or removed.</p>
         </div>
       </section>
+      </div>
       <footer class="main-footer"><span>PREPARED FOR AGENTS. RUNS NEED YOUR CONFIRMATION.</span><span>Saved by the local app <span aria-hidden="true">·</span> Human review required</span></footer>
       <section class="dock" id="dock" aria-labelledby="dock-heading" data-state="collapsed">
         <div class="dock-divider" id="dock-divider" role="separator" aria-orientation="horizontal" aria-label="Resize the agent sessions panel" tabindex="0" aria-valuemin="160" aria-valuemax="900" aria-valuenow="320"></div>

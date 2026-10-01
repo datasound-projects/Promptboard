@@ -54,8 +54,8 @@ export async function buildTimeline(project, runs) {
     for (const [index, completion] of [...(task.previousCompletions || []), ...(task.completion ? [task.completion] : [])].entries()) {
       const merged = completion.kind === 'merged', pr = completion.kind === 'pull_request';
       add({ ...base, id: `done:${task.id}:${index}`, at: completion.at, kind: 'completed', stage: 'done', status: completion.kind,
-        title: merged ? `Merged into ${completion.targetBranch}` : pr ? 'Pull request merged' : completion.kind === 'no_changes' ? 'Completed: no changes required' : 'Closed',
-        detail: merged ? `${completion.commits ?? '?'} commit${completion.commits === 1 ? '' : 's'}, ${completion.method || 'fast-forward'}${completion.trigger === 'automation' ? ', automatic' : ''}` : '',
+        title: merged ? `Merged into ${completion.targetBranch}` : pr ? 'Pull request merged' : completion.kind === 'no_changes' ? 'Completed: no changes required' : completion.kind === 'unmerged' ? 'Completed without merging' : 'Closed',
+        detail: merged ? `${completion.commits ?? '?'} commit${completion.commits === 1 ? '' : 's'}, ${completion.method || 'fast-forward'}${completion.trigger === 'automation' ? ', automatic' : ''}` : completion.summary || '',
         commit: merged && SHA.test(completion.mergedCommit || '') ? completion.mergedCommit : null,
         pr: pr ? { number: completion.number ?? null, url: completion.url || '', state: 'MERGED' } : null });
     }
