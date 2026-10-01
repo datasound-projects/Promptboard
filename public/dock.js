@@ -21,11 +21,14 @@ function applyDockHeight() {
   const barHeight = Math.max(44, Math.ceil($('#dock .dock-bar').getBoundingClientRect().height));
   const promptHeight = $('#dock-stop-prompt').hidden ? 0 : Math.ceil($('#dock-stop-prompt').getBoundingClientRect().height);
   const height = dock.state === 'collapsed' ? barHeight + promptHeight + 1 : Math.max(Math.min(limit, barHeight + promptHeight + 80), Math.max(160, Math.min(limit, dock.height)));
+  dock.layout = { height, before: $('#dock').getBoundingClientRect().height, time: performance.now() };
   $('#dock').style.height = dock.state === 'max' ? '' : `${height}px`;
+  dock.layout.after = $('#dock').getBoundingClientRect().height;
   view.style.setProperty('--dock-height', `${dock.state === 'max' ? dock.height : height}px`);
   $('#dock-divider').setAttribute('aria-valuenow', String(height));
   $('#dock-divider').setAttribute('aria-valuemax', String(limit));
   fitBoardHeight(true);
+  dock.layout.done = true;
 }
 
 function setDockState(state, save = true) {
