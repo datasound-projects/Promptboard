@@ -200,6 +200,20 @@ function setProjectCollapsed(collapsed, save = true) {
   $('#project-toggle span').textContent = collapsed ? '+' : '−';
   $('#project-summary').hidden = !collapsed;
   if (save) savePref(PROJECT_PANEL_KEY, collapsed ? 'collapsed' : 'expanded');
+  fitBoardHeight();
+}
+
+let boardFitFrame;
+function fitBoardHeight() {
+  if (typeof requestAnimationFrame !== 'function') return; // Non-visual test environments.
+  cancelAnimationFrame(boardFitFrame);
+  boardFitFrame = requestAnimationFrame(() => {
+    const columns = $('#kanban-columns');
+    if ($('#kanban-view').hidden || columns.hidden) return;
+    const dockHeight = $('#dock').getBoundingClientRect().height;
+    const top = columns.getBoundingClientRect().top + window.scrollY;
+    columns.style.setProperty('--board-height', `${Math.max(120, window.innerHeight - top - dockHeight - 16)}px`);
+  });
 }
 function scrollBehavior() { return window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches ? 'auto' : 'smooth'; }
 function renderTheme() { $('#theme-toggle').setAttribute('aria-pressed', String(document.documentElement.dataset.theme === 'dark')); }
@@ -1075,6 +1089,7 @@ async function migrateBrowserBoard() {
 }
 
 function renderBoard() {
+  fitBoardHeight();
   renderProjectContext(currentProject());
   const project = currentProject();
   const tasks = project?.tasks || [];
@@ -1101,7 +1116,11 @@ function renderBoard() {
   // Missing terminal support never blocks the board or the prompt editor; it only disables runs.
   $('#execution-status').hidden = !board || board.execution?.available !== false || !board.execution.setupMessage;
   $('#execution-status').textContent = board?.execution?.setupMessage ? `Agent runs are unavailable. ${board.execution.setupMessage}` : '';
-  $('#kanban-columns').replaceChildren(...(project ? projectColumnsOf(project).map(column => renderColumn(column, tasks.filter(task => task.column === column.id))) : []));
+  const columns = $('#kanban-columns');
+  const scroll = new Map(columns.dataset.projectId === project?.id ? [...columns.querySelectorAll('.kanban-cards')].map(list => [list.dataset.column, list.scrollTop]) : []);
+  columns.replaceChildren(...(project ? projectColumnsOf(project).map(column => renderColumn(column, tasks.filter(task => task.column === column.id))) : []));
+  columns.dataset.projectId = project?.id || '';
+  for (const list of columns.querySelectorAll('.kanban-cards')) list.scrollTop = scroll.get(list.dataset.column) || 0;
   renderRepository(project);
   const branch = project?.targetBranch?.name;
   $('#project-summary').textContent = project ? [project.name, project.repository ? project.repository.root.split(/[\\/]/).pop() + (branch ? ` → ${branch}` : '') : 'Not linked', workflowSummary(project)].join(' · ') : '';
@@ -1298,17 +1317,17 @@ function renderCard(card, index, count) {
   const more = document.createElement('div');
   more.className = 'kanban-more';
   more.id = `card-more-${card.id}`;
-  more.hidden = true;
-  more.append(copy,
+  more.hidden = cardElement(card.id)?.querySelector('.kanban-more')?.hidden ?? true;
+  more.append(copy, up, down,
     labelled(detailButton('Duplicate', () => duplicateCard(card.id), 'kanban-duplicate'), `Duplicate: ${card.title}`),
     labelled(detailButton('Delete', () => confirmCardDelete(item, card), 'kanban-delete'), `Delete: ${card.title}`));
   const toggle = labelled(detailButton('⋯', () => { more.hidden = !more.hidden; toggle.setAttribute('aria-expanded', String(!more.hidden)); }, 'kanban-more-toggle'), `More actions: ${card.title}`);
   toggle.title = 'Copy, duplicate, or delete';
-  toggle.setAttribute('aria-expanded', 'false');
+  toggle.setAttribute('aria-expanded', String(!more.hidden));
   toggle.setAttribute('aria-controls', more.id);
   const actions = document.createElement('div');
   actions.className = 'kanban-actions';
-  actions.append(up, down, moveTo, toggle);
+  actions.append(moveTo, toggle);
   const details = [card.source ? `Prompt source: ${sourceSummary(card.source)}` : 'Written by you'];
   if (card.workspace) details.push(`Branch ${card.workspace.branch}${card.workspace.status === 'ready' ? '' : ` (${card.workspace.status})`}`);
   const pullRequest = card.evidence?.pullRequest;
@@ -1325,13 +1344,13 @@ function renderCard(card, index, count) {
   }
   const meta = paragraph(details.join(' · '), 'kanban-meta');
   meta.title = meta.textContent;
-  item.append(badge, ...tags, heading, paragraph(card.prompt.slice(0, 400).replace(/\s+/g, ' ').trim(), 'kanban-preview'), meta, renderRunControls(card, run), actions, more);
-  if (card.workspace || card.completion?.kind === 'merged') {
-    const workspace = document.createElement('details'); workspace.className = 'card-workspace';
-    const summary = document.createElement('summary'); summary.textContent = 'Files and branch';
-    workspace.append(summary, taskLocation(card, currentProject()));
-    item.insertBefore(workspace, actions);
-  }
+  const context = document.createElement('details'); context.className = 'card-workspace';
+  context.open = Boolean(cardElement(card.id)?.querySelector('.card-workspace')?.open);
+  const summary = document.createElement('summary'); summary.textContent = card.workspace ? 'Files and context' : 'Prompt context';
+  context.append(summary, meta);
+  if (!status.flag) context.append(badge);
+  if (card.workspace || card.completion?.kind === 'merged') context.append(taskLocation(card, currentProject()));
+  item.append(...(status.flag ? [badge] : []), ...tags, heading, paragraph(card.prompt.slice(0, 400).replace(/\s+/g, ' ').trim(), 'kanban-preview'), renderRunControls(card, run), context, actions, more);
   if (pendingMoves.has(card.id)) item.classList.add('pending');
   if (movingTo.has(card.id)) { item.classList.add('moving'); item.prepend(paragraph(`Moving to ${columnTitle(movingTo.get(card.id))}…`, 'moving-to')); }
   // Selecting a card reveals its agent session, if it has one.
@@ -1918,10 +1937,13 @@ let projectAgentFormKey = '';
 function renderProjectContext(project) {
   $('#project-context').hidden = !project;
   if (!project) { projectAgentFormKey = ''; return; }
-  $('#project-context-heading').textContent = `${project.name} · Agent and files`;
+  $('#project-context-heading').textContent = project.name;
+  $('#project-target').textContent = project.targetBranch?.name ? `→ ${project.targetBranch.name}` : 'Repository not linked';
   $('#project-location').replaceChildren(locationFact('Repository', project.repository?.root), locationFact('Target branch', project.targetBranch?.name));
   const inherited = board?.settings?.defaultAgent || { provider: 'claude' };
   const defaultAgent = project.agentDefaults?.provider ? project.agentDefaults : inherited;
+  $('#project-agent-toggle').textContent = `${agentText(defaultAgent)} ▾`;
+  $('#project-agent-toggle').title = `${agentText(defaultAgent)}. Choose the project provider, model, and effort.`;
   const overrides = Object.entries(project.workflow || {}).filter(([, value]) => value.provider).map(([stage]) => columnTitle(stage));
   $('#project-agent-summary').textContent = `Project agent: ${agentText(defaultAgent)}. ${overrides.length ? `Stage overrides: ${overrides.join(', ')}.` : 'Every stage inherits this agent.'} Compose uses its own settings. Changes apply to new runs.`;
   const key = JSON.stringify([project.id, project.agentDefaults, board?.settings?.defaultAgent]);
@@ -1941,11 +1963,21 @@ $('#project-agent-form').addEventListener('submit', async event => {
   try {
     await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/workflow`, { workflow: project.workflow || {}, agentDefaults, expectedRevision: project.revision });
     $('#project-agent-error').hidden = true;
+    $('#project-agent-panel').hidden = true;
+    $('#project-agent-toggle').setAttribute('aria-expanded', 'false');
+    fitBoardHeight();
     announce(`Project agent saved for “${project.name}”. Existing runs keep their agent; new runs use the saved settings.`);
   } catch (error) { $('#project-agent-error').textContent = error.message; $('#project-agent-error').hidden = false; }
   finally { button.disabled = false; }
 });
 $('#project-stages-open').addEventListener('click', () => openWorkflowDialog());
+for (const [button, panel] of [['project-agent-toggle', 'project-agent-panel'], ['project-files-toggle', 'project-location']]) {
+  $(`#${button}`).addEventListener('click', () => {
+    const target = $(`#${panel}`); target.hidden = !target.hidden;
+    $(`#${button}`).setAttribute('aria-expanded', String(!target.hidden));
+    fitBoardHeight();
+  });
+}
 
 
 /** Start the card's stage agent now (the card is already in that stage). No dialog: the click is the instruction. */
@@ -3603,6 +3635,11 @@ window.addEventListener('resize', updateBoardScroll);
   columns.addEventListener('pointercancel', stop);
 }
 try { if (localStorage.getItem(SETTINGS_KEY) === 'collapsed') setSettingsCollapsed(true, false); } catch {}
-try { if (localStorage.getItem(PROJECT_PANEL_KEY) === 'collapsed') setProjectCollapsed(true, false); } catch {}
+try { setProjectCollapsed(localStorage.getItem(PROJECT_PANEL_KEY) !== 'expanded', false); } catch { setProjectCollapsed(true, false); }
+window.addEventListener('resize', fitBoardHeight);
+if (typeof ResizeObserver === 'function') {
+  const observer = new ResizeObserver(fitBoardHeight);
+  for (const id of ['project-context', 'project-body', 'autopilot-bar']) observer.observe($(`#${id}`));
+}
 // A required field inside a collapsed card would block submit without a visible message. Reopen it.
 $('#settings-body').addEventListener('invalid', () => setSettingsCollapsed(false, false), true);
