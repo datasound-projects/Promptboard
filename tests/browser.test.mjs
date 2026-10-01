@@ -163,10 +163,13 @@ test('terminal dock in a real browser: start, render, type, collapse, resize, se
   const paths = await browser.eval(`return document.querySelector('[data-id="${codexTask.id}"] .task-location').textContent;`);
   assert.ok(paths.includes(codexRun.branch)); assert.ok(paths.includes(codexRun.workspacePath));
   await browser.until(`document.querySelector('#kanban-columns').getBoundingClientRect().bottom <= document.querySelector('#dock').getBoundingClientRect().top + 1`, 'board fits above terminal');
+  await browser.until(`(() => { const columns = document.querySelector('#kanban-columns').getBoundingClientRect(); const height = document.querySelector('#dock').getBoundingClientRect().height; return Math.abs(columns.height - Math.max(120, window.innerHeight - columns.top - window.scrollY - height - 16)) < 1; })()`, 'board resize baseline settled');
   const boardHeight = await browser.eval(`return document.querySelector('#kanban-columns').getBoundingClientRect().height;`);
+  const dockHeight = await browser.eval(`return document.querySelector('#dock').getBoundingClientRect().height;`);
   await browser.eval(`document.querySelector('#dock-divider').focus();`);
   await browser.key('ArrowUp', 'ArrowUp', 38);
-  await browser.until(`document.querySelector('#kanban-columns').getBoundingClientRect().height < ${boardHeight}`, 'board adjusts to terminal resizing');
+  await browser.until(`document.querySelector('#dock').getBoundingClientRect().height > ${dockHeight} && document.querySelector('#kanban-columns').getBoundingClientRect().height < ${boardHeight}`, 'board adjusts to terminal resizing')
+    .catch(async error => { throw new Error(`${error.message}: baseline board ${boardHeight}, dock ${dockHeight}; current ${JSON.stringify(await browser.eval(`return { focus: document.activeElement.id, preferred: window.promptboardDock.height, state: window.promptboardDock.state, viewport: [window.innerWidth, window.innerHeight], scrollY: window.scrollY, board: document.querySelector('#kanban-columns').getBoundingClientRect().toJSON(), dock: document.querySelector('#dock').getBoundingClientRect().toJSON() };`))}`); });
   await browser.key('ArrowDown', 'ArrowDown', 40);
   // Expanded run facts remain available without covering terminal output.
   await browser.eval(`document.querySelector('#dock-details .dock-context').open = true;`);
