@@ -211,7 +211,6 @@ function fitBoardHeight(immediate = false) {
     if ($('#kanban-view').hidden || columns.hidden) return;
     const dockHeight = $('#dock').getBoundingClientRect().height;
     const top = columns.getBoundingClientRect().top + window.scrollY;
-    columns.dataset.fit = JSON.stringify({ dockHeight, top, viewport: window.innerHeight, immediate, time: performance.now() });
     columns.style.height = `${Math.max(120, window.innerHeight - top - dockHeight - 16)}px`;
   };
   // User resizing must take effect even when the browser throttles animation frames.
@@ -3647,7 +3646,8 @@ try { setProjectCollapsed(localStorage.getItem(PROJECT_PANEL_KEY) !== 'expanded'
 window.addEventListener('resize', fitBoardHeight);
 if (typeof ResizeObserver === 'function') {
   const observer = new ResizeObserver(fitBoardHeight);
-  for (const id of ['project-context', 'project-body', 'autopilot-bar']) observer.observe($(`#${id}`));
+  // Some browsers expose a resized dock's new geometry only after the layout commits.
+  for (const id of ['project-context', 'project-body', 'autopilot-bar', 'dock']) observer.observe($(`#${id}`));
 }
 // A required field inside a collapsed card would block submit without a visible message. Reopen it.
 $('#settings-body').addEventListener('invalid', () => setSettingsCollapsed(false, false), true);
