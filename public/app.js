@@ -1140,6 +1140,8 @@ function renderBoard() {
   if (timelineView) { $('#autopilot-bar').hidden = true; refreshTimeline(project); }
   updateBoardScroll();
   window.PromptboardDock?.sync();
+  const verifying = tasks.find(task => task.evidence?.tests?.status === 'running');
+  if (verifying) pollTests(verifying.id);
 }
 
 // Stage icons (24×24 outline paths). Each column's colour comes from CSS (--stage).
@@ -1191,7 +1193,7 @@ function renderColumn(column, tasks) {
     : !column.agent ? (column.id === 'todo' ? 'Never runs an agent' : 'Finished · never runs an agent')
     : !board.execution?.available ? 'Agent stage · agent terminals not set up'
     : column.id === 'merge' ? (policy === 'start' ? 'Merges automatically when verified' : 'One click merges when verified')
-    : policy === 'manual' ? 'Manual · start from the card' : column.id === 'testing' ? 'Runs your tests on arrival' : 'Starts when a card arrives', 'kanban-column-note');
+    : policy === 'manual' ? 'Manual · start from the card' : column.id === 'planning' ? 'Plan Mode · read-only' : column.id === 'testing' ? 'Testing agent starts on arrival' : 'Starts when a card arrives', 'kanban-column-note');
   const list = document.createElement('ol');
   list.className = 'kanban-cards';
   list.dataset.column = column.id;
@@ -1225,7 +1227,7 @@ function timeAgo(at) {
 function renderDoneList(tasks) {
   const zone = document.createElement('li');
   zone.className = 'kanban-done-drop';
-  zone.append(stageIcon('drop'), paragraph('Drop from Merge to merge and complete'));
+  zone.append(stageIcon('drop'), paragraph('Complete from Testing or Merge · no merge'));
   if (!tasks.length) return [zone];
   // Card numbers follow creation order within the project, so they stay stable.
   const numbers = new Map([...currentProject().tasks].sort((a, b) => a.createdAt - b.createdAt).map((task, index) => [task.id, index + 1]));
@@ -1272,7 +1274,9 @@ function renderDoneCard(card, number, draggable = true) {
   if (when) time.title = new Date(when).toLocaleString();
   const reopen = labelledButton(detailButton('Reopen', () => reopenCard(card), 'text-button kanban-reopen'), `Reopen: ${card.title}`);
   reopen.title = 'Start a new cycle in To Do. The history, commits, and completion stay.';
-  item.append(title, paragraph(card.prompt.slice(0, 200).replace(/\s+/g, ' ').trim(), 'kanban-done-preview'), time, reopen);
+  const details = detailButton('Details', () => { $('#done-dialog').close(); openTaskDetails(card.id); }, 'text-button kanban-details');
+  const summary = card.completion?.summary || card.prompt;
+  item.append(title, paragraph(summary.slice(0, 200).replace(/\s+/g, ' ').trim(), 'kanban-done-preview'), time, detailActions(details, reopen));
   return item;
 }
 
@@ -1443,7 +1447,7 @@ function movedAnnouncement(card, column, result, position = '') {
   if (result.run) { announce(`Moved “${card.title}” to ${columnTitle(column)} and started the ${columnTitle(column)} agent.`); showStartedRun(result.run.id); }
   else if (result.tests) { announce(`Moved “${card.title}” to Testing. The project's tests are running.`); pollTests(card.id); }
   else if (result.merge && !result.merged) announce(`Moved “${card.title}” to Merge. ${result.merge.message}`);
-  else if (result.task?.column === 'done') announce(`“${card.title}” is done: ${result.merged ? `merged into ${result.task.completion?.targetBranch || 'the target branch'}` : 'its pull request was merged'}.`);
+  else if (result.task?.column === 'done') announce(`“${card.title}” is done: ${result.merged ? `merged into ${result.task.completion?.targetBranch || 'the target branch'}` : 'saved without merging; the task branch is kept'}.`);
   else announce(`Moved “${card.title}” to ${columnTitle(column)}. Nothing was started.`);
 }
 
@@ -1864,8 +1868,9 @@ function effortsFor(provider) { return EFFORTS[provider] || []; }
  * Provider, model, and effort fields for one level of the agent hierarchy. `inherit` adds an
  * empty provider choice that means "use the next level" (its label says which agent that is).
  */
-function agentFields(value = {}, { inherit = '', stage = 'executing' } = {}) {
+function agentFields(value = {}, { inherit = '', stage = 'executing', inheritedProvider = board?.settings?.defaultAgent?.provider || 'claude' } = {}) {
   const grid = document.createElement('div'); grid.className = 'select-grid';
+  grid.dataset.inheritedProvider = inheritedProvider;
   const providers = board?.execution?.providers || {};
   const supported = Object.keys(providers).filter(id => providers[id][capabilityFor(stage)]?.supported);
   const label = (text, control) => { const field = document.createElement('label'); field.className = 'field-label'; field.textContent = text; field.append(control); return field; };
@@ -1876,6 +1881,22 @@ function agentFields(value = {}, { inherit = '', stage = 'executing' } = {}) {
   const model = document.createElement('select'); model.dataset.field = 'model';
   const custom = document.createElement('input'); Object.assign(custom, { type: 'text', maxLength: 100, placeholder: 'Custom model ID', spellcheck: false }); custom.dataset.field = 'model-custom'; custom.setAttribute('aria-label', 'Custom model ID');
   const effort = document.createElement('select'); effort.dataset.field = 'effort';
+  const permission = document.createElement('select'); permission.dataset.field = 'permissionMode';
+  const readOnly = ['planning', 'code_review'].includes(stage);
+  const permissionBox = label('Permissions', permission);
+  const permissionNote = paragraph('', 'agent-model-note');
+  const refreshPermissions = (keep = permission.value) => {
+    const effective = provider.value || grid.dataset.inheritedProvider;
+    const modes = readOnly ? ['plan'] : ['', 'auto', ...(effective === 'codex' ? [] : ['approve_edit'])];
+    fillSelect(permission, modes, { '': 'Inherit / provider default', plan: 'Plan Mode (read-only)', auto: effective === 'codex' ? 'Auto · sandbox, approval on request' : 'Auto · approve file edits', approve_edit: 'Approve edit · ask before changes' });
+    const canonical = ['acceptEdits', 'auto_edit', 'workspace-write'].includes(keep) ? 'auto' : keep === 'default' ? 'approve_edit' : keep;
+    permission.value = readOnly ? 'plan' : modes.includes(canonical) ? canonical : '';
+    permission.disabled = readOnly;
+    permissionBox.hidden = !provider.value && !readOnly && !grid.closest('[data-stage]');
+    permissionNote.hidden = !readOnly && effective !== 'codex';
+    permissionNote.textContent = readOnly ? 'Plan Mode is enforced for every model. This stage cannot edit files.' : 'Codex automatically edits inside its workspace sandbox and asks for escalation. It has no per-file Approve edit mode.';
+  };
+  grid.addEventListener('agent-inheritance-change', () => refreshPermissions());
   const modelBox = document.createElement('div'); modelBox.className = 'model-field'; modelBox.append(label('Model', model), custom);
   const note = paragraph('', 'agent-model-note');
   let nativeCatalog = null;
@@ -1893,6 +1914,7 @@ function agentFields(value = {}, { inherit = '', stage = 'executing' } = {}) {
     nativeCatalog = null;
     modelBox.hidden = !chosen; effort.parentElement && (effort.parentElement.hidden = !chosen);
     note.hidden = !chosen;
+    refreshPermissions(keep.permissionMode || '');
     if (!chosen) return;
     note.textContent = 'Reading models from your CLI…';
     loadModelSelect(model, custom, chosen, keep.model || '').then(catalog => {
@@ -1906,14 +1928,15 @@ function agentFields(value = {}, { inherit = '', stage = 'executing' } = {}) {
   provider.addEventListener('change', () => { custom.value = ''; refresh(); });
   model.addEventListener('change', () => { custom.hidden = model.value !== '__custom__'; refreshEffort(); if (!custom.hidden) custom.focus(); });
   custom.addEventListener('input', () => refreshEffort());
-  grid.append(label('Provider', provider), modelBox, label('Effort', effort), note);
+  grid.append(label('Provider', provider), modelBox, label('Effort', effort), permissionBox, permissionNote, note);
   refresh(value);
   return grid;
 }
 function readAgentFields(root) {
   const value = field => root.querySelector(`[data-field="${field}"]`)?.value || '';
   if (!value('provider')) return null;
-  return { provider: value('provider'), model: (value('model') === '__custom__' ? value('model-custom') : value('model')).trim(), effort: value('effort') };
+  const permissionMode = value('permissionMode');
+  return { provider: value('provider'), model: (value('model') === '__custom__' ? value('model-custom') : value('model')).trim(), effort: value('effort'), ...(permissionMode && permissionMode !== 'plan' ? { permissionMode } : {}) };
 }
 const agentText = agent => agent?.provider ? `${providerName(agent.provider)} · ${agent.model || 'CLI default model'}${agent.effort ? ` · ${agent.effort}` : ''}` : '';
 
@@ -2027,6 +2050,7 @@ async function confirmRun(run) {
 async function openTaskDetails(taskId) {
   const card = findTask(taskId);
   if (!card) return;
+  $('#task-dialog').dataset.taskId = taskId;
   const project = currentProject();
   const runs = board.runs.filter(run => run.taskId === taskId);
   const status = cardStatus(card);
@@ -2088,7 +2112,7 @@ function workflowPreview(stage, settings) {
     : 'Entering Merge merges at once when the review and tests passed for the current commit and the merge is a fast-forward. A moved target branch is brought in first; conflicts go to the merge agent.';
   const provider = settings.provider ? providerName(settings.provider) : 'The inherited agent';
   const what = stage === 'planning' ? `${provider} writes a read-only plan` : stage === 'code_review' ? `${provider} reviews the committed diff read-only`
-    : stage === 'testing' ? 'your test commands run in the task worktree' : `${provider} works in the task worktree`;
+    : stage === 'testing' ? `${provider} tests the task results; after confirmation, configured commands independently verify exit codes` : `${provider} works in the task worktree`;
   return manual ? `Moving a card here only moves it. Start ${columnTitle(stage)} from the card.` : `Moving a card here starts it: ${what}.`;
 }
 
@@ -2113,18 +2137,17 @@ function openWorkflowDialog(focusStage = null) {
     const preview = paragraph(workflowPreview(stage, settings), 'workflow-preview');
     const children = [legend, policy];
     if (STAGE_VERBS[stage]) {
-      const own = project.workflow?.[stage]?.provider ? project.workflow[stage] : {};
+      const own = project.workflow?.[stage] || {};
       const inherited = project.agentDefaults?.provider ? `Project default (${agentText(project.agentDefaults)})` : board?.settings?.defaultAgent?.provider ? `Global default (${agentText(board.settings.defaultAgent)})` : 'Default (Claude Code, CLI defaults)';
-      children.push(agentFields(own, { inherit: inherited, stage }));
+      const fields = agentFields(own, { inherit: inherited, stage, inheritedProvider: project.agentDefaults?.provider || board?.settings?.defaultAgent?.provider || 'claude' });
+      const permissions = fields.querySelector('[data-field="permissionMode"]');
+      if (permissions) permissions.parentElement.hidden = false;
+      children.push(fields);
     }
     const instructionsField = document.createElement('label'); instructionsField.className = 'field-label'; instructionsField.textContent = 'Stage instructions (optional, added before the task text)';
     const instructions = document.createElement('textarea'); instructions.maxLength = 4000; instructions.value = settings.instructions || ''; instructions.dataset.field = 'instructions';
     instructionsField.append(instructions);
     if (stage === 'testing') {
-      const agentOption = document.createElement('label'); agentOption.className = 'check-row';
-      const agentBox = document.createElement('input'); agentBox.type = 'checkbox'; agentBox.dataset.field = 'agentOnFailure'; agentBox.checked = settings.agentOnFailure === true;
-      agentOption.append(agentBox, ' Start the testing agent when tests fail (it fixes the cause in the task worktree)');
-      children.push(agentOption);
       const commandsField = document.createElement('label'); commandsField.className = 'field-label'; commandsField.textContent = 'Test commands (one per line; run without a shell, in the task worktree)';
       const commands = document.createElement('textarea'); commands.id = 'test-commands'; commands.value = (project.testCommands || []).map(item => item.argv.map(arg => /[\s"']/.test(arg) ? JSON.stringify(arg) : arg).join(' ')).join('\n');
       commands.placeholder = 'npm test';
@@ -2137,7 +2160,7 @@ function openWorkflowDialog(focusStage = null) {
     box.addEventListener('change', () => { preview.textContent = workflowPreview(stage, readWorkflowStage(box)); });
     stages.push(box);
   }
-  const fixed = paragraph('Dragging a card is the instruction: its stage starts at once. To Do and Done never run agents. A card reaches Done only through a verified merge, a merged pull request, or “no changes required”; Reopen starts a new cycle. Each column runs only its own stage.', 'workflow-preview');
+  const fixed = paragraph('Dragging a card is the instruction: its stage starts at once. To Do and Done never run agents. Planning is optional. After Testing, move to Done to save without merging, or to Merge for a separately approved merge. Reopen starts a new cycle. Each column runs only its own stage.', 'workflow-preview');
   // Agent hierarchy: a stage setting, else this project default, else the global default in Settings.
   const defaults = document.createElement('fieldset');
   defaults.className = 'workflow-stage workflow-defaults';
@@ -2149,6 +2172,8 @@ function openWorkflowDialog(focusStage = null) {
     for (const box of stages) {
       const provider = box.querySelector('[data-field="provider"]');
       if (provider?.options[0]?.value === '') provider.options[0].textContent = `Use project agent (${agentText(inherited)})`;
+      const fields = box.querySelector('.select-grid');
+      if (fields) { fields.dataset.inheritedProvider = inherited.provider; fields.dispatchEvent(new Event('agent-inheritance-change')); }
       box.querySelector('.workflow-preview').textContent = workflowPreview(box.dataset.stage, { ...inherited, ...readWorkflowStage(box) });
     }
   };
@@ -2167,8 +2192,8 @@ function openWorkflowDialog(focusStage = null) {
 
 function readWorkflowStage(box) {
   const result = { policy: box.querySelector('input[type="radio"]:checked')?.value || 'start', instructions: box.querySelector('[data-field="instructions"]')?.value || '' };
-  const agentOnFailure = box.querySelector('[data-field="agentOnFailure"]');
-  if (agentOnFailure) result.agentOnFailure = agentOnFailure.checked;
+  const permissionMode = box.querySelector('[data-field="permissionMode"]')?.value;
+  if (permissionMode && permissionMode !== 'plan') result.permissionMode = permissionMode;
   const agent = readAgentFields(box);
   return agent ? { ...result, ...agent } : result;
 }
@@ -2244,13 +2269,15 @@ function confirmStep(box, text, label, action) {
 
 async function renderDelivery(card, container, section, pre) {
   const nodes = [];
+  const inactive = ['todo', 'done'].includes(card.column);
   if (card.completion) {
     const done = card.completion;
     nodes.push(section('Completed', paragraph(done.kind === 'merged'
       ? `Merged${done.trigger === 'automation' ? ' automatically (project workflow setting)' : ''} into ${done.targetBranch}: ${short(done.previousTarget)} → ${short(done.mergedCommit)} (${done.method}). Nothing was pushed.`
       : done.kind === 'pull_request' ? `Pull request ${done.number ? `#${done.number} ` : ''}merged on GitHub into ${done.base || 'the target branch'}. Pull ${done.base || 'the target branch'} to update your local checkout.`
-      : done.kind === 'closed' ? 'Closed on the board. Nothing was merged or pushed; the task branch and worktree are kept.'
+      : ['closed', 'unmerged'].includes(done.kind) ? 'Completed on the board. Nothing was merged or pushed; the task branch and worktree are kept.'
       : 'Reviewed: no changes required. Nothing was merged.')));
+    if (done.summary) nodes.push(section('Accomplished', pre(done.summary)));
   }
   if (card.workspace?.status !== 'ready') {
     if (!['todo', 'done'].includes(card.column)) {
@@ -2272,7 +2299,7 @@ async function renderDelivery(card, container, section, pre) {
   // Task revision and commit.
   const revision = section('Task revision', paragraph(`Commit ${short(rev.taskCommit)} on ${rev.branch || 'a detached HEAD'} · ${plural(rev.ahead, 'commit')} ahead of ${rev.targetBranch} (${short(rev.targetCommit)}) · ${rev.clean ? 'no uncommitted changes' : plural(rev.changes.length, 'uncommitted change')}.`));
   if (!rev.branchOk) revision.append(paragraph('The worktree is not on its task branch. Promptboard will not commit, review, test, or merge until it is.', 'kanban-error'));
-  if (rev.merging) {
+  if (rev.merging && !inactive) {
     // A merge of the target branch (started for the merge agent) is waiting to be committed or aborted.
     revision.append(paragraph(rev.unresolved.length
       ? `A merge of ${rev.targetBranch} into the task branch is in progress. Still conflicted: ${rev.unresolved.join(', ')}. Resolve these (or let the merge agent do it) before you commit.`
@@ -2281,7 +2308,7 @@ async function renderDelivery(card, container, section, pre) {
     abort.append(detailActions(detailButton('Abort merge…', () => confirmStep(abort, `Abort the merge? The task branch returns to ${short(rev.taskCommit)} and every change made during the merge, including conflict resolutions, is discarded.`, 'Abort merge', () => deliveryAction(card, 'POST', 'abort-merge', { confirm: true }, 'Merge aborted; the task branch is unchanged.')))));
     revision.append(abort);
   }
-  if (!rev.clean && rev.branchOk) {
+  if (!rev.clean && rev.branchOk && !inactive) {
     const diff = pre('Loading the changes…');
     const label = document.createElement('label'); label.className = 'field-label'; label.textContent = 'Commit message';
     const input = document.createElement('input'); input.type = 'text'; input.maxLength = 2000; input.value = rev.merging ? `Merge ${rev.targetBranch} into ${rev.branch}` : card.title; input.id = 'commit-message';
@@ -2311,7 +2338,7 @@ async function renderDelivery(card, container, section, pre) {
       box.append(table);
     } else if (review.text) box.append(pre(review.text));
     const actions = [];
-    if (review.status === 'completed' && current) actions.push(detailButton('Accept review', () => deliveryAction(card, 'POST', 'accept-review', {}, 'Review accepted for this commit.'), 'danger'));
+    if (review.status === 'completed' && current && !inactive) actions.push(detailButton('Accept review', () => deliveryAction(card, 'POST', 'accept-review', {}, 'Review accepted for this commit.'), 'danger'));
     if (['completed', 'accepted'].includes(review.status) && card.column === 'code_review') actions.push(detailButton('Send back to Executing', () => { $('#task-dialog').close(); placeCard(card.id, 'executing', null); }));
     if (actions.length) box.append(detailActions(...actions));
     nodes.push(box);
@@ -2335,12 +2362,12 @@ async function renderDelivery(card, container, section, pre) {
       const failed = (tests.results || []).find(result => result.status !== 'passed' && result.tail);
       if (failed) box.append(pre(failed.tail));
     }
-    if (commands.length && tests?.status !== 'running') {
+    if (commands.length && tests?.status !== 'running' && !inactive) {
       box.append(detailActions(detailButton('Run tests…', () => confirmStep(box, `Run ${plural(commands.length, 'command')} in the task worktree? Only exit codes decide whether tests passed.`, 'Run tests', async () => {
         if (await deliveryAction(card, 'POST', 'tests', { confirm: true }, 'Tests started.')) pollTests(card.id);
       }))));
     }
-    if (tests?.status === 'running') pollTests(card.id);
+    if (tests?.status === 'running' && !inactive) pollTests(card.id);
     nodes.push(box);
   }
   // Merge preview and confirmation.
@@ -2404,11 +2431,12 @@ async function renderDelivery(card, container, section, pre) {
 }
 
 function pollTests(taskId) {
-  clearTimeout(pollTests.timer);
+  if (pollTests.timer) return;
   pollTests.timer = setTimeout(async () => {
+    pollTests.timer = null;
     await loadBoard();
     const card = findTask(taskId);
-    if ($('#task-dialog').open && card) openTaskDetails(taskId);
+    if ($('#task-dialog').open && $('#task-dialog').dataset.taskId === taskId && card) openTaskDetails(taskId);
   }, 1500);
 }
 

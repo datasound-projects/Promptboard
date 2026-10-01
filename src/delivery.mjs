@@ -78,11 +78,12 @@ export class Delivery {
     try { return await current; } finally { if (this.locks.get(key) === tail) this.locks.delete(key); }
   }
 
-  async #context(taskId) {
+  async #context(taskId, { working = false } = {}) {
     const state = await this.board.state();
     for (const project of state.projects) {
       const task = project.tasks.find(item => item.id === taskId);
       if (!task) continue;
+      if (working && ['todo', 'done'].includes(task.column)) throw fail('To Do and Done do not perform task work. Move or reopen the task first.', 'STAGE_NOT_RUNNABLE');
       if (task.workspace?.status !== 'ready') throw fail('This task has no worktree yet. Run Executing first.', 'WORKSPACE_REQUIRED');
       if (!project.targetBranch) throw fail('Choose the target branch first.', 'TARGET_BRANCH_REQUIRED');
       return { state, project, task, ws: task.workspace, target: project.targetBranch.name };
@@ -146,7 +147,7 @@ export class Delivery {
     if (typeof message !== 'string' || !message.trim() || message.length > 2000) throw fail('Enter a commit message of 1 to 2,000 characters.', 'INVALID_INPUT', 400);
     return this.#locked(`task:${taskId}`, async () => {
       const rev = await this.revision(taskId);
-      const { ws } = await this.#context(taskId);
+      const { ws } = await this.#context(taskId, { working: true });
       if (!rev.branchOk) throw fail(`The task worktree is not on its task branch (${ws.branch}). Promptboard will not commit there.`, 'BRANCH_MISMATCH');
       if (rev.clean) throw fail('There are no changes to commit.', 'NOTHING_TO_COMMIT');
       // Staging a file with conflict markers would record it as resolved. Refuse instead.
@@ -212,7 +213,7 @@ export class Delivery {
   async runTests(taskId, { confirm } = {}) {
     if (confirm !== true) throw fail('Confirm the test run first.', 'CONFIRMATION_REQUIRED', 400);
     if (this.testsRunning.has(taskId)) throw fail('Tests are already running for this task.', 'TESTS_RUNNING');
-    const { project, ws } = await this.#context(taskId);
+    const { project, ws } = await this.#context(taskId, { working: true });
     const commands = project.testCommands || [];
     if (!commands.length) throw fail('Add a test command in Workflow settings first. Promptboard only runs commands you configure.', 'NO_TEST_COMMANDS');
     const rev = await this.revision(taskId);
@@ -295,6 +296,7 @@ export class Delivery {
     if (!rev.ahead) problems.push('The task branch has no commits to merge.');
     if (!fastForward) problems.push(`${target} has advanced since this task branched. Update the task branch, then review and test again.`);
     if (review?.status !== 'accepted' || review.taskCommit !== rev.taskCommit) problems.push(review?.status === 'accepted' ? 'The accepted review is for an older task commit. Review again.' : 'An accepted code review for the current commit is required.');
+    if (review?.verdict !== 'no_issues' || review?.findings?.length) problems.push('The code review detected issues or has no clear verdict. Resolve them and review again before merging.');
     if (tests?.status !== 'passed' || tests.taskCommit !== rev.taskCommit || tests.targetCommit !== rev.targetCommit) problems.push(tests?.status === 'passed' ? 'The passing tests are for older commits. Run tests again.' : 'Passing tests for the current commits are required.');
     if (checkout && !checkout.clean) problems.push(`The checkout of ${target} at ${checkout.path} has uncommitted changes. Promptboard will not merge into it.`);
     return { sourceBranch: ws.branch, targetBranch: target, taskCommit: rev.taskCommit, targetCommit: rev.targetCommit, commits, files, fastForward,
@@ -304,7 +306,7 @@ export class Delivery {
   /** Confirmed fast-forward-only merge, serialized per repository, rechecked immediately before. */
   async merge(taskId, { confirm, taskCommit, targetCommit, trigger = 'user' }) {
     if (confirm !== true) throw fail('Confirm the merge first.', 'CONFIRMATION_REQUIRED', 400);
-    const { ws, target } = await this.#context(taskId);
+    const { ws, target } = await this.#context(taskId, { working: true });
     return this.#locked(`repo:${ws.commonDir}`, async () => {
       const preview = await this.mergePreview(taskId);
       if (preview.taskCommit !== taskCommit || preview.targetCommit !== targetCommit) throw fail('The task or target branch changed since the preview. Review the new preview.', 'MERGE_STALE');
@@ -336,7 +338,7 @@ export class Delivery {
     if (confirm !== true) throw fail('Confirm the branch update first.', 'CONFIRMATION_REQUIRED', 400);
     return this.#locked(`task:${taskId}`, async () => {
       const rev = await this.revision(taskId);
-      const { ws } = await this.#context(taskId);
+      const { ws } = await this.#context(taskId, { working: true });
       if (!rev.branchOk) throw fail('The task worktree is not on its task branch.', 'BRANCH_MISMATCH');
       if (!rev.clean) throw fail('Commit the task changes before updating the branch.', 'UNCOMMITTED_CHANGES');
       try { await git(['merge', '--no-edit', '--no-ff', rev.targetCommit], { cwd: ws.path, timeoutMs: 120000 }); }
@@ -370,7 +372,7 @@ export class Delivery {
    */
   async prepareMergeRun(taskId) {
     return this.#locked(`task:${taskId}`, async () => {
-      const { project, ws, target } = await this.#context(taskId);
+      const { project, ws, target } = await this.#context(taskId, { working: true });
       let rev = await this.revision(taskId);
       if (!rev.branchOk) throw fail('The task worktree is not on its task branch.', 'BRANCH_MISMATCH');
       let note;
@@ -400,7 +402,7 @@ export class Delivery {
   async abortMerge(taskId, { confirm }) {
     if (confirm !== true) throw fail('Confirm that you want to abort the merge.', 'CONFIRMATION_REQUIRED', 400);
     return this.#locked(`task:${taskId}`, async () => {
-      const { ws } = await this.#context(taskId);
+      const { ws } = await this.#context(taskId, { working: true });
       const rev = await this.revision(taskId);
       if (!rev.merging) throw fail('No merge is in progress in the task worktree.', 'NO_MERGE');
       await git(['merge', '--abort'], { cwd: ws.path }).catch(() => { throw fail('Git could not abort the merge. Run git merge --abort in the task worktree.', 'ABORT_FAILED'); });
@@ -417,7 +419,7 @@ export class Delivery {
     if (typeof title !== 'string' || !title.trim() || title.length > 256) throw fail('Enter a pull request title of 1 to 256 characters.', 'INVALID_INPUT', 400);
     if (typeof body !== 'string' || body.length > 20000) throw fail('The pull request description can have at most 20,000 characters.', 'INVALID_INPUT', 400);
     return this.#locked(`task:${taskId}`, async () => {
-      const { ws, target } = await this.#context(taskId);
+      const { ws, target } = await this.#context(taskId, { working: true });
       const rev = await this.revision(taskId);
       if (!rev.branchOk) throw fail('The task worktree is not on its task branch.', 'BRANCH_MISMATCH');
       if (rev.merging || !rev.clean) throw fail('Commit or remove the uncommitted changes (or finish the merge) before opening a pull request.', 'UNCOMMITTED_CHANGES');

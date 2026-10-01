@@ -76,8 +76,8 @@ test('Autopilot takes queued cards one at a time through their own routes, in th
   assert.match(order[0], /^Started “Second” \(route: Planning → Executing → Code Review → Testing → Merge\)/);
   assert.match(order[1], /^Started “First” \(route: Executing → Code Review → Testing → Merge\)/);
   const runs = (await w.board.view()).runs;
-  assert.deepEqual(runs.filter(run => run.taskId === first).map(run => run.stage), ['executing', 'code_review'], 'First never ran Planning.');
-  assert.deepEqual(runs.filter(run => run.taskId === second).map(run => run.stage), ['planning', 'executing', 'code_review']);
+  assert.deepEqual(runs.filter(run => run.taskId === first).map(run => run.stage), ['executing', 'code_review', 'testing'], 'First never ran Planning.');
+  assert.deepEqual(runs.filter(run => run.taskId === second).map(run => run.stage), ['planning', 'executing', 'code_review', 'testing']);
   assert.ok(runs.every(run => run.trigger === 'automation' && run.status === 'succeeded'));
   // The second card branched from trunk after the first merge, so no extra update round was needed.
   assert.ok(!ap.log.some(entry => /moved on/.test(entry.text)), ap.log.map(entry => entry.text).join('\n'));

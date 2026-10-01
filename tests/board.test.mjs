@@ -41,7 +41,7 @@ test('the seven fixed columns and the transition matrix of the stage contract; e
   assert.deepEqual(COLUMNS.map(column => column.title), ['To Do', 'Planning', 'Executing', 'Code Review', 'Testing', 'Merge', 'Done']);
   assert.deepEqual(COLUMNS.filter(column => !column.agent).map(column => column.id), ['todo', 'done']);
   const allowed = new Set(['todo>planning', 'todo>executing', 'planning>executing', 'planning>todo', 'executing>code_review', 'executing>todo',
-    'code_review>testing', 'code_review>executing', 'testing>merge', 'testing>executing', 'merge>done', 'merge>executing', 'merge>code_review']);
+    'code_review>testing', 'code_review>executing', 'testing>merge', 'testing>executing', 'testing>done', 'merge>done', 'merge>executing', 'merge>code_review']);
   const ids = COLUMNS.map(column => column.id);
   for (const from of ids) for (const to of ids) if (from !== to) assert.equal(canTransition(from, to), allowed.has(`${from}>${to}`), `${from} -> ${to}`);
   assert.equal(canTransition('todo', 'nowhere'), false);

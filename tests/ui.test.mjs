@@ -971,7 +971,7 @@ function fakeExecutor() {
     start: async ({ run }) => { executor.started.push(run); },
     activeCount: () => 0,
     subscribe: () => null,
-    async confirm(runId) { const run = await executor.board.run(runId); if (run.stage === 'planning') await executor.board.approvePlan(run.taskId, { runId }); await executor.board.updateRun(runId, { status: 'succeeded' }); },
+    async confirm(runId) { const run = await executor.board.run(runId); if (run.stage === 'planning') await executor.board.approvePlan(run.taskId, { runId }); if (run.status === 'queued') await executor.board.updateRun(runId, { status: 'running' }); await executor.board.updateRun(runId, { status: 'succeeded' }); if (['executing', 'testing'].includes(run.stage)) await executor.board.recordStageResult(run, 'Verified the task results.'); },
     async cancel(runId) { await executor.board.updateRun(runId, { status: 'cancelled' }); },
     artifact: async () => 'PLAN\n1. Change the parser.',
   };
@@ -1039,7 +1039,7 @@ test('drag-and-drop and keyboard moves use the same transition; rejected moves r
   const tasks = await serverTasks(ctx);
   assert.deepEqual(tasks.map(task => task.transitions.map(({ from, to, by }) => [from, to, by])), [[['todo', 'executing', 'user']], [['todo', 'executing', 'user']]]);
   // Done accepts a drop only from Merge (a verified merge). From Executing, the drop zone refuses the card.
-  assert.match(column($, 'done').querySelector('.kanban-done-drop').textContent, /Drop from Merge to merge and complete/);
+  assert.match(column($, 'done').querySelector('.kanban-done-drop').textContent, /Complete from Testing or Merge · no merge/);
   cardItem(ctx, 'Dragged').dispatchEvent(new win.Event('dragstart', { bubbles: true }));
   const refused = new win.Event('dragover', { bubbles: true, cancelable: true });
   column($, 'done').querySelector('.kanban-done-drop').dispatchEvent(refused);
@@ -1151,7 +1151,72 @@ test('the card’s Start button starts at once with the resolved agent; plan app
   assert.match($('#task-details').textContent, /approval is stale: the task changed/);
 });
 
-test('PB-04 in the UI: commit, configured tests, accepted review, merge preview, confirmed merge; Done only through merge', { skip: process.platform === 'win32', timeout: 60000 }, async t => {
+test('Workflow permissions: Plan Mode is fixed; project and inherited stage settings persist; Codex never offers per-file approval', { skip: process.platform === 'win32' }, async t => {
+  const ctx = await linkedKanban(t);
+  const { $, win } = ctx;
+  await link(ctx);
+  $('#workflow-open').click();
+  const defaults = $('#workflow-stages .workflow-defaults');
+  const provider = defaults.querySelector('[data-field="provider"]');
+  provider.value = 'claude'; provider.dispatchEvent(new win.Event('change', { bubbles: true }));
+  defaults.querySelector('[data-field="permissionMode"]').value = 'approve_edit';
+  const planning = $('#workflow-stages [data-stage="planning"] [data-field="permissionMode"]');
+  assert.equal(planning.value, 'plan');
+  assert.equal(planning.disabled, true);
+  const executing = $('#workflow-stages [data-stage="executing"]');
+  assert.equal(executing.querySelector('[data-field="provider"]').value, '');
+  executing.querySelector('[data-field="permissionMode"]').value = 'auto';
+  submitForm(ctx, '#workflow-form'); await ctx.idle();
+  let project = (await serverBoard(ctx)).projects[0];
+  assert.equal(project.agentDefaults.permissionMode, 'default');
+  assert.equal(project.workflow.executing.permissionMode, 'auto');
+  assert.equal(project.effectiveWorkflow.executing.permissionMode, 'acceptEdits');
+  assert.equal(project.effectiveWorkflow.planning.permissionMode, 'plan');
+  $('#workflow-open').click();
+  const stageProvider = $('#workflow-stages [data-stage="executing"] [data-field="provider"]');
+  stageProvider.value = 'codex'; stageProvider.dispatchEvent(new win.Event('change', { bubbles: true }));
+  const permissions = $('#workflow-stages [data-stage="executing"] [data-field="permissionMode"]');
+  assert.deepEqual([...permissions.options].map(item => item.value), ['', 'auto']);
+  assert.match($('#workflow-stages [data-stage="executing"]').textContent, /no per-file Approve edit mode/);
+  permissions.value = 'auto';
+  submitForm(ctx, '#workflow-form'); await ctx.idle();
+  project = (await serverBoard(ctx)).projects[0];
+  assert.equal(project.effectiveWorkflow.executing.provider, 'codex');
+  assert.equal(project.effectiveWorkflow.executing.permissionMode, 'workspace-write');
+});
+
+test('Done keeps accomplishments and evidence visible, offers no task-work controls, and does not merge', { skip: process.platform === 'win32' }, async t => {
+  const ctx = await linkedKanban(t);
+  const { $ } = ctx;
+  await link(ctx);
+  const board = ctx.app.board;
+  const created = await board.createTask({ projectId: ctx.project.id, title: 'Keep unmerged', prompt: 'Add a file.' });
+  await board.moveTask(created.id, { column: 'executing', expectedRevision: 1 });
+  const ws = await board.ensureTaskWorktree(created.id);
+  await writeFile(join(ws.path, 'unmerged.txt'), 'keep this change\n');
+  await board.delivery.commit(created.id, { message: 'unmerged work', confirm: true });
+  const current = async () => (await serverTasks(ctx)).find(task => task.id === created.id);
+  await board.moveTask(created.id, { column: 'code_review', expectedRevision: (await current()).revision });
+  const head = (await board.delivery.revision(created.id)).taskCommit;
+  await board.delivery.recordReview({ id: 'same-task-review', taskId: created.id, review: { taskCommit: head }, promptRevision: 1 }, '```json\n{"verdict":"no_issues","findings":[]}\n```');
+  await board.moveTask(created.id, { column: 'testing', expectedRevision: (await current()).revision });
+  await board.delivery.setTestCommands(ctx.project.id, { commands: [{ command: `${process.execPath} -e "0"` }], expectedRevision: (await serverBoard(ctx)).projects[0].revision });
+  await board.delivery.runTests(created.id, { confirm: true });
+  await until(async () => (await current()).evidence?.tests?.status === 'passed', 'configured tests passed');
+  await board.updateTaskEvidence(created.id, task => { task.stageResults = { executing: { runId: 'task-execution', promptRevision: 1, summary: 'Added unmerged.txt and verified it.' } }; });
+  const before = (await board.delivery.revision(created.id)).targetCommit;
+  await board.moveTask(created.id, { column: 'done', expectedRevision: (await current()).revision });
+  await ctx.win.__pbTest.loadBoard(); await ctx.idle();
+  column($, 'done').querySelector('.kanban-details').click();
+  await until(() => /Accomplished/.test($('#task-details').textContent) && /Last run: passed/.test($('#task-details').textContent), 'saved accomplishments and evidence');
+  assert.match($('#task-details').textContent, /Nothing was merged or pushed/);
+  assert.match($('#task-details').textContent, /Added unmerged\.txt and verified it\./);
+  assert.equal(byText($('#task-details'), 'Run tests…'), undefined);
+  assert.equal(byText($('#task-details'), 'Commit task changes…'), undefined);
+  assert.equal((await board.delivery.revision(created.id)).targetCommit, before);
+});
+
+test('PB-04 in the UI: commit, configured tests, accepted review, merge preview, confirmed merge', { skip: process.platform === 'win32', timeout: 60000 }, async t => {
   const ctx = await linkedKanban(t);
   const { $, win } = ctx;
   await link(ctx);
@@ -1191,7 +1256,9 @@ test('PB-04 in the UI: commit, configured tests, accepted review, merge preview,
   await until(async () => (await tasks())[0].evidence.review.status === 'accepted', 'accepted');
   $('#task-dialog').close();
   // Tests in Testing: only exit codes decide.
-  await moveBy(ctx, 'Ship it', 'testing'); await ctx.idle(); // The drag runs the tests.
+  await moveBy(ctx, 'Ship it', 'testing'); await ctx.idle();
+  assert.equal(ctx.executor.started.at(-1).stage, 'testing');
+  await ctx.executor.confirm(ctx.executor.started.at(-1).id);
   await until(async () => (await tasks())[0].evidence.tests?.status === 'passed', 'tests passed', 15000);
   // Merge: the task details also show the preview and can merge (the card has the one-click button).
   await moveBy(ctx, 'Ship it', 'merge'); await ctx.idle();
@@ -1304,7 +1371,7 @@ test('without a system folder picker, Open folder… asks for the path instead',
   await until(() => $('#repo-state').textContent.includes(`Linked to ${repo}`), 'linked from typed path');
 });
 
-test('Testing runs the tests on arrival; the card offers the testing agent; Merge shows one merge button and a pull request button; one click merges', { skip: process.platform === 'win32' }, async t => {
+test('Testing starts its agent on arrival and verifies commands after confirmation; Merge needs its button; one click merges', { skip: process.platform === 'win32' }, async t => {
   const ctx = await linkedKanban(t);
   const { $, win } = ctx;
   await link(ctx);
@@ -1322,7 +1389,9 @@ test('Testing runs the tests on arrival; the card offers the testing agent; Merg
   // Dropping on Testing runs the project's tests at once.
   await win.__pbTest.loadBoard(); await ctx.idle();
   await moveBy(ctx, 'Checked', 'testing'); await ctx.idle();
-  assert.match($('#announcement').textContent, /The project's tests are running/);
+  assert.match($('#announcement').textContent, /started the Testing agent/);
+  assert.equal(ctx.executor.started.at(-1).stage, 'testing');
+  await ctx.executor.confirm(ctx.executor.started.at(-1).id);
   await until(async () => (await current()).evidence?.tests?.status === 'passed', 'tests passed');
   await win.__pbTest.loadBoard(); await ctx.idle();
   const card = () => cardItem(ctx, 'Checked');

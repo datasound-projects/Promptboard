@@ -142,15 +142,26 @@ export class Autopilot {
     return this.advance(projectId, task, stage, route);
   }
 
-  /** Testing: Promptboard's own test run decides; failures go back to Executing with the output. */
+  /** Testing: the agent assesses the task first, then independent command exit codes decide. */
   async testing(projectId, project, task, cur, route) {
     const delivery = this.board.delivery;
     if (cur.step === 'start') {
       if (!(project.testCommands || []).length) return this.pause(projectId, 'The route includes Testing, but this project has no test commands. Add them in Workflow settings, then resume.');
-      let rev = await delivery.revision(task.id);
-      if (!rev.clean) rev = await delivery.commit(task.id, { message: task.title, confirm: true });
-      const run = await delivery.runTests(task.id, { confirm: true });
-      return this.set(projectId, a => { a.current = { ...a.current, step: 'running', testsId: run.id }; });
+      const run = await this.board.requestRun(task.id, { stage: 'testing', consent: true, trigger: 'automation' });
+      return this.set(projectId, a => { a.current = { ...a.current, step: 'agent', runId: run.id }; });
+    }
+    if (cur.step === 'agent') {
+      const run = await this.board.run(cur.runId);
+      if (done.has(run.status)) return this.pause(projectId, `The Testing agent for “${task.title}” ${run.status}.`);
+      if (run.status !== 'succeeded') {
+        if (run.status !== 'waiting_for_input' || !run.turnComplete || !run.turns) return;
+        await this.board.executor.confirm(run.id);
+      }
+      const rev = await delivery.revision(task.id);
+      if (!rev.clean) return this.rework(projectId, task, cur, project.autopilot, 'the testing agent changed files that need review');
+      const fresh = (await this.board.state()).projects.find(item => item.id === projectId).tasks.find(item => item.id === task.id);
+      if (!fresh.evidence?.tests) return this.pause(projectId, fresh.flow?.reason || 'Testing could not start the configured commands.');
+      return this.set(projectId, a => { a.current = { ...a.current, step: 'running', testsId: fresh.evidence.tests.id }; });
     }
     const tests = task.evidence?.tests;
     if (!tests || tests.id !== cur.testsId) return this.set(projectId, a => { a.current = { ...a.current, step: 'start' }; });

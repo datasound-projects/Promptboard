@@ -96,6 +96,30 @@ test('lifecycle events map to supervisor signals; the hook bridge records only l
 
 // ---- Supervisor integration with a real PTY and fake CLIs ----
 
+test('Plan Mode is forced for every supported provider and model; execution permissions use native controls', async t => {
+  const runDir = await temp(t, 'pb-mode-matrix-');
+  for (const provider of ['claude', 'codex', 'gemini']) {
+    for (const model of ['', 'custom-model-v1']) {
+      const config = resolveConfig('planning', { provider, model, permissionMode: 'auto' });
+      assert.equal(config.permissionMode, 'plan');
+      assert.equal(config.model, model);
+      const session = await buildSession({ provider, stage: 'planning', config, message: composeMessage('planning', 'Inspect, do not edit.'), runDir, eventsFile: join(runDir, 'events'), sessionId: 'test-session' });
+      const flag = { claude: '--permission-mode', codex: '--sandbox', gemini: '--approval-mode' }[provider];
+      assert.equal(session.args[session.args.indexOf(flag) + 1], provider === 'codex' ? 'read-only' : 'plan');
+      if (model) assert.equal(session.args[session.args.indexOf('--model') + 1], model);
+    }
+    assert.equal(resolveConfig('executing', { provider, permissionMode: 'auto' }).permissionMode, ADAPTERS[provider].permissionModes[0]);
+  }
+  for (const provider of ['claude', 'gemini']) {
+    const config = resolveConfig('executing', { provider, permissionMode: 'approve_edit' });
+    assert.equal(config.permissionMode, 'default');
+    const session = await buildSession({ provider, stage: 'executing', config, message: 'Implement.', runDir, eventsFile: join(runDir, 'events'), sessionId: 's' });
+    const flag = provider === 'claude' ? '--permission-mode' : '--approval-mode';
+    assert.equal(session.args[session.args.indexOf(flag) + 1], 'default');
+  }
+  assert.throws(() => resolveConfig('executing', { provider: 'codex', permissionMode: 'approve_edit' }), { code: 'INVALID_PERMISSION_MODE' }, 'Unsupported per-file approval is not silently weakened.');
+});
+
 async function world(t, { limit = 1, providers = ['claude', 'codex', 'gemini'], server = false } = {}) {
   const bin = await temp(t, 'pb-bin-');
   for (const id of providers) { await writeFile(join(bin, id), `#!${process.execPath}\nrequire(${JSON.stringify(fake)});\n`); await chmod(join(bin, id), 0o755); }
