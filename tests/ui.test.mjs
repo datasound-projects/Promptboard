@@ -1191,15 +1191,17 @@ test('Done keeps accomplishments and evidence visible, offers no task-work contr
   await link(ctx);
   const board = ctx.app.board;
   const created = await board.createTask({ projectId: ctx.project.id, title: 'Keep unmerged', prompt: 'Add a file.' });
-  await board.moveTask(created.id, { column: 'executing', expectedRevision: 1 });
+  // This test supplies its own review/test evidence. Do not also start stage agents,
+  // whose confirmation can launch another test run while the Done assertion is underway.
+  await board.moveTask(created.id, { column: 'executing', decision: 'move', expectedRevision: 1 });
   const ws = await board.ensureTaskWorktree(created.id);
   await writeFile(join(ws.path, 'unmerged.txt'), 'keep this change\n');
   await board.delivery.commit(created.id, { message: 'unmerged work', confirm: true });
   const current = async () => (await serverTasks(ctx)).find(task => task.id === created.id);
-  await board.moveTask(created.id, { column: 'code_review', expectedRevision: (await current()).revision });
+  await board.moveTask(created.id, { column: 'code_review', decision: 'move', expectedRevision: (await current()).revision });
   const head = (await board.delivery.revision(created.id)).taskCommit;
   await board.delivery.recordReview({ id: 'same-task-review', taskId: created.id, review: { taskCommit: head }, promptRevision: 1 }, '```json\n{"verdict":"no_issues","findings":[]}\n```');
-  await board.moveTask(created.id, { column: 'testing', expectedRevision: (await current()).revision });
+  await board.moveTask(created.id, { column: 'testing', decision: 'move', expectedRevision: (await current()).revision });
   await board.delivery.setTestCommands(ctx.project.id, { commands: [{ command: `${process.execPath} -e "0"` }], expectedRevision: (await serverBoard(ctx)).projects[0].revision });
   await board.delivery.runTests(created.id, { confirm: true });
   await until(async () => (await current()).evidence?.tests?.status === 'passed', 'configured tests passed');
