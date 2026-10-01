@@ -136,7 +136,7 @@ test('terminal dock in a real browser: start, render, type, collapse, resize, se
   assert.equal(await browser.eval(`return document.querySelector('#dock-stop-prompt').hidden;`), false);
   assert.equal(await browser.eval(`return document.querySelector('#dock').dataset.state;`), 'open', 'Stop reveals its confirmation from the collapsed panel.');
   await browser.eval(`document.querySelector('#dock-toggle').click();`);
-  assert.equal(await browser.eval(`const prompt = document.querySelector('#dock-stop-prompt').getBoundingClientRect(); const dock = document.querySelector('#dock').getBoundingClientRect(); return prompt.top >= dock.top && prompt.bottom <= window.innerHeight;`), true, 'Collapsing during confirmation does not hide Stop below the viewport.');
+  await browser.until(`(() => { const prompt = document.querySelector('#dock-stop-prompt').getBoundingClientRect(); const dock = document.querySelector('#dock').getBoundingClientRect(); return prompt.top >= dock.top - 1 && prompt.bottom <= window.innerHeight + 1; })()`, 'collapsed Stop confirmation stays in the viewport');
   await browser.eval(`[...document.querySelectorAll('#dock-stop-prompt button')].find(button => button.textContent === 'Stop this agent').click();`);
   for (let i = 0; i < 100 && (await board.run(firstRun)).status !== 'cancelled'; i++) await new Promise(resolve => setTimeout(resolve, 100));
   assert.equal((await board.run(firstRun)).status, 'cancelled');

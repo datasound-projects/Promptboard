@@ -204,15 +204,22 @@ function setProjectCollapsed(collapsed, save = true) {
 }
 
 let boardFitFrame;
-function fitBoardHeight() {
+function fitBoardHeight(immediate = false) {
   if (typeof requestAnimationFrame !== 'function') return; // Non-visual test environments.
-  cancelAnimationFrame(boardFitFrame);
-  boardFitFrame = requestAnimationFrame(() => {
+  const measure = () => {
     const columns = $('#kanban-columns');
     if ($('#kanban-view').hidden || columns.hidden) return;
     const dockHeight = $('#dock').getBoundingClientRect().height;
     const top = columns.getBoundingClientRect().top + window.scrollY;
     columns.style.setProperty('--board-height', `${Math.max(120, window.innerHeight - top - dockHeight - 16)}px`);
+  };
+  // User resizing must take effect even when the browser throttles animation frames.
+  if (immediate === true) { measure(); return; }
+  // Coalesce refreshes without repeatedly cancelling a frame before it can run.
+  if (boardFitFrame != null) return;
+  boardFitFrame = requestAnimationFrame(() => {
+    boardFitFrame = null;
+    measure();
   });
 }
 function scrollBehavior() { return window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches ? 'auto' : 'smooth'; }

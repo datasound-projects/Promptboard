@@ -25,7 +25,7 @@ function applyDockHeight() {
   view.style.setProperty('--dock-height', `${dock.state === 'max' ? dock.height : height}px`);
   $('#dock-divider').setAttribute('aria-valuenow', String(height));
   $('#dock-divider').setAttribute('aria-valuemax', String(limit));
-  fitBoardHeight();
+  fitBoardHeight(true);
 }
 
 function setDockState(state, save = true) {
