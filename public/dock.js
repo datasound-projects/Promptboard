@@ -18,7 +18,9 @@ function dockPref(key, fallback) { try { return localStorage.getItem(key) ?? fal
 function applyDockHeight() {
   const view = $('#kanban-view');
   const limit = Math.max(160, window.innerHeight - 140);
-  const height = dock.state === 'collapsed' ? 44 : Math.max(160, Math.min(limit, dock.height));
+  const barHeight = Math.max(44, Math.ceil($('#dock .dock-bar').getBoundingClientRect().height));
+  const promptHeight = $('#dock-stop-prompt').hidden ? 0 : Math.ceil($('#dock-stop-prompt').getBoundingClientRect().height);
+  const height = dock.state === 'collapsed' ? barHeight + promptHeight + 1 : Math.max(Math.min(limit, barHeight + promptHeight + 80), Math.max(160, Math.min(limit, dock.height)));
   $('#dock').style.height = dock.state === 'max' ? '' : `${height}px`;
   view.style.setProperty('--dock-height', `${dock.state === 'max' ? dock.height : height}px`);
   $('#dock-divider').setAttribute('aria-valuenow', String(height));
@@ -37,7 +39,11 @@ function setDockState(state, save = true) {
   applyDockHeight();
   if (save) savePref(DOCK_STATE_KEY, state === 'max' ? 'open' : state);
   // A restored terminal must be refitted to its new size. Collapsing never stops a process.
-  nextFrame(() => fitSession(dock.sessions.get(dock.selected)));
+  nextFrame(() => {
+    const session = dock.sessions.get(dock.selected);
+    session?.tab.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+    fitSession(session);
+  });
 }
 
 function stripTerminal(text) {
@@ -337,7 +343,6 @@ function selectDockTab(id, focus = false) {
   $('#dock-stop').hidden = !session || session.ended || !DOCK_LIVE.has(session.run.status);
   $('#dock-copy').hidden = !session?.term;
   renderDockDetails(session);
-  dock.stopFor = null;
   if (session) nextFrame(() => { fitSession(session); if (focus) session.term?.focus(); });
 }
 
@@ -409,13 +414,15 @@ function stopSelected() {
   message.textContent = `Stop “${session.title}”? Files and output are kept.`;
   box.replaceChildren(message, confirm, keep);
   box.hidden = false;
+  applyDockHeight();
   confirm.focus();
-  const dismiss = () => { box.hidden = true; dock.stopFor = null; $('#dock-stop').disabled = false; };
+  const dismiss = () => { box.hidden = true; dock.stopFor = null; $('#dock-stop').disabled = false; applyDockHeight(); };
   keep.addEventListener('click', dismiss);
   confirm.addEventListener('click', async () => {
     if (confirm.disabled) return;
     confirm.disabled = true; keep.disabled = true; $('#dock-stop').disabled = true;
     message.textContent = `Stopping “${session.title}”…`;
+    applyDockHeight();
     const { response, data } = await api(`/api/runs/${encodeURIComponent(session.runId)}/cancel`, { method: 'POST', body: { confirm: true }, timeoutMs: 15000 }).catch(() => ({ response: { ok: false }, data: {} }));
     if (response.ok) {
       dismiss();
@@ -426,6 +433,7 @@ function stopSelected() {
       message.textContent = data.error || 'The agent could not be stopped. Try again.';
       confirm.disabled = false; keep.disabled = false; $('#dock-stop').disabled = false;
       confirm.textContent = 'Retry stop';
+      applyDockHeight();
     }
   });
 }

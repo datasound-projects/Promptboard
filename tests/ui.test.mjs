@@ -1597,9 +1597,15 @@ test('Stop stays visible from a collapsed dock, survives refresh and tab switche
   assert.equal(win.promptboardDock.state, 'open');
   assert.equal(prompt.hidden, false);
   assert.equal(prompt.querySelector('button'), win.document.activeElement);
+  $('#dock-toggle').click();
+  assert.equal(win.promptboardDock.state, 'collapsed');
+  assert.equal(prompt.hidden, false, 'Collapsing during confirmation keeps the independent Stop controls.');
   await win.__pbTest.loadBoard(); await ctx.idle();
   assert.equal(prompt.hidden, false, 'Refreshing the board does not erase the confirmation.');
   $('#dock-tab-run-b').click();
+  const originalConfirmation = prompt.querySelector('button');
+  $('#dock-stop').click();
+  assert.equal(prompt.querySelector('button'), originalConfirmation, 'Another Stop click cannot replace a pending confirmation after switching tabs.');
   prompt.querySelector('button').click();
   await until(() => prompt.querySelector('button').textContent === 'Retry stop', 'visible stop error');
   assert.equal(prompt.hidden, false);
