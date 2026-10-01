@@ -1508,6 +1508,12 @@ test('Kanban project and stage agent selection is visible, persists, and launche
   if (!$('#project-body').hidden) $('#project-toggle').click();
   assert.equal($('#project-body').hidden, true);
   assert.equal($('#project-context').hidden, false, 'Agent selection stays visible with project settings collapsed.');
+  assert.equal($('#project-agent-panel').hidden, true);
+  assert.equal($('#project-location').hidden, true);
+  $('#project-files-toggle').click();
+  assert.equal($('#project-location').hidden, false);
+  $('#project-agent-toggle').click();
+  assert.equal($('#project-agent-panel').hidden, false);
   assert.match($('#project-location').textContent, new RegExp(ctx.repo.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.match($('#project-location').textContent, /Target branchtrunk/);
   choose('#project-agent-fields [data-field="provider"]', 'codex');
@@ -1553,7 +1559,15 @@ test('Kanban project and stage agent selection is visible, persists, and launche
   const copy = [...facts.querySelectorAll('button')].find(button => button.textContent === 'Copy worktree');
   copy.click(); await ctx.idle();
   assert.equal(ctx.copied(), run.workspacePath);
+  const taskItem = cardItem(ctx, 'Selected agent');
+  taskItem.querySelector('.kanban-more-toggle').click();
+  column($, 'executing').scrollTop = 81;
+  await win.__pbTest.loadBoard(); await ctx.idle();
+  assert.equal(cardItem(ctx, 'Selected agent').querySelector('.card-workspace').open, true, 'Board refresh keeps open file details.');
+  assert.equal(cardItem(ctx, 'Selected agent').querySelector('.kanban-more').hidden, false, 'Board refresh keeps the action menu open.');
+  assert.equal(column($, 'executing').scrollTop, 81, 'Board refresh does not jump to the first card.');
   // A new default affects future runs; the existing run still identifies Codex accurately.
+  $('#project-agent-toggle').click();
   choose('#project-agent-fields [data-field="provider"]', 'claude'); await ctx.idle();
   submitForm(ctx, '#project-agent-form'); await ctx.idle();
   assert.equal((await ctx.app.board.run(run.id)).config.provider, 'codex');
@@ -1561,6 +1575,65 @@ test('Kanban project and stage agent selection is visible, persists, and launche
   const reload = await setup(t, { executor: ctx.executor, hash: '#/kanban', dataDir: ctx.dataDir }); await reload.idle();
   assert.equal(reload.$('#project-agent-fields [data-field="provider"]').value, 'claude');
   assert.match(reload.$('#kanban-columns [data-column="code_review"] .column-agent').textContent, /haiku/);
+});
+
+test('Stop stays visible from a collapsed dock, survives refresh and tab switches, retries errors, and stops only the confirmed run', { skip: process.platform === 'win32' }, async t => {
+  const ctx = await agentFixture(t);
+  const { $, win } = ctx;
+  const cancel = ctx.executor.cancel;
+  let attempts = 0, release;
+  const gate = new Promise(resolve => { release = resolve; });
+  t.after(() => release());
+  ctx.executor.cancel = async runId => {
+    attempts++;
+    if (attempts === 1) throw new Error('Simulated stop failure.');
+    await gate;
+    await cancel(runId);
+  };
+  $('#dock-tab-run-a').click();
+  if (win.promptboardDock.state !== 'collapsed') $('#dock-toggle').click();
+  $('#dock-stop').click();
+  const prompt = $('#dock-stop-prompt');
+  assert.equal(win.promptboardDock.state, 'open');
+  assert.equal(prompt.hidden, false);
+  assert.equal(prompt.querySelector('button'), win.document.activeElement);
+  $('#dock-toggle').click();
+  assert.equal(win.promptboardDock.state, 'collapsed');
+  assert.equal(prompt.hidden, false, 'Collapsing during confirmation keeps the independent Stop controls.');
+  await win.__pbTest.loadBoard(); await ctx.idle();
+  assert.equal(prompt.hidden, false, 'Refreshing the board does not erase the confirmation.');
+  $('#dock-tab-run-b').click();
+  const originalConfirmation = prompt.querySelector('button');
+  $('#dock-stop').click();
+  assert.equal(prompt.querySelector('button'), originalConfirmation, 'Another Stop click cannot replace a pending confirmation after switching tabs.');
+  prompt.querySelector('button').click();
+  await until(() => prompt.querySelector('button').textContent === 'Retry stop', 'visible stop error');
+  assert.equal(prompt.hidden, false);
+  const retry = prompt.querySelector('button'); retry.click(); retry.click();
+  await until(() => attempts === 2, 'one retry request');
+  assert.equal(retry.disabled, true);
+  release();
+  await until(() => prompt.hidden, 'stop completed');
+  assert.equal(attempts, 2, 'Repeated clicks do not send duplicate stop requests.');
+  assert.equal((await ctx.app.board.run('run-a')).status, 'cancelled');
+  assert.equal((await ctx.app.board.run('run-b')).status, 'waiting_for_input', 'Switching tabs never changes the confirmed stop target.');
+  assert.equal(win.promptboardDock.sessions.get('run-a').ended, true);
+});
+
+test('Run details preserve immediate disclosure changes across refreshes and tab switches', { skip: process.platform === 'win32' }, async t => {
+  const ctx = await agentFixture(t);
+  const { $, win } = ctx;
+  $('#dock-tab-run-a').click();
+  $('#dock-details .dock-context').open = true;
+  win.PromptboardDock.sync(); // Native toggle events have not fired yet.
+  assert.equal($('#dock-details .dock-context').open, true);
+  $('#dock-tab-run-b').click();
+  assert.equal($('#dock-details .dock-context').open, false, 'Disclosure is per run.');
+  $('#dock-tab-run-a').click();
+  assert.equal($('#dock-details .dock-context').open, true);
+  $('#dock-details .dock-context').open = false;
+  win.PromptboardDock.sync();
+  assert.equal($('#dock-details .dock-context').open, false);
 });
 
 test('Kanban model selection keeps CLI default while discovery is pending and ignores replies after switching to inheritance', { skip: process.platform === 'win32' }, async t => {

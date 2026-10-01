@@ -94,6 +94,7 @@ export class Supervisor {
 
   async #fail(runId, error) {
     this.#endPending(runId);
+    if ((await this.board.run(runId).catch(() => null))?.status === 'cancelled') return;
     const code = typeof error?.code === 'string' ? error.code : 'CLI_FAILED';
     const reason = error instanceof AgentError ? error.message : FAILURE_MESSAGES[code] || 'The agent session could not start.';
     await this.board.updateRun(runId, { status: 'failed', errorCode: code, reason, endedAt: Date.now() }).catch(() => {});
@@ -119,6 +120,8 @@ export class Supervisor {
     await writeFile(eventsFile, '', { mode: 0o600 });
     const sessionId = randomUUID();
     const built = await buildSession({ provider: run.config.provider, stage: run.stage, config: run.config, message, runDir, eventsFile, sessionId, nodePath: this.nodePath });
+    // Cancellation can arrive during CLI discovery or session preparation.
+    if ((await this.board.run(runId)).status !== 'queued') { this.#endPending(runId); return; }
     const log = createWriteStream(join(runDir, 'output.log'), { flags: 'a', mode: 0o600 });
     log.on('error', () => {});
     const proc = pty.spawn(executable.command, [...executable.prefix, ...built.args], {
@@ -128,9 +131,10 @@ export class Supervisor {
     const session = { runId, taskId: run.taskId, stage: run.stage, provider: run.config.provider, proc, seq: 0, ring: [], ringBytes: 0,
       subscribers: new Set(), log, logBytes: 0, eventsFile, eventsOffset: 0, runDir, paste: built.paste, turns: 0, status: 'running', startedAt: Date.now(), sessionId };
     this.sessions.set(runId, session);
+    session.exited = new Promise(resolve => { session.resolveExit = resolve; });
     // Listen before any await so early output and fast exits are never lost.
     proc.onData(data => this.#output(session, data));
-    proc.onExit(({ exitCode, signal }) => { this.#exited(session, exitCode, signal).catch(() => {}); });
+    proc.onExit(({ exitCode, signal }) => { this.#exited(session, exitCode, signal).catch(() => {}).finally(() => session.resolveExit()); });
     // Streams opened while the run was queued attach now.
     for (const waiter of this.pending.get(runId) || []) waiter.attach();
     this.pending.delete(runId);
@@ -234,7 +238,7 @@ export class Supervisor {
   }
 
   async #signal(session, signal) {
-    if (signal.kind === 'ignore' || !session.proc) return;
+    if (signal.kind === 'ignore' || !session.proc || session.cancelled) return;
     if (!session.sawEvent) { session.sawEvent = true; clearTimeout(session.watchdog); await this.board.updateRun(session.runId, { lifecycle: 'events-received', waitingReason: '' }).catch(() => {}); }
     if (signal.kind === 'started') {
       if (signal.sessionId) await this.board.updateRun(session.runId, { providerSessionId: signal.sessionId }).catch(() => {});
@@ -324,16 +328,40 @@ export class Supervisor {
 
   /** Stop one run. Only that run's own process group is signalled. */
   async cancel(runId) {
+    const run = await this.board.run(runId);
+    const stopping = this.sessions.get(runId)?.cancelPromise;
+    if (stopping) return stopping; // Also share a stop while final status is being saved.
+    if (!ACTIVE.has(run.status)) return; // Stopping an already-ended run is harmless.
     const queued = this.queue.findIndex(item => item.runId === runId);
-    if (queued >= 0) {
-      this.queue.splice(queued, 1);
+    if (queued >= 0 || ((run.status === 'queued' || this.launching?.has(runId)) && !this.sessions.get(runId)?.proc)) {
+      if (queued >= 0) this.queue.splice(queued, 1);
       await this.board.updateRun(runId, { status: 'cancelled', reason: 'Cancelled before it started.', endedAt: Date.now() });
       this.#endPending(runId);
+      // A spawn may have raced the state write; stop that owned process too.
+      const started = this.sessions.get(runId);
+      if (started?.proc) await this.#cancelSession(started);
       return;
     }
     const session = this.#session(runId);
+    await this.#cancelSession(session);
+  }
+
+  async #cancelSession(session) {
+    if (session.cancelPromise) return session.cancelPromise;
     session.cancelled = true;
-    this.#kill(session);
+    clearTimeout(session.pasteTimer);
+    session.cancelPromise = (async () => {
+      this.#kill(session);
+      let timer;
+      try {
+        await Promise.race([session.exited, new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new AgentError('The agent has not exited yet. Try Stop again; its files and output are kept.', 'STOP_TIMEOUT', 409)), 7000);
+        })]);
+        if (ACTIVE.has((await this.board.run(session.runId)).status)) throw new AgentError('The agent exited, but its final status could not be saved. Refresh the board before retrying.', 'STOP_STATE_UNSAVED', 409);
+      } finally { clearTimeout(timer); }
+    })();
+    try { await session.cancelPromise; }
+    catch (error) { session.cancelPromise = null; throw error; }
   }
 
   /**

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fix: Stop reveals its confirmation from a collapsed dock, keeps the selected run as its target across tab switches, and displays retryable errors. Cancellation also works during startup; success waits for the owned process to exit, with the existing forced-stop fallback for an unresponsive agent. Files and logs are kept.
+- Kanban: a compact project bar opens agent, file, and settings panels on demand. Cards hide prompt metadata and secondary actions until needed; terminal paths and usage sit under Run details. The board fits around the resized terminal, toolbar actions wrap on narrow screens, and background refreshes preserve column scroll positions, open card controls, and per-run details.
+
 - Kanban: project provider, model, and effort are available directly above the board, even when Project settings is collapsed. Each agent column links to its stage settings and displays its resolved agent. Compose settings remain separate; changing settings affects future runs only.
 - Kanban: repository, target branch, task branch, and worktree paths are shown with copy actions on the board, cards, task details, and terminal dock. Prompt source and the actual run agent are labelled separately.
 - Fix: terminal details and connection feedback no longer overlap the CLI output. Tabs always show provider and model; model selection ignores stale discovery results and uses the selected model's reported effort options.

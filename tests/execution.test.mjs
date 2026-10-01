@@ -127,6 +127,58 @@ async function world(t, { limit = 1, providers = ['claude', 'codex', 'gemini'], 
 }
 const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
 
+test('cancel during launch prevents a spawn, and repeated cancellation is harmless', { skip }, async t => {
+  const w = await world(t);
+  let release, entered;
+  const gate = new Promise(resolve => { release = resolve; });
+  const started = new Promise(resolve => { entered = resolve; });
+  t.after(() => release());
+  const resolveExecutable = w.supervisor.resolver;
+  w.supervisor.resolver = async provider => {
+    if (w.supervisor.launching?.size) { entered(); await gate; }
+    return resolveExecutable(provider);
+  };
+  const task = await w.task('Cancel startup', 'Do not spawn.');
+  const run = await w.board.requestRun(task.id, { stage: 'executing', consent: true, config: { provider: 'codex' } });
+  await started;
+  await w.supervisor.cancel(run.id);
+  assert.equal((await w.run(run.id)).status, 'cancelled');
+  release();
+  await until(() => !w.supervisor.launching?.has(run.id), 'cancelled launch settled');
+  assert.deepEqual(await w.reports(), [], 'Cancelled startup never starts the CLI.');
+  await w.supervisor.cancel(run.id);
+  assert.equal((await w.run(run.id)).status, 'cancelled');
+});
+
+test('Stop waits for a stubborn agent to exit, escalates once, and keeps its files and logs', { skip }, async t => {
+  const w = await world(t);
+  const task = await w.task('Stubborn agent', 'IGNORE_TERM WRITE_FILE');
+  const run = await w.board.requestRun(task.id, { stage: 'executing', consent: true, config: { provider: 'codex' } });
+  await until(async () => (await w.run(run.id)).status === 'waiting_for_input', 'stubborn agent ready');
+  const [report] = await w.reports();
+  let exitReached, releaseExit;
+  const finalWrite = new Promise(resolve => { exitReached = resolve; });
+  const finish = new Promise(resolve => { releaseExit = resolve; });
+  t.after(() => releaseExit());
+  const updateRun = w.board.updateRun.bind(w.board);
+  w.board.updateRun = async (id, fields) => {
+    if (id === run.id && fields.status === 'cancelled') { exitReached(); await finish; }
+    return updateRun(id, fields);
+  };
+  const start = Date.now();
+  const first = w.supervisor.cancel(run.id);
+  await finalWrite;
+  assert.equal(alive(report.pid), false);
+  const second = w.supervisor.cancel(run.id); // The process exited; status is still being saved.
+  releaseExit();
+  await Promise.all([first, second]);
+  assert.ok(Date.now() - start >= 2500, 'An ignored SIGTERM reaches the SIGKILL fallback.');
+  assert.equal(alive(report.pid), false, 'Successful Stop means the agent exited.');
+  assert.equal((await w.run(run.id)).status, 'cancelled');
+  assert.equal(await readFile(join(run.workspacePath, 'agent-output.txt'), 'utf8'), 'written by the agent\n');
+  assert.match(await w.supervisor.artifact(run.id, 'output'), /fake codex started/);
+});
+
 test('planning captures a plan outside the worktree, cannot implement, and approval is tied to the task text', { skip }, async t => {
   const w = await world(t);
   const task = await w.task('Plan it', 'Add a WRITE_FILE feature.', 'planning');

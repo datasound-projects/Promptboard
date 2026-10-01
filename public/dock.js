@@ -17,10 +17,15 @@ function dockPref(key, fallback) { try { return localStorage.getItem(key) ?? fal
 
 function applyDockHeight() {
   const view = $('#kanban-view');
-  const height = dock.state === 'collapsed' ? 44 : dock.height;
+  const limit = Math.max(160, window.innerHeight - 140);
+  const barHeight = Math.max(44, Math.ceil($('#dock .dock-bar').getBoundingClientRect().height));
+  const promptHeight = $('#dock-stop-prompt').hidden ? 0 : Math.ceil($('#dock-stop-prompt').getBoundingClientRect().height);
+  const height = dock.state === 'collapsed' ? barHeight + promptHeight + 1 : Math.max(Math.min(limit, barHeight + promptHeight + 80), Math.max(160, Math.min(limit, dock.height)));
   $('#dock').style.height = dock.state === 'max' ? '' : `${height}px`;
   view.style.setProperty('--dock-height', `${dock.state === 'max' ? dock.height : height}px`);
-  $('#dock-divider').setAttribute('aria-valuenow', String(dock.height));
+  $('#dock-divider').setAttribute('aria-valuenow', String(height));
+  $('#dock-divider').setAttribute('aria-valuemax', String(limit));
+  fitBoardHeight(true);
 }
 
 function setDockState(state, save = true) {
@@ -34,7 +39,11 @@ function setDockState(state, save = true) {
   applyDockHeight();
   if (save) savePref(DOCK_STATE_KEY, state === 'max' ? 'open' : state);
   // A restored terminal must be refitted to its new size. Collapsing never stops a process.
-  nextFrame(() => fitSession(dock.sessions.get(dock.selected)));
+  nextFrame(() => {
+    const session = dock.sessions.get(dock.selected);
+    session?.tab.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+    fitSession(session);
+  });
 }
 
 function stripTerminal(text) {
@@ -254,6 +263,11 @@ function updateSessionTab(session) {
 /** Facts about the selected run, from the board's run record only. */
 function renderDockDetails(session) {
   const details = $('#dock-details');
+  // Native toggle events are asynchronous; capture the DOM before a refresh replaces it.
+  const previous = dock.sessions.get(details.dataset.runId);
+  const previousContext = details.querySelector('.dock-context');
+  if (previous && previousContext) previous.detailsOpen = previousContext.open;
+  details.dataset.runId = session?.runId || '';
   details.hidden = !session;
   if (!session) { $('#dock-connection').hidden = true; return; }
   const run = session.run; // Merged from the board in syncDock and from stream status items.
@@ -263,8 +277,17 @@ function renderDockDetails(session) {
   summary.append(`${agentModel(run)} · ${columnTitle(run.stage, project)} · ${agentStateText(shown)} · `, elapsedSpan(run));
   const location = document.createElement('div'); location.className = 'dock-location';
   location.append(locationFact('Repository', project?.repository?.root), locationFact('Task branch', run.branch), locationFact('Worktree', run.workspacePath));
-  details.replaceChildren(summary, paragraph(agentActivity(shown), 'dock-run-activity'), location,
+  const context = document.createElement('details'); context.className = 'dock-context';
+  context.open = Boolean(session.detailsOpen);
+  const toggle = document.createElement('summary'); toggle.textContent = 'Run details';
+  context.append(toggle, paragraph(agentActivity(shown), 'dock-run-activity'), location,
     paragraph(usageText(run) || (run.config?.provider === 'gemini' ? 'Usage: not reported by Gemini CLI' : 'Usage: not reported yet'), 'dock-usage'));
+  context.addEventListener('toggle', () => {
+    if (!context.isConnected) return;
+    session.detailsOpen = context.open;
+    nextFrame(() => fitSession(session));
+  });
+  details.replaceChildren(summary, context);
   details.title = details.textContent;
   renderDockConnection(session);
 }
@@ -325,7 +348,6 @@ function selectDockTab(id, focus = false) {
   $('#dock-stop').hidden = !session || session.ended || !DOCK_LIVE.has(session.run.status);
   $('#dock-copy').hidden = !session?.term;
   renderDockDetails(session);
-  dock.stopFor = null;
   if (session) nextFrame(() => { fitSession(session); if (focus) session.term?.focus(); });
 }
 
@@ -386,18 +408,38 @@ function revealTask(taskId) {
 
 function stopSelected() {
   const session = dock.sessions.get(dock.selected);
-  if (!session) return;
+  if (!session || session.ended || dock.stopFor) return;
+  if (dock.state === 'collapsed') setDockState('open');
+  dock.stopFor = session.runId;
   const confirm = document.createElement('button'); confirm.type = 'button'; confirm.className = 'danger'; confirm.textContent = 'Stop this agent';
   const keep = document.createElement('button'); keep.type = 'button'; keep.textContent = 'Keep running';
-  const box = $('#dock-note');
-  box.replaceChildren(document.createTextNode(`Stop “${session.title}”? The process ends; its worktree and output are kept. `), confirm, document.createTextNode(' '), keep);
+  const box = $('#dock-stop-prompt');
+  const message = document.createElement('span');
+  message.setAttribute('role', 'status');
+  message.textContent = `Stop “${session.title}”? Files and output are kept.`;
+  box.replaceChildren(message, confirm, keep);
   box.hidden = false;
-  keep.addEventListener('click', () => dockNote(''));
+  applyDockHeight();
+  confirm.focus();
+  const dismiss = () => { box.hidden = true; dock.stopFor = null; $('#dock-stop').disabled = false; applyDockHeight(); };
+  keep.addEventListener('click', dismiss);
   confirm.addEventListener('click', async () => {
-    dockNote('Stopping…');
+    if (confirm.disabled) return;
+    confirm.disabled = true; keep.disabled = true; $('#dock-stop').disabled = true;
+    message.textContent = `Stopping “${session.title}”…`;
+    applyDockHeight();
     const { response, data } = await api(`/api/runs/${encodeURIComponent(session.runId)}/cancel`, { method: 'POST', body: { confirm: true }, timeoutMs: 15000 }).catch(() => ({ response: { ok: false }, data: {} }));
-    dockNote(response.ok ? '' : data.error || 'The agent could not be stopped.');
-    if (response.ok) { announce(`Stopped ${session.title}.`); if (data.board) { board = data.board; renderBoard(); } }
+    if (response.ok) {
+      dismiss();
+      if (data.board) { acceptBoard(data.board); renderBoard(); }
+      announce(`Stopped ${session.title}. Files and output are kept.`);
+      $('#dock-toggle').focus();
+    } else {
+      message.textContent = data.error || 'The agent could not be stopped. Try again.';
+      confirm.disabled = false; keep.disabled = false; $('#dock-stop').disabled = false;
+      confirm.textContent = 'Retry stop';
+      applyDockHeight();
+    }
   });
 }
 
@@ -411,21 +453,33 @@ async function copySelection() {
 
 function startDividerDrag(event) {
   event.preventDefault();
-  const move = e => { dock.height = Math.max(120, Math.min(window.innerHeight - 160, window.innerHeight - e.clientY)); applyDockHeight(); };
+  const move = e => { dock.height = Math.max(160, Math.min(window.innerHeight - 140, window.innerHeight - e.clientY)); applyDockHeight(); };
   const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); savePref(DOCK_HEIGHT_KEY, String(dock.height)); fitSession(dock.sessions.get(dock.selected)); };
   window.addEventListener('pointermove', move);
   window.addEventListener('pointerup', up);
 }
 
 (function initDock() {
-  dock.height = Math.max(120, Math.min(900, Number(dockPref(DOCK_HEIGHT_KEY, '320')) || 320));
+  dock.height = Math.max(160, Math.min(900, Number(dockPref(DOCK_HEIGHT_KEY, '320')) || 320));
   $('#dock-toggle').addEventListener('click', () => setDockState(dock.state === 'collapsed' ? 'open' : 'collapsed'));
   $('#dock-max').addEventListener('click', () => setDockState(dock.state === 'max' ? 'open' : 'max'));
   $('#dock-tab-activity').addEventListener('click', () => selectDockTab('activity'));
   $('#dock-stop').addEventListener('click', stopSelected);
   $('#dock-copy').addEventListener('click', copySelection);
   $('#dock-divider').addEventListener('pointerdown', startDividerDrag);
+  if (typeof ResizeObserver === 'function') {
+    const controls = new ResizeObserver(() => {
+      applyDockHeight();
+      const session = dock.sessions.get(dock.selected);
+      session?.tab.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+      fitSession(session);
+    });
+    controls.observe($('#dock .dock-bar'));
+    controls.observe($('#dock-tabs'));
+    controls.observe($('#dock-stop-prompt'));
+  }
   window.addEventListener('resize', () => nextFrame(() => {
+    applyDockHeight();
     const session = dock.sessions.get(dock.selected);
     session?.tab.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
     fitSession(session);
@@ -433,7 +487,7 @@ function startDividerDrag(event) {
   $('#dock-divider').addEventListener('keydown', event => {
     if (!['ArrowUp', 'ArrowDown'].includes(event.key)) return;
     event.preventDefault();
-    dock.height = Math.max(120, Math.min(window.innerHeight - 160, dock.height + (event.key === 'ArrowUp' ? 24 : -24)));
+    dock.height = Math.max(160, Math.min(window.innerHeight - 140, dock.height + (event.key === 'ArrowUp' ? 24 : -24)));
     applyDockHeight(); savePref(DOCK_HEIGHT_KEY, String(dock.height)); fitSession(dock.sessions.get(dock.selected));
   });
   $('#dock-tabs').addEventListener('keydown', event => {

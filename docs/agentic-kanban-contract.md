@@ -172,6 +172,7 @@ A stage becomes `succeeded` only through `POST /api/runs/:id/confirm` after a fi
 **Endpoints.** These need the page token, local Host and Origin, and bounded payloads (input 64 KiB, resize 20–500 × 5–300):
 - `GET /api/runs/:id`, `/stream`, `/plan`, `/last-message`, `/output`
 - `POST /api/runs/:id/input`, `/resize`, `/cancel` (needs `confirm: true`), `/confirm`
+- Cancellation handles queued, starting, and live runs. Repeated requests are harmless; a live Stop waits for process exit and final recorded status, with a bounded timeout and the existing SIGTERM → SIGKILL fallback. It never removes worktree files or output. Stop confirmation is outside the collapsible dock body, pinned to the originally selected run.
 - `PATCH /api/settings`
 
 **Recovery and shutdown.**
@@ -184,7 +185,8 @@ A stage becomes `succeeded` only through `POST /api/runs/:id/confirm` after a fi
 
 ## Board interface (PB-03)
 
-- The always-visible project context shows the repository and target branch, with provider/model/effort selection for the project's default agent. The stage agent label opens the matching Workflow section. Stage overrides take priority over the project default, then the global default; Compose provider choices do not change Kanban configuration. Saved changes apply to future runs.
+- The compact project bar shows the name, target branch, and default agent. Its agent button opens provider/model/effort selection; Files opens copyable repository details; Settings opens the project configuration. The stage agent label opens the matching Workflow section. Stage overrides take priority over the project default, then the global default; Compose provider choices do not change Kanban configuration. Saved changes apply to future runs.
+- The board adapts to viewport size, expanded project panels, and the resizable terminal. Secondary card metadata/actions and terminal paths/usage are disclosed on demand. Refreshes keep column scroll positions and open card controls; action buttons wrap rather than clip on narrow screens.
 - Cards distinguish prompt-source metadata from the actual run provider. Workspace facts and copy actions are available on cards and in task details; the dock shows the selected run's provider, model, repository, branch, and worktree.
 - The dock reserves separate layout rows for run details, connection feedback, terminal output, and notices. A missing live session replays its bounded recorded log through the output endpoint. WebGL failures fall back to text output; no output is interpreted as HTML.
 

@@ -185,8 +185,8 @@
     <main class="workspace" id="kanban-view" tabindex="-1" hidden>
       <section class="intro intro-compact" aria-labelledby="kanban-title">
         <div>
-          <h1 id="kanban-title">Plan the work. <span>Brief your agent one card at a time.</span></h1>
-          <p class="intro-description">Move each task from To Do to Done. Agents can work in every stage from Planning to Merge, only in the task's own worktree, and only when you start them or turn on automatic start. Merges are fast-forward only; pull requests are pushed only when you confirm.</p>
+          <h1 id="kanban-title">Plan the work.</h1>
+          <p class="intro-description">One task at a time. Plan, build, review, and merge.</p>
         </div>
         <figure class="mascot"><img src="/kanban-mascot.png" alt="A black and white cartoon girl taking a bite out of a pixel-art creature" width="112" height="112"><figcaption>One bite at a time.</figcaption></figure>
       </section>
@@ -194,16 +194,25 @@
       <p class="storage-warning" id="execution-status" role="status" hidden></p>
       <p class="storage-warning board-warning" role="alert" hidden></p>
       <section class="card project-context" id="project-context" aria-labelledby="project-context-heading" hidden>
-        <div class="project-context-heading"><h2 id="project-context-heading">Project agent and files</h2><button type="button" class="text-button" id="project-stages-open">Agents per stage…</button></div>
-        <div id="project-location" class="project-location"></div>
+        <div class="project-context-heading">
+          <div class="project-identity"><h2 id="project-context-heading">Project</h2><span id="project-target" class="context-target"></span></div>
+          <div class="project-context-actions">
+            <button type="button" class="context-agent" id="project-agent-toggle" aria-expanded="false" aria-controls="project-agent-panel">Project agent</button>
+            <button type="button" class="text-button" id="project-files-toggle" aria-expanded="false" aria-controls="project-location">Files</button>
+            <button type="button" class="text-button collapse-toggle" id="project-toggle" aria-expanded="false" aria-controls="project-body" aria-label="Expand project settings">Settings <span aria-hidden="true">+</span></button>
+          </div>
+        </div>
+        <div id="project-location" class="project-location" hidden></div>
         <form id="project-agent-form">
+          <div id="project-agent-panel" hidden>
           <div id="project-agent-fields"></div>
-          <div class="project-agent-actions"><p class="note" id="project-agent-summary"></p><button type="submit" class="secondary-button" id="project-agent-save">Save project agent</button></div>
+          <div class="project-agent-actions"><p class="note" id="project-agent-summary"></p><button type="button" class="text-button" id="project-stages-open">Agents per stage…</button><button type="submit" class="secondary-button" id="project-agent-save">Save project agent</button></div>
           <p class="inline-error" id="project-agent-error" role="alert" hidden></p>
+          </div>
         </form>
       </section>
       <section class="card kanban-projects" aria-labelledby="projects-heading">
-        <div class="card-heading project-heading"><div><h2 id="projects-heading">Project settings</h2><span class="project-summary" id="project-summary" hidden></span></div><button type="button" class="icon-button collapse-toggle" id="project-toggle" aria-expanded="true" aria-controls="project-body" aria-label="Collapse project settings" title="Collapse project settings"><span aria-hidden="true">−</span></button></div>
+        <h2 id="projects-heading" class="sr-only">Project settings</h2><span class="project-summary sr-only" id="project-summary" hidden></span>
         <div id="project-body">
         <div class="kanban-toolbar">
           <div class="toolbar-cell">
@@ -272,7 +281,7 @@
       </section>
       <footer class="main-footer"><span>PREPARED FOR AGENTS. RUNS NEED YOUR CONFIRMATION.</span><span>Saved by the local app <span aria-hidden="true">·</span> Human review required</span></footer>
       <section class="dock" id="dock" aria-labelledby="dock-heading" data-state="collapsed">
-        <div class="dock-divider" id="dock-divider" role="separator" aria-orientation="horizontal" aria-label="Resize the agent sessions panel" tabindex="0" aria-valuemin="120" aria-valuemax="900" aria-valuenow="320"></div>
+        <div class="dock-divider" id="dock-divider" role="separator" aria-orientation="horizontal" aria-label="Resize the agent sessions panel" tabindex="0" aria-valuemin="160" aria-valuemax="900" aria-valuenow="320"></div>
         <div class="dock-bar">
           <h2 class="sr-only" id="dock-heading">Agent sessions</h2>
           <div class="dock-tabs" role="tablist" aria-label="Agent sessions" id="dock-tabs">
@@ -286,6 +295,7 @@
             <button type="button" class="text-button" id="dock-toggle" aria-expanded="false" aria-controls="dock-body">Expand</button>
           </div>
         </div>
+        <div class="dock-stop-prompt" id="dock-stop-prompt" role="group" aria-label="Stop agent confirmation" hidden></div>
         <div class="dock-body" id="dock-body" hidden>
           <div class="dock-details" id="dock-details" hidden></div>
           <p class="dock-connection" id="dock-connection" role="status" hidden></p>

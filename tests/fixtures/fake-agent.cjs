@@ -41,6 +41,7 @@ if (provider === 'claude') {
   };
 }
 
+if (prompt.includes('IGNORE_TERM')) process.on('SIGTERM', () => {});
 process.stdout.write(`fake ${provider} started in ${process.cwd()}\r\n`);
 // Report terminal size changes so tests can see resizes reach the process.
 process.on('SIGWINCH', () => process.stdout.write(`size ${process.stdout.columns}x${process.stdout.rows}\r\n`));
