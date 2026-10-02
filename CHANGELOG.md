@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Usage: add a minimal dashboard beside Settings with one-minute refresh, local per-model tokens and tool counts, 30-day charts, native Codex allowance, and reported Claude status-line allowance/cost. Unavailable and stale metrics are explicit; credentials and transcript text are never returned.
+
 - Fix: delete inactive or completed cards even when worktrees are dirty or missing. Card deletion keeps files and branches, records retained worktree locations, and removes Autopilot queue references atomically. Active runs still require stopping first.
 - Kanban sidebar: compact project actions and rows, quieter selection and agent information, no decorative footer or pulsing indicators.
 

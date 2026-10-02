@@ -28,6 +28,7 @@ test('terminal dock in a real browser: start, render, type, collapse, resize, se
   git(root, 'init', '-q', '-b', 'trunk'); git(root, 'config', 'user.email', 't@e'); git(root, 'config', 'user.name', 'T');
   await writeFile(join(root, 'a.txt'), 'a\n'); git(root, 'add', '.'); git(root, 'commit', '-q', '-m', 'init');
   const app = await startServer({ port: 0, dataDir: await temp('pb-browser-data-'), detector: async () => [],
+    usageReader: { get: async () => ({ updatedAt: Date.now(), providers: [{ id: 'codex', name: 'Codex', sessions: 12, inputTokens: 182000, cachedTokens: 64000, outputTokens: 21000, costUSD: null, costNote: 'Not reported by this CLI.', limits: { status: 'live', checkedAt: Date.now(), windows: [{ label: 'Primary', remainingPercent: 74, usedPercent: 26, windowMinutes: 300, resetsAt: new Date(Date.now() + 3600000).toISOString() }] }, models: [{ model: 'gpt-test', inputTokens: 182000, cachedTokens: 64000, outputTokens: 21000 }], tools: [{ name: 'exec_command', count: 48 }, { name: 'apply_patch', count: 21 }], daily: Array.from({ length: 30 }, (_, i) => ({ day: `Day ${i+1}`, tokens: (i % 7 + 1) * 1300 })) }] }) },
     catalogReader: async provider => ({ provider, defaultModel: `${provider}-test-model`, models: [{ id: `${provider}-test-model`, name: 'Test model', efforts: ['low', 'high'] }] }) });
   t.after(() => app.close());
   const board = app.board;
@@ -86,6 +87,13 @@ test('terminal dock in a real browser: start, render, type, collapse, resize, se
       await browser.eval(`document.querySelector('#set-agent-model').scrollIntoView({ block: 'center' });`);
       await shot(`settings-agent-${width}-${theme}`);
       await browser.eval(`document.querySelector('#app-settings-close').click(); document.querySelector('#settings-agents-section').open = false;`);
+      await browser.eval(`document.querySelector('#usage-open').click();`);
+      await browser.until(`document.querySelector('#usage-providers progress')`, 'usage data loaded');
+      assert.equal(await browser.eval(`const d = document.querySelector('#usage-dialog'); const r = d.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && d.scrollWidth <= d.clientWidth && document.querySelector('#usage-providers progress').value === 74;`), true, 'Usage is readable and fits both viewport sizes.');
+      await browser.eval(`document.querySelector('#usage-providers details').open = true;`);
+      await shot(`usage-${width}-${theme}`);
+      await browser.eval(`document.querySelector('#usage-close').click();`);
+      assert.equal(await browser.eval(`return document.activeElement.id;`), 'usage-open', 'Usage restores keyboard focus.');
     }
   }
   await browser.resize(1280, 900);

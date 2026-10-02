@@ -944,3 +944,30 @@ button.timeline-task:hover { text-decoration: underline; }
 .sidebar:has(#workspace-panel:not([hidden])) .sidebar-bottom { border-top: 0; padding: 8px 0; }
 
 .kanban-confirm { overflow-wrap: anywhere; }
+
+.usage-dialog { width: min(640px, calc(100vw - 24px)); max-height: calc(100dvh - 32px); overflow-y: auto; }
+.usage-dialog .dialog-heading { display: flex; justify-content: space-between; align-items: center; }
+.usage-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 12px; color: var(--muted); }
+.usage-toolbar button { border: 0; background: transparent; color: var(--ink); padding: 6px; }
+.usage-provider { padding: 18px 0; border-bottom: 1px solid var(--line); }
+.usage-provider h3 { margin: 0 0 10px; font-size: 15px; }
+.usage-limit-label { display: flex; justify-content: space-between; gap: 10px; margin: 8px 0 4px; font-size: 12px; }
+.usage-limit-label strong { font-size: 18px; font-weight: 550; }
+.usage-provider progress { width: 100%; height: 5px; accent-color: var(--ink); }
+.usage-muted { margin: 5px 0; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.usage-metrics { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 16px; margin-top: 12px; }
+.usage-total { margin: 0; font-size: 14px; font-weight: 550; }
+.usage-chart { display: block; width: 100%; height: 52px; margin: 10px 0; fill: var(--muted); opacity: .65; }
+.usage-provider summary { margin-top: 10px; cursor: pointer; font-size: 12px; color: var(--muted); }
+.usage-table-wrap { overflow-x: auto; }
+.usage-table { width: 100%; margin: 12px 0; border-collapse: collapse; font-size: 12px; text-align: right; }
+.usage-table th, .usage-table td { padding: 6px; border-bottom: 1px solid var(--line); }
+.usage-table :is(th,td):first-child { text-align: left; max-width: 210px; overflow-wrap: anywhere; }
+.usage-tools { display: flex; flex-wrap: wrap; gap: 0 14px; }
+
+@media (max-width: 480px) {
+  .topbar-actions { gap: 2px; }
+  .topbar .icon-button { width: 30px; min-width: 30px; }
+  .topbar .help-pill { width: 26px; }
+  .page-nav { gap: 2px; padding-left: 2px; }
+}

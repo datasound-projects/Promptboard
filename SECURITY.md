@@ -24,7 +24,7 @@ Report problems privately through GitHub: **Security → Report a vulnerability*
 
 **GitHub through the GitHub CLI.** Sign-in runs the official `gh auth login --web`; Promptboard reads only the one-time code that gh prints for you and declines gh's global Git credential setup. Tokens stay in gh's keychain storage and never reach the board, the browser, logs, URLs, process arguments, or Git remotes. A managed clone lives in the data folder; for an HTTPS remote it gets `gh auth git-credential` as a credential helper in that clone's own config only. Fetch never changes a branch; updating the target branch is a confirmed fast-forward. Disconnecting a project never signs gh out.
 
-**Usage data.** Token counts come from the CLIs' own session files (Claude Code's transcript for the session Promptboard started; Codex's rollout file for the run's thread). Only numbers and model IDs are read; message text is not stored.
+**Usage data.** The Usage panel scans known local Claude, Codex, and Gemini session directories, including sessions outside Promptboard, for the last 30 days. It reduces structured records to numbers, model IDs, timestamps, and tool names; transcript text and tool arguments are not retained or returned. Scans are bounded, skip symlinks and oversized files, and label incomplete coverage. No credential files are read. Codex account limits use its read-only app-server method. New Promptboard Claude sessions have a per-process status-line command that saves only whitelisted usage fields to their run folder; global CLI configuration is not edited. A refresh failure never fabricates available quota or costs.
 
 ## Limits
 

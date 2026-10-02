@@ -158,3 +158,9 @@ npm test
 ## License
 
 [MIT](LICENSE). Third-party licences: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The writing rules draw on ASD-STE100 Simplified Technical English; ASD and STEMG do not endorse this project.
+
+## Usage
+
+The chart icon beside Settings opens Usage: one-minute refresh, per-model input/cache/output tokens, tool counts, and 30-day charts from local Claude, Codex, and Gemini session files. This includes sessions outside Promptboard on this machine, not usage on other devices.
+
+Codex account allowance is read through its CLI. New Promptboard Claude sessions report allowance and estimated session cost through their status line; observation times and cost coverage are shown. Gemini account quota remains in `/stats model`; Antigravity has no supported machine-readable usage adapter. Missing metrics are marked unavailable, and costs are never presented as invoices. Bounded scans label partial coverage. No prompts, tool arguments, or credentials are retained by the dashboard.

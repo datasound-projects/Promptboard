@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { AUTH_CAPABILITIES, logout, readAuthStatus, startLogin } from '../src/auth.mjs';
 import { ProviderError } from '../src/providers.mjs';
+import { readCodexLimits } from '../src/usage-dashboard.mjs';
 import { startServer } from '../src/server.mjs';
 
 // Fake CLIs only. These tests never run an installed Codex or Claude binary and never sign anyone out.
@@ -23,6 +24,7 @@ const send = v => process.stdout.write(JSON.stringify(v) + '\\n');
 createInterface({ input: process.stdin }).on('line', line => {
   const msg = JSON.parse(line);
   if (msg.method === 'initialize') send({ id: msg.id, result: {} });
+  else if (msg.method === 'account/rateLimits/read') send({ id: msg.id, result: { rateLimits: { primary: { usedPercent: 25, windowDurationMins: 300, resetsAt: 1791000000 } } } });
   else if (msg.method === 'account/read') send({ id: msg.id, result: { account: state.codex ? { type: 'chatgpt', email: 'private@example.com', planType: 'plus' } : null, requiresOpenaiAuth: true } });
   else if (msg.method === 'account/login/start') {
     const device = msg.params.type === 'chatgptDeviceCode';
@@ -219,4 +221,14 @@ test('auth failure recovers after sign-in, and auth changes refresh the model ca
   assert.equal((await post('/api/auth/logout', { provider: 'codex', confirm: true })).status, 200);
   await get('/api/models?provider=codex');
   assert.equal(lookups(), 3, 'Sign-out invalidates the model cache.');
+});
+
+
+test('Codex usage uses only native read-only metadata and returns normalized allowance', { skip: process.platform === 'win32' }, async t => {
+  const cli = await fakeClis(t);
+  const usage = await readCodexLimits();
+  assert.equal(usage.windows[0].remainingPercent, 75);
+  assert.equal(usage.status, 'live');
+  assert.deepEqual((await cli.log()).map(entry => entry.args), [['app-server']]);
+  assert.doesNotMatch(JSON.stringify(usage), /private@example/);
 });

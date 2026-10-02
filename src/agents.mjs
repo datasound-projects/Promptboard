@@ -159,7 +159,7 @@ export async function buildSession({ provider, stage, config, message, runDir, e
   if (provider === 'claude') {
     const hook = { type: 'command', command: nodePath, args: [HOOK_SCRIPT, eventsFile, 'claude'] };
     const hooks = Object.fromEntries(['SessionStart', 'UserPromptSubmit', 'PermissionRequest', 'Notification', 'Stop', 'StopFailure', 'SessionEnd'].map(event => [event, [{ hooks: [hook] }]]));
-    args = ['--session-id', sessionId, '--settings', JSON.stringify({ hooks }), '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}'];
+    args = ['--session-id', sessionId, '--settings', JSON.stringify({ hooks, statusLine: { type: 'command', command: [nodePath, fileURLToPath(new URL('./usage-status.mjs', import.meta.url)), `${runDir}/usage-status.json`].map(shQuote).join(' ') } }), '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}'];
     if (readOnly) args.push('--permission-mode', 'plan', '--tools', 'Read,Grep,Glob', '--disallowedTools', 'Edit,Write,NotebookEdit,Bash,ExitPlanMode');
     else args.push('--permission-mode', config.permissionMode, '--disallowedTools', 'EnterPlanMode,ExitPlanMode'); // Writing stages never switch to plan mode.
     if (config.model) args.push('--model', config.model);
