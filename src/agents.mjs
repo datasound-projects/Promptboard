@@ -39,7 +39,7 @@ export const ADAPTERS = Object.freeze({
       planning: { supported: true, how: 'Native plan permission mode, with built-in tools limited to Read, Grep, and Glob, and no MCP servers. File changes and plan exit are not available in this session.' },
       execution: { supported: true, how: 'Permission mode acceptEdits (default) or default (ask for every change). File edits are limited to the task worktree.' },
       interactiveInput: true,
-      base: { instruction: true, context: true, mcp: ['stdio', 'streamable-http', 'tool-reference'], isolation: 'strict per-run MCP configuration' },
+      base: { instruction: true, context: true, subagents: true, mcp: ['stdio', 'streamable-http', 'tool-reference'], isolation: 'strict per-run MCP configuration' },
       completionEvents: 'Claude Code hooks (SessionStart, UserPromptSubmit, PermissionRequest, Notification, Stop, StopFailure), passed with --settings in exec form.',
       waitingEvents: true,
       cancellation: true,
@@ -179,6 +179,11 @@ export async function buildSession({ provider, stage, config, message, runDir, e
     args = ['--session-id', sessionId, '--settings', JSON.stringify({ hooks, statusLine: { type: 'command', command: [nodePath, fileURLToPath(new URL('./usage-status.mjs', import.meta.url)), `${runDir}/usage-status.json`].map(shQuote).join(' ') } }), '--strict-mcp-config', '--mcp-config', mcpConfig];
     if (readOnly) args.push('--permission-mode', 'plan', '--tools', 'Read,Grep,Glob', '--disallowedTools', 'Edit,Write,NotebookEdit,Bash,ExitPlanMode');
     else args.push('--permission-mode', config.permissionMode, '--disallowedTools', 'EnterPlanMode,ExitPlanMode'); // Writing stages never switch to plan mode.
+    if (!readOnly && baseDelivery?.subagents && Object.keys(baseDelivery.subagents).length) {
+      const agents = JSON.stringify(baseDelivery.subagents);
+      if (Buffer.byteLength(agents) > 60000) throw new AgentError('Native subagent definitions exceed the per-run limit.', 'BASE_SUBAGENT_LIMIT');
+      args.push('--agents', agents);
+    }
     if (config.model) args.push('--model', config.model);
     if (config.effort) { args.push('--effort', config.effort); env.CLAUDE_CODE_EFFORT_LEVEL = config.effort; }
     if (inArgv) args.push(message);

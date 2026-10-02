@@ -4,7 +4,7 @@
 // its authenticated API and existing agent controls when it creates this view.
 window.PromptboardBase = (() => {
   const KINDS = { profile: 'Agent profile', pack: 'Resource pack', mcp: 'MCP server', skill: 'Skill', knowledge: 'Knowledge / Wiki', context: 'Context source', tool: 'Tool' };
-  const CATEGORIES = [['', 'All'], ['profile', 'Agents'], ['pack', 'Packs'], ['mcp', 'MCPs'], ['skill', 'Skills'], ['knowledge', 'Knowledge'], ['context', 'Context'], ['tool', 'Tools']];
+  const CATEGORIES = [['', 'All'], ['agent', 'Agents'], ['pack', 'Packs'], ['mcp', 'MCPs'], ['skill', 'Skills'], ['knowledge', 'Knowledge'], ['context', 'Context'], ['tool', 'Tools']];
   const INHERIT = { mode: 'inherit', include: [], exclude: [] };
   const el = (tag, text, className = '') => { const node = document.createElement(tag); if (text !== undefined) node.textContent = text; if (className) node.className = className; return node; };
   const p = text => el('p', text, 'note');
@@ -23,6 +23,40 @@ window.PromptboardBase = (() => {
   const refsText = refs => (refs || []).map(item => item.resourceId || item.id || item).join(', ');
   const lineValues = text => text.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
   const basename = name => String(name || '').split(/[\\/]/).at(-1);
+
+  // Locally generated portraits: fixed SVG elements and palettes, never imported HTML.
+  function avatar(configuration, fallback = 'agent') {
+    if (configuration?.mime && configuration?.data) return Object.assign(el('img', undefined, 'base-agent-avatar'), { src: `data:${configuration.mime};base64,${configuration.data}`, alt: 'Agent profile avatar' });
+    const prompt = configuration?.prompt || '', seed = `${configuration?.seed || fallback}:${prompt}`;
+    let value = 2166136261;
+    for (const character of seed) value = Math.imul(value ^ character.charCodeAt(0), 16777619) >>> 0;
+    const colors = { blue: '#6b9edd', green: '#7aaf91', purple: '#a58aca', pink: '#d894b7', orange: '#dba177', red: '#ca8585', yellow: '#d9c17a', black: '#555967', white: '#c7cbd3' };
+    const requested = Object.keys(colors).find(color => new RegExp(`\\b${color}\\b`, 'i').test(prompt));
+    const accent = colors[requested] || Object.values(colors)[value % 9];
+    const skin = ['#efc4a2', '#d9a17e', '#ac7459', '#80503e'][value >>> 4 & 3];
+    const hair = /blond|golden/i.test(prompt) ? '#d8b565' : /red hair|ginger/i.test(prompt) ? '#b36548' : ['#33343f', '#685042', '#4a3e54'][(value >>> 7) % 3];
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 80 80'); svg.setAttribute('role', 'img'); svg.setAttribute('aria-label', prompt ? `Agent avatar: ${prompt}` : 'Agent avatar'); svg.classList.add('base-agent-avatar');
+    const add = (tag, attrs) => { const node = document.createElementNS(svg.namespaceURI, tag); for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, String(value)); svg.append(node); };
+    add('rect', { width: 80, height: 80, rx: 12, fill: accent });
+    add('path', { d: 'M10 80Q12 57 40 56Q68 57 70 80Z', fill: '#333846' });
+    if (/robot|android|bot/i.test(prompt)) {
+      add('path', { d: 'M40 20V12', stroke: '#333846', 'stroke-width': 3 }); add('circle', { cx: 40, cy: 10, r: 4, fill: '#eff4fa' });
+      add('rect', { x: 21, y: 24, width: 38, height: 33, rx: 10, fill: '#e0e7ee' });
+      add('rect', { x: 25, y: 30, width: 30, height: 15, rx: 6, fill: '#333846' });
+      add('circle', { cx: 32, cy: 37, r: 3, fill: accent }); add('circle', { cx: 48, cy: 37, r: 3, fill: accent });
+      add('path', { d: 'M34 50H46', stroke: '#777e88', 'stroke-width': 2, 'stroke-linecap': 'round' });
+    } else {
+      add('ellipse', { cx: 40, cy: 35, rx: 21, ry: 24, fill: hair });
+      add('rect', { x: 35, y: 48, width: 10, height: 13, rx: 4, fill: skin });
+      add('ellipse', { cx: 40, cy: 37, rx: 17, ry: 21, fill: skin });
+      add('path', { d: value & 1 ? 'M22 30Q18 10 42 13Q62 15 58 33Q44 28 35 19Q32 29 22 30Z' : 'M22 30Q20 10 42 13Q62 14 58 29Q37 16 22 30Z', fill: hair });
+      for (const cx of [33, 47]) add('circle', { cx, cy: 37, r: 2, fill: '#33313a' });
+      add('path', { d: 'M35 47Q40 51 45 47', fill: 'none', stroke: '#874f47', 'stroke-width': 2, 'stroke-linecap': 'round' });
+      if (/glasses|scientist|engineer/i.test(prompt)) { for (const cx of [32, 48]) add('rect', { x: cx - 6, y: 32, width: 12, height: 10, rx: 3, fill: 'none', stroke: '#34343f', 'stroke-width': 2 }); add('path', { d: 'M38 36H42', stroke: '#34343f', 'stroke-width': 2 }); }
+    }
+    return svg;
+  }
 
   // Only a small Markdown subset is rendered. All text is built as DOM nodes, and links
   // are restricted to http(s) and page fragments. Raw HTML remains literal text.
@@ -62,7 +96,31 @@ window.PromptboardBase = (() => {
   function create(context) {
     const $ = selector => document.querySelector(selector);
     const state = { revision: -1, resources: [], targets: [], providers: {} };
-    let category = '', chosen = null, loading = null, requestVersion = 0;
+    const avatarCache = new Map();
+    const preferenceKey = 'promptboard.base.library-view';
+    const viewState = { category: '', search: '', filter: 'all', sort: 'recently_updated', viewMode: 'grid' };
+    try {
+      const saved = JSON.parse(localStorage.getItem(preferenceKey) || '{}');
+      const category = ['agents', 'profile'].includes(saved.category) ? 'agent' : saved.category;
+      if (CATEGORIES.some(([id]) => id === category)) viewState.category = category;
+      if (typeof saved.search === 'string') viewState.search = saved.search.slice(0, 200);
+      if (['all', 'enabled', 'disabled'].includes(saved.filter)) viewState.filter = saved.filter;
+      if (['recently_updated', 'name'].includes(saved.sort)) viewState.sort = saved.sort;
+      if (['grid', 'list'].includes(saved.viewMode)) viewState.viewMode = saved.viewMode;
+    } catch { /* Invalid or unavailable browser preferences use the library defaults. */ }
+    let category = viewState.category, chosen = null, editingKind = null, loading = null, requestVersion = 0;
+    let loadVersion = 0, loadError = '', resultLoading = false, libraryScroll = 0;
+    const typeOf = item => item.type || (item.kind === 'profile' ? 'agent' : item.kind);
+    const categoryKind = () => category === 'agent' ? 'profile' : category;
+    function persistView() {
+      Object.assign(viewState, { category, search: $('#base-search').value });
+      try { localStorage.setItem(preferenceKey, JSON.stringify(viewState)); } catch {}
+    }
+    function closeResource() {
+      ++requestVersion; chosen = null; editingKind = null; renderList();
+      $('.base-list-panel').scrollTop = libraryScroll;
+    }
+    const categoryLabel = () => CATEGORIES.find(([id]) => id === category)?.[1] || 'All';
     const resource = id => state.resources.find(item => item.id === id);
     const nameOf = id => resource(id)?.name || id;
     const status = text => { $('#base-status').textContent = text; };
@@ -80,14 +138,35 @@ window.PromptboardBase = (() => {
     }
     async function load(force = false) {
       if (loading && !force) return loading;
-      const job = request('/api/base').then(data => { accept(data); renderList(); return data; });
+      const version = ++loadVersion;
+      resultLoading = true; loadError = ''; renderList();
+      // The collection is fetched once, independently of the current category. A late
+      // refresh cannot publish an older response even when its Base revision is equal.
+      const job = (async () => {
+        try {
+          const { response, data } = await context.api('/api/base');
+          if (!response.ok) throw new Error(data.error || 'Base could not load resources.');
+          if (version === loadVersion) { accept(data); resultLoading = false; renderList(); status(`${state.resources.length} resources · assignments are always optional`); }
+          return data;
+        } catch (failure) {
+          if (version === loadVersion) { resultLoading = false; loadError = failure.message; renderList(); }
+          throw failure;
+        }
+      })();
       loading = job;
       try { return await job; } finally { if (loading === job) loading = null; }
     }
     async function show() {
-      status('Loading Base…'); error('');
-      try { await context.ensureBoard?.(); await load(); status(`${state.resources.length} resources · assignments are always optional`); }
-      catch (failure) { status('Base unavailable'); error(failure.message); }
+      error(''); if (state.revision < 0) resultLoading = true; renderList();
+      window.requestAnimationFrame?.(placeCategories);
+      try {
+        if (state.revision < 0) { await context.ensureBoard?.(); await load(); }
+        status(`${state.resources.length} resources · assignments are always optional`);
+      } catch (failure) {
+        // load() owns its generation-guarded error state. Only an initial board-load
+        // failure needs a local error; an obsolete show() failure must not replace it.
+        if (!loadError && !loading && state.revision < 0) { resultLoading = false; loadError = failure.message; renderList(); }
+      }
     }
     function openDialog(title, nodes) {
       $('#base-dialog-heading').textContent = title;
@@ -113,22 +192,121 @@ window.PromptboardBase = (() => {
     }
     function renderList() {
       const query = $('#base-search').value.trim().toLocaleLowerCase();
-      const list = state.resources.filter(item => (!category || item.kind === category) && (!query || `${item.name} ${item.description || ''} ${(item.tags || []).join(' ')}`.toLocaleLowerCase().includes(query)));
-      $('#base-list').replaceChildren(...list.map(item => {
+      const kind = categoryKind();
+      const list = state.resources.filter(item => (!category || typeOf(item) === category)
+        && (viewState.filter === 'all' || Boolean(item.enabled) === (viewState.filter === 'enabled'))
+        && (!query || `${item.name} ${item.description || ''} ${(item.tags || []).join(' ')}`.toLocaleLowerCase().includes(query)));
+      list.sort((a, b) => (viewState.sort === 'recently_updated' ? (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0) : 0) || a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+      $('#base-category-heading').textContent = category ? categoryLabel() : 'All resources';
+      $('#base-sidebar-count').textContent = String(state.resources.length);
+      const showEditor = editingKind && (!kind || kind === editingKind);
+      $('#base-detail').hidden = !showEditor;
+      $('.base-layout').classList.toggle('base-browse', !showEditor);
+      $('#base-list').classList.toggle('base-list-mode', viewState.viewMode === 'list');
+      $('.base-list-panel').setAttribute('aria-busy', String(resultLoading));
+      $('#base-list').replaceChildren(...(resultLoading || loadError ? [] : list.map(item => {
+        if (item.kind === 'profile') return agentCard(item);
         const row = el('li'); const open = button('', () => openResource(item.id), 'base-resource'); open.dataset.resourceId = item.id;
         if (chosen === item.id) open.setAttribute('aria-current', 'true');
         open.append(el('strong', item.name), el('span', item.description || KINDS[item.kind], 'base-resource-description'), el('small', metadata(item)));
         row.append(open); return row;
-      }));
-      $('#base-empty').hidden = list.length > 0;
-      $('#base-empty').textContent = query || category ? 'No matching resources.' : 'Your library is empty. Create a skill, wiki, MCP connection, or reusable pack.';
-      for (const item of $('#base-categories').children) item.setAttribute('aria-pressed', String(item.dataset.kind === category));
+      })));
+      const empty = $('#base-empty'); empty.hidden = !resultLoading && !loadError && list.length > 0; empty.replaceChildren();
+      if (resultLoading) empty.append(p(`Loading ${category ? categoryLabel().toLowerCase() : 'resources'}…`));
+      else if (loadError) {
+        const failure = el('p', `Could not load ${category ? categoryLabel().toLowerCase() : 'resources'}. ${loadError}`, 'inline-error'); failure.setAttribute('role', 'alert');
+        empty.append(failure, button('Retry', () => load(true).catch(() => {})));
+      } else if (!list.length) {
+        empty.append(p(query ? `No ${category ? categoryLabel().toLowerCase() : 'resources'} match “${$('#base-search').value.trim()}”.` : viewState.filter !== 'all' ? `No ${category ? categoryLabel().toLowerCase() : 'resources'} match these filters.` : category ? `No ${categoryLabel().toLowerCase()} yet.` : 'Your library is empty. Create a skill, wiki, MCP connection, or reusable pack.'));
+        if (query) empty.append(button('Clear search', () => { $('#base-search').value = ''; persistView(); renderList(); }));
+        if (viewState.filter !== 'all') empty.append(button('Clear filters', () => { viewState.filter = 'all'; $('#base-filter').value = 'all'; persistView(); renderList(); }));
+        empty.append(button(category ? `Add ${categoryLabel() === 'MCPs' ? 'MCP' : KINDS[kind]}` : 'Add resource', createResource));
+      }
+      for (const item of $('#base-categories').children) {
+        item.setAttribute('aria-pressed', String(item.dataset.kind === category));
+        item.querySelector('.base-category-count').textContent = String(state.resources.filter(resource => !item.dataset.kind || typeOf(resource) === item.dataset.kind).length);
+      }
+    }
+    function profileResources(item, seen = new Set()) {
+      if (seen.has(item.id)) return []; seen.add(item.id);
+      const selected = new Map();
+      const refs = [...(item.dependencies || []), ...(item.kind === 'pack' ? item.configuration?.resources || [] : item.configuration?.binding?.include || [])];
+      for (const ref of refs) {
+        const target = resource(ref.resourceId); selected.set(ref.resourceId, target || { id: ref.resourceId, name: ref.resourceId, kind: 'unavailable' });
+        if (target && ['pack', 'profile'].includes(target.kind)) for (const child of profileResources(target, new Set(seen))) selected.set(child.id, child);
+      }
+      for (const id of item.configuration?.binding?.exclude || []) selected.delete(id);
+      return [...selected.values()];
+    }
+    function agentCard(item) {
+      const row = el('li', undefined, 'base-agent-card');
+      const open = button('', () => openResource(item.id), 'base-resource'); open.dataset.resourceId = item.id;
+      if (chosen === item.id) open.setAttribute('aria-current', 'true');
+      const title = el('div'); title.append(el('strong', item.name), el('small', `${item.configuration?.agent?.provider || 'Inherited provider'}${item.configuration?.agent?.model ? ` · ${item.configuration.agent.model}` : ''}`));
+      const head = el('div', undefined, 'base-agent-card-head'); const portrait = avatar(null, item.id); head.append(portrait, title);
+      if (item.configuration?.avatar?.contentHash) {
+        const hash = item.configuration.avatar.contentHash;
+        if (!avatarCache.has(hash)) { avatarCache.set(hash, request(`/api/base/resources/${encodeURIComponent(item.id)}/avatar`).then(data => data.image)); if (avatarCache.size > 32) avatarCache.delete(avatarCache.keys().next().value); }
+        avatarCache.get(hash).then(image => portrait.replaceWith(avatar(image))).catch(() => { portrait.setAttribute('aria-label', 'Saved avatar unavailable; regenerate or import its content.'); avatarCache.delete(hash); });
+      }
+      open.append(head, el('span', item.description || 'Reusable agent profile', 'base-resource-description'), el('small', metadata(item))); row.append(open);
+      const equipped = profileResources(item), loadout = el('div', undefined, 'base-agent-loadout'); loadout.setAttribute('aria-label', `Configured resources for ${item.name}`);
+      for (const resource of equipped) {
+        const toggle = check(resource.name, true); toggle.control.disabled = true; toggle.control.setAttribute('aria-label', `${resource.name} configured`); toggle.label.title = `${KINDS[resource.kind] || resource.kind} · configured for future runs`; loadout.append(toggle.label);
+      }
+      row.append(equipped.length ? loadout : p('No Base resources equipped.'), actions(button('Configure', () => openResource(item.id), 'text-button'), button('Apply to…', () => openApply(item), 'text-button')));
+      return row;
+    }
+    function revealCategory(node) {
+      const nav = $('#base-categories'), bounds = nav.getBoundingClientRect(), active = node.getBoundingClientRect();
+      if (active.left < bounds.left) nav.scrollLeft += active.left - bounds.left;
+      else if (active.right > bounds.right) nav.scrollLeft += active.right - bounds.right;
+    }
+    function createResource() {
+      if (categoryKind()) kindSelect.value = categoryKind();
+      editResource({ kind: kindSelect.value, name: '', enabled: true, trust: ['mcp', 'tool'].includes(kindSelect.value) ? 'untrusted' : 'trusted', dependencies: [], configuration: {}, content: {} });
     }
     for (const [kind, label] of CATEGORIES) {
-      const node = button(label, () => { category = kind; renderList(); }, 'base-category'); node.dataset.kind = kind; node.setAttribute('aria-pressed', String(!kind)); $('#base-categories').append(node);
+      const node = button('', () => {
+        category = kind; if (categoryKind()) kindSelect.value = categoryKind(); kindSelect.disabled = Boolean(category);
+        persistView(); renderList(); libraryScroll = 0; $('.base-list-panel').scrollTop = 0;
+        revealCategory(node); context.closeSidebar?.();
+      }, 'base-category');
+      node.append(el('span', label), el('span', '', 'base-category-count')); node.dataset.kind = kind; node.setAttribute('aria-label', label); node.setAttribute('aria-pressed', String(kind === category)); $('#base-categories').append(node);
     }
-    $('#base-search').addEventListener('input', renderList);
-    const kindSelect = select(Object.entries(KINDS), 'skill'); kindSelect.id = 'base-new-kind'; kindSelect.setAttribute('aria-label', 'New resource type');
+    // Buttons provide Tab/Enter/Space; arrows and Home/End move focus without changing
+    // the active filter. Only activation changes the collection.
+    $('#base-categories').addEventListener('keydown', event => {
+      const buttons = [...$('#base-categories').children], index = buttons.indexOf(document.activeElement);
+      if (index < 0) return;
+      let next = index;
+      if (['ArrowRight', 'ArrowDown'].includes(event.key)) next = (index + 1) % buttons.length;
+      else if (['ArrowLeft', 'ArrowUp'].includes(event.key)) next = (index + buttons.length - 1) % buttons.length;
+      else if (event.key === 'Home') next = 0;
+      else if (event.key === 'End') next = buttons.length - 1;
+      else return;
+      event.preventDefault(); buttons[next].focus(); revealCategory(buttons[next]);
+    });
+    $('#base-search').value = viewState.search; $('#base-search').maxLength = 200;
+    $('#base-search').addEventListener('input', () => { persistView(); renderList(); });
+    for (const [id, key, label, options] of [
+      ['base-filter', 'filter', 'Availability', [['all', 'Any status'], ['enabled', 'Enabled'], ['disabled', 'Disabled']]],
+      ['base-sort', 'sort', 'Sort', [['recently_updated', 'Recently Updated'], ['name', 'Name']]],
+      ['base-view-mode', 'viewMode', 'View', [['grid', 'Grid'], ['list', 'List']]],
+    ]) {
+      const control = select(options, viewState[key]); control.id = id; control.setAttribute('aria-label', label);
+      control.addEventListener('change', () => { viewState[key] = control.value; persistView(); renderList(); });
+      $('#base-view-controls').append(field(label, control));
+    }
+    const kindSelect = select(Object.entries(KINDS), categoryKind() || 'skill'); kindSelect.id = 'base-new-kind'; kindSelect.setAttribute('aria-label', 'New resource type'); kindSelect.disabled = Boolean(category);
+    const mobile = window.matchMedia?.('(max-width: 600px)');
+    const placeCategories = () => {
+      const parent = mobile?.matches ? $('#base-mobile-categories') : $('#base-sidebar-panel');
+      const nav = $('#base-categories');
+      if (nav.parentElement !== parent) { if (mobile?.matches) parent.append(nav); else parent.insertBefore(nav, $('.base-sidebar-note')); }
+      const active = $('#base-categories [aria-pressed="true"]'); if (active) revealCategory(active);
+    };
+    mobile?.addEventListener?.('change', placeCategories); placeCategories();
     const restoreGlobals = button('Review restored global resources…', () => {
       const pending = state.pendingGlobalBaseImport;
       const box = el('div'); box.append(p('This backup contains global Base selections. Restoring them applies to future runs in every project that inherits them. Imported executable resources remain inactive and untrusted until reviewed.'), el('pre', JSON.stringify(pending, null, 2), 'base-code'));
@@ -139,7 +317,7 @@ window.PromptboardBase = (() => {
       })));
       openDialog('Restore global selections', [box]);
     }, 'text-button'); restoreGlobals.hidden = true;
-    $('#base-actions').append(kindSelect, button('Create', () => editResource({ kind: kindSelect.value, name: '', enabled: true, trust: ['mcp', 'tool'].includes(kindSelect.value) ? 'untrusted' : 'trusted', dependencies: [], configuration: {}, content: {} })), button('Import…', openImport), button('Export…', () => openExport()), button('Context7 preset', createContext7, 'text-button'), restoreGlobals);
+    $('#base-actions').append(kindSelect, button('Create', createResource), button('Import…', openImport), button('Export…', () => openExport()), button('Context7 preset', createContext7, 'text-button'), restoreGlobals);
 
     function referenceFields(selected = [], { excludeId, kinds, label = 'Resources', exclusions = false } = {}) {
       const box = el('div', undefined, 'base-references'); box.setAttribute('role', 'group'); box.setAttribute('aria-label', label);
@@ -244,17 +422,18 @@ window.PromptboardBase = (() => {
     }
 
     async function openResource(id) {
-      const current = ++requestVersion; chosen = id; renderList(); $('#base-detail').replaceChildren(p('Loading resource…'));
+      if (!editingKind) libraryScroll = $('.base-list-panel').scrollTop;
+      const current = ++requestVersion; chosen = id; editingKind = resource(id)?.kind || null; renderList(); $('#base-detail').replaceChildren(p('Loading resource…'));
       try { const data = await request(`/api/base/resources/${encodeURIComponent(id)}`); if (current === requestVersion) editResource(data.resource || data); }
       catch (failure) { if (current === requestVersion) $('#base-detail').replaceChildren(el('p', failure.message, 'inline-error')); }
     }
     function editResource(original) {
       const item = clone(original); item.configuration ||= {}; item.content ||= {};
-      const expectedBaseRevision = state.revision;
-      chosen = item.id || null; renderList();
+      const expectedBaseRevision = state.revision, editorVersion = ++requestVersion;
+      chosen = item.id || null; editingKind = item.kind; renderList();
       const form = el('form', undefined, 'base-resource-form'); form.dataset.kind = item.kind;
       const heading = el('h2', item.id ? item.name : `New ${KINDS[item.kind].toLowerCase()}`);
-      form.append(heading);
+      form.append(button('Back to library', closeResource, 'text-button'), heading);
       if (item.id) form.append(p(metadata(item)));
       const name = input(item.name, 120); name.required = true; name.id = 'base-resource-name';
       const description = area(item.description || '', 2000); description.rows = 2;
@@ -277,7 +456,7 @@ window.PromptboardBase = (() => {
       }
       const fail = inlineError(form);
       const save = el('button', 'Save resource', 'dialog-done'); save.type = 'submit'; save.id = 'base-resource-save';
-      const footer = actions(save, button('Cancel', () => { if (item.id) openResource(item.id); else $('#base-detail').replaceChildren(p('Choose a resource or create one.')); }));
+      const footer = actions(save, button('Cancel', () => { if (item.id) openResource(item.id); else closeResource(); }));
       if (item.id) footer.append(button('Apply to…', () => openApply(item)), button('Export…', () => openExport(item.id)), button('Delete…', () => openDelete(item), 'text-button'));
       form.append(footer);
       form.addEventListener('submit', async event => {
@@ -290,12 +469,37 @@ window.PromptboardBase = (() => {
             : { kind: item.kind, name: name.value.trim(), description: description.value, tags: tags.value.split(',').map(value => value.trim()).filter(Boolean), enabled: enabled.control.checked, trust: trust.value, dependencies: dependencies.read(), ...resourceValues, expectedBaseRevision, ...(item.id ? { expectedRevision: item.revision } : {}) };
           const data = await request(skillImport ? '/api/base/skills/import' : item.id ? `/api/base/resources/${encodeURIComponent(item.id)}` : '/api/base/resources', { method: item.id && !skillImport ? 'PATCH' : 'POST', body });
           const savedId = data.resource?.id || data.id || item.id;
-          await load(); if (savedId) await openResource(savedId);
+          await load(); if (savedId && editorVersion === requestVersion) await openResource(savedId);
           status('Saved. No assignments changed.'); context.announce?.('Base resource saved.');
         } catch (error) { fail(error); } finally { save.disabled = false; }
       });
       $('#base-detail').replaceChildren(form);
       if (!item.id) name.focus();
+      const editable = () => ({ name: name.value, description: description.value, tags: tags.value, enabled: enabled.control.checked, trust: trust.value, dependencies: dependencies.read(), ...config.read() });
+      const savedDraft = JSON.stringify(editable());
+      // Discovery and refresh publish new immutable revisions too. Keep their editor
+      // synchronized, without discarding a draft or allowing saves during the operation.
+      form.savedAction = async (action, success) => {
+        let result = el('div'); form.append(result);
+        try {
+          if (JSON.stringify(editable()) !== savedDraft) throw new Error('Save your edits before testing or refreshing this resource.');
+        } catch (error) { result.append(el('p', error.message, 'inline-error')); return; }
+        const controls = [...form.querySelectorAll('input, textarea, select, button')].map(node => [node, node.disabled]);
+        controls.forEach(([node]) => { node.disabled = true; });
+        let data, failure;
+        try { data = await action(); } catch (error) { failure = error; }
+        try {
+          // Failed tests also persist a connection result and advance the revision.
+          await load();
+          if (form.isConnected && chosen === item.id) {
+            await openResource(item.id);
+            const current = $('#base-detail .base-resource-form');
+            if (current && chosen === item.id) { result = el('div'); current.append(result); }
+          }
+          result.replaceChildren(failure ? el('p', failure.message, 'inline-error') : success(data));
+        } catch (error) { result.replaceChildren(el('p', (failure || error).message, 'inline-error')); }
+        finally { controls.forEach(([node, disabled]) => { node.disabled = disabled; }); }
+      };
     }
     function fileEditor(files = [], label = 'Supporting files') {
       const list = el('div', undefined, 'base-files');
@@ -344,11 +548,10 @@ window.PromptboardBase = (() => {
         const http = group('HTTP server', field('Endpoint', endpoint), headers);
         const update = () => { stdio.hidden = transport.value !== 'stdio'; http.hidden = transport.value === 'stdio'; }; transport.addEventListener('change', update); update();
         form.append(field('Transport', transport), stdio, http, auth.label, field('Authentication requirements', authDescription), p('MCP is available only where the agent adapter can safely deliver it. Planning and Code Review do not receive Base MCP servers. A connection test starts the configured server or contacts its endpoint; trust and an explicit action are required.'));
-        if (item.id) form.append(busyButton('Test connection and discover tools', async () => {
-          const result = el('div'); form.append(result);
-          try { const data = await request(`/api/base/resources/${encodeURIComponent(item.id)}/test`, { method: 'POST', body: { expectedRevision: item.revision }, timeoutMs: 30000 }); result.replaceChildren(p('Connection test completed. This does not prove authenticated agent compatibility.'), el('pre', JSON.stringify(data.connection || data.result || data, null, 2), 'base-code')); await load(); }
-          catch (error) { result.replaceChildren(el('p', error.message, 'inline-error')); }
-        }));
+        if (item.id) form.append(button('Test connection and discover tools', () => form.savedAction(
+          () => request(`/api/base/resources/${encodeURIComponent(item.id)}/test`, { method: 'POST', body: { expectedRevision: item.revision }, timeoutMs: 30000 }),
+          data => { const result = el('div'); result.append(p('Connection test completed. This does not prove authenticated agent compatibility.'), el('pre', JSON.stringify(data.connection || data.result || data, null, 2), 'base-code')); return result; }
+        )));
         return { read: () => ({ configuration: { ...config, transport: transport.value, ...(transport.value === 'stdio' ? { command: command.value.trim(), args: lineValues(args.value), env: env.read() } : { endpoint: endpoint.value.trim(), headers: headers.read() }), auth: { required: auth.control.checked, description: authDescription.value } }, content }) };
       }
       if (item.kind === 'knowledge') return knowledgeEditor(item, form);
@@ -371,7 +574,7 @@ window.PromptboardBase = (() => {
         const budget = Object.assign(input(String(config.budgetChars || 24000)), { type: 'number', min: '1000', max: '100000', step: '1000' });
         const maxFiles = Object.assign(input(String(config.maxFiles || 30)), { type: 'number', min: '1', max: '100' });
         form.append(sourceList, actions(button('Add source', () => add({})), button('Manage external roots…', approveRoot, 'text-button')), field('Context budget (characters)', budget), field('Maximum files', maxFiles), p('Repository paths resolve in the task worktree at launch. Secret files, dependency folders, symlinks outside approved roots, and generated output are excluded. Supplied captures record their time and content hash; omitted material is reported. Token counts are estimates.'));
-        if (item.id) form.append(sourceTools(item));
+        if (item.id) form.append(sourceTools(item, form));
         return { read: () => ({ configuration: { ...config, sources: [...sourceList.children].map(row => row.read()), budgetChars: Number(budget.value), maxFiles: Number(maxFiles.value) }, content }) };
       }
       if (item.kind === 'tool') {
@@ -395,9 +598,27 @@ window.PromptboardBase = (() => {
       if (item.kind === 'profile') {
         const agent = context.agentFields(config.agent || {}, { inherit: 'Inherit provider at the assigned scope' });
         const instructions = area(config.agent?.instructions || '', 4000);
-        const binding = bindingFields(config.binding || INHERIT, { excludeId: item.id, allowProfiles: false });
-        form.append(group('Agent defaults', agent, field('Agent instructions', instructions)), group('Base resources', binding), p('A profile is reusable configuration, not a worker. It changes provider defaults only when explicitly selected as an agent profile at a configuration scope.'));
-        return { read: () => ({ configuration: { ...config, agent: { ...(context.readAgentFields(agent) || {}), instructions: instructions.value }, binding: binding.read() }, content }) };
+        const binding = bindingFields(config.binding || { mode: 'extend', include: [], exclude: [] }, { excludeId: item.id });
+        let portrait = config.avatar ? clone(config.avatar) : undefined;
+        let image = content.avatar;
+        const avatarPrompt = input(portrait?.prompt || '', 2000); avatarPrompt.id = 'base-avatar-prompt'; avatarPrompt.placeholder = 'Purple-haired engineer with glasses';
+        const preview = el('div', undefined, 'base-avatar-editor'); preview.append(avatar(image, item.id || item.name));
+        const feedback = p(''), errors = el('div'), fail = inlineError(errors); let operationId;
+        const cancel = button('Cancel avatar generation', async () => { try { if (operationId) await request('/api/base/avatar/cancel', { method: 'POST', body: { operationId } }); } catch (error) { fail(error); } }); cancel.hidden = true;
+        const generate = busyButton('Generate avatar', async () => {
+          fail(''); if (!avatarPrompt.value.trim()) { fail('Describe the illustrated face you want.'); return; }
+          operationId = `avatar_${globalThis.crypto?.randomUUID?.() || Date.now().toString(36)}`; cancel.hidden = false; feedback.textContent = 'Generating an illustration…';
+          const save = form.querySelector('#base-resource-save'); if (save) save.disabled = true;
+          try {
+            const data = await request('/api/base/avatar/generate', { method: 'POST', body: { prompt: avatarPrompt.value, operationId, ...(item.id ? { resourceId: item.id, expectedRevision: item.revision } : {}) }, timeoutMs: 240000 });
+            portrait = data.avatar; image = data.image; preview.replaceChildren(avatar(image)); feedback.textContent = 'Preview ready. Save the profile to keep this face.';
+          } catch (error) { fail(error); feedback.textContent = ''; }
+          finally { operationId = null; cancel.hidden = true; if (save) save.disabled = false; }
+        }); generate.id = 'base-avatar-generate';
+        form.append(group('Agent identity', preview, field('Avatar prompt', avatarPrompt), actions(generate, cancel, button('Reset avatar', () => { portrait = undefined; image = undefined; avatarPrompt.value = ''; preview.replaceChildren(avatar(null, item.id)); }, 'text-button')), feedback, errors, p('AI illustrations use OpenAI Images and require an API key in the server environment (OPENAI_API_KEY by default). Your prompt is sent to that service only when you generate. Save the profile to keep the reviewed face.')),
+          group('Agent defaults', agent, field('Agent instructions', instructions)), group('Base resources', binding), p('Attach any Base resource, pack, or another profile by reference. Attached profile instructions and resources do not change this agent’s provider or permissions. Separate subagent execution depends on CLI support. Cycles are rejected.'));
+        return { read: () => { const nextContent = { ...content }; if (image) nextContent.avatar = image; else delete nextContent.avatar;
+          return { configuration: { ...config, avatar: portrait, agent: { ...(context.readAgentFields(agent) || {}), instructions: instructions.value }, binding: binding.read() }, content: nextContent }; } };
       }
       if (item.kind === 'pack') {
         const refs = referenceFields(config.resources || [], { excludeId: item.id, kinds: Object.keys(KINDS).filter(kind => !['pack', 'profile'].includes(kind)) });
@@ -459,10 +680,10 @@ window.PromptboardBase = (() => {
       });
       form.append(group('Sources', p('Paste content or explicitly select Markdown/text files. Basic wiki editing and search work without a model.'), sourceList, button('Paste a source', () => { sources.push({ id: `source_${globalThis.crypto?.randomUUID?.() || Date.now().toString(36)}`, name: 'Pasted source', text: '', provenance: { method: 'paste', capturedAt: new Date().toISOString() } }); renderSources(); sourceList.lastChild.open = true; }), details('Import selected files or a folder', field('Markdown/text files', fileInput), field('Folder (bounded text selection)', folderInput)), details('Import documentation URL', field('Public documentation URL', url), p('Text is fetched only by this action. Redirects, size, and network destinations are validated.'), importUrl), sourceStatus));
       renderSources();
-      if (item.id) form.append(sourceTools(item), button('Generate/update from sources…', () => openWikiGenerate(item), 'secondary-button'), p('Generation uses the saved sources. Save manual edits first. Proposed changes remain a reviewable draft until you apply them.'));
+      if (item.id) form.append(sourceTools(item, form), button('Generate/update from sources…', () => openWikiGenerate(item), 'secondary-button'), p('Generation uses the saved sources. Save manual edits first. Proposed changes remain a reviewable draft until you apply them.'));
       return { read: () => { flush(); return { configuration: item.configuration, content: { ...content, pages, sources } }; } };
     }
-    function sourceTools(item) {
+    function sourceTools(item, form) {
       const box = el('div', undefined, 'base-source-tools');
       const query = input('', 500); query.placeholder = 'Search saved source text…'; query.setAttribute('aria-label', 'Search sources');
       const result = el('div');
@@ -474,10 +695,10 @@ window.PromptboardBase = (() => {
         try { const data = await request(`/api/base/resources/${encodeURIComponent(item.id)}/search?q=${encodeURIComponent(query.value)}`); result.replaceChildren(); for (const match of data.results || data.matches || []) { result.append(el('h4', match.title || match.name || match.sourceId || 'Source'), p(match.excerpt || match.text || ''), p(match.provenance?.url || match.provenance?.path || '')); } if (!result.children.length) result.append(p('No matching source passages.')); }
         catch (error) { result.replaceChildren(el('p', error.message, 'inline-error')); }
       });
-      const refresh = busyButton('Refresh saved sources', async () => {
-        try { if (needsProject && !repositoryProject.value) throw new Error('Choose a project for this repository source preview. Runs still use their own worktree.'); const data = await request(`/api/base/resources/${encodeURIComponent(item.id)}/refresh`, { method: 'POST', body: { expectedRevision: item.revision, ...(repositoryProject.value ? { projectId: repositoryProject.value } : {}) }, timeoutMs: 60000 }); result.replaceChildren(p(data.message || 'Sources refreshed. Live content is captured with its retrieval time and content hash.'), data.capture ? el('pre', JSON.stringify(data.capture, null, 2), 'base-code') : p('')); await load(); }
-        catch (error) { result.replaceChildren(el('p', error.message, 'inline-error')); }
-      });
+      const refresh = button('Refresh saved sources', () => form.savedAction(async () => {
+        if (needsProject && !repositoryProject.value) throw new Error('Choose a project for this repository source preview. Runs still use their own worktree.');
+        return request(`/api/base/resources/${encodeURIComponent(item.id)}/refresh`, { method: 'POST', body: { expectedRevision: item.revision, ...(repositoryProject.value ? { projectId: repositoryProject.value } : {}) }, timeoutMs: 60000 });
+      }, data => p(data.message || 'Sources refreshed. Live content is captured with its retrieval time and content hash.')));
       box.append(repositoryProject, actions(query, search, refresh), result); return box;
     }
     function revisionHistory(item) {
@@ -568,7 +789,7 @@ window.PromptboardBase = (() => {
       const box = el('div'); box.append(p(`Delete “${item.name}” from the current library? Immutable revisions needed by historical runs remain available.`), el('h3', 'Used by'), used.length ? list : p('No current references.'), detach.label);
       const fail = inlineError(box);
       box.append(actions(button('Cancel', closeDialog), busyButton('Delete resource', async () => {
-        try { await request(`/api/base/resources/${encodeURIComponent(item.id)}`, { method: 'DELETE', body: { expectedRevision: item.revision, expectedBaseRevision: state.revision, detach: detach.control.checked } }); chosen = null; await load(); await context.refreshBoard?.(); closeDialog(); $('#base-detail').replaceChildren(p('Resource deleted. Historical revisions are retained.')); }
+        try { await request(`/api/base/resources/${encodeURIComponent(item.id)}`, { method: 'DELETE', body: { expectedRevision: item.revision, expectedBaseRevision: state.revision, detach: detach.control.checked } }); await load(); await context.refreshBoard?.(); closeDialog(); if (chosen === item.id) closeResource(); status('Resource deleted. Historical revisions are retained.'); }
         catch (error) { fail(error); }
       }, 'danger')));
       openDialog('Delete resource', [box]);
@@ -677,7 +898,7 @@ window.PromptboardBase = (() => {
       }, 'text-button'), button('Configure resources for next run…', () => openPicker({ scope: 'task-column', projectId: run.projectId, taskId: run.taskId, columnId: run.stage }, { provider: run.config?.provider }), 'text-button')), content);
       return box;
     }
-    return { show, refresh: load, picker, openPicker, runManifest, openResource, state };
+    return { show, refresh: load, picker, openPicker, runManifest, openResource, state, viewState };
   }
   return { create, markdown };
 })();

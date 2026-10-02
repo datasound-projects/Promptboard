@@ -12,11 +12,12 @@ const taskColumn = { scope: 'task-column', projectId: 'project_a', taskId: 'task
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(fn, label) { for (let n = 0; n < 100; n++) { if (fn()) return; await wait(10); } assert.fail(`Timed out: ${label}`); }
 
-function setup(t, { resources = [skill, pack], respond } = {}) {
+function setup(t, { resources = [skill, pack], respond, savedView } = {}) {
   const dom = new JSDOM(html, { url: 'http://127.0.0.1:4318/#/base', runScripts: 'outside-only' });
   const win = dom.window;
   win.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
   win.HTMLDialogElement.prototype.close = function () { this.open = false; };
+  if (savedView) win.localStorage.setItem('promptboard.base.library-view', JSON.stringify(savedView));
   win.eval(script);
   t.after(async () => { await wait(50); win.close(); });
   const $ = selector => win.document.querySelector(selector);
@@ -52,7 +53,7 @@ function setup(t, { resources = [skill, pack], respond } = {}) {
   };
   const view = win.PromptboardBase.create({ api, announce: value => announcements.push(value), ensureBoard: async () => {}, refreshBoard: async () => {},
     agentFields: () => { const node = win.document.createElement('div'); node.textContent = 'Existing provider controls'; return node; }, readAgentFields: () => ({ provider: 'claude', model: 'fixture' }) });
-  const clickText = (text, root = win.document) => { const node = [...root.querySelectorAll('button')].find(node => node.textContent === text); assert.ok(node, `button ${text}`); node.click(); return node; };
+  const clickText = (text, root = win.document) => { const node = [...root.querySelectorAll('button')].find(node => node.textContent === text || node.getAttribute('aria-label') === text); assert.ok(node, `button ${text}`); node.click(); return node; };
   const change = (node, value) => { node.value = value; node.dispatchEvent(new win.Event('change', { bubbles: true })); };
   const submit = form => form.dispatchEvent(new win.Event('submit', { bubbles: true, cancelable: true }));
   return { win, $, view, calls, state, announcements, clickText, change, submit };
@@ -76,6 +77,33 @@ test('Base library creates a real instruction draft without assigning or testing
   $('#base-search').value = 'Exact'; $('#base-search').dispatchEvent(new ctx.win.Event('input'));
   assert.equal($('#base-list').children.length, 1);
   clickText('MCPs'); assert.equal($('#base-list').children.length, 0); assert.equal($('#base-empty').hidden, false);
+});
+
+test('Base sidebar categories change the visible collection, editor, creation type and empty state', async t => {
+  const profile = { ...skill, id: 'profile_a', kind: 'profile', name: 'Engineer', configuration: { agent: { provider: 'claude' }, binding: { mode: 'extend', include: [{ resourceId: skill.id, required: true }], exclude: [] } }, content: {} };
+  const { $, view, clickText } = setup(t, { resources: [skill, profile] });
+  await view.show(); await view.openResource(skill.id); clickText('Agents');
+  assert.equal($('#base-categories').closest('#base-sidebar-panel') !== null, true);
+  assert.equal($('#base-category-heading').textContent, 'Agents'); assert.equal($('#base-list').children.length, 1); assert.equal($('#base-detail').hidden, true);
+  assert.equal($('.base-agent-card .base-agent-loadout input').checked, true);
+  assert.match($('.base-agent-card').textContent, /Review checklist/);
+  clickText('Agents'); assert.equal($('#base-new-kind').value, 'profile');
+  clickText('MCPs'); assert.equal($('#base-list').children.length, 0); assert.match($('#base-empty').textContent, /No mcps yet/);
+  clickText('Create'); assert.equal($('.base-resource-form').dataset.kind, 'mcp'); assert.equal($('#base-detail').hidden, false);
+});
+
+test('profile editor equips other profiles and saves an explicitly generated AI avatar with its draft', async t => {
+  const child = { ...skill, id: 'child_agent', kind: 'profile', configuration: { agent: {}, binding: { mode: 'inherit', include: [], exclude: [] } }, content: {} };
+  const image = { mime: 'image/png', data: 'iVBORw0KGgo=' }, avatar = { version: 2, prompt: 'Purple scientist', model: 'image-fixture', contentHash: 'a'.repeat(64) };
+  const { $, view, calls, clickText, change, submit } = setup(t, { resources: [skill, child], respond: request => request.path === '/api/base/avatar/generate' ? { response: { ok: true }, data: { avatar, image } } : null });
+  await view.show(); change($('#base-new-kind'), 'profile'); clickText('Create');
+  $('#base-resource-name').value = 'Lead engineer'; $('#base-avatar-prompt').value = avatar.prompt;
+  const refs = $('.base-binding-fields .settings-group'); refs.querySelector(`[data-resource="${child.id}"]`).checked = true;
+  clickText('Generate avatar'); await until(() => $('.base-avatar-editor img'), 'AI avatar preview');
+  assert.equal(calls.some(call => call.path === '/api/base/resources' && call.method === 'POST'), false, 'Generating does not save or assign.');
+  submit($('.base-resource-form')); await until(() => calls.some(call => call.path === '/api/base/resources' && call.method === 'POST'), 'profile saved');
+  const saved = calls.find(call => call.path === '/api/base/resources' && call.method === 'POST').body;
+  assert.equal(saved.configuration.binding.include[0].resourceId, child.id); assert.deepEqual(saved.configuration.avatar, avatar); assert.deepEqual(saved.content.avatar, image);
 });
 
 test('a task-column picker opts out with empty Replace and never changes provider/profile settings', async t => {
@@ -168,6 +196,45 @@ test('MCP discovery requires an explicit test action; Context7 preset remains in
   assert.equal(calls.filter(call => call.path.endsWith('/test')).length, 1);
 });
 
+for (const outcome of ['connected', 'failed']) test(`MCP ${outcome} discovery refreshes editor revisions before retrying or saving`, async t => {
+  const mcp = { ...skill, id: 'res_mcp', kind: 'mcp', configuration: { transport: 'stdio', command: 'fixture', args: [] }, content: {} };
+  const { $, view, calls, clickText, submit } = setup(t, { resources: [mcp], respond: (request, state) => {
+    if (!request.path.endsWith('/test')) return;
+    const item = state.resources[0]; item.revision++; state.revision++;
+    item.connectionTest = { status: outcome, testedRevision: item.revision };
+    return outcome === 'failed' ? { response: { ok: false }, data: { code: 'BASE_MCP_FAILED', error: 'Fixture connection failed.' } }
+      : { response: { ok: true }, data: { resource: structuredClone(item), result: item.connectionTest } };
+  } });
+  await view.show(); await view.openResource(mcp.id);
+  clickText('Test connection and discover tools');
+  await until(() => $('.base-resource-form').textContent.includes('r2'), 'editor reflects persisted test revision');
+  if (outcome === 'failed') assert.match($('.base-resource-form').textContent, /Fixture connection failed/);
+  $('#base-resource-name').value = 'Edited after discovery'; submit($('.base-resource-form'));
+  await until(() => calls.some(call => call.method === 'PATCH'), 'save after discovery');
+  const saved = calls.find(call => call.method === 'PATCH').body;
+  assert.equal(saved.expectedRevision, 2); assert.equal(saved.expectedBaseRevision, 4);
+});
+
+test('saved-resource actions preserve drafts and refresh source text before a later save', async t => {
+  const wiki = { ...skill, id: 'res_wiki', kind: 'knowledge', configuration: { sources: [{ kind: 'knowledge', resourceId: skill.id }] }, content: { pages: [], sources: [{ id: 'live', name: 'Live source', text: 'Old capture' }] } };
+  const { $, view, calls, clickText, win, submit } = setup(t, { resources: [wiki], respond: (request, state) => {
+    if (!request.path.endsWith('/refresh')) return;
+    const item = state.resources[0]; item.revision++; state.revision++; item.content.sources[0].text = 'Fresh capture';
+    return { response: { ok: true }, data: { resource: structuredClone(item) } };
+  } });
+  await view.show(); await view.openResource(wiki.id);
+  $('#base-resource-name').value = 'Unsaved title'; $('#base-resource-name').dispatchEvent(new win.Event('input', { bubbles: true }));
+  clickText('Refresh saved sources');
+  await until(() => $('.base-resource-form').textContent.includes('Save your edits'), 'dirty draft guarded');
+  assert.equal(calls.some(call => call.path.endsWith('/refresh')), false); assert.equal($('#base-resource-name').value, 'Unsaved title');
+  await view.openResource(wiki.id); clickText('Refresh saved sources');
+  await until(() => [...$('.base-source-list').querySelectorAll('textarea')].some(node => node.value === 'Fresh capture'), 'refreshed content displayed');
+  submit($('.base-resource-form'));
+  await until(() => calls.some(call => call.method === 'PATCH'), 'save fresh source content');
+  const saved = calls.find(call => call.method === 'PATCH').body;
+  assert.equal(saved.expectedRevision, 2); assert.equal(saved.expectedBaseRevision, 4); assert.equal(saved.content.sources[0].text, 'Fresh capture');
+});
+
 test('run inspection keeps configured, supplied, and observed facts separate and scopes next-run edits', async t => {
   const { $, view, calls, clickText, win } = setup(t);
   await view.show();
@@ -180,4 +247,110 @@ test('run inspection keeps configured, supplied, and observed facts separate and
   await until(() => $('[data-base-mode]'), 'next-run picker');
   assert.match($('#base-dialog-content').textContent, /do not reconfigure a running CLI session/);
   assert.equal(calls.some(call => call.path.includes('/runs/') && call.method), false);
+});
+
+
+const categoryCases = [['', 'All'], ['agent', 'Agents'], ['pack', 'Packs'], ['mcp', 'MCPs'], ['skill', 'Skills'], ['knowledge', 'Knowledge'], ['context', 'Context'], ['tool', 'Tools']];
+const categoryResources = () => categoryCases.slice(1).flatMap(([type], index) => [true, false].map(enabled => ({ ...skill, id: `${type}_${enabled}`, type, kind: type === 'agent' ? 'profile' : type, name: `coding ${type} ${enabled}`, enabled, updatedAt: index * 10 + (enabled ? 1 : 2), configuration: type === 'agent' ? { agent: {}, binding: { mode: 'inherit', include: [], exclude: [] } } : {} })));
+
+test('exactly eight categories filter stored types locally with shared AND filters, sort, view and canonical counts', async t => {
+  const { $, win, view, calls, clickText, change } = setup(t, { resources: categoryResources() });
+  await view.show();
+  assert.deepEqual([...$('#base-categories').children].map(node => node.getAttribute('aria-label')), categoryCases.map(([, name]) => name));
+  assert.equal($('#base-categories [aria-pressed="true"]').dataset.kind, '');
+  assert.equal($('#base-list').children.length, 14);
+  for (const [type, label] of categoryCases) {
+    clickText(label); assert.equal($('#base-categories [aria-pressed="true"]').dataset.kind, type);
+    assert.equal($('#base-categories').querySelectorAll('[aria-pressed="true"]').length, 1);
+    assert.equal($('#base-list').children.length, type ? 2 : 14);
+    if (type) assert.equal($('#base-new-kind').value, type === 'agent' ? 'profile' : type);
+  }
+  $('#base-search').value = 'coding'; $('#base-search').dispatchEvent(new win.Event('input'));
+  change($('#base-filter'), 'enabled'); change($('#base-sort'), 'name'); change($('#base-view-mode'), 'list');
+  clickText('Agents'); clickText('Skills');
+  assert.equal($('#base-search').value, 'coding'); assert.equal($('#base-filter').value, 'enabled');
+  assert.equal($('#base-sort').value, 'name'); assert.equal($('#base-view-mode').value, 'list');
+  assert.equal($('#base-list').children.length, 1); assert.equal($('#base-list .base-resource').dataset.resourceId, 'skill_true');
+  assert.equal($('#base-list').classList.contains('base-list-mode'), true);
+  assert.equal($('#base-categories [data-kind="skill"] .base-category-count').textContent, '2');
+  clickText('All'); assert.equal($('#base-list').children.length, 7);
+  await view.show(); assert.equal(calls.filter(call => call.path === '/api/base').length, 1, 'Category changes and revisiting cached Base never refetch.');
+  const stored = JSON.parse(win.localStorage.getItem('promptboard.base.library-view'));
+  assert.deepEqual(stored, { category: '', search: 'coding', filter: 'enabled', sort: 'name', viewMode: 'list' });
+});
+
+test('validated preferences restore category/search/filter/sort/view and details restore list scroll', async t => {
+  const savedView = { category: 'skill', search: 'coding', filter: 'enabled', sort: 'recently_updated', viewMode: 'grid' };
+  const { $, view, clickText } = setup(t, { resources: categoryResources(), savedView });
+  await view.show(); assert.equal($('#base-list').children.length, 1); assert.equal($('#base-search').value, savedView.search);
+  $('.base-list-panel').scrollTop = 95; await view.openResource('skill_true');
+  assert.equal($('#base-filter').value, 'enabled'); clickText('Back to library');
+  assert.equal($('#base-detail').hidden, true); assert.equal($('.base-list-panel').scrollTop, 95);
+  clickText('Knowledge'); assert.equal($('.base-list-panel').scrollTop, 0); assert.equal($('#base-sort').value, savedView.sort);
+  const invalid = setup(t, { savedView: { category: 'imaginary', search: 12, filter: 'unknown', sort: 'broken', viewMode: 'broken' } });
+  await invalid.view.show(); assert.equal(invalid.$('#base-categories [aria-pressed="true"]').dataset.kind, '');
+  assert.equal(invalid.$('#base-sort').value, 'recently_updated'); assert.equal(invalid.$('#base-view-mode').value, 'grid');
+});
+
+test('empty search and category states retain active filters and use the shared contextual creation flow', async t => {
+  const { $, win, view, clickText, change } = setup(t, { resources: [] }); await view.show();
+  for (const [type, label] of categoryCases.slice(1)) {
+    clickText(label); assert.equal($('#base-empty').hidden, false); assert.equal($('#base-categories [aria-pressed="true"]').dataset.kind, type);
+    clickText('Create'); assert.equal($('.base-resource-form').dataset.kind, type === 'agent' ? 'profile' : type);
+    clickText('Back to library');
+  }
+  clickText('MCPs'); $('#base-search').value = 'github'; $('#base-search').dispatchEvent(new win.Event('input'));
+  change($('#base-filter'), 'enabled'); assert.match($('#base-empty').textContent, /No mcps match “github”/);
+  clickText('Clear search'); assert.equal($('#base-search').value, ''); assert.equal($('#base-filter').value, 'enabled');
+  clickText('Clear filters'); assert.equal($('#base-filter').value, 'all'); assert.equal($('#base-categories [aria-pressed="true"]').dataset.kind, 'mcp');
+  clickText('Add MCP'); assert.equal($('.base-resource-form').dataset.kind, 'mcp');
+});
+
+test('latest collection request wins while rapid category switches, failures and retry preserve all controls', async t => {
+  let resolveFirst, resolveSecond, resolveThird, requestNumber = 0;
+  const pending = new Map();
+  const { $, win, view, clickText, change } = setup(t, { respond: request => {
+    if (request.path !== '/api/base') return null;
+    const number = ++requestNumber; return new Promise(resolve => pending.set(number, resolve));
+  } });
+  const initial = view.show(); await until(() => pending.has(1), 'initial pending collection');
+  resolveFirst = pending.get(1);
+  clickText('Agents'); clickText('MCPs'); clickText('Skills');
+  $('#base-search').value = 'coding'; $('#base-search').dispatchEvent(new win.Event('input'));
+  change($('#base-filter'), 'enabled'); change($('#base-sort'), 'name'); change($('#base-view-mode'), 'list');
+  assert.equal($('#base-list').children.length, 0); assert.match($('#base-empty').textContent, /Loading skills/);
+  const newer = view.refresh(true); await until(() => pending.has(2), 'newer request'); resolveSecond = pending.get(2);
+  resolveSecond({ response: { ok: true }, data: { revision: 3, resources: categoryResources() } }); await newer;
+  resolveFirst({ response: { ok: false }, data: { error: 'Obsolete initial failure' } }); await initial;
+  assert.equal($('#base-list .base-resource').dataset.resourceId, 'skill_true');
+  const failure = view.refresh(true); await until(() => pending.has(3), 'failure request'); resolveThird = pending.get(3);
+  resolveThird({ response: { ok: false }, data: { error: 'Connection unavailable' } }); await assert.rejects(failure);
+  assert.equal($('#base-categories [aria-pressed="true"]').dataset.kind, 'skill');
+  assert.equal($('#base-list').children.length, 0); assert.match($('#base-empty').textContent, /Could not load skills/);
+  assert.equal($('#base-error').hidden, true); assert.equal($('#base-search').value, 'coding');
+  clickText('Retry'); await until(() => pending.has(4), 'retry request');
+  assert.equal($('.base-list-panel').getAttribute('aria-busy'), 'true');
+  pending.get(4)({ response: { ok: true }, data: { revision: 4, resources: categoryResources() } });
+  await until(() => $('#base-list').children.length === 1, 'retry result');
+  assert.equal($('#base-filter').value, 'enabled'); assert.equal($('#base-sort').value, 'name'); assert.equal($('#base-view-mode').value, 'list');
+  const obsolete = view.refresh(true), latest = view.refresh(true);
+  await until(() => pending.has(6), 'overlapping equal-revision refreshes');
+  pending.get(6)({ response: { ok: true }, data: { revision: 4, resources: categoryResources() } }); await latest;
+  pending.get(5)({ response: { ok: true }, data: { revision: 4, resources: [{ ...skill, name: 'stale' }] } }); await obsolete;
+  assert.equal($('#base-list .base-resource').dataset.resourceId, 'skill_true'); assert.equal($('.base-list-panel').getAttribute('aria-busy'), 'false');
+});
+
+test('category counts track canonical mutations and keyboard focus alone never changes the filter', async t => {
+  const { $, win, view, state, clickText } = setup(t, { resources: categoryResources() }); await view.show();
+  const nav = $('#base-categories'), first = nav.firstElementChild; first.focus();
+  first.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+  assert.equal(win.document.activeElement.dataset.kind, 'agent'); assert.equal(nav.querySelector('[aria-pressed="true"]').dataset.kind, '');
+  win.document.activeElement.click(); assert.equal(nav.querySelector('[aria-pressed="true"]').dataset.kind, 'agent');
+  state.resources = state.resources.filter(item => item.type !== 'mcp'); state.revision++;
+  state.resources.push({ ...skill, type: 'tool', kind: 'tool', id: 'new_tool', name: 'MCP skill in name only' });
+  await view.refresh(); clickText('Tools');
+  assert.equal($('#base-list').children.length, 3);
+  assert.equal(nav.querySelector('[data-kind="mcp"] .base-category-count').textContent, '0');
+  assert.equal(nav.querySelector('[data-kind=""] .base-category-count').textContent, '13');
+  assert.equal($('#base-search').value, '');
 });

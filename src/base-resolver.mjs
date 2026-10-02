@@ -44,6 +44,7 @@ export function resolveBase({ state, project, task, columnId, provider, capabili
   const registry = resourcesOf(state), selected = new Map(), excluded = new Set();
   const exclusions = [], warnings = [], errors = [], profiles = [];
   const canExpand = resource => resource?.enabled && resource.trust === 'trusted' && resource.contentStatus !== 'omitted' && !deliveryFor(resource, provider, columnId, capabilities).issue;
+  const subagentsSupported = resource => ADAPTERS[provider]?.capabilities?.base?.subagents && !['planning', 'code_review'].includes(columnId) && (!resource?.configuration?.agent?.provider || resource.configuration.agent.provider === provider);
   const layers = [
     ['global', state?.settings?.baseBinding, state?.settings?.agentProfileId],
     [`project:${project?.id || ''}`, project?.baseBinding, project?.agentProfileId],
@@ -51,7 +52,7 @@ export function resolveBase({ state, project, task, columnId, provider, capabili
     [`task:${task?.id || ''}`, task?.baseBinding, null],
     [`task-column:${task?.id || ''}:${columnId}`, task?.baseColumns?.[columnId]?.binding, null],
   ];
-  function select(ref, origin, rank, explicit = true, stack = []) {
+  function select(ref, origin, rank, explicit = true, stack = [], expandProfile = true) {
     if (!ref?.resourceId) return;
     const id = ref.resourceId, resource = registry.get(id);
     if (stack.includes(id)) { errors.push({ resourceId: id, code: 'BASE_CYCLE', message: 'Resource dependencies contain a cycle.' }); return; }
@@ -67,10 +68,22 @@ export function resolveBase({ state, project, task, columnId, provider, capabili
     }
     else if (entry.explicitRank <= rank) entry.required ||= ref.required === true;
     entry.rank = Math.max(entry.rank, rank);
+    if (resource?.kind === 'profile' && origin.includes('/profile:')) entry.nativeSubagent = true;
     selected.set(id, entry);
     // A disabled/untrusted pack is not a back door to its members. Independently
     // selected members remain separate and can still be delivered.
     if (resource?.kind === 'pack' && resource.enabled && resource.trust === 'trusted' && resource.contentStatus !== 'omitted') for (const child of refs(resource.configuration?.resources)) select({ ...child, required: entry.required || child.required }, `${origin}/pack:${id}`, rank, explicit, [...stack, id]);
+    if (resource?.kind === 'profile' && expandProfile && canExpand(resource) && (!entry.nativeSubagent || subagentsSupported(resource))) {
+      const binding = resource.configuration?.binding;
+      for (const child of refs(binding?.include)) select({ ...child, required: entry.required || child.required }, `${origin}/profile:${id}`, rank, explicit, [...stack, id]);
+      for (const excludedId of binding?.exclude || []) removeSelection(excludedId, `${origin}/profile:${id}`);
+    }
+  }
+  function removeSelection(id, origin, stack = []) {
+    if (stack.includes(id)) return;
+    selected.delete(id); excluded.add(id); exclusions.push({ resourceId: id, origin, reason: 'excluded' });
+    const resource = registry.get(id);
+    if (resource?.kind === 'pack') for (const child of refs(resource.configuration?.resources)) removeSelection(child.resourceId, origin, [...stack, id]);
   }
   function apply(binding, origin, rank) {
     const mode = binding?.mode || 'inherit';
@@ -80,13 +93,7 @@ export function resolveBase({ state, project, task, columnId, provider, capabili
       selected.clear(); excluded.clear();
     }
     for (const ref of refs(binding?.include)) select(ref, origin, rank);
-    const remove = (id, stack = []) => {
-      if (stack.includes(id)) return;
-      selected.delete(id); excluded.add(id); exclusions.push({ resourceId: id, origin, reason: 'excluded' });
-      const resource = registry.get(id);
-      if (resource?.kind === 'pack') for (const child of refs(resource.configuration?.resources)) remove(child.resourceId, [...stack, id]);
-    };
-    for (const id of binding?.exclude || []) remove(typeof id === 'string' ? id : id.resourceId);
+    for (const id of binding?.exclude || []) removeSelection(typeof id === 'string' ? id : id.resourceId, origin);
   }
   for (const [rank, [origin, binding, profileId]] of layers.entries()) {
     if (profileId) {
@@ -94,7 +101,7 @@ export function resolveBase({ state, project, task, columnId, provider, capabili
       profiles.push({ resourceId: profileId, revision: profile?.revision || 0, revisionRef: profile?.revisionRef ? { ...profile.revisionRef } : null, origin });
       if (!profile || profile.kind !== 'profile' || !profile.enabled || profile.trust !== 'trusted') errors.push({ resourceId: profileId, code: 'BASE_PROFILE_UNAVAILABLE', message: 'A selected agent profile is missing, disabled, or untrusted. Change the profile configuration explicitly.' });
       if (profile?.kind === 'profile') apply(profile.configuration?.binding, `${origin}/profile:${profileId}`, rank);
-      select({ resourceId: profileId, required: true }, `${origin}/profile`, rank);
+      select({ resourceId: profileId, required: true }, `${origin}/profile`, rank, true, [], false);
     }
     apply(binding, origin, rank);
   }
@@ -135,6 +142,11 @@ export function resolveBase({ state, project, task, columnId, provider, capabili
       if (resource.kind === 'tool' && resource.configuration?.delivery === 'mcp' && !registry.get(resource.configuration.serverId)?.connectionTest?.tools?.some(tool => tool.name === resource.configuration.toolName)) issues.push('The parent MCP server has not discovered this tool. Run an explicit connection test before attaching it.');
     }
     const result = resource ? deliveryFor(resource, provider, columnId, capabilities) : { delivery: 'unavailable' };
+    if (entry.nativeSubagent) {
+      result.delivery = 'native-subagent';
+      if (!ADAPTERS[provider]?.capabilities?.base?.subagents || ['planning', 'code_review'].includes(columnId)) result.issue = 'Native Base subagents are supported only by Claude Code writing stages; selections are retained for other providers and read-only stages.';
+      else if (resource?.configuration?.agent?.provider && resource.configuration.agent.provider !== provider) result.issue = 'A native subagent must inherit the parent provider or select that same provider.';
+    }
     if (resource?.kind === 'knowledge' && entry.origins.every(origin => origin.startsWith('dependency:'))) result.delivery = 'dependency-definition';
     if (result.issue) issues.push(result.issue);
     return { resourceId: entry.resourceId, revision: resource?.revision || 0, revisionRef: resource?.revisionRef ? { ...resource.revisionRef } : null, kind: resource?.kind || 'missing', name: resource?.name || entry.resourceId, required: entry.required, origins: entry.origins, delivery: result.delivery, status: issues.length ? 'omitted' : 'ready', issues };

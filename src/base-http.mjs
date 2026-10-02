@@ -1,22 +1,25 @@
 /** Protected Base routes, mounted after the server's local-origin and token checks. */
 import { readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { BaseError, BASE_LIMITS, normalizeContent } from './base.mjs';
 import { captureSources, fetchDocument, searchSources } from './base-context.mjs';
 import { CONTEXT7_PRESET, testMcp } from './base-mcp.mjs';
 import { WikiJobs } from './base-wiki.mjs';
+import { AvatarJobs, imageAvailability } from './base-avatar.mjs';
 
 const fail = (message, code = 'BASE_INVALID_INPUT', status = 400) => { throw new BaseError(message, code, status); };
 const sameTarget = (a, b) => ['scope', 'projectId', 'taskId', 'columnId'].every(key => a?.[key] === b?.[key]);
 
 export class BaseRoutes {
-  constructor({ board, runner, claim, track, catalog, send, jsonBody, mcpTester = testMcp }) {
+  constructor({ board, runner, claim, track, catalog, send, jsonBody, mcpTester = testMcp, imageGenerator }) {
     Object.assign(this, { board, track, send, jsonBody, mcpTester });
     this.wiki = new WikiJobs({ board, runner, claim, track, catalog });
+    this.avatars = new AvatarJobs({ board, claim, track, imageGenerator });
     this.operations = new Set();
   }
 
-  close() { this.wiki.close(); for (const controller of this.operations) controller.abort(); }
+  close() { this.wiki.close(); this.avatars.close(); for (const controller of this.operations) controller.abort(); }
 
   async body(req) {
     const body = await this.jsonBody(req, BASE_LIMITS.importBytes);
@@ -39,6 +42,14 @@ export class BaseRoutes {
     const { board } = this, method = req.method;
     if (method === 'GET' && pathname === '/api/base') return this.send(res, 200, await board.baseView());
     if (method === 'GET' && pathname === '/api/base/presets') return this.send(res, 200, { presets: [CONTEXT7_PRESET] });
+    if (method === 'GET' && pathname === '/api/base/avatar/service') return this.send(res, 200, imageAvailability());
+    if (method === 'POST' && pathname === '/api/base/avatar/cancel') return this.send(res, 200, this.avatars.cancel((await this.body(req)).operationId));
+    if (method === 'POST' && pathname === '/api/base/avatar/generate') {
+      const body = await this.body(req), controller = new AbortController();
+      const abort = () => { if (!res.writableEnded) controller.abort(); }; res.on('close', abort);
+      try { return this.send(res, 200, await this.track(this.avatars.generate(body, { signal: controller.signal }))); }
+      finally { res.off('close', abort); }
+    }
     if (method === 'GET' && pathname === '/api/base/target') {
       let target; try { target = JSON.parse(search.get('target')); } catch { fail('Choose a valid target.'); }
       const item = (await board.baseView()).targets.find(item => sameTarget(item.target, target));
@@ -89,9 +100,14 @@ export class BaseRoutes {
       const body = await this.body(req);
       return this.send(res, 200, { source: await this.bounded(res, signal => fetchDocument(body.url, { signal })) });
     }
-    const match = pathname.match(/^\/api\/base\/resources\/([A-Za-z0-9_-]{1,100})(?:\/(test|refresh|search|revisions)(?:\/([0-9]+))?)?$/);
+    const match = pathname.match(/^\/api\/base\/resources\/([A-Za-z0-9_-]{1,100})(?:\/(test|refresh|search|revisions|avatar)(?:\/([0-9]+))?)?$/);
     if (match) {
       const [, id, action, revision] = match;
+      if (method === 'GET' && action === 'avatar') {
+        const resource = await board.base.detail(id);
+        if (resource.kind !== 'profile' || !resource.content.avatar) fail('This profile has no saved avatar.', 'BASE_NOT_FOUND', 404);
+        return this.send(res, 200, { image: resource.content.avatar });
+      }
       if (method === 'GET' && (!action || action === 'revisions')) return this.send(res, 200, { resource: await board.base.detail(id, { revision }) });
       if (method === 'PATCH' && !action) {
         const body = await this.body(req);
@@ -124,7 +140,13 @@ export class BaseRoutes {
         if (body.projectId && !project) fail('Choose an existing project for repository sources.');
         const captured = await this.bounded(res, signal => captureSources(resource, { workspacePath: project?.repository?.root, approvedRoots: state.base.approvedRoots, signal,
           readRevision: ref => board.base.readRevision(ref), resources: state.base.resources }));
-        const updated = await board.base.update(id, { content: { ...resource.content, sources: captured.sources } }, { expectedRevision: resource.revision, expectedBaseRevision: body.expectedBaseRevision });
+        // Refresh owns only its captures. Pasted, uploaded, and independently imported
+        // sources remain intact; removed live sources disappear on the next refresh.
+        const live = [...new Map(captured.sources.map(source => [source.id, source])).values()].map(source => ({ ...source,
+          id: `refresh_${createHash('sha256').update(source.id).digest('hex').slice(0, 32)}`,
+          provenance: { ...source.provenance, method: 'refresh' } }));
+        const sources = [...resource.content.sources.filter(source => source.provenance?.method !== 'refresh'), ...live];
+        const updated = await board.base.update(id, { content: { ...resource.content, sources } }, { expectedRevision: resource.revision, expectedBaseRevision: body.expectedBaseRevision });
         return this.changed(res, { resource: updated, omitted: captured.omitted });
       }
       if (method === 'GET' && action === 'search') {

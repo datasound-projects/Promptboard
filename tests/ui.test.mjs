@@ -2440,7 +2440,10 @@ test('Base is the third global page, preserves Compose and project state, and su
   assert.equal($('#base-view').hidden, false); assert.equal($('#prompt-view').hidden, true); assert.equal($('#kanban-view').hidden, true);
   assert.equal(win.document.title, 'Base · Promptboard');
   assert.equal($('.page-nav [aria-current="page"]').getAttribute('href'), '#/base');
-  assert.equal($('#sidebar').hidden, true); assert.equal($('#menu-toggle').hidden, true);
+  assert.equal($('#sidebar').hidden, false); assert.equal($('#menu-toggle').hidden, false);
+  assert.equal($('#base-sidebar-panel').hidden, false); assert.equal($('#workspace-panel').hidden, true);
+  assert.equal($('#sidebar').getAttribute('aria-label'), 'Base library');
+  assert.equal($('#base-categories').closest('#base-sidebar-panel') !== null, true);
   assert.equal($('#base-error').hidden, true, $('#base-error').textContent);
   $('#skip-link').dispatchEvent(new win.MouseEvent('click', { bubbles: true, cancelable: true })); assert.equal(win.document.activeElement.id, 'base-view'); assert.equal(win.location.hash, '#/base');
   await goTo(ctx, '#/'); $('#prompt-input').value = 'An unfinished Compose draft.';

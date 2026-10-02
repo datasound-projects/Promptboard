@@ -37,7 +37,7 @@ npm install
 npm start
 ```
 
-Your browser opens **http://127.0.0.1:4318**. Press **Ctrl+C** to stop. No API keys and no accounts: Promptboard uses your CLI's own sign-in.
+Your browser opens **http://127.0.0.1:4318**. Press **Ctrl+C** to stop. Compose and Kanban use your CLI's own sign-in. Optional AI avatar illustrations use a separate image API key.
 
 ## Features
 
@@ -75,6 +75,11 @@ Use **Add task** at the bottom of To Do to enter a prompt directly, or choose **
 - **Timeline**: see the history of a project: moves, agent runs, reviews, tests, commits, and merges.
 
 **Base — optional reusable resources**
+
+- Base has its own sidebar: All, Agents, Packs, MCPs, Skills, Knowledge, Context, and Tools. Search, availability, sorting, and Grid/List remain selected when switching categories. On mobile the same navigation becomes a horizontal strip. Categories change the collection, heading, creation type, and empty state; an unrelated editor stays out of the way.
+- Agent cards show their provider/model, saved face, and checked configured resources. Configure a profile once and select it in existing Kanban project or column agent settings, or apply its resources to multiple targets. Profiles can reference other profiles; cycles are rejected.
+- Nested profiles are delivered as native custom subagents in **Claude Code writing stages**, with pinned instructions/context and the parent session’s permission boundary. Codex, Gemini, and read-only stages retain selections and report incompatibility; required incompatible subagents block launch. Availability does not mean the CLI invoked a subagent.
+- **Generate avatar** sends your description to OpenAI Images and returns an illustration draft; save the profile to retain it. Start the server with `OPENAI_API_KEY` available in its environment. `PROMPTBOARD_IMAGE_API_KEY_ENV` can name another credential variable; `PROMPTBOARD_IMAGE_MODEL` overrides the default `gpt-image-2.5-flare`. CLI subscriptions do not provide this API access; image generation is billed separately. No key is stored in Base. Avatars are included in exports only with document content.
 
 - Open **Base** after Kanban, or go directly to `#/base`. Create instruction skills, Markdown wikis, context selections, MCP definitions, command recipes, reusable agent profiles, and packs.
 - Store a resource once. **Base resources** in agent, project, column, and task settings attaches references to existing configurations. **Apply to…** previews assignments to several targets. Saving or assigning never starts an agent or installs software.

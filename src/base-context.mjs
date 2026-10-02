@@ -128,7 +128,7 @@ export async function captureSources(definition, { workspacePath, approvedRoots 
         if (source.pageId && page.id !== source.pageId) continue;
         const size = Buffer.byteLength(page.markdown);
         if (result.length >= limit || size > MAX_FILE || bytes + size > MAX_TOTAL) { omitted.push(page.id); continue; }
-        bytes += size; result.push({ id: page.id, name: page.title, text: page.markdown, provenance: { resourceId: source.resourceId, revision: loaded.revision, section: page.id, contentHash: digest(page.markdown), retrievedAt: Date.now() } });
+        bytes += size; result.push({ id: digest(`knowledge:${source.resourceId}:${page.id}`).slice(0, 24), name: page.title, text: page.markdown, provenance: { resourceId: source.resourceId, revision: loaded.revision, section: page.id, contentHash: digest(page.markdown), retrievedAt: Date.now() } });
       }
       if (source.pageId && !loaded.content?.pages?.some(page => page.id === source.pageId)) throw new BaseDeliveryError('The selected knowledge page is unavailable.', 'BASE_SOURCE_UNAVAILABLE');
       if (loaded.content?.body && !source.pageId) {
@@ -170,7 +170,7 @@ export function lexicalSearch(sources, query, { limit = 20 } = {}) { return sear
 export async function prepareBase({ manifest, readRevision, currentResources = [], workspacePath, runDir, signal, approvedRoots = [], contextBudget = 48000, query = '' }) {
   signal = signal ? AbortSignal.any([signal, AbortSignal.timeout(30000)]) : AbortSignal.timeout(30000);
   assertBaseReady(manifest); checkBaseRevocations(manifest, currentResources, approvedRoots); aborted(signal);
-  const prepared = structuredClone(manifest), sections = [], mcpServers = [];
+  const prepared = structuredClone(manifest), sections = [], mcpServers = [], subagents = {}, resourceText = new Map();
   const owned = join(runDir, 'base-context'); let remaining = Math.max(0, Math.min(100000, contextBudget));
   // Captures are evidence artifacts, retained with the run. Only generated configuration is temporary.
   const cleanup = async ({ discardCaptures = false } = {}) => { await Promise.all([rm(join(runDir, 'base-claude-mcp.json'), { force: true }), rm(join(runDir, 'gemini-system-settings.json'), { force: true }), ...(discardCaptures ? [rm(owned, { recursive: true, force: true })] : [])]); };
@@ -180,6 +180,8 @@ export async function prepareBase({ manifest, readRevision, currentResources = [
       aborted(signal);
       try {
         const definition = await cancellable(readRevision(entry.revisionRef), signal);
+        // Portraits are UI assets, never model context or native agent configuration.
+        if (definition.content?.avatar) delete definition.content.avatar;
         const size = Buffer.byteLength(JSON.stringify(definition));
         if (definitionBytes + size > 8_000_000) throw new BaseDeliveryError('Selected Base definitions exceed the preparation size limit.', 'BASE_DEFINITION_LIMIT');
         definitionBytes += size; definitions.set(entry.resourceId, definition);
@@ -226,12 +228,14 @@ export async function prepareBase({ manifest, readRevision, currentResources = [
         if (text.length > remaining) throw new BaseDeliveryError('The Base context budget cannot fit this resource; task text and evidence were preserved.', 'BASE_CONTEXT_BUDGET');
         const supplied = { resourceId: entry.resourceId, revision: entry.revision, delivery: entry.delivery, captures, omitted, chars: text.length, estimatedTokens: Math.ceil(text.length / 4), tokenCountIsEstimate: true };
         if (text) {
+          resourceText.set(entry.resourceId, text);
           await mkdir(owned, { recursive: true, mode: 0o700 });
           const file = `${entry.resourceId}.txt`;
           if (!/^[A-Za-z0-9_-]+\.txt$/.test(file)) throw new BaseDeliveryError('Invalid pinned resource identifier.', 'BASE_INVALID_RESOURCE');
           await writeFile(join(owned, file), text, { mode: 0o600, signal });
           supplied.contextRef = `base-context/${file}`; supplied.contentHash = digest(text);
-          sections.push(`--- ${entry.name} (${entry.delivery}; revision ${entry.revision}) ---\n${text}\n--- End resource ---`); remaining -= text.length;
+          if (entry.delivery !== 'native-subagent') sections.push(`--- ${entry.name} (${entry.delivery}; revision ${entry.revision}) ---\n${text}\n--- End resource ---`);
+          remaining -= text.length;
         }
         if (text || entry.kind === 'mcp') prepared.supplied.push(supplied);
         if (omitted.length) prepared.warnings.push({ resourceId: entry.resourceId, code: 'BASE_CONTEXT_OMITTED', message: `${omitted.length} source sections/files were omitted by selection or budget.` });
@@ -241,7 +245,32 @@ export async function prepareBase({ manifest, readRevision, currentResources = [
         entry.issues.push(message); prepared.warnings.push({ resourceId: entry.resourceId, code: error.code || 'BASE_PREPARATION_FAILED', message });
       }
     }
+    for (const entry of prepared.resources.filter(resource => resource.status === 'ready' && resource.delivery === 'native-subagent')) {
+      const definition = definitions.get(entry.resourceId), selected = new Set(), excluded = new Set(definition.configuration?.binding?.exclude || []);
+      const collect = id => {
+        if (selected.has(id) || excluded.has(id)) return;
+        selected.add(id); const resource = definitions.get(id);
+        if (!resource) return;
+        for (const ref of [...baseDependencies(resource), ...(resource.kind === 'pack' ? resource.configuration?.resources || [] : resource.kind === 'profile' ? resource.configuration?.binding?.include || [] : [])]) collect(ref.resourceId);
+      };
+      for (const ref of [...baseDependencies(definition), ...(definition.configuration?.binding?.include || [])]) collect(ref.resourceId);
+      const name = `pb_${entry.resourceId.replace(/[^A-Za-z0-9_]/g, '_')}`;
+      const context = [...selected].filter(id => definitions.get(id)?.kind !== 'profile').map(id => resourceText.get(id)).filter(Boolean).join('\n\n--- Selected Base context ---\n');
+      const prompt = `You are ${definition.name}. Follow the parent task stage and its permission restrictions. Do not commit, merge, push, or change permission settings.\n\n${definition.configuration?.agent?.instructions || definition.description || 'Help with your assigned portion of the task.'}${context ? `\n\n=== BASE RESOURCE CONTEXT ===\n${context}\n=== END BASE RESOURCE CONTEXT ===` : ''}`;
+      const native = { description: definition.description || `Reusable specialist: ${definition.name}`, prompt, model: definition.configuration?.agent?.model || 'inherit', disallowedTools: ['EnterPlanMode', 'ExitPlanMode'] };
+      if (definition.configuration?.agent?.effort) native.effort = definition.configuration.agent.effort;
+      const candidate = { ...subagents, [name]: native };
+      if (Object.keys(candidate).length > 16 || Buffer.byteLength(JSON.stringify(candidate)) > 60000) {
+        if (entry.required) throw new BaseDeliveryError('Native subagent definitions exceed the bounded per-run budget.', 'BASE_SUBAGENT_LIMIT');
+        entry.status = 'omitted'; prepared.warnings.push({ resourceId: entry.resourceId, code: 'BASE_SUBAGENT_LIMIT', message: 'Optional subagent omitted because its native definition exceeds the run budget.' }); continue;
+      }
+      subagents[name] = native;
+      await mkdir(owned, { recursive: true, mode: 0o700 }); await writeFile(join(owned, `${entry.resourceId}.txt`), prompt, { mode: 0o600, signal });
+      const supplied = { resourceId: entry.resourceId, revision: entry.revision, delivery: 'native-subagent', nativeName: name, contextRef: `base-context/${entry.resourceId}.txt`, contentHash: digest(prompt), chars: prompt.length, estimatedTokens: Math.ceil(prompt.length / 4), tokenCountIsEstimate: true, captures: [], omitted: [] };
+      prepared.supplied = prepared.supplied.filter(resource => resource.resourceId !== entry.resourceId); prepared.supplied.push(supplied);
+      sections.push(`Native subagent available: ${name} — ${definition.name}. Delegate relevant work when useful. Configured availability is not proof of invocation.`);
+    }
     aborted(signal); prepared.preparedAt = Date.now();
-    return { sections: sections.join('\n\n'), mcpServers, manifest: prepared, cleanup };
+    return { sections: sections.join('\n\n'), mcpServers, subagents, manifest: prepared, cleanup };
   } catch (error) { await cleanup({ discardCaptures: true }); throw error instanceof BaseDeliveryError ? error : new BaseDeliveryError('Base resource preparation failed.', signal?.aborted ? 'ABORTED' : 'BASE_PREPARATION_FAILED'); }
 }
