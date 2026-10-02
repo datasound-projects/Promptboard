@@ -14,6 +14,8 @@ import { dirname, join } from 'node:path';
 import { ADAPTERS, AgentError, buildSession, composeMessage, HOOK_ERRORS, interpretEvent, resolveConfig } from './agents.mjs';
 import { FAILURE_MESSAGES, killPidGroup, resolveExecutable, trackPid, untrackPid } from './providers.mjs';
 import { addClaudeRecord, addCodexRecord, claudeTranscript, findCodexRollout, newUsage, readNewLines, usageSummary } from './usage.mjs';
+import { prepareBase } from './base-context.mjs';
+import { BaseDeliveryError, checkBaseRevocations } from './base-resolver.mjs';
 
 const RING_BYTES = 1024 * 1024; // Live scrollback kept per run for reconnects.
 const LOG_BYTES = 20 * 1024 * 1024; // Output log file cap per run.
@@ -37,12 +39,14 @@ export async function loadPty(requireFrom = import.meta.url) {
 }
 
 export class Supervisor {
-  constructor({ board, dataDir, ptyLoader = loadPty, resolver = resolveExecutable, nodePath = process.execPath }) {
+  constructor({ board, dataDir, ptyLoader = loadPty, resolver = resolveExecutable, nodePath = process.execPath, basePreparer = prepareBase }) {
     this.board = board;
     this.dataDir = dataDir;
     this.ptyLoader = ptyLoader;
     this.resolver = resolver;
     this.nodePath = nodePath;
+    this.basePreparer = basePreparer;
+    this.preparing = new Map();
     this.sessions = new Map(); // runId -> session
     this.queue = [];
     this.pending = new Map(); // runId -> subscribers waiting for a queued run to start
@@ -94,15 +98,48 @@ export class Supervisor {
 
   async #fail(runId, error) {
     this.#endPending(runId);
-    if ((await this.board.run(runId).catch(() => null))?.status === 'cancelled') return;
     const code = typeof error?.code === 'string' ? error.code : 'CLI_FAILED';
-    const reason = error instanceof AgentError ? error.message : FAILURE_MESSAGES[code] || 'The agent session could not start.';
+    const reason = error instanceof AgentError || error instanceof BaseDeliveryError ? error.message : FAILURE_MESSAGES[code] || 'The agent session could not start.';
+    const session = this.sessions.get(runId);
+    // A spawn can succeed before manifest/status persistence fails. An unrecorded
+    // process must never keep running after failed-start handling moves its card back.
+    if (session?.proc) {
+      session.launchFailed = true;
+      session.failure = { code, reason };
+      this.#kill(session);
+      let timer;
+      try { await Promise.race([session.exited, new Promise(resolve => { timer = setTimeout(resolve, 7000); })]); }
+      finally { clearTimeout(timer); }
+      if (session.proc) killPidGroup(session.proc.pid, 'SIGKILL');
+    }
+    const failed = await this.board.run(runId).catch(() => null);
+    if (failed?.status === 'cancelled') return;
+    // Preparation may unwind and leave the preparing map before shutdown visits
+    // it. The stopping flag also covers that gap; shutdown is not a failed start.
+    if (this.stopping || failed?.status === 'interrupted') {
+      if (ACTIVE.has(failed?.status)) await this.board.updateRun(runId, { status: 'interrupted', reason: 'The app stopped during resource preparation.', endedAt: Date.now() }).catch(() => {});
+      return;
+    }
+    const manifest = session?.baseManifest || failed?.baseManifest;
+    if (manifest) await this.board.recordBaseManifest(runId, { ...manifest, deliveryState: 'failed', preparationError: { code, message: reason } }).catch(() => {});
     await this.board.updateRun(runId, { status: 'failed', errorCode: code, reason, endedAt: Date.now() }).catch(() => {});
     // The card entered the stage with this run; the session never began, so it returns to its previous column.
-    await this.board.runFailedToStart?.(runId).catch(() => {});
+    if (!this.stopping && (await this.board.run(runId).catch(() => null))?.status === 'failed') await this.board.runFailedToStart?.(runId).catch(() => {});
   }
 
-  async #launch({ runId, task, planRunId, extra }) {
+  async #launch(next) {
+    const controller = new AbortController();
+    this.preparing.set(next.runId, controller);
+    let prepared;
+    try { return await this.#launchSession(next, AbortSignal.any([controller.signal, AbortSignal.timeout(45000)]), value => { prepared = value; }); }
+    finally {
+      this.preparing.delete(next.runId);
+      const session = this.sessions.get(next.runId);
+      if (!session?.proc) await prepared?.cleanup?.({ discardCaptures: !session });
+    }
+  }
+
+  async #launchSession({ runId, task, planRunId, extra }, signal, onPrepared) {
     const run = await this.board.run(runId);
     if (run.status !== 'queued') { this.#endPending(runId); return; } // Cancelled while queued.
     const { pty, message: setup } = await this.pty();
@@ -111,25 +148,39 @@ export class Supervisor {
     if (!executable) throw new AgentError(`${ADAPTERS[run.config.provider].name} is not installed.`, 'NOT_INSTALLED');
     const runDir = join(this.dataDir, run.artifactsDir);
     await mkdir(runDir, { recursive: true, mode: 0o700 });
+    signal.throwIfAborted();
+    const state = await this.board.state();
+    const baseDelivery = await this.basePreparer({ manifest: run.baseManifest, readRevision: ref => this.board.base.readRevision(ref),
+      currentResources: state.base?.resources || [], workspacePath: run.workspacePath, runDir, signal, approvedRoots: state.base?.approvedRoots || [] });
+    onPrepared(baseDelivery);
+    signal.throwIfAborted();
     const plan = planRunId ? await readFile(join(this.dataDir, 'runs', planRunId, 'plan.md'), 'utf8').catch(() => null) : null;
-    const message = composeMessage(run.stage, task.prompt, plan, run.config.instructions || '', extra || '');
+    const message = composeMessage(run.stage, task.prompt, plan, run.config.instructions || '', extra || '', baseDelivery.sections);
     // Stage instructions, the exact task text, and the plan are stored with the run.
     await writeFile(join(runDir, 'prompt.md'), message, { mode: 0o600 });
     await writeFile(join(runDir, 'task-prompt.txt'), task.prompt, { mode: 0o600 });
     const eventsFile = join(runDir, 'events.jsonl');
     await writeFile(eventsFile, '', { mode: 0o600 });
     const sessionId = randomUUID();
-    const built = await buildSession({ provider: run.config.provider, stage: run.stage, config: run.config, message, runDir, eventsFile, sessionId, nodePath: this.nodePath });
+    const built = await buildSession({ provider: run.config.provider, stage: run.stage, config: run.config, message, runDir, eventsFile, sessionId, nodePath: this.nodePath, baseDelivery });
     // Cancellation can arrive during CLI discovery or session preparation.
     if ((await this.board.run(runId)).status !== 'queued') { this.#endPending(runId); return; }
+    signal.throwIfAborted();
+    const currentBase = (await this.board.state()).base;
+    checkBaseRevocations(run.baseManifest, currentBase?.resources || [], currentBase?.approvedRoots || []);
+    const supplied = { ...baseDelivery.manifest, acceptedAt: run.baseManifest?.acceptedAt, deliveryState: 'supplied', suppliedAt: Date.now() };
+    signal.throwIfAborted();
     const log = createWriteStream(join(runDir, 'output.log'), { flags: 'a', mode: 0o600 });
     log.on('error', () => {});
-    const proc = pty.spawn(executable.command, [...executable.prefix, ...built.args], {
-      name: 'xterm-256color', cols: 120, rows: 32, cwd: run.workspacePath, env: { ...process.env, ...built.env },
-    });
+    let proc;
+    try {
+      proc = pty.spawn(executable.command, [...executable.prefix, ...built.args], {
+        name: 'xterm-256color', cols: 120, rows: 32, cwd: run.workspacePath, env: { ...process.env, ...built.env },
+      });
+    } catch (error) { log.destroy(); throw error; }
     trackPid(proc.pid);
     const session = { runId, taskId: run.taskId, stage: run.stage, provider: run.config.provider, proc, seq: 0, ring: [], ringBytes: 0,
-      subscribers: new Set(), log, logBytes: 0, eventsFile, eventsOffset: 0, runDir, paste: built.paste, turns: 0, status: 'running', startedAt: Date.now(), sessionId };
+      subscribers: new Set(), log, logBytes: 0, eventsFile, eventsOffset: 0, runDir, paste: built.paste, turns: 0, status: 'running', startedAt: Date.now(), sessionId, baseCleanup: baseDelivery.cleanup, baseManifest: supplied };
     this.sessions.set(runId, session);
     session.exited = new Promise(resolve => { session.resolveExit = resolve; });
     // Listen before any await so early output and fast exits are never lost.
@@ -138,6 +189,8 @@ export class Supervisor {
     // Streams opened while the run was queued attach now.
     for (const waiter of this.pending.get(runId) || []) waiter.attach();
     this.pending.delete(runId);
+    await this.board.recordBaseManifest(runId, supplied);
+    await writeFile(join(runDir, 'base-manifest.json'), `${JSON.stringify(supplied, null, 2)}\n`, { mode: 0o600 });
     await this.board.updateRun(runId, { status: 'running', startedAt: session.startedAt, providerSessionId: run.config.provider === 'claude' ? sessionId : undefined, lifecycle: 'waiting-for-first-event' });
     if (!session.proc) return; // Exited during the update: #exited owns the outcome.
     this.#push(session, { status: 'running' });
@@ -238,7 +291,7 @@ export class Supervisor {
   }
 
   async #signal(session, signal) {
-    if (signal.kind === 'ignore' || !session.proc || session.cancelled) return;
+    if (signal.kind === 'ignore' || !session.proc || session.cancelled || session.launchFailed) return;
     if (!session.sawEvent) { session.sawEvent = true; clearTimeout(session.watchdog); await this.board.updateRun(session.runId, { lifecycle: 'events-received', waitingReason: '' }).catch(() => {}); }
     if (signal.kind === 'started') {
       if (signal.sessionId) await this.board.updateRun(session.runId, { providerSessionId: signal.sessionId }).catch(() => {});
@@ -283,6 +336,7 @@ export class Supervisor {
     await this.#readUsage(session).catch(() => {});
     untrackPid(session.proc.pid);
     session.proc = null;
+    try { await session.baseCleanup?.(); } catch { /* Continue closing the owned session even if a temporary file cannot be removed. */ }
     clearTimeout(session.killTimer);
     await new Promise(resolve => session.log.end(resolve));
     const endedAt = Date.now();
@@ -334,6 +388,7 @@ export class Supervisor {
     if (!ACTIVE.has(run.status)) return; // Stopping an already-ended run is harmless.
     const queued = this.queue.findIndex(item => item.runId === runId);
     if (queued >= 0 || ((run.status === 'queued' || this.launching?.has(runId)) && !this.sessions.get(runId)?.proc)) {
+      this.preparing.get(runId)?.abort();
       if (queued >= 0) this.queue.splice(queued, 1);
       await this.board.updateRun(runId, { status: 'cancelled', reason: 'Cancelled before it started.', endedAt: Date.now() });
       this.#endPending(runId);
@@ -433,6 +488,10 @@ export class Supervisor {
   /** Shutdown: stop owned sessions, record them as interrupted, and end streams. */
   async shutdown(graceMs = 3000) {
     this.stopping = true;
+    for (const [runId, controller] of this.preparing) {
+      controller.abort();
+      await this.board.updateRun(runId, { status: 'interrupted', reason: 'The app stopped during resource preparation.', endedAt: Date.now() }).catch(() => {});
+    }
     for (const { runId } of this.queue.splice(0)) { await this.board.updateRun(runId, { status: 'interrupted', reason: 'The app stopped before this run started.' }).catch(() => {}); this.#endPending(runId); }
     const live = [...this.sessions.values()].filter(session => session.proc);
     for (const session of live) { session.shuttingDown = true; killPidGroup(session.proc.pid, 'SIGTERM'); }

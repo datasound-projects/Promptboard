@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Base: add the global **Compose | Kanban | Base** navigation and an optional local library of instruction skills, MCP connections, Markdown wikis, context rules, command recipes/discovered MCP tool references, agent profiles, and packs.
+- Base assignments: reference resources across global, project, built-in/custom-column, task, and task-column scopes, with inheritance, exclusions, replacement/opt-out, effective previews, and atomic multi-target application. Profile selection remains an explicit agent configuration action; assignments never launch work.
+- Base delivery: pin immutable definitions with accepted runs and prepare resources through the existing Supervisor. Supported writing-stage MCP configuration is scoped per run; portable instructions/context preserve the exact task prompt and existing evidence. Run details distinguish configured resources, supplied captures, warnings, and observed invocations. Read-only stages retain their restrictions, and queued delivery rechecks trust/access revocations.
+- Base knowledge and portability: local text search, editable linked wiki pages, bounded source imports/refresh, optional reviewed wiki drafts through the existing restricted runner, validated SKILL.md imports, explicit MCP discovery tests, and versioned import/export with fresh reference mappings. Document bodies require an explicit export choice. Imported resources remain inactive/untrusted and do not import filesystem approval.
+- Persistence: explicitly migrate state version 2 to 3 with a retained pre-migration backup; fail safely on migration errors and preserve newer formats. Portable board backups use their separate version 3 and still accept supported older formats. Resource deletion protects references and retains historical immutable revisions.
+- Verification: new deterministic registry, migration, resolver, lifecycle, MCP fixture, source-containment, wiki coordination, backup, and browser coverage. Simulated CLIs and local MCP fixtures do not establish authenticated live-provider compatibility; see `docs/base-delivery.md` for supported combinations and limits.
+
 - Usage: add a minimal dashboard beside Settings with one-minute refresh, local per-model tokens and tool counts, 30-day charts, native Codex allowance, and reported Claude status-line allowance/cost. Unavailable and stale metrics are explicit; credentials and transcript text are never returned.
 
 - Fix: delete inactive or completed cards even when worktrees are dirty or missing. Card deletion keeps files and branches, records retained worktree locations, and removes Autopilot queue references atomically. Active runs still require stopping first.

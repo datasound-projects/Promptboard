@@ -71,6 +71,7 @@ async function setup(t, { catalogReader = async id => ({ provider: id, ...catalo
   Object.defineProperty(win.navigator, 'clipboard', { value: { writeText: async text => { copied = text; } } });
   // Same order as the page: prefs.js runs in <head>, app.js is deferred.
   win.eval(await readFile(new URL('../public/prefs.js', import.meta.url), 'utf8'));
+  win.eval(await readFile(new URL('../public/base.js', import.meta.url), 'utf8'));
   // Browsers share one global scope across classic scripts; jsdom's eval does not, so evaluate them together.
   // Test-only export appended by the harness (not part of the app): reload the board and read the token.
   win.eval(`${await readFile(new URL('../public/app.js', import.meta.url), 'utf8')}\n${await readFile(new URL('../public/dock.js', import.meta.url), 'utf8')}\nwindow.__pbTest = { loadBoard, get token() { return token; } };`);
@@ -2430,4 +2431,83 @@ test('Usage dashboard shows limits, model/tool totals, charts, minute refresh, e
   assert.equal(ctx.win.document.activeElement.id, 'usage-open');
   const before = reads; ctx.intervals.findLast(timer => timer.ms === 60000).fn(); await ctx.idle();
   assert.equal(reads, before);
+});
+
+test('Base is the third global page, preserves Compose and project state, and supports direct links and browser history', async t => {
+  const ctx = await setup(t, { hash: '#/base' }); const { $, win } = ctx;
+  await ctx.idle();
+  assert.deepEqual([...win.document.querySelectorAll('.page-nav a')].map(link => link.textContent), ['Compose', 'Kanban', 'Base']);
+  assert.equal($('#base-view').hidden, false); assert.equal($('#prompt-view').hidden, true); assert.equal($('#kanban-view').hidden, true);
+  assert.equal(win.document.title, 'Base · Promptboard');
+  assert.equal($('.page-nav [aria-current="page"]').getAttribute('href'), '#/base');
+  assert.equal($('#sidebar').hidden, true); assert.equal($('#menu-toggle').hidden, true);
+  assert.equal($('#base-error').hidden, true, $('#base-error').textContent);
+  $('#skip-link').dispatchEvent(new win.MouseEvent('click', { bubbles: true, cancelable: true })); assert.equal(win.document.activeElement.id, 'base-view'); assert.equal(win.location.hash, '#/base');
+  await goTo(ctx, '#/'); $('#prompt-input').value = 'An unfinished Compose draft.';
+  await goTo(ctx, '#/kanban'); await newProject(ctx, 'Persistent selection');
+  const selected = win.localStorage.getItem('promptboard.kanban.project');
+  await goTo(ctx, '#/base'); await until(() => !$('#base-view').hidden, 'Base shown');
+  assert.equal($('#prompt-input').value, 'An unfinished Compose draft.');
+  assert.equal(win.localStorage.getItem('promptboard.kanban.project'), selected);
+  win.history.back(); await until(() => !$('#kanban-view').hidden, 'Back to Kanban');
+  win.history.forward(); await until(() => !$('#base-view').hidden, 'Forward to Base');
+  $('#new-prompt').click(); await until(() => !$('#prompt-view').hidden, 'Compose action leaves Base');
+  assert.equal(win.document.title, 'Compose · Promptboard');
+});
+
+test('Base start-page preference applies only without an explicit route', async t => {
+  const saved = { 'promptboard.settings.start-page': 'base' };
+  const first = await setup(t, { prefs: saved }); await first.idle();
+  assert.equal(first.win.location.hash, '#/base'); assert.equal(first.$('#base-view').hidden, false);
+  const explicit = await setup(t, { prefs: saved, hash: '#/kanban' }); await explicit.idle();
+  assert.equal(explicit.$('#kanban-view').hidden, false); assert.equal(explicit.$('#base-view').hidden, true);
+  explicit.$('#app-settings-open').click(); await explicit.idle();
+  assert.equal(explicit.$('#set-start').value, 'base');
+  assert.ok(explicit.$('#set-base-fields .base-picker'), 'Global agent settings use the shared Base picker.');
+});
+
+test('Base skill creation and project assignment persist through the actual authenticated interface', async t => {
+  const ctx = await setup(t, { hash: '#/kanban' }); const { $, win } = ctx;
+  await newProject(ctx, 'Base project');
+  const project = (await serverBoard(ctx)).projects[0];
+  await goTo(ctx, '#/base'); await until(() => !$('#base-view').hidden && !$('#base-status').textContent.includes('Loading'), 'Base ready');
+  $('#base-new-kind').value = 'skill'; byText($('#base-actions'), 'Create').click();
+  $('#base-resource-name').value = 'UI instruction skill'; $('#base-skill-body').value = 'Keep the original task exactly.\n';
+  submitForm(ctx, '.base-resource-form'); await ctx.idle();
+  const resources = await ctx.app.board.base.list();
+  const created = (resources.resources || resources).find(item => item.name === 'UI instruction skill'); assert.ok(created);
+  const before = (await serverBoard(ctx)).projects[0]; assert.equal(before.baseBinding, undefined, 'Creating a skill never assigns it.');
+  await goTo(ctx, '#/kanban'); $('#project-agent-toggle').click();
+  $('#project-agent-fields .base-picker button').click(); await ctx.idle();
+  const mode = $('[data-base-mode]'); mode.value = 'extend'; mode.dispatchEvent(new win.Event('change', { bubbles: true }));
+  const include = $(`.base-binding-fields [data-resource="${created.id}"]`); include.checked = true; include.dispatchEvent(new win.Event('change', { bubbles: true }));
+  submitForm(ctx, '#base-dialog-content form'); await ctx.idle();
+  const after = (await serverBoard(ctx)).projects.find(item => item.id === project.id);
+  assert.deepEqual(after.baseBinding.include, [{ resourceId: created.id, required: true }]);
+  assert.equal(after.agentDefaults?.provider, before.agentDefaults?.provider, 'Resource selection does not change inherited provider.');
+  assert.equal((await serverBoard(ctx)).runs.length, 0, 'Assignment never starts a run.');
+});
+
+test('Base saves a linked wiki and official MCP preset, then groups them in a pack without executing', async t => {
+  const ctx = await setup(t, { hash: '#/base' }); const { $, win } = ctx; await ctx.idle();
+  $('#base-new-kind').value = 'knowledge'; byText($('#base-actions'), 'Create').click();
+  $('#base-resource-name').value = 'Local wiki'; byText($('#base-detail'), 'Add page').click();
+  $('#base-wiki-markdown').value = '# Manual wiki\nKeep this wording unchanged.';
+  submitForm(ctx, '.base-resource-form'); await ctx.idle();
+  assert.equal($('.base-resource-form .inline-error').hidden, true, $('.base-resource-form .inline-error').textContent);
+  let resources = (await ctx.app.board.base.list()).resources;
+  const wiki = resources.find(item => item.name === 'Local wiki'); assert.ok(wiki);
+  const detail = await ctx.app.board.base.detail(wiki.id); assert.equal(detail.content.pages[0].markdown, '# Manual wiki\nKeep this wording unchanged.');
+  byText($('#base-actions'), 'Context7 preset').click(); await ctx.idle();
+  assert.equal($('#base-resource-enabled').checked, false); assert.equal($('#base-resource-trust').value, 'untrusted');
+  submitForm(ctx, '.base-resource-form'); await ctx.idle();
+  resources = (await ctx.app.board.base.list()).resources;
+  const mcp = resources.find(item => item.name === 'Context7'); assert.ok(mcp);
+  assert.equal(mcp.configuration.headers.Authorization, 'CONTEXT7_AUTHORIZATION'); assert.equal(mcp.connectionTest, undefined);
+  $('#base-new-kind').value = 'pack'; byText($('#base-actions'), 'Create').click(); $('#base-resource-name').value = 'Optional documentation';
+  for (const id of [wiki.id, mcp.id]) { const input = $(`.base-resource-form [data-resource="${id}"]`); input.checked = true; input.dispatchEvent(new win.Event('change', { bubbles: true })); }
+  submitForm(ctx, '.base-resource-form'); await ctx.idle();
+  const pack = (await ctx.app.board.base.list()).resources.find(item => item.name === 'Optional documentation');
+  assert.deepEqual(pack.configuration.resources.map(ref => ref.resourceId).sort(), [wiki.id, mcp.id].sort());
+  assert.equal((await serverBoard(ctx)).runs.length, 0); assert.equal(ctx.calls.length, 0, 'Library edits never invoke the generation runner.');
 });

@@ -5,7 +5,7 @@ import { access, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } fr
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Board, canTransition, COLUMNS } from '../src/board.mjs';
-import { Store } from '../src/store.mjs';
+import { Store, STATE_VERSION } from '../src/store.mjs';
 import { initRepository, validateRepository } from '../src/git.mjs';
 import { startServer } from '../src/server.mjs';
 
@@ -56,7 +56,7 @@ test('the store serializes writes, replaces the file atomically, and recovers fr
   assert.equal((await store.read()).revision, 20);
   const saved = JSON.parse(await readFile(join(dir, 'state.json'), 'utf8'));
   assert.equal(saved.projects.length, 20);
-  assert.equal(saved.version, 2);
+  assert.equal(saved.version, STATE_VERSION);
   assert.deepEqual((await readdir(dir)).filter(name => name.includes('.tmp-')), []);
   // A failed change leaves both memory and disk unchanged.
   await assert.rejects(store.update(state => { state.projects = []; throw new Error('boom'); }), /boom/);

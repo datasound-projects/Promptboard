@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { chmod, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -36,7 +36,7 @@ async function world(t, testCommand = `${process.execPath} -e "process.exit(0)"`
   await board.delivery.setTestCommands(project.id, { commands: [{ command: testCommand }], expectedRevision: 3 });
   const view = async () => (await board.view()).projects[0];
   const card = async (title, prompt) => (await board.createTask({ projectId: project.id, title, prompt })).id;
-  return { board, supervisor, autopilot, root, project, view, card };
+  return { board, supervisor, autopilot, root, dataDir, project, view, card };
 }
 
 test('routes: stages in board order, Executing required, and the stage contract: Testing needs Code Review, Merge needs both', () => {
@@ -51,6 +51,11 @@ test('routes: stages in board order, Executing required, and the stage contract:
 
 test('Autopilot takes queued cards one at a time through their own routes, in the chosen order, and merges each', { skip, timeout: 180000 }, async t => {
   const w = await world(t);
+  const skill = await w.board.base.create({ kind: 'skill', name: 'Autopilot context', enabled: true, trust: 'trusted', content: { body: 'BASE_AUTOPILOT_REFERENCE' } });
+  await w.board.base.apply({ changes: [{ target: { scope: 'project', projectId: w.project.id }, binding: { mode: 'extend', include: [{ resourceId: skill.id, required: true }], exclude: [] } }], expectedBaseRevision: (await w.board.state()).base.revision });
+  const reportsFile = join(w.dataDir, 'base-autopilot-reports.jsonl'), oldReport = process.env.FAKE_AGENT_REPORT;
+  process.env.FAKE_AGENT_REPORT = reportsFile;
+  t.after(() => { if (oldReport === undefined) delete process.env.FAKE_AGENT_REPORT; else process.env.FAKE_AGENT_REPORT = oldReport; });
   const first = await w.card('First', 'Add the first file. WRITE_FILE:first.txt');
   const second = await w.card('Second', 'Add the second file. WRITE_FILE:second.txt');
   const skipped = await w.card('Not queued', 'Stay in To Do.');
@@ -79,6 +84,14 @@ test('Autopilot takes queued cards one at a time through their own routes, in th
   assert.deepEqual(runs.filter(run => run.taskId === first).map(run => run.stage), ['executing', 'code_review', 'testing'], 'First never ran Planning.');
   assert.deepEqual(runs.filter(run => run.taskId === second).map(run => run.stage), ['planning', 'executing', 'code_review', 'testing']);
   assert.ok(runs.every(run => run.trigger === 'automation' && run.status === 'succeeded'));
+  for (const run of runs) {
+    assert.equal(run.baseManifest.resources[0].resourceId, skill.id);
+    assert.equal(run.baseManifest.deliveryState, 'supplied');
+    assert.match(await readFile(join(w.dataDir, run.artifactsDir, 'prompt.md'), 'utf8'), /BASE_AUTOPILOT_REFERENCE/);
+  }
+  const reports = (await readFile(reportsFile, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+  assert.equal(reports.length, runs.length);
+  assert.ok(reports.every(report => report.args.at(-1).includes('BASE_AUTOPILOT_REFERENCE')), 'Every simulated CLI actually received the resource through Autopilot.');
   // The second card branched from trunk after the first merge, so no extra update round was needed.
   assert.ok(!ap.log.some(entry => /moved on/.test(entry.text)), ap.log.map(entry => entry.text).join('\n'));
 });

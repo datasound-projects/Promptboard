@@ -19,6 +19,9 @@ import { discoverModels, checkModelEffort } from './models.mjs';
 import { chooseFolder } from './folder.mjs';
 import { Autopilot } from './autopilot.mjs';
 import { GitHubError, GitHubLogin, githubStatus, listRepositories } from './github.mjs';
+import { BaseRoutes } from './base-http.mjs';
+import { BaseError } from './base.mjs';
+import { BaseDeliveryError } from './base-resolver.mjs';
 
 const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
 const assets = new Map([
@@ -26,6 +29,7 @@ const assets = new Map([
   ['/index.html', ['index.html', 'text/html; charset=utf-8']],
   ['/styles.css', ['styles.css', 'text/css; charset=utf-8']],
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
+  ['/base.js', ['base.js', 'text/javascript; charset=utf-8']],
   ['/prefs.js', ['prefs.js', 'text/javascript; charset=utf-8']],
   ['/nerd.png', ['nerd.png', 'image/png']],
   ['/kanban-mascot.png', ['kanban-mascot.png', 'image/png']],
@@ -107,7 +111,7 @@ async function boardRoute(board, req, res, pathname, searchParams) {
   const body = async (limit = TASK_BODY_LIMIT) => { const value = await jsonBody(req, limit); if (!value || typeof value !== 'object' || Array.isArray(value)) throw Object.assign(new Error('Send a JSON object.'), { status: 400 }); return value; };
   const view = async extra => send(res, 200, { ...extra, board: await board.view() });
   if (method === 'GET' && pathname === '/api/board') return view();
-  if (method === 'GET' && pathname === '/api/board/export') return send(res, 200, await board.exportBackup());
+  if (method === 'GET' && pathname === '/api/board/export') return send(res, 200, await board.exportBackup({ includeBaseContent: searchParams.get('includeBaseContent') === 'true' }));
   if (method === 'POST' && pathname === '/api/board/migrate') return view({ migrated: await board.migrateBrowserBoard((await body(BOARD_BODY_LIMIT)).board) });
   if (method === 'POST' && pathname === '/api/board/import') { const data = await body(BOARD_BODY_LIMIT); return view({ imported: await board.importBackup(data.backup, { replace: data.replace === true }) }); }
   if (method === 'POST' && pathname === '/api/projects') {
@@ -225,7 +229,7 @@ function streamRun(supervisor, req, res, runId, after) {
   req.on('close', () => { clearInterval(ping); unsubscribe(); });
 }
 
-export async function startServer({ port = 4318, runner = runProvider, detector = detectProviders, catalogReader = discoverModels, authAdapter = auth, dataDir = defaultDataDir(), projectsDir, executor = 'auto', folderPicker = chooseFolder, githubPty = loadPty, usageReader } = {}) {
+export async function startServer({ port = 4318, runner = runProvider, detector = detectProviders, catalogReader = discoverModels, authAdapter = auth, dataDir = defaultDataDir(), projectsDir, executor = 'auto', folderPicker = chooseFolder, githubPty = loadPty, usageReader, mcpTester } = {}) {
   // The board loads lazily, so starting the server never reads or writes board files.
   const usage = usageReader || new UsageDashboard({ dataDir });
   const board = new Board({ dataDir, ...(projectsDir ? { projectsDir } : {}) });
@@ -274,6 +278,7 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
     const job = busy;
     return { job, release: () => { if (busy === job) busy = null; release(); } };
   };
+  const baseRoutes = new BaseRoutes({ board, runner, claim, track, catalog: getCatalog, send, jsonBody, ...(mcpTester ? { mcpTester } : {}) });
   let closing = false;
   const server = http.createServer(async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
@@ -299,6 +304,15 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
     }
     if (req.method === 'GET' && pathname === '/api/status') {
       return send(res, 200, { busy: busy ? { kind: busy.kind, provider: busy.provider, stage: busy.stage, elapsedMs: Date.now() - busy.startedAt } : null, auth: authOperation });
+    }
+    if (/^\/api\/base(?:\/|$)/.test(pathname) || /^\/api\/runs\/[A-Za-z0-9_-]+\/base(?:-context|-definition)?$/.test(pathname)) {
+      try { if ((await baseRoutes.route(req, res, pathname, requestUrl.searchParams)) !== false) return; }
+      catch (error) {
+        if (error instanceof BaseError || error instanceof BaseDeliveryError) return send(res, error.status || 400, { error: error.message, code: error.code });
+        const failure = failureBody(error, 'The Base request could not be completed. Saved content is unchanged.');
+        return send(res, failure.status, failure.body);
+      }
+      return send(res, 404, { error: 'This Base route does not exist.' });
     }
     if (req.method === 'GET' && pathname === '/api/models') {
       try { return send(res, 200, await getCatalog(requestUrl.searchParams.get('provider'), { refresh: requestUrl.searchParams.get('refresh') === '1' })); }
@@ -430,7 +444,7 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
       try { if ((await boardRoute(board, req, res, pathname, requestUrl.searchParams)) !== false) return; }
       catch (error) {
         // Board, store, and Git errors carry fixed messages; raw Git output is never returned.
-        const known = error instanceof BoardError || error instanceof GitHubError || error instanceof GitError || error instanceof StoreError || error instanceof AgentError || error instanceof DeliveryError;
+        const known = error instanceof BoardError || error instanceof GitHubError || error instanceof GitError || error instanceof StoreError || error instanceof AgentError || error instanceof DeliveryError || error instanceof BaseError || error instanceof BaseDeliveryError;
         const status = known || error.status < 500 ? error.status || 500 : 500;
         return send(res, status, known || status < 500 ? { error: error.message, code: error.code || 'INVALID_REQUEST' } : { error: 'The board request failed.', code: 'BOARD_FAILED' });
       }
@@ -458,6 +472,7 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
     closing = true;
     const listening = new Promise(resolve => server.close(() => resolve()));
     busy?.controller.abort();
+    baseRoutes.close();
     catalogAbort.abort();
     usage.close?.();
     server.closeIdleConnections();

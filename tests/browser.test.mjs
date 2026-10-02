@@ -4,7 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { chmod, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -123,6 +123,36 @@ test('terminal dock in a real browser: start, render, type, collapse, resize, se
   assert.match(await browser.eval(`return ${text(firstRun)};`), /<img src=x onerror=/);
   await shot('1-running');
 
+  // Base is a global third page. Creating and assigning an instruction while the
+  // first PTY is live must preserve that exact terminal and affect only future runs.
+  await browser.eval(`window.__baseLiveSession = window.promptboardDock.sessions.get(${JSON.stringify(firstRun)}); location.hash = '#/base';`);
+  await browser.until(`!document.querySelector('#base-view').hidden && document.querySelector('#base-status').textContent.includes('resources')`, 'Base loaded');
+  assert.equal(await browser.eval(`return [...document.querySelectorAll('.page-nav a')].map(link => link.textContent).join(' | ');`), 'Compose | Kanban | Base');
+  assert.equal(await browser.eval(`document.querySelector('#skip-link').click(); return document.activeElement.id;`), 'base-view');
+  await browser.eval(`document.querySelector('#base-new-kind').value = 'skill'; [...document.querySelectorAll('#base-actions button')].find(button => button.textContent === 'Create').click(); document.querySelector('#base-resource-name').value = 'Browser instruction'; document.querySelector('#base-skill-body').value = 'BASE_BROWSER_CHECK: preserve invariants.\\n'; document.querySelector('#base-resource-save').click();`);
+  await browser.until(`document.querySelector('#base-status').textContent === 'Saved. No assignments changed.'`, 'skill persisted through Base form');
+  const baseSkill = (await board.base.list()).resources.find(item => item.name === 'Browser instruction'); assert.ok(baseSkill);
+  assert.equal((await board.view()).projects[0].baseBinding, undefined, 'Creating a resource never assigns it.');
+  for (const width of [1280, 390]) {
+    await browser.resize(width, 900);
+    for (const theme of ['light', 'dark']) {
+      await browser.eval(`document.documentElement.dataset.theme = '${theme}';`);
+      assert.equal(await browser.eval(`return document.documentElement.scrollWidth <= innerWidth && !document.querySelector('#base-error').textContent && document.querySelector('#base-detail').getBoundingClientRect().right <= innerWidth;`), true, 'Base editor fits both themes and viewport sizes.');
+      await shot(`base-${width}-${theme}`);
+    }
+  }
+  await browser.resize(1280, 900);
+  await browser.eval(`[...document.querySelectorAll('#base-detail button')].find(button => button.textContent === 'Apply to…').click();`);
+  await browser.until(`document.querySelector('.base-apply-targets input')`, 'Base targets available');
+  await browser.eval(`const box = [...document.querySelectorAll('[data-target-key]')].find(node => node.dataset.targetKey === ${JSON.stringify(`project:${project.id}::`)}); box.checked = true; box.dispatchEvent(new Event('change', { bubbles: true })); [...document.querySelectorAll('#base-dialog button')].find(button => button.textContent === 'Preview changes').click();`);
+  await browser.until(`[...document.querySelectorAll('#base-dialog button')].some(button => button.textContent === 'Apply assignments' && !button.disabled)`, 'assignment preview');
+  await browser.eval(`[...document.querySelectorAll('#base-dialog button')].find(button => button.textContent === 'Apply assignments').click();`);
+  await browser.until(`!document.querySelector('#base-dialog').open`, 'assignment saved');
+  assert.equal((await board.run(firstRun)).baseManifest.resources.length, 0, 'An already accepted run retains its original resource snapshot.');
+  await browser.eval(`location.hash = '#/kanban';`);
+  await browser.until(`!document.querySelector('#kanban-view').hidden`, 'Kanban restored');
+  assert.equal(await browser.eval(`return window.promptboardDock.sessions.get(${JSON.stringify(firstRun)}) === window.__baseLiveSession && !window.__baseLiveSession.closed;`), true, 'Navigation preserves the live terminal object and stream.');
+
   // Real keystrokes into the focused terminal reach the agent.
   await browser.eval(`window.promptboardDock.sessions.get(${JSON.stringify(firstRun)}).term.focus();`);
   await browser.type('hello');
@@ -148,10 +178,24 @@ test('terminal dock in a real browser: start, render, type, collapse, resize, se
   await browser.resize(1280, 900);
 
   // A second task gets its own tab, process, and output.
+  const capturedPrompt = join(await temp('pb-browser-base-prompt-'), 'prompt.txt');
+  const oldCapturedPrompt = process.env.FAKE_AGENT_PROMPT_FILE;
+  process.env.FAKE_AGENT_PROMPT_FILE = capturedPrompt;
+  t.after(() => { if (oldCapturedPrompt === undefined) delete process.env.FAKE_AGENT_PROMPT_FILE; else process.env.FAKE_AGENT_PROMPT_FILE = oldCapturedPrompt; });
   await browser.eval(`[...document.querySelectorAll('.kanban-card')].find(card => card.textContent.includes('Second task')).querySelector('.kanban-start').click();`);
   await browser.until(`window.promptboardDock.sessions.size === 2`, 'second session tab', 30000);
   const secondRun = (await board.view()).runs.find(run => run.taskId === second.id).id;
   await browser.until(`${text(secondRun)}.includes('working on')`, 'second output');
+  let deliveredPrompt;
+  for (const deadline = Date.now() + 10000; Date.now() < deadline;) {
+    try { deliveredPrompt = await readFile(capturedPrompt, 'utf8'); break; } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  assert.match(deliveredPrompt || '', /BASE_BROWSER_CHECK: preserve invariants\./, 'The actual simulated CLI receives the assigned instructions through the existing message path.');
+  assert.match(deliveredPrompt || '', /Do the second thing\./, 'Base preserves the original task prompt.');
+  const supplied = (await board.run(secondRun)).baseManifest;
+  assert.ok(supplied.supplied.some(item => item.resourceId === baseSkill.id), 'The run manifest records actual supplied context.');
+  if (oldCapturedPrompt === undefined) delete process.env.FAKE_AGENT_PROMPT_FILE; else process.env.FAKE_AGENT_PROMPT_FILE = oldCapturedPrompt;
   assert.doesNotMatch(await browser.eval(`return ${text(secondRun)};`), /you said: hello/, 'Sessions have separate output.');
   assert.equal(await browser.eval(`return document.querySelectorAll('#dock-tabs [role="tab"]').length;`), 3, 'Activity plus two session tabs.');
   await browser.until(`document.querySelector('#dock-tab-${secondRun}').classList.contains('waiting')`, 'waiting badge on the tab');
