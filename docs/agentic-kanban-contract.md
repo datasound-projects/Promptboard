@@ -72,11 +72,13 @@ Each project can change its columns (`PATCH /api/projects/:id/columns`, stored a
 
 - **Built-in stages** keep their order, because the evidence gates depend on it. They can be renamed and recoloured, and Planning can be hidden (then To Do goes straight to Executing).
 - **Custom columns** (at most 12) go anywhere between To Do and Done. Each one is attached to the built-in stage on its left (its anchor). A card moves from the anchor to the custom column, and from the custom column back to the anchor, along the anchor's moves, or to another custom column with the same anchor. `projectTransitions` builds the project's table; the board view sends it to the UI.
-- A custom column can start an agent (automatically when a card arrives, or from the card only) with its own instructions. The agent comes from the project default or global default, writes only in the card's own worktree, and never commits. Leaving the column hands off its finished turn and commits its changes like any other stage, and the evidence gates still apply to every stage the card enters, so code changed there cannot skip Code Review or Testing.
+- A custom column can start an agent (automatically when a card arrives, or from the card only) with its own instructions. The agent comes from the column override, project default, or global default, writes only in the card's own worktree, and never commits. Leaving the column hands off its finished turn and commits its changes like any other stage, and the evidence gates still apply to every stage the card enters, so code changed there cannot skip Code Review or Testing.
 - A column that still holds cards cannot be removed or hidden (`COLUMN_NOT_EMPTY`). Planning cannot be hidden while an Autopilot route uses it. Autopilot routes use built-in stages only.
 - Column layouts are exported and imported with board backups.
 
 ### Agent settings
+
+The board’s **Agents** button opens settings for the selected project. **Use project agent for all columns** clears provider/model overrides in the draft; Save applies it. Columns can also share a provider with different models. Custom agent columns use the same hierarchy, with overrides stored in `columnLayout[].agent`. Colors appear only as a subtle top accent on each column.
 
 Each stage's agent comes from the most specific level that names a provider: the stage override (Workflow settings), else the project default agent (Workflow settings), else the global default (Settings), else Claude Code with its CLI defaults. Model and effort come from the same level. `effectiveWorkflow` reports `agentSource` (`stage`, `project`, `global`, or `default`). A run can override the agent for itself only.
 
@@ -188,6 +190,12 @@ A stage becomes `succeeded` only through `POST /api/runs/:id/confirm` after a fi
 **Setup.** `node-pty` is an optional dependency. If it is missing, `execution.available` is false and `setupMessage` explains how to install it. The prompt editor and board keep working. On macOS, the app restores the execute bit on node-pty's prebuilt `spawn-helper` if an install lost it.
 
 ## Board interface (PB-03)
+
+- Shared Settings exposes browser display/terminal preferences separately from global agent defaults and project settings. Agent defaults require Save and use native model catalogs with refresh; project and column overrides remain independent. Card display defaults apply across this browser with optional per-card overrides. Task save dialogs lock while a request is pending; Split retries omit confirmed saved tasks.
+
+- Task cards show title, prompt preview, live state/blockers, and current workflow controls. Secondary actions and context live under …; Escape closes it and returns focus. Card display preferences (preview, agent information, spacing) are local per task/browser and never modify the task prompt or execution configuration.
+
+- To Do offers a bottom Add task control with prompt entry and an optional title. Refine in Composer transfers the draft without creating a task. Composer edits are explicitly saved to history; Kanban copies the exact saved text and Task Split uses it as input. Edited text has no inherited verification report.
 
 - The compact project bar shows the name, target branch, and default agent. Its agent button opens provider/model/effort selection; Files opens copyable repository details; Settings opens the project configuration. The stage agent label opens the matching Workflow section. Stage overrides take priority over the project default, then the global default; Compose provider choices do not change Kanban configuration. Saved changes apply to future runs.
 - The board adapts to viewport size, expanded project panels, and the resizable terminal. Secondary card metadata/actions and terminal paths/usage are disclosed on demand. Refreshes keep column scroll positions and open card controls; action buttons wrap rather than clip on narrow screens.

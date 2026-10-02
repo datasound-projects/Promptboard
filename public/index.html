@@ -42,7 +42,7 @@
         <input id="history-search" type="search" placeholder="Find a prompt…" autocomplete="off" aria-label="Search prompt history">
       </label>
       <div class="history-list" id="history-list"></div>
-      <div class="history-empty" id="history-empty"><p>No prompts yet. Suspiciously tidy.</p><small>Your finished prompts will appear here.</small></div>
+      <div class="history-empty" id="history-empty"><p>No saved prompts.</p><small>Your finished prompts will appear here.</small></div>
       </div>
       <div class="sidebar-panel" id="workspace-panel" hidden>
         <button class="new-prompt" id="workspace-new" type="button"><span aria-hidden="true">＋</span> New project</button>
@@ -62,25 +62,25 @@
       </div>
       <div class="sidebar-bottom">
         <button class="text-link" id="privacy-help" type="button">How your data is used <span aria-hidden="true">↗</span></button>
-        <div class="sidebar-footer"><span>LESS AMBIGUITY. MORE INTENT.</span><span>v0.4.0</span></div>
+        <div class="sidebar-footer"><span>LOCAL WORKSPACE</span><span>v0.4.0</span></div>
       </div>
     </aside>
 
     <main class="workspace" id="prompt-view">
       <section class="intro" aria-labelledby="page-title">
         <div>
-          <h1 id="page-title">Big ideas. <span>Ridiculously clear prompts.</span></h1>
+          <h1 id="page-title">Write a clear prompt.</h1>
           <p class="intro-description">Describe the task, choose settings, generate, then review and copy a clear prompt for your coding agent.</p>
         </div>
-        <figure class="mascot"><img src="/nerd.png" alt="A gloriously nerdy black and white cartoon prompt engineer" width="112" height="112"><figcaption>Less guesswork, please.</figcaption></figure>
+        <figure class="mascot"><img src="/nerd.png" alt="A gloriously nerdy black and white cartoon prompt engineer" width="112" height="112"></figure>
       </section>
 
       <form id="prompt-form">
         <section class="card" aria-labelledby="input-heading">
-          <div class="card-heading"><div><span class="step" aria-hidden="true">1</span><h2 id="input-heading">Describe the task</h2></div><span class="small-label">Rough is fine</span></div>
+          <div class="card-heading"><div><span class="step" aria-hidden="true">1</span><h2 id="input-heading">Describe the task</h2></div></div>
           <label for="prompt-input" class="sr-only">Describe the task you want your coding agent to do</label>
-          <textarea id="prompt-input" name="input" required maxlength="100000" placeholder="What do you want to build, fix, or figure out?&#10;&#10;Drop in a rough idea, a messy task, or a little context. Start anywhere." spellcheck="true"></textarea>
-          <div class="input-footer"><button type="button" class="text-button" id="load-example"><span aria-hidden="true">✳</span> Explore an example</button><span id="character-count" class="character-count">0 / 100,000</span></div>
+          <textarea id="prompt-input" name="input" required maxlength="100000" spellcheck="true"></textarea>
+          <div class="input-footer"><span id="character-count" class="character-count">0 / 100,000</span></div>
         </section>
 
         <section class="card" aria-labelledby="settings-heading">
@@ -151,7 +151,7 @@
         </section>
 
         <div class="action-row">
-          <button class="generate-button" id="generate-button" type="submit" disabled><span id="generate-label">Okay, let's goooo!</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 12h15M13 5l7 7-7 7"/></svg></button>
+          <button class="generate-button" id="generate-button" type="submit" disabled><span id="generate-label">Generate prompt</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 12h15M13 5l7 7-7 7"/></svg></button>
           <button type="button" class="secondary-button cancel-button" id="cancel-button" hidden>Cancel</button>
           <p class="shortcut-hint"><kbd>⌘</kbd> / <kbd>Ctrl</kbd> + <kbd>Enter</kbd> to generate</p>
         </div>
@@ -161,10 +161,12 @@
       <p class="storage-warning" id="storage-warning" role="alert" hidden>History changes were not saved. Export any prompts and check reports you want to keep before you close or reload this page.</p>
       <p class="storage-warning board-warning" role="alert" hidden></p>
       <section class="card output-card" aria-labelledby="output-heading" aria-busy="false" id="output-card">
-        <div class="card-heading"><div><span class="step" aria-hidden="true">3</span><h2 id="output-heading">Review and copy</h2></div><div class="output-actions"><span class="copy-cheer" id="copy-cheer" aria-hidden="true" hidden>*pushes glasses up*</span><button class="secondary-button" id="kanban-button" type="button" disabled title="Save this prompt as a task card" aria-label="Add to Kanban"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M12 8v8M8 12h8"/></svg><span id="kanban-label">Add to Kanban</span></button><button class="secondary-button" id="split-button" type="button" disabled title="Optional: split this prompt into smaller To Do cards"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="4" y="4" width="16" height="5" rx="1.5"/><rect x="4" y="11" width="7" height="9" rx="1.5"/><rect x="13" y="11" width="7" height="9" rx="1.5"/></svg><span>Split into tasks</span></button><button class="secondary-button" id="export-button" type="button" disabled title="Download as Markdown"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 16v5h14v-5"/></svg><span>Export</span></button><button class="copy-button" id="copy-button" type="button" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V4H4v12h4"/></svg><span id="copy-label">Copy prompt</span></button></div></div>
-        <div class="output-empty" id="output-empty"><img src="/nerd.png" alt="" width="48" height="48"><p>Nothing to review yet. The nerd is polishing their glasses.<small>Your engineered prompt will appear here.</small></p></div>
+        <div class="card-heading"><div><span class="step" aria-hidden="true">3</span><h2 id="output-heading">Review and copy</h2></div><div class="output-actions"><button class="secondary-button" id="kanban-button" type="button" disabled title="Save this prompt as a task card" aria-label="Add to Kanban"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M12 8v8M8 12h8"/></svg><span id="kanban-label">Add to Kanban</span></button><button class="secondary-button" id="split-button" type="button" disabled title="Optional: split this prompt into smaller To Do cards"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="4" y="4" width="16" height="5" rx="1.5"/><rect x="4" y="11" width="7" height="9" rx="1.5"/><rect x="13" y="11" width="7" height="9" rx="1.5"/></svg><span>Split into tasks</span></button><button class="secondary-button" id="export-button" type="button" disabled title="Download as Markdown"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 16v5h14v-5"/></svg><span>Export</span></button><button class="copy-button" id="copy-button" type="button" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V4H4v12h4"/></svg><span id="copy-label">Copy prompt</span></button></div></div>
+        <div class="output-empty" id="output-empty"><img src="/nerd.png" alt="" width="48" height="48"><p>No generated prompt yet.<small>Your engineered prompt will appear here.</small></p></div>
         <div class="generation-progress" id="generation-progress" role="status" hidden><span class="spinner" aria-hidden="true"></span><div><strong><span id="progress-stage">Starting</span> · <span id="progress-elapsed">0:00</span></strong><span id="progress-note">Your CLI is working. This may take a moment.</span></div></div>
         <div class="verification-status" id="verification-status" role="status" hidden></div>
+        <div class="prompt-edit-actions" id="prompt-edit-actions" hidden><button type="button" class="secondary-button" id="prompt-edit">Edit prompt</button></div>
+        <div id="prompt-editor" hidden><label class="field-label" for="prompt-edit-text">Edit generated prompt<textarea id="prompt-edit-text" spellcheck="false"></textarea></label><p class="note">Saved edits are used for Kanban and Task Split. Engine checks apply only to the original text.</p><p id="prompt-edit-error" class="inline-error" role="alert" hidden></p><div class="kanban-dialog-actions"><button type="button" class="secondary-button" id="prompt-edit-cancel">Cancel</button><button type="button" class="secondary-button" id="prompt-edit-save">Save prompt</button></div></div>
         <pre id="prompt-output" tabindex="0" aria-label="Engineered prompt" hidden></pre>
         <div class="output-meta" id="output-meta" hidden></div>
         <details class="verification-report" id="verification-report" hidden><summary>View the checks <span id="verification-summary"></span></summary><div class="verification-body">
@@ -184,10 +186,10 @@
 
     <main class="workspace" id="kanban-view" tabindex="-1" hidden>
       <section class="intro intro-compact" aria-labelledby="kanban-title">
-        <div>
-          <h1 id="kanban-title">Project board</h1>
+        <div class="kanban-identity"><img class="kanban-mascot" src="/kanban-mascot.png" alt="Anime girl mascot" width="64" height="64"><div>
+          <h1 id="kanban-title">Promptboard-Project</h1>
           <p class="intro-description">One task at a time. Plan, build, review, and merge.</p>
-        </div>
+        </div></div>
         <button type="button" class="secondary-button collapse-toggle" id="project-toggle" aria-expanded="false" aria-controls="project-settings" aria-label="Expand project settings">Settings <span aria-hidden="true">+</span></button>
       </section>
       <p class="storage-warning" id="kanban-load-warning" role="alert" hidden></p>
@@ -260,10 +262,10 @@
       </section>
       </aside>
       <section class="card kanban-board" aria-labelledby="board-heading">
-        <div class="card-heading"><div><h2 id="board-heading" class="sr-only">Project views</h2><div class="view-switch" role="tablist" aria-label="Project views"><button type="button" role="tab" id="view-board" aria-selected="true" aria-controls="board-view-panel">Board</button><button type="button" role="tab" id="view-timeline" aria-selected="false" aria-controls="timeline">Timeline</button></div><span class="kanban-count" id="board-count" aria-label="Cards">00</span></div><div class="board-actions" id="board-actions"><button class="secondary-button" id="columns-open" type="button" aria-haspopup="dialog"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><rect x="3.5" y="4.5" width="5" height="15" rx="1"/><rect x="9.5" y="4.5" width="5" height="15" rx="1"/><rect x="15.5" y="4.5" width="5" height="15" rx="1"/></svg><span>Columns</span></button><button class="secondary-button autopilot-open" id="autopilot-open" type="button" aria-haspopup="dialog"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h9m-4-4 4 4-4 4"/><path d="M15 5h4v14h-4"/></svg><span>Autopilot</span></button><button class="icon-button board-scroll" id="board-left" type="button" aria-controls="kanban-columns" aria-label="Scroll the board left" title="Scroll left"><span aria-hidden="true">‹</span></button><button class="icon-button board-scroll" id="board-right" type="button" aria-controls="kanban-columns" aria-label="Scroll the board right" title="Scroll right"><span aria-hidden="true">›</span></button><button class="copy-button" id="card-new" type="button"><span aria-hidden="true">＋</span> New card</button></div></div>
+        <div class="card-heading"><div><h2 id="board-heading" class="sr-only">Project views</h2><div class="view-switch" role="tablist" aria-label="Project views"><button type="button" role="tab" id="view-board" aria-selected="true" aria-controls="kanban-columns">Board</button><button type="button" role="tab" id="view-timeline" aria-selected="false" aria-controls="timeline">Timeline</button></div><span class="kanban-count" id="board-count" aria-label="Cards">00</span></div><div class="board-actions" id="board-actions"><button class="secondary-button" id="agents-open" type="button" aria-haspopup="dialog" title="Choose this project’s default agent and per-column overrides">Agents</button><button class="secondary-button" id="columns-open" type="button" aria-haspopup="dialog"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><rect x="3.5" y="4.5" width="5" height="15" rx="1"/><rect x="9.5" y="4.5" width="5" height="15" rx="1"/><rect x="15.5" y="4.5" width="5" height="15" rx="1"/></svg><span>Columns</span></button><button class="secondary-button autopilot-open" id="autopilot-open" type="button" aria-haspopup="dialog"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h9m-4-4 4 4-4 4"/><path d="M15 5h4v14h-4"/></svg><span>Autopilot</span></button><button class="icon-button board-scroll" id="board-left" type="button" aria-controls="kanban-columns" aria-label="Scroll the board left" title="Scroll left"><span aria-hidden="true">‹</span></button><button class="icon-button board-scroll" id="board-right" type="button" aria-controls="kanban-columns" aria-label="Scroll the board right" title="Scroll right"><span aria-hidden="true">›</span></button><button class="copy-button" id="card-new" type="button"><span aria-hidden="true">＋</span> New card</button></div></div>
         <div class="autopilot-bar" id="autopilot-bar" role="status" hidden></div>
         <div class="output-empty" id="board-empty"><p><span id="board-empty-text">Create a project to start planning.</span><small id="board-empty-note">Each project gets its own board, from To Do to Done.</small><a class="kanban-empty-link" id="empty-prompt-link" href="#/" hidden>Engineer a prompt <span aria-hidden="true">↗</span></a></p></div>
-        <div class="kanban-columns" id="kanban-columns" hidden></div>
+        <div class="kanban-columns" id="kanban-columns" role="tabpanel" aria-labelledby="view-board" hidden></div>
         <div class="timeline" id="timeline" role="tabpanel" aria-labelledby="view-timeline" hidden>
           <div class="timeline-toolbar">
             <p class="timeline-summary" id="timeline-summary"></p>
@@ -312,30 +314,39 @@
     </main>
 
     <dialog id="app-settings" class="kanban-dialog app-settings" aria-labelledby="app-settings-heading"><button class="dialog-close icon-button" id="app-settings-close" type="button" aria-label="Close settings">×</button><p class="eyebrow">PROMPTBOARD</p><h2 id="app-settings-heading">Settings</h2>
-      <p class="note">Changes apply at once. General, agent, and terminal settings apply to every project. Workflow settings belong to one project.</p>
+      <p class="note">Browser preferences are shared. Agent defaults apply unless a project or column overrides them.</p>
       <fieldset class="settings-group"><legend>General</legend>
         <label class="field-label">Theme<select id="set-theme"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label>
         <label class="field-label">Start page<select id="set-start"><option value="compose">Compose</option><option value="kanban">Kanban</option></select></label>
       </fieldset>
-      <fieldset class="settings-group"><legend>Agents</legend>
-        <label class="field-label">Global default agent<select id="set-agent-provider"><option value="">None (Claude Code, CLI defaults)</option><option value="claude">Claude Code</option><option value="codex">Codex CLI</option><option value="gemini">Gemini CLI</option></select></label>
-        <label class="field-label">Model<input id="set-agent-model" type="text" maxlength="100" autocomplete="off" spellcheck="false" placeholder="CLI default model"></label>
-        <label class="field-label">Effort<select id="set-agent-effort"></select></label>
-        <p class="note">The agent comes from the stage setting, else the project default (Workflow settings), else this global default.</p>
+      <details class="settings-section" id="settings-agents-section"><summary>Global agent defaults</summary><fieldset class="settings-group"><legend class="sr-only">Agents</legend>
+        <div id="set-agent-fields"></div>
+        <button type="button" class="secondary-button" id="set-agent-save">Save default agent</button>
+        <p class="note">Column overrides take priority, then project defaults, then this global default. Composer uses its own provider and model for prompt writing.</p>
         <label class="field-label">Agents at the same time<select id="set-max-runs"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option></select></label>
         <label class="check-row"><input type="checkbox" id="set-open-terminal"> Open the terminal when a run starts</label>
         <label class="check-row"><input type="checkbox" id="set-keep-tabs"> Keep tabs of finished runs</label>
-      </fieldset>
+      </fieldset></details>
       <fieldset class="settings-group"><legend>Kanban · <span id="set-project-name">no project</span></legend>
-        <p class="note">Project agent, agent per stage, stage behavior, and Autopilot are saved with the current project only. Compose settings apply to prompt writing.</p>
-        <div class="detail-actions"><button type="button" class="secondary-button" id="set-workflow">Edit workflow…</button><button type="button" class="secondary-button" id="set-autopilot">Autopilot…</button></div>
+        <p class="note">Settings for the selected project. Existing runs keep their configuration.</p>
+        <div class="detail-actions"><button type="button" class="secondary-button" id="set-workflow">Agents and workflow…</button><button type="button" class="secondary-button" id="set-columns">Columns…</button><button type="button" class="secondary-button" id="set-autopilot">Autopilot…</button></div>
       </fieldset>
-      <fieldset class="settings-group" id="set-github-group"><legend>GitHub</legend></fieldset>
-      <fieldset class="settings-group"><legend>Terminal</legend>
+      <fieldset class="settings-group"><legend>Composer</legend>
+        <p class="note">Provider, model, language, and checks for prompt writing.</p>
+        <button type="button" class="secondary-button" id="set-compose">Open Composer settings</button>
+      </fieldset>
+      <details class="settings-section" id="settings-cards-section"><summary>Card display defaults</summary><fieldset class="settings-group"><legend class="sr-only">Card display</legend>
+        <p class="note">Defaults for this browser; override from a card’s … menu.</p>
+        <label class="check-row"><input type="checkbox" id="set-card-preview"> Show prompt previews</label>
+        <label class="check-row"><input type="checkbox" id="set-card-agent"> Show agent information</label>
+        <label class="check-row"><input type="checkbox" id="set-card-spacing"> Comfortable spacing</label>
+      </fieldset></details>
+      <details class="settings-section" id="settings-github-section"><summary>GitHub connection</summary><fieldset class="settings-group" id="set-github-group"><legend class="sr-only">GitHub</legend></fieldset></details>
+      <details class="settings-section" id="settings-terminal-section"><summary>Terminal preferences</summary><fieldset class="settings-group"><legend class="sr-only">Terminal</legend>
         <label class="field-label">Terminal font size<select id="set-term-font"><option value="11">11</option><option value="12">12</option><option value="13">13</option><option value="14">14</option><option value="16">16</option></select></label>
         <label class="field-label">Terminal dock when the page opens<select id="set-dock-start"><option value="last">As last used</option><option value="collapsed">Collapsed</option><option value="open">Open</option></select></label>
         <div class="detail-actions"><button type="button" class="secondary-button" id="set-clear-tabs">Close finished tabs</button></div>
-      </fieldset>
+      </fieldset></details>
       <p class="inline-error" id="app-settings-error" role="alert" hidden></p>
     </dialog>
     <dialog id="help-dialog" aria-labelledby="dialog-heading"><button class="dialog-close icon-button" id="close-dialog" type="button" aria-label="Close help">×</button><p class="eyebrow">YOUR CLI. A CLEARER BRIEF.</p><h2 id="dialog-heading">A small tool.<br>A straightforward setup.</h2><div id="dialog-content"></div><button class="dialog-done" id="dialog-done" type="button">Got it <span aria-hidden="true">↗</span></button></dialog>
@@ -347,7 +358,7 @@
         <p class="note" id="card-note"></p>
         <details class="kanban-source" id="card-source" hidden><summary>Source details</summary><ul id="card-source-list"></ul></details>
         <p class="inline-error" id="card-error" role="alert" hidden></p>
-        <div class="kanban-dialog-actions"><button type="button" class="secondary-button" id="card-cancel">Cancel</button><button type="submit" class="dialog-done" id="card-save">Save card <span aria-hidden="true">↗</span></button></div>
+        <div class="kanban-dialog-actions"><button type="button" class="secondary-button" id="card-cancel">Cancel</button><button type="button" class="secondary-button" id="card-refine" hidden>Refine in Composer</button><button type="submit" class="dialog-done" id="card-save">Save card <span aria-hidden="true">↗</span></button></div>
       </form>
     </dialog>
     <dialog id="done-dialog" class="kanban-dialog done-dialog" aria-labelledby="done-dialog-heading"><button class="dialog-close icon-button" id="done-dialog-close" type="button" aria-label="Close">×</button><p class="eyebrow" id="done-dialog-project"></p><h2 id="done-dialog-heading">Completed</h2><ol class="kanban-done-list" id="done-dialog-list"></ol></dialog>

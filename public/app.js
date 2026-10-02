@@ -138,7 +138,7 @@ function renderHistory() {
   $('#history-list').replaceChildren();
   $('#history-count').textContent = String(history.length).padStart(2, '0');
   $('#history-empty').hidden = filtered.length > 0;
-  $('#history-empty p').textContent = query ? 'No matches. The nerd checked twice.' : 'No prompts yet. Suspiciously tidy.';
+  $('#history-empty p').textContent = query ? 'No matching prompts.' : 'No saved prompts.';
   $('#history-empty small').textContent = query ? 'Try another word or clear the search.' : 'Your finished prompts will appear here.';
   for (const entry of filtered) {
     const row = document.createElement('div');
@@ -271,7 +271,7 @@ function updateProviderState() {
   const availableCount = providers.filter((item) => item.available).length;
   $('#generate-button').disabled = running || authBusy || modelsLoading || invalidEffort || !available || !token;
   $('#cli-status-dot').classList.toggle('ready', availableCount > 0);
-  $('#cli-status-label').textContent = availableCount ? `${availableCount} CLI${availableCount === 1 ? '' : 's'} connected` : 'Connect a CLI';
+  $('#cli-status-label').textContent = availableCount ? `${availableCount} CLI${availableCount === 1 ? '' : 's'} installed` : 'Connect a CLI';
   $('#provider-note').classList.toggle('unavailable', !available);
   $('#provider-note').textContent = available
     ? `${providerInfo[provider.id]?.name || provider.name} is installed. Uses your CLI's configured account and permissions.`
@@ -369,6 +369,7 @@ async function loadModels({ model = '', effort = '', refresh = false } = {}) {
     if (!response.ok) throw new Error('Cannot read model options. Check your CLI, then refresh.');
     if (sequence !== modelSequence || provider !== $('#provider').value) return;
     catalog = data;
+    if (refresh) runCatalogs.delete(provider);
   } catch (error) {
     if (sequence !== modelSequence) return;
     catalog = { models: [], note: error.message };
@@ -388,13 +389,14 @@ function settings() {
 
 function setRunning(value) {
   running = value;
+  $('#prompt-edit').disabled = value;
+  if (value) closePromptEditor();
   $('#output-card').setAttribute('aria-busy', String(value));
   $('#generation-progress').hidden = !value;
   $('#cancel-button').hidden = !value;
-  $('#generate-label').textContent = value ? 'Writing and checking…' : "Okay, let's goooo!";
+  $('#generate-label').textContent = value ? 'Writing and checking…' : 'Generate prompt';
   $('#cancel-button').disabled = false;
   $('#new-prompt').disabled = value;
-  $('#load-example').disabled = value;
   for (const input of $('#prompt-form').querySelectorAll('input,select,textarea')) input.disabled = value;
   $('#copy-button').disabled = value || !currentResult;
   $('#export-button').disabled = value || !currentResult;
@@ -448,7 +450,14 @@ function failureMessage(data, fallback) {
   return message + reset;
 }
 
+function closePromptEditor() {
+  $('#prompt-editor').hidden = true;
+  $('#prompt-edit-error').hidden = true;
+}
+
 function clearOutput() {
+  closePromptEditor();
+  $('#prompt-edit-actions').hidden = true;
   currentResult = null;
   $('#prompt-output').textContent = '';
   $('#prompt-output').hidden = true;
@@ -467,6 +476,9 @@ function clearOutput() {
 
 function showResult(result) {
   currentResult = result;
+  closePromptEditor();
+  $('#prompt-edit-actions').hidden = false;
+  $('#prompt-edit').disabled = running;
   const lint = normalizeLint(result.lint);
   $('#prompt-output').textContent = result.prompt;
   $('#prompt-output').hidden = false;
@@ -732,6 +744,16 @@ async function loadAuth() {
     const { response, data } = await api(`/api/auth?provider=${encodeURIComponent(provider)}`, { timeoutMs: 20000 });
     if (sequence !== authSequence || provider !== $('#provider').value) return;
     authInfo = response.ok ? data : { provider, installed: Boolean(selectedProvider()?.available), state: 'unknown', capabilities: null };
+    if (response.ok && typeof data.installed === 'boolean') {
+      const detected = selectedProvider();
+      const changed = Boolean(detected?.available) !== data.installed;
+      if (detected) detected.available = data.installed;
+      else providers.push({ id: provider, name: providerInfo[provider]?.name || provider, available: data.installed });
+      const choice = [...$('#provider').options].find(option => option.value === provider);
+      if (choice) choice.textContent = `${providerInfo[provider]?.name || provider}${data.installed ? '' : ' · not installed'}`;
+      updateProviderState();
+      if (changed) loadModels({ model: chosenModel(), effort: $('#effort').value, refresh: data.installed });
+    }
   } catch {
     if (sequence !== authSequence) return;
     authInfo = { provider, installed: Boolean(selectedProvider()?.available), state: 'unknown', capabilities: null };
@@ -971,7 +993,7 @@ function showPage() {
 function showPromptPage() { if (location.hash === '#/kanban') location.hash = '#/'; }
 
 // Kanban (PB-01): the local app stores the board in its data folder. Seven fixed stages;
-// cards move through transitions the server validates. Nothing on this page starts an agent.
+// cards move through transitions the server validates; the destination determines what runs.
 const KANBAN_KEY = 'ste-prompt-engineer.kanban.v1'; // Earlier browser-only board. Moved to the app once and kept here.
 const MIGRATED_KEY = `${KANBAN_KEY}.migrated`;
 const SELECTED_PROJECT_KEY = 'promptboard.kanban.project';
@@ -1108,7 +1130,7 @@ function renderBoard() {
   $('#project-select').value = project?.id || '';
   $('#project-select').disabled = !project;
   $('#project-new').disabled = !board;
-  for (const id of ['#project-rename', '#project-delete', '#card-new']) $(id).disabled = !project;
+  for (const id of ['#project-rename', '#project-delete', '#card-new', '#agents-open']) $(id).disabled = !project;
   $('#board-count').textContent = String(tasks.length).padStart(2, '0');
   $('#board-empty').hidden = tasks.length > 0;
   $('#board-empty-text').textContent = !board ? 'Loading the board…' : project ? 'No tasks yet.' : 'Create a project to start planning.';
@@ -1121,15 +1143,18 @@ function renderBoard() {
   $('#view-board').setAttribute('aria-selected', String(!timelineView));
   $('#view-timeline').setAttribute('aria-selected', String(timelineView));
   $('#view-timeline').disabled = !project;
-  for (const id of ['#autopilot-open', '#columns-open', '#board-left', '#board-right', '#card-new']) $(id).hidden = timelineView;
+  for (const id of ['#autopilot-open', '#columns-open', '#agents-open', '#board-left', '#board-right', '#card-new']) $(id).hidden = timelineView;
   $('#columns-open').disabled = !project;
   // Missing terminal support never blocks the board or the prompt editor; it only disables runs.
   $('#execution-status').hidden = !board || board.execution?.available !== false || !board.execution.setupMessage;
   $('#execution-status').textContent = board?.execution?.setupMessage ? `Agent runs are unavailable. ${board.execution.setupMessage}` : '';
   const columns = $('#kanban-columns');
+  const focusedCard = document.activeElement?.closest('.kanban-card');
+  const focusedDisplay = document.activeElement?.dataset.cardDisplay;
   const scroll = new Map(columns.dataset.projectId === project?.id ? [...columns.querySelectorAll('.kanban-cards')].map(list => [list.dataset.column, list.scrollTop]) : []);
   columns.replaceChildren(...(project ? projectColumnsOf(project).map(column => renderColumn(column, tasks.filter(task => task.column === column.id))) : []));
   columns.dataset.projectId = project?.id || '';
+  if (focusedCard && focusedDisplay) [...(cardElement(focusedCard.dataset.id)?.querySelectorAll('[data-card-display]') || [])].find(input => input.dataset.cardDisplay === focusedDisplay)?.focus({ preventScroll: true });
   for (const list of columns.querySelectorAll('.kanban-cards')) list.scrollTop = scroll.get(list.dataset.column) || 0;
   renderRepository(project);
   const branch = project?.targetBranch?.name;
@@ -1186,7 +1211,7 @@ function renderColumn(column, tasks) {
   header.append(heading, count);
   if (column.agent) {
     const settings = currentProject()?.effectiveWorkflow?.[column.id];
-    const agent = detailButton(`Agent: ${agentText(settings)}`, () => openWorkflowDialog(column.custom ? null : column.id), 'column-agent');
+    const agent = detailButton(`Agent: ${agentText(settings)}`, () => openWorkflowDialog(column.id), 'column-agent');
     agent.setAttribute('aria-label', `Choose provider and model for ${column.title}`);
     agent.title = `${agentText(settings)} · ${settings?.agentSource || 'default'} setting`;
     header.append(agent);
@@ -1214,6 +1239,10 @@ function renderColumn(column, tasks) {
     placeCard(id, column.id, tasks.filter(task => task.id !== id).length);
   });
   section.append(header, note, list);
+  if (column.id === 'todo') {
+    const add = detailButton('Add task', () => openCard(null, true), 'secondary-button kanban-add-task');
+    section.append(add);
+  }
   return section;
 }
 
@@ -1279,7 +1308,14 @@ function renderDoneCard(card, number, draggable = true) {
   reopen.title = 'Start a new cycle in To Do. The history, commits, and completion stay.';
   const details = detailButton('Details', () => { $('#done-dialog').close(); openTaskDetails(card.id); }, 'text-button kanban-details');
   const summary = card.completion?.summary || card.prompt;
-  item.append(title, paragraph(summary.slice(0, 200).replace(/\s+/g, ' ').trim(), 'kanban-done-preview'), time, detailActions(details, reopen));
+  const more = document.createElement('div'); more.className = 'kanban-more'; more.id = `card-more-${card.id}${draggable ? '' : '-completed'}`; more.hidden = cardElement(card.id)?.querySelector('.kanban-more')?.hidden ?? true;
+  const edit = detailButton('Edit task', () => { $('#done-dialog').close(); openCard(card.id); }, 'kanban-edit');
+  const copy = detailButton('Copy prompt', () => copyCard(card, copy), 'kanban-copy');
+  more.append(edit, details, reopen, copy, detailButton('Duplicate', () => duplicateCard(card.id), 'kanban-duplicate'));
+  const actions = document.createElement('div'); actions.className = 'kanban-actions'; actions.append(cardMenuToggle(card, more));
+  title.append(actions);
+  cardAppearance(item, card, more);
+  item.append(title, paragraph(summary.slice(0, 200).replace(/\s+/g, ' ').trim(), 'kanban-done-preview'), time, more);
   return item;
 }
 
@@ -1307,6 +1343,59 @@ function makeDraggable(item, card) {
 
 function latestRun(taskId) { return board.runs.filter(run => run.taskId === taskId).at(-1) || null; }
 
+// Card display preferences are local to this browser; task content remains server-backed.
+function cardAppearance(item, card, more) {
+  const key = `promptboard.card-appearance.${card.id}`;
+  let prefs = {};
+  try {
+    const stored = JSON.parse(localStorage.getItem(key) || '{}');
+    for (const field of ['preview', 'agent', 'comfortable']) if (typeof stored?.[field] === 'boolean') prefs[field] = stored[field];
+  } catch {}
+  const values = () => ({ preview: prefs.preview ?? (uiPref('cardPreview') === '1'), agent: prefs.agent ?? (uiPref('cardAgent') === '1'), comfortable: prefs.comfortable ?? (uiPref('cardSpacing') === '1') });
+  const apply = () => {
+    const value = values();
+    item.classList.toggle('hide-preview', !value.preview);
+    item.classList.toggle('show-agent', value.agent);
+    item.classList.toggle('comfortable', value.comfortable);
+    for (const input of more.querySelectorAll('[data-card-display]')) input.checked = value[input.dataset.cardDisplay];
+  };
+  apply();
+  const settings = document.createElement('details'); settings.className = 'card-appearance';
+  const summary = document.createElement('summary'); summary.textContent = 'Card display';
+  settings.open = Boolean(cardElement(card.id)?.querySelector('.card-appearance')?.open);
+  settings.append(summary);
+  for (const [field, text] of [['preview', 'Show prompt preview'], ['agent', 'Show agent information'], ['comfortable', 'Comfortable spacing']]) {
+    if (field === 'agent' && card.column === 'done') continue;
+    const label = document.createElement('label'); label.className = 'check-row';
+    const input = document.createElement('input'); input.type = 'checkbox'; input.dataset.cardDisplay = field; input.checked = values()[field];
+    input.addEventListener('change', () => {
+      prefs[field] = input.checked; apply();
+      try { localStorage.setItem(key, JSON.stringify(prefs)); }
+      catch { announce('Card display changed, but this browser could not save it.'); }
+    });
+    label.append(input, text); settings.append(label);
+  }
+  settings.append(detailButton('Use display defaults', () => {
+    prefs = {}; apply();
+    try { localStorage.removeItem(key); } catch { announce('Defaults applied, but this browser could not save the change.'); }
+  }, 'card-display-reset'), paragraph('Overrides saved for this card in this browser.', 'note'));
+  more.append(settings);
+}
+
+function cardMenuToggle(card, more) {
+  const toggle = labelledButton(detailButton('⋯', () => {
+    more.hidden = !more.hidden;
+    toggle.setAttribute('aria-expanded', String(!more.hidden));
+  }, 'kanban-more-toggle'), `More actions: ${card.title}`);
+  toggle.title = 'Edit, configure, and manage task';
+  toggle.setAttribute('aria-expanded', String(!more.hidden));
+  toggle.setAttribute('aria-controls', more.id);
+  more.addEventListener('keydown', event => {
+    if (event.key === 'Escape') { event.stopPropagation(); more.hidden = true; toggle.setAttribute('aria-expanded', 'false'); toggle.focus(); }
+  });
+  return toggle;
+}
+
 function renderCard(card, index, count) {
   const status = cardStatus(card);
   const item = document.createElement('li');
@@ -1332,16 +1421,14 @@ function renderCard(card, index, count) {
   more.className = 'kanban-more';
   more.id = `card-more-${card.id}`;
   more.hidden = cardElement(card.id)?.querySelector('.kanban-more')?.hidden ?? true;
-  more.append(copy, up, down,
+  const reorder = document.createElement('div'); reorder.className = 'card-reorder'; reorder.append('Order ', up, down);
+  more.append(labelled(detailButton('Edit task', () => openCard(card.id), 'kanban-edit'), `Edit task: ${card.title}`), moveTo, copy, reorder,
     labelled(detailButton('Duplicate', () => duplicateCard(card.id), 'kanban-duplicate'), `Duplicate: ${card.title}`),
     labelled(detailButton('Delete', () => confirmCardDelete(item, card), 'kanban-delete'), `Delete: ${card.title}`));
-  const toggle = labelled(detailButton('⋯', () => { more.hidden = !more.hidden; toggle.setAttribute('aria-expanded', String(!more.hidden)); }, 'kanban-more-toggle'), `More actions: ${card.title}`);
-  toggle.title = 'Copy, duplicate, or delete';
-  toggle.setAttribute('aria-expanded', String(!more.hidden));
-  toggle.setAttribute('aria-controls', more.id);
+  const toggle = cardMenuToggle(card, more);
   const actions = document.createElement('div');
   actions.className = 'kanban-actions';
-  actions.append(moveTo, toggle);
+  actions.append(toggle);
   const details = [card.source ? `Prompt source: ${sourceSummary(card.source)}` : 'Written by you'];
   if (card.workspace) details.push(`Branch ${card.workspace.branch}${card.workspace.status === 'ready' ? '' : ` (${card.workspace.status})`}`);
   const pullRequest = card.evidence?.pullRequest;
@@ -1362,9 +1449,19 @@ function renderCard(card, index, count) {
   context.open = Boolean(cardElement(card.id)?.querySelector('.card-workspace')?.open);
   const summary = document.createElement('summary'); summary.textContent = card.workspace ? 'Files and context' : 'Prompt context';
   context.append(summary, meta);
-  if (!status.flag) context.append(badge);
+  context.append(badge);
   if (card.workspace || card.completion?.kind === 'merged') context.append(taskLocation(card, currentProject()));
-  item.append(...(status.flag ? [badge] : []), ...tags, heading, paragraph(card.prompt.slice(0, 400).replace(/\s+/g, ' ').trim(), 'kanban-preview'), renderRunControls(card, run), context, actions, more);
+  const header = document.createElement('div'); header.className = 'task-card-header'; header.append(heading, actions);
+  const controls = renderRunControls(card, run);
+  const agentInfo = document.createElement('div'); agentInfo.className = 'card-agent-info';
+  agentInfo.append(...controls.querySelectorAll('.run-agent'));
+  // Secondary actions remain available through the menu; urgent controls stay on the card.
+  more.append(...controls.querySelectorAll('.kanban-details, .kanban-pr'));
+  if (stageVerb(card.column)) more.append(detailButton('Column agent settings', () => openWorkflowDialog(card.column), 'kanban-configure'));
+  if (run && agentState(run) === 'active') context.append(...controls.querySelectorAll('.run-activity:not([class*="flow-"])'));
+  more.append(context);
+  cardAppearance(item, card, more);
+  item.append(header, ...tags, paragraph(card.prompt.slice(0, 400).replace(/\s+/g, ' ').trim(), 'kanban-preview'), controls, agentInfo, more);
   if (pendingMoves.has(card.id)) item.classList.add('pending');
   if (movingTo.has(card.id)) { item.classList.add('moving'); item.prepend(paragraph(`Moving to ${columnTitle(movingTo.get(card.id))}…`, 'moving-to')); }
   // Selecting a card reveals its agent session, if it has one.
@@ -1511,7 +1608,8 @@ function confirmCardDelete(item, card) {
   const note = card.workspace ? ' Its worktree is removed only if it has no uncommitted changes; its branch is kept.' : '';
   confirm.append(paragraph(`Delete “${card.title}”? This cannot be undone.${note}`), detailActions(detailButton('Delete card', () => deleteCard(card.id), 'danger'), keep));
   item.querySelector('.kanban-more').remove();
-  item.querySelector('.kanban-actions').replaceWith(confirm);
+  item.querySelector('.kanban-actions').remove();
+  item.append(confirm);
   keep.focus();
 }
 
@@ -1524,13 +1622,19 @@ async function deleteCard(id) {
   ($('#kanban-columns .kanban-open') || $('#card-new')).focus();
 }
 
-function openCard(id = null) {
+let quickTask = false;
+function openCard(id = null, quick = false) {
+  quickTask = quick;
   const project = currentProject();
   if (!project) return;
   const card = id ? project.tasks.find(item => item.id === id) : null;
   editingCardId = card?.id || null;
   $('#card-dialog-project').textContent = `${project.name} · ${columnTitle(card?.column || 'todo')}`;
   $('#card-dialog-heading').textContent = card ? 'Edit card' : 'New card';
+  $('#card-refine').hidden = Boolean(card);
+  $('#card-refine').disabled = running;
+  $('#card-title').required = !quick;
+  $('#card-title').placeholder = quick ? 'Optional — derived from your prompt' : '';
   $('#card-title').value = card?.title || '';
   $('#card-prompt').value = card?.prompt || '';
   const status = card && cardStatus(card);
@@ -1556,7 +1660,7 @@ function openCard(id = null) {
   }
   $('#card-error').hidden = true;
   if (!$('#card-dialog').open) $('#card-dialog').showModal();
-  $('#card-title').focus();
+  $(quick ? '#card-prompt' : '#card-title').focus();
 }
 
 async function saveCard(event) {
@@ -1564,8 +1668,8 @@ async function saveCard(event) {
   const project = currentProject();
   if (!project) return;
   const card = editingCardId ? project.tasks.find(item => item.id === editingCardId) : null;
-  const title = $('#card-title').value.trim();
   const typed = $('#card-prompt').value;
+  const title = $('#card-title').value.trim() || (quickTask ? typed.replace(/\s+/g, ' ').trim().slice(0, 80) : '');
   const error = !title ? 'Enter a short title.' : title.length > 120 ? 'Use a title of at most 120 characters.'
     : !typed.trim() ? 'Enter the prompt for this task.' : typed.length > MAX_PROMPT_BYTES ? 'The prompt exceeds the 2 MiB limit.' : '';
   if (error) { $('#card-error').textContent = error; $('#card-error').hidden = false; return; }
@@ -1833,11 +1937,12 @@ function renderRunControls(card, run) {
 // Model choices for agent runs come from the installed CLI (the same list Compose shows, cached by
 // the server). "Custom model ID…" keeps any other ID possible; the CLI still validates it.
 const runCatalogs = new Map();
-function modelCatalog(provider) {
-  if (!runCatalogs.has(provider)) {
-    runCatalogs.set(provider, api(`/api/models?provider=${encodeURIComponent(provider)}`, { timeoutMs: 20000 })
+function modelCatalog(provider, refresh = false) {
+  if (refresh || !runCatalogs.has(provider)) {
+    const request = api(`/api/models?provider=${encodeURIComponent(provider)}${refresh ? '&refresh=1' : ''}`, { timeoutMs: 20000 })
       .then(({ response, data }) => response.ok ? data : null).catch(() => null)
-      .then(data => { if (!data?.models?.length) runCatalogs.delete(provider); return data || { models: [] }; }));
+      .then(data => { if (!data?.models?.length && runCatalogs.get(provider) === request) runCatalogs.delete(provider); return data || { models: [] }; });
+    runCatalogs.set(provider, request);
   }
   return runCatalogs.get(provider);
 }
@@ -1852,11 +1957,11 @@ function fillModelSelect(select, custom, catalog, value = '', loading = false) {
   if (!known) custom.value = value;
   custom.hidden = select.value !== '__custom__';
 }
-async function loadModelSelect(select, custom, provider, value) {
+async function loadModelSelect(select, custom, provider, value, refresh = false) {
   const request = String(Number(select.dataset.catalogRequest || 0) + 1);
   select.dataset.catalogRequest = request;
   fillModelSelect(select, custom, null, value, true);
-  const catalog = await modelCatalog(provider);
+  const catalog = await modelCatalog(provider, refresh);
   if (select.dataset.provider !== provider || select.dataset.catalogRequest !== request) return null;
   fillModelSelect(select, custom, catalog, select.value === '__custom__' ? custom.value.trim() : select.value);
   return catalog;
@@ -1918,10 +2023,11 @@ function agentFields(value = {}, { inherit = '', stage = 'executing', inheritedP
     nativeCatalog = null;
     modelBox.hidden = !chosen; effort.parentElement && (effort.parentElement.hidden = !chosen);
     note.hidden = !chosen;
+    refreshModels.hidden = !chosen;
     refreshPermissions(keep.permissionMode || '');
     if (!chosen) return;
     note.textContent = 'Reading models from your CLI…';
-    loadModelSelect(model, custom, chosen, keep.model || '').then(catalog => {
+    loadModelSelect(model, custom, chosen, keep.model || '', keep.refresh === true).then(catalog => {
       if (!catalog) return;
       nativeCatalog = catalog;
       refreshEffort();
@@ -1929,10 +2035,11 @@ function agentFields(value = {}, { inherit = '', stage = 'executing', inheritedP
     });
     refreshEffort(keep.effort || '');
   };
+  const refreshModels = detailButton('Refresh models', () => refresh({ model: chosenModelFrom(model, custom), effort: effort.value, permissionMode: permission.value, refresh: true }), 'text-button agent-refresh-models');
   provider.addEventListener('change', () => { custom.value = ''; refresh(); });
   model.addEventListener('change', () => { custom.hidden = model.value !== '__custom__'; refreshEffort(); if (!custom.hidden) custom.focus(); });
   custom.addEventListener('input', () => refreshEffort());
-  grid.append(label('Provider', provider), modelBox, label('Effort', effort), permissionBox, permissionNote, note);
+  grid.append(label('Provider', provider), modelBox, label('Effort', effort), permissionBox, permissionNote, note, refreshModels);
   refresh(value);
   return grid;
 }
@@ -1969,7 +2076,6 @@ function taskLocation(card, project) {
 
 let projectAgentFormKey = '';
 function renderProjectContext(project) {
-  $('#kanban-title').textContent = project?.name || 'Project board';
   $('#project-context').hidden = !project;
   if (!project) { projectAgentFormKey = ''; return; }
   $('#project-context-heading').textContent = project.name;
@@ -1979,7 +2085,7 @@ function renderProjectContext(project) {
   const defaultAgent = project.agentDefaults?.provider ? project.agentDefaults : inherited;
   $('#project-agent-toggle').textContent = `${agentText(defaultAgent)} ▾`;
   $('#project-agent-toggle').title = `${agentText(defaultAgent)}. Choose the project provider, model, and effort.`;
-  const overrides = Object.entries(project.workflow || {}).filter(([, value]) => value.provider).map(([stage]) => columnTitle(stage));
+  const overrides = Object.entries(project.effectiveWorkflow || {}).filter(([, value]) => value.agentSource === 'stage').map(([stage]) => columnTitle(stage));
   $('#project-agent-summary').textContent = `Project agent: ${agentText(defaultAgent)}. ${overrides.length ? `Stage overrides: ${overrides.join(', ')}.` : 'Every stage inherits this agent.'} Compose uses its own settings. Changes apply to new runs.`;
   const key = JSON.stringify([project.id, project.agentDefaults, board?.settings?.defaultAgent]);
   if (key !== projectAgentFormKey) {
@@ -2126,7 +2232,8 @@ function openWorkflowDialog(focusStage = null) {
   if (!project) return;
   $('#workflow-dialog-project').textContent = `${project.name} · WORKFLOW`;
   const stages = [];
-  for (const stage of ['planning', 'executing', 'code_review', 'testing', 'merge']) {
+  const customAgents = (project.columnLayout || []).filter(entry => entry.custom && entry.agent?.enabled);
+  for (const stage of ['planning', 'executing', 'code_review', 'testing', 'merge', ...customAgents.map(entry => entry.id)]) {
     const settings = project.effectiveWorkflow?.[stage] || {};
     const box = document.createElement('fieldset');
     box.className = 'workflow-stage';
@@ -2141,8 +2248,8 @@ function openWorkflowDialog(focusStage = null) {
     }
     const preview = paragraph(workflowPreview(stage, settings), 'workflow-preview');
     const children = [legend, policy];
-    if (STAGE_VERBS[stage]) {
-      const own = project.workflow?.[stage] || {};
+    if (STAGE_VERBS[stage] || customAgents.some(entry => entry.id === stage)) {
+      const own = customAgents.find(entry => entry.id === stage)?.agent || project.workflow?.[stage] || {};
       const inherited = project.agentDefaults?.provider ? `Project default (${agentText(project.agentDefaults)})` : board?.settings?.defaultAgent?.provider ? `Global default (${agentText(board.settings.defaultAgent)})` : 'Default (Claude Code, CLI defaults)';
       const fields = agentFields(own, { inherit: inherited, stage, inheritedProvider: project.agentDefaults?.provider || board?.settings?.defaultAgent?.provider || 'claude' });
       const permissions = fields.querySelector('[data-field="permissionMode"]');
@@ -2182,6 +2289,19 @@ function openWorkflowDialog(focusStage = null) {
       box.querySelector('.workflow-preview').textContent = workflowPreview(box.dataset.stage, { ...inherited, ...readWorkflowStage(box) });
     }
   };
+  const useForAll = detailButton('Use project agent for all columns', () => {
+    for (const box of stages) {
+      const provider = box.querySelector('[data-field="provider"]');
+      const permission = box.querySelector('[data-field="permissionMode"]');
+      const savedPermission = permission?.value;
+      provider.value = '';
+      provider.dispatchEvent(new Event('change', { bubbles: true }));
+      if (permission && [...permission.options].some(option => option.value === savedPermission)) permission.value = savedPermission;
+    }
+    refreshInheritance();
+  }, 'secondary-button');
+  useForAll.id = 'workflow-use-project-agent';
+  defaults.append(useForAll, paragraph('Or select a provider and model in any column below. Select the same provider with a different model to vary models. Save settings applies changes only to this project.', 'workflow-preview'));
   defaults.addEventListener('change', refreshInheritance);
   for (const box of stages) box.addEventListener('change', refreshInheritance);
   refreshInheritance();
@@ -2742,6 +2862,8 @@ async function addToKanban(event) {
   try {
     project ||= (await boardCall('POST', '/api/projects', { name })).project;
     savePref(SELECTED_PROJECT_KEY, project.id);
+    if (![...$('#add-project').options].some(option => option.value === project.id)) $('#add-project').prepend(option(project.id, project.name));
+    $('#add-project').value = project.id; $('#add-project-name-field').hidden = true;
     await boardCall('POST', '/api/tasks', { projectId: project.id, title, prompt: result.prompt, source: snapshotSource(result) });
   } catch (failure) { showError(failure.message); return; }
   $('#add-dialog').close();
@@ -2786,7 +2908,8 @@ async function openSplit() {
   if (!currentResult || running) return;
   if (!board) await (boardLoading || loadBoard()).catch(() => {});
   const result = currentResult;
-  split.tasks = []; split.result = result;
+  split.tasks = []; split.result = result; split.savedIds = [];
+  $('#split-project').disabled = false;
   $('#split-list').replaceChildren();
   $('#split-error').hidden = true; $('#split-coverage').hidden = true; $('#split-target').hidden = true; $('#split-autopilot-field').hidden = true;
   $('#split-add').disabled = true;
@@ -2817,6 +2940,7 @@ async function openSplit() {
 async function addSplitCards(event) {
   event.preventDefault();
   const chosen = split.tasks.filter(task => task.included);
+  if (!chosen.length) return;
   const showError = message => { $('#split-error').textContent = message; $('#split-error').hidden = false; };
   const bad = chosen.findIndex(task => !task.title.trim() || task.title.length > 120 || !task.prompt.trim());
   if (bad >= 0) { showError(`Task ${split.tasks.indexOf(chosen[bad]) + 1} needs a title (at most 120 characters) and a prompt.`); return; }
@@ -2828,22 +2952,47 @@ async function addSplitCards(event) {
   try {
     project ||= (await boardCall('POST', '/api/projects', { name })).project;
     savePref(SELECTED_PROJECT_KEY, project.id);
-    for (const task of chosen) ids.push((await boardCall('POST', '/api/tasks', { projectId: project.id, title: task.title.trim(), prompt: task.prompt, source: snapshotSource(split.result) })).task.id);
-  } catch (failure) { showError(`${failure.message}${ids.length ? ` ${plural(ids.length, 'card')} were added before this error.` : ''}`); $('#split-add').disabled = false; return; }
+    if (![...$('#split-project').options].some(option => option.value === project.id)) $('#split-project').prepend(option(project.id, project.name));
+    $('#split-project').value = project.id; $('#split-project-name-field').hidden = true;
+    for (const task of chosen) {
+      const saved = await boardCall('POST', '/api/tasks', { projectId: project.id, title: task.title.trim(), prompt: task.prompt, source: snapshotSource(split.result) });
+      ids.push(saved.task.id); split.savedIds.push({ id: saved.task.id, projectId: project.id });
+      split.tasks = split.tasks.filter(item => item !== task);
+    }
+  } catch (failure) {
+    renderSplit();
+    showError(`${failure.message}${split.savedIds.length ? ` ${plural(split.savedIds.length, 'card')} already saved. Only unsaved tasks remain below.` : ''}`);
+    return;
+  }
   $('#split-dialog').close();
   announce(`Added ${plural(ids.length, 'card')} to To Do in ${project.name}, in order.`);
   if ($('#split-autopilot').checked) {
     if (location.hash !== '#/kanban') location.hash = '#/kanban';
     await loadBoard();
-    openAutopilot({ first: ids });
+    openAutopilot({ first: split.savedIds.filter(item => item.projectId === project.id).map(item => item.id) });
   }
 }
 $('#split-button').addEventListener('click', openSplit);
-$('#split-form').addEventListener('submit', addSplitCards);
+// Lock a modal while a save is in flight: repeated Enter/clicks cannot create duplicates.
+function bindAsyncForm(selector, handler) {
+  const form = $(selector), dialog = form.closest('dialog');
+  let saving = false;
+  dialog?.addEventListener('cancel', event => { if (saving) event.preventDefault(); });
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    if (saving || form.querySelector('[type="submit"]')?.disabled) return;
+    saving = true; form.setAttribute('aria-busy', 'true');
+    const controls = [...(dialog || form).querySelectorAll('input, textarea, select, button')].map(control => [control, control.disabled]);
+    for (const [control] of controls) control.disabled = true;
+    try { await handler(event); }
+    finally { saving = false; form.setAttribute('aria-busy', 'false'); for (const [control, disabled] of controls) control.disabled = disabled; }
+  });
+}
+bindAsyncForm('#split-form', addSplitCards);
 $('#split-project').addEventListener('change', () => { $('#split-project-name-field').hidden = Boolean($('#split-project').value); });
 for (const id of ['#split-cancel', '#split-close']) $(id).addEventListener('click', () => { split.controller?.abort(); $('#split-dialog').close(); });
 $('#split-dialog').addEventListener('close', () => split.controller?.abort());
-$('#add-form').addEventListener('submit', addToKanban);
+bindAsyncForm('#add-form', addToKanban);
 $('#add-project').addEventListener('change', () => { $('#add-project-name-field').hidden = Boolean($('#add-project').value); });
 $('#add-cancel').addEventListener('click', () => $('#add-dialog').close());
 $('#add-dialog-close').addEventListener('click', () => $('#add-dialog').close());
@@ -2911,6 +3060,7 @@ $('#branch-save').addEventListener('click', saveTargetBranch);
 $('#branch-refresh').addEventListener('click', () => { const project = currentProject(); if (project?.repository) { repositories.delete(project.id); renderRepository(project); } });
 $('#repo-edit').addEventListener('click', () => { repoPanelOpen = $('#repo-panel').hidden; renderRepository(currentProject()); if (repoPanelOpen) $('#repo-path').focus(); });
 $('#workflow-open').addEventListener('click', openWorkflowDialog);
+$('#agents-open').addEventListener('click', () => openWorkflowDialog());
 $('#workflow-form').addEventListener('submit', saveWorkflow);
 $('#workflow-cancel').addEventListener('click', () => $('#workflow-dialog').close());
 $('#workflow-dialog-close').addEventListener('click', () => $('#workflow-dialog').close());
@@ -2919,7 +3069,52 @@ $('#task-dialog-done').addEventListener('click', () => $('#task-dialog').close()
 $('#import-confirm').addEventListener('click', () => confirmImported(true));
 $('#import-dismiss').addEventListener('click', () => confirmImported(false));
 $('#card-new').addEventListener('click', () => openCard());
-$('#card-form').addEventListener('submit', saveCard);
+$('#card-refine').addEventListener('click', () => {
+  const prompt = $('#card-prompt').value;
+  if (!prompt.trim() || prompt.length > 100000) {
+    $('#card-error').textContent = 'Enter a prompt of at most 100,000 characters for Composer.';
+    $('#card-error').hidden = false;
+    return;
+  }
+  if (running) return;
+  $('#prompt-input').value = prompt;
+  $('#prompt-input').dispatchEvent(new Event('input', { bubbles: true }));
+  $('#card-dialog').close();
+  currentId = null;
+  clearOutput();
+  renderHistory();
+  location.hash = '#/';
+  showPage();
+  $('#prompt-input').focus();
+});
+$('#prompt-edit').addEventListener('click', () => {
+  if (!currentResult || running) return;
+  $('#prompt-edit').disabled = true;
+  $('#prompt-edit-text').value = currentResult.prompt;
+  $('#prompt-editor').hidden = false;
+  $('#prompt-output').hidden = true;
+  for (const id of ['kanban-button', 'split-button', 'copy-button', 'export-button']) $(`#${id}`).disabled = true;
+  $('#prompt-edit-text').focus();
+});
+$('#prompt-edit-cancel').addEventListener('click', () => { showResult(currentResult); $('#prompt-edit').focus(); });
+$('#prompt-edit-save').addEventListener('click', () => {
+  const typed = $('#prompt-edit-text').value;
+  if (!typed.trim() || new TextEncoder().encode(typed).byteLength > MAX_PROMPT_BYTES) {
+    $('#prompt-edit-error').textContent = 'Enter a prompt within the 2 MiB limit.';
+    $('#prompt-edit-error').hidden = false;
+    return;
+  }
+  const changed = typed !== currentResult.prompt.replace(/\r\n?/g, '\n');
+  const result = changed ? { ...currentResult, prompt: typed, verification: null, lint: { wordCount: typed.trim().split(/\s+/).length, warnings: [{ message: 'This edited prompt has not been checked by the engine.' }] } } : currentResult;
+  history = history.map(entry => entry.id === result.id ? result : entry);
+  const saved = persistHistory();
+  showResult(result);
+  renderHistory();
+  announce(saved ? 'Prompt saved. Kanban and Task Split will use this version.' : 'Prompt updated. Browser history was not saved; copy or export it to keep it.');
+  $('#prompt-edit').focus();
+});
+
+bindAsyncForm('#card-form', saveCard);
 $('#card-cancel').addEventListener('click', () => $('#card-dialog').close());
 $('#card-dialog-close').addEventListener('click', () => $('#card-dialog').close());
 $('#done-dialog-close').addEventListener('click', () => $('#done-dialog').close());
@@ -2956,27 +3151,14 @@ $('#auth-login').addEventListener('click', () => signIn('browser'));
 $('#auth-device').addEventListener('click', () => signIn('device'));
 $('#auth-logout').addEventListener('click', signOut);
 $('#auth-check').addEventListener('click', () => { loadAuth(); loadModels({ model: chosenModel(), effort: $('#effort').value, refresh: true }); });
-$('#load-example').addEventListener('click', () => {
-  if (running) return;
-  currentId = null;
-  clearOutput();
-  $('#prompt-input').value = 'Build a small FastAPI service that accepts a job URL and returns a structured job description. Use Python 3.12 and Pydantic. Include the title, company, location, work mode, salary, and required skills. Do not invent missing information. Add a health endpoint and meaningful tests. Keep the setup simple enough to run locally with one command.';
-  $('#task').value = 'build';
-  $('#terminology').value = 'FastAPI, Python 3.12, Pydantic';
-  updateCount();
-  renderHistory();
-  $('#prompt-input').focus();
-  announce('Example input loaded. Select a CLI and generate your own result.');
-});
 $('#copy-button').addEventListener('click', async () => {
   if (!currentResult) return;
   try {
     await navigator.clipboard.writeText(currentResult.prompt);
     $('#copy-label').textContent = 'Copied!';
-    $('#copy-cheer').hidden = false;
     announce('Prompt copied to your clipboard.');
     clearTimeout(copyTimer);
-    copyTimer = setTimeout(() => { $('#copy-label').textContent = 'Copy prompt'; $('#copy-cheer').hidden = true; }, 1800);
+    copyTimer = setTimeout(() => { $('#copy-label').textContent = 'Copy prompt'; }, 1800);
   } catch {
     const selection = window.getSelection();
     const range = document.createRange();
@@ -3262,7 +3444,14 @@ function renderColumnEditor() {
     }
     const instructions = document.createElement('textarea'); instructions.maxLength = 4000; instructions.id = 'column-instructions'; instructions.placeholder = 'What should the agent do in this column?'; instructions.value = entry.agent.instructions || '';
     instructions.addEventListener('input', () => { entry.agent.instructions = instructions.value; });
-    detail.append(policy, field('Instructions for the agent', instructions), paragraph('The agent works in the card’s own worktree with the project’s default agent, and never commits. Changed code still goes through Code Review and Testing before it can merge.', 'note'));
+    const fields = agentFields(entry.agent, { inherit: 'Use project agent', inheritedProvider: currentProject()?.agentDefaults?.provider || board?.settings?.defaultAgent?.provider || 'claude' });
+    const saveAgent = () => {
+      for (const key of ['provider', 'model', 'effort', 'permissionMode']) delete entry.agent[key];
+      Object.assign(entry.agent, readAgentFields(fields) || {});
+    };
+    fields.addEventListener('change', saveAgent);
+    fields.addEventListener('input', saveAgent);
+    detail.append(policy, fields, field('Instructions for the agent', instructions), paragraph('The agent works in the card’s own worktree and never commits. Changed code still goes through Code Review and Testing before it can merge.', 'note'));
     toggle.addEventListener('change', () => { entry.agent.enabled = toggle.checked; entry.agent.policy ||= 'start'; detail.hidden = !toggle.checked; });
     const anchor = draftAnchor(entry);
     nodes.push(group('Agent', enabled, detail), group('Moves', paragraph(`Cards reach this column from ${builtinTitle(anchor)} and leave it along ${builtinTitle(anchor)}’s moves (or to another custom column next to it). Move the column to attach it to another stage.`, 'note')));
@@ -3456,18 +3645,30 @@ $('#timeline-note-form').addEventListener('submit', saveNote);
 // Browser preferences (this browser only) and global server settings (every project). Project
 // workflow and Autopilot stay with their project and open in their own dialogs.
 const UI_PREFS = { startPage: ['promptboard.settings.start-page', 'compose'], openTerminal: ['promptboard.settings.open-terminal', '1'],
-  keepTabs: ['promptboard.settings.keep-tabs', '1'], termFont: ['promptboard.settings.terminal-font', '12'], dockStart: ['promptboard.settings.dock-start', 'last'] };
-function uiPref(name) { const [key, fallback] = UI_PREFS[name]; try { return localStorage.getItem(key) ?? fallback; } catch { return fallback; } }
+  keepTabs: ['promptboard.settings.keep-tabs', '1'], termFont: ['promptboard.settings.terminal-font', '12'], dockStart: ['promptboard.settings.dock-start', 'last'], cardPreview: ['promptboard.settings.card-preview', '1'], cardAgent: ['promptboard.settings.card-agent', '0'], cardSpacing: ['promptboard.settings.card-spacing', '0'] };
+function uiPref(name) {
+  const [key, fallback] = UI_PREFS[name];
+  const allowed = { startPage: ['compose', 'kanban'], termFont: ['11', '12', '13', '14', '16'], dockStart: ['last', 'collapsed', 'open'] }[name] || ['0', '1'];
+  try { const value = localStorage.getItem(key); return allowed.includes(value) ? value : fallback; } catch { return fallback; }
+}
 function setUiPref(name, value) { savePref(UI_PREFS[name][0], value); }
 function showStartedRun(runId) {
   if (uiPref('openTerminal') === '1') window.PromptboardDock?.open(runId);
   else loadBoard(); // The dock adds a tab for the live run without opening it.
 }
-function settingsError(message) { $('#app-settings-error').textContent = message; $('#app-settings-error').hidden = !message; }
-async function saveServerSettings(change) {
-  settingsError('');
-  try { const data = await boardCall('PATCH', '/api/settings', change); if (data.board) { board = data.board; renderBoard(); } }
-  catch (error) { settingsError(error.message); renderSettings(); }
+function settingsError(message) {
+  const error = $('#app-settings-error'); error.textContent = message; error.hidden = !message;
+  if (message && $('#app-settings').open) error.scrollIntoView?.({ block: 'nearest' });
+}
+let settingsSaveQueue = Promise.resolve();
+function saveServerSettings(change) {
+  const save = async () => {
+    settingsError('');
+    try { await boardCall('PATCH', '/api/settings', change); return true; }
+    catch (error) { settingsError(error.message); return false; }
+  };
+  settingsSaveQueue = settingsSaveQueue.then(save, save);
+  return settingsSaveQueue;
 }
 function renderSettings() {
   let theme = 'light'; try { theme = localStorage.getItem(THEME_KEY) || 'light'; } catch {}
@@ -3479,14 +3680,19 @@ function renderSettings() {
   $('#set-dock-start').value = uiPref('dockStart');
   const settings = board?.settings || {};
   $('#set-max-runs').value = String(settings.maxConcurrentRuns || 1);
-  $('#set-agent-provider').value = settings.defaultAgent?.provider || '';
-  $('#set-agent-model').value = settings.defaultAgent?.model || '';
-  renderGlobalEffort(settings.defaultAgent?.effort || '');
-  for (const id of ['#set-max-runs', '#set-agent-provider']) $(id).disabled = !board;
-  for (const id of ['#set-agent-model', '#set-agent-effort']) $(id).disabled = !board || !$('#set-agent-provider').value;
+  const fields = agentFields(settings.defaultAgent || {}, { inherit: 'Use CLI defaults (Claude Code)' });
+  for (const field of ['provider', 'model', 'effort', 'model-custom']) fields.querySelector(`[data-field="${field}"]`).id = `set-agent-${field}`;
+  $('#set-agent-fields').replaceChildren(fields);
+  $('#set-agent-save').textContent = 'Save default agent';
+  fields.addEventListener('change', () => { $('#set-agent-save').textContent = 'Save default agent'; });
+  $('#set-agent-save').disabled = !board;
+  $('#set-max-runs').disabled = !board;
+  $('#set-card-preview').checked = uiPref('cardPreview') === '1';
+  $('#set-card-agent').checked = uiPref('cardAgent') === '1';
+  $('#set-card-spacing').checked = uiPref('cardSpacing') === '1';
   const project = currentProject();
   $('#set-project-name').textContent = project?.name || 'no project';
-  $('#set-workflow').disabled = !project; $('#set-autopilot').disabled = !project;
+  $('#set-workflow').disabled = !project; $('#set-autopilot').disabled = !project; $('#set-columns').disabled = !project;
   window.PromptboardGitHub?.render();
 }
 async function openSettings() {
@@ -3506,15 +3712,20 @@ $('#set-term-font').addEventListener('change', () => { setUiPref('termFont', $('
 $('#set-dock-start').addEventListener('change', () => setUiPref('dockStart', $('#set-dock-start').value));
 $('#set-clear-tabs').addEventListener('click', () => { const closed = window.PromptboardDock?.closeFinished() || 0; announce(`Closed ${closed} finished ${closed === 1 ? 'tab' : 'tabs'}. Run history is kept.`); });
 $('#set-max-runs').addEventListener('change', () => saveServerSettings({ maxConcurrentRuns: Number($('#set-max-runs').value) }));
-function renderGlobalEffort(value) {
-  const efforts = effortsFor($('#set-agent-provider').value);
-  fillSelect($('#set-agent-effort'), ['', ...efforts], { '': 'CLI default' });
-  $('#set-agent-effort').value = efforts.includes(value) ? value : '';
+$('#set-agent-save').addEventListener('click', async () => {
+  const button = $('#set-agent-save'); button.disabled = true;
+  try {
+    if (await saveServerSettings({ defaultAgent: readAgentFields($('#set-agent-fields')) })) { button.textContent = 'Saved'; announce('Global default agent saved. Project and column overrides are kept.'); }
+  } finally { button.disabled = !board; }
+});
+for (const [id, preference] of [['set-card-preview', 'cardPreview'], ['set-card-agent', 'cardAgent'], ['set-card-spacing', 'cardSpacing']]) {
+  $(`#${id}`).addEventListener('change', () => { setUiPref(preference, $(`#${id}`).checked ? '1' : '0'); renderBoard(); });
 }
-const saveDefaultAgent = () => saveServerSettings({ defaultAgent: $('#set-agent-provider').value ? { provider: $('#set-agent-provider').value, model: $('#set-agent-model').value.trim(), effort: $('#set-agent-effort').value } : null });
-$('#set-agent-provider').addEventListener('change', () => { $('#set-agent-model').value = ''; renderGlobalEffort(''); saveDefaultAgent(); });
-$('#set-agent-model').addEventListener('change', saveDefaultAgent);
-$('#set-agent-effort').addEventListener('change', saveDefaultAgent);
+$('#set-compose').addEventListener('click', () => {
+  $('#app-settings').close(); location.hash = '#/'; showPage(); setSettingsCollapsed(false);
+  $('#settings-heading').scrollIntoView?.({ block: 'start' }); $('#settings-toggle').focus();
+});
+$('#set-columns').addEventListener('click', () => { $('#app-settings').close(); location.hash = '#/kanban'; showPage(); openColumns(); });
 // GitHub: sign-in through the GitHub CLI (gh keeps the token), and a repository for the current project.
 // The page receives only the user name, the one-time device code, and repository metadata.
 const github = { status: null, login: null, results: [], chosen: null, busy: false, message: '' };
@@ -3522,7 +3733,7 @@ const SYNC_TEXT = { up_to_date: 'Up to date', behind: 'Behind', ahead: 'Ahead', 
 async function githubCall(method, path, body) {
   const { response, data } = await api(path, { method, body, timeoutMs: 600000 });
   if (!response.ok) throw new Error(typeof data.error === 'string' ? data.error : 'The GitHub request failed.');
-  if (data.board) { board = data.board; renderBoard(); }
+  if (data.board) { acceptBoard(data.board); renderBoard(); }
   return data;
 }
 async function githubAction(work) {

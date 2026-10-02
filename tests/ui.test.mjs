@@ -106,7 +106,8 @@ test('UI sends selected model, effort, and language through HTTP, then restores 
   assert.equal($('#prompt-output').textContent, 'Dodaj test.');
   assert.match($('#output-meta').textContent, /actual-model/);
   $('#copy-button').click(); await until(() => copied(), 'copy'); assert.equal(copied(), 'Dodaj test.');
-  await until(() => !$('#copy-cheer').hidden, 'copy cheer');
+  await until(() => $('#copy-label').textContent === 'Copied!', 'copy feedback');
+  assert.equal($('#copy-cheer'), null);
   $('#new-prompt').click(); assert.equal($('input[name="language"]:checked').value, 'en');
   assert.equal($('input[name="quality"]:checked').value, 'reviewed');
   $('.history-restore').click();
@@ -677,9 +678,9 @@ test('seven stages render; cards are created, edited, duplicated, deleted, and r
   assert.deepEqual(Array.from($('#kanban-columns').querySelectorAll('h3'), heading => heading.textContent), ['To Do', 'Planning', 'Executing', 'Code Review', 'Testing', 'Merge', 'Done']);
   assert.match($('#kanban-columns [data-column="todo"] .kanban-column-note').textContent, /Never runs an agent/);
   assert.match($('#kanban-columns [data-column="done"] .kanban-column-note').textContent, /never runs an agent/);
-  $('#card-new').click(); submitForm(ctx, '#card-form');
+  $('#card-new').click(); submitForm(ctx, '#card-form'); await ctx.idle();
   assert.match($('#card-error').textContent, /title/);
-  $('#card-title').value = 'Only a title'; submitForm(ctx, '#card-form');
+  $('#card-title').value = 'Only a title'; submitForm(ctx, '#card-form'); await ctx.idle();
   assert.match($('#card-error').textContent, /prompt/);
   $('#card-cancel').click();
   assert.equal((await serverTasks(ctx)).length, 0);
@@ -1780,7 +1781,9 @@ test('every visible setting is stored and changes the app; global settings stay 
   assert.equal((await ctx.app.board.state()).settings.maxConcurrentRuns, 3);
   // The default agent fills stages without their own provider, in every project, but never a stage a project set.
   await ctx.app.board.setWorkflow(ctx.other.id, { workflow: { executing: { policy: 'ask', provider: 'claude', model: 'haiku' } }, expectedRevision: (await ctx.app.board.state()).projects[1].revision });
-  change('#set-agent-provider', 'codex'); change('#set-agent-model', 'gpt-test'); await ctx.idle();
+  change('#set-agent-provider', 'codex'); await ctx.idle();
+  change('#set-agent-model', '__custom__'); change('#set-agent-model-custom', 'gpt-test');
+  $('#set-agent-save').click(); await ctx.idle();
   const view = await ctx.app.board.view();
   assert.deepEqual((await ctx.app.board.state()).settings.defaultAgent, { provider: 'codex', model: 'gpt-test', effort: '' });
   assert.equal(view.projects[0].effectiveWorkflow.executing.agentSource, 'global');
@@ -1790,7 +1793,7 @@ test('every visible setting is stored and changes the app; global settings stay 
   assert.equal(view.projects[1].effectiveWorkflow.executing.provider, 'claude', 'A project stage keeps its own agent.');
   assert.equal(view.projects[1].effectiveWorkflow.executing.model, 'haiku');
   assert.equal(view.projects[1].effectiveWorkflow.planning.provider, 'codex');
-  change('#set-agent-model', 'bad model'); await ctx.idle();
+  change('#set-agent-model-custom', 'bad model'); $('#set-agent-save').click(); await ctx.idle();
   assert.match($('#app-settings-error').textContent, /model ID/);
   assert.equal((await ctx.app.board.state()).settings.defaultAgent.model, 'gpt-test', 'An invalid value is refused and not stored.');
   // Browser preferences.
@@ -1980,9 +1983,13 @@ test('Split into tasks (optional): ordered, editable tasks become To Do cards, t
   await goTo(ctx, '#/');
   $('#prompt-input').value = 'Build a parser with tests and docs.'; submit();
   await until(() => $('#prompt-output').textContent.includes('src/parser.ts') && !$('#split-button').disabled, 'prompt');
+  $('#prompt-edit').click();
+  const editedPrompt = '  Add, test, and document `src/parser.ts`.\nPreserve this edited requirement.  ';
+  $('#prompt-edit-text').value = editedPrompt; $('#prompt-edit-save').click();
   $('#split-button').click();
   await until(() => $('#split-list').children.length === 3, 'task list');
   assert.equal(calls.filter(call => call.prompt.startsWith('# Task split')).length, 1, 'One CLI call.');
+  assert.equal(JSON.parse(calls.find(call => call.prompt.startsWith('# Task split')).prompt.split('# Source data\n')[1]).prompt, editedPrompt, 'Split receives the saved edited prompt exactly.');
   assert.match($('#split-status').textContent, /3 tasks, in the order they run/);
   // Reorder: "Write docs" first; leave out "Test the parser"; edit a title.
   $('#split-list').children[2].querySelector('.split-up').click();
@@ -2081,4 +2088,281 @@ test('Start over in task details: says exactly what happens, takes a reason, and
   assert.equal(ctx.executor.started.length, 1, 'Start Executing right away started one run.');
   assert.notEqual(ctx.executor.started[0].branch, ws.branch);
   assert.match($('#announcement').textContent, /Started “Redo” over\. Executing started on a fresh branch/);
+});
+
+
+test('To Do prompt entry creates an exact task and optionally sends a draft to Composer', async t => {
+  const ctx = await setup(t, { hash: '#/kanban' });
+  const { $, win } = ctx;
+  await newProject(ctx, 'Prompt entry');
+  $('.kanban-add-task').click();
+  assert.equal(win.document.activeElement.id, 'card-prompt');
+  submitForm(ctx, '#card-form'); await ctx.idle();
+  assert.equal($('#card-error').hidden, false);
+  const prompt = '  Add a search field.\nKeep keyboard navigation.  ';
+  $('#card-prompt').value = prompt;
+  submitForm(ctx, '#card-form'); await ctx.idle();
+  const cards = await serverTasks(ctx);
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0].prompt, prompt);
+  assert.equal(cards[0].column, 'todo');
+  $('.kanban-add-task').click();
+  $('#card-prompt').value = 'Refine this request.';
+  $('#card-refine').click(); await ctx.idle();
+  assert.equal($('#kanban-view').hidden, true);
+  assert.equal($('#prompt-input').value, 'Refine this request.');
+  assert.equal($('#card-dialog').open, false);
+  assert.equal((await serverTasks(ctx)).length, 1);
+  ctx.submit();
+  await until(() => !$('#generate-button').disabled && ctx.requests.length === 1, 'refinement');
+  assert.equal(ctx.requests[0].input, 'Refine this request.');
+});
+
+test('Composer saves optional exact edits to history and Kanban, and cancels or rejects empty edits', async t => {
+  const ctx = await setup(t);
+  const { $, win } = ctx;
+  $('#prompt-input').value = 'Make a feature.'; ctx.submit();
+  await until(() => !$('#generate-button').disabled && ctx.requests.length === 1, 'generated');
+  const original = $('#prompt-output').textContent;
+  $('#prompt-edit').click(); $('#prompt-edit-text').value = 'discard me'; $('#prompt-edit-cancel').click();
+  assert.equal($('#prompt-output').textContent, original);
+  $('#prompt-edit').click(); $('#prompt-edit-text').value = '   '; $('#prompt-edit-save').click();
+  assert.equal($('#prompt-edit-error').hidden, false);
+  assert.equal($('#kanban-button').disabled, true);
+  const edited = '  My exact version.\nKeep `src/a.ts`.  ';
+  $('#prompt-edit-text').value = edited; $('#prompt-edit-save').click();
+  assert.equal($('#prompt-output').textContent, edited);
+  assert.equal($('#verification-report').hidden, true);
+  const stored = JSON.parse(win.localStorage.getItem('ste-prompt-engineer.history.v1'));
+  assert.equal(stored[0].prompt, edited);
+  assert.equal(stored[0].verification, null);
+  $('#kanban-button').click();
+  assert.equal($('#add-preview').textContent, edited);
+  $('#add-project-name').value = 'Edited prompts';
+  submitForm(ctx, '#add-form'); await ctx.idle();
+  assert.equal((await serverTasks(ctx))[0].prompt, edited);
+  $('.history-restore').click(); await ctx.idle();
+  assert.equal($('#prompt-output').textContent, edited);
+});
+
+
+test('Agents toolbar configures each project, column overrides, custom agents, and a shared model', async t => {
+  const ctx = await linkedKanban(t);
+  const { $, choose, win } = ctx;
+  await link(ctx);
+  const projectId = (await serverBoard(ctx)).projects[0].id;
+  await newProject(ctx, 'Independent');
+  const otherBefore = (await serverBoard(ctx)).projects.find(project => project.id !== projectId);
+  // Return to the linked project and add an agent column.
+  const project = (await serverBoard(ctx)).projects.find(project => project.id === projectId);
+  const columns = ['todo', 'planning', 'executing', 'code_review', 'testing', 'merge', 'done'].map(id => ({ id }));
+  columns.splice(3, 0, { id: 'c_docs0001', custom: true, title: 'Docs', agent: { enabled: true, policy: 'manual', instructions: 'Write docs.' } });
+  await ctx.app.board.setColumns(projectId, { columns, expectedRevision: project.revision });
+  await win.__pbTest.loadBoard(); await ctx.idle();
+  // Select using the workspace control so the test follows the real project selection path.
+  const workspace = [...$('#workspace-list').querySelectorAll('button')].find(button => button.textContent.includes(project.name));
+  workspace.click(); await ctx.idle();
+  $('#agents-open').click(); await ctx.idle();
+  const defaults = '#workflow-stages .workflow-defaults';
+  choose(`${defaults} [data-field="provider"]`, 'codex'); await ctx.idle();
+  choose(`${defaults} [data-field="model"]`, 'codex-one');
+  const review = '#workflow-stages [data-stage="code_review"]';
+  choose(`${review} [data-field="provider"]`, 'codex'); await ctx.idle();
+  choose(`${review} [data-field="model"]`, 'codex-two');
+  const custom = '#workflow-stages [data-stage="c_docs0001"]';
+  choose(`${custom} [data-field="provider"]`, 'claude'); await ctx.idle();
+  choose(`${custom} [data-field="model"]`, 'haiku');
+  submitForm(ctx, '#workflow-form'); await ctx.idle();
+  let saved = (await serverBoard(ctx)).projects.find(project => project.id === projectId);
+  assert.equal(saved.effectiveWorkflow.executing.model, 'codex-one');
+  assert.equal(saved.effectiveWorkflow.code_review.model, 'codex-two');
+  assert.equal(saved.effectiveWorkflow.c_docs0001.provider, 'claude');
+  assert.equal(saved.effectiveWorkflow.c_docs0001.model, 'haiku');
+  assert.equal(saved.effectiveWorkflow.c_docs0001.agentSource, 'stage');
+  assert.match($('#project-agent-summary').textContent, /Stage overrides:.*Docs/);
+  assert.deepEqual((await serverBoard(ctx)).projects.find(project => project.id !== projectId), otherBefore);
+  $('#kanban-columns [data-column="c_docs0001"] .column-agent').click(); await ctx.idle();
+  assert.equal(win.document.activeElement, $(`${custom} [data-field="provider"]`));
+  $('#workflow-use-project-agent').click();
+  submitForm(ctx, '#workflow-form'); await ctx.idle();
+  saved = (await serverBoard(ctx)).projects.find(project => project.id === projectId);
+  for (const id of ['planning', 'executing', 'code_review', 'testing', 'merge', 'c_docs0001']) {
+    assert.equal(saved.effectiveWorkflow[id].provider, 'codex');
+    assert.equal(saved.effectiveWorkflow[id].model, 'codex-one');
+    assert.equal(saved.effectiveWorkflow[id].agentSource, 'project');
+  }
+  assert.equal(saved.effectiveWorkflow.c_docs0001.policy, 'manual');
+  assert.equal(saved.effectiveWorkflow.c_docs0001.instructions, 'Write docs.');
+  const reload = await setup(t, { executor: ctx.executor, hash: '#/kanban', dataDir: ctx.dataDir });
+  assert.equal((await serverBoard(reload)).projects.find(project => project.id === projectId).effectiveWorkflow.c_docs0001.model, 'codex-one');
+});
+
+
+test('Task card menu edits content and saves independent display preferences with keyboard dismissal', async t => {
+  const ctx = await setup(t, { hash: '#/kanban' });
+  const { $, win } = ctx;
+  await newProject(ctx, 'Card design');
+  await newCard(ctx, 'Minimal task', 'Original prompt.');
+  await newCard(ctx, 'Another task', 'Keep this card unchanged.');
+  let card = cardItem(ctx, 'Minimal task');
+  const id = card.dataset.id;
+  assert.equal(card.querySelector('.kanban-more').hidden, true);
+  assert.ok(card.querySelector('.kanban-more .kanban-move-to'));
+  assert.ok(card.querySelector('.kanban-more .kanban-details'));
+  assert.ok(card.querySelector('.kanban-more .card-workspace'));
+  card.querySelector('.kanban-more-toggle').click();
+  for (const field of ['preview', 'agent', 'comfortable']) card.querySelector(`[data-card-display="${field}"]`).click();
+  assert.ok(card.classList.contains('hide-preview'));
+  assert.ok(card.classList.contains('show-agent'));
+  assert.ok(card.classList.contains('comfortable'));
+  assert.equal(cardItem(ctx, 'Another task').classList.contains('hide-preview'), false);
+  card.querySelector('.card-appearance').open = true;
+  card.querySelector('[data-card-display="preview"]').focus();
+  await win.__pbTest.loadBoard(); await ctx.idle();
+  card = cardItem(ctx, 'Minimal task');
+  assert.equal(card.querySelector('.card-appearance').open, true);
+  assert.equal(win.document.activeElement.dataset.cardDisplay, 'preview');
+  card.querySelector('.kanban-edit').click();
+  $('#card-title').value = 'Edited task'; $('#card-prompt').value = '  Exact edited prompt.  ';
+  submitForm(ctx, '#card-form'); await ctx.idle();
+  card = cardItem(ctx, 'Edited task');
+  assert.equal((await serverTasks(ctx)).find(task => task.id === id).prompt, '  Exact edited prompt.  ');
+  assert.ok(card.classList.contains('hide-preview'));
+  card.querySelector('.kanban-more').dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  assert.equal(card.querySelector('.kanban-more').hidden, true);
+  assert.equal(win.document.activeElement, card.querySelector('.kanban-more-toggle'));
+  const key = `promptboard.card-appearance.${id}`;
+  const reload = await setup(t, { hash: '#/kanban', dataDir: ctx.dataDir, prefs: { [key]: win.localStorage.getItem(key) } });
+  await reload.idle();
+  const restored = cardItem(reload, 'Edited task');
+  assert.ok(restored.classList.contains('hide-preview'));
+  assert.ok(restored.classList.contains('comfortable'));
+  restored.querySelector('.kanban-more-toggle').click();
+  restored.querySelector('[data-card-display="preview"]').click();
+  assert.equal(restored.classList.contains('hide-preview'), false);
+});
+
+
+test('Shared Settings uses live model catalogs, explicit saves, and model-specific effort', async t => {
+  let catalogReads = 0;
+  const ctx = await setup(t, { catalogReader: async provider => { catalogReads++; return { provider, ...catalogs[provider] }; } });
+  const { $, choose } = ctx;
+  $('#app-settings-open').click(); await ctx.idle();
+  choose('#set-agent-provider', 'claude'); await ctx.idle();
+  choose('#set-agent-model', 'haiku');
+  assert.equal($('#set-agent-effort').disabled, true, 'Haiku reports no effort choices.');
+  assert.equal((await serverBoard(ctx)).settings.defaultAgent ?? null, null, 'Draft choices do not save automatically.');
+  $('#set-agent-save').click(); await ctx.idle();
+  assert.equal((await serverBoard(ctx)).settings.defaultAgent.model, 'haiku');
+  choose('#set-agent-provider', 'codex'); await ctx.idle();
+  choose('#set-agent-model', 'codex-two'); choose('#set-agent-effort', 'low');
+  const before = catalogReads;
+  $('#set-agent-fields .agent-refresh-models').click(); await ctx.idle();
+  assert.ok(catalogReads > before, 'Refresh rereads the CLI catalog.');
+  assert.equal($('#set-agent-model').value, 'codex-two');
+  assert.equal($('#set-agent-effort').value, 'low');
+  $('#set-agent-save').click(); await ctx.idle();
+  assert.deepEqual((await serverBoard(ctx)).settings.defaultAgent, { provider: 'codex', model: 'codex-two', effort: 'low' });
+  choose('#set-agent-provider', ''); $('#set-agent-save').click(); await ctx.idle();
+  assert.equal((await serverBoard(ctx)).settings.defaultAgent, null);
+  assert.equal($('#set-agent-fields .model-field').hidden, true);
+});
+
+test('Settings connects Composer and Kanban, with universal display defaults and per-card overrides', async t => {
+  const ctx = await setup(t, { hash: '#/kanban' });
+  const { $, win, choose } = ctx;
+  await newProject(ctx, 'Shared settings'); await newCard(ctx, 'Task', 'Do this.');
+  $('#app-settings-open').click(); await ctx.idle();
+  $('#set-card-preview').click(); $('#set-card-spacing').click();
+  let card = cardItem(ctx, 'Task');
+  assert.ok(card.classList.contains('hide-preview')); assert.ok(card.classList.contains('comfortable'));
+  $('#app-settings-close').click();
+  card.querySelector('.kanban-more-toggle').click(); card.querySelector('[data-card-display="preview"]').click();
+  assert.equal(card.classList.contains('hide-preview'), false);
+  $('#app-settings-open').click(); await ctx.idle();
+  $('#set-card-agent').click();
+  card = cardItem(ctx, 'Task'); assert.equal(card.classList.contains('hide-preview'), false);
+  assert.ok(card.classList.contains('show-agent'));
+  $('#app-settings-close').click(); card.querySelector('.card-display-reset').click();
+  assert.ok(card.classList.contains('hide-preview'));
+  $('#app-settings-open').click(); await ctx.idle(); $('#set-columns').click();
+  assert.equal($('#columns-dialog').open, true); $('#columns-close').click();
+  $('#app-settings-open').click(); await ctx.idle(); $('#set-compose').click();
+  assert.equal($('#prompt-view').hidden, false); assert.equal($('#settings-body').hidden, false);
+  assert.equal(win.document.activeElement.id, 'settings-toggle');
+  assert.equal($('#view-board').getAttribute('aria-controls'), 'kanban-columns');
+  $('#app-settings-open').click(); await ctx.idle();
+  choose('#set-max-runs', '2'); choose('#set-max-runs', '4'); await ctx.idle();
+  assert.equal((await serverBoard(ctx)).settings.maxConcurrentRuns, 4);
+  const reload = await setup(t, { dataDir: ctx.dataDir, hash: '#/kanban', prefs: {
+    'promptboard.settings.card-preview': '0', 'promptboard.settings.card-spacing': '1', 'promptboard.settings.terminal-font': 'bad',
+  } }); await reload.idle();
+  assert.ok(cardItem(reload, 'Task').classList.contains('hide-preview'));
+  assert.ok(cardItem(reload, 'Task').classList.contains('comfortable'));
+});
+
+
+test('Task saves ignore repeated submits and Split retries only unsaved cards', async t => {
+  const tasks = [{ title: 'First split task', prompt: 'Implement it.' }, { title: 'Second split task', prompt: 'Test it.' }];
+  const ctx = await setup(t, { hash: '#/kanban', runner: request => ({ text: request.prompt.startsWith('# Task split') ? JSON.stringify({ tasks }) : 'Implement and test it.', reportedModels: ['m'] }) });
+  const { $, win } = ctx;
+  await newProject(ctx, 'Retry tasks');
+  $('.kanban-add-task').click(); $('#card-prompt').value = 'Create once.';
+  submitForm(ctx, '#card-form'); submitForm(ctx, '#card-form'); await ctx.idle();
+  assert.equal((await serverTasks(ctx)).length, 1);
+  await goTo(ctx, '#/'); ctx.quality('fast'); $('#prompt-input').value = 'Implement and test.'; ctx.submit();
+  await until(() => !$('#split-button').disabled, 'generated prompt');
+  $('#kanban-button').click(); submitForm(ctx, '#add-form'); submitForm(ctx, '#add-form'); await ctx.idle();
+  assert.equal((await serverTasks(ctx)).length, 2);
+  $('#split-button').click(); await until(() => $('#split-list').children.length === 2, 'split result');
+  $('#split-autopilot').checked = false;
+  const originalFetch = win.fetch;
+  let creates = 0;
+  win.fetch = (url, options) => {
+    if (url === '/api/tasks' && options?.method === 'POST' && ++creates === 2) return Promise.resolve(Response.json({ error: 'Temporary save failure.' }, { status: 500 }));
+    return originalFetch(url, options);
+  };
+  submitForm(ctx, '#split-form'); submitForm(ctx, '#split-form');
+  await until(() => !$('#split-error').hidden && $('#split-form').getAttribute('aria-busy') === 'false', 'partial failure');
+  assert.equal((await serverTasks(ctx)).filter(task => task.title === 'First split task').length, 1);
+  assert.equal($('#split-list').children.length, 1);
+  assert.match($('#split-error').textContent, /Only unsaved tasks remain/);
+  submitForm(ctx, '#split-form'); await ctx.idle();
+  assert.equal($('#split-dialog').open, false);
+  const saved = await serverTasks(ctx);
+  assert.equal(saved.filter(task => task.title === 'First split task').length, 1);
+  assert.equal(saved.filter(task => task.title === 'Second split task').length, 1);
+});
+
+
+test('Composer installation status and model availability follow the latest connection check', async t => {
+  let installed = true;
+  const ctx = await setup(t, { authAdapter: fakeAuth({ installed: async () => installed }) });
+  const { $ } = ctx;
+  installed = false;
+  $('#auth-check').click(); await ctx.idle();
+  assert.match($('#provider option:checked').textContent, /not installed/);
+  assert.equal($('#connection-install').textContent, 'CLI not installed');
+  assert.equal($('#generate-button').disabled, true);
+  installed = true;
+  $('#auth-check').click(); await ctx.idle();
+  assert.doesNotMatch($('#provider option:checked').textContent, /not installed/);
+  assert.match($('#connection-install').textContent, /CLI installed/);
+  assert.equal($('#generate-button').disabled, false);
+  assert.ok($('#model option[value="codex-one"]'));
+  assert.match($('#cli-status-label').textContent, /installed/);
+});
+
+
+test('Composer starts with an empty input and no bundled example feature', async t => {
+  const { $, submit, calls } = await setup(t);
+  assert.equal($('#prompt-input').value, '');
+  assert.equal($('#prompt-input').getAttribute('placeholder'), null);
+  assert.equal($('#load-example'), null);
+  const script = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  assert.doesNotMatch(script, /load-example|Build a small FastAPI service/);
+  $('#prompt-input').value = 'Review my task.';
+  submit();
+  await until(() => !$('#generate-button').disabled && calls.length > 0, 'generation without example control');
+  assert.ok($('#prompt-output').textContent.trim());
 });

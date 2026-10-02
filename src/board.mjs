@@ -210,8 +210,8 @@ export function effectiveWorkflow(project, globalAgent = null) {
     return [stage, { ...base, policy, instructions: own.instructions || '', ...resolved, agentSource }];
   }).concat((project?.columnLayout || []).filter(entry => entry.custom).map(entry => {
     // A custom column's agent writes in the task worktree (like Executing) with the column's instructions.
-    const [agentSource, agent] = [['project', project?.agentDefaults], ['global', globalAgent]].find(([, value]) => value?.provider) || ['default', {}];
-    let resolved = { provider: agent.provider || 'claude', model: agent.model || '', effort: agent.effort || '', permissionMode: agent.permissionMode || '' };
+    const [agentSource, agent] = [['stage', entry.agent?.provider ? entry.agent : null], ['project', project?.agentDefaults], ['global', globalAgent]].find(([, value]) => value?.provider) || ['default', {}];
+    let resolved = { provider: agent.provider || 'claude', model: agent.model || '', effort: agent.effort || '', permissionMode: entry.agent?.permissionMode || agent.permissionMode || '' };
     try { resolved = resolveConfig(entry.id, resolved); } catch { try { resolved = resolveConfig(entry.id, { ...resolved, effort: '' }); } catch {} }
     return [entry.id, { ...DEFAULT_STAGE_SETTINGS, policy: entry.agent?.enabled ? (entry.agent.policy === 'ask' ? 'start' : entry.agent.policy) : 'manual', instructions: entry.agent?.instructions || '', ...resolved, agentSource, custom: true, agentEnabled: entry.agent?.enabled === true }];
   })));
@@ -264,8 +264,10 @@ export function normalizeColumns(input) {
     if (!name) throw new BoardError('A custom column needs a name.', 'INVALID_COLUMNS');
     if (names.has(name.toLowerCase())) throw new BoardError(`Two columns are called “${name}”. Use different names.`, 'INVALID_COLUMNS');
     names.add(name.toLowerCase());
-    const agent = entry.agent?.enabled === true ? { enabled: true, policy: entry.agent.policy === 'manual' ? 'manual' : 'start',
-      instructions: typeof entry.agent.instructions === 'string' ? entry.agent.instructions.slice(0, 4000) : '' } : { enabled: false };
+    const agent = entry.agent?.enabled === true ? { enabled: true, ...normalizeWorkflow({ executing: {
+      ...entry.agent, policy: entry.agent.policy === 'manual' ? 'manual' : 'start',
+      instructions: typeof entry.agent.instructions === 'string' ? entry.agent.instructions.slice(0, 4000) : '',
+    } }).executing } : { enabled: false };
     out.push({ id: entry.id, custom: true, title: name, color, description: typeof entry.description === 'string' ? entry.description.trim().slice(0, 200) : '', agent });
   }
   if (out.filter(entry => !entry.custom).map(entry => entry.id).join() !== COLUMN_IDS.join()) throw new BoardError('The built-in stages keep their order: To Do, Planning, Executing, Code Review, Testing, Merge, Done.', 'INVALID_COLUMNS');
@@ -691,6 +693,13 @@ export class Board {
     return this.store.update(state => {
       const project = this.#project(state, id);
       checkRevision(project, expectedRevision, 'This project');
+      // Custom agent columns use the same validation as Executing and keep their layout.
+      const columnLayout = (project.columnLayout || []).map(entry => {
+        if (!entry.custom || !entry.agent?.enabled || !workflow[entry.id]) return entry;
+        const agent = normalizeWorkflow({ executing: workflow[entry.id] }).executing;
+        return { ...entry, agent: { enabled: true, ...agent } };
+      });
+      if (project.columnLayout) project.columnLayout = columnLayout;
       project.workflow = clean; // Applies to future runs only; active runs keep their snapshot.
       if (defaults !== undefined) project.agentDefaults = defaults;
       project.revision++;
