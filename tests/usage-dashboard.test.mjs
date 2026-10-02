@@ -67,3 +67,12 @@ test('allowance failures retain the last known observation as stale, never fresh
   assert.equal(value.status,'stale'); assert.equal(value.checkedAt,10); assert.equal(value.windows[0].remainingPercent,0);
   assert.doesNotMatch(JSON.stringify(value),/private/);
 });
+
+
+test('incremental Codex collection preserves totals and models across chunks without duplication', () => {
+  const context = model => ({type:'turn_context',payload:{model}});
+  const event = input => ({timestamp:stamp,payload:{type:'token_count',info:{total_token_usage:{input_tokens:input,output_tokens:10,cached_input_tokens:0}}}});
+  const first = sessionMetrics('codex',[context('one'),event(100)],0);
+  const next = sessionMetrics('codex',[event(100),context('two'),event(160)],0,first);
+  assert.deepEqual(next.rows.map(r=>[r.model,r.input]),[['one',100],['two',60]]);
+});

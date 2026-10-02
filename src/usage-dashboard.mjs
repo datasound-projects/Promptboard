@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { metadataSession } from './models.mjs';
 import { resolveExecutable, makeTempDir, removeTempDir } from './providers.mjs';
+import { readNewLines } from './usage.mjs';
 import { VERSION } from './version.mjs';
 
 const DAY = 86400000;
@@ -37,9 +38,9 @@ export async function readCodexLimits({ signal } = {}) {
 }
 
 /** Reduce a session to numeric records; repeated streaming messages replace earlier values. */
-export function sessionMetrics(provider, records, fallbackTime) {
-  const rows = new Map(), tools = new Map();
-  let model = 'unknown', previous = { input: 0, cached: 0, output: 0 }, sessionId = '', limits = null;
+export function sessionMetrics(provider, records, fallbackTime, seed = null) {
+  const rows = new Map((seed?.rows || []).map(r => [r.id, r])), tools = new Map((seed?.tools || []).map(t => [t.id, { name: t.name, at: t.at }]));
+  let model = seed?._model || 'unknown', previous = seed?._previous || { input: 0, cached: 0, output: 0 }, sessionId = seed?.sessionId || '', limits = seed?.limits || null;
   const when = r => { const t = Date.parse(r.timestamp); return Number.isFinite(t) ? t : fallbackTime; };
   const putTool = (id, name, at) => { if (typeof id === 'string' && id.length < 300 && safe(name) !== 'unknown') tools.set(id, { name: safe(name), at }); };
   for (const r of records) {
@@ -70,7 +71,7 @@ export function sessionMetrics(provider, records, fallbackTime) {
       for (const tool of r.toolCalls || []) putTool(tool.id, tool.name, when(r));
     }
   }
-  return { sessionId, rows: [...rows.values()], tools: [...tools.entries()].map(([id, t]) => ({ id, ...t })), limits };
+  return { sessionId, rows: [...rows.values()], tools: [...tools.entries()].map(([id, t]) => ({ id, ...t })), limits, _model: model, _previous: previous };
 }
 
 /** Bounded scans of known session directories. Symlinks and credentials are never followed. */
@@ -121,22 +122,36 @@ export class UsageDashboard {
         const stat = await lstat(path).catch(() => null);
         if (!stat?.isFile() || stat.mtimeMs < since) continue;
         seenFiles.add(path);
-        if (stat.size > 32 * 1024 * 1024) { p.partial = true; continue; }
         let entry = this.cache.get(path);
-        if (!entry || entry.mtime !== stat.mtimeMs || entry.size !== stat.size) {
-          if (bytesRead + stat.size > 128 * 1024 * 1024) { p.partial = true; continue; }
-          bytesRead += stat.size;
-          try {
-            const content = await readFile(path, 'utf8');
-            let records;
-            if (path.endsWith('.json')) { const value = JSON.parse(content); records = [{ sessionId: value.sessionId }, ...(value.messages || [])]; }
-            else {
-              const lines = content.split('\n');
-              records = lines.flatMap((line, i) => { try { return line.trim() ? [JSON.parse(line)] : []; } catch { if (i < lines.length - 1) p.partial = true; return []; } });
-            }
-            entry = { mtime: stat.mtimeMs, size: stat.size, metrics: sessionMetrics(id, records, stat.mtimeMs) };
-            this.cache.set(path, entry);
-          } catch { p.partial = true; continue; }
+        if (path.endsWith('.jsonl')) {
+          // Tail complete records, including large rollouts, over bounded refreshes.
+          if (!entry || stat.size < entry.size || entry.ino !== stat.ino) entry = { tail: { path, offset: 0 }, metrics: null };
+          if (entry.tail.offset < stat.size && bytesRead < 128 * 1024 * 1024) {
+            const before = entry.tail.offset;
+            try {
+              const records = await readNewLines(entry.tail);
+              bytesRead += entry.tail.offset - before;
+              entry.metrics = sessionMetrics(id, records, stat.mtimeMs, entry.metrics);
+              // An individual oversized record cannot be buffered; skip its chunk and label coverage.
+              if (entry.tail.offset === before && stat.size - before >= 16 * 1024 * 1024) { entry.tail.offset += 16 * 1024 * 1024; entry.incomplete = true; bytesRead += 16 * 1024 * 1024; }
+            } catch { p.partial = true; }
+          }
+          entry.size = stat.size; entry.ino = stat.ino;
+          p.partial ||= entry.tail.offset < stat.size || Boolean(entry.incomplete);
+          this.cache.set(path, entry);
+          if (!entry.metrics) continue;
+        } else {
+          if (stat.size > 32 * 1024 * 1024) { p.partial = true; continue; }
+          if (!entry || entry.mtime !== stat.mtimeMs || entry.size !== stat.size) {
+            if (bytesRead + stat.size > 128 * 1024 * 1024) { p.partial = true; continue; }
+            bytesRead += stat.size;
+            try {
+              const value = JSON.parse(await readFile(path, 'utf8'));
+              const records = [{ sessionId: value.sessionId }, ...(value.messages || [])];
+              entry = { mtime: stat.mtimeMs, size: stat.size, metrics: sessionMetrics(id, records, stat.mtimeMs) };
+              this.cache.set(path, entry);
+            } catch { p.partial = true; continue; }
+          }
         }
         const metrics = entry.metrics, session = metrics.sessionId || path;
         if (metrics.limits?.windows.length && (!p.limits.checkedAt || metrics.limits.checkedAt > p.limits.checkedAt)) p.limits = metrics.limits;
