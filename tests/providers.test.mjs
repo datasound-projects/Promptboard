@@ -149,7 +149,8 @@ test('cancellation kills a subprocess that ignores SIGTERM after its parent exit
     const descendant = `
 const fs = require('node:fs');
 process.on('SIGTERM', () => {});
-fs.writeFileSync(${JSON.stringify(reportPath)}, JSON.stringify({ pid: process.pid, parent: process.ppid }));
+fs.writeFileSync(${JSON.stringify(`${reportPath}.tmp`)}, JSON.stringify({ pid: process.pid, parent: process.ppid }));
+fs.renameSync(${JSON.stringify(`${reportPath}.tmp`)}, ${JSON.stringify(reportPath)});
 setInterval(() => {}, 1000);
 `;
     const executable = join(dir, 'codex');

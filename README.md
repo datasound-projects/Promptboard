@@ -41,6 +41,8 @@ Your browser opens **http://127.0.0.1:4318**. Press **Ctrl+C** to stop. No API k
 
 ## Features
 
+Navigation is **Compose | Kanban | Base**. Each page has its own link; switching pages keeps the selected project and agent terminals intact.
+
 **Compose**
 - Turn a rough request into a clear, structured prompt for a coding agent.
 - Keep exact text safe: code, paths, commands, URLs, and quoted text are checked so they stay unchanged.
@@ -72,6 +74,18 @@ Use **Add task** at the bottom of To Do to enter a prompt directly, or choose **
 - **Columns**: add your own columns, rename or recolour stages, and hide Planning.
 - **Timeline**: see the history of a project: moves, agent runs, reviews, tests, commits, and merges.
 
+**Base — optional reusable resources**
+
+- Open **Base** after Kanban, or go directly to `#/base`. Create instruction skills, Markdown wikis, context selections, MCP definitions, command recipes, reusable agent profiles, and packs.
+- Store a resource once. **Base resources** in agent, project, column, and task settings attaches references to existing configurations. **Apply to…** previews assignments to several targets. Saving or assigning never starts an agent or installs software.
+- Resources inherit **Global → Project → Column → Task → Task-and-column**. **Extend** adds resources and exclusions; **Replace** discards inherited resources. Empty Replace opts out. Profiles change provider defaults only when explicitly selected in agent configuration.
+- The normal Kanban runner supplies selected instructions/context to Claude Code, Codex, or Gemini. Supported MCP connections use per-run configuration in writing stages. Planning and Code Review keep their restrictions. Required incompatible resources block launch; optional omissions are explained.
+- Inspect **Run details** for pinned resource revisions, supplied context, warnings, and separate observed invocation information. Attaching a tool does not prove that the agent invoked it. Queued runs keep their accepted definitions; current trust/availability revocations are rechecked before launch.
+- Edit and link wiki pages locally; import selected text files or bounded folders; search without a model. **Generate/update from sources** optionally uses the existing restricted generation runner and returns a draft for review. Manual changes and stale drafts are protected by revision checks.
+- Import/export portable resource bundles and board backups. Document bodies are included only when selected. Imports use fresh IDs, remain inactive and untrusted, and do not approve external folders or execute MCP servers.
+
+See [Base delivery and limits](docs/base-delivery.md) for the provider matrix, source limits, and verification. Native skill installation, PDF extraction, arbitrary API tools, nested packs, and authenticated live-provider verification are not claimed. SKILL.md imports support scalar frontmatter with name and description; complex frontmatter can be entered through the editable instruction form.
+
 **Projects and GitHub**
 - **New project** creates a folder with a Git repository, ready to use.
 - **Open folder** uses code you already have (Git is set up if needed; your files are not added).
@@ -99,7 +113,7 @@ Full rules: [Kanban contract](docs/agentic-kanban-contract.md).
 <details>
 <summary><b>Settings</b></summary>
 
-The gear opens **Settings** from either page. Browser-wide preferences include theme, start page, card display defaults, terminal font size, and dock behaviour. **Global agent defaults** uses the same live provider/model/effort picker as project settings; choose **Save default agent** to apply it. Project and column overrides take priority. Composer, Agents and workflow, Columns, and Autopilot are directly accessible here. Less-used sections are collapsed. Per-card display overrides can return to the shared defaults through **… → Card display → Use display defaults**.
+The gear opens **Settings** from all three pages. Browser-wide preferences include theme, start page, card display defaults, terminal font size, and dock behaviour. **Global agent defaults** uses the same live provider/model/effort picker as project settings; choose **Save default agent** to apply it. Project and column overrides take priority. Composer, Agents and workflow, Columns, and Autopilot are directly accessible here. Less-used sections are collapsed. Per-card display overrides can return to the shared defaults through **… → Card display → Use display defaults**.
 </details>
 
 <details>
@@ -112,11 +126,14 @@ Install the [GitHub CLI](https://cli.github.com), then choose **Settings → Git
 <summary><b>Privacy and data</b></summary>
 
 - Promptboard runs only on this computer (`127.0.0.1`). No analytics, no telemetry.
-- Your prompts stay in your browser. The board, runs, and worktrees are in the Promptboard data folder (`PROMPTBOARD_DATA_DIR` changes it). New projects go to `~/Promptboard Projects` (`PROMPTBOARD_PROJECTS_DIR` changes it).
-- Text you send goes to your AI provider through its CLI. **Do not put secrets into prompts or cards.**
+- Compose history stays in your browser. The board, Base library, immutable resource revisions, captured run context, logs, and worktrees are in the Promptboard data folder (`PROMPTBOARD_DATA_DIR` changes it). New projects go to `~/Promptboard Projects` (`PROMPTBOARD_PROJECTS_DIR` changes it).
+- Text you send, including selected Base context and sources used for wiki generation, goes to your AI provider through its CLI. Local storage does not make cloud-backed CLI requests private to this machine. **Do not put secrets into prompts, cards, or resource documents.**
+- MCP credentials use environment-variable references. Explicit connection tests can run trusted stdio servers or contact their configured endpoints. Document imports allow public HTTP(S) sources with bounded redirects; external filesystem roots need explicit approval.
 - Promptboard never reads CLI or GitHub credentials.
 
 Read [SECURITY.md](SECURITY.md) before you use it with sensitive repositories.
+
+State version 2 upgrades automatically to version 3 with an exact pre-migration backup. A failed migration stops instead of replacing valid data with an empty board; files from newer versions are preserved. Portable board backups use their own version 3 format and continue accepting older supported backups. Resource revisions retained for historical runs are not deleted when a library entry is removed.
 </details>
 
 <details>

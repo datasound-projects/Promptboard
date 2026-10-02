@@ -11,10 +11,12 @@ import { access, mkdir, readdir, realpath, rm, stat } from 'node:fs/promises';
 import { join, relative, isAbsolute } from 'node:path';
 import { Store } from './store.mjs';
 import { branchExists, commitExists, git, GitError, initRepository, listWorktrees, validateRepository } from './git.mjs';
-import { resolveConfig } from './agents.mjs';
+import { ADAPTERS, resolveConfig } from './agents.mjs';
 import { Delivery } from './delivery.mjs';
 import { ensureClone, fastForward, fetchAndCompare, viewRepository } from './github.mjs';
 import { buildTimeline } from './timeline.mjs';
+import { Base, normalizeBinding, listTargets, remapBaseScopes } from './base.mjs';
+import { deliveryFor, profileDefaults, resolveBase } from './base-resolver.mjs';
 
 export const COLUMNS = Object.freeze([
   { id: 'todo', title: 'To Do', agent: false },
@@ -88,7 +90,8 @@ export function parseBackup(data) {
 }
 function parseBackupData(data) {
   const v1 = data?.version === 1 && (data.kind === undefined || data.kind === 'kanban-backup');
-  const v2 = data?.version === 2 && data.kind === 'promptboard-backup';
+  const v2 = [2, 3].includes(data?.version) && data.kind === 'promptboard-backup';
+  const v3 = data?.version === 3 && data.kind === 'promptboard-backup';
   if (!data || typeof data !== 'object' || (!v1 && !v2) || !Array.isArray(data.projects)) throw new BoardError('The data is not a Promptboard or version 1 Kanban board.', 'INVALID_BACKUP');
   if (data.projects.length > PROJECT_LIMIT) throw new BoardError(`A board can have at most ${PROJECT_LIMIT} projects.`, 'INVALID_BACKUP');
   const ids = new Set();
@@ -112,6 +115,7 @@ function parseBackupData(data) {
       id: unique(project.id, label), name, createdAt: time(project.createdAt),
       columnLayout,
       agentDefaults: v2 && project.agentDefaults?.provider ? normalizeAgent(project.agentDefaults) : null,
+      ...(v3 ? backupBaseScopes(project, false, columnIds) : {}),
       repositoryPath: v2 && typeof project.repository?.path === 'string' ? project.repository.path.slice(0, 4096) : null,
       targetBranch: v2 && typeof project.targetBranch?.name === 'string' ? project.targetBranch.name.slice(0, 255) : null,
       // Imported workflow settings (including legacy automation) are kept for confirmation only.
@@ -126,11 +130,31 @@ function parseBackupData(data) {
         if (!card || typeof card !== 'object') throw new BoardError(`${cardLabel} is not valid.`, 'INVALID_BACKUP');
         return { id: unique(card.id, cardLabel), title: text(card.title, 120, `${cardLabel} title`), prompt: promptText(card.prompt, cardLabel),
           createdAt: time(card.createdAt), updatedAt: time(card.updatedAt ?? card.createdAt), checksOutdated: card.checksOutdated === true,
-          source: normalizeSource(card.source), column: v2 && columnIds.has(card.column) ? card.column : 'todo' };
+          source: normalizeSource(card.source), column: v2 && columnIds.has(card.column) ? card.column : 'todo', ...(v3 ? backupBaseScopes(card, true, columnIds) : {}) };
       }),
     };
   });
-  return { projects };
+  return { projects, ...(v3 ? { base: data.base, baseGlobal: backupBaseScopes(data.baseGlobal || {}) } : {}) };
+}
+
+function backupBaseScopes(entity, task = false, columnIds) {
+  const result = {};
+  if (!entity || typeof entity !== 'object' || Array.isArray(entity)) throw new BoardError('Base assignment data is invalid.', 'INVALID_BACKUP');
+  if (task && (entity.agentProfileId || Object.values(entity.baseColumns || {}).some(entry => entry?.profileId))) throw new BoardError('Task Base overrides cannot select an agent provider profile.', 'INVALID_BACKUP');
+  if (entity.baseBinding) result.baseBinding = normalizeBinding(entity.baseBinding);
+  if (!task && entity.agentProfileId) {
+    if (typeof entity.agentProfileId !== 'string' || !/^[A-Za-z0-9_-]{1,100}$/.test(entity.agentProfileId)) throw new BoardError('A Base profile reference is invalid.', 'INVALID_BACKUP');
+    result.agentProfileId = entity.agentProfileId;
+  }
+  if (entity.baseColumns) {
+    if (typeof entity.baseColumns !== 'object' || Array.isArray(entity.baseColumns) || Object.keys(entity.baseColumns).length > 30) throw new BoardError('Base column references are invalid.', 'INVALID_BACKUP');
+    result.baseColumns = Object.fromEntries(Object.entries(entity.baseColumns).map(([id, value]) => {
+      if (!/^[A-Za-z0-9_-]{1,100}$/.test(id) || !value || typeof value !== 'object') throw new BoardError('A Base column reference is invalid.', 'INVALID_BACKUP');
+      if (columnIds && !columnIds.has(id)) throw new BoardError('A Base binding refers to a column absent from this backup.', 'INVALID_BACKUP');
+      return [id, { binding: normalizeBinding(value.binding), ...(!task && value.profileId ? { profileId: text(value.profileId, 100, 'Profile ID') } : {}) }];
+    }));
+  }
+  return result;
 }
 
 function newProject({ id = randomUUID(), name, createdAt = Date.now() }) {
@@ -195,10 +219,13 @@ export function normalizeAgent(input) {
  * Code with its CLI defaults. Model and effort come from that same level, because they belong to
  * one provider. `agentSource` says which level applied.
  */
-export function effectiveWorkflow(project, globalAgent = null) {
+export function effectiveWorkflow(project, globalAgent = null, state = null) {
+  const global = state ? profileDefaults(state, state.settings?.agentProfileId, globalAgent || {}) : globalAgent;
+  const projectAgent = state ? profileDefaults(state, project?.agentProfileId, project?.agentDefaults || {}) : project?.agentDefaults;
+  const columnAgent = (id, own) => state ? profileDefaults(state, project?.baseColumns?.[id]?.profileId, own) : own;
   return Object.fromEntries(WORKFLOW_STAGES.map(stage => {
     const own = project?.workflow?.[stage] || {};
-    const levels = [['stage', own.provider ? own : null], ['project', project?.agentDefaults], ['global', globalAgent]];
+    const levels = [['stage', columnAgent(stage, own)], ['project', projectAgent], ['global', global]];
     const [agentSource, agent] = levels.find(([, value]) => value?.provider) || ['default', {}];
     // Merge stays manual unless a project turns on automatic merging.
     const base = { ...DEFAULT_STAGE_SETTINGS, ...(stage === 'merge' ? { policy: 'manual' } : {}) };
@@ -210,7 +237,7 @@ export function effectiveWorkflow(project, globalAgent = null) {
     return [stage, { ...base, policy, instructions: own.instructions || '', ...resolved, agentSource }];
   }).concat((project?.columnLayout || []).filter(entry => entry.custom).map(entry => {
     // A custom column's agent writes in the task worktree (like Executing) with the column's instructions.
-    const [agentSource, agent] = [['stage', entry.agent?.provider ? entry.agent : null], ['project', project?.agentDefaults], ['global', globalAgent]].find(([, value]) => value?.provider) || ['default', {}];
+    const [agentSource, agent] = [['stage', columnAgent(entry.id, entry.agent || {})], ['project', projectAgent], ['global', global]].find(([, value]) => value?.provider) || ['default', {}];
     let resolved = { provider: agent.provider || 'claude', model: agent.model || '', effort: agent.effort || '', permissionMode: entry.agent?.permissionMode || agent.permissionMode || '' };
     try { resolved = resolveConfig(entry.id, resolved); } catch { try { resolved = resolveConfig(entry.id, { ...resolved, effort: '' }); } catch {} }
     return [entry.id, { ...DEFAULT_STAGE_SETTINGS, policy: entry.agent?.enabled ? (entry.agent.policy === 'ask' ? 'start' : entry.agent.policy) : 'manual', instructions: entry.agent?.instructions || '', ...resolved, agentSource, custom: true, agentEnabled: entry.agent?.enabled === true }];
@@ -321,6 +348,7 @@ export class Board {
     this.dataDir = dataDir;
     this.projectsDir = projectsDir; // Where "New project" creates each project's own Git repository.
     this.store = new Store(dataDir);
+    this.base = new Base({ store: this.store });
     this.worktreeRoot = join(dataDir, 'worktrees');
     this.hooksDir = join(dataDir, 'no-hooks'); // Empty: git worktree add runs no repository hooks.
     this.executor = executor; // PB-02 registers one. Null means execution is inactive.
@@ -355,8 +383,59 @@ export class Board {
   async view() {
     const state = await this.state();
     return { revision: state.revision, columns: COLUMNS, transitions: TRANSITIONS, settings: state.settings, runs: state.runs.slice(-500),
-      projects: state.projects.map(project => ({ ...project, columns: projectColumns(project), transitions: projectTransitions(project), effectiveWorkflow: effectiveWorkflow(project, state.settings.defaultAgent) })),
+      baseRevision: state.base?.revision || 0,
+      projects: state.projects.map(project => ({ ...project, columns: projectColumns(project), transitions: projectTransitions(project), effectiveWorkflow: effectiveWorkflow(project, state.settings.defaultAgent, state) })),
       execution: this.executor?.describe ? await this.executor.describe() : { available: Boolean(this.executor) }, recovery: this.store.recovery };
+  }
+
+  /** Base metadata is fetched separately; board polling never includes library document bodies. */
+  async baseView() {
+    const state = await this.state();
+    const library = await this.base.list();
+    const execution = this.executor?.describe ? await this.executor.describe() : { available: false, providers: Object.fromEntries(Object.entries(ADAPTERS).map(([id, adapter]) => [id, { name: adapter.name, ...adapter.capabilities, notLiveVerified: Boolean(adapter.notLiveVerified) }])) };
+    const targets = listTargets(state).map(item => {
+      const target = item.target;
+      const project = target.projectId ? this.#project(state, target.projectId) : null;
+      const columnId = target.columnId || 'executing';
+      const settings = effectiveWorkflow(project || {}, state.settings.defaultAgent, state)[columnId];
+      const column = project && projectColumns(project).find(entry => entry.id === columnId);
+      return { ...item, label: item.name, revision: item.baseRevision, provider: settings?.provider || 'claude', columnActive: target.columnId ? column?.agent === true : true };
+    });
+    const resources = library.resources.map(resource => ({ ...resource, compatibility: Object.fromEntries(Object.keys(execution.providers || {}).map(provider => [provider, {
+      execution: deliveryFor(resource, provider, 'executing'), readOnly: deliveryFor(resource, provider, 'planning'), notLiveVerified: Boolean(execution.providers[provider].notLiveVerified),
+    }])) }));
+    return { ...library, resources, targets, providers: execution.providers || {}, approvedRoots: state.base?.approvedRoots || [], pendingGlobalBaseImport: state.settings.pendingBaseImport || null };
+  }
+
+  async previewBase({ target, binding, profileId } = {}) {
+    const state = structuredClone(await this.state());
+    if (!target || !listTargets(state).some(item => JSON.stringify(item.target) === JSON.stringify(target) ||
+      item.target.scope === target.scope && item.target.projectId === target.projectId && item.target.taskId === target.taskId && item.target.columnId === target.columnId)) throw new BoardError('Choose an existing Base assignment target.', 'BASE_TARGET_INVALID');
+    const project = target.projectId ? this.#project(state, target.projectId) : null;
+    const task = target.taskId ? this.#task(state, target.taskId).task : null;
+    let entity = task || project || state.settings;
+    if (target.columnId) entity = (entity.baseColumns ??= {})[target.columnId] ??= {};
+    if (binding !== undefined) entity[target.columnId ? 'binding' : 'baseBinding'] = normalizeBinding(binding);
+    if (profileId !== undefined) {
+      if (task) throw new BoardError('Task overrides select resources, not another provider hierarchy.', 'BASE_TARGET_INVALID');
+      if (profileId && !state.base.resources.some(resource => resource.id === profileId && resource.kind === 'profile')) throw new BoardError('Choose an existing agent profile.', 'BASE_PROFILE_INVALID');
+      entity[target.columnId ? 'profileId' : 'agentProfileId'] = profileId || null;
+    }
+    const columnId = target.columnId || task?.column || 'executing';
+    const settings = effectiveWorkflow(project || {}, state.settings.defaultAgent, state)[columnId] || effectiveWorkflow(project || {}, state.settings.defaultAgent, state).executing;
+    return { provider: settings.provider, manifest: resolveBase({ state, project, task, columnId, provider: settings.provider }) };
+  }
+
+  #requestedAgent(settings, config = {}) {
+    const requested = Object.fromEntries(Object.entries(config || {}).filter(([key, value]) => ['provider', 'model', 'effort', 'permissionMode', 'instructions'].includes(key) && value !== undefined && value !== null));
+    const inherited = requested.provider && requested.provider !== settings.provider ? { policy: settings.policy, instructions: settings.instructions, provider: requested.provider } : settings;
+    return { ...inherited, ...requested };
+  }
+
+  #basePreflight(state, project, task, columnId, provider) {
+    const manifest = resolveBase({ state, project, task, columnId, provider });
+    if (manifest.errors.length) throw new BoardError(`Base resources cannot be supplied: ${manifest.errors.map(error => typeof error === 'string' ? error : error.message || error.reason || error.code).join(' ').slice(0, 1800)}`, 'BASE_REQUIRED_UNAVAILABLE', 409);
+    return manifest;
   }
 
   #project(state, id) {
@@ -682,6 +761,17 @@ export class Board {
       const ap = project.autopilot;
       if (ap && !visible.has('planning') && [ap.route, ...Object.values(ap.routes || {})].some(route => route?.includes('planning'))) throw conflict('Autopilot’s route uses Planning. Take Planning out of the route first.', 'AUTOPILOT_ROUTE');
       project.columnLayout = layout;
+      // Stable column IDs survive rename/reorder. Removed IDs cannot retain invisible assignments.
+      const present = new Set(layout.map(entry => entry.id));
+      let detached = false;
+      for (const entity of [project, ...project.tasks]) for (const id of Object.keys(entity.baseColumns || {})) if (!present.has(id)) {
+        delete entity.baseColumns[id]; entity.baseRevision = (entity.baseRevision || 0) + 1; detached = true;
+      }
+      // Imported settings awaiting confirmation cannot resurrect a removed column's references.
+      for (const id of Object.keys(project.pendingImport?.baseColumns || {})) if (!present.has(id)) {
+        delete project.pendingImport.baseColumns[id]; detached = true;
+      }
+      if (detached) state.base.revision++;
       project.revision++;
       return project;
     });
@@ -746,11 +836,28 @@ export class Board {
         : `A card cannot move from ${name(from)} to ${name(column)}. Allowed from ${name(from)}: ${(table[from] || []).map(name).join(', ') || 'none'}.`, 'TRANSITION_NOT_ALLOWED');
     }
     if (from === 'todo' && !project.repository) throw new BoardError('Link this project to a Git repository before cards leave To Do.', 'REPOSITORY_REQUIRED');
-    const plan = await this.#prepareTransition(state, project, task, column);
+    const plan = await this.#prepareTransition(state, project, task, column, config);
     const id2 = transitionId || randomUUID();
     // Done only saves a completion record. Merging is a separate, optional Merge-stage action.
     const startAction = Boolean(plan.action) && decision !== 'move' && (decision === 'start' || plan.policy !== 'manual' || plan.action === 'merge-prepare' || column === 'done');
     if (startAction && plan.agentError) throw new BoardError(plan.agentError.message, plan.agentError.code, 409);
+    // Required Base failures must precede plan approval or commits. A move-only action stays permitted.
+    if (startAction && plan.action === 'agent') {
+      // CLI/worktree validation above is asynchronous. Re-read Base and the actual agent
+      // before approving the outgoing turn or committing anything on its behalf.
+      let fresh = await this.state(), current = this.#task(fresh, id);
+      if ((current.task.contentRevision ?? 1) !== (task.contentRevision ?? 1)) throw conflict('The task text changed while this move was prepared. Try the move again.', 'REVISION_CONFLICT');
+      if (!projectColumns(current.project).some(item => item.id === column && item.agent)) throw conflict('The destination agent changed while this move was prepared. Try the move again.', 'REVISION_CONFLICT');
+      let requested = this.#requestedAgent(effectiveWorkflow(current.project, fresh.settings.defaultAgent, fresh)[column], config);
+      if (JSON.stringify(requested) !== JSON.stringify(this.#requestedAgent(plan.settings, config))) {
+        await this.executor.validate({ stage: column, config: requested });
+        fresh = await this.state(); current = this.#task(fresh, id);
+        const latest = this.#requestedAgent(effectiveWorkflow(current.project, fresh.settings.defaultAgent, fresh)[column], config);
+        if ((current.task.contentRevision ?? 1) !== (task.contentRevision ?? 1) || JSON.stringify(latest) !== JSON.stringify(requested)) throw conflict('Task or agent settings changed while this move was prepared. Try the move again.', 'REVISION_CONFLICT');
+        requested = latest;
+      }
+      this.#basePreflight(fresh, current.project, current.task, column, requested.provider);
+    }
 
     // Hand off: confirm the finished turn (this approves a plan or records a review), then commit its work.
     if (plan.handoff) await this.executor.confirm(plan.handoff.id);
@@ -910,7 +1017,7 @@ export class Board {
   async #taskNow(id) { return this.#task(await this.state(), id).task; }
 
   /** What the move needs, checked without changing anything. Throws when the move cannot happen. */
-  async #prepareTransition(state, project, task, to) {
+  async #prepareTransition(state, project, task, to, requestedConfig = {}) {
     const from = task.column;
     const active = this.#activeRun(state, task.id);
     let handoff = null;
@@ -920,7 +1027,7 @@ export class Board {
       if (!finished || to === 'todo') throw conflict('This card has an active run. Wait for it to finish or cancel it first.', 'RUN_ACTIVE');
       handoff = active;
     }
-    const settings = effectiveWorkflow(project, state.settings.defaultAgent)[to] || null;
+    const settings = effectiveWorkflow(project, state.settings.defaultAgent, state)[to] || null;
     const plan = { from, to, handoff, commit: null, notes: null, action: null, policy: settings?.policy || 'manual', settings };
     const hasWorkspace = task.workspace?.status === 'ready';
     if (hasWorkspace && to !== 'done') await this.ensureTaskWorktree(task.id); // Done never repairs or starts task work.
@@ -958,7 +1065,7 @@ export class Board {
       if (!this.executor) { plan.action = null; plan.notice = 'Agent terminals are not set up, so no agent started. Run npm install, then restart Promptboard.'; }
       else {
         // An agent that cannot start (not installed, not signed in) is a real blocker for starting; a plain move still works.
-        try { plan.config = await this.executor.validate({ stage: to, config: settings }); }
+        try { plan.config = await this.executor.validate({ stage: to, config: this.#requestedAgent(settings, requestedConfig) }); }
         catch (error) { plan.agentError = { message: `${title(to)} cannot start: ${error.message}`, code: error.code || 'AGENT_UNAVAILABLE' }; }
       }
       if (plan.action && to === 'executing') plan.approvedPlan = Boolean(this.#approvedPlan(state, task));
@@ -1197,7 +1304,10 @@ export class Board {
     return this.store.update(draft => {
       const project = this.#project(draft, id);
       checkRevision(project, expectedRevision, 'This project');
+      if (JSON.stringify(project.pendingImport) !== JSON.stringify(pending)) throw conflict('The imported settings changed. Reload before confirming.', 'REVISION_CONFLICT');
       if (accept) {
+        const hasBase = pending.baseBinding || pending.baseColumns || pending.agentProfileId;
+        if (hasBase && ((project.baseRevision || 0) !== (pending.baseTargetRevision || 0) || Object.values(project.baseColumns || {}).some(entry => entry.baseRevision))) throw conflict('Base settings were configured after import. Discard the imported selection to keep them.', 'BASE_TARGET_REVISION_CONFLICT');
         if (repository) {
           project.repository = { path: pending.repositoryPath, root: repository.root, commonDir: repository.commonDir, linkedWorktree: repository.linkedWorktree, validatedAt: Date.now() };
           const branch = repository.branches.find(item => item.name === pending.targetBranch);
@@ -1205,6 +1315,13 @@ export class Board {
         }
         if (pending.workflow) project.workflow = normalizeWorkflow(pending.workflow);
         if (pending.agentDefaults) project.agentDefaults = normalizeAgent(pending.agentDefaults);
+        if (pending.baseBinding) project.baseBinding = pending.baseBinding;
+        if (pending.baseColumns) project.baseColumns = pending.baseColumns;
+        if (pending.agentProfileId) project.agentProfileId = pending.agentProfileId;
+        if (pending.baseBinding || pending.baseColumns || pending.agentProfileId) {
+          project.baseRevision = (project.baseRevision || 0) + 1;
+          draft.base.revision++;
+        }
         if (pending.testCommands) project.testCommands = pending.testCommands.filter(item => Array.isArray(item?.argv) && item.argv.length && item.argv.every(arg => typeof arg === 'string' && arg.length <= 1000 && !arg.includes('\0'))).slice(0, 20).map(item => ({ label: String(item.label || item.argv.join(' ')).slice(0, 80), argv: item.argv.slice(0, 50), timeoutSec: Number.isInteger(item.timeoutSec) && item.timeoutSec >= 1 && item.timeoutSec <= 3600 ? item.timeoutSec : 600 }));
       }
       project.pendingImport = null;
@@ -1244,6 +1361,8 @@ export class Board {
       const { project, task } = this.#task(state, id);
       if (project.tasks.length >= TASK_LIMIT) throw new BoardError(`A project can have at most ${TASK_LIMIT} cards.`, 'LIMIT');
       const copy = newTask({ title: `${task.title.slice(0, 113)} (copy)`, prompt: task.prompt, source: structuredClone(task.source), checksOutdated: task.checksOutdated });
+      if (task.baseBinding) copy.baseBinding = structuredClone(task.baseBinding);
+      if (task.baseColumns) copy.baseColumns = structuredClone(task.baseColumns);
       project.tasks.splice(project.tasks.indexOf(task) + 1, 0, copy); // A copy starts in To Do with no workspace.
       return copy;
     });
@@ -1343,15 +1462,19 @@ export class Board {
     });
   }
 
-  async exportBackup() {
+  async exportBackup({ includeBaseContent = false } = {}) {
     const state = await this.state();
-    return { application: 'Promptboard', kind: 'promptboard-backup', version: 2, exportedAt: new Date().toISOString(),
+    const base = await this.base.export({ includeContent: includeBaseContent });
+    if ((await this.state()).base.revision !== state.base.revision) throw conflict('Base changed while the backup was being prepared. Export it again.', 'BASE_REVISION_CONFLICT');
+    return { application: 'Promptboard', kind: 'promptboard-backup', version: 3, exportedAt: new Date().toISOString(),
+      base, baseGlobal: backupBaseScopes(state.settings.pendingBaseImport || state.settings),
       projects: state.projects.map(project => ({ id: project.id, name: project.name, createdAt: project.createdAt,
+        ...backupBaseScopes({ ...project.pendingImport, ...project, ...(project.baseBinding ? {} : project.pendingImport?.baseBinding ? { baseBinding: project.pendingImport.baseBinding } : {}) }),
         repository: project.repository ? { path: project.repository.path } : null, targetBranch: project.targetBranch ? { name: project.targetBranch.name } : null,
         agentDefaults: project.agentDefaults || null, workflow: project.workflow || {}, testCommands: project.testCommands || [], timelineNotes: project.timelineNotes || [], columnLayout: project.columnLayout || [],
         // Workspaces and runs are machine-specific and are not exported.
         tasks: project.tasks.map(task => ({ id: task.id, title: task.title, prompt: task.prompt, source: task.source, checksOutdated: task.checksOutdated,
-          createdAt: task.createdAt, updatedAt: task.updatedAt, column: task.column })) })) };
+          createdAt: task.createdAt, updatedAt: task.updatedAt, column: task.column, ...backupBaseScopes(task, true) })) })) };
   }
 
   /**
@@ -1360,22 +1483,58 @@ export class Board {
    */
   async importBackup(data, { replace = false } = {}) {
     const parsed = parseBackup(data);
+    const preparedBase = parsed.base ? await this.base.prepareImport(parsed.base) : null;
+    if (data.version === 3 && !preparedBase) throw new BoardError('This backup is missing its Base resource library.', 'INVALID_BACKUP');
+    if (preparedBase) {
+      for (const incoming of parsed.projects) {
+        Object.assign(incoming, remapBaseScopes(incoming, preparedBase.remap));
+        for (const task of incoming.tasks) Object.assign(task, remapBaseScopes(task, preparedBase.remap));
+      }
+      parsed.baseGlobal = remapBaseScopes(parsed.baseGlobal, preparedBase.remap);
+      const resourceKinds = new Map(preparedBase.resources.map(resource => [resource.id, resource.kind]));
+      for (const scope of [parsed.baseGlobal, ...parsed.projects]) {
+        const profiles = [scope.agentProfileId, ...Object.values(scope.baseColumns || {}).map(column => column.profileId)].filter(Boolean);
+        if (profiles.some(profileId => resourceKinds.get(profileId) !== 'profile')) throw new BoardError('An imported agent profile reference points to another resource type.', 'INVALID_BACKUP');
+      }
+    }
     return this.store.update(state => {
       if (state.projects.length && !replace) throw conflict('Confirm that the import replaces the current board.', 'CONFIRMATION_REQUIRED');
       if (this.#hasWorkspaceOrRun(state)) throw conflict('Tasks on the current board own worktrees or runs. Remove those worktrees before you replace the board.', 'WORKSPACES_EXIST');
+      if (preparedBase) this.base.publishPreparedImport(state, preparedBase);
+      if (parsed.baseGlobal && Object.keys(parsed.baseGlobal).length) state.settings.pendingBaseImport = parsed.baseGlobal;
+      else delete state.settings.pendingBaseImport;
       state.projects = parsed.projects.map(incoming => {
         const project = newProject(incoming);
-        project.tasks = incoming.tasks.map(task => newTask(task));
+        project.tasks = incoming.tasks.map(task => ({ ...newTask(task), ...backupBaseScopes(task, true) }));
         if (incoming.columnLayout) project.columnLayout = incoming.columnLayout;
         project.timelineNotes = incoming.timelineNotes.map(note => ({ ...note, taskId: project.tasks.some(task => task.id === note.taskId) ? note.taskId : null }));
-        if (incoming.repositoryPath || incoming.targetBranch || incoming.workflow || incoming.testCommands || incoming.agentDefaults) {
+        if (incoming.repositoryPath || incoming.targetBranch || incoming.workflow || incoming.testCommands || incoming.agentDefaults || incoming.baseBinding || incoming.baseColumns || incoming.agentProfileId) {
           project.pendingImport = { repositoryPath: incoming.repositoryPath, targetBranch: incoming.targetBranch, workflow: incoming.workflow, testCommands: incoming.testCommands };
           if (incoming.agentDefaults) project.pendingImport.agentDefaults = incoming.agentDefaults;
+          Object.assign(project.pendingImport, backupBaseScopes(incoming));
+          if (incoming.baseBinding || incoming.baseColumns || incoming.agentProfileId) project.pendingImport.baseTargetRevision = 0;
         }
         return project;
       });
       state.runs = [];
       return { projects: state.projects.length, cards: state.projects.reduce((sum, project) => sum + project.tasks.length, 0) };
+    });
+  }
+
+  async restoreBaseGlobals({ confirm, expectedBaseRevision }) {
+    if (confirm !== true) throw new BoardError('Confirm restoring the imported global Base selection.', 'CONFIRMATION_REQUIRED', 409);
+    return this.store.update(state => {
+      if (state.base.revision !== expectedBaseRevision) throw conflict('Base changed. Reload the imported selection.', 'BASE_REVISION_CONFLICT');
+      const pending = state.settings.pendingBaseImport;
+      if (!pending) throw new BoardError('There is no imported global Base selection.', 'NOTHING_PENDING');
+      const previousBaseRevision = state.settings.baseRevision || 0;
+      delete state.settings.baseBinding;
+      delete state.settings.agentProfileId;
+      Object.assign(state.settings, pending);
+      delete state.settings.pendingBaseImport;
+      state.settings.baseRevision = previousBaseRevision + 1;
+      state.base.revision++;
+      return state.settings;
     });
   }
 
@@ -1526,13 +1685,11 @@ export class Board {
       if (!project.targetBranch) throw new BoardError('Choose the local target branch first.', 'TARGET_BRANCH_REQUIRED', 409);
       if (!EXECUTABLE_STAGES.has(stage) && !column.custom) throw conflict(`${column.title} runs are not available yet.`, 'STAGE_NOT_IMPLEMENTED');
       // Explicit request values override the project's workflow settings for this run only.
-      const settings = effectiveWorkflow(project, state.settings.defaultAgent)[stage];
-      const requested = Object.fromEntries(Object.entries(config || {}).filter(([key, value]) => ['provider', 'model', 'effort', 'permissionMode', 'instructions'].includes(key) && value !== undefined && value !== null));
-      // Model, effort, and permission mode belong to one provider; a different provider starts from its own defaults.
-      const inherited = requested.provider && requested.provider !== settings.provider ? { policy: settings.policy, instructions: settings.instructions, provider: requested.provider } : settings;
-      const merged = { ...inherited, ...requested };
+      const settings = effectiveWorkflow(project, state.settings.defaultAgent, state)[stage];
+      const merged = this.#requestedAgent(settings, config);
       if (typeof merged.instructions !== 'string' || merged.instructions.length > 4000) throw new BoardError('Stage instructions can have at most 4,000 characters.', 'INVALID_WORKFLOW');
       const resolved = { ...(await this.executor.validate({ stage, config: merged })), instructions: merged.instructions };
+      const baseManifest = this.#basePreflight(state, project, task, stage, resolved.provider);
       if (!WORKSPACE_STAGES.has(stage) && !column.custom && task.workspace?.status !== 'ready') throw new BoardError('Run Planning or Executing first to create the task worktree.', 'WORKSPACE_REQUIRED', 409);
       const workspace = await this.ensureTaskWorktree(taskId);
       const plan = stage === 'executing' ? this.#approvedPlan(state, task) : null;
@@ -1549,11 +1706,17 @@ export class Board {
       const extra = [review ? review.text : merge ? merge.text : testing || (stage === 'executing' && task.reworkNotes ? `=== REVIEW FINDINGS TO FIX ===\n${task.reworkNotes}\n=== END FINDINGS ===` : ''), executionContext, restart, note].filter(Boolean).join('\n\n');
       const run = await this.store.update(draft => {
         if (this.#activeRun(draft, taskId)) throw conflict('This card already has an active run.', 'RUN_ACTIVE');
+        const current = this.#task(draft, taskId);
+        if ((draft.base?.revision || 0) !== (state.base?.revision || 0)) throw conflict('Base changed while the run was being prepared. Start again to use the current selection.', 'BASE_REVISION_CONFLICT');
+        if ((current.task.contentRevision ?? 1) !== (task.contentRevision ?? 1)) throw conflict('The task text changed while the run was being prepared. Start again.', 'REVISION_CONFLICT');
+        if (JSON.stringify(this.#requestedAgent(effectiveWorkflow(current.project, draft.settings.defaultAgent, draft)[stage], config)) !== JSON.stringify(merged)) throw conflict('Agent settings changed while the run was being prepared. Start again.', 'REVISION_CONFLICT');
         const now = Date.now();
         const id = randomUUID();
         const record = { id, taskId, projectId: project.id, stage, status: 'queued', createdAt: now, updatedAt: now,
           promptRevision: task.contentRevision ?? 1, config: resolved, trigger: trigger === 'automation' ? 'automation' : 'user', workspacePath: workspace.path, branch: workspace.branch,
-          planRunId: plan?.runId || null, artifactsDir: join('runs', id), turns: 0, ...(review ? { review: { taskCommit: review.taskCommit, targetCommit: review.targetCommit } } : {}),
+          planRunId: plan?.runId || null, artifactsDir: join('runs', id), turns: 0, baseManifest: { ...baseManifest, acceptedAt: now, deliveryState: 'configured' },
+          ...(plan ? { planBaseChanged: baseSignature(draft.runs.find(item => item.id === plan.runId)?.baseManifest) !== baseSignature(baseManifest) } : {}),
+          ...(review ? { review: { taskCommit: review.taskCommit, targetCommit: review.targetCommit } } : {}),
           ...(move ? { transition: { id: move.transitionId, from: move.from } } : {}) };
         if (move) this.#place(draft, taskId, { ...move, runId: id });
         draft.runs.push(record);
@@ -1598,6 +1761,21 @@ export class Board {
     });
   }
 
+  /** Supervisor-only delivery facts; immutable resource identities cannot be swapped after acceptance. */
+  async recordBaseManifest(runId, manifest) {
+    if (!manifest || Buffer.byteLength(JSON.stringify(manifest)) > 512 * 1024) throw new BoardError('The Base manifest exceeds its limit.', 'BASE_MANIFEST_INVALID');
+    return this.store.update(state => {
+      const run = state.runs.find(item => item.id === runId);
+      if (!run || baseSignature(run.baseManifest) !== baseSignature(manifest)) throw conflict('The supplied Base manifest does not match this run.', 'BASE_MANIFEST_INVALID');
+      run.baseManifest = structuredClone(manifest);
+      if (run.planRunId && manifest.deliveryState === 'supplied') {
+        const plan = state.runs.find(item => item.id === run.planRunId);
+        run.planBaseChanged ||= suppliedSignature(plan?.baseManifest) !== suppliedSignature(manifest);
+      }
+      return run.baseManifest;
+    });
+  }
+
   /** Global settings. Each field is optional; project workflow settings stay with their project. */
   async setSettings({ maxConcurrentRuns, defaultAgent } = {}) {
     const change = {};
@@ -1618,3 +1796,5 @@ export class Board {
 }
 
 function title(column) { return COLUMNS.find(item => item.id === column)?.title || column; }
+function baseSignature(manifest) { return JSON.stringify({ resources: (manifest?.resources || []).map(item => [item.resourceId, item.revision]), profiles: (manifest?.profiles || []).map(item => [item.resourceId, item.revision]) }); }
+function suppliedSignature(manifest) { return JSON.stringify((manifest?.supplied || []).map(item => [item.resourceId, item.revision, item.delivery, item.contentHash || null])); }

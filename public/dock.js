@@ -282,6 +282,7 @@ function renderDockDetails(session) {
   const toggle = document.createElement('summary'); toggle.textContent = 'Run details';
   context.append(toggle, paragraph(agentActivity(shown), 'dock-run-activity'), location,
     paragraph(usageText(run) || (run.config?.provider === 'gemini' ? 'Usage: not reported by Gemini CLI' : 'Usage: not reported yet'), 'dock-usage'));
+  if (window.PromptboardBaseView) context.append(window.PromptboardBaseView.runManifest(run));
   context.addEventListener('toggle', () => {
     if (!context.isConnected) return;
     session.detailsOpen = context.open;

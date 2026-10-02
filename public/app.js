@@ -298,6 +298,7 @@ async function loadProviders() {
     updateProviderState();
     loadAuth();
     loadBoard();
+    if (currentPage() === 'base') baseView?.show();
     await loadModels({ model: chosenModel(), effort: $('#effort').value });
   } catch (error) {
     token = '';
@@ -914,10 +915,12 @@ function openHelp(privacy = false) {
       ...section('Saved on this computer', [
         'In this browser: your last 500 prompts and your view settings. Delete prompts in the sidebar.',
         'In the Promptboard data folder: projects, cards, agent runs and their terminal output, plans, reviews, test results, timeline notes, task worktrees, and GitHub clones.',
+        'Base stores resource definitions, document revisions, source captures, and assignments locally. Exports include document content only when you select it.',
       ]),
       ...section('Sent to your AI provider', [
         'Compose: your request goes to the CLI you selected, which sends it to its provider.',
         'Kanban: when you approve a stage (or it starts automatically), the agent CLI gets the card text, and the plan, diff, or test commands for that stage. It works in the task worktree and sends what it reads to its provider.',
+        'Base: assigned instructions and context, and selected sources for wiki generation, can go to your provider. Explicit MCP tests and documentation imports contact their configured servers.',
         'Do not put secrets or private data in prompts or cards that you cannot share with that provider.',
       ]),
       ...section('Accounts and costs', [
@@ -971,26 +974,35 @@ function openHelp(privacy = false) {
   if (!$('#help-dialog').open) $('#help-dialog').showModal();
 }
 
-// Pages. Both views stay in the document, so switching never clears the prompt form.
+// All three views stay in the document. Routing does not replace forms, boards or terminals.
+let baseView = null;
+function currentPage() { return location.hash === '#/kanban' ? 'kanban' : location.hash === '#/base' ? 'base' : 'compose'; }
 function showPage() {
-  const kanban = location.hash === '#/kanban';
-  $('#prompt-view').hidden = kanban;
+  const page = currentPage();
+  const kanban = page === 'kanban', base = page === 'base';
+  $('#prompt-view').hidden = page !== 'compose';
   $('#kanban-view').hidden = !kanban;
+  $('#base-view').hidden = !base;
+  document.documentElement.dataset.page = page;
   for (const link of document.querySelectorAll('.page-nav a')) {
-    if ((link.getAttribute('href') === '#/kanban') === kanban) link.setAttribute('aria-current', 'page');
+    if (link.getAttribute('href') === ({ compose: '#/', kanban: '#/kanban', base: '#/base' })[page]) link.setAttribute('aria-current', 'page');
     else link.removeAttribute('aria-current');
   }
-  document.title = kanban ? 'Kanban · Promptboard' : 'Compose · Promptboard';
-  // The sidebar follows the page: prompt history on Compose, the project workspace on Kanban.
-  $('#history-panel').hidden = kanban;
+  document.title = `${({ compose: 'Compose', kanban: 'Kanban', base: 'Base' })[page]} · Promptboard`;
+  $('#skip-link').setAttribute('href', base ? '#base-view' : kanban ? '#kanban-view' : '#prompt-input');
+  $('#history-panel').hidden = page !== 'compose';
   $('#workspace-panel').hidden = !kanban;
+  $('#sidebar').hidden = base;
+  $('#menu-toggle').hidden = base;
   $('#sidebar').setAttribute('aria-label', kanban ? 'Projects' : 'Prompt history');
   $('#sidebar-scrim').setAttribute('aria-label', kanban ? 'Close projects' : 'Close history');
   if (kanban) renderBoard();
+  if (base && token) baseView?.show();
   setSidebar(false);
   window.scrollTo(0, 0);
 }
-function showPromptPage() { if (location.hash === '#/kanban') location.hash = '#/'; }
+function showPromptPage() { if (currentPage() !== 'compose') location.hash = '#/'; }
+function basePicker(options) { return baseView?.picker(options) || document.createElement('div'); }
 
 // Kanban (PB-01): the local app stores the board in its data folder. Seven fixed stages;
 // cards move through transitions the server validates; the destination determines what runs.
@@ -2112,7 +2124,7 @@ function renderProjectContext(project) {
   const key = JSON.stringify([project.id, project.agentDefaults, board?.settings?.defaultAgent]);
   if (key !== projectAgentFormKey) {
     projectAgentFormKey = key;
-    $('#project-agent-fields').replaceChildren(agentFields(project.agentDefaults || {}, { inherit: `Use global default (${agentText(inherited)})` }));
+    $('#project-agent-fields').replaceChildren(agentFields(project.agentDefaults || {}, { inherit: `Use global default (${agentText(inherited)})` }), basePicker({ target: { scope: 'project', projectId: project.id }, provider: defaultAgent.provider }));
     $('#project-agent-error').hidden = true;
   }
 }
@@ -2195,7 +2207,13 @@ async function openTaskDetails(taskId) {
     section('Status', paragraph(`${status.text}. Task text revision ${card.contentRevision ?? 1}.${status.flag ? ' Review the prompt before you run an agent on it.' : ''}`)),
     section('Original prompt', pre(card.prompt)),
     section('Branch and worktree', taskLocation(card, project)),
+    section('Base resources for future runs', basePicker({ target: { scope: 'task', projectId: project.id, taskId: card.id } }), paragraph('Task selections can narrow or opt out of inherited resources without changing the task text or approved evidence.')),
   ];
+  const columnScope = document.createElement('select'); columnScope.setAttribute('aria-label', 'Column for task-specific Base resources');
+  columnScope.append(...projectColumnsOf(project).map(column => option(column.id, column.title)));
+  columnScope.value = card.column;
+  const override = detailButton('Configure this task in this column…', () => baseView?.openPicker({ scope: 'task-column', projectId: project.id, taskId: card.id, columnId: columnScope.value }));
+  nodes.at(-1).append(detailActions(columnScope, override));
   const planRun = [...runs].reverse().find(run => run.stage === 'planning' && run.hasPlan);
   if (planRun) {
     const approved = card.planApproval?.runId === planRun.id && card.planApproval.contentRevision === (card.contentRevision ?? 1);
@@ -2225,6 +2243,7 @@ async function openTaskDetails(taskId) {
     table.append(row);
   }
   nodes.push(section('Run history', runs.length ? table : paragraph('No runs yet.')));
+  if (runs.length && baseView) nodes.push(baseView.runManifest(runs.at(-1)));
   const delivery = document.createElement('div');
   delivery.className = 'task-delivery';
   nodes.splice(3, 0, delivery);
@@ -2289,6 +2308,7 @@ function openWorkflowDialog(focusStage = null) {
       children.push(commandsField);
     }
     children.push(instructionsField);
+    children.push(basePicker({ target: { scope: 'column', projectId: project.id, columnId: stage }, provider: settings.provider }));
     children.push(preview);
     box.append(...children);
     box.addEventListener('change', () => { preview.textContent = workflowPreview(stage, readWorkflowStage(box)); });
@@ -2300,7 +2320,7 @@ function openWorkflowDialog(focusStage = null) {
   defaults.className = 'workflow-stage workflow-defaults';
   const legend = document.createElement('legend'); legend.textContent = 'Project default agent';
   const global = board?.settings?.defaultAgent?.provider ? `Global default (${agentText(board.settings.defaultAgent)})` : 'Global default (Claude Code, CLI defaults)';
-  defaults.append(legend, agentFields(project.agentDefaults || {}, { inherit: global }), paragraph('Every stage below uses this agent unless it names its own. Each card run uses it without asking again.', 'workflow-preview'));
+  defaults.append(legend, agentFields(project.agentDefaults || {}, { inherit: global }), basePicker({ target: { scope: 'project', projectId: project.id } }), paragraph('Every stage below uses this agent unless it names its own. Each card run uses it without asking again.', 'workflow-preview'));
   const refreshInheritance = () => {
     const inherited = readAgentFields(defaults) || board?.settings?.defaultAgent || { provider: 'claude' };
     for (const box of stages) {
@@ -2811,7 +2831,7 @@ async function confirmImported(accept) {
 async function exportBoard() {
   let backup;
   try {
-    const { response, data } = await api('/api/board/export', { timeoutMs: 60000 });
+    const { response, data } = await api(`/api/board/export${$('#export-base-content')?.checked ? '?includeBaseContent=true' : ''}`, { timeoutMs: 60000 });
     if (!response.ok) throw new Error(data.error || 'The board could not be exported.');
     backup = data;
   } catch (error) { showBoardError(error); return; }
@@ -2896,7 +2916,7 @@ async function addToKanban(event) {
 }
 window.addEventListener('hashchange', showPage);
 // The skip link must not change the hash, which selects the page.
-$('#skip-link').addEventListener('click', event => { event.preventDefault(); ($('#kanban-view').hidden ? $('#prompt-input') : $('#kanban-view')).focus(); });
+$('#skip-link').addEventListener('click', event => { event.preventDefault(); ($(currentPage() === 'base' ? '#base-view' : currentPage() === 'kanban' ? '#kanban-view' : '#prompt-input')).focus(); });
 $('#kanban-button').addEventListener('click', openAddToKanban);
 
 // ---- Split into tasks (optional) ----
@@ -3478,6 +3498,8 @@ function renderColumnEditor() {
     const anchor = draftAnchor(entry);
     nodes.push(group('Agent', enabled, detail), group('Moves', paragraph(`Cards reach this column from ${builtinTitle(anchor)} and leave it along ${builtinTitle(anchor)}’s moves (or to another custom column next to it). Move the column to attach it to another stage.`, 'note')));
   }
+  const existing = projectColumnsOf(currentProject()).some(column => column.id === entry.id);
+  nodes.push(group('Base resources', existing ? basePicker({ target: { scope: 'column', projectId: currentProject().id, columnId: entry.id }, inactive: entry.custom ? !entry.agent?.enabled : ['todo', 'done'].includes(entry.id) }) : paragraph('Save this new column before assigning Base resources. Assignments use its stable column ID.', 'note')));
   editor.replaceChildren(...nodes);
 }
 function addColumn() {
@@ -3670,7 +3692,7 @@ const UI_PREFS = { startPage: ['promptboard.settings.start-page', 'compose'], op
   keepTabs: ['promptboard.settings.keep-tabs', '1'], termFont: ['promptboard.settings.terminal-font', '12'], dockStart: ['promptboard.settings.dock-start', 'last'], cardPreview: ['promptboard.settings.card-preview', '1'], cardAgent: ['promptboard.settings.card-agent', '0'], cardSpacing: ['promptboard.settings.card-spacing', '0'] };
 function uiPref(name) {
   const [key, fallback] = UI_PREFS[name];
-  const allowed = { startPage: ['compose', 'kanban'], termFont: ['11', '12', '13', '14', '16'], dockStart: ['last', 'collapsed', 'open'] }[name] || ['0', '1'];
+  const allowed = { startPage: ['compose', 'kanban', 'base'], termFont: ['11', '12', '13', '14', '16'], dockStart: ['last', 'collapsed', 'open'] }[name] || ['0', '1'];
   try { const value = localStorage.getItem(key); return allowed.includes(value) ? value : fallback; } catch { return fallback; }
 }
 function setUiPref(name, value) { savePref(UI_PREFS[name][0], value); }
@@ -3703,6 +3725,7 @@ function renderSettings() {
   const settings = board?.settings || {};
   $('#set-max-runs').value = String(settings.maxConcurrentRuns || 1);
   const fields = agentFields(settings.defaultAgent || {}, { inherit: 'Use CLI defaults (Claude Code)' });
+  $('#set-base-fields').replaceChildren(basePicker({ target: { scope: 'global' }, provider: settings.defaultAgent?.provider }));
   for (const field of ['provider', 'model', 'effort', 'model-custom']) fields.querySelector(`[data-field="${field}"]`).id = `set-agent-${field}`;
   $('#set-agent-fields').replaceChildren(fields);
   $('#set-agent-save').textContent = 'Save default agent';
@@ -3861,8 +3884,12 @@ $('#autopilot-rework').addEventListener('change', () => { autopilotDraft.maxRewo
 $('#autopilot-save').addEventListener('click', () => saveAutopilot(false));
 $('#autopilot-form').addEventListener('submit', event => { event.preventDefault(); saveAutopilot(true); });
 
-// Start page: applies when the app opens without a page in the address.
-if (!location.hash && uiPref('startPage') === 'kanban') location.hash = '#/kanban';
+// Base owns its own metadata/content requests, with only these explicit application seams.
+baseView = window.PromptboardBase?.create({ api, announce, ensureBoard: loadBoard, refreshBoard: loadBoard, agentFields, readAgentFields,
+  acceptBoard: next => { acceptBoard(next); renderBoard(); } }) || null;
+window.PromptboardBaseView = baseView;
+// Start page applies only when the URL contains no explicit route.
+if (!location.hash && uiPref('startPage') !== 'compose') location.hash = `#/${uiPref('startPage')}`;
 showPage();
 loadProviders();
 $('#settings-toggle').addEventListener('click', () => setSettingsCollapsed(!$('#settings-body').hidden));

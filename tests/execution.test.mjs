@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -150,6 +150,301 @@ async function world(t, { limit = 1, providers = ['claude', 'codex', 'gemini'], 
   return { board, supervisor, root, dataDir, task, run, reports, projectId: project.id, app };
 }
 const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
+
+async function baseSkill(board, text = 'BASE INSTRUCTION ONLY FOR ASSIGNED TARGET') {
+  return board.base.create({ kind: 'skill', name: 'Reusable instructions', enabled: true, trust: 'trusted', content: { body: text } });
+}
+async function attachBase(board, target, resource, mode = 'extend') {
+  return board.base.apply({ changes: [{ target, binding: { mode, include: resource ? [{ resourceId: resource.id, required: true }] : [], exclude: [] } }], expectedBaseRevision: (await board.state()).base.revision });
+}
+
+test('Base custom-column task overrides deliver isolated resources to concurrent inherited-provider agents from their own workspaces', { skip }, async t => {
+  const w = await world(t, { limit: 2 });
+  const project = (await w.board.view()).projects[0];
+  const customId = 'c_base0001';
+  const columns = ['todo', 'planning', 'executing', { id: customId, custom: true, title: 'Research', color: 'blue', agent: { enabled: true, policy: 'start', instructions: 'Follow the task.' } }, 'code_review', 'testing', 'merge', 'done'].map(value => typeof value === 'string' ? { id: value } : value);
+  await w.board.setColumns(w.projectId, { columns, expectedRevision: project.revision });
+  const a = await w.task('A', 'Task A'), b = await w.task('B', 'Task B');
+  const skillA = await baseSkill(w.board, 'ONLY_RESOURCE_A'), skillB = await baseSkill(w.board, 'ONLY_RESOURCE_B');
+  const context = await w.board.base.create({ kind: 'context', name: 'Task workspace README', enabled: true, trust: 'trusted', configuration: { sources: [{ kind: 'repository', path: 'README.md' }] } });
+  await attachBase(w.board, { scope: 'column', projectId: w.projectId, columnId: customId }, skillA);
+  await attachBase(w.board, { scope: 'task-column', projectId: w.projectId, taskId: b.id, columnId: customId }, skillB, 'replace');
+  for (const card of [a, b]) {
+    const workspace = await w.board.ensureTaskWorktree(card.id);
+    await writeFile(join(workspace.path, 'README.md'), `WORKSPACE_CONTEXT_${card.id}\n`);
+  }
+  const bindingB = { mode: 'replace', include: [skillB, context].map(resource => ({ resourceId: resource.id, required: true })), exclude: [] };
+  await w.board.base.apply({ changes: [{ target: { scope: 'task-column', projectId: w.projectId, taskId: b.id, columnId: customId }, binding: bindingB }, { target: { scope: 'task', projectId: w.projectId, taskId: a.id }, binding: { mode: 'extend', include: [{ resourceId: context.id, required: true }], exclude: [] } }], expectedBaseRevision: (await w.board.state()).base.revision });
+  const current = async id => (await w.board.view()).projects[0].tasks.find(task => task.id === id);
+  const runA = (await w.board.transition(a.id, { column: customId, expectedRevision: (await current(a.id)).revision })).run;
+  const runB = (await w.board.transition(b.id, { column: customId, expectedRevision: (await current(b.id)).revision })).run;
+  await until(async () => (await w.run(runA.id)).turns && (await w.run(runB.id)).turns, 'custom agents receive separate Base context');
+  for (const [run, card, own, other] of [[runA, a, 'ONLY_RESOURCE_A', 'ONLY_RESOURCE_B'], [runB, b, 'ONLY_RESOURCE_B', 'ONLY_RESOURCE_A']]) {
+    const message = await readFile(join(w.dataDir, run.artifactsDir, 'prompt.md'), 'utf8');
+    assert.match(message, new RegExp(own)); assert.doesNotMatch(message, new RegExp(other)); assert.ok(message.includes(`WORKSPACE_CONTEXT_${card.id}`)); assert.doesNotMatch(message, /main checkout/);
+    const accepted = await w.run(run.id); assert.equal(accepted.stage, customId); assert.equal(accepted.config.provider, 'claude');
+    assert.ok(accepted.baseManifest.supplied.some(item => item.resourceId === context.id && item.captures[0].path === 'README.md'));
+    assert.equal(card.contentRevision, (await current(card.id)).contentRevision, 'Assignments do not edit task text.');
+  }
+  const reports = await w.reports(); assert.equal(reports.length, 2);
+  assert.ok(reports.find(report => report.args.at(-1).includes('ONLY_RESOURCE_A'))); assert.ok(reports.find(report => report.args.at(-1).includes('ONLY_RESOURCE_B')));
+  await w.supervisor.cancel(runA.id); assert.equal((await w.run(runB.id)).status, 'waiting_for_input');
+});
+
+test('Base source changes after plan approval are recorded without changing the approved task text', { skip }, async t => {
+  const w = await world(t);
+  const context = await w.board.base.create({ kind: 'context', name: 'Repository guide', enabled: true, trust: 'trusted', configuration: { sources: [{ kind: 'repository', path: 'README.md' }] } });
+  await attachBase(w.board, { scope: 'project', projectId: w.projectId }, context);
+  const task = await w.board.createTask({ projectId: w.projectId, title: 'Plan with context', prompt: 'Implement the documented feature.' });
+  const planning = (await w.board.transition(task.id, { column: 'planning', expectedRevision: task.revision })).run;
+  await until(async () => (await w.run(planning.id)).hasPlan, 'Base-informed plan');
+  await w.supervisor.confirm(planning.id);
+  const approved = (await w.board.view()).projects[0].tasks.find(item => item.id === task.id);
+  assert.equal(approved.planApproval.runId, planning.id);
+  await writeFile(join(planning.workspacePath, 'README.md'), 'UPDATED GUIDE AFTER PLAN APPROVAL\n');
+  const executing = (await w.board.transition(task.id, { column: 'executing', expectedRevision: approved.revision })).run;
+  await until(async () => (await w.run(executing.id)).turns, 'execution captures updated context');
+  const finished = await w.run(executing.id), prior = await w.run(planning.id);
+  assert.equal(finished.planRunId, planning.id);
+  assert.equal(finished.planBaseChanged, true, 'Approval is not claimed to cover newly captured Base context.');
+  assert.notEqual(finished.baseManifest.supplied[0].contentHash, prior.baseManifest.supplied[0].contentHash);
+  assert.equal((await w.board.view()).projects[0].tasks.find(item => item.id === task.id).contentRevision, task.contentRevision);
+  const prompt = await readFile(join(w.dataDir, finished.artifactsDir, 'prompt.md'), 'utf8');
+  assert.match(prompt, /UPDATED GUIDE AFTER PLAN APPROVAL/); assert.match(prompt, /=== APPROVED PLAN ===/); assert.ok(prompt.includes(task.prompt));
+});
+
+test('A transition resolves required Base resources against the explicit runtime provider override', { skip }, async t => {
+  const w = await world(t), skill = await baseSkill(w.board, 'RUNTIME_PROVIDER_BASE');
+  await attachBase(w.board, { scope: 'project', projectId: w.projectId }, skill);
+  // A legacy/imported unavailable provider must not defeat an explicit supported override.
+  await w.board.store.update(state => { state.projects.find(project => project.id === w.projectId).agentDefaults = { provider: 'agy', model: 'unavailable-model', effort: 'high' }; });
+  const task = await w.board.createTask({ projectId: w.projectId, title: 'Runtime provider', prompt: 'Use the selected runtime provider.' });
+  const started = await w.board.transition(task.id, { column: 'executing', expectedRevision: task.revision, config: { provider: 'claude' } });
+  await until(async () => (await w.run(started.run.id)).turns, 'runtime override delivered Base');
+  const run = await w.run(started.run.id);
+  assert.equal(run.config.provider, 'claude'); assert.equal(run.config.model, ''); assert.equal(run.config.effort, '');
+  assert.equal(run.baseManifest.provider, 'claude'); assert.match(await readFile(join(w.dataDir, run.artifactsDir, 'prompt.md'), 'utf8'), /RUNTIME_PROVIDER_BASE/);
+});
+
+test('A Base revocation during asynchronous transition validation prevents handoff and commit', { skip }, async t => {
+  const w = await world(t), task = await w.task('Preserve dirty work', 'WRITE_FILE');
+  const active = await w.board.requestRun(task.id, { stage: 'executing', consent: true });
+  await until(async () => (await w.run(active.id)).turns, 'finished dirty execution');
+  const before = git(active.workspacePath, 'rev-parse', 'HEAD');
+  const skill = await baseSkill(w.board);
+  await attachBase(w.board, { scope: 'column', projectId: w.projectId, columnId: 'code_review' }, skill);
+  const validate = w.supervisor.validate.bind(w.supervisor); let revoked = false;
+  w.supervisor.validate = async options => {
+    const result = await validate(options);
+    if (options.stage === 'code_review' && !revoked) { revoked = true; await w.board.base.update(skill.id, { trust: 'revoked' }, { expectedRevision: skill.revision }); }
+    return result;
+  };
+  const current = (await w.board.view()).projects[0].tasks.find(item => item.id === task.id);
+  await assert.rejects(w.board.transition(task.id, { column: 'code_review', expectedRevision: current.revision }), { code: 'BASE_REQUIRED_UNAVAILABLE' });
+  assert.equal((await w.run(active.id)).status, 'waiting_for_input');
+  assert.equal(git(active.workspacePath, 'rev-parse', 'HEAD'), before);
+  assert.match(git(active.workspacePath, 'status', '--porcelain'), /agent-output\.txt/);
+  assert.equal((await w.board.view()).projects[0].tasks.find(item => item.id === task.id).column, 'executing');
+});
+
+test('Manifest, artifact, or status persistence failures after spawning terminate only that run and release its queue slot', { skip, timeout: 60000 }, async t => {
+  const w = await world(t, { limit: 2 }), hold = await w.task('Unaffected run', 'Keep this separate session alive.');
+  const unrelated = await w.board.requestRun(hold.id, { stage: 'executing', consent: true });
+  await until(async () => (await w.run(unrelated.id)).turns, 'unrelated session ready');
+  const unrelatedPid = (await w.reports())[0].pid;
+  const skill = await baseSkill(w.board, 'PERSISTENCE_FAILURE_RESOURCE');
+  const record = w.board.recordBaseManifest.bind(w.board), update = w.board.updateRun.bind(w.board);
+  for (const failure of ['manifest', 'artifact', 'status']) {
+    const card = await w.board.createTask({ projectId: w.projectId, title: `Fail ${failure}`, prompt: 'Start, then fail durable bookkeeping.' });
+    await attachBase(w.board, { scope: 'task', projectId: w.projectId, taskId: card.id }, skill);
+    let release, entered = false, injected = false;
+    const gate = new Promise(resolve => { release = resolve; });
+    const inject = async runId => {
+      const run = await w.run(runId);
+      if (injected || run.taskId !== card.id) return;
+      injected = true;
+      await until(async () => (await w.reports()).some(report => report.cwd === run.workspacePath), 'failed-start CLI actually spawned');
+      entered = true; await gate;
+      if (failure === 'artifact') await mkdir(join(w.dataDir, run.artifactsDir, 'base-manifest.json'));
+      else throw Object.assign(new Error('private filesystem failure detail'), { code: 'EIO' });
+    };
+    w.board.recordBaseManifest = async (runId, manifest) => { if (failure !== 'status' && manifest.deliveryState === 'supplied') await inject(runId); return record(runId, manifest); };
+    w.board.updateRun = async (runId, fields) => { if (failure === 'status' && fields.status === 'running') await inject(runId); return update(runId, fields); };
+    const started = (await w.board.transition(card.id, { column: 'executing', expectedRevision: card.revision })).run;
+    await until(() => entered, `${failure} failure point`);
+    const next = await w.board.createTask({ projectId: w.projectId, title: `After ${failure}`, prompt: 'The queued task still starts.' });
+    const queued = (await w.board.transition(next.id, { column: 'executing', expectedRevision: next.revision })).run;
+    assert.equal((await w.run(queued.id)).status, 'queued');
+    release();
+    await until(async () => (await w.run(started.id)).status === 'failed', `${failure} persisted as failed`);
+    await until(() => !w.supervisor.launching?.has(started.id), `${failure} failed-start rollback finished`);
+    const pid = (await w.reports()).find(report => report.cwd === started.workspacePath).pid;
+    assert.equal(alive(pid), false, `${failure} failure did not leave its process running`);
+    assert.equal(alive(unrelatedPid), true);
+    assert.equal((await w.board.view()).projects[0].tasks.find(item => item.id === card.id).column, 'todo');
+    assert.equal((await w.run(started.id)).baseManifest.deliveryState, 'failed');
+    assert.equal((await w.run(started.id)).baseManifest.supplied[0].resourceId, skill.id, 'Historical capture remains readable when a process actually received it.');
+    assert.doesNotMatch((await w.run(started.id)).reason, /private filesystem/);
+    await until(async () => (await w.run(queued.id)).turns, 'next queued run continues after failed start');
+    await w.supervisor.cancel(queued.id);
+  }
+  w.board.recordBaseManifest = record; w.board.updateRun = update;
+  assert.equal((await w.run(unrelated.id)).status, 'waiting_for_input');
+});
+
+test('Base portable project resources reach each existing CLI through normal transitions; exact task text and unassigned targets stay intact', { skip }, async t => {
+  const w = await world(t, { limit: 2 });
+  const skill = await baseSkill(w.board);
+  await attachBase(w.board, { scope: 'project', projectId: w.projectId }, skill);
+  const exact = '  Exact task\r\n@file `literal` $(not-a-command)  \n';
+  for (const provider of ['claude', 'codex', 'gemini']) {
+    const task = await w.board.createTask({ projectId: w.projectId, title: provider, prompt: exact });
+    const transition = await w.board.transition(task.id, { column: 'executing', expectedRevision: task.revision, transitionId: `base-delivery-${provider}`, config: { provider } });
+    const run = await until(async () => { const current = await w.run(transition.run.id); return current.turns && current; }, `${provider} receives Base`);
+    const prompt = await readFile(join(w.dataDir, run.artifactsDir, 'prompt.md'), 'utf8');
+    assert.ok(prompt.includes(`=== TASK (exact text from the card) ===\n${exact}\n=== END TASK ===`));
+    assert.match(prompt, /BASE INSTRUCTION ONLY FOR ASSIGNED TARGET/);
+    assert.equal(await readFile(join(w.dataDir, run.artifactsDir, 'task-prompt.txt'), 'utf8'), exact);
+    assert.equal(run.baseManifest.resources[0].revision, skill.revision);
+    assert.equal(run.baseManifest.deliveryState, 'supplied');
+    assert.equal(run.baseManifest.supplied[0].delivery, 'instruction');
+    assert.equal(run.baseManifest.observed.length, 0, 'Attachment is not observed invocation.');
+    assert.equal(JSON.parse(await readFile(join(w.dataDir, run.artifactsDir, 'base-manifest.json'), 'utf8')).resources[0].resourceId, skill.id);
+    await w.supervisor.cancel(run.id);
+  }
+  const project = await w.board.createProject({ name: 'No Base' });
+  await w.board.linkRepository(project.id, { path: w.root, expectedRevision: project.revision });
+  const task = await w.board.createTask({ projectId: project.id, title: 'Unassigned', prompt: exact });
+  const { run } = await w.board.transition(task.id, { column: 'executing', expectedRevision: task.revision });
+  await until(async () => (await w.run(run.id)).turns, 'unassigned run');
+  assert.doesNotMatch(await readFile(join(w.dataDir, run.artifactsDir, 'prompt.md'), 'utf8'), /BASE INSTRUCTION ONLY/);
+  assert.deepEqual((await w.run(run.id)).baseManifest.resources, []);
+});
+
+test('Base queued definitions stay pinned after edits; current revocation blocks launch and rolls back the move', { skip }, async t => {
+  const w = await world(t);
+  const first = await w.task('Occupy slot', 'First');
+  const occupying = await w.board.requestRun(first.id, { stage: 'executing', consent: true });
+  await until(async () => (await w.run(occupying.id)).turns, 'first holds slot');
+  const skill = await baseSkill(w.board, 'PINNED OLD CONTENT');
+  const pinned = await w.board.createTask({ projectId: w.projectId, title: 'Pinned', prompt: 'Keep the old instructions.' });
+  await attachBase(w.board, { scope: 'task', projectId: w.projectId, taskId: pinned.id }, skill);
+  const queued = (await w.board.transition(pinned.id, { column: 'executing', expectedRevision: pinned.revision })).run;
+  await w.board.base.update(skill.id, { content: { body: 'NEW FUTURE CONTENT' } }, { expectedRevision: 1 });
+  await w.supervisor.cancel(occupying.id);
+  await until(async () => (await w.run(queued.id)).turns, 'pinned queued launch');
+  const prompt = await readFile(join(w.dataDir, queued.artifactsDir, 'prompt.md'), 'utf8');
+  assert.match(prompt, /PINNED OLD CONTENT/); assert.doesNotMatch(prompt, /NEW FUTURE CONTENT/);
+  const revoked = await w.board.createTask({ projectId: w.projectId, title: 'Revoked', prompt: 'Never launch this.' });
+  await attachBase(w.board, { scope: 'task', projectId: w.projectId, taskId: revoked.id }, skill);
+  const denied = (await w.board.transition(revoked.id, { column: 'executing', expectedRevision: revoked.revision })).run;
+  await w.board.base.update(skill.id, { trust: 'revoked' }, { expectedRevision: 2 });
+  await w.supervisor.cancel(queued.id);
+  await until(async () => (await w.run(denied.id)).status === 'failed', 'revoked queued failure');
+  await until(() => !w.supervisor.launching?.has(denied.id), 'revoked queued rollback finished');
+  const state = await w.board.view(), card = state.projects[0].tasks.find(task => task.id === revoked.id);
+  assert.equal(card.column, 'todo');
+  assert.equal((await w.run(denied.id)).errorCode, 'BASE_REVOKED');
+  assert.equal((await w.reports()).length, 2);
+});
+
+test('Base required preflight fails before handoff and commit; manual moves remain available', { skip }, async t => {
+  const w = await world(t);
+  const task = await w.task('Preserve unfinished output', 'WRITE_FILE:base-feature.txt');
+  const run = await w.board.requestRun(task.id, { stage: 'executing', consent: true });
+  await until(async () => (await w.run(run.id)).turns, 'execution complete');
+  const mcp = await w.board.base.create({ kind: 'mcp', name: 'Not allowed in Review', enabled: true, trust: 'trusted', configuration: { transport: 'stdio', command: process.execPath, args: [] } });
+  await attachBase(w.board, { scope: 'column', projectId: w.projectId, columnId: 'code_review' }, mcp);
+  const latest = (await w.board.view()).projects[0].tasks.find(card => card.id === task.id);
+  await assert.rejects(w.board.transition(task.id, { column: 'code_review', expectedRevision: latest.revision }), { code: 'BASE_REQUIRED_UNAVAILABLE' });
+  assert.equal((await w.run(run.id)).status, 'waiting_for_input', 'The failed transition never confirms the outgoing stage.');
+  assert.match(git(run.workspacePath, 'status', '--porcelain'), /base-feature/);
+  const moved = await w.board.transition(task.id, { column: 'code_review', expectedRevision: latest.revision, decision: 'move' });
+  assert.equal(moved.task.column, 'code_review', 'A move with no destination agent does not require MCP delivery.');
+});
+
+test('Base changes during asynchronous acceptance reject a stale run instead of pinning a stale selection', { skip }, async t => {
+  const w = await world(t), skill = await baseSkill(w.board);
+  const task = await w.task('Racing configuration', 'Original prompt');
+  const validate = w.supervisor.validate.bind(w.supervisor);
+  let release, enter;
+  const gate = new Promise(resolve => { release = resolve; }), entered = new Promise(resolve => { enter = resolve; });
+  w.supervisor.validate = async value => { const result = await validate(value); enter(); await gate; return result; };
+  t.after(() => release());
+  const pending = w.board.requestRun(task.id, { stage: 'executing', consent: true });
+  const rejected = assert.rejects(pending, { code: 'BASE_REVISION_CONFLICT' });
+  await entered;
+  await attachBase(w.board, { scope: 'task', projectId: w.projectId, taskId: task.id }, skill);
+  release(); await rejected;
+  assert.equal((await w.board.state()).runs.length, 0);
+});
+
+test('Base launch preparation is cancellable and does not spawn or interfere with another queued run', { skip }, async t => {
+  const w = await world(t), skill = await baseSkill(w.board);
+  const task = await w.task('Cancel Base preparation', 'Do not start');
+  await attachBase(w.board, { scope: 'task', projectId: w.projectId, taskId: task.id }, skill);
+  const original = w.supervisor.basePreparer;
+  let entered;
+  const ready = new Promise(resolve => { entered = resolve; });
+  w.supervisor.basePreparer = async args => {
+    entered();
+    await new Promise((resolve, reject) => args.signal.addEventListener('abort', () => reject(args.signal.reason), { once: true }));
+    return original(args);
+  };
+  const run = await w.board.requestRun(task.id, { stage: 'executing', consent: true });
+  await ready; await w.supervisor.cancel(run.id);
+  await until(() => w.supervisor.preparing.size === 0, 'preparation unwinds');
+  assert.equal((await w.run(run.id)).status, 'cancelled'); assert.equal((await w.reports()).length, 0);
+  w.supervisor.basePreparer = original;
+  const other = await w.task('Unaffected next task', 'Next');
+  const next = await w.board.requestRun(other.id, { stage: 'executing', consent: true });
+  await until(async () => (await w.run(next.id)).turns, 'next run starts');
+  assert.deepEqual((await w.run(next.id)).baseManifest.resources, []);
+});
+
+test('Shutdown during or immediately after preparation stays interrupted without rollback; cancellation stays cancelled', { skip }, async t => {
+  for (const timing of ['preparing', 'preparing-entry-removed', 'cancelled']) await t.test(timing, async t => {
+    const w = await world(t);
+    const task = await w.board.createTask({ projectId: w.projectId, title: 'Interrupted preparation', prompt: 'Never spawn.' });
+    let enter, release, failEntered, releaseFailure;
+    const entered = new Promise(resolve => { enter = resolve; }), gate = new Promise(resolve => { release = resolve; });
+    const failureEntered = new Promise(resolve => { failEntered = resolve; }), failureGate = new Promise(resolve => { releaseFailure = resolve; });
+    t.after(() => { release(); releaseFailure(); });
+    w.supervisor.basePreparer = async () => { enter(); await gate; throw Object.assign(new Error('Preparation stopped'), { code: 'ABORTED' }); };
+    const moved = await w.board.transition(task.id, { column: 'executing', expectedRevision: task.revision });
+    const runId = moved.run.id;
+    await entered;
+    let rollbackCalls = 0;
+    const rollback = w.board.runFailedToStart.bind(w.board);
+    w.board.runFailedToStart = async id => { rollbackCalls++; return rollback(id); };
+    if (timing === 'preparing-entry-removed') {
+      // Hold failed-start handling after #launch has removed its preparing entry.
+      // Shutdown must still catch this queued run using its stopping flag.
+      const readRun = w.board.run.bind(w.board);
+      let held = false;
+      w.board.run = async id => {
+        if (id === runId && !held && !w.supervisor.preparing.has(id)) { held = true; failEntered(); await failureGate; }
+        return readRun(id);
+      };
+      release(); await failureEntered;
+      assert.equal(w.supervisor.preparing.size, 0);
+      await w.supervisor.shutdown(100);
+      releaseFailure();
+    } else {
+      if (timing === 'cancelled') await w.supervisor.cancel(runId);
+      await w.supervisor.shutdown(100);
+      release();
+    }
+    await until(() => !w.supervisor.launching?.has(runId), 'shutdown preparation has fully unwound');
+    const run = await w.run(runId);
+    assert.equal(run.status, timing === 'cancelled' ? 'cancelled' : 'interrupted');
+    assert.equal(run.baseManifest.deliveryState, 'configured', 'No delivery or failure is claimed for an interrupted preparation.');
+    assert.equal(rollbackCalls, 0);
+    assert.equal((await w.board.view()).projects[0].tasks.find(card => card.id === task.id).column, 'executing');
+    assert.deepEqual(await w.reports(), []);
+    assert.equal(w.supervisor.activeCount(), 0);
+  });
+});
 
 test('cancel during launch prevents a spawn, and repeated cancellation is harmless', { skip }, async t => {
   const w = await world(t);
