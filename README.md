@@ -50,6 +50,12 @@ Your browser opens **http://127.0.0.1:4318**. Press **Ctrl+C** to stop. No API k
 - Keep your last 500 prompts in the sidebar; copy, export, or add them to the board.
 
 **Kanban**
+
+- **Task cards:** use **…** to edit the title and prompt, move/reorder, copy, duplicate, delete, inspect details, or configure the column’s agent. **Card display** controls preview visibility, agent information, and spacing for that card in this browser.
+
+- **Agents** opens this project’s provider/model settings. Choose a project default and **Use project agent for all columns**, or override any agent column with its own provider/model. Custom agent columns support overrides too. **Columns** lets you choose the subtle top accent colors. TO DO and Done do not run agents.
+
+Use **Add task** at the bottom of To Do to enter a prompt directly, or choose **Refine in Composer** first. In Composer, **Edit prompt** and **Save prompt** optionally save your wording to history; Add to Kanban and Split into tasks use that saved version. Editing clears the original engine checks.
 - Move each task through To Do → optional Planning → Executing → Code Review → Testing → optional Merge → Done. To Do and Done never run agents.
 - Each card gets its own Git branch and worktree. Your main checkout is never touched.
 - Click the **project agent** above the board to choose its provider, model, effort, and execution permissions. Use **Agents per stage…**, or the agent label on a column, to override it for a stage. Planning always uses enforced read-only Plan Mode. Compose has separate settings.
@@ -92,7 +98,7 @@ Full rules: [Kanban contract](docs/agentic-kanban-contract.md).
 <details>
 <summary><b>Settings</b></summary>
 
-The gear in the top bar opens **Settings**: theme, start page, default agent and model, agents at the same time (1–4), terminal font size, dock behaviour, and GitHub.
+The gear opens **Settings** from either page. Browser-wide preferences include theme, start page, card display defaults, terminal font size, and dock behaviour. **Global agent defaults** uses the same live provider/model/effort picker as project settings; choose **Save default agent** to apply it. Project and column overrides take priority. Composer, Agents and workflow, Columns, and Autopilot are directly accessible here. Less-used sections are collapsed. Per-card display overrides can return to the shared defaults through **… → Card display → Use display defaults**.
 </details>
 
 <details>

@@ -50,6 +50,44 @@ test('terminal dock in a real browser: start, render, type, collapse, resize, se
   await browser.goto(`${app.url}/#/kanban`);
   await browser.until(`document.querySelector('#kanban-columns [data-column="executing"] .kanban-start')`, 'start buttons');
   assert.equal(await browser.eval(`return typeof Terminal === 'function' && typeof WebglAddon === 'object';`), true, 'Pinned xterm assets load from the app.');
+  for (const width of [1280, 390]) {
+    await browser.resize(width, 900);
+    await browser.until(`document.querySelector('.kanban-add-task').getBoundingClientRect().bottom <= innerHeight`, 'task entry fits after resize');
+    for (const theme of ['light', 'dark']) {
+      await browser.eval(`document.documentElement.dataset.theme = '${theme}';`);
+      await browser.until(`document.querySelector('.kanban-mascot').naturalWidth > 0`, 'mascot loaded');
+      assert.equal(await browser.eval(`return document.querySelector('#kanban-title').textContent;`), 'Promptboard-Project');
+      assert.equal(await browser.eval(`const image = document.querySelector('.kanban-mascot').getBoundingClientRect(); const title = document.querySelector('#kanban-title').getBoundingClientRect(); return image.width === 64 && image.height === 64 && image.right <= title.left && image.left >= 0 && title.right <= innerWidth;`), true, 'Mascot is enlarged, visible, and directly beside the heading.');
+      assert.equal(await browser.eval(`const button = document.querySelector('.kanban-add-task'); button.focus(); const r = button.getBoundingClientRect(); return document.activeElement === button && r.width > 0 && r.bottom <= innerHeight;`), true, 'To Do Add task is visible and keyboard focusable.');
+      assert.equal(await browser.eval(`const columns = [...document.querySelectorAll('.kanban-column')]; return columns.every(column => getComputedStyle(column).borderTopWidth === '2px') && new Set(columns.map(column => getComputedStyle(column).borderTopColor)).size > 3;`), true, 'Columns have distinct, thin top accents.');
+      await shot(`entry-${width}-${theme}`);
+      await browser.eval(`document.querySelector('.kanban-card').scrollIntoView({ block: 'nearest', inline: 'center' });`);
+      assert.equal(await browser.eval(`const card = document.querySelector('.kanban-card'); return card.querySelector('.kanban-more').hidden && getComputedStyle(card.querySelector('.card-agent-info')).display === 'none' && card.querySelector('.kanban-start').getBoundingClientRect().height > 0;`), true, 'Secondary controls are tucked away; the primary action stays visible.');
+      await shot(`cards-${width}-${theme}`);
+      await browser.eval(`document.querySelector('.kanban-card .kanban-more-toggle').click();`);
+      assert.equal(await browser.eval(`const card = document.querySelector('.kanban-card'); const edit = card.querySelector('.kanban-edit'); edit.focus(); const r = edit.getBoundingClientRect(); return document.activeElement === edit && r.width > 0 && r.left >= 0 && r.right <= innerWidth;`), true, 'Task menu actions are visible and keyboard accessible.');
+      await shot(`card-menu-${width}-${theme}`);
+      await browser.eval(`document.querySelector('.kanban-card .kanban-more').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); document.querySelector('#kanban-columns').scrollLeft = 0;`);
+
+    }
+  }
+  for (const width of [1280, 390]) {
+    await browser.resize(width, 900);
+    for (const theme of ['light', 'dark']) {
+      await browser.eval(`document.documentElement.dataset.theme = '${theme}'; document.querySelector('#app-settings-open').click();`);
+      await browser.until(`document.querySelector('#app-settings').open`, 'settings opened');
+      await browser.eval(`const theme = document.querySelector('#set-theme'); theme.value = '${theme}'; theme.dispatchEvent(new Event('change', { bubbles: true }));`);
+      assert.equal(await browser.eval(`const dialog = document.querySelector('#app-settings'); const r = dialog.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.height <= innerHeight && dialog.scrollWidth <= dialog.clientWidth;`), true, 'Shared settings fit the viewport.');
+      await shot(`settings-${width}-${theme}`);
+      await browser.eval(`document.querySelector('#settings-agents-section').open = true; const select = document.querySelector('#set-agent-provider'); select.value = 'codex'; select.dispatchEvent(new Event('change', { bubbles: true }));`);
+      await browser.until(`document.querySelector('#set-agent-model option[value="codex-test-model"]')`, 'shared model catalog');
+      assert.equal(await browser.eval(`const model = document.querySelector('#set-agent-model'); return !model.disabled && !model.closest('.model-field').hidden;`), true, 'Choosing a provider exposes a usable model selector.');
+      await browser.eval(`document.querySelector('#set-agent-model').scrollIntoView({ block: 'center' });`);
+      await shot(`settings-agent-${width}-${theme}`);
+      await browser.eval(`document.querySelector('#app-settings-close').click(); document.querySelector('#settings-agents-section').open = false;`);
+    }
+  }
+  await browser.resize(1280, 900);
   await browser.eval(`document.querySelector('#project-toggle').click();`);
   await browser.until(`!document.querySelector('#project-settings').hidden`, 'settings expanded');
   assert.equal(await browser.eval(`const panel = document.querySelector('#project-settings').getBoundingClientRect(); const board = document.querySelector('.kanban-board').getBoundingClientRect(); return panel.left >= board.right && Math.abs(panel.top - board.top) < 2;`), true, 'Desktop settings sit beside the board.');
@@ -204,6 +242,17 @@ test('terminal dock in a real browser: start, render, type, collapse, resize, se
   await browser.until(`document.querySelector('#kanban-columns').getBoundingClientRect().bottom <= document.querySelector('#dock').getBoundingClientRect().top + 1`, 'narrow board fits above terminal');
   await browser.until(`(() => { const tab = document.querySelector('#dock-tab-${codexRun.id}').getBoundingClientRect(); const tabs = document.querySelector('#dock-tabs').getBoundingClientRect(); return tab.right <= tabs.right + 1 && tab.left >= tabs.left - 1; })()`, 'selected agent stays visible after resizing');
   await shot('7-codex-narrow');
+  await browser.eval(`document.querySelector('.page-nav a[href="#/"]').click();`);
+  await browser.until(`!document.querySelector('#prompt-view').hidden`, 'Composer visible');
+  for (const width of [1280, 390]) {
+    await browser.resize(width, 900);
+    if (width < 731) await browser.until(`getComputedStyle(document.querySelector('#sidebar')).visibility === 'hidden'`, 'Composer drawer settled');
+    for (const theme of ['light', 'dark']) {
+      await browser.eval(`document.documentElement.dataset.theme = '${theme}'; window.scrollTo(0, 0);`);
+      assert.equal(await browser.eval(`return document.documentElement.scrollWidth <= innerWidth && document.querySelector('#generate-label').textContent === 'Generate prompt' && !document.querySelector('#copy-cheer');`), true, 'Composer fits the viewport and uses the cleaned-up controls.');
+      await shot(`composer-${width}-${theme}`);
+    }
+  }
   const errors = browser.consoleMessages.filter(message => /EXCEPTION/.test(message));
   assert.deepEqual(errors, [], 'No uncaught page errors.');
 });

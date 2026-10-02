@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Composer: remove the introductory input placeholder and example button, including the bundled sample prompt and its event handler.
+
+- Fix: Composer installation labels and generation availability follow the latest connection check; newly available CLIs refresh their model choices.
+- Settings audit: shared live agent/model/effort controls with explicit global saves and model refresh, browser-wide card display defaults, and direct Composer/Columns access. Less-used sections collapse; stale decorative Composer copy is removed.
+- Fix: repeated task submissions are locked while saving. Task Split retries only unsaved tasks after a partial failure, and newly created projects remain selected for retry. Settings/GitHub responses honor board revisions; rapid settings writes are serialized. Fix the Board tab’s accessibility target.
+
+- Task cards: compact title/preview/action layout with a subtle glossy surface. The … menu groups editing, moving, task details, context, and column-agent configuration. Per-card display choices control previews, agent information, and spacing, saved in this browser.
+
+- Kanban: subtle per-column top colors and a direct Agents control for each project. Use one project agent across all columns or choose individual providers/models, including custom agent columns.
+
+- Kanban: thin scrollbars across scrolling panes, flat column separators and toolbar controls, fewer decorative borders, and instant card hover feedback.
+
+- Kanban: add tasks directly from To Do or send drafts to Composer for refinement. Restore the enlarged left-side anime mascot beside the project heading.
+- Composer: optionally edit and save generated prompts; history, Kanban, and Task Split use the saved wording, with original checks cleared.
+
 - Fix: Stop reveals its confirmation from a collapsed dock, keeps the selected run as its target across tab switches, and displays retryable errors. Cancellation also works during startup; success waits for the owned process to exit, with the existing forced-stop fallback for an unresponsive agent. Files and logs are kept.
 - Kanban: a compact project bar opens agent, file, and settings panels on demand. Cards hide prompt metadata and secondary actions until needed; terminal paths and usage sit under Run details. The board fits around the resized terminal, toolbar actions wrap on narrow screens, and background refreshes preserve column scroll positions, open card controls, and per-run details.
 

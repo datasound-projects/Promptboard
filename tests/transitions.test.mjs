@@ -265,7 +265,7 @@ test('custom columns: layout rules, moves along the stage on their left, an agen
   const builtins = ['todo', 'planning', 'executing', 'code_review', 'testing', 'merge', 'done'];
   const layout = (...extra) => [...builtins.slice(0, 3), ...extra, ...builtins.slice(3)].map(id => typeof id === 'string' ? { id } : id);
   const blocked = { id: 'c_blocked01', custom: true, title: 'Blocked', color: 'red' };
-  const docs = { id: 'c_docs0001', custom: true, title: 'Docs', agent: { enabled: true, policy: 'ask', instructions: 'Update the README for this change. DOCS_AGENT' } };
+  const docs = { id: 'c_docs0001', custom: true, title: 'Docs', agent: { enabled: true, provider: 'claude', model: 'opus', policy: 'ask', instructions: 'Update the README for this change. DOCS_AGENT' } };
   // Built-ins keep their order; custom columns sit between To Do and Done; names are unique.
   assert.throws(() => normalizeColumns([{ id: 'executing' }, ...builtins.filter(id => id !== 'executing').map(id => ({ id }))]), { message: /keep their order/ });
   assert.throws(() => normalizeColumns([...builtins.map(id => ({ id })), blocked]), { message: /between To Do and Done/ });
@@ -285,7 +285,7 @@ test('custom columns: layout rules, moves along the stage on their left, an agen
   await w.board.setColumns(w.project.id, { columns: layout(blocked, docs), expectedRevision: await w.revision() });
   const view = (await w.board.view()).projects[0];
   assert.deepEqual(view.columns.map(column => column.id), ['todo', 'planning', 'executing', 'c_blocked01', 'c_docs0001', 'code_review', 'testing', 'merge', 'done']);
-  assert.deepEqual([view.effectiveWorkflow.c_docs0001.policy, view.effectiveWorkflow.c_docs0001.model, view.effectiveWorkflow.c_blocked01.policy], ['start', 'haiku', 'manual']);
+  assert.deepEqual([view.effectiveWorkflow.c_docs0001.policy, view.effectiveWorkflow.c_docs0001.model, view.effectiveWorkflow.c_blocked01.policy], ['start', 'opus', 'manual']);
   const task = await w.board.createTask({ projectId: w.project.id, title: 'With docs', prompt: 'Change it. WRITE_FILE:feature.txt' });
   await assert.rejects(w.go(task.id, 'c_blocked01'), { code: 'TRANSITION_NOT_ALLOWED' });
   await w.board.setWorkflow(w.project.id, { workflow: { executing: { policy: 'manual' } }, agentDefaults: { provider: 'claude', model: 'haiku' }, expectedRevision: await w.revision() });
@@ -298,7 +298,7 @@ test('custom columns: layout rules, moves along the stage on their left, an agen
   process.env.FAKE_AGENT_PROMPT_FILE = promptFile;
   t.after(() => { delete process.env.FAKE_AGENT_PROMPT_FILE; });
   const started = await w.go(task.id, 'c_docs0001');
-  assert.deepEqual([started.run.stage, started.run.workspacePath, started.run.branch, started.run.config.model], ['c_docs0001', ws.path, ws.branch, 'haiku']);
+  assert.deepEqual([started.run.stage, started.run.workspacePath, started.run.branch, started.run.config.model], ['c_docs0001', ws.path, ws.branch, 'opus']);
   await w.turn(started.run.id);
   assert.match(await readFile(promptFile, 'utf8'), /DOCS_AGENT/);
   assert.equal(await readFile(join(ws.path, 'feature.txt'), 'utf8'), 'written by the agent\n', 'It writes in the task worktree.');

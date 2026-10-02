@@ -442,3 +442,26 @@ test('every project made in the app has a Git repository: new folders, existing 
   await assert.rejects(board.createProjectWithRepository({ name: 'Missing', folder: join(dataDir, 'nope') }), { code: 'PATH_NOT_FOUND' });
   await assert.rejects(board.createProjectWithRepository({ name: 'Relative', folder: 'relative/path' }), { code: 'INVALID_PATH' });
 });
+
+
+test('custom agent overrides validate, persist, and use the same hierarchy as built-in stages', async t => {
+  const { normalizeColumns, effectiveWorkflow } = await import('../src/board.mjs');
+  const custom = { id: 'c_docs0001', custom: true, title: 'Docs', agent: { enabled: true, provider: 'codex', model: 'custom-model', effort: 'high', policy: 'manual' } };
+  const columns = COLUMNS.map(column => ({ id: column.id })); columns.splice(3, 0, custom);
+  const normalized = normalizeColumns(columns);
+  const project = { columnLayout: normalized, agentDefaults: { provider: 'claude', model: 'haiku' } };
+  assert.equal(effectiveWorkflow(project).c_docs0001.model, 'custom-model');
+  assert.equal(effectiveWorkflow(project).c_docs0001.agentSource, 'stage');
+  assert.throws(() => normalizeColumns(columns.map(entry => entry.custom ? { ...entry, agent: { ...entry.agent, provider: 'invalid' } } : entry)));
+  const dataDir = await temp(t, 'pb-custom-agent-');
+  const board = new Board({ dataDir });
+  let saved = await board.createProject({ name: 'Agents' });
+  saved = await board.setColumns(saved.id, { columns, expectedRevision: saved.revision });
+  const before = await board.view();
+  await assert.rejects(board.setWorkflow(saved.id, { workflow: { c_docs0001: { provider: 'invalid' } }, expectedRevision: saved.revision }));
+  assert.deepEqual(await board.view(), before, 'Invalid custom overrides do not partially update the project.');
+  saved = await board.setWorkflow(saved.id, { workflow: { c_docs0001: { provider: 'claude', model: 'haiku', policy: 'manual', instructions: 'Docs' } }, expectedRevision: saved.revision });
+  assert.equal(effectiveWorkflow(saved).c_docs0001.model, 'haiku');
+  const reopened = new Board({ dataDir });
+  assert.equal((await reopened.view()).projects[0].effectiveWorkflow.c_docs0001.model, 'haiku');
+});
