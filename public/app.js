@@ -1151,9 +1151,16 @@ function renderBoard() {
   const columns = $('#kanban-columns');
   const focusedCard = document.activeElement?.closest('.kanban-card');
   const focusedDisplay = document.activeElement?.dataset.cardDisplay;
+  const confirming = [...columns.querySelectorAll('.kanban-card:has(.kanban-confirm)')].map(item => item.dataset.id);
+  const confirmationFocus = document.activeElement?.closest('.kanban-confirm') ? document.activeElement.textContent : null;
   const scroll = new Map(columns.dataset.projectId === project?.id ? [...columns.querySelectorAll('.kanban-cards')].map(list => [list.dataset.column, list.scrollTop]) : []);
   columns.replaceChildren(...(project ? projectColumnsOf(project).map(column => renderColumn(column, tasks.filter(task => task.column === column.id))) : []));
   columns.dataset.projectId = project?.id || '';
+  for (const id of confirming) {
+    const item = cardElement(id), card = tasks.find(task => task.id === id);
+    if (item && card) confirmCardDelete(item, card, false);
+  }
+  if (confirmationFocus && focusedCard) [...(cardElement(focusedCard.dataset.id)?.querySelectorAll('.kanban-confirm button') || [])].find(button => button.textContent === confirmationFocus)?.focus({ preventScroll: true });
   if (focusedCard && focusedDisplay) [...(cardElement(focusedCard.dataset.id)?.querySelectorAll('[data-card-display]') || [])].find(input => input.dataset.cardDisplay === focusedDisplay)?.focus({ preventScroll: true });
   for (const list of columns.querySelectorAll('.kanban-cards')) list.scrollTop = scroll.get(list.dataset.column) || 0;
   renderRepository(project);
@@ -1311,7 +1318,7 @@ function renderDoneCard(card, number, draggable = true) {
   const more = document.createElement('div'); more.className = 'kanban-more'; more.id = `card-more-${card.id}${draggable ? '' : '-completed'}`; more.hidden = cardElement(card.id)?.querySelector('.kanban-more')?.hidden ?? true;
   const edit = detailButton('Edit task', () => { $('#done-dialog').close(); openCard(card.id); }, 'kanban-edit');
   const copy = detailButton('Copy prompt', () => copyCard(card, copy), 'kanban-copy');
-  more.append(edit, details, reopen, copy, detailButton('Duplicate', () => duplicateCard(card.id), 'kanban-duplicate'));
+  more.append(edit, details, reopen, copy, detailButton('Duplicate', () => duplicateCard(card.id), 'kanban-duplicate'), detailButton('Delete', () => confirmCardDelete(item, card), 'kanban-delete'));
   const actions = document.createElement('div'); actions.className = 'kanban-actions'; actions.append(cardMenuToggle(card, more));
   title.append(actions);
   cardAppearance(item, card, more);
@@ -1601,23 +1608,38 @@ async function duplicateCard(id) {
   } catch (error) { showBoardError(error); }
 }
 
-function confirmCardDelete(item, card) {
-  const keep = detailButton('Keep card', () => { renderBoard(); cardElement(card.id)?.querySelector('.kanban-more-toggle').focus(); });
+function confirmCardDelete(item, card, focus = true) {
+  const keep = detailButton('Keep card', () => {
+    if (item.closest('#done-dialog')) {
+      const replacement = renderDoneCard(findTask(card.id) || card, Number(item.querySelector('.kanban-done-number').textContent.slice(1)), false);
+      item.replaceWith(replacement);
+      replacement.querySelector('.kanban-more-toggle')?.focus();
+    } else {
+      item.querySelector('.kanban-confirm')?.remove();
+      renderBoard();
+      cardElement(card.id)?.querySelector('.kanban-more-toggle')?.focus();
+    }
+  });
   const confirm = document.createElement('div');
   confirm.className = 'connection-detail kanban-confirm';
-  const note = card.workspace ? ' Its worktree is removed only if it has no uncommitted changes; its branch is kept.' : '';
+  const note = card.workspace ? ` Files and branch are kept at ${card.workspace.path}.` : '';
   confirm.append(paragraph(`Delete “${card.title}”? This cannot be undone.${note}`), detailActions(detailButton('Delete card', () => deleteCard(card.id), 'danger'), keep));
   item.querySelector('.kanban-more').remove();
   item.querySelector('.kanban-actions').remove();
   item.append(confirm);
-  keep.focus();
+  if (focus) keep.focus();
 }
 
+const deletingCards = new Set();
 async function deleteCard(id) {
   const card = findTask(id);
-  if (!card) return;
-  try { await boardCall('DELETE', `/api/tasks/${encodeURIComponent(id)}?expectedRevision=${card.revision}`); }
+  if (!card || deletingCards.has(id)) return;
+  deletingCards.add(id);
+  try { await boardCall('DELETE', `/api/tasks/${encodeURIComponent(id)}?expectedRevision=${card.revision}&keepFiles=true`); }
   catch (error) { renderBoard(); showBoardError(error); return; }
+  finally { deletingCards.delete(id); }
+  try { localStorage.removeItem(`promptboard.card-appearance.${id}`); } catch {}
+  if ($('#done-dialog').open) $('#done-dialog').close();
   announce(`Deleted “${card.title}”.`);
   ($('#kanban-columns .kanban-open') || $('#card-new')).focus();
 }
@@ -1860,7 +1882,7 @@ function renderAgents(current) {
     button.dataset.runId = run.id;
     const icon = document.createElement('span'); icon.className = `agent-icon ${state}`; icon.setAttribute('aria-hidden', 'true'); icon.textContent = AGENT_STATE_ICON[state];
     const name = document.createElement('span'); name.className = 'agent-title'; name.textContent = task.title;
-    const model = document.createElement('span'); model.className = 'agent-meta'; model.textContent = agentModel(run);
+    const model = document.createElement('span'); model.className = 'agent-meta agent-model'; model.textContent = agentModel(run);
     const status = document.createElement('span'); status.className = 'agent-meta';
     const stateText = document.createElement('span'); stateText.className = 'agent-state'; stateText.textContent = agentStateText(run);
     status.append(`${columnTitle(run.stage, project)} · `, stateText, ' · ', elapsedSpan(run));

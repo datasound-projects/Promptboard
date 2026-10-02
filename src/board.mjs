@@ -1275,17 +1275,35 @@ export class Board {
   }
   #placeStored(id, move) { return this.store.update(state => this.#place(state, id, move)); }
 
-  async deleteTask(id, { expectedRevision }) {
-    const { task } = this.#task(await this.state(), id);
-    checkRevision(task, expectedRevision, 'This card');
-    let revision = expectedRevision;
-    // A task that owns a worktree is removed only after that worktree is removed safely.
-    if (task.workspace) revision = (await this.removeTaskWorktree(id)).revision;
-    return this.store.update(state => {
-      const { project, task: current } = this.#task(state, id);
-      checkRevision(current, revision, 'This card');
-      if (this.#activeRun(state, id)) throw conflict('This card has an active run.', 'RUN_ACTIVE');
-      project.tasks = project.tasks.filter(item => item.id !== id);
+  deleteTask(id, { expectedRevision, keepFiles = false }) {
+    // Share the run-start lock so deletion cannot race with a queued agent launch.
+    return this.#locked(`run:${id}`, async () => {
+      const { task } = this.#task(await this.state(), id);
+      checkRevision(task, expectedRevision, 'This card');
+      let revision = expectedRevision;
+      if (task.workspace && !keepFiles) revision = (await this.removeTaskWorktree(id)).revision;
+      return this.store.update(state => {
+        const { project, task: current } = this.#task(state, id);
+        checkRevision(current, revision, 'This card');
+        if (this.#activeRun(state, id)) throw conflict('Stop this card’s active run before deleting it.', 'RUN_ACTIVE');
+        if (current.workspace && keepFiles) {
+          // Keep a durable locator even when the card has never had a run.
+          state.retainedWorkspaces ??= [];
+          state.retainedWorkspaces.push({ taskId: id, projectId: project.id, title: current.title, ...current.workspace, retainedAt: Date.now() });
+        }
+        const ap = project.autopilot;
+        if (ap) {
+          ap.queue = (ap.queue || []).filter(taskId => taskId !== id);
+          ap.done = (ap.done || []).filter(taskId => taskId !== id);
+          if (ap.routes) delete ap.routes[id];
+          if (ap.current?.taskId === id) {
+            ap.current = null;
+            if (ap.status !== 'off') { ap.status = 'paused'; ap.reason = 'The current card was deleted. Review the remaining queue before resuming.'; }
+          }
+        }
+        project.tasks = project.tasks.filter(item => item.id !== id);
+        project.revision++;
+      });
     });
   }
 

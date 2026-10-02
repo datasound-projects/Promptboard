@@ -161,7 +161,7 @@ async function boardRoute(board, req, res, pathname, searchParams) {
     if (method === 'POST' && action === 'confirm') { await body(); await supervisor.confirm(id); return view({ run: await board.run(id) }); }
   } else {
     if (method === 'PATCH' && !action) return view(await board.updateTask(id, await body()));
-    if (method === 'DELETE' && !action) return view({ deleted: await board.deleteTask(id, { expectedRevision: expected() }) ?? true });
+    if (method === 'DELETE' && !action) return view({ deleted: await board.deleteTask(id, { expectedRevision: expected(), keepFiles: searchParams.get('keepFiles') === 'true' }) ?? true });
     if (method === 'POST' && action === 'move') {
       // Only the fields a person can choose; the trigger is always the user here.
       const { column, index, expectedRevision, transitionId, decision, commitMessage, config, handoffRunId } = await body();

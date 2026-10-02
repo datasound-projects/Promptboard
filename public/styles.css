@@ -925,3 +925,22 @@ button.timeline-task:hover { text-decoration: underline; }
 .settings-section > summary { padding: 12px 0; color: var(--ink); font-size: 13px; font-weight: 500; cursor: pointer; }
 .settings-section > .settings-group { border: 0; padding: 4px 0 12px; margin: 0; }
 .settings-section .agent-refresh-models { justify-self: start; }
+
+/* Quiet project navigation: compact rows, restrained selection, details on hover. */
+#workspace-panel > :is(.new-prompt, .workspace-open) { justify-content: flex-start; min-height: 32px; margin-bottom: 4px; padding: 6px 10px; border: 0; border-radius: 5px; background: transparent; color: var(--muted); font-size: 13px; box-shadow: none; }
+#workspace-panel > :is(.new-prompt, .workspace-open):hover { background: var(--surface); color: var(--ink); }
+#workspace-panel .history-label { margin-top: 14px; margin-bottom: 6px; font-family: inherit; font-size: 11px; letter-spacing: 0; }
+#workspace-panel .workspace-item { padding-top: 7px; padding-bottom: 7px; border-radius: 5px; grid-template-areas: "name live"; }
+#workspace-panel .workspace-item[aria-current="true"] { border-color: transparent; box-shadow: none; background: var(--surface); }
+#workspace-panel .workspace-meta { display: none; }
+#workspace-panel .workspace-name { font-size: 13px; font-weight: 500; }
+#workspace-panel .workspace-menu-toggle { top: 3px; }
+#workspace-panel .workspace-live { background: transparent; padding: 0 3px; }
+#workspace-panel .workspace-live::before, #workspace-panel .agent-icon { animation: none; }
+#workspace-panel .agents-section { border-top: 0; }
+#workspace-panel .agent-item { border-radius: 5px; margin-bottom: 2px; }
+#workspace-panel .agent-item > .agent-model { display: none; }
+.sidebar:has(#workspace-panel:not([hidden])) .sidebar-footer { display: none; }
+.sidebar:has(#workspace-panel:not([hidden])) .sidebar-bottom { border-top: 0; padding: 8px 0; }
+
+.kanban-confirm { overflow-wrap: anywhere; }
