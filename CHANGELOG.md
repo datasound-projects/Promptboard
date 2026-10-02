@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Simplify the README around Compose, Kanban, and Base; replace the demos with dark-mode recordings under 12 seconds and add a reproducible Base demo.
+
 - Base uses exactly eight local category filters over one library, with persistent search, availability, sort and Grid/List, canonical counts, contextual Add, accessible mobile scrolling, and result-area retry with stale-response protection.
 - Base sidebar: move categories out of the content area and make each selection update the collection, heading, empty state, and creation type. Preserve unrelated editor drafts while browsing another category.
 - Agent profiles: reusable cards with equipped-resource indicators, profile references, and native Claude Code subagents for writing stages. Pin and capture subagent instructions/resources through the existing runner; retain selections and report unsupported provider/stage combinations without changing permissions.
