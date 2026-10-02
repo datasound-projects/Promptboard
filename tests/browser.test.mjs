@@ -258,7 +258,8 @@ test('terminal dock in a real browser: start, render, type, collapse, resize, se
     if (width < 731) await browser.until(`getComputedStyle(document.querySelector('#sidebar')).visibility === 'hidden'`, 'Composer drawer settled');
     for (const theme of ['light', 'dark']) {
       await browser.eval(`document.documentElement.dataset.theme = '${theme}'; window.scrollTo(0, 0);`);
-      assert.equal(await browser.eval(`return document.documentElement.scrollWidth <= innerWidth && document.querySelector('#generate-label').textContent === 'Generate prompt' && !document.querySelector('#copy-cheer');`), true, 'Composer fits the viewport and uses the cleaned-up controls.');
+      const composerLayout = await browser.eval(`return { width: innerWidth, scrollWidth: document.documentElement.scrollWidth, label: document.querySelector('#generate-label').textContent, overflow: [...document.querySelectorAll('body *')].filter(e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.right > innerWidth + 1; }).slice(0, 12).map(e => ({ tag: e.tagName, id: e.id, class: e.className, right: e.getBoundingClientRect().right })) };`);
+      await browser.until(`document.documentElement.scrollWidth <= innerWidth && document.querySelector('#generate-label').textContent === 'Generate prompt' && !document.querySelector('#copy-cheer')`, `Composer layout settles: ${JSON.stringify(composerLayout)}`);
       await shot(`composer-${width}-${theme}`);
     }
   }
