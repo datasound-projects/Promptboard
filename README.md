@@ -6,7 +6,7 @@
 
 <p align="center">
   <b>Compose prompts. Run coding tasks. Reuse agent resources.</b><br>
-  A local-first workspace for your coding CLI and your repositories.
+  A local-first agentic development environment workspace for your coding agents.
 </p>
 
 ## Get started
