@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fix: delete inactive or completed cards even when worktrees are dirty or missing. Card deletion keeps files and branches, records retained worktree locations, and removes Autopilot queue references atomically. Active runs still require stopping first.
+- Kanban sidebar: compact project actions and rows, quieter selection and agent information, no decorative footer or pulsing indicators.
+
 - Kanban: separate columns with a minimal 4px gap while retaining subtle top accents.
 
 - Composer: remove the introductory input placeholder and example button, including the bundled sample prompt and its event handler.

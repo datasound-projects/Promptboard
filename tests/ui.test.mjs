@@ -2366,3 +2366,39 @@ test('Composer starts with an empty input and no bundled example feature', async
   await until(() => !$('#generate-button').disabled && calls.length > 0, 'generation without example control');
   assert.ok($('#prompt-output').textContent.trim());
 });
+
+
+test('interrupted dirty cards and completed cards delete through HTTP and stay deleted after reload', async t => {
+  const ctx = await setup(t);
+  await goTo(ctx, '#/kanban'); await newProject(ctx, 'Deletion');
+  await newCard(ctx, 'Interrupted work', 'Keep my files.');
+  const task = (await serverTasks(ctx))[0];
+  const workspace = await ctx.app.board.ensureTaskWorktree(task.id);
+  await writeFile(join(workspace.path, 'unfinished.txt'), 'keep this');
+  await ctx.app.board.store.update(state => { state.runs.push({ id: 'interrupted-delete', projectId: state.projects[0].id, taskId: task.id, status: 'interrupted', stage: 'executing', updatedAt: Date.now(), config: { provider: 'codex' } }); });
+  await ctx.win.__pbTest.loadBoard(); await ctx.idle();
+  cardItem(ctx, 'Interrupted work').querySelector('.kanban-delete').click();
+  await ctx.win.__pbTest.loadBoard(); await ctx.idle();
+  assert.match(ctx.$('#kanban-columns').textContent, /Files and branch are kept/);
+  assert.equal(ctx.win.document.activeElement.textContent, 'Keep card');
+  byText(ctx.$('#kanban-columns'), 'Keep card').click();
+  assert.equal(ctx.$('.kanban-confirm'), null);
+  cardItem(ctx, 'Interrupted work').querySelector('.kanban-delete').click();
+  await click(ctx, byText(ctx.$('#kanban-columns'), 'Delete card'));
+  assert.equal((await serverTasks(ctx)).length, 0);
+  assert.equal(await readFile(join(workspace.path, 'unfinished.txt'), 'utf8'), 'keep this');
+  assert.equal(ctx.$('#agents-list').children.length, 0);
+  await newCard(ctx, 'Completed work', 'Done.');
+  const completed = (await serverTasks(ctx))[0];
+  await ctx.app.board.store.update(state => { state.projects[0].tasks.find(item => item.id === completed.id).column = 'done'; });
+  await ctx.win.__pbTest.loadBoard(); await ctx.idle();
+  ctx.$('.kanban-done-all').click();
+  ctx.$('#done-dialog .kanban-delete').click();
+  byText(ctx.$('#done-dialog'), 'Keep card').click();
+  assert.equal(ctx.$('#done-dialog .kanban-confirm'), null);
+  ctx.$('#done-dialog .kanban-delete').click();
+  await click(ctx, byText(ctx.$('#done-dialog'), 'Delete card'));
+  assert.equal(ctx.$('#done-dialog').open, false);
+  const fresh = await setup(t, { dataDir: ctx.dataDir });
+  assert.equal((await serverTasks(fresh)).length, 0);
+});

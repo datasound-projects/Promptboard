@@ -57,6 +57,7 @@ Your browser opens **http://127.0.0.1:4318**. Press **Ctrl+C** to stop. No API k
 
 Use **Add task** at the bottom of To Do to enter a prompt directly, or choose **Refine in Composer** first. In Composer, **Edit prompt** and **Save prompt** optionally save your wording to history; Add to Kanban and Split into tasks use that saved version. Editing clears the original engine checks.
 - Move each task through To Do → optional Planning → Executing → Code Review → Testing → optional Merge → Done. To Do and Done never run agents.
+- Delete cards from their … menu, including interrupted and completed cards. Deletion is saved to the server and removes the card from Autopilot queues; files, branches, and run logs are kept. Stop active runs first. Retained worktree locations are recorded in `state.json` under `retainedWorkspaces`.
 - Each card gets its own Git branch and worktree. Your main checkout is never touched.
 - Click the **project agent** above the board to choose its provider, model, effort, and execution permissions. Use **Agents per stage…**, or the agent label on a column, to override it for a stage. Planning always uses enforced read-only Plan Mode. Compose has separate settings.
 - The compact project bar shows the target branch; **Files** opens the local repository details. **Files and context** on a card shows where the agent edits files; paths and branch names can be copied.

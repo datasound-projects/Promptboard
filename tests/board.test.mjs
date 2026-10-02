@@ -465,3 +465,40 @@ test('custom agent overrides validate, persist, and use the same hierarchy as bu
   const reopened = new Board({ dataDir });
   assert.equal((await reopened.view()).projects[0].effectiveWorkflow.c_docs0001.model, 'haiku');
 });
+
+
+test('deleting inactive cards can retain dirty or missing worktrees and persists queue cleanup', async t => {
+  const { board, dataDir, projectId } = await linkedBoard(t);
+  for (const status of ['interrupted', 'cancelled', 'failed', 'succeeded']) {
+    const task = await board.createTask({ projectId, title: status, prompt: 'Keep my work.' });
+    const workspace = await board.ensureTaskWorktree(task.id);
+    await writeFile(join(workspace.path, 'unfinished.txt'), 'important work');
+    await board.store.update(state => {
+      state.runs.push({ id: `run-${task.id}`, taskId: task.id, projectId, status });
+      state.projects[0].autopilot = { status: 'running', queue: [task.id], done: [task.id], routes: { [task.id]: ['executing'] }, current: { taskId: task.id } };
+    });
+    await board.deleteTask(task.id, { expectedRevision: (await taskIn(board, task.id)).revision, keepFiles: true });
+    assert.equal(await readFile(join(workspace.path, 'unfinished.txt'), 'utf8'), 'important work');
+    const fresh = new Board({ dataDir });
+    assert.equal(await taskIn(fresh, task.id), undefined);
+    const state = await fresh.state();
+    assert.equal(state.retainedWorkspaces.at(-1).path, workspace.path);
+    assert.deepEqual(state.projects[0].autopilot.queue, []);
+    assert.deepEqual(state.projects[0].autopilot.routes, {});
+    assert.equal(state.projects[0].autopilot.current, null);
+    assert.equal(state.projects[0].autopilot.status, 'paused');
+  }
+  const task = await board.createTask({ projectId, title: 'Missing', prompt: 'x' });
+  await board.store.update(state => { state.projects[0].tasks.find(item => item.id === task.id).workspace = { path: join(dataDir, 'missing'), branch: 'missing' }; });
+  await board.deleteTask(task.id, { expectedRevision: task.revision, keepFiles: true });
+  assert.equal(await taskIn(board, task.id), undefined);
+});
+
+test('retaining files does not allow deleting active runs or stale card revisions', async t => {
+  const { board, projectId } = await linkedBoard(t);
+  const task = await board.createTask({ projectId, title: 'Active', prompt: 'x' });
+  await board.store.update(state => { state.runs.push({ id: 'active', taskId: task.id, projectId, status: 'running' }); });
+  await assert.rejects(board.deleteTask(task.id, { expectedRevision: task.revision, keepFiles: true }), { code: 'RUN_ACTIVE' });
+  await assert.rejects(board.deleteTask(task.id, { expectedRevision: task.revision + 1, keepFiles: true }));
+  assert.ok(await taskIn(board, task.id));
+});

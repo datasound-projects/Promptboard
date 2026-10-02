@@ -269,3 +269,7 @@ Everything in this section lives in `src/delivery.mjs`. Evidence is tied to the 
 - Codex approval prompts and CLI startup prompts (folder trust, hook review) have no lifecycle event; the user answers them in the terminal.
 - Gemini CLI plan and turn events were not verified against a live account (see `docs/live-verification.md`).
 - Windows paths and Git behavior are not tested.
+
+### Card deletion
+
+The UI deletes cards with `DELETE /api/tasks/:id?expectedRevision=…&keepFiles=true`. This atomically removes the task and its Autopilot references, pauses a deleted current Autopilot task, and records any retained worktree location in server state. It preserves files, branches, and run logs, including dirty or missing worktrees. Active runs and stale revisions are rejected. Without `keepFiles=true`, the API retains its strict clean-worktree cleanup behavior.
