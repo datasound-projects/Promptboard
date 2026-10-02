@@ -85,7 +85,9 @@ export class Store {
           // Preserve the exact original, including unknown fields, before publishing anything.
           const backup = `state.pre-migration-v2-${Date.now()}-${randomBytes(4).toString('hex')}.json`;
           await copyFile(source, join(this.dir, backup));
-          const handle = await open(join(this.dir, backup), 'r'); try { await handle.sync(); } finally { await handle.close(); }
+          // Windows FlushFileBuffers requires write access. r+ permits the flush
+          // without truncating or changing the preserved pre-migration bytes.
+          const handle = await open(join(this.dir, backup), 'r+'); try { await handle.sync(); } finally { await handle.close(); }
           const migrated = migrateState(state);
           await this.#write(migrated);
           state = migrated;

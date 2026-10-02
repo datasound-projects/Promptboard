@@ -133,11 +133,18 @@ test('terminal dock in a real browser: start, render, type, collapse, resize, se
   await browser.until(`document.querySelector('#base-status').textContent === 'Saved. No assignments changed.'`, 'skill persisted through Base form');
   const baseSkill = (await board.base.list()).resources.find(item => item.name === 'Browser instruction'); assert.ok(baseSkill);
   assert.equal((await board.view()).projects[0].baseBinding, undefined, 'Creating a resource never assigns it.');
+  const baseLayout = () => browser.eval(`const detail = document.querySelector('#base-detail'); return { width: innerWidth, scrollWidth: document.documentElement.scrollWidth, detail: detail.getBoundingClientRect().toJSON(), error: document.querySelector('#base-error').textContent, page: document.documentElement.dataset.page, overflow: [...document.querySelectorAll('body *')].filter(node => { const rect = node.getBoundingClientRect(); return rect.width > 0 && rect.right > innerWidth; }).slice(0, 12).map(node => ({ tag: node.tagName, id: node.id, class: node.className, right: node.getBoundingClientRect().right, width: node.getBoundingClientRect().width })) };`);
   for (const width of [1280, 390]) {
     await browser.resize(width, 900);
     for (const theme of ['light', 'dark']) {
       await browser.eval(`document.documentElement.dataset.theme = '${theme}';`);
-      assert.equal(await browser.eval(`return document.documentElement.scrollWidth <= innerWidth && !document.querySelector('#base-error').textContent && document.querySelector('#base-detail').getBoundingClientRect().right <= innerWidth;`), true, 'Base editor fits both themes and viewport sizes.');
+      // A CDP resize acknowledgement can precede the final document overflow update,
+      // especially while the software terminal renderer paints. Wait for the same
+      // visible-layout contract that we assert; persistent overflow still fails.
+      await browser.until(`innerWidth === ${width} && document.documentElement.dataset.page === 'base' && document.documentElement.scrollWidth <= innerWidth && !document.querySelector('#base-error').textContent && document.querySelector('#base-detail').getBoundingClientRect().right <= innerWidth`, `Base editor fits ${width}px in ${theme}`)
+        .catch(async failure => { throw new Error(`${failure.message}: ${JSON.stringify(await baseLayout())}`); });
+      const layout = await baseLayout();
+      assert.equal(layout.scrollWidth <= layout.width && !layout.error && layout.detail.right <= layout.width, true, `Base editor fits both themes and viewport sizes: ${JSON.stringify(layout)}`);
       await shot(`base-${width}-${theme}`);
     }
   }

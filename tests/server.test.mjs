@@ -1,13 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { access } from 'node:fs/promises';
+import { access, readFile } from 'node:fs/promises';
 import http from 'node:http';
-import { startServer } from '../src/server.mjs';
+import { startTestServer } from './helpers/test-server.mjs';
+import { emptyState, STATE_VERSION } from '../src/store.mjs';
 
 const detector = async () => [{ id: 'codex', name: 'Codex', available: true, version: 'test fixture' }];
 async function open(t, runner = async () => ({ text: 'Add the route. Do the tests.', provider: 'codex', durationMs: 15 })) {
-  const app = await startServer({ port: 0, runner, detector });
-  t.after(() => app.close());
+  const app = await startTestServer(t, { port: 0, runner, detector });
   const { token } = await fetch(app.url + '/api/session').then(r => r.json());
   const post = (data, extra = {}) => fetch(app.url + '/api/generate', {
     method: 'POST', headers: { 'content-type': 'application/json', 'x-ste-token': token, ...extra }, body: JSON.stringify({ quality: 'fast', ...data }),
@@ -120,8 +120,7 @@ test('model lookup is token protected, cached, and validates requested effort be
     lookups++;
     return { provider, source: 'cli', defaultModel: 'test-model', models: [{ id: 'test-model', name: 'Test', efforts: ['low', 'high'] }] };
   };
-  const app = await startServer({ port: 0, detector, catalogReader, runner: async request => { calls++; last = request; return { text: 'Dodaj test.', reportedModels: ['resolved-test-model'] }; } });
-  t.after(() => app.close());
+  const app = await startTestServer(t, { port: 0, detector, catalogReader, runner: async request => { calls++; last = request; return { text: 'Dodaj test.', reportedModels: ['resolved-test-model'] }; } });
   const { token } = await fetch(app.url + '/api/session').then(r => r.json());
   const headers = { 'x-ste-token': token };
   assert.equal((await fetch(app.url + '/api/models?provider=codex')).status, 403);
@@ -150,4 +149,16 @@ test('model lookup is token protected, cached, and validates requested effort be
   assert.equal(lookups, 2);
   await fetch(app.url + '/api/models?provider=codex', { headers });
   assert.equal(lookups, 3);
+});
+
+test('background server polling migrates only its disposable test data without a board request', async t => {
+  const legacy = { ...emptyState(), version: 2, projects: [{ id: 'isolated-fixture', name: 'Fixture', tasks: [] }] };
+  delete legacy.base;
+  const app = await startTestServer(t, { port: 0, detector, initialState: legacy });
+  const deadline = Date.now() + 5000;
+  while (!app.board.store.state && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+  assert.ok(app.board.store.state, 'Autopilot can load state even when this test never requests the board.');
+  const saved = JSON.parse(await readFile(app.board.store.path, 'utf8'));
+  assert.equal(saved.version, STATE_VERSION); assert.equal(saved.projects[0].id, 'isolated-fixture');
+  assert.match(app.board.dataDir, /pb-server-fixture-/);
 });

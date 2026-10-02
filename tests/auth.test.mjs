@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { AUTH_CAPABILITIES, logout, readAuthStatus, startLogin } from '../src/auth.mjs';
 import { ProviderError } from '../src/providers.mjs';
 import { readCodexLimits } from '../src/usage-dashboard.mjs';
-import { startServer } from '../src/server.mjs';
+import { startTestServer } from './helpers/test-server.mjs';
 
 // Fake CLIs only. These tests never run an installed Codex or Claude binary and never sign anyone out.
 async function fakeClis(t) {
@@ -123,10 +123,9 @@ function adapter() {
 async function open(t, options = {}) {
   const auth = adapter();
   let lookups = 0;
-  const app = await startServer({ port: 0, authAdapter: auth, detector: async () => [{ id: 'codex', available: true }],
+  const app = await startTestServer(t, { port: 0, authAdapter: auth, detector: async () => [{ id: 'codex', available: true }],
     catalogReader: async provider => { lookups++; return { provider, source: 'cli', models: [{ id: 'm', name: 'M', efforts: [] }] }; },
     runner: async () => ({ text: 'Add a test.' }), ...options });
-  t.after(() => app.close());
   const { token } = await fetch(app.url + '/api/session').then(r => r.json());
   const post = (path, body, headers = {}) => fetch(app.url + path, { method: 'POST', headers: { 'content-type': 'application/json', 'x-ste-token': token, ...headers }, body: JSON.stringify(body) });
   const get = path => fetch(app.url + path, { headers: { 'x-ste-token': token } });
@@ -153,8 +152,7 @@ test('auth endpoints require the token, local origin, JSON, and explicit sign-ou
 
 test('unsupported native sign-in is reported, not simulated', async t => {
   // The real adapter rejects before starting any process for these providers.
-  const app = await startServer({ port: 0, detector: async () => [] });
-  t.after(() => app.close());
+  const app = await startTestServer(t, { port: 0, detector: async () => [] });
   const { token } = await fetch(app.url + '/api/session').then(r => r.json());
   for (const provider of ['claude', 'gemini', 'agy']) {
     const response = await fetch(app.url + '/api/auth/login', { method: 'POST', headers: { 'content-type': 'application/json', 'x-ste-token': token }, body: JSON.stringify({ provider }) });
