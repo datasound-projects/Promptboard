@@ -702,7 +702,7 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
 #kanban-view .intro-compact > div { min-width: 0; }
 #kanban-title { overflow-wrap: anywhere; }
 #project-toggle { flex: none; width: auto; height: auto; gap: 10px; }
-#kanban-view .kanban-columns { grid-auto-columns: clamp(260px, 23vw, 320px); gap: 0; padding: 8px 0; background: var(--surface-2); scroll-padding: 8px; }
+#kanban-view .kanban-columns { grid-auto-columns: clamp(260px, 23vw, 320px); gap: 4px; padding: 8px 0; background: var(--surface-2); scroll-padding: 8px; }
 #kanban-view .kanban-column { border: 0; border-top: 2px solid color-mix(in srgb, var(--stage) 35%, var(--surface-2)); border-right: 1px solid var(--line); border-radius: 0; background: transparent; }
 #kanban-view .kanban-column:last-child { border-right: 0; }
 #kanban-view .kanban-column-heading { padding: 12px 12px 0; gap: 8px; }

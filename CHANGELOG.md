@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Kanban: separate columns with a minimal 4px gap while retaining subtle top accents.
+
 - Composer: remove the introductory input placeholder and example button, including the bundled sample prompt and its event handler.
 
 - Fix: Composer installation labels and generation availability follow the latest connection check; newly available CLIs refresh their model choices.
