@@ -146,7 +146,7 @@ window.PromptboardBase = (() => {
         try {
           const { response, data } = await context.api('/api/base');
           if (!response.ok) throw new Error(data.error || 'Base could not load resources.');
-          if (version === loadVersion) { accept(data); resultLoading = false; renderList(); }
+          if (version === loadVersion) { accept(data); resultLoading = false; renderList(); status(`${state.resources.length} resources · assignments are always optional`); }
           return data;
         } catch (failure) {
           if (version === loadVersion) { resultLoading = false; loadError = failure.message; renderList(); }
@@ -162,7 +162,11 @@ window.PromptboardBase = (() => {
       try {
         if (state.revision < 0) { await context.ensureBoard?.(); await load(); }
         status(`${state.resources.length} resources · assignments are always optional`);
-      } catch (failure) { status(''); resultLoading = false; loadError = failure.message; renderList(); }
+      } catch (failure) {
+        // load() owns its generation-guarded error state. Only an initial board-load
+        // failure needs a local error; an obsolete show() failure must not replace it.
+        if (!loadError && !loading && state.revision < 0) { resultLoading = false; loadError = failure.message; renderList(); }
+      }
     }
     function openDialog(title, nodes) {
       $('#base-dialog-heading').textContent = title;

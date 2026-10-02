@@ -321,7 +321,7 @@ test('latest collection request wins while rapid category switches, failures and
   assert.equal($('#base-list').children.length, 0); assert.match($('#base-empty').textContent, /Loading skills/);
   const newer = view.refresh(true); await until(() => pending.has(2), 'newer request'); resolveSecond = pending.get(2);
   resolveSecond({ response: { ok: true }, data: { revision: 3, resources: categoryResources() } }); await newer;
-  resolveFirst({ response: { ok: true }, data: { revision: 3, resources: [{ ...skill, name: 'stale' }] } }); await initial;
+  resolveFirst({ response: { ok: false }, data: { error: 'Obsolete initial failure' } }); await initial;
   assert.equal($('#base-list .base-resource').dataset.resourceId, 'skill_true');
   const failure = view.refresh(true); await until(() => pending.has(3), 'failure request'); resolveThird = pending.get(3);
   resolveThird({ response: { ok: false }, data: { error: 'Connection unavailable' } }); await assert.rejects(failure);
@@ -333,6 +333,11 @@ test('latest collection request wins while rapid category switches, failures and
   pending.get(4)({ response: { ok: true }, data: { revision: 4, resources: categoryResources() } });
   await until(() => $('#base-list').children.length === 1, 'retry result');
   assert.equal($('#base-filter').value, 'enabled'); assert.equal($('#base-sort').value, 'name'); assert.equal($('#base-view-mode').value, 'list');
+  const obsolete = view.refresh(true), latest = view.refresh(true);
+  await until(() => pending.has(6), 'overlapping equal-revision refreshes');
+  pending.get(6)({ response: { ok: true }, data: { revision: 4, resources: categoryResources() } }); await latest;
+  pending.get(5)({ response: { ok: true }, data: { revision: 4, resources: [{ ...skill, name: 'stale' }] } }); await obsolete;
+  assert.equal($('#base-list .base-resource').dataset.resourceId, 'skill_true'); assert.equal($('.base-list-panel').getAttribute('aria-busy'), 'false');
 });
 
 test('category counts track canonical mutations and keyboard focus alone never changes the filter', async t => {
