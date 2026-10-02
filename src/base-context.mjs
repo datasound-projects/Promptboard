@@ -128,7 +128,7 @@ export async function captureSources(definition, { workspacePath, approvedRoots 
         if (source.pageId && page.id !== source.pageId) continue;
         const size = Buffer.byteLength(page.markdown);
         if (result.length >= limit || size > MAX_FILE || bytes + size > MAX_TOTAL) { omitted.push(page.id); continue; }
-        bytes += size; result.push({ id: page.id, name: page.title, text: page.markdown, provenance: { resourceId: source.resourceId, revision: loaded.revision, section: page.id, contentHash: digest(page.markdown), retrievedAt: Date.now() } });
+        bytes += size; result.push({ id: digest(`knowledge:${source.resourceId}:${page.id}`).slice(0, 24), name: page.title, text: page.markdown, provenance: { resourceId: source.resourceId, revision: loaded.revision, section: page.id, contentHash: digest(page.markdown), retrievedAt: Date.now() } });
       }
       if (source.pageId && !loaded.content?.pages?.some(page => page.id === source.pageId)) throw new BaseDeliveryError('The selected knowledge page is unavailable.', 'BASE_SOURCE_UNAVAILABLE');
       if (loaded.content?.body && !source.pageId) {

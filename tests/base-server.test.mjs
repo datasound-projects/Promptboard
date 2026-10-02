@@ -109,6 +109,37 @@ test('wiki generation returns a reviewable draft through the shared restricted r
   assert.equal(refresh.status, 400); assert.equal((await w.board.base.detail(wiki.id)).content.sources.length, 1, 'Refresh never clears pasted sources.');
 });
 
+test('refresh replaces live captures without deleting pasted sources or accumulating stale captures', async t => {
+  const w = await world(t), upstream = await w.create(knowledge);
+  const collection = await w.create({ ...knowledge, name: 'Mixed sources', configuration: { sources: [{ kind: 'knowledge', resourceId: upstream.id }] } });
+  const refresh = async () => {
+    const saved = await w.board.base.detail(collection.id);
+    const response = await w.request(`/api/base/resources/${collection.id}/refresh`, { expectedRevision: saved.revision });
+    assert.equal(response.status, 200, JSON.stringify(response.data));
+    return w.board.base.detail(collection.id);
+  };
+  let saved = await refresh();
+  assert.equal(saved.content.sources.find(source => source.id === 'source-one')?.text, knowledge.content.sources[0].text);
+  assert.equal(saved.content.sources.length, 2);
+  await w.board.base.update(upstream.id, { content: { pages: [{ id: 'replacement', title: 'New page', markdown: 'Fresh documentation' }] } }, { expectedRevision: upstream.revision });
+  saved = await refresh();
+  assert.equal(saved.content.sources.length, 2, 'A removed live page is replaced, while the pasted source remains.');
+  assert.ok(saved.content.sources.some(source => source.text === 'Fresh documentation'));
+  assert.equal(saved.content.sources.some(source => source.text === 'Keep this manual wording.'), false);
+  assert.equal((await refresh()).content.sources.length, 2, 'Repeated refresh does not duplicate captures.');
+});
+
+test('context refresh keeps same-named pages from separate knowledge collections distinct', async t => {
+  const w = await world(t), first = await w.create(knowledge);
+  const second = await w.create({ ...knowledge, name: 'Another wiki', content: { pages: [{ id: 'manual', title: 'Manual page', markdown: 'Different collection text' }] } });
+  const context = await w.create({ kind: 'context', name: 'Both wikis', enabled: true, trust: 'trusted', configuration: { sources: [{ kind: 'knowledge', resourceId: first.id }, { kind: 'knowledge', resourceId: second.id }] } });
+  const response = await w.request(`/api/base/resources/${context.id}/refresh`, { expectedRevision: context.revision });
+  assert.equal(response.status, 200, JSON.stringify(response.data));
+  const sources = (await w.board.base.detail(context.id)).content.sources;
+  assert.equal(sources.length, 2); assert.equal(new Set(sources.map(source => source.id)).size, 2);
+  assert.deepEqual(sources.map(source => source.text), ['Keep this manual wording.', 'Different collection text']);
+});
+
 test('wiki operation cancellation is scoped and shares Compose/auth job coordination', async t => {
   let enter;
   const entered = new Promise(resolve => { enter = resolve; });

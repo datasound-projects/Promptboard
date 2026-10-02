@@ -296,6 +296,31 @@ window.PromptboardBase = (() => {
       });
       $('#base-detail').replaceChildren(form);
       if (!item.id) name.focus();
+      const editable = () => ({ name: name.value, description: description.value, tags: tags.value, enabled: enabled.control.checked, trust: trust.value, dependencies: dependencies.read(), ...config.read() });
+      const savedDraft = JSON.stringify(editable());
+      // Discovery and refresh publish new immutable revisions too. Keep their editor
+      // synchronized, without discarding a draft or allowing saves during the operation.
+      form.savedAction = async (action, success) => {
+        let result = el('div'); form.append(result);
+        try {
+          if (JSON.stringify(editable()) !== savedDraft) throw new Error('Save your edits before testing or refreshing this resource.');
+        } catch (error) { result.append(el('p', error.message, 'inline-error')); return; }
+        const controls = [...form.querySelectorAll('input, textarea, select, button')].map(node => [node, node.disabled]);
+        controls.forEach(([node]) => { node.disabled = true; });
+        let data, failure;
+        try { data = await action(); } catch (error) { failure = error; }
+        try {
+          // Failed tests also persist a connection result and advance the revision.
+          await load();
+          if (form.isConnected && chosen === item.id) {
+            await openResource(item.id);
+            const current = $('#base-detail .base-resource-form');
+            if (current && chosen === item.id) { result = el('div'); current.append(result); }
+          }
+          result.replaceChildren(failure ? el('p', failure.message, 'inline-error') : success(data));
+        } catch (error) { result.replaceChildren(el('p', (failure || error).message, 'inline-error')); }
+        finally { controls.forEach(([node, disabled]) => { node.disabled = disabled; }); }
+      };
     }
     function fileEditor(files = [], label = 'Supporting files') {
       const list = el('div', undefined, 'base-files');
@@ -344,11 +369,10 @@ window.PromptboardBase = (() => {
         const http = group('HTTP server', field('Endpoint', endpoint), headers);
         const update = () => { stdio.hidden = transport.value !== 'stdio'; http.hidden = transport.value === 'stdio'; }; transport.addEventListener('change', update); update();
         form.append(field('Transport', transport), stdio, http, auth.label, field('Authentication requirements', authDescription), p('MCP is available only where the agent adapter can safely deliver it. Planning and Code Review do not receive Base MCP servers. A connection test starts the configured server or contacts its endpoint; trust and an explicit action are required.'));
-        if (item.id) form.append(busyButton('Test connection and discover tools', async () => {
-          const result = el('div'); form.append(result);
-          try { const data = await request(`/api/base/resources/${encodeURIComponent(item.id)}/test`, { method: 'POST', body: { expectedRevision: item.revision }, timeoutMs: 30000 }); result.replaceChildren(p('Connection test completed. This does not prove authenticated agent compatibility.'), el('pre', JSON.stringify(data.connection || data.result || data, null, 2), 'base-code')); await load(); }
-          catch (error) { result.replaceChildren(el('p', error.message, 'inline-error')); }
-        }));
+        if (item.id) form.append(button('Test connection and discover tools', () => form.savedAction(
+          () => request(`/api/base/resources/${encodeURIComponent(item.id)}/test`, { method: 'POST', body: { expectedRevision: item.revision }, timeoutMs: 30000 }),
+          data => { const result = el('div'); result.append(p('Connection test completed. This does not prove authenticated agent compatibility.'), el('pre', JSON.stringify(data.connection || data.result || data, null, 2), 'base-code')); return result; }
+        )));
         return { read: () => ({ configuration: { ...config, transport: transport.value, ...(transport.value === 'stdio' ? { command: command.value.trim(), args: lineValues(args.value), env: env.read() } : { endpoint: endpoint.value.trim(), headers: headers.read() }), auth: { required: auth.control.checked, description: authDescription.value } }, content }) };
       }
       if (item.kind === 'knowledge') return knowledgeEditor(item, form);
@@ -371,7 +395,7 @@ window.PromptboardBase = (() => {
         const budget = Object.assign(input(String(config.budgetChars || 24000)), { type: 'number', min: '1000', max: '100000', step: '1000' });
         const maxFiles = Object.assign(input(String(config.maxFiles || 30)), { type: 'number', min: '1', max: '100' });
         form.append(sourceList, actions(button('Add source', () => add({})), button('Manage external roots…', approveRoot, 'text-button')), field('Context budget (characters)', budget), field('Maximum files', maxFiles), p('Repository paths resolve in the task worktree at launch. Secret files, dependency folders, symlinks outside approved roots, and generated output are excluded. Supplied captures record their time and content hash; omitted material is reported. Token counts are estimates.'));
-        if (item.id) form.append(sourceTools(item));
+        if (item.id) form.append(sourceTools(item, form));
         return { read: () => ({ configuration: { ...config, sources: [...sourceList.children].map(row => row.read()), budgetChars: Number(budget.value), maxFiles: Number(maxFiles.value) }, content }) };
       }
       if (item.kind === 'tool') {
@@ -459,10 +483,10 @@ window.PromptboardBase = (() => {
       });
       form.append(group('Sources', p('Paste content or explicitly select Markdown/text files. Basic wiki editing and search work without a model.'), sourceList, button('Paste a source', () => { sources.push({ id: `source_${globalThis.crypto?.randomUUID?.() || Date.now().toString(36)}`, name: 'Pasted source', text: '', provenance: { method: 'paste', capturedAt: new Date().toISOString() } }); renderSources(); sourceList.lastChild.open = true; }), details('Import selected files or a folder', field('Markdown/text files', fileInput), field('Folder (bounded text selection)', folderInput)), details('Import documentation URL', field('Public documentation URL', url), p('Text is fetched only by this action. Redirects, size, and network destinations are validated.'), importUrl), sourceStatus));
       renderSources();
-      if (item.id) form.append(sourceTools(item), button('Generate/update from sources…', () => openWikiGenerate(item), 'secondary-button'), p('Generation uses the saved sources. Save manual edits first. Proposed changes remain a reviewable draft until you apply them.'));
+      if (item.id) form.append(sourceTools(item, form), button('Generate/update from sources…', () => openWikiGenerate(item), 'secondary-button'), p('Generation uses the saved sources. Save manual edits first. Proposed changes remain a reviewable draft until you apply them.'));
       return { read: () => { flush(); return { configuration: item.configuration, content: { ...content, pages, sources } }; } };
     }
-    function sourceTools(item) {
+    function sourceTools(item, form) {
       const box = el('div', undefined, 'base-source-tools');
       const query = input('', 500); query.placeholder = 'Search saved source text…'; query.setAttribute('aria-label', 'Search sources');
       const result = el('div');
@@ -474,10 +498,10 @@ window.PromptboardBase = (() => {
         try { const data = await request(`/api/base/resources/${encodeURIComponent(item.id)}/search?q=${encodeURIComponent(query.value)}`); result.replaceChildren(); for (const match of data.results || data.matches || []) { result.append(el('h4', match.title || match.name || match.sourceId || 'Source'), p(match.excerpt || match.text || ''), p(match.provenance?.url || match.provenance?.path || '')); } if (!result.children.length) result.append(p('No matching source passages.')); }
         catch (error) { result.replaceChildren(el('p', error.message, 'inline-error')); }
       });
-      const refresh = busyButton('Refresh saved sources', async () => {
-        try { if (needsProject && !repositoryProject.value) throw new Error('Choose a project for this repository source preview. Runs still use their own worktree.'); const data = await request(`/api/base/resources/${encodeURIComponent(item.id)}/refresh`, { method: 'POST', body: { expectedRevision: item.revision, ...(repositoryProject.value ? { projectId: repositoryProject.value } : {}) }, timeoutMs: 60000 }); result.replaceChildren(p(data.message || 'Sources refreshed. Live content is captured with its retrieval time and content hash.'), data.capture ? el('pre', JSON.stringify(data.capture, null, 2), 'base-code') : p('')); await load(); }
-        catch (error) { result.replaceChildren(el('p', error.message, 'inline-error')); }
-      });
+      const refresh = button('Refresh saved sources', () => form.savedAction(async () => {
+        if (needsProject && !repositoryProject.value) throw new Error('Choose a project for this repository source preview. Runs still use their own worktree.');
+        return request(`/api/base/resources/${encodeURIComponent(item.id)}/refresh`, { method: 'POST', body: { expectedRevision: item.revision, ...(repositoryProject.value ? { projectId: repositoryProject.value } : {}) }, timeoutMs: 60000 });
+      }, data => p(data.message || 'Sources refreshed. Live content is captured with its retrieval time and content hash.')));
       box.append(repositoryProject, actions(query, search, refresh), result); return box;
     }
     function revisionHistory(item) {

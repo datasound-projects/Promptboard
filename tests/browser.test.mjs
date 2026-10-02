@@ -10,11 +10,49 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findChrome, launch } from './helpers/browser.mjs';
 import { startServer } from '../src/server.mjs';
+import { startTestServer } from './helpers/test-server.mjs';
 
 const fake = fileURLToPath(new URL('./fixtures/fake-agent.cjs', import.meta.url));
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } }).trim();
 const chrome = await findChrome();
 const skip = process.platform === 'win32' || !chrome ? 'Chrome is not installed or the platform has no PTY support in this test.' : false;
+
+test('Base saved-resource actions refresh real browser editors after discovery failures and source capture', { skip: !chrome, timeout: 30000 }, async t => {
+  let tests = 0;
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [], mcpTester: async () => {
+    if (++tests === 2) throw Object.assign(new Error('Fixture failure'), { code: 'BASE_MCP_FAILED' });
+    return { status: 'connected', tools: [{ name: 'lookup' }], resources: [], prompts: [] };
+  } });
+  const mcp = await app.board.base.create({ kind: 'mcp', name: 'Browser MCP', enabled: true, trust: 'trusted', configuration: { transport: 'stdio', command: 'inert-fixture' } });
+  const upstream = await app.board.base.create({ kind: 'knowledge', name: 'Upstream', enabled: true, trust: 'trusted', content: { pages: [{ id: 'guide', title: 'Guide', markdown: 'Fresh upstream documentation' }] } });
+  const wiki = await app.board.base.create({ kind: 'knowledge', name: 'Mixed wiki', enabled: true, trust: 'trusted', configuration: { sources: [{ kind: 'knowledge', resourceId: upstream.id }] }, content: { sources: [{ id: 'pasted', name: 'Pasted notes', text: 'Keep my local notes' }] } });
+  const browser = await launch();
+  if (!browser) { t.skip('Chrome did not start.'); return; }
+  t.after(() => browser.close());
+  const click = text => browser.eval(`[...document.querySelectorAll('#base-detail button')].find(node => node.textContent === ${JSON.stringify(text)}).click();`);
+  const editName = value => browser.eval(`const input = document.querySelector('#base-resource-name'); input.value = ${JSON.stringify(value)}; input.dispatchEvent(new Event('input', { bubbles: true }));`);
+  const open = async id => {
+    await browser.eval(`document.querySelector('[data-resource-id="${id}"]').click();`);
+    await browser.until(`document.querySelector('#base-resource-name') && document.querySelector('.base-resource-form')`, 'resource editor');
+  };
+  await browser.goto(`${app.url}/#/base`);
+  await browser.until(`document.querySelector('[data-resource-id="${mcp.id}"]')`, 'Base library');
+  await open(mcp.id); await editName('Unsaved MCP name'); await click('Test connection and discover tools');
+  await browser.until(`document.querySelector('#base-detail').textContent.includes('Save your edits')`, 'unsaved draft protected');
+  assert.equal(tests, 0); assert.equal(await browser.eval(`return document.querySelector('#base-resource-name').value;`), 'Unsaved MCP name');
+  await click('Cancel'); await browser.until(`document.querySelector('#base-resource-name')?.value === 'Browser MCP'`, 'saved MCP reopened');
+  await click('Test connection and discover tools'); await browser.until(`document.querySelector('.base-resource-form')?.textContent.includes('r2')`, 'successful discovery revision');
+  await editName('After discovery'); await click('Save resource'); await browser.until(`document.querySelector('.base-resource-form')?.textContent.includes('r3')`, 'save after discovery');
+  await click('Test connection and discover tools'); await browser.until(`document.querySelector('.base-resource-form')?.textContent.includes('r4')`, 'failed discovery revision');
+  assert.equal((await app.board.base.detail(mcp.id)).connectionTest.status, 'failed');
+  await editName('After failed discovery'); await click('Save resource'); await browser.until(`document.querySelector('.base-resource-form')?.textContent.includes('r5')`, 'save after failed discovery');
+  assert.equal((await app.board.base.detail(mcp.id)).name, 'After failed discovery');
+  await open(wiki.id); await click('Refresh saved sources');
+  await browser.until(`[...document.querySelectorAll('.base-source-list textarea')].some(node => node.value === 'Fresh upstream documentation')`, 'captured sources displayed');
+  await click('Save resource'); await browser.until(`document.querySelector('.base-resource-form')?.textContent.includes('r3')`, 'save refreshed wiki');
+  assert.deepEqual((await app.board.base.detail(wiki.id)).content.sources.map(source => source.text), ['Keep my local notes', 'Fresh upstream documentation']);
+  assert.deepEqual(browser.consoleMessages.filter(message => message.startsWith('EXCEPTION')), []);
+});
 
 test('terminal dock in a real browser: start, render, type, collapse, resize, separate sessions, reconnect, no HTML injection', { skip, timeout: 120000 }, async t => {
   const temp = async prefix => { const dir = await realpath(await mkdtemp(join(tmpdir(), prefix))); t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })); return dir; };

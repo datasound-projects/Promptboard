@@ -190,7 +190,9 @@ test('Knowledge page selection and configured retrieval query constrain captured
   const dir = await directory(t), wiki = resource('wiki', 'knowledge'); wiki.content = { body: 'collection body', pages: [{ id: 'one', title: 'One', markdown: 'unrelated material' }, { id: 'two', title: 'Two', markdown: 'selected needle' }] };
   const ctx = resource('context', 'context', { sources: [{ kind: 'knowledge', resourceId: 'wiki', pageId: 'two' }], query: 'needle', budgetChars: 1000 });
   const captured = await captureSources(ctx, { resources: [wiki], readRevision: async () => wiki });
-  assert.deepEqual(captured.sources.map(source => source.id), ['two']);
+  assert.equal(captured.sources.length, 1);
+  assert.equal(captured.sources[0].provenance.section, 'two');
+  assert.equal(captured.sources[0].provenance.resourceId, wiki.id);
   const state = stateWith(wiki, ctx), manifest = preview(state, { baseBinding: binding(['context']) });
   const delivery = await prepareBase({ manifest, currentResources: [wiki, ctx], readRevision: async ref => ref.id === 'wiki' ? wiki : ctx, runDir: dir });
   assert.match(delivery.sections, /selected needle/);

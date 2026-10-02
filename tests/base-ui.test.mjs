@@ -168,6 +168,45 @@ test('MCP discovery requires an explicit test action; Context7 preset remains in
   assert.equal(calls.filter(call => call.path.endsWith('/test')).length, 1);
 });
 
+for (const outcome of ['connected', 'failed']) test(`MCP ${outcome} discovery refreshes editor revisions before retrying or saving`, async t => {
+  const mcp = { ...skill, id: 'res_mcp', kind: 'mcp', configuration: { transport: 'stdio', command: 'fixture', args: [] }, content: {} };
+  const { $, view, calls, clickText, submit } = setup(t, { resources: [mcp], respond: (request, state) => {
+    if (!request.path.endsWith('/test')) return;
+    const item = state.resources[0]; item.revision++; state.revision++;
+    item.connectionTest = { status: outcome, testedRevision: item.revision };
+    return outcome === 'failed' ? { response: { ok: false }, data: { code: 'BASE_MCP_FAILED', error: 'Fixture connection failed.' } }
+      : { response: { ok: true }, data: { resource: structuredClone(item), result: item.connectionTest } };
+  } });
+  await view.show(); await view.openResource(mcp.id);
+  clickText('Test connection and discover tools');
+  await until(() => $('.base-resource-form').textContent.includes('r2'), 'editor reflects persisted test revision');
+  if (outcome === 'failed') assert.match($('.base-resource-form').textContent, /Fixture connection failed/);
+  $('#base-resource-name').value = 'Edited after discovery'; submit($('.base-resource-form'));
+  await until(() => calls.some(call => call.method === 'PATCH'), 'save after discovery');
+  const saved = calls.find(call => call.method === 'PATCH').body;
+  assert.equal(saved.expectedRevision, 2); assert.equal(saved.expectedBaseRevision, 4);
+});
+
+test('saved-resource actions preserve drafts and refresh source text before a later save', async t => {
+  const wiki = { ...skill, id: 'res_wiki', kind: 'knowledge', configuration: { sources: [{ kind: 'knowledge', resourceId: skill.id }] }, content: { pages: [], sources: [{ id: 'live', name: 'Live source', text: 'Old capture' }] } };
+  const { $, view, calls, clickText, win, submit } = setup(t, { resources: [wiki], respond: (request, state) => {
+    if (!request.path.endsWith('/refresh')) return;
+    const item = state.resources[0]; item.revision++; state.revision++; item.content.sources[0].text = 'Fresh capture';
+    return { response: { ok: true }, data: { resource: structuredClone(item) } };
+  } });
+  await view.show(); await view.openResource(wiki.id);
+  $('#base-resource-name').value = 'Unsaved title'; $('#base-resource-name').dispatchEvent(new win.Event('input', { bubbles: true }));
+  clickText('Refresh saved sources');
+  await until(() => $('.base-resource-form').textContent.includes('Save your edits'), 'dirty draft guarded');
+  assert.equal(calls.some(call => call.path.endsWith('/refresh')), false); assert.equal($('#base-resource-name').value, 'Unsaved title');
+  await view.openResource(wiki.id); clickText('Refresh saved sources');
+  await until(() => [...$('.base-source-list').querySelectorAll('textarea')].some(node => node.value === 'Fresh capture'), 'refreshed content displayed');
+  submit($('.base-resource-form'));
+  await until(() => calls.some(call => call.method === 'PATCH'), 'save fresh source content');
+  const saved = calls.find(call => call.method === 'PATCH').body;
+  assert.equal(saved.expectedRevision, 2); assert.equal(saved.expectedBaseRevision, 4); assert.equal(saved.content.sources[0].text, 'Fresh capture');
+});
+
 test('run inspection keeps configured, supplied, and observed facts separate and scopes next-run edits', async t => {
   const { $, view, calls, clickText, win } = setup(t);
   await view.show();

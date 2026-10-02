@@ -108,7 +108,7 @@ function provenance(value = {}) {
     ...(value.resourceId ? { resourceId: id(value.resourceId) } : {}), ...(value.rootId ? { rootId: id(value.rootId) } : {}),
     ...(value.kind ? { kind: string(value.kind, 40, 'Source kind') } : {}), ...(Number.isSafeInteger(value.revision) && value.revision > 0 ? { revision: value.revision } : {}),
     ...(Number.isFinite(value.generatedAt) ? { generatedAt: value.generatedAt } : {}), ...(value.sourceIds ? { sourceIds: strings(value.sourceIds, 200, 100, 'Source IDs').map(sourceId => id(sourceId)) } : {}),
-    ...(['paste', 'user-selected-file'].includes(value.method) ? { method: value.method } : {}), ...(typeof value.capturedAt === 'string' && value.capturedAt.length <= 40 && Number.isFinite(Date.parse(value.capturedAt)) ? { capturedAt: new Date(value.capturedAt).toISOString() } : {}),
+    ...(['paste', 'user-selected-file', 'refresh'].includes(value.method) ? { method: value.method } : {}), ...(typeof value.capturedAt === 'string' && value.capturedAt.length <= 40 && Number.isFinite(Date.parse(value.capturedAt)) ? { capturedAt: new Date(value.capturedAt).toISOString() } : {}),
     ...(value.sources ? { sources: (() => { if (!Array.isArray(value.sources) || value.sources.length > 200) fail('Too many provenance sources.'); return value.sources.map(source => {
       if (!object(source)) fail('Invalid provenance source.');
       const { sources, ...flat } = source; return { ...(source.id ? { id: id(source.id) } : {}), ...provenance(flat) };

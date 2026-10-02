@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fix Base editing after MCP discovery and source refresh: reload persisted revisions and captured text, including failed discovery results, so subsequent saves and retries remain valid. Guard unsaved drafts and overlapping saves during these operations.
+- Fix Base source refresh preserving pasted/uploaded content while replacing only managed live captures. Knowledge pages from different collections retain distinct source identities.
+
 - Base: add the global **Compose | Kanban | Base** navigation and an optional local library of instruction skills, MCP connections, Markdown wikis, context rules, command recipes/discovered MCP tool references, agent profiles, and packs.
 - Base assignments: reference resources across global, project, built-in/custom-column, task, and task-column scopes, with inheritance, exclusions, replacement/opt-out, effective previews, and atomic multi-target application. Profile selection remains an explicit agent configuration action; assignments never launch work.
 - Base delivery: pin immutable definitions with accepted runs and prepare resources through the existing Supervisor. Supported writing-stage MCP configuration is scoped per run; portable instructions/context preserve the exact task prompt and existing evidence. Run details distinguish configured resources, supplied captures, warnings, and observed invocations. Read-only stages retain their restrictions, and queued delivery rechecks trust/access revocations.
