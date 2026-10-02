@@ -482,7 +482,7 @@ async function importFile(ctx, text) {
 }
 async function gitRepo(t) {
   const dir = await realpath(await mkdtemp(join(tmpdir(), 'pb-ui-repo-')));
-  t.after(() => rm(dir, { recursive: true, force: true }));
+  t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const git = (...args) => execFileSync('git', args, { cwd: dir, env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } });
   git('init', '-q', '-b', 'trunk'); git('config', 'user.email', 't@example.com'); git('config', 'user.name', 'T');
   await writeFile(join(dir, 'a.txt'), 'a\n'); git('add', '.'); git('commit', '-q', '-m', 'init');
@@ -1290,7 +1290,7 @@ test('a folder that is not a Git repository is set up only after confirmation; i
   Object.assign(process.env, { GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@example.com' });
   t.after(() => { for (const [key, value] of Object.entries(saved)) if (value === undefined) delete process.env[key]; else process.env[key] = value; });
   const dir = await realpath(await mkdtemp(join(tmpdir(), 'pb-ui-plain-')));
-  t.after(() => rm(dir, { recursive: true, force: true }));
+  t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   await writeFile(join(dir, 'notes.txt'), 'private notes\n');
   const ctx = await setup(t);
   const { $ } = ctx;
