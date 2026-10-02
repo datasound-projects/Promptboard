@@ -922,7 +922,7 @@ function openHelp(privacy = false) {
       ]),
       ...section('Accounts and costs', [
         'No API key is needed. Each CLI uses its own sign-in, limits, and costs. GitHub uses the GitHub CLI sign-in.',
-        'Promptboard never stores these tokens. It only reads usage numbers that the CLIs record.',
+        'Promptboard never stores account tokens. Usage reads local CLI session files from this machine, including sessions outside Promptboard, and keeps only numeric metrics, model IDs, and tool names. Codex account limits are queried through its CLI; Claude run usage snapshots are saved locally.',
         'Compose calls: Fast 1, Reviewed 2, or 4 when a confirmed problem is repaired.',
       ]),
       ...section('What Promptboard does not do', [
@@ -3921,3 +3921,85 @@ if (typeof ResizeObserver === 'function') {
 }
 // A required field inside a collapsed card would block submit without a visible message. Reopen it.
 $('#settings-body').addEventListener('invalid', () => setSettingsCollapsed(false, false), true);
+
+// Read-only provider usage. Poll independently of board updates, once per minute.
+let usageLoading = false;
+function usageChart(points) {
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('viewBox', '0 0 300 52'); svg.setAttribute('role', 'img');
+  svg.setAttribute('aria-label', 'Daily token usage over the last 30 days'); svg.classList.add('usage-chart');
+  const max = Math.max(1, ...points.map(p => p.tokens));
+  points.forEach((point, index) => {
+    const rect = document.createElementNS(ns, 'rect');
+    rect.setAttribute('x', String(index * 10)); rect.setAttribute('y', String(50 - point.tokens / max * 48));
+    rect.setAttribute('width', '7'); rect.setAttribute('height', String(point.tokens ? Math.max(1, point.tokens / max * 48) : 1));
+    rect.setAttribute('rx', '1');
+    const title = document.createElementNS(ns, 'title'); title.textContent = `${point.day}: ${point.tokens.toLocaleString()} tokens`; rect.append(title); svg.append(rect);
+  });
+  return svg;
+}
+function renderUsage(data) {
+  const open = new Set([...$('#usage-providers').querySelectorAll('details[open]')].map(x => x.dataset.provider));
+  const content = document.createDocumentFragment();
+  for (const provider of data.providers) {
+    const section = document.createElement('section'); section.className = 'usage-provider';
+    const head = document.createElement('h3'); head.textContent = provider.name; section.append(head);
+    const limits = provider.limits;
+    if (limits.windows.length) {
+      for (const window of limits.windows) {
+        const label = document.createElement('p'); label.className = 'usage-limit-label';
+        const remaining = document.createElement('strong'); remaining.textContent = `${Math.round(window.remainingPercent)}% left`;
+        const meta = document.createElement('span'); meta.textContent = window.windowMinutes ? `${window.label} · ${window.windowMinutes >= 1440 ? `${Math.round(window.windowMinutes / 1440)}d` : window.windowMinutes < 60 ? `${window.windowMinutes}m` : `${window.windowMinutes / 60}h`} window` : window.label.replaceAll('_', ' ');
+        label.append(remaining, meta);
+        const bar = document.createElement('progress'); bar.max = 100; bar.value = window.remainingPercent; bar.setAttribute('aria-label', `${meta.textContent}: ${remaining.textContent}`);
+        section.append(label, bar);
+        if (window.resetsAt) section.append(paragraph(`Resets ${new Date(window.resetsAt).toLocaleString()}`, 'usage-muted'));
+      }
+      const age = limits.checkedAt ? ` · ${timeAgo(limits.checkedAt)}` : '';
+      section.append(paragraph(`${limits.status === 'live' ? 'Live account limits' : 'Last reported limits'}${age}${limits.note ? ` · ${limits.note}` : ''}`, 'usage-muted'));
+    } else section.append(paragraph(limits.note || 'Plan limits unavailable.', 'usage-muted'));
+    const total = provider.inputTokens + provider.cachedTokens + provider.outputTokens;
+    const summary = document.createElement('div'); summary.className = 'usage-metrics';
+    summary.append(paragraph(provider.sessions ? `${tokens(total)} tokens` : 'No local token data', 'usage-total'), paragraph(`${provider.sessions} sessions`, 'usage-muted'), paragraph(provider.costUSD === null ? 'Cost not reported' : `$${provider.costUSD.toFixed(2)} reported estimate`, 'usage-muted'));
+    section.append(summary);
+    if (provider.sessions) section.append(usageChart(provider.daily));
+    if (provider.partial) section.append(paragraph('Partial coverage: some session files exceeded scan limits or could not be read.', 'inline-error'));
+    const details = document.createElement('details'); details.dataset.provider = provider.id; details.open = open.has(provider.id);
+    const toggle = document.createElement('summary'); toggle.textContent = 'Models and tools'; details.append(toggle);
+    if (provider.models.length) {
+      const table = document.createElement('table'); table.className = 'usage-table';
+      const header = document.createElement('tr');
+      for (const text of ['Model', 'Input', 'Cached', 'Output']) { const th = document.createElement('th'); th.textContent = text; th.scope = 'col'; header.append(th); }
+      table.append(header);
+      for (const model of provider.models) {
+        const row = document.createElement('tr');
+        for (const text of [model.model, tokens(model.inputTokens), tokens(model.cachedTokens), tokens(model.outputTokens)]) { const td = document.createElement('td'); td.textContent = text; row.append(td); }
+        table.append(row);
+      }
+      const wrapper = document.createElement('div'); wrapper.className = 'usage-table-wrap'; wrapper.append(table); details.append(wrapper);
+    } else details.append(paragraph('No local model usage reported.', 'usage-muted'));
+    if (provider.tools.length) {
+      const tools = document.createElement('div'); tools.className = 'usage-tools';
+      for (const tool of provider.tools) tools.append(paragraph(`${tool.name} · ${tool.count.toLocaleString()}`, 'usage-muted'));
+      details.append(tools);
+    } else details.append(paragraph('Tool counts not reported.', 'usage-muted'));
+    details.append(paragraph(provider.costNote, 'usage-muted'));
+    section.append(details); content.append(section);
+  }
+  $('#usage-providers').replaceChildren(content);
+  $('#usage-updated').textContent = `Updated ${new Date(data.updatedAt).toLocaleTimeString()} · every minute`;
+}
+async function loadUsage(force = false) {
+  if (usageLoading || !$('#usage-dialog').open) return;
+  usageLoading = true; $('#usage-refresh').disabled = true;
+  try { const { response, data } = await api(`/api/usage${force ? '?refresh=1' : ''}`, { timeoutMs: 60000 }); if (!response.ok) throw new Error(data.error || 'Usage unavailable.'); renderUsage(data); $('#usage-error').hidden = true; }
+  catch (error) { $('#usage-error').textContent = `${error.message} Previously shown figures may be stale.`; $('#usage-error').hidden = false; }
+  finally { usageLoading = false; $('#usage-refresh').disabled = false; }
+}
+$('#usage-open').addEventListener('click', () => { $('#usage-dialog').showModal(); loadUsage(); });
+$('#usage-close').addEventListener('click', () => { $('#usage-dialog').close(); $('#usage-open').focus(); });
+$('#usage-dialog').addEventListener('close', () => $('#usage-open').focus());
+$('#usage-refresh').addEventListener('click', () => loadUsage(true));
+setInterval(() => { if (!document.hidden) loadUsage(); }, 60000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) loadUsage(); });

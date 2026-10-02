@@ -1,3 +1,4 @@
+import { UsageDashboard } from './usage-dashboard.mjs';
 import http from 'node:http';
 import { randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
@@ -224,8 +225,9 @@ function streamRun(supervisor, req, res, runId, after) {
   req.on('close', () => { clearInterval(ping); unsubscribe(); });
 }
 
-export async function startServer({ port = 4318, runner = runProvider, detector = detectProviders, catalogReader = discoverModels, authAdapter = auth, dataDir = defaultDataDir(), projectsDir, executor = 'auto', folderPicker = chooseFolder, githubPty = loadPty } = {}) {
+export async function startServer({ port = 4318, runner = runProvider, detector = detectProviders, catalogReader = discoverModels, authAdapter = auth, dataDir = defaultDataDir(), projectsDir, executor = 'auto', folderPicker = chooseFolder, githubPty = loadPty, usageReader } = {}) {
   // The board loads lazily, so starting the server never reads or writes board files.
+  const usage = usageReader || new UsageDashboard({ dataDir });
   const board = new Board({ dataDir, ...(projectsDir ? { projectsDir } : {}) });
   board.executor = executor === 'auto' ? new Supervisor({ board, dataDir }) : executor;
   board.folderPicker = folderPicker;
@@ -301,6 +303,10 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
     if (req.method === 'GET' && pathname === '/api/models') {
       try { return send(res, 200, await getCatalog(requestUrl.searchParams.get('provider'), { refresh: requestUrl.searchParams.get('refresh') === '1' })); }
       catch (error) { return send(res, error.status || 502, { error: error.status === 400 ? error.message : 'Cannot read CLI models. Check sign-in and update your CLI.' }); }
+    }
+    if (req.method === 'GET' && pathname === '/api/usage') {
+      try { return send(res, 200, await usage.get({ refresh: requestUrl.searchParams.get('refresh') === '1' })); }
+      catch { return send(res, 502, { error: 'Usage could not be refreshed. Try again.' }); }
     }
     if (req.method === 'GET' && pathname === '/api/auth') {
       const provider = requestUrl.searchParams.get('provider');
@@ -453,6 +459,7 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
     const listening = new Promise(resolve => server.close(() => resolve()));
     busy?.controller.abort();
     catalogAbort.abort();
+    usage.close?.();
     server.closeIdleConnections();
     // Agent sessions: stop owned process groups, record runs as interrupted, end streams.
     const agents = board.executor?.shutdown ? board.executor.shutdown(Math.min(3000, graceMs)) : null;

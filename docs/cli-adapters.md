@@ -113,3 +113,12 @@ const result = await runProvider({
 - [Gemini ACP model metadata source](https://github.com/google-gemini/gemini-cli/blob/main/packages/cli/src/acp/acpSessionManager.ts)
 - [Antigravity headless model, effort, and stream contracts](https://antigravity.google/docs/cli/headless/)
 - [Antigravity permission rules](https://antigravity.google/docs/permissions?tab=cli)
+
+## Usage dashboard
+
+- Codex: read-only `account/rateLimits/read` after app-server initialization ([official protocol](https://learn.chatgpt.com/docs/app-server)); never starts a thread or turn. Local rollout token totals are differenced across model changes.
+- Claude: local transcript usage is deduplicated by message ID. Per-run `statusLine` receives documented cost and rate-limit fields ([official status-line schema](https://code.claude.com/docs/en/statusline)); a whitelist-only bridge records these without changing global settings. Costs are CLI estimates, not invoices.
+- Gemini: local session JSON/JSONL provides per-message tokens and tool names ([record format](https://github.com/google-gemini/gemini-cli/blob/main/packages/core/src/services/chatRecordingTypes.ts)). The interactive `/stats model` remains the source for account quota ([quota docs](https://geminicli.com/docs/resources/quota-and-pricing/)).
+- Antigravity: unsupported metrics are explicitly unavailable. No guessed token pricing or quota percentages.
+
+The server's `/api/usage` endpoint requires the usual local session token. Collection begins on opening Usage, refreshes every 60 seconds, and stops at server shutdown. Bounded scans use known session directories only and return sanitized aggregates. Manual refresh is coalesced and rate-limited to once per ten seconds.

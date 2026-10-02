@@ -28,15 +28,17 @@ function fakeAuth(overrides = {}) {
     login: async (provider, options) => { log.push(['login', provider, options.method]); options.onUpdate({ authUrl: 'https://auth.example/start' }); return { state: 'signed-in' }; },
     logout: async provider => { log.push(['logout', provider]); return { state: 'signed-out' }; }, ...overrides };
 }
-async function setup(t, { catalogReader = async id => ({ provider: id, ...catalogs[id], note: 'Native model options.' }), storage, prefs = {}, kanban, hash = '', generationResponse, authAdapter = fakeAuth(), runner, dataDir, executor = 'auto', folderPicker } = {}) {
+async function setup(t, { catalogReader = async id => ({ provider: id, ...catalogs[id], note: 'Native model options.' }), storage, prefs = {}, kanban, hash = '', generationResponse, authAdapter = fakeAuth(), runner, dataDir, executor = 'auto', folderPicker, usageReader } = {}) {
   // Every page gets a private board folder unless a test shares one to simulate a reload.
   if (!dataDir) { dataDir = await mkdtemp(join(tmpdir(), 'pb-ui-')); t.after(() => rm(dataDir, { recursive: true, force: true })); }
   const calls = [];
   const requests = [];
-  const app = await startServer({ port: 0, dataDir, executor, authAdapter, ...(folderPicker ? { folderPicker } : {}), detector: async () => Object.keys(catalogs).map(id => ({ id, available: true })), catalogReader,
+  const app = await startServer({ port: 0, dataDir, executor, authAdapter, usageReader, ...(folderPicker ? { folderPicker } : {}), detector: async () => Object.keys(catalogs).map(id => ({ id, available: true })), catalogReader,
     runner: runner ? async request => { calls.push(request); return runner(request); } : async request => { calls.push(request); return { text: request.prompt.includes('prose in Polish') ? 'Dodaj test.' : request.prompt.includes('prose in German') ? 'Füge einen Test hinzu.' : 'Add a test.', reportedModels: ['actual-model'], durationMs: 3 }; } });
   const dom = new JSDOM(await readFile(new URL('../public/index.html', import.meta.url), 'utf8'), { url: app.url + hash, runScripts: 'outside-only' });
   const win = dom.window;
+  const intervals = [], nativeInterval = win.setInterval.bind(win);
+  win.setInterval = (fn, ms, ...args) => { intervals.push({ fn, ms }); return nativeInterval(fn, ms, ...args); };
   let pending = 0;
   win.fetch = (url, options) => {
     pending++;
@@ -87,7 +89,7 @@ async function setup(t, { catalogReader = async id => ({ provider: id, ...catalo
   const quality = value => { $(`input[name="quality"][value="${value}"]`).checked = true; $(`input[name="quality"][value="${value}"]`).dispatchEvent(new win.Event('change')); };
   // Resolves when no request from the page is in flight.
   const idle = async () => { for (let quiet = 0, end = Date.now() + 5000; quiet < 3 && Date.now() < end;) { await new Promise(resolve => setTimeout(resolve, 10)); quiet = pending ? 0 : quiet + 1; } };
-  return { win, $, choose, radio, quality, submit, calls, requests, downloads, blobs, copied: () => copied, authAdapter, app, dataDir, idle };
+  return { win, intervals, $, choose, radio, quality, submit, calls, requests, downloads, blobs, copied: () => copied, authAdapter, app, dataDir, idle };
 }
 
 test('UI sends selected model, effort, and language through HTTP, then restores history and copies output', async t => {
@@ -2401,4 +2403,31 @@ test('interrupted dirty cards and completed cards delete through HTTP and stay d
   assert.equal(ctx.$('#done-dialog').open, false);
   const fresh = await setup(t, { dataDir: ctx.dataDir });
   assert.equal((await serverTasks(fresh)).length, 0);
+});
+
+
+test('Usage dashboard shows limits, model/tool totals, charts, minute refresh, errors, and focus return', async t => {
+  let left = 75, failed = false, reads = 0;
+  const provider = () => ({ id: 'codex', name: 'Codex', sessions: 2, inputTokens: 1200, cachedTokens: 100, outputTokens: 50, costUSD: null, costNote: 'Not reported', limits: { status: 'live', checkedAt: Date.now(), windows: [{ label: '5h', remainingPercent: left, usedPercent: 100-left }] }, models: [{ model: 'gpt-test', inputTokens: 1200, cachedTokens: 100, outputTokens: 50 }], tools: [{ name: 'exec_command', count: 3 }], daily: [{ day: '2026-10-02', tokens: 1350 }] });
+  const ctx = await setup(t, { usageReader: { get: async () => { reads++; if (failed) throw new Error('private'); return { updatedAt: Date.now(), providers: [provider()] }; } } });
+  Object.defineProperty(ctx.win.document, 'hidden', { configurable: true, value: false });
+  ctx.$('#usage-open').click(); await ctx.idle();
+  assert.match(ctx.$('#usage-providers').textContent, /75% left/);
+  assert.equal(ctx.$('#usage-providers progress').value, 75);
+  assert.equal(ctx.$('#usage-providers svg').getAttribute('role'), 'img');
+  assert.match(ctx.$('#usage-providers').textContent, /gpt-test/);
+  assert.match(ctx.$('#usage-providers').textContent, /exec_command · 3/);
+  assert.match(ctx.$('#usage-providers').textContent, /Cost not reported/);
+  ctx.$('#usage-providers details').open = true;
+  left = 62;
+  ctx.intervals.findLast(timer => timer.ms === 60000).fn(); await ctx.idle();
+  assert.match(ctx.$('#usage-providers').textContent, /62% left/);
+  assert.equal(ctx.$('#usage-providers details').open, true);
+  failed = true; ctx.$('#usage-refresh').click(); await ctx.idle();
+  assert.equal(ctx.$('#usage-error').hidden, false);
+  assert.match(ctx.$('#usage-providers').textContent, /62% left/);
+  ctx.$('#usage-close').click();
+  assert.equal(ctx.win.document.activeElement.id, 'usage-open');
+  const before = reads; ctx.intervals.findLast(timer => timer.ms === 60000).fn(); await ctx.idle();
+  assert.equal(reads, before);
 });
