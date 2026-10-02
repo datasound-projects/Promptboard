@@ -292,6 +292,20 @@ test('Manifest, artifact, or status persistence failures after spawning terminat
   assert.equal((await w.run(unrelated.id)).status, 'waiting_for_input');
 });
 
+test('nested Base agent profiles reach the existing PTY as native subagents with their pinned resources', { skip }, async t => {
+  const w = await world(t), skill = await baseSkill(w.board, 'SUBAGENT_RESOURCE_CONTEXT');
+  const child = await w.board.base.create({ kind: 'profile', name: 'Specialist', configuration: { agent: { provider: 'claude', instructions: 'SPECIALIST_ROLE' }, binding: { mode: 'extend', include: [{ resourceId: skill.id, required: true }], exclude: [] } } });
+  const parent = await w.board.base.create({ kind: 'profile', name: 'Lead', configuration: { agent: { provider: 'claude' }, binding: { mode: 'extend', include: [{ resourceId: child.id, required: true }], exclude: [] } } });
+  await w.board.base.apply({ changes: [{ target: { scope: 'project', projectId: w.projectId }, binding: { mode: 'inherit' }, profileId: parent.id }] });
+  const task = await w.board.createTask({ projectId: w.projectId, title: 'Native specialist', prompt: 'Exact original task. ' });
+  const transition = await w.board.transition(task.id, { column: 'executing', expectedRevision: task.revision });
+  const run = await until(async () => { const current = await w.run(transition.run.id); return current.turns && current; }, 'native agent configuration supplied');
+  const report = (await w.reports())[0], native = JSON.parse(report.args[report.args.indexOf('--agents') + 1]);
+  assert.match(Object.values(native)[0].prompt, /SPECIALIST_ROLE/); assert.match(Object.values(native)[0].prompt, /SUBAGENT_RESOURCE_CONTEXT/);
+  assert.equal(await readFile(join(w.dataDir, run.artifactsDir, 'task-prompt.txt'), 'utf8'), task.prompt);
+  assert.equal(run.baseManifest.supplied.find(resource => resource.resourceId === child.id).delivery, 'native-subagent'); assert.equal(run.baseManifest.observed.length, 0);
+});
+
 test('Base portable project resources reach each existing CLI through normal transitions; exact task text and unassigned targets stay intact', { skip }, async t => {
   const w = await world(t, { limit: 2 });
   const skill = await baseSkill(w.board);

@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, realpath, rename, rm, stat } from 'node:fs/promises';
 import { isAbsolute, join, posix } from 'node:path';
 import { resolveConfig } from './agents.mjs';
+import { normalizeAvatarImage } from './base-avatar.mjs';
 
 export const BASE_KINDS = Object.freeze(['skill', 'mcp', 'knowledge', 'context', 'tool', 'profile', 'pack']);
 export const BASE_EXPORT_VERSION = 1;
@@ -117,6 +118,7 @@ function provenance(value = {}) {
 export function normalizeContent(input = {}) {
   if (!object(input)) fail('Resource content must be an object.');
   const result = { body: string(input.body, BASE_LIMITS.documentChars, 'Instructions'), files: [], pages: [], sources: [] };
+  if (input.avatar !== undefined) result.avatar = normalizeAvatarImage(input.avatar);
   for (const key of ['files', 'pages', 'sources']) if (input[key] !== undefined && (!Array.isArray(input[key]) || input[key].length > BASE_LIMITS.files)) fail(`Too many ${key}.`);
   const paths = new Set();
   for (const file of input.files || []) {
@@ -147,7 +149,12 @@ function configuration(kind, value = {}) {
   if (kind === 'profile') {
     if (value.agent !== undefined && !object(value.agent)) fail('Profile agent settings must be an object.');
     const agent = value.agent?.provider ? resolveConfig('executing', value.agent) : {};
-    return { agent: { ...agent, instructions: string(value.agent?.instructions, 4000, 'Profile stage instructions') }, binding: normalizeBinding(value.binding) };
+    let avatar;
+    if (value.avatar !== undefined) {
+      if (!object(value.avatar) || value.avatar.version !== 2 || !/^[a-f0-9]{64}$/.test(value.avatar.contentHash || '')) fail('Choose a valid generated agent avatar.');
+      avatar = { version: 2, contentHash: value.avatar.contentHash, model: string(value.avatar.model, 120, 'Image model', true), prompt: string(value.avatar.prompt, 2000, 'Avatar prompt'), contentStatus: value.avatar.contentStatus === 'omitted' ? 'omitted' : 'available' };
+    }
+    return { agent: { ...agent, instructions: string(value.agent?.instructions, 4000, 'Profile stage instructions') }, binding: normalizeBinding(value.binding), ...(avatar ? { avatar } : {}) };
   }
   if (kind === 'mcp') {
     const transport = value.transport || 'stdio';
@@ -214,17 +221,22 @@ export function validateResourceGraph(resources) {
   return true;
 }
 function normalizeResource(input, previous, { imported = false, omitted = false } = {}) {
-  if (!object(input) || !BASE_KINDS.includes(input.kind || previous?.kind)) fail('Choose a supported Base resource type.');
-  const kind = input.kind || previous.kind;
+  if (!object(input)) fail('Choose a supported Base resource type.');
+  const requestedKind = input.kind || (input.type === 'agent' ? 'profile' : input.type) || previous?.kind;
+  if (!BASE_KINDS.includes(requestedKind)) fail('Choose a supported Base resource type.');
+  const kind = requestedKind;
+  const type = kind === 'profile' ? 'agent' : kind;
+  if (input.type !== undefined && input.type !== type) fail('Resource type must match its stored kind.');
   if (previous && previous.kind !== kind) fail('A resource type cannot change. Create a new resource instead.');
   const content = normalizeContent(input.content ?? previous?.content);
   const config = configuration(kind, input.configuration ?? previous?.configuration);
+  if (kind === 'profile' && config.avatar && config.avatar.contentStatus !== 'omitted' && !omitted && content.avatar?.contentHash !== config.avatar.contentHash) fail('Avatar content does not match this profile’s saved face.');
   if (kind === 'skill' && !omitted && !content.body.trim() && !content.files.some(file => file.path === config.entrypoint && file.text.trim())) fail('An instruction skill needs instructions or a SKILL.md file.');
   const trust = imported ? 'untrusted' : input.trust ?? previous?.trust ?? (['mcp', 'tool'].includes(kind) ? 'untrusted' : 'trusted');
   if (!['trusted', 'untrusted', 'revoked'].includes(trust)) fail('Trust must be trusted, untrusted, or revoked.');
   if (input.enabled !== undefined && typeof input.enabled !== 'boolean') fail('Availability must be a boolean.');
   const now = Date.now();
-  return { id: previous?.id || id(input.id || randomUUID()), kind, name: string(input.name ?? previous?.name, 120, 'Resource name', true).trim(),
+  return { id: previous?.id || id(input.id || randomUUID()), kind, type, name: string(input.name ?? previous?.name, 120, 'Resource name', true).trim(),
     description: string(input.description ?? previous?.description, 2000, 'Resource description'), tags: strings(input.tags ?? previous?.tags, 30, 80, 'Tags'),
     enabled: imported ? false : input.enabled ?? previous?.enabled ?? true, trust, revision: (previous?.revision || 0) + 1,
     createdAt: previous?.createdAt || now, updatedAt: now, configuration: config, dependencies: normalizeReferences(input.dependencies ?? previous?.dependencies),
@@ -298,7 +310,7 @@ function targetEntity(state, target, create = false) {
 
 export class Base {
   constructor({ store }) { if (!store?.update || !store?.read) throw new TypeError('Base requires the existing Board Store.'); this.store = store; this.dir = join(store.dir, 'base'); }
-  async list() { const state = await this.store.read(); return { revision: state.base.revision, resources: state.base.resources.map(resource => ({ ...resource, usedBy: usedBy(state, resource.id) })), approvedRoots: state.base.approvedRoots }; }
+  async list() { const state = await this.store.read(); return { revision: state.base.revision, resources: state.base.resources.map(resource => ({ ...resource, type: resource.kind === 'profile' ? 'agent' : resource.kind, usedBy: usedBy(state, resource.id) })), approvedRoots: state.base.approvedRoots }; }
   async detail(resourceId, { revision } = {}) {
     const state = await this.store.read(), current = state.base.resources.find(resource => resource.id === resourceId);
     if (!current) throw new BaseError('This Base resource no longer exists.', 'BASE_NOT_FOUND', 404);
@@ -474,6 +486,7 @@ export class Base {
     const resources = [];
     for (const resourceId of selected) {
       const resource = byId.get(resourceId), { revisionRef, revisions, connectionTest, ...metadata } = resource;
+      if (!includeContent && metadata.kind === 'profile' && metadata.configuration.avatar) metadata.configuration = { ...metadata.configuration, avatar: { ...metadata.configuration.avatar, contentStatus: 'omitted' } };
       resources.push({ ...metadata, ...(includeContent ? { content: (await this.readRevision(revisionRef)).content } : {}), contentStatus: includeContent || !['skill', 'knowledge'].includes(resource.kind) ? resource.contentStatus : 'omitted' });
     }
     const bundle = { kind: 'promptboard-base', version: BASE_EXPORT_VERSION, exportedAt: new Date().toISOString(), includesContent: includeContent, resources };

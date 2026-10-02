@@ -28,6 +28,31 @@ test('Base bindings resolve stable scopes, packs, opt-out, re-addition and requi
   assert.equal(preview(stateWith(a), {}, {}).resources.length, 0, 'unassigned projects receive nothing');
 });
 
+test('attached profiles expand their resources and nested profiles use bounded native Claude definitions', async t => {
+  const dir = await directory(t), skill = resource('skill');
+  const child = resource('child', 'profile', { agent: { provider: 'claude', model: 'custom-claude-model', instructions: 'SPECIALIST INSTRUCTIONS' }, binding: binding(['skill']) });
+  const parent = resource('parent', 'profile', { agent: { provider: 'claude', instructions: 'MAIN INSTRUCTIONS' }, binding: binding(['child']) });
+  const state = stateWith(skill, child, parent), project = { id: 'p', agentProfileId: parent.id };
+  const manifest = preview(state, project); assert.equal(manifest.errors.length, 0);
+  assert.equal(manifest.resources.find(resource => resource.resourceId === child.id).delivery, 'native-subagent');
+  const definitions = new Map([skill, child, parent].map(resource => [resource.id, resource]));
+  const prepared = await prepareBase({ manifest, currentResources: state.base.resources, readRevision: async ref => structuredClone(definitions.get(ref.id)), runDir: dir });
+  assert.match(prepared.subagents.pb_child.prompt, /SPECIALIST INSTRUCTIONS/); assert.match(prepared.subagents.pb_child.prompt, /Instructions skill/);
+  assert.equal(prepared.subagents.pb_child.model, 'custom-claude-model'); assert.equal('permissionMode' in prepared.subagents.pb_child, false);
+  const session = await buildSession({ provider: 'claude', stage: 'executing', config: resolveConfig('executing', { provider: 'claude' }), message: 'Exact task', runDir: dir, eventsFile: join(dir, 'events'), sessionId: 'session', baseDelivery: prepared });
+  assert.deepEqual(JSON.parse(session.args[session.args.indexOf('--agents') + 1]), prepared.subagents);
+  assert.equal(prepared.manifest.observed.length, 0); assert.equal(prepared.manifest.supplied.find(resource => resource.resourceId === child.id).delivery, 'native-subagent');
+  assert.match(await readFile(join(dir, 'base-context/child.txt'), 'utf8'), /Instructions skill/);
+  for (const provider of ['codex', 'gemini']) {
+    const incompatible = preview(state, project, {}, 'executing', provider);
+    assert.ok(incompatible.errors.some(error => /Native Base subagents/.test(error.message)));
+    assert.equal(incompatible.resources.some(resource => resource.resourceId === skill.id), false, 'An omitted native profile does not supply its resources through the main agent.');
+  }
+  assert.equal(preview(state, project, { baseBinding: binding([], 'replace') }).resources.length, 0);
+  assert.ok(preview(state, project, {}, 'planning').errors.some(error => /Native Base subagents/.test(error.message)));
+  await prepared.cleanup();
+});
+
 test('Base dependencies do not re-add exclusions and converge required status across shared dependencies', () => {
   const a = resource('a'), b = resource('b'), c = resource('c'); a.dependencies = [{ resourceId: 'b', required: false }]; b.dependencies = [{ resourceId: 'c', required: false }];
   const state = stateWith(a, b, c); state.settings.baseBinding = binding([{ resourceId: 'b', required: false }, 'a']);

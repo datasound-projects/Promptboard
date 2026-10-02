@@ -16,7 +16,8 @@ test('headless SIGTERM stops the provider and removes its temporary working fold
   try {
     await writeFile(executable, `#!${process.execPath}
 const fs = require('node:fs');
-fs.writeFileSync(${JSON.stringify(reportPath)}, JSON.stringify({ pid: process.pid, cwd: process.cwd() }));
+fs.writeFileSync(${JSON.stringify(reportPath + '.tmp')}, JSON.stringify({ pid: process.pid, cwd: process.cwd() }));
+fs.renameSync(${JSON.stringify(reportPath + '.tmp')}, ${JSON.stringify(reportPath)});
 process.stdin.resume();
 setInterval(() => {}, 1000);
 `);

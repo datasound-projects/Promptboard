@@ -1,5 +1,9 @@
 # Security
 
+**Agent portraits are optional image API requests.** Only an explicit Generate action sends the avatar description to the fixed OpenAI Images HTTPS endpoint. Credentials remain in the server environment, are never collected from CLI sign-in, and are excluded from definitions, logs, exports, and errors. Responses are bounded raster PNG/JPEG content, never SVG/HTML. Saving stores image content in immutable resource revisions outside state metadata; avatar reads require the existing session token. Portraits are not supplied to coding agents. Export includes image bytes only when document content is explicitly selected. Generation uses the existing job coordinator and scoped cancellation/shutdown handling.
+
+**Nested agent profiles use native CLI delegation.** Claude writing-stage subagents receive bounded session-scoped JSON with pinned instructions/context. They inherit the parent permission mode; Base never passes a subagent permission override, installs an agent file, changes global settings, or creates a second scheduler. Incompatible providers/stages report omissions or block required selections. MCPs remain subject to the session’s permissions; resource selection is not a claim of tool exclusivity or observed invocation.
+
 Promptboard is a local, single-user app. It starts AI coding agents that can edit files in your repositories, so read this before you use it with sensitive code.
 
 ## Reporting a vulnerability

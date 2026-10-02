@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Base uses exactly eight local category filters over one library, with persistent search, availability, sort and Grid/List, canonical counts, contextual Add, accessible mobile scrolling, and result-area retry with stale-response protection.
+- Base sidebar: move categories out of the content area and make each selection update the collection, heading, empty state, and creation type. Preserve unrelated editor drafts while browsing another category.
+- Agent profiles: reusable cards with equipped-resource indicators, profile references, and native Claude Code subagents for writing stages. Pin and capture subagent instructions/resources through the existing runner; retain selections and report unsupported provider/stage combinations without changing permissions.
+- Agent avatars: explicit AI illustration drafts via OpenAI Images, preview/save, protected image loading, content-aware export/import, and scoped cancellation. API access is optional and uses server environment credentials; no CLI login credentials are collected.
+
 - Fix Base editing after MCP discovery and source refresh: reload persisted revisions and captured text, including failed discovery results, so subsequent saves and retries remain valid. Guard unsaved drafts and overlapping saves during these operations.
 - Fix Base source refresh preserving pasted/uploaded content while replacing only managed live captures. Knowledge pages from different collections retain distinct source identities.
 

@@ -17,23 +17,31 @@ const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8',
 const chrome = await findChrome();
 const skip = process.platform === 'win32' || !chrome ? 'Chrome is not installed or the platform has no PTY support in this test.' : false;
 
-test('Base saved-resource actions refresh real browser editors after discovery failures and source capture', { skip: !chrome, timeout: 30000 }, async t => {
+test('Base saved-resource actions, sidebar categories, agent cards and avatar drafts work in real Chrome', { skip: !chrome, timeout: 30000 }, async t => {
   let tests = 0;
-  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [], mcpTester: async () => {
+  const image = { mime: 'image/png', data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jF1sAAAAASUVORK5CYII=' };
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [], imageGenerator: async () => image, mcpTester: async () => {
     if (++tests === 2) throw Object.assign(new Error('Fixture failure'), { code: 'BASE_MCP_FAILED' });
     return { status: 'connected', tools: [{ name: 'lookup' }], resources: [], prompts: [] };
   } });
   const mcp = await app.board.base.create({ kind: 'mcp', name: 'Browser MCP', enabled: true, trust: 'trusted', configuration: { transport: 'stdio', command: 'inert-fixture' } });
   const upstream = await app.board.base.create({ kind: 'knowledge', name: 'Upstream', enabled: true, trust: 'trusted', content: { pages: [{ id: 'guide', title: 'Guide', markdown: 'Fresh upstream documentation' }] } });
   const wiki = await app.board.base.create({ kind: 'knowledge', name: 'Mixed wiki', enabled: true, trust: 'trusted', configuration: { sources: [{ kind: 'knowledge', resourceId: upstream.id }] }, content: { sources: [{ id: 'pasted', name: 'Pasted notes', text: 'Keep my local notes' }] } });
+  const child = await app.board.base.create({ kind: 'profile', name: 'Specialist', configuration: { agent: { provider: 'claude', instructions: 'Specialist role' } } });
+  const parent = await app.board.base.create({ kind: 'profile', name: 'Lead engineer', configuration: { agent: { provider: 'claude' }, binding: { mode: 'extend', include: [{ resourceId: child.id, required: true }, { resourceId: wiki.id, required: true }], exclude: [] } } });
+  const instruction = await app.board.base.create({ kind: 'skill', name: 'coding checklist', content: { body: 'Check invariants.' } });
+  await app.board.base.create({ kind: 'pack', name: 'Coding essentials', configuration: { resources: [{ resourceId: instruction.id, required: true }] } });
+  await app.board.base.create({ kind: 'context', name: 'Coding context', configuration: { sources: [] } });
+  const utility = await app.board.base.create({ kind: 'tool', name: 'Coding utility', configuration: { delivery: 'command-recipe', command: 'node', args: ['--version'] } });
   const browser = await launch();
   if (!browser) { t.skip('Chrome did not start.'); return; }
   t.after(() => browser.close());
   const click = text => browser.eval(`[...document.querySelectorAll('#base-detail button')].find(node => node.textContent === ${JSON.stringify(text)}).click();`);
   const editName = value => browser.eval(`const input = document.querySelector('#base-resource-name'); input.value = ${JSON.stringify(value)}; input.dispatchEvent(new Event('input', { bubbles: true }));`);
   const open = async id => {
+    const name = (await app.board.base.detail(id)).name;
     await browser.eval(`document.querySelector('[data-resource-id="${id}"]').click();`);
-    await browser.until(`document.querySelector('#base-resource-name') && document.querySelector('.base-resource-form')`, 'resource editor');
+    await browser.until(`document.querySelector('#base-resource-name')?.value === ${JSON.stringify(name)}`, 'resource editor');
   };
   await browser.goto(`${app.url}/#/base`);
   await browser.until(`document.querySelector('[data-resource-id="${mcp.id}"]')`, 'Base library');
@@ -51,6 +59,48 @@ test('Base saved-resource actions refresh real browser editors after discovery f
   await browser.until(`[...document.querySelectorAll('.base-source-list textarea')].some(node => node.value === 'Fresh upstream documentation')`, 'captured sources displayed');
   await click('Save resource'); await browser.until(`document.querySelector('.base-resource-form')?.textContent.includes('r3')`, 'save refreshed wiki');
   assert.deepEqual((await app.board.base.detail(wiki.id)).content.sources.map(source => source.text), ['Keep my local notes', 'Fresh upstream documentation']);
+  await browser.eval(`document.querySelector('#base-categories [data-kind="agent"]').click();`);
+  assert.equal(await browser.eval(`return document.querySelector('#base-detail').hidden && document.querySelector('#base-category-heading').textContent === 'Agents' && document.querySelectorAll('.base-agent-card').length === 2 && document.querySelector('#base-categories').closest('#sidebar') !== null;`), true);
+  await open(parent.id);
+  await browser.eval(`document.querySelector('#base-avatar-prompt').value = 'Illustrated purple scientist'; document.querySelector('#base-avatar-generate').click();`);
+  await browser.until(`document.querySelector('.base-avatar-editor img')?.naturalWidth > 0`, 'illustration draft visible');
+  await click('Save resource'); await browser.until(`document.querySelector('.base-resource-form')?.textContent.includes('r2')`, 'profile portrait saved');
+  assert.equal((await app.board.base.detail(parent.id)).content.avatar.data, image.data);
+  assert.equal(await browser.eval(`return [...document.querySelectorAll('.base-agent-card .base-agent-loadout input')].every(node => node.checked);`), true);
+  for (const width of [1280, 850, 390]) {
+    await browser.resize(width, 900);
+    assert.equal(await browser.layout(`return document.documentElement.scrollWidth <= innerWidth && document.querySelector('#base-detail').getBoundingClientRect().right <= innerWidth;`), true);
+  }
+  await click('Back to library');
+  assert.deepEqual(await browser.eval(`return [...document.querySelectorAll('#base-categories button')].map(node => node.getAttribute('aria-label'));`), ['All', 'Agents', 'Packs', 'MCPs', 'Skills', 'Knowledge', 'Context', 'Tools']);
+  await browser.eval(`window.baseFetches = 0; const originalFetch = window.fetch; window.fetch = (...args) => { if (args[0] === '/api/base') window.baseFetches++; return originalFetch(...args); };`);
+  for (const type of ['', 'agent', 'pack', 'mcp', 'skill', 'knowledge', 'context', 'tool']) {
+    await browser.eval(`document.querySelector('#base-categories [data-kind="${type}"]').click();`);
+    const ids = await browser.eval(`return [...document.querySelectorAll('#base-list [data-resource-id]')].map(node => node.dataset.resourceId);`);
+    const resources = (await app.board.base.list()).resources;
+    assert.deepEqual(ids.slice().sort(), resources.filter(item => !type || item.type === type).map(item => item.id).sort());
+    if (type) assert.equal(await browser.eval(`return document.querySelector('#base-new-kind').value;`), type === 'agent' ? 'profile' : type);
+  }
+  assert.equal(await browser.eval(`return window.baseFetches;`), 0);
+  assert.equal(await browser.layout(`const nav = document.querySelector('#base-categories'); const active = nav.querySelector('[aria-pressed="true"]').getBoundingClientRect(); const bounds = nav.getBoundingClientRect(); return nav.closest('#base-mobile-categories') !== null && nav.scrollWidth > nav.clientWidth && active.left >= bounds.left && active.right <= bounds.right + 1 && active.height >= 44 && document.documentElement.scrollWidth <= innerWidth;`), true);
+  await browser.eval(`const search = document.querySelector('#base-search'); search.value = 'coding'; search.dispatchEvent(new Event('input')); for (const [id, value] of [['base-filter', 'enabled'], ['base-sort', 'recently_updated'], ['base-view-mode', 'grid']]) { const control = document.getElementById(id); control.value = value; control.dispatchEvent(new Event('change')); } document.querySelector('#base-categories [data-kind="agent"]').click(); document.querySelector('#base-categories [data-kind="mcp"]').click(); document.querySelector('#base-categories [data-kind="skill"]').click();`);
+  assert.equal(await browser.eval(`return document.querySelector('#base-list [data-resource-id]')?.dataset.resourceId;`), instruction.id);
+  await open(instruction.id); await editName('coding checklist edited'); await click('Save resource');
+  await browser.until(`document.querySelector('.base-resource-form')?.textContent.includes('r2') && document.querySelector('#base-resource-name')?.value === 'coding checklist edited'`, 'edited skill retains filter');
+  await click('Back to library'); await browser.reload();
+  await browser.until(`document.querySelector('#base-list [data-resource-id]')?.dataset.resourceId === ${JSON.stringify(instruction.id)}`, 'restored library state');
+  assert.equal((await app.board.base.detail(instruction.id)).name, 'coding checklist edited');
+  assert.equal(await browser.layout(`const nav = document.querySelector('#base-categories').getBoundingClientRect(), active = document.querySelector('#base-categories [aria-pressed="true"]').getBoundingClientRect(); return active.left >= nav.left && active.right <= nav.right + 1;`), true);
+  assert.equal(await browser.eval(`return document.querySelector('#base-categories [aria-pressed="true"]').dataset.kind === 'skill' && document.querySelector('#base-search').value === 'coding' && document.querySelector('#base-filter').value === 'enabled' && document.querySelector('#base-sort').value === 'recently_updated' && document.querySelector('#base-view-mode').value === 'grid';`), true);
+  const shots = process.env.PB_BROWSER_SHOTS;
+  if (shots) await writeFile(join(shots, 'base-mobile-filters.png'), await browser.screenshot());
+  await browser.resize(1280, 900); await browser.layout(`return true;`);
+  if (shots) await writeFile(join(shots, 'base-desktop-filters.png'), await browser.screenshot());
+  await browser.eval(`document.querySelector('#base-categories [data-kind="tool"]').click();`); await open(utility.id); await click('Delete…');
+  await browser.eval(`[...document.querySelectorAll('#base-dialog button')].find(node => node.textContent === 'Delete resource').click();`);
+  await browser.until(`!document.querySelector('#base-dialog').open && document.querySelector('#base-detail').hidden && document.querySelector('#base-categories [data-kind="tool"] .base-category-count').textContent === '0'`, 'deleted resource and canonical count');
+  assert.equal((await app.board.base.list()).resources.some(item => item.id === utility.id), false);
+  assert.equal(await browser.eval(`return document.querySelector('#base-search').value === 'coding' && document.querySelector('#base-filter').value === 'enabled' && document.querySelector('#base-empty').textContent.includes('No tools match');`), true);
   assert.deepEqual(browser.consoleMessages.filter(message => message.startsWith('EXCEPTION')), []);
 });
 

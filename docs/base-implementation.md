@@ -1,5 +1,15 @@
 # Base implementation map
 
+## Follow-up audit and agent cards (2026-10-02)
+
+Reference checkout: main `652666e`. The audit found stale editor revisions after MCP discovery/source refresh and replacement of standalone sources during live refresh. Regression tests cover both connection outcomes, retained drafts, mixed sources, and distinct knowledge identities.
+
+The existing sidebar now owns Base categories; `public/base.js` renders category-specific browsing and reusable profile cards with equipped resources. Profile references expand through the shared resolver; nested profile references become native subagent entries where the adapter supports them. `base-context.mjs` prepares pinned native prompts and captures them, and `agents.mjs` passes bounded session-scoped Claude `--agents` JSON without changing permission modes, hooks, workspaces, or Supervisor ownership. Required incompatibility blocks runs, including per-run provider changes. Empty Replace still opts out.
+
+`src/base-avatar.mjs` owns explicit OpenAI Images drafts, with the existing server claim/track/cancel/shutdown seams. Avatar bytes are validated PNG/JPEG and persist inside immutable content, outside state metadata. Protected content loading is separate from library metadata. Credentials are environment references only; image generation never starts a task, invokes Compose rewriting, or automatically saves/assigns a profile. Exporting content is required to export avatar bytes. The state schema remains version 3; existing migration behavior is unchanged.
+
+Coverage adds category/editor behavior, profile resource cards, image drafts/save/import/export/cancellation/credential redaction, native profile resolution and adapter arguments, actual fake-CLI PTY delivery, and authenticated Chrome interactions. Authenticated image and provider calls are not part of deterministic tests.
+
 Baseline: the clean local `main` checkout is `06a89c03355d4b71530280db5556a5bf876bac02`, newer than the architectural reference. Development uses an isolated checkout. Existing conventions are plain DOM/hash navigation, JavaScript ES modules, Node 22+, Node tests, jsdom, and the existing Chrome smoke harness. Baseline check/test results are recorded below as they finish.
 
 ## Integration order and ownership
@@ -42,3 +52,15 @@ Final local verification on 2026-10-02, macOS with Node 26.8.2:
 - CI exposed Windows' requirement for a writable backup handle when flushing to disk; migration now opens the preserved copy without truncating it. Exact-byte preservation and recovery assertions remain intact. All test servers and GUI child processes use disposable data folders, including background polling, and fake cancellation/layout checks wait for explicit readiness. The final full run left the existing application state file unchanged.
 
 The [delivery matrix and limitations](base-delivery.md) describe Claude, Codex, and Gemini instruction/context and run-scoped MCP mechanisms. No authenticated live-provider request or paid model call was made. Gemini retains its existing `notLiveVerified` status; Antigravity remains unavailable for Kanban. Instruction skills/command recipes are not native tool installation, MCP tool references expose their parent server, Codex ambient MCP configuration is not isolated, observed invocations are not inferred, and source extraction is limited to supported text/Markdown files. GitHub CI separately checks supported Node 22 and 24 on Linux, macOS, and Windows.
+
+
+## Category navigation follow-up
+
+The canonical `Base.list()` metadata collection supplies exactly All, Agents, Packs, MCPs, Skills, Knowledge, Context, Tools. New definitions persist explicit `type`; `agent` maps to the existing internal `profile` kind. Older stored kinds supply their explicit compatibility type without rewriting immutable revision hashes or introducing a second agent registry. The state schema remains version 3; existing version-2 migration and recovery remain unchanged.
+
+`public/base.js` derives results from one collection plus validated category/search/availability/sort/Grid-or-List preferences in one browser preference key. All operations keep the existing editor, assignment picker, persistence and authenticated API. Categories do not fetch or navigate. Counts ignore search and filters; collection refreshes use a request generation guard and the existing Base revision guard. Loading/failure/retry affect only results. Detail return restores the results scroll; category selection resets it. The same eight-button navigation lives in the desktop sidebar and moves to one horizontally scrolling strip at 600px or less.
+
+jsdom covers exact types/order, defaults/restoration, shared AND filters, sorting/view preservation, contextual creation, count changes, empty/search actions, detail scroll, keyboard focus and out-of-order equal-revision responses with failure/retry. Chrome checks every category against actual server metadata, saved edits/reload restoration, zero category refetches and 1280/850/390px layouts, including mobile active-button visibility. Existing Chrome terminal-session tests remain intact. The package has no separate TypeScript, lint or build command; `npm run check` validates JavaScript syntax and `npm test` exercises the supported runtime/interface.
+
+
+Follow-up verification on 2026-10-02: `npm run check` passed; `npm test` passed **356/356**, 0 failed, 0 skipped (121.3s). Real Chrome exercised all eight categories, edits/deletion and durable counts, preference restoration, no category refetches, mobile scrolling and 1280/850/390px layouts; desktop/mobile screenshots were visually inspected. The existing headless cancellation fixture now atomically publishes its readiness JSON, fixing a truncated-read race with cancellation/cleanup assertions unchanged (focused CLI tests: 2/2). Registry/UI focused checks: 39/39. No paid image request or authenticated native-subagent delegation was made; image and provider behavior was tested with injected fixtures/fake CLIs. No separate typecheck/lint/build scripts or dependency changes were introduced.

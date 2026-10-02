@@ -220,3 +220,16 @@ test('large bounded definitions remain readable with metadata overhead included 
     content: { sources: Array.from({ length: 15 }, (_, i) => ({ id: `source_${i}`, name: `Source ${i}`, text: 't'.repeat(256 * 1024) })) } });
   const definition = await base.detail(resource.id); assert.equal(definition.content.sources.length, 15); assert.equal(definition.configuration.args.length, 100);
 });
+
+
+test('explicit library type maps Agents to existing profiles and preserves legacy immutable revisions', async t => {
+  const { base, store } = await setup(t);
+  const profile = await base.create({ type: 'agent', name: 'Engineer', configuration: { agent: {}, binding: { mode: 'inherit' } } });
+  assert.equal(profile.kind, 'profile'); assert.equal(profile.type, 'agent');
+  assert.equal((await store.read()).base.resources[0].type, 'agent');
+  const instruction = await base.create(skill()); assert.equal(instruction.type, 'skill');
+  await assert.rejects(base.create({ ...skill(), type: 'agent' }), /must match/);
+  await store.update(state => { delete state.base.resources[0].type; });
+  assert.equal((await base.list()).resources[0].type, 'agent', 'Legacy stored kind remains the explicit source of type.');
+  assert.equal((await base.readRevision(profile.revisionRef)).type, 'agent');
+});

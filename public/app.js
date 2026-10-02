@@ -242,7 +242,7 @@ function isMobile() { return window.innerWidth <= 730; }
 function syncSidebarToggle() {
   const expanded = isMobile() ? $('#sidebar').classList.contains('open') : document.documentElement.dataset.sidebar !== 'collapsed';
   $('#menu-toggle').setAttribute('aria-expanded', String(expanded));
-  const what = location.hash === '#/kanban' ? 'projects' : 'prompt history';
+  const what = location.hash === '#/base' ? 'Base categories' : location.hash === '#/kanban' ? 'projects' : 'prompt history';
   $('#menu-toggle').setAttribute('aria-label', expanded ? `Hide ${what}` : `Show ${what}`);
 }
 function setSidebar(open) {
@@ -915,16 +915,17 @@ function openHelp(privacy = false) {
       ...section('Saved on this computer', [
         'In this browser: your last 500 prompts and your view settings. Delete prompts in the sidebar.',
         'In the Promptboard data folder: projects, cards, agent runs and their terminal output, plans, reviews, test results, timeline notes, task worktrees, and GitHub clones.',
-        'Base stores resource definitions, document revisions, source captures, and assignments locally. Exports include document content only when you select it.',
+        'Base stores resource definitions, document revisions, agent avatars, source captures, and assignments locally. Exports include document and avatar content only when you select it.',
       ]),
       ...section('Sent to your AI provider', [
         'Compose: your request goes to the CLI you selected, which sends it to its provider.',
         'Kanban: when you approve a stage (or it starts automatically), the agent CLI gets the card text, and the plan, diff, or test commands for that stage. It works in the task worktree and sends what it reads to its provider.',
         'Base: assigned instructions and context, and selected sources for wiki generation, can go to your provider. Explicit MCP tests and documentation imports contact their configured servers.',
+        'Illustrated agent avatars: clicking Generate sends your description to OpenAI Images. Preview the result and save the profile to keep it.',
         'Do not put secrets or private data in prompts or cards that you cannot share with that provider.',
       ]),
       ...section('Accounts and costs', [
-        'No API key is needed. Each CLI uses its own sign-in, limits, and costs. GitHub uses the GitHub CLI sign-in.',
+        'Compose and Kanban use each CLI’s sign-in, limits, and costs. GitHub uses the GitHub CLI sign-in. Optional avatar illustrations need an OpenAI image API key in the server environment and are billed separately from CLI subscriptions.',
         'Promptboard never stores account tokens. Usage reads local CLI session files from this machine, including sessions outside Promptboard, and keeps only numeric metrics, model IDs, and tool names. Codex account limits are queried through its CLI; Claude run usage snapshots are saved locally.',
         'Compose calls: Fast 1, Reviewed 2, or 4 when a confirmed problem is repaired.',
       ]),
@@ -992,10 +993,11 @@ function showPage() {
   $('#skip-link').setAttribute('href', base ? '#base-view' : kanban ? '#kanban-view' : '#prompt-input');
   $('#history-panel').hidden = page !== 'compose';
   $('#workspace-panel').hidden = !kanban;
-  $('#sidebar').hidden = base;
-  $('#menu-toggle').hidden = base;
-  $('#sidebar').setAttribute('aria-label', kanban ? 'Projects' : 'Prompt history');
-  $('#sidebar-scrim').setAttribute('aria-label', kanban ? 'Close projects' : 'Close history');
+  $('#base-sidebar-panel').hidden = !base;
+  $('#sidebar').hidden = false;
+  $('#menu-toggle').hidden = false;
+  $('#sidebar').setAttribute('aria-label', base ? 'Base library' : kanban ? 'Projects' : 'Prompt history');
+  $('#sidebar-scrim').setAttribute('aria-label', base ? 'Close Base categories' : kanban ? 'Close projects' : 'Close history');
   if (kanban) renderBoard();
   if (base && token) baseView?.show();
   setSidebar(false);
@@ -3885,7 +3887,7 @@ $('#autopilot-save').addEventListener('click', () => saveAutopilot(false));
 $('#autopilot-form').addEventListener('submit', event => { event.preventDefault(); saveAutopilot(true); });
 
 // Base owns its own metadata/content requests, with only these explicit application seams.
-baseView = window.PromptboardBase?.create({ api, announce, ensureBoard: loadBoard, refreshBoard: loadBoard, agentFields, readAgentFields,
+baseView = window.PromptboardBase?.create({ api, announce, ensureBoard: loadBoard, refreshBoard: loadBoard, agentFields, readAgentFields, closeSidebar: () => setSidebar(false),
   acceptBoard: next => { acceptBoard(next); renderBoard(); } }) || null;
 window.PromptboardBaseView = baseView;
 // Start page applies only when the URL contains no explicit route.
