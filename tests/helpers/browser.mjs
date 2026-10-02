@@ -78,7 +78,11 @@ export async function launch({ width = 1280, height = 900 } = {}) {
     async type(text) { for (const char of text) { await send('Input.dispatchKeyEvent', { type: 'keyDown', text: char, key: char }); await send('Input.dispatchKeyEvent', { type: 'keyUp', key: char }); } },
     async key(key, code = key, keyCode = 13) { await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key, code, windowsVirtualKeyCode: keyCode, ...(key === 'Enter' ? { text: '\r' } : {}) }); await send('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode: keyCode }); },
     async click(x, y) { for (const type of ['mousePressed', 'mouseReleased']) await send('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1 }); },
-    async resize(width, height) { await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false }); },
+    async resize(width, height) {
+      await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
+      // Device emulation acknowledges before resize listeners and layout have painted.
+      await browser.eval('await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame);');
+    },
     async screenshot() { return Buffer.from((await send('Page.captureScreenshot', { format: 'png' })).data, 'base64'); },
     async close() { try { socket.close(); } catch {} chrome.kill('SIGKILL'); await new Promise(resolve => setTimeout(resolve, 200)); await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); },
   };
