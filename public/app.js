@@ -1576,6 +1576,7 @@ async function placeCard(id, column, index, retried = false) {
 function movedAnnouncement(card, column, result, position = '') {
   if (position) { announce(`Moved “${card.title}” to ${position}.`); return; }
   if (result.duplicate) return;
+  if (result.run && ['suspended', 'cancelled'].includes(result.run.status)) { announce(`Moved “${card.title}” to ${columnTitle(column)}. The agent was ${result.run.status === 'suspended' ? 'paused' : 'stopped'} before starting.`); return; }
   if (result.run) { announce(`Moved “${card.title}” to ${columnTitle(column)} and started the ${columnTitle(column)} agent.`); showStartedRun(result.run.id); }
   else if (result.tests) { announce(`Moved “${card.title}” to Testing. The project's tests are running.`); pollTests(card.id); }
   else if (result.merge && !result.merged) announce(`Moved “${card.title}” to Merge. ${result.merge.message}`);

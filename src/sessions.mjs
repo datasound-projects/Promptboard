@@ -65,6 +65,9 @@ export function attachResumedRun(state, run, session) {
   session.artifacts.push({ runId: run.id, directory: run.artifactsDir });
   session.pauseIntent = null;
   delete session.suspensionRequestedAt;
+  delete session.suspensionToken;
+  delete session.previousLifecycle;
   delete session.reason;
+  session.config = structuredClone(run.config);
   synchronizeSession(state, run);
 }

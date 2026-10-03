@@ -21,6 +21,8 @@ test('silence and permission waits never become a completed turn; quiet output i
   assert.equal(activity.snapshot(4 + ACTIVITY_QUIET_MS).ready, true);
   activity.output(2000); assert.equal(activity.snapshot(3000).ready, false);
   assert.equal(activity.snapshot(3500).ready, true);
+  activity.input(3501); assert.equal(activity.snapshot(100000).ready, false);
+  activity.observe({ name: 'Stop' }, 3502); assert.equal(activity.snapshot(100000).ready, true);
   activity.observe({ name: 'UserPromptSubmit' }, 3501); assert.equal(activity.snapshot(100000).ready, false);
   activity.observe({ name: 'Stop' }, 3502); activity.observe({ name: 'SessionEnd' }, 3503);
   assert.equal(activity.snapshot(100000).phase, 'ended'); assert.equal(activity.snapshot(100000).ready, false);
@@ -114,6 +116,14 @@ test('hook bridge keeps bounded activity metadata but excludes tool inputs, resu
   const activity = new SessionActivity('claude'); activity.observe(malformed, 1);
   activity.observe({ name: 'Stop' }, 2);
   assert.equal(activity.snapshot(100000).planApproval, undefined); assert.equal(activity.snapshot(100000).ready, false);
+  for (const raw of ['{broken', 'null', '[]', '{}']) {
+    const result = spawnSync(process.execPath, [HOOK_SCRIPT, events, 'claude'], { input: raw });
+    assert.equal(result.status, 0); assert.equal(result.stdout.length, 0);
+    const event = JSON.parse((await readFile(events, 'utf8')).trim().split('\n').at(-1));
+    assert.equal(event.activityUncertain, true);
+    const a = new SessionActivity('claude'); a.observe(event, 1); a.observe({ name: 'Stop' }, 2);
+    assert.equal(a.snapshot(100000).ready, false);
+  }
 });
 
 test('extra observation hooks are pipeline-only; provider permissions and ambient user settings stay intact', async t => {

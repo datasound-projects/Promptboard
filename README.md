@@ -44,6 +44,7 @@ Open **http://127.0.0.1:4318**. The navigation is **Compose | Kanban | Base**. P
 - Column Manager offers an opt-in [column pipeline](docs/pipeline-lifecycle.md): compatible moves keep the agent alive and send no stage instructions; Done pauses/archives, and To Do stops/resets its current session while retaining files. Existing boards keep their stage rules.
 - Pipeline [activity observations](docs/pipeline-activity.md) show outstanding work separately from response completion, with explicit provider coverage and native approval evidence.
 - [Queued destinations](docs/pipeline-queue.md) apply the latest settings without losing FIFO position; manual columns park agents and retain their conversations.
+- [Live settings](docs/pipeline-live-settings.md) wait for native turn completion before resuming the exact conversation with new settings or Base resources.
 - Pipeline first input uses a [task envelope](docs/pipeline-prompts.md) preserving engineered prompt content, with selected Base resources and inherited CLI tools. Automations, automatic plan exit, and advanced session strategies are still being implemented.
 
 <p align="center">

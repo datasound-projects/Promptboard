@@ -89,5 +89,10 @@ test('column pipeline conversion and editing work by keyboard in both themes and
   await browser.eval(`await loadBoard();`);
   assert.equal(await browser.eval(`return agentState(board.runs.find(run => run.id === 'activity-display-fixture'));`), 'awaits_you');
   assert.ok((await browser.eval(`return document.querySelector('[data-id="${card.id}"]').textContent;`)).includes('needs your answer'));
+  for (const theme of ['light', 'dark']) for (const status of ['suspended', 'cancelled']) {
+    const text = await browser.eval(`document.documentElement.dataset.theme = '${theme}'; movedAnnouncement(findTask('${card.id}'), 'code_review', { run: { id: 'cancelled-before-queue', status: '${status}' } }); return document.querySelector('#announcement').textContent;`);
+    assert.match(text, status === 'suspended' ? /paused before starting/ : /stopped before starting/);
+    assert.doesNotMatch(text, /started the/);
+  }
   assert.ok(!browser.consoleMessages.some(message => message.startsWith('EXCEPTION')), browser.consoleMessages.join('\n'));
 });

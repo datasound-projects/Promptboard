@@ -51,6 +51,7 @@ export class Supervisor {
     this.sessions = new Map(); // runId -> session
     this.queue = [];
     this.heldQueue = new Set();
+    this.boundaryWaits = new Map();
     this.pending = new Map(); // runId -> subscribers waiting for a queued run to start
     this.stopping = false;
   }
@@ -264,13 +265,21 @@ export class Supervisor {
   }
 
   async #readEvents(session) {
-    if (session.reading) return;
+    if (session.eventRead) return session.eventRead;
+    session.eventRead = this.#readEventBatch(session);
+    try { return await session.eventRead; }
+    finally { session.eventRead = null; }
+  }
+
+  async #readEventBatch(session) {
     session.reading = true;
     try {
       const handle = await open(session.eventsFile, 'r');
       try {
         const { size } = await handle.stat();
-        if (size <= session.eventsOffset) return;
+        if (size < session.eventsOffset && session.activity) session.activity.uncertain = true;
+        if (size <= session.eventsOffset) { session.eventsPending = false; return; }
+        session.eventsPending = true;
         const buffer = Buffer.alloc(Math.min(size - session.eventsOffset, 8 * 1024 * 1024));
         await handle.read(buffer, 0, buffer.length, session.eventsOffset);
         const text = buffer.toString('utf8');
@@ -278,7 +287,11 @@ export class Supervisor {
         if (end < 0) return;
         session.eventsOffset += Buffer.byteLength(text.slice(0, end + 1));
         for (const line of text.slice(0, end).split('\n')) {
-          let event; try { event = JSON.parse(line); } catch { continue; }
+          let event; try { event = JSON.parse(line); } catch { if (session.activity) session.activity.uncertain = true; continue; }
+          if (!event || typeof event !== 'object' || Array.isArray(event) || typeof event.name !== 'string') {
+            if (session.activity) session.activity.uncertain = true;
+            continue;
+          }
           if (session.activity) {
             session.activity.observe(event);
             // Subagent hooks share the parent's lifecycle file. A subordinate
@@ -288,17 +301,23 @@ export class Supervisor {
           await this.#locateUsage(session, event);
           await this.#signal(session, interpretEvent(session.provider, event));
         }
+        session.eventsPending = size > session.eventsOffset;
       } finally { await handle.close(); }
     } finally { try { await this.#publishActivity(session); } finally { session.reading = false; } }
   }
 
   async #publishActivity(session) {
     if (!session.activity || !session.proc || session.cancelled || session.suspending || session.launchFailed) return;
-    const activity = session.activity.snapshot(), key = JSON.stringify(activity);
+    const activity = this.#activity(session), key = JSON.stringify(activity);
     if (key === session.activityKey) return;
     await this.board.updateRun(session.runId, { activity });
     session.activityKey = key;
     this.#push(session, { activity });
+  }
+
+  #activity(session) {
+    const activity = session.activity.snapshot();
+    return session.eventsPending ? { ...activity, ready: false, uncertain: true, phase: activity.phase === 'ended' ? 'ended' : 'working' } : activity;
   }
 
   /** Find the CLI's own session file once: Claude names it in hook payloads, Codex by thread ID. */
@@ -396,7 +415,7 @@ export class Supervisor {
     if (!current) { /* Run removed. */ }
     else if (session.confirmed) await this.board.updateRun(session.runId, exit).catch(() => {});
     else if (session.failure || current.status === 'failed') await this.board.updateRun(session.runId, exit).catch(() => {});
-    else if (session.suspended) await this.#finish(session, 'suspended', { ...exit, reason: 'Paused by you. The conversation, worktree and output are kept.' });
+    else if (session.suspended) await this.#finish(session, 'suspended', { ...exit, reason: session.suspensionReason || 'Paused by you. The conversation, worktree and output are kept.' });
     else if (session.cancelled) await this.#finish(session, 'cancelled', { ...exit, reason: 'Stopped by you. The worktree and output are kept.' });
     else if (ACTIVE.has(current.status)) {
       // An exit is not a confirmation. The user checks the worktree and decides.
@@ -424,6 +443,7 @@ export class Supervisor {
     if (typeof data !== 'string' || Buffer.byteLength(data) > INPUT_BYTES) throw new AgentError(`Send at most ${INPUT_BYTES / 1024} KiB of input at a time.`, 'INPUT_TOO_LARGE', 413);
     const session = this.#session(runId);
     if (session.suspending) throw new AgentError('The agent is being paused. Wait for it to exit before resuming.', 'SESSION_SUSPENDING', 409);
+    if (data) session.activity?.input();
     session.proc.write(data);
     if (session.status === 'waiting_for_input' && /\r|\n/.test(data)) this.#setStatus(session, 'running', { waitingReason: '' });
   }
@@ -435,7 +455,12 @@ export class Supervisor {
 
   /** Stop one run. Only that run's own process group is signalled. */
   async cancel(runId) {
+    const cancelledHandoff = this.abortBoundary(runId, 'stop');
     const run = await this.board.run(runId);
+    if (cancelledHandoff && !ACTIVE.has(run.status) && run.sessionId) {
+      const session = (await this.board.state()).sessions.find(item => item.id === run.sessionId);
+      if (session?.currentRunId && session.currentRunId !== runId) return this.cancel(session.currentRunId);
+    }
     const stopping = this.sessions.get(runId)?.cancelPromise;
     if (stopping) return stopping; // Also share a stop while final status is being saved.
     if (!ACTIVE.has(run.status)) return; // Stopping an already-ended run is harmless.
@@ -456,6 +481,7 @@ export class Supervisor {
 
   /** Pause a queued/preparing or owned live process, preserving the exact native conversation. */
   async suspend(runId) {
+    this.abortBoundary(runId);
     const run = await this.board.run(runId);
     if (!ACTIVE.has(run.status)) return;
     const session = this.sessions.get(runId);
@@ -474,6 +500,68 @@ export class Supervisor {
       return;
     }
     await this.#cancelSession(this.#session(runId), true);
+  }
+
+  abortBoundary(runId, reason = 'pause') {
+    const controller = this.boundaryWaits.get(runId); controller?.abort(reason); return Boolean(controller);
+  }
+
+  /** A column move may replace only an owned, observably settled pipeline process. */
+  async suspendAtBoundary(runId, { prepare, guard, currentGuard, resume, timeoutMs = 120000 } = {}) {
+    const session = this.#session(runId);
+    if (!session.activity || !session.pipeline) throw new AgentError('This session cannot report a pipeline turn boundary.', 'PIPELINE_RECONFIGURE_REQUIRED', 409);
+    if (this.boundaryWaits.has(runId) || session.suspending || session.cancelPromise) throw new AgentError('This agent is already changing settings or stopping.', 'RUN_BUSY', 409);
+    const controller = new AbortController(), token = randomUUID(), deadline = Date.now() + timeoutMs;
+    this.boundaryWaits.set(runId, controller);
+    const cancelled = () => new AgentError('The settings change was cancelled. The card stays in its current column.', 'PIPELINE_RECONFIGURE_CANCELLED', 409);
+    const timedOut = () => new AgentError('The agent did not reach a settled native turn boundary. Its process and card were kept; finish the turn or pause it before retrying.', 'PIPELINE_BOUNDARY_TIMEOUT', 409);
+    const check = () => {
+      if (controller.signal.aborted || this.stopping) throw cancelled();
+      if (!session.proc || session.cancelled || session.failure || session.launchFailed) throw new AgentError('The original agent is no longer available for this settings change.', 'SESSION_NOT_LIVE', 409);
+      if (Date.now() >= deadline) throw timedOut();
+    };
+    try {
+      // Validation is read-only. An unresponsive resolver must not hold the
+      // task lock or block an explicit Pause beyond the handoff's budget.
+      let timer, onAbort;
+      try {
+        check();
+        await Promise.race([Promise.resolve().then(() => prepare?.()), new Promise((_, reject) => {
+          onAbort = () => reject(cancelled()); controller.signal.addEventListener('abort', onAbort, { once: true });
+          timer = setTimeout(() => reject(timedOut()), Math.max(0, deadline - Date.now()));
+          if (controller.signal.aborted) onAbort();
+        })]);
+      } finally { clearTimeout(timer); if (onAbort) controller.signal.removeEventListener('abort', onAbort); }
+      check();
+      for (;;) {
+        check();
+        await this.#readEvents(session); check();
+        if (!this.#activity(session).ready) {
+          await new Promise(resolve => { const timer = setTimeout(done, 100); function done() { clearTimeout(timer); controller.signal.removeEventListener('abort', done); resolve(); } controller.signal.addEventListener('abort', done, { once: true }); });
+          continue;
+        }
+        // Block input while the atomic guard and final hook drain are pending.
+        session.suspending = true;
+        let intentSaved = false;
+        try {
+          await this.board.beginSuspension(runId, { intent: 'system', token, guard }); intentSaved = true;
+          await this.#readEvents(session); check();
+          currentGuard?.(); // No await between the final committed-state check and signalling.
+          if (!this.#activity(session).ready) continue;
+          session.suspensionReason = 'Suspended at a native turn boundary to apply column settings. The conversation, worktree and output are kept.';
+          await this.#cancelSession(session, true);
+          if (controller.signal.aborted || this.stopping) throw new AgentError('The settings change was cancelled. The saved conversation stays paused in its current column.', 'PIPELINE_RECONFIGURE_CANCELLED', 409);
+          return resume ? await resume(AbortSignal.any([controller.signal, AbortSignal.timeout(Math.max(1, deadline - Date.now()))])) : undefined;
+        } finally {
+          // New output/hooks during persistence revoke the lease. Do not signal
+          // the process, and never erase another caller's pause intent.
+          if (!session.suspended) {
+            if (intentSaved) await this.board.abortSuspension(runId, token);
+            session.suspending = false;
+          }
+        }
+      }
+    } finally { this.boundaryWaits.delete(runId); }
   }
 
   async #cancelSession(session, suspended = false) {
@@ -564,6 +652,7 @@ export class Supervisor {
 
   /** Shutdown: stop owned sessions, record them as interrupted, and end streams. */
   async shutdown(graceMs = 3000) {
+    for (const controller of this.boundaryWaits.values()) controller.abort('shutdown');
     this.stopping = true;
     for (const [runId, controller] of this.preparing) {
       controller.abort();
