@@ -1,9 +1,11 @@
 /** Prompt construction and advisory prose checks. No model or shell calls occur here. */
 
+import { validateGrounding, groundingRules } from './compose-grounding.mjs';
+
 const PROVIDERS = new Set(['codex', 'claude', 'gemini', 'agy']);
 const DETAILS = new Set(['super-short', 'concise', 'detailed', 'extremely-detailed']);
 const TASKS = new Set(['build', 'debug', 'refactor', 'review', 'architecture', 'agent-workflow', 'research']);
-const FIELDS = new Set(['input', 'provider', 'model', 'effort', 'language', 'quality', 'detail', 'task', 'options', 'terminology']);
+const FIELDS = new Set(['input', 'provider', 'model', 'effort', 'language', 'quality', 'detail', 'task', 'options', 'terminology', 'grounding']);
 const OPTION_DEFAULTS = Object.freeze({
   acceptanceChecks: true,
   planFirst: true,
@@ -71,6 +73,7 @@ export function validateRequest(body) {
     task: choice(body, 'task', 'build', TASKS),
     options,
     terminology,
+    ...(body.grounding !== undefined ? { grounding: validateGrounding(body.grounding) } : {}),
   };
 }
 
@@ -235,7 +238,8 @@ export function buildPrompt(request) {
     '# Detail\n' + DETAIL_RULES[normalized.detail],
     '# Task guidance\n' + TASK_RULES[normalized.task],
     aids.length ? '# Selected aids\n' + aids.join('\n') : '',
-    '# Source data\n' + JSON.stringify({ request: normalized.input, terminology: normalized.terminology }),
+    normalized.grounding ? groundingRules : '',
+    '# Source data\n' + JSON.stringify({ request: normalized.input, terminology: normalized.terminology, ...(normalized.grounding ? { grounding: normalized.grounding } : {}) }),
   ].filter(Boolean).join('\n\n');
 }
 

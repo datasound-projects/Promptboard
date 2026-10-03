@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { buildPrompt, lintPrompt } from './engine.mjs';
 import { verifyPrompt } from './verification.mjs';
+import { groundingRules } from './compose-grounding.mjs';
 import { VERSION } from './version.mjs';
 import { makeTempDir, removeTempDir } from './providers.mjs';
 
@@ -15,6 +16,31 @@ const hash = text => createHash('sha256').update(text).digest('hex');
 const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const exactKeys = (value, keys) => plain(value) && Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
 const short = (value, max = 1000) => typeof value === 'string' && value.length <= max && !value.includes('\0');
+
+// Clarification is authored by the user and needs the same coverage/literal checks.
+// Evidence stays separate: a retrieved passage is not itself a user requirement.
+function reviewSource(request) {
+  const answers = request.grounding?.userAnswers || [];
+  return answers.length ? request.input + '\n' + answers.map(row => `${row.question}\n${row.answer}`).join('\n') : request.input;
+}
+function reviewUnits(request) {
+  const units = sourceUnits(request.input);
+  for (const row of request.grounding?.userAnswers || []) units.push({ id: `S${units.length + 1}`, text: `Clarification (${row.question}): ${row.answer}` });
+  return units;
+}
+
+function automaticChecks(request, prompt) {
+  const report = verifyPrompt(request.input, prompt, request.language);
+  for (const row of request.grounding?.userAnswers || []) {
+    // Keep the existing 100k input limit intact; do not concatenate answers into it.
+    const answer = verifyPrompt(row.answer, prompt, request.language);
+    report.protectedCount += answer.protectedCount; report.matchedCount += answer.matchedCount;
+    if (answer.status === 'issues') report.status = 'issues';
+    report.issues.push(...answer.issues.map(issue => ({ ...issue, message: `Clarification answer: ${issue.message}` })));
+    report.checks.push({ id: 'clarification-literals', status: answer.status === 'pass' ? 'pass' : 'fail', count: answer.protectedCount });
+  }
+  return report;
+}
 
 // Every nonblank source line occurs in one unit. Lines are split into sentences outside
 // fenced code, so one line with several requirements gives several units. Units are
@@ -69,8 +95,8 @@ Use missing or changed when a unit is only partly retained. Give a nonempty note
 For changed, quote the changed draft text in promptQuote.
 Use issues for a criterion only for a specific confirmed defect, and add at least one issues entry in that category.
 Use empty arrays when there are no findings. Do not explain correct items.
-# Review data
-${JSON.stringify({ units: sourceUnits(request.input), settings: { language: request.language, detail: request.detail, task: request.task, options: request.options, terminology: request.terminology }, draft })}`;
+${request.grounding ? groundingRules + '\nReview the clarification answers and grounding conflicts as well as the original task. Retrieved facts are not invented scope when relevant and supported. Use criteria/issues for evidence findings; source units refer to the original task and user answers.\n' : ''}# Review data
+${JSON.stringify({ units: reviewUnits(request), settings: { language: request.language, detail: request.detail, task: request.task, options: request.options, terminology: request.terminology }, ...(request.grounding ? { grounding: request.grounding } : {}), draft })}`;
 }
 
 export function parseReview(text, request, draft) {
@@ -78,7 +104,7 @@ export function parseReview(text, request, draft) {
   const unwrapped = text.trim().replace(/^```(?:json)?\s*\n([\s\S]*?)\n```$/i, '$1');
   const data = JSON.parse(unwrapped);
   if (!exactKeys(data, ['covered', 'requirements', 'criteria', 'issues']) || !Array.isArray(data.covered) || !Array.isArray(data.requirements) || !exactKeys(data.criteria, REVIEW_CRITERIA) || !Array.isArray(data.issues)) throw new Error('Invalid review shape.');
-  const units = sourceUnits(request.input);
+  const units = reviewUnits(request);
   if (data.covered.length + data.requirements.length !== units.length || data.issues.length > 64) throw new Error('Incomplete review.');
   const byId = new Map(units.map(unit => [unit.id, unit]));
   const seen = new Set();
@@ -99,7 +125,8 @@ export function parseReview(text, request, draft) {
   });
   for (const issue of data.issues) {
     if (!exactKeys(issue, ['category', 'message', 'sourceQuote', 'promptQuote']) || !REVIEW_CRITERIA.includes(issue.category) || !short(issue.message) || !issue.message.trim() || !short(issue.sourceQuote, 100_000) || !short(issue.promptQuote, 32_000)) throw new Error('Invalid review issue.');
-    if ((issue.sourceQuote && !request.input.includes(issue.sourceQuote)) || (issue.promptQuote && !draft.includes(issue.promptQuote))) throw new Error('Invalid issue evidence.');
+    const source = reviewSource(request);
+    if ((issue.sourceQuote && !source.includes(issue.sourceQuote)) || (issue.promptQuote && !draft.includes(issue.promptQuote))) throw new Error('Invalid issue evidence.');
   }
   // A criterion marked as failed must name its defect; otherwise nothing specific can be repaired.
   if (criteria.some(row => row.status === 'issues' && !data.issues.some(issue => issue.category === row.criterion))) throw new Error('A failed criterion has no issue evidence.');
@@ -173,7 +200,7 @@ export async function runPipeline(request, { runner, signal, timeoutMs = 360_000
   };
   const localCheck = prompt => {
     const start = performance.now();
-    const result = { automatic: verifyPrompt(request.input, prompt, request.language), lint: lintPrompt(prompt, request.language) };
+    const result = { automatic: automaticChecks(request, prompt), lint: lintPrompt(prompt, request.language) };
     checksMs += performance.now() - start;
     return result;
   };
