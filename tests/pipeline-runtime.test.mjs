@@ -93,8 +93,8 @@ test('compatible live moves retain one run without completing, committing, testi
   const reordered = await w.move(card.id, 'executing', { index: 0 }); assert.equal(reordered.run, undefined); assert.equal(w.starts.length, 1);
   const duplicateId = 'move-fixture-id'; await w.move(card.id, 'testing', { transitionId: duplicateId });
   assert.equal((await w.board.transition(card.id, { column: 'testing', expectedRevision: -1, transitionId: duplicateId })).duplicate, true);
-  await assert.rejects(w.move(card.id, 'planning'), { code: 'PIPELINE_RECONFIGURE_REQUIRED' });
-  assert.equal((await w.taskNow(card.id)).column, 'testing');
+  assert.equal((await w.move(card.id, 'planning')).continuedRunId, first.run.id); // Permissions are launch metadata; live CLI choices are retained.
+  await w.move(card.id, 'testing');
   await w.move(card.id, 'done'); assert.equal((await w.board.run(first.run.id)).status, 'suspended');
   assert.ok((await w.taskNow(card.id)).archivedAt); assert.equal((await w.taskNow(card.id)).sessionId, sessionId);
   const restored = await w.move(card.id, 'code_review'); assert.equal(restored.run.sessionId, sessionId);
@@ -584,4 +584,179 @@ test('a title edit during post-suspension validation cannot accept a stale reque
   assert.equal((await w.taskNow(card.id)).column, 'executing'); assert.equal((await w.taskNow(card.id)).title, 'New title');
   assert.equal(w.board.executor.sessions.get(original.id).proc, null);
   assert.equal(state.sessions.find(session => session.id === original.sessionId).nativeSessionId, (await w.board.run(original.id)).providerSessionId);
+});
+
+test('native approved plans move immediately while implementation continues; requests/rejections never route and no prompt is injected', { skip: process.platform === 'win32' }, async t => {
+  const w = await world(t, true);
+  for (const provider of ['claude', 'gemini']) {
+    const config = defaultPipelineConfig(); for (const column of config.columns.filter(item => item.role === 'active')) column.strategy.agentOverride = provider;
+    config.columns.find(column => column.id === 'planning').strategy.modelOverride = 'native-current-model';
+    await w.configure(config);
+    const card = await w.board.createTask({ projectId: w.projectId, title: 'Native plan', prompt: 'ACTIVITY_FIXTURE ORIGINAL PLANNING INPUT' });
+    const original = (await w.move(card.id, 'planning')).run; await until(async () => (await w.board.run(original.id)).activity?.ready);
+    const owned = w.board.executor.sessions.get(original.id), pid = owned.proc.pid;
+    w.board.executor.input(original.id, 'activity-plan-request\r'); await until(async () => (await w.board.run(original.id)).activity?.permissionPending);
+    assert.equal((await w.taskNow(card.id)).column, 'planning'); assert.equal((await w.board.run(original.id)).planRoutes, undefined);
+    w.board.executor.input(original.id, 'activity-plan-reject\r'); await until(async () => !(await w.board.run(original.id)).activity?.permissionPending);
+    assert.equal((await w.taskNow(card.id)).column, 'planning');
+    w.board.executor.input(original.id, 'activity-plan-approve-working\r');
+    await until(async () => (await w.taskNow(card.id)).column === 'executing');
+    const routed = await until(async () => { const r = await w.board.run(original.id); return r.planRoutes?.at(-1)?.status === 'completed' && r; });
+    assert.equal(owned.proc.pid, pid); assert.equal(routed.activity.parentTurnComplete, false); assert.equal(routed.activity.ready, false);
+    assert.equal(routed.config.permissionMode, 'plan'); // Historical spawn settings were not fabricated as the live native permission mode.
+    assert.equal(routed.config.model, 'native-current-model'); // Empty destination model preserves the current live choice.
+    assert.equal((await w.taskNow(card.id)).sessionId, original.sessionId); assert.equal((await w.board.state()).runs.filter(run => run.taskId === card.id).length, 1);
+    assert.equal(await readFile(join(original.workspacePath, 'native-implementation.txt'), 'utf8'), 'Native approved implementation is still running.\n');
+    assert.equal(await readFile(join(w.dataDir, original.artifactsDir, 'prompt.md'), 'utf8'), pipelineTaskEnvelope(card));
+    const output = await readFile(join(w.dataDir, original.artifactsDir, 'output.log'), 'utf8'); assert.doesNotMatch(output, /you said:.*Proceed with implementing/);
+    const proof = routed.activity.planApproval, before = (await w.taskNow(card.id)).transitions.length;
+    const repeated = await w.board.routeApprovedPlan(original.id, proof); assert.equal(repeated.id, routed.planRoutes[0].id);
+    assert.equal((await w.taskNow(card.id)).transitions.length, before); assert.equal((await w.board.run(original.id)).planRoutes.length, 1);
+    await w.move(card.id, 'todo');
+  }
+});
+
+test('native plan targets follow the task profile, null targets stay put, and successful re-entry enables another approved stage', { skip: process.platform === 'win32' }, async t => {
+  const w = await world(t, true), config = defaultPipelineConfig();
+  config.profiles = [{ id: 'profile-plan', name: 'Custom planning', columns: { planning: { planExitTargetId: 'testing' } } }];
+  config.columns.find(column => column.id === 'testing').strategy.planExitTargetId = 'merge'; await w.configure(config);
+  const card = await w.board.createTask({ projectId: w.projectId, title: 'Profile target', prompt: 'ACTIVITY_FIXTURE' });
+  await w.board.store.update(state => { state.projects[0].tasks.find(task => task.id === card.id).profileId = 'profile-plan'; });
+  const original = (await w.move(card.id, 'planning')).run; await until(async () => (await w.board.run(original.id)).activity?.ready);
+  const owned = w.board.executor.sessions.get(original.id), pid = owned.proc.pid;
+  w.board.executor.input(original.id, 'activity-plan-approve\r'); await until(async () => (await w.taskNow(card.id)).column === 'testing');
+  w.board.executor.input(original.id, 'activity-enter-plan\r'); await until(async () => !(await w.board.run(original.id)).activity?.planApproval);
+  w.board.executor.input(original.id, 'activity-plan-approve\r'); await until(async () => (await w.taskNow(card.id)).column === 'merge');
+  await until(async () => (await w.board.run(original.id)).planRoutes?.length === 2);
+  assert.equal(owned.proc.pid, pid); assert.equal((await w.board.run(original.id)).planRoutes[0].toColumn, 'testing');
+  assert.equal((await w.board.run(original.id)).planRoutes[1].toColumn, 'merge'); await w.move(card.id, 'todo');
+  const stay = await w.board.createTask({ projectId: w.projectId, title: 'Stay', prompt: 'ACTIVITY_FIXTURE' });
+  const run = (await w.move(stay.id, 'code_review')).run; await until(async () => (await w.board.run(run.id)).activity?.ready);
+  w.board.executor.input(run.id, 'activity-plan-approve\r');
+  await until(async () => (await w.board.run(run.id)).planRoutes?.at(-1)?.status === 'ignored');
+  assert.equal((await w.taskNow(stay.id)).column, 'code_review'); await w.move(stay.id, 'todo');
+});
+
+test('approved-plan model changes defer until work settles and use a resume-only continuation without replaying task text', { skip: process.platform === 'win32' }, async t => {
+  const w = await world(t, true), config = defaultPipelineConfig(); config.columns.find(column => column.id === 'executing').strategy.modelOverride = 'approved-model'; await w.configure(config);
+  const card = await w.board.createTask({ projectId: w.projectId, title: 'Model handoff', prompt: 'ACTIVITY_FIXTURE ORIGINAL PLAN BODY' });
+  const original = (await w.move(card.id, 'planning')).run; await until(async () => (await w.board.run(original.id)).activity?.ready);
+  const owned = w.board.executor.sessions.get(original.id), pid = owned.proc.pid, nativeId = (await w.board.run(original.id)).providerSessionId;
+  w.board.executor.input(original.id, 'activity-plan-approve-working\r');
+  await until(() => w.board.executor.boundaryWaits.has(original.id));
+  assert.equal(owned.proc.pid, pid); assert.equal((await w.taskNow(card.id)).column, 'planning');
+  assert.equal((await w.board.run(original.id)).planRoutes.at(-1).status, 'pending');
+  w.board.executor.input(original.id, 'activity-finish\r');
+  const completed = await until(async () => { const route = (await w.board.run(original.id)).planRoutes.at(-1); return route.status === 'completed' && route; });
+  const resumed = await w.board.run(completed.destinationRunId); await until(async () => (await w.board.run(resumed.id)).turnComplete);
+  assert.equal(resumed.sessionId, original.sessionId); assert.equal(resumed.resumeFrom.nativeSessionId, nativeId); assert.equal(resumed.config.model, 'approved-model');
+  assert.equal(await readFile(join(w.dataDir, resumed.artifactsDir, 'prompt.md'), 'utf8'), 'Proceed with implementing the approved plan.');
+  assert.equal((await w.taskNow(card.id)).column, 'executing'); assert.equal(owned.proc, null); await w.move(card.id, 'todo');
+});
+
+test('approval observation persistence retries before routing; incompatible providers fail once without replacing the conversation', { skip: process.platform === 'win32' }, async t => {
+  const w = await world(t, true), config = defaultPipelineConfig(); config.columns.find(column => column.id === 'executing').strategy.agentOverride = 'gemini'; await w.configure(config);
+  const card = await w.board.createTask({ projectId: w.projectId, title: 'Persist approval', prompt: 'ACTIVITY_FIXTURE' });
+  const original = (await w.move(card.id, 'planning')).run; await until(async () => (await w.board.run(original.id)).activity?.ready);
+  const owned = w.board.executor.sessions.get(original.id), pid = owned.proc.pid, update = w.board.updateRun.bind(w.board); let rejected = false, calls = 0;
+  const route = w.board.routeApprovedPlan.bind(w.board);
+  w.board.routeApprovedPlan = (...args) => { calls++; return route(...args); };
+  w.board.updateRun = async (id, change) => {
+    if (id === original.id && change.activity?.planApproval && !rejected) { rejected = true; throw new Error('Fixture transient observation write failure'); }
+    return update(id, change);
+  };
+  w.board.executor.input(original.id, 'activity-plan-approve\r');
+  const failed = await until(async () => { const r = await w.board.run(original.id); return r.planRoutes?.at(-1)?.status === 'failed' && r; });
+  assert.equal(rejected, true); assert.equal(failed.planRoutes[0].errorCode, 'PIPELINE_RECONFIGURE_REQUIRED'); assert.equal(calls, 1);
+  assert.equal(owned.proc.pid, pid); assert.equal((await w.taskNow(card.id)).column, 'planning');
+  assert.equal((await w.board.routeApprovedPlan(original.id, failed.activity.planApproval)).id, failed.planRoutes[0].id);
+  assert.equal((await w.board.state()).runs.filter(run => run.taskId === card.id).length, 1); await w.move(card.id, 'todo');
+});
+
+test('Pause cancels automatic routing before boundary registration, while Stop cannot resurrect a stopped run', { skip: process.platform === 'win32' }, async t => {
+  for (const action of ['pause', 'stop', 'shutdown']) {
+    const w = await world(t, true), config = defaultPipelineConfig(); config.columns.find(column => column.id === 'executing').strategy.modelOverride = 'next-model'; await w.configure(config);
+    const card = await w.board.createTask({ projectId: w.projectId, title: action, prompt: 'ACTIVITY_FIXTURE' });
+    const original = (await w.move(card.id, 'planning')).run; await until(async () => (await w.board.run(original.id)).activity?.ready);
+    const update = w.board.updateRun.bind(w.board); let release;
+    const held = new Promise(resolve => { release = resolve; }); let saved = false;
+    w.board.updateRun = async (id, change) => {
+      const result = await update(id, change);
+      if (id === original.id && change.planRoutes?.at(-1)?.status === 'pending') { saved = true; await held; }
+      return result;
+    };
+    t.after(release); w.board.executor.input(original.id, 'activity-plan-approve-working\r'); await until(() => saved);
+    assert.equal(w.board.executor.boundaryWaits.has(original.id), false);
+    const cancelling = action === 'pause' ? w.board.pauseRun(original.id, { confirm: true }) : action === 'stop' ? w.board.executor.cancel(original.id) : w.board.executor.shutdown(500);
+    await until(() => w.board.executor.sessions.get(original.id).planRoutingController.signal.aborted);
+    release(); await cancelling;
+    await until(async () => (await w.board.run(original.id)).planRoutes.at(-1).status === 'failed');
+    assert.equal((await w.taskNow(card.id)).column, 'planning'); assert.equal((await w.board.run(original.id)).status, action === 'pause' ? 'suspended' : action === 'stop' ? 'cancelled' : 'interrupted');
+    assert.equal((await w.board.state()).runs.filter(run => run.taskId === card.id).length, 1);
+    assert.equal(w.board.executor.sessions.get(original.id).proc, null);
+  }
+});
+
+test('a new native plan entry or exit request invalidates a pending approved-plan handoff without stopping work', { skip: process.platform === 'win32' }, async t => {
+  for (const provider of ['claude', 'gemini']) for (const command of ['activity-enter-plan', 'activity-plan-request']) {
+    const w = await world(t, true), config = defaultPipelineConfig();
+    for (const column of config.columns.filter(item => item.role === 'active')) column.strategy.agentOverride = provider;
+    config.columns.find(column => column.id === 'executing').strategy.modelOverride = 'next-model'; await w.configure(config);
+    const card = await w.board.createTask({ projectId: w.projectId, title: 'Superseded plan', prompt: 'ACTIVITY_FIXTURE' });
+    const original = (await w.move(card.id, 'planning')).run; await until(async () => (await w.board.run(original.id)).activity?.ready);
+    const owned = w.board.executor.sessions.get(original.id), pid = owned.proc.pid;
+    w.board.executor.input(original.id, 'activity-plan-approve-working\r'); await until(() => w.board.executor.boundaryWaits.has(original.id));
+    w.board.executor.input(original.id, command + '\r');
+    const failed = await until(async () => { const r = await w.board.run(original.id); return r.planRoutes.at(-1).status === 'failed' && r; });
+    assert.equal(failed.planRoutes[0].errorCode, 'PLAN_APPROVAL_STALE'); assert.equal(owned.proc.pid, pid);
+    assert.equal((await w.taskNow(card.id)).column, 'planning'); assert.equal((await w.board.state()).runs.filter(run => run.taskId === card.id).length, 1);
+    await w.move(card.id, 'todo');
+  }
+});
+
+test('an uncertain final plan-route save is never replayed and restart interrupts the durable pending marker even for an ended run', { skip: process.platform === 'win32' }, async t => {
+  const w = await world(t, true); await w.configure(defaultPipelineConfig());
+  const card = await w.board.createTask({ projectId: w.projectId, title: 'Unknown outcome', prompt: 'ACTIVITY_FIXTURE' });
+  const original = (await w.move(card.id, 'planning')).run; await until(async () => (await w.board.run(original.id)).activity?.ready);
+  const update = w.board.updateRun.bind(w.board);
+  w.board.updateRun = (id, change) => id === original.id && change.planRoutes?.at(-1)?.status === 'completed' ? Promise.reject(new Error('Fixture final route write failure')) : update(id, change);
+  w.board.executor.input(original.id, 'activity-plan-approve\r');
+  await until(async () => (await w.taskNow(card.id)).column === 'executing'); await until(() => !w.board.executor.sessions.get(original.id).planRouting);
+  const run = await w.board.run(original.id), transitions = (await w.taskNow(card.id)).transitions.length;
+  assert.equal(run.planRoutes[0].status, 'pending');
+  assert.equal((await w.board.routeApprovedPlan(original.id, run.activity.planApproval)).id, run.planRoutes[0].id);
+  assert.equal((await w.taskNow(card.id)).transitions.length, transitions);
+  await w.move(card.id, 'todo'); assert.equal((await w.board.run(original.id)).status, 'cancelled');
+  const recovered = new Board({ dataDir: w.dataDir, executor: { start() { assert.fail('Recovery must not replay.'); } } });
+  const restored = await recovered.run(original.id); assert.equal(restored.planRoutes[0].status, 'interrupted'); assert.equal(restored.status, 'cancelled');
+  assert.match(restored.planRoutes[0].reason, /not replayed/);
+});
+
+test('stale task approval is recorded as ignored and Codex turn completion cannot route a plan', { skip: process.platform === 'win32' }, async t => {
+  const w = await world(t, true); await w.configure(defaultPipelineConfig());
+  const card = await w.board.createTask({ projectId: w.projectId, title: 'Edited task', prompt: 'ACTIVITY_FIXTURE' });
+  const original = (await w.move(card.id, 'planning')).run; await until(async () => (await w.board.run(original.id)).activity?.ready);
+  await w.board.updateTask(card.id, { prompt: 'ACTIVITY_FIXTURE EDITED', expectedRevision: (await w.taskNow(card.id)).revision });
+  w.board.executor.input(original.id, 'activity-plan-approve\r');
+  await until(async () => (await w.board.run(original.id)).planRoutes?.at(-1)?.status === 'ignored');
+  assert.equal((await w.taskNow(card.id)).column, 'planning'); assert.match((await w.board.run(original.id)).planRoutes[0].reason, /task changed/i); await w.move(card.id, 'todo');
+  const config = defaultPipelineConfig(); config.columns.find(column => column.id === 'planning').strategy.agentOverride = 'codex'; await w.configure(config);
+  const codexCard = await w.board.createTask({ projectId: w.projectId, title: 'Codex native limit', prompt: 'ACTIVITY_FIXTURE' });
+  const codex = (await w.move(codexCard.id, 'planning')).run; await until(async () => (await w.board.run(codex.id)).activity?.ready);
+  w.board.executor.input(codex.id, 'activity-plan-approve\r'); await until(async () => (await w.board.run(codex.id)).activity?.ready);
+  assert.equal((await w.board.run(codex.id)).planRoutes, undefined); assert.equal((await w.taskNow(codexCard.id)).column, 'planning');
+  await assert.rejects(w.board.routeApprovedPlan(codex.id, { provider: 'codex', source: 'agent-turn-complete', at: Date.now() }), { code: 'PLAN_APPROVAL_NOT_OBSERVED' });
+  await w.move(codexCard.id, 'todo');
+});
+
+test('an approved-plan target with auto-start off parks the native conversation without launching or injecting a continuation', { skip: process.platform === 'win32' }, async t => {
+  const w = await world(t, true), config = defaultPipelineConfig(); config.columns.find(column => column.id === 'executing').strategy.autoSpawn = false; await w.configure(config);
+  const card = await w.board.createTask({ projectId: w.projectId, title: 'Manual destination', prompt: 'ACTIVITY_FIXTURE' });
+  const original = (await w.move(card.id, 'planning')).run; await until(async () => (await w.board.run(original.id)).activity?.ready);
+  w.board.executor.input(original.id, 'activity-plan-approve-working\r');
+  const routed = await until(async () => { const run = await w.board.run(original.id); return run.planRoutes?.at(-1)?.status === 'completed' && run; });
+  assert.equal(routed.status, 'suspended'); assert.equal(w.board.executor.sessions.get(original.id).proc, null);
+  assert.equal((await w.taskNow(card.id)).column, 'executing'); assert.equal((await w.taskNow(card.id)).sessionId, original.sessionId);
+  assert.equal((await w.board.state()).runs.filter(run => run.taskId === card.id).length, 1);
+  const output = await readFile(join(w.dataDir, original.artifactsDir, 'output.log'), 'utf8'); assert.doesNotMatch(output, /you said:.*Proceed with implementing/);
 });

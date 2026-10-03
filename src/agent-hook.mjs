@@ -35,6 +35,8 @@ try {
       scheduledCount: Array.isArray(data.session_crons) ? data.session_crons.length : undefined,
       planApproved: provider === 'gemini' && data.hook_event_name === 'AfterTool' && data.tool_name === 'exit_plan_mode'
         ? !data.tool_response?.error && typeof data.tool_response?.returnDisplay === 'string' && data.tool_response.returnDisplay.startsWith('Plan approved: ') : undefined,
+      planEntered: provider === 'gemini' && data.hook_event_name === 'AfterTool' && data.tool_name === 'enter_plan_mode'
+        ? !data.tool_response?.error && typeof data.tool_response?.returnDisplay === 'string' && data.tool_response.returnDisplay.startsWith('Switching to Plan mode') : undefined,
       error: pick(data.error),
       transcriptPath: pick(data.transcript_path),
       message: pick(data.last_assistant_message) || pick(data['last-assistant-message']) || pick(data.prompt_response),

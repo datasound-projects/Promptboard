@@ -1932,11 +1932,12 @@ function renderAgents(current) {
     const model = document.createElement('span'); model.className = 'agent-meta agent-model'; model.textContent = agentModel(run);
     const status = document.createElement('span'); status.className = 'agent-meta';
     const stateText = document.createElement('span'); stateText.className = 'agent-state'; stateText.textContent = agentStateText(run);
-    status.append(`${columnTitle(run.stage, project)} · `, stateText, ' · ', elapsedSpan(run));
+    const stage = run.config?.pipeline && RUN_LIVE.includes(run.status) ? task.column : run.stage;
+    status.append(`${columnTitle(stage, project)} · `, stateText, ' · ', elapsedSpan(run));
     button.append(icon, name, model, status);
     const other = project.id !== current?.id;
     if (other) { const where = document.createElement('span'); where.className = 'agent-meta'; where.textContent = `Project: ${project.name}`; button.append(where); }
-    button.setAttribute('aria-label', `${task.title}: ${agentStateText(run)}. ${columnTitle(run.stage)}. ${agentModel(run)}.${other ? ` Project ${project.name}.` : ''}`);
+    button.setAttribute('aria-label', `${task.title}: ${agentStateText(run)}. ${columnTitle(stage, project)}. ${agentModel(run)}.${other ? ` Project ${project.name}.` : ''}`);
     button.title = [task.title, agentActivity(run), run.branch ? `Branch ${run.branch}` : ''].filter(Boolean).join('\n');
     button.addEventListener('click', () => selectAgent(run.id));
     item.append(button);
@@ -1970,11 +1971,14 @@ function renderRunControls(card, run) {
     const badge = document.createElement('span');
     const state = agentState(run);
     badge.className = `run-badge${state === 'awaits_you' ? ' waiting awaits' : state === 'active' ? ' running' : ['failed', 'interrupted'].includes(run.status) ? ' failed' : ''}`;
-    badge.append(`${columnTitle(run.stage)} · ${state === 'awaits_you' ? 'AWAITS YOU' : agentStateText(run)} · `, elapsedSpan(run));
+    badge.append(`${columnTitle(active?.config?.pipeline ? card.column : run.stage)} · ${state === 'awaits_you' ? 'AWAITS YOU' : agentStateText(run)} · `, elapsedSpan(run));
     badge.title = [agentModel(run), run.waitingReason || run.reason].filter(Boolean).join(' · ');
     box.append(badge, paragraph(`Run agent: ${agentModel(run)}`, 'run-agent'));
     const activity = active ? agentActivity(run) : '';
     if (activity) { const line = paragraph(activity, 'run-activity'); line.title = activity; box.append(line); }
+    const route = run.planRoutes?.at(-1);
+    if (route?.status === 'pending') box.append(paragraph(`Plan approved. Moving to ${columnTitle(route.toColumn)} after the current turn settles…`, 'run-activity plan-route'));
+    else if (route?.status === 'failed' || route?.status === 'interrupted') box.append(paragraph(`Approved-plan move ${route.status}: ${route.reason}`, 'run-activity plan-route kanban-error'));
   }
   const labelled = (button, label) => { button.setAttribute('aria-label', `${label}: ${card.title}`); return button; };
   // The Merge stage's own work (preparing, merge agent, readiness, or the blocker) is shown on the card.
@@ -3489,7 +3493,7 @@ const draftAnchor = entry => { let anchor = 'todo'; for (const item of columnsDr
 function renderColumns() {
   $('#columns-use-pipeline').hidden = columnsDraft.pipeline;
   $('#columns-mode-note').textContent = columnsDraft.pipeline
-    ? 'Columns control the agent’s session. Moves send no stage instructions. Pause agents before changing settings. Plan exit automation is being added; move approved plans to Executing manually for now.'
+    ? 'Columns control the agent’s session. Moves send no stage instructions. Pause agents before changing settings. Claude and Gemini can move approved native plans to the configured target; Codex requires an explicit move.'
     : 'This board uses the original stage rules. Switching removes automatic stage instructions and keeps the saved tasks, files, and run history. Save to confirm the switch.';
   if (columnsDraft.pipeline) return renderPipelineColumns();
   const list = columnsDraft.list;
@@ -3623,7 +3627,11 @@ function renderPipelineColumns() {
     const permissions = document.createElement('select'); permissions.setAttribute('aria-label', 'Column permissions');
     permissions.append(...[['', 'Use agent default'], ['plan', 'Plan mode'], ['default', 'Ask for permission'], ['acceptEdits', 'Claude: accept file edits'], ['workspace-write', 'Codex: write in workspace'], ['auto_edit', 'Gemini: accept file edits']].map(([value, label]) => option(value, label)));
     permissions.value = entry.strategy.permissionMode || ''; permissions.addEventListener('change', () => { entry.strategy.permissionMode = permissions.value || null; }); nodes.push(field('Permissions', permissions));
-    nodes.push(paragraph('A running conversation continues silently between compatible columns. Moves with different settings or Base wait for the current turn before resuming. Pause before editing this board or switching providers.', 'note'));
+    const target = document.createElement('select'); target.id = 'column-plan-target';
+    target.append(option('', 'Stay in this column'), ...list.filter(column => column.role === 'active' && column.id !== entry.id).map(column => option(column.id, column.name)));
+    target.value = entry.strategy.planExitTargetId || ''; target.addEventListener('change', () => { entry.strategy.planExitTargetId = target.value || null; }); nodes.push(field('After native plan approval', target));
+    nodes.push(paragraph('Claude and Gemini can move to this target after a native plan is approved in the terminal. A request or finished response does not count as approval. Codex currently requires an explicit move.', 'note'));
+    nodes.push(paragraph('Live moves retain the CLI’s current permissions. New model, effort or Base settings wait for the current turn before resuming. Permissions apply on startup/resume. Pause before editing this board or switching providers.', 'note'));
   } else nodes.push(paragraph(entry.role === 'todo' ? 'The holding role never starts agents. Returning a card stops its agent and resets the current session; files and historical output are kept.'
     : 'The completion role pauses the agent and archives its task, preserving the conversation and worktree for restoration.', 'note'));
   if (projectColumnsOf().some(column => column.id === entry.id)) nodes.push(basePicker({ target: { scope: 'column', projectId: currentProject().id, columnId: entry.id }, inactive: entry.role !== 'active' }));

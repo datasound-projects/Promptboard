@@ -268,7 +268,23 @@ export class Supervisor {
     if (session.eventRead) return session.eventRead;
     session.eventRead = this.#readEventBatch(session);
     try { return await session.eventRead; }
-    finally { session.eventRead = null; }
+    finally { session.eventRead = null; this.#schedulePlanRoute(session); }
+  }
+
+  #schedulePlanRoute(session) {
+    const approval = session.activity?.planApproval;
+    if (!approval || !session.proc || session.cancelled || session.suspending || session.failure || session.launchFailed || this.stopping || session.planRouting) return;
+    const key = JSON.stringify(approval);
+    if (session.publishedPlanApprovalKey !== key) return; // Retry observation persistence before accepting the move.
+    if (key === session.planRouteKey) return;
+    // At most one attempt per native approval. A failed move is visible and can
+    // be made explicitly; never restart/replay an uncertain automatic action.
+    session.planRouteKey = key;
+    const controller = new AbortController(); session.planRoutingController = controller;
+    session.planRouting = Promise.resolve().then(() => this.board.routeApprovedPlan(session.runId, approval, { signal: controller.signal }))
+      .catch(error => {
+        this.#push(session, { planRoutingError: { code: error.code || 'PLAN_ROUTE_FAILED', reason: 'The approved plan could not be routed. Check the card and move it explicitly.' } });
+      }).finally(() => { session.planRouting = null; session.planRoutingController = null; });
   }
 
   async #readEventBatch(session) {
@@ -312,6 +328,7 @@ export class Supervisor {
     if (key === session.activityKey) return;
     await this.board.updateRun(session.runId, { activity });
     session.activityKey = key;
+    session.publishedPlanApprovalKey = JSON.stringify(activity.planApproval || null);
     this.#push(session, { activity });
   }
 
@@ -503,21 +520,26 @@ export class Supervisor {
   }
 
   abortBoundary(runId, reason = 'pause') {
-    const controller = this.boundaryWaits.get(runId); controller?.abort(reason); return Boolean(controller);
+    const controller = this.boundaryWaits.get(runId), plan = this.sessions.get(runId)?.planRoutingController;
+    controller?.abort(reason); plan?.abort(reason); return Boolean(controller || plan);
   }
 
   /** A column move may replace only an owned, observably settled pipeline process. */
-  async suspendAtBoundary(runId, { prepare, guard, currentGuard, resume, timeoutMs = 120000 } = {}) {
+  async suspendAtBoundary(runId, { prepare, guard, currentGuard, resume, requiredApproval = null, signal = null, timeoutMs = 120000 } = {}) {
     const session = this.#session(runId);
     if (!session.activity || !session.pipeline) throw new AgentError('This session cannot report a pipeline turn boundary.', 'PIPELINE_RECONFIGURE_REQUIRED', 409);
     if (this.boundaryWaits.has(runId) || session.suspending || session.cancelPromise) throw new AgentError('This agent is already changing settings or stopping.', 'RUN_BUSY', 409);
     const controller = new AbortController(), token = randomUUID(), deadline = Date.now() + timeoutMs;
+    const externalAbort = () => controller.abort(signal.reason);
+    signal?.addEventListener('abort', externalAbort, { once: true });
+    if (signal?.aborted) externalAbort();
     this.boundaryWaits.set(runId, controller);
     const cancelled = () => new AgentError('The settings change was cancelled. The card stays in its current column.', 'PIPELINE_RECONFIGURE_CANCELLED', 409);
     const timedOut = () => new AgentError('The agent did not reach a settled native turn boundary. Its process and card were kept; finish the turn or pause it before retrying.', 'PIPELINE_BOUNDARY_TIMEOUT', 409);
     const check = () => {
       if (controller.signal.aborted || this.stopping) throw cancelled();
       if (!session.proc || session.cancelled || session.failure || session.launchFailed) throw new AgentError('The original agent is no longer available for this settings change.', 'SESSION_NOT_LIVE', 409);
+      if (requiredApproval && JSON.stringify(session.activity.planApproval) !== JSON.stringify(requiredApproval)) throw new AgentError('Native plan approval changed while waiting. The automatic move was cancelled.', 'PLAN_APPROVAL_STALE', 409);
       if (Date.now() >= deadline) throw timedOut();
     };
     try {
@@ -561,7 +583,7 @@ export class Supervisor {
           }
         }
       }
-    } finally { this.boundaryWaits.delete(runId); }
+    } finally { this.boundaryWaits.delete(runId); signal?.removeEventListener('abort', externalAbort); }
   }
 
   async #cancelSession(session, suspended = false) {
@@ -653,6 +675,7 @@ export class Supervisor {
   /** Shutdown: stop owned sessions, record them as interrupted, and end streams. */
   async shutdown(graceMs = 3000) {
     for (const controller of this.boundaryWaits.values()) controller.abort('shutdown');
+    for (const session of this.sessions.values()) session.planRoutingController?.abort('shutdown');
     this.stopping = true;
     for (const [runId, controller] of this.preparing) {
       controller.abort();

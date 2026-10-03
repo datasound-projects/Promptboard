@@ -68,6 +68,20 @@ test('approval requires a main native completed plan tool, never a request, reje
     assert.deepEqual(a.snapshot().planApproval, { provider, at: 5, toolId: 'approved', source: end });
     a.observe({ name: end, tool, toolId: 'approved', planApproved: true }, 6);
     assert.equal(a.snapshot().planApproval.at, 5);
+    a.observe({ name: start, tool, toolId: 'next-request' }, 7);
+    assert.equal(a.snapshot().planApproval, undefined); // A new plan request supersedes a deferred prior approval.
+    a.observe({ name: end, tool, toolId: 'next-request', planApproved: true }, 8);
+    assert.equal(a.snapshot().planApproval.at, 8);
+    if (provider === 'gemini') {
+      a.observe({ name: end, tool: 'enter_plan_mode', planEntered: false }, 9); assert.ok(a.snapshot().planApproval);
+      a.observe({ name: end, tool: 'enter_plan_mode', planEntered: true }, 10); assert.equal(a.snapshot().planApproval, undefined);
+    } else {
+      a.observe({ name: end, tool: 'EnterPlanMode', toolId: 'enter' }, 9); assert.equal(a.snapshot().planApproval, undefined);
+      a.observe({ name: end, tool, toolId: 'next-request' }, 10); assert.equal(a.snapshot().planApproval, undefined); // Late duplicate approval cannot rearm after re-entry.
+      a.observe({ name: end, tool, toolId: 'new-approved' }, 11); assert.equal(a.snapshot().planApproval.at, 11);
+      a.observe({ name: end, tool: 'EnterPlanMode', toolId: 'enter' }, 12); assert.equal(a.snapshot().planApproval.at, 11);
+      a.observe({ name: start, tool, toolId: 'next-request' }, 13); assert.equal(a.snapshot().planApproval.at, 11); // Late duplicate starts also cannot supersede newer approval.
+    }
   }
 });
 
@@ -109,6 +123,12 @@ test('hook bridge keeps bounded activity metadata but excludes tool inputs, resu
   assert.doesNotMatch(text, /PRIVATE/);
   assert.deepEqual([lines[0].toolId, lines[0].agentId, lines[0].backgroundRequested, lines[0].backgroundCount, lines[0].scheduledCount], ['tool-1', 'child', true, 1, 1]);
   assert.deepEqual(lines.slice(1).map(event => event.planApproved), [false, false, false, false, true, false]);
+  for (const display of ['Cancelled', 'Switching to Plan mode', 'Switching to Plan mode: PRIVATE REASON']) {
+    emit('gemini', { hook_event_name: 'AfterTool', tool_name: 'enter_plan_mode', tool_response: { returnDisplay: display, llmContent: 'PRIVATE RESULT' } });
+  }
+  emit('gemini', { hook_event_name: 'AfterTool', tool_name: 'enter_plan_mode', tool_response: { returnDisplay: 'Switching to Plan mode', error: { message: 'PRIVATE ERROR' } } });
+  const entered = await readFile(events, 'utf8'); assert.doesNotMatch(entered, /PRIVATE/);
+  assert.deepEqual(entered.trim().split('\n').slice(-4).map(line => JSON.parse(line).planEntered), [false, true, true, false]);
   emit('claude', { hook_event_name: 'PostToolUse', tool_name: 'ExitPlanMode', tool_use_id: 'x'.repeat(300), agent_id: 'y'.repeat(300) });
   const malformed = JSON.parse((await readFile(events, 'utf8')).trim().split('\n').at(-1));
   assert.equal(malformed.toolId, undefined); assert.equal(malformed.agentId, undefined);

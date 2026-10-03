@@ -66,6 +66,7 @@ if (prompt.includes('USAGE') && provider === 'codex') {
 const baseEmit = emit;
 emit = (name, extra = {}) => baseEmit(name, { ...(transcript ? { transcript_path: transcript } : {}), ...(flag('--resume') && process.env.FAKE_AGENT_RESUME_ID ? { session_id: process.env.FAKE_AGENT_RESUME_ID } : {}), ...extra });
 emit('SessionStart');
+let planApprovalSequence = 0;
 function turn(text) {
   if (prompt.includes('ACTIVITY_FIXTURE') && text.startsWith('activity-')) {
     const tool = provider === 'gemini' ? 'exit_plan_mode' : 'ExitPlanMode';
@@ -86,9 +87,19 @@ function turn(text) {
     } else if (text === 'activity-plan-reject') {
       if (provider === 'gemini') emit('PostToolUse', { tool_name: tool, tool_response: { returnDisplay: 'Rejected (no feedback)' } });
       else emit('PostToolUseFailure', { tool_name: tool, tool_use_id: 'plan-tool' });
-    } else if (text === 'activity-plan-approve') {
-      emit('PostToolUse', { tool_name: tool, tool_use_id: 'approved-plan-tool', tool_response: { returnDisplay: 'Plan approved: /fixture/plan.md' } });
-      emit('Stop', { last_assistant_message: 'Approved plan.', background_tasks: [], session_crons: [] });
+    } else if (text === 'activity-plan-approve' || text === 'activity-plan-approve-working') {
+      emit('PostToolUse', { tool_name: tool, tool_use_id: `approved-plan-tool-${++planApprovalSequence}`, tool_response: { returnDisplay: 'Plan approved: /fixture/plan.md' } });
+      if (text === 'activity-plan-approve-working') {
+        // Native approval already starts implementation; routing must not
+        // wait for Stop or inject another task/continuation into this turn.
+        emit('PreToolUse', { tool_name: 'Bash', tool_use_id: 'main-tool' });
+        writeFileSync(join(process.cwd(), 'native-implementation.txt'), 'Native approved implementation is still running.\n');
+      } else emit('Stop', { last_assistant_message: 'Approved plan.', background_tasks: [], session_crons: [] });
+    } else if (text === 'activity-enter-plan') {
+      const enter = provider === 'gemini' ? 'enter_plan_mode' : 'EnterPlanMode';
+      emit('PreToolUse', { tool_name: enter, tool_use_id: 'enter-plan-tool' });
+      emit('PostToolUse', { tool_name: enter, tool_use_id: 'enter-plan-tool', tool_response: { returnDisplay: 'Switching to Plan mode' } });
+      emit('Stop', { last_assistant_message: 'Planning again.', background_tasks: [], session_crons: [] });
     } else if (text === 'activity-child-failure') {
       emit('StopFailure', { agent_id: 'child', error: 'billing_error' });
     }
