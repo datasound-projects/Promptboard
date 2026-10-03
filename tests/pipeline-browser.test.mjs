@@ -5,8 +5,58 @@ import { join } from 'node:path';
 import { findChrome, launch } from './helpers/browser.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
 import { attachSession } from '../src/sessions.mjs';
+import { defaultPipelineConfig } from '../src/pipeline-config.mjs';
 
 const chrome = await findChrome();
+test('automation editing, Stop and receipt history work by keyboard in light/dark and desktop/narrow Chrome', { skip: !chrome, timeout: 90000 }, async t => {
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] }), pipeline = defaultPipelineConfig();
+  const project = await app.board.createProject({ name: 'Actions UI' });
+  for (const column of pipeline.columns) column.strategy.autoSpawn = false;
+  await app.board.setPipeline(project.id, { pipeline, expectedRevision: 1, confirm: true });
+  const task = await app.board.createTask({ projectId: project.id, title: 'Literal task', prompt: '  Exact Composer\r\n' });
+  const browser = await launch({ width: 1280, height: 900 }); if (!browser) { t.skip('Chrome did not start.'); return; } t.after(() => browser.close());
+  const enter = async () => { await browser.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' }); await browser.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 }); };
+  await browser.goto(`${app.url}/#/kanban`); await browser.until(`document.querySelector('[data-id="${task.id}"]')`, 'task ready'); await browser.send('Page.bringToFront');
+  await browser.eval(`document.querySelector('#columns-open').focus();`); await enter(); await browser.until(`document.querySelector('#columns-dialog').open`, 'editor opened');
+  await browser.eval(`[...document.querySelectorAll('.columns-item')].find(button => button.textContent === 'To Do').focus();`); await enter();
+  await browser.eval(`document.querySelector('[data-trigger="onExit"] .automation-add').scrollIntoView({block:'center'}); document.querySelector('[data-trigger="onExit"] .automation-add').focus();`); await enter();
+  await browser.until(`document.querySelector('.automation-row [data-field="script"]')`, 'script row created');
+  await browser.eval(`const type = document.querySelector('.automation-row [data-field="type"]'); type.value = 'webhook'; type.dispatchEvent(new Event('change',{bubbles:true}));`);
+  await browser.eval(`const name = document.querySelector('.automation-row [data-field="name"]'); name.value = 'Recorded <img src=x onerror="window.__historyPwned=1">'; name.dispatchEvent(new Event('input',{bubbles:true})); const url = document.querySelector('.automation-row [data-field="url"]'); url.value = 'https://example.test/offline'; url.dispatchEvent(new Event('input',{bubbles:true}));`);
+  for (const width of [1280, 390]) {
+    await browser.resize(width, 900);
+    for (const theme of ['light', 'dark']) {
+      await browser.eval(`document.documentElement.dataset.theme = '${theme}'; const input = document.querySelector('.automation-row [data-field="headers"]'); input.scrollIntoView({block:'center'}); input.focus();`);
+      assert.equal(await browser.layout(`const d=document.querySelector('#columns-dialog').getBoundingClientRect(),r=document.activeElement.getBoundingClientRect(); return document.activeElement.dataset.field === 'headers' && d.left >= -1 && d.right <= innerWidth+1 && r.left>=0 && r.right<=innerWidth && r.top>=0 && r.bottom<=innerHeight;`), true);
+      await browser.eval(`const button = document.querySelector('.automation-row .danger'); button.scrollIntoView({block:'center'}); button.focus();`);
+      assert.equal(await browser.layout(`const r=document.activeElement.getBoundingClientRect(); return document.activeElement.textContent === 'Delete action' && r.left>=0 && r.right<=innerWidth && r.top>=0 && r.bottom<=innerHeight;`), true);
+      if (process.env.PB_BROWSER_SHOTS) { await mkdir(process.env.PB_BROWSER_SHOTS, { recursive: true }); await writeFile(join(process.env.PB_BROWSER_SHOTS, `pipeline-actions-${width}-${theme}.png`), await browser.screenshot()); }
+    }
+  }
+  await browser.eval(`const save = document.querySelector('#columns-form button[type="submit"]'); save.scrollIntoView({block:'center'}); save.focus();`); await enter();
+  await browser.until(`!document.querySelector('#columns-dialog').open`, 'saved without executing');
+  assert.equal((await app.board.state()).runs.length, 0); assert.equal((await app.board.automationRuns(task.id)).length, 0);
+  let calls = 0;
+  app.board.automations.actions.fetcher = (_url, { signal }) => new Promise((_resolve, reject) => { calls++; const abort = () => reject(new Error('Owned fixture stopped.')); signal.addEventListener('abort', abort, { once:true }); if (signal.aborted) abort(); });
+  const moving = app.board.transition(task.id, { column: 'code_review', expectedRevision: 1 }), cancelled = assert.rejects(moving, { code: 'AUTOMATION_MOVE_CANCELLED' });
+  await browser.until(`document.querySelector('[data-id="${task.id}"] .kanban-stop-automations')`, 'poll displays owned pending work'); assert.equal(calls, 1);
+  for (const theme of ['light', 'dark']) {
+    await browser.eval(`document.documentElement.dataset.theme='${theme}'; const stop = document.querySelector('[data-id="${task.id}"] .kanban-stop-automations'); stop.scrollIntoView({block:'center',inline:'center'}); stop.focus();`);
+    assert.equal(await browser.layout(`const r=document.activeElement.getBoundingClientRect(); return document.activeElement.classList.contains('kanban-stop-automations') && r.left>=0 && r.right<=innerWidth && r.top>=0 && r.bottom<=innerHeight;`), true);
+  }
+  await enter(); await cancelled;
+  await browser.until(`!document.querySelector('[data-id="${task.id}"] .kanban-stop-automations')`, 'Stop acknowledged');
+  await browser.eval(`document.querySelector('[data-id="${task.id}"] .kanban-more-toggle').click(); document.querySelector('[data-id="${task.id}"] .kanban-details').focus();`); await enter();
+  await browser.until(`document.querySelector('.automation-history')?.textContent.includes('On exit')`, 'durable results loaded');
+  assert.equal(await browser.eval(`return document.querySelector('.automation-history img')===null && !window.__historyPwned;`), true);
+  for (const theme of ['light', 'dark']) {
+    await browser.eval(`document.documentElement.dataset.theme='${theme}'; const summary=document.querySelector('.automation-history summary'); summary.scrollIntoView({block:'center'}); summary.focus();`);
+    assert.equal(await browser.layout(`const r=document.activeElement.getBoundingClientRect(); return document.activeElement.tagName==='SUMMARY' && r.left>=0 && r.right<=innerWidth && r.top>=0 && r.bottom<=innerHeight;`), true);
+  }
+  await enter(); assert.equal(await browser.eval(`return document.querySelector('.automation-history details').open;`), true);
+  assert.equal(calls, 1); assert.equal((await app.board.state()).projects[0].tasks[0].prompt, task.prompt);
+  assert.ok(!browser.consoleMessages.some(message=>message.startsWith('EXCEPTION')),browser.consoleMessages.join('\n'));
+});
 // This scenario includes cold Chrome startup and sequential persisted edits,
 // keyboard actions and layout checks. Individual readiness waits remain bounded;
 // allow the complete scenario to finish on slower hosted macOS runners.

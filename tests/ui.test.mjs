@@ -127,6 +127,80 @@ test('a pipeline revision conflict after an exit webhook never creates an automa
   const history = await ctx.app.board.automationRuns(task.id); assert.equal(history.length, 1); assert.equal(history[0].actions[0].status, 'succeeded'); assert.equal(history[0].lifecycle.status, 'failed');
 });
 
+test('pipeline action editing preserves literal definitions, validates headers, and saves without executing or losing dormant messages', async t => {
+  const ctx = await setup(t, { executor: null, hash: '#/kanban' }), pipeline = defaultPipelineConfig();
+  const project = await ctx.app.board.createProject({ name: 'Action editor' });
+  for (const column of pipeline.columns) column.strategy.autoSpawn = false;
+  const savedMessage = { id: 'dormant-message', name: 'Future message', type: 'send_message', enabled: false, message: '  Preserve {{title}}\r\n', mode: 'deferred' };
+  pipeline.columns[3].automations.onEnter = [savedMessage]; await ctx.app.board.setPipeline(project.id, { pipeline, expectedRevision: 1, confirm: true });
+  await ctx.app.board.createTask({ projectId: project.id, title: 'Composer', prompt: '  Exact edited split task\r\n' });
+  let effects = 0; ctx.app.board.automations.actions.fetcher = async () => { effects++; return new Response(null, { status: 204 }); };
+  await ctx.win.__pbTest.loadBoard(); await ctx.idle({ requireComplete: true }); ctx.$('#columns-open').click();
+  [...ctx.win.document.querySelectorAll('.columns-item')].find(button => button.textContent === 'Code Review').click();
+  const input = (row, key, value, event = 'input') => { const field = row.querySelector(`[data-field="${key}"]`); field.value = value; field.dispatchEvent(new ctx.win.Event(event, { bubbles: true })); return field; };
+  const exit = () => ctx.$('[data-trigger="onExit"]');
+  exit().querySelector('.automation-add').click(); let script = exit().querySelector('.automation-row');
+  const scriptId = script.dataset.automationId; input(script, 'name', 'Literal script'); input(script, 'script', 'printf "%s" "$PROMPTBOARD_TITLE"\nexit 7'); input(script, 'timeoutMinutes', '12');
+  exit().querySelector('.automation-add').click(); let hook = exit().querySelectorAll('.automation-row')[1], hookId = hook.dataset.automationId;
+  input(hook, 'type', 'webhook', 'change'); hook = ctx.$(`[data-automation-id="${hookId}"]`);
+  const malicious = 'Hook <img src=x onerror="window.__actionPwned=1">'; input(hook, 'name', malicious);
+  input(hook, 'url', 'https://example.test/?title={{title}}'); input(hook, 'method', 'PUT', 'change'); input(hook, 'body', '{"title":"{{title}}"}');
+  const headers = input(hook, 'headers', '{'); assert.equal(headers.checkValidity(), false);
+  hook.querySelector('button[aria-label^="Move up automation"]').click(); hook = ctx.$(`[data-automation-id="${hookId}"]`);
+  assert.equal(hook.querySelector('[data-field="headers"]').value, '{'); assert.equal(hook.querySelector('[data-field="headers"]').checkValidity(), false);
+  submitForm(ctx, '#columns-form'); await ctx.idle({ requireComplete: true }); assert.equal(ctx.$('#columns-dialog').open, true);
+  input(hook, 'headers', '{"X-Task":"{{taskId}}","Authorization":"PRIVATE_TOKEN"}'); assert.equal(hook.querySelector('[data-field="headers"]').checkValidity(), true);
+  hook.querySelector('input[type="checkbox"]').click();
+  assert.equal(exit().querySelector('.automation-row').dataset.automationId, hookId);
+  const future = ctx.$('[data-automation-id="dormant-message"]'); assert.equal(future.querySelector('input[type="checkbox"]').disabled, true);
+  assert.equal(future.querySelector('[data-field="type"] option[value="notify"]').disabled, true);
+  assert.equal(future.querySelector('[data-field="type"] option[value="send_message"]').disabled, true);
+  assert.equal(ctx.$('#columns-editor img'), null); assert.equal(ctx.win.__actionPwned, undefined);
+  exit().querySelector('.automation-add').click(); const added = exit().querySelectorAll('.automation-row')[2];
+  added.querySelector('.danger').click(); assert.equal(exit().querySelectorAll('.automation-row').length, 2);
+  submitForm(ctx, '#columns-form'); await ctx.idle({ requireComplete: true }); assert.equal(ctx.$('#columns-dialog').open, false);
+  const saved = (await ctx.app.board.state()).projects[0], review = saved.pipeline.columns[3];
+  assert.deepEqual(review.automations.onExit.map(row => row.id), [hookId, scriptId]); assert.equal(review.automations.onExit[0].enabled, false);
+  assert.equal(review.automations.onExit[0].name, malicious); assert.deepEqual(review.automations.onExit[0].headers, { 'X-Task': '{{taskId}}', Authorization: 'PRIVATE_TOKEN' });
+  assert.equal(review.automations.onExit[1].script, 'printf "%s" "$PROMPTBOARD_TITLE"\nexit 7'); assert.equal(review.automations.onExit[1].timeoutMinutes, 12);
+  assert.deepEqual(review.automations.onEnter[0], savedMessage); assert.equal(effects, 0); assert.equal((await ctx.app.board.state()).runs.length, 0);
+  assert.equal(saved.tasks[0].prompt, '  Exact edited split task\r\n'); assert.equal(saved.tasks[0].column, 'todo');
+  ctx.$('#columns-open').click(); [...ctx.win.document.querySelectorAll('.columns-item')].find(button => button.textContent === 'Done').click();
+  assert.ok(ctx.$('[data-trigger="onExit"]')); assert.equal(ctx.$('[data-trigger="onEnter"]'), null);
+  [...ctx.win.document.querySelectorAll('.columns-item')].find(button => button.textContent === 'Code Review').click();
+  const copy = ctx.$(`[data-automation-id="${hookId}"] select[aria-label^="Copy automation"]`); assert.equal([...copy.options].some(option => option.value === 'done/onEnter'), false);
+  copy.value = 'done/onExit'; copy.dispatchEvent(new ctx.win.Event('change', { bubbles: true }));
+  assert.equal(ctx.$('#column-name').value, 'Done'); submitForm(ctx, '#columns-form'); await ctx.idle({ requireComplete: true });
+  const copied = (await ctx.app.board.state()).projects[0].pipeline.columns.at(-1).automations.onExit[0];
+  assert.notEqual(copied.id, hookId); assert.equal(copied.enabled, false); assert.equal(copied.url, review.automations.onExit[0].url); assert.deepEqual(copied.headers, review.automations.onExit[0].headers); assert.equal(effects, 0);
+});
+
+test('pipeline card Stop cancels owned automation work and Details shows escaped durable results without retrying', async t => {
+  const ctx = await setup(t, { executor: null, hash: '#/kanban' }), pipeline = defaultPipelineConfig();
+  const project = await ctx.app.board.createProject({ name: 'Scoped Stop' });
+  for (const column of pipeline.columns) column.strategy.autoSpawn = false;
+  const malicious = 'Pending <img src=x onerror="window.__receiptPwned=1">';
+  pipeline.columns[0].automations.onExit = [{ id: 'pending-hook', name: malicious, type: 'webhook', enabled: true, url: 'https://example.test/never-contacted', headers: { Authorization: 'PRIVATE_TOKEN' } }];
+  await ctx.app.board.setPipeline(project.id, { pipeline, expectedRevision: 1, confirm: true });
+  const task = await ctx.app.board.createTask({ projectId: project.id, title: 'Stop this task', prompt: 'Exact Composer body' });
+  let calls = 0, cancelled = false;
+  ctx.app.board.automations.actions.fetcher = (_url, { signal }) => new Promise((_resolve, reject) => {
+    calls++; const abort = () => { cancelled = true; reject(new Error('Owned fixture stopped.')); };
+    signal.addEventListener('abort', abort, { once: true }); if (signal.aborted) abort();
+  });
+  await ctx.win.__pbTest.loadBoard(); await ctx.idle({ requireComplete: true });
+  const menu = ctx.$(`[data-id="${task.id}"] .kanban-move-to`); menu.value = 'code_review'; menu.dispatchEvent(new ctx.win.Event('change', { bubbles: true }));
+  await until(() => calls === 1, 'owned webhook pending'); await ctx.win.__pbTest.loadBoard();
+  const stop = ctx.$(`[data-id="${task.id}"] .kanban-stop-automations`); assert.ok(stop); stop.click();
+  await until(async () => (await ctx.app.board.automationRuns(task.id))[0].status === 'cancelled', 'durable cancellation'); await ctx.idle({ requireComplete: true });
+  assert.equal(cancelled, true); assert.equal(calls, 1); assert.equal((await ctx.app.board.state()).projects[0].tasks[0].column, 'todo');
+  ctx.$(`[data-id="${task.id}"] .kanban-details`).click();
+  await until(() => ctx.$('.automation-history').textContent.includes(malicious), 'recorded history');
+  assert.match(ctx.$('.automation-history').textContent, /Session change: cancelled/); assert.match(ctx.$('.automation-history').textContent, /On exit.*cancelled/);
+  assert.equal(ctx.$('.automation-history img'), null); assert.equal(ctx.win.__receiptPwned, undefined); assert.doesNotMatch(ctx.$('.automation-history').textContent, /PRIVATE_TOKEN|Exact Composer body/);
+  ctx.$('.automation-history').parentElement.querySelector('button').click(); await ctx.idle({ requireComplete: true }); assert.equal(calls, 1);
+});
+
 test('UI sends selected model, effort, and language through HTTP, then restores history and copies output', async t => {
   const { $, choose, radio, quality, submit, calls, requests, copied, win } = await setup(t);
   assert.equal($('input[name="language"]:checked').value, 'en');

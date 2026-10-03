@@ -973,6 +973,18 @@ button.timeline-task:hover { text-decoration: underline; }
 .columns-editor { display: grid; align-content: start; gap: 14px; }
 .columns-editor .settings-group textarea, .columns-editor input[type="text"] { display: block; width: 100%; margin-top: 6px; padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface); font: 13.5px var(--sans); }
 .columns-editor textarea { min-height: 70px; }
+.column-automations { min-width: 0; display: grid; gap: 10px; }
+.column-automations h3 { margin: 0; font-size: 14px; }
+.automation-group, .automation-row { min-width: 0; margin: 0; padding: 12px; border: 1px solid var(--line); border-radius: 8px; display: grid; gap: 10px; }
+.automation-group legend, .automation-row legend { padding: 0 5px; font-size: 12px; color: var(--muted); }
+.automation-row .detail-actions { flex-wrap: wrap; }
+.automation-row textarea, .automation-row select { display: block; width: 100%; min-width: 0; color: var(--text); background: var(--surface); border: 1px solid var(--line-strong); border-radius: 8px; padding: 8px; }
+.columns-editor .automation-row .field-label textarea { min-height: 100px; }
+.automation-state { margin: 0; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.automation-history { display: grid; gap: 10px; min-width: 0; }
+.automation-history details { min-width: 0; padding: 10px; border: 1px solid var(--line); border-radius: 8px; }
+.automation-history summary, .automation-history p { overflow-wrap: anywhere; }
+.automation-history ol { padding-left: 20px; }
 .color-swatches { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
 .color-swatches label { position: relative; }
 .color-swatches input { position: absolute; opacity: 0; }
