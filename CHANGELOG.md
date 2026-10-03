@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Bind read-only native message checkpoints to Supervisor process ownership, observed native identity, main hook history and terminal-input epochs. Revoke stale evidence on partial drafts, startup, Stop/Pause, exit, failure or uncertainty. Keep private paths out of run updates; terminal scheduling, durable receipt display and enabled rows remain pending.
+
 - Revoke prior native plan approval and ended activity on a main SessionStart. Preserve outstanding work, uncertain observations and finished-tool guards so startup cannot invent readiness or rearm late old approvals; subordinate starts cannot reset the parent.
 
 - Prepare journal version 2 asynchronous enter-message receipts: complete scheduled dispatch separately from delivery, grant native dispatch once, retain submission/queue/confirmation stages, and recover unfinished delivery after completed placement without replay. Preserve version 1 synchronous records and refuse active delivery cancellation until owned work is stopped and recorded. Keep runtime scheduling, receipt UI and enabled rows pending; board state stays version 5.
