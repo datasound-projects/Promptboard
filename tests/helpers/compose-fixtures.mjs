@@ -23,3 +23,16 @@ export const questPlan = { questions: [
   { id: 'q2', question: 'Which QuestDB ingestion protocol supports high throughput market ticks?', answerFrom: 'sources', required: false, sourceQueries: [{ sourceHint: 'all', libraryHint: 'QuestDB', query: 'QuestDB crypto ingestion high throughput ILP protocol' }] },
   { id: 'q3', question: 'Which field is the designated timestamp?', answerFrom: 'either', required: false, sourceQueries: [{ sourceHint: 'document', libraryHint: 'QuestDB', query: 'QuestDB designated timestamp field' }] },
 ] };
+
+export function researchPlan(input = questTask, overrides = {}) {
+  return { assessment: { actionable: true, goal: input, entities: ['QuestDB', 'Python'], operations: ['ingestion'], constraints: [], expectedOutput: 'An implementation-ready prompt', complexity: 'moderate', research: 'standard', needsProject: false, reason: 'Verify the ingestion protocol and timestamp semantics.', ...overrides },
+    questions: [
+      { id: 'r1', question: 'Which QuestDB ingestion protocol supports Python market ticks?', reason: 'Select a compatible ingestion API.', sourceHint: 'all', libraryHint: 'QuestDB', query: 'QuestDB Python crypto ingestion high throughput ILP protocol' },
+      { id: 'r2', question: 'How should the QuestDB timestamp and duplicates be configured?', reason: 'Preserve financial time-series semantics.', sourceHint: 'document', libraryHint: 'QuestDB', query: 'QuestDB designated timestamp deduplication upsert keys' },
+    ], assumptions: [], unverified: ['Detect the actual ingestion rate and timestamp field from the implementation environment.'] };
+}
+export function researchReview(prompt, overrides = {}) {
+  const data = JSON.parse(prompt.split('# Research data\n')[1]);
+  return { findings: data.evidence.slice(0, 3).map(item => ({ evidenceId: item.id, statement: 'Use only the documented ingestion facts supported by this excerpt.', quote: item.text.slice(0, 250) })),
+    questions: [], assumptions: [], unverified: [], continueResearch: false, reason: 'Enough relevant context; further research would not materially improve the prompt.', ...overrides };
+}

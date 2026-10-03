@@ -82,3 +82,10 @@ test('Context7 discovers current capabilities and resolves only task-specific li
   globalThis.fetch = context7Fetch([], { changed: true });
   await assert.rejects(new ComposeMcp().retrieve({ type: 'mcp', preset: 'context7' }, queries), /capabilities changed/);
 });
+
+test('a later MCP failure retains earlier exact results without claiming missing answers', async () => {
+  const adapter = new ComposeMcp();
+  const rows = await adapter.retrieve(source('partial'), [queries[0], { ...queries[0], questionId: 'r2', query: 'QuestDB Python timestamp configuration' }]);
+  assert.equal(rows.length, 1); assert.equal(rows[0].questionId, queries[0].questionId);
+  assert.match(rows.warning, /remaining details must be verified/); assert.match(rows[0].text, /QuestDB/);
+});

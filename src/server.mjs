@@ -1,3 +1,4 @@
+import { assertActionable, obviouslyNonActionable } from './compose-intent.mjs';
 import { UsageDashboard } from './usage-dashboard.mjs';
 import http from 'node:http';
 import { randomBytes } from 'node:crypto';
@@ -79,6 +80,7 @@ function abortable(promise, signal) {
 
 export async function generate(request, { runner = runProvider, signal, catalogReader = discoverModels, onStage } = {}) {
   const value = validateRequest(request);
+  assertActionable(value.input, value.language);
   try { validateEffort(value.provider, value.effort); } catch (error) { throw Object.assign(error, { status: 400 }); }
   if (value.effort) {
     onStage?.('models');
@@ -395,9 +397,10 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
       try {
         const documentId = pathname.match(/^\/api\/compose\/sources\/document\/([a-zA-Z0-9-]{1,80})$/)?.[1];
         if (req.method === 'DELETE' && documentId) { (await getCompose()).documents.delete(documentId); return send(res, 200, { removed: true }); }
-        if (req.method !== 'POST' || !['/api/compose/prepare', '/api/compose/sources/document', '/api/compose/mcp/test'].includes(pathname)) return send(res, 404, { error: 'This Compose route does not exist.' });
+        if (req.method !== 'POST' || !['/api/compose/prepare', '/api/compose/sources/document', '/api/compose/mcp/test', '/api/compose/folder/choose'].includes(pathname)) return send(res, 404, { error: 'This Compose route does not exist.' });
         claimed = await claim('generate', null);
         const { job } = claimed;
+        if (pathname === '/api/compose/folder/choose') return send(res, 200, await folderPicker());
         const context = await getCompose();
         const signal = job.controller.signal;
         if (pathname === '/api/compose/sources/document') {
@@ -415,13 +418,14 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
           const document = await track(context.documents.add(Buffer.concat(chunks), metadata, { signal }));
           return send(res, 200, { document });
         }
-        const body = await jsonBody(req, 256_000);
+        const body = await jsonBody(req, 1_048_576);
         if (pathname === '/api/compose/mcp/test') {
           job.stage = 'retrieving';
           return send(res, 200, await track(context.mcp.retrieve(body, [], { signal, discoveryOnly: true })));
         }
         const { validatePreparation } = await import('./compose-context.mjs');
         const { request } = validatePreparation(body);
+        if (obviouslyNonActionable(request.input)) return send(res, 200, await context.prepare(body, { runner, signal }));
         job.provider = request.provider;
         validateEffort(request.provider, request.effort);
         if (request.effort) checkModelEffort(request.provider, request.model, request.effort, await abortable(getCatalog(request.provider), signal));
