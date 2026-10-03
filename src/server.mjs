@@ -232,7 +232,7 @@ function streamRun(supervisor, req, res, runId, after) {
   req.on('close', () => { clearInterval(ping); unsubscribe(); });
 }
 
-export async function startServer({ port = 4318, runner = runProvider, detector = detectProviders, catalogReader = discoverModels, authAdapter = auth, dataDir = defaultDataDir(), projectsDir, executor = 'auto', folderPicker = chooseFolder, githubPty = loadPty, usageReader, mcpTester, imageGenerator } = {}) {
+export async function startServer({ port = 4318, runner = runProvider, detector = detectProviders, catalogReader = discoverModels, authAdapter = auth, dataDir = defaultDataDir(), projectsDir, executor = 'auto', folderPicker = chooseFolder, githubPty = loadPty, usageReader, mcpTester, imageGenerator, composeMcp } = {}) {
   // The board loads lazily, so starting the server never reads or writes board files.
   const usage = usageReader || new UsageDashboard({ dataDir });
   const board = new Board({ dataDir, ...(projectsDir ? { projectsDir } : {}) });
@@ -282,6 +282,8 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
     return { job, release: () => { if (busy === job) busy = null; release(); } };
   };
   const baseRoutes = new BaseRoutes({ board, runner, claim, track, catalog: getCatalog, send, jsonBody, ...(mcpTester ? { mcpTester } : {}), imageGenerator });
+  let composeContext;
+  const getCompose = () => composeContext ??= import('./compose-context.mjs').then(({ ComposeContext }) => new ComposeContext(composeMcp ? { mcp: composeMcp } : {}));
   let closing = false;
   const server = http.createServer(async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
@@ -386,6 +388,51 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
         return send(res, status, body);
       } finally { claimed?.release(); }
     }
+    if (pathname.startsWith('/api/compose/')) {
+      let claimed;
+      const abort = () => { if (!res.writableEnded) claimed?.job.controller.abort(); };
+      res.once('close', abort);
+      try {
+        const documentId = pathname.match(/^\/api\/compose\/sources\/document\/([a-zA-Z0-9-]{1,80})$/)?.[1];
+        if (req.method === 'DELETE' && documentId) { (await getCompose()).documents.delete(documentId); return send(res, 200, { removed: true }); }
+        if (req.method !== 'POST' || !['/api/compose/prepare', '/api/compose/sources/document', '/api/compose/mcp/test'].includes(pathname)) return send(res, 404, { error: 'This Compose route does not exist.' });
+        claimed = await claim('generate', null);
+        const { job } = claimed;
+        const context = await getCompose();
+        const signal = job.controller.signal;
+        if (pathname === '/api/compose/sources/document') {
+          job.stage = 'document';
+          const { UPLOAD_BYTES, documentMeta } = await import('./compose-documents.mjs');
+          const param = name => requestUrl.searchParams.has(name) ? Number(requestUrl.searchParams.get(name)) : undefined;
+          const metadata = { name: requestUrl.searchParams.get('name'), type: req.headers['content-type'] || '', from: param('from'), to: param('to') };
+          documentMeta(metadata);
+          const length = Number(req.headers['content-length']);
+          if (Number.isFinite(length) && length > UPLOAD_BYTES) throw Object.assign(new Error('Documents must be at most 20 MiB.'), { status: 413 });
+          const chunks = []; let bytes = 0;
+          const timer = setTimeout(() => { job.controller.abort(); req.destroy(); }, 30_000);
+          try { for await (const chunk of req) { signal.throwIfAborted(); bytes += chunk.length; if (bytes > UPLOAD_BYTES) throw Object.assign(new Error('Documents must be at most 20 MiB.'), { status: 413 }); chunks.push(chunk); } }
+          finally { clearTimeout(timer); }
+          const document = await track(context.documents.add(Buffer.concat(chunks), metadata, { signal }));
+          return send(res, 200, { document });
+        }
+        const body = await jsonBody(req, 256_000);
+        if (pathname === '/api/compose/mcp/test') {
+          job.stage = 'retrieving';
+          return send(res, 200, await track(context.mcp.retrieve(body, [], { signal, discoveryOnly: true })));
+        }
+        const { validatePreparation } = await import('./compose-context.mjs');
+        const { request } = validatePreparation(body);
+        job.provider = request.provider;
+        validateEffort(request.provider, request.effort);
+        if (request.effort) checkModelEffort(request.provider, request.model, request.effort, await abortable(getCatalog(request.provider), signal));
+        return send(res, 200, await track(context.prepare(body, { runner, signal, onStage: stage => { job.stage = stage; } })));
+      } catch (error) {
+        if (error.statusCode === 400 || error.status === 400) send(res, 400, { error: error.message, code: 'INVALID_REQUEST' });
+        else if (pathname === '/api/compose/sources/document' && !claimed?.job.controller.signal.aborted && !error.status) send(res, 422, { error: error.message, code: 'DOCUMENT_FAILED' });
+        else { const failure = failureBody(error, 'Context preparation failed. Retry or continue without this source.'); send(res, failure.status, failure.body); }
+      } finally { res.off('close', abort); claimed?.release(); }
+      return;
+    }
     if (req.method === 'POST' && pathname === '/api/split') {
       // Optional: one CLI call splits an engineered prompt into tasks. Shares the one-job slot with Generate.
       let claimed;
@@ -476,6 +523,7 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
     const listening = new Promise(resolve => server.close(() => resolve()));
     busy?.controller.abort();
     baseRoutes.close();
+    if (composeContext) (await composeContext).close();
     catalogAbort.abort();
     usage.close?.();
     server.closeIdleConnections();

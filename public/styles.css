@@ -1083,3 +1083,19 @@ button.timeline-task:hover { text-decoration: underline; }
   .topbar .help-pill { width: 26px; }
   .page-nav { gap: 2px; padding-left: 2px; }
 }
+
+/* Optional Compose context uses the existing progressive disclosure and theme tokens. */
+.compose-context .advanced-body { display: grid; gap: 14px; }
+.context-source-list, #context-questions { display: grid; gap: 10px; }
+.context-source, .context-prepared { padding: 12px; border: 1px solid var(--line); border-radius: 8px; margin: 10px 0; min-width: 0; }
+.context-source > .detail-actions { justify-content: space-between; }
+.context-source .check-option { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.compose-context input:not([type="checkbox"]), .compose-context textarea, .context-prepared textarea { width: 100%; min-width: 0; max-width: 100%; border: 1px solid var(--line-strong); border-radius: 6px; padding: 8px; background: var(--surface); color: var(--text); }
+.compose-context textarea, .context-prepared textarea { font: inherit; resize: vertical; }
+.context-custom { margin: 12px 0; }
+.context-custom summary, #context-evidence summary { cursor: pointer; font-size: 13px; }
+.context-prepared h3 { font-size: 15px; margin: 0 0 10px; }
+.context-prepared .field-label { display: grid; gap: 5px; margin: 10px 0; }
+#context-evidence-list { max-height: 300px; overflow: auto; overflow-wrap: anywhere; }
+#context-evidence-list pre { white-space: pre-wrap; font: 12px/1.5 var(--mono); }
+#context-sources .detail-actions, .context-prepared .detail-actions { flex-wrap: wrap; }
