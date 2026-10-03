@@ -233,3 +233,118 @@ test('real PTY activity hooks track outstanding work and native approval without
     await w.move(card.id, 'todo'); assert.equal((await w.board.run(run.id)).activity.phase, 'ended');
   }
 });
+
+test('queued pipeline retargeting uses the latest provider/model/Base and keeps FIFO while acceptance holds its slot', { skip: process.platform === 'win32' }, async t => {
+  const w = await world(t, true), config = defaultPipelineConfig();
+  config.columns.find(column => column.id === 'testing').strategy.agentOverride = 'gemini';
+  Object.assign(config.columns.find(column => column.id === 'code_review').strategy, { agentOverride: 'codex', modelOverride: 'fixture-final' });
+  await w.configure(config);
+  const skill = await w.board.base.create({ kind: 'skill', name: 'Latest destination', content: { body: 'CURRENT DESTINATION BASE' } });
+  await w.board.base.apply({ changes: [{ target: { scope: 'column', projectId: w.projectId, columnId: 'code_review' }, binding: { mode: 'extend', include: [{ resourceId: skill.id, required: true }], exclude: [] } }], expectedBaseRevision: (await w.board.state()).base.revision });
+  const cards = [], runs = [];
+  for (const title of ['Blocker', 'Retarget', 'After one', 'After two']) {
+    const card = await w.board.createTask({ projectId: w.projectId, title, prompt: `  Exact ${title}\r\n` });
+    cards.push(card); runs.push((await w.move(card.id, 'executing')).run);
+    if (cards.length === 1) await until(async () => (await w.board.run(runs[0].id)).turnComplete);
+  }
+  const order = runs.slice(1).map(run => run.id), sessionId = runs[1].sessionId;
+  for (const destination of ['testing', 'merge']) {
+    const result = await w.move(cards[1].id, destination);
+    assert.equal(result.retargetedRunId, runs[1].id);
+    assert.deepEqual(w.board.executor.queue.map(entry => entry.runId), order);
+  }
+  const validate = w.board.executor.validate.bind(w.board.executor); let release, entered;
+  const barrier = new Promise(resolve => { release = resolve; }), accepting = new Promise(resolve => { entered = resolve; });
+  w.board.executor.validate = async request => { if (request.stage === 'code_review') { entered(); await barrier; } return validate(request); };
+  const move = w.move(cards[1].id, 'code_review'); await accepting;
+  await w.move(cards[0].id, 'todo'); await new Promise(resolve => setTimeout(resolve, 200));
+  assert.deepEqual(w.board.executor.queue.map(entry => entry.runId), order);
+  assert.equal(w.board.executor.activeCount(), 0); assert.equal((await w.taskNow(cards[1].id)).column, 'merge');
+  release(); const result = await move;
+  assert.equal(result.run.sessionId, sessionId); assert.equal(result.run.config.provider, 'codex'); assert.equal(result.run.config.model, 'fixture-final');
+  await until(async () => (await w.board.run(runs[1].id)).turnComplete);
+  assert.equal(w.board.executor.sessions.get(runs[1].id).provider, 'codex');
+  const prompt = await readFile(join(w.dataDir, runs[1].artifactsDir, 'prompt.md'), 'utf8');
+  assert.ok(prompt.startsWith(pipelineTaskEnvelope(cards[1]))); assert.match(prompt, /CURRENT DESTINATION BASE/);
+  assert.equal((await w.board.state()).sessions.find(session => session.id === sessionId).provider, 'codex');
+  assert.deepEqual(w.board.executor.queue.map(entry => entry.runId), order.slice(1));
+  await w.move(cards[1].id, 'todo'); await until(async () => (await w.board.run(runs[2].id)).turnComplete);
+  assert.deepEqual(w.board.executor.queue.map(entry => entry.runId), [runs[3].id]);
+  await w.move(cards[2].id, 'todo'); await until(async () => (await w.board.run(runs[3].id)).turnComplete);
+  await w.move(cards[3].id, 'todo'); assert.equal(await readFile(join(w.root, 'README.md'), 'utf8'), 'main checkout\n');
+});
+
+test('a cancelled held queue entry is never resurrected by retargeting', { skip: process.platform === 'win32' }, async t => {
+  const w = await world(t, true), config = defaultPipelineConfig();
+  config.columns.find(column => column.id === 'testing').strategy.agentOverride = 'gemini'; await w.configure(config);
+  const first = await w.board.createTask({ projectId: w.projectId, title: 'Blocker', prompt: 'Stay live' });
+  const blocker = (await w.move(first.id, 'executing')).run; await until(async () => (await w.board.run(blocker.id)).turnComplete);
+  const card = await w.board.createTask({ projectId: w.projectId, title: 'Cancelled', prompt: 'Never launch' });
+  const queued = (await w.move(card.id, 'executing')).run;
+  const validate = w.board.executor.validate.bind(w.board.executor); let release, entered;
+  const barrier = new Promise(resolve => { release = resolve; }), accepting = new Promise(resolve => { entered = resolve; });
+  w.board.executor.validate = async request => { entered(); await barrier; return validate(request); };
+  const move = w.move(card.id, 'testing'); const rejection = assert.rejects(move, { code: 'REVISION_CONFLICT' });
+  await accepting; await w.board.executor.cancel(queued.id); release(); await rejection;
+  assert.equal((await w.taskNow(card.id)).column, 'executing'); assert.equal((await w.board.run(queued.id)).status, 'cancelled');
+  assert.equal(w.board.executor.queue.some(entry => entry.runId === queued.id), false);
+  await w.move(first.id, 'todo'); await new Promise(resolve => setTimeout(resolve, 200));
+  assert.equal(w.board.executor.sessions.has(queued.id), false);
+});
+
+test('a run already preparing rejects retargeting without changing its card or accepted configuration', { skip: process.platform === 'win32' }, async t => {
+  const w = await world(t, true), config = defaultPipelineConfig();
+  config.columns.find(column => column.id === 'testing').strategy.agentOverride = 'gemini'; await w.configure(config);
+  const prepare = w.board.executor.basePreparer; let release, entered;
+  const barrier = new Promise(resolve => { release = resolve; }), preparing = new Promise(resolve => { entered = resolve; });
+  w.board.executor.basePreparer = async request => { entered(); await barrier; return prepare(request); };
+  const card = await w.board.createTask({ projectId: w.projectId, title: 'Preparing', prompt: 'Original authorized input' });
+  const run = (await w.move(card.id, 'executing')).run; await preparing;
+  await assert.rejects(w.move(card.id, 'testing'), { code: 'RUN_STARTING' });
+  assert.equal((await w.taskNow(card.id)).column, 'executing'); assert.equal((await w.board.run(run.id)).config.provider, 'claude');
+  release(); await until(async () => (await w.board.run(run.id)).turnComplete); await w.move(card.id, 'todo');
+});
+
+test('queued native resumes retain the exact conversation and apply new flags/Base without task replay; provider handoff stays guarded', { skip: process.platform === 'win32' }, async t => {
+  const w = await world(t, true), config = defaultPipelineConfig();
+  Object.assign(config.columns.find(column => column.id === 'code_review').strategy, { modelOverride: 'resume-fixture', permissionMode: 'default' });
+  config.columns.find(column => column.id === 'merge').strategy.agentOverride = 'gemini'; await w.configure(config);
+  const skill = await w.board.base.create({ kind: 'skill', name: 'Resume destination', content: { body: 'RESUME DESTINATION INSTRUCTIONS' } });
+  await w.board.base.apply({ changes: [{ target: { scope: 'column', projectId: w.projectId, columnId: 'code_review' }, binding: { mode: 'extend', include: [{ resourceId: skill.id, required: true }], exclude: [] } }], expectedBaseRevision: (await w.board.state()).base.revision });
+  const card = await w.board.createTask({ projectId: w.projectId, title: 'Native context', prompt: 'ORIGINAL UNIQUE TASK INPUT' });
+  const original = (await w.move(card.id, 'executing')).run; await until(async () => (await w.board.run(original.id)).turnComplete);
+  const nativeId = (await w.board.run(original.id)).providerSessionId; await w.move(card.id, 'done');
+  const other = await w.board.createTask({ projectId: w.projectId, title: 'Blocker', prompt: 'Hold this slot' });
+  const blocker = (await w.move(other.id, 'executing')).run; await until(async () => (await w.board.run(blocker.id)).turnComplete);
+  const resume = (await w.move(card.id, 'testing')).run;
+  const changed = (await w.move(card.id, 'code_review')).run;
+  assert.equal(changed.id, resume.id); assert.equal(changed.sessionId, original.sessionId);
+  assert.equal(changed.resumeFrom.nativeSessionId, nativeId); assert.equal(changed.baseChanged, true);
+  assert.equal(changed.config.model, 'resume-fixture'); assert.equal(changed.config.permissionMode, 'default');
+  await assert.rejects(w.move(card.id, 'merge'), { code: 'PIPELINE_RECONFIGURE_REQUIRED' });
+  assert.equal((await w.taskNow(card.id)).column, 'code_review');
+  await w.move(other.id, 'todo'); await until(async () => (await w.board.run(resume.id)).turnComplete);
+  assert.equal((await w.board.run(resume.id)).providerSessionId, nativeId);
+  const prompt = await readFile(join(w.dataDir, resume.artifactsDir, 'prompt.md'), 'utf8');
+  assert.match(prompt, /RESUME DESTINATION INSTRUCTIONS/); assert.doesNotMatch(prompt, /ORIGINAL UNIQUE TASK INPUT|<task>/);
+  await w.move(card.id, 'todo');
+});
+
+test('manual pipeline columns park queued and live sessions; explicit Start resumes captured context', { skip: process.platform === 'win32' }, async t => {
+  const w = await world(t, true), config = defaultPipelineConfig(); config.columns.find(column => column.id === 'testing').strategy.autoSpawn = false; await w.configure(config);
+  const first = await w.board.createTask({ projectId: w.projectId, title: 'Live', prompt: 'Keep my conversation' });
+  const live = (await w.move(first.id, 'executing')).run; await until(async () => (await w.board.run(live.id)).turnComplete);
+  const second = await w.board.createTask({ projectId: w.projectId, title: 'Queued', prompt: 'Keep my prompt' });
+  const queued = (await w.move(second.id, 'executing')).run;
+  assert.equal((await w.move(second.id, 'testing')).suspendedRunId, queued.id);
+  assert.equal((await w.board.run(queued.id)).status, 'suspended'); assert.equal(w.board.executor.queue.length, 0);
+  assert.equal((await w.move(first.id, 'testing')).suspendedRunId, live.id);
+  assert.equal(w.board.executor.sessions.get(live.id).proc, null); assert.equal((await w.taskNow(first.id)).sessionId, live.sessionId);
+  const resumed = await w.board.requestRun(first.id, { stage: 'testing', consent: true });
+  await until(async () => (await w.board.run(resumed.id)).status === 'running');
+  assert.equal(resumed.sessionId, live.sessionId); assert.equal(await readFile(join(w.dataDir, resumed.artifactsDir, 'prompt.md'), 'utf8'), '');
+  await w.move(first.id, 'todo');
+  const fresh = await w.board.requestRun(second.id, { stage: 'testing', consent: true });
+  await until(async () => (await w.board.run(fresh.id)).turnComplete);
+  assert.notEqual(fresh.sessionId, queued.sessionId); await w.move(second.id, 'todo');
+});

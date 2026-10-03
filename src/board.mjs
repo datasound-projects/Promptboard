@@ -1926,10 +1926,26 @@ export class Board {
     const settings = effectiveWorkflow(project, state.settings.defaultAgent, state, task)[column];
     const strategy = resolvePipelineStrategy(project.pipeline, column, task);
     if (active) {
+      if (!strategy.autoSpawn && decision !== 'start') {
+        if (!this.executor?.suspend) throw new BoardError('The owned agent cannot be paused.', 'EXECUTION_UNAVAILABLE', 503);
+        await this.executor.suspend(active.id);
+        const parked = await this.store.update(draft => {
+          const current = this.#task(draft, taskId);
+          checkRevision(current.task, expectedRevision, 'This card');
+          if (current.project.revision !== project.revision || this.#activeRun(draft, taskId)) throw conflict('The board or agent changed while parking this card.', 'REVISION_CONFLICT');
+          const result = this.#place(draft, taskId, move); delete result.archivedAt; return result;
+        });
+        return { task: parked, suspendedRunId: active.id };
+      }
       const resolved = resolveConfig(column, settings);
       const manifest = this.#basePreflight(state, project, task, column, resolved.provider);
-      if (JSON.stringify(resolved) !== JSON.stringify(Object.fromEntries(Object.entries(active.config).filter(([key]) => key !== 'instructions')))
-        || baseSignature(manifest) !== baseSignature(active.baseManifest)) throw conflict('Pause this agent before moving to a column with different agent settings or Base resources.', 'PIPELINE_RECONFIGURE_REQUIRED');
+      const changed = JSON.stringify(resolved) !== JSON.stringify(Object.fromEntries(Object.entries(active.config).filter(([key]) => key !== 'instructions')))
+        || baseSignature(manifest) !== baseSignature(active.baseManifest);
+      if (changed && active.status === 'queued') {
+        const run = await this.#pipelineRetargetQueued(taskId, { state, project, task, active, column, settings, move, expectedRevision });
+        return { task: await this.#taskNow(taskId), run, retargetedRunId: run.id };
+      }
+      if (changed) throw conflict('Pause this agent before moving to a column with different agent settings or Base resources.', 'PIPELINE_RECONFIGURE_REQUIRED');
       const saved = await this.store.update(draft => {
         const current = this.#task(draft, taskId);
         checkRevision(current.task, expectedRevision, 'This card');
@@ -1951,6 +1967,34 @@ export class Board {
       const result = this.#place(draft, taskId, move); delete result.archivedAt; return result;
     });
     return { task: saved };
+  }
+
+  async #pipelineRetargetQueued(taskId, { state, project, task, active, column, settings, move, expectedRevision }) {
+    if (!this.executor?.retargetQueued) throw conflict('Pause this queued agent before changing its destination settings.', 'PIPELINE_RECONFIGURE_REQUIRED');
+    return this.executor.retargetQueued(active.id, async () => {
+      const config = { ...await this.executor.validate({ stage: column, config: settings }), pipeline: true, instructions: '' };
+      if (active.resumeFrom && config.provider !== active.config.provider) throw conflict('Pause this queued native resume before switching providers.', 'PIPELINE_RECONFIGURE_REQUIRED');
+      const manifest = this.#basePreflight(state, project, task, column, config.provider);
+      const run = await this.store.update(draft => {
+        const current = this.#task(draft, taskId), record = draft.runs.find(item => item.id === active.id);
+        checkRevision(current.task, expectedRevision, 'This card');
+        if (current.project.revision !== project.revision || current.task.column !== task.column || record?.status !== 'queued'
+          || this.#activeRun(draft, taskId)?.id !== active.id || current.task.sessionId !== active.sessionId
+          || record.promptRevision !== (current.task.contentRevision ?? 1) || current.task.workspace?.path !== active.workspacePath
+          || draft.base.revision !== state.base.revision || JSON.stringify(draft.settings.defaultAgent) !== JSON.stringify(state.settings.defaultAgent)) throw conflict('The task, queue, settings or Base changed during retargeting.', 'REVISION_CONFLICT');
+        const session = draft.sessions.find(item => item.id === record.sessionId);
+        if (!session || session.currentRunId !== record.id || (!record.resumeFrom && session.nativeSessionId)) throw conflict('This queued conversation has changed.', 'REVISION_CONFLICT');
+        const now = Date.now();
+        Object.assign(record, { stage: column, config, updatedAt: now, transition: { id: move.transitionId, from: move.from },
+          baseManifest: { ...manifest, acceptedAt: now, deliveryState: 'configured' } });
+        if (record.resumeFrom) record.baseChanged = baseSignature(manifest) !== baseSignature(draft.runs.find(item => item.id === record.resumeFrom.runId)?.baseManifest);
+        Object.assign(session, { provider: config.provider, config: structuredClone(config), updatedAt: now });
+        const result = this.#place(draft, taskId, { ...move, runId: record.id }); delete result.archivedAt;
+        return record;
+      });
+      return { run, payload: { task: { id: task.id, title: task.title, prompt: task.prompt },
+        firstPrompt: renderPipelineSpawnPrompt({ task, project }) } };
+    });
   }
 
   async #pipelineStart(taskId, { column, move = null, trigger = 'user', expectedRevision, requireResume = false, continuation = '' } = {}) {
