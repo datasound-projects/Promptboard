@@ -139,6 +139,7 @@ async function boardRoute(board, req, res, pathname, searchParams) {
     if (method === 'PATCH' && action === 'autopilot') return view({ project: await board.setAutopilot(id, await body()) });
     if (method === 'POST' && action === 'autopilot') { const { action: command, confirm } = await body(); return view({ project: await board.controlAutopilot(id, { action: command, confirm }) }); }
     if (method === 'PATCH' && action === 'columns') return view({ project: await board.setColumns(id, await body()) });
+    if (method === 'PATCH' && action === 'pipeline') return view({ project: await board.setPipeline(id, await body()) });
     if (method === 'PATCH' && action === 'workflow') return view({ project: await board.setWorkflow(id, await body()) });
     if (method === 'PATCH' && action === 'tests') return view({ project: await board.delivery.setTestCommands(id, await body()) });
     if (method === 'POST' && action === 'target-branch') return view({ project: await board.setTargetBranch(id, await body()) });

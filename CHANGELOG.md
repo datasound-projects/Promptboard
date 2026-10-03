@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add an opt-in main-session column pipeline in Column Manager. Stable roles replace stage-name actions: compatible live moves preserve the process without hidden prompts/commits/tests/merges; Done suspends and archives, active restoration resumes the native conversation without task replay, and To Do stops/resets its session while retaining files. Preserve Composer entry and Base/CLI tool inheritance. Migrate state to version 5 without reconstructing version 4 sessions; pipeline backups restore with dispatch disabled. Guard unsupported automation/advanced strategies and incompatible live settings changes until subsequent checkpoints. Legacy boards retain their original workflow.
+
 - Add pure pipeline prompt/template rendering: task envelopes preserve Composer text and Markdown whitespace, attachment paths follow the envelope, and substitutions never re-expand task content. Distinguish literal messages, encoded URL/JSON values, and stripped script substitutions with exact `PROMPTBOARD_*` environment values. Runtime stage prompts remain unchanged until lifecycle integration.
 
 - Add the pure column-pipeline configuration foundation: stable role-based columns, silent seven-column defaults, plan targets, sparse strategy profiles, exclusive task-wide agent pins, isolated conversation policies, and bounded definitions for the four automation types. Runtime integration remains pending; this checkpoint does not alter existing projects or run automations.

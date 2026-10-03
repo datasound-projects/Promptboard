@@ -73,8 +73,8 @@ export class Supervisor {
   async limit() { return (await this.board.state()).settings.maxConcurrentRuns || 1; }
 
   /** Queue a run. Returns at once; the run starts when a slot is free. */
-  async start({ run, task, planRunId, extra = '', continuation = '' }) {
-    this.queue.push({ runId: run.id, task, planRunId, extra, continuation });
+  async start({ run, task, planRunId, extra = '', continuation = '', firstPrompt = '' }) {
+    this.queue.push({ runId: run.id, task, planRunId, extra, continuation, firstPrompt });
     this.#pump();
   }
 
@@ -139,7 +139,7 @@ export class Supervisor {
     }
   }
 
-  async #launchSession({ runId, task, planRunId, extra, continuation }, signal, onPrepared) {
+  async #launchSession({ runId, task, planRunId, extra, continuation, firstPrompt }, signal, onPrepared) {
     const run = await this.board.run(runId);
     if (run.status !== 'queued') { this.#endPending(runId); return; } // Cancelled while queued.
     const { pty, message: setup } = await this.pty();
@@ -155,7 +155,9 @@ export class Supervisor {
     onPrepared(baseDelivery);
     signal.throwIfAborted();
     const plan = planRunId ? await readFile(join(this.dataDir, 'runs', planRunId, 'plan.md'), 'utf8').catch(() => null) : null;
-    const message = run.resumeFrom ? continuation || '' : composeMessage(run.stage, task.prompt, plan, run.config.instructions || '', extra || '', baseDelivery.sections);
+    const message = run.config.pipeline
+      ? [run.resumeFrom ? continuation || '' : firstPrompt, (!run.resumeFrom || run.baseChanged) ? baseDelivery.sections : ''].filter(Boolean).join('\n\n')
+      : run.resumeFrom ? continuation || '' : composeMessage(run.stage, task.prompt, plan, run.config.instructions || '', extra || '', baseDelivery.sections);
     // Stage instructions, the exact task text, and the plan are stored with the run.
     await writeFile(join(runDir, 'prompt.md'), message, { mode: 0o600 });
     await writeFile(join(runDir, 'task-prompt.txt'), task.prompt, { mode: 0o600 });
@@ -182,7 +184,7 @@ export class Supervisor {
     trackPid(proc.pid);
     const session = { runId, taskId: run.taskId, stage: run.stage, provider: run.config.provider, proc, seq: 0, ring: [], ringBytes: 0,
       subscribers: new Set(), log, logBytes: 0, eventsFile, eventsOffset: 0, runDir, paste: built.paste, turns: 0, status: 'running', startedAt: Date.now(), sessionId,
-      resumeNativeId: run.resumeFrom?.nativeSessionId, baseCleanup: baseDelivery.cleanup, baseManifest: supplied };
+      pipeline: run.config.pipeline === true, resumeNativeId: run.resumeFrom?.nativeSessionId, baseCleanup: baseDelivery.cleanup, baseManifest: supplied };
     this.sessions.set(runId, session);
     session.exited = new Promise(resolve => { session.resolveExit = resolve; });
     // Listen before any await so early output and fast exits are never lost.
@@ -313,13 +315,13 @@ export class Supervisor {
     } else if (signal.kind === 'turn_complete') {
       session.turns++;
       await this.#readUsage(session).catch(() => {});
-      const planning = session.stage === 'planning', reviewing = session.stage === 'code_review';
+      const planning = !session.pipeline && session.stage === 'planning', reviewing = !session.pipeline && session.stage === 'code_review';
       if (signal.message) await writeFile(join(session.runDir, planning ? 'plan.md' : reviewing ? 'review.md' : 'last-message.md'), signal.message, { mode: 0o600 });
       await this.#setStatus(session, 'waiting_for_input', {
         turns: session.turns, turnComplete: true, ...(planning && signal.message ? { hasPlan: true, planExcerpt: signal.message } : {}), ...(reviewing && signal.message ? { hasReview: true } : {}),
         waitingReason: planning ? (signal.message ? 'The plan is ready. Review it, continue in the terminal, or approve it.' : 'The agent finished its turn without a plan message. Continue in the terminal.')
           : reviewing ? 'The review is ready. Check the findings, then confirm to record them.'
-          : 'The agent finished its turn. Review the work, continue in the terminal, or confirm the stage.',
+          : session.pipeline ? 'The agent finished its turn. Continue in the terminal or move the card.' : 'The agent finished its turn. Review the work, continue in the terminal, or confirm the stage.',
       });
     } else if (signal.kind === 'failed') {
       // Account and quota failures are final for this run; there is no automatic retry.
@@ -459,6 +461,7 @@ export class Supervisor {
    */
   async confirm(runId) {
     const run = await this.board.run(runId);
+    if (run.config.pipeline) throw new AgentError('Move this pipeline card or pause its agent; a finished turn does not complete a stage.', 'PIPELINE_STAGE_CONFIRM_UNAVAILABLE', 409);
     if (run.status !== 'waiting_for_input' || !run.turns) throw new AgentError('Confirm after the agent has finished a turn and is waiting.', 'NOT_CONFIRMABLE', 409);
     if (run.stage === 'planning') await this.board.approvePlan(run.taskId, { runId });
     // A confirmed review records its findings for the reviewed commits; accepting it is a separate step.

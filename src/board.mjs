@@ -18,6 +18,8 @@ import { ensureClone, fastForward, fetchAndCompare, viewRepository } from './git
 import { buildTimeline } from './timeline.mjs';
 import { Base, normalizeBinding, listTargets, remapBaseScopes } from './base.mjs';
 import { checkBaseRevocations, deliveryFor, profileDefaults, resolveBase } from './base-resolver.mjs';
+import { defaultPipelineConfig, normalizePipelineConfig, resolvePipelineStrategy } from './pipeline-config.mjs';
+import { renderPipelineSpawnPrompt } from './pipeline-templates.mjs';
 
 export const COLUMNS = Object.freeze([
   { id: 'todo', title: 'To Do', agent: false },
@@ -87,12 +89,12 @@ export function normalizeSource(source) {
 /** Validate a browser board (v1) or a backup (v1 kanban-backup, v2 promptboard-backup). */
 export function parseBackup(data) {
   try { return parseBackupData(data); }
-  catch (error) { throw error instanceof BoardError ? new BoardError(error.message, 'INVALID_BACKUP') : error; }
+  catch (error) { throw error instanceof BoardError || error.code === 'INVALID_PIPELINE_CONFIG' ? new BoardError(error.message, 'INVALID_BACKUP') : error; }
 }
 function parseBackupData(data) {
   const v1 = data?.version === 1 && (data.kind === undefined || data.kind === 'kanban-backup');
-  const v2 = [2, 3].includes(data?.version) && data.kind === 'promptboard-backup';
-  const v3 = data?.version === 3 && data.kind === 'promptboard-backup';
+  const v2 = [2, 3, 4].includes(data?.version) && data.kind === 'promptboard-backup';
+  const v3 = [3, 4].includes(data?.version) && data.kind === 'promptboard-backup';
   if (!data || typeof data !== 'object' || (!v1 && !v2) || !Array.isArray(data.projects)) throw new BoardError('The data is not a Promptboard or version 1 Kanban board.', 'INVALID_BACKUP');
   if (data.projects.length > PROJECT_LIMIT) throw new BoardError(`A board can have at most ${PROJECT_LIMIT} projects.`, 'INVALID_BACKUP');
   const ids = new Set();
@@ -110,11 +112,14 @@ function parseBackupData(data) {
     const name = text(project.name, 80, `${label} name`);
     if (names.has(name.toLowerCase())) throw new BoardError(`${label} repeats the project name “${name}”.`, 'INVALID_BACKUP');
     names.add(name.toLowerCase());
-    const columnLayout = v2 && Array.isArray(project.columnLayout) && project.columnLayout.length ? normalizeColumns(project.columnLayout) : null;
-    const columnIds = new Set([...COLUMN_IDS, ...(columnLayout || []).filter(entry => entry.custom).map(entry => entry.id)]);
+    if (data.version === 4 && project.workflowMode !== undefined && !['legacy', 'pipeline'].includes(project.workflowMode)) throw new BoardError('Unknown backup workflow mode.', 'INVALID_BACKUP');
+    const pipeline = data.version === 4 && project.workflowMode === 'pipeline' ? normalizePipelineConfig(project.pipeline) : null;
+    const columnLayout = !pipeline && v2 && Array.isArray(project.columnLayout) && project.columnLayout.length ? normalizeColumns(project.columnLayout) : null;
+    const columnIds = new Set(pipeline ? pipeline.columns.map(column => column.id) : [...COLUMN_IDS, ...(columnLayout || []).filter(entry => entry.custom).map(entry => entry.id)]);
     return {
       id: unique(project.id, label), name, createdAt: time(project.createdAt),
       columnLayout,
+      pipeline,
       agentDefaults: v2 && project.agentDefaults?.provider ? normalizeAgent(project.agentDefaults) : null,
       ...(v3 ? backupBaseScopes(project, false, columnIds) : {}),
       repositoryPath: v2 && typeof project.repository?.path === 'string' ? project.repository.path.slice(0, 4096) : null,
@@ -129,6 +134,7 @@ function parseBackupData(data) {
       tasks: cards.map((card, cardIndex) => {
         const cardLabel = `${label}, card ${cardIndex + 1}`;
         if (!card || typeof card !== 'object') throw new BoardError(`${cardLabel} is not valid.`, 'INVALID_BACKUP');
+        if (pipeline && !columnIds.has(card.column)) throw new BoardError(`${cardLabel} refers to a missing pipeline column.`, 'INVALID_BACKUP');
         return { id: unique(card.id, cardLabel), title: text(card.title, 120, `${cardLabel} title`), prompt: promptText(card.prompt, cardLabel),
           createdAt: time(card.createdAt), updatedAt: time(card.updatedAt ?? card.createdAt), checksOutdated: card.checksOutdated === true,
           source: normalizeSource(card.source), column: v2 && columnIds.has(card.column) ? card.column : 'todo', ...(v3 ? backupBaseScopes(card, true, columnIds) : {}) };
@@ -159,7 +165,7 @@ function backupBaseScopes(entity, task = false, columnIds) {
 }
 
 function newProject({ id = randomUUID(), name, createdAt = Date.now() }) {
-  return { id, name, createdAt, revision: 1, repository: null, targetBranch: null, workflow: {}, pendingImport: null, tasks: [] };
+  return { id, name, createdAt, revision: 1, repository: null, targetBranch: null, workflowMode: 'legacy', workflow: {}, pendingImport: null, tasks: [] };
 }
 function newTask({ id = randomUUID(), title, prompt, source = null, checksOutdated = false, createdAt = Date.now(), updatedAt = createdAt, column = 'todo' }) {
   // contentRevision changes only when the title or prompt changes; plan approvals refer to it.
@@ -220,7 +226,17 @@ export function normalizeAgent(input) {
  * Code with its CLI defaults. Model and effort come from that same level, because they belong to
  * one provider. `agentSource` says which level applied.
  */
-export function effectiveWorkflow(project, globalAgent = null, state = null) {
+export function effectiveWorkflow(project, globalAgent = null, state = null, task = null) {
+  if (project?.workflowMode === 'pipeline') return Object.fromEntries(project.pipeline.columns.map(column => {
+    const strategy = resolvePipelineStrategy(project.pipeline, column.id, task || {});
+    const global = state ? profileDefaults(state, state.settings?.agentProfileId, globalAgent || {}) : globalAgent;
+    const defaults = state ? profileDefaults(state, project.agentProfileId, project.agentDefaults || {}) : project.agentDefaults;
+    const local = state ? profileDefaults(state, project.baseColumns?.[column.id]?.profileId) : null;
+    const inherited = local?.provider ? local : defaults?.provider ? defaults : global || {};
+    const agent = strategy.agentOverride ? { provider: strategy.agentOverride } : inherited;
+    return [column.id, { provider: agent.provider || 'claude', model: strategy.modelOverride ?? agent.model ?? '', effort: strategy.effortOverride ?? agent.effort ?? '',
+      permissionMode: strategy.permissionMode ?? agent.permissionMode ?? '', pipeline: true, instructions: '', policy: strategy.autoSpawn ? 'start' : 'manual', agentSource: 'pipeline' }];
+  }));
   const global = state ? profileDefaults(state, state.settings?.agentProfileId, globalAgent || {}) : globalAgent;
   const projectAgent = state ? profileDefaults(state, project?.agentProfileId, project?.agentDefaults || {}) : project?.agentDefaults;
   const columnAgent = (id, own) => state ? profileDefaults(state, project?.baseColumns?.[id]?.profileId, own) : own;
@@ -306,6 +322,8 @@ export function normalizeColumns(input) {
 
 /** The columns a project shows, in order. A custom column records its anchor stage. */
 export function projectColumns(project) {
+  if (project?.workflowMode === 'pipeline') return project.pipeline.columns.map(column => ({ ...column, title: column.name,
+    agent: column.role === 'active', custom: true, builtin: false, anchor: null }));
   const layout = project?.columnLayout?.length ? project.columnLayout : COLUMN_IDS.map(id => ({ id }));
   let anchor = 'todo';
   const result = [];
@@ -323,6 +341,7 @@ export function projectColumns(project) {
 /** The transition table of one project: TRANSITIONS without hidden stages, plus each custom column's moves. */
 export function projectTransitions(project) {
   const columns = projectColumns(project);
+  if (project?.workflowMode === 'pipeline') return Object.fromEntries(columns.map(column => [column.id, columns.filter(other => other.id !== column.id).map(other => other.id)]));
   const visible = new Set(columns.map(column => column.id));
   const table = {};
   for (const [from, targets] of Object.entries(TRANSITIONS)) if (visible.has(from)) table[from] = targets.filter(to => visible.has(to));
@@ -700,6 +719,7 @@ export class Board {
       const project = this.#project(state, id);
       checkRevision(project, expectedRevision, 'This project');
       if (project.autopilot?.status === 'running') throw conflict('Pause or stop Autopilot before you change its settings.', 'AUTOPILOT_RUNNING');
+      if (project.workflowMode === 'pipeline') throw conflict('Legacy Autopilot is unavailable for column pipelines.', 'PIPELINE_AUTOPILOT_UNAVAILABLE');
       const ids = new Set(project.tasks.map(task => task.id));
       if (queue.some(taskId => !ids.has(taskId))) throw new BoardError('The Autopilot queue lists a card that is not in this project.', 'INVALID_AUTOPILOT');
       const perCard = {};
@@ -715,6 +735,7 @@ export class Board {
   /** Start (confirmed), pause, resume, stop, or skip the current card. The engine does the work. */
   async controlAutopilot(id, { action, confirm }) {
     const project = this.#project(await this.state(), id);
+    if (project.workflowMode === 'pipeline') throw conflict('Legacy Autopilot is unavailable for column pipelines.', 'PIPELINE_AUTOPILOT_UNAVAILABLE');
     if (action === 'start') {
       if (confirm !== true) throw new BoardError('Confirm what Autopilot will do before you start it.', 'CONFIRMATION_REQUIRED');
       if (!project.repository || !project.targetBranch) throw new BoardError('Link a repository and choose the target branch first.', 'REPOSITORY_REQUIRED', 409);
@@ -759,6 +780,7 @@ export class Board {
     const layout = normalizeColumns(columns);
     return this.store.update(state => {
       const project = this.#project(state, id);
+      if (project.workflowMode === 'pipeline') throw conflict('Use the pipeline column settings for this board.', 'PIPELINE_SETTINGS_REQUIRED');
       checkRevision(project, expectedRevision, 'This project');
       const visible = new Set(projectColumns({ columnLayout: layout }).map(column => column.id));
       const stranded = [...new Set(project.tasks.filter(task => !visible.has(task.column)).map(task => task.column))];
@@ -780,6 +802,41 @@ export class Board {
         delete project.pendingImport.baseColumns[id]; detached = true;
       }
       if (detached) state.base.revision++;
+      project.revision++;
+      return project;
+    });
+  }
+
+  /** Explicit conversion/configuration; saving settings never dispatches agents. */
+  async setPipeline(id, { pipeline = defaultPipelineConfig(), expectedRevision, confirm = false } = {}) {
+    const clean = normalizePipelineConfig(pipeline);
+    // Reject executable definitions until their dispatcher is implemented; never silently ignore them.
+    for (const column of clean.columns) if ([...column.automations.onEnter, ...column.automations.onExit].some(row => row.enabled)) throw new BoardError('Automation execution is not available in this checkpoint.', 'PIPELINE_FEATURE_PENDING', 409);
+    for (const column of clean.columns) for (const options of [{}, ...clean.profiles.map(profile => ({ profileId: profile.id }))]) {
+      const strategy = resolvePipelineStrategy(clean, column.id, options);
+      if (strategy.sessionTarget !== 'main' || strategy.sessionSpawnStrategy !== 'create_or_resume' || strategy.handoffContext) throw new BoardError('Isolated sessions, forced fresh sessions, and provider handoff are not available in this checkpoint.', 'PIPELINE_FEATURE_PENDING', 409);
+    }
+    return this.store.update(state => {
+      const project = this.#project(state, id);
+      checkRevision(project, expectedRevision, 'This project');
+      if (project.workflowMode !== 'pipeline' && confirm !== true) throw new BoardError('Confirm switching this project from stage rules to a column pipeline.', 'CONFIRMATION_REQUIRED', 409);
+      if (project.workflowMode === 'pipeline' && ['todo', 'done'].some(role => project.pipeline.columns.find(column => column.role === role).id !== clean.columns.find(column => column.role === role).id)) throw conflict('Rename the system columns without changing their stable IDs or roles.', 'PIPELINE_SYSTEM_ROLE_CHANGED');
+      if (project.tasks.some(task => this.#activeRun(state, task.id))) throw conflict('Pause the project’s agents before changing its pipeline configuration.', 'RUN_ACTIVE');
+      if (project.autopilot?.status === 'running') throw conflict('Pause Autopilot before switching workflow mode.', 'AUTOPILOT_ACTIVE');
+      const present = new Set(clean.columns.map(column => column.id));
+      if (project.tasks.some(task => !present.has(task.column))) throw conflict('Move every card out of columns being removed first.', 'COLUMN_NOT_EMPTY');
+      for (const task of project.tasks) resolvePipelineStrategy(clean, task.column, task);
+      project.workflowMode = 'pipeline'; project.pipeline = clean;
+      for (const column of clean.columns.filter(column => column.role === 'active')) {
+        for (const task of [null, ...clean.profiles.map(profile => ({ profileId: profile.id }))]) {
+          resolveConfig(column.id, effectiveWorkflow(project, state.settings.defaultAgent, state, task)[column.id]);
+        }
+      }
+      delete project.pipelineImport;
+      for (const entity of [project, ...project.tasks]) for (const columnId of Object.keys(entity.baseColumns || {})) if (!present.has(columnId)) {
+        delete entity.baseColumns[columnId]; entity.baseRevision = (entity.baseRevision || 0) + 1; state.base.revision++;
+      }
+      for (const columnId of Object.keys(project.pendingImport?.baseColumns || {})) if (!present.has(columnId)) { delete project.pendingImport.baseColumns[columnId]; state.base.revision++; }
       project.revision++;
       return project;
     });
@@ -829,6 +886,10 @@ export class Board {
     const automation = trigger === 'automation';
     const state = await this.state();
     const { project, task } = this.#task(state, id);
+    if (project.workflowMode === 'pipeline') {
+      if (Object.keys(config || {}).length) throw new BoardError('Configure the pipeline agent in Column Manager before moving this card.', 'PIPELINE_SETTINGS_REQUIRED');
+      return this.#locked(`run:${id}`, () => this.#pipelineTransition(id, { column, index, expectedRevision, transitionId, decision, trigger }));
+    }
     // The same request delivered twice (a double drop, a retried request) returns the first outcome.
     if (transitionId && task.lastTransition?.id === transitionId) {
       return { task, duplicate: true, ...(task.lastTransition.runId ? { run: state.runs.find(run => run.id === task.lastTransition.runId) } : {}) };
@@ -1134,6 +1195,7 @@ export class Board {
     return this.#locked(`transition:${id}`, async () => {
       const state = await this.state();
       const { project, task } = this.#task(state, id);
+      if (project.workflowMode === 'pipeline') throw conflict('Pipeline worktree reset is not available yet. Move the task to To Do to stop its agent and retain files.', 'PIPELINE_FEATURE_PENDING');
       checkRevision(task, expectedRevision, 'This card');
       if (task.column === 'done') throw conflict('This card is done. Reopen it first; then you can start over.', 'NOT_ALLOWED_IN_DONE');
       if (task.workspace?.status !== 'ready') throw conflict('This card has no task branch yet, so there is nothing to start over.', 'NOTHING_TO_START_OVER');
@@ -1189,6 +1251,11 @@ export class Board {
 
   /** Done → To Do: a new cycle. Earlier completions, commits, evidence, and runs are kept. */
   async reopenTask(id, { expectedRevision } = {}) {
+    const current = this.#task(await this.state(), id);
+    if (current.project.workflowMode === 'pipeline') {
+      if (current.project.pipeline.columns.find(column => column.id === current.task.column)?.role !== 'done') throw conflict('Only an archived task can be restored.', 'NOT_DONE');
+      return (await this.transition(id, { column: current.project.pipeline.columns.find(column => column.role === 'todo').id, expectedRevision })).task;
+    }
     return this.store.update(state => {
       const { task } = this.#task(state, id);
       checkRevision(task, expectedRevision, 'This card');
@@ -1242,11 +1309,13 @@ export class Board {
     return this.store.update(state => {
       const { project, task } = this.#task(state, id);
       if (this.#activeRun(state, id)) throw conflict('This card has an active run.', 'RUN_ACTIVE');
+      const done = project.workflowMode === 'pipeline' ? project.pipeline.columns.find(column => column.role === 'done').id : 'done';
       task.completion = { kind, at: Date.now(), summary: task.stageResults?.executing?.summary || '', executionRunId: task.stageResults?.executing?.runId || null, ...details };
       task.flow = null;
-      if (transitionId) task.lastTransition = { id: transitionId, to: 'done', at: Date.now() };
-      task.transitions = [...task.transitions, { at: Date.now(), from: task.column, to: 'done', by: kind }].slice(-TRANSITION_LOG_LIMIT);
-      task.column = 'done';
+      if (transitionId) task.lastTransition = { id: transitionId, to: done, at: Date.now() };
+      task.transitions = [...task.transitions, { at: Date.now(), from: task.column, to: done, by: kind }].slice(-TRANSITION_LOG_LIMIT);
+      task.column = done;
+      if (project.workflowMode === 'pipeline') task.archivedAt = Date.now();
       project.tasks = [...project.tasks.filter(item => item !== task), task];
       task.revision++;
       return task;
@@ -1345,7 +1414,8 @@ export class Board {
     return this.store.update(state => {
       const project = this.#project(state, projectId);
       if (project.tasks.length >= TASK_LIMIT) throw new BoardError(`A project can have at most ${TASK_LIMIT} cards.`, 'LIMIT');
-      project.tasks.push(task); // New cards always start in To Do and never start a run.
+      if (project.workflowMode === 'pipeline') task.column = project.pipeline.columns.find(column => column.role === 'todo').id;
+      project.tasks.push(task); // Composer/new cards always enter the To Do role without a run.
       return task;
     });
   }
@@ -1369,6 +1439,7 @@ export class Board {
       const { project, task } = this.#task(state, id);
       if (project.tasks.length >= TASK_LIMIT) throw new BoardError(`A project can have at most ${TASK_LIMIT} cards.`, 'LIMIT');
       const copy = newTask({ title: `${task.title.slice(0, 113)} (copy)`, prompt: task.prompt, source: structuredClone(task.source), checksOutdated: task.checksOutdated });
+      if (project.workflowMode === 'pipeline') copy.column = project.pipeline.columns.find(column => column.role === 'todo').id;
       if (task.baseBinding) copy.baseBinding = structuredClone(task.baseBinding);
       if (task.baseColumns) copy.baseColumns = structuredClone(task.baseColumns);
       project.tasks.splice(project.tasks.indexOf(task) + 1, 0, copy); // A copy starts in To Do with no workspace.
@@ -1383,7 +1454,7 @@ export class Board {
   #place(state, id, { from, column, index, transitionId = null, by = 'user', reason = '', runId = null }) {
     const { project, task } = this.#task(state, id);
     if (task.column !== from) throw conflict(`The card moved to ${title(task.column)} meanwhile. Reload the board.`, 'REVISION_CONFLICT');
-    if (task.column !== column && this.#activeRun(state, id)) throw conflict('This card has an active run. Wait for it to finish or cancel it first.', 'RUN_ACTIVE');
+    if (project.workflowMode !== 'pipeline' && task.column !== column && this.#activeRun(state, id)) throw conflict('This card has an active run. Wait for it to finish or cancel it first.', 'RUN_ACTIVE');
     const others = project.tasks.filter(item => item !== task);
     const inColumn = others.filter(item => item.column === column);
     const position = Number.isInteger(index) ? Math.max(0, Math.min(index, inColumn.length)) : inColumn.length;
@@ -1460,7 +1531,7 @@ export class Board {
         for (const card of incoming.tasks) {
           if (taskIds.has(card.id)) { skipped++; continue; }
           if (project.tasks.length >= TASK_LIMIT) throw new BoardError(`A project can have at most ${TASK_LIMIT} cards.`, 'LIMIT');
-          project.tasks.push(newTask({ ...card, column: 'todo' }));
+          project.tasks.push(newTask({ ...card, column: project.workflowMode === 'pipeline' ? project.pipeline.columns.find(column => column.role === 'todo').id : 'todo' }));
           taskIds.add(card.id);
           cards++;
         }
@@ -1474,9 +1545,10 @@ export class Board {
     const state = await this.state();
     const base = await this.base.export({ includeContent: includeBaseContent });
     if ((await this.state()).base.revision !== state.base.revision) throw conflict('Base changed while the backup was being prepared. Export it again.', 'BASE_REVISION_CONFLICT');
-    return { application: 'Promptboard', kind: 'promptboard-backup', version: 3, exportedAt: new Date().toISOString(),
+    return { application: 'Promptboard', kind: 'promptboard-backup', version: state.projects.some(project => project.workflowMode === 'pipeline') ? 4 : 3, exportedAt: new Date().toISOString(),
       base, baseGlobal: backupBaseScopes(state.settings.pendingBaseImport || state.settings),
       projects: state.projects.map(project => ({ id: project.id, name: project.name, createdAt: project.createdAt,
+        ...(project.workflowMode === 'pipeline' ? { workflowMode: 'pipeline', pipeline: project.pipelineImport || project.pipeline } : {}),
         ...backupBaseScopes({ ...project.pendingImport, ...project, ...(project.baseBinding ? {} : project.pendingImport?.baseBinding ? { baseBinding: project.pendingImport.baseBinding } : {}) }),
         repository: project.repository ? { path: project.repository.path } : null, targetBranch: project.targetBranch ? { name: project.targetBranch.name } : null,
         agentDefaults: project.agentDefaults || null, workflow: project.workflow || {}, testCommands: project.testCommands || [], timelineNotes: project.timelineNotes || [], columnLayout: project.columnLayout || [],
@@ -1492,7 +1564,7 @@ export class Board {
   async importBackup(data, { replace = false } = {}) {
     const parsed = parseBackup(data);
     const preparedBase = parsed.base ? await this.base.prepareImport(parsed.base) : null;
-    if (data.version === 3 && !preparedBase) throw new BoardError('This backup is missing its Base resource library.', 'INVALID_BACKUP');
+    if ([3, 4].includes(data.version) && !preparedBase) throw new BoardError('This backup is missing its Base resource library.', 'INVALID_BACKUP');
     if (preparedBase) {
       for (const incoming of parsed.projects) {
         Object.assign(incoming, remapBaseScopes(incoming, preparedBase.remap));
@@ -1514,6 +1586,16 @@ export class Board {
       state.projects = parsed.projects.map(incoming => {
         const project = newProject(incoming);
         project.tasks = incoming.tasks.map(task => ({ ...newTask(task), ...backupBaseScopes(task, true) }));
+        if (incoming.pipeline) {
+          project.workflowMode = 'pipeline'; project.pipelineImport = incoming.pipeline;
+          project.pipeline = structuredClone(incoming.pipeline);
+          for (const column of project.pipeline.columns) {
+            column.strategy.autoSpawn = false;
+            for (const rows of Object.values(column.automations)) for (const row of rows) row.enabled = false;
+          }
+          for (const profile of project.pipeline.profiles) for (const strategy of Object.values(profile.columns)) strategy.autoSpawn = false;
+          for (const task of project.tasks) if (project.pipeline.columns.find(column => column.id === task.column)?.role === 'done') task.archivedAt = task.updatedAt;
+        }
         if (incoming.columnLayout) project.columnLayout = incoming.columnLayout;
         project.timelineNotes = incoming.timelineNotes.map(note => ({ ...note, taskId: project.tasks.some(task => task.id === note.taskId) ? note.taskId : null }));
         if (incoming.repositoryPath || incoming.targetBranch || incoming.workflow || incoming.testCommands || incoming.agentDefaults || incoming.baseBinding || incoming.baseColumns || incoming.agentProfileId) {
@@ -1706,6 +1788,7 @@ export class Board {
       if (consent !== true) throw new BoardError('Resuming an agent needs your explicit confirmation.', 'CONSENT_REQUIRED');
       if (typeof message !== 'string' || Buffer.byteLength(message) > 64 * 1024 || message.includes('\0')) throw new BoardError('Send a continuation of at most 64 KiB without null characters.', 'INVALID_INPUT');
       const state = await this.state(), { project, task } = this.#task(state, taskId);
+      if (project.workflowMode === 'pipeline') return this.#pipelineStart(taskId, { column: task.column, requireResume: true, continuation: message });
       if (['todo', 'done'].includes(task.column) || task.archivedAt) throw conflict('Move or restore this task to an active column before resuming.', 'SESSION_NOT_RESUMABLE');
       if (this.#activeRun(state, taskId)) throw conflict('This card already has an active run.', 'RUN_ACTIVE');
       if (project.autopilot?.status === 'running') throw conflict('Pause Autopilot before resuming this conversation manually.', 'AUTOPILOT_ACTIVE');
@@ -1749,6 +1832,11 @@ export class Board {
     {
       let state = await this.state();
       let { project, task } = this.#task(state, taskId);
+      if (project.workflowMode === 'pipeline') {
+        if (consent !== true) throw new BoardError('Starting an agent needs your explicit confirmation.', 'CONSENT_REQUIRED');
+        if (Object.keys(config || {}).length) throw new BoardError('Configure the pipeline agent in Column Manager before starting it.', 'PIPELINE_SETTINGS_REQUIRED');
+        return this.#pipelineStart(taskId, { column: stage, move, trigger });
+      }
       const column = projectColumns(project).find(item => item.id === stage);
       if (!column) throw new BoardError('Choose a valid stage.', 'INVALID_COLUMN');
       if (!column.agent) throw new BoardError(`${column.title} never runs an agent.`, 'STAGE_NOT_RUNNABLE');
@@ -1806,6 +1894,110 @@ export class Board {
       await this.executor.start({ run, task: { id: task.id, title: task.title, prompt: task.prompt }, workspace, planRunId: plan?.runId || null, extra });
       return run;
     }
+  }
+
+  /** Main-session pipeline moves. Names carry no review, commit, test, or merge action. */
+  async #pipelineTransition(taskId, { column, index, expectedRevision, transitionId, decision, trigger }) {
+    const state = await this.state(), { project, task } = this.#task(state, taskId);
+    if (transitionId && task.lastTransition?.id === transitionId) return { task, duplicate: true };
+    checkRevision(task, expectedRevision, 'This card');
+    const target = project.pipeline.columns.find(item => item.id === column);
+    if (!target) throw new BoardError('Choose a valid column.', 'INVALID_COLUMN');
+    const move = { from: task.column, column, index, transitionId: transitionId || randomUUID(), by: trigger === 'automation' ? 'automation' : 'user' };
+    if (task.column === column) return { task: await this.#placeStored(taskId, move) };
+    const active = this.#activeRun(state, taskId);
+    if (target.role !== 'active') {
+      if (active) {
+        if (!this.executor) throw new BoardError('The owned agent cannot be stopped.', 'EXECUTION_UNAVAILABLE', 503);
+        if (target.role === 'done') await this.executor.suspend(active.id);
+        else await this.executor.cancel(active.id);
+      }
+      const saved = await this.store.update(draft => {
+        const current = this.#task(draft, taskId);
+        checkRevision(current.task, expectedRevision, 'This card');
+        if (current.project.revision !== project.revision || this.#activeRun(draft, taskId)) throw conflict('The board or agent changed during this move.', 'REVISION_CONFLICT');
+        const result = this.#place(draft, taskId, move);
+        if (target.role === 'todo') { result.sessionId = null; delete result.archivedAt; }
+        else result.archivedAt = Date.now();
+        return result;
+      });
+      return { task: saved };
+    }
+    const settings = effectiveWorkflow(project, state.settings.defaultAgent, state, task)[column];
+    const strategy = resolvePipelineStrategy(project.pipeline, column, task);
+    if (active) {
+      const resolved = resolveConfig(column, settings);
+      const manifest = this.#basePreflight(state, project, task, column, resolved.provider);
+      if (JSON.stringify(resolved) !== JSON.stringify(Object.fromEntries(Object.entries(active.config).filter(([key]) => key !== 'instructions')))
+        || baseSignature(manifest) !== baseSignature(active.baseManifest)) throw conflict('Pause this agent before moving to a column with different agent settings or Base resources.', 'PIPELINE_RECONFIGURE_REQUIRED');
+      const saved = await this.store.update(draft => {
+        const current = this.#task(draft, taskId);
+        checkRevision(current.task, expectedRevision, 'This card');
+        if (current.project.revision !== project.revision || this.#activeRun(draft, taskId)?.id !== active.id || draft.base.revision !== state.base.revision) throw conflict('The board, agent, or Base selection changed during this move.', 'REVISION_CONFLICT');
+        const result = this.#place(draft, taskId, { ...move, runId: active.id });
+        delete result.archivedAt;
+        return result;
+      });
+      return { task: saved, continuedRunId: active.id };
+    }
+    if (decision !== 'move' && (strategy.autoSpawn || decision === 'start')) {
+      const run = await this.#pipelineStart(taskId, { column, move, trigger, expectedRevision });
+      return { task: await this.#taskNow(taskId), run };
+    }
+    const saved = await this.store.update(draft => {
+      const current = this.#task(draft, taskId);
+      checkRevision(current.task, expectedRevision, 'This card');
+      if (current.project.revision !== project.revision || this.#activeRun(draft, taskId)) throw conflict('This board or agent changed during the move.', 'REVISION_CONFLICT');
+      const result = this.#place(draft, taskId, move); delete result.archivedAt; return result;
+    });
+    return { task: saved };
+  }
+
+  async #pipelineStart(taskId, { column, move = null, trigger = 'user', expectedRevision, requireResume = false, continuation = '' } = {}) {
+    let state = await this.state(), { project, task } = this.#task(state, taskId);
+    const target = project.pipeline.columns.find(item => item.id === column);
+    if (target?.role !== 'active') throw new BoardError('Only active columns run agents.', 'STAGE_NOT_RUNNABLE');
+    if (!move && task.column !== column) throw conflict('Move this card to the requested column first.', 'STAGE_MISMATCH');
+    if (expectedRevision !== undefined) checkRevision(task, expectedRevision, 'This card');
+    if (this.#activeRun(state, taskId)) throw conflict('This card already has an active run.', 'RUN_ACTIVE');
+    if (!project.repository) throw new BoardError('Link this project to a Git repository first.', 'REPOSITORY_REQUIRED', 409);
+    if (!this.executor) throw new BoardError('Agent execution is not available.', 'EXECUTION_UNAVAILABLE', 503);
+    await this.#defaultTargetBranch(taskId);
+    state = await this.state(); ({ project, task } = this.#task(state, taskId));
+    const settings = effectiveWorkflow(project, state.settings.defaultAgent, state, task)[column];
+    const resolved = await this.executor.validate({ stage: column, config: settings });
+    const config = { ...resolved, pipeline: true, instructions: '' };
+    const baseManifest = this.#basePreflight(state, project, task, column, config.provider);
+    const saved = state.sessions.find(item => item.id === task.sessionId && item.taskId === taskId);
+    const previous = saved && state.runs.find(item => item.id === saved.currentRunId);
+    const resume = saved?.nativeSessionId && saved.provider === config.provider && previous?.promptRevision === (task.contentRevision ?? 1)
+      && ['suspended', 'orphaned', 'exited'].includes(saved.status) && previous.config.pipeline === true;
+    const nativeSessionId = resume ? validateResumeId(saved.nativeSessionId) : null;
+    if (requireResume && !resume) throw conflict('This task has no unchanged native conversation to resume.', 'SESSION_NOT_RESUMABLE');
+    const workspace = await this.ensureTaskWorktree(taskId);
+    if (resume && workspace.path !== saved.workspacePath) throw conflict('The conversation belongs to another workspace.', 'SESSION_WORKSPACE_MISMATCH');
+    const firstPrompt = renderPipelineSpawnPrompt({ task: { ...task, workspace }, project });
+    const run = await this.store.update(draft => {
+      const current = this.#task(draft, taskId), session = saved && draft.sessions.find(item => item.id === saved.id);
+      if (this.#activeRun(draft, taskId) || current.project.revision !== project.revision || current.task.contentRevision !== task.contentRevision || current.task.column !== task.column
+        || current.task.workspace?.path !== workspace.path
+        || draft.base.revision !== state.base.revision || JSON.stringify(draft.settings.defaultAgent) !== JSON.stringify(state.settings.defaultAgent)
+        || current.task.sessionId !== task.sessionId || (resume && session?.currentRunId !== previous.id)) throw conflict('The task, agent settings, or Base changed while the run was prepared.', 'REVISION_CONFLICT');
+      const now = Date.now(), id = randomUUID();
+      const record = { id, taskId, projectId: project.id, stage: column, status: 'queued', createdAt: now, updatedAt: now,
+        promptRevision: task.contentRevision ?? 1, config, trigger, workspacePath: workspace.path, branch: workspace.branch,
+        artifactsDir: join('runs', id), turns: 0,
+        baseManifest: { ...baseManifest, acceptedAt: now, deliveryState: 'configured' },
+        ...(resume ? { providerSessionId: nativeSessionId, resumeFrom: { runId: previous.id, nativeSessionId }, baseChanged: baseSignature(baseManifest) !== baseSignature(previous.baseManifest) } : {}),
+        ...(move ? { transition: { id: move.transitionId, from: move.from } } : {}) };
+      if (move) this.#place(draft, taskId, { ...move, runId: id });
+      delete current.task.archivedAt;
+      draft.runs.push(record);
+      if (resume) attachResumedRun(draft, record, session); else attachSession(draft, record);
+      return record;
+    });
+    await this.executor.start({ run, task: { id: task.id, title: task.title, prompt: task.prompt }, workspace, firstPrompt, continuation });
+    return run;
   }
 
   #approvedPlan(state, task) {

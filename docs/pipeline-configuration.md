@@ -1,6 +1,6 @@
 # Pipeline configuration foundation
 
-`src/pipeline-config.mjs` defines and validates the configuration that the new column lifecycle will consume. This checkpoint is a pure library: it does not change project state, replace the current Column Manager, start agents, or execute automations. Runtime integration and repository-file reconciliation are subsequent changes. The current stage workflow remains described in [the existing contract](agentic-kanban-contract.md).
+`src/pipeline-config.mjs` defines and validates the configuration consumed by the opt-in [main-session lifecycle](pipeline-lifecycle.md). The library itself remains pure. Enabled automation execution, advanced session strategies, native plan-exit auto-move, and repository-file reconciliation are subsequent changes. Legacy projects retain [the existing stage contract](agentic-kanban-contract.md).
 
 The [prompt and template foundation](pipeline-prompts.md) defines the separate first-spawn and automation input boundaries.
 
