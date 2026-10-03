@@ -102,9 +102,10 @@ Do not invent files, tools, results, dependencies, deadlines, metrics, or requir
 Do not claim that work or tests are complete.
 Keep requested values even when they conflict.
 Identify material conflicts instead of silently choosing a value.
-If missing information blocks a safe, useful task, add a short Questions section.
-Ask only questions that resolve those blockers.
-Otherwise, proceed with the supplied facts.
+Never ask the user clarification questions.
+If a material detail is unknown, instruct the implementation agent to inspect or verify it.
+Infer implementation details only when the objective is clear. Never invent the objective from a topic or random input.
+Proceed with supplied facts and explicitly labelled safe assumptions.
 Label any necessary inference in an Assumptions section.
 Prefer an instruction to inspect the relevant project over a guess about that project.
 

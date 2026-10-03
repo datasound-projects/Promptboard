@@ -37,7 +37,7 @@ let authInfo = null;
 let authBusy = false;
 let authSequence = 0;
 const GENERATION_CEILING_MS = 7.5 * 60 * 1000; // Above the server's 6-minute pipeline deadline.
-const STAGE_LABELS = { understanding: 'Understanding task', retrieving: 'Finding relevant context', document: 'Preparing document', ready: 'Ready for clarification', starting: 'Starting', models: 'Checking model options', draft: 'Drafting prompt', review: 'Reviewing requirements', repair: 'Repairing confirmed issues', 'repair-review': 'Verifying repaired prompt' };
+const STAGE_LABELS = { understanding: 'Understanding task', project: 'Reading project context', 'research-review': 'Checking research', retrieving: 'Finding relevant context', document: 'Preparing document', ready: 'Context ready', starting: 'Starting', models: 'Checking model options', draft: 'Drafting prompt', review: 'Reviewing requirements', repair: 'Repairing confirmed issues', 'repair-review': 'Verifying repaired prompt' };
 
 function safeText(value, max = MAX_PROMPT_BYTES) { return typeof value === 'string' ? value.slice(0, max) : ''; }
 
@@ -661,14 +661,18 @@ function newPrompt() {
   window.scrollTo({ top: 0, behavior: scrollBehavior() });
 }
 
-async function generate(event, { skipQuestions = false } = {}) {
+async function generate(event) {
   event.preventDefault();
   if (running || authBusy || modelsLoading || invalidEffort || !token || !selectedProvider()?.available) return;
   const request = settings();
   if (!request.input.trim()) { $('#prompt-input').focus(); return; }
   if (contextNeeded()) {
-    if (!contextState.prepared || contextState.signature !== contextSignature()) { await prepareContext(request); return; }
-    request.grounding = contextGrounding(skipQuestions);
+    if (!contextState.prepared || contextState.prepared.state === 'assessment-failed' || contextState.signature !== contextSignature()) {
+      const prepared = await prepareContext(request);
+      if (!prepared || prepared.state !== 'ready') return;
+    }
+    if (contextState.prepared.state !== 'ready') return;
+    request.grounding = contextState.prepared.grounding;
   }
   let generated = false;
   const autoSplit = $('#context-auto-split').checked;
@@ -754,8 +758,8 @@ const CONTEXT_PREFS = 'promptboard.compose-context';
 function contextSources() {
   return $('#context-use-sources').checked ? contextState.sources.filter(row => row.enabled).map(row => row.config.type === 'expert' ? { ...row.config, text: row.text || '' } : row.config) : [];
 }
-function contextNeeded() { return $('#context-clarify').checked || $('#context-use-sources').checked; }
-function contextSignature() { return JSON.stringify([settings(), $('#context-clarify').checked, contextSources()]); }
+function contextNeeded() { return $('#context-autonomous').checked || $('#context-use-sources').checked; }
+function contextSignature() { return JSON.stringify([settings(), $('#context-autonomous').checked, contextSources()]); }
 function contextReset() {
   contextState.prepared = null; contextState.signature = '';
   $('#context-prepared').hidden = true;
@@ -767,7 +771,7 @@ function contextLabel() {
   $('#context-summary').textContent = contextNeeded() || $('#context-auto-split').checked ? 'On' : 'Off';
   $('#context-sources').hidden = !$('#context-use-sources').checked;
   $('#context-use-sources').setAttribute('aria-expanded', String($('#context-use-sources').checked));
-  if (!running) $('#generate-label').textContent = contextNeeded() && (!contextState.prepared || contextState.signature !== contextSignature()) ? 'Prepare prompt' : 'Generate prompt';
+  if (!running) $('#generate-label').textContent = 'Generate prompt';
 }
 function contextError(message = '') { $('#context-error').textContent = message; $('#context-error').hidden = !message; }
 function renderContextSources() {
@@ -804,19 +808,12 @@ function addContextSource(config, label, text = '') {
 function showContextPrepared(data) {
   contextState.prepared = data; contextState.signature = contextSignature();
   $('#context-prepared').hidden = false;
-  const grounded = new Set(data.evidence.flatMap(item => item.questionIds || []));
-  const remaining = data.questions.filter(q => q.answerFrom !== 'sources' || !grounded.has(q.id));
-  const found = grounded.size;
-  $('#context-prepared-status').textContent = `${found ? `Relevant evidence found for ${found} ${found === 1 ? 'question' : 'questions'}. ` : ''}${remaining.length} open ${remaining.length === 1 ? 'question' : 'questions'}. All answers are optional.`;
-  const notes = [...data.warnings, ...data.sources.filter(row => row.status !== 'retrieved').map(row => `${row.name}: ${row.status === 'not-needed' ? 'not needed for this task' : row.status === 'failed' ? 'unavailable' : 'no relevant material found'}.`)];
+  const research = data.research || {};
+  $('#context-prepared-status').textContent = data.state === 'ready'
+    ? `${data.assessment?.research || 'No'} research · ${research.lookups || 0} targeted lookups. ${research.reason || 'Ready for generation.'}`
+    : data.message;
+  const notes = [...(data.warnings || []), ...(data.sources || []).filter(row => row.status !== 'retrieved').map(row => `${row.name}: ${row.status === 'not-needed' ? 'not needed for this task' : row.status === 'failed' ? 'unavailable' : 'no relevant material found'}.`)];
   $('#context-warnings').textContent = notes.join(' '); $('#context-warnings').hidden = !notes.length;
-  $('#context-questions').replaceChildren();
-  if ($('#context-clarify').checked) for (const q of remaining) {
-    const label = document.createElement('label'); label.className = 'field-label'; label.htmlFor = `context-answer-${q.id}`;
-    label.append(document.createTextNode(q.question));
-    const input = document.createElement('textarea'); input.id = `context-answer-${q.id}`; input.dataset.questionId = q.id; input.rows = 2; input.maxLength = 2000; input.placeholder = 'Optional answer'; label.append(input);
-    $('#context-questions').append(label);
-  }
   $('#context-evidence-list').replaceChildren(...data.evidence.map(item => {
     const block = document.createElement('div');
     const origins = [{ source: item.source, locator: item.locator }, ...(item.alsoFrom || [])];
@@ -828,29 +825,22 @@ function showContextPrepared(data) {
   contextLabel();
   $('#context-prepared-heading').focus();
 }
-function contextGrounding(skip) {
-  const data = contextState.prepared;
-  const userAnswers = [], unresolvedQuestions = [];
-  for (const q of data.questions) {
-    const answer = skip ? '' : $(`#context-answer-${q.id}`)?.value.trim();
-    if (answer) userAnswers.push({ question: q.question, answer });
-    else if (q.answerFrom !== 'sources' || !data.evidence.some(item => item.questionIds?.includes(q.id))) unresolvedQuestions.push(q.question);
-  }
-  return { userAnswers, evidence: data.evidence, unresolvedQuestions };
-}
 async function prepareContext(request) {
   const own = new AbortController(); controller = own;
   setRunning(true); startProgress(); contextError();
-  $('#generate-label').textContent = 'Preparing prompt…';
+  $('#generate-label').textContent = 'Understanding task…';
   try {
     const signature = contextSignature();
-    const { response, data } = await api('/api/compose/prepare', { method: 'POST', body: { request, clarify: $('#context-clarify').checked, sources: contextSources() }, signal: own.signal, timeoutMs: 130000 });
+    const { response, data } = await api('/api/compose/prepare', { method: 'POST', body: { request, autonomous: $('#context-autonomous').checked, sources: contextSources() }, signal: own.signal, timeoutMs: 250000 });
     if (own.signal.aborted) return;
     if (!response.ok) throw new Error(failureMessage(data, 'Preparation failed.'));
-    if (signature === contextSignature()) showContextPrepared(data);
+    if (signature !== contextSignature()) return null;
+    showContextPrepared(data);
+    return data;
   } catch (error) {
-    if (!own.signal.aborted) showContextPrepared({ questions: [], evidence: [], sources: [], warnings: [error.message + ' Retry or generate without preparation.'] });
-    else announce('Preparation canceled. Your task and sources are kept.');
+    if (!own.signal.aborted) showContextPrepared({ state: 'assessment-failed', message: error.message + ' Retry before generation.', evidence: [], sources: [], warnings: [] });
+    else announce('Research canceled. Your task and sources are kept.');
+    return null;
   } finally { controller = null; stopProgress(); setRunning(false); contextLabel(); }
 }
 async function uploadContextDocument() {
@@ -873,10 +863,10 @@ async function uploadContextDocument() {
   } catch (error) { contextError(own.signal.aborted ? 'Document preparation stopped. Retry or continue without this document.' : error.message); }
   finally { clearTimeout(timer); controller = null; stopProgress(); setRunning(false); }
 }
-for (const id of ['context-clarify', 'context-use-sources', 'context-auto-split']) {
-  try { $(`#${id}`).checked = JSON.parse(localStorage.getItem(CONTEXT_PREFS) || '{}')[id] === true; } catch {}
+for (const id of ['context-autonomous', 'context-use-sources', 'context-auto-split']) {
+  try { const prefs = JSON.parse(localStorage.getItem(CONTEXT_PREFS) || '{}'); $(`#${id}`).checked = id === 'context-autonomous' ? (prefs[id] === true || (prefs[id] === undefined && prefs['context-clarify'] === true)) : prefs[id] === true; } catch {}
   $(`#${id}`).addEventListener('change', () => {
-    savePref(CONTEXT_PREFS, JSON.stringify(Object.fromEntries(['context-clarify', 'context-use-sources', 'context-auto-split'].map(key => [key, $(`#${key}`).checked]))));
+    savePref(CONTEXT_PREFS, JSON.stringify(Object.fromEntries(['context-autonomous', 'context-use-sources', 'context-auto-split'].map(key => [key, $(`#${key}`).checked]))));
     if (id === 'context-auto-split') contextLabel(); else contextReset();
   });
 }
@@ -888,6 +878,24 @@ $('#context-add-mcp').addEventListener('click', () => {
 });
 $('#context-add-document').addEventListener('click', () => { $('#context-document-fields').hidden = !$('#context-document-fields').hidden; $('#context-add-document').setAttribute('aria-expanded', String(!$('#context-document-fields').hidden)); });
 $('#context-upload').addEventListener('click', uploadContextDocument);
+$('#context-add-local').addEventListener('click', () => {
+  const fields = $('#context-local-fields'); fields.hidden = !fields.hidden;
+  $('#context-add-local').setAttribute('aria-expanded', String(!fields.hidden));
+});
+$('#context-pick-local').addEventListener('click', async () => {
+  try { const { response, data } = await api('/api/compose/folder/choose', { method: 'POST', body: {}, timeoutMs: 600000 });
+    if (!response.ok) throw new Error(data.error || 'Folder selection failed.');
+    if (data.path) $('#context-local-path').value = data.path;
+  } catch (error) { contextError(error.message); }
+});
+$('#context-save-local').addEventListener('click', () => {
+  const path = $('#context-local-path').value.trim(), kind = $('#context-local-kind').value;
+  if (!path) { contextError('Choose or enter a local folder path.'); return; }
+  const name = path.replace(/[\\/]+$/, '').split(/[\\/]/).at(-1).slice(0, 80);
+  addContextSource({ type: 'local', name, path, kind }, `${kind === 'repository' ? 'Project' : 'Knowledge'} · ${name}`);
+  $('#context-local-path').value = ''; $('#context-local-fields').hidden = true;
+  $('#context-add-local').setAttribute('aria-expanded', 'false');
+});
 $('#context-add-expert').addEventListener('click', () => addContextSource({ type: 'expert', name: 'Expert context' }, 'Expert context'));
 $('#context-save-mcp').addEventListener('click', () => {
   try {
@@ -898,7 +906,6 @@ $('#context-save-mcp').addEventListener('click', () => {
     $('#context-mcp-config').value = ''; $('#context-allow-start').checked = false; $('#context-custom').open = false;
   } catch (error) { contextError(error.message); }
 });
-$('#context-skip').addEventListener('click', event => generate(event, { skipQuestions: true }));
 $('#context-retry').addEventListener('click', event => { contextReset(); generate(event); });
 contextLabel();
 

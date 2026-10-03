@@ -133,7 +133,7 @@ export class ComposeMcp {
         if (!callCache.has(key)) callCache.set(key, redact(textResult(await client.callTool({ name: tool.name, arguments: args }, undefined, options))));
         return callCache.get(key);
       };
-      for (const query of pending.slice(0, 12)) {
+      for (const query of pending.slice(0, 24)) {
         combined.throwIfAborted();
         let text, locator;
         if (cfg.preset === 'context7') {
@@ -162,6 +162,12 @@ export class ComposeMcp {
       return results;
     } catch (error) {
       if (signal?.aborted) throw signal.reason;
+      // A slow later lookup must not erase documentation already retrieved.
+      // Missing question IDs remain unresolved in the final grounding payload.
+      if (results.length) {
+        results.warning = 'Some MCP lookups could not finish. Only returned documentation is available; remaining details must be verified during implementation.';
+        return results;
+      }
       if (combined.aborted) throw new Error('MCP retrieval exceeded its time or output limit. Retry or continue without this source.');
       const known = /^(Context7|This MCP|MCP returned)/.test(error.message);
       throw new Error(known ? error.message : 'MCP server is unavailable. Check the connection and environment references, retry, or continue without this source.');
