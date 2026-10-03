@@ -40,6 +40,8 @@ Report problems privately through GitHub: **Security → Report a vulnerability*
 
 **Usage data.** The Usage panel scans known local Claude, Codex, and Gemini session directories, including sessions outside Promptboard, for the last 30 days. It reduces structured records to numbers, model IDs, timestamps, and tool names; transcript text and tool arguments are not retained or returned. Scans are bounded, skip symlinks and oversized files, and label incomplete coverage. No credential files are read. Codex account limits use its read-only app-server method. New Promptboard Claude sessions have a per-process status-line command that saves only whitelisted usage fields to their run folder; global CLI configuration is not edited. A refresh failure never fabricates available quota or costs.
 
+**Conversation metadata.** State version 4 separates logical sessions from process runs. Migration retains an exact original version 2 or 3 backup and preserves Base. Native conversation IDs remain local metadata; this foundation adds no resume command or new authorization path. Recovery marks active sessions orphaned and never relaunches them. Portable board backups exclude machine-specific session references.
+
 ## Limits
 
 - An agent in Executing can run any command its CLI allows in the task worktree, with your user's permissions. Review what it asks to do.

@@ -7,9 +7,10 @@ import { randomBytes } from 'node:crypto';
 import { copyFile, mkdir, open, readdir, readFile, rename, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { migrateSessions } from './sessions.mjs';
 
 export const STATE_SCHEMA = 'promptboard.state';
-export const STATE_VERSION = 3;
+export const STATE_VERSION = 4;
 const STATE_FILE = 'state.json';
 
 export function defaultDataDir(env = process.env, platform = process.platform) {
@@ -20,7 +21,7 @@ export function defaultDataDir(env = process.env, platform = process.platform) {
 }
 
 export function emptyState() {
-  return { schema: STATE_SCHEMA, version: STATE_VERSION, revision: 0, settings: { execution: 'inactive' }, projects: [], runs: [], migrations: [], base: { revision: 0, resources: [], approvedRoots: [] } };
+  return { schema: STATE_SCHEMA, version: STATE_VERSION, revision: 0, settings: { execution: 'inactive' }, projects: [], runs: [], sessions: [], migrations: [], base: { revision: 0, resources: [], approvedRoots: [] } };
 }
 
 export class StoreError extends Error {
@@ -30,17 +31,29 @@ export class StoreError extends Error {
 function checkShape(data) {
   if (!data || typeof data !== 'object' || data.schema !== STATE_SCHEMA) throw new Error('Unknown state file.');
   if (data.version > STATE_VERSION) throw new StoreError('The board was saved by a newer Promptboard version. Update the app; the file was not changed.', 'STATE_VERSION_UNSUPPORTED');
-  if (![2, STATE_VERSION].includes(data.version) || !Array.isArray(data.projects) || !Array.isArray(data.runs)) throw new Error('Unsupported state shape.');
-  if (data.version === STATE_VERSION && (!data.base || !Array.isArray(data.base.resources) || !Array.isArray(data.base.approvedRoots) || !Number.isSafeInteger(data.base.revision) || data.base.revision < 0)) throw new Error('Invalid Base registry shape.');
+  if (![2, 3, STATE_VERSION].includes(data.version) || !Array.isArray(data.projects) || !Array.isArray(data.runs)) throw new Error('Unsupported state shape.');
+  if (data.version >= 3 && (!data.base || !Array.isArray(data.base.resources) || !Array.isArray(data.base.approvedRoots) || !Number.isSafeInteger(data.base.revision) || data.base.revision < 0)) throw new Error('Invalid Base registry shape.');
+  if (data.version === STATE_VERSION && (!Array.isArray(data.sessions) || data.sessions.some(session => !session || typeof session !== 'object'
+    || typeof session.id !== 'string' || !session.id || typeof session.taskId !== 'string' || typeof session.projectId !== 'string'
+    || !['queued', 'running', 'waiting_for_input', 'suspended', 'exited', 'orphaned'].includes(session.status)
+    || !Array.isArray(session.runIds) || session.runIds.some(id => typeof id !== 'string') || !Array.isArray(session.artifacts)))) throw new Error('Invalid session registry shape.');
   return { ...emptyState(), ...data };
 }
 
-/** Pure, explicit migration. It must run before corruption recovery can classify valid v2 data. */
+/** Pure, explicit migration. Valid older data is never classified as corruption. */
 export function migrateState(data) {
-  const state = checkShape(data);
+  let state = checkShape(data);
   if (state.version === STATE_VERSION) return state;
-  return { ...state, version: STATE_VERSION, base: { revision: 0, resources: [], approvedRoots: [] },
-    migrations: [...(Array.isArray(state.migrations) ? state.migrations : []), { kind: 'state-v2-to-v3', at: Date.now() }] };
+  state = structuredClone(state);
+  state.migrations = Array.isArray(state.migrations) ? state.migrations : [];
+  if (state.version === 2) {
+    state.base = { revision: 0, resources: [], approvedRoots: [] };
+    state.migrations.push({ kind: 'state-v2-to-v3', at: Date.now() });
+  }
+  migrateSessions(state);
+  state.version = STATE_VERSION;
+  state.migrations.push({ kind: 'state-v3-to-v4', at: Date.now() });
+  return state;
 }
 
 export class Store {
@@ -80,10 +93,11 @@ export class Store {
           this.recovery = { restoredFromBackup: true, quarantined: null };
         }
       }
-      if (state.version === 2) {
+      if (state.version < STATE_VERSION) {
+        const previousVersion = state.version;
         try {
           // Preserve the exact original, including unknown fields, before publishing anything.
-          const backup = `state.pre-migration-v2-${Date.now()}-${randomBytes(4).toString('hex')}.json`;
+          const backup = `state.pre-migration-v${previousVersion}-${Date.now()}-${randomBytes(4).toString('hex')}.json`;
           await copyFile(source, join(this.dir, backup));
           // Windows FlushFileBuffers requires write access. r+ permits the flush
           // without truncating or changing the preserved pre-migration bytes.
@@ -91,7 +105,7 @@ export class Store {
           const migrated = migrateState(state);
           await this.#write(migrated);
           state = migrated;
-          this.recovery = { ...this.recovery, migratedFromVersion: 2, migrationBackup: backup };
+          this.recovery = { ...this.recovery, migratedFromVersion: previousVersion, migrationBackup: backup };
         } catch {
           throw new StoreError('The existing board could not be migrated. Its pre-migration data was preserved; fix folder permissions or free disk space and retry.', 'STATE_MIGRATION_FAILED');
         }
