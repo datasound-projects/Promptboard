@@ -1,6 +1,6 @@
 # Ordered automation groups
 
-`PipelineAutomations` combines the prepared move journal and execution adapters for one exit or enter group. It remains disconnected from board transitions, HTTP endpoints and the editor. Enabled automation rows are still refused. Session scheduling and application integration remain pending; this checkpoint does not change Composer, Base delivery, CLI configuration or state version 5.
+`PipelineAutomations` combines the prepared move journal and execution adapters for one exit or enter group. The [column runtime](pipeline-runtime-automations.md) now connects scripts/webhooks to board transitions, task-scoped cancellation and authenticated receipt endpoints. The editor, notification receiver and native message scheduler remain pending. Composer, Base delivery and native CLI configuration retain their existing paths.
 
 The caller records the move first, runs its exit group, applies and records the session lifecycle, then runs its enter group. The coordinator verifies row order, IDs and normalized configuration hashes against that move before any action starts. It also checks task/project identity and derives source/destination column variables from the journal. Metadata is captured once so a later mutation cannot rewrite an in-flight template. The caller remains responsible for task/configuration revision guards, verified workspaces and native session ownership.
 

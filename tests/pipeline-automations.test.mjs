@@ -163,6 +163,23 @@ test('request identity, definitions and metadata are captured before the first a
   const result = await pending; assert.equal(result.outcomes[0].status, 'succeeded'); assert.equal(seen[0].title, `Before ${expected}`); assert.equal((await ctx.journal.read(input)).actions[0].status, 'succeeded');
 });
 
+test('the exit deadline starts when a group is accepted, including a delay before its first microtask', async t => {
+  const input = move('accepted-deadline', 'task', { onExit: [row('never')] }), persisted = new PipelineJournal(await temp(t));
+  let snapshot = (await persisted.beginMove(input)).move, calls = 0;
+  // A hot receipt cache completes inside the microtask queue, before timers can
+  // fire. The monotonic budget must still include time spent awaiting that queue.
+  const journal = { read: async () => snapshot,
+    skipAction: async (_key, id, reason) => { const action = snapshot.actions.find(item => item.id === id); action.status = 'skipped'; action.outcome = { reason }; },
+    startAction: async (_key, id) => { snapshot.actions.find(item => item.id === id).status = 'running'; return { accepted: true }; },
+    finishAction: async (_key, id, result) => { snapshot.actions.find(item => item.id === id).status = result.status; } };
+  const actions = { jobs: new Map(), run: async () => { calls++; return { status: 'succeeded' }; }, shutdown: async () => {} };
+  const runner = new PipelineAutomations({ journal, actions }); t.after(() => runner.shutdown());
+  const pending = runner.runGroup({ key: input, trigger: 'exit', rows: input.onExit, context: metadata(input), exitBudgetMs: 40 });
+  const end = performance.now() + 90; while (performance.now() < end) {}
+  const result = await pending;
+  assert.equal(calls, 0); assert.equal(result.outcomes[0].status, 'skipped'); assert.equal(result.safeToAdvance, true);
+});
+
 test('an exit budget exhausted while progress blocks the event loop cannot dispatch a side effect', async t => {
   const input = move('dispatch-deadline', 'task', { onExit: [row('never')] }); let calls = 0, progressCalled = false;
   const ctx = await fixture(t, input, { actions: new PipelineActions({ notifier: () => { calls++; return { confirmed: true }; } }) });

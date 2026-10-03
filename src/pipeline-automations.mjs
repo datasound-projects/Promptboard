@@ -50,6 +50,7 @@ export class PipelineAutomations {
     try { rows = structuredClone(rows); metadata = structuredClone({ task: context?.task, project: context?.project, cwd: context?.cwd }); }
     catch { return Promise.reject(new PipelineAutomationError('Use plain task metadata and automation definitions.', 'AUTOMATION_CONTEXT_INVALID')); }
     const controller = new AbortController(), external = AbortSignal.any([controller.signal, ...(signal ? [signal] : [])]);
+    const groupStartedAt = performance.now();
     // AbortSignal.timeout uses an unreferenced timer. Keep accepted work alive
     // until its bounded outcome is recorded, including on Node 22 without I/O.
     const deadlineController = trigger === 'exit' ? new AbortController() : null;
@@ -59,7 +60,7 @@ export class PipelineAutomations {
     const job = { controller, trigger, transitionId: key.transitionId, started: new Set(), finished: false };
     this.jobs.set(ownerKey, job);
     job.promise = Promise.resolve().then(async () => {
-      const groupStartedAt = performance.now(), group = trigger === 'exit' ? 'onExit' : 'onEnter';
+      const group = trigger === 'exit' ? 'onExit' : 'onEnter';
       const definitions = normalizePipelineAutomations({ [group]: rows })[group];
       if (canMessage && !suppressMessages && definitions.some(row => row.enabled && row.type === 'send_message') && !this.deliverMessage)
         fail('Agent messages need the session delivery scheduler.', 'MESSAGE_SCHEDULER_REQUIRED');

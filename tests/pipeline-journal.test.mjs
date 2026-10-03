@@ -24,6 +24,20 @@ function child(dir, input, code) {
   });
 }
 
+test('scoped restart recovery ignores an unrelated corrupt journal and never grants execution', async t => {
+  const dir = await temp(t), journal = new PipelineJournal(dir), broken = move('unrelated-corrupt');
+  await journal.beginMove(broken);
+  await writeFile(join(await folder(dir), '00000000.json'), 'unreadable fixture');
+  const current = move('owned-dead', { taskId: 'task-two', onExit: [row('unknown')] });
+  await child(dir, current, 'const saved=await journal.beginMove(input); await journal.startAction(input,saved.move.actions[0].id); console.log(JSON.stringify({ok:true}));');
+  const recovered = await journal.recoverInterrupted(current);
+  assert.equal(recovered.length, 1); assert.equal(recovered[0].taskId, 'task-two');
+  assert.equal((await journal.read(current)).actions[0].status, 'interrupted');
+  assert.deepEqual(await journal.recoverInterrupted(current), []);
+  await assert.rejects(journal.read(broken), { code: 'JOURNAL_CORRUPT' });
+  await assert.rejects(journal.startAction(current, recovered[0].actions[0].id), { code: 'JOURNAL_OWNER_MISMATCH' });
+});
+
 test('reading and recovery are inert; first intent captures bounded metadata, never executable configuration', async t => {
   const dir = await temp(t), journal = new PipelineJournal(dir), input = move('literal', {
     onExit: [row('script', { type: 'run_script', script: 'PRIVATE SCRIPT', enabled: false })],

@@ -390,9 +390,12 @@ export class PipelineJournal {
     return moves;
   }
 
-  async recoverInterrupted() {
+  async recoverInterrupted(key = null) {
     const recovered = [];
-    for (const snapshot of await this.list()) {
+    // Runtime recovery can inspect a task's persisted move reference without
+    // depending on every other project's historical journal folder.
+    const snapshots = key ? [await this.read(key)].filter(Boolean) : await this.list();
+    for (const snapshot of snapshots) {
       if (snapshot.phase === 'complete' && !hasPendingDelivery(snapshot) || ownerAlive(snapshot.ownerPid)) continue;
       const changed = await this.#change(snapshot, move => {
         if (move.phase === 'complete' && !hasPendingDelivery(move) || ownerAlive(move.ownerPid)) return { changed: false, value: false };
