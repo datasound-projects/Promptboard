@@ -180,7 +180,7 @@ function updateCount() {
 }
 
 function savePref(key, value) { try { localStorage.setItem(key, value); } catch {} }
-// Collapse step 2 to focus on the request. The choice is remembered in this browser.
+// Collapse Compose settings to focus on the request. Remember the choice in this browser.
 function setSettingsCollapsed(collapsed, save = true) {
   $('#settings-body').hidden = collapsed;
   $('#settings-toggle').setAttribute('aria-expanded', String(!collapsed));
@@ -266,6 +266,7 @@ function toggleSidebar() {
 function selectedProvider() { return providers.find((provider) => provider.id === $('#provider').value); }
 
 function updateProviderState() {
+  updateComposeSummary();
   const provider = selectedProvider();
   const available = Boolean(provider?.available);
   const availableCount = providers.filter((item) => item.available).length;
@@ -336,6 +337,8 @@ function updateEffort(preferred = '') {
   $('#effort').replaceChildren(option('', defaultEffort ? `CLI default (${defaultEffort})` : 'CLI default (not reported)'));
   for (const level of choices) $('#effort').append(option(level, level === 'xhigh' ? 'Extra high (xhigh)' : level[0].toUpperCase() + level.slice(1)));
   invalidEffort = Boolean(preferred && !choices.includes(preferred));
+  $('#effort').setAttribute('aria-invalid', String(invalidEffort));
+  if (invalidEffort && !modelsLoading) { setSettingsCollapsed(false, false); $('#compose-general').open = true; }
   if (invalidEffort) $('#effort').append(option(preferred, `${preferred} — unavailable; choose again`));
   $('#effort').value = preferred;
   $('#effort').disabled = running || modelsLoading || (!choices.length && !invalidEffort);
@@ -390,8 +393,18 @@ function settings() {
   };
 }
 
+function updateComposeSummary() {
+  const provider = $('#provider').selectedOptions[0]?.textContent || 'CLI default';
+  const detail = $('input[name="detail"]:checked')?.nextElementSibling.textContent || 'Concise';
+  $('#compose-general-summary').textContent = `${provider} · ${detail}`;
+}
+$('#prompt-form').addEventListener('change', updateComposeSummary);
+updateComposeSummary();
+
 function setRunning(value) {
   running = value;
+  $('#output-tools').hidden = value || !currentResult;
+  if (value) $('#output-tools').open = false;
   $('#prompt-edit').disabled = value;
   if (value) closePromptEditor();
   $('#output-card').setAttribute('aria-busy', String(value));
@@ -464,6 +477,9 @@ function clearOutput() {
   closePromptEditor();
   $('#prompt-edit-actions').hidden = true;
   currentResult = null;
+  $('#output-tools').hidden = true;
+  $('#output-tools').open = false;
+  $('#output-info').open = false;
   $('#prompt-output').textContent = '';
   $('#prompt-output').hidden = true;
   $('#output-empty').hidden = false;
@@ -481,6 +497,8 @@ function clearOutput() {
 
 function showResult(result) {
   currentResult = result;
+  $('#output-tools').hidden = running;
+  $('#output-info').open = false;
   closePromptEditor();
   $('#prompt-edit-actions').hidden = false;
   $('#prompt-edit').disabled = running;
@@ -872,7 +890,13 @@ for (const id of ['context-autonomous', 'context-use-sources', 'context-auto-spl
     if (id === 'context-auto-split') contextLabel(); else contextReset();
   });
 }
-for (const id of ['compose-context', 'context-custom', 'context-evidence']) $(`#${id}`).addEventListener('toggle', () => $(`#${id} > summary`).setAttribute('aria-expanded', String($(`#${id}`).open)));
+for (const id of ['compose-general', 'compose-context', 'advanced-options', 'context-custom', 'context-evidence', 'output-tools', 'output-info']) $(`#${id}`).addEventListener('toggle', () => $(`#${id} > summary`).setAttribute('aria-expanded', String($(`#${id}`).open)));
+$('#output-tools').addEventListener('keydown', event => {
+  if (event.key === 'Escape') { event.preventDefault(); $('#output-tools').open = false; $('#output-tools > summary').focus(); }
+});
+document.addEventListener('click', event => {
+  if (!$('#output-tools').contains(event.target)) $('#output-tools').open = false;
+});
 $('#prompt-form').addEventListener('input', event => { if (!event.target.closest('#context-prepared') && !event.target.closest('#compose-context')) contextReset(); });
 $('#prompt-form').addEventListener('change', event => { if (!event.target.closest('#context-prepared') && !event.target.closest('#compose-context')) contextReset(); });
 $('#context-add-mcp').addEventListener('click', () => {
@@ -4485,7 +4509,10 @@ if (typeof ResizeObserver === 'function') {
   for (const id of ['project-context', 'project-body', 'autopilot-bar', 'dock', 'kanban-columns']) observer.observe($(`#${id}`));
 }
 // A required field inside a collapsed card would block submit without a visible message. Reopen it.
-$('#settings-body').addEventListener('invalid', () => setSettingsCollapsed(false, false), true);
+$('#settings-body').addEventListener('invalid', event => {
+  setSettingsCollapsed(false, false);
+  for (let node = event.target.parentElement; node && node !== $('#settings-body'); node = node.parentElement) if (node.tagName === 'DETAILS') node.open = true;
+}, true);
 
 // Read-only provider usage. Poll independently of board updates, once per minute.
 let usageLoading = false;

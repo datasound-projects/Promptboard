@@ -1111,3 +1111,130 @@ button.timeline-task:hover { text-decoration: underline; }
 #context-evidence-list { max-height: 300px; overflow: auto; overflow-wrap: anywhere; }
 #context-evidence-list pre { white-space: pre-wrap; font: 12px/1.5 var(--mono); }
 #context-sources .detail-actions, .context-prepared .detail-actions { flex-wrap: wrap; }
+
+/* Compose: a quiet input surface, three settings groups, and a focused result toolbar. */
+#prompt-view { padding-top: 34px; }
+#prompt-view .compose-input-card, #prompt-view .compose-settings-card {
+  overflow: visible; border: 0; background: transparent; box-shadow: none;
+}
+#prompt-view .compose-input-card { margin-bottom: 24px; }
+#prompt-view .compose-section-heading {
+  position: relative; justify-content: center; min-height: 36px; padding: 0 40px 12px; border: 0;
+}
+#prompt-view .compose-section-heading h2 { font-size: 13px; font-weight: 500; color: var(--muted); letter-spacing: .05px; }
+#prompt-view .compose-section-heading .collapse-toggle { position: absolute; right: 0; top: -6px; color: var(--subtle); }
+.compose-input-surface {
+  position: relative; isolation: isolate; border: 1px solid var(--line); border-radius: 24px;
+  background: linear-gradient(150deg, var(--surface), var(--surface-2));
+  box-shadow: 0 2px 5px rgb(0 0 0 / .025), 0 12px 40px rgb(0 0 0 / .045), 0 0 28px 6px rgb(255 255 255 / .75);
+}
+.compose-input-surface::before {
+  content: ''; position: absolute; inset: -12px; z-index: -1; pointer-events: none; border-radius: 32px;
+  background: radial-gradient(ellipse at 50% 0%, rgb(255 255 255 / .28), transparent 72%); filter: blur(10px); opacity: .35;
+}
+:root[data-theme="dark"] .compose-input-surface {
+  border-color: #393939; background: linear-gradient(145deg, #232323, #1b1b1b);
+  box-shadow: 0 12px 35px rgb(0 0 0 / .18), 0 0 26px 2px rgb(255 255 255 / .045);
+}
+.compose-input-surface:focus-within { border-color: var(--line-strong); }
+#prompt-view #prompt-input { min-height: 168px; padding: 23px 24px 10px; border-radius: 23px 23px 0 0; line-height: 1.75; }
+#prompt-view #prompt-input:focus-visible { outline: none; }
+.compose-input-surface:has(#prompt-input:focus-visible) { outline: 2px solid var(--focus); outline-offset: 4px; }
+#prompt-view .input-footer { padding: 6px 24px 16px; }
+#prompt-view .character-count { font: 11px var(--sans); color: var(--subtle); }
+#prompt-view .compose-settings-card { margin-bottom: 22px; }
+#prompt-view #settings-body { padding: 0; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); }
+#prompt-view .compose-settings-category { margin: 0; border: 0; }
+#prompt-view .compose-settings-category + .compose-settings-category { border-top: 1px solid var(--line); }
+#prompt-view .compose-settings-category > summary { min-height: 54px; padding: 14px 18px; font-size: 13px; font-weight: 550; gap: 8px 12px; border-radius: 15px; }
+#prompt-view .compose-settings-category[open] > summary { border-radius: 15px 15px 0 0; }
+#prompt-view .compose-settings-category > summary .advanced-summary { margin-left: auto; font-size: 11px; text-align: right; font-weight: 400; }
+#prompt-view .compose-settings-category > summary .details-plus { margin-left: 0; font-size: 14px; font-weight: 400; color: var(--subtle); }
+#prompt-view .compose-settings-category > .advanced-body { padding: 4px 18px 18px; }
+#compose-general > .advanced-body { display: grid; gap: 16px; }
+#prompt-view .select-grid { gap: 12px; }
+#prompt-view .field-label { font-weight: 500; }
+#prompt-view .field-label :is(select, input:not([type="checkbox"])) { height: 38px; margin-top: 5px; border-color: var(--line); border-radius: 9px; font-size: 13px; }
+#prompt-view .choice { margin: 0; }
+#prompt-view .choice legend { font-weight: 500; }
+#prompt-view .choice-row { gap: 14px; }
+#prompt-view .segmented { border-color: var(--line); padding: 3px; border-radius: 10px; }
+#prompt-view .segmented span { padding: 7px 9px; font-size: 12px; border-radius: 7px; }
+#prompt-view .segmented input:checked + span { background: var(--surface); color: var(--ink); box-shadow: 0 1px 4px rgb(0 0 0 / .08), inset 0 0 0 1px var(--line); }
+#prompt-view .note { margin-bottom: 10px; }
+#prompt-view .connection-chip { border: 0; background: var(--surface-2); font: 11px/1.6 var(--sans); }
+#prompt-view .settings-group h3 { font: 550 12px var(--sans); letter-spacing: 0; text-transform: none; color: var(--muted); }
+#prompt-view .compose-context .advanced-body { gap: 12px; }
+#prompt-view .context-source { margin: 0; padding: 10px; border-radius: 10px; }
+#prompt-view .context-source-list { gap: 8px; margin-bottom: 10px; }
+#prompt-view .check-option strong { font-size: 12px; font-weight: 550; }
+#prompt-view .check-option small { font-size: 11px; line-height: 1.6; }
+#prompt-view .context-prepared { margin: 0; border: 0; border-top: 1px solid var(--line); border-radius: 0; padding: 16px 18px; }
+#prompt-view .context-prepared h3 { font-size: 13px; font-weight: 550; }
+#prompt-view .action-row { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px 14px; margin: 0 0 26px; }
+#prompt-view .generate-button {
+  position: relative; justify-content: center; flex: none; min-height: 48px; gap: 12px; padding: 0 24px; border-radius: 999px;
+  background: linear-gradient(145deg, #333, #141414); border-color: #303030; color: #fff;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / .2), 0 4px 10px rgb(0 0 0 / .12); font-size: 14px;
+}
+:root[data-theme="dark"] #prompt-view .generate-button { background: linear-gradient(145deg, #fff, #dcdcdc); border-color: #eee; color: #171717; box-shadow: inset 0 1px 0 #fff, 0 4px 24px rgb(255 255 255 / .08); }
+#prompt-view .generate-button:hover:enabled { filter: brightness(1.12); transform: translateY(-1px); }
+:root[data-theme="dark"] #prompt-view .generate-button:hover:enabled { filter: brightness(.95); }
+#prompt-view .generate-button:disabled { box-shadow: none; }
+#prompt-view .cancel-button { min-height: 40px; border-radius: 999px; }
+#prompt-view .shortcut-hint { flex-basis: 100%; text-align: center; font-size: 11px; }
+#prompt-view .shortcut-hint kbd { border: 0; padding: 0 2px; background: transparent; font: inherit; }
+#prompt-view .output-card { overflow: visible; border-radius: 18px; box-shadow: 0 4px 24px rgb(0 0 0 / .025); }
+#prompt-view .compose-output-heading { padding: 14px 18px; border-radius: 18px 18px 0 0; gap: 10px 14px; }
+#prompt-view .compose-output-heading h2 { font-size: 13px; font-weight: 550; letter-spacing: 0; }
+.compose-output-toolbar { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+#prompt-view .prompt-edit-actions { padding: 0; }
+#prompt-view .compose-output-toolbar .secondary-button { border-color: transparent; background: transparent; min-height: 38px; padding: 0 10px; font-size: 12px; }
+#prompt-view .compose-output-toolbar .secondary-button:hover:enabled { background: var(--surface-2); }
+#prompt-view .copy-button { border-radius: 10px; min-height: 38px; font-size: 12px; padding: 0 13px; }
+.output-tools { position: relative; }
+.output-tools > summary { display: flex; align-items: center; gap: 8px; min-height: 38px; padding: 0 10px; border-radius: 8px; list-style: none; cursor: pointer; font-size: 12px; color: var(--muted); }
+.output-tools > summary::-webkit-details-marker { display: none; }
+.output-tools > summary:hover, .output-tools[open] > summary { background: var(--surface-2); color: var(--ink); }
+#prompt-view .output-tools .output-actions { position: absolute; top: calc(100% + 8px); right: 0; z-index: 12; display: grid; grid-template-columns: 1fr; justify-content: stretch; gap: 3px; min-width: 208px; padding: 6px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 8px 28px rgb(0 0 0 / .12); }
+#prompt-view .output-tools .secondary-button { justify-content: flex-start; min-height: 40px; width: 100%; }
+#prompt-view .output-empty { flex-direction: column; text-align: center; min-height: 150px; gap: 12px; }
+#prompt-view .output-empty > svg { width: 25px; height: 25px; color: var(--subtle); opacity: .7; }
+#prompt-view .output-empty p { font-size: 13px; }
+#prompt-view .output-empty small { font-size: 11px; }
+#prompt-view #prompt-output { max-height: 620px; padding: 24px; font: 14px/1.9 var(--sans); }
+#prompt-view .verification-status { padding: 10px 18px; background: transparent; font-size: 12px; font-weight: 500; }
+#prompt-view :is(.verification-report, .lint-review, .output-info) { padding: 12px 18px; border-top: 1px solid var(--line); background: transparent; }
+#prompt-view :is(.verification-report, .lint-review, .output-info) > summary { font-size: 12px; font-weight: 500; cursor: pointer; color: var(--muted); }
+#prompt-view .output-info:has(#output-meta[hidden]) { display: none; }
+#prompt-view .output-meta { padding: 14px 0 0; border: 0; font: 11px/1.6 var(--sans); gap: 6px 14px; }
+#prompt-view .output-card > :last-child { border-radius: 0 0 18px 18px; }
+#prompt-view .main-footer { justify-content: center; font: 10px/1.6 var(--sans); letter-spacing: 0; gap: 4px 12px; margin-top: 0; padding: 4px 8px; text-align: center; }
+@media (max-width: 730px) {
+  #prompt-view { padding: 26px 18px 20px; }
+  #prompt-view .select-grid, #prompt-view .choice-row { grid-template-columns: 1fr 1fr; }
+  #prompt-view .compose-settings-category > summary { flex-wrap: nowrap; }
+  #prompt-view .compose-settings-category > summary .advanced-summary { max-width: 44%; overflow-wrap: anywhere; }
+  #prompt-view #detail-options { display: grid; grid-template-columns: 1fr 1fr; }
+  #prompt-view .segmented span { white-space: normal; }
+  #prompt-view .compose-output-heading { padding: 14px; }
+  #prompt-view .compose-output-toolbar { width: 100%; justify-content: flex-end; gap: 6px; }
+  #prompt-view .compose-output-toolbar :is(button, summary) { min-height: 44px; }
+  #prompt-view .output-tools .output-actions { right: -12px; }
+  #prompt-view :is(#kanban-button, #export-button) span { display: inline; }
+  #prompt-view #prompt-input { min-height: 160px; padding: 20px 20px 8px; }
+  #prompt-view .input-footer { padding: 6px 20px 14px; }
+  #prompt-view #prompt-output { padding: 20px; font-size: 13px; }
+  #prompt-view .choice-row { grid-template-columns: 1fr; }
+}
+@media (max-width: 360px) {
+  #prompt-view { padding-left: 12px; padding-right: 12px; }
+  #prompt-view .output-tools .output-actions { left: 0; right: auto; }
+  #prompt-view .select-grid { grid-template-columns: 1fr; }
+  #prompt-view .compose-settings-category > summary { padding-left: 14px; padding-right: 14px; }
+  /* Keep every navigation and account control reachable on the smallest Compose screens. */
+  :root:has(#prompt-view:not([hidden])) { --topbar: 104px; }
+  body:has(#prompt-view:not([hidden])) .topbar { flex-wrap: wrap; gap: 0 4px; padding: 4px 8px; }
+  body:has(#prompt-view:not([hidden])) .topbar .page-nav { order: 3; flex-basis: 100%; justify-content: center; padding: 0; margin: 0; }
+  body:has(#prompt-view:not([hidden])) .topbar :is(.icon-button, .help-pill) { width: 44px; min-width: 44px; height: 44px; }
+}
