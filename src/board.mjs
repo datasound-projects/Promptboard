@@ -1761,24 +1761,53 @@ export class Board {
   async pauseRun(runId, { confirm = false } = {}) {
     const run = await this.run(runId);
     if (confirm !== true) throw new BoardError('Confirm that you want to pause this agent session.', 'CONFIRMATION_REQUIRED');
+    const cancelledHandoff = this.executor?.abortBoundary?.(runId);
     return this.#locked(`run:${run.taskId}`, async () => {
       if (!this.executor?.suspend) throw new BoardError('Session suspension is not available.', 'EXECUTION_UNAVAILABLE', 503);
+      if (cancelledHandoff && run.sessionId) {
+        const state = await this.state(), session = state.sessions.find(item => item.id === run.sessionId);
+        if (session?.currentRunId && session.currentRunId !== runId) runId = session.currentRunId;
+      }
       await this.executor.suspend(runId);
+      // A user pause may cancel a system handoff after its owned process exited.
+      // Preserve the user's intent even though suspend() now has no process to stop.
+      await this.store.update(state => {
+        const current = state.runs.find(item => item.id === runId);
+        const session = state.sessions.find(item => item.currentRunId === runId);
+        if (current?.status === 'suspended' && session) {
+          session.pauseIntent = 'user'; session.suspensionRequestedAt = Date.now();
+          delete session.suspensionToken; delete session.previousLifecycle;
+        }
+      });
       return this.run(runId);
     });
   }
 
   /** Supervisor-only: save pause intent before signalling an owned process. */
-  async beginSuspension(runId) {
+  async beginSuspension(runId, { intent = 'user', token = null, guard = null } = {}) {
     return this.store.update(state => {
+      guard?.(state);
       const run = state.runs.find(item => item.id === runId);
       if (!run || !ACTIVE_RUN_STATUSES.includes(run.status)) throw conflict('This run is no longer active.', 'RUN_NOT_ACTIVE');
       const session = state.sessions.find(item => item.id === run.sessionId && item.currentRunId === run.id);
       if (!session) throw conflict('This run has no logical session.', 'SESSION_MISSING');
-      session.pauseIntent = 'user'; session.suspensionRequestedAt = Date.now();
+      session.pauseIntent = intent; session.suspensionRequestedAt = Date.now();
+      if (token) { session.suspensionToken = token; session.previousLifecycle = run.lifecycle; }
       run.lifecycle = 'suspending';
       const project = state.projects.find(item => item.id === run.projectId);
       if (project?.autopilot?.status === 'running') { project.autopilot.status = 'paused'; project.autopilot.reason = 'The task agent was paused by you.'; }
+    });
+  }
+
+  /** Undo only this system lease when fresh activity invalidates a boundary. */
+  async abortSuspension(runId, token) {
+    return this.store.update(state => {
+      const run = state.runs.find(item => item.id === runId);
+      const session = state.sessions.find(item => item.currentRunId === runId && item.suspensionToken === token && item.pauseIntent === 'system');
+      if (!session || !ACTIVE_RUN_STATUSES.includes(run?.status)) return;
+      run.lifecycle = session.previousLifecycle;
+      session.pauseIntent = null;
+      delete session.suspensionRequestedAt; delete session.suspensionToken; delete session.previousLifecycle;
     });
   }
 
@@ -1945,7 +1974,10 @@ export class Board {
         const run = await this.#pipelineRetargetQueued(taskId, { state, project, task, active, column, settings, move, expectedRevision });
         return { task: await this.#taskNow(taskId), run, retargetedRunId: run.id };
       }
-      if (changed) throw conflict('Pause this agent before moving to a column with different agent settings or Base resources.', 'PIPELINE_RECONFIGURE_REQUIRED');
+      if (changed) {
+        const run = await this.#pipelineReconfigureLive(taskId, { state, project, task, active, column, settings, move, expectedRevision, trigger });
+        return { task: await this.#taskNow(taskId), run, resumedRunId: run.id };
+      }
       const saved = await this.store.update(draft => {
         const current = this.#task(draft, taskId);
         checkRevision(current.task, expectedRevision, 'This card');
@@ -1967,6 +1999,26 @@ export class Board {
       const result = this.#place(draft, taskId, move); delete result.archivedAt; return result;
     });
     return { task: saved };
+  }
+
+  async #pipelineReconfigureLive(taskId, { state, project, task, active, column, settings, move, expectedRevision, trigger }) {
+    if (!this.executor?.suspendAtBoundary || settings.provider !== active.config.provider) throw conflict('Pause this agent before switching providers. Native conversation handoff is not available yet.', 'PIPELINE_RECONFIGURE_REQUIRED');
+    const saved = state.sessions.find(item => item.id === task.sessionId && item.currentRunId === active.id);
+    if (!saved?.nativeSessionId) throw conflict('This live agent has not captured a native conversation ID. Wait for startup or pause it before changing settings.', 'SESSION_NOT_RESUMABLE');
+    const nativeSessionId = validateResumeId(saved.nativeSessionId);
+    if (active.promptRevision !== (task.contentRevision ?? 1)) throw conflict('The task text changed after this conversation. Pause it and start a fresh run to supply the new text.', 'SESSION_PROMPT_STALE');
+    if (saved.workspacePath !== task.workspace?.path || active.workspacePath !== saved.workspacePath) throw conflict('The conversation belongs to another workspace.', 'SESSION_WORKSPACE_MISMATCH');
+    const guard = draft => {
+      const current = this.#task(draft, taskId), session = draft.sessions.find(item => item.id === saved.id);
+      checkRevision(current.task, expectedRevision ?? task.revision, 'This card');
+      if (current.project.revision !== project.revision || current.task.column !== task.column || current.task.contentRevision !== task.contentRevision
+        || current.task.workspace?.path !== task.workspace?.path || current.task.sessionId !== saved.id || session?.currentRunId !== active.id
+        || session.nativeSessionId !== nativeSessionId || this.#activeRun(draft, taskId)?.id !== active.id
+        || draft.base.revision !== state.base.revision || JSON.stringify(draft.settings.defaultAgent) !== JSON.stringify(state.settings.defaultAgent)) throw conflict('The task, agent settings, or Base changed while waiting for the current turn.', 'REVISION_CONFLICT');
+    };
+    return this.executor.suspendAtBoundary(active.id, { guard, currentGuard: () => guard(this.store.state),
+      prepare: () => this.executor.validate({ stage: column, config: settings }),
+      resume: handoffSignal => this.#pipelineStart(taskId, { column, move, trigger, expectedRevision: expectedRevision ?? task.revision, requireResume: true, acceptance: state, handoffSignal }) });
   }
 
   async #pipelineRetargetQueued(taskId, { state, project, task, active, column, settings, move, expectedRevision }) {
@@ -1997,8 +2049,14 @@ export class Board {
     });
   }
 
-  async #pipelineStart(taskId, { column, move = null, trigger = 'user', expectedRevision, requireResume = false, continuation = '' } = {}) {
+  async #pipelineStart(taskId, { column, move = null, trigger = 'user', expectedRevision, requireResume = false, continuation = '', acceptance = null, handoffSignal = null } = {}) {
+    const checkHandoff = () => {
+      if (handoffSignal?.aborted) throw conflict('The settings handoff was cancelled or expired. The saved conversation and files are kept.', handoffSignal.reason?.name === 'TimeoutError' ? 'PIPELINE_BOUNDARY_TIMEOUT' : 'PIPELINE_RECONFIGURE_CANCELLED');
+    };
+    checkHandoff();
     let state = await this.state(), { project, task } = this.#task(state, taskId);
+    if (acceptance && (acceptance.projects.find(item => item.id === project.id)?.revision !== project.revision || acceptance.base.revision !== state.base.revision
+      || JSON.stringify(acceptance.settings.defaultAgent) !== JSON.stringify(state.settings.defaultAgent))) throw conflict('The board or Base changed during the settings handoff. The original conversation is paused and kept.', 'REVISION_CONFLICT');
     const target = project.pipeline.columns.find(item => item.id === column);
     if (target?.role !== 'active') throw new BoardError('Only active columns run agents.', 'STAGE_NOT_RUNNABLE');
     if (!move && task.column !== column) throw conflict('Move this card to the requested column first.', 'STAGE_MISMATCH');
@@ -2008,8 +2066,19 @@ export class Board {
     if (!this.executor) throw new BoardError('Agent execution is not available.', 'EXECUTION_UNAVAILABLE', 503);
     await this.#defaultTargetBranch(taskId);
     state = await this.state(); ({ project, task } = this.#task(state, taskId));
+    if (acceptance && (acceptance.projects.find(item => item.id === project.id)?.revision !== project.revision || acceptance.base.revision !== state.base.revision
+      || JSON.stringify(acceptance.settings.defaultAgent) !== JSON.stringify(state.settings.defaultAgent))) throw conflict('The board or Base changed during the settings handoff. The original conversation is paused and kept.', 'REVISION_CONFLICT');
     const settings = effectiveWorkflow(project, state.settings.defaultAgent, state, task)[column];
-    const resolved = await this.executor.validate({ stage: column, config: settings });
+    let onAbort;
+    const validation = Promise.resolve().then(() => this.executor.validate({ stage: column, config: settings }));
+    let resolved;
+    try {
+      resolved = await (handoffSignal ? Promise.race([validation, new Promise((_, reject) => {
+        onAbort = () => { try { checkHandoff(); } catch (error) { reject(error); } };
+        handoffSignal.addEventListener('abort', onAbort, { once: true }); if (handoffSignal.aborted) onAbort();
+      })]) : validation);
+    } finally { if (onAbort) handoffSignal.removeEventListener('abort', onAbort); }
+    checkHandoff();
     const config = { ...resolved, pipeline: true, instructions: '' };
     const baseManifest = this.#basePreflight(state, project, task, column, config.provider);
     const saved = state.sessions.find(item => item.id === task.sessionId && item.taskId === taskId);
@@ -2022,7 +2091,9 @@ export class Board {
     if (resume && workspace.path !== saved.workspacePath) throw conflict('The conversation belongs to another workspace.', 'SESSION_WORKSPACE_MISMATCH');
     const firstPrompt = renderPipelineSpawnPrompt({ task: { ...task, workspace }, project });
     const run = await this.store.update(draft => {
+      checkHandoff();
       const current = this.#task(draft, taskId), session = saved && draft.sessions.find(item => item.id === saved.id);
+      if (handoffSignal) checkRevision(current.task, expectedRevision, 'This card');
       if (this.#activeRun(draft, taskId) || current.project.revision !== project.revision || current.task.contentRevision !== task.contentRevision || current.task.column !== task.column
         || current.task.workspace?.path !== workspace.path
         || draft.base.revision !== state.base.revision || JSON.stringify(draft.settings.defaultAgent) !== JSON.stringify(state.settings.defaultAgent)
@@ -2040,6 +2111,14 @@ export class Board {
       if (resume) attachResumedRun(draft, record, session); else attachSession(draft, record);
       return record;
     });
+    if (handoffSignal?.aborted) {
+      // Acceptance is atomic. A cancellation during its disk write parks/stops
+      // the newly published run before it can enter the process queue.
+      if (handoffSignal.reason === 'shutdown') await this.updateRun(run.id, { status: 'interrupted', reason: 'The app stopped during the settings handoff. The conversation and files are kept.', endedAt: Date.now() });
+      else if (handoffSignal.reason === 'stop') await this.executor.cancel(run.id);
+      else await this.executor.suspend(run.id);
+      return this.run(run.id);
+    }
     await this.executor.start({ run, task: { id: task.id, title: task.title, prompt: task.prompt }, workspace, firstPrompt, continuation });
     return run;
   }

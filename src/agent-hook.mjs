@@ -13,8 +13,11 @@ const metadata = value => (typeof value === 'string' && value.length <= 256 ? va
 
 try {
   if (eventsFile && ['claude', 'codex', 'gemini'].includes(provider)) {
-    let data = {};
-    try { data = JSON.parse(argPayload ?? (readFileSync(0, 'utf8') || '{}')); } catch {}
+    let data = {}, malformed = false;
+    try {
+      data = JSON.parse(argPayload ?? (readFileSync(0, 'utf8') || '{}'));
+      if (!data || typeof data !== 'object' || Array.isArray(data)) { data = {}; malformed = true; }
+    } catch { malformed = true; }
     // Keep lifecycle fields only. Raw payloads can contain tool input and file content.
     const event = {
       at: Date.now(), provider,
@@ -25,7 +28,7 @@ try {
       toolId: metadata(data.tool_use_id),
       agentId: metadata(data.agent_id),
       subordinate: data.agent_id != null && data.agent_id !== '' || undefined,
-      activityUncertain: [data.tool_use_id, data.agent_id].some(value => value != null && metadata(value) === undefined) || undefined,
+      activityUncertain: malformed || !(pick(data.hook_event_name) || pick(data.type)) || [data.tool_use_id, data.agent_id].some(value => value != null && metadata(value) === undefined) || undefined,
       backgroundRequested: data.tool_input?.run_in_background === true || undefined,
       // Keep counts, never commands, scheduled prompts or tool results.
       backgroundCount: Array.isArray(data.background_tasks) ? data.background_tasks.length : undefined,

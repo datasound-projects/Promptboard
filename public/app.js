@@ -1576,6 +1576,7 @@ async function placeCard(id, column, index, retried = false) {
 function movedAnnouncement(card, column, result, position = '') {
   if (position) { announce(`Moved “${card.title}” to ${position}.`); return; }
   if (result.duplicate) return;
+  if (result.run && ['suspended', 'cancelled'].includes(result.run.status)) { announce(`Moved “${card.title}” to ${columnTitle(column)}. The agent was ${result.run.status === 'suspended' ? 'paused' : 'stopped'} before starting.`); return; }
   if (result.run) { announce(`Moved “${card.title}” to ${columnTitle(column)} and started the ${columnTitle(column)} agent.`); showStartedRun(result.run.id); }
   else if (result.tests) { announce(`Moved “${card.title}” to Testing. The project's tests are running.`); pollTests(card.id); }
   else if (result.merge && !result.merged) announce(`Moved “${card.title}” to Merge. ${result.merge.message}`);
@@ -3622,7 +3623,7 @@ function renderPipelineColumns() {
     const permissions = document.createElement('select'); permissions.setAttribute('aria-label', 'Column permissions');
     permissions.append(...[['', 'Use agent default'], ['plan', 'Plan mode'], ['default', 'Ask for permission'], ['acceptEdits', 'Claude: accept file edits'], ['workspace-write', 'Codex: write in workspace'], ['auto_edit', 'Gemini: accept file edits']].map(([value, label]) => option(value, label)));
     permissions.value = entry.strategy.permissionMode || ''; permissions.addEventListener('change', () => { entry.strategy.permissionMode = permissions.value || null; }); nodes.push(field('Permissions', permissions));
-    nodes.push(paragraph('A running conversation continues silently between compatible columns. Pause it first when changing its agent, permissions, or Base resources.', 'note'));
+    nodes.push(paragraph('A running conversation continues silently between compatible columns. Moves with different settings or Base wait for the current turn before resuming. Pause before editing this board or switching providers.', 'note'));
   } else nodes.push(paragraph(entry.role === 'todo' ? 'The holding role never starts agents. Returning a card stops its agent and resets the current session; files and historical output are kept.'
     : 'The completion role pauses the agent and archives its task, preserving the conversation and worktree for restoration.', 'note'));
   if (projectColumnsOf().some(column => column.id === entry.id)) nodes.push(basePicker({ target: { scope: 'column', projectId: currentProject().id, columnId: entry.id }, inactive: entry.role !== 'active' }));

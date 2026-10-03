@@ -16,6 +16,10 @@ export class SessionActivity {
 
   output(now = Date.now()) { this.lastOutputAt = now; }
 
+  // The user can type before the CLI emits a new-turn hook. Invalidate the old
+  // completed turn immediately, including partially entered prompt text.
+  input(now = Date.now()) { this.parentComplete = false; this.lastEventAt = now; }
+
   observe(event, now = Date.now()) {
     if (!event || (event.provider && event.provider !== this.provider)) return;
     const name = event.name, child = id(event.agentId), subordinate = Boolean(child || event.subordinate);

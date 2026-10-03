@@ -123,3 +123,16 @@ test('session and run acceptance share an atomic write; a failed write publishes
   assert.deepEqual((await store.read()).runs, []); assert.deepEqual((await store.read()).sessions, []);
   assert.deepEqual(JSON.parse(await readFile(join(dir, 'state.json'), 'utf8')).sessions, []);
 });
+
+test('restart during a system settings handoff keeps the native ID and does not replay the move or claim a user pause', async t => {
+  const dir = await directory(t), state = migrateState(legacyState());
+  state.runs[1].status = 'running'; state.runs[1].lifecycle = 'suspending';
+  state.sessions[1].status = 'running'; state.sessions[1].pauseIntent = 'system';
+  state.sessions[1].suspensionRequestedAt = 123; state.sessions[1].suspensionToken = 'lease-fixture';
+  await writeFile(join(dir, 'state.json'), JSON.stringify(state));
+  const board = new Board({ dataDir: dir, executor: { start() { assert.fail('Recovery must not replay a system handoff.'); } } });
+  const recovered = await board.state();
+  assert.equal(recovered.runs[1].status, 'interrupted'); assert.equal(recovered.sessions[1].status, 'orphaned');
+  assert.equal(recovered.sessions[1].pauseIntent, 'system'); assert.equal(recovered.sessions[1].nativeSessionId, 'native-1');
+  assert.equal(recovered.projects[0].tasks[0].column, 'executing'); assert.equal(recovered.runs.length, 2);
+});

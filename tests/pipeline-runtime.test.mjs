@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { copyFile, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { appendFile, copyFile, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -347,4 +347,241 @@ test('manual pipeline columns park queued and live sessions; explicit Start resu
   const fresh = await w.board.requestRun(second.id, { stage: 'testing', consent: true });
   await until(async () => (await w.board.run(fresh.id)).turnComplete);
   assert.notEqual(fresh.sessionId, queued.sessionId); await w.move(second.id, 'todo');
+});
+
+test('live model/permission/Base changes wait for observed work to settle and resume the exact conversation without task replay', { skip: process.platform === 'win32' }, async t => {
+  const w = await world(t, true);
+  for (const provider of ['claude', 'codex', 'gemini']) {
+    const config = defaultPipelineConfig();
+    for (const column of config.columns.filter(item => item.role === 'active')) column.strategy.agentOverride = provider;
+    Object.assign(config.columns.find(column => column.id === 'code_review').strategy, { modelOverride: 'boundary-fixture', permissionMode: 'plan' });
+    await w.configure(config);
+    const skill = await w.board.base.create({ kind: 'skill', name: `Boundary ${provider}`, content: { body: `DESTINATION BASE ${provider}` } });
+    await w.board.base.apply({ changes: [{ target: { scope: 'column', projectId: w.projectId, columnId: 'code_review' }, binding: { mode: 'extend', include: [{ resourceId: skill.id, required: true }], exclude: [] } }], expectedBaseRevision: (await w.board.state()).base.revision });
+    const card = await w.board.createTask({ projectId: w.projectId, title: 'Live change', prompt: 'ACTIVITY_FIXTURE ORIGINAL COMPOSER TASK' });
+    const original = (await w.move(card.id, 'executing')).run;
+    await until(async () => (await w.board.run(original.id)).activity?.ready);
+    const owned = w.board.executor.sessions.get(original.id), pid = owned.proc.pid;
+    const nativeId = (await w.board.run(original.id)).providerSessionId;
+    await writeFile(join(original.workspacePath, 'preserve-dirty.txt'), 'USER WORK MUST SURVIVE\n');
+    if (provider !== 'codex') {
+      w.board.executor.input(original.id, 'activity-start\r');
+      await until(async () => (await w.board.run(original.id)).activity?.tools === 2);
+    } else w.board.executor.input(original.id, 'unsent'); // No turn hook yet: submitted text must invalidate readiness immediately.
+    const moving = w.move(card.id, 'code_review');
+    await until(() => w.board.executor.boundaryWaits.has(original.id));
+    await new Promise(resolve => setTimeout(resolve, 200));
+    assert.equal(owned.proc.pid, pid); assert.equal((await w.taskNow(card.id)).column, 'executing');
+    w.board.executor.input(original.id, provider === 'codex' ? '\r' : 'activity-finish\r');
+    const result = await moving; await until(async () => (await w.board.run(result.run.id)).turnComplete);
+    assert.equal(result.resumedRunId, result.run.id); assert.notEqual(result.run.id, original.id);
+    assert.equal(result.run.resumeFrom.nativeSessionId, nativeId); assert.equal(result.run.sessionId, original.sessionId);
+    assert.equal(owned.proc, null); assert.equal(result.run.config.model, 'boundary-fixture'); assert.equal(result.run.baseChanged, true);
+    const resumed = w.board.executor.sessions.get(result.run.id);
+    assert.notEqual(resumed.proc.pid, pid); assert.equal((await w.board.run(result.run.id)).providerSessionId, nativeId);
+    const prompt = await readFile(join(w.dataDir, result.run.artifactsDir, 'prompt.md'), 'utf8');
+    assert.match(prompt, new RegExp(`DESTINATION BASE ${provider}`)); assert.doesNotMatch(prompt, /ORIGINAL COMPOSER TASK|<task>/);
+    const logical = (await w.board.state()).sessions.find(session => session.id === original.sessionId);
+    assert.deepEqual(logical.config, result.run.config); assert.equal(logical.pauseIntent, null);
+    assert.match((await w.board.run(original.id)).reason, /native turn boundary/);
+    assert.equal(await readFile(join(result.run.workspacePath, 'preserve-dirty.txt'), 'utf8'), 'USER WORK MUST SURVIVE\n');
+    assert.equal((await w.taskNow(card.id)).prompt, card.prompt); await w.move(card.id, 'todo');
+  }
+  assert.equal(await readFile(join(w.root, 'README.md'), 'utf8'), 'main checkout\n');
+});
+
+test('a boundary timeout never kills a permission wait or a partially entered prompt, even if persisted activity says ready', { skip: process.platform === 'win32' }, async t => {
+  const w = await world(t, true), config = defaultPipelineConfig(); config.columns[3].strategy.modelOverride = 'boundary-fixture'; await w.configure(config);
+  const suspend = w.board.executor.suspendAtBoundary.bind(w.board.executor);
+  w.board.executor.suspendAtBoundary = (id, options) => suspend(id, { ...options, timeoutMs: 350 });
+  for (const input of ['activity-plan-request\r', 'partially typed prompt']) {
+    const card = await w.board.createTask({ projectId: w.projectId, title: 'Wait', prompt: 'ACTIVITY_FIXTURE' });
+    const original = (await w.move(card.id, 'executing')).run; await until(async () => (await w.board.run(original.id)).activity?.ready);
+    const owned = w.board.executor.sessions.get(original.id), pid = owned.proc.pid;
+    w.board.executor.input(original.id, input);
+    if (input.endsWith('\r')) await until(async () => (await w.board.run(original.id)).activity?.permissionPending);
+    await w.board.updateRun(original.id, { activity: { ready: true } }); // A saved snapshot is never the authorization to kill.
+    await assert.rejects(w.move(card.id, 'code_review'), { code: 'PIPELINE_BOUNDARY_TIMEOUT' });
+    assert.equal(owned.proc.pid, pid); assert.equal(owned.suspending, undefined);
+    assert.equal((await w.taskNow(card.id)).column, 'executing'); assert.equal((await w.board.state()).runs.filter(run => run.taskId === card.id).length, 1);
+    await w.move(card.id, 'todo');
+  }
+  const card = await w.board.createTask({ projectId: w.projectId, title: 'Slow discovery', prompt: 'ACTIVITY_FIXTURE' });
+  const original = (await w.move(card.id, 'executing')).run; await until(async () => (await w.board.run(original.id)).activity?.ready);
+  const owned = w.board.executor.sessions.get(original.id), pid = owned.proc.pid, validate = w.board.executor.validate;
+  w.board.executor.validate = () => new Promise(() => {});
+  await assert.rejects(w.move(card.id, 'code_review'), { code: 'PIPELINE_BOUNDARY_TIMEOUT' });
+  assert.equal(owned.proc.pid, pid); assert.equal((await w.taskNow(card.id)).column, 'executing');
+  w.board.executor.validate = validate; await w.move(card.id, 'todo');
+});
+
+test('new native work during pause-intent persistence revokes the lease and waits again before signalling', { skip: process.platform === 'win32' }, async t => {
+  const w = await world(t, true), config = defaultPipelineConfig(); config.columns[3].strategy.modelOverride = 'boundary-fixture'; await w.configure(config);
+  const card = await w.board.createTask({ projectId: w.projectId, title: 'Lease', prompt: 'ACTIVITY_FIXTURE' });
+  const original = (await w.move(card.id, 'executing')).run; await until(async () => (await w.board.run(original.id)).activity?.ready);
+  const owned = w.board.executor.sessions.get(original.id), pid = owned.proc.pid;
+  const begin = w.board.beginSuspension.bind(w.board), abort = w.board.abortSuspension.bind(w.board); let injected = false, revoked = false;
+  w.board.beginSuspension = async (id, options) => {
+    const result = await begin(id, options);
+    if (id === original.id && options?.intent === 'system' && !injected) {
+      injected = true;
+      assert.throws(() => w.board.executor.input(id, 'another prompt\r'), { code: 'SESSION_SUSPENDING' });
+      // The CLI starts work independently while the disk write is in flight.
+      owned.proc.write('activity-start\r'); await until(() => owned.activity.snapshot().tools === 2);
+    }
+    return result;
+  };
+  w.board.abortSuspension = async (...args) => { await abort(...args); revoked = true; };
+  const moving = w.move(card.id, 'code_review');
+  await until(() => revoked && !owned.suspending);
+  assert.equal(owned.proc.pid, pid); assert.equal((await w.taskNow(card.id)).column, 'executing');
+  assert.equal((await w.board.state()).sessions.find(session => session.id === original.sessionId).pauseIntent, null);
+  w.board.executor.input(original.id, 'activity-finish\r'); const result = await moving;
+  await until(async () => (await w.board.run(result.run.id)).status === 'running');
+  assert.equal(result.run.resumeFrom.nativeSessionId, original.providerSessionId || owned.sessionId); await w.move(card.id, 'todo');
+});
+
+test('edits after pause-intent persistence fail the final guard without killing the original agent or moving the card', { skip: process.platform === 'win32' }, async t => {
+  const w = await world(t, true), config = defaultPipelineConfig(); config.columns[3].strategy.modelOverride = 'boundary-fixture'; await w.configure(config);
+  const card = await w.board.createTask({ projectId: w.projectId, title: 'Edit race', prompt: 'ACTIVITY_FIXTURE' });
+  const original = (await w.move(card.id, 'executing')).run; await until(async () => (await w.board.run(original.id)).activity?.ready);
+  const owned = w.board.executor.sessions.get(original.id), pid = owned.proc.pid, begin = w.board.beginSuspension.bind(w.board);
+  w.board.beginSuspension = async (id, options) => {
+    const result = await begin(id, options);
+    if (options?.intent === 'system') await w.board.updateTask(card.id, { prompt: 'NEW COMPOSER REQUIREMENT', expectedRevision: (await w.taskNow(card.id)).revision });
+    return result;
+  };
+  await assert.rejects(w.move(card.id, 'code_review'), { code: 'REVISION_CONFLICT' });
+  assert.equal(owned.proc.pid, pid); assert.equal(owned.suspending, false);
+  assert.equal((await w.taskNow(card.id)).column, 'executing'); assert.equal((await w.taskNow(card.id)).prompt, 'NEW COMPOSER REQUIREMENT');
+  assert.equal((await w.board.state()).sessions.find(session => session.id === original.sessionId).pauseIntent, null);
+  await assert.rejects(w.move(card.id, 'code_review'), { code: 'SESSION_PROMPT_STALE' }); await w.move(card.id, 'todo');
+});
+
+test('an explicit Pause during asynchronous destination validation cancels the handoff and preserves user pause intent', { skip: process.platform === 'win32' }, async t => {
+  const w = await world(t, true), config = defaultPipelineConfig(); config.columns[3].strategy.modelOverride = 'boundary-fixture'; await w.configure(config);
+  const card = await w.board.createTask({ projectId: w.projectId, title: 'Pause wins', prompt: 'ACTIVITY_FIXTURE' });
+  const original = (await w.move(card.id, 'executing')).run; await until(async () => (await w.board.run(original.id)).activity?.ready);
+  const validate = w.board.executor.validate.bind(w.board.executor); let release;
+  w.board.executor.validate = async request => { await new Promise(resolve => { release = resolve; }); return validate(request); };
+  const moving = w.move(card.id, 'code_review'); const rejected = assert.rejects(moving, { code: 'PIPELINE_RECONFIGURE_CANCELLED' });
+  await until(() => release);
+  const paused = w.board.pauseRun(original.id, { confirm: true });
+  await rejected; await paused;
+  release(); // Read-only discovery may finish later; Pause must not wait for it.
+  assert.equal((await w.taskNow(card.id)).column, 'executing'); assert.equal((await w.board.run(original.id)).status, 'suspended');
+  const state = await w.board.state(); assert.equal(state.sessions.find(session => session.id === original.sessionId).pauseIntent, 'user');
+  assert.equal(state.runs.filter(run => run.taskId === card.id).length, 1); assert.equal(w.board.executor.sessions.get(original.id).proc, null);
+});
+
+test('Stop cancels a busy boundary wait promptly without creating a replacement conversation', { skip: process.platform === 'win32' }, async t => {
+  const w = await world(t, true), config = defaultPipelineConfig(); config.columns[3].strategy.modelOverride = 'boundary-fixture'; await w.configure(config);
+  const card = await w.board.createTask({ projectId: w.projectId, title: 'Stop wins', prompt: 'ACTIVITY_FIXTURE' });
+  const original = (await w.move(card.id, 'executing')).run; await until(async () => (await w.board.run(original.id)).activity?.ready);
+  w.board.executor.input(original.id, 'activity-start\r'); await until(async () => (await w.board.run(original.id)).activity?.tools === 2);
+  const moving = w.move(card.id, 'code_review'); const rejected = assert.rejects(moving, { code: 'PIPELINE_RECONFIGURE_CANCELLED' });
+  await until(() => w.board.executor.boundaryWaits.has(original.id));
+  await w.board.executor.cancel(original.id); await rejected;
+  assert.equal((await w.taskNow(card.id)).column, 'executing'); assert.equal((await w.board.run(original.id)).status, 'cancelled');
+  assert.equal((await w.board.state()).runs.filter(run => run.taskId === card.id).length, 1);
+  assert.equal(w.board.executor.sessions.get(original.id).proc, null);
+});
+
+test('Pause after the system process has exited cancels resume and records a user pause', { skip: process.platform === 'win32' }, async t => {
+  const w = await world(t, true), config = defaultPipelineConfig(); config.columns[3].strategy.modelOverride = 'boundary-fixture'; await w.configure(config);
+  const card = await w.board.createTask({ projectId: w.projectId, title: 'Exit race', prompt: 'ACTIVITY_FIXTURE' });
+  const original = (await w.move(card.id, 'executing')).run; await until(async () => (await w.board.run(original.id)).activity?.ready);
+  const update = w.board.updateRun.bind(w.board); let exited, release;
+  w.board.updateRun = async (id, fields) => {
+    const result = await update(id, fields);
+    if (id === original.id && fields.status === 'suspended') { exited = true; await new Promise(resolve => { release = resolve; }); }
+    return result;
+  };
+  const moving = w.move(card.id, 'code_review'); const rejected = assert.rejects(moving, { code: 'PIPELINE_RECONFIGURE_CANCELLED' });
+  await until(() => exited);
+  const paused = w.board.pauseRun(original.id, { confirm: true });
+  await until(() => w.board.executor.boundaryWaits.get(original.id)?.signal.aborted); release();
+  await rejected; await paused;
+  const state = await w.board.state(); assert.equal(state.sessions.find(session => session.id === original.sessionId).pauseIntent, 'user');
+  assert.equal(state.runs.filter(run => run.taskId === card.id).length, 1); assert.equal((await w.taskNow(card.id)).column, 'executing');
+});
+
+test('partial or malformed native events cannot reuse an old completed turn to authorize a live restart', { skip: process.platform === 'win32' }, async t => {
+  const w = await world(t, true), config = defaultPipelineConfig(); config.columns[3].strategy.modelOverride = 'boundary-fixture'; await w.configure(config);
+  const suspend = w.board.executor.suspendAtBoundary.bind(w.board.executor);
+  w.board.executor.suspendAtBoundary = (id, options) => suspend(id, { ...options, timeoutMs: 350 });
+  for (const suffix of ['', '\n']) {
+    const card = await w.board.createTask({ projectId: w.projectId, title: 'Interrupted hook', prompt: 'ACTIVITY_FIXTURE' });
+    const original = (await w.move(card.id, 'executing')).run; await until(async () => (await w.board.run(original.id)).activity?.ready);
+    const owned = w.board.executor.sessions.get(original.id), pid = owned.proc.pid;
+    await appendFile(owned.eventsFile, '{"provider":"claude","name":"PreToolUse","toolId":"partial' + suffix);
+    await assert.rejects(w.move(card.id, 'code_review'), { code: 'PIPELINE_BOUNDARY_TIMEOUT' });
+    assert.equal(owned.proc.pid, pid); assert.equal((await w.taskNow(card.id)).column, 'executing');
+    assert.equal((await w.board.run(original.id)).activity.uncertain, true);
+    if (!suffix) {
+      await appendFile(owned.eventsFile, '"}\n'); await until(async () => (await w.board.run(original.id)).activity?.tools === 1);
+      await appendFile(owned.eventsFile, JSON.stringify({ provider: 'claude', name: 'PostToolUse', toolId: 'partial' }) + '\n' + JSON.stringify({ provider: 'claude', name: 'Stop', backgroundCount: 0, scheduledCount: 0 }) + '\n');
+      await until(async () => (await w.board.run(original.id)).activity?.ready); // A valid completed record releases a partial read.
+    } else {
+      await appendFile(owned.eventsFile, JSON.stringify({ provider: 'claude', name: 'Stop', backgroundCount: 0, scheduledCount: 0 }) + '\n');
+      await new Promise(resolve => setTimeout(resolve, 1700)); assert.equal((await w.board.run(original.id)).activity.ready, false);
+    }
+    await w.move(card.id, 'todo');
+  }
+});
+
+test('Pause can cancel replacement validation after the system suspension without waiting for CLI discovery', { skip: process.platform === 'win32' }, async t => {
+  const w = await world(t, true), config = defaultPipelineConfig(); config.columns[3].strategy.modelOverride = 'boundary-fixture'; await w.configure(config);
+  const card = await w.board.createTask({ projectId: w.projectId, title: 'Resume discovery', prompt: 'ACTIVITY_FIXTURE' });
+  const original = (await w.move(card.id, 'executing')).run; await until(async () => (await w.board.run(original.id)).activity?.ready);
+  const validate = w.board.executor.validate.bind(w.board.executor); let calls = 0, release;
+  w.board.executor.validate = async request => { if (++calls === 2) await new Promise(resolve => { release = resolve; }); return validate(request); };
+  const moving = w.move(card.id, 'code_review'); const rejected = assert.rejects(moving, { code: 'PIPELINE_RECONFIGURE_CANCELLED' });
+  await until(() => release); assert.equal(w.board.executor.sessions.get(original.id).proc, null);
+  await w.board.pauseRun(original.id, { confirm: true }); await rejected; release();
+  const state = await w.board.state(); assert.equal(state.runs.filter(run => run.taskId === card.id).length, 1);
+  assert.equal(state.sessions.find(session => session.id === original.sessionId).pauseIntent, 'user');
+  assert.equal((await w.taskNow(card.id)).column, 'executing');
+});
+
+test('Pause or Stop during atomic replacement publication prevents queueing and follows only the same logical conversation', { skip: process.platform === 'win32' }, async t => {
+  const w = await world(t, true), config = defaultPipelineConfig(); config.columns[3].strategy.modelOverride = 'boundary-fixture'; await w.configure(config);
+  for (const action of ['pause', 'stop', 'shutdown']) {
+    const card = await w.board.createTask({ projectId: w.projectId, title: 'Publication race', prompt: 'ACTIVITY_FIXTURE' });
+    const original = (await w.move(card.id, 'executing')).run; await until(async () => (await w.board.run(original.id)).activity?.ready);
+    const update = w.board.store.update.bind(w.board.store); let release;
+    w.board.store.update = async change => {
+      let accepted = false;
+      const result = await update(draft => { const before = draft.runs.length; const value = change(draft); accepted = draft.runs.length > before; return value; });
+      if (accepted) await new Promise(resolve => { release = resolve; });
+      return result;
+    };
+    const moving = w.move(card.id, 'code_review'); await until(() => release);
+    const currentId = (await w.board.state()).sessions.find(session => session.id === original.sessionId).currentRunId;
+    assert.notEqual(currentId, original.id); assert.equal(w.board.executor.queue.length, 0);
+    const stopping = action === 'pause' ? w.board.pauseRun(original.id, { confirm: true }) : action === 'stop' ? w.board.executor.cancel(original.id) : w.board.executor.shutdown(500);
+    await until(() => w.board.executor.boundaryWaits.get(original.id)?.signal.aborted); release();
+    const result = await moving; await stopping;
+    assert.equal(result.run.id, currentId); assert.equal(result.run.status, action === 'pause' ? 'suspended' : action === 'stop' ? 'cancelled' : 'interrupted');
+    assert.equal(result.run.sessionId, original.sessionId); assert.equal((await w.taskNow(card.id)).column, 'code_review'); // Placement was already atomically accepted.
+    assert.equal(w.board.executor.sessions.has(currentId), false); assert.equal(w.board.executor.queue.length, 0);
+    const logical = (await w.board.state()).sessions.find(session => session.id === original.sessionId);
+    assert.equal(logical.pauseIntent, action === 'pause' ? 'user' : null);
+    w.board.store.update = update; await w.move(card.id, 'todo');
+  }
+});
+
+test('a title edit during post-suspension validation cannot accept a stale requested move or launch a replacement', { skip: process.platform === 'win32' }, async t => {
+  const w = await world(t, true), config = defaultPipelineConfig(); config.columns[3].strategy.modelOverride = 'boundary-fixture'; await w.configure(config);
+  const card = await w.board.createTask({ projectId: w.projectId, title: 'Old title', prompt: 'ACTIVITY_FIXTURE' });
+  const original = (await w.move(card.id, 'executing')).run; await until(async () => (await w.board.run(original.id)).activity?.ready);
+  const validate = w.board.executor.validate.bind(w.board.executor); let calls = 0, release;
+  w.board.executor.validate = async request => { if (++calls === 2) await new Promise(resolve => { release = resolve; }); return validate(request); };
+  const moving = w.move(card.id, 'code_review'); const rejected = assert.rejects(moving, { code: 'REVISION_CONFLICT' });
+  await until(() => release);
+  await w.board.updateTask(card.id, { title: 'New title', expectedRevision: (await w.taskNow(card.id)).revision }); release(); await rejected;
+  const state = await w.board.state(); assert.equal(state.runs.filter(run => run.taskId === card.id).length, 1);
+  assert.equal((await w.taskNow(card.id)).column, 'executing'); assert.equal((await w.taskNow(card.id)).title, 'New title');
+  assert.equal(w.board.executor.sessions.get(original.id).proc, null);
+  assert.equal(state.sessions.find(session => session.id === original.sessionId).nativeSessionId, (await w.board.run(original.id)).providerSessionId);
 });

@@ -7,7 +7,10 @@ import { startTestServer } from './helpers/test-server.mjs';
 import { attachSession } from '../src/sessions.mjs';
 
 const chrome = await findChrome();
-test('column pipeline conversion and editing work by keyboard in both themes and narrow Chrome viewports', { skip: !chrome, timeout: 30000 }, async t => {
+// This scenario includes cold Chrome startup and sequential persisted edits,
+// keyboard actions and layout checks. Individual readiness waits remain bounded;
+// allow the complete scenario to finish on slower hosted macOS runners.
+test('column pipeline conversion and editing work by keyboard in both themes and narrow Chrome viewports', { skip: !chrome, timeout: 90000 }, async t => {
   const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
   const project = await app.board.createProject({ name: 'Pipeline UI' });
   const prompt = '  Composer split task\r\nconst x = 1;  \r\n';
@@ -89,5 +92,10 @@ test('column pipeline conversion and editing work by keyboard in both themes and
   await browser.eval(`await loadBoard();`);
   assert.equal(await browser.eval(`return agentState(board.runs.find(run => run.id === 'activity-display-fixture'));`), 'awaits_you');
   assert.ok((await browser.eval(`return document.querySelector('[data-id="${card.id}"]').textContent;`)).includes('needs your answer'));
+  for (const theme of ['light', 'dark']) for (const status of ['suspended', 'cancelled']) {
+    const text = await browser.eval(`document.documentElement.dataset.theme = '${theme}'; movedAnnouncement(findTask('${card.id}'), 'code_review', { run: { id: 'cancelled-before-queue', status: '${status}' } }); return document.querySelector('#announcement').textContent;`);
+    assert.match(text, status === 'suspended' ? /paused before starting/ : /stopped before starting/);
+    assert.doesNotMatch(text, /started the/);
+  }
   assert.ok(!browser.consoleMessages.some(message => message.startsWith('EXCEPTION')), browser.consoleMessages.join('\n'));
 });
