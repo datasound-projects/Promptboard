@@ -222,7 +222,25 @@ test('real PTY activity hooks track outstanding work and native approval without
     await input('activity-plan-request');
     await until(async () => (await w.board.run(run.id)).activity?.permissionPending);
     assert.equal((await w.board.run(run.id)).activity.planApproval, undefined);
-    await input('activity-plan-reject');
+    const eventsFile = join(w.dataDir, run.artifactsDir, 'events.jsonl');
+    const observedInput = async text => {
+      const before = Buffer.byteLength(await readFile(eventsFile, 'utf8'));
+      await input(text);
+      await until(async () => {
+        const bytes = Buffer.byteLength(await readFile(eventsFile, 'utf8'));
+        const output = await readFile(join(w.dataDir, run.artifactsDir, 'output.log'), 'utf8');
+        const session = w.board.executor.sessions.get(run.id);
+        return output.includes(`${text} emitted`) && bytes > before && session.eventsOffset === bytes && !session.reading;
+      });
+    };
+    await observedInput('activity-unrelated-results');
+    assert.equal((await w.board.run(run.id)).activity.permissionPending, true);
+    assert.equal((await w.board.run(run.id)).activity.phase, 'waiting');
+    // Documented permission events have no tool ID. Even the rejected plan's
+    // result cannot resolve that uncorrelated notification before a turn boundary.
+    await observedInput('activity-plan-reject');
+    assert.equal((await w.board.run(run.id)).activity.permissionPending, true);
+    await input('activity-finish');
     await until(async () => !(await w.board.run(run.id)).activity?.permissionPending);
     assert.equal((await w.board.run(run.id)).activity.planApproval, undefined);
     await input('activity-plan-approve');
@@ -230,6 +248,14 @@ test('real PTY activity hooks track outstanding work and native approval without
     assert.equal(approved.provider, provider);
     assert.equal((await w.taskNow(card.id)).column, 'executing'); // Evidence foundation does not auto-move yet.
     assert.doesNotMatch(await readFile(join(w.dataDir, run.artifactsDir, 'events.jsonl'), 'utf8'), /PRIVATE/);
+    if (provider === 'claude') {
+      await observedInput('activity-child-permission');
+      assert.equal((await w.board.run(run.id)).activity.parentTurnComplete, true);
+      assert.equal((await w.board.run(run.id)).activity.permissionPending, true);
+      await observedInput('activity-unrelated-results');
+      assert.equal((await w.board.run(run.id)).activity.permissionPending, true);
+      await input('activity-finish'); await until(async () => (await w.board.run(run.id)).activity?.ready);
+    }
     await w.move(card.id, 'todo'); assert.equal((await w.board.run(run.id)).activity.phase, 'ended');
   }
 });
@@ -646,8 +672,12 @@ test('native approved plans move immediately while implementation continues; req
     const owned = w.board.executor.sessions.get(original.id), pid = owned.proc.pid;
     w.board.executor.input(original.id, 'activity-plan-request\r'); await until(async () => (await w.board.run(original.id)).activity?.permissionPending);
     assert.equal((await w.taskNow(card.id)).column, 'planning'); assert.equal((await w.board.run(original.id)).planRoutes, undefined);
-    w.board.executor.input(original.id, 'activity-plan-reject\r'); await until(async () => !(await w.board.run(original.id)).activity?.permissionPending);
-    assert.equal((await w.taskNow(card.id)).column, 'planning');
+    w.board.executor.input(original.id, 'activity-plan-reject\r');
+    await until(async () => (await readFile(join(w.dataDir, original.artifactsDir, 'output.log'), 'utf8')).includes('activity-plan-reject emitted') && !owned.reading);
+    assert.equal((await w.board.run(original.id)).activity.permissionPending, true);
+    assert.equal((await w.taskNow(card.id)).column, 'planning'); assert.equal((await w.board.run(original.id)).planRoutes, undefined);
+    w.board.executor.input(original.id, 'activity-finish\r'); await until(async () => (await w.board.run(original.id)).activity?.ready);
+    assert.equal((await w.taskNow(card.id)).column, 'planning'); assert.equal((await w.board.run(original.id)).planRoutes, undefined);
     w.board.executor.input(original.id, 'activity-plan-approve-working\r');
     await until(async () => (await w.taskNow(card.id)).column === 'executing');
     const routed = await until(async () => { const r = await w.board.run(original.id); return r.planRoutes?.at(-1)?.status === 'completed' && r; });

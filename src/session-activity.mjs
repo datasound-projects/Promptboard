@@ -8,6 +8,7 @@ export class SessionActivity {
     this.provider = provider;
     this.tools = new Set(); this.finishedTools = new Set(); this.agents = new Set();
     this.anonymousTools = new Map();
+    this.permissionTools = new Map(); this.permissionScopes = new Set();
     this.parentComplete = false; this.permission = false; this.ended = false;
     this.uncertain = false; this.backgroundUnknown = false;
     this.background = 0; this.scheduled = 0; this.planApproval = null;
@@ -20,17 +21,26 @@ export class SessionActivity {
   // completed turn immediately, including partially entered prompt text.
   input(now = Date.now()) { this.parentComplete = false; this.lastEventAt = now; }
 
+  clearPermissionScope(scope) {
+    this.permissionScopes.delete(scope);
+    for (const [key, owner] of this.permissionTools) if (owner === scope) this.permissionTools.delete(key);
+  }
+
   observe(event, now = Date.now()) {
     if (!event || (event.provider && event.provider !== this.provider)) return;
     const name = event.name, child = id(event.agentId), subordinate = Boolean(child || event.subordinate);
+    const scope = JSON.stringify([subordinate, child]);
+    const toolId = id(event.toolId), key = toolId ? JSON.stringify([child, toolId]) : null;
+    const permissionKey = toolId ? JSON.stringify([scope, toolId]) : null;
+    const repeatedToolEnd = Boolean(key && this.finishedTools.has(key));
     const claude = this.provider === 'claude', gemini = this.provider === 'gemini';
     const toolStart = claude ? name === 'PreToolUse' : gemini && name === 'BeforeTool';
     const toolEnd = claude ? ['PostToolUse', 'PostToolUseFailure', 'PermissionDenied'].includes(name) : gemini && name === 'AfterTool';
     const agentStart = claude && name === 'SubagentStart', agentEnd = claude && name === 'SubagentStop';
     const started = name === 'SessionStart' && !subordinate;
     const running = !subordinate && (claude ? name === 'UserPromptSubmit' : gemini && name === 'BeforeAgent');
-    const waiting = (claude && (name === 'PermissionRequest' || name === 'Notification' && ['permission_prompt', 'elicitation_dialog', 'elicitation_url_dialog'].includes(event.notification)))
-      || (gemini && name === 'Notification' && event.notification === 'ToolPermission');
+    const waiting = (!repeatedToolEnd || subordinate && !child) && ((claude && (name === 'PermissionRequest' || name === 'Notification' && ['permission_prompt', 'elicitation_dialog', 'elicitation_url_dialog'].includes(event.notification)))
+      || (gemini && name === 'Notification' && event.notification === 'ToolPermission'));
     const complete = !subordinate && (claude ? name === 'Stop' : gemini ? name === 'AfterAgent' : name === 'agent-turn-complete');
     const ended = !subordinate && (name === 'SessionEnd' || name === 'StopFailure');
     if (event.activityUncertain) this.uncertain = true;
@@ -44,11 +54,14 @@ export class SessionActivity {
     // lifecycle. Keep outstanding work and finished tool IDs: startup alone
     // neither proves readiness nor makes late old approvals fresh again.
     if (started) { this.planApproval = null; this.ended = false; }
-    if (started || running) { this.parentComplete = false; this.permission = false; }
-    if (waiting) { this.permission = true; this.parentComplete = false; }
+    if (started || running) { this.parentComplete = false; this.clearPermissionScope(scope); }
+    if (waiting) {
+      if (permissionKey) this.permissionTools.set(permissionKey, scope);
+      else this.permissionScopes.add(scope);
+      if (subordinate && !child) this.uncertain = true;
+      this.parentComplete = false;
+    }
     if (ended) { this.ended = true; this.parentComplete = false; }
-    const toolId = id(event.toolId), key = toolId ? JSON.stringify([child, toolId]) : null;
-    const repeatedToolEnd = Boolean(key && this.finishedTools.has(key));
     const toolName = id(event.tool) || 'unknown';
     if (toolStart) {
       this.parentComplete = false;
@@ -64,7 +77,9 @@ export class SessionActivity {
     if (toolEnd) {
       if (key) { this.tools.delete(key); this.finishedTools.add(key); }
       else if (this.anonymousTools.get(toolName) > 0) this.anonymousTools.set(toolName, this.anonymousTools.get(toolName) - 1);
-      this.permission = false;
+      // PermissionRequest/Notification often lack a tool ID. A result from
+      // another parallel tool cannot prove that an unidentified dialog closed.
+      if (permissionKey) this.permissionTools.delete(permissionKey);
       if (event.backgroundRequested === true && name === 'PostToolUse') this.backgroundUnknown = true;
       if (!subordinate && !repeatedToolEnd && name === 'PostToolUse' && event.tool === 'EnterPlanMode') this.planApproval = null;
       if (!subordinate && gemini && name === 'AfterTool' && event.tool === 'enter_plan_mode' && event.planEntered === true) this.planApproval = null;
@@ -75,19 +90,22 @@ export class SessionActivity {
       if (approved && !repeatedToolEnd && !this.planApproval) this.planApproval = { provider: this.provider, at: now, toolId, source: name };
     }
     if (agentStart) { if (child) this.agents.add(child); else this.uncertain = true; }
-    if (agentEnd && child) this.agents.delete(child);
+    if (agentEnd && child) { this.agents.delete(child); this.clearPermissionScope(scope); }
     if (complete || agentEnd) {
       if (Number.isSafeInteger(event.backgroundCount) && event.backgroundCount >= 0) {
         this.background = Math.min(event.backgroundCount, LIMIT); this.backgroundUnknown = false;
       }
       if (Number.isSafeInteger(event.scheduledCount) && event.scheduledCount >= 0) this.scheduled = Math.min(event.scheduledCount, LIMIT);
     }
-    if (complete) { this.parentComplete = true; this.permission = false; }
+    if (complete) { this.parentComplete = true; this.clearPermissionScope(scope); }
     // Never let malformed/lost hooks or unbounded counters establish a safe boundary.
     if (this.tools.size + this.finishedTools.size + this.agents.size > LIMIT || this.anonymousTools.size > LIMIT
-      || [...this.anonymousTools.values()].reduce((sum, n) => sum + n, 0) > LIMIT) {
+      || [...this.anonymousTools.values()].reduce((sum, n) => sum + n, 0) > LIMIT
+      || this.permissionTools.size + this.permissionScopes.size > LIMIT) {
       this.uncertain = true; this.tools.clear(); this.finishedTools.clear(); this.agents.clear(); this.anonymousTools.clear();
+      this.permissionTools.clear(); this.permissionScopes.clear();
     }
+    this.permission = Boolean(this.permissionTools.size || this.permissionScopes.size);
   }
 
   snapshot(now = Date.now()) {

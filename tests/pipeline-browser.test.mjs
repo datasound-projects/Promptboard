@@ -156,6 +156,9 @@ test('column pipeline conversion and editing work by keyboard in both themes and
   for (const status of ['pending', 'failed', 'interrupted']) {
     await app.board.updateRun('activity-display-fixture', { planRoutes: [{ id: 'route-ui', toColumn: 'executing', status, reason: '<img src=x onerror="window.__routePwned=1"> Move explicitly.' }] });
     await browser.eval(`await loadBoard();`);
+    // loadBoard can join a background poll that captured the prior snapshot.
+    // Wait for this exact status and its rendered text, not an unrelated refresh.
+    await browser.until(`board.runs.find(run => run.id === 'activity-display-fixture')?.planRoutes?.at(-1)?.status === ${JSON.stringify(status)} && document.querySelector('[data-id="${card.id}"] .plan-route')?.textContent.includes(${JSON.stringify(status === 'pending' ? 'turn settles' : 'Move explicitly')})`, `current ${status} plan route rendered`);
     const routeText = await browser.eval(`return document.querySelector('[data-id="${card.id}"] .plan-route').textContent;`);
     assert.match(routeText, status === 'pending' ? /Plan approved.*Build.*turn settles/ : /Move explicitly/);
     assert.equal(await browser.eval(`return document.querySelector('[data-id="${card.id}"] .plan-route img') === null && !window.__routePwned;`), true);
