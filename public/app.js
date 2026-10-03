@@ -1249,7 +1249,7 @@ function setBoardWarning(message) {
 async function boardCall(method, path, body, timeoutMs = 60000) {
   let result;
   try { result = await api(path, { method, body, timeoutMs }); }
-  catch { setBoardWarning('The app did not answer, so the change was not saved. Check that Promptboard is still running.'); throw new Error('The app did not answer. The change was not saved.'); }
+  catch { setBoardWarning('The app did not answer. Reload the board to check whether the change was saved.'); throw new Error('The app did not answer. Reload the board to check the result before trying again.'); }
   const { response, data } = result;
   if (data.board) acceptBoard(data.board);
   if (!response.ok) {
@@ -1266,8 +1266,9 @@ async function boardCall(method, path, body, timeoutMs = 60000) {
 /** Every state write raises the board revision. A slow older answer never replaces a newer board. */
 function acceptBoard(next) { if (!board || !Number.isInteger(next?.revision) || next.revision >= board.revision) board = next; }
 
-async function loadBoard() {
+async function loadBoard({ ifChanged = false } = {}) {
   if (!token) return;
+  const previousRevision = board?.revision;
   boardLoading ??= (async () => {
     try {
       const { response, data } = await api('/api/board', { timeoutMs: 30000 });
@@ -1280,7 +1281,7 @@ async function loadBoard() {
       await migrateBrowserBoard();
     } catch (error) {
       showLoadWarning(`The board could not be loaded. ${error.message}`);
-    } finally { boardLoading = null; renderBoard(); }
+    } finally { boardLoading = null; if (!ifChanged || board?.revision !== previousRevision) renderBoard(); }
   })();
   return boardLoading;
 }
@@ -1340,6 +1341,7 @@ function renderBoard() {
   const columns = $('#kanban-columns');
   const focusedCard = document.activeElement?.closest('.kanban-card');
   const focusedDisplay = document.activeElement?.dataset.cardDisplay;
+  const focusedAutomation = document.activeElement?.dataset.automationStop;
   const confirming = [...columns.querySelectorAll('.kanban-card:has(.kanban-confirm)')].map(item => item.dataset.id);
   const confirmationFocus = document.activeElement?.closest('.kanban-confirm') ? document.activeElement.textContent : null;
   const scroll = new Map(columns.dataset.projectId === project?.id ? [...columns.querySelectorAll('.kanban-cards')].map(list => [list.dataset.column, list.scrollTop]) : []);
@@ -1351,6 +1353,7 @@ function renderBoard() {
   }
   if (confirmationFocus && focusedCard) [...(cardElement(focusedCard.dataset.id)?.querySelectorAll('.kanban-confirm button') || [])].find(button => button.textContent === confirmationFocus)?.focus({ preventScroll: true });
   if (focusedCard && focusedDisplay) [...(cardElement(focusedCard.dataset.id)?.querySelectorAll('[data-card-display]') || [])].find(input => input.dataset.cardDisplay === focusedDisplay)?.focus({ preventScroll: true });
+  if (focusedAutomation) cardElement(focusedAutomation)?.querySelector('.kanban-stop-automations')?.focus({ preventScroll: true });
   for (const list of columns.querySelectorAll('.kanban-cards')) list.scrollTop = scroll.get(list.dataset.column) || 0;
   renderRepository(project);
   const branch = project?.targetBranch?.name;
@@ -2143,6 +2146,17 @@ function renderRunControls(card, run) {
   const box = document.createElement('div');
   box.className = 'kanban-run';
   const active = run && RUN_LIVE.includes(run.status) ? run : null;
+  const move = card.automationMove;
+  if (move) {
+    const busy = ['pending', 'running', 'blocked'].includes(move.status);
+    const phase = { exit: 'On exit', lifecycle: 'Session change', enter: 'On enter', complete: 'Recorded' }[move.phase];
+    const text = busy ? `Column automations: ${move.status === 'blocked' ? 'need attention' : phase}. ${move.reason || ''}` : `Automation move ${move.status}. Open Details for each action’s result.`;
+    box.append(paragraph(text, `automation-state${move.status === 'blocked' || move.status === 'failed' ? ' kanban-error' : ''}`));
+    if (busy) {
+      const stop = detailButton('Stop automations', () => stopColumnAutomations(card), 'kanban-stop-automations'); stop.dataset.automationStop = card.id;
+      stop.setAttribute('aria-label', `Stop column automations: ${card.title}`); box.append(stop);
+    }
+  }
   if (run) {
     const badge = document.createElement('span');
     const state = agentState(run);
@@ -2438,6 +2452,51 @@ async function confirmRun(run) {
   announce(run.stage === 'planning' ? 'Plan approved. The agent session ended; the plan is saved with the task.' : 'Stage confirmed. The agent session ended; the worktree keeps the changes.');
 }
 
+async function stopColumnAutomations(card) {
+  if (sessionActions.has(card.id)) return;
+  sessionActions.add(card.id);
+  try { await boardCall('POST', `/api/tasks/${encodeURIComponent(card.id)}/cancel-automations`, { confirm: true }, 20000); announce('Column automations stopped. Recorded results are kept.'); }
+  catch (error) { showBoardError(error); }
+  finally { sessionActions.delete(card.id); }
+}
+
+function automationHistory(card, section) {
+  const content = document.createElement('div'); content.className = 'automation-history';
+  let request = 0;
+  const refresh = async () => {
+    const current = ++request; refreshButton.disabled = true;
+    try {
+      const { response, data } = await api(`/api/tasks/${encodeURIComponent(card.id)}/automations`, { timeoutMs: 15000 });
+      if (!response.ok) throw new Error(data.error || 'Automation history is unavailable.');
+      if (current !== request || !content.isConnected) return;
+      const nodes = [...data.moves].reverse().map(move => {
+        const group = document.createElement('details');
+        const summary = document.createElement('summary'); summary.textContent = `${move.from.name} → ${move.to.name} · ${move.status}`;
+        group.append(summary, paragraph(`Session change: ${move.lifecycle.status}. ${move.lifecycle.outcome?.reason || ''}`, 'note'));
+        const rows = document.createElement('ol');
+        for (const action of move.actions) {
+          const item = document.createElement('li');
+          item.append(paragraph(`${action.trigger === 'exit' ? 'On exit' : 'On enter'} · ${action.name} · ${action.status}`));
+          const outcome = action.outcome || {}, facts = [outcome.reason, outcome.exitCode !== undefined ? `Exit code ${outcome.exitCode}` : '', outcome.httpStatus !== undefined ? `HTTP ${outcome.httpStatus}` : '', outcome.errorCode].filter(Boolean);
+          if (facts.length) item.append(paragraph(facts.join(' · '), 'note'));
+          if (action.delivery) item.append(paragraph(`Agent message: ${action.delivery.status}. ${action.delivery.outcome?.reason || ''}`, 'note'));
+          rows.append(item);
+        }
+        group.append(rows); return group;
+      });
+      content.replaceChildren(...(nodes.length ? nodes : [paragraph('No column automations recorded yet.', 'note')]));
+    } catch (error) { if (current === request && content.isConnected) content.replaceChildren(paragraph(error.message, 'kanban-error')); }
+    finally { if (current === request) refreshButton.disabled = false; }
+  };
+  const refreshButton = detailButton('Refresh results', refresh);
+  const controls = detailActions(refreshButton);
+  if (['pending', 'running', 'blocked'].includes(card.automationMove?.status)) controls.append(detailButton('Stop automations', async () => { await stopColumnAutomations(card); await refresh(); }));
+  const box = section('Column automations', content, controls);
+  content.append(paragraph('Loading automation results…', 'note'));
+  queueMicrotask(refresh);
+  return box;
+}
+
 async function openTaskDetails(taskId) {
   const card = findTask(taskId);
   if (!card) return;
@@ -2489,6 +2548,7 @@ async function openTaskDetails(taskId) {
     table.append(row);
   }
   nodes.push(section('Run history', runs.length ? table : paragraph('No runs yet.')));
+  if (project.workflowMode === 'pipeline') nodes.push(automationHistory(card, section));
   if (runs.length && baseView) nodes.push(baseView.runManifest(runs.at(-1)));
   const delivery = document.createElement('div');
   delivery.className = 'task-delivery';
@@ -3673,9 +3733,10 @@ $('#autopilot-open').addEventListener('click', openAutopilot);
 // go anywhere between To Do and Done and are attached to the built-in stage on their left.
 const COLUMN_COLOR_NAMES = { gray: 'Gray', red: 'Red', orange: 'Orange', amber: 'Amber', green: 'Green', teal: 'Teal', blue: 'Blue', violet: 'Violet', pink: 'Pink' };
 const BUILTIN_DEFAULT_COLORS = { todo: 'gray', planning: 'violet', executing: 'blue', code_review: 'amber', testing: 'teal', merge: 'orange', done: 'green' };
-const columnsDraft = { list: [], selected: null, project: null, revision: null, pipeline: false, profiles: [] };
+const columnsDraft = { list: [], selected: null, project: null, revision: null, pipeline: false, profiles: [], headerDrafts: new Map() };
 const builtinTitle = id => board?.columns?.find(column => column.id === id)?.title || id;
 function openColumns() {
+  columnsDraft.headerDrafts.clear();
   const project = currentProject();
   if (!project) return;
   const layout = project.columnLayout?.length ? project.columnLayout : (board?.columns || []).map(column => ({ id: column.id }));
@@ -3835,9 +3896,103 @@ function renderPipelineColumns() {
     nodes.push(paragraph('Live moves retain the CLI’s current permissions. New model, effort or Base settings wait for the current turn before resuming. Permissions apply on startup/resume. Pause before editing this board or switching providers.', 'note'));
   } else nodes.push(paragraph(entry.role === 'todo' ? 'The holding role never starts agents. Returning a card stops its agent and resets the current session; files and historical output are kept.'
     : 'The completion role pauses the agent and archives its task, preserving the conversation and worktree for restoration.', 'note'));
+  nodes.push(pipelineAutomationEditor(entry));
   if (projectColumnsOf().some(column => column.id === entry.id)) nodes.push(basePicker({ target: { scope: 'column', projectId: currentProject().id, columnId: entry.id }, inactive: entry.role !== 'active' }));
   editor.replaceChildren(...nodes);
 }
+
+function pipelineAutomationEditor(entry) {
+  const section = document.createElement('section'); section.className = 'column-automations';
+  const heading = document.createElement('h3'); heading.textContent = 'Automations';
+  section.append(heading, paragraph('Actions run in order when a card leaves or arrives. Saving this list runs nothing.', 'note'));
+  const types = { run_script: 'Run script', webhook: 'Call webhook', send_message: 'Send message to agent', notify: 'Notify me' };
+  const supported = type => ['run_script', 'webhook'].includes(type);
+  const defaults = type => ({ run_script: { script: '', timeoutMinutes: 10 }, webhook: { url: '', method: 'POST', body: '', headers: {} } }[type]);
+  const uniqueName = (column, stem) => {
+    const used = new Set([...column.automations.onEnter, ...column.automations.onExit].map(row => row.name.trim().toLowerCase()));
+    let name = stem; for (let number = 2; used.has(name.toLowerCase()); number++) name = `${stem} ${number}`;
+    return name;
+  };
+  const field = (row, key, title, { multiline = false, max = 65536, choices = null, numeric = false, required = false } = {}) => {
+    const label = document.createElement('label'); label.className = 'field-label'; label.append(title);
+    const input = document.createElement(choices ? 'select' : multiline ? 'textarea' : 'input');
+    input.dataset.field = key; input.setAttribute('aria-label', `${title}: ${row.name}`);
+    if (choices) input.append(...choices.map(value => option(value, value)));
+    else { input.maxLength = max; if (!multiline) input.type = numeric ? 'number' : 'text'; }
+    if (numeric) { input.min = 1; input.max = 120; input.step = 1; }
+    input.required = required; input.value = key === 'headers' ? columnsDraft.headerDrafts.get(row.id) ?? JSON.stringify(row.headers || {}, null, 2) : row[key] ?? '';
+    const checkHeaders = () => {
+      try { const headers = JSON.parse(input.value || '{}'); if (!headers || typeof headers !== 'object' || Array.isArray(headers)) throw new Error(); row.headers = headers; input.setCustomValidity(''); }
+      catch { input.setCustomValidity('Use a JSON object for webhook headers.'); }
+    };
+    if (key === 'headers') checkHeaders();
+    input.addEventListener(choices ? 'change' : 'input', () => {
+      if (key === 'headers') {
+        columnsDraft.headerDrafts.set(row.id, input.value); checkHeaders();
+      } else row[key] = numeric ? Number(input.value) : input.value;
+    });
+    label.append(input); return label;
+  };
+  for (const trigger of entry.role === 'active' ? ['onExit', 'onEnter'] : ['onExit']) {
+    const rows = entry.automations[trigger], group = document.createElement('fieldset'); group.className = 'automation-group'; group.dataset.trigger = trigger;
+    const legend = document.createElement('legend'); legend.textContent = trigger === 'onExit' ? 'On exit' : 'On enter'; group.append(legend);
+    for (const [index, row] of rows.entries()) {
+      const item = document.createElement('fieldset'); item.className = 'automation-row'; item.dataset.automationId = row.id;
+      const caption = document.createElement('legend'); caption.textContent = `${index + 1}. ${types[row.type]}`;
+      const enabled = document.createElement('input'); enabled.type = 'checkbox'; enabled.checked = row.enabled; enabled.disabled = !supported(row.type) && !row.enabled;
+      enabled.setAttribute('aria-label', `Enable automation: ${row.name}`); enabled.addEventListener('change', () => { row.enabled = enabled.checked; enabled.disabled = !supported(row.type) && !row.enabled; });
+      const switchLabel = document.createElement('label'); switchLabel.className = 'check-row'; switchLabel.append(enabled, ' Enabled');
+      const type = document.createElement('select'); type.dataset.field = 'type'; type.setAttribute('aria-label', `Automation type: ${row.name}`);
+      for (const [value, title] of Object.entries(types)) { const choice = option(value, title); choice.disabled = !supported(value); type.append(choice); }
+      type.value = row.type;
+      type.addEventListener('change', () => {
+        if (!supported(type.value)) return;
+        columnsDraft.headerDrafts.delete(row.id);
+        rows[index] = { id: row.id, name: row.name, type: type.value, enabled: row.enabled, ...defaults(type.value) };
+        renderColumns(); $('#columns-editor').querySelector(`[data-automation-id="${row.id}"] [data-field="type"]`)?.focus();
+      });
+      item.append(caption, switchLabel, field(row, 'name', 'Action name', { max: 80, required: true }), type);
+      if (row.type === 'run_script') item.append(field(row, 'script', 'Script', { multiline: true, required: true }), field(row, 'timeoutMinutes', 'Timeout (minutes)', { numeric: true }), paragraph('Scripts run in the task worktree, or project checkout when it has none. Windows uses PowerShell; propagate a native command’s exit code with exit $LASTEXITCODE.', 'note'));
+      else if (row.type === 'webhook') item.append(field(row, 'url', 'Webhook URL', { max: 8192, required: true }), field(row, 'method', 'HTTP method', { choices: ['GET', 'POST', 'PUT'] }), field(row, 'body', 'JSON body', { multiline: true }), field(row, 'headers', 'Headers (JSON object)', { multiline: true }));
+      else item.append(paragraph(row.type === 'send_message' ? 'Agent message delivery is not available yet. This saved row is preserved.' : 'Desktop notifications are not available yet. This saved row is preserved.', 'note'));
+      const buttons = [];
+      for (const step of [-1, 1]) {
+        const button = detailButton(step < 0 ? 'Move up' : 'Move down', () => {
+          rows.splice(index, 1); rows.splice(index + step, 0, row); renderColumns(); $('#columns-editor').querySelector(`[data-automation-id="${row.id}"] [data-field="name"]`)?.focus();
+        }); button.setAttribute('aria-label', `${step < 0 ? 'Move up' : 'Move down'} automation: ${row.name}`); button.disabled = index + step < 0 || index + step >= rows.length; buttons.push(button);
+      }
+      buttons.push(detailButton('Delete action', () => { rows.splice(index, 1); columnsDraft.headerDrafts.delete(row.id); renderColumns(); $('#columns-editor').querySelector(`[data-trigger="${trigger}"] .automation-add`)?.focus(); }, 'danger'));
+      const copy = document.createElement('select'); copy.setAttribute('aria-label', `Copy automation: ${row.name}`); copy.append(option('', 'Copy action to…'));
+      for (const column of columnsDraft.list) for (const destination of column.role === 'active' ? ['onExit', 'onEnter'] : ['onExit']) {
+        const target = option(`${column.id}/${destination}`, `${column.name} · ${destination === 'onExit' ? 'On exit' : 'On enter'}`);
+        target.disabled = column.automations[destination].length >= 40; copy.append(target);
+      }
+      copy.addEventListener('change', () => {
+        const header = item.querySelector('[data-field="headers"]');
+        if (header && !header.checkValidity()) { header.reportValidity(); copy.value = ''; return; }
+        const [id, destination] = copy.value.split('/'), column = columnsDraft.list.find(item => item.id === id);
+        if (!column || !['onExit', 'onEnter'].includes(destination) || column.role !== 'active' && destination === 'onEnter' || column.automations[destination].length >= 40) return;
+        const cloned = { ...JSON.parse(JSON.stringify(row)), id: 'a_' + newTransitionId(), name: uniqueName(column, `${row.name.trim().slice(0, 65)} (copy)`) };
+        column.automations[destination].push(cloned); columnsDraft.selected = column.id; renderColumns();
+        $('#columns-editor').querySelector(`[data-automation-id="${cloned.id}"] [data-field="name"]`)?.focus(); announce('Action copied. Save columns to keep the change.');
+      });
+      item.append(detailActions(...buttons), copy); group.append(item);
+    }
+    const add = detailButton('Add action', () => {
+      const name = uniqueName(entry, 'Run script');
+      const row = { id: 'a_' + newTransitionId(), name, type: 'run_script', enabled: true, ...defaults('run_script') };
+      rows.push(row); renderColumns(); $('#columns-editor').querySelector(`[data-automation-id="${row.id}"] [data-field="script"]`)?.focus();
+    }, 'automation-add'); add.disabled = rows.length >= 40; group.append(add); section.append(group);
+  }
+  return section;
+}
+
+setInterval(() => {
+  if (document.hidden || location.hash !== '#/kanban') return;
+  // Discover moves accepted by native plan routing or another board window too.
+  // An unchanged revision keeps the current DOM and keyboard focus intact.
+  loadBoard({ ifChanged: true }).catch(() => {});
+}, 2000);
 
 $('#columns-use-pipeline').addEventListener('click', () => {
   columnsDraft.pipeline = true;
@@ -3863,6 +4018,7 @@ function addColumn() {
 }
 async function saveColumns(event) {
   event.preventDefault();
+  if (!event.currentTarget.checkValidity()) { event.currentTarget.reportValidity(); return; }
   const project = board?.projects.find(item => item.id === columnsDraft.project);
   if (!project) return;
   const columns = columnsDraft.list.map(entry => entry.custom ? entry : { id: entry.id, ...(entry.title && entry.title !== builtinTitle(entry.id) ? { title: entry.title } : {}), ...(entry.color && entry.color !== BUILTIN_DEFAULT_COLORS[entry.id] ? { color: entry.color } : {}), ...(entry.hidden ? { hidden: true } : {}) });

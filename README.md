@@ -94,7 +94,8 @@ Read [SECURITY.md](SECURITY.md) before working with sensitive repositories. [Kan
 ## More
 
 - [Kanban parity plan](docs/kanban-parity-plan.md): the Kangentic reference, implementation gaps, and acceptance checks.
-- [Column automation runtime](docs/pipeline-runtime-automations.md): ordered scripts/webhooks, durable outcomes, scoped Stop and no-replay recovery; editor and native message delivery remain pending.
+- [Column automation runtime](docs/pipeline-runtime-automations.md): ordered scripts/webhooks, durable outcomes, scoped Stop and no-replay recovery.
+- [Action editor and results](docs/pipeline-automation-editor.md): row switches, ordering/copying, task-scoped Stop and durable history; native messages, desktop notifications and explicit retries remain pending.
 - [Automation execution primitives](docs/pipeline-automation-actions.md): bounded script/webhook/notification adapters.
 - [Durable automation journal](docs/pipeline-automation-journal.md): atomic intent, ordered phases and interruption recovery; scheduler integration remains pending.
 - [Ordered automation groups](docs/pipeline-automation-coordinator.md): durable dispatch, exit budgets and owned cancellation; native message scheduling remains pending.
