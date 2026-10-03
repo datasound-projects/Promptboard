@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Retarget waiting pipeline runs to their latest destination provider/model/permissions/Base without losing FIFO position. Hold the slot during atomic acceptance, reject already-preparing launches and cross-provider native resumes, and never resurrect a cancelled entry. Manual columns now park queued/live agents while preserving context for explicit Start.
+
 - Add pipeline activity observations separate from process status: track native tools/subagents, background/scheduled-work counts and permission waits, retain explicit provider coverage, and require turn-end evidence before a quiet-output readiness gate. Subordinate events cannot finish/fail their parent. Record genuine native plan approval evidence without advancing cards yet; omit raw tool results, commands and scheduled prompts from lifecycle logs. Legacy hooks and Composer/Base behavior remain intact.
 
 - Add an opt-in main-session column pipeline in Column Manager. Stable roles replace stage-name actions: compatible live moves preserve the process without hidden prompts/commits/tests/merges; Done suspends and archives, active restoration resumes the native conversation without task replay, and To Do stops/resets its session while retaining files. Preserve Composer entry and Base/CLI tool inheritance. Migrate state to version 5 without reconstructing version 4 sessions; pipeline backups restore with dispatch disabled. Guard unsupported automation/advanced strategies and incompatible live settings changes until subsequent checkpoints. Legacy boards retain their original workflow.

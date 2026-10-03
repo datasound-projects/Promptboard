@@ -50,6 +50,7 @@ export class Supervisor {
     this.preparing = new Map();
     this.sessions = new Map(); // runId -> session
     this.queue = [];
+    this.heldQueue = new Set();
     this.pending = new Map(); // runId -> subscribers waiting for a queued run to start
     this.stopping = false;
   }
@@ -84,12 +85,31 @@ export class Supervisor {
     this.pumping = (async () => {
       while (this.queue.length && !this.stopping) {
         if (this.activeCount() >= await this.limit()) break;
+        if (this.heldQueue.has(this.queue[0]?.runId)) break; // Preserve FIFO while its destination is accepted.
         const next = this.queue.shift(); // Re-read after the await: a cancel may have emptied the queue.
         if (!next) break;
         (this.launching ??= new Set()).add(next.runId);
         await this.#launch(next).catch(error => this.#fail(next.runId, error)).finally(() => this.launching.delete(next.runId));
       }
     })().finally(() => { this.pumping = null; });
+  }
+
+  /** Keep a waiting run's FIFO slot while Board atomically retargets its configuration. */
+  async retargetQueued(runId, accept) {
+    const entry = this.queue.find(item => item.runId === runId);
+    if (!entry || this.preparing.has(runId) || this.sessions.get(runId)?.proc) throw new AgentError('This agent is already starting. Wait for startup or pause it before changing settings.', 'RUN_STARTING', 409);
+    if (this.heldQueue.has(runId)) throw new AgentError('This queued run is already changing destinations.', 'RUN_BUSY', 409);
+    this.heldQueue.add(runId);
+    try {
+      const result = await accept();
+      // A concurrent explicit Stop can remove this entry; never put it back.
+      if (this.queue.includes(entry)) Object.assign(entry, result.payload);
+      return result.run;
+    } finally {
+      this.heldQueue.delete(runId);
+      if (this.pumping) this.pumping.finally(() => this.#pump()).catch(() => {});
+      else this.#pump();
+    }
   }
 
   #endPending(runId) {
