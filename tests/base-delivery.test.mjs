@@ -110,7 +110,7 @@ test('Provider changes retain selections with truthful permission and optional d
   assert.ok(preview(state, {}, {}, 'planning').errors.length);
   assert.ok(preview(state, {}, {}, 'executing', 'agy').errors.length);
   assert.equal(preview(state, {}, {}, 'executing', 'codex').resources[0].resourceId, 'mcp');
-  assert.ok(preview(state, {}, {}, 'executing', 'codex').warnings.some(w => w.code === 'BASE_AMBIENT_CONFIGURATION'));
+  for (const provider of ['claude', 'codex', 'gemini']) assert.ok(preview(state, {}, {}, 'executing', provider).warnings.some(w => w.code === 'BASE_AMBIENT_CONFIGURATION'));
   state.settings.baseBinding = binding([{ resourceId: 'mcp', required: false }]);
   const optional = preview(state, {}, {}, 'code_review'); assert.equal(optional.errors.length, 0); assert.ok(optional.warnings.length); assert.equal(optional.resources[0].status, 'omitted');
 });
@@ -136,11 +136,54 @@ test('Native MCP delivery preserves adapter hooks, permissions and secret refere
   for (const provider of ['claude', 'codex', 'gemini']) {
     const built = await buildSession({ provider, stage: 'executing', config: resolveConfig('executing', { provider }), message: 'exact', runDir: dir, eventsFile: 'events', sessionId: 's', baseDelivery });
     assert.doesNotMatch(JSON.stringify(built), /bypassPermissions|yolo|danger-full-access/);
-    if (provider === 'claude') { assert.ok(built.args.includes('--strict-mcp-config')); assert.match(await readFile(built.args[built.args.indexOf('--mcp-config') + 1], 'utf8'), /\$\{BASE_TEST_AUTH\}/); assert.match(built.args[built.args.indexOf('--settings') + 1], /SessionStart/); }
+    if (provider === 'claude') { assert.equal(built.args.includes('--strict-mcp-config'), false); assert.match(await readFile(built.args[built.args.indexOf('--mcp-config') + 1], 'utf8'), /\$\{BASE_TEST_AUTH\}/); assert.match(built.args[built.args.indexOf('--settings') + 1], /SessionStart/); }
     if (provider === 'codex') { assert.ok(built.args.includes('--sandbox')); assert.ok(built.args.some(arg => arg.includes('env_http_headers'))); assert.ok(built.args.some(arg => arg.startsWith('notify='))); }
-    if (provider === 'gemini') { const config = JSON.parse(await readFile(built.env.GEMINI_CLI_SYSTEM_SETTINGS_PATH, 'utf8')); assert.equal(config.mcpServers.pb_docs.trust, false); assert.ok(config.hooks.BeforeAgent); assert.ok(built.args.includes('pb_docs')); }
+    if (provider === 'gemini') { const config = JSON.parse(await readFile(built.env.GEMINI_CLI_SYSTEM_SETTINGS_PATH, 'utf8')); assert.equal(config.mcpServers.pb_docs.trust, false); assert.ok(config.hooks.BeforeAgent); assert.equal(built.args.includes('--allowed-mcp-server-names'), false); }
     const restricted = await buildSession({ provider, stage: 'planning', config: resolveConfig('planning', { provider }), message: 'exact', runDir: dir, eventsFile: 'events', sessionId: 's', baseDelivery });
     assert.doesNotMatch(JSON.stringify(restricted.args), /pb_docs/);
+  }
+});
+
+test('Kanban writing launches and resumes inherit CLI tools alongside Base without changing configured policy', async t => {
+  const dir = await directory(t), settingsPath = join(dir, 'administrator.json');
+  const original = JSON.stringify({ mcpServers: { ambient: { command: 'user-configured-server' } }, security: { allowedExtensions: ['trusted-extension'] }, mcp: { excluded: ['blocked-server'] }, hooks: { BeforeAgent: [{ hooks: [{ type: 'command', command: 'existing-hook' }] }] } });
+  await writeFile(settingsPath, original);
+  const previous = process.env.GEMINI_CLI_SYSTEM_SETTINGS_PATH;
+  process.env.GEMINI_CLI_SYSTEM_SETTINGS_PATH = settingsPath;
+  t.after(() => { if (previous === undefined) delete process.env.GEMINI_CLI_SYSTEM_SETTINGS_PATH; else process.env.GEMINI_CLI_SYSTEM_SETTINGS_PATH = previous; });
+  const baseDelivery = { mcpServers: [{ name: 'pb_docs', configuration: { transport: 'stdio', command: 'base-server', args: [] } }], subagents: { specialist: { description: 'Base specialist', prompt: 'Review invariants' } } };
+  for (const provider of ['claude', 'codex', 'gemini']) for (const stage of ['executing', 'testing', 'merge', 'planning', 'code_review']) for (const resumeId of [null, 'captured-conversation']) {
+    const readOnly = ['planning', 'code_review'].includes(stage);
+    const built = await buildSession({ provider, stage, config: resolveConfig(stage, { provider }), message: '', runDir: dir, eventsFile: 'events', sessionId: 'new-id', resumeId, workspacePath: dir, baseDelivery });
+    assert.doesNotMatch(JSON.stringify(built.args), /dangerously|bypassPermissions|yolo|danger-full-access/);
+    if (provider === 'claude') {
+      assert.equal(built.args.includes('--strict-mcp-config'), readOnly);
+      assert.equal(built.args[built.args.indexOf('--permission-mode') + 1], readOnly ? 'plan' : 'acceptEdits');
+      const native = JSON.parse(await readFile(built.args[built.args.indexOf('--mcp-config') + 1], 'utf8').catch(() => built.args[built.args.indexOf('--mcp-config') + 1]));
+      assert.deepEqual(Object.keys(native.mcpServers), readOnly ? [] : ['pb_docs']);
+      assert.equal(built.args.includes('--agents'), !readOnly);
+      if (!readOnly) assert.deepEqual(JSON.parse(built.args[built.args.indexOf('--agents') + 1]), baseDelivery.subagents);
+    } else if (provider === 'gemini') {
+      assert.equal(built.args.includes('--extensions'), readOnly);
+      assert.equal(built.args.includes('--allowed-mcp-server-names'), readOnly);
+      if (readOnly) assert.equal(built.args[built.args.indexOf('--allowed-mcp-server-names') + 1], '');
+      const settings = JSON.parse(await readFile(built.env.GEMINI_CLI_SYSTEM_SETTINGS_PATH, 'utf8'));
+      assert.deepEqual(settings.mcpServers.ambient, { command: 'user-configured-server' });
+      assert.deepEqual(settings.mcp, { excluded: ['blocked-server'] });
+      assert.deepEqual(settings.security, { allowedExtensions: ['trusted-extension'] });
+      assert.equal(settings.hooks.BeforeAgent[0].hooks[0].command, 'existing-hook');
+      assert.equal(Boolean(settings.mcpServers.pb_docs), !readOnly);
+    } else {
+      assert.equal(built.args[built.args.indexOf('--sandbox') + 1], readOnly ? 'read-only' : 'workspace-write');
+      assert.equal(built.args.some(arg => arg.includes('mcp_servers.')), !readOnly);
+    }
+  }
+  assert.equal(await readFile(settingsPath, 'utf8'), original, 'Administrator settings must remain byte-for-byte unchanged.');
+  for (const provider of ['claude', 'gemini']) {
+    const built = await buildSession({ provider, stage: 'executing', config: resolveConfig('executing', { provider }), message: 'Exact task', runDir: dir, eventsFile: 'events', sessionId: 'new' });
+    assert.equal(built.args.includes('--mcp-config'), false);
+    assert.equal(built.args.includes('--allowed-mcp-server-names'), false);
+    assert.equal(built.args.includes('--extensions'), false);
   }
 });
 

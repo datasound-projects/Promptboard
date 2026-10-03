@@ -162,7 +162,7 @@ export function resolveBase({ state, project, task, columnId, provider, capabili
     if (!changed) break;
   }
   for (const entry of resources) for (const message of entry.issues) (entry.required ? errors : warnings).push({ resourceId: entry.resourceId, code: 'BASE_RESOURCE_UNAVAILABLE', message });
-  if (resources.some(entry => entry.delivery === 'native-mcp') && provider === 'codex') warnings.push({ code: 'BASE_AMBIENT_CONFIGURATION', message: 'Base-managed MCP servers supplement external Codex configuration; Base does not isolate ambient MCPs.' });
+  if (resources.some(entry => entry.status === 'ready' && entry.delivery === 'native-mcp')) warnings.push({ code: 'BASE_AMBIENT_CONFIGURATION', message: 'Base-managed MCP servers supplement the user-configured CLI tools; Base does not isolate ambient MCPs.' });
   if (ADAPTERS[provider]?.notLiveVerified && resources.length) warnings.push({ code: 'BASE_NOT_LIVE_VERIFIED', message: 'This provider adapter is covered by simulated checks, not authenticated live verification.' });
   const externalRoots = [...new Set(resources.filter(entry => entry.status === 'ready').flatMap(entry => (registry.get(entry.resourceId)?.configuration?.sources || []).filter(source => source.kind === 'external').map(source => source.rootId)))].map(id => ({ id, approvedAt: state?.base?.approvedRoots?.find(root => root.id === id)?.approvedAt || null }));
   return { version: 1, baseRevision: state?.base?.revision || 0, provider, columnId, profiles, resources, externalRoots, exclusions, warnings, errors, configuredAt: null, supplied: [], observed: [] };

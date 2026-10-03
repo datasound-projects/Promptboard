@@ -185,7 +185,11 @@ export async function buildSession({ provider, stage, config, message, runDir, e
     const hooks = Object.fromEntries(['SessionStart', 'UserPromptSubmit', 'PermissionRequest', 'Notification', 'Stop', 'StopFailure', 'SessionEnd'].map(event => [event, [{ hooks: [hook] }]]));
     let mcpConfig = '{"mcpServers":{}}';
     if (selected.length) { mcpConfig = `${runDir}/base-claude-mcp.json`; await writeFile(mcpConfig, JSON.stringify({ mcpServers: jsonServers }), { mode: 0o600 }); }
-    args = [resumeId ? '--resume' : '--session-id', resumeId || sessionId, '--settings', JSON.stringify({ hooks, statusLine: { type: 'command', command: [nodePath, fileURLToPath(new URL('./usage-status.mjs', import.meta.url)), `${runDir}/usage-status.json`].map(shQuote).join(' ') } }), '--strict-mcp-config', '--mcp-config', mcpConfig];
+    args = [resumeId ? '--resume' : '--session-id', resumeId || sessionId, '--settings', JSON.stringify({ hooks, statusLine: { type: 'command', command: [nodePath, fileURLToPath(new URL('./usage-status.mjs', import.meta.url)), `${runDir}/usage-status.json`].map(shQuote).join(' ') } })];
+    // Writing stages keep user-configured CLI MCPs/plugins; Base adds per-run servers.
+    // Legacy read-only stages retain their explicit restriction to no MCPs.
+    if (readOnly) args.push('--strict-mcp-config');
+    if (readOnly || selected.length) args.push('--mcp-config', mcpConfig);
     if (readOnly) args.push('--permission-mode', 'plan', '--tools', 'Read,Grep,Glob', '--disallowedTools', 'Edit,Write,NotebookEdit,Bash,ExitPlanMode');
     else args.push('--permission-mode', config.permissionMode, '--disallowedTools', 'EnterPlanMode,ExitPlanMode'); // Writing stages never switch to plan mode.
     if (!readOnly && baseDelivery?.subagents && Object.keys(baseDelivery.subagents).length) {
@@ -213,7 +217,7 @@ export async function buildSession({ provider, stage, config, message, runDir, e
     if (inArgv && message) args.push(...(resumeId ? ['--', message] : [message]));
   } else if (provider === 'gemini') {
     env.GEMINI_CLI_SYSTEM_SETTINGS_PATH = await geminiSystemSettings(runDir, [nodePath, HOOK_SCRIPT, eventsFile, 'gemini'].map(shQuote).join(' '), { plan: readOnly, mcpServers: selected.length ? jsonServers : null });
-    args = ['--extensions', 'none', '--allowed-mcp-server-names', selected.map(server => server.name).join(',')];
+    args = readOnly ? ['--extensions', 'none', '--allowed-mcp-server-names', ''] : [];
     if (resumeId) args.push('--resume', resumeId);
     if (readOnly) {
       const policy = `${runDir}/plan-policy.toml`;

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Kanban writing stages inherit user-configured CLI tools, MCPs, and extensions alongside Base delivery on fresh starts and native resumes. Preserve native permissions, administrator settings, read-only stage restrictions, and Composer's existing adapters; do not edit CLI configuration files.
+
 - Kanban Pause and Resume: preserve the native conversation, worktree, and run history while stopping an owned CLI process. Resume the same stage with saved permissions and pinned Base configuration, recheck revocations, and avoid repeating task text. Serialize concurrent requests, retain pause intent across restart, and stop a CLI that reports another conversation ID. Queued runs without a native ID require a fresh start. Cross-column continuity remains a later step.
 
 - Kanban session foundation: persist logical conversation records separately from process runs, including native provider IDs and artifact references. Migrate state versions 2 and 3 to version 4 with an exact original backup; preserve Composer task text and Base. Concurrent startup reads share recovery, and orphaned sessions never relaunch automatically. Existing stage behavior is retained; native resume and column continuity are subsequent steps.
