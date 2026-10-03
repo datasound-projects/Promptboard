@@ -11,7 +11,7 @@ const user = (provider, text, id = 'new-user') => provider === 'claude'
   ? { type: 'user', sessionId: nativeId, message: { role: 'user', content: text } }
   : provider === 'codex' ? { type: 'event_msg', payload: { type: 'user_message', message: text } }
     : { id, type: 'user', content: [{ text }] };
-async function fixture(t, provider = 'claude') {
+async function fixture(t, provider = 'claude', { historyAt = null } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'pb-native-custody-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const eventsFile = join(dir, 'events.jsonl'), writes = [], updates = [], startedAt = Date.now();
@@ -19,8 +19,8 @@ async function fixture(t, provider = 'claude') {
   if (provider === 'codex') {
     const previousHome = process.env.CODEX_HOME; process.env.CODEX_HOME = dir;
     t.after(() => { if (previousHome === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = previousHome; });
-    const date = new Date(startedAt), day = join(dir, 'sessions', String(date.getFullYear()), String(date.getMonth() + 1).padStart(2, '0'), String(date.getDate()).padStart(2, '0'));
-    await mkdir(day, { recursive: true }); path = join(day, `rollout-fixture-${nativeId}.jsonl`);
+    const date = new Date(historyAt ?? startedAt), parts = [String(date.getFullYear()), String(date.getMonth() + 1).padStart(2, '0'), String(date.getDate()).padStart(2, '0')], day = join(dir, 'sessions', ...parts);
+    await mkdir(day, { recursive: true }); path = join(day, `rollout-${parts.join('-')}T00-00-00-${nativeId}.jsonl`);
   }
   const first = provider === 'claude' ? user(provider, 'Original task') : provider === 'codex'
     ? { type: 'session_meta', payload: { id: nativeId, source: 'cli' } } : { sessionId: nativeId, kind: 'main' };
@@ -67,6 +67,14 @@ test('native queue acceptance stays distinct from confirmation, and partial manu
   w.supervisor.input(w.run.id, ''); // Empty input supplies no bytes and does not invalidate proof.
   await w.append('Fresh continuation');
   assert.equal((await w.supervisor.verifyMessage(fresh.ticket, 'Fresh continuation')).status, 'confirmed');
+});
+
+test('Supervisor locates an older resumed Codex conversation by exact native metadata without typing or exposing its path', async t => {
+  const w = await fixture(t, 'codex', { historyAt: Date.UTC(2025, 0, 2) });
+  const baseline = await w.supervisor.checkpointMessage(w.run.id); assert.equal(baseline.status, 'ready');
+  await w.append('Older resumed continuation');
+  assert.equal((await w.supervisor.verifyMessage(baseline.ticket, 'Older resumed continuation')).status, 'confirmed');
+  assert.deepEqual(w.writes, []); assert.doesNotMatch(JSON.stringify(w.updates), /rollout-|Older resumed continuation/);
 });
 
 test('main startup invalidates prior receipt epochs while subordinate startup cannot redirect or revoke the main history', async t => {
