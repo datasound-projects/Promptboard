@@ -74,12 +74,22 @@ export class PipelineActions {
         errorCode: combined.reason?.name === 'TimeoutError' ? 'ACTION_TIMEOUT' : 'ACTION_CANCELLED', reason: 'The automation was stopped before its outcome was confirmed.' };
       return { status: 'failed', errorCode: error instanceof PipelineActionError ? error.code : 'ACTION_FAILED',
         reason: error instanceof PipelineActionError ? error.message : 'The automation could not finish. Check its configuration and retry explicitly.' };
-    }).then(result => ({ ...result, durationMs: Date.now() - startedAt })).finally(() => this.jobs.delete(context.actionId));
+    }).then(result => ({ ...result, durationMs: Date.now() - startedAt })).finally(() => {
+      job.finished = true;
+      // Keep ownership of a process whose termination was not confirmed. It
+      // can still be stopped explicitly or retried during shutdown.
+      if (!job.child?.pid || job.child.exitCode !== null || job.child.signalCode !== null) this.jobs.delete(context.actionId);
+    });
     return job.promise;
   }
 
-  cancel(actionId) { const job = this.jobs.get(actionId); job?.controller.abort('cancelled'); return Boolean(job); }
-  async shutdown() { this.stopping = true; for (const job of this.jobs.values()) job.controller.abort('shutdown'); await Promise.allSettled([...this.jobs.values()].map(job => job.promise)); }
+  cancel(actionId) { const job = this.jobs.get(actionId); job?.controller.abort('cancelled'); if (job?.stopRetry) void job.stopRetry(); return Boolean(job); }
+  async shutdown() {
+    this.stopping = true;
+    for (const job of this.jobs.values()) job.controller.abort('shutdown');
+    await Promise.allSettled([...this.jobs.values()].map(job => job.promise));
+    await Promise.allSettled([...this.jobs.values()].map(job => job.stopRetry?.()));
+  }
 
   async #script(row, context, variables, signal) {
     const directory = await makeTempDir('promptboard-script-');
@@ -99,29 +109,36 @@ export class PipelineActions {
         let child;
         try { child = trackChild(spawn(command, args, { cwd: context.cwd, env: environment, shell: false, windowsHide: true, detached: !windows, stdio: 'ignore' })); }
         catch { resolve({ status: 'failed', errorCode: 'SCRIPT_SPAWN_FAILED', reason: 'The script shell could not start.' }); return; }
+        const owned = this.jobs.get(context.actionId); owned.child = child;
+        child.once('close', () => { owned.child = null; if (owned.finished && this.jobs.get(context.actionId) === owned) this.jobs.delete(context.actionId); });
         let settled = false, timer, killing = null, stopFailed = false;
         const kill = () => {
           if (!child.pid || killing) return killing;
+          if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+          stopFailed = false;
           if (!windows) {
             try { process.kill(-child.pid, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') stopFailed = true; }
-            killing = Promise.resolve(); return killing;
+            killing = Promise.resolve().finally(() => { if (stopFailed) killing = null; }); return killing;
           }
           killing = new Promise(done => {
             const killer = spawn(join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'taskkill.exe'), ['/PID', String(child.pid), '/T', '/F'], { shell: false, windowsHide: true, stdio: 'ignore' });
-            let killTimer; const finish = code => { clearTimeout(killTimer); if (code !== 0) { stopFailed = true; try { child.kill(); } catch {} } done(); };
+            let killTimer; const finish = code => { clearTimeout(killTimer); if (code !== 0) stopFailed = true; done(); };
             killer.once('error', () => finish(null)); killer.once('close', finish);
-            killTimer = setTimeout(() => { try { killer.kill(); } catch {} finish(null); }, 2000);
-          });
+            // Native taskkill startup can be slow on busy Windows hosts. Keep
+            // the root alive if cleanup fails, so its tree remains addressable.
+            killTimer = setTimeout(() => { try { killer.kill(); } catch {} finish(null); }, 7000);
+          }).catch(() => { stopFailed = true; }).finally(() => { if (stopFailed) killing = null; });
           return killing;
         };
+        owned.stopRetry = kill;
         const finish = async result => {
           if (settled) return; settled = true; clearTimeout(timer); signal.removeEventListener('abort', abort);
-          if (signal.aborted) await kill();
+          if (signal.aborted && killing) await killing;
           resolve(stopFailed ? { status: 'failed', errorCode: 'SCRIPT_STOP_FAILED', reason: 'The script process tree could not be confirmed stopped. Check it before retrying.' } : result);
         };
         const abort = () => {
           kill();
-          timer = setTimeout(() => { stopFailed = true; void finish({ status: 'failed', errorCode: 'SCRIPT_STOP_FAILED', reason: 'The script did not confirm that it stopped.' }); }, 2500);
+          timer = setTimeout(() => { stopFailed = true; void finish({ status: 'failed', errorCode: 'SCRIPT_STOP_FAILED', reason: 'The script did not confirm that it stopped.' }); }, 9500);
         };
         child.once('error', error => { void finish({ status: 'failed', errorCode: error.code === 'E2BIG' ? 'SCRIPT_ENVIRONMENT_LIMIT' : 'SCRIPT_SPAWN_FAILED', reason: error.code === 'E2BIG' ? 'Task metadata exceeds the native process environment limit.' : 'The script shell could not start.' }); });
         child.once('close', (exitCode, terminatedBy) => { void finish(exitCode === 0 && !signal.aborted ? { status: 'succeeded', exitCode: 0 }

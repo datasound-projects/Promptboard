@@ -60,7 +60,7 @@ test('script deadlines stop running work and pre-cancelled actions never start',
   const cwd = await temp(t), worker = join(cwd, 'busy.mjs'); await writeFile(worker, `import { writeFileSync } from 'node:fs'; writeFileSync('started.txt','started'); setInterval(()=>{},1000);`);
   const actions = new PipelineActions(); t.after(() => actions.shutdown());
   const work = actions.run(row('run_script', { script: nodeScript(worker) }), context('deadline-script', cwd), { timeoutMs: 2500 });
-  await until(async () => readFile(join(cwd, 'started.txt'), 'utf8').catch(() => null)); assert.equal((await work).status, 'timed_out');
+  await until(async () => readFile(join(cwd, 'started.txt'), 'utf8').catch(() => null)); const timed = await work; assert.equal(timed.status, 'timed_out', JSON.stringify(timed));
   const controller = new AbortController(); controller.abort();
   const result = await actions.run(row('run_script', { script: 'echo NEVER RUN' }), context('pre-cancelled', cwd), { signal: controller.signal });
   assert.equal(result.status, 'cancelled'); assert.equal(actions.jobs.size, 0);
