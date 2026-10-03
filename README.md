@@ -40,6 +40,7 @@ Open **http://127.0.0.1:4318**. The navigation is **Compose | Kanban | Base**. P
 - Plan, build, review, and test. Reviews and passing tests must match the current commit before a merge. Merge manually, or explicitly enable automatic merging.
 - Choose providers and models per project or column. Customize columns, edit cards, and inspect run history.
 - Pause stops a task's agent while keeping its conversation and files. Resume continues the captured native conversation in the same stage and workspace, without repeating the task prompt. Restart preserves session metadata without launching agents. See [session persistence](docs/session-persistence.md) for limits.
+- Writing-stage Kanban agents inherit tools and MCPs configured in their CLI alongside selected Base resources. Native permissions and administrator policies still apply; Planning and Code Review keep their restrictions. See [Base delivery](docs/base-delivery.md).
 
 <p align="center">
   <img src="docs/kanban-demo.gif" width="960" alt="Dark-mode Kanban demo: consent to Autopilot, run a task through Executing, Code Review, Testing and Merge, and finish in Done with agent terminal tabs.">
