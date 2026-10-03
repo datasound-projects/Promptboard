@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add the pure column-pipeline configuration foundation: stable role-based columns, silent seven-column defaults, plan targets, sparse strategy profiles, exclusive task-wide agent pins, isolated conversation policies, and bounded definitions for the four automation types. Runtime integration remains pending; this checkpoint does not alter existing projects or run automations.
+
 - Kanban writing stages inherit user-configured CLI tools, MCPs, and extensions alongside Base delivery on fresh starts and native resumes. Preserve native permissions, administrator settings, read-only stage restrictions, and Composer's existing adapters; do not edit CLI configuration files.
 
 - Kanban Pause and Resume: preserve the native conversation, worktree, and run history while stopping an owned CLI process. Resume the same stage with saved permissions and pinned Base configuration, recheck revocations, and avoid repeating task text. Serialize concurrent requests, retain pause intent across restart, and stop a CLI that reports another conversation ID. Queued runs without a native ID require a fresh start. Cross-column continuity remains a later step.
