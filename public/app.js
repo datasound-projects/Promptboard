@@ -37,7 +37,7 @@ let authInfo = null;
 let authBusy = false;
 let authSequence = 0;
 const GENERATION_CEILING_MS = 7.5 * 60 * 1000; // Above the server's 6-minute pipeline deadline.
-const STAGE_LABELS = { starting: 'Starting', models: 'Checking model options', draft: 'Drafting prompt', review: 'Reviewing requirements', repair: 'Repairing confirmed issues', 'repair-review': 'Verifying repaired prompt' };
+const STAGE_LABELS = { understanding: 'Understanding task', retrieving: 'Finding relevant context', document: 'Preparing document', ready: 'Ready for clarification', starting: 'Starting', models: 'Checking model options', draft: 'Drafting prompt', review: 'Reviewing requirements', repair: 'Repairing confirmed issues', 'repair-review': 'Verifying repaired prompt' };
 
 function safeText(value, max = MAX_PROMPT_BYTES) { return typeof value === 'string' ? value.slice(0, max) : ''; }
 
@@ -396,6 +396,8 @@ function setRunning(value) {
   $('#generation-progress').hidden = !value;
   $('#cancel-button').hidden = !value;
   $('#generate-label').textContent = value ? 'Writing and checking…' : 'Generate prompt';
+  if (!value) contextLabel();
+  for (const button of document.querySelectorAll('#compose-context button, #context-prepared button')) button.disabled = value;
   $('#cancel-button').disabled = false;
   $('#new-prompt').disabled = value;
   for (const input of $('#prompt-form').querySelectorAll('input,select,textarea')) input.disabled = value;
@@ -616,6 +618,7 @@ function quotedEvidence(label, text) {
 function restoreEntry(entry) {
   if (running) return;
   showPromptPage();
+  contextReset();
   currentId = entry.id;
   $('#prompt-input').value = entry.input;
   $('#provider').value = entry.provider;
@@ -643,6 +646,7 @@ function restoreEntry(entry) {
 function newPrompt() {
   if (running) return;
   showPromptPage();
+  contextReset();
   currentId = null;
   $('#prompt-input').value = '';
   $('input[name="language"][value="en"]').checked = true;
@@ -657,11 +661,17 @@ function newPrompt() {
   window.scrollTo({ top: 0, behavior: scrollBehavior() });
 }
 
-async function generate(event) {
+async function generate(event, { skipQuestions = false } = {}) {
   event.preventDefault();
   if (running || authBusy || modelsLoading || invalidEffort || !token || !selectedProvider()?.available) return;
   const request = settings();
   if (!request.input.trim()) { $('#prompt-input').focus(); return; }
+  if (contextNeeded()) {
+    if (!contextState.prepared || contextState.signature !== contextSignature()) { await prepareContext(request); return; }
+    request.grounding = contextGrounding(skipQuestions);
+  }
+  let generated = false;
+  const autoSplit = $('#context-auto-split').checked;
   const previousResult = currentResult;
   $('#generation-error').hidden = true;
   $('#output-empty').hidden = true;
@@ -701,6 +711,8 @@ async function generate(event) {
       reportedModels: Array.isArray(data.reportedModels) ? data.reportedModels.filter(x => typeof x === 'string').slice(0, 20) : [],
       durationMs: Number.isFinite(data.durationMs) ? data.durationMs : 0, lint: normalizeLint(data.lint), verification: normalizeVerification(data.verification),
     };
+    delete entry.grounding; // Keep raw source excerpts and answers out of browser storage.
+    generated = true;
     currentId = entry.id;
     history = [entry, ...history].slice(0, HISTORY_LIMIT);
     const saved = persistHistory();
@@ -733,7 +745,162 @@ async function generate(event) {
       updateProviderState();
     }
   }
+  if (generated && autoSplit) await openSplit({ previewOnly: true });
 }
+
+// ---- Optional Compose grounding: source contents live only in this tab's memory. ----
+const contextState = { sources: [], prepared: null, signature: '' };
+const CONTEXT_PREFS = 'promptboard.compose-context';
+function contextSources() {
+  return $('#context-use-sources').checked ? contextState.sources.filter(row => row.enabled).map(row => row.config.type === 'expert' ? { ...row.config, text: row.text || '' } : row.config) : [];
+}
+function contextNeeded() { return $('#context-clarify').checked || $('#context-use-sources').checked; }
+function contextSignature() { return JSON.stringify([settings(), $('#context-clarify').checked, contextSources()]); }
+function contextReset() {
+  contextState.prepared = null; contextState.signature = '';
+  $('#context-prepared').hidden = true;
+  contextLabel();
+}
+function contextLabel() {
+  const count = contextState.sources.filter(row => row.enabled).length;
+  $('#context-source-count').textContent = `${count} ${count === 1 ? 'source' : 'sources'}`;
+  $('#context-summary').textContent = contextNeeded() || $('#context-auto-split').checked ? 'On' : 'Off';
+  $('#context-sources').hidden = !$('#context-use-sources').checked;
+  $('#context-use-sources').setAttribute('aria-expanded', String($('#context-use-sources').checked));
+  if (!running) $('#generate-label').textContent = contextNeeded() && (!contextState.prepared || contextState.signature !== contextSignature()) ? 'Prepare prompt' : 'Generate prompt';
+}
+function contextError(message = '') { $('#context-error').textContent = message; $('#context-error').hidden = !message; }
+function renderContextSources() {
+  $('#context-source-list').replaceChildren(...contextState.sources.map(row => {
+    const card = document.createElement('div'); card.className = 'context-source';
+    const label = document.createElement('label'); label.className = 'check-option';
+    const enabled = document.createElement('input'); enabled.type = 'checkbox'; enabled.checked = row.enabled;
+    const name = document.createElement('span'); name.textContent = row.label;
+    enabled.addEventListener('change', () => { row.enabled = enabled.checked; contextReset(); });
+    label.append(enabled, name);
+    const remove = detailButton('Remove', () => {
+      contextState.sources = contextState.sources.filter(item => item !== row);
+      if (row.config.type === 'document') void api(`/api/compose/sources/document/${encodeURIComponent(row.config.id)}`, { method: 'DELETE' }).catch(() => {});
+      renderContextSources(); contextReset();
+    }, 'text-button');
+    remove.setAttribute('aria-label', `Remove ${row.label}`);
+    card.append(detailActions(label, remove));
+    if (row.config.type === 'expert') {
+      const input = document.createElement('textarea'); input.rows = 4; input.maxLength = 20000; input.value = row.text || '';
+      input.setAttribute('aria-label', 'Expert context'); input.placeholder = 'Relevant facts, constraints, or architecture notes…';
+      input.addEventListener('input', () => { row.text = input.value; contextReset(); }); card.append(input);
+    }
+    return card;
+  }));
+  contextLabel();
+}
+function addContextSource(config, label, text = '') {
+  const existing = config.type === 'document' && contextState.sources.find(row => row.config.type === 'document' && row.config.id === config.id);
+  if (existing) { existing.enabled = true; renderContextSources(); contextReset(); return; }
+  if (contextState.sources.length >= 8) { contextError('Use at most eight sources.'); return; }
+  contextState.sources.push({ config, label, enabled: true, text });
+  contextError(); renderContextSources(); contextReset();
+}
+function showContextPrepared(data) {
+  contextState.prepared = data; contextState.signature = contextSignature();
+  $('#context-prepared').hidden = false;
+  const grounded = new Set(data.evidence.flatMap(item => item.questionIds || []));
+  const remaining = data.questions.filter(q => q.answerFrom !== 'sources' || !grounded.has(q.id));
+  const found = grounded.size;
+  $('#context-prepared-status').textContent = `${found ? `Relevant evidence found for ${found} ${found === 1 ? 'question' : 'questions'}. ` : ''}${remaining.length} open ${remaining.length === 1 ? 'question' : 'questions'}. All answers are optional.`;
+  const notes = [...data.warnings, ...data.sources.filter(row => row.status !== 'retrieved').map(row => `${row.name}: ${row.status === 'not-needed' ? 'not needed for this task' : row.status === 'failed' ? 'unavailable' : 'no relevant material found'}.`)];
+  $('#context-warnings').textContent = notes.join(' '); $('#context-warnings').hidden = !notes.length;
+  $('#context-questions').replaceChildren();
+  if ($('#context-clarify').checked) for (const q of remaining) {
+    const label = document.createElement('label'); label.className = 'field-label'; label.htmlFor = `context-answer-${q.id}`;
+    label.append(document.createTextNode(q.question));
+    const input = document.createElement('textarea'); input.id = `context-answer-${q.id}`; input.dataset.questionId = q.id; input.rows = 2; input.maxLength = 2000; input.placeholder = 'Optional answer'; label.append(input);
+    $('#context-questions').append(label);
+  }
+  $('#context-evidence-list').replaceChildren(...data.evidence.map(item => {
+    const block = document.createElement('div');
+    const origins = [{ source: item.source, locator: item.locator }, ...(item.alsoFrom || [])];
+    block.append(paragraph(origins.map(origin => `${origin.source} · ${origin.locator}`).join(' / '), 'note'));
+    const excerpt = document.createElement('pre'); excerpt.textContent = item.text; block.append(excerpt); return block;
+  }));
+  $('#context-evidence').hidden = !data.evidence.length;
+  setSettingsCollapsed(false);
+  contextLabel();
+  $('#context-prepared-heading').focus();
+}
+function contextGrounding(skip) {
+  const data = contextState.prepared;
+  const userAnswers = [], unresolvedQuestions = [];
+  for (const q of data.questions) {
+    const answer = skip ? '' : $(`#context-answer-${q.id}`)?.value.trim();
+    if (answer) userAnswers.push({ question: q.question, answer });
+    else if (q.answerFrom !== 'sources' || !data.evidence.some(item => item.questionIds?.includes(q.id))) unresolvedQuestions.push(q.question);
+  }
+  return { userAnswers, evidence: data.evidence, unresolvedQuestions };
+}
+async function prepareContext(request) {
+  const own = new AbortController(); controller = own;
+  setRunning(true); startProgress(); contextError();
+  $('#generate-label').textContent = 'Preparing prompt…';
+  try {
+    const signature = contextSignature();
+    const { response, data } = await api('/api/compose/prepare', { method: 'POST', body: { request, clarify: $('#context-clarify').checked, sources: contextSources() }, signal: own.signal, timeoutMs: 130000 });
+    if (own.signal.aborted) return;
+    if (!response.ok) throw new Error(failureMessage(data, 'Preparation failed.'));
+    if (signature === contextSignature()) showContextPrepared(data);
+  } catch (error) {
+    if (!own.signal.aborted) showContextPrepared({ questions: [], evidence: [], sources: [], warnings: [error.message + ' Retry or generate without preparation.'] });
+    else announce('Preparation canceled. Your task and sources are kept.');
+  } finally { controller = null; stopProgress(); setRunning(false); contextLabel(); }
+}
+async function uploadContextDocument() {
+  if (contextState.sources.length >= 8) { contextError('Remove a source before adding another document.'); return; }
+  const file = $('#context-file').files[0];
+  if (!file) { contextError('Choose a PDF, .txt, or .md file.'); return; }
+  if (file.size > 20 * 1024 * 1024) { contextError('Choose a document up to 20 MiB.'); return; }
+  const params = new URLSearchParams({ name: file.name });
+  for (const [name, id] of [['from', 'context-page-from'], ['to', 'context-page-to']]) if ($(`#${id}`).value) params.set(name, $(`#${id}`).value);
+  const own = new AbortController(); controller = own; setRunning(true); startProgress(); contextError();
+  const timer = setTimeout(() => own.abort(), 65000);
+  try {
+    const response = await fetch(`/api/compose/sources/document?${params}`, { method: 'POST', headers: { 'X-STE-Token': token, 'Content-Type': file.type || (/\.pdf$/i.test(file.name) ? 'application/pdf' : 'text/plain') }, body: file, signal: own.signal });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Document preparation failed.');
+    const doc = data.document;
+    addContextSource({ type: 'document', id: doc.id }, `${doc.name}${doc.sourceType === 'pdf' ? ` · pp. ${doc.from}–${doc.to}` : ''}`);
+    $('#context-file').value = ''; $('#context-document-fields').hidden = true;
+    $('#context-add-document').setAttribute('aria-expanded', 'false');
+  } catch (error) { contextError(own.signal.aborted ? 'Document preparation stopped. Retry or continue without this document.' : error.message); }
+  finally { clearTimeout(timer); controller = null; stopProgress(); setRunning(false); }
+}
+for (const id of ['context-clarify', 'context-use-sources', 'context-auto-split']) {
+  try { $(`#${id}`).checked = JSON.parse(localStorage.getItem(CONTEXT_PREFS) || '{}')[id] === true; } catch {}
+  $(`#${id}`).addEventListener('change', () => {
+    savePref(CONTEXT_PREFS, JSON.stringify(Object.fromEntries(['context-clarify', 'context-use-sources', 'context-auto-split'].map(key => [key, $(`#${key}`).checked]))));
+    if (id === 'context-auto-split') contextLabel(); else contextReset();
+  });
+}
+for (const id of ['compose-context', 'context-custom', 'context-evidence']) $(`#${id}`).addEventListener('toggle', () => $(`#${id} > summary`).setAttribute('aria-expanded', String($(`#${id}`).open)));
+$('#prompt-form').addEventListener('input', event => { if (!event.target.closest('#context-prepared') && !event.target.closest('#compose-context')) contextReset(); });
+$('#prompt-form').addEventListener('change', event => { if (!event.target.closest('#context-prepared') && !event.target.closest('#compose-context')) contextReset(); });
+$('#context-add-mcp').addEventListener('click', () => {
+  if (!contextState.sources.some(row => row.config.preset === 'context7')) addContextSource({ type: 'mcp', preset: 'context7' }, 'Context7 · current library documentation');
+});
+$('#context-add-document').addEventListener('click', () => { $('#context-document-fields').hidden = !$('#context-document-fields').hidden; $('#context-add-document').setAttribute('aria-expanded', String(!$('#context-document-fields').hidden)); });
+$('#context-upload').addEventListener('click', uploadContextDocument);
+$('#context-add-expert').addEventListener('click', () => addContextSource({ type: 'expert', name: 'Expert context' }, 'Expert context'));
+$('#context-save-mcp').addEventListener('click', () => {
+  try {
+    const data = JSON.parse($('#context-mcp-config').value);
+    if (!data || typeof data !== 'object' || Array.isArray(data) || !data.name || !['stdio', 'streamable-http'].includes(data.transport)) throw new Error('Invalid MCP configuration.');
+    if (data.transport === 'stdio' && !$('#context-allow-start').checked) throw new Error('Allow starting this trusted local MCP program first.');
+    addContextSource({ ...data, type: 'mcp', ...(data.transport === 'stdio' ? { allowStart: true } : {}) }, String(data.name).slice(0, 80));
+    $('#context-mcp-config').value = ''; $('#context-allow-start').checked = false; $('#context-custom').open = false;
+  } catch (error) { contextError(error.message); }
+});
+$('#context-skip').addEventListener('click', event => generate(event, { skipQuestions: true }));
+$('#context-retry').addEventListener('click', event => { contextReset(); generate(event); });
+contextLabel();
 
 // CLI connection panel. Installation and sign-in are reported separately; sign-in
 // actions use each CLI's own documented flow. No credentials pass through this page.
@@ -3018,10 +3185,13 @@ function renderSplit() {
   $('#split-add').disabled = !count;
   $('#split-add').firstChild.textContent = `Add ${plural(count, 'card')} to To Do `;
 }
-async function openSplit() {
+async function openSplit({ previewOnly = false } = {}) {
   if (!currentResult || running) return;
-  if (!board) await (boardLoading || loadBoard()).catch(() => {});
+  if (!previewOnly && !board) await (boardLoading || loadBoard()).catch(() => {});
   const result = currentResult;
+  $('#split-save-options').hidden = true;
+  $('#split-copy-tasks').hidden = true;
+  $('#split-add').hidden = previewOnly;
   split.tasks = []; split.result = result; split.savedIds = [];
   $('#split-project').disabled = false;
   $('#split-list').replaceChildren();
@@ -3043,6 +3213,14 @@ async function openSplit() {
     $('#split-coverage').textContent = `Check before adding: ${coverage.issues.length === 1 ? 'this exact text from your prompt is' : 'these exact texts from your prompt are'} in no task: ${coverage.issues.map(issue => issue.excerpt || issue.message).slice(0, 5).join(' · ')}`;
     $('#split-coverage').className = 'note kanban-error'; $('#split-coverage').hidden = false;
   } else if (coverage?.protectedCount) { $('#split-coverage').textContent = `All ${coverage.protectedCount} exact texts found in your prompt (paths, code, quotes) appear in the tasks.`; $('#split-coverage').className = 'note'; $('#split-coverage').hidden = false; }
+  $('#split-copy-tasks').hidden = false;
+  if (previewOnly) {
+    $('#split-status').textContent = `${split.tasks.length} tasks ready to review. Nothing has been saved or started.`;
+    $('#split-save-options').hidden = false;
+    renderSplit();
+    $('#split-copy-tasks').focus();
+    return;
+  }
   const projects = board?.projects || [];
   $('#split-project').replaceChildren(...projects.map(project => option(project.id, project.name)), option('', 'New project…'));
   $('#split-project').value = currentProject()?.id || '';
@@ -3087,6 +3265,20 @@ async function addSplitCards(event) {
   }
 }
 $('#split-button').addEventListener('click', openSplit);
+$('#split-copy-tasks').addEventListener('click', async () => {
+  try { await navigator.clipboard.writeText(split.tasks.filter(task => task.included).map(task => `# ${task.title}\n\n${task.prompt}`).join('\n\n')); announce('Subtasks copied.'); }
+  catch { $('#split-error').textContent = 'Copy failed. Select the task text to copy it.'; $('#split-error').hidden = false; }
+});
+$('#split-save-options').addEventListener('click', async () => {
+  if (!board) await (boardLoading || loadBoard()).catch(() => {});
+  const projects = board?.projects || [];
+  $('#split-project').replaceChildren(...projects.map(project => option(project.id, project.name)), option('', 'New project…'));
+  $('#split-project').value = currentProject()?.id || '';
+  $('#split-project-name-field').hidden = Boolean($('#split-project').value);
+  $('#split-target').hidden = false; $('#split-add').hidden = false; $('#split-save-options').hidden = true;
+  $('#split-autopilot').checked = false;
+});
+
 // Lock a modal while a save is in flight: repeated Enter/clicks cannot create duplicates.
 function bindAsyncForm(selector, handler) {
   const form = $(selector), dialog = form.closest('dialog');

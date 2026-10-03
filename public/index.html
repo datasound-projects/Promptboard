@@ -130,6 +130,49 @@
               </div><p class="note" id="quality-note">Automatic checks and a separate model review. Usually 2 CLI calls; up to 4 only when a check confirms a lost or changed requirement. Uses more time and CLI allowance.</p></fieldset>
             </div>
 
+            <details class="advanced compose-context" id="compose-context">
+              <summary aria-expanded="false"><span>Context grounding</span><span class="advanced-summary" id="context-summary">Off</span><span class="details-plus" aria-hidden="true">＋</span></summary>
+              <div class="advanced-body">
+                <p class="note">Let Compose ask focused questions and use relevant information from sources you choose.</p>
+                <label class="check-option"><input type="checkbox" id="context-clarify"><span><strong>Ask clarification questions</strong><small>Identify missing decisions before writing the final prompt.</small></span></label>
+                <label class="check-option"><input type="checkbox" id="context-use-sources" aria-controls="context-sources" aria-expanded="false"><span><strong>Use context sources</strong><small id="context-source-count">0 sources</small></span></label>
+                <div id="context-sources" hidden>
+                  <div id="context-source-list" class="context-source-list"></div>
+                  <div class="detail-actions">
+                    <button type="button" class="secondary-button" id="context-add-mcp">+ Context7</button>
+                    <button type="button" class="secondary-button" id="context-add-document" aria-expanded="false" aria-controls="context-document-fields">+ Document / PDF</button>
+                    <button type="button" class="secondary-button" id="context-add-expert">+ Expert context</button>
+                  </div>
+                  <div id="context-document-fields" class="context-source" hidden>
+                    <label class="field-label" for="context-file">PDF, text, or Markdown (up to 20 MiB)<input id="context-file" type="file" accept=".pdf,.txt,.md,application/pdf,text/plain,text/markdown"></label>
+                    <div class="select-grid">
+                      <label class="field-label" for="context-page-from">From page (optional)<input id="context-page-from" type="text" maxlength="6" inputmode="numeric"></label>
+                      <label class="field-label" for="context-page-to">To page (optional)<input id="context-page-to" type="text" maxlength="6" inputmode="numeric"></label>
+                    </div>
+                    <button type="button" class="secondary-button" id="context-upload">Add document</button>
+                  </div>
+                  <details class="context-custom" id="context-custom"><summary aria-expanded="false">Custom MCP (advanced)</summary>
+                    <p class="note">Use a remote MCP URL or local stdio command. Credentials must reference environment variable names. Configuration lasts for this tab only.</p>
+                    <label class="field-label" for="context-mcp-config">MCP configuration (JSON)<textarea id="context-mcp-config" rows="5" maxlength="8000" spellcheck="false" placeholder='{"name":"Docs","transport":"streamable-http","endpoint":"https://example.com/mcp","headers":{"Authorization":"DOCS_AUTHORIZATION"}}'></textarea></label>
+                    <p class="note">Stdio example: {"name":"Local docs","transport":"stdio","command":"my-docs-mcp","args":[],"env":{}}</p>
+                    <label class="check-option"><input type="checkbox" id="context-allow-start"><span>Allow starting this trusted local MCP program. It runs on your computer.</span></label>
+                    <button type="button" class="secondary-button" id="context-save-mcp">Add custom MCP</button>
+                  </details>
+                  <p class="note">Documents are processed locally and expire after 30 minutes of inactivity. Only retrieved excerpts used for generation are sent through your selected CLI. MCP may contact an external service. Context7 uses CONTEXT7_API_KEY from the server environment when set.</p>
+                </div>
+                <label class="check-option"><input type="checkbox" id="context-auto-split"><span><strong>Auto-split final prompt into subtasks</strong><small>Preview tasks after generation. Nothing executes automatically.</small></span></label>
+                <p class="inline-error" id="context-error" role="alert" hidden></p>
+              </div>
+            </details>
+            <section id="context-prepared" class="context-prepared" aria-labelledby="context-prepared-heading" hidden>
+              <h3 id="context-prepared-heading" tabindex="-1">Task clarification</h3>
+              <p class="note" id="context-prepared-status" role="status"></p>
+              <p class="inline-error" id="context-warnings" role="alert" hidden></p>
+              <div id="context-questions"></div>
+              <details id="context-evidence"><summary aria-expanded="false">Inspect retrieved sources</summary><div id="context-evidence-list"></div></details>
+              <div class="detail-actions"><button type="button" class="text-button" id="context-skip">Skip questions and generate</button><button type="button" class="text-button" id="context-retry">Prepare again</button></div>
+            </section>
+
             <details class="advanced" id="advanced-options">
               <summary><span>More settings</span><span class="advanced-summary">Sign-in, sign-out, and brief options</span><span class="details-plus" aria-hidden="true">＋</span></summary>
               <div class="advanced-body">
@@ -394,7 +437,7 @@
         </div>
         <label class="check-row" id="split-autopilot-field" hidden><input type="checkbox" id="split-autopilot" checked> Then open Autopilot with these cards in this order (you review and start it)</label>
         <p class="inline-error" id="split-error" role="alert" hidden></p>
-        <div class="kanban-dialog-actions"><button type="button" class="secondary-button" id="split-cancel">Cancel</button><button type="submit" class="dialog-done" id="split-add" disabled>Add cards to To Do <span aria-hidden="true">↗</span></button></div>
+        <div class="kanban-dialog-actions"><button type="button" class="secondary-button" id="split-cancel">Cancel</button><button type="button" class="secondary-button" id="split-copy-tasks" hidden>Copy subtasks</button><button type="button" class="secondary-button" id="split-save-options" hidden>Save to Kanban…</button><button type="submit" class="dialog-done" id="split-add" disabled>Add cards to To Do <span aria-hidden="true">↗</span></button></div>
       </form>
     </dialog>
     <dialog id="columns-dialog" class="kanban-dialog columns-dialog" aria-labelledby="columns-heading"><button class="dialog-close icon-button" id="columns-close" type="button" aria-label="Close">×</button><p class="eyebrow" id="columns-project">COLUMNS</p><h2 id="columns-heading">Column Manager</h2>
