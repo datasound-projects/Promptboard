@@ -88,8 +88,18 @@ async function setup(t, { catalogReader = async id => ({ provider: id, ...catalo
   const submit = () => $('#prompt-form').dispatchEvent(new win.Event('submit', { bubbles: true, cancelable: true }));
   await until(() => !$('#generate-button').disabled, 'initial model discovery');
   const quality = value => { $(`input[name="quality"][value="${value}"]`).checked = true; $(`input[name="quality"][value="${value}"]`).dispatchEvent(new win.Event('change')); };
-  // Resolves when no request from the page is in flight.
-  const idle = async () => { for (let quiet = 0, end = Date.now() + 5000; quiet < 3 && Date.now() < end;) { await new Promise(resolve => setTimeout(resolve, 10)); quiet = pending ? 0 : quiet + 1; } };
+  // Some scenarios intentionally hold model requests. Saves/moves can instead
+  // require completion so a bounded settle never masquerades as an idle page.
+  const idle = async ({ requireComplete = false } = {}) => {
+    const end = Date.now() + (requireComplete ? 15000 : 5000);
+    for (let quiet = 0; quiet < 3;) {
+      if (Date.now() > end) {
+        if (requireComplete) assert.fail(`The page still has ${pending} pending request(s); it is not idle.`);
+        return;
+      }
+      await new Promise(resolve => setTimeout(resolve, 10)); quiet = pending ? 0 : quiet + 1;
+    }
+  };
   return { win, intervals, $, choose, radio, quality, submit, calls, requests, downloads, blobs, copied: () => copied, authAdapter, app, dataDir, idle };
 }
 
@@ -1438,11 +1448,14 @@ test('Testing starts its agent on arrival and verifies commands after confirmati
   await ctx.executor.cancel(ctx.executor.started.at(-1).id);
   // Merge: entering verifies; the card shows one merge button and a pull request button.
   await win.__pbTest.loadBoard(); await ctx.idle();
-  await moveBy(ctx, 'Checked', 'merge'); await ctx.idle();
+  await moveBy(ctx, 'Checked', 'merge'); await ctx.idle({ requireComplete: true });
+  await until(() => !card().textContent.includes('Moving to Merge'), 'merge arrival finished', 15000);
   assert.match(card().textContent, /Ready to merge into trunk\./);
   assert.equal(card().querySelector('.kanban-merge').textContent, 'Merge trunk');
   assert.equal(card().querySelector('.kanban-pr').textContent, 'Open pull request');
   await click(ctx, card().querySelector('.kanban-merge'));
+  await ctx.idle({ requireComplete: true });
+  await until(async () => (await current()).column === 'done', 'merge completion saved', 15000);
   const done = await current();
   assert.deepEqual([done.column, done.completion.kind, done.completion.trigger], ['done', 'merged', 'user']);
   assert.match($('#announcement').textContent, /Merged “Checked” into trunk\. The card is Done/);
@@ -2520,24 +2533,25 @@ test('Base skill creation and project assignment persist through the actual auth
 });
 
 test('Base saves a linked wiki and official MCP preset, then groups them in a pack without executing', async t => {
-  const ctx = await setup(t, { hash: '#/base' }); const { $, win } = ctx; await ctx.idle();
+  const ctx = await setup(t, { hash: '#/base' }); const { $, win } = ctx; await ctx.idle({ requireComplete: true });
   $('#base-new-kind').value = 'knowledge'; byText($('#base-actions'), 'Create').click();
   $('#base-resource-name').value = 'Local wiki'; byText($('#base-detail'), 'Add page').click();
   $('#base-wiki-markdown').value = '# Manual wiki\nKeep this wording unchanged.';
-  submitForm(ctx, '.base-resource-form'); await ctx.idle();
+  submitForm(ctx, '.base-resource-form'); await ctx.idle({ requireComplete: true });
   assert.equal($('.base-resource-form .inline-error').hidden, true, $('.base-resource-form .inline-error').textContent);
   let resources = (await ctx.app.board.base.list()).resources;
   const wiki = resources.find(item => item.name === 'Local wiki'); assert.ok(wiki);
   const detail = await ctx.app.board.base.detail(wiki.id); assert.equal(detail.content.pages[0].markdown, '# Manual wiki\nKeep this wording unchanged.');
-  byText($('#base-actions'), 'Context7 preset').click(); await ctx.idle();
+  byText($('#base-actions'), 'Context7 preset').click(); await ctx.idle({ requireComplete: true });
   assert.equal($('#base-resource-enabled').checked, false); assert.equal($('#base-resource-trust').value, 'untrusted');
-  submitForm(ctx, '.base-resource-form'); await ctx.idle();
+  submitForm(ctx, '.base-resource-form'); await ctx.idle({ requireComplete: true });
   resources = (await ctx.app.board.base.list()).resources;
   const mcp = resources.find(item => item.name === 'Context7'); assert.ok(mcp);
   assert.equal(mcp.configuration.headers.Authorization, 'CONTEXT7_AUTHORIZATION'); assert.equal(mcp.connectionTest, undefined);
   $('#base-new-kind').value = 'pack'; byText($('#base-actions'), 'Create').click(); $('#base-resource-name').value = 'Optional documentation';
   for (const id of [wiki.id, mcp.id]) { const input = $(`.base-resource-form [data-resource="${id}"]`); input.checked = true; input.dispatchEvent(new win.Event('change', { bubbles: true })); }
-  submitForm(ctx, '.base-resource-form'); await ctx.idle();
+  submitForm(ctx, '.base-resource-form'); await ctx.idle({ requireComplete: true });
+  await until(async () => (await ctx.app.board.base.list()).resources.some(item => item.name === 'Optional documentation'), 'pack publication', 15000);
   const pack = (await ctx.app.board.base.list()).resources.find(item => item.name === 'Optional documentation');
   assert.deepEqual(pack.configuration.resources.map(ref => ref.resourceId).sort(), [wiki.id, mcp.id].sort());
   assert.equal((await serverBoard(ctx)).runs.length, 0); assert.equal(ctx.calls.length, 0, 'Library edits never invoke the generation runner.');

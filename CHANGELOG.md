@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Prepare the durable automation move journal with atomic revision publication, stable request/action identities, ordered exit/lifecycle/enter grants, persisted webhook attempts and dead-owner interruption recovery. Refuse replay after unknown outcomes or corrupt/newer records. Keep enabled rows unavailable until runtime and message scheduling are integrated; no board or state-schema changes.
+
+- Make Merge and Base pack UI fixtures await completed requests and saved results before asserting. Keep intentionally pending discovery tests bounded. Increase the test runner's file budget to five minutes so Node 22 can finish the growing UI file; retain explicit scenario deadlines and concurrency two.
+
+- Prepare bounded script/webhook/notification execution primitives with native shell files, exact task metadata, owned process-tree cancellation, retry/idempotency handling and explicit unconfirmed notification outcomes. Keep automation rows unavailable until durable move journaling and session message delivery are integrated; no board behavior changes in this step.
+
 - Route verified main Claude/Gemini native plan approvals to the current column/profile's configured target, with a durable one-attempt record and visible pending/failure states. Keep compatible live implementation and native permissions without injecting a prompt. Concrete model/effort/Base changes wait for a verified boundary and resume the exact conversation with an implementation continuation; Stop/Pause, superseding plans and restart cannot replay the action. Add the plan target selector; Codex remains an explicit move. Keep Composer input and Base/CLI tool inheritance intact.
 
 - Resume same-provider live pipeline settings/Base changes at an observed native turn boundary, preserving the exact conversation and worktree without replaying task text. Invalidate readiness on terminal input, recheck events and committed task/settings before signalling, revoke stale leases, and let explicit Stop/Pause cancel the handoff. Distinguish system suspension from user pause and retain the original process/card on timeout or pre-stop conflicts.
