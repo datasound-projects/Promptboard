@@ -194,3 +194,42 @@ test('real PTY simulated providers use a silent first envelope, keep the live pr
   }
   assert.equal(await readFile(join(w.root, 'README.md'), 'utf8'), 'main checkout\n');
 });
+
+test('real PTY activity hooks track outstanding work and native approval without advancing or failing the parent task', { skip: process.platform === 'win32' }, async t => {
+  const w = await world(t, true);
+  const updateRun = w.board.updateRun.bind(w.board); let failedActivityWrite = false;
+  w.board.updateRun = async (id, fields) => {
+    if (fields.activity?.ready && !failedActivityWrite) { failedActivityWrite = true; throw new Error('Simulated activity persistence failure'); }
+    return updateRun(id, fields);
+  };
+  for (const provider of ['claude', 'gemini']) {
+    const config = defaultPipelineConfig(); for (const column of config.columns.filter(item => item.role === 'active')) column.strategy.agentOverride = provider;
+    await w.configure(config);
+    const card = await w.board.createTask({ projectId: w.projectId, title: 'Activity', prompt: 'ACTIVITY_FIXTURE' });
+    const { run } = await w.move(card.id, 'executing');
+    await until(async () => (await w.board.run(run.id)).activity?.ready);
+    assert.equal(failedActivityWrite, true); // An unchanged snapshot is retried after a failed store write.
+    const input = text => w.board.executor.input(run.id, `${text}\r`);
+    await input('activity-start');
+    const busy = await until(async () => { const r = await w.board.run(run.id); return r.activity?.background === 1 && r; });
+    assert.equal(busy.activity.ready, false); assert.equal(busy.activity.phase, 'working');
+    assert.equal(busy.activity.parentTurnComplete, true); assert.equal(busy.activity.tools, 2);
+    if (provider === 'claude') assert.equal(busy.activity.subagents, 1);
+    assert.doesNotMatch(await readFile(join(w.dataDir, run.artifactsDir, 'last-message.md'), 'utf8'), /Child response/);
+    await input('activity-child-failure'); await new Promise(resolve => setTimeout(resolve, 400));
+    assert.notEqual((await w.board.run(run.id)).status, 'failed');
+    await input('activity-finish'); await until(async () => (await w.board.run(run.id)).activity?.ready);
+    await input('activity-plan-request');
+    await until(async () => (await w.board.run(run.id)).activity?.permissionPending);
+    assert.equal((await w.board.run(run.id)).activity.planApproval, undefined);
+    await input('activity-plan-reject');
+    await until(async () => !(await w.board.run(run.id)).activity?.permissionPending);
+    assert.equal((await w.board.run(run.id)).activity.planApproval, undefined);
+    await input('activity-plan-approve');
+    const approved = await until(async () => (await w.board.run(run.id)).activity?.planApproval);
+    assert.equal(approved.provider, provider);
+    assert.equal((await w.taskNow(card.id)).column, 'executing'); // Evidence foundation does not auto-move yet.
+    assert.doesNotMatch(await readFile(join(w.dataDir, run.artifactsDir, 'events.jsonl'), 'utf8'), /PRIVATE/);
+    await w.move(card.id, 'todo'); assert.equal((await w.board.run(run.id)).activity.phase, 'ended');
+  }
+});

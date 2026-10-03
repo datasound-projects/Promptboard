@@ -42,6 +42,7 @@ Open **http://127.0.0.1:4318**. The navigation is **Compose | Kanban | Base**. P
 - Pause stops a task's agent while keeping its conversation and files. Resume continues the captured native conversation in the same stage and workspace, without repeating the task prompt. Restart preserves session metadata without launching agents. See [session persistence](docs/session-persistence.md) for limits.
 - Writing-stage Kanban agents inherit tools and MCPs configured in their CLI alongside selected Base resources. Native permissions and administrator policies still apply; Planning and Code Review keep their restrictions. See [Base delivery](docs/base-delivery.md).
 - Column Manager offers an opt-in [column pipeline](docs/pipeline-lifecycle.md): compatible moves keep the agent alive and send no stage instructions; Done pauses/archives, and To Do stops/resets its current session while retaining files. Existing boards keep their stage rules.
+- Pipeline [activity observations](docs/pipeline-activity.md) show outstanding work separately from response completion, with explicit provider coverage and native approval evidence.
 - Pipeline first input uses a [task envelope](docs/pipeline-prompts.md) preserving engineered prompt content, with selected Base resources and inherited CLI tools. Automations, automatic plan exit, and advanced session strategies are still being implemented.
 
 <p align="center">
