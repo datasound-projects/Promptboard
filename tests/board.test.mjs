@@ -201,12 +201,17 @@ test('runs: To Do and Done never run; consent is required; without an executor n
   assert.equal(first.status, 'queued');
   assert.equal(first.promptRevision, 1);
   assert.equal(first.workspacePath, started[0].workspace.path);
+  assert.ok(first.sessionId);
+  assert.equal(started[0].run.sessionId, first.sessionId);
+  assert.equal((await board.view()).sessions.find(session => session.id === first.sessionId).status, 'queued');
   revision = (await taskIn(board, task.id)).revision;
   await assert.rejects(board.moveTask(task.id, { column: 'code_review', expectedRevision: revision }), { code: 'RUN_ACTIVE' });
   await board.updateRun(first.id, { status: 'running' });
   await assert.rejects(board.updateRun(first.id, { status: 'queued' }), { code: 'RUN_TRANSITION_NOT_ALLOWED' });
   await board.updateRun(first.id, { status: 'succeeded' });
   const second = await board.requestRun(task.id, { stage: 'executing', consent: true });
+  assert.notEqual(second.sessionId, first.sessionId, 'Legacy stage launches retain separate conversations.');
+  assert.equal((await taskIn(board, task.id)).sessionId, second.sessionId);
   assert.equal(started.length, 2);
   assert.equal(started[1].workspace.path, started[0].workspace.path);
   assert.equal(started[1].workspace.branch, started[0].workspace.branch);

@@ -39,6 +39,7 @@ Open **http://127.0.0.1:4318**. The navigation is **Compose | Kanban | Base**. P
 - Drag a card to start its agent, or use **Autopilot** to run a queue one task at a time. Watch and interact through the built-in terminals.
 - Plan, build, review, and test. Reviews and passing tests must match the current commit before a merge. Merge manually, or explicitly enable automatic merging.
 - Choose providers and models per project or column. Customize columns, edit cards, and inspect run history.
+- Session metadata and native conversation IDs persist separately from process runs. Restart preserves their records and marks interrupted work for inspection. See [session persistence](docs/session-persistence.md) for current limits.
 
 <p align="center">
   <img src="docs/kanban-demo.gif" width="960" alt="Dark-mode Kanban demo: consent to Autopilot, run a task through Executing, Code Review, Testing and Merge, and finish in Done with agent terminal tabs.">

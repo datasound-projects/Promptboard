@@ -7,6 +7,7 @@
  * requests are refused before any worktree is created.
  */
 import { randomUUID } from 'node:crypto';
+import { attachSession, LIVE_SESSION_STATUSES, recoverSessions, synchronizeSession } from './sessions.mjs';
 import { access, mkdir, readdir, realpath, rm, stat } from 'node:fs/promises';
 import { join, relative, isAbsolute } from 'node:path';
 import { Store } from './store.mjs';
@@ -353,7 +354,7 @@ export class Board {
     this.hooksDir = join(dataDir, 'no-hooks'); // Empty: git worktree add runs no repository hooks.
     this.executor = executor; // PB-02 registers one. Null means execution is inactive.
     this.locks = new Map();
-    this.recovered = false;
+    this.recoveryPromise = null;
     this.delivery = new Delivery(this);
   }
 
@@ -368,21 +369,27 @@ export class Board {
 
   /** First load: any run left active by a previous process becomes interrupted. Never relaunched. */
   async state() {
-    const state = await this.store.read();
-    if (!this.recovered) {
-      this.recovered = true;
-      if (state.runs.some(run => ACTIVE_RUN_STATUSES.includes(run.status))) {
+    this.recoveryPromise ||= (async () => {
+      const state = await this.store.read();
+      if (state.runs.some(run => ACTIVE_RUN_STATUSES.includes(run.status)) || state.sessions.some(session => LIVE_SESSION_STATUSES.has(session.status))) {
         await this.store.update(draft => {
-          for (const run of draft.runs) if (ACTIVE_RUN_STATUSES.includes(run.status)) Object.assign(run, { status: 'interrupted', updatedAt: Date.now(), reason: 'The app stopped while this run was active.' });
+          const now = Date.now();
+          for (const run of draft.runs) if (ACTIVE_RUN_STATUSES.includes(run.status)) {
+            Object.assign(run, { status: 'interrupted', updatedAt: now, reason: 'The app stopped while this run was active.' });
+            synchronizeSession(draft, run);
+          }
+          recoverSessions(draft, now);
         });
       }
-    }
+    })();
+    try { await this.recoveryPromise; }
+    catch (error) { this.recoveryPromise = null; throw error; }
     return this.store.read();
   }
 
   async view() {
     const state = await this.state();
-    return { revision: state.revision, columns: COLUMNS, transitions: TRANSITIONS, settings: state.settings, runs: state.runs.slice(-500),
+    return { revision: state.revision, columns: COLUMNS, transitions: TRANSITIONS, settings: state.settings, runs: state.runs.slice(-500), sessions: state.sessions.slice(-500),
       baseRevision: state.base?.revision || 0,
       projects: state.projects.map(project => ({ ...project, columns: projectColumns(project), transitions: projectTransitions(project), effectiveWorkflow: effectiveWorkflow(project, state.settings.defaultAgent, state) })),
       execution: this.executor?.describe ? await this.executor.describe() : { available: Boolean(this.executor) }, recovery: this.store.recovery };
@@ -531,6 +538,7 @@ export class Board {
       if (this.#hasWorkspaceOrRun(state, [project])) throw conflict('Remove the task worktrees in this project first. Promptboard never deletes worktrees with a whole project.', 'WORKSPACES_EXIST');
       state.projects = state.projects.filter(item => item.id !== id);
       state.runs = state.runs.filter(run => run.projectId !== id);
+      state.sessions = state.sessions.filter(session => session.projectId !== id);
     });
   }
 
@@ -1517,6 +1525,7 @@ export class Board {
         return project;
       });
       state.runs = [];
+      state.sessions = [];
       return { projects: state.projects.length, cards: state.projects.reduce((sum, project) => sum + project.tasks.length, 0) };
     });
   }
@@ -1720,6 +1729,7 @@ export class Board {
           ...(move ? { transition: { id: move.transitionId, from: move.from } } : {}) };
         if (move) this.#place(draft, taskId, { ...move, runId: id });
         draft.runs.push(record);
+        attachSession(draft, record);
         // The reason for a start over goes to the new attempt's first Executing run only.
         if (stage === 'executing' && restart) this.#task(draft, taskId).task.restartNote = '';
         return record;
@@ -1757,6 +1767,7 @@ export class Board {
       if (status && status !== run.status && !RUN_NEXT[run.status]?.includes(status)) throw conflict(`A ${run.status} run cannot become ${status}.`, 'RUN_TRANSITION_NOT_ALLOWED');
       for (const key of RUN_FIELDS) if (fields[key] !== undefined) run[key] = typeof fields[key] === 'string' ? clip(fields[key], key === 'planExcerpt' ? 4000 : 500) : fields[key];
       Object.assign(run, { ...(status ? { status } : {}), updatedAt: Date.now(), ...(reason ? { reason: clip(reason, 500) } : {}) });
+      synchronizeSession(state, run);
       return run;
     });
   }

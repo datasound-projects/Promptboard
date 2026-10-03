@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Kanban session foundation: persist logical conversation records separately from process runs, including native provider IDs and artifact references. Migrate state versions 2 and 3 to version 4 with an exact original backup; preserve Composer task text and Base. Concurrent startup reads share recovery, and orphaned sessions never relaunch automatically. Existing stage behavior is retained; native resume and column continuity are subsequent steps.
+
 - Simplify the README around Compose, Kanban, and Base; replace the demos with dark-mode recordings under 12 seconds and add a reproducible Base demo.
 
 - Base uses exactly eight local category filters over one library, with persistent search, availability, sort and Grid/List, canonical counts, contextual Add, accessible mobile scrolling, and result-area retry with stale-response protection.
