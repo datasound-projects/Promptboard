@@ -1159,6 +1159,7 @@ function renderBoard() {
   $('#view-timeline').disabled = !project;
   for (const id of ['#autopilot-open', '#columns-open', '#agents-open', '#board-left', '#board-right', '#card-new']) $(id).hidden = timelineView;
   $('#columns-open').disabled = !project;
+  if (project?.workflowMode === 'pipeline') $('#autopilot-open').hidden = true;
   // Missing terminal support never blocks the board or the prompt editor; it only disables runs.
   $('#execution-status').hidden = !board || board.execution?.available !== false || !board.execution.setupMessage;
   $('#execution-status').textContent = board?.execution?.setupMessage ? `Agent runs are unavailable. ${board.execution.setupMessage}` : '';
@@ -1243,11 +1244,13 @@ function renderColumn(column, tasks) {
     : !board.execution?.available ? 'Agent stage · agent terminals not set up'
     : column.id === 'merge' ? (policy === 'start' ? 'Merges automatically when verified' : 'One click merges when verified')
     : policy === 'manual' ? 'Manual · start from the card' : column.id === 'planning' ? 'Plan Mode · read-only' : column.id === 'testing' ? 'Testing agent starts on arrival' : 'Starts when a card arrives', 'kanban-column-note');
+  if (currentProject()?.workflowMode === 'pipeline') note.textContent = column.role === 'todo' ? 'Stops the agent · resets its session' : column.role === 'done' ? 'Pauses the agent · archives the task'
+    : column.description || (policy === 'manual' ? 'Start from the card · existing agent keeps running' : 'Starts or resumes on arrival · existing agent keeps running');
   const list = document.createElement('ol');
   list.className = 'kanban-cards';
   list.dataset.column = column.id;
   list.setAttribute('aria-labelledby', heading.id);
-  const done = column.id === 'done';
+  const done = column.role === 'done' || (!column.role && column.id === 'done');
   list.append(...(done ? renderDoneList(tasks) : tasks.map((task, index) => renderCard(task, index, tasks.length))));
   // Dropping on empty column space puts the card at the end of that column. All of Done is one drop zone.
   const accepts = event => dragId && (done || event.target === list) && (findTask(dragId)?.column === column.id || canMove(findTask(dragId)?.column, column.id));
@@ -1327,12 +1330,20 @@ function renderDoneCard(card, number, draggable = true) {
   if (when) time.title = new Date(when).toLocaleString();
   const reopen = labelledButton(detailButton('Reopen', () => reopenCard(card), 'text-button kanban-reopen'), `Reopen: ${card.title}`);
   reopen.title = 'Start a new cycle in To Do. The history, commits, and completion stay.';
+  let restore = null;
+  if (currentProject()?.workflowMode === 'pipeline') {
+    reopen.textContent = 'Restore to To Do'; reopen.title = 'Restore without starting an agent.';
+    restore = document.createElement('select'); restore.className = 'kanban-move-to kanban-restore'; restore.setAttribute('aria-label', `Restore to column: ${card.title}`);
+    restore.append(option('', 'Restore to…'), ...projectColumnsOf().filter(column => column.role === 'active').map(column => option(column.id, column.title)));
+    restore.addEventListener('change', async () => { if (restore.value) await placeCard(card.id, restore.value); });
+  }
   const details = detailButton('Details', () => { $('#done-dialog').close(); openTaskDetails(card.id); }, 'text-button kanban-details');
   const summary = card.completion?.summary || card.prompt;
   const more = document.createElement('div'); more.className = 'kanban-more'; more.id = `card-more-${card.id}${draggable ? '' : '-completed'}`; more.hidden = cardElement(card.id)?.querySelector('.kanban-more')?.hidden ?? true;
   const edit = detailButton('Edit task', () => { $('#done-dialog').close(); openCard(card.id); }, 'kanban-edit');
   const copy = detailButton('Copy prompt', () => copyCard(card, copy), 'kanban-copy');
   more.append(edit, details, reopen, copy, detailButton('Duplicate', () => duplicateCard(card.id), 'kanban-duplicate'), detailButton('Delete', () => confirmCardDelete(item, card), 'kanban-delete'));
+  if (restore) more.prepend(restore);
   const actions = document.createElement('div'); actions.className = 'kanban-actions'; actions.append(cardMenuToggle(card, more));
   title.append(actions);
   cardAppearance(item, card, more);
@@ -1955,7 +1966,12 @@ function renderRunControls(card, run) {
     const pause = labelled(detailButton('Pause', () => pauseAgent(active), 'kanban-pause'), 'Pause agent');
     pause.disabled = active.lifecycle === 'suspending'; box.append(pause);
     // Plan approval stays available; moving the card to Executing also approves the plan.
-    if (active.stage === 'planning' && active.status === 'waiting_for_input' && active.turns > 0) box.append(labelled(detailButton('Approve plan', () => openTaskDetails(card.id), 'kanban-confirm-run'), 'Review and approve the plan'));
+    if (!active.config?.pipeline && active.stage === 'planning' && active.status === 'waiting_for_input' && active.turns > 0) box.append(labelled(detailButton('Approve plan', () => openTaskDetails(card.id), 'kanban-confirm-run'), 'Review and approve the plan'));
+  } else if (currentProject()?.workflowMode === 'pipeline') {
+    if (projectColumnsOf().find(column => column.id === card.column)?.role === 'active') {
+      const start = labelled(detailButton('Start agent', () => startStage(card, card.column), 'primary kanban-start'), 'Start agent');
+      start.disabled = !board?.execution?.available || !currentProject()?.repository; box.append(start);
+    }
   } else if (card.column === 'merge') {
     const target = currentProject()?.targetBranch?.name || 'target';
     box.append(labelled(detailButton(`Merge ${target}`, () => mergeCard(card), 'primary kanban-merge'), `Merge into ${target}`));
@@ -1971,7 +1987,7 @@ function renderRunControls(card, run) {
   }
   if (run && !active) box.append(labelled(detailButton('View output', () => window.PromptboardDock?.open(run.id), 'kanban-terminal'), 'View saved agent output'));
   const conversation = board?.sessions?.find(session => session.id === card.sessionId);
-  if (!active && run?.stage === card.column && conversation?.nativeSessionId && ['suspended', 'orphaned', 'exited'].includes(conversation.status) && !['todo', 'done'].includes(card.column) && !card.archivedAt) {
+  if (!active && (currentProject()?.workflowMode === 'pipeline' ? projectColumnsOf().find(column => column.id === card.column)?.role === 'active' : run?.stage === card.column && !['todo', 'done'].includes(card.column)) && conversation?.nativeSessionId && ['suspended', 'orphaned', 'exited'].includes(conversation.status) && !card.archivedAt) {
     const resume = labelled(detailButton('Resume', () => resumeAgent(card), 'kanban-resume'), 'Resume conversation');
     resume.disabled = !board?.execution?.available || !currentProject()?.repository;
     box.append(resume);
@@ -2251,7 +2267,7 @@ async function openTaskDetails(taskId) {
     nodes.push(section(`Plan${approved ? ' (approved)' : card.planApproval?.runId === planRun.id ? ' (approval is stale: the task changed)' : ''}`, planText));
     api(`/api/runs/${encodeURIComponent(planRun.id)}/plan`, { timeoutMs: 15000 }).then(({ data }) => { planText.textContent = data.text || planRun.planExcerpt || 'The plan text is not available.'; }).catch(() => { planText.textContent = planRun.planExcerpt || 'The plan text is not available.'; });
   }
-  const waiting = runs.find(run => run.status === 'waiting_for_input' && run.turns > 0);
+  const waiting = runs.find(run => !run.config?.pipeline && run.status === 'waiting_for_input' && run.turns > 0);
   if (waiting) {
     const planning = waiting.stage === 'planning', reviewing = waiting.stage === 'code_review';
     nodes.push(section(planning ? 'Approve the plan' : reviewing ? 'Record the review' : 'Confirm the stage',
@@ -2278,7 +2294,8 @@ async function openTaskDetails(taskId) {
   delivery.className = 'task-delivery';
   nodes.splice(3, 0, delivery);
   $('#task-details').replaceChildren(...nodes);
-  renderDelivery(card, delivery, section, pre);
+  if (project.workflowMode === 'pipeline') delivery.append(section('Conversation', renderRunControls(card, latestRun(card.id))));
+  else renderDelivery(card, delivery, section, pre);
   if (!$('#task-dialog').open) $('#task-dialog').showModal();
 }
 
@@ -2299,6 +2316,7 @@ function workflowPreview(stage, settings) {
 }
 
 function openWorkflowDialog(focusStage = null) {
+  if (currentProject()?.workflowMode === 'pipeline') { openColumns(); if (focusStage) { columnsDraft.selected = focusStage; renderColumns(); } return; }
   const project = currentProject();
   if (!project) return;
   $('#workflow-dialog-project').textContent = `${project.name} · WORKFLOW`;
@@ -3430,14 +3448,17 @@ $('#autopilot-open').addEventListener('click', openAutopilot);
 // go anywhere between To Do and Done and are attached to the built-in stage on their left.
 const COLUMN_COLOR_NAMES = { gray: 'Gray', red: 'Red', orange: 'Orange', amber: 'Amber', green: 'Green', teal: 'Teal', blue: 'Blue', violet: 'Violet', pink: 'Pink' };
 const BUILTIN_DEFAULT_COLORS = { todo: 'gray', planning: 'violet', executing: 'blue', code_review: 'amber', testing: 'teal', merge: 'orange', done: 'green' };
-const columnsDraft = { list: [], selected: null, project: null };
+const columnsDraft = { list: [], selected: null, project: null, revision: null, pipeline: false, profiles: [] };
 const builtinTitle = id => board?.columns?.find(column => column.id === id)?.title || id;
 function openColumns() {
   const project = currentProject();
   if (!project) return;
   const layout = project.columnLayout?.length ? project.columnLayout : (board?.columns || []).map(column => ({ id: column.id }));
   columnsDraft.project = project.id;
-  columnsDraft.list = JSON.parse(JSON.stringify(layout)); // Plain data: an independent draft copy.
+  columnsDraft.revision = project.revision;
+  columnsDraft.pipeline = project.workflowMode === 'pipeline';
+  columnsDraft.profiles = JSON.parse(JSON.stringify(project.pipeline?.profiles || []));
+  columnsDraft.list = JSON.parse(JSON.stringify(columnsDraft.pipeline ? project.pipeline.columns : layout));
   columnsDraft.selected = columnsDraft.list.find(entry => entry.custom)?.id || 'executing';
   $('#columns-project').textContent = `${project.name} · COLUMNS`;
   $('#columns-error').hidden = true;
@@ -3446,6 +3467,11 @@ function openColumns() {
 }
 const draftAnchor = entry => { let anchor = 'todo'; for (const item of columnsDraft.list) { if (item === entry) return anchor; if (!item.custom && !item.hidden) anchor = item.id; } return anchor; };
 function renderColumns() {
+  $('#columns-use-pipeline').hidden = columnsDraft.pipeline;
+  $('#columns-mode-note').textContent = columnsDraft.pipeline
+    ? 'Columns control the agent’s session. Moves send no stage instructions. Pause agents before changing settings. Plan exit automation is being added; move approved plans to Executing manually for now.'
+    : 'This board uses the original stage rules. Switching removes automatic stage instructions and keeps the saved tasks, files, and run history. Save to confirm the switch.';
+  if (columnsDraft.pipeline) return renderPipelineColumns();
   const list = columnsDraft.list;
   $('#columns-list').replaceChildren(...list.map((entry, index) => {
     const row = document.createElement('li'); row.className = 'columns-row';
@@ -3532,14 +3558,76 @@ function renderColumnEditor() {
   nodes.push(group('Base resources', existing ? basePicker({ target: { scope: 'column', projectId: currentProject().id, columnId: entry.id }, inactive: entry.custom ? !entry.agent?.enabled : ['todo', 'done'].includes(entry.id) }) : paragraph('Save this new column before assigning Base resources. Assignments use its stable column ID.', 'note')));
   editor.replaceChildren(...nodes);
 }
+function renderPipelineColumns() {
+  const list = columnsDraft.list;
+  $('#columns-list').replaceChildren(...list.map((entry, index) => {
+    const row = document.createElement('li'); row.className = 'columns-row';
+    const button = detailButton(entry.name, () => { columnsDraft.selected = entry.id; renderColumns(); }, 'columns-item');
+    if (entry.id === columnsDraft.selected) button.setAttribute('aria-current', 'true');
+    row.append(button);
+    if (entry.role === 'active') for (const step of [-1, 1]) {
+      const move = detailButton(step < 0 ? '↑' : '↓', () => {
+        list.splice(index, 1); list.splice(index + step, 0, entry); renderColumns();
+        $(`#columns-list [data-move="${entry.id}${step}"]`)?.focus();
+      }, 'icon-button');
+      move.dataset.move = `${entry.id}${step}`; move.setAttribute('aria-label', `${step < 0 ? 'Move left' : 'Move right'}: ${entry.name}`);
+      move.disabled = step < 0 ? index <= 1 : index >= list.length - 2; row.append(move);
+    }
+    return row;
+  }));
+  const entry = list.find(column => column.id === columnsDraft.selected) || list[0];
+  $('#columns-remove').hidden = entry.role !== 'active';
+  const editor = $('#columns-editor');
+  const field = (title, input) => { const label = document.createElement('label'); label.className = 'field-label'; label.append(title, input); return label; };
+  const name = document.createElement('input'); name.id = 'column-name'; name.maxLength = 80; name.value = entry.name;
+  name.addEventListener('input', () => { entry.name = name.value; const item = $('#columns-list [aria-current="true"]'); if (item) item.textContent = name.value; });
+  const description = document.createElement('textarea'); description.id = 'column-description'; description.maxLength = 4000; description.value = entry.description;
+  description.addEventListener('input', () => { entry.description = description.value; });
+  const color = document.createElement('select'); color.setAttribute('aria-label', 'Column colour');
+  color.append(...Object.entries(COLUMN_COLOR_NAMES).map(([value, label]) => option(value, label))); color.value = entry.color;
+  color.addEventListener('change', () => { entry.color = color.value; });
+  const nodes = [field('Name', name), field('Description', description), field('Colour', color)];
+  if (entry.role === 'active') {
+    const automatic = document.createElement('input'); automatic.type = 'checkbox'; automatic.checked = entry.strategy.autoSpawn !== false; automatic.id = 'column-auto-spawn';
+    automatic.addEventListener('change', () => { entry.strategy.autoSpawn = automatic.checked; });
+    const label = document.createElement('label'); label.className = 'check-row'; label.append(automatic, ' Start or resume an agent when a card arrives'); nodes.push(label);
+    const provider = document.createElement('select'); provider.setAttribute('aria-label', 'Column agent');
+    provider.append(option('', 'Use project agent'), ...['claude', 'codex', 'gemini'].map(id => option(id, board?.execution?.providers?.[id]?.name || id)));
+    provider.value = entry.strategy.agentOverride || '';
+    provider.addEventListener('change', () => { entry.strategy.agentOverride = provider.value || null; }); nodes.push(field('Agent', provider));
+    for (const [key, title, max] of [['modelOverride', 'Model ID (empty uses the agent default)', 100], ['effortOverride', 'Effort (empty uses the agent default)', 20]]) {
+      const input = key === 'effortOverride' ? document.createElement('select') : document.createElement('input'); input.maxLength = max;
+      if (key === 'effortOverride') input.append(option('', 'Use agent default'), ...['low', 'medium', 'high', 'xhigh', 'max'].map(value => option(value, value)));
+      input.value = entry.strategy[key] || ''; input.addEventListener('change', () => { entry.strategy[key] = input.value || null; }); nodes.push(field(title, input));
+    }
+    const permissions = document.createElement('select'); permissions.setAttribute('aria-label', 'Column permissions');
+    permissions.append(...[['', 'Use agent default'], ['plan', 'Plan mode'], ['default', 'Ask for permission'], ['acceptEdits', 'Claude: accept file edits'], ['workspace-write', 'Codex: write in workspace'], ['auto_edit', 'Gemini: accept file edits']].map(([value, label]) => option(value, label)));
+    permissions.value = entry.strategy.permissionMode || ''; permissions.addEventListener('change', () => { entry.strategy.permissionMode = permissions.value || null; }); nodes.push(field('Permissions', permissions));
+    nodes.push(paragraph('A running conversation continues silently between compatible columns. Pause it first when changing its agent, permissions, or Base resources.', 'note'));
+  } else nodes.push(paragraph(entry.role === 'todo' ? 'The holding role never starts agents. Returning a card stops its agent and resets the current session; files and historical output are kept.'
+    : 'The completion role pauses the agent and archives its task, preserving the conversation and worktree for restoration.', 'note'));
+  if (projectColumnsOf().some(column => column.id === entry.id)) nodes.push(basePicker({ target: { scope: 'column', projectId: currentProject().id, columnId: entry.id }, inactive: entry.role !== 'active' }));
+  editor.replaceChildren(...nodes);
+}
+
+$('#columns-use-pipeline').addEventListener('click', () => {
+  columnsDraft.pipeline = true;
+  columnsDraft.list = columnsDraft.list.filter(entry => !entry.hidden).map(entry => ({ id: entry.id, name: entry.title || builtinTitle(entry.id),
+    role: entry.id === 'todo' ? 'todo' : entry.id === 'done' ? 'done' : 'active', color: entry.color || BUILTIN_DEFAULT_COLORS[entry.id] || 'gray', description: entry.description || '',
+    strategy: entry.id === 'planning' ? { permissionMode: 'plan', planExitTargetId: 'executing' } : entry.custom ? { autoSpawn: entry.agent?.enabled === true && entry.agent?.policy !== 'manual' } : {},
+    automations: { onEnter: [], onExit: [] } }));
+  renderColumns();
+});
+
 function addColumn() {
   const list = columnsDraft.list;
   const at = Math.min(Math.max(list.findIndex(entry => entry.id === columnsDraft.selected) + 1, 1), list.length - 1);
-  const taken = new Set(list.map(entry => (entry.title || builtinTitle(entry.id)).toLowerCase()));
+  const taken = new Set(list.map(entry => (entry.name || entry.title || builtinTitle(entry.id)).toLowerCase()));
   let title = 'New column';
   for (let n = 2; taken.has(title.toLowerCase()); n++) title = `New column ${n}`;
   const id = `c_${(globalThis.crypto?.randomUUID?.() || `${Date.now()}${Math.random()}`).replace(/[^a-z0-9]/g, '').slice(0, 12).padEnd(8, '0')}`;
-  list.splice(at, 0, { id, custom: true, title, color: 'blue', description: '', agent: { enabled: false } });
+  list.splice(at, 0, columnsDraft.pipeline ? { id, name: title, role: 'active', color: 'blue', description: '', strategy: { autoSpawn: false }, automations: { onEnter: [], onExit: [] } }
+    : { id, custom: true, title, color: 'blue', description: '', agent: { enabled: false } });
   columnsDraft.selected = id;
   renderColumns();
   $('#column-name')?.select();
@@ -3549,7 +3637,9 @@ async function saveColumns(event) {
   const project = board?.projects.find(item => item.id === columnsDraft.project);
   if (!project) return;
   const columns = columnsDraft.list.map(entry => entry.custom ? entry : { id: entry.id, ...(entry.title && entry.title !== builtinTitle(entry.id) ? { title: entry.title } : {}), ...(entry.color && entry.color !== BUILTIN_DEFAULT_COLORS[entry.id] ? { color: entry.color } : {}), ...(entry.hidden ? { hidden: true } : {}) });
-  try { await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/columns`, { columns, expectedRevision: project.revision }); }
+  try { await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/${columnsDraft.pipeline ? 'pipeline' : 'columns'}`, columnsDraft.pipeline
+    ? { pipeline: { version: 1, columns: columnsDraft.list, profiles: columnsDraft.profiles }, expectedRevision: columnsDraft.revision, confirm: true }
+    : { columns, expectedRevision: project.revision }); }
   catch (error) { $('#columns-error').textContent = error.message; $('#columns-error').hidden = false; return; }
   $('#columns-dialog').close();
   announce('Columns saved.');
@@ -3559,8 +3649,15 @@ $('#columns-add').addEventListener('click', addColumn);
 $('#columns-form').addEventListener('submit', saveColumns);
 $('#columns-remove').addEventListener('click', () => {
   const index = columnsDraft.list.findIndex(entry => entry.id === columnsDraft.selected);
-  if (index < 0 || !columnsDraft.list[index].custom) return;
-  columnsDraft.list.splice(index, 1);
+  if (index < 0 || (columnsDraft.pipeline ? columnsDraft.list[index].role !== 'active' : !columnsDraft.list[index].custom)) return;
+  const [removed] = columnsDraft.list.splice(index, 1);
+  if (columnsDraft.pipeline) {
+    for (const column of columnsDraft.list) if (column.strategy.planExitTargetId === removed.id) column.strategy.planExitTargetId = null;
+    for (const profile of columnsDraft.profiles) {
+      delete profile.columns[removed.id];
+      for (const strategy of Object.values(profile.columns)) if (strategy.planExitTargetId === removed.id) strategy.planExitTargetId = null;
+    }
+  }
   columnsDraft.selected = columnsDraft.list[Math.max(1, index - 1)].id;
   renderColumns();
 });

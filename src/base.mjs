@@ -249,11 +249,11 @@ export function listTargets(state) {
   const scopes = [{ target: { scope: 'global' }, name: 'Global agents', entity: state.settings, binding: state.settings.baseBinding, profileId: state.settings.agentProfileId }];
   for (const project of state.projects) {
     scopes.push({ target: { scope: 'project', projectId: project.id }, name: project.name, entity: project, binding: project.baseBinding, profileId: project.agentProfileId });
-    const columnIds = [...new Set([...BUILTIN_COLUMNS, ...(project.columnLayout || []).map(column => column.id)])];
+    const columnIds = project.workflowMode === 'pipeline' ? project.pipeline.columns.map(column => column.id) : [...new Set([...BUILTIN_COLUMNS, ...(project.columnLayout || []).map(column => column.id)])];
     for (const columnId of columnIds) {
-      const column = project.columnLayout?.find(item => item.id === columnId), saved = project.baseColumns?.[columnId] || {};
-      scopes.push({ target: { scope: 'column', projectId: project.id, columnId }, name: `${project.name} / ${column?.title || columnId}`, entity: saved, binding: saved.binding, profileId: saved.profileId,
-        inactive: ['todo', 'done'].includes(columnId) || (column?.custom && !column.agent?.enabled) });
+      const column = (project.workflowMode === 'pipeline' ? project.pipeline.columns : project.columnLayout)?.find(item => item.id === columnId), saved = project.baseColumns?.[columnId] || {};
+      scopes.push({ target: { scope: 'column', projectId: project.id, columnId }, name: `${project.name} / ${column?.name || column?.title || columnId}`, entity: saved, binding: saved.binding, profileId: saved.profileId,
+        inactive: project.workflowMode === 'pipeline' ? column.role !== 'active' : ['todo', 'done'].includes(columnId) || (column?.custom && !column.agent?.enabled) });
     }
     for (const task of project.tasks) {
       scopes.push({ target: { scope: 'task', projectId: project.id, taskId: task.id }, name: `${project.name} / ${task.title}`, entity: task, binding: task.baseBinding });
@@ -296,7 +296,7 @@ function targetEntity(state, target, create = false) {
   const project = state.projects.find(item => item.id === target.projectId);
   if (!project) throw new BaseError('The project no longer exists.', 'BASE_TARGET_NOT_FOUND', 404);
   if (target.scope === 'project') return { entity: project, bindingKey: 'baseBinding', profileKey: 'agentProfileId' };
-  if (['column', 'task-column'].includes(target.scope) && !BUILTIN_COLUMNS.includes(target.columnId) && !project.columnLayout?.some(column => column.id === target.columnId)) throw new BaseError('The column no longer exists.', 'BASE_TARGET_NOT_FOUND', 404);
+  if (['column', 'task-column'].includes(target.scope) && (project.workflowMode === 'pipeline' ? !project.pipeline.columns.some(column => column.id === target.columnId) : !BUILTIN_COLUMNS.includes(target.columnId) && !project.columnLayout?.some(column => column.id === target.columnId))) throw new BaseError('The column no longer exists.', 'BASE_TARGET_NOT_FOUND', 404);
   let entity = project;
   if (['task', 'task-column'].includes(target.scope)) {
     entity = project.tasks.find(task => task.id === target.taskId);

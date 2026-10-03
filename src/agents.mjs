@@ -105,7 +105,8 @@ export function resolveConfig(stage, config = {}) {
   const provider = config.provider || 'claude';
   const adapter = ADAPTERS[provider];
   if (!adapter) throw new AgentError('Choose Claude Code, Codex, or Gemini CLI.', 'INVALID_PROVIDER');
-  const readOnly = stage === 'planning' || stage === 'code_review';
+  const pipeline = config.pipeline === true;
+  const readOnly = pipeline ? config.permissionMode === 'plan' : stage === 'planning' || stage === 'code_review';
   const capability = adapter.capabilities[readOnly ? 'planning' : 'execution'];
   if (!capability?.supported) throw new AgentError(`${adapter.name}: ${capability?.how || 'This stage is not supported.'}`, 'STAGE_UNSUPPORTED_BY_PROVIDER');
   const model = config.model ? String(config.model) : '';
@@ -116,7 +117,7 @@ export function resolveConfig(stage, config = {}) {
     : config.permissionMode === 'approve_edit' ? (provider === 'codex' ? 'approve_edit' : 'default') : config.permissionMode;
   const permissionMode = readOnly ? 'plan' : (requested || adapter.permissionModes[0]);
   if (!readOnly && !adapter.permissionModes.includes(permissionMode)) throw new AgentError(`${adapter.name} execution supports these permission modes only: ${adapter.permissionModes.join(', ')}.`, 'INVALID_PERMISSION_MODE');
-  return { provider, model, effort, permissionMode };
+  return { provider, model, effort, permissionMode, ...(pipeline ? { pipeline: true } : {}) };
 }
 
 /** Compose the first message: stage instructions, the exact task text, and an approved plan. */
@@ -166,7 +167,10 @@ priority = 999
  */
 export async function buildSession({ provider, stage, config, message, runDir, eventsFile, sessionId, resumeId = null, workspacePath, nodePath = process.execPath, baseDelivery = null }) {
   if (resumeId !== null) validateResumeId(resumeId);
-  const readOnly = stage === 'planning' || stage === 'code_review';
+  const pipeline = config.pipeline === true;
+  const readOnly = !pipeline && (stage === 'planning' || stage === 'code_review');
+  if (pipeline && (typeof message !== 'string' || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(message))) throw new AgentError('Pipeline input contains terminal control characters. Edit the task, continuation, or selected Base text before starting.', 'INVALID_PIPELINE_INPUT');
+  const plan = readOnly || config.permissionMode === 'plan';
   const inArgv = Buffer.byteLength(message) <= ARGV_PROMPT_LIMIT;
   const env = { TERM: 'xterm-256color', PROMPTBOARD_RUN: '1' };
   const selected = readOnly ? [] : baseDelivery?.mcpServers || [];
@@ -191,7 +195,10 @@ export async function buildSession({ provider, stage, config, message, runDir, e
     if (readOnly) args.push('--strict-mcp-config');
     if (readOnly || selected.length) args.push('--mcp-config', mcpConfig);
     if (readOnly) args.push('--permission-mode', 'plan', '--tools', 'Read,Grep,Glob', '--disallowedTools', 'Edit,Write,NotebookEdit,Bash,ExitPlanMode');
-    else args.push('--permission-mode', config.permissionMode, '--disallowedTools', 'EnterPlanMode,ExitPlanMode'); // Writing stages never switch to plan mode.
+    else {
+      args.push('--permission-mode', config.permissionMode);
+      if (!pipeline) args.push('--disallowedTools', 'EnterPlanMode,ExitPlanMode');
+    }
     if (!readOnly && baseDelivery?.subagents && Object.keys(baseDelivery.subagents).length) {
       const agents = JSON.stringify(baseDelivery.subagents);
       if (Buffer.byteLength(agents) > 60000) throw new AgentError('Native subagent definitions exceed the per-run limit.', 'BASE_SUBAGENT_LIMIT');
@@ -202,7 +209,7 @@ export async function buildSession({ provider, stage, config, message, runDir, e
     if (inArgv && message) args.push(...(resumeId ? ['--', message] : [message]));
   } else if (provider === 'codex') {
     args = [...(resumeId ? ['resume', resumeId, ...(workspacePath ? ['--cd', workspacePath] : [])] : []), '-c', `notify=[${[nodePath, HOOK_SCRIPT, eventsFile, 'codex'].map(tomlString).join(',')}]`, '--no-alt-screen'];
-    if (readOnly) args.push('--sandbox', 'read-only', '--ask-for-approval', 'never');
+    if (plan) args.push('--sandbox', 'read-only', '--ask-for-approval', pipeline ? 'on-request' : 'never');
     else args.push('--sandbox', 'workspace-write', '--ask-for-approval', 'on-request');
     if (config.model) args.push('--model', config.model);
     if (config.effort) args.push('-c', `model_reasoning_effort=${tomlString(config.effort)}`);
@@ -216,7 +223,7 @@ export async function buildSession({ provider, stage, config, message, runDir, e
     }
     if (inArgv && message) args.push(...(resumeId ? ['--', message] : [message]));
   } else if (provider === 'gemini') {
-    env.GEMINI_CLI_SYSTEM_SETTINGS_PATH = await geminiSystemSettings(runDir, [nodePath, HOOK_SCRIPT, eventsFile, 'gemini'].map(shQuote).join(' '), { plan: readOnly, mcpServers: selected.length ? jsonServers : null });
+    env.GEMINI_CLI_SYSTEM_SETTINGS_PATH = await geminiSystemSettings(runDir, [nodePath, HOOK_SCRIPT, eventsFile, 'gemini'].map(shQuote).join(' '), { plan, mcpServers: selected.length ? jsonServers : null });
     args = readOnly ? ['--extensions', 'none', '--allowed-mcp-server-names', ''] : [];
     if (resumeId) args.push('--resume', resumeId);
     if (readOnly) {
