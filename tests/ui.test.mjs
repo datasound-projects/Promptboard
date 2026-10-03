@@ -153,7 +153,7 @@ test('pipeline action editing preserves literal definitions, validates headers, 
   hook.querySelector('input[type="checkbox"]').click();
   assert.equal(exit().querySelector('.automation-row').dataset.automationId, hookId);
   const future = ctx.$('[data-automation-id="dormant-message"]'); assert.equal(future.querySelector('input[type="checkbox"]').disabled, true);
-  assert.equal(future.querySelector('[data-field="type"] option[value="notify"]').disabled, true);
+  assert.equal(future.querySelector('[data-field="type"] option[value="notify"]').disabled, false);
   assert.equal(future.querySelector('[data-field="type"] option[value="send_message"]').disabled, true);
   assert.equal(ctx.$('#columns-editor img'), null); assert.equal(ctx.win.__actionPwned, undefined);
   exit().querySelector('.automation-add').click(); const added = exit().querySelectorAll('.automation-row')[2];
@@ -173,6 +173,32 @@ test('pipeline action editing preserves literal definitions, validates headers, 
   assert.equal(ctx.$('#column-name').value, 'Done'); submitForm(ctx, '#columns-form'); await ctx.idle({ requireComplete: true });
   const copied = (await ctx.app.board.state()).projects[0].pipeline.columns.at(-1).automations.onExit[0];
   assert.notEqual(copied.id, hookId); assert.equal(copied.enabled, false); assert.equal(copied.url, review.automations.onExit[0].url); assert.deepEqual(copied.headers, review.automations.onExit[0].headers); assert.equal(effects, 0);
+});
+
+test('notification drafts retain literal templates, switches and independent copies without permission or dispatch', async t => {
+  const ctx = await setup(t, { executor: null, hash: '#/kanban' }), pipeline = defaultPipelineConfig();
+  const project = await ctx.app.board.createProject({ name: 'Notification drafts' });
+  for (const column of pipeline.columns) column.strategy.autoSpawn = false;
+  await ctx.app.board.setPipeline(project.id, { pipeline, expectedRevision: 1, confirm: true });
+  const task = await ctx.app.board.createTask({ projectId: project.id, title: 'Composer', prompt: '  Exact split\r\n' });
+  let dispatches = 0; ctx.app.board.automations.actions.notifier = () => { dispatches++; throw new Error('Draft dispatched.'); };
+  await ctx.win.__pbTest.loadBoard(); await ctx.idle({ requireComplete: true }); ctx.$('#columns-open').click();
+  [...ctx.win.document.querySelectorAll('.columns-item')].find(button => button.textContent === 'Executing').click();
+  ctx.$('[data-trigger="onEnter"] .automation-add').click(); let row = ctx.$('.automation-row'), id = row.dataset.automationId;
+  const input = (key, value, event = 'input') => { const field = row.querySelector(`[data-field="${key}"]`); field.value = value; field.dispatchEvent(new ctx.win.Event(event, { bubbles: true })); };
+  input('type', 'notify', 'change'); row = ctx.$(`[data-automation-id="${id}"]`);
+  const title = '  {{title}} <img src=x> {{unknown}}', body = 'Literal 😀\n{{toColumn}} · {{projectName}}';
+  input('name', 'Literal alert'); input('title', title); input('body', body);
+  assert.equal(row.querySelector('[data-field="title"]').maxLength, 500); assert.equal(row.querySelector('[data-field="body"]').maxLength, 4000);
+  row.querySelector('input[type="checkbox"]').click();
+  const copy = row.querySelector('select[aria-label^="Copy automation"]'); copy.value = 'done/onExit'; copy.dispatchEvent(new ctx.win.Event('change', { bubbles: true }));
+  submitForm(ctx, '#columns-form'); await ctx.idle({ requireComplete: true }); assert.equal(ctx.$('#columns-dialog').open, false);
+  const saved = (await ctx.app.board.state()).projects[0], original = saved.pipeline.columns[2].automations.onEnter[0], duplicate = saved.pipeline.columns.at(-1).automations.onExit[0];
+  assert.deepEqual(original, { id, name: 'Literal alert', type: 'notify', enabled: false, title, body });
+  assert.notEqual(duplicate.id, id); assert.equal(duplicate.name, 'Literal alert (copy)'); assert.equal(duplicate.title, title); assert.equal(duplicate.body, body); assert.equal(duplicate.enabled, false);
+  assert.equal(dispatches, 0); assert.equal((await ctx.app.board.automationRuns(task.id)).length, 0); assert.equal((await ctx.app.board.state()).runs.length, 0);
+  assert.equal(saved.tasks[0].prompt, task.prompt); assert.equal(saved.tasks[0].column, 'todo');
+  ctx.$('#app-settings-open').click(); await ctx.idle({ requireComplete: true }); assert.equal(ctx.$('#set-notifications-enable').disabled, true);
 });
 
 test('pipeline card Stop cancels owned automation work and Details shows escaped durable results without retrying', async t => {

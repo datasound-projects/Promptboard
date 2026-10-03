@@ -2,13 +2,15 @@
 
 ## Unreleased
 
+- Add Notify me column editing and explicit browser notification opt-in. Authenticate bounded receiver streams and task-scoped display receipts; preserve unconfirmed outcomes on loss, scoped cancellation and no automatic replay. Alert clicks open the exact task without agent actions. Tests use mocked desktop APIs in disposable browsers; native message delivery and explicit retries remain pending.
+
 - Find older resumed Codex histories by exact thread metadata in bounded canonical date folders, with strict UTF-8/header checks, symlink refusal and unavailable outcomes for ambiguous/reverted/compressed rollouts or incomplete searches. Keep paths private and preserve read-only receipt custody, Composer/Base/CLI delivery and process behavior.
 
-- Add pipeline script/webhook row editing, switches, ordering, copying and draft deletion to Column Manager. Preserve disabled message/notification definitions and invalid header drafts; saving runs nothing. Show task-scoped Stop and durable per-row/lifecycle results in Details, with escaped content and revision-aware polling that preserves focus. Keep native messages, desktop notifications and explicit retries pending.
+- Add pipeline script/webhook row editing, switches, ordering, copying and draft deletion to Column Manager. Preserve disabled message definitions and invalid header drafts; saving runs nothing. Show task-scoped Stop and durable per-row/lifecycle results in Details, with escaped content and revision-aware polling that preserves focus. Keep native messages and explicit retries pending.
 
 - Keep pipeline permission waits scoped to their agent and exact tool when available. Unrelated or late tool results and parent lifecycle boundaries cannot dismiss another agent's dialog. Uncorrelated native notifications await their own lifecycle boundary; bound registries and unknown subordinate waits retain uncertainty. No permission decisions or terminal messages are injected.
 
-- Integrate durable exit/lifecycle/enter script and webhook execution on opt-in pipeline moves, with exact metadata, verified workspaces, delayed fresh startup, queued FIFO holds, scoped cancellation and no-replay recovery. Preserve Composer/Base/CLI delivery, migrate state 5 to 6 with its original backup, omit move grants from portable backups, and add authenticated receipt/Stop endpoints. Message scheduling, notification reception and editor/display controls remain pending.
+- Integrate durable exit/lifecycle/enter script and webhook execution on opt-in pipeline moves, with exact metadata, verified workspaces, delayed fresh startup, queued FIFO holds, scoped cancellation and no-replay recovery. Preserve Composer/Base/CLI delivery, migrate state 5 to 6 with its original backup, omit move grants from portable backups, and add authenticated receipt/Stop endpoints. Message scheduling and explicit retries remain pending; later steps expose editor/display controls and browser notification reception.
 
 - Bind read-only native message checkpoints to Supervisor process ownership, observed native identity, main hook history and terminal-input epochs. Revoke stale evidence on partial drafts, startup, Stop/Pause, exit, failure or uncertainty. Keep private paths out of run updates; terminal scheduling, durable receipt display and enabled rows remain pending.
 
