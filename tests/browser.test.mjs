@@ -17,7 +17,9 @@ const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8',
 const chrome = await findChrome();
 const skip = process.platform === 'win32' || !chrome ? 'Chrome is not installed or the platform has no PTY support in this test.' : false;
 
-test('Base saved-resource actions, sidebar categories, agent cards and avatar drafts work in real Chrome', { skip: !chrome, timeout: 30000 }, async t => {
+// This scenario includes cold Chrome startup and many sequential persisted UI actions.
+// Individual browser.until checks remain bounded; allow slower Windows CI the total budget.
+test('Base saved-resource actions, sidebar categories, agent cards and avatar drafts work in real Chrome', { skip: !chrome, timeout: 90000 }, async t => {
   let tests = 0;
   const image = { mime: 'image/png', data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jF1sAAAAASUVORK5CYII=' };
   const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [], imageGenerator: async () => image, mcpTester: async () => {
