@@ -1038,9 +1038,34 @@ test('the settings step collapses and expands, is remembered, and reopens for an
   assert.equal(restored.$('#settings-body').hidden, false, 'A fresh browser storage starts expanded.');
   $('#custom-model').dispatchEvent(new win.Event('invalid', { cancelable: true }));
   assert.equal($('#settings-body').hidden, false);
+  assert.equal($('#compose-general').open, true, 'An invalid input is reachable inside its settings category.');
   toggle.click(); toggle.click();
   assert.equal($('#settings-body').hidden, false);
   assert.equal(win.localStorage.getItem('ste-prompt-engineer.settings'), 'expanded');
+});
+
+test('Compose exposes three quiet settings groups, restores its summary, and keeps result actions discoverable', async t => {
+  const { $, win, choose, submit, idle } = await setup(t);
+  const groups = [...win.document.querySelectorAll('#settings-body > details')];
+  assert.deepEqual(groups.map(group => group.querySelector('summary > span').textContent), ['General settings', 'Context grounding', 'More settings']);
+  assert.ok(groups.every(group => !group.open));
+  assert.equal($('#prompt-view .step'), null); assert.equal($('#prompt-view img'), null);
+  choose('#provider', 'claude'); await idle();
+  $('input[name="detail"][value="detailed"]').checked = true;
+  $('input[name="detail"][value="detailed"]').dispatchEvent(new win.Event('change', { bubbles: true }));
+  assert.equal($('#compose-general-summary').textContent, 'Claude Code · Detailed');
+  $('#prompt-input').value = 'Build a simple page.'; submit(); await idle();
+  assert.equal($('#output-tools').hidden, false); assert.equal($('#output-info').open, false);
+  assert.ok($('#output-tools').contains($('#split-button'))); assert.ok($('#output-tools').contains($('#export-button')));
+  assert.equal($('#copy-button').disabled, false); assert.equal($('#prompt-edit-actions').hidden, false);
+  $('#output-tools').open = true; $('#output-tools > summary').focus();
+  $('#output-tools').dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  assert.equal($('#output-tools').open, false); assert.equal(win.document.activeElement, $('#output-tools > summary'));
+  $('#output-tools').open = true; $('#copy-button').click();
+  assert.equal($('#output-tools').open, false);
+  $('#new-prompt').click(); $('#provider').value = 'codex';
+  $('.history-restore').click(); await idle();
+  assert.equal($('#compose-general-summary').textContent, 'Claude Code · Detailed');
 });
 
 test('the Kanban header exposes a collapsible settings panel outside the board', async t => {
