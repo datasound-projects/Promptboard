@@ -8,6 +8,8 @@ npm run check
 npm test
 ```
 
+The suite runs two test files at a time. This bounds competing Git, PTY and browser fixtures so machine load does not consume their readiness deadlines; it does not disable tests or extend their timeouts.
+
 1. Make one change with one clear purpose. Match the style of the surrounding code: plain ES modules, no framework, no build step.
 2. Add or update a test that fails without your change. Tests use simulated CLIs (`tests/fixtures/fake-agent.cjs`) and disposable Git repositories. Never point a test at a real repository.
 3. Update the README, `docs/`, and `CHANGELOG.md` (under **Unreleased**) when behaviour changes.
