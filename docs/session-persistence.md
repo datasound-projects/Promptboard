@@ -18,4 +18,6 @@ On restart, active runs become interrupted and their sessions become orphaned. I
 
 Run and session acceptance happen in the same atomic Store write. Native IDs and lifecycle updates are persisted together. A failed write leaves both registries unchanged. Session metadata contains references to run artifacts; it does not duplicate the prompt, Base content, or full transcript into board snapshots.
 
+Codex usage and read-only native receipt custody now locate an older resumed conversation by its exact thread metadata in a bounded search of canonical session date folders. They do not choose the latest or a related conversation. Ambiguous/reverted or compressed histories remain unavailable until an authoritative active-rollout locator is implemented. This lookup neither resumes a process nor sends input. See [Codex history discovery](codex-history-discovery.md).
+
 Verification uses disposable state directories, Git repositories, and simulated CLIs. It covers migration, concurrent recovery, atomic acceptance, exact resume arguments, process ownership, duplicate requests, queued/preparing pause, failed pause persistence, revocation checks, changed task text, conversation-ID mismatch, HTTP authorization, and accessible UI controls. These tests do not establish authenticated live-provider resume behavior or the contents of a provider's restored history.

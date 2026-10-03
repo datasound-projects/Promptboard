@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Find older resumed Codex histories by exact thread metadata in bounded canonical date folders, with strict UTF-8/header checks, symlink refusal and unavailable outcomes for ambiguous/reverted/compressed rollouts or incomplete searches. Keep paths private and preserve read-only receipt custody, Composer/Base/CLI delivery and process behavior.
+
 - Add pipeline script/webhook row editing, switches, ordering, copying and draft deletion to Column Manager. Preserve disabled message/notification definitions and invalid header drafts; saving runs nothing. Show task-scoped Stop and durable per-row/lifecycle results in Details, with escaped content and revision-aware polling that preserves focus. Keep native messages, desktop notifications and explicit retries pending.
 
 - Keep pipeline permission waits scoped to their agent and exact tool when available. Unrelated or late tool results and parent lifecycle boundaries cannot dismiss another agent's dialog. Uncorrelated native notifications await their own lifecycle boundary; bound registries and unknown subordinate waits retain uncertainty. No permission decisions or terminal messages are injected.
