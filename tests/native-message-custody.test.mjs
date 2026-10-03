@@ -14,12 +14,12 @@ const user = (provider, text, id = 'new-user') => provider === 'claude'
 async function fixture(t, provider = 'claude') {
   const dir = await mkdtemp(join(tmpdir(), 'pb-native-custody-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
-  const eventsFile = join(dir, 'events.jsonl'), writes = [], updates = [];
+  const eventsFile = join(dir, 'events.jsonl'), writes = [], updates = [], startedAt = Date.now();
   let path = join(dir, provider === 'claude' ? `${nativeId}.jsonl` : `session-fixture.jsonl`);
   if (provider === 'codex') {
     const previousHome = process.env.CODEX_HOME; process.env.CODEX_HOME = dir;
     t.after(() => { if (previousHome === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = previousHome; });
-    const date = new Date(), day = join(dir, 'sessions', String(date.getFullYear()), String(date.getMonth() + 1).padStart(2, '0'), String(date.getDate()).padStart(2, '0'));
+    const date = new Date(startedAt), day = join(dir, 'sessions', String(date.getFullYear()), String(date.getMonth() + 1).padStart(2, '0'), String(date.getDate()).padStart(2, '0'));
     await mkdir(day, { recursive: true }); path = join(day, `rollout-fixture-${nativeId}.jsonl`);
   }
   const first = provider === 'claude' ? user(provider, 'Original task') : provider === 'codex'
@@ -32,7 +32,7 @@ async function fixture(t, provider = 'claude') {
   const supervisor = new Supervisor({ board, dataDir: dir });
   // A controlled PTY seam, with no real provider, process, timer or network call.
   const session = { runId: run.id, provider, pipeline: true, proc: { write: data => writes.push(data) }, inputEpoch: 0,
-    sessionId: nativeId, eventsFile, eventsOffset: 0, startedAt: Date.now(), runDir: dir,
+    sessionId: nativeId, eventsFile, eventsOffset: 0, startedAt, runDir: dir,
     activity: new SessionActivity(provider), status: 'running', turns: 0, seq: 0, ring: [], ringBytes: 0, subscribers: new Set() };
   supervisor.sessions.set(run.id, session);
   const emit = event => appendFile(eventsFile, JSON.stringify({ provider, ...event }) + '\n');
