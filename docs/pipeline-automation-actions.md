@@ -10,6 +10,8 @@ Webhooks have one thirty-second total budget, including waits and up to three at
 
 Notifications pass literal rendered title/body, persisted action ID and project/task identity to an injected receiver. Title/body are capped at 500/4,000 characters. Only an explicit receiver acknowledgement records success; a missing receiver or absent acknowledgement records `unconfirmed`. A cancelled or timed-out receiver is not retried here. Browser permission handling, task-click navigation, failure toasts and the durable log belong to the forthcoming integration.
 
+Each accepted action owns a referenced deadline timer and clears it when its outcome resolves. Pending callbacks therefore reach their bounded timeout even in a standalone Node 22 process without other I/O; no test keep-alive interval is needed.
+
 Tests exercise native script files in quoted working directories, exact environment values, large output, nonzero exits, missing paths, owned child-tree cancellation, independent jobs, shutdown, deadlines, real loopback HTTP receivers, JSON/URL/header boundaries, bounded retries, dates, intent persistence failures and unconfirmed notifications. Windows behavior must pass the GitHub matrix before merge. No real external webhook or desktop notification is sent by these fixtures.
 
 References: [Node child process API](https://nodejs.org/docs/latest-v22.x/api/child_process.html), [Windows PowerShell invocation](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_powershell_exe?view=powershell-5.1), [Windows taskkill](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/taskkill), and [Kangentic automation behavior](https://www.kangentic.com/features/workflows/).
