@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- Simplify the README around Compose, Kanban, and Base; replace the demos with dark-mode recordings under 12 seconds and add a reproducible Base demo.
+
+- Base uses exactly eight local category filters over one library, with persistent search, availability, sort and Grid/List, canonical counts, contextual Add, accessible mobile scrolling, and result-area retry with stale-response protection.
+- Base sidebar: move categories out of the content area and make each selection update the collection, heading, empty state, and creation type. Preserve unrelated editor drafts while browsing another category.
+- Agent profiles: reusable cards with equipped-resource indicators, profile references, and native Claude Code subagents for writing stages. Pin and capture subagent instructions/resources through the existing runner; retain selections and report unsupported provider/stage combinations without changing permissions.
+- Agent avatars: explicit AI illustration drafts via OpenAI Images, preview/save, protected image loading, content-aware export/import, and scoped cancellation. API access is optional and uses server environment credentials; no CLI login credentials are collected.
+
+- Fix Base editing after MCP discovery and source refresh: reload persisted revisions and captured text, including failed discovery results, so subsequent saves and retries remain valid. Guard unsaved drafts and overlapping saves during these operations.
+- Fix Base source refresh preserving pasted/uploaded content while replacing only managed live captures. Knowledge pages from different collections retain distinct source identities.
+
+- Base: add the global **Compose | Kanban | Base** navigation and an optional local library of instruction skills, MCP connections, Markdown wikis, context rules, command recipes/discovered MCP tool references, agent profiles, and packs.
+- Base assignments: reference resources across global, project, built-in/custom-column, task, and task-column scopes, with inheritance, exclusions, replacement/opt-out, effective previews, and atomic multi-target application. Profile selection remains an explicit agent configuration action; assignments never launch work.
+- Base delivery: pin immutable definitions with accepted runs and prepare resources through the existing Supervisor. Supported writing-stage MCP configuration is scoped per run; portable instructions/context preserve the exact task prompt and existing evidence. Run details distinguish configured resources, supplied captures, warnings, and observed invocations. Read-only stages retain their restrictions, and queued delivery rechecks trust/access revocations.
+- Base knowledge and portability: local text search, editable linked wiki pages, bounded source imports/refresh, optional reviewed wiki drafts through the existing restricted runner, validated SKILL.md imports, explicit MCP discovery tests, and versioned import/export with fresh reference mappings. Document bodies require an explicit export choice. Imported resources remain inactive/untrusted and do not import filesystem approval.
+- Persistence: explicitly migrate state version 2 to 3 with a retained pre-migration backup; fail safely on migration errors and preserve newer formats. Portable board backups use their separate version 3 and still accept supported older formats. Resource deletion protects references and retains historical immutable revisions.
+- Verification: new deterministic registry, migration, resolver, lifecycle, MCP fixture, source-containment, wiki coordination, backup, and browser coverage. Simulated CLIs and local MCP fixtures do not establish authenticated live-provider compatibility; see `docs/base-delivery.md` for supported combinations and limits.
+
+- Usage: add a minimal dashboard beside Settings with one-minute refresh, local per-model tokens and tool counts, 30-day charts, native Codex allowance, and reported Claude status-line allowance/cost. Unavailable and stale metrics are explicit; credentials and transcript text are never returned.
+
+- Fix: delete inactive or completed cards even when worktrees are dirty or missing. Card deletion keeps files and branches, records retained worktree locations, and removes Autopilot queue references atomically. Active runs still require stopping first.
+- Kanban sidebar: compact project actions and rows, quieter selection and agent information, no decorative footer or pulsing indicators.
+
+- Kanban: separate columns with a minimal 4px gap while retaining subtle top accents.
+
 - Composer: remove the introductory input placeholder and example button, including the bundled sample prompt and its event handler.
 
 - Fix: Composer installation labels and generation availability follow the latest connection check; newly available CLIs refresh their model choices.

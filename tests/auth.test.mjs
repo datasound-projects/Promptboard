@@ -5,7 +5,8 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { AUTH_CAPABILITIES, logout, readAuthStatus, startLogin } from '../src/auth.mjs';
 import { ProviderError } from '../src/providers.mjs';
-import { startServer } from '../src/server.mjs';
+import { readCodexLimits } from '../src/usage-dashboard.mjs';
+import { startTestServer } from './helpers/test-server.mjs';
 
 // Fake CLIs only. These tests never run an installed Codex or Claude binary and never sign anyone out.
 async function fakeClis(t) {
@@ -23,6 +24,7 @@ const send = v => process.stdout.write(JSON.stringify(v) + '\\n');
 createInterface({ input: process.stdin }).on('line', line => {
   const msg = JSON.parse(line);
   if (msg.method === 'initialize') send({ id: msg.id, result: {} });
+  else if (msg.method === 'account/rateLimits/read') send({ id: msg.id, result: { rateLimits: { primary: { usedPercent: 25, windowDurationMins: 300, resetsAt: 1791000000 } } } });
   else if (msg.method === 'account/read') send({ id: msg.id, result: { account: state.codex ? { type: 'chatgpt', email: 'private@example.com', planType: 'plus' } : null, requiresOpenaiAuth: true } });
   else if (msg.method === 'account/login/start') {
     const device = msg.params.type === 'chatgptDeviceCode';
@@ -121,10 +123,9 @@ function adapter() {
 async function open(t, options = {}) {
   const auth = adapter();
   let lookups = 0;
-  const app = await startServer({ port: 0, authAdapter: auth, detector: async () => [{ id: 'codex', available: true }],
+  const app = await startTestServer(t, { port: 0, authAdapter: auth, detector: async () => [{ id: 'codex', available: true }],
     catalogReader: async provider => { lookups++; return { provider, source: 'cli', models: [{ id: 'm', name: 'M', efforts: [] }] }; },
     runner: async () => ({ text: 'Add a test.' }), ...options });
-  t.after(() => app.close());
   const { token } = await fetch(app.url + '/api/session').then(r => r.json());
   const post = (path, body, headers = {}) => fetch(app.url + path, { method: 'POST', headers: { 'content-type': 'application/json', 'x-ste-token': token, ...headers }, body: JSON.stringify(body) });
   const get = path => fetch(app.url + path, { headers: { 'x-ste-token': token } });
@@ -151,8 +152,7 @@ test('auth endpoints require the token, local origin, JSON, and explicit sign-ou
 
 test('unsupported native sign-in is reported, not simulated', async t => {
   // The real adapter rejects before starting any process for these providers.
-  const app = await startServer({ port: 0, detector: async () => [] });
-  t.after(() => app.close());
+  const app = await startTestServer(t, { port: 0, detector: async () => [] });
   const { token } = await fetch(app.url + '/api/session').then(r => r.json());
   for (const provider of ['claude', 'gemini', 'agy']) {
     const response = await fetch(app.url + '/api/auth/login', { method: 'POST', headers: { 'content-type': 'application/json', 'x-ste-token': token }, body: JSON.stringify({ provider }) });
@@ -219,4 +219,14 @@ test('auth failure recovers after sign-in, and auth changes refresh the model ca
   assert.equal((await post('/api/auth/logout', { provider: 'codex', confirm: true })).status, 200);
   await get('/api/models?provider=codex');
   assert.equal(lookups(), 3, 'Sign-out invalidates the model cache.');
+});
+
+
+test('Codex usage uses only native read-only metadata and returns normalized allowance', { skip: process.platform === 'win32' }, async t => {
+  const cli = await fakeClis(t);
+  const usage = await readCodexLimits();
+  assert.equal(usage.windows[0].remainingPercent, 75);
+  assert.equal(usage.status, 'live');
+  assert.deepEqual((await cli.log()).map(entry => entry.args), [['app-server']]);
+  assert.doesNotMatch(JSON.stringify(usage), /private@example/);
 });

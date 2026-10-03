@@ -317,6 +317,8 @@ test('custom columns: layout rules, moves along the stage on their left, an agen
 
 test('Merge with a conflicting target: the merge agent starts by itself, its resolution is committed, and the card goes back to Code Review', { skip, timeout: 90000 }, async t => {
   const w = await world(t);
+  const skill = await w.board.base.create({ kind: 'skill', name: 'Merge context', enabled: true, trust: 'trusted', content: { body: 'BASE_INTERNAL_MERGE_REFERENCE' } });
+  await w.board.base.apply({ changes: [{ target: { scope: 'column', projectId: w.project.id, columnId: 'merge' }, binding: { mode: 'extend', include: [{ resourceId: skill.id, required: true }], exclude: [] } }], expectedBaseRevision: (await w.board.state()).base.revision });
   const task = await w.board.createTask({ projectId: w.project.id, title: 'Conflicting', prompt: 'Change it.' });
   await w.board.setWorkflow(w.project.id, { workflow: { executing: { policy: 'manual' }, code_review: { policy: 'manual' } }, expectedRevision: await w.revision() });
   await w.go(task.id, 'executing');
@@ -340,6 +342,9 @@ test('Merge with a conflicting target: the merge agent starts by itself, its res
   assert.match(await readFile(join(ws, 'feature.txt'), 'utf8'), /<<<<<<</);
   // The agent resolves the conflict in the task worktree (simulated here) and finishes its turn.
   await w.turn(mergeRun.id);
+  assert.equal((await w.board.run(mergeRun.id)).baseManifest.resources[0].resourceId, skill.id);
+  assert.equal((await w.board.run(mergeRun.id)).baseManifest.deliveryState, 'supplied');
+  assert.match(await readFile(join(w.dataDir, mergeRun.artifactsDir, 'prompt.md'), 'utf8'), /BASE_INTERNAL_MERGE_REFERENCE/);
   await writeFile(join(ws, 'feature.txt'), 'task version\ntarget version\n');
   await w.board.advanceFlows();
   const back = await w.current(task.id);
@@ -348,6 +353,7 @@ test('Merge with a conflicting target: the merge agent starts by itself, its res
   assert.equal(git(ws, 'status', '--porcelain'), '');
   // A new review of the merge commit starts by itself; the old review never authorizes it.
   const review = (await w.board.view()).runs.filter(run => run.taskId === task.id && run.stage === 'code_review').at(-1);
+  assert.deepEqual(review.baseManifest.resources, [], 'The internally launched review does not inherit the merge-only resource.');
   assert.deepEqual([review.trigger, review.review.taskCommit], ['automation', git(ws, 'rev-parse', 'HEAD')]);
   await w.board.updateRun(review.id, { status: 'cancelled' });
   await assert.rejects(w.go(task.id, 'testing'), { message: /older commit/ });

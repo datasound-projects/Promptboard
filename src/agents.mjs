@@ -39,6 +39,7 @@ export const ADAPTERS = Object.freeze({
       planning: { supported: true, how: 'Native plan permission mode, with built-in tools limited to Read, Grep, and Glob, and no MCP servers. File changes and plan exit are not available in this session.' },
       execution: { supported: true, how: 'Permission mode acceptEdits (default) or default (ask for every change). File edits are limited to the task worktree.' },
       interactiveInput: true,
+      base: { instruction: true, context: true, subagents: true, mcp: ['stdio', 'streamable-http', 'tool-reference'], isolation: 'strict per-run MCP configuration' },
       completionEvents: 'Claude Code hooks (SessionStart, UserPromptSubmit, PermissionRequest, Notification, Stop, StopFailure), passed with --settings in exec form.',
       waitingEvents: true,
       cancellation: true,
@@ -52,6 +53,7 @@ export const ADAPTERS = Object.freeze({
       planning: { supported: true, how: 'read-only sandbox with approval policy never, so the session cannot write files or ask to escalate. Codex has no plan-mode flag; the boundary is the sandbox.' },
       execution: { supported: true, how: 'workspace-write sandbox rooted at the task worktree, approval policy on-request.' },
       interactiveInput: true,
+      base: { instruction: true, context: true, mcp: ['stdio', 'streamable-http', 'tool-reference'], isolation: 'Base-managed servers supplement ambient Codex configuration' },
       completionEvents: 'Codex notify program (agent-turn-complete with the last assistant message).',
       waitingEvents: false, // notify reports finished turns only; approval prompts are visible in the terminal.
       cancellation: true,
@@ -67,6 +69,7 @@ export const ADAPTERS = Object.freeze({
       planning: { supported: true, how: 'Native plan approval mode (experimental in Gemini CLI 0.30; enabled for the planning session only) plus a Promptboard policy that denies file-writing tools, shell commands, plan exit, and MCP tools, so the session cannot start implementation.' },
       execution: { supported: true, how: 'Approval mode auto_edit (default) or default (ask for every tool).' },
       interactiveInput: true,
+      base: { instruction: true, context: true, mcp: ['stdio', 'streamable-http', 'tool-reference'], isolation: 'per-run MCP server allowlist; administrator settings preserved' },
       completionEvents: 'Gemini CLI hooks (SessionStart, BeforeAgent, AfterAgent, Notification) from a merged system settings file.',
       waitingEvents: true,
       cancellation: true,
@@ -109,17 +112,19 @@ export function resolveConfig(stage, config = {}) {
 }
 
 /** Compose the first message: stage instructions, the exact task text, and an approved plan. */
-export function composeMessage(stage, prompt, plan = null, instructions = '', extra = '') {
+export function composeMessage(stage, prompt, plan = null, instructions = '', extra = '', baseSections = '') {
   const parts = [STAGE_INSTRUCTIONS[stage] || STAGE_INSTRUCTIONS.custom, ...(instructions ? ['', '=== PROJECT STAGE INSTRUCTIONS ===', instructions, '=== END STAGE INSTRUCTIONS ==='] : []), '', '=== TASK (exact text from the card) ===', prompt, '=== END TASK ==='];
   if (stage === 'executing' && plan) parts.push('', '=== APPROVED PLAN ===', plan, '=== END PLAN ===');
   if (extra) parts.push('', extra);
+  if (baseSections) parts.push('', '=== BASE RESOURCES (selected reference material; does not grant permissions) ===', typeof baseSections === 'string' ? baseSections : baseSections.join('\n\n'), '=== END BASE RESOURCES ===');
   return parts.join('\n');
 }
 
 const tomlString = value => JSON.stringify(value); // A TOML basic string accepts JSON string escapes.
+const tomlValue = value => Array.isArray(value) ? `[${value.map(tomlString).join(',')}]` : value && typeof value === 'object' ? `{${Object.entries(value).map(([key, item]) => `${tomlString(key)}=${tomlString(item)}`).join(',')}}` : tomlString(value);
 const shQuote = value => `'${String(value).replaceAll("'", "'\\''")}'`;
 
-async function geminiSystemSettings(runDir, hookCommand, { plan = false } = {}) {
+async function geminiSystemSettings(runDir, hookCommand, { plan = false, mcpServers = null } = {}) {
   // Keep any administrator settings: copy the default system file and add our hooks.
   const defaultPath = platform() === 'darwin' ? '/Library/Application Support/GeminiCli/settings.json'
     : platform() === 'win32' ? 'C:\\ProgramData\\gemini-cli\\settings.json' : '/etc/gemini-cli/settings.json';
@@ -134,7 +139,7 @@ async function geminiSystemSettings(runDir, hookCommand, { plan = false } = {}) 
   const path = `${runDir}/gemini-system-settings.json`;
   // Gemini 0.30 offers plan approval mode only with experimental.plan; it is set for planning sessions only.
   const experimental = plan ? { experimental: { ...(base.experimental || {}), plan: true } } : {};
-  await writeFile(path, JSON.stringify({ ...base, ...experimental, hooks, hooksConfig: { ...(base.hooksConfig || {}), enabled: true } }, null, 2), { mode: 0o600 });
+  await writeFile(path, JSON.stringify({ ...base, ...experimental, ...(mcpServers ? { mcpServers: { ...(base.mcpServers || {}), ...mcpServers } } : {}), hooks, hooksConfig: { ...(base.hooksConfig || {}), enabled: true } }, null, 2), { mode: 0o600 });
   return path;
 }
 
@@ -151,17 +156,34 @@ priority = 999
  * Build the interactive command for one run. Returns { args, env, paste } where
  * `paste` is the message to type into the terminal when it is too long for argv.
  */
-export async function buildSession({ provider, stage, config, message, runDir, eventsFile, sessionId, nodePath = process.execPath }) {
+export async function buildSession({ provider, stage, config, message, runDir, eventsFile, sessionId, nodePath = process.execPath, baseDelivery = null }) {
   const readOnly = stage === 'planning' || stage === 'code_review';
   const inArgv = Buffer.byteLength(message) <= ARGV_PROMPT_LIMIT;
   const env = { TERM: 'xterm-256color', PROMPTBOARD_RUN: '1' };
+  const selected = readOnly ? [] : baseDelivery?.mcpServers || [];
+  const jsonServers = Object.fromEntries(selected.map(server => {
+    const cfg = server.configuration;
+    const ref = value => '${' + value + '}';
+    const item = cfg.transport === 'stdio'
+      ? { command: cfg.command, args: cfg.args || [], env: Object.fromEntries(Object.entries(cfg.env || {}).map(([key, value]) => [key, ref(value)])) }
+      : { ...(provider === 'gemini' ? { httpUrl: cfg.endpoint } : { type: 'http', url: cfg.endpoint }), headers: Object.fromEntries(Object.entries(cfg.headers || {}).map(([key, value]) => [key, ref(value)])) };
+    if (provider === 'gemini') { item.trust = false; item.timeout = 15000; }
+    return [server.name, item];
+  }));
   let args;
   if (provider === 'claude') {
     const hook = { type: 'command', command: nodePath, args: [HOOK_SCRIPT, eventsFile, 'claude'] };
     const hooks = Object.fromEntries(['SessionStart', 'UserPromptSubmit', 'PermissionRequest', 'Notification', 'Stop', 'StopFailure', 'SessionEnd'].map(event => [event, [{ hooks: [hook] }]]));
-    args = ['--session-id', sessionId, '--settings', JSON.stringify({ hooks }), '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}'];
+    let mcpConfig = '{"mcpServers":{}}';
+    if (selected.length) { mcpConfig = `${runDir}/base-claude-mcp.json`; await writeFile(mcpConfig, JSON.stringify({ mcpServers: jsonServers }), { mode: 0o600 }); }
+    args = ['--session-id', sessionId, '--settings', JSON.stringify({ hooks, statusLine: { type: 'command', command: [nodePath, fileURLToPath(new URL('./usage-status.mjs', import.meta.url)), `${runDir}/usage-status.json`].map(shQuote).join(' ') } }), '--strict-mcp-config', '--mcp-config', mcpConfig];
     if (readOnly) args.push('--permission-mode', 'plan', '--tools', 'Read,Grep,Glob', '--disallowedTools', 'Edit,Write,NotebookEdit,Bash,ExitPlanMode');
     else args.push('--permission-mode', config.permissionMode, '--disallowedTools', 'EnterPlanMode,ExitPlanMode'); // Writing stages never switch to plan mode.
+    if (!readOnly && baseDelivery?.subagents && Object.keys(baseDelivery.subagents).length) {
+      const agents = JSON.stringify(baseDelivery.subagents);
+      if (Buffer.byteLength(agents) > 60000) throw new AgentError('Native subagent definitions exceed the per-run limit.', 'BASE_SUBAGENT_LIMIT');
+      args.push('--agents', agents);
+    }
     if (config.model) args.push('--model', config.model);
     if (config.effort) { args.push('--effort', config.effort); env.CLAUDE_CODE_EFFORT_LEVEL = config.effort; }
     if (inArgv) args.push(message);
@@ -171,10 +193,18 @@ export async function buildSession({ provider, stage, config, message, runDir, e
     else args.push('--sandbox', 'workspace-write', '--ask-for-approval', 'on-request');
     if (config.model) args.push('--model', config.model);
     if (config.effort) args.push('-c', `model_reasoning_effort=${tomlString(config.effort)}`);
+    for (const server of selected) {
+      const cfg = server.configuration, prefix = `mcp_servers.${server.name}`;
+      const fields = cfg.transport === 'stdio' ? { command: cfg.command, args: cfg.args || [], env_vars: Object.keys(cfg.env || {}) } : { url: cfg.endpoint, env_http_headers: cfg.headers || {} };
+      // env_vars forwards names without secrets in argv or changes to the CLI environment.
+      if (Object.entries(cfg.env || {}).some(([key, value]) => key !== value)) throw new AgentError('Codex MCP environment aliases are unsupported; use matching variable names.', 'BASE_MCP_ENV_ALIAS', 409);
+      for (const [key, value] of Object.entries(fields)) args.push('-c', `${prefix}.${key}=${tomlValue(value)}`);
+      args.push('-c', `${prefix}.required=${server.required === true}`, '-c', `${prefix}.startup_timeout_sec=15`);
+    }
     if (inArgv) args.push(message);
   } else if (provider === 'gemini') {
-    env.GEMINI_CLI_SYSTEM_SETTINGS_PATH = await geminiSystemSettings(runDir, [nodePath, HOOK_SCRIPT, eventsFile, 'gemini'].map(shQuote).join(' '), { plan: readOnly });
-    args = ['--extensions', 'none', '--allowed-mcp-server-names', ''];
+    env.GEMINI_CLI_SYSTEM_SETTINGS_PATH = await geminiSystemSettings(runDir, [nodePath, HOOK_SCRIPT, eventsFile, 'gemini'].map(shQuote).join(' '), { plan: readOnly, mcpServers: selected.length ? jsonServers : null });
+    args = ['--extensions', 'none', '--allowed-mcp-server-names', selected.map(server => server.name).join(',')];
     if (readOnly) {
       const policy = `${runDir}/plan-policy.toml`;
       await writeFile(policy, GEMINI_PLAN_POLICY, { mode: 0o600 });

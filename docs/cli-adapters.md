@@ -76,6 +76,20 @@ On 2026-09-28, the command contracts were checked against official sources. Loca
 
 ## API
 
+### Base and Kanban sessions
+
+The restricted text-generation adapters documented above remain separate from `agents.mjs`, which builds interactive Kanban sessions. Optional wiki generation invokes the existing restricted runner directly through the shared server job coordinator, as Task Split does; it never uses Compose's rewrite pipeline or starts a Kanban task.
+
+Base instruction skills, wiki/context text, and command recipes reach interactive agents through delimited message sections. This is instruction/context delivery, not native skill installation or a new tool registry. Required incompatibilities block the existing launch path; optional omissions appear in the pinned run manifest. Command recipes and Base MCPs cannot be attached to read-only Planning or Code Review runs.
+
+For authorized writing stages, Claude uses a selected strict per-run MCP configuration while retaining hooks and its usage status line. Gemini receives selected server names and merged per-run system settings while retaining administrator settings and hooks. Codex uses documented per-run MCP configuration overrides and preserves notify/sandbox arguments; ambient Codex MCP configuration remains external to Base and is not claimed to be isolated. Per-run model/effort selection, approvals, long-prompt paste, and Gemini's prompt encoding are unchanged.
+
+Stdio and Streamable HTTP definitions use declared environment/header references. Explicit trusted connection tests use the maintained MCP client SDK for initialization and capability discovery, with bounded output and cleanup. A discovered tool reference retains its parent server and tool identity; it does not claim that other server tools are filtered out. No global setup command, provider-home replacement, credential copy, permission bypass, or automatic skill/script execution is introduced.
+
+The [Base delivery matrix](base-delivery.md) records the exact supported combinations, current official references, installed CLI versions checked on 2026-10-02, and limitations. Default regression tests use fake coding CLIs and deterministic local MCP fixtures. They are not authenticated live-provider verification; Gemini retains its `notLiveVerified` status and Antigravity remains unavailable for Kanban.
+
+### Restricted text generation
+
 ```js
 import { detectProviders, runProvider } from './src/providers.mjs';
 
@@ -113,3 +127,12 @@ const result = await runProvider({
 - [Gemini ACP model metadata source](https://github.com/google-gemini/gemini-cli/blob/main/packages/cli/src/acp/acpSessionManager.ts)
 - [Antigravity headless model, effort, and stream contracts](https://antigravity.google/docs/cli/headless/)
 - [Antigravity permission rules](https://antigravity.google/docs/permissions?tab=cli)
+
+## Usage dashboard
+
+- Codex: read-only `account/rateLimits/read` after app-server initialization ([official protocol](https://learn.chatgpt.com/docs/app-server)); never starts a thread or turn. Local rollout token totals are differenced across model changes.
+- Claude: local transcript usage is deduplicated by message ID. Per-run `statusLine` receives documented cost and rate-limit fields ([official status-line schema](https://code.claude.com/docs/en/statusline)); a whitelist-only bridge records these without changing global settings. Costs are CLI estimates, not invoices.
+- Gemini: local session JSON/JSONL provides per-message tokens and tool names ([record format](https://github.com/google-gemini/gemini-cli/blob/main/packages/core/src/services/chatRecordingTypes.ts)). The interactive `/stats model` remains the source for account quota ([quota docs](https://geminicli.com/docs/resources/quota-and-pricing/)).
+- Antigravity: unsupported metrics are explicitly unavailable. No guessed token pricing or quota percentages.
+
+The server's `/api/usage` endpoint requires the usual local session token. Collection begins on opening Usage, refreshes every 60 seconds, and stops at server shutdown. Bounded scans use known session directories only and return sanitized aggregates. Manual refresh is coalesced and rate-limited to once per ten seconds.

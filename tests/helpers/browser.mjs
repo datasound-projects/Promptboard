@@ -75,10 +75,27 @@ export async function launch({ width = 1280, height = 900 } = {}) {
         await new Promise(resolve => setTimeout(resolve, 100));
       }
     },
+    /** Measure after paint and wait for the exact asserted value. A stream update, DOM
+     * mutation, or CDP resize acknowledgement need not mean ResizeObserver/rAF sizing
+     * has finished. This leaves pixel bounds unchanged and reports persistent defects. */
+    async layout(expression, expected = true, ms = 10000) {
+      try {
+        const result = await browser.until(`(async () => { await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame); const value = (() => { ${expression} })(); return Object.is(value, ${JSON.stringify(expected)}) ? { value } : false; })()`, 'painted layout', ms);
+        return result.value;
+      } catch (failure) {
+        const diagnostics = await browser.eval(`return { viewport: { width: innerWidth, height: innerHeight, scrollX, scrollY }, document: { width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight }, active: document.activeElement?.id, elements: [...document.querySelectorAll('[id]')].filter(node => { const r = node.getBoundingClientRect(); return r.width > 0 || r.height > 0; }).slice(0, 160).map(node => { const style = getComputedStyle(node); return { id: node.id, rect: node.getBoundingClientRect().toJSON(), display: style.display, position: style.position, gridRows: style.gridTemplateRows }; }) };`).catch(() => null);
+        throw new Error(`${failure.message}; expected ${JSON.stringify(expected)} from ${expression}; geometry ${JSON.stringify(diagnostics)}`);
+      }
+    },
     async type(text) { for (const char of text) { await send('Input.dispatchKeyEvent', { type: 'keyDown', text: char, key: char }); await send('Input.dispatchKeyEvent', { type: 'keyUp', key: char }); } },
     async key(key, code = key, keyCode = 13) { await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key, code, windowsVirtualKeyCode: keyCode, ...(key === 'Enter' ? { text: '\r' } : {}) }); await send('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode: keyCode }); },
     async click(x, y) { for (const type of ['mousePressed', 'mouseReleased']) await send('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1 }); },
-    async resize(width, height) { await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false }); },
+    async resize(width, height) {
+      await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
+      // Verify the requested viewport after paint. Callers use layout() for the
+      // component-specific contract after its resize listeners have reacted.
+      await browser.layout(`return innerWidth === ${width} && innerHeight === ${height};`);
+    },
     async screenshot() { return Buffer.from((await send('Page.captureScreenshot', { format: 'png' })).data, 'base64'); },
     async close() { try { socket.close(); } catch {} chrome.kill('SIGKILL'); await new Promise(resolve => setTimeout(resolve, 200)); await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); },
   };

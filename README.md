@@ -1,34 +1,17 @@
 <p align="center">
-  <img src="docs/logo.png" width="180" alt="Promptboard mascot: a girl in glasses and a kimono giving a thumbs-up">
+  <img src="docs/logo.png" width="140" alt="Promptboard mascot">
 </p>
 
 <h1 align="center">Promptboard</h1>
 
 <p align="center">
-  Write clear prompts for AI coding agents, then run them on a local Kanban board.<br>
-  Your own CLI · Your own repository · Nothing merges without you.
+  <b>Compose prompts. Run coding tasks. Reuse agent resources.</b><br>
+  A local-first workspace for your coding CLI and your repositories.
 </p>
 
-<p align="center">
-  <img src="docs/compose-demo.gif" width="820" alt="Compose: a rough request is typed, Promptboard writes a structured prompt, and Split into tasks proposes three ordered tasks.">
-  <br><sub><b>Compose</b>: a rough request becomes a clear prompt, then optional smaller tasks.</sub>
-</p>
+## Get started
 
-<p align="center">
-  <img src="docs/kanban-demo.gif" width="820" alt="Kanban: Autopilot takes three cards one after another from To Do through Executing, Code Review, Testing, and Merge to Done, with the agents sidebar and terminal tabs.">
-  <br><sub><b>Kanban</b>: Autopilot takes three cards from To Do to Done, each in its own Git worktree.</sub>
-</p>
-
-## Install
-
-You need **Node.js 22+**, **Git**, and at least one AI coding CLI, installed and signed in:
-
-| CLI | Compose | Kanban agents |
-| --- | --- | --- |
-| [Claude Code](https://code.claude.com/docs/en/quickstart) | Yes | Yes |
-| [OpenAI Codex CLI](https://developers.openai.com/codex/cli) | Yes | Yes |
-| [Gemini CLI](https://geminicli.com/docs/get-started/installation/) | Yes | Yes (not verified live) |
-| [Google Antigravity](https://antigravity.google/docs/getting-started?tab=cli) (`agy`) | Yes | No |
+Install **Node.js 22+**, **Git**, and a [supported coding CLI](#supported-clis). Sign in to that CLI, then run:
 
 ```bash
 git clone https://github.com/datasound-projects/Promptboard.git
@@ -37,125 +20,78 @@ npm install
 npm start
 ```
 
-Your browser opens **http://127.0.0.1:4318**. Press **Ctrl+C** to stop. No API keys and no accounts: Promptboard uses your CLI's own sign-in.
+Open **http://127.0.0.1:4318**. The navigation is **Compose | Kanban | Base**. Press **Ctrl+C** to stop.
 
-## Features
+## Compose — turn an idea into a clear prompt
 
-**Compose**
-- Turn a rough request into a clear, structured prompt for a coding agent.
-- Keep exact text safe: code, paths, commands, URLs, and quoted text are checked so they stay unchanged.
-- Choose the CLI, model, effort, detail level, task type, and language (English, German, Polish).
-- **Reviewed** mode checks the prompt with a second model call; **Fast** mode uses one call.
-- **Split into tasks** (optional): break the prompt into smaller, ordered tasks that become To Do cards.
-- Keep your last 500 prompts in the sidebar; copy, export, or add them to the board.
+- Describe what you want to build or fix. Choose your CLI, model, language, and level of detail.
+- Review the generated prompt. Optionally edit and save your exact wording.
+- Copy it, add it to Kanban, or split it into smaller, editable To Do tasks.
 
-**Kanban**
+<p align="center">
+  <img src="docs/compose-demo.gif" width="960" alt="Dark-mode Compose demo: enter a request, generate a structured prompt, edit and save it, then split it into three To Do tasks.">
+  <br><sub>Idea → prompt → optional edits → tasks</sub>
+</p>
 
-- **Task cards:** use **…** to edit the title and prompt, move/reorder, copy, duplicate, delete, inspect details, or configure the column’s agent. **Card display** controls preview visibility, agent information, and spacing for that card in this browser.
+## Kanban — take tasks from To Do to Done
 
-- **Agents** opens this project’s provider/model settings. Choose a project default and **Use project agent for all columns**, or override any agent column with its own provider/model. Custom agent columns support overrides too. **Columns** lets you choose the subtle top accent colors. TO DO and Done do not run agents.
+- Open an existing repository or create a project. Each task works in its own Git branch and worktree.
+- Drag a card to start its agent, or use **Autopilot** to run a queue one task at a time. Watch and interact through the built-in terminals.
+- Plan, build, review, and test. Reviews and passing tests must match the current commit before a merge. Merge manually, or explicitly enable automatic merging.
+- Choose providers and models per project or column. Customize columns, edit cards, and inspect run history.
 
-Use **Add task** at the bottom of To Do to enter a prompt directly, or choose **Refine in Composer** first. In Composer, **Edit prompt** and **Save prompt** optionally save your wording to history; Add to Kanban and Split into tasks use that saved version. Editing clears the original engine checks.
-- Move each task through To Do → optional Planning → Executing → Code Review → Testing → optional Merge → Done. To Do and Done never run agents.
-- Each card gets its own Git branch and worktree. Your main checkout is never touched.
-- Click the **project agent** above the board to choose its provider, model, effort, and execution permissions. Use **Agents per stage…**, or the agent label on a column, to override it for a stage. Planning always uses enforced read-only Plan Mode. Compose has separate settings.
-- The compact project bar shows the target branch; **Files** opens the local repository details. **Files and context** on a card shows where the agent edits files; paths and branch names can be copied.
-- **Drag = start.** Drop a card on a working stage and its agent starts. Execute can start directly from To Do, or use the approved plan. Review and Testing assess the same task's execution results; configured test commands independently verify after the testing agent is confirmed.
-- Watch and type into each agent's terminal in the dock at the bottom.
-- Drag the terminal divider (or use its arrow keys) to resize it; the board adjusts to the space left. Expand **Run details** for paths and usage. Stop has a visible confirmation and waits for the selected agent to exit, keeping its files and logs.
-- Terminal tabs identify the actual provider and model. Connection feedback shows whether output is live or reconnecting; **View output** also opens saved logs after a restart.
-- See every agent in the sidebar: Active, On hold, Awaits you, or Inactive, with model and time.
-- **Merge** is the one place you approve: one click on **Merge main** merges a verified card and moves it to Done.
-- Reviews and tests must match the exact commit before a merge. If `main` moved on, it is brought in first; conflicts go to the merge agent.
-- **Autopilot** runs queued cards one at a time through their route, from To Do to Done.
-- **Columns**: add your own columns, rename or recolour stages, and hide Planning.
-- **Timeline**: see the history of a project: moves, agent runs, reviews, tests, commits, and merges.
+<p align="center">
+  <img src="docs/kanban-demo.gif" width="960" alt="Dark-mode Kanban demo: consent to Autopilot, run a task through Executing, Code Review, Testing and Merge, and finish in Done with agent terminal tabs.">
+  <br><sub>To Do → Execute → Review → Test → Merge → Done</sub>
+</p>
 
-**Projects and GitHub**
-- **New project** creates a folder with a Git repository, ready to use.
-- **Open folder** uses code you already have (Git is set up if needed; your files are not added).
-- Connect GitHub with the official GitHub CLI, pick a repository, and open pull requests.
+## Base — store once, reuse where you need it
 
-## More details
+- Keep one library of **Agents, Packs, MCPs, Skills, Knowledge, Context, and Tools**. **All** shows everything. Search and filter without losing your view settings.
+- Create reusable agent profiles with instructions and configured resources. Save an optional illustrated avatar. Packs group resources by reference.
+- Assign resources to one or several projects, columns, or tasks. Inherit them, add to them, replace them, or opt out. Saving or assigning never starts an agent.
+- Edit linked Markdown wikis, import text sources, and optionally generate reviewable wiki drafts. **Run details** shows the pinned resources and what was actually supplied.
 
-<details>
-<summary><b>How a card moves</b></summary>
+<p align="center">
+  <img src="docs/base-demo.gif" width="960" alt="Dark-mode Base demo: browse the shared resource library, inspect skill instructions, view equipped agent cards, preview a project assignment, and save it without starting an agent.">
+  <br><sub>Store → configure → assign optionally → inspect delivery</sub>
+</p>
 
-- Cards move only along the workflow. The board offers only the allowed moves.
-- A card enters a column only when the move worked. If a stage cannot start, the card stays and shows why.
-- Dropping a card starts its stage. Set a stage to **Manual** in **Workflow settings** to only move cards there.
-- Moving on from a stage confirms the agent's finished turn and commits its work in the task worktree.
-- In **Merge**, the card shows **Merge main** (one click) and **Open pull request**. **Merge automatically** merges as soon as the card is verified.
-- Code Review → Testing needs a review of the current commit. Testing → Merge also needs passing tests for it.
-- Sending a card back to Executing gives the next run the review findings or the failing test output.
-- Testing → Done saves a reviewed/tested task without merging. Merge → Done also saves without merging; only the Merge button or explicitly selected automatic merging changes the target. Done retains the execution summary and branch history. **Reopen** starts a new cycle.
-- Not happy with an attempt? **Start over** (task details) keeps the old branch exactly as it is, removes the worktree, and sends the card back to To Do. The next run starts a new branch from the current target and gets your reason. Nothing is deleted or force-pushed.
-- The agent for a stage comes from the stage setting, else the project default, else the global default in **Settings**.
+<sub>All demos use the real interface in dark mode with simulated model responses and agents. The local Git workflow and Base resource delivery are real. Edited for speed; each GIF is under 12 seconds.</sub>
 
-Full rules: [Kanban contract](docs/agentic-kanban-contract.md).
+## Supported CLIs
 
-Proposed Kangentic-style Kanban behavior, current gaps, and implementation sequence: [Kanban parity plan](docs/kanban-parity-plan.md). This plan does not change the current runtime behavior.
-</details>
+| CLI | Compose | Kanban |
+| --- | --- | --- |
+| [Claude Code](https://code.claude.com/docs/en/quickstart) | Yes | Yes |
+| [OpenAI Codex CLI](https://developers.openai.com/codex/cli) | Yes | Yes |
+| [Gemini CLI](https://geminicli.com/docs/get-started/installation/) | Yes | Yes; not live-verified |
+| [Antigravity](https://antigravity.google/docs/getting-started?tab=cli) (`agy`) | Yes | No |
+
+Compose and Kanban use your CLI's existing sign-in and billing. MCP delivery depends on the provider and stage. Native Base subagents currently support **Claude Code writing stages**. See [Base delivery and limits](docs/base-delivery.md).
 
 <details>
-<summary><b>Settings</b></summary>
+<summary><b>Settings, usage, and privacy</b></summary>
 
-The gear opens **Settings** from either page. Browser-wide preferences include theme, start page, card display defaults, terminal font size, and dock behaviour. **Global agent defaults** uses the same live provider/model/effort picker as project settings; choose **Save default agent** to apply it. Project and column overrides take priority. Composer, Agents and workflow, Columns, and Autopilot are directly accessible here. Less-used sections are collapsed. Per-card display overrides can return to the shared defaults through **… → Card display → Use display defaults**.
+- **Settings** works across all three pages: theme, start page, agent defaults, terminal preferences, project workflows, and GitHub connection through the GitHub CLI.
+- **Usage**, beside Settings, refreshes every minute. It shows available model/token totals, tool counts, cost estimates, allowance, and lightweight charts from local CLI records. Missing metrics stay marked unavailable; estimates are not invoices.
+- Promptboard runs on **127.0.0.1**, with no analytics or telemetry. Compose history stays in your browser; boards, Base resources, logs, and worktrees stay in the local data folder.
+- Prompts and selected context may be sent to your provider through its CLI. Explicit MCP tests may start a trusted server or contact its endpoint.
+- Optional AI avatars use **OpenAI Images**, require a server-side `OPENAI_API_KEY`, and have separate API billing. No image key is stored in Base. [Avatar setup](docs/base-delivery.md#agent-profiles-native-subagents-and-avatars).
+
+Read [SECURITY.md](SECURITY.md) before working with sensitive repositories. [Kanban workflow rules](docs/agentic-kanban-contract.md) explain approvals, evidence checks, and merges.
+
 </details>
 
-<details>
-<summary><b>GitHub</b></summary>
+## More
 
-Install the [GitHub CLI](https://cli.github.com), then choose **Settings → GitHub → Connect GitHub**. Promptboard runs `gh auth login --web`; the GitHub CLI keeps the token. Pick a repository and Promptboard clones it into its data folder. **Open pull request** pushes the task branch (never forced). **Disconnect** keeps your local work and never signs you out.
-</details>
-
-<details>
-<summary><b>Privacy and data</b></summary>
-
-- Promptboard runs only on this computer (`127.0.0.1`). No analytics, no telemetry.
-- Your prompts stay in your browser. The board, runs, and worktrees are in the Promptboard data folder (`PROMPTBOARD_DATA_DIR` changes it). New projects go to `~/Promptboard Projects` (`PROMPTBOARD_PROJECTS_DIR` changes it).
-- Text you send goes to your AI provider through its CLI. **Do not put secrets into prompts or cards.**
-- Promptboard never reads CLI or GitHub credentials.
-
-Read [SECURITY.md](SECURITY.md) before you use it with sensitive repositories.
-</details>
-
-<details>
-<summary><b>Command line</b></summary>
-
-```bash
-node bin/ste.mjs --provider codex < request.txt > prompt.md
-node bin/ste.mjs --provider claude --language de --quality fast < request.txt
-```
-
-Run `node bin/ste.mjs --help` for all options.
-</details>
-
-<details>
-<summary><b>Troubleshooting</b></summary>
-
-| Problem | Action |
-| --- | --- |
-| Port already in use | `npm start -- --port 4320` |
-| CLI not detected | `node bin/ste.mjs --doctor` |
-| Agent seems stuck at the start | Open its terminal. The CLI may ask whether to trust the folder. |
-| Board terminals unavailable | Run `npm install`. On Linux, install `python3`, `make`, and a C++ compiler first. |
-
-Kanban agents are verified on macOS and Linux, not on Windows. See [what was verified](RELEASE-VERIFICATION.md).
-</details>
-
-<details>
-<summary><b>Development</b></summary>
-
-```bash
-npm ci
-npm run check
-npm test
-```
-
-`scripts/live-transitions.mjs` and `scripts/live-flow.mjs` run real CLIs in throwaway repositories and use your provider quota. `scripts/record-demo.mjs` records the demos above. See [CONTRIBUTING.md](CONTRIBUTING.md) and the [changelog](CHANGELOG.md).
-</details>
+- [Kanban parity plan](docs/kanban-parity-plan.md): the Kangentic reference, implementation gaps, and acceptance checks.
+- [Changelog](CHANGELOG.md) · [CLI adapters](docs/cli-adapters.md) · [Verification](RELEASE-VERIFICATION.md)
+- [Contributing](CONTRIBUTING.md): `npm run check` and `npm test`. No frontend framework or build step.
+- `node bin/ste.mjs --help` for command-line usage; `node bin/ste.mjs --doctor` for CLI detection.
+- `npm start -- --port 4320` to use another port.
+- `node scripts/record-demo.mjs` regenerates all three demos with Chrome and ffmpeg, without paid model calls.
 
 ## License
 
-[MIT](LICENSE). Third-party licences: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The writing rules draw on ASD-STE100 Simplified Technical English; ASD and STEMG do not endorse this project.
+[MIT](LICENSE). [Third-party notices](THIRD_PARTY_NOTICES.md). Writing rules draw on ASD-STE100 Simplified Technical English; ASD and STEMG do not endorse this project.

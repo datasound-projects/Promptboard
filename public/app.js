@@ -242,7 +242,7 @@ function isMobile() { return window.innerWidth <= 730; }
 function syncSidebarToggle() {
   const expanded = isMobile() ? $('#sidebar').classList.contains('open') : document.documentElement.dataset.sidebar !== 'collapsed';
   $('#menu-toggle').setAttribute('aria-expanded', String(expanded));
-  const what = location.hash === '#/kanban' ? 'projects' : 'prompt history';
+  const what = location.hash === '#/base' ? 'Base categories' : location.hash === '#/kanban' ? 'projects' : 'prompt history';
   $('#menu-toggle').setAttribute('aria-label', expanded ? `Hide ${what}` : `Show ${what}`);
 }
 function setSidebar(open) {
@@ -298,6 +298,7 @@ async function loadProviders() {
     updateProviderState();
     loadAuth();
     loadBoard();
+    if (currentPage() === 'base') baseView?.show();
     await loadModels({ model: chosenModel(), effort: $('#effort').value });
   } catch (error) {
     token = '';
@@ -914,15 +915,18 @@ function openHelp(privacy = false) {
       ...section('Saved on this computer', [
         'In this browser: your last 500 prompts and your view settings. Delete prompts in the sidebar.',
         'In the Promptboard data folder: projects, cards, agent runs and their terminal output, plans, reviews, test results, timeline notes, task worktrees, and GitHub clones.',
+        'Base stores resource definitions, document revisions, agent avatars, source captures, and assignments locally. Exports include document and avatar content only when you select it.',
       ]),
       ...section('Sent to your AI provider', [
         'Compose: your request goes to the CLI you selected, which sends it to its provider.',
         'Kanban: when you approve a stage (or it starts automatically), the agent CLI gets the card text, and the plan, diff, or test commands for that stage. It works in the task worktree and sends what it reads to its provider.',
+        'Base: assigned instructions and context, and selected sources for wiki generation, can go to your provider. Explicit MCP tests and documentation imports contact their configured servers.',
+        'Illustrated agent avatars: clicking Generate sends your description to OpenAI Images. Preview the result and save the profile to keep it.',
         'Do not put secrets or private data in prompts or cards that you cannot share with that provider.',
       ]),
       ...section('Accounts and costs', [
-        'No API key is needed. Each CLI uses its own sign-in, limits, and costs. GitHub uses the GitHub CLI sign-in.',
-        'Promptboard never stores these tokens. It only reads usage numbers that the CLIs record.',
+        'Compose and Kanban use each CLI’s sign-in, limits, and costs. GitHub uses the GitHub CLI sign-in. Optional avatar illustrations need an OpenAI image API key in the server environment and are billed separately from CLI subscriptions.',
+        'Promptboard never stores account tokens. Usage reads local CLI session files from this machine, including sessions outside Promptboard, and keeps only numeric metrics, model IDs, and tool names. Codex account limits are queried through its CLI; Claude run usage snapshots are saved locally.',
         'Compose calls: Fast 1, Reviewed 2, or 4 when a confirmed problem is repaired.',
       ]),
       ...section('What Promptboard does not do', [
@@ -971,26 +975,36 @@ function openHelp(privacy = false) {
   if (!$('#help-dialog').open) $('#help-dialog').showModal();
 }
 
-// Pages. Both views stay in the document, so switching never clears the prompt form.
+// All three views stay in the document. Routing does not replace forms, boards or terminals.
+let baseView = null;
+function currentPage() { return location.hash === '#/kanban' ? 'kanban' : location.hash === '#/base' ? 'base' : 'compose'; }
 function showPage() {
-  const kanban = location.hash === '#/kanban';
-  $('#prompt-view').hidden = kanban;
+  const page = currentPage();
+  const kanban = page === 'kanban', base = page === 'base';
+  $('#prompt-view').hidden = page !== 'compose';
   $('#kanban-view').hidden = !kanban;
+  $('#base-view').hidden = !base;
+  document.documentElement.dataset.page = page;
   for (const link of document.querySelectorAll('.page-nav a')) {
-    if ((link.getAttribute('href') === '#/kanban') === kanban) link.setAttribute('aria-current', 'page');
+    if (link.getAttribute('href') === ({ compose: '#/', kanban: '#/kanban', base: '#/base' })[page]) link.setAttribute('aria-current', 'page');
     else link.removeAttribute('aria-current');
   }
-  document.title = kanban ? 'Kanban · Promptboard' : 'Compose · Promptboard';
-  // The sidebar follows the page: prompt history on Compose, the project workspace on Kanban.
-  $('#history-panel').hidden = kanban;
+  document.title = `${({ compose: 'Compose', kanban: 'Kanban', base: 'Base' })[page]} · Promptboard`;
+  $('#skip-link').setAttribute('href', base ? '#base-view' : kanban ? '#kanban-view' : '#prompt-input');
+  $('#history-panel').hidden = page !== 'compose';
   $('#workspace-panel').hidden = !kanban;
-  $('#sidebar').setAttribute('aria-label', kanban ? 'Projects' : 'Prompt history');
-  $('#sidebar-scrim').setAttribute('aria-label', kanban ? 'Close projects' : 'Close history');
+  $('#base-sidebar-panel').hidden = !base;
+  $('#sidebar').hidden = false;
+  $('#menu-toggle').hidden = false;
+  $('#sidebar').setAttribute('aria-label', base ? 'Base library' : kanban ? 'Projects' : 'Prompt history');
+  $('#sidebar-scrim').setAttribute('aria-label', base ? 'Close Base categories' : kanban ? 'Close projects' : 'Close history');
   if (kanban) renderBoard();
+  if (base && token) baseView?.show();
   setSidebar(false);
   window.scrollTo(0, 0);
 }
-function showPromptPage() { if (location.hash === '#/kanban') location.hash = '#/'; }
+function showPromptPage() { if (currentPage() !== 'compose') location.hash = '#/'; }
+function basePicker(options) { return baseView?.picker(options) || document.createElement('div'); }
 
 // Kanban (PB-01): the local app stores the board in its data folder. Seven fixed stages;
 // cards move through transitions the server validates; the destination determines what runs.
@@ -1151,9 +1165,16 @@ function renderBoard() {
   const columns = $('#kanban-columns');
   const focusedCard = document.activeElement?.closest('.kanban-card');
   const focusedDisplay = document.activeElement?.dataset.cardDisplay;
+  const confirming = [...columns.querySelectorAll('.kanban-card:has(.kanban-confirm)')].map(item => item.dataset.id);
+  const confirmationFocus = document.activeElement?.closest('.kanban-confirm') ? document.activeElement.textContent : null;
   const scroll = new Map(columns.dataset.projectId === project?.id ? [...columns.querySelectorAll('.kanban-cards')].map(list => [list.dataset.column, list.scrollTop]) : []);
   columns.replaceChildren(...(project ? projectColumnsOf(project).map(column => renderColumn(column, tasks.filter(task => task.column === column.id))) : []));
   columns.dataset.projectId = project?.id || '';
+  for (const id of confirming) {
+    const item = cardElement(id), card = tasks.find(task => task.id === id);
+    if (item && card) confirmCardDelete(item, card, false);
+  }
+  if (confirmationFocus && focusedCard) [...(cardElement(focusedCard.dataset.id)?.querySelectorAll('.kanban-confirm button') || [])].find(button => button.textContent === confirmationFocus)?.focus({ preventScroll: true });
   if (focusedCard && focusedDisplay) [...(cardElement(focusedCard.dataset.id)?.querySelectorAll('[data-card-display]') || [])].find(input => input.dataset.cardDisplay === focusedDisplay)?.focus({ preventScroll: true });
   for (const list of columns.querySelectorAll('.kanban-cards')) list.scrollTop = scroll.get(list.dataset.column) || 0;
   renderRepository(project);
@@ -1311,7 +1332,7 @@ function renderDoneCard(card, number, draggable = true) {
   const more = document.createElement('div'); more.className = 'kanban-more'; more.id = `card-more-${card.id}${draggable ? '' : '-completed'}`; more.hidden = cardElement(card.id)?.querySelector('.kanban-more')?.hidden ?? true;
   const edit = detailButton('Edit task', () => { $('#done-dialog').close(); openCard(card.id); }, 'kanban-edit');
   const copy = detailButton('Copy prompt', () => copyCard(card, copy), 'kanban-copy');
-  more.append(edit, details, reopen, copy, detailButton('Duplicate', () => duplicateCard(card.id), 'kanban-duplicate'));
+  more.append(edit, details, reopen, copy, detailButton('Duplicate', () => duplicateCard(card.id), 'kanban-duplicate'), detailButton('Delete', () => confirmCardDelete(item, card), 'kanban-delete'));
   const actions = document.createElement('div'); actions.className = 'kanban-actions'; actions.append(cardMenuToggle(card, more));
   title.append(actions);
   cardAppearance(item, card, more);
@@ -1601,23 +1622,38 @@ async function duplicateCard(id) {
   } catch (error) { showBoardError(error); }
 }
 
-function confirmCardDelete(item, card) {
-  const keep = detailButton('Keep card', () => { renderBoard(); cardElement(card.id)?.querySelector('.kanban-more-toggle').focus(); });
+function confirmCardDelete(item, card, focus = true) {
+  const keep = detailButton('Keep card', () => {
+    if (item.closest('#done-dialog')) {
+      const replacement = renderDoneCard(findTask(card.id) || card, Number(item.querySelector('.kanban-done-number').textContent.slice(1)), false);
+      item.replaceWith(replacement);
+      replacement.querySelector('.kanban-more-toggle')?.focus();
+    } else {
+      item.querySelector('.kanban-confirm')?.remove();
+      renderBoard();
+      cardElement(card.id)?.querySelector('.kanban-more-toggle')?.focus();
+    }
+  });
   const confirm = document.createElement('div');
   confirm.className = 'connection-detail kanban-confirm';
-  const note = card.workspace ? ' Its worktree is removed only if it has no uncommitted changes; its branch is kept.' : '';
+  const note = card.workspace ? ` Files and branch are kept at ${card.workspace.path}.` : '';
   confirm.append(paragraph(`Delete “${card.title}”? This cannot be undone.${note}`), detailActions(detailButton('Delete card', () => deleteCard(card.id), 'danger'), keep));
   item.querySelector('.kanban-more').remove();
   item.querySelector('.kanban-actions').remove();
   item.append(confirm);
-  keep.focus();
+  if (focus) keep.focus();
 }
 
+const deletingCards = new Set();
 async function deleteCard(id) {
   const card = findTask(id);
-  if (!card) return;
-  try { await boardCall('DELETE', `/api/tasks/${encodeURIComponent(id)}?expectedRevision=${card.revision}`); }
+  if (!card || deletingCards.has(id)) return;
+  deletingCards.add(id);
+  try { await boardCall('DELETE', `/api/tasks/${encodeURIComponent(id)}?expectedRevision=${card.revision}&keepFiles=true`); }
   catch (error) { renderBoard(); showBoardError(error); return; }
+  finally { deletingCards.delete(id); }
+  try { localStorage.removeItem(`promptboard.card-appearance.${id}`); } catch {}
+  if ($('#done-dialog').open) $('#done-dialog').close();
   announce(`Deleted “${card.title}”.`);
   ($('#kanban-columns .kanban-open') || $('#card-new')).focus();
 }
@@ -1860,7 +1896,7 @@ function renderAgents(current) {
     button.dataset.runId = run.id;
     const icon = document.createElement('span'); icon.className = `agent-icon ${state}`; icon.setAttribute('aria-hidden', 'true'); icon.textContent = AGENT_STATE_ICON[state];
     const name = document.createElement('span'); name.className = 'agent-title'; name.textContent = task.title;
-    const model = document.createElement('span'); model.className = 'agent-meta'; model.textContent = agentModel(run);
+    const model = document.createElement('span'); model.className = 'agent-meta agent-model'; model.textContent = agentModel(run);
     const status = document.createElement('span'); status.className = 'agent-meta';
     const stateText = document.createElement('span'); stateText.className = 'agent-state'; stateText.textContent = agentStateText(run);
     status.append(`${columnTitle(run.stage, project)} · `, stateText, ' · ', elapsedSpan(run));
@@ -2090,7 +2126,7 @@ function renderProjectContext(project) {
   const key = JSON.stringify([project.id, project.agentDefaults, board?.settings?.defaultAgent]);
   if (key !== projectAgentFormKey) {
     projectAgentFormKey = key;
-    $('#project-agent-fields').replaceChildren(agentFields(project.agentDefaults || {}, { inherit: `Use global default (${agentText(inherited)})` }));
+    $('#project-agent-fields').replaceChildren(agentFields(project.agentDefaults || {}, { inherit: `Use global default (${agentText(inherited)})` }), basePicker({ target: { scope: 'project', projectId: project.id }, provider: defaultAgent.provider }));
     $('#project-agent-error').hidden = true;
   }
 }
@@ -2173,7 +2209,13 @@ async function openTaskDetails(taskId) {
     section('Status', paragraph(`${status.text}. Task text revision ${card.contentRevision ?? 1}.${status.flag ? ' Review the prompt before you run an agent on it.' : ''}`)),
     section('Original prompt', pre(card.prompt)),
     section('Branch and worktree', taskLocation(card, project)),
+    section('Base resources for future runs', basePicker({ target: { scope: 'task', projectId: project.id, taskId: card.id } }), paragraph('Task selections can narrow or opt out of inherited resources without changing the task text or approved evidence.')),
   ];
+  const columnScope = document.createElement('select'); columnScope.setAttribute('aria-label', 'Column for task-specific Base resources');
+  columnScope.append(...projectColumnsOf(project).map(column => option(column.id, column.title)));
+  columnScope.value = card.column;
+  const override = detailButton('Configure this task in this column…', () => baseView?.openPicker({ scope: 'task-column', projectId: project.id, taskId: card.id, columnId: columnScope.value }));
+  nodes.at(-1).append(detailActions(columnScope, override));
   const planRun = [...runs].reverse().find(run => run.stage === 'planning' && run.hasPlan);
   if (planRun) {
     const approved = card.planApproval?.runId === planRun.id && card.planApproval.contentRevision === (card.contentRevision ?? 1);
@@ -2203,6 +2245,7 @@ async function openTaskDetails(taskId) {
     table.append(row);
   }
   nodes.push(section('Run history', runs.length ? table : paragraph('No runs yet.')));
+  if (runs.length && baseView) nodes.push(baseView.runManifest(runs.at(-1)));
   const delivery = document.createElement('div');
   delivery.className = 'task-delivery';
   nodes.splice(3, 0, delivery);
@@ -2267,6 +2310,7 @@ function openWorkflowDialog(focusStage = null) {
       children.push(commandsField);
     }
     children.push(instructionsField);
+    children.push(basePicker({ target: { scope: 'column', projectId: project.id, columnId: stage }, provider: settings.provider }));
     children.push(preview);
     box.append(...children);
     box.addEventListener('change', () => { preview.textContent = workflowPreview(stage, readWorkflowStage(box)); });
@@ -2278,7 +2322,7 @@ function openWorkflowDialog(focusStage = null) {
   defaults.className = 'workflow-stage workflow-defaults';
   const legend = document.createElement('legend'); legend.textContent = 'Project default agent';
   const global = board?.settings?.defaultAgent?.provider ? `Global default (${agentText(board.settings.defaultAgent)})` : 'Global default (Claude Code, CLI defaults)';
-  defaults.append(legend, agentFields(project.agentDefaults || {}, { inherit: global }), paragraph('Every stage below uses this agent unless it names its own. Each card run uses it without asking again.', 'workflow-preview'));
+  defaults.append(legend, agentFields(project.agentDefaults || {}, { inherit: global }), basePicker({ target: { scope: 'project', projectId: project.id } }), paragraph('Every stage below uses this agent unless it names its own. Each card run uses it without asking again.', 'workflow-preview'));
   const refreshInheritance = () => {
     const inherited = readAgentFields(defaults) || board?.settings?.defaultAgent || { provider: 'claude' };
     for (const box of stages) {
@@ -2789,7 +2833,7 @@ async function confirmImported(accept) {
 async function exportBoard() {
   let backup;
   try {
-    const { response, data } = await api('/api/board/export', { timeoutMs: 60000 });
+    const { response, data } = await api(`/api/board/export${$('#export-base-content')?.checked ? '?includeBaseContent=true' : ''}`, { timeoutMs: 60000 });
     if (!response.ok) throw new Error(data.error || 'The board could not be exported.');
     backup = data;
   } catch (error) { showBoardError(error); return; }
@@ -2874,7 +2918,7 @@ async function addToKanban(event) {
 }
 window.addEventListener('hashchange', showPage);
 // The skip link must not change the hash, which selects the page.
-$('#skip-link').addEventListener('click', event => { event.preventDefault(); ($('#kanban-view').hidden ? $('#prompt-input') : $('#kanban-view')).focus(); });
+$('#skip-link').addEventListener('click', event => { event.preventDefault(); ($(currentPage() === 'base' ? '#base-view' : currentPage() === 'kanban' ? '#kanban-view' : '#prompt-input')).focus(); });
 $('#kanban-button').addEventListener('click', openAddToKanban);
 
 // ---- Split into tasks (optional) ----
@@ -3456,6 +3500,8 @@ function renderColumnEditor() {
     const anchor = draftAnchor(entry);
     nodes.push(group('Agent', enabled, detail), group('Moves', paragraph(`Cards reach this column from ${builtinTitle(anchor)} and leave it along ${builtinTitle(anchor)}’s moves (or to another custom column next to it). Move the column to attach it to another stage.`, 'note')));
   }
+  const existing = projectColumnsOf(currentProject()).some(column => column.id === entry.id);
+  nodes.push(group('Base resources', existing ? basePicker({ target: { scope: 'column', projectId: currentProject().id, columnId: entry.id }, inactive: entry.custom ? !entry.agent?.enabled : ['todo', 'done'].includes(entry.id) }) : paragraph('Save this new column before assigning Base resources. Assignments use its stable column ID.', 'note')));
   editor.replaceChildren(...nodes);
 }
 function addColumn() {
@@ -3648,7 +3694,7 @@ const UI_PREFS = { startPage: ['promptboard.settings.start-page', 'compose'], op
   keepTabs: ['promptboard.settings.keep-tabs', '1'], termFont: ['promptboard.settings.terminal-font', '12'], dockStart: ['promptboard.settings.dock-start', 'last'], cardPreview: ['promptboard.settings.card-preview', '1'], cardAgent: ['promptboard.settings.card-agent', '0'], cardSpacing: ['promptboard.settings.card-spacing', '0'] };
 function uiPref(name) {
   const [key, fallback] = UI_PREFS[name];
-  const allowed = { startPage: ['compose', 'kanban'], termFont: ['11', '12', '13', '14', '16'], dockStart: ['last', 'collapsed', 'open'] }[name] || ['0', '1'];
+  const allowed = { startPage: ['compose', 'kanban', 'base'], termFont: ['11', '12', '13', '14', '16'], dockStart: ['last', 'collapsed', 'open'] }[name] || ['0', '1'];
   try { const value = localStorage.getItem(key); return allowed.includes(value) ? value : fallback; } catch { return fallback; }
 }
 function setUiPref(name, value) { savePref(UI_PREFS[name][0], value); }
@@ -3681,6 +3727,7 @@ function renderSettings() {
   const settings = board?.settings || {};
   $('#set-max-runs').value = String(settings.maxConcurrentRuns || 1);
   const fields = agentFields(settings.defaultAgent || {}, { inherit: 'Use CLI defaults (Claude Code)' });
+  $('#set-base-fields').replaceChildren(basePicker({ target: { scope: 'global' }, provider: settings.defaultAgent?.provider }));
   for (const field of ['provider', 'model', 'effort', 'model-custom']) fields.querySelector(`[data-field="${field}"]`).id = `set-agent-${field}`;
   $('#set-agent-fields').replaceChildren(fields);
   $('#set-agent-save').textContent = 'Save default agent';
@@ -3839,8 +3886,12 @@ $('#autopilot-rework').addEventListener('change', () => { autopilotDraft.maxRewo
 $('#autopilot-save').addEventListener('click', () => saveAutopilot(false));
 $('#autopilot-form').addEventListener('submit', event => { event.preventDefault(); saveAutopilot(true); });
 
-// Start page: applies when the app opens without a page in the address.
-if (!location.hash && uiPref('startPage') === 'kanban') location.hash = '#/kanban';
+// Base owns its own metadata/content requests, with only these explicit application seams.
+baseView = window.PromptboardBase?.create({ api, announce, ensureBoard: loadBoard, refreshBoard: loadBoard, agentFields, readAgentFields, closeSidebar: () => setSidebar(false),
+  acceptBoard: next => { acceptBoard(next); renderBoard(); } }) || null;
+window.PromptboardBaseView = baseView;
+// Start page applies only when the URL contains no explicit route.
+if (!location.hash && uiPref('startPage') !== 'compose') location.hash = `#/${uiPref('startPage')}`;
 showPage();
 loadProviders();
 $('#settings-toggle').addEventListener('click', () => setSettingsCollapsed(!$('#settings-body').hidden));
@@ -3899,3 +3950,85 @@ if (typeof ResizeObserver === 'function') {
 }
 // A required field inside a collapsed card would block submit without a visible message. Reopen it.
 $('#settings-body').addEventListener('invalid', () => setSettingsCollapsed(false, false), true);
+
+// Read-only provider usage. Poll independently of board updates, once per minute.
+let usageLoading = false;
+function usageChart(points) {
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('viewBox', '0 0 300 52'); svg.setAttribute('role', 'img');
+  svg.setAttribute('aria-label', 'Daily token usage over the last 30 days'); svg.classList.add('usage-chart');
+  const max = Math.max(1, ...points.map(p => p.tokens));
+  points.forEach((point, index) => {
+    const rect = document.createElementNS(ns, 'rect');
+    rect.setAttribute('x', String(index * 10)); rect.setAttribute('y', String(50 - point.tokens / max * 48));
+    rect.setAttribute('width', '7'); rect.setAttribute('height', String(point.tokens ? Math.max(1, point.tokens / max * 48) : 1));
+    rect.setAttribute('rx', '1');
+    const title = document.createElementNS(ns, 'title'); title.textContent = `${point.day}: ${point.tokens.toLocaleString()} tokens`; rect.append(title); svg.append(rect);
+  });
+  return svg;
+}
+function renderUsage(data) {
+  const open = new Set([...$('#usage-providers').querySelectorAll('details[open]')].map(x => x.dataset.provider));
+  const content = document.createDocumentFragment();
+  for (const provider of data.providers) {
+    const section = document.createElement('section'); section.className = 'usage-provider';
+    const head = document.createElement('h3'); head.textContent = provider.name; section.append(head);
+    const limits = provider.limits;
+    if (limits.windows.length) {
+      for (const window of limits.windows) {
+        const label = document.createElement('p'); label.className = 'usage-limit-label';
+        const remaining = document.createElement('strong'); remaining.textContent = `${Math.round(window.remainingPercent)}% left`;
+        const meta = document.createElement('span'); meta.textContent = window.windowMinutes ? `${window.label} · ${window.windowMinutes >= 1440 ? `${Math.round(window.windowMinutes / 1440)}d` : window.windowMinutes < 60 ? `${window.windowMinutes}m` : `${window.windowMinutes / 60}h`} window` : window.label.replaceAll('_', ' ');
+        label.append(remaining, meta);
+        const bar = document.createElement('progress'); bar.max = 100; bar.value = window.remainingPercent; bar.setAttribute('aria-label', `${meta.textContent}: ${remaining.textContent}`);
+        section.append(label, bar);
+        if (window.resetsAt) section.append(paragraph(`Resets ${new Date(window.resetsAt).toLocaleString()}`, 'usage-muted'));
+      }
+      const age = limits.checkedAt ? ` · ${timeAgo(limits.checkedAt)}` : '';
+      section.append(paragraph(`${limits.status === 'live' ? 'Live account limits' : 'Last reported limits'}${age}${limits.note ? ` · ${limits.note}` : ''}`, 'usage-muted'));
+    } else section.append(paragraph(limits.note || 'Plan limits unavailable.', 'usage-muted'));
+    const total = provider.inputTokens + provider.cachedTokens + provider.outputTokens;
+    const summary = document.createElement('div'); summary.className = 'usage-metrics';
+    summary.append(paragraph(provider.sessions ? `${tokens(total)} tokens` : 'No local token data', 'usage-total'), paragraph(`${provider.sessions} sessions`, 'usage-muted'), paragraph(provider.costUSD === null ? 'Cost not reported' : `$${provider.costUSD.toFixed(2)} reported estimate`, 'usage-muted'));
+    section.append(summary);
+    if (provider.sessions) section.append(usageChart(provider.daily));
+    if (provider.partial) section.append(paragraph('Partial coverage: some session files exceeded scan limits or could not be read.', 'inline-error'));
+    const details = document.createElement('details'); details.dataset.provider = provider.id; details.open = open.has(provider.id);
+    const toggle = document.createElement('summary'); toggle.textContent = 'Models and tools'; details.append(toggle);
+    if (provider.models.length) {
+      const table = document.createElement('table'); table.className = 'usage-table';
+      const header = document.createElement('tr');
+      for (const text of ['Model', 'Input', 'Cached', 'Output']) { const th = document.createElement('th'); th.textContent = text; th.scope = 'col'; header.append(th); }
+      table.append(header);
+      for (const model of provider.models) {
+        const row = document.createElement('tr');
+        for (const text of [model.model, tokens(model.inputTokens), tokens(model.cachedTokens), tokens(model.outputTokens)]) { const td = document.createElement('td'); td.textContent = text; row.append(td); }
+        table.append(row);
+      }
+      const wrapper = document.createElement('div'); wrapper.className = 'usage-table-wrap'; wrapper.append(table); details.append(wrapper);
+    } else details.append(paragraph('No local model usage reported.', 'usage-muted'));
+    if (provider.tools.length) {
+      const tools = document.createElement('div'); tools.className = 'usage-tools';
+      for (const tool of provider.tools) tools.append(paragraph(`${tool.name} · ${tool.count.toLocaleString()}`, 'usage-muted'));
+      details.append(tools);
+    } else details.append(paragraph('Tool counts not reported.', 'usage-muted'));
+    details.append(paragraph(provider.costNote, 'usage-muted'));
+    section.append(details); content.append(section);
+  }
+  $('#usage-providers').replaceChildren(content);
+  $('#usage-updated').textContent = `Updated ${new Date(data.updatedAt).toLocaleTimeString()} · every minute`;
+}
+async function loadUsage(force = false) {
+  if (usageLoading || !$('#usage-dialog').open) return;
+  usageLoading = true; $('#usage-refresh').disabled = true;
+  try { const { response, data } = await api(`/api/usage${force ? '?refresh=1' : ''}`, { timeoutMs: 60000 }); if (!response.ok) throw new Error(data.error || 'Usage unavailable.'); renderUsage(data); $('#usage-error').hidden = true; }
+  catch (error) { $('#usage-error').textContent = `${error.message} Previously shown figures may be stale.`; $('#usage-error').hidden = false; }
+  finally { usageLoading = false; $('#usage-refresh').disabled = false; }
+}
+$('#usage-open').addEventListener('click', () => { $('#usage-dialog').showModal(); loadUsage(); });
+$('#usage-close').addEventListener('click', () => { $('#usage-dialog').close(); $('#usage-open').focus(); });
+$('#usage-dialog').addEventListener('close', () => $('#usage-open').focus());
+$('#usage-refresh').addEventListener('click', () => loadUsage(true));
+setInterval(() => { if (!document.hidden) loadUsage(); }, 60000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) loadUsage(); });

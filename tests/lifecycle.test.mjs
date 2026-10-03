@@ -6,15 +6,14 @@ import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { startServer } from '../src/server.mjs';
+import { startTestServer } from './helpers/test-server.mjs';
 import { runPipeline } from '../src/pipeline.mjs';
 import { validateRequest } from '../src/engine.mjs';
 import { ProviderError } from '../src/providers.mjs';
 
 const detector = async () => [{ id: 'codex', name: 'Codex', available: true }];
 async function open(t, runner, options = {}) {
-  const app = await startServer({ port: 0, runner, detector, authAdapter: { installed: async () => true, status: async () => ({ state: 'unknown' }) }, ...options });
-  t.after(() => app.close());
+  const app = await startTestServer(t, { port: 0, runner, detector, authAdapter: { installed: async () => true, status: async () => ({ state: 'unknown' }) }, ...options });
   const { token } = await fetch(app.url + '/api/session').then(r => r.json());
   const post = (data, signal) => fetch(app.url + '/api/generate', { method: 'POST', signal,
     headers: { 'content-type': 'application/json', 'x-ste-token': token }, body: JSON.stringify({ quality: 'fast', input: 'Add a test.', ...data }) });
@@ -51,18 +50,26 @@ test('the pipeline deadline is reported as a timeout, not an unknown error', asy
 });
 
 test('cancellation stops the run, and an immediate new request is not blocked', async t => {
-  let calls = 0, stopped;
+  let calls = 0, stopped, entered;
   const cancelled = new Promise(resolve => { stopped = resolve; });
+  const started = new Promise(resolve => { entered = resolve; });
   const app = await open(t, ({ signal }) => {
     if (calls++ > 0) return Promise.resolve({ text: 'Add a test.' });
-    return new Promise((_, reject) => signal.addEventListener('abort', () => {
-      // Simulate a CLI that needs a moment to exit after cancellation.
-      setTimeout(() => { stopped(); reject(new ProviderError('Cancelled.', 'ABORTED')); }, 150);
-    }, { once: true }));
+    return new Promise((_, reject) => {
+      const stop = () => {
+        // Simulate a CLI that needs a moment to exit after cancellation.
+        setTimeout(() => { stopped(); reject(new ProviderError('Cancelled.', 'ABORTED')); }, 150);
+      };
+      if (signal.aborted) stop(); else signal.addEventListener('abort', stop, { once: true });
+      entered();
+    });
   });
   const controller = new AbortController();
   const first = app.post({}, controller.signal).catch(error => error);
-  await waitFor(async () => (await app.status()).busy?.stage === 'draft', 'draft stage');
+  // "draft" is published before the temporary directory is ready; it does not mean
+  // the runner started. Cancelling before entry intentionally prevents that first call.
+  await started;
+  assert.equal((await app.status()).busy?.stage, 'draft');
   controller.abort();
   assert.equal((await first).name, 'AbortError');
   // Sent before the old CLI has exited: the server waits briefly instead of returning 409.
@@ -139,7 +146,7 @@ const freePort = () => new Promise((resolve, reject) => { const s = net.createSe
 const canBind = port => new Promise(resolve => { const s = net.createServer(); s.once('error', () => resolve(false)); s.listen(port, '127.0.0.1', () => s.close(() => resolve(true))); });
 
 async function startApp(t, dir, port) {
-  const child = spawn(process.execPath, ['bin/ste.mjs', '--gui', '--no-open', '--port', String(port)], { cwd: root, env: { ...process.env, PATH: dir }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, ['bin/ste.mjs', '--gui', '--no-open', '--port', String(port)], { cwd: root, env: { ...process.env, PATH: dir, PROMPTBOARD_DATA_DIR: join(dir, 'app-data') }, stdio: ['ignore', 'pipe', 'pipe'] });
   let output = '';
   child.stdout.on('data', chunk => { output += chunk; });
   child.stderr.on('data', chunk => { output += chunk; });
@@ -190,12 +197,14 @@ for (const [signal, phase] of [['SIGINT', 'generation'], ['SIGTERM', 'model disc
   });
 }
 
-test('a port held by another process is reported and that process is left alone', { skip: process.platform === 'win32', timeout: 10000 }, async () => {
+test('a port held by another process is reported and that process is left alone', { skip: process.platform === 'win32', timeout: 10000 }, async t => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'pb-port-fixture-'));
+  t.after(() => rm(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const holder = net.createServer();
   await new Promise(resolve => holder.listen(0, '127.0.0.1', resolve));
   const { port } = holder.address();
   try {
-    const child = spawn(process.execPath, ['bin/ste.mjs', '--gui', '--no-open', '--port', String(port)], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, ['bin/ste.mjs', '--gui', '--no-open', '--port', String(port)], { cwd: root, env: { ...process.env, PROMPTBOARD_DATA_DIR: dataDir }, stdio: ['ignore', 'pipe', 'pipe'] });
     let output = '';
     child.stderr.on('data', chunk => { output += chunk; });
     const code = await new Promise(resolve => child.once('close', resolve));

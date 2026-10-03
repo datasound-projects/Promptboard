@@ -28,15 +28,17 @@ function fakeAuth(overrides = {}) {
     login: async (provider, options) => { log.push(['login', provider, options.method]); options.onUpdate({ authUrl: 'https://auth.example/start' }); return { state: 'signed-in' }; },
     logout: async provider => { log.push(['logout', provider]); return { state: 'signed-out' }; }, ...overrides };
 }
-async function setup(t, { catalogReader = async id => ({ provider: id, ...catalogs[id], note: 'Native model options.' }), storage, prefs = {}, kanban, hash = '', generationResponse, authAdapter = fakeAuth(), runner, dataDir, executor = 'auto', folderPicker } = {}) {
+async function setup(t, { catalogReader = async id => ({ provider: id, ...catalogs[id], note: 'Native model options.' }), storage, prefs = {}, kanban, hash = '', generationResponse, authAdapter = fakeAuth(), runner, dataDir, executor = 'auto', folderPicker, usageReader } = {}) {
   // Every page gets a private board folder unless a test shares one to simulate a reload.
   if (!dataDir) { dataDir = await mkdtemp(join(tmpdir(), 'pb-ui-')); t.after(() => rm(dataDir, { recursive: true, force: true })); }
   const calls = [];
   const requests = [];
-  const app = await startServer({ port: 0, dataDir, executor, authAdapter, ...(folderPicker ? { folderPicker } : {}), detector: async () => Object.keys(catalogs).map(id => ({ id, available: true })), catalogReader,
+  const app = await startServer({ port: 0, dataDir, executor, authAdapter, usageReader, ...(folderPicker ? { folderPicker } : {}), detector: async () => Object.keys(catalogs).map(id => ({ id, available: true })), catalogReader,
     runner: runner ? async request => { calls.push(request); return runner(request); } : async request => { calls.push(request); return { text: request.prompt.includes('prose in Polish') ? 'Dodaj test.' : request.prompt.includes('prose in German') ? 'Füge einen Test hinzu.' : 'Add a test.', reportedModels: ['actual-model'], durationMs: 3 }; } });
   const dom = new JSDOM(await readFile(new URL('../public/index.html', import.meta.url), 'utf8'), { url: app.url + hash, runScripts: 'outside-only' });
   const win = dom.window;
+  const intervals = [], nativeInterval = win.setInterval.bind(win);
+  win.setInterval = (fn, ms, ...args) => { intervals.push({ fn, ms }); return nativeInterval(fn, ms, ...args); };
   let pending = 0;
   win.fetch = (url, options) => {
     pending++;
@@ -69,6 +71,7 @@ async function setup(t, { catalogReader = async id => ({ provider: id, ...catalo
   Object.defineProperty(win.navigator, 'clipboard', { value: { writeText: async text => { copied = text; } } });
   // Same order as the page: prefs.js runs in <head>, app.js is deferred.
   win.eval(await readFile(new URL('../public/prefs.js', import.meta.url), 'utf8'));
+  win.eval(await readFile(new URL('../public/base.js', import.meta.url), 'utf8'));
   // Browsers share one global scope across classic scripts; jsdom's eval does not, so evaluate them together.
   // Test-only export appended by the harness (not part of the app): reload the board and read the token.
   win.eval(`${await readFile(new URL('../public/app.js', import.meta.url), 'utf8')}\n${await readFile(new URL('../public/dock.js', import.meta.url), 'utf8')}\nwindow.__pbTest = { loadBoard, get token() { return token; } };`);
@@ -87,7 +90,7 @@ async function setup(t, { catalogReader = async id => ({ provider: id, ...catalo
   const quality = value => { $(`input[name="quality"][value="${value}"]`).checked = true; $(`input[name="quality"][value="${value}"]`).dispatchEvent(new win.Event('change')); };
   // Resolves when no request from the page is in flight.
   const idle = async () => { for (let quiet = 0, end = Date.now() + 5000; quiet < 3 && Date.now() < end;) { await new Promise(resolve => setTimeout(resolve, 10)); quiet = pending ? 0 : quiet + 1; } };
-  return { win, $, choose, radio, quality, submit, calls, requests, downloads, blobs, copied: () => copied, authAdapter, app, dataDir, idle };
+  return { win, intervals, $, choose, radio, quality, submit, calls, requests, downloads, blobs, copied: () => copied, authAdapter, app, dataDir, idle };
 }
 
 test('UI sends selected model, effort, and language through HTTP, then restores history and copies output', async t => {
@@ -482,7 +485,7 @@ async function importFile(ctx, text) {
 }
 async function gitRepo(t) {
   const dir = await realpath(await mkdtemp(join(tmpdir(), 'pb-ui-repo-')));
-  t.after(() => rm(dir, { recursive: true, force: true }));
+  t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const git = (...args) => execFileSync('git', args, { cwd: dir, env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } });
   git('init', '-q', '-b', 'trunk'); git('config', 'user.email', 't@example.com'); git('config', 'user.name', 'T');
   await writeFile(join(dir, 'a.txt'), 'a\n'); git('add', '.'); git('commit', '-q', '-m', 'init');
@@ -1290,7 +1293,7 @@ test('a folder that is not a Git repository is set up only after confirmation; i
   Object.assign(process.env, { GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@example.com' });
   t.after(() => { for (const [key, value] of Object.entries(saved)) if (value === undefined) delete process.env[key]; else process.env[key] = value; });
   const dir = await realpath(await mkdtemp(join(tmpdir(), 'pb-ui-plain-')));
-  t.after(() => rm(dir, { recursive: true, force: true }));
+  t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   await writeFile(join(dir, 'notes.txt'), 'private notes\n');
   const ctx = await setup(t);
   const { $ } = ctx;
@@ -2365,4 +2368,149 @@ test('Composer starts with an empty input and no bundled example feature', async
   submit();
   await until(() => !$('#generate-button').disabled && calls.length > 0, 'generation without example control');
   assert.ok($('#prompt-output').textContent.trim());
+});
+
+
+test('interrupted dirty cards and completed cards delete through HTTP and stay deleted after reload', async t => {
+  const ctx = await setup(t);
+  await goTo(ctx, '#/kanban'); await newProject(ctx, 'Deletion');
+  await newCard(ctx, 'Interrupted work', 'Keep my files.');
+  const task = (await serverTasks(ctx))[0];
+  const workspace = await ctx.app.board.ensureTaskWorktree(task.id);
+  await writeFile(join(workspace.path, 'unfinished.txt'), 'keep this');
+  await ctx.app.board.store.update(state => { state.runs.push({ id: 'interrupted-delete', projectId: state.projects[0].id, taskId: task.id, status: 'interrupted', stage: 'executing', updatedAt: Date.now(), config: { provider: 'codex' } }); });
+  await ctx.win.__pbTest.loadBoard(); await ctx.idle();
+  cardItem(ctx, 'Interrupted work').querySelector('.kanban-delete').click();
+  await ctx.win.__pbTest.loadBoard(); await ctx.idle();
+  assert.match(ctx.$('#kanban-columns').textContent, /Files and branch are kept/);
+  assert.equal(ctx.win.document.activeElement.textContent, 'Keep card');
+  byText(ctx.$('#kanban-columns'), 'Keep card').click();
+  assert.equal(ctx.$('.kanban-confirm'), null);
+  cardItem(ctx, 'Interrupted work').querySelector('.kanban-delete').click();
+  await click(ctx, byText(ctx.$('#kanban-columns'), 'Delete card'));
+  assert.equal((await serverTasks(ctx)).length, 0);
+  assert.equal(await readFile(join(workspace.path, 'unfinished.txt'), 'utf8'), 'keep this');
+  assert.equal(ctx.$('#agents-list').children.length, 0);
+  await newCard(ctx, 'Completed work', 'Done.');
+  const completed = (await serverTasks(ctx))[0];
+  await ctx.app.board.store.update(state => { state.projects[0].tasks.find(item => item.id === completed.id).column = 'done'; });
+  await ctx.win.__pbTest.loadBoard(); await ctx.idle();
+  ctx.$('.kanban-done-all').click();
+  ctx.$('#done-dialog .kanban-delete').click();
+  byText(ctx.$('#done-dialog'), 'Keep card').click();
+  assert.equal(ctx.$('#done-dialog .kanban-confirm'), null);
+  ctx.$('#done-dialog .kanban-delete').click();
+  await click(ctx, byText(ctx.$('#done-dialog'), 'Delete card'));
+  assert.equal(ctx.$('#done-dialog').open, false);
+  const fresh = await setup(t, { dataDir: ctx.dataDir });
+  assert.equal((await serverTasks(fresh)).length, 0);
+});
+
+
+test('Usage dashboard shows limits, model/tool totals, charts, minute refresh, errors, and focus return', async t => {
+  let left = 75, failed = false, reads = 0;
+  const provider = () => ({ id: 'codex', name: 'Codex', sessions: 2, inputTokens: 1200, cachedTokens: 100, outputTokens: 50, costUSD: null, costNote: 'Not reported', limits: { status: 'live', checkedAt: Date.now(), windows: [{ label: '5h', remainingPercent: left, usedPercent: 100-left }] }, models: [{ model: 'gpt-test', inputTokens: 1200, cachedTokens: 100, outputTokens: 50 }], tools: [{ name: 'exec_command', count: 3 }], daily: [{ day: '2026-10-02', tokens: 1350 }] });
+  const ctx = await setup(t, { usageReader: { get: async () => { reads++; if (failed) throw new Error('private'); return { updatedAt: Date.now(), providers: [provider()] }; } } });
+  Object.defineProperty(ctx.win.document, 'hidden', { configurable: true, value: false });
+  ctx.$('#usage-open').click(); await ctx.idle();
+  assert.match(ctx.$('#usage-providers').textContent, /75% left/);
+  assert.equal(ctx.$('#usage-providers progress').value, 75);
+  assert.equal(ctx.$('#usage-providers svg').getAttribute('role'), 'img');
+  assert.match(ctx.$('#usage-providers').textContent, /gpt-test/);
+  assert.match(ctx.$('#usage-providers').textContent, /exec_command · 3/);
+  assert.match(ctx.$('#usage-providers').textContent, /Cost not reported/);
+  ctx.$('#usage-providers details').open = true;
+  left = 62;
+  ctx.intervals.findLast(timer => timer.ms === 60000).fn(); await ctx.idle();
+  assert.match(ctx.$('#usage-providers').textContent, /62% left/);
+  assert.equal(ctx.$('#usage-providers details').open, true);
+  failed = true; ctx.$('#usage-refresh').click(); await ctx.idle();
+  assert.equal(ctx.$('#usage-error').hidden, false);
+  assert.match(ctx.$('#usage-providers').textContent, /62% left/);
+  ctx.$('#usage-close').click();
+  assert.equal(ctx.win.document.activeElement.id, 'usage-open');
+  const before = reads; ctx.intervals.findLast(timer => timer.ms === 60000).fn(); await ctx.idle();
+  assert.equal(reads, before);
+});
+
+test('Base is the third global page, preserves Compose and project state, and supports direct links and browser history', async t => {
+  const ctx = await setup(t, { hash: '#/base' }); const { $, win } = ctx;
+  await ctx.idle();
+  assert.deepEqual([...win.document.querySelectorAll('.page-nav a')].map(link => link.textContent), ['Compose', 'Kanban', 'Base']);
+  assert.equal($('#base-view').hidden, false); assert.equal($('#prompt-view').hidden, true); assert.equal($('#kanban-view').hidden, true);
+  assert.equal(win.document.title, 'Base · Promptboard');
+  assert.equal($('.page-nav [aria-current="page"]').getAttribute('href'), '#/base');
+  assert.equal($('#sidebar').hidden, false); assert.equal($('#menu-toggle').hidden, false);
+  assert.equal($('#base-sidebar-panel').hidden, false); assert.equal($('#workspace-panel').hidden, true);
+  assert.equal($('#sidebar').getAttribute('aria-label'), 'Base library');
+  assert.equal($('#base-categories').closest('#base-sidebar-panel') !== null, true);
+  assert.equal($('#base-error').hidden, true, $('#base-error').textContent);
+  $('#skip-link').dispatchEvent(new win.MouseEvent('click', { bubbles: true, cancelable: true })); assert.equal(win.document.activeElement.id, 'base-view'); assert.equal(win.location.hash, '#/base');
+  await goTo(ctx, '#/'); $('#prompt-input').value = 'An unfinished Compose draft.';
+  await goTo(ctx, '#/kanban'); await newProject(ctx, 'Persistent selection');
+  const selected = win.localStorage.getItem('promptboard.kanban.project');
+  await goTo(ctx, '#/base'); await until(() => !$('#base-view').hidden, 'Base shown');
+  assert.equal($('#prompt-input').value, 'An unfinished Compose draft.');
+  assert.equal(win.localStorage.getItem('promptboard.kanban.project'), selected);
+  win.history.back(); await until(() => !$('#kanban-view').hidden, 'Back to Kanban');
+  win.history.forward(); await until(() => !$('#base-view').hidden, 'Forward to Base');
+  $('#new-prompt').click(); await until(() => !$('#prompt-view').hidden, 'Compose action leaves Base');
+  assert.equal(win.document.title, 'Compose · Promptboard');
+});
+
+test('Base start-page preference applies only without an explicit route', async t => {
+  const saved = { 'promptboard.settings.start-page': 'base' };
+  const first = await setup(t, { prefs: saved }); await first.idle();
+  assert.equal(first.win.location.hash, '#/base'); assert.equal(first.$('#base-view').hidden, false);
+  const explicit = await setup(t, { prefs: saved, hash: '#/kanban' }); await explicit.idle();
+  assert.equal(explicit.$('#kanban-view').hidden, false); assert.equal(explicit.$('#base-view').hidden, true);
+  explicit.$('#app-settings-open').click(); await explicit.idle();
+  assert.equal(explicit.$('#set-start').value, 'base');
+  assert.ok(explicit.$('#set-base-fields .base-picker'), 'Global agent settings use the shared Base picker.');
+});
+
+test('Base skill creation and project assignment persist through the actual authenticated interface', async t => {
+  const ctx = await setup(t, { hash: '#/kanban' }); const { $, win } = ctx;
+  await newProject(ctx, 'Base project');
+  const project = (await serverBoard(ctx)).projects[0];
+  await goTo(ctx, '#/base'); await until(() => !$('#base-view').hidden && !$('#base-status').textContent.includes('Loading'), 'Base ready');
+  $('#base-new-kind').value = 'skill'; byText($('#base-actions'), 'Create').click();
+  $('#base-resource-name').value = 'UI instruction skill'; $('#base-skill-body').value = 'Keep the original task exactly.\n';
+  submitForm(ctx, '.base-resource-form'); await ctx.idle();
+  const resources = await ctx.app.board.base.list();
+  const created = (resources.resources || resources).find(item => item.name === 'UI instruction skill'); assert.ok(created);
+  const before = (await serverBoard(ctx)).projects[0]; assert.equal(before.baseBinding, undefined, 'Creating a skill never assigns it.');
+  await goTo(ctx, '#/kanban'); $('#project-agent-toggle').click();
+  $('#project-agent-fields .base-picker button').click(); await ctx.idle();
+  const mode = $('[data-base-mode]'); mode.value = 'extend'; mode.dispatchEvent(new win.Event('change', { bubbles: true }));
+  const include = $(`.base-binding-fields [data-resource="${created.id}"]`); include.checked = true; include.dispatchEvent(new win.Event('change', { bubbles: true }));
+  submitForm(ctx, '#base-dialog-content form'); await ctx.idle();
+  const after = (await serverBoard(ctx)).projects.find(item => item.id === project.id);
+  assert.deepEqual(after.baseBinding.include, [{ resourceId: created.id, required: true }]);
+  assert.equal(after.agentDefaults?.provider, before.agentDefaults?.provider, 'Resource selection does not change inherited provider.');
+  assert.equal((await serverBoard(ctx)).runs.length, 0, 'Assignment never starts a run.');
+});
+
+test('Base saves a linked wiki and official MCP preset, then groups them in a pack without executing', async t => {
+  const ctx = await setup(t, { hash: '#/base' }); const { $, win } = ctx; await ctx.idle();
+  $('#base-new-kind').value = 'knowledge'; byText($('#base-actions'), 'Create').click();
+  $('#base-resource-name').value = 'Local wiki'; byText($('#base-detail'), 'Add page').click();
+  $('#base-wiki-markdown').value = '# Manual wiki\nKeep this wording unchanged.';
+  submitForm(ctx, '.base-resource-form'); await ctx.idle();
+  assert.equal($('.base-resource-form .inline-error').hidden, true, $('.base-resource-form .inline-error').textContent);
+  let resources = (await ctx.app.board.base.list()).resources;
+  const wiki = resources.find(item => item.name === 'Local wiki'); assert.ok(wiki);
+  const detail = await ctx.app.board.base.detail(wiki.id); assert.equal(detail.content.pages[0].markdown, '# Manual wiki\nKeep this wording unchanged.');
+  byText($('#base-actions'), 'Context7 preset').click(); await ctx.idle();
+  assert.equal($('#base-resource-enabled').checked, false); assert.equal($('#base-resource-trust').value, 'untrusted');
+  submitForm(ctx, '.base-resource-form'); await ctx.idle();
+  resources = (await ctx.app.board.base.list()).resources;
+  const mcp = resources.find(item => item.name === 'Context7'); assert.ok(mcp);
+  assert.equal(mcp.configuration.headers.Authorization, 'CONTEXT7_AUTHORIZATION'); assert.equal(mcp.connectionTest, undefined);
+  $('#base-new-kind').value = 'pack'; byText($('#base-actions'), 'Create').click(); $('#base-resource-name').value = 'Optional documentation';
+  for (const id of [wiki.id, mcp.id]) { const input = $(`.base-resource-form [data-resource="${id}"]`); input.checked = true; input.dispatchEvent(new win.Event('change', { bubbles: true })); }
+  submitForm(ctx, '.base-resource-form'); await ctx.idle();
+  const pack = (await ctx.app.board.base.list()).resources.find(item => item.name === 'Optional documentation');
+  assert.deepEqual(pack.configuration.resources.map(ref => ref.resourceId).sort(), [wiki.id, mcp.id].sort());
+  assert.equal((await serverBoard(ctx)).runs.length, 0); assert.equal(ctx.calls.length, 0, 'Library edits never invoke the generation runner.');
 });

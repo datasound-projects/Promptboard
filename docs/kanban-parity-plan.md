@@ -4,7 +4,9 @@ Promptboard should use Kangentic's Kanban behavior as the reference for task orc
 
 Scope is the Kanban board and the services it needs: tasks, columns, automations, archives, backlog, profiles, Git workspaces, session continuity, conversation history, and activity. Prompt composition remains part of Promptboard. Kangentic's desktop packaging, mobile app, relay, window system, and complete agent catalog are outside this scope.
 
-Reviewed on 3 October 2026 against the documentation linked below and the local working tree on `fix/kanban-stage-responsibilities`. Existing uncommitted changes were included in the comparison and must be preserved.
+Reviewed on 3 October 2026 against the documentation linked below and GitHub main at `9089a95`, after reconciling the existing local changes. That baseline includes Composer editing and task splitting, Base assignments and native tool delivery, and the usage dashboard.
+
+Two integration requirements apply to every step: Composer must continue inserting exact engineered prompts and edited split tasks into To Do without starting an agent; Base must continue resolving user-selected resources and supplying supported MCP tools and native subagents under the configured permissions. Session continuation must retain Base delivery records and recheck resource revocations when launching another process. Base agent profiles remain distinct from board workflow profiles.
 
 ## Default board behavior
 
@@ -47,7 +49,7 @@ These defaults provide session orchestration. A configured board can provide a c
 | Conversation memory | Output, last messages, plans, and summaries are retained; native history is read for usage counts. | Parse structured conversation turns, add a viewer and project search. |
 | Activity | Hooks detect broad running, waiting, and turn-complete states. | Separate activity from session status and completion; account for tools and background work. |
 
-Evidence for this table comes from `src/board.mjs`, `src/supervisor.mjs`, `src/agents.mjs`, `src/agent-hook.mjs`, `src/store.mjs`, `src/delivery.mjs`, `src/autopilot.mjs`, `src/usage.mjs`, `public/app.js`, and their tests. Having seven matching column names does not currently provide lifecycle parity.
+Evidence for this table comes from `src/board.mjs`, `src/supervisor.mjs`, `src/agents.mjs`, `src/agent-hook.mjs`, `src/store.mjs`, `src/delivery.mjs`, `src/autopilot.mjs`, `src/base.mjs`, `src/base-resolver.mjs`, `src/usage.mjs`, `public/app.js`, and their tests. Having seven matching column names does not currently provide lifecycle parity.
 
 ## Requirements from the supporting chapters
 
@@ -116,7 +118,7 @@ Template rendering must use the destination format: literal text for messages, q
 
 ## Implementation sequence and acceptance checks
 
-Each step should be independently reviewable, with tests using disposable repositories and simulated CLIs. Required live adapter checks use a disposable project and must distinguish simulation from verified provider behavior.
+Each step must be pushed as a separate pull request, reviewed, and tested locally and in GitHub CI before merging. Tests use disposable repositories and simulated CLIs. Required live adapter checks use a disposable project and must distinguish simulation from verified provider behavior. A passing suite establishes the tested behavior; it cannot establish the absence of every possible defect.
 
 1. **Session foundation and migration.** Add logical session records, native resume, suspended/orphaned states, and process-run links. Preserve existing tasks, branches, artifacts, overrides, and unfinished checkout changes. Test restart recovery, user pause persistence, resume IDs, and clean shutdown. Bump the state schema when old readers cannot safely interpret the new model; retain backup import compatibility.
 2. **Column lifecycle and configuration.** Replace fixed stage semantics with roles and strategy. Add configurable order, creation/removal, plan targets, and continuity across active moves. Test moving a busy agent without killing it, settings changes at a safe boundary, queued moves to the latest destination, To Do reset, archive/restore, and same-column reorder. Cleanup tests must cover uncommitted and local-only committed work.

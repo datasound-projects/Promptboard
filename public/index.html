@@ -13,6 +13,7 @@
     <script src="/vendor/xterm.js" defer></script>
     <script src="/vendor/addon-fit.js" defer></script>
     <script src="/vendor/addon-webgl.js" defer></script>
+    <script src="/base.js" defer></script>
     <script src="/app.js" defer></script>
     <script src="/dock.js" defer></script>
   </head>
@@ -24,9 +25,11 @@
       <nav class="page-nav" aria-label="Pages">
         <a href="#/" aria-current="page">Compose</a>
         <a href="#/kanban">Kanban</a>
+        <a href="#/base">Base</a>
       </nav>
       <div class="topbar-actions">
         <button class="help-pill" id="setup-help" type="button"><span class="status-dot" id="cli-status-dot"></span><span id="cli-status-label">Checking your CLIs</span></button>
+        <button class="icon-button" id="usage-open" type="button" aria-label="Usage" title="Usage" aria-haspopup="dialog"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M4 19V5M4 19h16M8 15v-4M13 15V7M18 15V3"/></svg></button>
         <button class="icon-button" id="app-settings-open" type="button" aria-label="Settings" title="Settings" aria-haspopup="dialog"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg></button>
         <button class="icon-button" id="theme-toggle" type="button" aria-pressed="false" aria-label="Dark mode" title="Dark mode"><svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M19.5 14.5A7.5 7.5 0 0 1 9.5 4.5a7.5 7.5 0 1 0 10 10Z"/></svg><svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/></svg></button>
       </div>
@@ -59,6 +62,11 @@
           <div class="history-label agents-label"><span id="agents-heading">AGENTS</span><span class="agents-head"><select id="agents-filter" aria-label="Show agents from"><option value="project">This project</option><option value="all">All projects</option></select><span id="agents-count">00</span></span></div>
           <ul class="agents-list" id="agents-list" aria-labelledby="agents-heading"></ul>
         </section>
+      </div>
+      <div class="sidebar-panel" id="base-sidebar-panel" hidden>
+        <div class="history-label"><span>BASE LIBRARY</span><span id="base-sidebar-count">0</span></div>
+        <nav id="base-categories" class="base-categories" aria-label="Base resource categories"></nav>
+        <p class="note base-sidebar-note">Reusable resources for future agent runs.</p>
       </div>
       <div class="sidebar-bottom">
         <button class="text-link" id="privacy-help" type="button">How your data is used <span aria-hidden="true">↗</span></button>
@@ -238,8 +246,9 @@
             <p class="toolbar-value" id="workflow-summary">Planning: Ask · Executing: Ask</p>
             <button type="button" class="text-button" id="workflow-open">Workflow settings</button>
           </div>
-          <div class="toolbar-cell toolbar-end"><button class="secondary-button" id="import-board" type="button" title="Restore a board backup (JSON)" aria-label="Import board backup"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M12 15V3m-5 5 5-5 5 5M5 16v5h14v-5"/></svg><span>Import</span></button><button class="secondary-button" id="export-board" type="button" title="Download a board backup (JSON)" aria-label="Export board backup"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 16v5h14v-5"/></svg><span>Export</span></button><input type="file" id="import-file" accept=".json,application/json" hidden></div>
+          <div class="toolbar-cell toolbar-end"><button class="secondary-button" id="import-board" type="button" title="Restore a board backup (JSON)" aria-label="Import board backup"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M12 15V3m-5 5 5-5 5 5M5 16v5h14v-5"/></svg><span>Import</span></button><button class="secondary-button" id="export-board" type="button" title="Download a board backup (JSON). Document content follows Backup contents below." aria-label="Export board backup"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 16v5h14v-5"/></svg><span>Export</span></button><input type="file" id="import-file" accept=".json,application/json" hidden></div>
         </div>
+        <details class="base-disclosure"><summary>Backup contents</summary><label class="check-row"><input type="checkbox" id="export-base-content"> Include Base document content (may contain private context)</label><p class="note">Resource definitions and assignments are included. Document bodies and supporting files are omitted unless selected.</p></details>
         <form class="kanban-project-form" id="project-form" novalidate hidden>
           <label class="field-label" for="project-name"><span id="project-form-label">New project name</span><input id="project-name" type="text" maxlength="80" autocomplete="off" required></label>
           <p class="note" id="project-form-note">Promptboard creates a folder for the project in “Promptboard Projects” in your home folder, with a Git repository ready for agents. To use existing code, choose Open folder instead.</p>
@@ -313,14 +322,26 @@
       </section>
     </main>
 
+    <main class="workspace base-workspace" id="base-view" tabindex="-1" hidden aria-labelledby="base-heading">
+      <section class="base-heading"><div><h1 id="base-heading">Base</h1><p class="intro-description">Store once. Choose what each agent receives.</p></div><div id="base-actions" class="detail-actions"></div></section>
+      <p class="note base-privacy">Your library is stored locally. Selected context, including sources for wiki drafts, can be sent through a cloud-backed CLI. Explicit MCP tests contact the configured server. Imports and documents are untrusted input.</p>
+      <p id="base-status" class="note" role="status" aria-live="polite"></p>
+      <p id="base-error" class="inline-error" role="alert" hidden></p>
+      <div class="base-toolbar"><h2 id="base-category-heading">All resources</h2><label class="field-label base-search">Search Base<input id="base-search" type="search" placeholder="Find a resource…" autocomplete="off"></label></div>
+      <div id="base-mobile-categories"></div><div id="base-view-controls" class="base-view-controls"></div>
+      <div class="base-layout base-browse"><section aria-label="Resources" class="base-list-panel"><ul id="base-list" class="base-list"></ul><div id="base-empty" class="note" role="status" aria-live="polite">Loading Base…</div></section><section id="base-detail" class="base-detail" aria-label="Resource editor" hidden><p class="base-placeholder">Choose a resource or create one. Nothing is attached automatically.</p></section></div>
+    </main>
+    <dialog id="base-dialog" class="kanban-dialog base-dialog" aria-labelledby="base-dialog-heading"><button class="dialog-close icon-button" id="base-dialog-close" type="button" aria-label="Close Base dialog">×</button><h2 id="base-dialog-heading">Base resources</h2><div id="base-dialog-content"></div></dialog>
+
     <dialog id="app-settings" class="kanban-dialog app-settings" aria-labelledby="app-settings-heading"><button class="dialog-close icon-button" id="app-settings-close" type="button" aria-label="Close settings">×</button><p class="eyebrow">PROMPTBOARD</p><h2 id="app-settings-heading">Settings</h2>
       <p class="note">Browser preferences are shared. Agent defaults apply unless a project or column overrides them.</p>
       <fieldset class="settings-group"><legend>General</legend>
         <label class="field-label">Theme<select id="set-theme"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label>
-        <label class="field-label">Start page<select id="set-start"><option value="compose">Compose</option><option value="kanban">Kanban</option></select></label>
+        <label class="field-label">Start page<select id="set-start"><option value="compose">Compose</option><option value="kanban">Kanban</option><option value="base">Base</option></select></label>
       </fieldset>
       <details class="settings-section" id="settings-agents-section"><summary>Global agent defaults</summary><fieldset class="settings-group"><legend class="sr-only">Agents</legend>
         <div id="set-agent-fields"></div>
+        <div id="set-base-fields"></div>
         <button type="button" class="secondary-button" id="set-agent-save">Save default agent</button>
         <p class="note">Column overrides take priority, then project defaults, then this global default. Composer uses its own provider and model for prompt writing.</p>
         <label class="field-label">Agents at the same time<select id="set-max-runs"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option></select></label>
@@ -429,5 +450,13 @@
       </form>
     </dialog>
     <div id="announcement" class="sr-only" aria-live="polite"></div>
+    <dialog id="usage-dialog" class="kanban-dialog usage-dialog" aria-labelledby="usage-heading">
+      <div class="dialog-heading"><h2 id="usage-heading">Usage</h2><button type="button" id="usage-close" class="icon-button" aria-label="Close usage">×</button></div>
+      <p class="dialog-note">Local CLI sessions · last 30 days · this machine</p>
+      <div class="usage-toolbar"><span id="usage-updated" role="status">Loading usage…</span><button type="button" id="usage-refresh">Refresh</button></div>
+      <p id="usage-error" class="inline-error" role="alert" hidden></p>
+      <div id="usage-providers"></div>
+      <p class="dialog-note">Account limits and local token totals cover different scopes. Missing metrics mean “not reported”, never zero. CLI costs are estimates, not billing statements.</p>
+    </dialog>
   </body>
 </html>
