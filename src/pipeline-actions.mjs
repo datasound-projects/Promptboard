@@ -88,6 +88,14 @@ export class PipelineActions {
   }
 
   cancel(actionId) { const job = this.jobs.get(actionId); job?.controller.abort('cancelled'); if (job?.stopRetry) void job.stopRetry(); return Boolean(job); }
+  async stop(actionId) {
+    const job = this.jobs.get(actionId);
+    if (!job) return true;
+    job.controller.abort('cancelled');
+    await job.promise;
+    await job.stopRetry?.();
+    return !this.jobs.has(actionId);
+  }
   async shutdown() {
     this.stopping = true;
     for (const job of this.jobs.values()) job.controller.abort('shutdown');

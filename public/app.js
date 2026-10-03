@@ -1734,7 +1734,9 @@ async function placeCard(id, column, index, retried = false) {
     pendingMoves.delete(id); movingTo.delete(id);
     // Background work (for example test results) can change a card's revision. If the card is still
     // where the user saw it, the move they asked for is unchanged: reload and try once more.
-    if (error.code === 'REVISION_CONFLICT' && !retried && findTask(id)?.column === card.column) return placeCard(id, column, index, true);
+    // Pipeline exits may already have effects. A new move ID needs an explicit
+    // user action, even when the revision conflict leaves the card at its source.
+    if (project.workflowMode !== 'pipeline' && error.code === 'REVISION_CONFLICT' && !retried && findTask(id)?.column === card.column) return placeCard(id, column, index, true);
     if (reorder && currentProject()?.id === project.id && error.code !== 'REVISION_CONFLICT' && error.code !== 'NOT_FOUND') currentProject().tasks = snapshot;
     renderBoard();
     cardElement(id)?.classList.add('rejected');

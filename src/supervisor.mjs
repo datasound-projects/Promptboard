@@ -53,6 +53,7 @@ export class Supervisor {
     this.sessions = new Map(); // runId -> session
     this.queue = [];
     this.heldQueue = new Set();
+    this.queuedHolds = new Map();
     this.boundaryWaits = new Map();
     this.pending = new Map(); // runId -> subscribers waiting for a queued run to start
     this.stopping = false;
@@ -98,10 +99,11 @@ export class Supervisor {
   }
 
   /** Keep a waiting run's FIFO slot while Board atomically retargets its configuration. */
-  async retargetQueued(runId, accept) {
+  async retargetQueued(runId, accept, { hold = null } = {}) {
     const entry = this.queue.find(item => item.runId === runId);
     if (!entry || this.preparing.has(runId) || this.sessions.get(runId)?.proc) throw new AgentError('This agent is already starting. Wait for startup or pause it before changing settings.', 'RUN_STARTING', 409);
-    if (this.heldQueue.has(runId)) throw new AgentError('This queued run is already changing destinations.', 'RUN_BUSY', 409);
+    const inheritedHold = hold !== null && this.queuedHolds.get(runId) === hold;
+    if (this.heldQueue.has(runId) && !inheritedHold) throw new AgentError('This queued run is already changing destinations.', 'RUN_BUSY', 409);
     this.heldQueue.add(runId);
     try {
       const result = await accept();
@@ -109,10 +111,26 @@ export class Supervisor {
       if (this.queue.includes(entry)) Object.assign(entry, result.payload);
       return result.run;
     } finally {
-      this.heldQueue.delete(runId);
+      if (!inheritedHold) this.heldQueue.delete(runId);
       if (this.pumping) this.pumping.finally(() => this.#pump()).catch(() => {});
       else this.#pump();
     }
+  }
+
+  /** Hold a known queued run while its column's actions finish, preserving FIFO. */
+  holdQueued(runId) {
+    if (!this.queue.some(item => item.runId === runId) || this.preparing.has(runId) || this.launching?.has(runId)) throw new AgentError('This queued agent is already starting. Wait for startup before changing its automation destination.', 'RUN_STARTING', 409);
+    if (this.heldQueue.has(runId)) throw new AgentError('This queued run is already changing destinations.', 'RUN_BUSY', 409);
+    const hold = Object.freeze({}); this.queuedHolds.set(runId, hold); this.heldQueue.add(runId);
+    return hold;
+  }
+
+  releaseQueued(runId, hold) {
+    if (!hold || this.queuedHolds.get(runId) !== hold) return false;
+    this.queuedHolds.delete(runId); this.heldQueue.delete(runId);
+    if (this.pumping) this.pumping.finally(() => this.#pump()).catch(() => {});
+    else this.#pump();
+    return true;
   }
 
   #endPending(runId) {
@@ -522,9 +540,10 @@ export class Supervisor {
   }
 
   /** Stop one run. Only that run's own process group is signalled. */
-  async cancel(runId) {
+  async cancel(runId, { withinAutomationMove = null } = {}) {
     const cancelledHandoff = this.abortBoundary(runId, 'stop');
     const run = await this.board.run(runId);
+    this.board.abortAutomationTask?.(run.taskId, { exceptTransitionId: withinAutomationMove });
     if (cancelledHandoff && !ACTIVE.has(run.status) && run.sessionId) {
       const session = (await this.board.state()).sessions.find(item => item.id === run.sessionId);
       if (session?.currentRunId && session.currentRunId !== runId) return this.cancel(session.currentRunId);
@@ -548,9 +567,10 @@ export class Supervisor {
   }
 
   /** Pause a queued/preparing or owned live process, preserving the exact native conversation. */
-  async suspend(runId) {
+  async suspend(runId, { withinAutomationMove = null } = {}) {
     this.abortBoundary(runId);
     const run = await this.board.run(runId);
+    this.board.abortAutomationTask?.(run.taskId, { exceptTransitionId: withinAutomationMove });
     if (!ACTIVE.has(run.status)) return;
     const session = this.sessions.get(runId);
     if (session?.cancelPromise) return session.cancelPromise;

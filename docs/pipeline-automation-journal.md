@@ -1,6 +1,6 @@
 # Durable automation move journal
 
-`PipelineJournal` prepares the durable intent and outcome layer for column automations. It is not connected to `Board.transition`, startup recovery or HTTP endpoints yet. Enabled rows remain refused. This checkpoint does not change board behavior, state version 5, Composer input, Base delivery or native CLI configuration.
+`PipelineJournal` prepares the durable intent and outcome layer for column automations. The [column runtime](pipeline-runtime-automations.md) now connects it to `Board.transition`, scoped startup recovery and authenticated receipt endpoints for scripts/webhooks. Native message scheduling, notification reception and the editor remain pending. State version 6 records task-scoped move ownership while preserving Composer, Base and native CLI configuration.
 
 New records now use version 2 and prepare [asynchronous enter-message receipts](pipeline-message-journal.md). Their immutable `scheduled` dispatch outcome releases later rows and placement without claiming delivery success; a separate nested receipt remains observable and recoverable after the move completes. Version 1 records remain readable under their original synchronous contract. The ordering and cancellation descriptions below apply to synchronous rows; active asynchronous receipts must also be stopped and recorded before move cancellation.
 

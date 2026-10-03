@@ -11,7 +11,7 @@ import { migrateSessions } from './sessions.mjs';
 import { normalizePipelineConfig } from './pipeline-config.mjs';
 
 export const STATE_SCHEMA = 'promptboard.state';
-export const STATE_VERSION = 5;
+export const STATE_VERSION = 6;
 const STATE_FILE = 'state.json';
 
 export function defaultDataDir(env = process.env, platform = process.platform) {
@@ -32,17 +32,32 @@ export class StoreError extends Error {
 function checkShape(data) {
   if (!data || typeof data !== 'object' || data.schema !== STATE_SCHEMA) throw new Error('Unknown state file.');
   if (data.version > STATE_VERSION) throw new StoreError('The board was saved by a newer Promptboard version. Update the app; the file was not changed.', 'STATE_VERSION_UNSUPPORTED');
-  if (![2, 3, 4, STATE_VERSION].includes(data.version) || !Array.isArray(data.projects) || !Array.isArray(data.runs)) throw new Error('Unsupported state shape.');
+  if (![2, 3, 4, 5, STATE_VERSION].includes(data.version) || !Array.isArray(data.projects) || !Array.isArray(data.runs)) throw new Error('Unsupported state shape.');
   if (data.version >= 3 && (!data.base || !Array.isArray(data.base.resources) || !Array.isArray(data.base.approvedRoots) || !Number.isSafeInteger(data.base.revision) || data.base.revision < 0)) throw new Error('Invalid Base registry shape.');
   if (data.version >= 4 && (!Array.isArray(data.sessions) || data.sessions.some(session => !session || typeof session !== 'object'
     || typeof session.id !== 'string' || !session.id || typeof session.taskId !== 'string' || typeof session.projectId !== 'string'
     || !['queued', 'running', 'waiting_for_input', 'suspended', 'exited', 'orphaned'].includes(session.status)
     || !Array.isArray(session.runIds) || session.runIds.some(id => typeof id !== 'string') || !Array.isArray(session.artifacts)))) throw new Error('Invalid session registry shape.');
-  if (data.version === STATE_VERSION) for (const project of data.projects) {
+  if (data.version >= 5) for (const project of data.projects) {
     if (project.workflowMode !== undefined && !['legacy', 'pipeline'].includes(project.workflowMode)) throw new Error('Invalid project workflow mode.');
     if (project.workflowMode === 'pipeline') {
       const config = normalizePipelineConfig(project.pipeline);
       if (project.tasks.some(task => !config.columns.some(column => column.id === task.column))) throw new Error('Task refers to a missing pipeline column.');
+    }
+    if (data.version === STATE_VERSION) for (const task of project.tasks) {
+      const validKey = key => key && typeof key === 'object' && key.projectId === project.id && key.taskId === task.id
+        && typeof key.transitionId === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(key.transitionId);
+      if (task.automationMoves !== undefined && (!Array.isArray(task.automationMoves) || task.automationMoves.length > 100
+        || task.automationMoves.some(key => !validKey(key) || Object.keys(key).some(name => !['projectId', 'taskId', 'transitionId'].includes(name)))
+        || new Set(task.automationMoves.map(key => key.transitionId)).size !== task.automationMoves.length)) throw new Error('Invalid task automation history.');
+      if (task.automationMove !== undefined && (!validKey(task.automationMove)
+        || !['pending', 'running', 'completed', 'failed', 'cancelled', 'interrupted', 'blocked'].includes(task.automationMove.status)
+        || !['exit', 'lifecycle', 'enter', 'complete'].includes(task.automationMove.phase)
+        || task.automationMove.updatedAt !== undefined && (!Number.isSafeInteger(task.automationMove.updatedAt) || task.automationMove.updatedAt < 0)
+        || task.automationMove.reason !== undefined && (typeof task.automationMove.reason !== 'string' || task.automationMove.reason.length > 500)
+        || task.automationMove.errorCode !== undefined && (typeof task.automationMove.errorCode !== 'string' || !/^[A-Z][A-Z0-9_]{0,79}$/.test(task.automationMove.errorCode))
+        || !(task.automationMoves || []).some(key => key.transitionId === task.automationMove.transitionId)
+        || Object.keys(task.automationMove).some(name => !['projectId', 'taskId', 'transitionId', 'status', 'phase', 'updatedAt', 'reason', 'errorCode'].includes(name)))) throw new Error('Invalid task automation move.');
     }
   }
   return { ...emptyState(), ...data };
@@ -62,9 +77,12 @@ export function migrateState(data) {
     migrateSessions(state);
     state.migrations.push({ kind: 'state-v3-to-v4', at: Date.now() });
   }
-  for (const project of state.projects) project.workflowMode = 'legacy';
+  if (state.version < 5) {
+    for (const project of state.projects) project.workflowMode = 'legacy';
+    state.migrations.push({ kind: 'state-v4-to-v5', at: Date.now() });
+  }
   state.version = STATE_VERSION;
-  state.migrations.push({ kind: 'state-v4-to-v5', at: Date.now() });
+  state.migrations.push({ kind: 'state-v5-to-v6', at: Date.now() });
   return state;
 }
 
