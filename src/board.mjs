@@ -7,17 +7,17 @@
  * requests are refused before any worktree is created.
  */
 import { randomUUID } from 'node:crypto';
-import { attachSession, LIVE_SESSION_STATUSES, recoverSessions, synchronizeSession } from './sessions.mjs';
+import { attachSession, attachResumedRun, LIVE_SESSION_STATUSES, recoverSessions, synchronizeSession } from './sessions.mjs';
 import { access, mkdir, readdir, realpath, rm, stat } from 'node:fs/promises';
 import { join, relative, isAbsolute } from 'node:path';
 import { Store } from './store.mjs';
 import { branchExists, commitExists, git, GitError, initRepository, listWorktrees, validateRepository } from './git.mjs';
-import { ADAPTERS, resolveConfig } from './agents.mjs';
+import { ADAPTERS, resolveConfig, validateResumeId } from './agents.mjs';
 import { Delivery } from './delivery.mjs';
 import { ensureClone, fastForward, fetchAndCompare, viewRepository } from './github.mjs';
 import { buildTimeline } from './timeline.mjs';
 import { Base, normalizeBinding, listTargets, remapBaseScopes } from './base.mjs';
-import { deliveryFor, profileDefaults, resolveBase } from './base-resolver.mjs';
+import { checkBaseRevocations, deliveryFor, profileDefaults, resolveBase } from './base-resolver.mjs';
 
 export const COLUMNS = Object.freeze([
   { id: 'todo', title: 'To Do', agent: false },
@@ -29,11 +29,11 @@ export const COLUMNS = Object.freeze([
   { id: 'done', title: 'Done', agent: false },
 ]);
 const COLUMN_IDS = COLUMNS.map(column => column.id);
-export const RUN_STATUSES = Object.freeze(['queued', 'running', 'waiting_for_input', 'succeeded', 'failed', 'cancelled', 'interrupted']);
+export const RUN_STATUSES = Object.freeze(['queued', 'running', 'waiting_for_input', 'suspended', 'succeeded', 'failed', 'cancelled', 'interrupted']);
 export const ACTIVE_RUN_STATUSES = Object.freeze(['queued', 'running', 'waiting_for_input']);
 // Succeeded is reached only through an explicit user confirmation (supervisor.confirm).
-const RUN_NEXT = { queued: ['running', 'cancelled', 'failed', 'interrupted'], running: ['waiting_for_input', 'succeeded', 'failed', 'cancelled', 'interrupted'],
-  waiting_for_input: ['running', 'succeeded', 'cancelled', 'failed', 'interrupted'] };
+const RUN_NEXT = { queued: ['running', 'cancelled', 'failed', 'interrupted', 'suspended'], running: ['waiting_for_input', 'succeeded', 'failed', 'cancelled', 'interrupted', 'suspended'],
+  waiting_for_input: ['running', 'succeeded', 'cancelled', 'failed', 'interrupted', 'suspended'] };
 // Stages that can run an agent. To Do and Done never do.
 const EXECUTABLE_STAGES = new Set(['planning', 'executing', 'code_review', 'testing', 'merge']);
 // Per-stage workflow settings. Projects store overrides; defaults apply otherwise.
@@ -1004,7 +1004,7 @@ export class Board {
     }
     if (flow?.kind === 'merge-resolve') {
       const run = state.runs.find(item => item.id === flow.runId);
-      if (!run || ['failed', 'cancelled', 'interrupted'].includes(run.status)) return this.#setFlow(id, { kind: 'blocked', reason: `The merge agent ${run?.status || 'stopped'}${run?.reason ? `: ${run.reason}` : ''}. Resolve the conflicts in the task worktree, or send the card back to Executing.` });
+      if (!run || ['failed', 'cancelled', 'interrupted', 'suspended'].includes(run.status)) return this.#setFlow(id, { kind: 'blocked', reason: `The merge agent ${run?.status || 'stopped'}${run?.reason ? `: ${run.reason}` : ''}. Resolve the conflicts in the task worktree, or send the card back to Executing.` });
       if (run.status === 'waiting_for_input' && run.turnComplete && run.turns > 0) await this.executor.confirm(run.id);
       else if (run.status !== 'succeeded') return;
       const rev = await this.delivery.revision(id);
@@ -1673,6 +1673,75 @@ export class Board {
    */
   requestRun(taskId, options = {}) {
     return this.#locked(`run:${taskId}`, () => this.#startRun(taskId, options));
+  }
+
+  /** Serialize pause with launch/deletion/resume for this task. Files and the native conversation stay. */
+  async pauseRun(runId, { confirm = false } = {}) {
+    const run = await this.run(runId);
+    if (confirm !== true) throw new BoardError('Confirm that you want to pause this agent session.', 'CONFIRMATION_REQUIRED');
+    return this.#locked(`run:${run.taskId}`, async () => {
+      if (!this.executor?.suspend) throw new BoardError('Session suspension is not available.', 'EXECUTION_UNAVAILABLE', 503);
+      await this.executor.suspend(runId);
+      return this.run(runId);
+    });
+  }
+
+  /** Supervisor-only: save pause intent before signalling an owned process. */
+  async beginSuspension(runId) {
+    return this.store.update(state => {
+      const run = state.runs.find(item => item.id === runId);
+      if (!run || !ACTIVE_RUN_STATUSES.includes(run.status)) throw conflict('This run is no longer active.', 'RUN_NOT_ACTIVE');
+      const session = state.sessions.find(item => item.id === run.sessionId && item.currentRunId === run.id);
+      if (!session) throw conflict('This run has no logical session.', 'SESSION_MISSING');
+      session.pauseIntent = 'user'; session.suspensionRequestedAt = Date.now();
+      run.lifecycle = 'suspending';
+      const project = state.projects.find(item => item.id === run.projectId);
+      if (project?.autopilot?.status === 'running') { project.autopilot.status = 'paused'; project.autopilot.reason = 'The task agent was paused by you.'; }
+    });
+  }
+
+  /** Explicit native resume of the current stage. No stage actions or original task text are replayed. */
+  resumeTask(taskId, { consent = false, message = '' } = {}) {
+    return this.#locked(`run:${taskId}`, async () => {
+      if (consent !== true) throw new BoardError('Resuming an agent needs your explicit confirmation.', 'CONSENT_REQUIRED');
+      if (typeof message !== 'string' || Buffer.byteLength(message) > 64 * 1024 || message.includes('\0')) throw new BoardError('Send a continuation of at most 64 KiB without null characters.', 'INVALID_INPUT');
+      const state = await this.state(), { project, task } = this.#task(state, taskId);
+      if (['todo', 'done'].includes(task.column) || task.archivedAt) throw conflict('Move or restore this task to an active column before resuming.', 'SESSION_NOT_RESUMABLE');
+      if (this.#activeRun(state, taskId)) throw conflict('This card already has an active run.', 'RUN_ACTIVE');
+      if (project.autopilot?.status === 'running') throw conflict('Pause Autopilot before resuming this conversation manually.', 'AUTOPILOT_ACTIVE');
+      const session = state.sessions.find(item => item.id === task.sessionId && item.taskId === taskId && item.projectId === project.id);
+      const previous = session && state.runs.find(item => item.id === session.currentRunId && item.taskId === taskId);
+      if (!previous || !['suspended', 'orphaned', 'exited'].includes(session.status)) throw conflict('This card has no inactive conversation to resume.', 'SESSION_NOT_RESUMABLE');
+      const nativeSessionId = validateResumeId(session.nativeSessionId);
+      if (previous.stage !== task.column) throw conflict('This saved conversation belongs to another stage. Start this stage instead.', 'SESSION_STAGE_MISMATCH');
+      if (previous.promptRevision !== (task.contentRevision ?? 1)) throw conflict('The task text changed after this conversation. Start a fresh run to supply the new text.', 'SESSION_PROMPT_STALE');
+      if (!this.executor) throw new BoardError('Agent execution is not available.', 'EXECUTION_UNAVAILABLE', 503);
+      const config = { ...await this.executor.validate({ stage: previous.stage, config: session.config }), instructions: session.config.instructions || '' };
+      const baseManifest = structuredClone(previous.baseManifest || this.#basePreflight(state, project, task, previous.stage, config.provider));
+      baseManifest.supplied = []; baseManifest.warnings = [];
+      delete baseManifest.suppliedAt; delete baseManifest.preparedAt; delete baseManifest.preparationError;
+      checkBaseRevocations(baseManifest, state.base.resources, state.base.approvedRoots);
+      const workspace = await this.ensureTaskWorktree(taskId);
+      if (workspace.path !== session.workspacePath) throw conflict('The saved conversation belongs to another workspace. Start a fresh run instead.', 'SESSION_WORKSPACE_MISMATCH');
+      const run = await this.store.update(draft => {
+        const current = this.#task(draft, taskId).task, saved = draft.sessions.find(item => item.id === session.id);
+        if (this.#activeRun(draft, taskId) || current.sessionId !== session.id || saved?.currentRunId !== previous.id || saved.status !== session.status || current.column !== task.column || current.contentRevision !== task.contentRevision) throw conflict('This task or conversation changed. Reload before resuming.', 'REVISION_CONFLICT');
+        checkBaseRevocations(baseManifest, draft.base.resources, draft.base.approvedRoots);
+        const id = randomUUID(), now = Date.now();
+        const record = { id, taskId, projectId: project.id, stage: previous.stage, status: 'queued', createdAt: now, updatedAt: now,
+          promptRevision: previous.promptRevision, config, trigger: 'user', workspacePath: workspace.path, branch: workspace.branch,
+          artifactsDir: join('runs', id), turns: 0, providerSessionId: nativeSessionId,
+          resumeFrom: { runId: previous.id, nativeSessionId },
+          baseManifest: { ...structuredClone(baseManifest), acceptedAt: now, deliveryState: 'configured' },
+          ...(previous.review ? { review: structuredClone(previous.review) } : {}), ...(previous.planRunId ? { planRunId: previous.planRunId } : {}) };
+        draft.runs.push(record); attachResumedRun(draft, record, saved);
+        const ap = this.#project(draft, project.id).autopilot;
+        if (ap?.status === 'paused' && ap.current?.runId === previous.id) { ap.current.runId = id; ap.current.step = 'running'; }
+        return record;
+      });
+      await this.executor.start({ run, task: { id: task.id, title: task.title, prompt: task.prompt }, workspace, continuation: message });
+      return run;
+    });
   }
 
   /** With `move`, the card enters the stage in the same write that records the run (see transition). */

@@ -177,6 +177,8 @@ Execution is a separate subsystem (`src/agents.mjs`, `src/supervisor.mjs`, `src/
 
 Every stage from Planning to Merge can run an agent; To Do and Done never do (`STAGE_NOT_RUNNABLE`).
 
+**Pause and native resume.** `POST /api/runs/:id/pause { confirm: true }` saves user intent and stops only that run's process, yielding `suspended`. `POST /api/tasks/:id/resume { consent: true, message?: string }` accepts another process run in the current logical conversation with the saved configuration and workspace. It rechecks pinned Base revocations and supplies native tool configuration again. The original task/stage/Base text is not replayed; only an explicit continuation is sent. Native IDs are captured from provider events (Claude also receives its initial ID at launch). Resume refuses stale task text, another stage/workspace, missing IDs, To Do/Done/archive, active runs, and running Autopilot. See [session persistence](session-persistence.md) for restart and adapter limits.
+
 **Supervisor.**
 - **Queue:** runs start in FIFO order, up to `settings.maxConcurrentRuns` (default 1, at most 4). Requests return at once.
 - **Sessions:** each session is a `node-pty` process in the task worktree, in its own process group, tracked for shutdown.

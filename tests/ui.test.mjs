@@ -977,6 +977,7 @@ function fakeExecutor() {
     subscribe: () => null,
     async confirm(runId) { const run = await executor.board.run(runId); if (run.stage === 'planning') await executor.board.approvePlan(run.taskId, { runId }); if (run.status === 'queued') await executor.board.updateRun(runId, { status: 'running' }); await executor.board.updateRun(runId, { status: 'succeeded' }); if (['executing', 'testing'].includes(run.stage)) await executor.board.recordStageResult(run, 'Verified the task results.'); },
     async cancel(runId) { await executor.board.updateRun(runId, { status: 'cancelled' }); },
+    async suspend(runId) { await executor.board.beginSuspension(runId); await executor.board.updateRun(runId, { status: 'suspended' }); },
     artifact: async () => 'PLAN\n1. Change the parser.',
   };
   return executor;
@@ -1005,6 +1006,33 @@ async function link(ctx) {
   await ctx.win.__pbTest.loadBoard(); await ctx.idle();
 }
 const moveBy = async (ctx, title, column) => { const menu = cardItem(ctx, title).querySelector('.kanban-move-to'); menu.value = column; menu.dispatchEvent(new ctx.win.Event('change')); };
+
+test('Kanban Pause and Resume preserve the conversation and keep Composer cards in To Do', { skip: process.platform === 'win32' }, async t => {
+  const ctx = await linkedKanban(t);
+  await link(ctx);
+  await newCard(ctx, 'Unstarted', 'Exact To Do text.');
+  const card = await ctx.app.board.createTask({ projectId: ctx.project.id, title: 'Conversation', prompt: 'Original task.' });
+  await ctx.app.board.moveTask(card.id, { column: 'executing', expectedRevision: 1 });
+  const run = await ctx.app.board.requestRun(card.id, { stage: 'executing', consent: true });
+  await ctx.app.board.updateRun(run.id, { status: 'running', providerSessionId: 'native-conversation' });
+  await ctx.win.__pbTest.loadBoard(); await ctx.idle();
+  const pause = cardItem(ctx, 'Conversation').querySelector('.kanban-pause');
+  assert.match(pause.getAttribute('aria-label'), /Pause agent.*Conversation/);
+  pause.focus(); assert.equal(ctx.win.document.activeElement, pause);
+  await click(ctx, pause);
+  assert.equal((await ctx.app.board.run(run.id)).status, 'suspended');
+  const resume = cardItem(ctx, 'Conversation').querySelector('.kanban-resume');
+  assert.match(resume.getAttribute('aria-label'), /Resume conversation.*Conversation/);
+  assert.match(cardItem(ctx, 'Conversation').textContent, /Paused/);
+  assert.equal(cardItem(ctx, 'Unstarted').querySelector('.kanban-resume'), null);
+  await click(ctx, resume);
+  const resumed = ctx.executor.started.at(-1);
+  assert.equal(resumed.sessionId, run.sessionId);
+  assert.equal(resumed.providerSessionId, 'native-conversation');
+  assert.deepEqual(resumed.resumeFrom, { runId: run.id, nativeSessionId: 'native-conversation' });
+  assert.deepEqual(titles(ctx.$, 'todo'), ['Unstarted']);
+  assert.equal((await serverTasks(ctx)).find(task => task.title === 'Unstarted').prompt, 'Exact To Do text.');
+});
 
 test('drag-and-drop and keyboard moves use the same transition; rejected moves roll back visibly with the reason', { skip: process.platform === 'win32' }, async t => {
   const ctx = await linkedKanban(t);

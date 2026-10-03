@@ -11,7 +11,7 @@
  */
 
 const TICK_MS = 1000;
-const done = new Set(['failed', 'cancelled', 'interrupted']);
+const done = new Set(['failed', 'cancelled', 'interrupted', 'suspended']);
 const title = stage => ({ planning: 'Planning', executing: 'Executing', code_review: 'Code Review', testing: 'Testing', merge: 'Merge' })[stage] || stage;
 
 export class Autopilot {

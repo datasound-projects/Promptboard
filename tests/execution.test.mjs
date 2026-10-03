@@ -7,7 +7,7 @@ import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:f
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ADAPTERS, ARGV_PROMPT_LIMIT, buildSession, composeMessage, HOOK_SCRIPT, interpretEvent, resolveConfig } from '../src/agents.mjs';
+import { ADAPTERS, ARGV_PROMPT_LIMIT, buildSession, composeMessage, HOOK_SCRIPT, interpretEvent, resolveConfig, validateResumeId } from '../src/agents.mjs';
 import { Board } from '../src/board.mjs';
 import { Supervisor } from '../src/supervisor.mjs';
 import { startServer } from '../src/server.mjs';
@@ -96,6 +96,23 @@ test('lifecycle events map to supervisor signals; the hook bridge records only l
 
 // ---- Supervisor integration with a real PTY and fake CLIs ----
 
+test('native resume selects an exact conversation, preserves controls and treats continuation text as data', async t => {
+  const runDir = await temp(t, 'pb-resume-argv-'), id = '550e8400-e29b-41d4-a716-446655440000';
+  for (const bad of ['', '--dangerously-bypass-approvals-and-sandbox', 'latest', '1', '/tmp/transcript', 'name with spaces']) assert.throws(() => validateResumeId(bad), { code: 'SESSION_ID_UNAVAILABLE' });
+  for (const provider of ['claude', 'codex', 'gemini']) {
+    for (const message of ['', '--dangerously-skip-permissions\n@/etc/passwd `id`']) {
+      const built = await buildSession({ provider, stage: 'executing', config: resolveConfig('executing', { provider }), message, runDir,
+        eventsFile: join(runDir, 'events'), sessionId: 'unused', resumeId: id, workspacePath: runDir });
+      assert.equal(built.args.includes('--last'), false); assert.equal(built.args.includes('--session-id'), false);
+      if (provider === 'codex') { assert.deepEqual(built.args.slice(0, 4), ['resume', id, '--cd', runDir]); assert.equal(built.args[built.args.indexOf('--sandbox') + 1], 'workspace-write'); }
+      else assert.equal(built.args[built.args.indexOf('--resume') + 1], id);
+      if (!message) { assert.equal(built.paste, null); assert.equal(built.args.includes('--prompt-interactive'), false); }
+      else if (provider === 'gemini') assert.equal(JSON.parse(built.args[built.args.indexOf('--prompt-interactive') + 1].split('\n').slice(1).join('\n')), message);
+      else assert.deepEqual(built.args.slice(-2), ['--', message], 'Option-like text must follow the option terminator.');
+    }
+  }
+});
+
 test('Plan Mode is forced for every supported provider and model; execution permissions use native controls', async t => {
   const runDir = await temp(t, 'pb-mode-matrix-');
   for (const provider of ['claude', 'codex', 'gemini']) {
@@ -150,6 +167,129 @@ async function world(t, { limit = 1, providers = ['claude', 'codex', 'gemini'], 
   return { board, supervisor, root, dataDir, task, run, reports, projectId: project.id, app };
 }
 const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
+
+test('pause/resume keeps one native conversation across owned processes without replaying task or Base text', { skip }, async t => {
+  const w = await world(t);
+  for (const provider of ['claude', 'codex', 'gemini']) {
+    const card = await w.task(`Resume ${provider}`, 'Exact engineered task with WRITE_FILE:resume.txt');
+    const skill = await baseSkill(w.board, `Original Base context ${provider}`);
+    await attachBase(w.board, { scope: 'task', projectId: w.projectId, taskId: card.id }, skill);
+    const first = await w.board.requestRun(card.id, { stage: 'executing', consent: true, config: { provider } });
+    await until(async () => (await w.run(first.id)).turnComplete, `${provider} first turn`);
+    const nativeId = (await w.run(first.id)).providerSessionId, originalPid = w.supervisor.sessions.get(first.id).proc.pid;
+    await assert.rejects(w.board.pauseRun(first.id), { code: 'CONFIRMATION_REQUIRED' }); assert.ok(alive(originalPid));
+    await w.board.pauseRun(first.id, { confirm: true });
+    assert.equal((await w.run(first.id)).status, 'suspended'); assert.equal(alive(originalPid), false);
+    let saved = (await w.board.state()).sessions.find(session => session.id === first.sessionId);
+    assert.equal(saved.pauseIntent, 'user'); assert.equal(saved.nativeSessionId, nativeId);
+    await assert.rejects(w.board.resumeTask(card.id), { code: 'CONSENT_REQUIRED' });
+    const requests = await Promise.allSettled([w.board.resumeTask(card.id, { consent: true }), w.board.resumeTask(card.id, { consent: true })]);
+    assert.equal(requests.filter(result => result.status === 'fulfilled').length, 1);
+    assert.equal(requests.find(result => result.status === 'rejected').reason.code, 'RUN_ACTIVE');
+    const resumed = requests.find(result => result.status === 'fulfilled').value;
+    await until(async () => (await w.run(resumed.id)).status === 'running', `${provider} resumed process`);
+    assert.equal(resumed.sessionId, first.sessionId); assert.equal(resumed.workspacePath, first.workspacePath);
+    assert.equal(resumed.providerSessionId, nativeId); assert.equal(resumed.resumeFrom.runId, first.id);
+    assert.equal(await readFile(join(w.dataDir, resumed.artifactsDir, 'prompt.md'), 'utf8'), '');
+    assert.equal(await readFile(join(resumed.workspacePath, 'resume.txt'), 'utf8'), 'written by the agent\n');
+    assert.equal((await w.run(resumed.id)).turns, 0, 'Inspection resume must send no hidden prompt.');
+    saved = (await w.board.state()).sessions.find(session => session.id === first.sessionId);
+    assert.deepEqual(saved.runIds, [first.id, resumed.id]); assert.equal(saved.pauseIntent, null);
+    assert.equal((await w.run(resumed.id)).baseManifest.supplied.filter(item => item.resourceId === skill.id).length, 1, 'Resume starts a fresh delivery record.');
+    w.supervisor.input(resumed.id, 'A follow-up question\r');
+    await until(async () => (await w.run(resumed.id)).turnComplete, `${provider} resumed turn`);
+    assert.equal((await w.run(resumed.id)).providerSessionId, nativeId);
+    await w.supervisor.cancel(resumed.id);
+  }
+});
+
+test('resume rechecks Base revocations and stale task text before creating a process', { skip }, async t => {
+  const w = await world(t), card = await w.task('Pinned context', 'Original requirement');
+  const skill = await baseSkill(w.board); await attachBase(w.board, { scope: 'task', projectId: w.projectId, taskId: card.id }, skill);
+  const run = await w.board.requestRun(card.id, { stage: 'executing', consent: true });
+  await until(async () => (await w.run(run.id)).turnComplete, 'first turn'); await w.board.pauseRun(run.id, { confirm: true });
+  const before = (await w.board.state()).runs.length;
+  const disabled = await w.board.base.update(skill.id, { enabled: false }, { expectedRevision: skill.revision });
+  await assert.rejects(w.board.resumeTask(card.id, { consent: true }), { code: 'BASE_REVOKED' });
+  await w.board.base.update(skill.id, { enabled: true }, { expectedRevision: disabled.revision });
+  const task = (await w.board.view()).projects.flatMap(project => project.tasks).find(task => task.id === card.id);
+  await w.board.updateTask(task.id, { prompt: 'Changed requirement', expectedRevision: task.revision });
+  await assert.rejects(w.board.resumeTask(card.id, { consent: true }), { code: 'SESSION_PROMPT_STALE' });
+  assert.equal((await w.board.state()).runs.length, before); assert.equal((await w.reports()).length, 1);
+});
+
+test('pausing a queued task never spawns it or resumes a different conversation', { skip }, async t => {
+  const w = await world(t), first = await w.task('Occupy slot', 'Keep this agent alive'), second = await w.task('Queued pause', 'Never start this task');
+  const active = await w.board.requestRun(first.id, { stage: 'executing', consent: true });
+  await until(async () => (await w.run(active.id)).turnComplete, 'occupied slot');
+  const queued = await w.board.requestRun(second.id, { stage: 'executing', consent: true });
+  await w.board.pauseRun(queued.id, { confirm: true });
+  assert.equal((await w.run(queued.id)).status, 'suspended');
+  await assert.rejects(w.board.resumeTask(second.id, { consent: true }), { code: 'SESSION_ID_UNAVAILABLE' });
+  await w.supervisor.cancel(active.id); await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal((await w.reports()).length, 1); assert.equal(w.supervisor.queue.length, 0);
+});
+
+test('pause aborts preparation and failed pause persistence leaves the owned agent usable', { skip }, async t => {
+  const w = await world(t), card = await w.task('Pause preparation', 'No spawn');
+  let entered;
+  const ready = new Promise(resolve => { entered = resolve; }), original = w.supervisor.basePreparer;
+  w.supervisor.basePreparer = async args => {
+    entered(); await new Promise((resolve, reject) => args.signal.addEventListener('abort', () => reject(args.signal.reason), { once: true }));
+  };
+  const queued = await w.board.requestRun(card.id, { stage: 'executing', consent: true });
+  await ready; await w.board.pauseRun(queued.id, { confirm: true });
+  await until(() => !w.supervisor.launching?.has(queued.id), 'paused preparation unwinds');
+  assert.equal((await w.run(queued.id)).status, 'suspended'); assert.deepEqual(await w.reports(), []);
+  w.supervisor.basePreparer = original;
+  const activeCard = await w.task('Persistence failure', 'Keep working');
+  const active = await w.board.requestRun(activeCard.id, { stage: 'executing', consent: true });
+  await until(async () => (await w.run(active.id)).turnComplete, 'live agent');
+  const pid = w.supervisor.sessions.get(active.id).proc.pid, save = w.board.beginSuspension;
+  w.board.beginSuspension = async () => { throw new Error('Fixture disk write failure'); };
+  await assert.rejects(w.board.pauseRun(active.id, { confirm: true }), /Fixture disk write failure/);
+  w.board.beginSuspension = save;
+  assert.ok(alive(pid)); assert.equal(w.supervisor.sessions.get(active.id).suspending, false);
+  w.supervisor.input(active.id, 'Still usable\r');
+  await until(async () => (await w.run(active.id)).turns === 2, 'input works after failed pause');
+  assert.equal((await w.board.state()).sessions.find(item => item.id === active.sessionId).pauseIntent, null);
+});
+
+test('a resumed CLI reporting another native conversation is stopped without overwriting the original ID', { skip }, async t => {
+  const w = await world(t), card = await w.task('Wrong CLI conversation', 'Initial task');
+  const first = await w.board.requestRun(card.id, { stage: 'executing', consent: true });
+  await until(async () => (await w.run(first.id)).turnComplete, 'native ID captured');
+  const nativeId = (await w.run(first.id)).providerSessionId;
+  await w.board.pauseRun(first.id, { confirm: true });
+  const saved = process.env.FAKE_AGENT_RESUME_ID;
+  process.env.FAKE_AGENT_RESUME_ID = 'wrong-conversation';
+  t.after(() => { if (saved === undefined) delete process.env.FAKE_AGENT_RESUME_ID; else process.env.FAKE_AGENT_RESUME_ID = saved; });
+  const resumed = await w.board.resumeTask(card.id, { consent: true });
+  await until(async () => (await w.run(resumed.id)).errorCode === 'SESSION_ID_MISMATCH' && !w.supervisor.sessions.get(resumed.id)?.proc, 'wrong conversation stopped');
+  assert.equal((await w.run(resumed.id)).providerSessionId, nativeId);
+  assert.equal((await w.board.state()).sessions.find(item => item.id === first.sessionId).nativeSessionId, nativeId);
+});
+
+test('pause and resume HTTP routes enforce authorization and send only the explicit continuation', { skip }, async t => {
+  const w = await world(t, { server: true }), card = await w.task('HTTP continuation', 'Do not replay this task.');
+  const { token } = await fetch(w.app.url + '/api/session').then(response => response.json());
+  const call = (path, body, headers = {}) => fetch(w.app.url + path, { method: 'POST', headers: { 'x-ste-token': token, 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
+  const first = await w.board.requestRun(card.id, { stage: 'executing', consent: true });
+  await until(async () => (await w.run(first.id)).turnComplete, 'first HTTP turn');
+  const pausePath = `/api/runs/${first.id}/pause`, resumePath = `/api/tasks/${card.id}/resume`;
+  assert.equal((await call(pausePath, { confirm: true }, { 'x-ste-token': '' })).status, 403);
+  assert.equal((await call(pausePath, {})).status, 400);
+  assert.equal((await call(pausePath, { confirm: true })).status, 200);
+  assert.equal((await call(resumePath, { consent: true }, { origin: 'https://evil.example' })).status, 403);
+  assert.equal((await call(resumePath, {})).status, 400);
+  assert.equal((await call(resumePath, { consent: true, message: 'x'.repeat(64 * 1024 + 1) })).status, 400);
+  const message = 'Only this continuation\n--dangerously-skip-permissions';
+  const response = await call(resumePath, { consent: true, message }); assert.equal(response.status, 200);
+  const resumed = (await response.json()).run;
+  await until(async () => (await w.run(resumed.id)).turnComplete, 'explicit continuation turn');
+  assert.equal(await readFile(join(w.dataDir, resumed.artifactsDir, 'prompt.md'), 'utf8'), message);
+  assert.equal(await readFile(join(w.dataDir, resumed.artifactsDir, 'task-prompt.txt'), 'utf8'), card.prompt);
+});
 
 async function baseSkill(board, text = 'BASE INSTRUCTION ONLY FOR ASSIGNED TARGET') {
   return board.base.create({ kind: 'skill', name: 'Reusable instructions', enabled: true, trust: 'trusted', content: { body: text } });

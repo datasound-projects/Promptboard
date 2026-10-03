@@ -43,7 +43,7 @@ export const ADAPTERS = Object.freeze({
       completionEvents: 'Claude Code hooks (SessionStart, UserPromptSubmit, PermissionRequest, Notification, Stop, StopFailure), passed with --settings in exec form.',
       waitingEvents: true,
       cancellation: true,
-      resume: 'Session ID recorded; resume with --resume is available to later stages.',
+      resume: 'Captured conversation ID resumes the current stage with --resume; task text is not replayed.',
     },
     permissionModes: ['acceptEdits', 'default'],
   },
@@ -57,7 +57,7 @@ export const ADAPTERS = Object.freeze({
       completionEvents: 'Codex notify program (agent-turn-complete with the last assistant message).',
       waitingEvents: false, // notify reports finished turns only; approval prompts are visible in the terminal.
       cancellation: true,
-      resume: 'Thread ID recorded from notify events.',
+      resume: 'Captured thread ID resumes the current stage with codex resume; task text is not replayed.',
     },
     permissionModes: ['workspace-write'],
   },
@@ -73,7 +73,7 @@ export const ADAPTERS = Object.freeze({
       completionEvents: 'Gemini CLI hooks (SessionStart, BeforeAgent, AfterAgent, Notification) from a merged system settings file.',
       waitingEvents: true,
       cancellation: true,
-      resume: 'Session ID recorded.',
+      resume: 'Captured conversation ID resumes the current stage with --resume; task text is not replayed.',
     },
     permissionModes: ['auto_edit', 'default'],
   },
@@ -90,6 +90,14 @@ export const ADAPTERS = Object.freeze({
 
 export class AgentError extends Error {
   constructor(message, code, status = 400) { super(message); this.code = code; this.status = status; }
+}
+
+/** Only an exact captured native ID, never a picker, latest-session alias, path or CLI option. */
+export function validateResumeId(value) {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,199}$/.test(value) || /^(latest|last|\d+)$/i.test(value)) {
+    throw new AgentError('This conversation has no usable native session ID. Start a fresh run instead.', 'SESSION_ID_UNAVAILABLE', 409);
+  }
+  return value;
 }
 
 /** Validate a run configuration against the adapter's capabilities. */
@@ -156,7 +164,8 @@ priority = 999
  * Build the interactive command for one run. Returns { args, env, paste } where
  * `paste` is the message to type into the terminal when it is too long for argv.
  */
-export async function buildSession({ provider, stage, config, message, runDir, eventsFile, sessionId, nodePath = process.execPath, baseDelivery = null }) {
+export async function buildSession({ provider, stage, config, message, runDir, eventsFile, sessionId, resumeId = null, workspacePath, nodePath = process.execPath, baseDelivery = null }) {
+  if (resumeId !== null) validateResumeId(resumeId);
   const readOnly = stage === 'planning' || stage === 'code_review';
   const inArgv = Buffer.byteLength(message) <= ARGV_PROMPT_LIMIT;
   const env = { TERM: 'xterm-256color', PROMPTBOARD_RUN: '1' };
@@ -176,7 +185,7 @@ export async function buildSession({ provider, stage, config, message, runDir, e
     const hooks = Object.fromEntries(['SessionStart', 'UserPromptSubmit', 'PermissionRequest', 'Notification', 'Stop', 'StopFailure', 'SessionEnd'].map(event => [event, [{ hooks: [hook] }]]));
     let mcpConfig = '{"mcpServers":{}}';
     if (selected.length) { mcpConfig = `${runDir}/base-claude-mcp.json`; await writeFile(mcpConfig, JSON.stringify({ mcpServers: jsonServers }), { mode: 0o600 }); }
-    args = ['--session-id', sessionId, '--settings', JSON.stringify({ hooks, statusLine: { type: 'command', command: [nodePath, fileURLToPath(new URL('./usage-status.mjs', import.meta.url)), `${runDir}/usage-status.json`].map(shQuote).join(' ') } }), '--strict-mcp-config', '--mcp-config', mcpConfig];
+    args = [resumeId ? '--resume' : '--session-id', resumeId || sessionId, '--settings', JSON.stringify({ hooks, statusLine: { type: 'command', command: [nodePath, fileURLToPath(new URL('./usage-status.mjs', import.meta.url)), `${runDir}/usage-status.json`].map(shQuote).join(' ') } }), '--strict-mcp-config', '--mcp-config', mcpConfig];
     if (readOnly) args.push('--permission-mode', 'plan', '--tools', 'Read,Grep,Glob', '--disallowedTools', 'Edit,Write,NotebookEdit,Bash,ExitPlanMode');
     else args.push('--permission-mode', config.permissionMode, '--disallowedTools', 'EnterPlanMode,ExitPlanMode'); // Writing stages never switch to plan mode.
     if (!readOnly && baseDelivery?.subagents && Object.keys(baseDelivery.subagents).length) {
@@ -186,9 +195,9 @@ export async function buildSession({ provider, stage, config, message, runDir, e
     }
     if (config.model) args.push('--model', config.model);
     if (config.effort) { args.push('--effort', config.effort); env.CLAUDE_CODE_EFFORT_LEVEL = config.effort; }
-    if (inArgv) args.push(message);
+    if (inArgv && message) args.push(...(resumeId ? ['--', message] : [message]));
   } else if (provider === 'codex') {
-    args = ['-c', `notify=[${[nodePath, HOOK_SCRIPT, eventsFile, 'codex'].map(tomlString).join(',')}]`, '--no-alt-screen'];
+    args = [...(resumeId ? ['resume', resumeId, ...(workspacePath ? ['--cd', workspacePath] : [])] : []), '-c', `notify=[${[nodePath, HOOK_SCRIPT, eventsFile, 'codex'].map(tomlString).join(',')}]`, '--no-alt-screen'];
     if (readOnly) args.push('--sandbox', 'read-only', '--ask-for-approval', 'never');
     else args.push('--sandbox', 'workspace-write', '--ask-for-approval', 'on-request');
     if (config.model) args.push('--model', config.model);
@@ -201,10 +210,11 @@ export async function buildSession({ provider, stage, config, message, runDir, e
       for (const [key, value] of Object.entries(fields)) args.push('-c', `${prefix}.${key}=${tomlValue(value)}`);
       args.push('-c', `${prefix}.required=${server.required === true}`, '-c', `${prefix}.startup_timeout_sec=15`);
     }
-    if (inArgv) args.push(message);
+    if (inArgv && message) args.push(...(resumeId ? ['--', message] : [message]));
   } else if (provider === 'gemini') {
     env.GEMINI_CLI_SYSTEM_SETTINGS_PATH = await geminiSystemSettings(runDir, [nodePath, HOOK_SCRIPT, eventsFile, 'gemini'].map(shQuote).join(' '), { plan: readOnly, mcpServers: selected.length ? jsonServers : null });
     args = ['--extensions', 'none', '--allowed-mcp-server-names', selected.map(server => server.name).join(',')];
+    if (resumeId) args.push('--resume', resumeId);
     if (readOnly) {
       const policy = `${runDir}/plan-policy.toml`;
       await writeFile(policy, GEMINI_PLAN_POLICY, { mode: 0o600 });
@@ -214,8 +224,8 @@ export async function buildSession({ provider, stage, config, message, runDir, e
     // Gemini expands @file references and slash commands in typed prompts. Encode them
     // as in the prompt adapter; the JSON string carries the exact text.
     const encoded = `Decode the JSON string below and follow it exactly.\n${JSON.stringify(message).replaceAll('@', '\\u0040')}`;
-    if (Buffer.byteLength(encoded) <= ARGV_PROMPT_LIMIT) args.push('--prompt-interactive', encoded);
-    return { args, env, paste: Buffer.byteLength(encoded) <= ARGV_PROMPT_LIMIT ? null : encoded };
+    if (message && Buffer.byteLength(encoded) <= ARGV_PROMPT_LIMIT) args.push('--prompt-interactive', encoded);
+    return { args, env, paste: !message || Buffer.byteLength(encoded) <= ARGV_PROMPT_LIMIT ? null : encoded };
   } else throw new AgentError('This provider cannot run board tasks.', 'STAGE_UNSUPPORTED_BY_PROVIDER');
   return { args, env, paste: inArgv ? null : message };
 }

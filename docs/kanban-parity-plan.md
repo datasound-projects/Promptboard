@@ -8,6 +8,8 @@ Reviewed on 3 October 2026 against the documentation linked below and GitHub mai
 
 Two integration requirements apply to every step: Composer must continue inserting exact engineered prompts and edited split tasks into To Do without starting an agent; Base must continue resolving user-selected resources and supplying supported MCP tools and native subagents under the configured permissions. Session continuation must retain Base delivery records and recheck resource revocations when launching another process. Base agent profiles remain distinct from board workflow profiles.
 
+The user also confirmed that Kanban agents should inherit tools, MCP servers, and extensions configured in their underlying CLI. Implement ambient CLI inheritance for writing stages alongside Base delivery as a separate compatibility step. Retain the current read-only legacy stage restrictions and do not change CLI configuration files.
+
 ## Default board behavior
 
 The following layout is the product requirement supplied by the user. Column names are editable; behavior should attach to a role or setting rather than the display name.
@@ -135,4 +137,4 @@ The desired new-project default is the column-driven behavior described above. E
 
 Kangentic's documentation contains older descriptions in some supporting chapters. Use the current [Columns and automations](https://www.kangentic.com/features/workflows/) and [Board configuration](https://www.kangentic.com/guide/board-config/) pages for current automation and move semantics. “Advanced” is a navigation label on board configuration and activity detection, rather than a separate requested feature chapter. Verify provider flags against each CLI's official documentation during adapter implementation.
 
-Implementation status: the session registry and version 4 migration establish the first foundation described in [Session persistence](session-persistence.md). Native resume, pause controls, column continuity, automations, and the remaining steps are not yet implemented. The existing contract still describes the current stage workflow; this document must not be described as completed parity.
+Implementation status: the session registry and version 4 migration are merged. The next change adds native resume and explicit pause controls, described in [Session persistence](session-persistence.md). CLI tool inheritance, column continuity, automations, and the remaining steps are still pending. The existing contract still describes the current stage workflow; this document must not be described as completed parity.

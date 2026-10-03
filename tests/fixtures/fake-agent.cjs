@@ -16,27 +16,27 @@ let prompt = '';
 let emit = () => {};
 if (provider === 'claude') {
   const hooks = JSON.parse(flag('--settings')).hooks;
-  prompt = args.at(-1).startsWith('-') ? '' : args.at(-1);
+  prompt = flag('--resume') ? (args.includes('--') ? args[args.indexOf('--') + 1] : '') : args.at(-1).startsWith('-') ? '' : args.at(-1);
   emit = (name, extra = {}) => {
     for (const group of hooks[name] || []) for (const hook of group.hooks) {
-      spawnSync(hook.command, hook.args, { input: JSON.stringify({ hook_event_name: name, session_id: flag('--session-id'), cwd: process.cwd(), ...extra }) });
+      spawnSync(hook.command, hook.args, { input: JSON.stringify({ hook_event_name: name, session_id: flag('--resume') || flag('--session-id'), cwd: process.cwd(), ...extra }) });
     }
   };
 } else if (provider === 'codex') {
   const notify = JSON.parse(args[args.indexOf('-c') + 1].slice('notify='.length));
-  prompt = args.at(-1);
+  prompt = args[0] === 'resume' ? (args.includes('--') ? args[args.indexOf('--') + 1] : '') : args.at(-1);
   emit = (name, extra = {}) => {
     if (name !== 'Stop') return;
-    spawnSync(notify[0], [...notify.slice(1), JSON.stringify({ type: 'agent-turn-complete', 'thread-id': 'thread-1', 'last-assistant-message': extra.last_assistant_message })]);
+    spawnSync(notify[0], [...notify.slice(1), JSON.stringify({ type: 'agent-turn-complete', 'thread-id': args[0] === 'resume' ? args[1] : 'thread-1', 'last-assistant-message': extra.last_assistant_message })]);
   };
 } else if (provider === 'gemini') {
   const settings = JSON.parse(readFileSync(process.env.GEMINI_CLI_SYSTEM_SETTINGS_PATH, 'utf8'));
-  prompt = JSON.parse(flag('--prompt-interactive').split('\n').slice(1).join('\n'));
+  prompt = flag('--prompt-interactive') ? JSON.parse(flag('--prompt-interactive').split('\n').slice(1).join('\n')) : '';
   const map = { SessionStart: 'SessionStart', UserPromptSubmit: 'BeforeAgent', Stop: 'AfterAgent', PermissionRequest: 'Notification' };
   emit = (name, extra = {}) => {
     const event = map[name];
     for (const group of settings.hooks[event] || []) for (const hook of group.hooks) {
-      spawnSync('/bin/sh', ['-c', hook.command], { input: JSON.stringify({ hook_event_name: event, session_id: 'gemini-session', prompt_response: extra.last_assistant_message, notification_type: name === 'PermissionRequest' ? 'ToolPermission' : undefined }) });
+      spawnSync('/bin/sh', ['-c', hook.command], { input: JSON.stringify({ hook_event_name: event, session_id: flag('--resume') || 'gemini-session', prompt_response: extra.last_assistant_message, notification_type: name === 'PermissionRequest' ? 'ToolPermission' : undefined }) });
     }
   };
 }
@@ -50,7 +50,7 @@ if (prompt.includes('HTML_PAYLOAD')) process.stdout.write('<img src=x onerror="w
 // USAGE: write the CLI's own session file (Claude transcript / Codex rollout) with token counts.
 let transcript;
 if (prompt.includes('USAGE') && provider === 'claude') {
-  transcript = join(process.env.FAKE_CLAUDE_PROJECTS, `${flag('--session-id')}.jsonl`);
+  transcript = join(process.env.FAKE_CLAUDE_PROJECTS, `${flag('--resume') || flag('--session-id')}.jsonl`);
   const line = (id, input, read, write, output) => JSON.stringify({ type: 'assistant', message: { id, model: 'claude-test-model', usage: { input_tokens: input, cache_read_input_tokens: read, cache_creation_input_tokens: write, output_tokens: output } } });
   // The same message appears twice (streamed blocks): it must count once.
   writeFileSync(transcript, [line('m1', 10, 1000, 200, 50), line('m1', 10, 1000, 200, 50), line('m2', 5, 1200, 0, 70), JSON.stringify({ type: 'user', message: { content: 'secret text' } })].join('\n') + '\n');
@@ -63,7 +63,7 @@ if (prompt.includes('USAGE') && provider === 'codex') {
     JSON.stringify({ type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: { input_tokens: 15000, cached_input_tokens: 7000, output_tokens: 100 }, last_token_usage: { input_tokens: 15000, output_tokens: 100 }, model_context_window: 200000 }, rate_limits: { primary: { used_percent: 40, resets_at: 1791048036 } } } })].join('\n') + '\n');
 }
 const baseEmit = emit;
-emit = (name, extra = {}) => baseEmit(name, transcript ? { transcript_path: transcript, ...extra } : extra);
+emit = (name, extra = {}) => baseEmit(name, { ...(transcript ? { transcript_path: transcript } : {}), ...(flag('--resume') && process.env.FAKE_AGENT_RESUME_ID ? { session_id: process.env.FAKE_AGENT_RESUME_ID } : {}), ...extra });
 emit('SessionStart');
 function turn(text) {
   emit('UserPromptSubmit');
@@ -91,7 +91,7 @@ if (prompt.includes('ASK_PERMISSION')) {
   emit('PermissionRequest', { tool_name: 'Bash' });
   process.stdout.write('Allow Bash? (y/n)\r\n');
 }
-else turn(prompt);
+else if (prompt) turn(prompt);
 if (process.env.FAKE_AGENT_PROMPT_FILE) writeFileSync(process.env.FAKE_AGENT_PROMPT_FILE, prompt);
 process.stdin.setRawMode?.(true);
 let line = '';

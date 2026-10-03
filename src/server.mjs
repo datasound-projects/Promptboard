@@ -164,6 +164,7 @@ async function boardRoute(board, req, res, pathname, searchParams) {
       return view({ run: await board.run(id) });
     }
     if (method === 'POST' && action === 'confirm') { await body(); await supervisor.confirm(id); return view({ run: await board.run(id) }); }
+    if (method === 'POST' && action === 'pause') return view({ run: await board.pauseRun(id, await body()) });
   } else {
     if (method === 'PATCH' && !action) return view(await board.updateTask(id, await body()));
     if (method === 'DELETE' && !action) return view({ deleted: await board.deleteTask(id, { expectedRevision: expected(), keepFiles: searchParams.get('keepFiles') === 'true' }) ?? true });
@@ -177,6 +178,7 @@ async function boardRoute(board, req, res, pathname, searchParams) {
     if (method === 'POST' && action === 'reopen') return view({ task: await board.reopenTask(id, await body()) });
     if (method === 'POST' && action === 'duplicate') { await body(); return view({ task: await board.duplicateTask(id) }); }
     if (method === 'POST' && action === 'runs') return view({ run: await board.requestRun(id, await body()) });
+    if (method === 'POST' && action === 'resume') return view({ run: await board.resumeTask(id, await body(128 * 1024)) });
     if (method === 'DELETE' && action === 'worktree') return view({ task: await board.removeTaskWorktree(id) });
     // Review, testing, merge, and completion (PB-04). Every change needs an explicit confirm flag.
     const delivery = board.delivery;
