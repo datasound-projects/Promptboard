@@ -133,6 +133,8 @@ The first end-to-end milestone is a task moving Planning → Executing → Code 
 
 ## Decisions for migration
 
+The [native message receipt reader](native-message-receipts.md) now prepares private pre-submission checkpoints and exact new-turn evidence for Claude, Codex and both Gemini history formats. It distinguishes Claude queue acceptance from a conversation turn and revokes uncertain, stale or cancelled evidence. Verified history location, terminal scheduling, durable asynchronous receipts and board/editor integration remain pending; no enabled automation row can run yet.
+
 The [automation coordinator](pipeline-automation-coordinator.md) now prepares ordered row dispatch, aggregate exit deadlines, independent cancellation, progress metadata and strict message callback outcomes. It does not select/start native sessions or provide readiness/confirmation; those and board/editor integration remain pending before enabled rows are exposed.
 
 The [durable automation journal](pipeline-automation-journal.md) now prepares atomic move/action intent, ordered exit/lifecycle/enter grants, webhook attempt receipts and dead-owner interruption recovery. It remains disconnected from board execution and startup; automation rows are still unavailable. Scheduler integration and explicit retry/delivery UI are the next automation work.

@@ -97,6 +97,7 @@ Read [SECURITY.md](SECURITY.md) before working with sensitive repositories. [Kan
 - [Automation execution primitives](docs/pipeline-automation-actions.md): prepared script/webhook/notification adapters; board integration remains pending.
 - [Durable automation journal](docs/pipeline-automation-journal.md): atomic intent, ordered phases and interruption recovery; scheduler integration remains pending.
 - [Ordered automation groups](docs/pipeline-automation-coordinator.md): durable dispatch, exit budgets and owned cancellation; session and board integration remain pending.
+- [Native message receipts](docs/native-message-receipts.md): exact new conversation turns, queue acceptance and cancellation guards; terminal scheduling and durable receipt integration remain pending.
 - [Changelog](CHANGELOG.md) · [CLI adapters](docs/cli-adapters.md) · [Verification](RELEASE-VERIFICATION.md)
 - [Contributing](CONTRIBUTING.md): `npm run check` and `npm test`. No frontend framework or build step.
 - `node bin/ste.mjs --help` for command-line usage; `node bin/ste.mjs --doctor` for CLI detection.
