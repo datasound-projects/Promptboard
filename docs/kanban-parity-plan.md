@@ -133,6 +133,8 @@ The first end-to-end milestone is a task moving Planning → Executing → Code 
 
 ## Decisions for migration
 
+The [automation coordinator](pipeline-automation-coordinator.md) now prepares ordered row dispatch, aggregate exit deadlines, independent cancellation, progress metadata and strict message callback outcomes. It does not select/start native sessions or provide readiness/confirmation; those and board/editor integration remain pending before enabled rows are exposed.
+
 The [durable automation journal](pipeline-automation-journal.md) now prepares atomic move/action intent, ordered exit/lifecycle/enter grants, webhook attempt receipts and dead-owner interruption recovery. It remains disconnected from board execution and startup; automation rows are still unavailable. Scheduler integration and explicit retry/delivery UI are the next automation work.
 
 The desired new-project default is the column-driven behavior described above. Existing projects currently depend on mandatory review/test gates, stage-specific prompts, and Autopilot. Proposed migration: preserve their saved settings under an explicit legacy workflow policy, and let users convert a project to the new model without running work during conversion. Whether that legacy policy should remain user-visible is a product choice.
