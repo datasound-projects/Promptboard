@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Prepare bounded script/webhook/notification execution primitives with native shell files, exact task metadata, owned process-tree cancellation, retry/idempotency handling and explicit unconfirmed notification outcomes. Keep automation rows unavailable until durable move journaling and session message delivery are integrated; no board behavior changes in this step.
+
 - Route verified main Claude/Gemini native plan approvals to the current column/profile's configured target, with a durable one-attempt record and visible pending/failure states. Keep compatible live implementation and native permissions without injecting a prompt. Concrete model/effort/Base changes wait for a verified boundary and resume the exact conversation with an implementation continuation; Stop/Pause, superseding plans and restart cannot replay the action. Add the plan target selector; Codex remains an explicit move. Keep Composer input and Base/CLI tool inheritance intact.
 
 - Resume same-provider live pipeline settings/Base changes at an observed native turn boundary, preserving the exact conversation and worktree without replaying task text. Invalidate readiness on terminal input, recheck events and committed task/settings before signalling, revoke stale leases, and let explicit Stop/Pause cancel the handoff. Distinguish system suspension from user pause and retain the original process/card on timeout or pre-stop conflicts.
