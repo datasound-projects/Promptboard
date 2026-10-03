@@ -7,7 +7,6 @@ node_modules/
 coverage/
 test-results/
 playwright-report/
-
-.kangentic/
-.claude/settings.local.json
+.claude/
+.serena/
 kangentic.local.json

@@ -33,7 +33,7 @@
   "scripts": {
     "start": "node bin/ste.mjs --gui",
     "start:no-open": "node bin/ste.mjs --gui --no-open",
-    "test": "node --test --test-timeout=180000 --test-force-exit tests/*.test.mjs",
+    "test": "node --test --test-concurrency=2 --test-timeout=180000 --test-force-exit tests/*.test.mjs",
     "check": "node scripts/check.mjs",
     "eval:live": "node scripts/evaluate.mjs",
     "bench": "node scripts/benchmark.mjs",
