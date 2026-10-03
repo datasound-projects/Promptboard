@@ -5,7 +5,7 @@ import { PipelineActions } from './pipeline-actions.mjs';
 import { normalizePipelineAutomations } from './pipeline-config.mjs';
 import { pipelineTemplateVariables, renderPipelineTemplate } from './pipeline-templates.mjs';
 
-const TERMINAL = new Set(['succeeded', 'failed', 'cancelled', 'timed_out', 'unconfirmed', 'skipped', 'interrupted']);
+const TERMINAL = new Set(['succeeded', 'failed', 'cancelled', 'timed_out', 'unconfirmed', 'skipped', 'interrupted', 'scheduled']);
 export class PipelineAutomationError extends Error {
   constructor(message, code) { super(message); this.code = code; }
 }

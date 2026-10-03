@@ -99,6 +99,7 @@ Read [SECURITY.md](SECURITY.md) before working with sensitive repositories. [Kan
 - [Ordered automation groups](docs/pipeline-automation-coordinator.md): durable dispatch, exit budgets and owned cancellation; session and board integration remain pending.
 - [Native message receipts](docs/native-message-receipts.md): exact new conversation turns, queue acceptance and cancellation guards; terminal scheduling and durable receipt integration remain pending.
 - [Native receipt ownership](docs/native-message-custody.md): private Supervisor checkpoints bound to live processes, native identities and terminal input; message dispatch remains pending.
+- [Asynchronous message journal](docs/pipeline-message-journal.md): scheduled dispatch and durable delivery stages survive completed placement; runtime scheduling and receipt display remain pending.
 - [Changelog](CHANGELOG.md) · [CLI adapters](docs/cli-adapters.md) · [Verification](RELEASE-VERIFICATION.md)
 - [Contributing](CONTRIBUTING.md): `npm run check` and `npm test`. No frontend framework or build step.
 - `node bin/ste.mjs --help` for command-line usage; `node bin/ste.mjs --doctor` for CLI detection.

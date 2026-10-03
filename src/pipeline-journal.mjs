@@ -4,9 +4,11 @@ import { link, mkdir, open, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { normalizePipelineAutomations } from './pipeline-config.mjs';
 
-const SCHEMA = 'promptboard.automation-move', VERSION = 1, LIMIT = 4096;
+const SCHEMA = 'promptboard.automation-move', VERSION = 2, LIMIT = 4096;
 const TYPES = ['send_message', 'run_script', 'webhook', 'notify'];
-const TERMINAL = ['succeeded', 'failed', 'cancelled', 'timed_out', 'unconfirmed', 'skipped', 'interrupted'];
+const TERMINAL = ['succeeded', 'failed', 'cancelled', 'timed_out', 'unconfirmed', 'skipped', 'interrupted', 'scheduled'];
+const DELIVERY_ACTIVE = ['queued', 'dispatching', 'submitted', 'accepted'];
+const DELIVERY_TERMINAL = ['confirmed', 'failed', 'cancelled', 'timed_out', 'unconfirmed', 'interrupted'];
 const OUTCOME_FIELDS = ['status', 'reason', 'errorCode', 'durationMs', 'httpStatus', 'attempts', 'exitCode', 'terminatedBy'];
 const digest = value => createHash('sha256').update(value).digest('hex');
 const integer = value => Number.isSafeInteger(value) && value >= 0;
@@ -23,7 +25,7 @@ function identity(value) {
   return Object.fromEntries(['projectId', 'taskId', 'transitionId'].map(key => [key, value[key]]));
 }
 function folderName(value) { const key = identity(value); return digest(JSON.stringify([key.projectId, key.taskId, key.transitionId])); }
-function outcome(value, allowed = TERMINAL.filter(status => status !== 'interrupted')) {
+function outcome(value, allowed = TERMINAL.filter(status => !['interrupted', 'scheduled'].includes(status))) {
   if (!keys(value, OUTCOME_FIELDS) || !allowed.includes(value.status)
     || (value.reason !== undefined && !text(value.reason, 500))
     || (value.errorCode !== undefined && (typeof value.errorCode !== 'string' || !/^[A-Z][A-Z0-9_]{0,79}$/.test(value.errorCode)))
@@ -38,6 +40,31 @@ function column(value) {
   if (!keys(value, ['id', 'name']) || !id(value.id) || !text(value.name, 80) || !value.name.trim()) fail('A move needs its source and destination column identities.');
   return { id: value.id, name: value.name };
 }
+function deliveryScope(value) {
+  if (!keys(value, ['provider', 'sessionId', 'runId', 'mode', 'messageHash']) || !['claude', 'codex', 'gemini'].includes(value.provider)
+    || !id(value.sessionId) || !id(value.runId) || !['immediate', 'deferred'].includes(value.mode) || typeof value.messageHash !== 'string' || !/^[a-f0-9]{64}$/.test(value.messageHash)) fail('A queued message needs its exact session/run scope and rendered message hash.', 'JOURNAL_DELIVERY_INVALID');
+  return structuredClone(value);
+}
+function deliveryOutcome(value, recovery = false) {
+  if (!keys(value, ['status', 'reason', 'errorCode', 'durationMs'])) fail('Use a bounded message receipt without raw conversation content.', 'JOURNAL_DELIVERY_INVALID');
+  return outcome(value, DELIVERY_TERMINAL.filter(status => recovery || status !== 'interrupted'));
+}
+function validateDelivery(value) {
+  if (!keys(value, ['provider', 'sessionId', 'runId', 'mode', 'messageHash', 'status', 'queuedAt', 'dispatchStartedAt', 'submittedAt', 'acceptedAt', 'finishedAt', 'outcome'])) throw new Error();
+  deliveryScope(Object.fromEntries(['provider', 'sessionId', 'runId', 'mode', 'messageHash'].map(key => [key, value[key]])));
+  if (![...DELIVERY_ACTIVE, ...DELIVERY_TERMINAL].includes(value.status) || !integer(value.queuedAt)
+    || ['dispatchStartedAt', 'submittedAt', 'acceptedAt', 'finishedAt'].some(key => value[key] !== undefined && !integer(value[key]))
+    || value.submittedAt !== undefined && value.dispatchStartedAt === undefined || value.acceptedAt !== undefined && value.submittedAt === undefined
+    || value.status === 'queued' && ['dispatchStartedAt', 'submittedAt', 'acceptedAt'].some(key => value[key] !== undefined)
+    || value.status === 'dispatching' && (value.dispatchStartedAt === undefined || value.submittedAt !== undefined || value.acceptedAt !== undefined)
+    || value.status === 'submitted' && (value.submittedAt === undefined || value.acceptedAt !== undefined)
+    || value.status === 'accepted' && value.acceptedAt === undefined
+    || value.status === 'confirmed' && value.submittedAt === undefined
+    || DELIVERY_ACTIVE.includes(value.status) && (value.finishedAt !== undefined || value.outcome !== undefined)
+    || DELIVERY_TERMINAL.includes(value.status) && (value.finishedAt === undefined || value.outcome?.status !== value.status)) throw new Error();
+  if (value.outcome) deliveryOutcome(value.outcome, true);
+}
+const hasPendingDelivery = move => move.actions.some(action => action.delivery && DELIVERY_ACTIVE.includes(action.delivery.status));
 function ownerAlive(pid) {
   try { process.kill(pid, 0); return true; } catch (error) { return error.code !== 'ESRCH'; }
 }
@@ -63,7 +90,7 @@ async function syncDirectory(path) {
 function validate(data, key, revision) {
   if (data?.schema === SCHEMA && data.version > VERSION) fail('This automation journal needs a newer Promptboard version.', 'JOURNAL_VERSION_UNSUPPORTED');
   if (!keys(data, ['schema', 'version', 'revision', 'projectId', 'taskId', 'transitionId', 'taskRevision', 'projectRevision', 'from', 'to', 'ownerPid', 'status', 'phase', 'createdAt', 'updatedAt', 'finishedAt', 'actions', 'lifecycle'])
-    || data.schema !== SCHEMA || data.version !== VERSION || data.revision !== revision
+    || data.schema !== SCHEMA || ![1, VERSION].includes(data.version) || data.revision !== revision
     || Object.entries(key).some(([name, value]) => data[name] !== value)
     || !integer(data.taskRevision) || !integer(data.projectRevision) || !Number.isSafeInteger(data.ownerPid) || data.ownerPid < 1
     || !integer(data.createdAt) || !integer(data.updatedAt) || (data.finishedAt !== undefined && !integer(data.finishedAt))
@@ -73,7 +100,7 @@ function validate(data, key, revision) {
     column(data.from); column(data.to);
     const ids = new Set();
     for (const action of data.actions) {
-      if (!keys(action, ['id', 'rowId', 'name', 'type', 'trigger', 'columnId', 'configHash', 'status', 'startedAt', 'finishedAt', 'attempts', 'outcome'])
+      if (!keys(action, ['id', 'rowId', 'name', 'type', 'trigger', 'columnId', 'configHash', 'status', 'startedAt', 'finishedAt', 'attempts', 'outcome', ...(data.version === 2 ? ['delivery'] : [])])
         || !id(action.id) || ids.has(action.id) || !id(action.rowId) || !text(action.name, 80) || !action.name.trim() || !TYPES.includes(action.type)
         || !['exit', 'enter'].includes(action.trigger) || action.columnId !== data[action.trigger === 'exit' ? 'from' : 'to'].id
         || !/^[a-f0-9]{64}$/.test(action.configHash) || !['pending', 'running', ...TERMINAL].includes(action.status)
@@ -86,6 +113,11 @@ function validate(data, key, revision) {
         || (TERMINAL.includes(action.status) && !['skipped', 'interrupted'].includes(action.status) && action.startedAt === undefined)
         || (TERMINAL.includes(action.status) && (action.finishedAt === undefined || action.outcome?.status !== action.status))
         || (['pending', 'running'].includes(action.status) && (action.finishedAt !== undefined || action.outcome !== undefined))) throw new Error();
+      if (action.status === 'scheduled') {
+        if (data.version !== 2 || action.type !== 'send_message' || action.trigger !== 'enter' || !action.delivery || data.lifecycle.status !== 'succeeded') throw new Error();
+        validateDelivery(action.delivery);
+        if (!keys(action.outcome, ['status', 'reason'])) throw new Error();
+      } else if (action.delivery !== undefined) throw new Error();
       if (action.outcome) outcome(action.outcome, TERMINAL);
       ids.add(action.id);
     }
@@ -105,6 +137,7 @@ function validate(data, key, revision) {
     if (data.phase === 'complete' && (data.finishedAt === undefined || !TERMINAL.includes(lifecycle.status) || data.actions.some(action => !TERMINAL.includes(action.status)))) throw new Error();
     if (data.phase !== 'complete' && (!['pending', 'running'].includes(data.status) || data.finishedAt !== undefined)) throw new Error();
     if (data.phase === 'complete' && !['completed', 'failed', 'cancelled', 'interrupted'].includes(data.status)) throw new Error();
+    if (data.phase === 'complete' && hasPendingDelivery(data) && data.status !== 'completed') throw new Error();
     if (data.status === 'completed' && lifecycle.status !== 'succeeded') throw new Error();
     if (data.status === 'failed' && !['failed', 'cancelled'].includes(lifecycle.status)) throw new Error();
   } catch { fail('The automation journal is invalid; it was not changed.', 'JOURNAL_CORRUPT'); }
@@ -216,6 +249,66 @@ export class PipelineJournal {
     });
   }
 
+  async scheduleMessage(key, actionId, scope) {
+    const saved = deliveryScope(scope);
+    return this.#change(key, move => {
+      if (move.version !== 2) fail('This legacy move cannot schedule an asynchronous message. Use a new explicit request.', 'JOURNAL_VERSION_UNSUPPORTED');
+      const action = move.actions.find(row => row.id === actionId);
+      if (!action) fail('This move does not contain that action.', 'JOURNAL_ACTION_NOT_FOUND');
+      if (action.status !== 'running') return { changed: false, value: { accepted: false, delivery: structuredClone(action.delivery ?? null) } };
+      if (action.type !== 'send_message' || action.trigger !== 'enter' || move.phase !== 'enter' || move.lifecycle.status !== 'succeeded') fail('Only a started enter message may hand off to its session scheduler.', 'JOURNAL_ORDER');
+      const now = Date.now();
+      action.status = 'scheduled'; action.finishedAt = now;
+      action.outcome = { status: 'scheduled', reason: 'The session scheduler owns this message; delivery is pending.' };
+      action.delivery = { ...saved, status: 'queued', queuedAt: now };
+      return { changed: true, value: { accepted: true, delivery: structuredClone(action.delivery) } };
+    });
+  }
+
+  #deliveryChange(key, actionId, apply) {
+    return this.#change(key, move => {
+      const action = move.actions.find(row => row.id === actionId);
+      if (!action?.delivery || action.status !== 'scheduled') fail('Schedule this enter message before dispatching it.', 'JOURNAL_DELIVERY_MISSING');
+      return apply(action.delivery, move);
+    });
+  }
+
+  startMessageDelivery(key, actionId) {
+    return this.#deliveryChange(key, actionId, (delivery, move) => {
+      if (delivery.status !== 'queued') return { changed: false, value: { accepted: false, delivery: structuredClone(delivery) } };
+      if (move.lifecycle.status !== 'succeeded' || !['enter', 'complete'].includes(move.phase)) fail('The session lifecycle must finish before message dispatch.', 'JOURNAL_ORDER');
+      delivery.status = 'dispatching'; delivery.dispatchStartedAt = Date.now();
+      return { changed: true, value: { accepted: true, delivery: structuredClone(delivery) } };
+    });
+  }
+
+  markMessageSubmitted(key, actionId) {
+    return this.#deliveryChange(key, actionId, delivery => {
+      if (delivery.status !== 'dispatching') return { changed: false, value: false };
+      delivery.status = 'submitted'; delivery.submittedAt = Date.now();
+      return { changed: true, value: true };
+    });
+  }
+
+  markMessageAccepted(key, actionId) {
+    return this.#deliveryChange(key, actionId, delivery => {
+      if (DELIVERY_TERMINAL.includes(delivery.status) || delivery.status === 'accepted') return { changed: false, value: false };
+      if (delivery.status !== 'submitted') fail('Record submission before native queue acceptance.', 'JOURNAL_ORDER');
+      delivery.status = 'accepted'; delivery.acceptedAt = Date.now();
+      return { changed: true, value: true };
+    });
+  }
+
+  async finishMessageDelivery(key, actionId, result) {
+    const saved = deliveryOutcome(result);
+    return this.#deliveryChange(key, actionId, delivery => {
+      if (DELIVERY_TERMINAL.includes(delivery.status)) return { changed: false, value: false };
+      if (saved.status === 'confirmed' && !['submitted', 'accepted'].includes(delivery.status)) fail('Native confirmation requires a recorded submission.', 'JOURNAL_ORDER');
+      delivery.status = saved.status; delivery.finishedAt = Date.now(); delivery.outcome = saved;
+      return { changed: true, value: true };
+    });
+  }
+
   async skipAction(key, actionId, reason) {
     const saved = outcome({ status: 'skipped', reason });
     return this.#change(key, move => {
@@ -263,6 +356,7 @@ export class PipelineJournal {
 
   cancelMove(key) {
     return this.#change(key, move => {
+      if (hasPendingDelivery(move)) fail('Cancel queued message delivery and record its outcome first.', 'JOURNAL_WORK_ACTIVE');
       if (move.phase === 'complete') return { changed: false, value: false };
       if (move.lifecycle.status === 'running' || move.actions.some(action => action.status === 'running')) fail('Stop owned work and record its outcome before cancelling the remaining move.', 'JOURNAL_WORK_ACTIVE');
       const now = Date.now();
@@ -299,10 +393,14 @@ export class PipelineJournal {
   async recoverInterrupted() {
     const recovered = [];
     for (const snapshot of await this.list()) {
-      if (snapshot.phase === 'complete' || ownerAlive(snapshot.ownerPid)) continue;
+      if (snapshot.phase === 'complete' && !hasPendingDelivery(snapshot) || ownerAlive(snapshot.ownerPid)) continue;
       const changed = await this.#change(snapshot, move => {
-        if (move.phase === 'complete' || ownerAlive(move.ownerPid)) return { changed: false, value: false };
+        if (move.phase === 'complete' && !hasPendingDelivery(move) || ownerAlive(move.ownerPid)) return { changed: false, value: false };
         const result = { status: 'interrupted', reason: 'The application stopped before this move finished. It will not be replayed.' };
+        for (const action of move.actions) if (action.delivery && DELIVERY_ACTIVE.includes(action.delivery.status)) Object.assign(action.delivery, {
+          status: 'interrupted', finishedAt: Date.now(), outcome: { status: 'interrupted', reason: 'The message scheduler stopped before delivery finished. Input will not be replayed.' } });
+        // Placement can already be complete while its enter messages await delivery.
+        if (move.phase === 'complete') return { changed: true, value: true };
         for (const action of move.actions) if (['pending', 'running'].includes(action.status)) Object.assign(action, { status: 'interrupted', finishedAt: Date.now(), outcome: result });
         if (['pending', 'running'].includes(move.lifecycle.status)) Object.assign(move.lifecycle, { status: 'interrupted', finishedAt: Date.now(), outcome: result });
         move.status = 'interrupted'; move.phase = 'complete'; move.finishedAt = Date.now();
