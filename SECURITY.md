@@ -48,6 +48,8 @@ Report problems privately through GitHub: **Security → Report a vulnerability*
 
 ## Limits
 
+**Exact Codex history lookup.** Per-run usage and read-only receipt custody search only bounded canonical session date folders for the observed thread. A complete bounded UTF-8 metadata header must match that exact ID; a provided source must be CLI. Descendant symlinks, malformed, ambiguous, reverted or compressed files cannot supply a substitute history. Lookup paths remain in owned process memory, outside public run updates and portable backups. This evidence does not grant terminal writes or permissions.
+
 - An agent in Executing can run any command its CLI allows in the task worktree, with your user's permissions. Review what it asks to do.
 - Worktrees are created with Git hooks disabled. Commits and merges you confirm run your repository's normal Git hooks, like any commit you make yourself. The agent's own commands and your test commands also run normally.
 - These controls do not protect against other software that already runs as your user.

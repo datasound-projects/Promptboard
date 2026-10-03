@@ -60,7 +60,7 @@ if (prompt.includes('USAGE') && provider === 'codex') {
   const d = new Date();
   const dir = join(process.env.CODEX_HOME, 'sessions', String(d.getFullYear()), String(d.getMonth() + 1).padStart(2, '0'), String(d.getDate()).padStart(2, '0'));
   require('node:fs').mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, 'rollout-2026-01-01T00-00-00-thread-1.jsonl'), [JSON.stringify({ type: 'turn_context', payload: { model: 'gpt-test', effort: 'low' } }),
+  writeFileSync(join(dir, 'rollout-2026-01-01T00-00-00-thread-1.jsonl'), [JSON.stringify({ type: 'session_meta', payload: { id: 'thread-1', source: 'cli' } }), JSON.stringify({ type: 'turn_context', payload: { model: 'gpt-test', effort: 'low' } }),
     JSON.stringify({ type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: { input_tokens: 15000, cached_input_tokens: 7000, output_tokens: 100 }, last_token_usage: { input_tokens: 15000, output_tokens: 100 }, model_context_window: 200000 }, rate_limits: { primary: { used_percent: 40, resets_at: 1791048036 } } } })].join('\n') + '\n');
 }
 const baseEmit = emit;

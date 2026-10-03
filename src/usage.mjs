@@ -7,9 +7,10 @@
  * - Gemini CLI: its hooks give no usage, so none is reported.
  * Only numbers and model IDs are read; message text is never kept.
  */
-import { open, readdir } from 'node:fs/promises';
+import { open } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, isAbsolute, join } from 'node:path';
+import { locateCodexRollout } from './codex-rollout-locator.mjs';
 
 const READ_LIMIT = 16 * 1024 * 1024;
 const SAFE_MODEL = /^[A-Za-z0-9][A-Za-z0-9._:/@+\[\]-]{0,99}$/;
@@ -77,13 +78,5 @@ export function claudeTranscript(path, sessionId) {
 
 /** Find Codex's rollout file for a thread: sessions/YYYY/MM/DD/rollout-<time>-<thread>.jsonl. */
 export async function findCodexRollout(threadId, startedAt, home = process.env.CODEX_HOME || join(homedir(), '.codex')) {
-  if (typeof threadId !== 'string' || !/^[A-Za-z0-9-]{1,100}$/.test(threadId)) return null;
-  const days = new Set([startedAt, Date.now()].map(time => { const d = new Date(time); return join(String(d.getFullYear()), String(d.getMonth() + 1).padStart(2, '0'), String(d.getDate()).padStart(2, '0')); }));
-  for (const day of days) {
-    const dir = join(home, 'sessions', day);
-    const names = await readdir(dir).catch(() => []);
-    const name = names.find(item => item.startsWith('rollout-') && item.endsWith(`-${threadId}.jsonl`));
-    if (name) return join(dir, name);
-  }
-  return null;
+  return locateCodexRollout(threadId, startedAt, home);
 }
