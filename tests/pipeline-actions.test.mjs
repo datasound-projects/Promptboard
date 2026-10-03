@@ -133,12 +133,27 @@ test('notifications preserve literal template text and task identity, with expli
   assert.equal((await new PipelineActions({ notifier: () => ({ confirmed: false }) }).run(row('notify'), context('unconfirmed'))).status, 'unconfirmed');
 });
 
-test('Retry-After HTTP dates are honored and expired dates permit immediate bounded retries', async () => {
+test('Retry-After HTTP dates are honored and expired dates permit immediate bounded retries', async t => {
+  // Exercise the actual retry/deadline timers without a 750 ms wall-clock race
+  // against another fixture on a busy Windows runner.
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: Date.UTC(2026, 0, 1) });
+  const drain = () => new Promise(resolve => setImmediate(resolve));
   for (const future of [false, true]) {
     let calls = 0; const actions = new PipelineActions({ fetcher: async () => { calls++; return new Response(null, { status: 503,
       headers: { 'Retry-After': new Date(Date.now() + (future ? 10000 : -10000)).toUTCString() } }); } });
-    const result = await actions.run(row('webhook', { url: 'https://example.test/' }), context('date-backoff'), { timeoutMs: 750 });
+    t.after(() => actions.shutdown());
+    const pending = actions.run(row('webhook', { url: 'https://example.test/' }), context('date-backoff'), { timeoutMs: 750 });
+    await drain(); assert.equal(calls, 1);
+    if (future) {
+      t.mock.timers.tick(749); await drain(); assert.equal(calls, 1);
+      t.mock.timers.tick(1);
+    } else {
+      t.mock.timers.tick(0); await drain(); assert.equal(calls, 2);
+      t.mock.timers.tick(0); await drain(); assert.equal(calls, 3);
+    }
+    const result = await pending;
     assert.equal(result.status, future ? 'timed_out' : 'failed'); assert.equal(calls, future ? 1 : 3);
+    assert.equal(result.durationMs, future ? 750 : 0);
   }
 });
 
