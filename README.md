@@ -94,6 +94,7 @@ Read [SECURITY.md](SECURITY.md) before working with sensitive repositories. [Kan
 ## More
 
 - [Kanban parity plan](docs/kanban-parity-plan.md): the Kangentic reference, implementation gaps, and acceptance checks.
+- [Automation execution primitives](docs/pipeline-automation-actions.md): prepared script/webhook/notification adapters; board integration remains pending.
 - [Changelog](CHANGELOG.md) · [CLI adapters](docs/cli-adapters.md) · [Verification](RELEASE-VERIFICATION.md)
 - [Contributing](CONTRIBUTING.md): `npm run check` and `npm test`. No frontend framework or build step.
 - `node bin/ste.mjs --help` for command-line usage; `node bin/ste.mjs --doctor` for CLI detection.
