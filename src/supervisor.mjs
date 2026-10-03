@@ -17,6 +17,7 @@ import { addClaudeRecord, addCodexRecord, claudeTranscript, findCodexRollout, ne
 import { prepareBase } from './base-context.mjs';
 import { BaseDeliveryError, checkBaseRevocations } from './base-resolver.mjs';
 import { SessionActivity } from './session-activity.mjs';
+import { NativeMessageReceipts } from './native-message-receipts.mjs';
 
 const RING_BYTES = 1024 * 1024; // Live scrollback kept per run for reconnects.
 const LOG_BYTES = 20 * 1024 * 1024; // Output log file cap per run.
@@ -40,6 +41,7 @@ export async function loadPty(requireFrom = import.meta.url) {
 }
 
 export class Supervisor {
+  #messageTickets = new WeakMap();
   constructor({ board, dataDir, ptyLoader = loadPty, resolver = resolveExecutable, nodePath = process.execPath, basePreparer = prepareBase }) {
     this.board = board;
     this.dataDir = dataDir;
@@ -206,7 +208,7 @@ export class Supervisor {
     trackPid(proc.pid);
     const session = { runId, taskId: run.taskId, stage: run.stage, provider: run.config.provider, proc, seq: 0, ring: [], ringBytes: 0,
       subscribers: new Set(), log, logBytes: 0, eventsFile, eventsOffset: 0, runDir, paste: built.paste, turns: 0, status: 'running', startedAt: Date.now(), sessionId,
-      pipeline: run.config.pipeline === true, resumeNativeId: run.resumeFrom?.nativeSessionId, baseCleanup: baseDelivery.cleanup, baseManifest: supplied };
+      pipeline: run.config.pipeline === true, inputEpoch: 0, resumeNativeId: run.resumeFrom?.nativeSessionId, baseCleanup: baseDelivery.cleanup, baseManifest: supplied };
     if (session.pipeline) session.activity = new SessionActivity(session.provider);
     this.sessions.set(runId, session);
     session.exited = new Promise(resolve => { session.resolveExit = resolve; });
@@ -239,8 +241,9 @@ export class Supervisor {
   #paste(session) {
     if (!session.paste || !session.proc || session.suspending) return;
     clearTimeout(session.pasteTimer);
+    session.inputEpoch++;
     session.proc.write(`\x1b[200~${session.paste}\x1b[201~`);
-    setTimeout(() => { if (!session.suspending && !session.cancelled) session.proc?.write('\r'); }, 300);
+    setTimeout(() => { if (!session.suspending && !session.cancelled && session.proc) { session.inputEpoch++; session.proc.write('\r'); } }, 300);
     session.paste = null;
   }
 
@@ -309,6 +312,7 @@ export class Supervisor {
             continue;
           }
           if (session.activity) {
+            if (event.name === 'SessionStart' && !event.agentId && !event.subordinate) session.inputEpoch++;
             session.activity.observe(event);
             // Subagent hooks share the parent's lifecycle file. A subordinate
             // Stop, failure or permission event must not finish/fail its parent.
@@ -316,6 +320,10 @@ export class Supervisor {
           }
           await this.#locateUsage(session, event);
           await this.#signal(session, interpretEvent(session.provider, event));
+          // Keep hook paths private. The receipt reader still validates the exact
+          // native identity and file format before it grants any checkpoint.
+          if (session.pipeline && (!event.provider || event.provider === session.provider) && !event.activityUncertain && event.sessionId === session.nativeSessionId && typeof event.transcriptPath === 'string'
+            && ['claude', 'gemini'].includes(session.provider)) session.nativeHistoryPath = event.transcriptPath;
         }
         session.eventsPending = size > session.eventsOffset;
       } finally { await handle.close(); }
@@ -377,6 +385,7 @@ export class Supervisor {
         this.#kill(session); return;
       }
       await this.board.updateRun(session.runId, { providerSessionId: signal.sessionId }).catch(() => {});
+      session.nativeSessionId = signal.sessionId;
     }
     if (!session.sawEvent) { session.sawEvent = true; clearTimeout(session.watchdog); await this.board.updateRun(session.runId, { lifecycle: 'events-received', waitingReason: '' }).catch(() => {}); }
     if (signal.kind === 'started') {
@@ -407,6 +416,7 @@ export class Supervisor {
   }
 
   #kill(session) {
+    session.nativeReceiptReader?.close();
     if (!session.proc) return;
     killPidGroup(session.proc.pid, 'SIGTERM');
     clearTimeout(session.killTimer);
@@ -415,6 +425,8 @@ export class Supervisor {
   }
 
   async #exited(session, exitCode, signal) {
+    session.exiting = true;
+    session.nativeReceiptReader?.close();
     clearInterval(session.poll); clearInterval(session.usagePoll); clearTimeout(session.pasteTimer); clearTimeout(session.watchdog);
     // Read the last lifecycle events (for example a final Stop) and usage before the session closes.
     await this.#readEvents(session).catch(() => {});
@@ -460,9 +472,48 @@ export class Supervisor {
     if (typeof data !== 'string' || Buffer.byteLength(data) > INPUT_BYTES) throw new AgentError(`Send at most ${INPUT_BYTES / 1024} KiB of input at a time.`, 'INPUT_TOO_LARGE', 413);
     const session = this.#session(runId);
     if (session.suspending) throw new AgentError('The agent is being paused. Wait for it to exit before resuming.', 'SESSION_SUSPENDING', 409);
-    if (data) session.activity?.input();
+    if (data) { session.inputEpoch++; session.activity?.input(); }
     session.proc.write(data);
     if (session.status === 'waiting_for_input' && /\r|\n/.test(data)) this.#setStatus(session, 'running', { waitingReason: '' });
+  }
+
+  /** Internal read-only receipt custody; these opaque tickets are never HTTP data. */
+  async checkpointMessage(runId) {
+    const session = this.sessions.get(runId);
+    if (!session?.pipeline || !session.proc) return { status: 'unavailable', reason: 'session_unavailable' };
+    try { await this.#readEvents(session); }
+    catch { return { status: 'unavailable', reason: 'events_unavailable' }; }
+    const nativeId = session.nativeSessionId, proc = session.proc;
+    const epoch = () => !this.stopping && this.sessions.get(runId) === session && session.proc === proc && proc
+      && !session.cancelled && !session.suspending && !session.exiting && !session.failure && !session.launchFailed && !session.activity?.ended
+      && !session.activity?.uncertain && !session.eventsPending
+      && session.nativeSessionId === nativeId ? session.inputEpoch : null;
+    if (epoch() === null || !nativeId || session.eventsPending || session.activity?.uncertain) return { status: 'unavailable', reason: 'session_unavailable' };
+    const path = session.nativeHistoryPath || (session.provider === 'codex' ? session.usage?.tail.path : null);
+    if (!path) return { status: 'unavailable', reason: 'history_unavailable' };
+    if (session.nativeReceiptReader?.nativeId !== nativeId) {
+      session.nativeReceiptReader?.close();
+      try { session.nativeReceiptReader = new NativeMessageReceipts({ provider: session.provider, nativeSessionId: nativeId, runId, getInputEpoch: epoch }); }
+      catch { return { status: 'unavailable', reason: 'session_unavailable' }; }
+    }
+    const reader = session.nativeReceiptReader, baseline = await reader.checkpoint(path);
+    if (baseline.status !== 'ready') return baseline;
+    const ticket = Object.freeze({});
+    this.#messageTickets.set(ticket, { reader, nativeTicket: baseline.ticket, session });
+    return { status: 'ready', ticket };
+  }
+
+  async verifyMessage(ticket, transportText) {
+    const saved = ticket && typeof ticket === 'object' ? this.#messageTickets.get(ticket) : null;
+    if (!saved) return { status: 'uncertain', reason: 'checkpoint_invalid' };
+    try { await this.#readEvents(saved.session); }
+    catch { saved.reader.cancel(saved.nativeTicket); return { status: 'uncertain', reason: 'events_unavailable' }; }
+    return saved.reader.verify(saved.nativeTicket, transportText);
+  }
+
+  cancelMessageCheckpoint(ticket) {
+    const saved = ticket && typeof ticket === 'object' ? this.#messageTickets.get(ticket) : null;
+    return Boolean(saved && saved.reader.cancel(saved.nativeTicket));
   }
 
   resize(runId, cols, rows) {

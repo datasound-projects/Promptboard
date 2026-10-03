@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Bind read-only native message checkpoints to Supervisor process ownership, observed native identity, main hook history and terminal-input epochs. Revoke stale evidence on partial drafts, startup, Stop/Pause, exit, failure or uncertainty. Keep private paths out of run updates; terminal scheduling, durable receipt display and enabled rows remain pending.
+
 - Revoke prior native plan approval and ended activity on a main SessionStart. Preserve outstanding work, uncertain observations and finished-tool guards so startup cannot invent readiness or rearm late old approvals; subordinate starts cannot reset the parent.
 
 - Prepare read-only native message receipts with private pre-submission checkpoints, exact new-turn matching, distinct Claude queue acceptance, input/cancellation guards and bounded Claude/Codex/Gemini history formats. Reject changed, malformed or uncertain evidence without retrying input. Keep terminal scheduling, asynchronous receipt persistence and board integration pending.
