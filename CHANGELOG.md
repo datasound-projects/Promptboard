@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Prepare read-only native message receipts with private pre-submission checkpoints, exact new-turn matching, distinct Claude queue acceptance, input/cancellation guards and bounded Claude/Codex/Gemini history formats. Reject changed, malformed or uncertain evidence without retrying input. Keep terminal scheduling, asynchronous receipt persistence and board integration pending.
+
 - Prepare ordered automation groups with durable dispatch grants, configuration/metadata guards, a sixty-second exit budget, independent task cancellation, strict message acknowledgements and retained ownership of scripts whose termination is unconfirmed. Refuse incomplete group replay. Keep runtime/session/editor integration pending and enabled rows unavailable.
 
 - Keep accepted automation/action/message deadlines referenced until completion so pending callbacks receive their bounded outcomes on Node 22 without an external keep-alive handle. Clear owned timers on completion and verify standalone notification timeout in a subprocess.
