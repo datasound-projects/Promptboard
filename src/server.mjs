@@ -174,6 +174,8 @@ async function boardRoute(board, req, res, pathname, searchParams) {
       const { column, index, expectedRevision, transitionId, decision, commitMessage, config, handoffRunId } = await body();
       return view(await board.transition(id, { column, index, expectedRevision, transitionId, decision, commitMessage, config, handoffRunId }));
     }
+    if (method === 'GET' && action === 'automations') return send(res, 200, { moves: await board.automationRuns(id) });
+    if (method === 'POST' && action === 'cancel-automations') return view({ task: await board.cancelAutomationMove(id, await body()) });
     if (method === 'POST' && action === 'merge-now') { await body(); return view(await board.mergeNow(id)); }
     if (method === 'POST' && action === 'start-over') { const { expectedRevision, reason, startExecuting } = await body(); return view(await board.startOver(id, { expectedRevision, reason, startExecuting: startExecuting === true })); }
     if (method === 'POST' && action === 'reopen') return view({ task: await board.reopenTask(id, await body()) });
@@ -528,11 +530,12 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
     usage.close?.();
     server.closeIdleConnections();
     // Agent sessions: stop owned process groups, record runs as interrupted, end streams.
+    const automations = board.shutdownAutomations();
     const agents = board.executor?.shutdown ? board.executor.shutdown(Math.min(3000, graceMs)) : null;
     autopilot.stop();
     board.githubLogin.cancel('The app stopped.');
     board.delivery.stopAllTests();
-    const settle = Promise.allSettled([...tasks, ...lookups.values(), busy?.done, agents].filter(Boolean));
+    const settle = Promise.allSettled([...tasks, ...lookups.values(), busy?.done, automations, agents].filter(Boolean));
     await Promise.race([settle, new Promise(resolve => setTimeout(resolve, graceMs).unref())]);
     killOwnedProcesses('SIGKILL');
     server.closeAllConnections();

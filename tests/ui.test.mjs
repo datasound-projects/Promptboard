@@ -10,6 +10,7 @@ import { fakeGh } from './fixtures/fake-gh.mjs';
 // Git output for assertions (the file's local helpers take other argument shapes).
 const gitIn = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
 import { VERSION } from '../src/version.mjs';
+import { defaultPipelineConfig } from '../src/pipeline-config.mjs';
 
 const catalogs = {
   codex: { source: 'cli', defaultModel: 'codex-one', defaultEffort: 'medium', models: [{ id: 'codex-one', name: 'Codex One', efforts: ['low', 'medium', 'high', 'xhigh'] }, { id: 'codex-two', name: 'Codex Two', efforts: ['low'] }] },
@@ -102,6 +103,29 @@ async function setup(t, { catalogReader = async id => ({ provider: id, ...catalo
   };
   return { win, intervals, $, choose, radio, quality, submit, calls, requests, downloads, blobs, copied: () => copied, authAdapter, app, dataDir, idle };
 }
+
+test('a pipeline revision conflict after an exit webhook never creates an automatic new move or repeats its effect', async t => {
+  const ctx = await setup(t, { executor: null, hash: '#/kanban' }), pipeline = defaultPipelineConfig();
+  const project = await ctx.app.board.createProject({ name: 'No replay' });
+  for (const column of pipeline.columns) column.strategy.autoSpawn = false;
+  pipeline.columns[0].automations.onExit = [{ id: 'exit-fixture', name: 'Recorded effect', type: 'webhook', enabled: true, url: 'https://example.test/never-contacted' }];
+  await ctx.app.board.setPipeline(project.id, { pipeline, expectedRevision: 1, confirm: true });
+  const task = await ctx.app.board.createTask({ projectId: project.id, title: 'Original', prompt: 'Exact Composer body' });
+  let effects = 0;
+  ctx.app.board.automations.actions.fetcher = async () => {
+    effects++;
+    if (effects === 1) await ctx.app.board.updateTask(task.id, { title: 'Edited during exit', expectedRevision: 1 });
+    return new Response(null, { status: 204 });
+  };
+  await ctx.win.__pbTest.loadBoard(); await ctx.idle({ requireComplete: true });
+  const selector = ctx.$(`[data-id="${task.id}"] .kanban-move-to`); assert.ok(selector);
+  selector.value = 'code_review'; selector.dispatchEvent(new ctx.win.Event('change', { bubbles: true }));
+  await until(() => effects === 1 && ctx.$('#announcement').textContent.includes('changed since'), 'visible conflicted move');
+  await ctx.idle({ requireComplete: true });
+  assert.equal(effects, 1); const saved = (await ctx.app.board.state()).projects[0].tasks[0];
+  assert.equal(saved.column, 'todo'); assert.equal(saved.title, 'Edited during exit'); assert.equal(saved.prompt, task.prompt);
+  const history = await ctx.app.board.automationRuns(task.id); assert.equal(history.length, 1); assert.equal(history[0].actions[0].status, 'succeeded'); assert.equal(history[0].lifecycle.status, 'failed');
+});
 
 test('UI sends selected model, effort, and language through HTTP, then restores history and copies output', async t => {
   const { $, choose, radio, quality, submit, calls, requests, copied, win } = await setup(t);

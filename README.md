@@ -94,9 +94,10 @@ Read [SECURITY.md](SECURITY.md) before working with sensitive repositories. [Kan
 ## More
 
 - [Kanban parity plan](docs/kanban-parity-plan.md): the Kangentic reference, implementation gaps, and acceptance checks.
-- [Automation execution primitives](docs/pipeline-automation-actions.md): prepared script/webhook/notification adapters; board integration remains pending.
+- [Column automation runtime](docs/pipeline-runtime-automations.md): ordered scripts/webhooks, durable outcomes, scoped Stop and no-replay recovery; editor and native message delivery remain pending.
+- [Automation execution primitives](docs/pipeline-automation-actions.md): bounded script/webhook/notification adapters.
 - [Durable automation journal](docs/pipeline-automation-journal.md): atomic intent, ordered phases and interruption recovery; scheduler integration remains pending.
-- [Ordered automation groups](docs/pipeline-automation-coordinator.md): durable dispatch, exit budgets and owned cancellation; session and board integration remain pending.
+- [Ordered automation groups](docs/pipeline-automation-coordinator.md): durable dispatch, exit budgets and owned cancellation; native message scheduling remains pending.
 - [Native message receipts](docs/native-message-receipts.md): exact new conversation turns, queue acceptance and cancellation guards; terminal scheduling and durable receipt integration remain pending.
 - [Native receipt ownership](docs/native-message-custody.md): private Supervisor checkpoints bound to live processes, native identities and terminal input; message dispatch remains pending.
 - [Asynchronous message journal](docs/pipeline-message-journal.md): scheduled dispatch and durable delivery stages survive completed placement; runtime scheduling and receipt display remain pending.

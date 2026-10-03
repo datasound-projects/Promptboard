@@ -49,7 +49,8 @@ test('script cancellation kills its child tree and leaves a separate action work
   const b = actions.run(row('run_script', { script: nodeScript(worker) }), context('second-tree', second));
   await until(async () => (await readFile(join(first, 'heartbeat.txt'), 'utf8').catch(() => null)) && (await readFile(join(second, 'heartbeat.txt'), 'utf8').catch(() => null)));
   await assert.rejects(actions.run(row('run_script', { script: 'exit 0' }), context('first-tree', first)), { code: 'ACTION_ACTIVE' });
-  assert.equal(actions.cancel('first-tree'), true); assert.equal((await a).status, 'cancelled');
+  assert.equal(await actions.stop('first-tree'), true); assert.equal((await a).status, 'cancelled');
+  assert.equal(await actions.stop('already-stopped'), true);
   const stopped = await readFile(join(first, 'heartbeat.txt'), 'utf8'), alive = await readFile(join(second, 'heartbeat.txt'), 'utf8');
   await until(async () => (await readFile(join(second, 'heartbeat.txt'), 'utf8')) !== alive);
   await new Promise(resolve => setTimeout(resolve, 150)); assert.equal(await readFile(join(first, 'heartbeat.txt'), 'utf8'), stopped);

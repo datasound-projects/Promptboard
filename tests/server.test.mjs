@@ -4,6 +4,7 @@ import { access, readFile } from 'node:fs/promises';
 import http from 'node:http';
 import { startTestServer } from './helpers/test-server.mjs';
 import { emptyState, STATE_VERSION } from '../src/store.mjs';
+import { defaultPipelineConfig } from '../src/pipeline-config.mjs';
 
 const detector = async () => [{ id: 'codex', name: 'Codex', available: true, version: 'test fixture' }];
 async function open(t, runner = async () => ({ text: 'Add the route. Do the tests.', provider: 'codex', durationMs: 15 })) {
@@ -149,6 +150,35 @@ test('model lookup is token protected, cached, and validates requested effort be
   assert.equal(lookups, 2);
   await fetch(app.url + '/api/models?provider=codex', { headers });
   assert.equal(lookups, 3);
+});
+
+test('automation history and scoped Stop require authentication, expose receipts without executable content, and never replay input', async t => {
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
+  const { token } = await fetch(app.url + '/api/session').then(response => response.json());
+  const headers = { 'content-type': 'application/json', 'x-ste-token': token };
+  const project = await app.board.createProject({ name: 'Offline actions' }), pipeline = defaultPipelineConfig();
+  for (const column of pipeline.columns) column.strategy.autoSpawn = false;
+  pipeline.columns[3].automations.onEnter = [{ id: 'fixture-webhook', name: 'Local fixture', type: 'webhook', enabled: true,
+    url: 'https://example.test/PRIVATE_ENDPOINT', body: 'PRIVATE_BODY', headers: { Authorization: 'PRIVATE_TOKEN' } }];
+  await app.board.setPipeline(project.id, { pipeline, expectedRevision: 1, confirm: true });
+  const task = await app.board.createTask({ projectId: project.id, title: 'Exact title', prompt: 'PRIVATE_COMPOSER_PROMPT' });
+  let calls = 0; app.board.automations.actions.fetcher = async () => { calls++; return new Response(null, { status: 204 }); };
+  const path = `/api/tasks/${task.id}`, nonce = 'same-http-move';
+  for (const action of ['automations', 'cancel-automations']) {
+    const options = action === 'automations' ? {} : { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"confirm":true}' };
+    assert.equal((await fetch(app.url + path + '/' + action, options)).status, 403);
+  }
+  const move = () => fetch(app.url + path + '/move', { method: 'POST', headers, body: JSON.stringify({ column: 'code_review', expectedRevision: 1, transitionId: nonce }) });
+  assert.equal((await move()).status, 200); assert.equal(calls, 1);
+  const history = await fetch(app.url + path + '/automations', { headers }).then(response => response.json());
+  assert.equal(history.moves[0].status, 'completed'); assert.equal(history.moves[0].actions[0].status, 'succeeded');
+  assert.doesNotMatch(JSON.stringify(history), /PRIVATE_|script|nativeHistoryPath/);
+  assert.equal((await move()).status, 200); assert.equal(calls, 1);
+  assert.equal((await fetch(app.url + path + '/cancel-automations', { method: 'POST', headers, body: '{}' })).status, 400);
+  assert.equal((await fetch(app.url + path + '/cancel-automations', { method: 'POST', headers, body: '{"confirm":true}' })).status, 200);
+  assert.equal(calls, 1); assert.equal((await app.board.state()).runs.length, 0);
+  assert.equal((await fetch(app.url + '/api/tasks/missing/automations', { headers })).status, 404);
+  assert.equal((await fetch(app.url + path + '/message', { method: 'POST', headers, body: '{"message":"NEVER_TYPE"}' })).status, 404);
 });
 
 test('background server polling migrates only its disposable test data without a board request', async t => {

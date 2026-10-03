@@ -20,6 +20,9 @@ import { Base, normalizeBinding, listTargets, remapBaseScopes } from './base.mjs
 import { checkBaseRevocations, deliveryFor, profileDefaults, resolveBase } from './base-resolver.mjs';
 import { defaultPipelineConfig, normalizePipelineConfig, resolvePipelineStrategy } from './pipeline-config.mjs';
 import { renderPipelineSpawnPrompt } from './pipeline-templates.mjs';
+import { PipelineJournal } from './pipeline-journal.mjs';
+import { PipelineAutomations } from './pipeline-automations.mjs';
+import { PipelineActions } from './pipeline-actions.mjs';
 
 export const COLUMNS = Object.freeze([
   { id: 'todo', title: 'To Do', agent: false },
@@ -364,7 +367,7 @@ const inside = (parent, child) => { const rel = relative(parent, child); return 
 const slug = value => value.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'task';
 
 export class Board {
-  constructor({ dataDir, executor = null, projectsDir = join(dataDir, 'projects') }) {
+  constructor({ dataDir, executor = null, projectsDir = join(dataDir, 'projects'), automationActions = new PipelineActions() }) {
     this.dataDir = dataDir;
     this.projectsDir = projectsDir; // Where "New project" creates each project's own Git repository.
     this.store = new Store(dataDir);
@@ -375,6 +378,11 @@ export class Board {
     this.locks = new Map();
     this.recoveryPromise = null;
     this.delivery = new Delivery(this);
+    this.automationJournal = new PipelineJournal(dataDir);
+    this.automations = new PipelineAutomations({ journal: this.automationJournal, actions: automationActions });
+    this.automationMoves = new Map();
+    this.deferredPipelineStarts = new Map();
+    this.automationsStopping = false;
   }
 
   /** Serialize work per key (task or repository) inside this process. */
@@ -390,6 +398,23 @@ export class Board {
   async state() {
     this.recoveryPromise ||= (async () => {
       const state = await this.store.read();
+      for (const project of state.projects) for (const task of project.tasks) if (task.automationMove
+        && !['completed', 'failed', 'cancelled', 'interrupted'].includes(task.automationMove.status)) {
+        const key = { projectId: project.id, taskId: task.id, transitionId: task.automationMove.transitionId };
+        try {
+          await this.automationJournal.recoverInterrupted(key);
+          const move = await this.automationJournal.read(key);
+          if (!move) throw new BoardError('The recorded automation journal is missing.', 'AUTOMATION_JOURNAL_MISSING');
+          await this.#publishAutomationMove(key);
+        } catch (error) {
+          await this.store.update(draft => {
+            const current = this.#task(draft, task.id).task;
+            if (current.automationMove?.transitionId === key.transitionId) Object.assign(current.automationMove, {
+              status: 'blocked', errorCode: /^[A-Z][A-Z0-9_]{0,79}$/.test(error.code || '') ? error.code : 'AUTOMATION_RECOVERY_FAILED',
+              reason: 'The move journal is unavailable. No automation was replayed.' });
+          });
+        }
+      }
       if (state.runs.some(run => ACTIVE_RUN_STATUSES.includes(run.status) || run.planRoutes?.some(route => route.status === 'pending')) || state.sessions.some(session => LIVE_SESSION_STATUSES.has(session.status))) {
         await this.store.update(draft => {
           const now = Date.now();
@@ -557,6 +582,7 @@ export class Board {
     return this.store.update(state => {
       const project = this.#project(state, id);
       checkRevision(project, expectedRevision, 'This project');
+      for (const task of project.tasks) this.#requireAutomationsStopped(task);
       if (this.#hasWorkspaceOrRun(state, [project])) throw conflict('Remove the task worktrees in this project first. Promptboard never deletes worktrees with a whole project.', 'WORKSPACES_EXIST');
       state.projects = state.projects.filter(item => item.id !== id);
       state.runs = state.runs.filter(run => run.projectId !== id);
@@ -813,8 +839,8 @@ export class Board {
   /** Explicit conversion/configuration; saving settings never dispatches agents. */
   async setPipeline(id, { pipeline = defaultPipelineConfig(), expectedRevision, confirm = false } = {}) {
     const clean = normalizePipelineConfig(pipeline);
-    // Reject executable definitions until their dispatcher is implemented; never silently ignore them.
-    for (const column of clean.columns) if ([...column.automations.onEnter, ...column.automations.onExit].some(row => row.enabled)) throw new BoardError('Automation execution is not available in this checkpoint.', 'PIPELINE_FEATURE_PENDING', 409);
+    // Messages require the native scheduler; non-message actions use durable move grants.
+    for (const column of clean.columns) if ([...column.automations.onEnter, ...column.automations.onExit].some(row => row.enabled && row.type === 'send_message')) throw new BoardError('Agent messages need the native delivery scheduler, which is not available yet.', 'PIPELINE_FEATURE_PENDING', 409);
     for (const column of clean.columns) for (const options of [{}, ...clean.profiles.map(profile => ({ profileId: profile.id }))]) {
       const strategy = resolvePipelineStrategy(clean, column.id, options);
       if (strategy.sessionTarget !== 'main' || strategy.sessionSpawnStrategy !== 'create_or_resume' || strategy.handoffContext) throw new BoardError('Isolated sessions, forced fresh sessions, and provider handoff are not available in this checkpoint.', 'PIPELINE_FEATURE_PENDING', 409);
@@ -824,6 +850,7 @@ export class Board {
       checkRevision(project, expectedRevision, 'This project');
       if (project.workflowMode !== 'pipeline' && confirm !== true) throw new BoardError('Confirm switching this project from stage rules to a column pipeline.', 'CONFIRMATION_REQUIRED', 409);
       if (project.workflowMode === 'pipeline' && ['todo', 'done'].some(role => project.pipeline.columns.find(column => column.role === role).id !== clean.columns.find(column => column.role === role).id)) throw conflict('Rename the system columns without changing their stable IDs or roles.', 'PIPELINE_SYSTEM_ROLE_CHANGED');
+      if (project.tasks.some(task => this.automationMoves.has(task.id) || task.automationMove && !['completed', 'failed', 'cancelled', 'interrupted'].includes(task.automationMove.status))) throw conflict('Stop the project’s active automations before changing its pipeline configuration.', 'AUTOMATIONS_ACTIVE');
       if (project.tasks.some(task => this.#activeRun(state, task.id))) throw conflict('Pause the project’s agents before changing its pipeline configuration.', 'RUN_ACTIVE');
       if (project.autopilot?.status === 'running') throw conflict('Pause Autopilot before switching workflow mode.', 'AUTOPILOT_ACTIVE');
       const present = new Set(clean.columns.map(column => column.id));
@@ -1311,6 +1338,7 @@ export class Board {
   async completeTask(id, { kind, details, transitionId }) {
     return this.store.update(state => {
       const { project, task } = this.#task(state, id);
+      this.#requireAutomationsStopped(task);
       if (this.#activeRun(state, id)) throw conflict('This card has an active run.', 'RUN_ACTIVE');
       const done = project.workflowMode === 'pipeline' ? project.pipeline.columns.find(column => column.role === 'done').id : 'done';
       task.completion = { kind, at: Date.now(), summary: task.stageResults?.executing?.summary || '', executionRunId: task.stageResults?.executing?.runId || null, ...details };
@@ -1476,10 +1504,12 @@ export class Board {
   }
   #placeStored(id, move) { return this.store.update(state => this.#place(state, id, move)); }
 
-  deleteTask(id, { expectedRevision, keepFiles = false }) {
+  async deleteTask(id, { expectedRevision, keepFiles = false }) {
+    this.#requireAutomationsStopped(this.#task(await this.state(), id).task);
     // Share the run-start lock so deletion cannot race with a queued agent launch.
     return this.#locked(`run:${id}`, async () => {
       const { task } = this.#task(await this.state(), id);
+      this.#requireAutomationsStopped(task);
       checkRevision(task, expectedRevision, 'This card');
       let revision = expectedRevision;
       if (task.workspace && !keepFiles) revision = (await this.removeTaskWorktree(id)).revision;
@@ -1729,6 +1759,7 @@ export class Board {
   removeTaskWorktree(taskId) {
     return this.#locked(`task:${taskId}`, async () => {
       const { task } = this.#task(await this.state(), taskId);
+      this.#requireAutomationsStopped(task);
       const workspace = task.workspace;
       if (!workspace) return null;
       if (this.#activeRun(await this.state(), taskId)) throw conflict('This card has an active run.', 'RUN_ACTIVE');
@@ -1764,6 +1795,7 @@ export class Board {
   async pauseRun(runId, { confirm = false } = {}) {
     const run = await this.run(runId);
     if (confirm !== true) throw new BoardError('Confirm that you want to pause this agent session.', 'CONFIRMATION_REQUIRED');
+    this.abortAutomationTask(run.taskId);
     const cancelledHandoff = this.executor?.abortBoundary?.(runId);
     return this.#locked(`run:${run.taskId}`, async () => {
       if (!this.executor?.suspend) throw new BoardError('Session suspension is not available.', 'EXECUTION_UNAVAILABLE', 503);
@@ -1929,7 +1961,213 @@ export class Board {
   }
 
   /** Main-session pipeline moves. Names carry no review, commit, test, or merge action. */
-  async #pipelineTransition(taskId, { column, index, expectedRevision, transitionId, decision, trigger, continuation = '', requiredRunId = null, requiredApproval = null, expectedProjectRevision = null, signal = null }) {
+  async #pipelineTransition(taskId, request) {
+    const state = await this.state(), { project, task } = this.#task(state, taskId);
+    const transitionId = request.transitionId || randomUUID(), key = { projectId: project.id, taskId, transitionId };
+    if (request.transitionId) {
+      const previous = await this.automationJournal.read(key);
+      if (previous) return { task, duplicate: true, automationMove: previous };
+    }
+    if (task.column === request.column) return this.#pipelineLifecycleTransition(taskId, request);
+    checkRevision(task, request.expectedRevision, 'This card');
+    const from = project.pipeline.columns.find(column => column.id === task.column), to = project.pipeline.columns.find(column => column.id === request.column);
+    if (!to) throw new BoardError('Choose a valid column.', 'INVALID_COLUMN');
+    const onExit = from.automations.onExit, onEnter = to.automations.onEnter;
+    if (task.automationMove && !['completed', 'failed', 'cancelled', 'interrupted'].includes(task.automationMove.status)) throw conflict('Stop or resolve this card’s existing automation move first.', 'AUTOMATION_MOVE_ACTIVE');
+    if (!onExit.length && !onEnter.length) return this.#pipelineLifecycleTransition(taskId, request);
+    if (this.automationsStopping) throw conflict('The application is shutting down. No column automation was started.', 'AUTOMATIONS_SHUTTING_DOWN');
+    if (request.signal?.aborted) throw conflict('The automatic plan move was cancelled.', 'PLAN_ROUTE_CANCELLED');
+    if (request.expectedProjectRevision != null && project.revision !== request.expectedProjectRevision) throw conflict('The board changed after native plan approval.', 'REVISION_CONFLICT');
+    if (project.pipelineImport) throw conflict('Review and save the imported board configuration before running its automations.', 'PIPELINE_IMPORT_PENDING');
+    if ([...onExit, ...onEnter].some(row => row.enabled && row.type === 'send_message')) throw conflict('Agent messages need the native delivery scheduler.', 'PIPELINE_FEATURE_PENDING');
+    const active = this.#activeRun(state, taskId), controller = new AbortController();
+    if (request.requiredRunId && active?.id !== request.requiredRunId) throw conflict('The approved conversation was stopped or replaced. The automatic move was cancelled.', 'PLAN_ROUTE_CANCELLED');
+    if (request.requiredApproval && JSON.stringify(active?.activity?.planApproval) !== JSON.stringify(request.requiredApproval)) throw conflict('Native plan approval changed before the move.', 'PLAN_APPROVAL_STALE');
+    const signal = AbortSignal.any([controller.signal, ...(request.signal ? [request.signal] : [])]);
+    const { promise: done, resolve: settled } = Promise.withResolvers();
+    const job = { key, controller, activeRunId: active?.id, queuedHold: null, blocked: false, deferNativeStart: true, done };
+    if (active?.status === 'queued' && this.executor?.holdQueued) job.queuedHold = this.executor.holdQueued(active.id);
+    this.automationMoves.set(taskId, job);
+    let moveCreated = false, groupEntered = false, lifecycleGranted = false, lifecycleFinished = false;
+    try {
+      signal.throwIfAborted();
+      const created = await this.automationJournal.beginMove({ ...key, taskRevision: task.revision, projectRevision: project.revision,
+        from: { id: from.id, name: from.name }, to: { id: to.id, name: to.name }, onExit, onEnter });
+      if (!created.created) return { task: await this.#taskNow(taskId), duplicate: true, automationMove: created.move };
+      moveCreated = true;
+      await this.store.update(draft => {
+        const current = this.#task(draft, taskId); checkRevision(current.task, request.expectedRevision, 'This card');
+        if (current.project.revision !== project.revision) throw conflict('The board changed before automation acceptance.', 'REVISION_CONFLICT');
+        current.task.automationMoves = [...(current.task.automationMoves || []), key].slice(-100);
+        current.task.automationMove = { ...key, status: 'pending', phase: 'exit' };
+      });
+      const context = await this.#automationContext(taskId, onExit, { task, project }, request);
+      groupEntered = true;
+      const exits = await this.automations.runGroup({ key, trigger: 'exit', rows: onExit, context, signal,
+        onProgress: () => this.#publishAutomationMove(key) });
+      if (!exits.safeToAdvance) {
+        job.blocked = !exits.cancelled || this.#automationWorkOwned(key);
+        if (!job.blocked) await this.automationJournal.cancelMove(key);
+        await this.#publishAutomationMove(key, job.blocked ? 'blocked' : null);
+        throw conflict(job.blocked ? 'Automation cleanup is unconfirmed. Stop its owned work before moving this card.' : 'This automation move was cancelled.', job.blocked ? 'AUTOMATION_CLEANUP_UNCONFIRMED' : 'AUTOMATION_MOVE_CANCELLED');
+      }
+      signal.throwIfAborted();
+      await this.automationJournal.advance(key);
+      lifecycleGranted = await this.automationJournal.startLifecycle(key);
+      if (!lifecycleGranted) throw conflict('The session lifecycle already has an owner. It cannot be replayed.', 'AUTOMATION_LIFECYCLE_OWNED');
+      await this.#publishAutomationMove(key);
+      const fresh = await this.state(), current = this.#task(fresh, taskId);
+      checkRevision(current.task, request.expectedRevision, 'This card');
+      if (current.project.revision !== project.revision) throw conflict('The board changed during exit automations.', 'REVISION_CONFLICT');
+      const result = await this.#pipelineLifecycleTransition(taskId, { ...request, transitionId, signal });
+      if (!(await this.automationJournal.finishLifecycle(key, { status: 'succeeded' }))) throw conflict('The lifecycle save was not acknowledged. No enter automation may run.', 'AUTOMATION_LIFECYCLE_UNSAVED');
+      lifecycleFinished = true;
+      await this.#publishAutomationMove(key);
+      const entered = this.#task(await this.state(), taskId);
+      const enterContext = await this.#automationContext(taskId, onEnter, entered);
+      const enters = await this.automations.runGroup({ key, trigger: 'enter', rows: onEnter, context: enterContext, signal,
+        canMessage: false, suppressMessages: from.role === 'done', onProgress: () => this.#publishAutomationMove(key) });
+      if (!enters.safeToAdvance) {
+        job.blocked = !enters.cancelled || this.#automationWorkOwned(key);
+        if (!job.blocked) await this.automationJournal.cancelMove(key);
+        await this.#publishAutomationMove(key, job.blocked ? 'blocked' : null);
+        throw conflict(job.blocked ? 'Automation cleanup is unconfirmed. Stop its owned work before moving this card.' : 'The remaining enter automations were cancelled.', job.blocked ? 'AUTOMATION_CLEANUP_UNCONFIRMED' : 'AUTOMATION_MOVE_CANCELLED');
+      }
+      signal.throwIfAborted();
+      await this.#automationContext(taskId, [], entered);
+      await this.automationJournal.advance(key);
+      await this.#publishAutomationMove(key);
+      const pending = [...this.deferredPipelineStarts.entries()].filter(([, payload]) => payload.run.taskId === taskId);
+      for (const [runId, payload] of pending) {
+        signal.throwIfAborted();
+        if ((await this.run(runId)).status === 'queued') await this.executor.start(payload);
+        this.deferredPipelineStarts.delete(runId);
+      }
+      return { ...result, task: await this.#taskNow(taskId), automationMove: await this.automationJournal.read(key) };
+    } catch (error) {
+      if (!job.blocked) {
+        try {
+          if (lifecycleGranted && !lifecycleFinished) await this.automationJournal.finishLifecycle(key, { status: signal.aborted ? 'cancelled' : 'failed', reason: 'The session lifecycle stopped before its outcome was confirmed.' });
+          else if (moveCreated) await this.automationJournal.cancelMove(key);
+          await this.#publishAutomationMove(key);
+        } catch { job.blocked = groupEntered || lifecycleGranted; await this.#publishAutomationMove(key, 'blocked').catch(() => {}); }
+        for (const [runId, payload] of this.deferredPipelineStarts) if (payload.run.taskId === taskId) {
+          await Promise.resolve(this.executor?.cancel?.(runId, { withinAutomationMove: transitionId })).catch(() => {});
+          this.deferredPipelineStarts.delete(runId);
+        }
+      }
+      throw error;
+    } finally {
+      if (!job.blocked) {
+        if (job.queuedHold) this.executor?.releaseQueued?.(job.activeRunId, job.queuedHold);
+        if (this.automationMoves.get(taskId) === job) this.automationMoves.delete(taskId);
+      }
+      settled();
+    }
+  }
+
+  async #automationContext(taskId, rows, snapshot, request = {}) {
+    const { project, task } = structuredClone(snapshot);
+    const checkCurrent = async () => {
+      const state = await this.state(), current = this.#task(state, taskId);
+      checkRevision(current.task, task.revision, 'This card');
+      if (current.project.revision !== project.revision) throw conflict('The board changed before its automation group.', 'REVISION_CONFLICT');
+      const active = this.#activeRun(state, taskId);
+      if (request.requiredRunId && active?.id !== request.requiredRunId) throw conflict('The approved conversation was stopped or replaced before its exit actions.', 'PLAN_ROUTE_CANCELLED');
+      if (request.requiredApproval && JSON.stringify(active?.activity?.planApproval) !== JSON.stringify(request.requiredApproval)) throw conflict('Native plan approval changed before its exit actions.', 'PLAN_APPROVAL_STALE');
+    };
+    await checkCurrent();
+    if (!rows.some(row => row.enabled && row.type === 'run_script')) return { task, project, cwd: null };
+    const repository = await this.#checkedRepository(project);
+    let cwd = repository.root;
+    if (task.workspace) {
+      const ws = task.workspace, registered = await this.#registered(repository.root, ws.path);
+      if (ws.status !== 'ready' || ws.repositoryRoot !== repository.root || ws.commonDir !== repository.commonDir || !registered || registered.branch !== ws.branch || !(await stat(ws.path).catch(() => null))?.isDirectory()) throw conflict('The automation worktree is missing or is on another branch. Restore its recorded workspace before running scripts.', 'AUTOMATION_WORKSPACE_UNAVAILABLE');
+      cwd = ws.path;
+    }
+    await checkCurrent();
+    return { task, project, cwd };
+  }
+
+  #automationWorkOwned(key) {
+    const group = this.automations.jobs.get(JSON.stringify([key.projectId, key.taskId]));
+    return Boolean(group && [...group.started].some(id => this.automations.actions.jobs.has(id)));
+  }
+
+  #requireAutomationsStopped(task) {
+    if (this.automationMoves.has(task.id) || task.automationMove && !['completed', 'failed', 'cancelled', 'interrupted'].includes(task.automationMove.status)) throw conflict('Stop or resolve this card’s column automations before removing its task, project or workspace, or recording a separate completion.', 'AUTOMATIONS_ACTIVE');
+  }
+
+  async #publishAutomationMove(key, status = null) {
+    const move = await this.automationJournal.read(key);
+    if (!move) return;
+    await this.store.update(state => {
+      const task = this.#task(state, key.taskId).task;
+      if (task.automationMove?.transitionId !== key.transitionId) return;
+      task.automationMove = { ...key, status: status || move.status, phase: move.phase, updatedAt: move.updatedAt };
+    });
+  }
+
+  /** Revoke ongoing column work before waiting for task/run locks. */
+  abortAutomationTask(taskId, { exceptTransitionId = null } = {}) {
+    const job = this.automationMoves.get(taskId);
+    if (!job || job.key.transitionId === exceptTransitionId) return false;
+    job.controller.abort('automation stopped'); this.automations.cancel(job.key);
+    return true;
+  }
+
+  async automationRuns(taskId) {
+    const task = this.#task(await this.state(), taskId).task;
+    const moves = [];
+    for (const key of task.automationMoves || []) {
+      const move = await this.automationJournal.read(key);
+      if (!move) throw conflict('This automation history is unavailable. It cannot be replayed.', 'AUTOMATION_JOURNAL_MISSING');
+      moves.push(move);
+    }
+    return moves;
+  }
+
+  async cancelAutomationMove(taskId, { confirm = false } = {}) {
+    if (confirm !== true) throw new BoardError('Confirm stopping this card’s automations.', 'CONFIRMATION_REQUIRED');
+    this.abortAutomationTask(taskId);
+    return this.#locked(`run:${taskId}`, async () => {
+      const task = this.#task(await this.state(), taskId).task, job = this.automationMoves.get(taskId);
+      const key = job?.key || (task.automationMove && { projectId: task.automationMove.projectId, taskId, transitionId: task.automationMove.transitionId });
+      if (!key) return task;
+      const group = this.automations.jobs.get(JSON.stringify([key.projectId, taskId]));
+      if (group) this.automations.cancel(key);
+      for (const id of group?.started || []) await this.automations.actions.stop?.(id);
+      if (group && [...group.started].some(id => this.automations.actions.jobs.has(id))) throw conflict('An owned script has not confirmed termination. Stop again after cleanup; no move will be replayed.', 'AUTOMATION_CLEANUP_UNCONFIRMED');
+      const move = await this.automationJournal.read(key);
+      if (!move) throw conflict('This automation journal is missing. No owned work or move can be inferred from it.', 'AUTOMATION_JOURNAL_MISSING');
+      if (move?.ownerPid !== process.pid) {
+        await this.automationJournal.recoverInterrupted(key);
+        const recovered = await this.automationJournal.read(key);
+        if (recovered?.phase !== 'complete') throw conflict('This move belongs to another live application process.', 'AUTOMATION_OWNER_ACTIVE');
+      } else if (move && move.phase !== 'complete') {
+        for (const action of move.actions.filter(row => row.status === 'running')) await this.automationJournal.finishAction(key, action.id, { status: 'unconfirmed', reason: 'Owned work stopped without a confirmed result. It will not be replayed.' });
+        if (move.lifecycle.status === 'running') await this.automationJournal.finishLifecycle(key, { status: 'cancelled', reason: 'The lifecycle stopped without a confirmed result. It will not be replayed.' });
+        else await this.automationJournal.cancelMove(key);
+      }
+      for (const [runId, payload] of this.deferredPipelineStarts) if (payload.run.taskId === taskId) {
+        await this.executor?.cancel?.(runId, { withinAutomationMove: key.transitionId }); this.deferredPipelineStarts.delete(runId);
+      }
+      await this.#publishAutomationMove(key);
+      if (job?.queuedHold) this.executor?.releaseQueued?.(job.activeRunId, job.queuedHold);
+      if (job) this.automationMoves.delete(taskId);
+      return this.#taskNow(taskId);
+    });
+  }
+
+  async shutdownAutomations() {
+    this.automationsStopping = true;
+    const jobs = [...this.automationMoves.values()];
+    for (const job of jobs) job.controller.abort('shutdown');
+    await this.automations.shutdown();
+    await Promise.allSettled(jobs.map(job => job.done));
+  }
+
+  async #pipelineLifecycleTransition(taskId, { column, index, expectedRevision, transitionId, decision, trigger, continuation = '', requiredRunId = null, requiredApproval = null, expectedProjectRevision = null, signal = null }) {
     const state = await this.state(), { project, task } = this.#task(state, taskId);
     if (signal?.aborted) throw conflict('The automatic plan move was cancelled.', 'PLAN_ROUTE_CANCELLED');
     if (transitionId && task.lastTransition?.id === transitionId) return { task, duplicate: true };
@@ -1945,8 +2183,9 @@ export class Board {
     if (target.role !== 'active') {
       if (active) {
         if (!this.executor) throw new BoardError('The owned agent cannot be stopped.', 'EXECUTION_UNAVAILABLE', 503);
-        if (target.role === 'done') await this.executor.suspend(active.id);
-        else await this.executor.cancel(active.id);
+        const withinAutomationMove = this.automationMoves.get(taskId)?.key.transitionId;
+        if (target.role === 'done') await this.executor.suspend(active.id, { withinAutomationMove });
+        else await this.executor.cancel(active.id, { withinAutomationMove });
       }
       const saved = await this.store.update(draft => {
         const current = this.#task(draft, taskId);
@@ -1964,7 +2203,7 @@ export class Board {
     if (active) {
       if (!strategy.autoSpawn && decision !== 'start') {
         if (!this.executor?.suspend) throw new BoardError('The owned agent cannot be paused.', 'EXECUTION_UNAVAILABLE', 503);
-        await this.executor.suspend(active.id);
+        await this.executor.suspend(active.id, { withinAutomationMove: this.automationMoves.get(taskId)?.key.transitionId });
         const parked = await this.store.update(draft => {
           const current = this.#task(draft, taskId);
           checkRevision(current.task, expectedRevision, 'This card');
@@ -2003,7 +2242,7 @@ export class Board {
       return { task: saved, continuedRunId: active.id };
     }
     if (decision !== 'move' && (strategy.autoSpawn || decision === 'start')) {
-      const run = await this.#pipelineStart(taskId, { column, move, trigger, expectedRevision });
+      const run = await this.#pipelineStart(taskId, { column, move, trigger, expectedRevision, handoffSignal: signal });
       return { task: await this.#taskNow(taskId), run };
     }
     const saved = await this.store.update(draft => {
@@ -2097,7 +2336,7 @@ export class Board {
       });
       return { run, payload: { task: { id: task.id, title: task.title, prompt: task.prompt },
         firstPrompt: renderPipelineSpawnPrompt({ task, project }) } };
-    });
+    }, { hold: this.automationMoves.get(taskId)?.queuedHold });
   }
 
   async #pipelineStart(taskId, { column, move = null, trigger = 'user', expectedRevision, requireResume = false, continuation = '', acceptance = null, handoffSignal = null } = {}) {
@@ -2144,7 +2383,7 @@ export class Board {
     const run = await this.store.update(draft => {
       checkHandoff();
       const current = this.#task(draft, taskId), session = saved && draft.sessions.find(item => item.id === saved.id);
-      if (handoffSignal) checkRevision(current.task, expectedRevision, 'This card');
+      if (handoffSignal && acceptance) checkRevision(current.task, expectedRevision, 'This card');
       if (this.#activeRun(draft, taskId) || current.project.revision !== project.revision || current.task.contentRevision !== task.contentRevision || current.task.column !== task.column
         || current.task.workspace?.path !== workspace.path
         || draft.base.revision !== state.base.revision || JSON.stringify(draft.settings.defaultAgent) !== JSON.stringify(state.settings.defaultAgent)
@@ -2170,7 +2409,9 @@ export class Board {
       else await this.executor.suspend(run.id);
       return this.run(run.id);
     }
-    await this.executor.start({ run, task: { id: task.id, title: task.title, prompt: task.prompt }, workspace, firstPrompt, continuation });
+    const payload = { run, task: { id: task.id, title: task.title, prompt: task.prompt }, workspace, firstPrompt, continuation };
+    if (this.automationMoves.get(taskId)?.deferNativeStart) this.deferredPipelineStarts.set(run.id, payload);
+    else await this.executor.start(payload);
     return run;
   }
 

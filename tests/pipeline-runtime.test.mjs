@@ -274,6 +274,55 @@ test('queued pipeline retargeting uses the latest provider/model/Base and keeps 
   await w.move(cards[3].id, 'todo'); assert.equal(await readFile(join(w.root, 'README.md'), 'utf8'), 'main checkout\n');
 });
 
+test('column scripts hold an actual queued agent through retargeting and run before native startup without losing FIFO', { skip: process.platform === 'win32' }, async t => {
+  const w = await world(t, true), pipeline = defaultPipelineConfig(), worker = join(w.dataDir, 'enter-gate.mjs');
+  const ready = join(w.dataDir, 'enter-ready'), release = join(w.dataDir, 'enter-release');
+  await writeFile(worker, `import {writeFileSync,existsSync} from 'node:fs'; writeFileSync(${JSON.stringify(ready)},process.cwd()); setInterval(()=>{if(existsSync(${JSON.stringify(release)}))process.exit(0)},20);`);
+  const shellQuote = text => `'${text.replaceAll("'", "'\\''")}'`;
+  const review = pipeline.columns.find(column => column.id === 'code_review'); review.strategy.agentOverride = 'gemini';
+  review.automations.onEnter = [{ id: 'enter-gate', name: 'Before agent', type: 'run_script', enabled: true, script: `${shellQuote(process.execPath)} ${shellQuote(worker)}` }];
+  await w.configure(pipeline); t.after(() => w.board.shutdownAutomations());
+  const cards = [], runs = [];
+  for (const title of ['Blocker', 'Retarget with actions', 'Later']) {
+    const card = await w.board.createTask({ projectId: w.projectId, title, prompt: title }); cards.push(card); runs.push((await w.move(card.id, 'executing')).run);
+    if (runs.length === 1) await until(async () => (await w.board.run(runs[0].id)).turnComplete);
+  }
+  const moving = w.move(cards[1].id, 'code_review'); await until(() => readFile(ready, 'utf8').catch(() => null));
+  assert.equal(await readFile(ready, 'utf8'), runs[1].workspacePath); assert.equal((await w.board.run(runs[1].id)).config.provider, 'gemini');
+  await w.move(cards[0].id, 'todo'); await new Promise(resolve => setTimeout(resolve, 200));
+  assert.equal(w.board.executor.activeCount(), 0); assert.deepEqual(w.board.executor.queue.map(item => item.runId), runs.slice(1).map(run => run.id));
+  assert.equal(w.board.executor.sessions.has(runs[1].id), false); await writeFile(release, 'release'); const result = await moving;
+  assert.equal(result.retargetedRunId, runs[1].id); assert.equal(result.automationMove.status, 'completed');
+  await until(async () => (await w.board.run(runs[1].id)).turnComplete);
+  assert.equal(w.board.executor.sessions.get(runs[1].id).provider, 'gemini'); assert.deepEqual(w.board.executor.queue.map(item => item.runId), [runs[2].id]);
+  await w.move(cards[1].id, 'todo'); await until(async () => (await w.board.run(runs[2].id)).turnComplete); await w.move(cards[2].id, 'todo');
+  assert.equal(w.board.executor.queuedHolds.size, 0); assert.equal(w.board.automationMoves.size, 0);
+});
+
+test('opaque automation holds retain a queued FIFO slot through retargeting and cancellation', { skip: process.platform === 'win32' }, async t => {
+  const w = await world(t, true); await w.configure(defaultPipelineConfig());
+  const cards = [], runs = [];
+  for (const title of ['Blocker', 'Held', 'Later']) {
+    const card = await w.board.createTask({ projectId: w.projectId, title, prompt: title }); cards.push(card);
+    runs.push((await w.move(card.id, 'executing')).run);
+    if (runs.length === 1) await until(async () => (await w.board.run(runs[0].id)).turnComplete);
+  }
+  const supervisor = w.board.executor, held = supervisor.holdQueued(runs[1].id);
+  assert.equal(supervisor.releaseQueued(runs[1].id, {}), false);
+  await assert.rejects(supervisor.retargetQueued(runs[1].id, async () => assert.fail('Forged hold accepted.'), { hold: {} }), { code: 'RUN_BUSY' });
+  await supervisor.retargetQueued(runs[1].id, async () => ({ run: runs[1], payload: { ...supervisor.queue[0] } }), { hold: held });
+  await w.move(cards[0].id, 'todo');
+  await new Promise(resolve => setTimeout(resolve, 200));
+  assert.equal(supervisor.activeCount(), 0); assert.deepEqual(supervisor.queue.map(item => item.runId), runs.slice(1).map(run => run.id));
+  assert.equal(supervisor.releaseQueued(runs[1].id, held), true);
+  assert.equal(supervisor.releaseQueued(runs[1].id, held), false);
+  await until(async () => (await w.board.run(runs[1].id)).turnComplete);
+  const cancelledHold = supervisor.holdQueued(runs[2].id); await supervisor.cancel(runs[2].id);
+  assert.equal(supervisor.releaseQueued(runs[2].id, cancelledHold), true);
+  await w.move(cards[1].id, 'todo'); await new Promise(resolve => setTimeout(resolve, 200));
+  assert.equal(supervisor.queue.length, 0); assert.equal(supervisor.sessions.has(runs[2].id), false); assert.equal(supervisor.queuedHolds.size, 0);
+});
+
 test('a cancelled held queue entry is never resurrected by retargeting', { skip: process.platform === 'win32' }, async t => {
   const w = await world(t, true), config = defaultPipelineConfig();
   config.columns.find(column => column.id === 'testing').strategy.agentOverride = 'gemini'; await w.configure(config);
