@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -150,7 +152,6 @@ test('a webhook that never answers respects the total timeout and explicit cance
 });
 
 test('notification cancellation and timeout do not invent confirmation; rendered text and webhook fields stay bounded', async t => {
-  const keepAlive = setInterval(() => {}, 1000); t.after(() => clearInterval(keepAlive));
   let calls = 0; const actions = new PipelineActions({ notifier: () => { calls++; return new Promise(() => {}); } }); t.after(() => actions.shutdown());
   const pending = actions.run(row('notify'), context('hung-notification')); await until(() => calls === 1);
   actions.cancel('hung-notification'); assert.equal((await pending).status, 'cancelled');
@@ -160,4 +161,13 @@ test('notification cancellation and timeout do not invent confirmation; rendered
   assert.equal((await bounded.run(row('notify', { body: '{{description}}' }), ctx)).status, 'succeeded'); assert.equal(message.title.length, 500); assert.equal(message.body.length, 4000);
   assert.equal((await bounded.run(row('webhook', { url: 'https://example.test/?title={{title}}' }), ctx)).errorCode, 'WEBHOOK_URL_INVALID');
   assert.equal((await bounded.run(row('webhook', { url: 'https://example.test/', headers: { 'X-Title': '{{title}}' } }), ctx)).errorCode, 'WEBHOOK_HEADERS_INVALID');
+});
+
+test('a standalone process retains a pending notification until its bounded timeout without a keep-alive shim', async () => {
+  const source = `import {PipelineActions} from ${JSON.stringify(new URL('../src/pipeline-actions.mjs', import.meta.url).href)};
+    const actions = new PipelineActions({notifier:()=>new Promise(()=>{})});
+    const result = await actions.run(${JSON.stringify(row('notify'))}, ${JSON.stringify(context('standalone-notify'))}, {timeoutMs:80});
+    await actions.shutdown(); process.stdout.write(JSON.stringify(result));`;
+  const { stdout } = await promisify(execFile)(process.execPath, ['--input-type=module', '--eval', source], { timeout: 10000, maxBuffer: 4096 });
+  assert.equal(JSON.parse(stdout).status, 'timed_out');
 });

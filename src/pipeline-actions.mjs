@@ -56,8 +56,11 @@ export class PipelineActions {
     const variables = pipelineTemplateVariables(context);
     const budget = row.type === 'run_script' ? row.timeoutMinutes * 60000 : row.type === 'webhook' ? 30000 : 5000;
     if (timeoutMs !== null && (!Number.isFinite(timeoutMs) || timeoutMs < 1)) fail('Use a positive remaining automation budget.', 'ACTION_CONTEXT_INVALID');
-    const controller = new AbortController(), deadline = AbortSignal.timeout(Math.ceil(Math.min(timeoutMs ?? budget, budget)));
-    const combined = AbortSignal.any([controller.signal, deadline, ...(signal ? [signal] : [])]);
+    const controller = new AbortController(), deadline = new AbortController();
+    const combined = AbortSignal.any([controller.signal, deadline.signal, ...(signal ? [signal] : [])]);
+    // Keep an accepted callback alive until its bounded outcome can be saved.
+    // AbortSignal.timeout alone does not keep Node 22's event loop running.
+    const deadlineTimer = setTimeout(() => deadline.abort(new DOMException('Automation budget expired.', 'TimeoutError')), Math.ceil(Math.min(timeoutMs ?? budget, budget)));
     const startedAt = Date.now();
     const job = { controller, promise: null }; this.jobs.set(context.actionId, job);
     job.promise = Promise.resolve().then(async () => {
@@ -75,6 +78,7 @@ export class PipelineActions {
       return { status: 'failed', errorCode: error instanceof PipelineActionError ? error.code : 'ACTION_FAILED',
         reason: error instanceof PipelineActionError ? error.message : 'The automation could not finish. Check its configuration and retry explicitly.' };
     }).then(result => ({ ...result, durationMs: Date.now() - startedAt })).finally(() => {
+      clearTimeout(deadlineTimer);
       job.finished = true;
       // Keep ownership of a process whose termination was not confirmed. It
       // can still be stopped explicitly or retried during shutdown.
