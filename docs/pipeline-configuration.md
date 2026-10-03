@@ -2,6 +2,8 @@
 
 `src/pipeline-config.mjs` defines and validates the configuration that the new column lifecycle will consume. This checkpoint is a pure library: it does not change project state, replace the current Column Manager, start agents, or execute automations. Runtime integration and repository-file reconciliation are subsequent changes. The current stage workflow remains described in [the existing contract](agentic-kanban-contract.md).
 
+The [prompt and template foundation](pipeline-prompts.md) defines the separate first-spawn and automation input boundaries.
+
 The schema has `version: 1`, a `columns` array, and a `profiles` array. Every column has a stable `id`, a unique display `name`, a `role` (`todo`, `active`, or `done`), a palette `color`, an optional `description`, a sparse `strategy`, and `automations.onEnter`/`onExit` arrays. Display names carry no permissions or hidden prompts. Exactly one To Do role stays first, and one Done role stays last, preserving a destination for Composer and archive behavior. Active columns can be added, removed, renamed, and reordered independently of the former stage names. Occupied-column checks belong to runtime reconciliation.
 
 The default factory returns seven independent, silent columns. Planning sets `permissionMode: "plan"` and `planExitTargetId: "executing"`; the other active columns inherit the configured agent's permissions. The library does not insert review, test, or shipping messages. A plan target must refer to another active column by stable ID.

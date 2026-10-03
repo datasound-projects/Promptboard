@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add pure pipeline prompt/template rendering: task envelopes preserve Composer text and Markdown whitespace, attachment paths follow the envelope, and substitutions never re-expand task content. Distinguish literal messages, encoded URL/JSON values, and stripped script substitutions with exact `PROMPTBOARD_*` environment values. Runtime stage prompts remain unchanged until lifecycle integration.
+
 - Add the pure column-pipeline configuration foundation: stable role-based columns, silent seven-column defaults, plan targets, sparse strategy profiles, exclusive task-wide agent pins, isolated conversation policies, and bounded definitions for the four automation types. Runtime integration remains pending; this checkpoint does not alter existing projects or run automations.
 
 - Kanban writing stages inherit user-configured CLI tools, MCPs, and extensions alongside Base delivery on fresh starts and native resumes. Preserve native permissions, administrator settings, read-only stage restrictions, and Composer's existing adapters; do not edit CLI configuration files.
