@@ -14,7 +14,9 @@ import { pipelineTaskEnvelope } from '../src/pipeline-templates.mjs';
 
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null' } }).trim();
 const quote = text => process.platform === 'win32' ? `'${text.replaceAll("'", "''")}'` : `'${text.replaceAll("'", "'\\''")}'`;
-const nodeScript = (file, ...args) => `${process.platform === 'win32' ? '& ' : ''}${[process.execPath, file, ...args].map(quote).join(' ')}`;
+// PowerShell scripts explicitly propagate a native command's exit code, as a
+// user-authored Windows automation must do; invocation alone exits successfully.
+const nodeScript = (file, ...args) => `${process.platform === 'win32' ? '& ' : ''}${[process.execPath, file, ...args].map(quote).join(' ')}${process.platform === 'win32' ? '\nexit $LASTEXITCODE' : ''}`;
 async function until(fn) { const end = Date.now() + 10000; for (;;) { const value = await fn(); if (value) return value; if (Date.now() > end) assert.fail('Runtime automation fixture did not become ready.'); await new Promise(resolve => setTimeout(resolve, 30)); } }
 async function temp(t) { const dir = await realpath(await mkdtemp(join(tmpdir(), 'pb-runtime-actions-'))); t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })); return dir; }
 async function world(t, { autoSpawn = false, actions = new PipelineActions() } = {}) {
