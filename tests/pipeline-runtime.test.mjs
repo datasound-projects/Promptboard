@@ -606,7 +606,11 @@ test('native approved plans move immediately while implementation continues; req
     assert.equal(routed.config.permissionMode, 'plan'); // Historical spawn settings were not fabricated as the live native permission mode.
     assert.equal(routed.config.model, 'native-current-model'); // Empty destination model preserves the current live choice.
     assert.equal((await w.taskNow(card.id)).sessionId, original.sessionId); assert.equal((await w.board.state()).runs.filter(run => run.taskId === card.id).length, 1);
-    assert.equal(await readFile(join(original.workspacePath, 'native-implementation.txt'), 'utf8'), 'Native approved implementation is still running.\n');
+    // Routing is deliberately immediate. The next tool/file write may still
+    // be starting when the move commits; observe it without waiting for Stop.
+    const implementation = await until(() => readFile(join(original.workspacePath, 'native-implementation.txt'), 'utf8').catch(error => { if (error.code === 'ENOENT') return null; throw error; }));
+    assert.equal(implementation, 'Native approved implementation is still running.\n');
+    assert.equal(owned.proc.pid, pid); assert.equal((await w.board.run(original.id)).activity.parentTurnComplete, false);
     assert.equal(await readFile(join(w.dataDir, original.artifactsDir, 'prompt.md'), 'utf8'), pipelineTaskEnvelope(card));
     const output = await readFile(join(w.dataDir, original.artifactsDir, 'output.log'), 'utf8'); assert.doesNotMatch(output, /you said:.*Proceed with implementing/);
     const proof = routed.activity.planApproval, before = (await w.taskNow(card.id)).transitions.length;
