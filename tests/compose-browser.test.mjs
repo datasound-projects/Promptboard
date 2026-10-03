@@ -29,7 +29,7 @@ test('Compose browser: all option combinations, skip, cancel, failure, languages
   const value = (id, text) => browser.eval(`const node = document.querySelector('#${id}'); node.value = ${JSON.stringify(text)}; node.dispatchEvent(new Event('input', { bubbles: true }));`);
   const toggle = (id, checked) => browser.eval(`const node = document.querySelector('#${id}'); node.checked = ${checked}; node.dispatchEvent(new Event('change', { bubbles: true }));`);
   const generate = async () => { await click('generate-button'); await browser.until(`!document.querySelector('#cancel-button').hidden || !document.querySelector('#prompt-output').hidden`, 'started'); await browser.until(`document.querySelector('#cancel-button').hidden`, 'finished'); };
-  const prepare = async () => { await click('generate-button'); await browser.until(`!document.querySelector('#context-prepared').hidden && document.querySelector('#cancel-button').hidden`, 'prepared'); };
+  const prepare = async () => { const ready = await browser.eval(`return !document.querySelector('#context-prepared').hidden;`); await click(ready ? 'context-retry' : 'generate-button'); await browser.until(`!document.querySelector('#context-prepared').hidden && document.querySelector('#cancel-button').hidden`, 'prepared'); };
   await value('prompt-input', questTask); await browser.eval(`document.querySelector('[name="quality"][value="fast"]').click();`);
   assert.equal(await browser.eval(`return document.querySelector('#generate-label').textContent;`), 'Generate prompt');
   await generate();
