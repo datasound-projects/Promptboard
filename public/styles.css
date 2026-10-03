@@ -1098,7 +1098,7 @@ button.timeline-task:hover { text-decoration: underline; }
 
 /* Optional Compose context uses the existing progressive disclosure and theme tokens. */
 .compose-context .advanced-body { display: grid; gap: 14px; }
-.context-source-list, #context-questions { display: grid; gap: 10px; }
+.context-source-list { display: grid; gap: 10px; }
 .context-source, .context-prepared { padding: 12px; border: 1px solid var(--line); border-radius: 8px; margin: 10px 0; min-width: 0; }
 .context-source > .detail-actions { justify-content: space-between; }
 .context-source .check-option { flex: 1; min-width: 0; overflow-wrap: anywhere; }

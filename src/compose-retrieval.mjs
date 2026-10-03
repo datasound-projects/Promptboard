@@ -29,7 +29,7 @@ export function chunkPages(pages, { target = 2800, overlap = 280 } = {}) {
 export function buildIndex(chunks) {
   const df = new Map();
   const rows = chunks.map((chunk, order) => {
-    const words = terms(chunk.text), tf = new Map();
+    const words = terms(chunk.text + (chunk.file ? `\n${chunk.file}` : '')), tf = new Map();
     for (const word of words) tf.set(word, (tf.get(word) || 0) + 1);
     for (const word of tf.keys()) df.set(word, (df.get(word) || 0) + 1);
     return { ...chunk, order, tf, length: words.length };
@@ -69,7 +69,7 @@ export function budgetEvidence(candidates, budget = CONTEXT_CHARS) {
     const existing = result.find(other => similar(other.text, item.text));
     if (existing) {
       const backup = JSON.stringify(existing);
-      existing.questionIds = [...new Set([...(existing.questionIds || []), ...(item.questionIds || [])])].slice(0, 6);
+      existing.questionIds = [...new Set([...(existing.questionIds || []), ...(item.questionIds || [])])].slice(0, 32);
       if (existing.source !== item.source || existing.locator !== item.locator || existing.sourceType !== item.sourceType) {
         const origin = { sourceType: item.sourceType, source: item.source, locator: item.locator };
         existing.alsoFrom ??= [];

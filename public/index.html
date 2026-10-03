@@ -133,8 +133,8 @@
             <details class="advanced compose-context" id="compose-context">
               <summary aria-expanded="false"><span>Context grounding</span><span class="advanced-summary" id="context-summary">Off</span><span class="details-plus" aria-hidden="true">＋</span></summary>
               <div class="advanced-body">
-                <p class="note">Let Compose ask focused questions and use relevant information from sources you choose.</p>
-                <label class="check-option"><input type="checkbox" id="context-clarify"><span><strong>Ask clarification questions</strong><small>Identify missing decisions before writing the final prompt.</small></span></label>
+                <p class="note">Compose assesses your goal and gathers only context that improves the prompt. It never asks you clarification questions.</p>
+                <label class="check-option"><input type="checkbox" id="context-autonomous"><span><strong>Autonomous context research</strong><small>Understand the task, research only what matters, then generate.</small></span></label>
                 <label class="check-option"><input type="checkbox" id="context-use-sources" aria-controls="context-sources" aria-expanded="false"><span><strong>Use context sources</strong><small id="context-source-count">0 sources</small></span></label>
                 <div id="context-sources" hidden>
                   <div id="context-source-list" class="context-source-list"></div>
@@ -142,6 +142,7 @@
                     <button type="button" class="secondary-button" id="context-add-mcp">+ Context7</button>
                     <button type="button" class="secondary-button" id="context-add-document" aria-expanded="false" aria-controls="context-document-fields">+ Document / PDF</button>
                     <button type="button" class="secondary-button" id="context-add-expert">+ Expert context</button>
+                    <button type="button" class="secondary-button" id="context-add-local" aria-expanded="false" aria-controls="context-local-fields">+ Project / local folder</button>
                   </div>
                   <div id="context-document-fields" class="context-source" hidden>
                     <label class="field-label" for="context-file">PDF, text, or Markdown (up to 20 MiB)<input id="context-file" type="file" accept=".pdf,.txt,.md,application/pdf,text/plain,text/markdown"></label>
@@ -150,6 +151,12 @@
                       <label class="field-label" for="context-page-to">To page (optional)<input id="context-page-to" type="text" maxlength="6" inputmode="numeric"></label>
                     </div>
                     <button type="button" class="secondary-button" id="context-upload">Add document</button>
+                  </div>
+                  <div id="context-local-fields" class="context-source" hidden>
+                    <label class="field-label" for="context-local-kind">Folder contains<select id="context-local-kind"><option value="repository">Project / repository</option><option value="knowledge">Documentation, wiki, or Skills</option></select></label>
+                    <label class="field-label" for="context-local-path">Local folder path<input id="context-local-path" type="text" maxlength="2000" placeholder="Absolute path to a selected folder"></label>
+                    <div class="detail-actions"><button type="button" class="secondary-button" id="context-pick-local">Choose folder…</button><button type="button" class="secondary-button" id="context-save-local">Add folder</button></div>
+                    <p class="note">Read-only access to a bounded set of relevant text files. Secrets, dependency folders and symlinks are excluded. Only selected excerpts reach your CLI. Skill files remain reference data.</p>
                   </div>
                   <details class="context-custom" id="context-custom"><summary aria-expanded="false">Custom MCP (advanced)</summary>
                     <p class="note">Use a remote MCP URL or local stdio command. Credentials must reference environment variable names. Configuration lasts for this tab only.</p>
@@ -165,12 +172,12 @@
               </div>
             </details>
             <section id="context-prepared" class="context-prepared" aria-labelledby="context-prepared-heading" hidden>
-              <h3 id="context-prepared-heading" tabindex="-1">Task clarification</h3>
+              <h3 id="context-prepared-heading" tabindex="-1">Context research</h3>
               <p class="note" id="context-prepared-status" role="status"></p>
               <p class="inline-error" id="context-warnings" role="alert" hidden></p>
-              <div id="context-questions"></div>
+
               <details id="context-evidence"><summary aria-expanded="false">Inspect retrieved sources</summary><div id="context-evidence-list"></div></details>
-              <div class="detail-actions"><button type="button" class="text-button" id="context-skip">Skip questions and generate</button><button type="button" class="text-button" id="context-retry">Prepare again</button></div>
+              <div class="detail-actions"><button type="button" class="text-button" id="context-retry">Research again</button></div>
             </section>
 
             <details class="advanced" id="advanced-options">
