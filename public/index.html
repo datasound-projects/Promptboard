@@ -14,6 +14,7 @@
     <script src="/vendor/addon-fit.js" defer></script>
     <script src="/vendor/addon-webgl.js" defer></script>
     <script src="/base.js" defer></script>
+    <script src="/notifications.js" defer></script>
     <script src="/app.js" defer></script>
     <script src="/dock.js" defer></script>
   </head>
@@ -404,6 +405,12 @@
       <fieldset class="settings-group"><legend>General</legend>
         <label class="field-label">Theme<select id="set-theme"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label>
         <label class="field-label">Start page<select id="set-start"><option value="compose">Compose</option><option value="kanban">Kanban</option><option value="base">Base</option></select></label>
+      </fieldset>
+      <fieldset class="settings-group"><legend>Desktop notifications</legend>
+        <p class="note">Receive alerts from “Notify me” column actions while this browser is open. Permission and this preference apply to this browser.</p>
+        <p id="set-notifications-status" class="note" role="status">Desktop notifications are unavailable in this browser.</p>
+        <button type="button" class="secondary-button" id="set-notifications-enable">Enable browser notifications</button>
+        <button type="button" class="secondary-button" id="set-notifications-disable" hidden>Turn off notifications</button>
       </fieldset>
       <details class="settings-section" id="settings-agents-section"><summary>Global agent defaults</summary><fieldset class="settings-group"><legend class="sr-only">Agents</legend>
         <div id="set-agent-fields"></div>

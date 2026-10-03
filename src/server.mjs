@@ -23,6 +23,9 @@ import { GitHubError, GitHubLogin, githubStatus, listRepositories } from './gith
 import { BaseRoutes } from './base-http.mjs';
 import { BaseError } from './base.mjs';
 import { BaseDeliveryError } from './base-resolver.mjs';
+import { PipelineActions } from './pipeline-actions.mjs';
+import { PipelineNotifications, NotificationError } from './pipeline-notifications.mjs';
+import { notificationRoute } from './pipeline-notifications-http.mjs';
 
 const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
 const assets = new Map([
@@ -32,6 +35,7 @@ const assets = new Map([
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
   ['/base.js', ['base.js', 'text/javascript; charset=utf-8']],
   ['/prefs.js', ['prefs.js', 'text/javascript; charset=utf-8']],
+  ['/notifications.js', ['notifications.js', 'text/javascript; charset=utf-8']],
   ['/nerd.png', ['nerd.png', 'image/png']],
   ['/kanban-mascot.png', ['kanban-mascot.png', 'image/png']],
   ['/dock.js', ['dock.js', 'text/javascript; charset=utf-8']],
@@ -239,7 +243,8 @@ function streamRun(supervisor, req, res, runId, after) {
 export async function startServer({ port = 4318, runner = runProvider, detector = detectProviders, catalogReader = discoverModels, authAdapter = auth, dataDir = defaultDataDir(), projectsDir, executor = 'auto', folderPicker = chooseFolder, githubPty = loadPty, usageReader, mcpTester, imageGenerator, composeMcp } = {}) {
   // The board loads lazily, so starting the server never reads or writes board files.
   const usage = usageReader || new UsageDashboard({ dataDir });
-  const board = new Board({ dataDir, ...(projectsDir ? { projectsDir } : {}) });
+  const notifications = new PipelineNotifications();
+  const board = new Board({ dataDir, ...(projectsDir ? { projectsDir } : {}), automationActions: new PipelineActions({ notifier: (message, options) => notifications.deliver(message, options) }) });
   board.executor = executor === 'auto' ? new Supervisor({ board, dataDir }) : executor;
   board.folderPicker = folderPicker;
   board.githubLogin = new GitHubLogin({ ptyLoader: githubPty });
@@ -307,6 +312,14 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
     const isApi = pathname.startsWith('/api/') && pathname !== '/api/session' && pathname !== '/api/providers';
     if (isApi && req.headers['x-ste-token'] !== token) return send(res, 403, { error: 'Reload this page before you try again.' });
     if (req.method === 'GET' && pathname === '/api/session') return send(res, 200, { token });
+    if (/^\/api\/notifications(?:\/|$)/.test(pathname)) {
+      try { return await notificationRoute(notifications, req, res, pathname, { jsonBody, send }); }
+      catch (error) {
+        if (res.headersSent) { res.end(); return; }
+        return send(res, error instanceof NotificationError || error.status < 500 ? error.status || 400 : 500,
+          { error: error instanceof NotificationError || error.status < 500 ? error.message : 'Browser notification reception failed.', code: error.code || 'NOTIFICATION_FAILED' });
+      }
+    }
     if (req.method === 'GET' && pathname === '/api/providers') {
       try { return send(res, 200, { providers: await detector() }); }
       catch { return send(res, 500, { error: 'Cannot check the installed CLIs. Restart this app from your terminal.' }); }
@@ -526,6 +539,7 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
   // SIGKILL any owned CLI process group that is still alive.
   const close = ({ graceMs = 4000 } = {}) => closed ??= (async () => {
     closing = true;
+    notifications.close();
     const listening = new Promise(resolve => server.close(() => resolve()));
     busy?.controller.abort();
     baseRoutes.close();
