@@ -10,7 +10,10 @@ const dayFor = value => {
   const d = new Date(value);
   return Number.isFinite(d.getTime()) ? [String(d.getFullYear()), String(d.getMonth() + 1).padStart(2, '0'), String(d.getDate()).padStart(2, '0')] : null;
 };
-const directory = async path => { const s = await lstat(path).catch(() => null); return Boolean(s?.isDirectory() && !s.isSymbolicLink()); };
+const directory = async path => {
+  try { const s = await lstat(path); return s.isDirectory() && !s.isSymbolicLink(); }
+  catch (error) { if (['ENOENT', 'ENOTDIR'].includes(error.code)) return false; throw error; }
+};
 
 async function mainThread(path, threadId) {
   const before = await lstat(path).catch(() => null);
@@ -37,14 +40,13 @@ export async function locateCodexRollout(threadId, startedAt, home, { maxEntries
   const resolved = await realpath(home).catch(() => null);
   if (!resolved) return null;
   const root = join(resolved, 'sessions');
-  if (!await directory(root)) return null;
+  if (!await directory(root).catch(() => false)) return null;
   const budget = { entries: 0, directories: 0 }, visited = new Set(), candidates = [];
   let invalid = false;
   const entries = async path => {
     if (++budget.directories > maxDirectories) throw new Error('Directory bound');
-    if (!await directory(path)) return [];
-    const dir = await opendir(path).catch(() => null);
-    if (!dir) return [];
+    if (!await directory(path)) throw new Error('Directory unavailable');
+    const dir = await opendir(path);
     const rows = [];
     try {
       for await (const entry of dir) {
@@ -54,13 +56,16 @@ export async function locateCodexRollout(threadId, startedAt, home, { maxEntries
     } finally { await dir.close().catch(() => {}); }
     return rows;
   };
-  const scanDay = async parts => {
+  const scanDay = async (parts, optional = false) => {
     const day = parts.join('-');
     if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || !validDate(new Date(`${day}T00:00:00Z`), day)) return;
     const path = join(root, ...parts);
     if (visited.has(path)) return;
+    if (!await directory(join(root, parts[0])) || !await directory(join(root, ...parts.slice(0, 2))) || !await directory(path)) {
+      if (optional) return;
+      throw new Error('Date directory unavailable');
+    }
     visited.add(path);
-    if (!await directory(join(root, parts[0])) || !await directory(join(root, ...parts.slice(0, 2)))) return;
     for (const entry of await entries(path)) {
       const extension = entry.name.endsWith('.jsonl.zst') ? '.jsonl.zst' : entry.name.endsWith('.jsonl') ? '.jsonl' : null;
       if (!entry.name.startsWith('rollout-') || !extension) continue;
@@ -80,17 +85,20 @@ export async function locateCodexRollout(threadId, startedAt, home, { maxEntries
     }
   };
   try {
-    for (const parts of [dayFor(startedAt), dayFor(Date.now())].filter(Boolean)) await scanDay(parts);
+    for (const parts of [dayFor(startedAt), dayFor(Date.now())].filter(Boolean)) await scanDay(parts, true);
     if (invalid || candidates.length > 1) return null;
     // Resume keeps the original file date. Search canonical date directories
     // with a finite budget, including when a preferred date matched: another
     // immutable rollout can share the thread ID. Do not guess which is active.
     // Do not scan archives, credentials or arbitrary trees.
     for (const year of await entries(root)) {
+      if (year.isSymbolicLink() && /^\d{4}$/.test(year.name)) return null;
       if (!year.isDirectory() || !/^\d{4}$/.test(year.name)) continue;
       for (const month of await entries(join(root, year.name))) {
+        if (month.isSymbolicLink() && /^(0[1-9]|1[0-2])$/.test(month.name)) return null;
         if (!month.isDirectory() || !/^(0[1-9]|1[0-2])$/.test(month.name)) continue;
         for (const day of await entries(join(root, year.name, month.name))) {
+          if (day.isSymbolicLink() && /^(0[1-9]|[12]\d|3[01])$/.test(day.name)) return null;
           if (!day.isDirectory() || !/^(0[1-9]|[12]\d|3[01])$/.test(day.name)) continue;
           await scanDay([year.name, month.name, day.name]);
           if (invalid || candidates.length > 1) return null;

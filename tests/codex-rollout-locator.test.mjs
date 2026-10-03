@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { findCodexRollout } from '../src/usage.mjs';
@@ -69,6 +69,19 @@ test('symlink histories and date directories never redirect discovery', { skip: 
   assert.equal(await findCodexRollout(thread, Date.now(), w.home), null);
   await rm(join(w.home, 'sessions'), { recursive: true }); await mkdir(join(w.home, 'sessions'));
   await symlink(join(outside.home, 'sessions', '2025'), join(w.home, 'sessions', '2025'), 'dir');
+  assert.equal(await findCodexRollout(thread, Date.now(), w.home), null);
+});
+
+test('an unreadable canonical folder cannot conceal another active rollout behind a known match', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, async t => {
+  const w = await fixture(t); await w.write(w.today()); await w.write('2024/01/02', other);
+  const hidden = join(w.home, 'sessions', '2024', '01'); await chmod(hidden, 0);
+  try { assert.equal(await findCodexRollout(thread, Date.now(), w.home), null); }
+  finally { await chmod(hidden, 0o700); }
+});
+
+test('a canonical symlink shadow cannot publish a partial match from another date', { skip: process.platform === 'win32' }, async t => {
+  const w = await fixture(t), outside = await fixture(t); await w.write(w.today()); await outside.write('2024/01/02');
+  await symlink(join(outside.home, 'sessions', '2024'), join(w.home, 'sessions', '2024'), 'dir');
   assert.equal(await findCodexRollout(thread, Date.now(), w.home), null);
 });
 
