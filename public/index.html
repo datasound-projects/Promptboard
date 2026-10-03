@@ -76,62 +76,60 @@
     </aside>
 
     <main class="workspace" id="prompt-view">
-      <section class="intro" aria-labelledby="page-title">
-        <div>
-          <h1 id="page-title">Write a clear prompt.</h1>
-          <p class="intro-description">Describe the task, choose settings, generate, then review and copy a clear prompt for your coding agent.</p>
-        </div>
-        <figure class="mascot"><img src="/nerd.png" alt="A gloriously nerdy black and white cartoon prompt engineer" width="112" height="112"></figure>
-      </section>
+      <h1 id="page-title" class="sr-only">Compose a prompt</h1>
 
       <form id="prompt-form">
-        <section class="card" aria-labelledby="input-heading">
-          <div class="card-heading"><div><span class="step" aria-hidden="true">1</span><h2 id="input-heading">Describe the task</h2></div></div>
-          <label for="prompt-input" class="sr-only">Describe the task you want your coding agent to do</label>
-          <textarea id="prompt-input" name="input" required maxlength="100000" spellcheck="true"></textarea>
-          <div class="input-footer"><span id="character-count" class="character-count">0 / 100,000</span></div>
+        <section class="card compose-input-card" aria-labelledby="input-heading">
+          <div class="card-heading compose-section-heading"><h2 id="input-heading">Describe the task</h2></div>
+          <div class="compose-input-surface">
+            <label for="prompt-input" class="sr-only">Describe the task you want your coding agent to do</label>
+            <textarea id="prompt-input" name="input" required maxlength="100000" spellcheck="true"></textarea>
+            <div class="input-footer"><span id="character-count" class="character-count">0 / 100,000</span></div>
+          </div>
         </section>
 
-        <section class="card" aria-labelledby="settings-heading">
-          <div class="card-heading"><div><span class="step" aria-hidden="true">2</span><h2 id="settings-heading">Choose settings</h2></div><button type="button" class="icon-button collapse-toggle" id="settings-toggle" aria-expanded="true" aria-controls="settings-body" aria-label="Collapse settings" title="Collapse settings"><span aria-hidden="true">−</span></button></div>
+        <section class="card compose-settings-card" aria-labelledby="settings-heading">
+          <div class="card-heading compose-section-heading"><h2 id="settings-heading">Choose settings</h2><button type="button" class="icon-button collapse-toggle" id="settings-toggle" aria-expanded="true" aria-controls="settings-body" aria-label="Collapse settings" title="Collapse settings"><span aria-hidden="true">−</span></button></div>
           <div class="card-body" id="settings-body">
-            <div class="select-grid">
-              <label class="field-label" for="task">What's the job?<select id="task" name="task"><option value="build">Build something</option><option value="debug">Debug a problem</option><option value="refactor">Refactor code</option><option value="review">Review code</option><option value="architecture">Design architecture</option><option value="agent-workflow">Create an agent workflow</option><option value="research">Research an approach</option></select></label>
-              <div>
-                <label class="field-label" for="provider">CLI<select id="provider" name="provider" aria-describedby="provider-note"><option value="codex">Codex</option><option value="claude">Claude Code</option><option value="agy">Antigravity CLI (agy)</option><option value="gemini">Gemini CLI</option></select></label>
-                <div class="connection-status"><span class="connection-chip" id="connection-install">Checking CLI…</span><span class="connection-chip" id="connection-auth">Sign-in: checking…</span></div>
+            <details class="advanced compose-settings-category" id="compose-general">
+              <summary aria-expanded="false"><span>General settings</span><span class="advanced-summary" id="compose-general-summary">Codex · Concise</span><span class="details-plus" aria-hidden="true">＋</span></summary>
+              <div class="advanced-body">
+                <div class="select-grid">
+                  <label class="field-label" for="task">Task type<select id="task" name="task"><option value="build">Build something</option><option value="debug">Debug a problem</option><option value="refactor">Refactor code</option><option value="review">Review code</option><option value="architecture">Design architecture</option><option value="agent-workflow">Create an agent workflow</option><option value="research">Research an approach</option></select></label>
+                  <div>
+                    <label class="field-label" for="provider">CLI<select id="provider" name="provider" aria-describedby="provider-note"><option value="codex">Codex</option><option value="claude">Claude Code</option><option value="agy">Antigravity CLI (agy)</option><option value="gemini">Gemini CLI</option></select></label>
+                  </div>
+                </div>
+
+                <div class="select-grid">
+                  <label class="field-label" for="model">Model<select id="model" aria-describedby="model-note"><option value="">CLI configured default</option><option value="__custom__">Custom model ID…</option></select></label>
+                  <label class="field-label" for="effort">Reasoning effort<select id="effort" aria-describedby="effort-note"><option value="">CLI default</option></select></label>
+                </div>
+                <label class="field-label" id="custom-model-field" for="custom-model" hidden>Custom model ID<input id="custom-model" type="text" maxlength="100" autocomplete="off" placeholder="Exact model ID from your CLI"></label>
+
+                <fieldset class="choice"><legend>Detail</legend><div class="segmented" id="detail-options">
+                  <label><input type="radio" name="detail" value="super-short"><span>Super short</span></label>
+                  <label><input type="radio" name="detail" value="concise" checked><span>Concise</span></label>
+                  <label><input type="radio" name="detail" value="detailed"><span>Detailed</span></label>
+                  <label><input type="radio" name="detail" value="extremely-detailed"><span>Extremely detailed</span></label>
+                </div></fieldset>
+
+                <div class="choice-row">
+                  <fieldset class="choice"><legend>Output language</legend><div class="segmented">
+                    <label><input type="radio" name="language" value="en" checked aria-describedby="language-note"><span>English</span></label>
+                    <label><input type="radio" name="language" value="de" aria-describedby="language-note"><span>Deutsch</span></label>
+                    <label><input type="radio" name="language" value="pl" aria-describedby="language-note"><span>Polski</span></label>
+                  </div></fieldset>
+                  <fieldset class="choice"><legend>Result checks</legend><div class="segmented">
+                    <label><input type="radio" name="quality" value="reviewed" checked aria-describedby="quality-note"><span>Reviewed</span></label>
+                    <label><input type="radio" name="quality" value="fast" aria-describedby="quality-note"><span>Fast</span></label>
+                  </div></fieldset>
+                </div>
+
               </div>
-            </div>
-            <p class="note" id="provider-note">Uses your installed CLI and its current account.</p>
+            </details>
 
-            <div class="select-grid">
-              <label class="field-label" for="model">Model<select id="model" aria-describedby="model-note"><option value="">CLI configured default</option><option value="__custom__">Custom model ID…</option></select></label>
-              <label class="field-label" for="effort">Reasoning effort<select id="effort" aria-describedby="effort-note"><option value="">CLI default</option></select></label>
-            </div>
-            <label class="field-label" id="custom-model-field" for="custom-model" hidden>Custom model ID<input id="custom-model" type="text" maxlength="100" autocomplete="off" placeholder="Exact model ID from your CLI"></label>
-            <div class="catalog-status"><p class="note" id="model-note" role="status">Reading your CLI model list…</p><button type="button" class="text-button" id="refresh-models">↻ Refresh models</button></div>
-            <p class="note" id="effort-note">Select a model to see its effort levels.</p>
-
-            <fieldset class="choice"><legend>Detail</legend><div class="segmented" id="detail-options">
-              <label><input type="radio" name="detail" value="super-short"><span>Super short</span></label>
-              <label><input type="radio" name="detail" value="concise" checked><span>Concise</span></label>
-              <label><input type="radio" name="detail" value="detailed"><span>Detailed</span></label>
-              <label><input type="radio" name="detail" value="extremely-detailed"><span>Extremely detailed</span></label>
-            </div></fieldset>
-
-            <div class="choice-row">
-              <fieldset class="choice"><legend>Output language</legend><div class="segmented">
-                <label><input type="radio" name="language" value="en" checked aria-describedby="language-note"><span>English</span></label>
-                <label><input type="radio" name="language" value="de" aria-describedby="language-note"><span>Deutsch</span></label>
-                <label><input type="radio" name="language" value="pl" aria-describedby="language-note"><span>Polski</span></label>
-              </div><p class="note" id="language-note">English uses STE writing principles.</p></fieldset>
-              <fieldset class="choice"><legend>Check the result</legend><div class="segmented">
-                <label><input type="radio" name="quality" value="reviewed" checked aria-describedby="quality-note"><span>Reviewed</span></label>
-                <label><input type="radio" name="quality" value="fast" aria-describedby="quality-note"><span>Fast</span></label>
-              </div><p class="note" id="quality-note">Automatic checks and a separate model review. Usually 2 CLI calls; up to 4 only when a check confirms a lost or changed requirement. Uses more time and CLI allowance.</p></fieldset>
-            </div>
-
-            <details class="advanced compose-context" id="compose-context">
+            <details class="advanced compose-context compose-settings-category" id="compose-context">
               <summary aria-expanded="false"><span>Context grounding</span><span class="advanced-summary" id="context-summary">Off</span><span class="details-plus" aria-hidden="true">＋</span></summary>
               <div class="advanced-body">
                 <p class="note">Compose assesses your goal and gathers only context that improves the prompt. It never asks you clarification questions.</p>
@@ -181,11 +179,15 @@
               <div class="detail-actions"><button type="button" class="text-button" id="context-retry">Research again</button></div>
             </section>
 
-            <details class="advanced" id="advanced-options">
-              <summary><span>More settings</span><span class="advanced-summary">Sign-in, sign-out, and brief options</span><span class="details-plus" aria-hidden="true">＋</span></summary>
+            <details class="advanced compose-settings-category" id="advanced-options">
+              <summary aria-expanded="false"><span>More settings</span><span class="advanced-summary">Connection &amp; brief</span><span class="details-plus" aria-hidden="true">＋</span></summary>
               <div class="advanced-body">
                 <section class="settings-group" aria-labelledby="connection-heading">
                   <h3 id="connection-heading">Connection</h3>
+                  <div class="connection-status"><span class="connection-chip" id="connection-install">Checking CLI…</span><span class="connection-chip" id="connection-auth">Sign-in: checking…</span></div>
+                  <p class="note" id="provider-note">Uses your installed CLI and its current account.</p>
+                  <div class="catalog-status"><p class="note" id="model-note" role="status">Reading your CLI model list…</p><button type="button" class="text-button" id="refresh-models">↻ Refresh models</button></div>
+                  <p class="note" id="effort-note">Select a model to see its effort levels.</p>
                   <div class="connection-actions">
                     <button type="button" class="secondary-button" id="auth-login">Connect / Sign in</button>
                     <button type="button" class="secondary-button" id="auth-device" hidden>Use a device code</button>
@@ -193,6 +195,11 @@
                     <button type="button" class="secondary-button" id="auth-logout">Sign out</button>
                   </div>
                   <div class="connection-detail" id="auth-detail" role="status" hidden></div>
+                </section>
+                <section class="settings-group" aria-labelledby="generation-details-heading">
+                  <h3 id="generation-details-heading">Generation details</h3>
+                  <p class="note" id="language-note">English uses STE writing principles.</p>
+                  <p class="note" id="quality-note">Automatic checks and a separate model review. Usually 2 CLI calls; up to 4 only when a check confirms a lost or changed requirement. Uses more time and CLI allowance.</p>
                 </section>
                 <section class="settings-group" aria-labelledby="brief-heading">
                   <h3 id="brief-heading">Brief options</h3>
@@ -220,14 +227,23 @@
       <p class="storage-warning" id="storage-warning" role="alert" hidden>History changes were not saved. Export any prompts and check reports you want to keep before you close or reload this page.</p>
       <p class="storage-warning board-warning" role="alert" hidden></p>
       <section class="card output-card" aria-labelledby="output-heading" aria-busy="false" id="output-card">
-        <div class="card-heading"><div><span class="step" aria-hidden="true">3</span><h2 id="output-heading">Review and copy</h2></div><div class="output-actions"><button class="secondary-button" id="kanban-button" type="button" disabled title="Save this prompt as a task card" aria-label="Add to Kanban"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M12 8v8M8 12h8"/></svg><span id="kanban-label">Add to Kanban</span></button><button class="secondary-button" id="split-button" type="button" disabled title="Optional: split this prompt into smaller To Do cards"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="4" y="4" width="16" height="5" rx="1.5"/><rect x="4" y="11" width="7" height="9" rx="1.5"/><rect x="13" y="11" width="7" height="9" rx="1.5"/></svg><span>Split into tasks</span></button><button class="secondary-button" id="export-button" type="button" disabled title="Download as Markdown"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 16v5h14v-5"/></svg><span>Export</span></button><button class="copy-button" id="copy-button" type="button" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V4H4v12h4"/></svg><span id="copy-label">Copy prompt</span></button></div></div>
-        <div class="output-empty" id="output-empty"><img src="/nerd.png" alt="" width="48" height="48"><p>No generated prompt yet.<small>Your engineered prompt will appear here.</small></p></div>
+        <div class="card-heading compose-output-heading">
+          <h2 id="output-heading">Review and copy</h2>
+          <div class="compose-output-toolbar">
+            <div class="prompt-edit-actions" id="prompt-edit-actions" hidden><button type="button" class="secondary-button" id="prompt-edit">Edit prompt</button></div>
+            <details class="output-tools" id="output-tools" hidden>
+              <summary aria-expanded="false" aria-label="More prompt actions">More <span aria-hidden="true">⌄</span></summary>
+              <div class="output-actions" aria-label="Additional prompt actions"><button class="secondary-button" id="split-button" type="button" disabled title="Optional: split this prompt into smaller To Do cards"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="4" y="4" width="16" height="5" rx="1.5"/><rect x="4" y="11" width="7" height="9" rx="1.5"/><rect x="13" y="11" width="7" height="9" rx="1.5"/></svg><span>Split into tasks</span></button><button class="secondary-button" id="export-button" type="button" disabled title="Download as Markdown"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 16v5h14v-5"/></svg><span>Export</span></button><button class="secondary-button" id="kanban-button" type="button" disabled title="Save this prompt as a task card" aria-label="Add to Kanban"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M12 8v8M8 12h8"/></svg><span id="kanban-label">Add to Kanban</span></button></div>
+            </details>
+            <button class="copy-button" id="copy-button" type="button" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V4H4v12h4"/></svg><span id="copy-label">Copy prompt</span></button>
+          </div>
+        </div>
+        <div class="output-empty" id="output-empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M7 3.5h7l4 4V20H7a2 2 0 0 1-2-2V5.5a2 2 0 0 1 2-2Z"/><path d="M14 3.5V8h4M9 12h5M9 16h5"/></svg><p>Your prompt will appear here.<small>Ready to review, refine, and copy.</small></p></div>
         <div class="generation-progress" id="generation-progress" role="status" hidden><span class="spinner" aria-hidden="true"></span><div><strong><span id="progress-stage">Starting</span> · <span id="progress-elapsed">0:00</span></strong><span id="progress-note">Your CLI is working. This may take a moment.</span></div></div>
         <div class="verification-status" id="verification-status" role="status" hidden></div>
-        <div class="prompt-edit-actions" id="prompt-edit-actions" hidden><button type="button" class="secondary-button" id="prompt-edit">Edit prompt</button></div>
         <div id="prompt-editor" hidden><label class="field-label" for="prompt-edit-text">Edit generated prompt<textarea id="prompt-edit-text" spellcheck="false"></textarea></label><p class="note">Saved edits are used for Kanban and Task Split. Engine checks apply only to the original text.</p><p id="prompt-edit-error" class="inline-error" role="alert" hidden></p><div class="kanban-dialog-actions"><button type="button" class="secondary-button" id="prompt-edit-cancel">Cancel</button><button type="button" class="secondary-button" id="prompt-edit-save">Save prompt</button></div></div>
         <pre id="prompt-output" tabindex="0" aria-label="Engineered prompt" hidden></pre>
-        <div class="output-meta" id="output-meta" hidden></div>
+        <details class="output-info" id="output-info"><summary aria-expanded="false">Prompt details</summary><div class="output-meta" id="output-meta" hidden></div></details>
         <details class="verification-report" id="verification-report" hidden><summary>View the checks <span id="verification-summary"></span></summary><div class="verification-body">
           <p id="verification-limits">Automatic checks cover specific rules. Model review can miss errors. Compare this prompt with your request before use. This is not a certified ASD-STE100 check.</p>
           <p id="verification-overview"></p>
@@ -240,7 +256,7 @@
         </div></details>
         <details class="lint-review" id="lint-review" hidden><summary>Review the language <span id="lint-count"></span></summary><p>These checks are advisory. They do not verify full ASD-STE100 compliance.</p><ul id="lint-warnings"></ul></details>
       </section>
-      <footer class="main-footer"><span>BASED ON ASD-STE100 SIMPLIFIED TECHNICAL ENGLISH</span><span>STE-informed <span aria-hidden="true">·</span> Human review required</span></footer>
+      <footer class="main-footer"><span>Based on ASD-STE100 Simplified Technical English</span><span>STE-informed <span aria-hidden="true">·</span> Human review required</span></footer>
     </main>
 
     <main class="workspace" id="kanban-view" tabindex="-1" hidden>
