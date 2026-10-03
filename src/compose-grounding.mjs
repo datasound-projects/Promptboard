@@ -58,7 +58,7 @@ export function validatePlan(text) {
     if (!['user', 'sources', 'either'].includes(q.answerFrom) || q.required !== false) invalid('Questions must be optional and have a valid answerFrom.');
     const sourceQueries = list(q.sourceQueries, 2, 'source queries').map(query => {
       object(query, ['sourceHint', 'libraryHint', 'query'], 'source query');
-      return { sourceHint: string(query.sourceHint, 80, 'source hint'), libraryHint: string(query.libraryHint, 120, 'library hint', true), query: string(query.query, 600, 'source query') };
+      return { sourceHint: string(query.sourceHint, 200, 'source hint'), libraryHint: string(query.libraryHint, 120, 'library hint', true), query: string(query.query, 600, 'source query') };
     });
     if (q.answerFrom === 'user' && sourceQueries.length) invalid('User-only questions cannot retrieve sources.');
     return { id: q.id, question: q.question, answerFrom: q.answerFrom, required: false, sourceQueries };

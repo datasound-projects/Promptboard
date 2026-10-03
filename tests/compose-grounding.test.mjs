@@ -56,6 +56,16 @@ test('planner receives metadata only and selected language; sources cannot injec
   }
 });
 
+test('review findings may quote retrieved facts, but cannot invent source evidence', () => {
+  const request = validateRequest({ input: 'Keep TCP.', grounding: { evidence: [evidence()] } });
+  const draft = 'Use HTTP.';
+  const review = { covered: ['S1'], requirements: [], criteria: Object.fromEntries(REVIEW_CRITERIA.map(key => [key, key === 'conflicts' ? 'issues' : 'pass'])),
+    issues: [{ category: 'conflicts', message: 'The draft silently substitutes a documented protocol for the requested one.', sourceQuote: evidence().text, promptQuote: draft }] };
+  assert.equal(parseReview(JSON.stringify(review), request, draft).status, 'issues');
+  review.issues[0].sourceQuote = 'Invented documentation that was never retrieved.';
+  assert.throws(() => parseReview(JSON.stringify(review), request, draft), /Invalid issue evidence/);
+});
+
 test('clarification literals participate in automatic checks and review coverage', async () => {
   const request = validateRequest({ input: 'Build an ingestion service.', quality: 'fast', grounding: { userAnswers: [{ question: 'Rate?', answer: 'Keep `event_time` at 150000 events/sec.' }] } });
   const output = await runPipeline(request, { runner: async () => ({ text: 'Build an ingestion service.' }) });

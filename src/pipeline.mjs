@@ -126,7 +126,8 @@ export function parseReview(text, request, draft) {
   for (const issue of data.issues) {
     if (!exactKeys(issue, ['category', 'message', 'sourceQuote', 'promptQuote']) || !REVIEW_CRITERIA.includes(issue.category) || !short(issue.message) || !issue.message.trim() || !short(issue.sourceQuote, 100_000) || !short(issue.promptQuote, 32_000)) throw new Error('Invalid review issue.');
     const source = reviewSource(request);
-    if ((issue.sourceQuote && !source.includes(issue.sourceQuote)) || (issue.promptQuote && !draft.includes(issue.promptQuote))) throw new Error('Invalid issue evidence.');
+    const inEvidence = request.grounding?.evidence?.some(row => row.text.includes(issue.sourceQuote));
+    if ((issue.sourceQuote && !source.includes(issue.sourceQuote) && !inEvidence) || (issue.promptQuote && !draft.includes(issue.promptQuote))) throw new Error('Invalid issue evidence.');
   }
   // A criterion marked as failed must name its defect; otherwise nothing specific can be repaired.
   if (criteria.some(row => row.status === 'issues' && !data.issues.some(issue => issue.category === row.criterion))) throw new Error('A failed criterion has no issue evidence.');
