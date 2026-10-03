@@ -1825,11 +1825,13 @@ const AGENT_STATE_TEXT = { active: 'Active', on_hold: 'On hold', awaits_you: 'Aw
 const AGENT_STATE_ICON = { active: '●', on_hold: '○', awaits_you: '!', inactive: '–' };
 function agentState(run) { return AGENT_STATES[run?.status] || 'inactive'; }
 function agentStateText(run) {
+  if (run?.status === 'suspended') return 'Paused';
   const state = agentState(run);
   return state === 'inactive' && run?.status ? `Inactive · ${run.status.replaceAll('_', ' ')}` : AGENT_STATE_TEXT[state];
 }
 function agentModel(run) { return `${providerName(run.config?.provider)} · ${run.config?.model || 'CLI default model'}${run.config?.effort ? ` · ${run.config.effort}` : ''}`; }
 function agentActivity(run) {
+  if (run?.lifecycle === 'suspending' && RUN_LIVE.includes(run.status)) return 'Pausing the agent; waiting for its process to exit…';
   const state = agentState(run);
   if (state === 'awaits_you') return run.waitingReason || (run.turnComplete ? 'Turn finished. Review the changes or continue in the terminal.' : 'Permission or input needed. Open the terminal.');
   if (state === 'on_hold') return 'Queued until an agent slot is free.';
@@ -1950,6 +1952,8 @@ function renderRunControls(card, run) {
   if (flowText) box.append(paragraph(flowText, `run-activity flow-${flow.kind}${flow.kind === 'blocked' ? ' kanban-error' : ''}`));
   if (active) {
     box.append(labelled(detailButton('Terminal', () => window.PromptboardDock?.open(active.id), 'kanban-terminal'), 'Show terminal'));
+    const pause = labelled(detailButton('Pause', () => pauseAgent(active), 'kanban-pause'), 'Pause agent');
+    pause.disabled = active.lifecycle === 'suspending'; box.append(pause);
     // Plan approval stays available; moving the card to Executing also approves the plan.
     if (active.stage === 'planning' && active.status === 'waiting_for_input' && active.turns > 0) box.append(labelled(detailButton('Approve plan', () => openTaskDetails(card.id), 'kanban-confirm-run'), 'Review and approve the plan'));
   } else if (card.column === 'merge') {
@@ -1966,6 +1970,12 @@ function renderRunControls(card, run) {
     box.append(paragraph(`Next run: ${agentText(selected)}`, 'run-agent'));
   }
   if (run && !active) box.append(labelled(detailButton('View output', () => window.PromptboardDock?.open(run.id), 'kanban-terminal'), 'View saved agent output'));
+  const conversation = board?.sessions?.find(session => session.id === card.sessionId);
+  if (!active && run?.stage === card.column && conversation?.nativeSessionId && ['suspended', 'orphaned', 'exited'].includes(conversation.status) && !['todo', 'done'].includes(card.column) && !card.archivedAt) {
+    const resume = labelled(detailButton('Resume', () => resumeAgent(card), 'kanban-resume'), 'Resume conversation');
+    resume.disabled = !board?.execution?.available || !currentProject()?.repository;
+    box.append(resume);
+  }
   box.append(labelled(detailButton('Details', () => openTaskDetails(card.id), 'kanban-details'), 'Task details'));
   return box;
 }
@@ -2164,6 +2174,24 @@ async function startStage(card, stage) {
     announce(`${stageVerb(stage)} for “${card.title}”.`);
     showStartedRun(run.id);
   } catch (error) { showBoardError(error); }
+}
+
+const sessionActions = new Set();
+async function pauseAgent(run) {
+  if (sessionActions.has(run.taskId)) return;
+  sessionActions.add(run.taskId);
+  try { await boardCall('POST', `/api/runs/${encodeURIComponent(run.id)}/pause`, { confirm: true }, 20000); announce('Agent paused. Conversation, files and output are kept.'); }
+  catch (error) { showBoardError(error); }
+  finally { sessionActions.delete(run.taskId); }
+}
+async function resumeAgent(card) {
+  if (sessionActions.has(card.id)) return;
+  sessionActions.add(card.id);
+  try {
+    const { run } = await boardCall('POST', `/api/tasks/${encodeURIComponent(card.id)}/resume`, { consent: true }, 180000);
+    announce(`Resuming the conversation for “${card.title}”.`); showStartedRun(run.id);
+  } catch (error) { showBoardError(error); }
+  finally { sessionActions.delete(card.id); }
 }
 async function runTestsCard(card) {
   try { await boardCall('POST', `/api/tasks/${encodeURIComponent(card.id)}/tests`, { confirm: true }); announce(`Tests started for “${card.title}”.`); pollTests(card.id); }

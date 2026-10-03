@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Kanban Pause and Resume: preserve the native conversation, worktree, and run history while stopping an owned CLI process. Resume the same stage with saved permissions and pinned Base configuration, recheck revocations, and avoid repeating task text. Serialize concurrent requests, retain pause intent across restart, and stop a CLI that reports another conversation ID. Queued runs without a native ID require a fresh start. Cross-column continuity remains a later step.
+
 - Kanban session foundation: persist logical conversation records separately from process runs, including native provider IDs and artifact references. Migrate state versions 2 and 3 to version 4 with an exact original backup; preserve Composer task text and Base. Concurrent startup reads share recovery, and orphaned sessions never relaunch automatically. Existing stage behavior is retained; native resume and column continuity are subsequent steps.
 
 - Simplify the README around Compose, Kanban, and Base; replace the demos with dark-mode recordings under 12 seconds and add a reproducible Base demo.

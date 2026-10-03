@@ -332,6 +332,30 @@ test('terminal dock in a real browser: start, render, type, collapse, resize, se
   assert.equal((await board.run(firstRun)).status, 'cancelled');
   assert.ok(['running', 'waiting_for_input'].includes((await board.run(secondRun)).status), 'Stopping one session leaves the other running.');
   await shot('4-stopped-one');
+  // Pause/Resume is a card action; verify real controls in both themes and a phone viewport.
+  for (const width of [1280, 390]) {
+    await browser.resize(width, 900);
+    for (const theme of ['light', 'dark']) {
+      await browser.eval(`document.documentElement.dataset.theme = '${theme}'; document.querySelector('[data-id="${second.id}"]').scrollIntoView({ block: 'nearest', inline: 'center' });`);
+      assert.equal(await browser.layout(`const button = document.querySelector('[data-id="${second.id}"] .kanban-pause'); button.focus(); const r = button.getBoundingClientRect(); return document.activeElement === button && r.width > 0 && r.left >= 0 && r.right <= innerWidth;`), true, 'Pause is visible and keyboard accessible.');
+      await shot(`pause-${width}-${theme}`);
+    }
+  }
+  await browser.eval(`document.querySelector('[data-id="${second.id}"] .kanban-pause').click();`);
+  await browser.until(`document.querySelector('[data-id="${second.id}"] .kanban-resume')`, 'paused conversation can resume');
+  assert.equal((await board.run(secondRun)).status, 'suspended');
+  for (const theme of ['light', 'dark']) {
+    await browser.eval(`document.documentElement.dataset.theme = '${theme}';`);
+    assert.equal(await browser.layout(`const button = document.querySelector('[data-id="${second.id}"] .kanban-resume'); button.focus(); const r = button.getBoundingClientRect(); return document.activeElement === button && r.left >= 0 && r.right <= innerWidth;`), true, 'Resume fits a phone viewport and takes keyboard focus.');
+    await shot(`resume-390-${theme}`);
+  }
+  await browser.eval(`document.querySelector('[data-id="${second.id}"] .kanban-resume').click();`);
+  await browser.until(`window.promptboardDock.sessions.size === 4`, 'resumed run opens its terminal');
+  const resumed = (await board.view()).runs.find(run => run.resumeFrom?.runId === secondRun);
+  assert.equal(resumed.sessionId, (await board.run(secondRun)).sessionId);
+  await browser.until(`${text(resumed.id)}.includes('fake claude started')`, 'resumed terminal renders');
+  assert.equal(await readFile(join(board.executor.dataDir, resumed.artifactsDir, 'prompt.md'), 'utf8'), '');
+  await browser.resize(1280, 900);
   // Set the project agent through the visible form, then start a real Codex PTY.
   assert.equal(await browser.eval(`return document.querySelector('#project-agent-panel').hidden;`), true);
   await browser.eval(`document.querySelector('#project-agent-toggle').click();`);

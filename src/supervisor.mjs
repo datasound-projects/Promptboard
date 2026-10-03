@@ -73,8 +73,8 @@ export class Supervisor {
   async limit() { return (await this.board.state()).settings.maxConcurrentRuns || 1; }
 
   /** Queue a run. Returns at once; the run starts when a slot is free. */
-  async start({ run, task, planRunId, extra = '' }) {
-    this.queue.push({ runId: run.id, task, planRunId, extra });
+  async start({ run, task, planRunId, extra = '', continuation = '' }) {
+    this.queue.push({ runId: run.id, task, planRunId, extra, continuation });
     this.#pump();
   }
 
@@ -113,7 +113,7 @@ export class Supervisor {
       if (session.proc) killPidGroup(session.proc.pid, 'SIGKILL');
     }
     const failed = await this.board.run(runId).catch(() => null);
-    if (failed?.status === 'cancelled') return;
+    if (['cancelled', 'suspended'].includes(failed?.status)) return;
     // Preparation may unwind and leave the preparing map before shutdown visits
     // it. The stopping flag also covers that gap; shutdown is not a failed start.
     if (this.stopping || failed?.status === 'interrupted') {
@@ -139,7 +139,7 @@ export class Supervisor {
     }
   }
 
-  async #launchSession({ runId, task, planRunId, extra }, signal, onPrepared) {
+  async #launchSession({ runId, task, planRunId, extra, continuation }, signal, onPrepared) {
     const run = await this.board.run(runId);
     if (run.status !== 'queued') { this.#endPending(runId); return; } // Cancelled while queued.
     const { pty, message: setup } = await this.pty();
@@ -155,14 +155,15 @@ export class Supervisor {
     onPrepared(baseDelivery);
     signal.throwIfAborted();
     const plan = planRunId ? await readFile(join(this.dataDir, 'runs', planRunId, 'plan.md'), 'utf8').catch(() => null) : null;
-    const message = composeMessage(run.stage, task.prompt, plan, run.config.instructions || '', extra || '', baseDelivery.sections);
+    const message = run.resumeFrom ? continuation || '' : composeMessage(run.stage, task.prompt, plan, run.config.instructions || '', extra || '', baseDelivery.sections);
     // Stage instructions, the exact task text, and the plan are stored with the run.
     await writeFile(join(runDir, 'prompt.md'), message, { mode: 0o600 });
     await writeFile(join(runDir, 'task-prompt.txt'), task.prompt, { mode: 0o600 });
     const eventsFile = join(runDir, 'events.jsonl');
     await writeFile(eventsFile, '', { mode: 0o600 });
-    const sessionId = randomUUID();
-    const built = await buildSession({ provider: run.config.provider, stage: run.stage, config: run.config, message, runDir, eventsFile, sessionId, nodePath: this.nodePath, baseDelivery });
+    const sessionId = run.resumeFrom?.nativeSessionId || randomUUID();
+    const built = await buildSession({ provider: run.config.provider, stage: run.stage, config: run.config, message, runDir, eventsFile, sessionId,
+      resumeId: run.resumeFrom?.nativeSessionId || null, workspacePath: run.workspacePath, nodePath: this.nodePath, baseDelivery });
     // Cancellation can arrive during CLI discovery or session preparation.
     if ((await this.board.run(runId)).status !== 'queued') { this.#endPending(runId); return; }
     signal.throwIfAborted();
@@ -180,7 +181,8 @@ export class Supervisor {
     } catch (error) { log.destroy(); throw error; }
     trackPid(proc.pid);
     const session = { runId, taskId: run.taskId, stage: run.stage, provider: run.config.provider, proc, seq: 0, ring: [], ringBytes: 0,
-      subscribers: new Set(), log, logBytes: 0, eventsFile, eventsOffset: 0, runDir, paste: built.paste, turns: 0, status: 'running', startedAt: Date.now(), sessionId, baseCleanup: baseDelivery.cleanup, baseManifest: supplied };
+      subscribers: new Set(), log, logBytes: 0, eventsFile, eventsOffset: 0, runDir, paste: built.paste, turns: 0, status: 'running', startedAt: Date.now(), sessionId,
+      resumeNativeId: run.resumeFrom?.nativeSessionId, baseCleanup: baseDelivery.cleanup, baseManifest: supplied };
     this.sessions.set(runId, session);
     session.exited = new Promise(resolve => { session.resolveExit = resolve; });
     // Listen before any await so early output and fast exits are never lost.
@@ -191,7 +193,7 @@ export class Supervisor {
     this.pending.delete(runId);
     await this.board.recordBaseManifest(runId, supplied);
     await writeFile(join(runDir, 'base-manifest.json'), `${JSON.stringify(supplied, null, 2)}\n`, { mode: 0o600 });
-    await this.board.updateRun(runId, { status: 'running', startedAt: session.startedAt, providerSessionId: run.config.provider === 'claude' ? sessionId : undefined, lifecycle: 'waiting-for-first-event' });
+    await this.board.updateRun(runId, { status: 'running', startedAt: session.startedAt, providerSessionId: run.resumeFrom?.nativeSessionId || (run.config.provider === 'claude' ? sessionId : undefined), lifecycle: 'waiting-for-first-event' });
     if (!session.proc) return; // Exited during the update: #exited owns the outcome.
     this.#push(session, { status: 'running' });
     session.poll = setInterval(() => this.#readEvents(session).catch(() => {}), 250);
@@ -210,10 +212,10 @@ export class Supervisor {
   }
 
   #paste(session) {
-    if (!session.paste || !session.proc) return;
+    if (!session.paste || !session.proc || session.suspending) return;
     clearTimeout(session.pasteTimer);
     session.proc.write(`\x1b[200~${session.paste}\x1b[201~`);
-    setTimeout(() => session.proc?.write('\r'), 300);
+    setTimeout(() => { if (!session.suspending && !session.cancelled) session.proc?.write('\r'); }, 300);
     session.paste = null;
   }
 
@@ -291,10 +293,17 @@ export class Supervisor {
   }
 
   async #signal(session, signal) {
-    if (signal.kind === 'ignore' || !session.proc || session.cancelled || session.launchFailed) return;
+    if (signal.kind === 'ignore' || !session.proc || session.cancelled || session.suspending || session.launchFailed) return;
+    if (signal.sessionId) {
+      if (session.resumeNativeId && signal.sessionId !== session.resumeNativeId) {
+        session.failure = { code: 'SESSION_ID_MISMATCH', reason: 'The CLI opened a different conversation instead of the requested session. It was stopped; files and the original conversation are kept.' };
+        await this.#setStatus(session, 'failed', { errorCode: session.failure.code, reason: session.failure.reason });
+        this.#kill(session); return;
+      }
+      await this.board.updateRun(session.runId, { providerSessionId: signal.sessionId }).catch(() => {});
+    }
     if (!session.sawEvent) { session.sawEvent = true; clearTimeout(session.watchdog); await this.board.updateRun(session.runId, { lifecycle: 'events-received', waitingReason: '' }).catch(() => {}); }
     if (signal.kind === 'started') {
-      if (signal.sessionId) await this.board.updateRun(session.runId, { providerSessionId: signal.sessionId }).catch(() => {});
       if (session.paste) setTimeout(() => this.#paste(session), 1500);
     } else if (signal.kind === 'running') {
       if (session.status !== 'running') await this.#setStatus(session, 'running', { waitingReason: '', turnComplete: false });
@@ -345,6 +354,7 @@ export class Supervisor {
     if (!current) { /* Run removed. */ }
     else if (session.confirmed) await this.board.updateRun(session.runId, exit).catch(() => {});
     else if (session.failure || current.status === 'failed') await this.board.updateRun(session.runId, exit).catch(() => {});
+    else if (session.suspended) await this.#finish(session, 'suspended', { ...exit, reason: 'Paused by you. The conversation, worktree and output are kept.' });
     else if (session.cancelled) await this.#finish(session, 'cancelled', { ...exit, reason: 'Stopped by you. The worktree and output are kept.' });
     else if (ACTIVE.has(current.status)) {
       // An exit is not a confirmation. The user checks the worktree and decides.
@@ -371,6 +381,7 @@ export class Supervisor {
   input(runId, data) {
     if (typeof data !== 'string' || Buffer.byteLength(data) > INPUT_BYTES) throw new AgentError(`Send at most ${INPUT_BYTES / 1024} KiB of input at a time.`, 'INPUT_TOO_LARGE', 413);
     const session = this.#session(runId);
+    if (session.suspending) throw new AgentError('The agent is being paused. Wait for it to exit before resuming.', 'SESSION_SUSPENDING', 409);
     session.proc.write(data);
     if (session.status === 'waiting_for_input' && /\r|\n/.test(data)) this.#setStatus(session, 'running', { waitingReason: '' });
   }
@@ -401,9 +412,32 @@ export class Supervisor {
     await this.#cancelSession(session);
   }
 
-  async #cancelSession(session) {
+  /** Pause a queued/preparing or owned live process, preserving the exact native conversation. */
+  async suspend(runId) {
+    const run = await this.board.run(runId);
+    if (!ACTIVE.has(run.status)) return;
+    const session = this.sessions.get(runId);
+    if (session?.cancelPromise) return session.cancelPromise;
+    if (session) session.suspending = true;
+    try { await this.board.beginSuspension(runId); }
+    catch (error) { if (session) session.suspending = false; throw error; }
+    const queued = this.queue.findIndex(item => item.runId === runId);
+    if (queued >= 0 || ((run.status === 'queued' || this.launching?.has(runId)) && !this.sessions.get(runId)?.proc)) {
+      this.preparing.get(runId)?.abort();
+      if (queued >= 0) this.queue.splice(queued, 1);
+      await this.board.updateRun(runId, { status: 'suspended', endedAt: Date.now(), reason: 'Paused before the agent started. Start a fresh run when ready.' });
+      this.#endPending(runId);
+      const started = this.sessions.get(runId);
+      if (started?.proc) await this.#cancelSession(started, true);
+      return;
+    }
+    await this.#cancelSession(this.#session(runId), true);
+  }
+
+  async #cancelSession(session, suspended = false) {
     if (session.cancelPromise) return session.cancelPromise;
-    session.cancelled = true;
+    if (suspended) { session.suspended = true; session.suspending = true; }
+    else session.cancelled = true;
     clearTimeout(session.pasteTimer);
     session.cancelPromise = (async () => {
       this.#kill(session);

@@ -99,6 +99,20 @@ test('run updates persist native IDs and logical lifecycle without rewriting pro
   assert.equal(state.runs[0].status, 'cancelled');
 });
 
+test('restart between saved pause intent and process exit retains suspension without relaunching', async t => {
+  const dir = await directory(t), state = migrateState(legacyState());
+  state.runs[1].status = 'running'; state.runs[1].lifecycle = 'suspending';
+  state.sessions[1].status = 'running'; state.sessions[1].pauseIntent = 'user'; state.sessions[1].suspensionRequestedAt = 123;
+  await writeFile(join(dir, 'state.json'), JSON.stringify(state));
+  const board = new Board({ dataDir: dir, executor: { start() { assert.fail('Saved pause must not launch a process.'); } } });
+  const recovered = await board.state();
+  assert.equal(recovered.runs[1].status, 'interrupted');
+  assert.equal(recovered.sessions[1].status, 'suspended');
+  assert.equal(recovered.sessions[1].pauseIntent, 'user');
+  assert.equal(recovered.sessions[1].nativeSessionId, 'native-1');
+  assert.equal(recovered.sessions[1].suspensionRequestedAt, 123);
+});
+
 test('session and run acceptance share an atomic write; a failed write publishes neither', async t => {
   const dir = await directory(t), store = new Store(dir); await store.update(() => {});
   await mkdir(join(dir, 'state.json.bak'));

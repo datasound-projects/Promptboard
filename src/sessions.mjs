@@ -5,6 +5,7 @@ export const LIVE_SESSION_STATUSES = new Set(['queued', 'running', 'waiting_for_
 const PROVIDERS = new Set(['claude', 'codex', 'gemini']);
 
 function sessionStatus(run) {
+  if (run.status === 'suspended') return 'suspended';
   if (LIVE_SESSION_STATUSES.has(run.status)) return run.status;
   return run.status === 'interrupted' ? 'orphaned' : 'exited';
 }
@@ -41,7 +42,7 @@ export function migrateSessions(state) {
 export function synchronizeSession(state, run) {
   const session = state.sessions.find(item => item.id === run.sessionId);
   if (!session || session.currentRunId !== run.id) return;
-  session.status = sessionStatus(run);
+  session.status = run.status === 'interrupted' && session.pauseIntent === 'user' && session.suspensionRequestedAt ? 'suspended' : sessionStatus(run);
   session.lastRunStatus = run.status;
   session.updatedAt = run.updatedAt;
   if (run.providerSessionId) session.nativeSessionId = run.providerSessionId;
@@ -50,8 +51,20 @@ export function synchronizeSession(state, run) {
 
 export function recoverSessions(state, now = Date.now()) {
   for (const session of state.sessions) if (LIVE_SESSION_STATUSES.has(session.status)) {
-    session.status = 'orphaned';
+    session.status = session.pauseIntent === 'user' ? 'suspended' : 'orphaned';
     session.updatedAt = now;
     session.reason = 'The app stopped while this session was active.';
   }
+}
+
+/** Link another process to the same conversation inside its acceptance transaction. */
+export function attachResumedRun(state, run, session) {
+  run.sessionId = session.id;
+  session.currentRunId = run.id;
+  session.runIds.push(run.id);
+  session.artifacts.push({ runId: run.id, directory: run.artifactsDir });
+  session.pauseIntent = null;
+  delete session.suspensionRequestedAt;
+  delete session.reason;
+  synchronizeSession(state, run);
 }
