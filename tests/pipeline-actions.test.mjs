@@ -140,7 +140,9 @@ test('Retry-After HTTP dates are honored and expired dates permit immediate boun
 });
 
 test('a webhook that never answers respects the total timeout and explicit cancellation without another request', async t => {
-  let requests = 0; const url = await server(t, () => { requests++; }), actions = new PipelineActions(); t.after(() => actions.shutdown());
+  // A short deadline can expire while Windows establishes the connection. Count
+  // transport starts, not server arrivals, to check exactly one attempt either way.
+  let requests = 0; const url = await server(t, () => {}), actions = new PipelineActions({ fetcher: (...args) => { requests++; return fetch(...args); } }); t.after(() => actions.shutdown());
   const timed = await actions.run(row('webhook', { url }), context('hung-timeout'), { timeoutMs: 250 });
   assert.equal(timed.status, 'timed_out'); assert.equal(requests, 1);
   const pending = actions.run(row('webhook', { url }), context('hung-cancel'));
