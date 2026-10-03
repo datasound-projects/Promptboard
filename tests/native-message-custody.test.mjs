@@ -154,3 +154,78 @@ test('unknown tickets, absent/legacy sessions and unreported or mismatched paths
   assert.equal((await w.supervisor.checkpointMessage(w.run.id)).status, 'unavailable');
   assert.deepEqual(w.writes, []);
 });
+
+test('initial prompt submission cannot press Enter after a human draft changes the owned input epoch', async t => {
+  const w = await fixture(t); t.mock.timers.enable({ apis: ['setTimeout'] });
+  w.session.paste = 'Initial long prompt'; await w.supervisor.checkpointMessage(w.run.id);
+  t.mock.timers.tick(1500); assert.deepEqual(w.writes, ['\x1b[200~Initial long prompt\x1b[201~']);
+  w.supervisor.input(w.run.id, 'human draft'); t.mock.timers.tick(300);
+  assert.deepEqual(w.writes, ['\x1b[200~Initial long prompt\x1b[201~', 'human draft']);
+});
+
+test('delayed initial paste and submission never write to stopped, failed or replaced owners', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  for (const invalidate of [w => { w.session.cancelled = true; }, w => { w.session.failure = {}; }, w => { w.supervisor.stopping = true; }, w => { w.session.exiting = true; }, w => { w.session.confirmed = true; }, w => { w.session.activity.ended = true; }, w => { w.session.activity.uncertain = true; }, w => { w.supervisor.sessions.delete(w.run.id); }]) {
+    const w = await fixture(t); w.session.paste = 'Original initial prompt'; await w.supervisor.checkpointMessage(w.run.id);
+    invalidate(w); t.mock.timers.tick(1800); assert.deepEqual(w.writes, []);
+  }
+  const w = await fixture(t); w.session.paste = 'Owned initial prompt'; await w.supervisor.checkpointMessage(w.run.id); t.mock.timers.tick(1500);
+  const replacement = []; w.session.proc = { write: data => replacement.push(data) }; t.mock.timers.tick(300);
+  assert.deepEqual(replacement, []); assert.deepEqual(w.writes, ['\x1b[200~Owned initial prompt\x1b[201~']);
+});
+
+test('initial paste transport failures are unconfirmed, contained and never retried by another startup event', async t => {
+  const w = await fixture(t); t.mock.timers.enable({ apis: ['setTimeout'] }); let attempts = 0;
+  w.session.paste = 'Private initial envelope'; w.session.proc.write = () => { attempts++; throw new Error('PRIVATE TRANSPORT'); };
+  await w.supervisor.checkpointMessage(w.run.id); assert.doesNotThrow(() => t.mock.timers.tick(1500));
+  await Promise.resolve(); assert.equal(attempts, 1); assert.equal(w.session.paste, null);
+  await w.emit({ name: 'SessionStart', sessionId: nativeId, transcriptPath: w.path }); await w.supervisor.checkpointMessage(w.run.id); t.mock.timers.tick(20000);
+  assert.equal(attempts, 1); assert.doesNotMatch(JSON.stringify(w.updates), /PRIVATE TRANSPORT|Private initial envelope/);
+});
+
+test('a pending initial submission blocks receipt checkpoints, then submits exactly once to its unchanged owner', async t => {
+  const w = await fixture(t); t.mock.timers.enable({ apis: ['setTimeout'] });
+  w.session.paste = 'Exact initial envelope'; await w.supervisor.checkpointMessage(w.run.id); t.mock.timers.tick(1500);
+  assert.equal((await w.supervisor.checkpointMessage(w.run.id)).status, 'unavailable');
+  t.mock.timers.tick(300); assert.deepEqual(w.writes, ['\x1b[200~Exact initial envelope\x1b[201~', '\r']);
+  assert.equal((await w.supervisor.checkpointMessage(w.run.id)).status, 'ready'); t.mock.timers.tick(20000);
+  assert.deepEqual(w.writes, ['\x1b[200~Exact initial envelope\x1b[201~', '\r']);
+});
+
+test('a changed main native identity or lifecycle cannot submit the old initial envelope', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  for (const change of ['identity', 'startup', 'legacy-startup', 'partial-events']) {
+    const w = await fixture(t); w.session.paste = 'Old envelope'; const baseline = await w.supervisor.checkpointMessage(w.run.id); t.mock.timers.tick(1500);
+    if (change === 'identity') w.session.nativeSessionId = '66666666-7777-8888-9999-000000000000';
+    else if (change === 'partial-events') w.session.eventsPending = true;
+    else { if (change === 'legacy-startup') { w.session.pipeline = false; delete w.session.activity; } await w.emit({ name: 'SessionStart', sessionId: nativeId, transcriptPath: w.path }); await w.supervisor.verifyMessage(baseline.ticket, 'Unsubmitted text'); }
+    t.mock.timers.tick(300); assert.deepEqual(w.writes, ['\x1b[200~Old envelope\x1b[201~']);
+  }
+});
+
+test('initial Enter transport failures retain uncertainty without another write or raw diagnostic', async t => {
+  const w = await fixture(t); t.mock.timers.enable({ apis: ['setTimeout'] }); let attempts = 0;
+  w.session.paste = 'Literal envelope'; w.session.proc.write = text => { attempts++; if (text === '\r') throw new Error('PRIVATE ENTER FAILURE'); w.writes.push(text); };
+  await w.supervisor.checkpointMessage(w.run.id); t.mock.timers.tick(1500); assert.doesNotThrow(() => t.mock.timers.tick(300));
+  assert.equal(attempts, 2); assert.equal(w.session.activity.uncertain, true); await Promise.resolve();
+  assert.match(w.updates.at(-1).waitingReason, /not confirmed/); assert.doesNotMatch(JSON.stringify(w.updates), /PRIVATE ENTER FAILURE|Literal envelope/);
+  await w.emit({ name: 'SessionStart', sessionId: nativeId, transcriptPath: w.path }); await w.supervisor.checkpointMessage(w.run.id); t.mock.timers.tick(20000);
+  assert.equal(attempts, 2);
+});
+
+test('a later native Stop cannot turn an unknown initial write into legacy automatic-advancement evidence', async t => {
+  const w = await fixture(t); t.mock.timers.enable({ apis: ['setTimeout'] });
+  w.session.paste = 'Unknown initial text'; const baseline = await w.supervisor.checkpointMessage(w.run.id);
+  w.session.pipeline = false; delete w.session.activity; w.session.proc.write = () => { throw new Error('UNKNOWN BYTES'); };
+  t.mock.timers.tick(1500); await w.emit({ name: 'Stop', sessionId: nativeId, message: 'Some turn finished.' });
+  await w.supervisor.verifyMessage(baseline.ticket, 'Not submitted');
+  assert.equal(w.run.turnComplete, false); assert.equal(w.run.status, 'waiting_for_input'); assert.match(w.run.waitingReason, /automatic advancement is blocked/);
+  assert.doesNotMatch(JSON.stringify(w.updates), /UNKNOWN BYTES|Unknown initial text/);
+});
+
+test('reentrant human input during a paste cannot re-acquire pending Enter ownership', async t => {
+  const w = await fixture(t); t.mock.timers.enable({ apis: ['setTimeout'] }); w.session.paste = 'Owned initial text';
+  w.session.proc.write = data => { w.writes.push(data); if (data.startsWith('\x1b[200~')) w.supervisor.input(w.run.id, 'human draft'); };
+  await w.supervisor.checkpointMessage(w.run.id); t.mock.timers.tick(1500); assert.equal(w.session.initialSubmitPending, false); t.mock.timers.tick(300);
+  assert.deepEqual(w.writes, ['\x1b[200~Owned initial text\x1b[201~', 'human draft']); assert.match(w.run.waitingReason, /submission was cancelled/);
+});

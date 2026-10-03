@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Bind delayed initial prompt paste/Enter to the owned PTY, input epoch and native identity. Human drafts revoke automatic Enter; Stop/Pause/failure/replacement and pending input block stale writes/checkpoints. Contain unknown transport writes without retries or raw errors. Verify exact long Composer envelopes, Base instructions/MCPs and inherited tools in a disposable simulated CLI PTY.
+
 - Add Notify me column editing and explicit browser notification opt-in. Authenticate bounded receiver streams and task-scoped display receipts; preserve unconfirmed outcomes on loss, scoped cancellation and no automatic replay. Alert clicks open the exact task without agent actions. Tests use mocked desktop APIs in disposable browsers; native message delivery and explicit retries remain pending.
 
 - Find older resumed Codex histories by exact thread metadata in bounded canonical date folders, with strict UTF-8/header checks, symlink refusal and unavailable outcomes for ambiguous/reverted/compressed rollouts or incomplete searches. Keep paths private and preserve read-only receipt custody, Composer/Base/CLI delivery and process behavior.

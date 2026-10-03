@@ -252,17 +252,57 @@ export class Supervisor {
     session.watchdog.unref();
     if (session.paste) {
       // Long prompts are pasted once the session is ready (bracketed paste keeps the text intact).
-      session.pasteTimer = setTimeout(() => this.#paste(session), 15000);
+      const proc = session.proc;
+      session.pasteTimer = setTimeout(() => { if (this.#ownsInitialInput(session, proc)) this.#paste(session); }, 15000);
     }
   }
 
   #paste(session) {
-    if (!session.paste || !session.proc || session.suspending) return;
+    if (!session.paste || !this.#ownsInitialInput(session, session.proc)) return;
     clearTimeout(session.pasteTimer);
+    clearTimeout(session.pasteReadyTimer);
+    const proc = session.proc, nativeId = session.nativeSessionId, text = session.paste;
+    session.paste = null; // An unknown write outcome must never grant another paste.
     session.inputEpoch++;
-    session.proc.write(`\x1b[200~${session.paste}\x1b[201~`);
-    setTimeout(() => { if (!session.suspending && !session.cancelled && session.proc) { session.inputEpoch++; session.proc.write('\r'); } }, 300);
-    session.paste = null;
+    session.activity?.input();
+    const epoch = session.inputEpoch;
+    session.initialSubmitPending = true;
+    try { proc.write(`\x1b[200~${text}\x1b[201~`); }
+    catch { this.#initialInputUnconfirmed(session, true); return; }
+    if (!session.initialSubmitPending) return;
+    session.initialSubmitTimer = setTimeout(() => {
+      session.initialSubmitPending = false;
+      if (!this.#ownsInitialInput(session, proc) || session.inputEpoch !== epoch || session.nativeSessionId !== nativeId) {
+        if (this.#ownsInitialProcess(session, proc)) this.#initialInputUnconfirmed(session);
+        return;
+      }
+      session.inputEpoch++;
+      session.activity?.input();
+      try { proc.write('\r'); }
+      catch { this.#initialInputUnconfirmed(session, true); }
+    }, 300);
+  }
+
+  #ownsInitialInput(session, proc) {
+    return this.#ownsInitialProcess(session, proc) && !session.initialInputUncertain && !session.eventsPending
+      && !session.activity?.ended && !session.activity?.uncertain;
+  }
+
+  #ownsInitialProcess(session, proc) {
+    return Boolean(proc && this.sessions.get(session.runId) === session && session.proc === proc && !this.stopping
+      && !session.cancelled && !session.suspending && !session.exiting && !session.failure && !session.launchFailed && !session.confirmed
+    );
+  }
+
+  #initialInputUnconfirmed(session, transportFailed = false) {
+    clearTimeout(session.initialSubmitTimer); session.initialSubmitPending = false;
+    session.activity?.input();
+    if (transportFailed) session.initialInputUncertain = true;
+    if (transportFailed && session.activity) session.activity.uncertain = true;
+    const reason = transportFailed ? 'Initial prompt input was not confirmed. Check the terminal before continuing; no input will be retried.'
+      : 'Initial prompt submission was cancelled because terminal ownership or input changed. Check the terminal before submitting.';
+    this.#push(session, { initialInput: { status: 'unconfirmed', reason } });
+    this.board.updateRun(session.runId, { lifecycle: 'initial-input-unconfirmed', waitingReason: reason, turnComplete: false }).catch(() => {});
   }
 
   #push(session, entry) {
@@ -329,8 +369,11 @@ export class Supervisor {
             if (session.activity) session.activity.uncertain = true;
             continue;
           }
+          if (event.name === 'SessionStart' && !event.agentId && !event.subordinate) {
+            session.inputEpoch++;
+            if (session.initialSubmitPending) this.#initialInputUnconfirmed(session);
+          }
           if (session.activity) {
-            if (event.name === 'SessionStart' && !event.agentId && !event.subordinate) session.inputEpoch++;
             session.activity.observe(event);
             // Subagent hooks share the parent's lifecycle file. A subordinate
             // Stop, failure or permission event must not finish/fail its parent.
@@ -407,7 +450,11 @@ export class Supervisor {
     }
     if (!session.sawEvent) { session.sawEvent = true; clearTimeout(session.watchdog); await this.board.updateRun(session.runId, { lifecycle: 'events-received', waitingReason: '' }).catch(() => {}); }
     if (signal.kind === 'started') {
-      if (session.paste) setTimeout(() => this.#paste(session), 1500);
+      if (session.paste) {
+        clearTimeout(session.pasteReadyTimer);
+        const proc = session.proc;
+        session.pasteReadyTimer = setTimeout(() => { if (this.#ownsInitialInput(session, proc)) this.#paste(session); }, 1500);
+      }
     } else if (signal.kind === 'running') {
       if (session.status !== 'running') await this.#setStatus(session, 'running', { waitingReason: '', turnComplete: false });
     } else if (signal.kind === 'waiting') {
@@ -419,8 +466,9 @@ export class Supervisor {
       const planning = !session.pipeline && session.stage === 'planning', reviewing = !session.pipeline && session.stage === 'code_review';
       if (signal.message) await writeFile(join(session.runDir, planning ? 'plan.md' : reviewing ? 'review.md' : 'last-message.md'), signal.message, { mode: 0o600 });
       await this.#setStatus(session, 'waiting_for_input', {
-        turns: session.turns, turnComplete: true, ...(planning && signal.message ? { hasPlan: true, planExcerpt: signal.message } : {}), ...(reviewing && signal.message ? { hasReview: true } : {}),
-        waitingReason: planning ? (signal.message ? 'The plan is ready. Review it, continue in the terminal, or approve it.' : 'The agent finished its turn without a plan message. Continue in the terminal.')
+        turns: session.turns, turnComplete: !session.initialInputUncertain, ...(planning && signal.message ? { hasPlan: true, planExcerpt: signal.message } : {}), ...(reviewing && signal.message ? { hasReview: true } : {}),
+        waitingReason: session.initialInputUncertain ? 'The agent finished a turn, but initial prompt input remains unconfirmed. Check the terminal; automatic advancement is blocked.'
+          : planning ? (signal.message ? 'The plan is ready. Review it, continue in the terminal, or approve it.' : 'The agent finished its turn without a plan message. Continue in the terminal.')
           : reviewing ? 'The review is ready. Check the findings, then confirm to record them.'
           : session.pipeline ? 'The agent finished its turn. Continue in the terminal or move the card.' : 'The agent finished its turn. Review the work, continue in the terminal, or confirm the stage.',
       });
@@ -434,6 +482,8 @@ export class Supervisor {
   }
 
   #kill(session) {
+    clearTimeout(session.pasteTimer); clearTimeout(session.pasteReadyTimer); clearTimeout(session.initialSubmitTimer);
+    session.initialSubmitPending = false;
     session.nativeReceiptReader?.close();
     if (!session.proc) return;
     killPidGroup(session.proc.pid, 'SIGTERM');
@@ -444,6 +494,7 @@ export class Supervisor {
 
   async #exited(session, exitCode, signal) {
     session.exiting = true;
+    clearTimeout(session.pasteReadyTimer); clearTimeout(session.initialSubmitTimer); session.initialSubmitPending = false;
     session.nativeReceiptReader?.close();
     clearInterval(session.poll); clearInterval(session.usagePoll); clearTimeout(session.pasteTimer); clearTimeout(session.watchdog);
     // Read the last lifecycle events (for example a final Stop) and usage before the session closes.
@@ -490,7 +541,10 @@ export class Supervisor {
     if (typeof data !== 'string' || Buffer.byteLength(data) > INPUT_BYTES) throw new AgentError(`Send at most ${INPUT_BYTES / 1024} KiB of input at a time.`, 'INPUT_TOO_LARGE', 413);
     const session = this.#session(runId);
     if (session.suspending) throw new AgentError('The agent is being paused. Wait for it to exit before resuming.', 'SESSION_SUSPENDING', 409);
-    if (data) { session.inputEpoch++; session.activity?.input(); }
+    if (data) {
+      session.inputEpoch++; session.activity?.input();
+      if (session.initialSubmitPending) this.#initialInputUnconfirmed(session);
+    }
     session.proc.write(data);
     if (session.status === 'waiting_for_input' && /\r|\n/.test(data)) this.#setStatus(session, 'running', { waitingReason: '' });
   }
@@ -499,12 +553,14 @@ export class Supervisor {
   async checkpointMessage(runId) {
     const session = this.sessions.get(runId);
     if (!session?.pipeline || !session.proc) return { status: 'unavailable', reason: 'session_unavailable' };
+    if (session.initialSubmitPending) return { status: 'unavailable', reason: 'initial_input_pending' };
     try { await this.#readEvents(session); }
     catch { return { status: 'unavailable', reason: 'events_unavailable' }; }
     const nativeId = session.nativeSessionId, proc = session.proc;
     const epoch = () => !this.stopping && this.sessions.get(runId) === session && session.proc === proc && proc
       && !session.cancelled && !session.suspending && !session.exiting && !session.failure && !session.launchFailed && !session.activity?.ended
       && !session.activity?.uncertain && !session.eventsPending
+      && !session.initialSubmitPending && !session.initialInputUncertain
       && session.nativeSessionId === nativeId ? session.inputEpoch : null;
     if (epoch() === null || !nativeId || session.eventsPending || session.activity?.uncertain) return { status: 'unavailable', reason: 'session_unavailable' };
     const path = session.nativeHistoryPath || (session.provider === 'codex' ? session.usage?.tail.path : null);
