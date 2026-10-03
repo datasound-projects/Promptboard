@@ -50,7 +50,11 @@ export class PipelineAutomations {
     try { rows = structuredClone(rows); metadata = structuredClone({ task: context?.task, project: context?.project, cwd: context?.cwd }); }
     catch { return Promise.reject(new PipelineAutomationError('Use plain task metadata and automation definitions.', 'AUTOMATION_CONTEXT_INVALID')); }
     const controller = new AbortController(), external = AbortSignal.any([controller.signal, ...(signal ? [signal] : [])]);
-    const deadline = trigger === 'exit' ? AbortSignal.timeout(Math.ceil(exitBudgetMs)) : null;
+    // AbortSignal.timeout uses an unreferenced timer. Keep accepted work alive
+    // until its bounded outcome is recorded, including on Node 22 without I/O.
+    const deadlineController = trigger === 'exit' ? new AbortController() : null;
+    const deadlineTimer = deadlineController ? setTimeout(() => deadlineController.abort(new DOMException('Exit automation budget expired.', 'TimeoutError')), Math.ceil(exitBudgetMs)) : null;
+    const deadline = deadlineController?.signal;
     const combined = AbortSignal.any([external, ...(deadline ? [deadline] : [])]);
     const job = { controller, trigger, transitionId: key.transitionId, started: new Set(), finished: false };
     this.jobs.set(ownerKey, job);
@@ -92,7 +96,7 @@ export class PipelineAutomations {
         let result;
         if (external.aborted || deadline?.aborted || dispatchRemaining !== null && dispatchRemaining <= 0)
           result = { status: external.aborted ? 'cancelled' : 'timed_out', reason: 'The move stopped or its exit budget expired before dispatch.' };
-        else if (row.type === 'send_message') result = await this.#message(row, ctx, AbortSignal.any([combined, AbortSignal.timeout(Math.ceil(messageTimeoutMs))]));
+        else if (row.type === 'send_message') result = await this.#message(row, ctx, combined, messageTimeoutMs);
         else {
           try { result = await this.actions.run(row, ctx, { signal: combined, timeoutMs: dispatchRemaining === null ? null : Math.max(1, dispatchRemaining) }); }
           catch { result = { status: 'failed', errorCode: 'AUTOMATION_START_FAILED', reason: 'The automation could not start with this task context.' }; }
@@ -104,6 +108,7 @@ export class PipelineAutomations {
       return { duplicate: false, cancelled: external.aborted, safeToAdvance: !external.aborted && !cleanupUnconfirmed,
         outcomes: final.actions.filter(action => action.trigger === trigger) };
     }).finally(() => {
+      clearTimeout(deadlineTimer);
       job.finished = true;
       // Retain an unresolved script tree so Cancel/shutdown can retry stopping it.
       if (!this.#ownsWork(job) && this.jobs.get(ownerKey) === job) this.jobs.delete(ownerKey);
@@ -111,7 +116,9 @@ export class PipelineAutomations {
     return job.promise;
   }
 
-  async #message(row, context, signal) {
+  async #message(row, context, parentSignal, timeoutMs) {
+    const controller = new AbortController(), timer = setTimeout(() => controller.abort(new DOMException('Message acknowledgement budget expired.', 'TimeoutError')), Math.ceil(timeoutMs));
+    const signal = AbortSignal.any([parentSignal, controller.signal]);
     const startedAt = performance.now();
     try {
       signal.throwIfAborted();
@@ -124,7 +131,7 @@ export class PipelineAutomations {
       const timed = signal.aborted && signal.reason?.name === 'TimeoutError';
       return { status: signal.aborted ? (timed ? 'timed_out' : 'cancelled') : 'failed', errorCode: signal.aborted ? (timed ? 'MESSAGE_TIMEOUT' : 'MESSAGE_CANCELLED') : 'MESSAGE_FAILED',
         reason: 'The agent message did not confirm delivery.', durationMs: Math.round(performance.now() - startedAt) };
-    }
+    } finally { clearTimeout(timer); }
   }
 
   cancel(key) {

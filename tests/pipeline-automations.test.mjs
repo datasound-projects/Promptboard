@@ -60,7 +60,7 @@ test('changed definitions and incorrect phase fail before any action starts; uns
 test('one total exit budget stops a hung callback and skips later rows while enter groups keep their own per-row budget', async t => {
   const input = move('budget', 'task', { onExit: [row('hung'), row('never')], onEnter: [row('enter')] }), seen = [];
   const ctx = await fixture(t, input, { actions: new PipelineActions({ notifier: value => { seen.push(value.id); return value.title === 'Enter' ? { confirmed: true } : new Promise(() => {}); } }) });
-  const result = await ctx.runner.runGroup({ ...ctx, trigger: 'exit', rows: input.onExit, exitBudgetMs: 150 });
+  const result = await ctx.runner.runGroup({ ...ctx, trigger: 'exit', rows: input.onExit, exitBudgetMs: 1000 });
   assert.equal(result.safeToAdvance, true); assert.equal(result.cancelled, false); assert.deepEqual(result.outcomes.map(action => action.status), ['timed_out', 'skipped']); assert.equal(seen.length, 1);
   await enter(ctx.journal, input);
   // Input definitions are fixed by the move; receiver acknowledgement can vary by group.

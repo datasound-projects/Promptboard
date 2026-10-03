@@ -4,6 +4,8 @@
 
 - Prepare ordered automation groups with durable dispatch grants, configuration/metadata guards, a sixty-second exit budget, independent task cancellation, strict message acknowledgements and retained ownership of scripts whose termination is unconfirmed. Refuse incomplete group replay. Keep runtime/session/editor integration pending and enabled rows unavailable.
 
+- Keep accepted automation/action/message deadlines referenced until completion so pending callbacks receive their bounded outcomes on Node 22 without an external keep-alive handle. Clear owned timers on completion and verify standalone notification timeout in a subprocess.
+
 - Prepare the durable automation move journal with atomic revision publication, stable request/action identities, ordered exit/lifecycle/enter grants, persisted webhook attempts and dead-owner interruption recovery. Refuse replay after unknown outcomes or corrupt/newer records. Keep enabled rows unavailable until runtime and message scheduling are integrated; no board or state-schema changes.
 
 - Make Merge and Base pack UI fixtures await completed requests and saved results before asserting. Keep intentionally pending discovery tests bounded. Increase the test runner's file budget to five minutes so Node 22 can finish the growing UI file; retain explicit scenario deadlines and concurrency two.
