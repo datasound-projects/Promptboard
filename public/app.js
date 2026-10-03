@@ -287,6 +287,7 @@ async function loadProviders() {
     token = safeText(session.token, 1000);
     providers = Array.isArray(status.providers) ? status.providers.filter((item) => item && KNOWN_PROVIDERS.includes(item.id)) : [];
     if (!token) throw new Error('The local server did not return a session token.');
+    browserNotifications?.resume();
     for (const option of $('#provider').options) {
       const provider = providers.find((item) => item.id === option.value);
       option.textContent = `${providerInfo[option.value].name}${provider?.available ? '' : ' · not installed'}`;
@@ -302,6 +303,7 @@ async function loadProviders() {
     await loadModels({ model: chosenModel(), effort: $('#effort').value });
   } catch (error) {
     token = '';
+    browserNotifications?.stop();
     $('#cli-status-label').textContent = 'Server unavailable';
     $('#provider-note').textContent = 'Could not reach the local server. Restart the app, then reload this page.';
     $('#generate-button').disabled = true;
@@ -3906,8 +3908,8 @@ function pipelineAutomationEditor(entry) {
   const heading = document.createElement('h3'); heading.textContent = 'Automations';
   section.append(heading, paragraph('Actions run in order when a card leaves or arrives. Saving this list runs nothing.', 'note'));
   const types = { run_script: 'Run script', webhook: 'Call webhook', send_message: 'Send message to agent', notify: 'Notify me' };
-  const supported = type => ['run_script', 'webhook'].includes(type);
-  const defaults = type => ({ run_script: { script: '', timeoutMinutes: 10 }, webhook: { url: '', method: 'POST', body: '', headers: {} } }[type]);
+  const supported = type => ['run_script', 'webhook', 'notify'].includes(type);
+  const defaults = type => ({ run_script: { script: '', timeoutMinutes: 10 }, webhook: { url: '', method: 'POST', body: '', headers: {} }, notify: { title: '{{title}}', body: '{{toColumn}}' } }[type]);
   const uniqueName = (column, stem) => {
     const used = new Set([...column.automations.onEnter, ...column.automations.onExit].map(row => row.name.trim().toLowerCase()));
     let name = stem; for (let number = 2; used.has(name.toLowerCase()); number++) name = `${stem} ${number}`;
@@ -3954,7 +3956,8 @@ function pipelineAutomationEditor(entry) {
       item.append(caption, switchLabel, field(row, 'name', 'Action name', { max: 80, required: true }), type);
       if (row.type === 'run_script') item.append(field(row, 'script', 'Script', { multiline: true, required: true }), field(row, 'timeoutMinutes', 'Timeout (minutes)', { numeric: true }), paragraph('Scripts run in the task worktree, or project checkout when it has none. Windows uses PowerShell; propagate a native command’s exit code with exit $LASTEXITCODE.', 'note'));
       else if (row.type === 'webhook') item.append(field(row, 'url', 'Webhook URL', { max: 8192, required: true }), field(row, 'method', 'HTTP method', { choices: ['GET', 'POST', 'PUT'] }), field(row, 'body', 'JSON body', { multiline: true }), field(row, 'headers', 'Headers (JSON object)', { multiline: true }));
-      else item.append(paragraph(row.type === 'send_message' ? 'Agent message delivery is not available yet. This saved row is preserved.' : 'Desktop notifications are not available yet. This saved row is preserved.', 'note'));
+      else if (row.type === 'notify') item.append(field(row, 'title', 'Notification title', { max: 500 }), field(row, 'body', 'Notification body', { multiline: true, max: 4000 }), paragraph('Enable browser notifications in Settings to receive this alert. A browser display event confirms delivery; missing permission, closed browsers or unsupported display events leave it unconfirmed.', 'note'));
+      else item.append(paragraph('Agent message delivery is not available yet. This saved row is preserved.', 'note'));
       const buttons = [];
       for (const step of [-1, 1]) {
         const button = detailButton(step < 0 ? 'Move up' : 'Move down', () => {
@@ -4226,7 +4229,30 @@ function saveServerSettings(change) {
   settingsSaveQueue = settingsSaveQueue.then(save, save);
   return settingsSaveQueue;
 }
+const browserNotifications = window.PromptboardNotifications ? new window.PromptboardNotifications({ token: () => token, onChange: renderNotificationSettings,
+  onOpen: async ({ projectId, taskId }) => {
+    await loadBoard();
+    const project = board?.projects.find(item => item.id === projectId);
+    if (!project?.tasks.some(task => task.id === taskId)) { announce('The notification task is no longer available.'); return; }
+    for (const dialog of document.querySelectorAll('dialog[open]')) dialog.close();
+    location.hash = '#/kanban'; showPage(); selectProject(projectId); await openTaskDetails(taskId);
+  } }) : null;
+function renderNotificationSettings() {
+  const enable = $('#set-notifications-enable'), disable = $('#set-notifications-disable');
+  enable.disabled = !browserNotifications?.supported() || browserNotifications.busy || browserNotifications.connected;
+  enable.textContent = browserNotifications?.enabled ? 'Reconnect browser notifications' : 'Enable browser notifications';
+  disable.hidden = !browserNotifications?.enabled;
+  $('#set-notifications-status').textContent = browserNotifications?.status || 'Desktop notifications are unavailable in this browser.';
+}
+$('#set-notifications-enable').addEventListener('click', () => browserNotifications?.enable());
+$('#set-notifications-disable').addEventListener('click', () => browserNotifications?.disable());
+window.addEventListener('pagehide', () => browserNotifications?.stop());
+window.addEventListener('pageshow', event => { if (event.persisted) browserNotifications?.resume(); });
+window.addEventListener('storage', event => {
+  if ((event.key === 'promptboard:browser-notifications' && event.newValue !== '1') || event.key === null) browserNotifications?.disable();
+});
 function renderSettings() {
+  renderNotificationSettings();
   let theme = 'light'; try { theme = localStorage.getItem(THEME_KEY) || 'light'; } catch {}
   $('#set-theme').value = ['system', 'light', 'dark'].includes(theme) ? theme : 'light';
   $('#set-start').value = uiPref('startPage');
