@@ -16,6 +16,7 @@ import { FAILURE_MESSAGES, killPidGroup, resolveExecutable, trackPid, untrackPid
 import { addClaudeRecord, addCodexRecord, claudeTranscript, findCodexRollout, newUsage, readNewLines, usageSummary } from './usage.mjs';
 import { prepareBase } from './base-context.mjs';
 import { BaseDeliveryError, checkBaseRevocations } from './base-resolver.mjs';
+import { SessionActivity } from './session-activity.mjs';
 
 const RING_BYTES = 1024 * 1024; // Live scrollback kept per run for reconnects.
 const LOG_BYTES = 20 * 1024 * 1024; // Output log file cap per run.
@@ -185,6 +186,7 @@ export class Supervisor {
     const session = { runId, taskId: run.taskId, stage: run.stage, provider: run.config.provider, proc, seq: 0, ring: [], ringBytes: 0,
       subscribers: new Set(), log, logBytes: 0, eventsFile, eventsOffset: 0, runDir, paste: built.paste, turns: 0, status: 'running', startedAt: Date.now(), sessionId,
       pipeline: run.config.pipeline === true, resumeNativeId: run.resumeFrom?.nativeSessionId, baseCleanup: baseDelivery.cleanup, baseManifest: supplied };
+    if (session.pipeline) session.activity = new SessionActivity(session.provider);
     this.sessions.set(runId, session);
     session.exited = new Promise(resolve => { session.resolveExit = resolve; });
     // Listen before any await so early output and fast exits are never lost.
@@ -232,6 +234,7 @@ export class Supervisor {
   }
 
   #output(session, data) {
+    session.activity?.output();
     this.#push(session, { data });
     if (session.logBytes < LOG_BYTES) {
       const chunk = session.logBytes + Buffer.byteLength(data) > LOG_BYTES ? '\n[Promptboard: output log limit reached]\n' : data;
@@ -256,11 +259,26 @@ export class Supervisor {
         session.eventsOffset += Buffer.byteLength(text.slice(0, end + 1));
         for (const line of text.slice(0, end).split('\n')) {
           let event; try { event = JSON.parse(line); } catch { continue; }
+          if (session.activity) {
+            session.activity.observe(event);
+            // Subagent hooks share the parent's lifecycle file. A subordinate
+            // Stop, failure or permission event must not finish/fail its parent.
+            if (event.agentId || event.subordinate) continue;
+          }
           await this.#locateUsage(session, event);
           await this.#signal(session, interpretEvent(session.provider, event));
         }
       } finally { await handle.close(); }
-    } finally { session.reading = false; }
+    } finally { try { await this.#publishActivity(session); } finally { session.reading = false; } }
+  }
+
+  async #publishActivity(session) {
+    if (!session.activity || !session.proc || session.cancelled || session.suspending || session.launchFailed) return;
+    const activity = session.activity.snapshot(), key = JSON.stringify(activity);
+    if (key === session.activityKey) return;
+    await this.board.updateRun(session.runId, { activity });
+    session.activityKey = key;
+    this.#push(session, { activity });
   }
 
   /** Find the CLI's own session file once: Claude names it in hook payloads, Codex by thread ID. */
@@ -351,7 +369,9 @@ export class Supervisor {
     clearTimeout(session.killTimer);
     await new Promise(resolve => session.log.end(resolve));
     const endedAt = Date.now();
-    const exit = { exitCode: Number.isInteger(exitCode) ? exitCode : null, endedAt };
+    session.activity?.observe({ name: 'SessionEnd' });
+    const exit = { exitCode: Number.isInteger(exitCode) ? exitCode : null, endedAt,
+      ...(session.activity ? { activity: session.activity.snapshot() } : {}) };
     const current = await this.board.run(session.runId).catch(() => null);
     if (!current) { /* Run removed. */ }
     else if (session.confirmed) await this.board.updateRun(session.runId, exit).catch(() => {});

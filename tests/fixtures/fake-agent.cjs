@@ -32,11 +32,12 @@ if (provider === 'claude') {
 } else if (provider === 'gemini') {
   const settings = JSON.parse(readFileSync(process.env.GEMINI_CLI_SYSTEM_SETTINGS_PATH, 'utf8'));
   prompt = flag('--prompt-interactive') ? JSON.parse(flag('--prompt-interactive').split('\n').slice(1).join('\n')) : '';
-  const map = { SessionStart: 'SessionStart', UserPromptSubmit: 'BeforeAgent', Stop: 'AfterAgent', PermissionRequest: 'Notification' };
+  const map = { SessionStart: 'SessionStart', UserPromptSubmit: 'BeforeAgent', Stop: 'AfterAgent', PermissionRequest: 'Notification', PreToolUse: 'BeforeTool', PostToolUse: 'AfterTool', SessionEnd: 'SessionEnd' };
   emit = (name, extra = {}) => {
     const event = map[name];
+    const { tool_use_id, ...geminiExtra } = extra; // Gemini's documented tool hooks have no Claude tool-use ID.
     for (const group of settings.hooks[event] || []) for (const hook of group.hooks) {
-      spawnSync('/bin/sh', ['-c', hook.command], { input: JSON.stringify({ hook_event_name: event, session_id: flag('--resume') || 'gemini-session', prompt_response: extra.last_assistant_message, notification_type: name === 'PermissionRequest' ? 'ToolPermission' : undefined }) });
+      spawnSync('/bin/sh', ['-c', hook.command], { input: JSON.stringify({ ...geminiExtra, hook_event_name: event, session_id: flag('--resume') || 'gemini-session', prompt_response: extra.last_assistant_message, notification_type: name === 'PermissionRequest' ? 'ToolPermission' : undefined }) });
     }
   };
 }
@@ -66,6 +67,33 @@ const baseEmit = emit;
 emit = (name, extra = {}) => baseEmit(name, { ...(transcript ? { transcript_path: transcript } : {}), ...(flag('--resume') && process.env.FAKE_AGENT_RESUME_ID ? { session_id: process.env.FAKE_AGENT_RESUME_ID } : {}), ...extra });
 emit('SessionStart');
 function turn(text) {
+  if (prompt.includes('ACTIVITY_FIXTURE') && text.startsWith('activity-')) {
+    const tool = provider === 'gemini' ? 'exit_plan_mode' : 'ExitPlanMode';
+    if (text === 'activity-start') {
+      emit('PreToolUse', { tool_name: 'Bash', tool_use_id: 'main-tool' });
+      emit('SubagentStart', { agent_id: 'child' });
+      emit('PreToolUse', { agent_id: 'child', tool_name: 'Read', tool_use_id: 'child-tool' });
+      emit('Stop', { agent_id: 'child', last_assistant_message: 'Child response must not replace parent output.' });
+      emit('Stop', { last_assistant_message: 'Parent response with outstanding work.', background_tasks: [{ command: 'PRIVATE COMMAND' }], session_crons: [{ prompt: 'PRIVATE CRON' }] });
+    } else if (text === 'activity-finish') {
+      emit('PostToolUse', { tool_name: 'Bash', tool_use_id: 'main-tool' });
+      emit('PostToolUse', { agent_id: 'child', tool_name: 'Read', tool_use_id: 'child-tool' });
+      emit('SubagentStop', { agent_id: 'child', background_tasks: [], session_crons: [] });
+      emit('Stop', { last_assistant_message: 'All work finished.', background_tasks: [], session_crons: [] });
+    } else if (text === 'activity-plan-request') {
+      emit('PreToolUse', { tool_name: tool, tool_use_id: 'plan-tool' });
+      emit('PermissionRequest', { tool_name: tool });
+    } else if (text === 'activity-plan-reject') {
+      if (provider === 'gemini') emit('PostToolUse', { tool_name: tool, tool_response: { returnDisplay: 'Rejected (no feedback)' } });
+      else emit('PostToolUseFailure', { tool_name: tool, tool_use_id: 'plan-tool' });
+    } else if (text === 'activity-plan-approve') {
+      emit('PostToolUse', { tool_name: tool, tool_use_id: 'approved-plan-tool', tool_response: { returnDisplay: 'Plan approved: /fixture/plan.md' } });
+      emit('Stop', { last_assistant_message: 'Approved plan.', background_tasks: [], session_crons: [] });
+    } else if (text === 'activity-child-failure') {
+      emit('StopFailure', { agent_id: 'child', error: 'billing_error' });
+    }
+    process.stdout.write(`${text} emitted\r\n`); return;
+  }
   emit('UserPromptSubmit');
   process.stdout.write(`working on ${text.length} characters\r\n`);
   if (text.includes('BILLING')) { emit('StopFailure', { error: 'billing_error', last_assistant_message: 'API Error: billing' }); return; }

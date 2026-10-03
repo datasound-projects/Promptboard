@@ -9,6 +9,7 @@ import { appendFileSync, readFileSync } from 'node:fs';
 
 const [eventsFile, provider, argPayload] = process.argv.slice(2);
 const pick = value => (typeof value === 'string' ? value.slice(0, 200_000) : undefined);
+const metadata = value => (typeof value === 'string' && value.length <= 256 ? value : undefined);
 
 try {
   if (eventsFile && ['claude', 'codex', 'gemini'].includes(provider)) {
@@ -21,6 +22,16 @@ try {
       sessionId: pick(data.session_id) || pick(data['thread-id']),
       notification: pick(data.notification_type) || pick(data.notificationType),
       tool: pick(data.tool_name),
+      toolId: metadata(data.tool_use_id),
+      agentId: metadata(data.agent_id),
+      subordinate: data.agent_id != null && data.agent_id !== '' || undefined,
+      activityUncertain: [data.tool_use_id, data.agent_id].some(value => value != null && metadata(value) === undefined) || undefined,
+      backgroundRequested: data.tool_input?.run_in_background === true || undefined,
+      // Keep counts, never commands, scheduled prompts or tool results.
+      backgroundCount: Array.isArray(data.background_tasks) ? data.background_tasks.length : undefined,
+      scheduledCount: Array.isArray(data.session_crons) ? data.session_crons.length : undefined,
+      planApproved: provider === 'gemini' && data.hook_event_name === 'AfterTool' && data.tool_name === 'exit_plan_mode'
+        ? !data.tool_response?.error && typeof data.tool_response?.returnDisplay === 'string' && data.tool_response.returnDisplay.startsWith('Plan approved: ') : undefined,
       error: pick(data.error),
       transcriptPath: pick(data.transcript_path),
       message: pick(data.last_assistant_message) || pick(data['last-assistant-message']) || pick(data.prompt_response),

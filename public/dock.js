@@ -224,6 +224,7 @@ function handleItem(session, item) {
   if (Number.isInteger(item.seq)) session.lastSeq = item.seq;
   if (typeof item.data === 'string') { session.lastOutputAt = Date.now(); write(session, item.data); renderDockConnection(session); }
   if (item.usage && typeof item.usage === 'object') { session.run = { ...session.run, usage: item.usage }; if (dock.selected === session.runId) renderDockDetails(session); }
+  if (item.activity && typeof item.activity === 'object') { session.run = { ...session.run, activity: item.activity }; updateSessionTab(session); updateDockIndicator(); scheduleBoardRefresh(); }
   if (item.status) { session.run = { ...session.run, status: item.status, waitingReason: item.reason || '' }; updateSessionTab(session); updateDockIndicator(); scheduleBoardRefresh(); }
   if (item.ended || item.missing) markEnded(session);
 }
@@ -308,7 +309,7 @@ function renderDockConnection(session = dock.sessions.get(dock.selected)) {
 function updateDockIndicator() {
   // Counts every live run on the board, including runs whose tab was closed.
   const live = (board?.runs || []).filter(run => DOCK_LIVE.has(run.status));
-  const waiting = live.filter(run => run.status === 'waiting_for_input');
+  const waiting = live.filter(run => agentState(run) === 'awaits_you');
   const indicator = $('#dock-indicator');
   indicator.textContent = waiting.length ? `${waiting.length} waiting for you` : live.length ? `${live.length} running` : '';
   indicator.classList.toggle('waiting', waiting.length > 0);

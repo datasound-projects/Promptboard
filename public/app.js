@@ -1834,7 +1834,13 @@ function providerName(id) { return board?.execution?.providers?.[id]?.name || pr
 const AGENT_STATES = { queued: 'on_hold', running: 'active', waiting_for_input: 'awaits_you' };
 const AGENT_STATE_TEXT = { active: 'Active', on_hold: 'On hold', awaits_you: 'Awaits you', inactive: 'Inactive' };
 const AGENT_STATE_ICON = { active: '●', on_hold: '○', awaits_you: '!', inactive: '–' };
-function agentState(run) { return AGENT_STATES[run?.status] || 'inactive'; }
+function agentState(run) {
+  if (run?.config?.pipeline && RUN_LIVE.includes(run.status) && run.status !== 'queued' && run.activity) {
+    if (run.activity.phase === 'working') return 'active';
+    if (run.activity.phase === 'waiting') return 'awaits_you';
+  }
+  return AGENT_STATES[run?.status] || 'inactive';
+}
 function agentStateText(run) {
   if (run?.status === 'suspended') return 'Paused';
   const state = agentState(run);
@@ -1844,6 +1850,19 @@ function agentModel(run) { return `${providerName(run.config?.provider)} · ${ru
 function agentActivity(run) {
   if (run?.lifecycle === 'suspending' && RUN_LIVE.includes(run.status)) return 'Pausing the agent; waiting for its process to exit…';
   const state = agentState(run);
+  if (run?.config?.pipeline && RUN_LIVE.includes(run.status) && run.status !== 'queued' && run.activity) {
+    const activity = run.activity;
+    if (activity.phase === 'waiting') return !run.turnComplete && run.waitingReason || 'The agent needs your answer in the terminal.';
+    const work = [];
+    for (const [key, label] of [['tools', 'tool'], ['subagents', 'subagent'], ['background', 'background task'], ['scheduled', 'scheduled wakeup']]) {
+      if (activity[key]) work.push(`${activity[key]} ${label}${activity[key] === 1 ? '' : 's'}`);
+    }
+    if (work.length) return `Working… ${work.join(', ')} outstanding.`;
+    if (activity.uncertain) return 'Activity tracking is incomplete. Check the terminal before continuing.';
+    if (activity.phase === 'settling') return 'The agent finished its response; waiting for terminal output to settle…';
+    if (activity.phase === 'ended') return 'The CLI reported that its session ended.';
+    if (activity.coverage === 'turns-only' && state === 'active') return 'Working… this CLI reports completed turns; tool activity and permission waits are visible in the terminal.';
+  }
   if (state === 'awaits_you') return run.waitingReason || (run.turnComplete ? 'Turn finished. Review the changes or continue in the terminal.' : 'Permission or input needed. Open the terminal.');
   if (state === 'on_hold') return 'Queued until an agent slot is free.';
   if (state === 'active') return run.lifecycle === 'waiting-for-first-event' ? 'Starting…' : run.lifecycle === 'no-events-yet' ? 'Working… no lifecycle event yet; check the terminal.' : 'Working…';

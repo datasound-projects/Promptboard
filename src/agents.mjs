@@ -133,7 +133,7 @@ const tomlString = value => JSON.stringify(value); // A TOML basic string accept
 const tomlValue = value => Array.isArray(value) ? `[${value.map(tomlString).join(',')}]` : value && typeof value === 'object' ? `{${Object.entries(value).map(([key, item]) => `${tomlString(key)}=${tomlString(item)}`).join(',')}}` : tomlString(value);
 const shQuote = value => `'${String(value).replaceAll("'", "'\\''")}'`;
 
-async function geminiSystemSettings(runDir, hookCommand, { plan = false, mcpServers = null } = {}) {
+async function geminiSystemSettings(runDir, hookCommand, { plan = false, pipeline = false, mcpServers = null } = {}) {
   // Keep any administrator settings: copy the default system file and add our hooks.
   const defaultPath = platform() === 'darwin' ? '/Library/Application Support/GeminiCli/settings.json'
     : platform() === 'win32' ? 'C:\\ProgramData\\gemini-cli\\settings.json' : '/etc/gemini-cli/settings.json';
@@ -144,7 +144,7 @@ async function geminiSystemSettings(runDir, hookCommand, { plan = false, mcpServ
   }
   const hook = [{ hooks: [{ type: 'command', command: hookCommand, name: 'promptboard-lifecycle' }] }];
   const hooks = { ...(base.hooks || {}) };
-  for (const event of ['SessionStart', 'BeforeAgent', 'AfterAgent', 'Notification']) hooks[event] = [...(hooks[event] || []), ...hook];
+  for (const event of ['SessionStart', 'BeforeAgent', 'AfterAgent', 'Notification', ...(pipeline ? ['BeforeTool', 'AfterTool', 'SessionEnd'] : [])]) hooks[event] = [...(hooks[event] || []), ...hook];
   const path = `${runDir}/gemini-system-settings.json`;
   // Gemini 0.30 offers plan approval mode only with experimental.plan; it is set for planning sessions only.
   const experimental = plan ? { experimental: { ...(base.experimental || {}), plan: true } } : {};
@@ -186,7 +186,8 @@ export async function buildSession({ provider, stage, config, message, runDir, e
   let args;
   if (provider === 'claude') {
     const hook = { type: 'command', command: nodePath, args: [HOOK_SCRIPT, eventsFile, 'claude'] };
-    const hooks = Object.fromEntries(['SessionStart', 'UserPromptSubmit', 'PermissionRequest', 'Notification', 'Stop', 'StopFailure', 'SessionEnd'].map(event => [event, [{ hooks: [hook] }]]));
+    const hooks = Object.fromEntries(['SessionStart', 'UserPromptSubmit', 'PermissionRequest', 'Notification', 'Stop', 'StopFailure', 'SessionEnd',
+      ...(pipeline ? ['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'PermissionDenied', 'SubagentStart', 'SubagentStop'] : [])].map(event => [event, [{ hooks: [hook] }]]));
     let mcpConfig = '{"mcpServers":{}}';
     if (selected.length) { mcpConfig = `${runDir}/base-claude-mcp.json`; await writeFile(mcpConfig, JSON.stringify({ mcpServers: jsonServers }), { mode: 0o600 }); }
     args = [resumeId ? '--resume' : '--session-id', resumeId || sessionId, '--settings', JSON.stringify({ hooks, statusLine: { type: 'command', command: [nodePath, fileURLToPath(new URL('./usage-status.mjs', import.meta.url)), `${runDir}/usage-status.json`].map(shQuote).join(' ') } })];
@@ -223,7 +224,7 @@ export async function buildSession({ provider, stage, config, message, runDir, e
     }
     if (inArgv && message) args.push(...(resumeId ? ['--', message] : [message]));
   } else if (provider === 'gemini') {
-    env.GEMINI_CLI_SYSTEM_SETTINGS_PATH = await geminiSystemSettings(runDir, [nodePath, HOOK_SCRIPT, eventsFile, 'gemini'].map(shQuote).join(' '), { plan, mcpServers: selected.length ? jsonServers : null });
+    env.GEMINI_CLI_SYSTEM_SETTINGS_PATH = await geminiSystemSettings(runDir, [nodePath, HOOK_SCRIPT, eventsFile, 'gemini'].map(shQuote).join(' '), { plan, pipeline, mcpServers: selected.length ? jsonServers : null });
     args = readOnly ? ['--extensions', 'none', '--allowed-mcp-server-names', ''] : [];
     if (resumeId) args.push('--resume', resumeId);
     if (readOnly) {

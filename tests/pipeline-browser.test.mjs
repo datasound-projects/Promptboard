@@ -4,6 +4,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { findChrome, launch } from './helpers/browser.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
+import { attachSession } from '../src/sessions.mjs';
 
 const chrome = await findChrome();
 test('column pipeline conversion and editing work by keyboard in both themes and narrow Chrome viewports', { skip: !chrome, timeout: 30000 }, async t => {
@@ -70,5 +71,23 @@ test('column pipeline conversion and editing work by keyboard in both themes and
   await browser.eval(`await loadBoard(); document.querySelector('#columns-form button[type="submit"]').click();`);
   await browser.until(`!document.querySelector('#columns-error').hidden && document.querySelector('#columns-error').textContent.includes('changed since')`, 'stale draft rejected after background refresh');
   assert.equal((await app.board.state()).projects[0].pipeline.columns.find(column => column.id === triage).name, 'Other editor');
+  await browser.eval(`document.querySelector('#columns-dialog').close();`);
+  await app.board.store.update(state => {
+    const run = { id: 'activity-display-fixture', taskId: card.id, projectId: project.id, stage: triage, status: 'waiting_for_input',
+      createdAt: Date.now(), config: { provider: 'claude', pipeline: true }, turnComplete: true,
+      waitingReason: 'The agent finished its response.', activity: { phase: 'working', tools: 2, subagents: 1, background: 1, scheduled: 1, ready: false } };
+    state.runs.push(run); attachSession(state, run);
+  });
+  await browser.eval(`await loadBoard(); document.querySelector('[data-id="${card.id}"]').scrollIntoView({ block: 'nearest', inline: 'center' });`);
+  await browser.until(`document.querySelector('[data-id="${card.id}"]').textContent.includes('2 tools')`, 'outstanding activity displayed separately from response completion');
+  assert.equal(await browser.eval(`return agentState(board.runs.find(run => run.id === 'activity-display-fixture'));`), 'active');
+  for (const theme of ['light', 'dark']) {
+    await browser.eval(`document.documentElement.dataset.theme = '${theme}';`);
+    assert.equal(await browser.layout(`const r = document.querySelector('[data-id="${card.id}"] .run-activity').getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth;`), true);
+  }
+  await app.board.updateRun('activity-display-fixture', { activity: { phase: 'waiting', permissionPending: true, ready: false } });
+  await browser.eval(`await loadBoard();`);
+  assert.equal(await browser.eval(`return agentState(board.runs.find(run => run.id === 'activity-display-fixture'));`), 'awaits_you');
+  assert.ok((await browser.eval(`return document.querySelector('[data-id="${card.id}"]').textContent;`)).includes('needs your answer'));
   assert.ok(!browser.consoleMessages.some(message => message.startsWith('EXCEPTION')), browser.consoleMessages.join('\n'));
 });
