@@ -84,6 +84,13 @@ function turn(text) {
     } else if (text === 'activity-plan-request') {
       emit('PreToolUse', { tool_name: tool, tool_use_id: 'plan-tool' });
       emit('PermissionRequest', { tool_name: tool });
+    } else if (text === 'activity-unrelated-results') {
+      emit('PostToolUse', { tool_name: 'Read', tool_use_id: 'unrelated-main' });
+      emit('PostToolUse', { agent_id: 'other-child', tool_name: 'Read', tool_use_id: 'unrelated-child' });
+    } else if (text === 'activity-child-permission') {
+      emit('SubagentStart', { agent_id: 'child' });
+      emit('PermissionRequest', { agent_id: 'child', tool_name: 'Bash' });
+      emit('Stop', { last_assistant_message: 'Parent finished while child awaits permission.' });
     } else if (text === 'activity-plan-reject') {
       if (provider === 'gemini') emit('PostToolUse', { tool_name: tool, tool_response: { returnDisplay: 'Rejected (no feedback)' } });
       else emit('PostToolUseFailure', { tool_name: tool, tool_use_id: 'plan-tool' });

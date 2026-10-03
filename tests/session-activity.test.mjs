@@ -9,6 +9,69 @@ import { ACTIVITY_QUIET_MS, SessionActivity } from '../src/session-activity.mjs'
 
 async function temp(t) { const dir = await mkdtemp(join(tmpdir(), 'pb-activity-')); t.after(() => rm(dir, { recursive: true, force: true })); return dir; }
 
+test('unrelated and late tool results cannot dismiss permission waits', () => {
+  for (const provider of ['claude', 'gemini']) {
+    const a = new SessionActivity(provider), end = provider === 'claude' ? 'PostToolUse' : 'AfterTool';
+    a.observe({ name: end, toolId: 'old', tool: 'Read' }, 1);
+    a.observe(provider === 'claude' ? { name: 'PermissionRequest', tool: 'Bash' }
+      : { name: 'Notification', notification: 'ToolPermission' }, 2);
+    for (const event of [{ name: end, toolId: 'old' }, { name: end, toolId: 'parallel' }, { name: end, agentId: 'child', toolId: 'child-tool' }]) {
+      a.observe(event, 3);
+      assert.equal(a.snapshot(100000).permissionPending, true);
+      assert.equal(a.snapshot(100000).phase, 'waiting');
+    }
+    a.observe({ name: provider === 'claude' ? 'Stop' : 'AfterAgent' }, 4);
+    assert.equal(a.snapshot(100000).ready, true);
+  }
+});
+
+test('identified permission results resolve only their own tool and agent', () => {
+  const a = new SessionActivity('claude');
+  a.observe({ name: 'PermissionRequest', agentId: 'first', toolId: 'same' }, 1);
+  a.observe({ name: 'PermissionRequest', agentId: 'second', toolId: 'same' }, 2);
+  a.observe({ name: 'PostToolUseFailure', agentId: 'first', toolId: 'same' }, 3);
+  assert.equal(a.snapshot().permissionPending, true);
+  a.observe({ name: 'PermissionDenied', agentId: 'second', toolId: 'same' }, 4);
+  assert.equal(a.snapshot().permissionPending, false);
+  a.observe({ name: 'Stop' }, 5); assert.equal(a.snapshot(100000).ready, true);
+  a.observe({ name: 'PermissionRequest', agentId: 'first', toolId: 'same' }, 6);
+  assert.equal(a.snapshot(100000).ready, true); // Late request for a finished tool cannot rearm.
+});
+
+test('main lifecycle boundaries do not dismiss another agent permission dialog', () => {
+  for (const name of ['Stop', 'SessionStart', 'UserPromptSubmit']) {
+    const a = new SessionActivity('claude');
+    a.observe({ name: 'SubagentStart', agentId: 'child' }, 1);
+    a.observe({ name: 'PermissionRequest', agentId: 'child' }, 2);
+    a.observe({ name }, 3);
+    assert.equal(a.snapshot(100000).permissionPending, true);
+    assert.equal(a.snapshot(100000).ready, false);
+    a.observe({ name: 'SubagentStop', agentId: 'other' }, 4);
+    assert.equal(a.snapshot().permissionPending, true);
+    a.observe({ name: 'SubagentStop', agentId: 'child' }, 5);
+    assert.equal(a.snapshot().permissionPending, false);
+    a.observe({ name: 'Stop' }, 6); assert.equal(a.snapshot(100000).ready, true);
+  }
+});
+
+test('unidentified subordinate waits and overflowing permission registries cannot establish readiness', () => {
+  for (const previouslyFinished of [false, true]) {
+    const unknown = new SessionActivity('claude');
+    if (previouslyFinished) unknown.observe({ name: 'PostToolUse', toolId: 'same' }, 0);
+    unknown.observe({ name: 'PermissionRequest', subordinate: true, toolId: 'same' }, 1);
+    unknown.observe({ name: 'PostToolUse', toolId: 'same' }, 2);
+    unknown.observe({ name: 'Stop' }, 3);
+    assert.equal(unknown.snapshot(100000).permissionPending, true);
+    assert.equal(unknown.snapshot(100000).uncertain, true);
+    assert.equal(unknown.snapshot(100000).ready, false);
+  }
+  const overflow = new SessionActivity('claude');
+  for (let n = 0; n < 4097; n++) overflow.observe({ name: 'PermissionRequest', agentId: `child-${n}` }, n);
+  overflow.observe({ name: 'Stop' }, 5000);
+  assert.equal(overflow.snapshot(100000).uncertain, true);
+  assert.equal(overflow.snapshot(100000).ready, false);
+});
+
 test('silence and permission waits never become a completed turn; quiet output is only a secondary gate', () => {
   const activity = new SessionActivity('claude');
   assert.equal(activity.snapshot(100000).ready, false);
