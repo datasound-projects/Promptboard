@@ -620,6 +620,32 @@ test('native approved plans move immediately while implementation continues; req
   }
 });
 
+test('batched main session startup prevents stale approval routing while a fresh native approval still routes', { skip: process.platform === 'win32' }, async t => {
+  const w = await world(t, true);
+  for (const provider of ['claude', 'gemini']) {
+    const config = defaultPipelineConfig();
+    for (const column of config.columns.filter(item => item.role === 'active')) column.strategy.agentOverride = provider;
+    await w.configure(config);
+    const card = await w.board.createTask({ projectId: w.projectId, title: 'New native lifecycle', prompt: 'ACTIVITY_FIXTURE' });
+    const original = (await w.move(card.id, 'planning')).run;
+    await until(async () => (await w.board.run(original.id)).activity?.ready);
+    const owned = w.board.executor.sessions.get(original.id), pid = owned.proc.pid;
+    const end = provider === 'claude' ? 'PostToolUse' : 'AfterTool', tool = provider === 'claude' ? 'ExitPlanMode' : 'exit_plan_mode';
+    const events = [{ name: end, tool, toolId: 'prior-lifecycle', planApproved: true },
+      { name: 'SessionStart' }, { name: provider === 'claude' ? 'Stop' : 'AfterAgent', backgroundCount: 0, scheduledCount: 0 }];
+    await appendFile(owned.eventsFile, events.map(event => JSON.stringify({ provider, ...event })).join('\n') + '\n');
+    await until(() => owned.activity.finishedTools.has(JSON.stringify([null, 'prior-lifecycle'])));
+    await until(async () => owned.activity.snapshot().ready && !owned.reading && (await w.board.run(original.id)).activity?.ready);
+    assert.equal((await w.taskNow(card.id)).column, 'planning');
+    assert.equal((await w.board.run(original.id)).planRoutes, undefined);
+    assert.equal((await w.board.run(original.id)).activity.planApproval, undefined);
+    assert.equal(owned.proc.pid, pid);
+    w.board.executor.input(original.id, 'activity-plan-approve\r');
+    await until(async () => (await w.taskNow(card.id)).column === 'executing');
+    assert.equal(owned.proc.pid, pid); await w.move(card.id, 'todo');
+  }
+});
+
 test('native plan targets follow the task profile, null targets stay put, and successful re-entry enables another approved stage', { skip: process.platform === 'win32' }, async t => {
   const w = await world(t, true), config = defaultPipelineConfig();
   config.profiles = [{ id: 'profile-plan', name: 'Custom planning', columns: { planning: { planExitTargetId: 'testing' } } }];

@@ -85,6 +85,59 @@ test('approval requires a main native completed plan tool, never a request, reje
   }
 });
 
+test('main session startup revokes prior approval and termination without accepting late old tools', () => {
+  for (const provider of ['claude', 'gemini']) {
+    const a = new SessionActivity(provider), tool = provider === 'claude' ? 'ExitPlanMode' : 'exit_plan_mode';
+    const start = provider === 'claude' ? 'PreToolUse' : 'BeforeTool', end = provider === 'claude' ? 'PostToolUse' : 'AfterTool';
+    a.observe({ name: end, tool, toolId: 'old-approved', planApproved: true }, 1);
+    a.observe({ name: 'SessionEnd' }, 2);
+    assert.equal(a.snapshot(100000).phase, 'ended'); assert.ok(a.snapshot().planApproval);
+    for (const child of [{ agentId: 'child' }, { subordinate: true }]) {
+      a.observe({ name: 'SessionStart', ...child }, 3);
+      assert.equal(a.snapshot().phase, 'ended'); assert.equal(a.snapshot().planApproval.toolId, 'old-approved');
+    }
+    a.observe({ name: 'SessionStart' }, 4);
+    assert.equal(a.snapshot(100000).phase, 'working'); assert.equal(a.snapshot(100000).ready, false);
+    assert.equal(a.snapshot().parentTurnComplete, false); assert.equal(a.snapshot().planApproval, undefined);
+    a.observe({ name: start, tool, toolId: 'old-approved' }, 5);
+    a.observe({ name: end, tool, toolId: 'old-approved', planApproved: true }, 6);
+    assert.equal(a.snapshot().planApproval, undefined); assert.equal(a.snapshot().tools, 0);
+    a.observe({ name: end, tool, toolId: 'fresh-approved', planApproved: true }, 7);
+    assert.equal(a.snapshot().planApproval.toolId, 'fresh-approved');
+    a.observe({ name: end, tool, toolId: 'old-approved', planApproved: true }, 8);
+    assert.equal(a.snapshot().planApproval.toolId, 'fresh-approved');
+    a.observe({ name: 'SessionStart' }, 9); // Startup also supersedes an approval before SessionEnd.
+    assert.equal(a.snapshot().planApproval, undefined); assert.equal(a.snapshot(100000).ready, false);
+  }
+});
+
+test('main session startup retains outstanding work and uncertain observations until native completion evidence', () => {
+  for (const provider of ['claude', 'gemini']) {
+    const a = new SessionActivity(provider), start = provider === 'claude' ? 'PreToolUse' : 'BeforeTool';
+    const end = provider === 'claude' ? 'PostToolUse' : 'AfterTool', complete = provider === 'claude' ? 'Stop' : 'AfterAgent';
+    a.observe({ name: start, toolId: 'ongoing', tool: 'read', backgroundRequested: true }, 1);
+    a.observe({ name: start, tool: 'anonymous' }, 2);
+    if (provider === 'claude') a.observe({ name: 'SubagentStart', agentId: 'child' }, 3);
+    a.observe({ name: complete, backgroundCount: 2, scheduledCount: 1 }, 4);
+    a.observe({ name: start, toolId: 'background', backgroundRequested: true }, 5);
+    const prior = a.snapshot(100000);
+    a.observe({ name: 'SessionEnd' }, 6); a.observe({ name: 'SessionStart' }, 7);
+    a.observe({ name: complete }, 8);
+    const after = a.snapshot(100000);
+    for (const key of ['tools', 'subagents', 'background', 'scheduled', 'uncertain']) assert.equal(after[key], prior[key]);
+    assert.equal(after.ready, false); assert.equal(after.phase, 'working');
+    a.observe({ name: end, toolId: 'ongoing' }, 9); a.observe({ name: end, tool: 'anonymous' }, 10);
+    a.observe({ name: end, toolId: 'background' }, 11);
+    if (provider === 'claude') a.observe({ name: 'SubagentStop', agentId: 'child' }, 12);
+    assert.equal(a.snapshot(100000).ready, false);
+    a.observe({ name: complete, backgroundCount: 0, scheduledCount: 0 }, 13);
+    assert.equal(a.snapshot(100000).ready, true);
+    a.observe({ name: complete, activityUncertain: true }, 14);
+    a.observe({ name: 'SessionStart' }, 15); a.observe({ name: complete, backgroundCount: 0, scheduledCount: 0 }, 16);
+    assert.equal(a.snapshot(100000).uncertain, true); assert.equal(a.snapshot(100000).ready, false);
+  }
+});
+
 test('provider coverage is explicit and unmatched or bounded activity cannot manufacture readiness', () => {
   const codex = new SessionActivity('codex');
   codex.observe({ name: 'agent-turn-complete', message: '{"title":"Synthetic title"}' }, 1);
