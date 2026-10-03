@@ -226,6 +226,7 @@ function handleItem(session, item) {
   if (item.usage && typeof item.usage === 'object') { session.run = { ...session.run, usage: item.usage }; if (dock.selected === session.runId) renderDockDetails(session); }
   if (item.activity && typeof item.activity === 'object') { session.run = { ...session.run, activity: item.activity }; updateSessionTab(session); updateDockIndicator(); scheduleBoardRefresh(); }
   if (item.status) { session.run = { ...session.run, status: item.status, waitingReason: item.reason || '' }; updateSessionTab(session); updateDockIndicator(); scheduleBoardRefresh(); }
+  if (item.planRoutingError?.reason) dockNote(item.planRoutingError.reason);
   if (item.ended || item.missing) markEnded(session);
 }
 
@@ -251,6 +252,8 @@ function updateSessionTab(session) {
   const state = agentState(run);
   const task = board?.projects.flatMap(project => project.tasks).find(task => task.id === session.taskId);
   const title = task?.title || 'Task';
+  const owner = board?.projects.find(project => project.id === run.projectId);
+  session.title = `${title} · ${columnTitle(run.config?.pipeline && live ? task?.column || run.stage : run.stage, owner)}`;
   session.label.textContent = `${title.length > 20 ? `${title.slice(0, 19)}…` : title} · ${agentModel(session.run)}`;
   session.tab.classList.toggle('live', state === 'active');
   session.tab.classList.toggle('waiting', state === 'awaits_you');
@@ -274,8 +277,9 @@ function renderDockDetails(session) {
   const run = session.run; // Merged from the board in syncDock and from stream status items.
   const shown = session.ended && DOCK_LIVE.has(run.status) ? { ...run, status: 'interrupted' } : run;
   const project = board?.projects.find(project => project.id === run.projectId || project.tasks.some(task => task.id === run.taskId));
+  const task = project?.tasks.find(task => task.id === run.taskId);
   const summary = paragraph('', 'dock-run-summary');
-  summary.append(`${agentModel(run)} · ${columnTitle(run.stage, project)} · ${agentStateText(shown)} · `, elapsedSpan(run));
+  summary.append(`${agentModel(run)} · ${columnTitle(run.config?.pipeline && DOCK_LIVE.has(shown.status) ? task?.column || run.stage : run.stage, project)} · ${agentStateText(shown)} · `, elapsedSpan(run));
   const location = document.createElement('div'); location.className = 'dock-location';
   location.append(locationFact('Repository', project?.repository?.root), locationFact('Task branch', run.branch), locationFact('Worktree', run.workspacePath));
   const context = document.createElement('details'); context.className = 'dock-context';

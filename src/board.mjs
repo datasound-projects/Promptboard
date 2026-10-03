@@ -43,7 +43,7 @@ const EXECUTABLE_STAGES = new Set(['planning', 'executing', 'code_review', 'test
 export const WORKFLOW_STAGES = Object.freeze(['planning', 'executing', 'code_review', 'testing', 'merge']);
 const POLICIES = ['manual', 'ask', 'start'];
 export const DEFAULT_STAGE_SETTINGS = Object.freeze({ policy: 'start', provider: 'claude', model: '', effort: '', permissionMode: '', instructions: '' });
-const RUN_FIELDS = ['hasReview', 'startedAt', 'endedAt', 'providerSessionId', 'waitingReason', 'errorCode', 'exitCode', 'hasPlan', 'planExcerpt', 'turns', 'lifecycle', 'turnComplete', 'usage', 'activity'];
+const RUN_FIELDS = ['hasReview', 'startedAt', 'endedAt', 'providerSessionId', 'waitingReason', 'errorCode', 'exitCode', 'hasPlan', 'planExcerpt', 'turns', 'lifecycle', 'turnComplete', 'usage', 'activity', 'planRoutes'];
 // Stages whose first authorized run may create the task branch and worktree.
 const WORKSPACE_STAGES = new Set(['planning', 'executing']);
 
@@ -390,12 +390,15 @@ export class Board {
   async state() {
     this.recoveryPromise ||= (async () => {
       const state = await this.store.read();
-      if (state.runs.some(run => ACTIVE_RUN_STATUSES.includes(run.status)) || state.sessions.some(session => LIVE_SESSION_STATUSES.has(session.status))) {
+      if (state.runs.some(run => ACTIVE_RUN_STATUSES.includes(run.status) || run.planRoutes?.some(route => route.status === 'pending')) || state.sessions.some(session => LIVE_SESSION_STATUSES.has(session.status))) {
         await this.store.update(draft => {
           const now = Date.now();
           for (const run of draft.runs) if (ACTIVE_RUN_STATUSES.includes(run.status)) {
             Object.assign(run, { status: 'interrupted', updatedAt: now, reason: 'The app stopped while this run was active.' });
             synchronizeSession(draft, run);
+          }
+          for (const run of draft.runs) for (const route of run.planRoutes || []) if (route.status === 'pending') {
+            Object.assign(route, { status: 'interrupted', endedAt: now, reason: 'The app stopped during the approved-plan move. It was not replayed.' });
           }
           recoverSessions(draft, now);
         });
@@ -1926,15 +1929,19 @@ export class Board {
   }
 
   /** Main-session pipeline moves. Names carry no review, commit, test, or merge action. */
-  async #pipelineTransition(taskId, { column, index, expectedRevision, transitionId, decision, trigger }) {
+  async #pipelineTransition(taskId, { column, index, expectedRevision, transitionId, decision, trigger, continuation = '', requiredRunId = null, requiredApproval = null, expectedProjectRevision = null, signal = null }) {
     const state = await this.state(), { project, task } = this.#task(state, taskId);
+    if (signal?.aborted) throw conflict('The automatic plan move was cancelled.', 'PLAN_ROUTE_CANCELLED');
     if (transitionId && task.lastTransition?.id === transitionId) return { task, duplicate: true };
     checkRevision(task, expectedRevision, 'This card');
+    if (expectedProjectRevision !== null && project.revision !== expectedProjectRevision) throw conflict('The board changed after native plan approval.', 'REVISION_CONFLICT');
     const target = project.pipeline.columns.find(item => item.id === column);
     if (!target) throw new BoardError('Choose a valid column.', 'INVALID_COLUMN');
     const move = { from: task.column, column, index, transitionId: transitionId || randomUUID(), by: trigger === 'automation' ? 'automation' : 'user' };
     if (task.column === column) return { task: await this.#placeStored(taskId, move) };
     const active = this.#activeRun(state, taskId);
+    if (requiredRunId && active?.id !== requiredRunId) throw conflict('The approved conversation was stopped or replaced. The automatic move was cancelled.', 'PLAN_ROUTE_CANCELLED');
+    if (requiredApproval && JSON.stringify(active?.activity?.planApproval) !== JSON.stringify(requiredApproval)) throw conflict('Native plan approval changed before the move.', 'PLAN_APPROVAL_STALE');
     if (target.role !== 'active') {
       if (active) {
         if (!this.executor) throw new BoardError('The owned agent cannot be stopped.', 'EXECUTION_UNAVAILABLE', 503);
@@ -1968,20 +1975,27 @@ export class Board {
       }
       const resolved = resolveConfig(column, settings);
       const manifest = this.#basePreflight(state, project, task, column, resolved.provider);
-      const changed = JSON.stringify(resolved) !== JSON.stringify(Object.fromEntries(Object.entries(active.config).filter(([key]) => key !== 'instructions')))
+      // Native permissions can change inside the CLI (notably on plan approval).
+      // Launch flags are historical; permission-only moves keep that live choice.
+      // Empty model/effort overrides preserve the existing live settings.
+      const changed = (active.status === 'queued'
+        ? JSON.stringify(resolved) !== JSON.stringify(Object.fromEntries(Object.entries(active.config).filter(([key]) => key !== 'instructions')))
+        : ['provider', 'pipeline', 'model', 'effort'].some(key => (key === 'model' || key === 'effort' ? Boolean(resolved[key]) : true) && resolved[key] !== active.config[key]))
         || baseSignature(manifest) !== baseSignature(active.baseManifest);
       if (changed && active.status === 'queued') {
         const run = await this.#pipelineRetargetQueued(taskId, { state, project, task, active, column, settings, move, expectedRevision });
         return { task: await this.#taskNow(taskId), run, retargetedRunId: run.id };
       }
       if (changed) {
-        const run = await this.#pipelineReconfigureLive(taskId, { state, project, task, active, column, settings, move, expectedRevision, trigger });
+        const run = await this.#pipelineReconfigureLive(taskId, { state, project, task, active, column, settings, move, expectedRevision, trigger, continuation, requiredApproval, signal });
         return { task: await this.#taskNow(taskId), run, resumedRunId: run.id };
       }
       const saved = await this.store.update(draft => {
         const current = this.#task(draft, taskId);
         checkRevision(current.task, expectedRevision, 'This card');
         if (current.project.revision !== project.revision || this.#activeRun(draft, taskId)?.id !== active.id || draft.base.revision !== state.base.revision) throw conflict('The board, agent, or Base selection changed during this move.', 'REVISION_CONFLICT');
+        if (signal?.aborted) throw conflict('The automatic plan move was cancelled.', 'PLAN_ROUTE_CANCELLED');
+        if (requiredApproval && JSON.stringify(draft.runs.find(run => run.id === active.id)?.activity?.planApproval) !== JSON.stringify(requiredApproval)) throw conflict('Native plan approval changed before accepting the move.', 'PLAN_APPROVAL_STALE');
         const result = this.#place(draft, taskId, { ...move, runId: active.id });
         delete result.archivedAt;
         return result;
@@ -2001,7 +2015,7 @@ export class Board {
     return { task: saved };
   }
 
-  async #pipelineReconfigureLive(taskId, { state, project, task, active, column, settings, move, expectedRevision, trigger }) {
+  async #pipelineReconfigureLive(taskId, { state, project, task, active, column, settings, move, expectedRevision, trigger, continuation = '', requiredApproval = null, signal = null }) {
     if (!this.executor?.suspendAtBoundary || settings.provider !== active.config.provider) throw conflict('Pause this agent before switching providers. Native conversation handoff is not available yet.', 'PIPELINE_RECONFIGURE_REQUIRED');
     const saved = state.sessions.find(item => item.id === task.sessionId && item.currentRunId === active.id);
     if (!saved?.nativeSessionId) throw conflict('This live agent has not captured a native conversation ID. Wait for startup or pause it before changing settings.', 'SESSION_NOT_RESUMABLE');
@@ -2016,9 +2030,46 @@ export class Board {
         || session.nativeSessionId !== nativeSessionId || this.#activeRun(draft, taskId)?.id !== active.id
         || draft.base.revision !== state.base.revision || JSON.stringify(draft.settings.defaultAgent) !== JSON.stringify(state.settings.defaultAgent)) throw conflict('The task, agent settings, or Base changed while waiting for the current turn.', 'REVISION_CONFLICT');
     };
-    return this.executor.suspendAtBoundary(active.id, { guard, currentGuard: () => guard(this.store.state),
+    return this.executor.suspendAtBoundary(active.id, { guard, currentGuard: () => guard(this.store.state), requiredApproval, signal,
       prepare: () => this.executor.validate({ stage: column, config: settings }),
-      resume: handoffSignal => this.#pipelineStart(taskId, { column, move, trigger, expectedRevision: expectedRevision ?? task.revision, requireResume: true, acceptance: state, handoffSignal }) });
+      resume: handoffSignal => this.#pipelineStart(taskId, { column, move, trigger, expectedRevision: expectedRevision ?? task.revision, requireResume: true, acceptance: state, handoffSignal, continuation }) });
+  }
+
+  /** Supervisor-only native approval. Its persisted observation is the gate, never task prose or a turn end. */
+  async routeApprovedPlan(runId, approval, { signal = null } = {}) {
+    const observed = await this.run(runId);
+    return this.#locked(`transition:${observed.taskId}`, () => this.#locked(`run:${observed.taskId}`, async () => {
+      const state = await this.state(), run = state.runs.find(item => item.id === runId);
+      const { project, task } = this.#task(state, run.taskId);
+      const key = JSON.stringify(approval);
+      if (!['claude', 'gemini'].includes(approval?.provider) || approval.provider !== run.config.provider
+        || approval.source !== (approval.provider === 'claude' ? 'PostToolUse' : 'AfterTool') || !Number.isSafeInteger(approval.at)
+        || JSON.stringify(run.activity?.planApproval) !== key || !run.config.pipeline || project.workflowMode !== 'pipeline') throw conflict('Native plan approval has not been observed for this run.', 'PLAN_APPROVAL_NOT_OBSERVED');
+      const existing = run.planRoutes?.find(route => JSON.stringify(route.approval) === key);
+      if (existing) return existing; // Failed/interrupted actions also require an explicit move, never replay.
+      if ((run.planRoutes?.length || 0) >= 50) throw conflict('This run reached its automatic plan-route history limit. Move the card explicitly.', 'PLAN_ROUTE_LIMIT');
+      const session = state.sessions.find(item => item.id === task.sessionId && item.currentRunId === runId);
+      let reason = !session || this.#activeRun(state, task.id)?.id !== runId ? 'This approval belongs to an inactive conversation.'
+        : run.promptRevision !== (task.contentRevision ?? 1) ? 'The task changed after this conversation started.' : '';
+      const targetId = reason ? null : resolvePipelineStrategy(project.pipeline, task.column, task).planExitTargetId;
+      reason ||= !targetId ? 'No plan exit target is configured for this column.' : '';
+      const route = { id: randomUUID(), approval: structuredClone(approval), fromColumn: task.column, toColumn: targetId,
+        status: reason ? 'ignored' : 'pending', createdAt: Date.now(), taskRevision: task.revision, ...(reason ? { reason, endedAt: Date.now() } : {}) };
+      await this.updateRun(runId, { planRoutes: [...(run.planRoutes || []), route] });
+      if (reason) return route;
+      try {
+        const result = await this.#pipelineTransition(task.id, { column: targetId, expectedRevision: task.revision,
+          transitionId: route.id, trigger: 'automation', continuation: 'Proceed with implementing the approved plan.', requiredRunId: runId, requiredApproval: approval, expectedProjectRevision: project.revision, signal });
+        Object.assign(route, { status: 'completed', endedAt: Date.now(), ...(result.run ? { destinationRunId: result.run.id } : {}) });
+      } catch (error) {
+        Object.assign(route, { status: 'failed', endedAt: Date.now(), errorCode: clip(error.code || 'PLAN_ROUTE_FAILED', 64),
+          reason: clip(error.status ? error.message : 'The approved plan could not be routed. Move the card explicitly.', 500) });
+      }
+      // If this save fails, the pending record still prevents replay. Recovery
+      // marks it interrupted even when its process already ended or resumed.
+      await this.updateRun(runId, { planRoutes: [...(run.planRoutes || []), route] });
+      return route;
+    }));
   }
 
   async #pipelineRetargetQueued(taskId, { state, project, task, active, column, settings, move, expectedRevision }) {

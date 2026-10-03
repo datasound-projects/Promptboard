@@ -37,6 +37,8 @@ test('column pipeline conversion and editing work by keyboard in both themes and
     for (const theme of ['light', 'dark']) {
       await browser.eval(`document.documentElement.dataset.theme = '${theme}'; document.querySelector('#column-name').focus();`);
       assert.equal(await browser.layout(`const dialog = document.querySelector('#columns-dialog').getBoundingClientRect(); const field = document.activeElement.getBoundingClientRect(); return dialog.left >= -1 && dialog.right <= innerWidth + 1 && field.left >= 0 && field.right <= innerWidth && document.activeElement.id === 'column-name';`), true);
+      await browser.eval(`document.querySelector('#column-plan-target').focus();`);
+      assert.equal(await browser.layout(`const r = document.activeElement.getBoundingClientRect(); return document.activeElement.id === 'column-plan-target' && r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight;`), true);
       if (process.env.PB_BROWSER_SHOTS) { await mkdir(process.env.PB_BROWSER_SHOTS, { recursive: true }); await writeFile(join(process.env.PB_BROWSER_SHOTS, `pipeline-columns-${width}-${theme}.png`), await browser.screenshot()); }
     }
   }
@@ -48,12 +50,20 @@ test('column pipeline conversion and editing work by keyboard in both themes and
   assert.equal(await browser.eval(`return document.querySelector('#autopilot-open').hidden;`), true);
   await browser.eval(`document.querySelector('#columns-open').click();`);
   await browser.until(`document.querySelector('#column-auto-spawn')`, 'saved pipeline editor reopened');
+  await browser.eval(`[...document.querySelectorAll('.columns-item')].find(button => button.textContent === 'Planning').focus();`); await enter();
+  assert.equal(await browser.eval(`return document.querySelector('#column-plan-target').value;`), 'executing');
+  await browser.eval(`document.querySelector('#column-plan-target').focus();`);
+  await browser.type('Testing'); await browser.key('Tab', 'Tab', 9);
+  assert.equal(await browser.eval(`return document.querySelector('#column-plan-target').value;`), 'testing');
+  assert.equal(await browser.eval(`return document.querySelector('#columns-dialog').open;`), true);
+  await browser.eval(`[...document.querySelectorAll('.columns-item')].find(button => button.textContent === 'Build').focus();`); await enter();
   await browser.eval(`document.querySelector('[aria-label="Move right: Build"]').click(); document.querySelector('#columns-add').click();`);
   await browser.until(`document.querySelector('#column-name')?.value.startsWith('New column')`, 'new active column');
   await browser.eval(`const input = document.querySelector('#column-name'); input.value = 'Triage'; input.dispatchEvent(new Event('input', { bubbles: true })); document.querySelector('#columns-form button[type="submit"]').click();`);
   await browser.until(`!document.querySelector('#columns-dialog').open && [...document.querySelectorAll('.kanban-column h3')].some(node => node.textContent.includes('Triage'))`, 'new column saved');
   saved = (await app.board.state()).projects[0];
   assert.equal(saved.pipeline.columns.findIndex(column => column.id === 'executing'), 3);
+  assert.equal(saved.pipeline.columns.find(column => column.id === 'planning').strategy.planExitTargetId, 'testing');
   assert.equal(saved.pipeline.columns.find(column => column.name === 'Triage').strategy.autoSpawn, false);
   assert.equal(saved.tasks[0].prompt, prompt); assert.deepEqual((await app.board.state()).runs, []);
   await app.board.transition(card.id, { column: 'done', expectedRevision: saved.tasks[0].revision });
@@ -76,7 +86,7 @@ test('column pipeline conversion and editing work by keyboard in both themes and
   assert.equal((await app.board.state()).projects[0].pipeline.columns.find(column => column.id === triage).name, 'Other editor');
   await browser.eval(`document.querySelector('#columns-dialog').close();`);
   await app.board.store.update(state => {
-    const run = { id: 'activity-display-fixture', taskId: card.id, projectId: project.id, stage: triage, status: 'waiting_for_input',
+    const run = { id: 'activity-display-fixture', taskId: card.id, projectId: project.id, stage: 'planning', status: 'waiting_for_input',
       createdAt: Date.now(), config: { provider: 'claude', pipeline: true }, turnComplete: true,
       waitingReason: 'The agent finished its response.', activity: { phase: 'working', tools: 2, subagents: 1, background: 1, scheduled: 1, ready: false } };
     state.runs.push(run); attachSession(state, run);
@@ -84,6 +94,7 @@ test('column pipeline conversion and editing work by keyboard in both themes and
   await browser.eval(`await loadBoard(); document.querySelector('[data-id="${card.id}"]').scrollIntoView({ block: 'nearest', inline: 'center' });`);
   await browser.until(`document.querySelector('[data-id="${card.id}"]').textContent.includes('2 tools')`, 'outstanding activity displayed separately from response completion');
   assert.equal(await browser.eval(`return agentState(board.runs.find(run => run.id === 'activity-display-fixture'));`), 'active');
+  assert.ok((await browser.eval(`return document.querySelector('.agent-item[data-run-id="activity-display-fixture"]').textContent;`)).includes('Other editor'));
   for (const theme of ['light', 'dark']) {
     await browser.eval(`document.documentElement.dataset.theme = '${theme}';`);
     assert.equal(await browser.layout(`const r = document.querySelector('[data-id="${card.id}"] .run-activity').getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth;`), true);
@@ -92,6 +103,17 @@ test('column pipeline conversion and editing work by keyboard in both themes and
   await browser.eval(`await loadBoard();`);
   assert.equal(await browser.eval(`return agentState(board.runs.find(run => run.id === 'activity-display-fixture'));`), 'awaits_you');
   assert.ok((await browser.eval(`return document.querySelector('[data-id="${card.id}"]').textContent;`)).includes('needs your answer'));
+  for (const status of ['pending', 'failed', 'interrupted']) {
+    await app.board.updateRun('activity-display-fixture', { planRoutes: [{ id: 'route-ui', toColumn: 'executing', status, reason: '<img src=x onerror="window.__routePwned=1"> Move explicitly.' }] });
+    await browser.eval(`await loadBoard();`);
+    const routeText = await browser.eval(`return document.querySelector('[data-id="${card.id}"] .plan-route').textContent;`);
+    assert.match(routeText, status === 'pending' ? /Plan approved.*Build.*turn settles/ : /Move explicitly/);
+    assert.equal(await browser.eval(`return document.querySelector('[data-id="${card.id}"] .plan-route img') === null && !window.__routePwned;`), true);
+    for (const theme of ['light', 'dark']) {
+      await browser.eval(`document.documentElement.dataset.theme = '${theme}';`);
+      assert.equal(await browser.layout(`const r = document.querySelector('[data-id="${card.id}"] .plan-route').getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth;`), true);
+    }
+  }
   for (const theme of ['light', 'dark']) for (const status of ['suspended', 'cancelled']) {
     const text = await browser.eval(`document.documentElement.dataset.theme = '${theme}'; movedAnnouncement(findTask('${card.id}'), 'code_review', { run: { id: 'cancelled-before-queue', status: '${status}' } }); return document.querySelector('#announcement').textContent;`);
     assert.match(text, status === 'suspended' ? /paused before starting/ : /stopped before starting/);

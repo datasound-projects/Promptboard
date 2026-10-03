@@ -44,9 +44,12 @@ export class SessionActivity {
     if (waiting) { this.permission = true; this.parentComplete = false; }
     if (ended) { this.ended = true; this.parentComplete = false; }
     const toolId = id(event.toolId), key = toolId ? JSON.stringify([child, toolId]) : null;
+    const repeatedToolEnd = Boolean(key && this.finishedTools.has(key));
     const toolName = id(event.tool) || 'unknown';
     if (toolStart) {
       this.parentComplete = false;
+      if (!subordinate && !repeatedToolEnd && (claude && event.tool === 'ExitPlanMode' || gemini && event.tool === 'exit_plan_mode')
+        && (!toolId || this.planApproval?.toolId !== toolId)) this.planApproval = null;
       if (key) {
         if (!this.finishedTools.has(key)) this.tools.add(key);
       } else {
@@ -59,12 +62,13 @@ export class SessionActivity {
       else if (this.anonymousTools.get(toolName) > 0) this.anonymousTools.set(toolName, this.anonymousTools.get(toolName) - 1);
       this.permission = false;
       if (event.backgroundRequested === true && name === 'PostToolUse') this.backgroundUnknown = true;
-      if (!subordinate && name === 'PostToolUse' && event.tool === 'EnterPlanMode') this.planApproval = null;
+      if (!subordinate && !repeatedToolEnd && name === 'PostToolUse' && event.tool === 'EnterPlanMode') this.planApproval = null;
+      if (!subordinate && gemini && name === 'AfterTool' && event.tool === 'enter_plan_mode' && event.planEntered === true) this.planApproval = null;
       // Gemini rejection/invalid-plan results need not contain an error. The bridge
       // requires the native tool's explicit approved display, not merely AfterTool.
       const approved = !subordinate && !event.activityUncertain && ((claude && name === 'PostToolUse' && event.tool === 'ExitPlanMode')
         || (gemini && name === 'AfterTool' && event.tool === 'exit_plan_mode' && event.planApproved === true));
-      if (approved && !this.planApproval) this.planApproval = { provider: this.provider, at: now, toolId, source: name };
+      if (approved && !repeatedToolEnd && !this.planApproval) this.planApproval = { provider: this.provider, at: now, toolId, source: name };
     }
     if (agentStart) { if (child) this.agents.add(child); else this.uncertain = true; }
     if (agentEnd && child) this.agents.delete(child);

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Route verified main Claude/Gemini native plan approvals to the current column/profile's configured target, with a durable one-attempt record and visible pending/failure states. Keep compatible live implementation and native permissions without injecting a prompt. Concrete model/effort/Base changes wait for a verified boundary and resume the exact conversation with an implementation continuation; Stop/Pause, superseding plans and restart cannot replay the action. Add the plan target selector; Codex remains an explicit move. Keep Composer input and Base/CLI tool inheritance intact.
+
 - Resume same-provider live pipeline settings/Base changes at an observed native turn boundary, preserving the exact conversation and worktree without replaying task text. Invalidate readiness on terminal input, recheck events and committed task/settings before signalling, revoke stale leases, and let explicit Stop/Pause cancel the handoff. Distinguish system suspension from user pause and retain the original process/card on timeout or pre-stop conflicts.
 
 - Retarget waiting pipeline runs to their latest destination provider/model/permissions/Base without losing FIFO position. Hold the slot during atomic acceptance, reject already-preparing launches and cross-provider native resumes, and never resurrect a cancelled entry. Manual columns now park queued/live agents while preserving context for explicit Start.
