@@ -40,6 +40,10 @@ export class SessionActivity {
       try { const parsed = JSON.parse(event.message); if (parsed && typeof parsed === 'object' && Object.keys(parsed).join() === 'title') return; } catch {}
     }
     this.lastEventAt = now;
+    // A new main lifecycle cannot carry approval or termination from the prior
+    // lifecycle. Keep outstanding work and finished tool IDs: startup alone
+    // neither proves readiness nor makes late old approvals fresh again.
+    if (started) { this.planApproval = null; this.ended = false; }
     if (started || running) { this.parentComplete = false; this.permission = false; }
     if (waiting) { this.permission = true; this.parentComplete = false; }
     if (ended) { this.ended = true; this.parentComplete = false; }
