@@ -4,7 +4,10 @@
 
 - Make Compose grounding's main toggle authoritative, with deliberate legacy preference migration and one cancellable preparation/generation snapshot. Use relevant supplied guidance for simple and multilingual tasks, distinguish reference repositories from confirmed targets, share duplicate lookups without changing question IDs, and resolve questions only from retained quoted findings. Preserve provider errors, refresh mutable local context and keep existing UI, generation/review, limits and no-default-deadline behavior.
 
+- Browse completed pipeline tasks in a filtered table with keyboard title/archive-date sorting, retained conversation state and exact latest reported usage. Preserve old card actions, refresh focus and project scoping; use archive dates after task edits and retain the common restoration lifecycle without dispatching from browsing. Bulk operations and complete telemetry summaries remain pending.
+
 - Add read-only project file trees to the Kanban Workspace sidebar, with lazy folder expansion, checkout/task-worktree selection and centered file viewers. Preserve multiple files, minimized viewers, scroll and expansion during refresh. Display UTF-8 code with lexical highlighting and line numbers; bound reads and directory pages, refuse traversal/symlinks/credentials and never start agents or mutate board/repository state. Report observed updates without inventing per-file agent activity.
+- Allow title-only tasks in opt-in column pipelines, preserving empty or supplied descriptions through editing, copying, restart and portable backups. Keep new tasks in To Do without agents, retain legacy required bodies, and refine a title-only draft through Composer using its title. Native first input uses the existing escaped task envelope and CLI/Base delivery.
 
 - Run Chrome fixture files sequentially after the other tests, preserving scenario/file deadlines and failure exit codes. Keep non-browser concurrency at two; avoid concurrent renderer/PTY/Git fixture work during full verification.
 

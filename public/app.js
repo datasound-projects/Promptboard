@@ -20,6 +20,7 @@ const providerInfo = {
 };
 
 let token = '';
+let pipelineTitleOnlySupported = false;
 let providers = [];
 let history = readHistory();
 let currentId = null;
@@ -286,6 +287,7 @@ async function loadProviders() {
     const session = await sessionResponse.json();
     const status = await providerResponse.json();
     token = safeText(session.token, 1000);
+    pipelineTitleOnlySupported = session.capabilities?.pipelineTitleOnly === true;
     providers = Array.isArray(status.providers) ? status.providers.filter((item) => item && KNOWN_PROVIDERS.includes(item.id)) : [];
     if (!token) throw new Error('The local server did not return a session token.');
     browserNotifications?.resume();
@@ -304,6 +306,7 @@ async function loadProviders() {
     await loadModels({ model: chosenModel(), effort: $('#effort').value });
   } catch (error) {
     token = '';
+    pipelineTitleOnlySupported = false;
     browserNotifications?.stop();
     $('#cli-status-label').textContent = 'Server unavailable';
     $('#provider-note').textContent = 'Could not reach the local server. Restart the app, then reload this page.';
@@ -1363,6 +1366,7 @@ async function migrateBrowserBoard() {
 function renderBoard() {
   fitBoardHeight();
   renderProjectContext(currentProject());
+  refreshPipelineArchive();
   const project = currentProject();
   const tasks = project?.tasks || [];
   $('#project-select').replaceChildren(...(board?.projects || []).map(item => option(item.id, item.name)));
@@ -1513,11 +1517,11 @@ function timeAgo(at) {
 function renderDoneList(tasks) {
   const zone = document.createElement('li');
   zone.className = 'kanban-done-drop';
-  zone.append(stageIcon('drop'), paragraph('Complete from Testing or Merge · no merge'));
+  zone.append(stageIcon('drop'), paragraph(currentProject()?.workflowMode === 'pipeline' ? 'Pauses the agent · archives the task' : 'Complete from Testing or Merge · no merge'));
   if (!tasks.length) return [zone];
   // Card numbers follow creation order within the project, so they stay stable.
   const numbers = new Map([...currentProject().tasks].sort((a, b) => a.createdAt - b.createdAt).map((task, index) => [task.id, index + 1]));
-  const finished = task => task.completion?.at || task.updatedAt || 0;
+  const finished = task => task.archivedAt || task.completion?.at || task.updatedAt || 0;
   const recent = [...tasks].sort((a, b) => finished(b) - finished(a));
   const viewAll = () => openDoneDialog(recent, numbers);
   const head = document.createElement('li');
@@ -1537,11 +1541,69 @@ function renderDoneList(tasks) {
   all.append(button);
   return [zone, head, ...recent.slice(0, DONE_PREVIEW).map(task => renderDoneCard(task, numbers.get(task.id))), all];
 }
-function openDoneDialog(recent, numbers) {
-  $('#done-dialog-project').textContent = `${currentProject()?.name || ''} · Done`.toUpperCase();
+function openDoneDialog(recent, numbers, cards = false) {
+  const project = currentProject(), isPipeline = project?.workflowMode === 'pipeline', pipeline = isPipeline && !cards;
+  $('#done-dialog-project').textContent = `${project?.name || ''} · Done`.toUpperCase();
   $('#done-dialog-heading').textContent = `Completed (${recent.length})`;
-  $('#done-dialog-list').replaceChildren(...recent.map(task => renderDoneCard(task, numbers.get(task.id), false)));
+  $('#done-dialog').classList.toggle('pipeline-archive-open', pipeline);
+  $('#done-dialog-list').hidden = pipeline;
+  $('#pipeline-archive').hidden = !pipeline;
+  archiveProjectId = isPipeline ? project.id : null; archiveSignature = '';
+  if (pipeline) {
+    $('#archive-filter').value = ''; $('#archive-sort').value = 'newest';
+    refreshPipelineArchive(true);
+  } else $('#done-dialog-list').replaceChildren(...recent.map(task => renderDoneCard(task, numbers.get(task.id), false)));
   $('#done-dialog').showModal();
+  if (cards) $('#done-dialog-list .kanban-open')?.focus();
+}
+let archiveProjectId = null, archiveSignature = '';
+function refreshPipelineArchive(opening = false) {
+  if (!archiveProjectId || !opening && !$('#done-dialog').open) return;
+  const project = currentProject();
+  if (project?.id !== archiveProjectId || project.workflowMode !== 'pipeline') {
+    archiveProjectId = null;
+    if ($('#done-dialog').open) $('#done-dialog').close();
+    return;
+  }
+  if ($('#pipeline-archive').hidden) return;
+  const tasks = project.tasks.filter(task => projectColumnsOf(project).find(column => column.id === task.column)?.role === 'done');
+  const filter = $('#archive-filter').value.trim().toLocaleLowerCase(), sort = $('#archive-sort').value;
+  const observed = tasks.map(task => [task.id, task.revision, task.title, task.archivedAt, task.updatedAt, latestRun(task.id)?.usage, task.sessionId, (board.sessions || []).find(session => session.id === task.sessionId)]);
+  const signature = JSON.stringify([project.revision, observed, filter, sort]);
+  if (signature === archiveSignature) return;
+  archiveSignature = signature;
+  const focus = document.activeElement?.closest('[data-archive-task]'), action = document.activeElement?.dataset.archiveAction;
+  const when = task => task.archivedAt || task.completion?.at || task.updatedAt || 0;
+  const rows = tasks.filter(task => task.title.toLocaleLowerCase().includes(filter)).sort((a, b) => {
+    const order = ['title', 'title-desc'].includes(sort) ? a.title.localeCompare(b.title) * (sort === 'title-desc' ? -1 : 1) : (sort === 'oldest' ? when(a) - when(b) : when(b) - when(a));
+    return order || a.id.localeCompare(b.id);
+  }).map(task => {
+    const row = document.createElement('tr'); row.dataset.archiveTask = task.id;
+    const name = document.createElement('td'), archived = document.createElement('td'), conversationCell = document.createElement('td'), usage = document.createElement('td');
+    const open = detailButton(task.title, () => { $('#done-dialog').close(); openCard(task.id); }, 'text-button archive-title'); open.dataset.archiveAction = 'edit';
+    const details = detailButton('Details', () => { $('#done-dialog').close(); openTaskDetails(task.id); }, 'text-button'); details.dataset.archiveAction = 'details'; details.setAttribute('aria-label', `Details: ${task.title}`);
+    const restore = document.createElement('select'); restore.dataset.archiveAction = 'restore'; restore.setAttribute('aria-label', `Restore: ${task.title}`);
+    restore.append(option('', 'Restore to…'), ...projectColumnsOf(project).filter(column => ['todo', 'active'].includes(column.role)).map(column => option(column.id, column.title)));
+    restore.addEventListener('change', () => { if (restore.value) { $('#done-dialog').close(); placeCard(task.id, restore.value, null); } });
+    const actions = document.createElement('div'); actions.className = 'archive-actions'; actions.append(details, restore); name.append(open, actions);
+    const date = when(task); archived.textContent = date ? new Date(date).toLocaleString() : 'Unavailable';
+    const conversation = (board.sessions || []).find(session => session.id === task.sessionId && session.taskId === task.id && session.projectId === project.id);
+    conversationCell.textContent = !task.sessionId ? 'None retained' : conversation ? `${providerInfo[conversation.provider]?.name || conversation.provider} · ${conversation.status}` : 'Unavailable';
+    const run = latestRun(task.id), measured = run?.usage;
+    usage.textContent = measured && ['inputTokens', 'cachedTokens', 'outputTokens'].every(key => Number.isFinite(measured[key]) && measured[key] >= 0) ? usageText(run) : 'Unavailable';
+    row.append(name, archived, conversationCell, usage); return row;
+  });
+  $('#archive-rows').replaceChildren(...rows);
+  $('#archive-empty').hidden = rows.length > 0;
+  $('#archive-empty').textContent = tasks.length ? 'No completed tasks match this title.' : 'No completed tasks.';
+  $('#done-dialog-heading').textContent = `Completed (${tasks.length})`;
+  $('#archive-count').textContent = `${rows.length} of ${tasks.length} tasks`;
+  $('#archive-title-header').setAttribute('aria-sort', sort === 'title' ? 'ascending' : sort === 'title-desc' ? 'descending' : 'none');
+  $('#archive-date-header').setAttribute('aria-sort', sort === 'newest' ? 'descending' : sort === 'oldest' ? 'ascending' : 'none');
+  if (focus) {
+    const replacement = [...$('#archive-rows').children].find(row => row.dataset.archiveTask === focus.dataset.archiveTask);
+    ([...(replacement?.querySelectorAll('[data-archive-action]') || [])].find(node => node.dataset.archiveAction === action) || $('#archive-filter')).focus();
+  }
 }
 function renderDoneCard(card, number, draggable = true) {
   const item = document.createElement('li');
@@ -1555,7 +1617,7 @@ function renderDoneCard(card, number, draggable = true) {
   tag.className = 'kanban-done-number';
   tag.textContent = `#${number}`;
   title.append(open, tag);
-  const when = card.completion?.at || card.updatedAt;
+  const when = card.archivedAt || card.completion?.at || card.updatedAt;
   const time = paragraph(when ? timeAgo(when) : '', 'kanban-done-time');
   if (when) time.title = new Date(when).toLocaleString();
   const reopen = labelledButton(detailButton('Reopen', () => reopenCard(card), 'text-button kanban-reopen'), `Reopen: ${card.title}`);
@@ -1903,6 +1965,7 @@ async function deleteCard(id) {
 }
 
 let quickTask = false, cardPipelineEditor = null, cardEditSnapshot = null;
+function canOmitTaskPrompt(project) { return project?.workflowMode === 'pipeline' && pipelineTitleOnlySupported; }
 function openCard(id = null, quick = false) {
   quickTask = quick;
   const project = currentProject();
@@ -1920,12 +1983,14 @@ function openCard(id = null, quick = false) {
   $('#card-title').required = !quick;
   $('#card-title').placeholder = quick ? 'Optional — derived from your prompt' : '';
   $('#card-title').value = card?.title || '';
+  $('#card-prompt').required = !canOmitTaskPrompt(project);
+  $('#card-prompt-label').textContent = canOmitTaskPrompt(project) ? 'Prompt (optional)' : 'Prompt';
   $('#card-prompt').value = card?.prompt || '';
   const status = card && cardStatus(card);
   $('#card-status').hidden = !card;
   $('#card-status').textContent = status?.text || '';
   $('#card-status').classList.toggle('needs-review', Boolean(status?.flag));
-  $('#card-note').textContent = !card?.source ? 'Write the task as your coding agent should receive it. Copy prompt copies this text exactly.'
+  $('#card-note').textContent = !card?.source ? (canOmitTaskPrompt(project) ? 'A title is enough. The agent receives the title and any prompt. Copy prompt copies the prompt text exactly.' : 'Write the task as your coding agent should receive it. Copy prompt copies this text exactly.')
     : card.checksOutdated ? 'This prompt was edited. The checks from generation apply to the original text only. Your prompt history is unchanged.'
     : 'Imported from Compose. Saving changes marks the previous checks as outdated. Your prompt history is unchanged.';
   $('#card-source').hidden = !card?.source;
@@ -1955,7 +2020,7 @@ async function saveCard(event) {
   const typed = $('#card-prompt').value;
   const title = $('#card-title').value.trim() || (quickTask ? typed.replace(/\s+/g, ' ').trim().slice(0, 80) : '');
   const error = !title ? 'Enter a short title.' : title.length > 120 ? 'Use a title of at most 120 characters.'
-    : !typed.trim() ? 'Enter the prompt for this task.' : typed.length > MAX_PROMPT_BYTES ? 'The prompt exceeds the 2 MiB limit.' : '';
+    : !typed.trim() && !canOmitTaskPrompt(project) ? 'Enter the prompt for this task.' : typed.length > MAX_PROMPT_BYTES ? 'The prompt exceeds the 2 MiB limit.' : '';
   if (error) { $('#card-error').textContent = error; $('#card-error').hidden = false; return; }
   let saved, message;
   try {
@@ -3540,7 +3605,8 @@ $('#import-confirm').addEventListener('click', () => confirmImported(true));
 $('#import-dismiss').addEventListener('click', () => confirmImported(false));
 $('#card-new').addEventListener('click', () => openCard());
 $('#card-refine').addEventListener('click', () => {
-  const prompt = $('#card-prompt').value;
+  const description = $('#card-prompt').value;
+  const prompt = currentProject()?.workflowMode === 'pipeline' && !description.trim() ? $('#card-title').value.trim() : description;
   if (!prompt.trim() || prompt.length > 100000) {
     $('#card-error').textContent = 'Enter a prompt of at most 100,000 characters for Composer.';
     $('#card-error').hidden = false;
@@ -3588,6 +3654,17 @@ bindAsyncForm('#card-form', saveCard);
 $('#card-cancel').addEventListener('click', () => $('#card-dialog').close());
 $('#card-dialog-close').addEventListener('click', () => $('#card-dialog').close());
 $('#done-dialog-close').addEventListener('click', () => $('#done-dialog').close());
+$('#archive-filter').addEventListener('input', () => refreshPipelineArchive());
+$('#archive-sort').addEventListener('change', () => refreshPipelineArchive());
+$('#archive-sort-title').addEventListener('click', () => { $('#archive-sort').value = $('#archive-sort').value === 'title' ? 'title-desc' : 'title'; refreshPipelineArchive(); });
+$('#archive-sort-date').addEventListener('click', () => { $('#archive-sort').value = $('#archive-sort').value === 'newest' ? 'oldest' : 'newest'; refreshPipelineArchive(); });
+$('#archive-cards').addEventListener('click', () => {
+  const project = currentProject();
+  if (project?.id !== archiveProjectId) return;
+  const tasks = project.tasks.filter(task => projectColumnsOf(project).find(column => column.id === task.column)?.role === 'done');
+  const numbers = new Map([...project.tasks].sort((a, b) => a.createdAt - b.createdAt).map((task, index) => [task.id, index + 1]));
+  openDoneDialog(tasks.sort((a, b) => (b.archivedAt || b.updatedAt || 0) - (a.archivedAt || a.updatedAt || 0)), numbers, true);
+});
 $('#export-board').addEventListener('click', exportBoard);
 $('#import-board').addEventListener('click', () => $('#import-file').click());
 $('#import-file').addEventListener('change', importBoard);

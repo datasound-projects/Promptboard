@@ -70,9 +70,9 @@ function text(value, max, label) {
   if (!result || result.length > max) throw new BoardError(`${label} needs 1 to ${max} characters.`, 'INVALID_INPUT');
   return result;
 }
-function promptText(value, label) {
+function promptText(value, label, allowBlank = false) {
   // The prompt is kept exactly as given, including whitespace and line endings.
-  if (typeof value !== 'string' || !value.trim() || value.length > MAX_PROMPT) throw new BoardError(`${label} needs a prompt of 1 to ${MAX_PROMPT.toLocaleString('en-US')} characters.`, 'INVALID_INPUT');
+  if (typeof value !== 'string' || (!allowBlank && !value.trim()) || value.length > MAX_PROMPT) throw new BoardError(`${label} needs ${allowBlank ? 'a text prompt of at most' : 'a prompt of 1 to'} ${MAX_PROMPT.toLocaleString('en-US')} characters.`, 'INVALID_INPUT');
   return value;
 }
 const clip = (value, max) => typeof value === 'string' ? value.slice(0, max) : '';
@@ -140,7 +140,7 @@ function parseBackupData(data) {
         if (!card || typeof card !== 'object') throw new BoardError(`${cardLabel} is not valid.`, 'INVALID_BACKUP');
         if (pipeline && !columnIds.has(card.column)) throw new BoardError(`${cardLabel} refers to a missing pipeline column.`, 'INVALID_BACKUP');
         if ((!pipeline || data.version !== 5) && (card.profileId != null || card.agentOverride != null)) throw new BoardError('Task pipeline settings require a version 5 pipeline backup.', 'INVALID_BACKUP');
-        return { id: unique(card.id, cardLabel), title: text(card.title, 120, `${cardLabel} title`), prompt: promptText(card.prompt, cardLabel),
+        return { id: unique(card.id, cardLabel), title: text(card.title, 120, `${cardLabel} title`), prompt: promptText(card.prompt, cardLabel, Boolean(pipeline)),
           createdAt: time(card.createdAt), updatedAt: time(card.updatedAt ?? card.createdAt), checksOutdated: card.checksOutdated === true,
           source: normalizeSource(card.source), column: v2 && columnIds.has(card.column) ? card.column : 'todo', ...(v3 ? backupBaseScopes(card, true, columnIds) : {}),
           ...(pipeline && data.version === 5 ? normalizePipelineTaskSelection(pipeline, { profileId: card.profileId, agentOverride: card.agentOverride }) : {}) };
@@ -1513,10 +1513,11 @@ export class Board {
 
   // ---- Tasks ----
 
-  async createTask({ projectId, title, prompt, source = null, pipelineSettings, expectedProjectRevision }) {
-    const task = newTask({ title: text(title, 120, 'Title'), prompt: promptText(prompt, 'The task'), source: normalizeSource(source) });
+  async createTask({ projectId, title, prompt = '', source = null, pipelineSettings, expectedProjectRevision }) {
+    const task = newTask({ title: text(title, 120, 'Title'), prompt, source: normalizeSource(source) });
     return this.store.update(state => {
       const project = this.#project(state, projectId);
+      task.prompt = promptText(prompt, 'The task', project.workflowMode === 'pipeline');
       if (project.tasks.length >= TASK_LIMIT) throw new BoardError(`A project can have at most ${TASK_LIMIT} cards.`, 'LIMIT');
       if (pipelineSettings !== undefined) Object.assign(task, this.#taskPipelineSettings(state, project, pipelineSettings, expectedProjectRevision));
       if (project.workflowMode === 'pipeline') task.column = project.pipeline.columns.find(column => column.role === 'todo').id;
@@ -1554,7 +1555,7 @@ export class Board {
         }
       }
       const nextTitle = title === undefined ? task.title : text(title, 120, 'Title');
-      const nextPrompt = prompt === undefined ? task.prompt : promptText(prompt, 'The task');
+      const nextPrompt = prompt === undefined ? task.prompt : promptText(prompt, 'The task', project.workflowMode === 'pipeline');
       const contentChanged = nextTitle !== task.title || nextPrompt !== task.prompt;
       if (!contentChanged && !settingsChanged) return { task, changed: false };
       // Checks from generation apply only to the original text.

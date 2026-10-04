@@ -1,0 +1,13 @@
+# Completed pipeline tasks
+
+View all in an opt-in pipeline's Done column opens a completed-task table. Filter literal titles, sort Task or Archived in either direction using their keyboard-accessible headers or the sort selector, and open the task editor or Details. Archive dates take precedence over later edits. The compact Done preview uses the same archive date and describes suspension/archival rather than legacy Testing/Merge gates. Legacy stage boards retain their card view.
+
+The table displays the retained conversation when it is present in the bounded board response. A missing referenced conversation is unavailable, not a fabricated session count. Usage is the latest run's native report: input, cached and output counts must all be known before it is displayed. Missing/partial usage is unavailable. Reports are not added across resumed runs, and costs are not estimated. Historical reports outside the bounded board response may be unavailable.
+
+Browsing, filtering and sorting write no board state and dispatch nothing. Refresh preserves filter/sort choices and focused row actions. Changing the selected project closes its pipeline archive. Titles and native report text are rendered literally. The table scrolls within its keyboard-focusable region on narrow screens.
+
+Restore uses the existing common column transition with revisions and a fresh move ID. To Do resets context; active destinations follow their configured lifecycle, including resuming retained context when automatic spawning is enabled or preserving it without a new run in a manual column. Restore does not approve plans, permissions, tests or merges. View cards and actions retains the existing Copy, Duplicate and confirmed Delete controls, including their file-retention policy.
+
+This is the browsing part of Kangentic's [completed-task workflow](https://www.kangentic.com/guide/completed-tasks/). Bulk restore/delete, full per-session telemetry and cost/change summaries, expired-context warnings, stable display numbers, global archive search and worktree cleanup remain pending. Native message rows remain disabled until scheduling is integrated; this view does not claim completed parity.
+
+Verification uses an isolated real browser and disposable board/native-session metadata. It covers renamed Done roles, exact latest versus duplicated resume usage, absent/partial reports, unsafe-looking titles, both themes at 390/1280 pixels, keyboard header sorting, filtering, focus during an edit, old card actions, project scoping, legacy rendering and an actual restore into a manual column preserving the recorded native identity without starting a run. No live provider is invoked.
