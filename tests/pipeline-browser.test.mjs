@@ -6,8 +6,42 @@ import { findChrome, launch } from './helpers/browser.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
 import { attachSession } from '../src/sessions.mjs';
 import { defaultPipelineConfig } from '../src/pipeline-config.mjs';
+import { repositoryPipelineDefinition } from '../src/pipeline-repository.mjs';
 
 const chrome = await findChrome();
+test('repository board review works by keyboard in both themes and narrow Chrome without running agents', { skip: !chrome, timeout: 90000 }, async t => {
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
+  const { project } = await app.board.createProjectWithRepository({ name: 'Config browser', folder: 'new' }), pipeline = defaultPipelineConfig();
+  for (const column of pipeline.columns) column.strategy.autoSpawn = false;
+  await app.board.setPipeline(project.id, { pipeline, expectedRevision: project.revision, confirm: true });
+  const task = await app.board.createTask({ projectId: project.id, title: 'Exact Composer', prompt: '  Literal 😀\r\n' }), team = repositoryPipelineDefinition(pipeline);
+  team.columns[2].description = '<img src=x onerror="window.__configPwned=1">'; await writeFile(join(project.repository.root, 'promptboard.json'), JSON.stringify(team));
+  const browser = await launch(); if (!browser) { t.skip('Chrome did not start.'); return; } t.after(() => browser.close());
+  const enter = async id => { if (id) await browser.eval(`const node=document.getElementById(${JSON.stringify(id)}); node.scrollIntoView({block:'center'}); node.focus();`); await browser.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' }); await browser.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 }); };
+  await browser.goto(`${app.url}/#/kanban`); await browser.until(`document.querySelector('[data-id="${task.id}"]')`, 'task ready'); await enter('columns-open');
+  for (const width of [1280, 390]) {
+    await browser.resize(width, 900);
+    for (const theme of ['light', 'dark']) {
+      await browser.eval(`document.documentElement.dataset.theme='${theme}';`); await enter('columns-repository-read');
+      await browser.until(`!document.getElementById('repository-pipeline-apply').disabled`, `repository definition read at ${width}px ${theme}`).catch(async error => {
+        const state = await browser.eval(`return { columnsOpen:document.getElementById('columns-dialog').open, reviewOpen:document.getElementById('repository-pipeline-dialog').open, focus:document.activeElement.id, error:document.getElementById('repository-pipeline-error').textContent, preview:document.getElementById('repository-pipeline-preview').textContent };`);
+        throw new Error(`${error.message}; state ${JSON.stringify(state)}; console ${JSON.stringify(browser.consoleMessages)}`);
+      });
+      await browser.eval(`document.querySelector('#repository-pipeline-preview summary').focus();`); await enter();
+      await browser.until(`document.querySelector('#repository-pipeline-preview details').open`, 'definition opened by keyboard');
+      assert.equal(await browser.layout(`const dialog=document.getElementById('repository-pipeline-dialog'); const r=dialog.getBoundingClientRect(); return r.left>=-1 && r.right<=innerWidth+1 && dialog.scrollWidth<=dialog.clientWidth && document.querySelector('#repository-pipeline-preview img')===null && !window.__configPwned;`), true);
+      await browser.eval(`const pre=document.querySelector('#repository-pipeline-preview pre'); pre.scrollIntoView({block:'center'}); pre.focus();`);
+      assert.equal(await browser.eval(`return document.activeElement.tagName==='PRE' && document.activeElement.textContent.includes('onerror');`), true);
+      if (process.env.PB_BROWSER_SHOTS) { await mkdir(process.env.PB_BROWSER_SHOTS, { recursive: true }); await writeFile(join(process.env.PB_BROWSER_SHOTS, `repository-config-${width}-${theme}.png`), await browser.screenshot()); }
+      await enter('repository-pipeline-cancel'); await browser.until(`!document.getElementById('repository-pipeline-dialog').open`, 'review closed');
+    }
+  }
+  await enter('columns-repository-read'); await browser.until(`!document.getElementById('repository-pipeline-apply').disabled`, 'final review'); await enter('repository-pipeline-apply');
+  await browser.until(`!document.getElementById('columns-dialog').open && !document.getElementById('repository-pipeline-dialog').open`, 'review applied');
+  const saved=(await app.board.state()).projects[0]; assert.equal(saved.tasks[0].prompt, task.prompt); assert.equal(saved.pipeline.columns[2].description, team.columns[2].description); assert.deepEqual((await app.board.state()).runs, []);
+  assert.deepEqual(browser.consoleMessages.filter(message=>message.startsWith('EXCEPTION')), []);
+});
+
 test('automation editing, Stop and receipt history work by keyboard in light/dark and desktop/narrow Chrome', { skip: !chrome, timeout: 90000 }, async t => {
   const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] }), pipeline = defaultPipelineConfig();
   const project = await app.board.createProject({ name: 'Actions UI' });

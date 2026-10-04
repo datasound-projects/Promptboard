@@ -1,10 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { access, readFile } from 'node:fs/promises';
+import { access, readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import http from 'node:http';
 import { startTestServer } from './helpers/test-server.mjs';
 import { emptyState, STATE_VERSION } from '../src/store.mjs';
 import { defaultPipelineConfig } from '../src/pipeline-config.mjs';
+import { repositoryPipelineDefinition } from '../src/pipeline-repository.mjs';
 
 const detector = async () => [{ id: 'codex', name: 'Codex', available: true, version: 'test fixture' }];
 async function open(t, runner = async () => ({ text: 'Add the route. Do the tests.', provider: 'codex', durationMs: 15 })) {
@@ -209,4 +211,20 @@ test('task pipeline settings require local authentication and exact revisions, a
   const response = await post(); assert.equal(response.status, 200); const saved = await response.json();
   assert.equal(saved.task.profileId, 'profile'); assert.equal(saved.task.prompt, task.prompt); assert.equal(saved.task.contentRevision, 1); assert.deepEqual(saved.board.runs, []);
   assert.equal((await post()).status, 409); assert.equal((await app.board.state()).projects[0].tasks[0].revision, 2);
+});
+
+test('repository board review and apply enforce authentication, local origin, reviewed revisions and confirmation', async t => {
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
+  const { token } = await fetch(app.url + '/api/session').then(response => response.json());
+  const { project } = await app.board.createProjectWithRepository({ name: 'Config fixture', folder: 'new' }), pipeline = defaultPipelineConfig();
+  for (const column of pipeline.columns) column.strategy.autoSpawn = false;
+  await app.board.setPipeline(project.id, { pipeline, expectedRevision: project.revision, confirm: true });
+  await writeFile(join(project.repository.root, 'promptboard.json'), JSON.stringify(repositoryPipelineDefinition(pipeline)));
+  const url = `${app.url}/api/projects/${project.id}/repository-pipeline`, headers = { 'x-ste-token': token };
+  assert.equal((await fetch(url)).status, 403); assert.equal((await fetch(url, { headers: { ...headers, origin: 'https://foreign.test' } })).status, 403);
+  const response = await fetch(url, { headers }); assert.equal(response.status, 200); const reviewed = await response.json();
+  const post = body => fetch(url, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  assert.equal((await post(reviewed)).status, 409); assert.equal((await post({ ...reviewed, confirm: true, expectedProjectRevision: 99 })).status, 409);
+  assert.equal((await post({ ...reviewed, confirm: true })).status, 200); assert.deepEqual((await app.board.state()).runs, []);
+  assert.equal((await post({ ...reviewed, confirm: true })).status, 409);
 });
