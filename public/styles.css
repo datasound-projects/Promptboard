@@ -837,24 +837,39 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
 .kanban-column-heading { flex-wrap: wrap; }
 .column-agent { flex-basis: 100%; padding: 0; border: 0; background: none; color: var(--muted); text-align: left; font-size: 11px; cursor: pointer; overflow-wrap: anywhere; }
 .column-agent:hover { color: var(--ink); text-decoration: underline; }
-/* Project controls live beside the board, never above its columns. */
+/* The board stays focused. Project configuration lives with project navigation in the sidebar. */
 .kanban-layout { display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; gap: 16px; min-width: 0; }
-.kanban-layout.settings-open { grid-template-columns: minmax(0, 1fr) 320px; }
 .kanban-layout > .kanban-board { grid-column: 1; grid-row: 1; min-width: 0; margin: 0; overflow: hidden; }
-#project-settings { grid-column: 2; grid-row: 1; min-width: 0; max-height: calc(100dvh - var(--dock-height) - 112px); overflow-y: auto; overscroll-behavior: contain; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
-.settings-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.settings-panel-heading h2 { margin: 0; font-size: 15px; }
-.settings-panel-note { margin: 8px 0 18px; font-size: 12px; }
-#project-settings .card { border: 0; padding: 0; margin: 0 0 16px; background: transparent; }
-#project-settings .kanban-toolbar, #project-settings .select-grid { grid-template-columns: minmax(0, 1fr); padding: 0; gap: 16px; }
-#project-settings .toolbar-cell { padding-top: 12px; border-top: 1px solid var(--line); }
-#project-settings .toolbar-end { justify-content: flex-start; }
-#project-settings .kanban-project-form, #project-settings .kanban-repo { padding: 16px 0 0; }
-#project-settings .kanban-detail { margin: 12px 0; }
+.sidebar-project-settings { flex: 0 0 auto; margin: 4px 0 0; padding: 8px 0 4px; border-top: 1px solid var(--line); }
+.sidebar-section-toggle { display: flex; align-items: center; justify-content: space-between; width: 100%; min-height: 32px; padding: 6px 2px; border: 0; background: transparent; color: var(--subtle); font-size: 11px; font-weight: 600; letter-spacing: .35px; text-align: left; }
+.sidebar-section-toggle:hover { color: var(--ink); }
+.sidebar-section-toggle span:last-child { font-size: 16px; font-weight: 400; }
+#project-settings { min-width: 0; padding: 2px 2px 10px; background: transparent; }
+.settings-panel-heading { display: flex; align-items: center; justify-content: flex-end; gap: 12px; }
+.settings-panel-heading h2 { margin: 0; font-size: 14px; }
+.settings-panel-heading .text-button { font-size: 11px; }
+.settings-panel-note { margin: 5px 0 12px; font-size: 11.5px; line-height: 1.45; }
+#project-settings .card { border: 0; padding: 0; margin: 0; background: transparent; box-shadow: none; }
+#project-settings .project-context { padding: 10px 0 12px; border-top: 1px solid var(--line); }
+#project-settings .project-context-heading { display: grid; gap: 7px; }
+#project-settings .project-context-actions { justify-content: space-between; gap: 6px; }
+#project-settings .context-agent { flex: 1 1 auto; min-width: 0; max-width: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+#project-settings .kanban-toolbar, #project-settings .select-grid { grid-template-columns: minmax(0, 1fr); padding: 0; gap: 0; }
+#project-settings .toolbar-cell { padding: 11px 0; border-top: 1px solid var(--line); }
+#project-settings .toolbar-cell:first-child { display: none; }
+#project-settings .toolbar-value { margin: 3px 0; overflow: hidden; color: var(--ink); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+#project-settings .field-label { font-size: 11.5px; }
+#project-settings .kanban-project-form, #project-settings .kanban-repo { padding: 12px 0 0; border-top: 1px solid var(--line); }
+#project-settings .kanban-detail { margin: 10px 0; }
+#project-settings .project-backup { padding: 11px 0; }
+#project-settings .project-backup > summary { color: var(--subtle); font-size: 11.5px; }
+.project-backup-actions { display: flex; gap: 6px; margin: 10px 0; }
+.project-backup-actions button { flex: 1; justify-content: center; min-width: 0; }
+#project-settings .project-backup .check-row { align-items: flex-start; margin-top: 8px; font-size: 11.5px; }
+#project-settings .project-backup .note { margin: 6px 0 0; font-size: 11px; }
 #kanban-view .intro-compact { align-items: center; gap: 16px; }
 #kanban-view .intro-compact > div { min-width: 0; }
 #kanban-title { overflow-wrap: anywhere; }
-#project-toggle { flex: none; width: auto; height: auto; gap: 10px; }
 #kanban-view .kanban-columns { grid-auto-columns: clamp(260px, 23vw, 320px); gap: 4px; padding: 8px 0; background: var(--surface-2); scroll-padding: 8px; }
 #kanban-view .kanban-column { border: 0; border-top: 2px solid color-mix(in srgb, var(--stage) 35%, var(--surface-2)); border-right: 1px solid var(--line); border-radius: 0; background: transparent; }
 #kanban-view .kanban-column:last-child { border-right: 0; }
@@ -876,9 +891,8 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
 #kanban-view .view-switch { padding: 0; border: 0; border-radius: 0; background: transparent; }
 #kanban-view .view-switch button { border-radius: 4px; font-size: 13px; font-weight: 500; }
 #kanban-view .view-switch button[aria-selected="true"] { background: var(--surface-2); box-shadow: none; }
-#kanban-view :is(.board-actions .secondary-button, .board-scroll, #project-toggle, .kanban-add-task) { border-color: transparent; border-radius: 4px; background: transparent; color: var(--muted); }
-#kanban-view :is(.board-actions .secondary-button, .board-scroll, #project-toggle, .kanban-add-task):hover:enabled { background: var(--surface-3); color: var(--ink); }
-#kanban-view #project-toggle { padding: 6px 8px; font-size: 12px; }
+#kanban-view :is(.board-actions .secondary-button, .board-scroll, .kanban-add-task) { border-color: transparent; border-radius: 4px; background: transparent; color: var(--muted); }
+#kanban-view :is(.board-actions .secondary-button, .board-scroll, .kanban-add-task):hover:enabled { background: var(--surface-3); color: var(--ink); }
 #kanban-view #card-new { min-height: 34px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface-2); color: var(--ink); font-size: 12px; }
 #kanban-view #card-new:hover:enabled { background: var(--surface-3); }
 #kanban-view .kanban-stage-icon { width: 15px; height: 15px; color: var(--muted); }
@@ -886,10 +900,6 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
 #kanban-view .kanban-actions :is(button, select) { border-color: transparent; background: transparent; border-radius: 4px; }
 #kanban-view .kanban-actions :is(button, select):hover:enabled { background: var(--surface-2); border-color: var(--line); }
 #kanban-view .kanban-done-drop { border-radius: 4px; }
-@media (max-width: 1100px) {
-  .kanban-layout.settings-open { grid-template-columns: minmax(0, 1fr); }
-  #project-settings { position: fixed; z-index: 30; top: 72px; right: 16px; bottom: calc(var(--dock-height) + 16px); width: min(360px, calc(100vw - 32px)); max-height: none; box-shadow: 0 12px 40px rgb(0 0 0 / .18); }
-}
 .card-workspace { margin: 8px 0; font-size: 11px; }
 .card-workspace summary { cursor: pointer; }
 .card-workspace .location-fact { flex-wrap: wrap; }
@@ -1100,6 +1110,8 @@ button.timeline-task:hover { text-decoration: underline; }
 .settings-section .agent-refresh-models { justify-self: start; }
 
 /* Quiet project navigation: compact rows, restrained selection, details on hover. */
+#workspace-panel { overflow-y: auto; overscroll-behavior: contain; }
+#workspace-panel .workspace-list { flex: 0 0 auto; }
 #workspace-panel > :is(.new-prompt, .workspace-open) { justify-content: flex-start; min-height: 32px; margin-bottom: 4px; padding: 6px 10px; border: 0; border-radius: 5px; background: transparent; color: var(--muted); font-size: 13px; box-shadow: none; }
 #workspace-panel > :is(.new-prompt, .workspace-open):hover { background: var(--surface); color: var(--ink); }
 #workspace-panel .history-label { margin-top: 14px; margin-bottom: 6px; font-family: inherit; font-size: 11px; letter-spacing: 0; }
@@ -1111,6 +1123,7 @@ button.timeline-task:hover { text-decoration: underline; }
 #workspace-panel .workspace-live { background: transparent; padding: 0 3px; }
 #workspace-panel .workspace-live::before, #workspace-panel .agent-icon { animation: none; }
 #workspace-panel .agents-section { border-top: 0; }
+#workspace-panel:has(#project-settings:not([hidden])) .workspace-list { max-height: 28vh; }
 #workspace-panel .agent-item { border-radius: 5px; margin-bottom: 2px; }
 #workspace-panel .agent-item > .agent-model { display: none; }
 .sidebar:has(#workspace-panel:not([hidden])) .sidebar-footer { display: none; }

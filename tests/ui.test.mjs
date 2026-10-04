@@ -1251,13 +1251,17 @@ test('Compose exposes three quiet settings groups, restores its summary, and kee
   assert.equal($('#compose-general-summary').textContent, 'Claude Code · Detailed');
 });
 
-test('the Kanban header exposes a collapsible settings panel outside the board', async t => {
+test('the Kanban sidebar owns one quiet collapsible project settings panel', async t => {
   const { $ } = await setup(t);
   assert.equal($('#project-toggle').getAttribute('aria-controls'), 'project-settings');
+  assert.ok($('#workspace-panel').contains($('#project-toggle')));
+  assert.ok($('#workspace-panel').contains($('#project-settings')));
   assert.ok($('#project-settings').contains($('#project-body')));
   assert.equal($('.kanban-board').contains($('#project-settings')), false);
   if ($('#project-settings').hidden) $('#project-toggle').click();
   assert.equal($('#project-settings').hidden, false);
+  assert.equal($('#project-settings .toolbar-cell:first-child').querySelector('#project-select') !== null, true, 'Existing project controls remain available to application logic.');
+  assert.equal($('#project-settings .project-backup').open, false);
   $('#project-settings-close').click();
   assert.equal($('#project-settings').hidden, true);
   assert.equal($('#project-toggle').getAttribute('aria-expanded'), 'false');

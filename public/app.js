@@ -189,18 +189,17 @@ function setSettingsCollapsed(collapsed, save = true) {
   $('#settings-toggle span').textContent = collapsed ? '+' : '−';
   if (save) savePref(SETTINGS_KEY, collapsed ? 'collapsed' : 'expanded');
 }
-// Collapse the Kanban project settings to give the board more room. Remembered in this browser.
+// Project settings live in the Kanban sidebar and use one quiet disclosure. Remembered per browser.
 function setProjectCollapsed(collapsed, save = true) {
   if (collapsed && $('#project-settings').contains(document.activeElement)) $('#project-toggle').focus();
   $('#project-settings').hidden = collapsed;
-  $('.kanban-layout').classList.toggle('settings-open', !collapsed);
   $('#project-body').hidden = collapsed;
   $('.kanban-projects').classList.toggle('collapsed', collapsed);
-  const label = collapsed ? 'Expand project settings' : 'Collapse project settings';
+  const label = collapsed ? 'Show project settings' : 'Hide project settings';
   $('#project-toggle').setAttribute('aria-expanded', String(!collapsed));
   $('#project-toggle').setAttribute('aria-label', label);
   $('#project-toggle').title = label;
-  $('#project-toggle span').textContent = collapsed ? '+' : '−';
+  $('#project-toggle span:last-child').textContent = collapsed ? '+' : '−';
   $('#project-summary').hidden = !collapsed;
   if (save) savePref(PROJECT_PANEL_KEY, collapsed ? 'collapsed' : 'expanded');
   fitBoardHeight();
@@ -1395,8 +1394,6 @@ function renderBoard() {
   const branch = project?.targetBranch?.name;
   $('#project-summary').textContent = project ? [project.name, project.repository ? project.repository.root.split(/[\\/]/).pop() + (branch ? ` → ${branch}` : '') : 'Not linked', workflowSummary(project)].join(' · ') : '';
   $('#project-summary').title = $('#project-summary').textContent;
-  // Without a project the settings are the only way forward, so they stay open.
-  if (!project && $('#project-body').hidden) setProjectCollapsed(false, false);
   renderWorkspace(project);
   renderAgents(project);
   renderAutopilotBar(project);
@@ -3089,7 +3086,7 @@ function renderRepository(project) {
   // The repository form opens when the project is not linked, or when the user asks for it.
   $('#repo-panel').hidden = !project || (Boolean(project.repository) && !repoPanelOpen && !project.pendingImport);
   $('#repo-edit').setAttribute('aria-expanded', String(!$('#repo-panel').hidden));
-  $('#repo-summary').textContent = !project ? '—' : project.repository ? project.repository.root : 'Not linked';
+  $('#repo-summary').textContent = !project ? '—' : project.repository ? project.repository.root.split(/[\\/]/).filter(Boolean).at(-1) || project.repository.root : 'Not linked';
   $('#repo-summary').title = project?.repository?.root || '';
   $('#workflow-summary').textContent = project ? workflowSummary(project) : '—';
   $('#workflow-open').disabled = !project;
@@ -4770,6 +4767,9 @@ window.addEventListener('resize', updateBoardScroll);
   columns.addEventListener('pointerup', stop);
   columns.addEventListener('pointercancel', stop);
 }
+// Keep project configuration with project navigation. Moving the existing node preserves every
+// form handler while removing the competing right-side panel from the board workspace.
+$('#sidebar-project-settings').append($('#project-settings'));
 try { if (localStorage.getItem(SETTINGS_KEY) === 'collapsed') setSettingsCollapsed(true, false); } catch {}
 try { setProjectCollapsed(localStorage.getItem(PROJECT_PANEL_KEY) !== 'expanded', false); } catch { setProjectCollapsed(true, false); }
 window.addEventListener('resize', fitBoardHeight);

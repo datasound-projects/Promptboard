@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Move Kanban project settings into the project sidebar and keep the board at full width. Use one compact disclosure for repository, target branch, project agent and workflow controls; hide redundant project selection, shorten repository status and collapse backup actions while preserving keyboard and phone navigation.
+
 - Store repositories created through New project under `~/Promptboard/projects` by default, with `PROMPTBOARD_PROJECTS_DIR` override support. Keep projects opened from existing local folders at their original absolute paths and explain both locations in the interface.
 
 - Expand Compose Task Type coverage for agentic coding with feature, integration, UI/UX, data, security, dependency, CI/CD/infrastructure and workflow-automation guidance.
