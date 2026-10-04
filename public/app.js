@@ -10,7 +10,7 @@ const HISTORY_LIMIT = 500;
 const MAX_PROMPT_BYTES = 2 * 1024 * 1024;
 const KNOWN_PROVIDERS = ['codex', 'claude', 'gemini', 'agy'];
 const KNOWN_DETAILS = ['super-short', 'concise', 'detailed', 'extremely-detailed'];
-const KNOWN_TASKS = ['build', 'debug', 'refactor', 'review', 'architecture', 'agent-workflow', 'research'];
+const KNOWN_TASKS = ['unspecified', 'build', 'debug', 'refactor', 'review', 'architecture', 'agent-workflow', 'research', 'documentation', 'testing', 'migration', 'performance'];
 const LANGUAGE_NAMES = { en: 'English', de: 'Deutsch', pl: 'Polski' };
 const providerInfo = {
   codex: { name: 'Codex', install: 'npm install -g @openai/codex', url: 'https://developers.openai.com/codex/cli/', signIn: 'Run codex and sign in.' },

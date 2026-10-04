@@ -5,7 +5,7 @@ import { COMPOSE_INPUT_CHARS } from './compose-limits.mjs';
 
 const PROVIDERS = new Set(['codex', 'claude', 'gemini', 'agy']);
 const DETAILS = new Set(['super-short', 'concise', 'detailed', 'extremely-detailed']);
-const TASKS = new Set(['build', 'debug', 'refactor', 'review', 'architecture', 'agent-workflow', 'research']);
+const TASKS = new Set(['unspecified', 'build', 'debug', 'refactor', 'review', 'architecture', 'agent-workflow', 'research', 'documentation', 'testing', 'migration', 'performance']);
 const FIELDS = new Set(['input', 'provider', 'model', 'effort', 'language', 'quality', 'detail', 'task', 'options', 'terminology', 'grounding']);
 const OPTION_DEFAULTS = Object.freeze({
   acceptanceChecks: true,
@@ -176,6 +176,9 @@ Do not pad a simple request.`,
 };
 
 const TASK_RULES = {
+  unspecified: `Do not impose a task category that the source does not specify.
+Let the source request determine the structure and kind of work.
+Keep implementation, analysis, review, research, and documentation scope distinct when the source makes that distinction.`,
   build: `Frame the task as an implementation request.
 Tell the target agent to inspect the relevant project conventions before it changes code.
 Keep the change within the stated scope.
@@ -208,6 +211,22 @@ Ask the target agent to use primary sources when available.
 Ask it to check current facts when freshness matters.
 Separate evidence, inference, and uncertainty.
 Do not fabricate citations or claim access to unavailable sources.`,
+  documentation: `State the documentation's purpose, audience, and requested deliverable.
+Ask the target agent to inspect the relevant source of truth before it writes.
+Keep examples and technical details consistent with the current project.
+Do not request code behavior changes unless the source requests them.`,
+  testing: `State the behavior, risk, or regression that the tests must cover.
+Ask the target agent to follow the project's existing test conventions.
+Prefer deterministic checks with clear expected results.
+Do not change production behavior unless the source requires it.`,
+  migration: `Preserve the supplied current state, target state, and compatibility constraints.
+Make the migration order and validation points explicit.
+Include rollback or recovery requirements only when the source or identified risk supports them.
+Do not invent versions, schemas, or compatibility guarantees.`,
+  performance: `Preserve the behavior and resource constraints that must remain unchanged.
+Ask the target agent to identify and measure the relevant bottleneck before it optimizes.
+Define before-and-after verification from supplied or discoverable metrics.
+Do not invent a performance target or trade correctness for speed.`,
 };
 
 /** Build an instruction envelope. JSON separation is useful, but not an injection guarantee. */
