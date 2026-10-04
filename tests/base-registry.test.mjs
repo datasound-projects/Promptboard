@@ -23,7 +23,7 @@ test('v2 primary migration preserves exact backup, unknown fields, projects and 
   delete original.base;
   const bytes = JSON.stringify(original, null, 3); await writeFile(join(dir, 'state.json'), bytes);
   const result = await store.read();
-  assert.equal(result.version, STATE_VERSION); assert.deepEqual(result.projects, original.projects.map(project => ({ ...project, workflowMode: 'legacy' }))); assert.deepEqual(result.runs, original.runs); assert.deepEqual(result.privateExtension, original.privateExtension);
+  assert.equal(result.version, STATE_VERSION); assert.deepEqual(result.projects, original.projects.map(project => ({ ...project, workflowMode: 'legacy', nextTaskNumber: project.tasks.length + 1, tasks: project.tasks.map((task, index) => ({ ...task, number: index + 1 })) }))); assert.deepEqual(result.runs, original.runs); assert.deepEqual(result.privateExtension, original.privateExtension);
   assert.deepEqual(result.base, { revision: 0, resources: [], approvedRoots: [] });
   const files = await readdir(dir), backup = files.find(name => name.startsWith('state.pre-migration-v2-'));
   assert.ok(backup); assert.equal(await readFile(join(dir, backup), 'utf8'), bytes); assert.equal(files.some(name => name.startsWith('state.corrupt-')), false);

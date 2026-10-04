@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Allocate stable project-local task numbers atomically across Composer creation, duplication and browser migration. Retain numbers through moves/archive/restore and never recycle deleted numbers. Migrate state to version 7 with an exact original backup; portable version 6 exports preserve numbers/counters and older backups remain importable. Number display remains a separate UI step.
+
 - Refresh the short dark-mode Compose, Kanban and Base demos with the current interface, including task settings, sidebar project setup, explicit file editing and linked knowledge pages. Simplify the GitHub social preview around all three pages and add its repeatable renderer.
 
 - Move Kanban project settings into the project sidebar and keep the board at full width. Use one compact disclosure for repository, target branch, project agent and workflow controls; hide redundant project selection, shorten repository status and collapse backup actions while preserving keyboard and phone navigation.

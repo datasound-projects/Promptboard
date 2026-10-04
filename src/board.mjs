@@ -11,6 +11,7 @@ import { attachSession, attachResumedRun, LIVE_SESSION_STATUSES, recoverSessions
 import { access, mkdir, readdir, realpath, rm, stat } from 'node:fs/promises';
 import { join, relative, isAbsolute } from 'node:path';
 import { Store } from './store.mjs';
+import { assignTaskNumbers, allocateTaskNumber, validateTaskNumbers } from './task-numbers.mjs';
 import { branchExists, commitExists, git, GitError, initRepository, listWorktrees, repositoryIdentity, validateRepository } from './git.mjs';
 import { ADAPTERS, resolveConfig, validateResumeId } from './agents.mjs';
 import { Delivery } from './delivery.mjs';
@@ -97,8 +98,8 @@ export function parseBackup(data) {
 }
 function parseBackupData(data) {
   const v1 = data?.version === 1 && (data.kind === undefined || data.kind === 'kanban-backup');
-  const v2 = [2, 3, 4, 5].includes(data?.version) && data.kind === 'promptboard-backup';
-  const v3 = [3, 4, 5].includes(data?.version) && data.kind === 'promptboard-backup';
+  const v2 = [2, 3, 4, 5, 6].includes(data?.version) && data.kind === 'promptboard-backup';
+  const v3 = [3, 4, 5, 6].includes(data?.version) && data.kind === 'promptboard-backup';
   if (!data || typeof data !== 'object' || (!v1 && !v2) || !Array.isArray(data.projects)) throw new BoardError('The data is not a Promptboard or version 1 Kanban board.', 'INVALID_BACKUP');
   if (data.projects.length > PROJECT_LIMIT) throw new BoardError(`A board can have at most ${PROJECT_LIMIT} projects.`, 'INVALID_BACKUP');
   const ids = new Set();
@@ -116,12 +117,13 @@ function parseBackupData(data) {
     const name = text(project.name, 80, `${label} name`);
     if (names.has(name.toLowerCase())) throw new BoardError(`${label} repeats the project name “${name}”.`, 'INVALID_BACKUP');
     names.add(name.toLowerCase());
-    if ([4, 5].includes(data.version) && project.workflowMode !== undefined && !['legacy', 'pipeline'].includes(project.workflowMode)) throw new BoardError('Unknown backup workflow mode.', 'INVALID_BACKUP');
-    const pipeline = [4, 5].includes(data.version) && project.workflowMode === 'pipeline' ? normalizePipelineConfig(project.pipeline) : null;
+    if ([4, 5, 6].includes(data.version) && project.workflowMode !== undefined && !['legacy', 'pipeline'].includes(project.workflowMode)) throw new BoardError('Unknown backup workflow mode.', 'INVALID_BACKUP');
+    const pipeline = [4, 5, 6].includes(data.version) && project.workflowMode === 'pipeline' ? normalizePipelineConfig(project.pipeline) : null;
     const columnLayout = !pipeline && v2 && Array.isArray(project.columnLayout) && project.columnLayout.length ? normalizeColumns(project.columnLayout) : null;
     const columnIds = new Set(pipeline ? pipeline.columns.map(column => column.id) : [...COLUMN_IDS, ...(columnLayout || []).filter(entry => entry.custom).map(entry => entry.id)]);
     return {
       id: unique(project.id, label), name, createdAt: time(project.createdAt),
+      ...(data.version === 6 ? { nextTaskNumber: project.nextTaskNumber } : {}),
       columnLayout,
       pipeline,
       agentDefaults: v2 && project.agentDefaults?.provider ? normalizeAgent(project.agentDefaults) : null,
@@ -139,14 +141,19 @@ function parseBackupData(data) {
         const cardLabel = `${label}, card ${cardIndex + 1}`;
         if (!card || typeof card !== 'object') throw new BoardError(`${cardLabel} is not valid.`, 'INVALID_BACKUP');
         if (pipeline && !columnIds.has(card.column)) throw new BoardError(`${cardLabel} refers to a missing pipeline column.`, 'INVALID_BACKUP');
-        if ((!pipeline || data.version !== 5) && (card.profileId != null || card.agentOverride != null)) throw new BoardError('Task pipeline settings require a version 5 pipeline backup.', 'INVALID_BACKUP');
+        if ((!pipeline || ![5, 6].includes(data.version)) && (card.profileId != null || card.agentOverride != null)) throw new BoardError('Task pipeline settings require a version 5 or 6 pipeline backup.', 'INVALID_BACKUP');
         return { id: unique(card.id, cardLabel), title: text(card.title, 120, `${cardLabel} title`), prompt: promptText(card.prompt, cardLabel, Boolean(pipeline)),
           createdAt: time(card.createdAt), updatedAt: time(card.updatedAt ?? card.createdAt), checksOutdated: card.checksOutdated === true,
+          ...(data.version === 6 ? { number: card.number } : {}),
           source: normalizeSource(card.source), column: v2 && columnIds.has(card.column) ? card.column : 'todo', ...(v3 ? backupBaseScopes(card, true, columnIds) : {}),
-          ...(pipeline && data.version === 5 ? normalizePipelineTaskSelection(pipeline, { profileId: card.profileId, agentOverride: card.agentOverride }) : {}) };
+          ...(pipeline && [5, 6].includes(data.version) ? normalizePipelineTaskSelection(pipeline, { profileId: card.profileId, agentOverride: card.agentOverride }) : {}) };
       }),
     };
   });
+  for (const project of projects) {
+    try { validateTaskNumbers(project, { required: data.version === 6 }); assignTaskNumbers(project); }
+    catch (error) { throw new BoardError(error.message, 'INVALID_BACKUP'); }
+  }
   return { projects, ...(v3 ? { base: data.base, baseGlobal: backupBaseScopes(data.baseGlobal || {}) } : {}) };
 }
 
@@ -170,12 +177,12 @@ function backupBaseScopes(entity, task = false, columnIds) {
   return result;
 }
 
-function newProject({ id = randomUUID(), name, createdAt = Date.now() }) {
-  return { id, name, createdAt, revision: 1, repository: null, targetBranch: null, workflowMode: 'legacy', workflow: {}, pendingImport: null, tasks: [] };
+function newProject({ id = randomUUID(), name, createdAt = Date.now(), nextTaskNumber = 1 }) {
+  return { id, name, createdAt, nextTaskNumber, revision: 1, repository: null, targetBranch: null, workflowMode: 'legacy', workflow: {}, pendingImport: null, tasks: [] };
 }
-function newTask({ id = randomUUID(), title, prompt, source = null, checksOutdated = false, createdAt = Date.now(), updatedAt = createdAt, column = 'todo' }) {
+function newTask({ id = randomUUID(), title, prompt, source = null, checksOutdated = false, createdAt = Date.now(), updatedAt = createdAt, column = 'todo', number }) {
   // contentRevision changes only when the title or prompt changes; plan approvals refer to it.
-  return { id, title, prompt, source, checksOutdated, createdAt, updatedAt, column, revision: 1, contentRevision: 1, planApproval: null, workspace: null, retainedBranches: [], transitions: [] };
+  return { id, title, prompt, source, checksOutdated, createdAt, updatedAt, column, ...(number === undefined ? {} : { number }), revision: 1, contentRevision: 1, planApproval: null, workspace: null, retainedBranches: [], transitions: [] };
 }
 
 // Autopilot routes: stages a card visits, in board order. Executing is required (it does the work).
@@ -1527,6 +1534,7 @@ export class Board {
       if (project.tasks.length >= TASK_LIMIT) throw new BoardError(`A project can have at most ${TASK_LIMIT} cards.`, 'LIMIT');
       if (pipelineSettings !== undefined) Object.assign(task, this.#taskPipelineSettings(state, project, pipelineSettings, expectedProjectRevision));
       if (project.workflowMode === 'pipeline') task.column = project.pipeline.columns.find(column => column.role === 'todo').id;
+      assignTaskNumbers(project); task.number = allocateTaskNumber(project);
       project.tasks.push(task); // Composer/new cards always enter the To Do role without a run.
       return task;
     });
@@ -1581,6 +1589,7 @@ export class Board {
       if (project.workflowMode === 'pipeline' && (task.profileId || task.agentOverride)) Object.assign(copy, normalizePipelineTaskSelection(project.pipeline, { profileId: task.profileId, agentOverride: task.agentOverride }));
       if (task.baseBinding) copy.baseBinding = structuredClone(task.baseBinding);
       if (task.baseColumns) copy.baseColumns = structuredClone(task.baseColumns);
+      assignTaskNumbers(project); copy.number = allocateTaskNumber(project);
       project.tasks.splice(project.tasks.indexOf(task) + 1, 0, copy); // A copy starts in To Do with no workspace.
       return copy;
     });
@@ -1672,7 +1681,8 @@ export class Board {
         for (const card of incoming.tasks) {
           if (taskIds.has(card.id)) { skipped++; continue; }
           if (project.tasks.length >= TASK_LIMIT) throw new BoardError(`A project can have at most ${TASK_LIMIT} cards.`, 'LIMIT');
-          project.tasks.push(newTask({ ...card, column: project.workflowMode === 'pipeline' ? project.pipeline.columns.find(column => column.role === 'todo').id : 'todo' }));
+          assignTaskNumbers(project);
+          project.tasks.push(newTask({ ...card, number: allocateTaskNumber(project), column: project.workflowMode === 'pipeline' ? project.pipeline.columns.find(column => column.role === 'todo').id : 'todo' }));
           taskIds.add(card.id);
           cards++;
         }
@@ -1686,15 +1696,15 @@ export class Board {
     const state = await this.state();
     const base = await this.base.export({ includeContent: includeBaseContent });
     if ((await this.state()).base.revision !== state.base.revision) throw conflict('Base changed while the backup was being prepared. Export it again.', 'BASE_REVISION_CONFLICT');
-    return { application: 'Promptboard', kind: 'promptboard-backup', version: state.projects.some(project => project.workflowMode === 'pipeline') ? 5 : 3, exportedAt: new Date().toISOString(),
+    return { application: 'Promptboard', kind: 'promptboard-backup', version: 6, exportedAt: new Date().toISOString(),
       base, baseGlobal: backupBaseScopes(state.settings.pendingBaseImport || state.settings),
-      projects: state.projects.map(project => ({ id: project.id, name: project.name, createdAt: project.createdAt,
+      projects: state.projects.map(project => ({ id: project.id, name: project.name, createdAt: project.createdAt, nextTaskNumber: project.nextTaskNumber,
         ...(project.workflowMode === 'pipeline' ? { workflowMode: 'pipeline', pipeline: project.pipelineImport || project.pipeline } : {}),
         ...backupBaseScopes({ ...project.pendingImport, ...project, ...(project.baseBinding ? {} : project.pendingImport?.baseBinding ? { baseBinding: project.pendingImport.baseBinding } : {}) }),
         repository: project.repository ? { path: project.repository.path } : null, targetBranch: project.targetBranch ? { name: project.targetBranch.name } : null,
         agentDefaults: project.agentDefaults || null, workflow: project.workflow || {}, testCommands: project.testCommands || [], timelineNotes: project.timelineNotes || [], columnLayout: project.columnLayout || [],
         // Workspaces and runs are machine-specific and are not exported.
-        tasks: project.tasks.map(task => ({ id: task.id, title: task.title, prompt: task.prompt, source: task.source, checksOutdated: task.checksOutdated,
+        tasks: project.tasks.map(task => ({ id: task.id, number: task.number, title: task.title, prompt: task.prompt, source: task.source, checksOutdated: task.checksOutdated,
           createdAt: task.createdAt, updatedAt: task.updatedAt, column: task.column, ...backupBaseScopes(task, true),
           ...(project.workflowMode === 'pipeline' ? normalizePipelineTaskSelection(project.pipelineImport || project.pipeline, { profileId: task.profileId, agentOverride: task.agentOverride }) : {}) })) })) };
   }
@@ -1706,7 +1716,7 @@ export class Board {
   async importBackup(data, { replace = false } = {}) {
     const parsed = parseBackup(data);
     const preparedBase = parsed.base ? await this.base.prepareImport(parsed.base) : null;
-    if ([3, 4, 5].includes(data.version) && !preparedBase) throw new BoardError('This backup is missing its Base resource library.', 'INVALID_BACKUP');
+    if ([3, 4, 5, 6].includes(data.version) && !preparedBase) throw new BoardError('This backup is missing its Base resource library.', 'INVALID_BACKUP');
     if (preparedBase) {
       for (const incoming of parsed.projects) {
         Object.assign(incoming, remapBaseScopes(incoming, preparedBase.remap));
