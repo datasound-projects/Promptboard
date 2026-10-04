@@ -84,5 +84,13 @@ test('Compose waits beyond old browser deadlines in generation, research and spl
   try { await browser.until(`document.querySelectorAll('#split-list .split-item').length === 1`, 'manual split after cancellation'); }
   catch (error) { throw new Error(`${error.message}; ${JSON.stringify(await browser.eval(`return { status: document.querySelector('#split-status').textContent, error: document.querySelector('#split-error').textContent, open: document.querySelector('#split-dialog').open };`))}; calls=${calls.map(row => row.stage).join(',')}`); }
   assert.equal(await browser.eval(`return document.querySelector('#split-error').hidden;`), true);
+  await click('split-close'); hold = 'split'; pending = null;
+  await click('split-button'); await waitPending('split');
+  const escaped = pending;
+  await browser.key('Escape', 'Escape', 27);
+  await browser.until(`!document.querySelector('#split-dialog').open`, 'Escape closes the pending split');
+  for (let i = 0; !escaped.call.signal.aborted && i < 100; i++) await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(escaped.call.signal.aborted, true);
+  assert.equal(await browser.eval(`return document.querySelector('#prompt-output').textContent;`), draft.trim());
   assert.doesNotMatch(browser.consoleMessages.join('\n'), /EXCEPTION/);
 });

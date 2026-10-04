@@ -2183,6 +2183,8 @@ test('a cancelled split cannot overwrite a new split with a late result or error
     $('#split-button').click(); await until(() => pending.length === 1, 'first split request');
     $('#split-close').click(); assert.equal(pending[0].signal.aborted, true);
     $('#split-button').click(); await until(() => pending.length === 2, 'replacement split request');
+    $('#split-dialog').dispatchEvent(new win.Event('close'));
+    assert.equal(pending[1].signal.aborted, false, 'A queued native close from the previous dialog cannot abort its replacement.');
     if (outcome === 'result') pending[0].resolve(Response.json({ tasks: [{ title: 'Stale task', prompt: 'Stale prompt.' }] }));
     else pending[0].reject(new Error('Old request failed late.'));
     await new Promise(resolve => setTimeout(resolve, 30));

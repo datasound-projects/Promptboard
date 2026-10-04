@@ -3414,7 +3414,11 @@ function bindAsyncForm(selector, handler) {
 bindAsyncForm('#split-form', addSplitCards);
 $('#split-project').addEventListener('change', () => { $('#split-project-name-field').hidden = Boolean($('#split-project').value); });
 for (const id of ['#split-cancel', '#split-close']) $(id).addEventListener('click', () => { split.controller?.abort(); $('#split-dialog').close(); });
-$('#split-dialog').addEventListener('close', () => split.controller?.abort());
+$('#split-dialog').addEventListener('cancel', () => split.controller?.abort());
+$('#split-dialog').addEventListener('close', () => {
+  // Native close events are queued. A reopened dialog belongs to a new request.
+  if (!$('#split-dialog').open) split.controller?.abort();
+});
 bindAsyncForm('#add-form', addToKanban);
 $('#add-project').addEventListener('change', () => { $('#add-project-name-field').hidden = Boolean($('#add-project').value); });
 $('#add-cancel').addEventListener('click', () => $('#add-dialog').close());
