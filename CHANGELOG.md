@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add an opt-in disposable Codex busy-queue check with bounded native-turn evidence, exact follow-up confirmation and real offline PTY coverage. Verify the default Tab queue behavior separately from steering, preserve manual-input guards and report both replies and cleanup without enabling automatic immediate delivery.
+
 - Save task priority separately from prompt content, with keyboard pipeline editing and labeled card/archive badges. Preserve exact Composer prompts, content checks, task order and agent execution; migrate state to version 9 with exact original backups and export portable version 7 metadata. Custom levels, filters and backlog integration remain pending.
 
 - Make the opt-in disposable Claude live check wait for a settled folder-trust screen and verify the current positive selection before Enter. Preserve manual-input guards and separate trust warmup from fresh-process delivery; never confirm a stale or reset negative answer.

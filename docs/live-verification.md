@@ -2,6 +2,15 @@
 
 Real CLI runs, recorded separately from the simulated (fake-CLI) test suite. Each checkpoint names its smoke script and uses an installed, signed-in CLI in its own disposable repository. Nothing here ran against a user repository.
 
+
+## 4 October 2026 — Codex busy queue observation
+
+macOS arm64, Node.js 24.14.1, Codex CLI 0.157.0, `gpt-6-luna` with low effort. An authorized prototype used its own disposable board/repository, answered startup trust only in a warmup, then started a fresh process. A configured deferred Code Review row was confirmed on the continued task run. During its longer second turn, one deliberately manual bracketed-paste follow-up and Tab queued the next input. The manual-input guard remained set.
+
+The owned rollout independently showed all 160 ordered `PB_BUSY_LINE_NNN` lines and `PB_BUSY_END`, completed before a different native turn accepted the exact follow-up and completed `PB_BUSY_NEXT`. No turn-aborted event appeared. Exact stored task text, clean main/worktree repositories and owned-process shutdown passed. No provider flags, Base selections, ambient tools or global CLI settings were edited directly.
+
+The first diagnostic missed this CLI's current `response_item` input format and sent no busy follow-up. Its corrected run observed the queue and exact next reply, but initially marked the first reply false because the model added matching numeric prefixes. A separate bounded audit of that owned rollout verified all 160 lines in order and both native turn boundaries; the original reports remain unchanged. The reproducible harness accepts those numbered lines and covers both native input formats with offline regressions, including a real PTY steering refusal. This entry records the prototype and native-history audit; it does not claim a live run of the newly added option or automatic immediate delivery in the app. No further live turn was needed to audit the recorded evidence.
+
 ## 4 October 2026 — Claude folder-trust startup
 
 Read-only replay of the previous owned terminal log revealed that the first Down selection briefly changed to Yes and then reset to No. A startup-only disposable check reproduced that reset without pressing Enter or starting a model turn. A second controlled observation showed that Down after startup settled retained Yes. The opt-in harness now parses the current 120×32 terminal viewport, waits for one second of unchanged output before navigation and confirmation, and presses Enter only while the exact folder-trust menu currently selects Yes. A reset negative answer is never confirmed; lost/truncated output or unsupported menus cannot supply an answer. This is limited to the harness's disposable repository, not automatic product approval.
