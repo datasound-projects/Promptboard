@@ -11,7 +11,7 @@ import { attachSession, attachResumedRun, LIVE_SESSION_STATUSES, recoverSessions
 import { access, mkdir, readdir, realpath, rm, stat } from 'node:fs/promises';
 import { join, relative, isAbsolute } from 'node:path';
 import { Store } from './store.mjs';
-import { branchExists, commitExists, git, GitError, initRepository, listWorktrees, validateRepository } from './git.mjs';
+import { branchExists, commitExists, git, GitError, initRepository, listWorktrees, repositoryIdentity, validateRepository } from './git.mjs';
 import { ADAPTERS, resolveConfig, validateResumeId } from './agents.mjs';
 import { Delivery } from './delivery.mjs';
 import { ensureClone, fastForward, fetchAndCompare, viewRepository } from './github.mjs';
@@ -901,7 +901,7 @@ export class Board {
     if (project.workflowMode !== 'pipeline') throw conflict('Switch this project to a column pipeline before reading repository configuration.', 'PIPELINE_SETTINGS_REQUIRED');
     if (!project.repository) throw conflict('Link this project to a repository first.', 'REPOSITORY_REQUIRED');
     const root = project.repository.root, revision = project.revision;
-    const repository = await validateRepository(root);
+    const repository = await repositoryIdentity(root);
     if (repository.root !== root || repository.commonDir !== project.repository.commonDir) throw conflict('The linked repository changed. Review its link first.', 'REPOSITORY_PIPELINE_ROOT_CHANGED');
     const snapshot = await readRepositoryPipeline(root), result = resolveRepositoryPipeline(snapshot, project.repositoryPipeline?.shared || project.pipeline);
     const current = this.#project(await this.state(), id);
@@ -914,6 +914,26 @@ export class Board {
         removed: removed.map(column => column.name), renamed: result.pipeline.columns.filter(column => before.columns.some(item => item.id === column.id && item.name !== column.name)).map(column => column.name),
         profiles: result.pipeline.profiles.map(profile => profile.name) },
       conflicts: removed.filter(column => current.tasks.some(task => task.column === column.id)).map(column => `Move tasks out of ${column.name} before applying its removal.`) };
+  }
+
+  /** Detect external changes to a previously accepted source without changing state. */
+  async repositoryPipelineStatus(id) {
+    const project = this.#project(await this.state(), id), applied = project.repositoryPipeline?.sourceRevision;
+    if (project.workflowMode !== 'pipeline' || !project.repository || typeof applied !== 'string' || !/^[a-f0-9]{64}$/.test(applied)) return { projectId: id, watching: false };
+    const root = project.repository.root, revision = project.revision;
+    let snapshot, errorCode = null;
+    try {
+      snapshot = await readRepositoryPipeline(root);
+      resolveRepositoryPipeline(snapshot, project.repositoryPipeline.shared || project.pipeline);
+    } catch (error) {
+      if (!(error instanceof RepositoryPipelineError) && error.code !== 'INVALID_PIPELINE_CONFIG') throw error;
+      errorCode = error.code;
+    }
+    const current = this.#project(await this.state(), id);
+    if (current.revision !== revision || current.repository?.root !== root || current.repositoryPipeline?.sourceRevision !== applied) throw conflict('The project changed while configuration was checked. Check it again.', 'REPOSITORY_PIPELINE_CHANGED');
+    return { projectId: id, watching: true, expectedProjectRevision: revision, appliedSourceRevision: applied,
+      checkedSourceRevision: snapshot?.sourceRevision || null, changed: snapshot ? snapshot.sourceRevision !== applied : null,
+      files: snapshot?.files.map(({ name, hash }) => ({ name, present: hash !== null })) || [], errorCode };
   }
 
   async applyRepositoryPipeline(id, { sourceRevision, expectedProjectRevision, confirm = false } = {}) {

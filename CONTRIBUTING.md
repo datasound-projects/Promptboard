@@ -8,7 +8,7 @@ npm run check
 npm test
 ```
 
-The suite runs two test files at a time. This bounds competing Git, PTY and browser fixtures so machine load does not consume their readiness deadlines; it does not disable tests or extend their timeouts.
+The suite first runs non-browser test files two at a time, then runs files using `tests/helpers/browser.mjs` one at a time. This keeps Chrome fixtures separate from competing Git, PTY and JSDOM work; it does not disable tests or extend their timeouts. The runner uses the same Node executable and propagates failures from either phase.
 
 1. Make one change with one clear purpose. Match the style of the surrounding code: plain ES modules, no framework, no build step.
 2. Add or update a test that fails without your change. Tests use simulated CLIs (`tests/fixtures/fake-agent.cjs`) and disposable Git repositories. Never point a test at a real repository.

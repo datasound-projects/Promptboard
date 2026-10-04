@@ -213,6 +213,25 @@ test('task pipeline settings require local authentication and exact revisions, a
   assert.equal((await post()).status, 409); assert.equal((await app.board.state()).projects[0].tasks[0].revision, 2);
 });
 
+test('repository change status is authenticated, contains no definition text and never applies or starts work', async t => {
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
+  const { token } = await fetch(`${app.url}/api/session`).then(response => response.json());
+  const { project } = await app.board.createProjectWithRepository({ name: 'Watched files', folder: 'new' }), pipeline = defaultPipelineConfig();
+  for (const column of pipeline.columns) column.strategy.autoSpawn = false;
+  await app.board.setPipeline(project.id, { pipeline, expectedRevision: project.revision, confirm: true });
+  await writeFile(join(project.repository.root, 'promptboard.json'), JSON.stringify(repositoryPipelineDefinition(pipeline)));
+  await app.board.applyRepositoryPipeline(project.id, { ...await app.board.previewRepositoryPipeline(project.id), confirm: true });
+  const url = `${app.url}/api/projects/${project.id}/repository-pipeline-status`, headers = { 'x-ste-token': token };
+  assert.equal((await fetch(url)).status, 403); assert.equal((await fetch(url, { headers: { ...headers, origin: 'https://evil.example' } })).status, 403);
+  const before = structuredClone(await app.board.state());
+  assert.equal((await fetch(url, { headers }).then(response => response.json())).changed, false);
+  await writeFile(join(project.repository.root, 'promptboard.local.json'), JSON.stringify({ version: 1, columns: [{ name: 'Executing', description: 'SECRET_CONFIG_TEXT', strategy: { autoSpawn: true } }] }));
+  const response = await fetch(url + '?path=outside.json', { headers }); assert.equal(response.status, 200);
+  const data = await response.json(); assert.equal(data.changed, true); assert.equal(data.errorCode, null); assert.ok(!JSON.stringify(data).includes('SECRET_CONFIG_TEXT')); assert.equal(data.pipeline, undefined);
+  assert.equal((await fetch(url, { method: 'POST', headers })).status, 404);
+  assert.deepEqual(await app.board.state(), before);
+});
+
 test('repository board review and apply enforce authentication, local origin, reviewed revisions and confirmation', async t => {
   const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
   const { token } = await fetch(app.url + '/api/session').then(response => response.json());

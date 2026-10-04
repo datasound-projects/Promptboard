@@ -145,6 +145,7 @@ async function boardRoute(board, req, res, pathname, searchParams) {
     if (method === 'PATCH' && action === 'columns') return view({ project: await board.setColumns(id, await body()) });
     if (method === 'PATCH' && action === 'pipeline') return view({ project: await board.setPipeline(id, await body()) });
     if (method === 'GET' && action === 'repository-pipeline') return send(res, 200, await board.previewRepositoryPipeline(id));
+    if (method === 'GET' && action === 'repository-pipeline-status') return send(res, 200, await board.repositoryPipelineStatus(id));
     if (method === 'POST' && action === 'repository-pipeline') {
       const { sourceRevision, expectedProjectRevision, confirm } = await body();
       return view({ project: await board.applyRepositoryPipeline(id, { sourceRevision, expectedProjectRevision, confirm }) });

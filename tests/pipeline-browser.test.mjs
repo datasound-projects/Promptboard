@@ -9,6 +9,66 @@ import { defaultPipelineConfig } from '../src/pipeline-config.mjs';
 import { repositoryPipelineDefinition } from '../src/pipeline-repository.mjs';
 
 const chrome = await findChrome();
+test('external repository changes show a keyboard review banner across themes and widths without changing the board or an open draft', { skip: !chrome, timeout: 90000 }, async t => {
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
+  const { project } = await app.board.createProjectWithRepository({ name: 'Watched browser', folder: 'new' }), pipeline = defaultPipelineConfig();
+  for (const column of pipeline.columns) column.strategy.autoSpawn = false;
+  await app.board.setPipeline(project.id, { pipeline, expectedRevision: project.revision, confirm: true });
+  const task = await app.board.createTask({ projectId: project.id, title: 'Exact Composer split', prompt: '  Original 😀\r\n' }), team = repositoryPipelineDefinition(pipeline), bytes = JSON.stringify(team);
+  await writeFile(join(project.repository.root, 'promptboard.json'), bytes); await app.board.applyRepositoryPipeline(project.id, { ...await app.board.previewRepositoryPipeline(project.id), confirm: true });
+  const browser = await launch(); if (!browser) { t.skip('Chrome did not start.'); return; } t.after(() => browser.close());
+  await browser.send('Page.addScriptToEvaluateOnNewDocument', { source: `
+    window.__repositoryReads = []; window.__statusReads = 0;
+    const nativeFetch = window.fetch;
+    window.fetch = function (...args) {
+      const result = Reflect.apply(nativeFetch, this, args);
+      if (typeof args[0] === 'string' && args[0].endsWith('/repository-pipeline')) window.__repositoryReads.push(result.then(async response => ({ status: response.status, data: await response.clone().json() })).catch(error => ({ error: error.name })));
+      if (typeof args[0] === 'string' && args[0].endsWith('/repository-pipeline-status')) result.then(response => response.clone().text()).catch(() => null).then(() => window.__statusReads++);
+      return result;
+    };
+  ` });
+  const enter = async id => { await browser.eval(`const node=document.getElementById(${JSON.stringify(id)}); node.scrollIntoView({block:'center'}); node.focus();`); await browser.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' }); await browser.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 }); };
+  const reviewed = async label => {
+    const read = await browser.eval('return await window.__repositoryReads.at(-1);');
+    assert.equal(read.status, 200, `${label}: ${JSON.stringify(read)}`);
+    await browser.until(`!document.getElementById('repository-pipeline-apply').disabled`, label).catch(async error => {
+      const state = await browser.eval(`return { open:document.getElementById('repository-pipeline-dialog').open, preview:document.getElementById('repository-pipeline-preview').textContent, error:document.getElementById('repository-pipeline-error').textContent, focus:document.activeElement.id };`);
+      throw new Error(`${error.message}; state ${JSON.stringify(state)}; console ${JSON.stringify(browser.consoleMessages)}`);
+    });
+  };
+  await browser.send('Page.bringToFront'); await browser.goto(`${app.url}/#/kanban`);
+  await browser.until(`document.querySelector('[data-id="${task.id}"]') && window.__statusReads > 0`, 'accepted repository monitor ready');
+  const before = structuredClone(await app.board.state());
+  team.columns[2].description = '<img src=x onerror="window.__watchPwned=1">'; team.columns[2].strategy.autoSpawn = true;
+  await writeFile(join(project.repository.root, 'promptboard.json'), JSON.stringify(team));
+  await browser.until(`!document.getElementById('repository-pipeline-warning').hidden`, 'external edit detected without a board revision');
+  for (const width of [1280, 390]) {
+    await browser.resize(width, 900);
+    for (const theme of ['light', 'dark']) {
+      await browser.eval(`document.documentElement.dataset.theme='${theme}'; const button=document.getElementById('repository-pipeline-warning-review'); button.scrollIntoView({block:'center'}); button.focus();`);
+      assert.equal(await browser.layout(`const banner=document.getElementById('repository-pipeline-warning'), r=banner.getBoundingClientRect(), b=document.activeElement.getBoundingClientRect(); return document.activeElement.id==='repository-pipeline-warning-review' && r.left>=-1 && r.right<=innerWidth+1 && banner.scrollWidth<=banner.clientWidth && b.left>=0 && b.right<=innerWidth && b.top>=0 && b.bottom<=innerHeight;`), true);
+      if (process.env.PB_BROWSER_SHOTS) { await mkdir(process.env.PB_BROWSER_SHOTS, { recursive: true }); await writeFile(join(process.env.PB_BROWSER_SHOTS, `repository-watch-${width}-${theme}.png`), await browser.screenshot()); }
+    }
+  }
+  assert.deepEqual(await app.board.state(), before);
+  await enter('columns-open'); await browser.until(`document.getElementById('columns-dialog').open`, 'editor opened');
+  await browser.eval(`const input=document.getElementById('column-name'); input.value='Unsaved keyboard draft'; input.dispatchEvent(new Event('input')); input.focus();`);
+  await writeFile(join(project.repository.root, 'promptboard.json'), 'PRIVATE INVALID JSON');
+  await browser.until(`document.getElementById('repository-pipeline-warning-text').textContent.includes('could not be checked')`, 'unreadable file reported');
+  assert.equal(await browser.eval(`return document.getElementById('column-name').value==='Unsaved keyboard draft' && document.activeElement.id==='column-name' && !document.getElementById('repository-pipeline-warning').textContent.includes('PRIVATE');`), true);
+  await writeFile(join(project.repository.root, 'promptboard.json'), JSON.stringify(team));
+  await browser.until(`document.getElementById('repository-pipeline-warning-text').textContent.includes('configuration changed')`, 'recovered definition detected');
+  // An open editor retains its draft during background reads and opens review
+  // through its own repository button while the modal owns keyboard focus.
+  await enter('columns-repository-read'); await browser.until(`window.__repositoryReads.length > 0`, 'fresh reviewed read dispatched'); await reviewed('fresh definition reviewed');
+  assert.equal(await browser.eval(`return document.getElementById('column-name').value==='Unsaved keyboard draft' && !document.querySelector('#repository-pipeline-preview img') && !window.__watchPwned;`), true);
+  await enter('repository-pipeline-cancel'); await enter('columns-close');
+  await enter('repository-pipeline-warning-review'); await browser.until(`window.__repositoryReads.length === 2`, 'banner keyboard action dispatched'); await reviewed('banner opens fresh review');
+  await enter('repository-pipeline-cancel'); await enter('columns-close');
+  await writeFile(join(project.repository.root, 'promptboard.json'), bytes); await browser.until(`document.getElementById('repository-pipeline-warning').hidden`, 'unchanged original bytes clear banner');
+  assert.deepEqual(await app.board.state(), before); assert.deepEqual(browser.consoleMessages.filter(message => message.startsWith('EXCEPTION')), []);
+});
+
 test('repository board review works by keyboard in both themes and narrow Chrome without running agents', { skip: !chrome, timeout: 90000 }, async t => {
   const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
   const { project } = await app.board.createProjectWithRepository({ name: 'Config browser', folder: 'new' }), pipeline = defaultPipelineConfig();
