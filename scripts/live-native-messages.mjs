@@ -23,6 +23,8 @@ const seconds = Number(option('timeout', '120'));
 if (!Number.isFinite(seconds) || seconds < 1 || seconds > 180) throw new Error('Timeout must be between 1 and 180 seconds.');
 const strategy = normalizePipelineStrategy({ agentOverride: provider, ...(model ? { modelOverride: model } : {}), ...(effort ? { effortOverride: effort } : {}) });
 const keep = process.argv.includes('--keep'), answerTrust = process.argv.includes('--answer-trust'), freshTrusted = process.argv.includes('--fresh-trusted');
+const cancelled = new AbortController(), stop = () => cancelled.abort('live-check-stopped');
+process.once('SIGINT', stop); process.once('SIGTERM', stop);
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
 const report = { provider, model: model || null, effort: effort || null, freshTrusted, initial: null, warmup: null,
@@ -40,7 +42,7 @@ async function waitReady(runId, mayAnswer) {
     const run = await board.run(runId), session = supervisor.sessions.get(runId);
     if (session?.proc?.pid) pids.add(session.proc.pid);
     const state = summary(run, session);
-    if (state.ready && state.nativeIdentityObserved || ['failed', 'cancelled', 'interrupted'].includes(run.status) || Date.now() >= deadline) return state;
+    if (cancelled.signal.aborted || state.ready && state.nativeIdentityObserved || ['failed', 'cancelled', 'interrupted'].includes(run.status) || Date.now() >= deadline) return state;
     // Only fixed startup questions in this owned fixture; never answer a tool permission.
     if (mayAnswer && !run.turns && session?.proc) {
       const screen = (await supervisor.artifact(runId, 'output')).replace(/\x1b\[[0-9;?<>]*[A-Za-z]/g, '').replace(/\s+/g, '');
@@ -69,19 +71,21 @@ try {
   await board.setPipeline(project.id, { pipeline, expectedRevision: 3, confirm: true });
   task = await board.createTask({ projectId: project.id, title: 'Private native input smoke', prompt });
   if ((await board.state()).runs.length) throw new Error('Unexpected To Do run.');
+  cancelled.signal.throwIfAborted();
   let result = await board.transition(task.id, { column: 'executing', expectedRevision: task.revision });
   report.initial = await waitReady(result.run.id, answerTrust);
-  if (freshTrusted && report.initial.ready && report.initial.manualInputObserved && Date.now() < deadline) {
+  if (!cancelled.signal.aborted && freshTrusted && report.initial.ready && report.initial.manualInputObserved && Date.now() < deadline) {
     // A separate fresh conversation in the already trusted fixture. No guard is reset,
     // and the warmup never receives a native message or an unknown-write retry.
     report.warmup = report.initial;
     let current = (await board.state()).projects.find(p => p.id === project.id).tasks.find(t => t.id === task.id);
     await board.transition(task.id, { column: 'todo', expectedRevision: current.revision });
     current = (await board.state()).projects.find(p => p.id === project.id).tasks.find(t => t.id === task.id);
+    cancelled.signal.throwIfAborted();
     result = await board.transition(task.id, { column: 'executing', expectedRevision: current.revision });
     report.initial = await waitReady(result.run.id, false);
   }
-  if (report.initial.ready && report.initial.nativeIdentityObserved && Date.now() < deadline) {
+  if (!cancelled.signal.aborted && report.initial.ready && report.initial.nativeIdentityObserved && Date.now() < deadline) {
     let current = (await board.state()).projects.find(p => p.id === project.id).tasks.find(t => t.id === task.id);
     const moved = await board.transition(task.id, { column: 'code_review', expectedRevision: current.revision });
     report.sameRun = moved.continuedRunId === result.run.id;
@@ -95,7 +99,7 @@ try {
     await journal.advance(key); await journal.startLifecycle(key); await journal.finishLifecycle(key, { status: 'succeeded' });
     const actionId = move.actions[0].id; await journal.startAction(key, actionId); await journal.scheduleMessage(key, actionId, scope); await journal.advance(key);
     dispatch = new NativeMessageDispatch({ journal, supervisor });
-    const delivered = await dispatch.deliver({ key, actionId, message, scope }, { timeoutMs: Math.max(1, Math.min(10000, deadline - Date.now())),
+    const delivered = await dispatch.deliver({ key, actionId, message, scope }, { signal: cancelled.signal, timeoutMs: Math.max(1, Math.min(10000, deadline - Date.now())),
       preflight: async () => { const run = await board.run(result.run.id); return report.sameRun && run.taskId === task.id && run.sessionId === scope.sessionId && run.config.provider === provider; } });
     const receipt = (await journal.read(key)).actions[0].delivery;
     report.message = { status: delivered.status, confirmed: delivered.confirmed === true, receiptStatus: receipt.status, submitted: Boolean(receipt.submittedAt) };
@@ -104,6 +108,7 @@ try {
   report.errorCode = /^[A-Z0-9_]{1,80}$/.test(error.code || '') ? error.code : 'LIVE_CHECK_FAILED';
 } finally {
   await dispatch?.shutdown(); await supervisor?.shutdown(1000);
+  report.cancelled = cancelled.signal.aborted;
   report.processStopped = [...pids].every(pid => { try { process.kill(pid, 0); return false; } catch { return true; } });
   if (board && task) {
     const current = (await board.state()).projects.find(p => p.id === project.id)?.tasks.find(t => t.id === task.id);
@@ -113,5 +118,6 @@ try {
   }
   if (keep) Object.assign(report, { root, dataDir });
   else { await rm(root, { recursive: true, force: true }); if (dataDir) await rm(dataDir, { recursive: true, force: true }); }
+  process.removeListener('SIGINT', stop); process.removeListener('SIGTERM', stop);
   console.log(JSON.stringify(report, null, 2));
 }
