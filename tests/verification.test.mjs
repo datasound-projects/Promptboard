@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
 import { extractProtectedLiterals, verifyPrompt } from '../src/verification.mjs';
+import { COMPOSE_PROMPT_CHARS, VERIFICATION_OUTPUT_CHARS } from '../src/compose-limits.mjs';
 
 test('recognizes exact code, quotes, URLs and paths without nested duplicates', () => {
   const source = [
@@ -163,20 +164,21 @@ test('a pass is limited to mechanics and explicitly leaves semantics and STE unv
 });
 
 test('invalid outputs fail deterministically and are not scanned for protected literals', () => {
-  for (const output of ['', ' \n\t ', null, {}, '\0', 'a'.repeat(64_001)]) {
+  for (const output of ['', ' \n\t ', null, {}, '\0', 'a'.repeat(VERIFICATION_OUTPUT_CHARS + 1)]) {
     const result = verifyPrompt('Keep `important`.', output);
     assert.equal(result.status, 'issues');
     assert.equal(result.matchedCount, 0);
     assert.equal(result.reviewRequired, true);
     assert.equal(result.checks.find(check => check.id === 'protected-literals').status, 'not-applicable');
   }
-  assert.equal(verifyPrompt('Text.', 'a'.repeat(64_000)).status, 'pass');
+  assert.equal(verifyPrompt('Text.', 'a'.repeat(VERIFICATION_OUTPUT_CHARS)).status, 'pass');
 });
 
 test('source size, type and null-character bounds are enforced before extraction', () => {
   assert.deepEqual(extractProtectedLiterals(''), []);
   assert.deepEqual(extractProtectedLiterals('a'.repeat(100_000)), []);
-  assert.throws(() => extractProtectedLiterals('a'.repeat(100_001)), /100,000/);
+  assert.deepEqual(extractProtectedLiterals('a'.repeat(COMPOSE_PROMPT_CHARS)), []);
+  assert.throws(() => extractProtectedLiterals('a'.repeat(COMPOSE_PROMPT_CHARS + 1)), /200,000/);
   for (const input of [null, {}, 12, '\0']) assert.throws(() => extractProtectedLiterals(input), TypeError);
 });
 

@@ -36,7 +36,6 @@ let progressTimer = null;
 let authInfo = null;
 let authBusy = false;
 let authSequence = 0;
-const GENERATION_CEILING_MS = 7.5 * 60 * 1000; // Above the server's 6-minute pipeline deadline.
 const STAGE_LABELS = { understanding: 'Understanding task', project: 'Reading project context', 'research-review': 'Checking research', retrieving: 'Finding relevant context', document: 'Preparing document', ready: 'Context ready', starting: 'Starting', models: 'Checking model options', draft: 'Drafting prompt', review: 'Reviewing requirements', repair: 'Repairing confirmed issues', 'repair-review': 'Verifying repaired prompt' };
 
 function safeText(value, max = MAX_PROMPT_BYTES) { return typeof value === 'string' ? value.slice(0, max) : ''; }
@@ -325,14 +324,14 @@ function updateQuality() {
   $('#quality-note').textContent = reviewed
     ? 'Automatic checks and a separate model review. Usually 2 CLI calls; up to 4 only when a check confirms a lost or changed requirement. Uses more time and CLI allowance.'
     : '1 CLI call, then automatic checks. No model review or repair. Check the meaning and every requirement yourself.';
-  $('#progress-note').textContent = reviewed ? 'Your CLI writes, reviews, and may revise the prompt. This can take a few minutes.' : 'Your CLI writes the prompt. Automatic checks follow.';
+  $('#progress-note').textContent = reviewed ? 'Your CLI writes, reviews, and may revise the prompt. You can cancel at any time.' : 'Your CLI writes the prompt. Automatic checks follow. You can cancel at any time.';
 }
 function updateEffort(preferred = '') {
   const provider = $('#provider').value;
   const model = chosenModel();
   const selected = catalog?.models?.find(item => item.id === (model || catalog.defaultModel));
   const unverified = model && !selected;
-  const choices = selected?.efforts || (unverified ? ({ codex: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'], claude: ['low', 'medium', 'high', 'xhigh', 'max'], agy: ['low', 'medium', 'high'], gemini: [] }[provider] || []) : []);
+  const choices = selected?.efforts || (unverified ? ({ codex: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'], claude: ['low', 'medium', 'high', 'xhigh', 'max'], agy: ['low', 'medium', 'high'], gemini: [] }[provider] || []) : []);
   const defaultEffort = model ? selected?.defaultEffort : catalog?.defaultEffort;
   $('#effort').replaceChildren(option('', defaultEffort ? `CLI default (${defaultEffort})` : 'CLI default (not reported)'));
   for (const level of choices) $('#effort').append(option(level, level === 'xhigh' ? 'Extra high (xhigh)' : level[0].toUpperCase() + level.slice(1)));
@@ -428,19 +427,28 @@ function setRunning(value) {
   renderAuth();
 }
 
-async function api(path, { method = 'GET', body, timeoutMs = 20000, signal } = {}) {
-  // A plain controller keeps this compatible with every fetch implementation; the timer bounds every request.
+function composeCancellation(controller) {
+  const id = crypto.randomUUID();
+  const cancel = () => { void api('/api/compose/cancel', { method: 'POST', body: { id }, timeoutMs: 5000 }).catch(() => {}); };
+  controller.signal.addEventListener('abort', cancel, { once: true });
+  return { id, dispose: () => controller.signal.removeEventListener('abort', cancel) };
+}
+
+async function api(path, { method = 'GET', body, timeoutMs = 20000, signal, compose = false } = {}) {
+  // Metadata requests are bounded. Compose model calls explicitly wait for completion or Cancel.
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  const forward = () => controller.abort();
+  const cancellation = compose ? composeCancellation(controller) : null;
+  const timer = timeoutMs === null ? undefined : setTimeout(() => controller.abort(), timeoutMs);
+  const forward = () => controller.abort(signal.reason);
   signal?.addEventListener('abort', forward, { once: true });
+  if (signal?.aborted) forward();
   try {
     const response = await fetch(path, { method, cache: 'no-store', signal: controller.signal,
-      headers: { 'X-STE-Token': token, ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+      headers: { 'X-STE-Token': token, ...(cancellation ? { 'X-STE-Compose-Id': cancellation.id } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
     let data = {};
     try { data = await response.json(); } catch {}
     return { response, data: data && typeof data === 'object' ? data : {} };
-  } finally { clearTimeout(timer); signal?.removeEventListener('abort', forward); }
+  } finally { clearTimeout(timer); cancellation?.dispose(); signal?.removeEventListener('abort', forward); }
 }
 
 function formatElapsed(ms) { const total = Math.max(0, Math.floor(ms / 1000)); return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`; }
@@ -706,16 +714,15 @@ async function generate(event) {
   $('#verification-report').hidden = true;
   const sequence = ++generationSequence;
   const ownController = new AbortController();
+  const cancellation = composeCancellation(ownController);
   controller = ownController;
-  let timedOut = false;
-  const ceiling = setTimeout(() => { timedOut = true; ownController.abort(); }, GENERATION_CEILING_MS);
   setRunning(true);
   startProgress();
   announce('Your CLI is engineering the prompt.');
   let failureCode = '';
   try {
     const response = await fetch('/api/generate', {
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-STE-Token': token },
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-STE-Token': token, 'X-STE-Compose-Id': cancellation.id },
       body: JSON.stringify(request), signal: ownController.signal,
     });
     let data;
@@ -750,10 +757,7 @@ async function generate(event) {
     if (previousResult) showResult(previousResult);
     else { currentResult = null; $('#output-empty').hidden = false; }
     // The request text stays in the input box on every failure path.
-    if (timedOut) {
-      $('#generation-error').textContent = 'The request took too long and was stopped. Your input is kept. Try again or use Fast mode.';
-      $('#generation-error').hidden = false;
-    } else if (error.name === 'AbortError' || failureCode === 'ABORTED') announce('Generation canceled. Your input is kept.');
+    if (error.name === 'AbortError' || failureCode === 'ABORTED') announce('Generation canceled. Your input is kept.');
     else {
       $('#generation-error').textContent = error.message || 'Generation failed. Your input is kept. Please try again.';
       $('#generation-error').hidden = false;
@@ -761,7 +765,7 @@ async function generate(event) {
       if (!failureCode && /token|session|403/i.test(error.message || '')) await loadProviders();
     }
   } finally {
-    clearTimeout(ceiling);
+    cancellation.dispose();
     if (sequence === generationSequence) {
       stopProgress();
       controller = null;
@@ -851,7 +855,7 @@ async function prepareContext(request) {
   $('#generate-label').textContent = 'Understanding task…';
   try {
     const signature = contextSignature();
-    const { response, data } = await api('/api/compose/prepare', { method: 'POST', body: { request, autonomous: $('#context-autonomous').checked, sources: contextSources() }, signal: own.signal, timeoutMs: 250000 });
+    const { response, data } = await api('/api/compose/prepare', { method: 'POST', body: { request, autonomous: $('#context-autonomous').checked, sources: contextSources() }, signal: own.signal, timeoutMs: null, compose: true });
     if (own.signal.aborted) return;
     if (!response.ok) throw new Error(failureMessage(data, 'Preparation failed.'));
     if (signature !== contextSignature()) return null;
@@ -870,10 +874,10 @@ async function uploadContextDocument() {
   if (file.size > 20 * 1024 * 1024) { contextError('Choose a document up to 20 MiB.'); return; }
   const params = new URLSearchParams({ name: file.name });
   for (const [name, id] of [['from', 'context-page-from'], ['to', 'context-page-to']]) if ($(`#${id}`).value) params.set(name, $(`#${id}`).value);
-  const own = new AbortController(); controller = own; setRunning(true); startProgress(); contextError();
+  const own = new AbortController(); const cancellation = composeCancellation(own); controller = own; setRunning(true); startProgress(); contextError();
   const timer = setTimeout(() => own.abort(), 65000);
   try {
-    const response = await fetch(`/api/compose/sources/document?${params}`, { method: 'POST', headers: { 'X-STE-Token': token, 'Content-Type': file.type || (/\.pdf$/i.test(file.name) ? 'application/pdf' : 'text/plain') }, body: file, signal: own.signal });
+    const response = await fetch(`/api/compose/sources/document?${params}`, { method: 'POST', headers: { 'X-STE-Token': token, 'X-STE-Compose-Id': cancellation.id, 'Content-Type': file.type || (/\.pdf$/i.test(file.name) ? 'application/pdf' : 'text/plain') }, body: file, signal: own.signal });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'Document preparation failed.');
     const doc = data.document;
@@ -881,7 +885,7 @@ async function uploadContextDocument() {
     $('#context-file').value = ''; $('#context-document-fields').hidden = true;
     $('#context-add-document').setAttribute('aria-expanded', 'false');
   } catch (error) { contextError(own.signal.aborted ? 'Document preparation stopped. Retry or continue without this document.' : error.message); }
-  finally { clearTimeout(timer); controller = null; stopProgress(); setRunning(false); }
+  finally { clearTimeout(timer); cancellation.dispose(); controller = null; stopProgress(); setRunning(false); }
 }
 for (const id of ['context-autonomous', 'context-use-sources', 'context-auto-split']) {
   try { const prefs = JSON.parse(localStorage.getItem(CONTEXT_PREFS) || '{}'); $(`#${id}`).checked = id === 'context-autonomous' ? (prefs[id] === true || (prefs[id] === undefined && prefs['context-clarify'] === true)) : prefs[id] === true; } catch {}
@@ -3324,11 +3328,12 @@ async function openSplit({ previewOnly = false } = {}) {
   $('#split-add').disabled = true;
   $('#split-status').textContent = `${providerInfo[result.provider]?.name || result.provider} is splitting the prompt into tasks… This is one CLI call.`;
   $('#split-dialog').showModal();
-  split.controller = new AbortController();
+  const own = new AbortController();
+  split.controller = own;
   let answer;
-  try { answer = await api('/api/split', { method: 'POST', body: { prompt: result.prompt, provider: result.provider, model: result.model || '', effort: result.effort || '', language: result.language || 'en' }, timeoutMs: 200000, signal: split.controller.signal }); }
-  catch { if (!split.controller.signal.aborted) $('#split-status').textContent = 'The app did not answer. Check that Promptboard is still running.'; return; }
-  if (split.controller.signal.aborted || !$('#split-dialog').open) return;
+  try { answer = await api('/api/split', { method: 'POST', body: { prompt: result.prompt, provider: result.provider, model: result.model || '', effort: result.effort || '', language: result.language || 'en' }, timeoutMs: null, signal: own.signal, compose: true }); }
+  catch { if (split.controller === own && !own.signal.aborted) $('#split-status').textContent = 'The app did not answer. Check that Promptboard is still running.'; return; }
+  if (own.signal.aborted || split.controller !== own || !$('#split-dialog').open) return;
   const { response, data } = answer;
   if (!response.ok) { $('#split-status').textContent = ''; $('#split-error').textContent = data.error || 'The prompt could not be split.'; $('#split-error').hidden = false; return; }
   split.tasks = data.tasks.map(task => ({ ...task, included: true }));
@@ -3422,7 +3427,11 @@ function bindAsyncForm(selector, handler) {
 bindAsyncForm('#split-form', addSplitCards);
 $('#split-project').addEventListener('change', () => { $('#split-project-name-field').hidden = Boolean($('#split-project').value); });
 for (const id of ['#split-cancel', '#split-close']) $(id).addEventListener('click', () => { split.controller?.abort(); $('#split-dialog').close(); });
-$('#split-dialog').addEventListener('close', () => split.controller?.abort());
+$('#split-dialog').addEventListener('cancel', () => split.controller?.abort());
+$('#split-dialog').addEventListener('close', () => {
+  // Native close events are queued. A reopened dialog belongs to a new request.
+  if (!$('#split-dialog').open) split.controller?.abort();
+});
 bindAsyncForm('#add-form', addToKanban);
 $('#add-project').addEventListener('change', () => { $('#add-project-name-field').hidden = Boolean($('#add-project').value); });
 $('#add-cancel').addEventListener('click', () => $('#add-dialog').close());

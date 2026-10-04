@@ -25,6 +25,7 @@ Open **http://127.0.0.1:4318**. The navigation is **Compose | Kanban | Base**. P
 ## Compose — turn an idea into a clear prompt
 
 - Describe what you want to build or fix. Choose your CLI, model, language, and level of detail.
+- Optional autonomous context research uses only relevant selected sources. Model calls wait for completion or **Cancel**, including reviewed generation and splitting; Compose does not cut off a healthy run on a timer.
 - Review the generated prompt. Optionally edit and save your exact wording.
 - Copy it, add it to Kanban, or split it into smaller, editable To Do tasks.
 

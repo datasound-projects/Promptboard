@@ -59,6 +59,11 @@ import { basename } from 'node:path';
 import { readFileSync, writeFileSync } from 'node:fs';
 const args = process.argv.slice(2);
 if (args.includes('--version')) { process.stdout.write('fixture-cli 1.0'); process.exit(0); }
+if (args[0] === 'mcp') {
+  if (process.env.STE_BAD_MCP_METADATA === 'true') process.stdout.write('SECRET malformed metadata');
+  else process.stdout.write(JSON.stringify([{ name: 'ambient.docs', enabled: true, transport: { type: 'stdio', command: 'DO_NOT_START' } }, { name: 'remote', enabled: true, transport: { type: 'streamable_http', url: 'https://SECRET.invalid', http_headers: { Authorization: 'SECRET' } } }]));
+  process.exit(0);
+}
 let input = ''; for await (const chunk of process.stdin) input += chunk;
 if (input === 'HANG') { setInterval(() => {}, 1000); }
 else if (input === 'FLOOD') { process.stdout.write('x'.repeat(2200000)); }
@@ -100,6 +105,13 @@ else {
         if (provider === 'claude') assert.equal(data.effortEnv, 'high');
         assert.equal(await resolveRealPath(data.cwd), await resolveRealPath(dir));
         assert.ok(!data.args.includes(prompt));
+        if (provider === 'codex') {
+          const override = data.args.find(arg => arg.startsWith('mcp_servers='));
+          assert.ok(override.includes('"ambient.docs"={enabled=false,command='));
+          assert.ok(override.includes('"remote"={enabled=false,url="https://127.0.0.1/"}'));
+          assert.doesNotMatch(override, /SECRET|DO_NOT_START/);
+          for (const feature of ['apps', 'plugins', 'hooks']) assert.ok(data.args.includes('features.' + feature + '=false'));
+        }
         if (provider === 'gemini') {
           assert.match(data.policy, /toolName = "\*"/);
           assert.match(data.policy, /decision = "deny"/);
@@ -111,6 +123,13 @@ else {
       await assert.rejects(runProvider({ provider: 'claude', prompt: 'FAIL', cwd: dir }), error => {
         assert.equal(error.code, 'CLI_FAILED'); assert.ok(!error.message.includes('SECRET')); return true;
       });
+    });
+    await t.test('malformed inherited MCP metadata fails closed without exposing its contents', async () => {
+      const previous = process.env.STE_BAD_MCP_METADATA;
+      process.env.STE_BAD_MCP_METADATA = 'true';
+      try { await assert.rejects(runProvider({ provider: 'codex', prompt: 'FLOOD', cwd: dir }), error => {
+        assert.equal(error.code, 'POLICY_DENIED'); assert.doesNotMatch(JSON.stringify(error), /SECRET/); return true;
+      }); } finally { if (previous === undefined) delete process.env.STE_BAD_MCP_METADATA; else process.env.STE_BAD_MCP_METADATA = previous; }
     });
     await t.test('bounds stdout and stderr', async () => {
       for (const prompt of ['FLOOD', 'STDERR_FLOOD']) {
@@ -124,6 +143,15 @@ else {
       setTimeout(() => controller.abort(), 100);
       await assert.rejects(pending, { code: 'ABORTED' });
       await assert.rejects(runProvider({ provider: 'claude', prompt: 'X', cwd: dir, signal: controller.signal }), { code: 'ABORTED' });
+    });
+    await t.test('an explicitly untimed CLI remains cancellable instead of timing out immediately', async () => {
+      const controller = new AbortController();
+      const pending = runProvider({ provider: 'claude', prompt: 'HANG', cwd: dir, timeoutMs: null, signal: controller.signal });
+      const cancel = setTimeout(() => controller.abort(), 150);
+      try { await assert.rejects(pending, { code: 'ABORTED' }); }
+      finally { clearTimeout(cancel); }
+      const result = await runProvider({ provider: 'claude', prompt: 'Complete the task.', cwd: dir, timeoutMs: null });
+      assert.ok(result.text);
     });
   } finally {
     if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath;
@@ -156,6 +184,7 @@ setInterval(() => {}, 1000);
     const executable = join(dir, 'codex');
     await writeFile(executable, `#!${process.execPath}
 const { spawn } = require('node:child_process');
+if (process.argv[2] === 'mcp') { process.stdout.write('[]'); process.exit(0); }
 spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}], { stdio: 'ignore' });
 process.stdin.resume();
 setInterval(() => {}, 1000);
@@ -198,6 +227,7 @@ setInterval(() => {}, 1000);
 test('each native effort flag is passed without changing the safety flags', () => {
   const codex = buildCommand({ provider: 'codex', model: 'test', effort: 'xhigh' });
   assert.ok(codex.args.includes('model_reasoning_effort="xhigh"'));
+  assert.ok(buildCommand({ provider: 'codex', effort: 'max' }).args.includes('model_reasoning_effort="max"'));
   for (const provider of ['claude', 'agy']) {
     const command = buildCommand({ provider, model: 'test', effort: 'high' });
     assert.equal(command.args[command.args.indexOf('--effort') + 1], 'high');
