@@ -161,8 +161,10 @@ test('a pipeline revision conflict after an exit webhook never creates an automa
   await ctx.win.__pbTest.loadBoard(); await ctx.idle({ requireComplete: true });
   const selector = ctx.$(`[data-id="${task.id}"] .kanban-move-to`); assert.ok(selector);
   selector.value = 'code_review'; selector.dispatchEvent(new ctx.win.Event('change', { bubbles: true }));
-  await until(() => effects === 1 && ctx.$('#announcement').textContent.includes('changed since'), 'visible conflicted move');
+  // Settle the actual request/journal writes before the UI assertion deadline.
+  // This fixture already gives request completion its own bounded failure check.
   await ctx.idle({ requireComplete: true });
+  await until(() => effects === 1 && ctx.$('#announcement').textContent.includes('changed since'), 'visible conflicted move');
   assert.equal(effects, 1); const saved = (await ctx.app.board.state()).projects[0].tasks[0];
   assert.equal(saved.column, 'todo'); assert.equal(saved.title, 'Edited during exit'); assert.equal(saved.prompt, task.prompt);
   const history = await ctx.app.board.automationRuns(task.id); assert.equal(history.length, 1); assert.equal(history[0].actions[0].status, 'succeeded'); assert.equal(history[0].lifecycle.status, 'failed');
