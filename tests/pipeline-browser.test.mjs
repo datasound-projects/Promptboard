@@ -37,9 +37,13 @@ test('automation editing, Stop and receipt history work by keyboard in light/dar
   await browser.until(`!document.querySelector('#columns-dialog').open`, 'saved without executing');
   assert.equal((await app.board.state()).runs.length, 0); assert.equal((await app.board.automationRuns(task.id)).length, 0);
   let calls = 0;
-  app.board.automations.actions.fetcher = (_url, { signal }) => new Promise((_resolve, reject) => { calls++; const abort = () => reject(new Error('Owned fixture stopped.')); signal.addEventListener('abort', abort, { once:true }); if (signal.aborted) abort(); });
+  const dispatched = Promise.withResolvers();
+  app.board.automations.actions.fetcher = (_url, { signal }) => new Promise((_resolve, reject) => { calls++; dispatched.resolve(); const abort = () => reject(new Error('Owned fixture stopped.')); signal.addEventListener('abort', abort, { once:true }); if (signal.aborted) abort(); });
   const moving = app.board.transition(task.id, { column: 'code_review', expectedRevision: 1 }), cancelled = assert.rejects(moving, { code: 'AUTOMATION_MOVE_CANCELLED' });
-  await browser.until(`document.querySelector('[data-id="${task.id}"] .kanban-stop-automations')`, 'poll displays owned pending work'); assert.equal(calls, 1);
+  await browser.until(`document.querySelector('[data-id="${task.id}"] .kanban-stop-automations')`, 'poll displays owned pending work');
+  // Pending intent is visible before dispatch. This scenario tests cancelling an
+  // active webhook, so observe the owned fetch itself before asserting or stopping.
+  await dispatched.promise; assert.equal(calls, 1);
   for (const theme of ['light', 'dark']) {
     await browser.eval(`document.documentElement.dataset.theme='${theme}'; const stop = document.querySelector('[data-id="${task.id}"] .kanban-stop-automations'); stop.scrollIntoView({block:'center',inline:'center'}); stop.focus();`);
     assert.equal(await browser.layout(`const r=document.activeElement.getBoundingClientRect(); return document.activeElement.classList.contains('kanban-stop-automations') && r.left>=0 && r.right<=innerWidth && r.top>=0 && r.bottom<=innerHeight;`), true);
