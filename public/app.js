@@ -302,7 +302,7 @@ async function loadProviders() {
       if (firstAvailable) $('#provider').value = firstAvailable.id;
     }
     updateProviderState();
-    loadAuth();
+    loadAuth(authInfo?.provider || $('#provider').value);
     loadBoard();
     if (currentPage() === 'base') baseView?.show();
     await loadModels({ model: chosenModel(), effort: $('#effort').value });
@@ -966,35 +966,38 @@ contextLabel();
 
 // CLI connection panel. Installation and sign-in are reported separately; sign-in
 // actions use each CLI's own documented flow. No credentials pass through this page.
-async function loadAuth() {
+async function loadAuth(provider = $('#provider').value) {
+  // Account inspection is independent of Compose's generation settings.
+  if (authBusy && provider !== $('#connection-provider').value) return;
+  $('#connection-provider').value = provider;
   const sequence = ++authSequence;
-  const provider = $('#provider').value;
+  renderAuth();
   if (!token) return;
   try {
     const { response, data } = await api(`/api/auth?provider=${encodeURIComponent(provider)}`, { timeoutMs: 20000 });
-    if (sequence !== authSequence || provider !== $('#provider').value) return;
-    authInfo = response.ok ? data : { provider, installed: Boolean(selectedProvider()?.available), state: 'unknown', capabilities: null };
+    if (sequence !== authSequence || provider !== $('#connection-provider').value) return;
+    authInfo = response.ok ? data : { provider, installed: Boolean(providers.find(row => row.id === provider)?.available), state: 'unknown', capabilities: null };
     if (response.ok && typeof data.installed === 'boolean') {
-      const detected = selectedProvider();
+      const detected = providers.find(row => row.id === provider);
       const changed = Boolean(detected?.available) !== data.installed;
       if (detected) detected.available = data.installed;
       else providers.push({ id: provider, name: providerInfo[provider]?.name || provider, available: data.installed });
       const choice = [...$('#provider').options].find(option => option.value === provider);
       if (choice) choice.textContent = `${providerInfo[provider]?.name || provider}${data.installed ? '' : ' · not installed'}`;
       updateProviderState();
-      if (changed) loadModels({ model: chosenModel(), effort: $('#effort').value, refresh: data.installed });
+      if (changed && provider === $('#provider').value) loadModels({ model: chosenModel(), effort: $('#effort').value, refresh: data.installed });
     }
   } catch {
     if (sequence !== authSequence) return;
-    authInfo = { provider, installed: Boolean(selectedProvider()?.available), state: 'unknown', capabilities: null };
+    authInfo = { provider, installed: Boolean(providers.find(row => row.id === provider)?.available), state: 'unknown', capabilities: null };
   }
   renderAuth();
 }
 
 function renderAuth() {
-  const provider = $('#provider').value;
+  const provider = $('#connection-provider').value;
   const info = authInfo?.provider === provider ? authInfo : null;
-  const detected = selectedProvider();
+  const detected = providers.find(row => row.id === provider);
   const installed = info ? info.installed === true : Boolean(detected?.available);
   const caps = info?.capabilities || {};
   $('#connection-install').textContent = !detected && !info ? 'Checking CLI…' : installed ? `CLI installed${detected?.version ? ` · ${safeText(detected.version, 60)}` : ''}` : 'CLI not installed';
@@ -1005,6 +1008,7 @@ function renderAuth() {
     : info.state === 'signed-out' ? `Signed out${info.stale ? ' · last check' : ''}`
     : caps.status === 'unsupported' ? 'Sign-in status: not reported by this CLI' : 'Sign-in status: unknown';
   const blocked = running || authBusy || !token || !installed;
+  $('#connection-provider').disabled = running || authBusy || !token;
   $('#auth-login').textContent = info?.state === 'signed-in' ? 'Reauthenticate' : 'Connect / Sign in';
   $('#auth-login').disabled = blocked || !info;
   $('#auth-device').hidden = !caps.device;
@@ -1032,13 +1036,14 @@ function setAuthBusy(value) { authBusy = value; renderAuth(); updateProviderStat
 
 async function afterAuthChange(message) {
   setAuthBusy(false);
-  await loadAuth();
-  loadModels({ model: chosenModel(), effort: $('#effort').value, refresh: true });
+  const provider = $('#connection-provider').value;
+  await loadAuth(provider);
+  if (provider === $('#provider').value) loadModels({ model: chosenModel(), effort: $('#effort').value, refresh: true });
   if (message) announce(message);
 }
 
 async function signIn(method) {
-  const provider = $('#provider').value;
+  const provider = $('#connection-provider').value;
   const caps = authInfo?.capabilities || {};
   const name = providerInfo[provider]?.name || 'This CLI';
   if (caps.login !== 'native') {
@@ -1048,7 +1053,7 @@ async function signIn(method) {
       codeBlock(caps.loginCommand || provider),
       ...(caps.loginNote ? [paragraph(caps.loginNote)] : []),
       paragraph('Then choose Check again.'),
-      detailActions(detailButton('Check again', () => { showAuthDetail(); loadAuth(); loadModels({ model: chosenModel(), effort: $('#effort').value, refresh: true }); })),
+      detailActions(detailButton('Check again', () => { showAuthDetail(); checkConnection(); })),
     );
     return;
   }
@@ -1091,7 +1096,7 @@ async function signIn(method) {
 }
 
 function signOut() {
-  const provider = $('#provider').value;
+  const provider = $('#connection-provider').value;
   const caps = authInfo?.capabilities || {};
   const name = providerInfo[provider]?.name || 'This CLI';
   if (caps.logout === 'terminal') {
@@ -1131,7 +1136,8 @@ function paragraph(content, className = '') {
 function openHelp(privacy = false) {
   const content = $('#dialog-content');
   content.replaceChildren();
-  $('#dialog-heading').textContent = privacy ? 'Your work. Your browser. Your CLI.' : 'A small tool. A straightforward setup.';
+  $('#dialog-heading').textContent = privacy ? 'Your work. Your browser. Your CLI.' : 'CLI connections';
+  $('#cli-connection').hidden = privacy;
   if (privacy) {
     // Facts about the current version only. Keep this in step with README "Privacy and data" and SECURITY.md.
     const section = (title, items) => {
@@ -1165,7 +1171,8 @@ function openHelp(privacy = false) {
       ]),
     );
   } else {
-    content.append(paragraph('Install one supported CLI on the same computer, then sign in through its terminal. The workbench uses that CLI’s configured model unless you select a model. Choose a supported effort and an output language before you generate.'));
+    const guides = document.createElement('details');
+    const summary = document.createElement('summary'); summary.textContent = 'Installation guides'; guides.append(summary);
     const list = document.createElement('div');
     list.className = 'setup-list';
     for (const [id, info] of Object.entries(providerInfo)) {
@@ -1188,7 +1195,7 @@ function openHelp(privacy = false) {
       card.append(heading, command, paragraph(info.signIn), link);
       list.append(card);
     }
-    content.append(list, paragraph('Restart the workbench if your PATH changes. Detection confirms the command exists; it does not verify your sign-in. CLI account limits and usage costs still apply.', 'dialog-note'));
+    guides.append(list, paragraph('Restart the workbench if your PATH changes. Detection confirms the command exists; it does not verify your sign-in. CLI account limits and usage costs still apply.', 'dialog-note'));
     const refresh = document.createElement('button');
     refresh.type = 'button';
     refresh.className = 'reload-button';
@@ -1199,7 +1206,7 @@ function openHelp(privacy = false) {
       await loadProviders();
       openHelp();
     });
-    content.append(refresh);
+    guides.append(refresh); content.append(guides);
   }
   if (!$('#help-dialog').open) $('#help-dialog').showModal();
 }
@@ -3753,7 +3760,13 @@ $('#cancel-button').addEventListener('click', () => { if (!controller) return; $
 $('#auth-login').addEventListener('click', () => signIn('browser'));
 $('#auth-device').addEventListener('click', () => signIn('device'));
 $('#auth-logout').addEventListener('click', signOut);
-$('#auth-check').addEventListener('click', () => { loadAuth(); loadModels({ model: chosenModel(), effort: $('#effort').value, refresh: true }); });
+function checkConnection() {
+  const provider = $('#connection-provider').value;
+  loadAuth(provider);
+  if (provider === $('#provider').value) loadModels({ model: chosenModel(), effort: $('#effort').value, refresh: true });
+}
+$('#connection-provider').addEventListener('change', () => { showAuthDetail(); authInfo = null; loadAuth($('#connection-provider').value); renderAuth(); });
+$('#auth-check').addEventListener('click', checkConnection);
 $('#copy-button').addEventListener('click', async () => {
   if (!currentResult) return;
   try {
