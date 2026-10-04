@@ -46,7 +46,7 @@ export class NativeMessageDispatch {
       Promise.resolve().then(callback).then(finish, () => finish(false));
     });
     job.promise = (async () => {
-      let ownsGrant = false, knownQueue = false, nativeStarted = false, confirmedSaved = false;
+      let ownsGrant = false, knownQueue = false, nativeStarted = false, confirmedSaved = false, publicationAttempted = false;
       try {
         const move = await bounded(() => this.journal.read(key)), action = move?.actions.find(row => row.id === actionId);
         if (move?.ownerPid !== process.pid || action?.status !== 'scheduled' || action.delivery?.status !== 'queued' || !same(action.delivery, scope))
@@ -72,19 +72,21 @@ export class NativeMessageDispatch {
           accepted: () => nativeStarted && !combined.aborted ? this.journal.markMessageAccepted(key, actionId) : false,
           confirmDelivery: async () => {
             if (!nativeStarted || combined.aborted) return false;
+            publicationAttempted = true;
             confirmedSaved = await this.journal.finishMessageDelivery(key, actionId, { status: 'confirmed', durationMs: Math.round(performance.now() - started) }) === true;
             return confirmedSaved;
           } });
         const delivered = await job.native;
         if (delivered?.confirmed === true && delivered.status === 'confirmed' && confirmedSaved)
           return result('confirmed', 'Exact native input and its durable receipt were confirmed.');
-        if (confirmedSaved) { job.blocked = true; return result('unconfirmed', 'The native outcome acknowledgement was lost. No input will be retried.', true); }
+        if (publicationAttempted) { job.blocked = true; return result('unconfirmed', 'The native outcome acknowledgement was lost. No input will be retried.', true); }
         const status = ['cancelled', 'timed_out', 'unconfirmed'].includes(delivered?.status) ? delivered.status : 'failed';
+        publicationAttempted = true;
         if (await save(() => this.journal.finishMessageDelivery(key, actionId, { status, reason: 'Native delivery was not confirmed. No input will be retried.' })) !== true) throw new Error('save');
         return result(status, 'Native delivery was not confirmed. No input will be retried.');
       } catch {
         const status = combined.aborted ? combined.reason?.name === 'TimeoutError' ? 'timed_out' : 'cancelled' : 'unconfirmed';
-        if (!confirmedSaved && knownQueue && await save(() => ownsGrant
+        if (!publicationAttempted && knownQueue && await save(() => ownsGrant
           ? this.journal.finishMessageDelivery(key, actionId, { status, reason: 'Native input stopped without confirmation. No input will be retried.' })
           : this.journal.finishQueuedMessageDelivery(key, actionId, { status, reason: 'Queued input stopped before dispatch. No input was supplied.' })))
           return result(status, 'Native delivery stopped without confirmation. No input will be retried.');
@@ -97,8 +99,10 @@ export class NativeMessageDispatch {
         if (!job.blocked) this.jobs.delete(jobId);
       }
     })();
-    this.tails.set(queueId, job.promise);
-    job.promise.finally(() => { if (!job.blocked && this.tails.get(queueId) === job.promise) this.tails.delete(queueId); });
+    // A rejected/cancelled later request must not erase an earlier live tail.
+    const tail = previous.catch(() => null).then(() => job.promise);
+    this.tails.set(queueId, tail);
+    tail.finally(() => { if (!this.blockedQueues.has(queueId) && this.tails.get(queueId) === tail) this.tails.delete(queueId); });
     return job.promise;
   }
 

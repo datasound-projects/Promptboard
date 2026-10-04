@@ -1,5 +1,7 @@
 # Private deferred native input
 
+The [journal bridge](native-message-dispatch.md) can supply `confirmDelivery` to save exact native confirmation before this transport releases input. Only strict `true` acknowledges it; a failed, lost or cancelled save preserves uncertainty. This remains an internal callback, not connected column scheduling.
+
 `Supervisor.sendNativeMessage` is an internal transport seam. It is not an HTTP action, a connected column scheduler, or permission to enable message rows. Column moves still refuse enabled agent-message automations. Composer tasks still enter To Do without starting a run, and the first task envelope, Base delivery and inherited CLI tools are unchanged.
 
 The caller supplies a unique dispatch ID, literal rendered message, deferred mode and bounded cancellation/deadline. It must own task/settings preflight, scheduling, and the durable journal callbacks. `grant` must acknowledge persistence for the exact dispatch ID, message hash, provider, logical session and process run before any input. `submitted` records the one Enter attempt; `accepted` records a native queue receipt separately. Only strict `true` acknowledges a callback. The caller must save the returned delivery outcome before advancing its automation group. This seam does not connect those callbacks to the board journal.

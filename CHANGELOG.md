@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Connect queued journal receipts to private owned deferred input with exact scope/preflight checks, per-run FIFO and durable confirmation before releasing input. Preserve live queue tails during cancellation, use atomic queued-only outcomes and retain unknown acknowledgements as blocked ownership without replay. Keep column scheduling, live provider readiness and enabled message rows pending.
+
 - Prepare private deferred native-message transport bound to one live pipeline process, exact native history and strict durable callback acknowledgements. Preserve literal Unicode, consume dispatch IDs once, cancel changed ownership/input before Enter, bound hanging callbacks and keep unknown writes sticky without clearing drafts or retrying. Block Stop-based completion during pending/unknown submission; column scheduling, immediate delivery and enabled message rows remain pending.
 
 - Move CLI connection/status/sign-in controls from Compose's More settings into the top-bar CLI dialog. Manage accounts independently of Compose's CLI/model selection, preserve pending sign-in through close/reopen, and keep model feedback beside generation controls. Retain installation guides and privacy help.

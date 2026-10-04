@@ -222,3 +222,23 @@ test('a fresh process without an observed native ID acquires no grant and does n
   w.session.nativeSessionId = nativeId;
   assert.equal((await w.call()).status, 'confirmed');
 });
+
+test('an exact native turn cannot release input or completion after a lost durable confirmation acknowledgement', async t => {
+  const w = await fixture(t);
+  assert.equal((await w.call({ confirmDelivery: async () => {
+    assert.equal(w.session.messageInputPending, true); return false;
+  } })).status, 'unconfirmed');
+  assert.equal(w.session.messageInputUncertain, true); assert.equal(w.session.activity.uncertain, true);
+  assert.equal(w.writes.filter(value => value === '\r').length, 1);
+  assert.equal((await w.call({ dispatchId: 'after-lost-confirmation' })).status, 'unavailable');
+  assert.equal(w.writes.filter(value => value === '\r').length, 1);
+});
+
+test('cancellation bounds a hanging confirmation save after real native input evidence without reviving the attempt', async t => {
+  const w = await fixture(t), controller = new AbortController(); let release;
+  const result = await w.call({ signal: controller.signal, timeoutMs: 10000, confirmDelivery: () => {
+    controller.abort(); return new Promise(resolve => { release = resolve; });
+  } });
+  assert.equal(result.status, 'cancelled'); assert.equal(result.confirmed, false); assert.equal(w.session.messageInputUncertain, true);
+  release(true); await new Promise(resolve => setImmediate(resolve)); assert.equal(w.writes.filter(value => value === '\r').length, 1);
+});
