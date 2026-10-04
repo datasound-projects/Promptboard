@@ -50,8 +50,8 @@ test('v5 migration preserves pipeline configuration, exact Composer text, Base a
     sessions: [{ id: 's', taskId: 't', projectId: 'p', status: 'suspended', runIds: ['r'], artifacts: [], nativeSessionId: 'native-exact' }] };
   const bytes = JSON.stringify(original); await writeFile(join(dir, 'state.json'), bytes);
   const store = new Store(dir), migrated = await store.read();
-  assert.equal(migrated.version, STATE_VERSION); assert.equal(STATE_VERSION, 6);
-  assert.deepEqual(migrated.projects, original.projects); assert.deepEqual(migrated.base, original.base);
+  assert.equal(migrated.version, STATE_VERSION); assert.equal(STATE_VERSION, 7);
+  assert.deepEqual(migrated.projects, original.projects.map(project => ({ ...project, nextTaskNumber: 2, tasks: project.tasks.map(task => ({ ...task, number: 1 })) }))); assert.deepEqual(migrated.base, original.base);
   assert.deepEqual(migrated.runs, original.runs); assert.deepEqual(migrated.sessions, original.sessions);
   assert.equal(await readFile(join(dir, store.recovery.migrationBackup), 'utf8'), bytes);
   await assert.rejects(access(join(dir, 'automations')), { code: 'ENOENT' });
