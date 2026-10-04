@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Make Compose grounding's main toggle authoritative, with deliberate legacy preference migration and one cancellable preparation/generation snapshot. Use relevant supplied guidance for simple and multilingual tasks, distinguish reference repositories from confirmed targets, share duplicate lookups without changing question IDs, and resolve questions only from retained quoted findings. Preserve provider errors, refresh mutable local context and keep existing UI, generation/review, limits and no-default-deadline behavior.
+
 - Add read-only project file trees to the Kanban Workspace sidebar, with lazy folder expansion, checkout/task-worktree selection and centered file viewers. Preserve multiple files, minimized viewers, scroll and expansion during refresh. Display UTF-8 code with lexical highlighting and line numbers; bound reads and directory pages, refuse traversal/symlinks/credentials and never start agents or mutate board/repository state. Report observed updates without inventing per-file agent activity.
 
 - Run Chrome fixture files sequentially after the other tests, preserving scenario/file deadlines and failure exit codes. Keep non-browser concurrency at two; avoid concurrent renderer/PTY/Git fixture work during full verification.

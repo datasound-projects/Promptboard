@@ -34,7 +34,11 @@ test('HTTP task → internal research → compression → existing generation; n
   assert.deepEqual(prepared.grounding.userAnswers, []);
   const generated = await app.post('/api/generate', { input: questTask, quality: 'fast', grounding: prepared.grounding }); assert.equal(generated.status, 200);
   assert.equal(calls.length, 3); assert.match(calls[2].prompt, /ASD-STE100/); assert.match(calls[2].prompt, /Never ask the user clarification/);
-  assert.doesNotMatch(calls[0].prompt, /ILP over HTTP/); // No raw source material before intent assessment.
+  const assessmentData = JSON.parse(calls[0].prompt.split('# Preparation data\n')[1]);
+  assert.equal(assessmentData.request, questTask);
+  assert.ok(assessmentData.sources.every(source => !source.preview || source.preview.length <= 1200));
+  assert.ok(assessmentData.sources.some(source => source.preview?.includes('ILP over HTTP'))); // Bounded already-supplied previews let assessment choose relevant material.
+  assert.match(calls[0].prompt, /untrusted source data/);
   for (const call of calls) await assert.rejects(access(call.cwd));
 });
 
