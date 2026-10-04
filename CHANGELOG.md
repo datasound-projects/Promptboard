@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Queued Usage dialog close events preserve focus on subsequent project actions and reopened dialogs while normal closing still returns to Usage.
+
 - Retain keyboard focus on the same card action when background board updates replace its DOM. Keep open menus and the existing confirmation/display focus behavior, so a refreshed card can still open task settings with Enter.
 
 - Add an opt-in disposable Codex busy-queue check with bounded native-turn evidence, exact follow-up confirmation and real offline PTY coverage. Verify the default Tab queue behavior separately from steering, preserve manual-input guards and report both replies and cleanup without enabling automatic immediate delivery.

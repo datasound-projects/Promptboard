@@ -5065,7 +5065,11 @@ async function loadUsage(force = false) {
 }
 $('#usage-open').addEventListener('click', () => { $('#usage-dialog').showModal(); loadUsage(); });
 $('#usage-close').addEventListener('click', () => { $('#usage-dialog').close(); $('#usage-open').focus(); });
-$('#usage-dialog').addEventListener('close', () => $('#usage-open').focus());
+$('#usage-dialog').addEventListener('close', () => {
+  const dialog = $('#usage-dialog');
+  // Native close events are queued; preserve focus moved by a subsequent action.
+  if (!dialog.open && (document.activeElement === document.body || dialog.contains(document.activeElement))) $('#usage-open').focus();
+});
 $('#usage-refresh').addEventListener('click', () => loadUsage(true));
 setInterval(() => { if (!document.hidden) loadUsage(); }, 60000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) loadUsage(); });

@@ -23,3 +23,40 @@ test('background board updates retain keyboard focus on the same card action and
   const saved = (await app.board.state()).projects[0].tasks[0]; assert.equal(saved.prompt, task.prompt); assert.equal(saved.contentRevision, 1);
   assert.deepEqual((await app.board.state()).runs, []); assert.deepEqual(browser.consoleMessages.filter(message => message.startsWith('EXCEPTION')), []);
 });
+
+test('delayed usage dialog close events preserve subsequent project settings focus', { skip: !await findChrome(), timeout: 60000 }, async t => {
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
+  await app.board.createProject({ name: 'Dialog focus', workflowMode: 'pipeline' });
+  const browser = await launch(); assert.ok(browser); t.after(() => browser.close());
+  await browser.goto(app.url + '/#/kanban');
+  await browser.until(`document.querySelector('#workspace-count').textContent === '01'`, 'project navigation loaded');
+  for (const width of [1280, 390]) for (const theme of ['light', 'dark']) {
+    await browser.resize(width, 844);
+    await browser.eval(`document.documentElement.dataset.theme=${JSON.stringify(theme)}; if(innerWidth<=730&&!document.querySelector('#sidebar').classList.contains('open'))document.querySelector('#menu-toggle').click();`);
+    assert.equal(await browser.eval(`return new Promise(resolve => {
+      const dialog = document.querySelector('#usage-dialog');
+      document.querySelector('#usage-open').click();
+      dialog.addEventListener('close', () => resolve(document.activeElement.id), { once: true });
+      document.querySelector('#usage-close').click();
+      if(document.querySelector('#project-settings').hidden)document.querySelector('#project-toggle').click();
+      document.querySelector('#project-settings-close').focus();
+      document.querySelector('#project-settings-close').click();
+    });`), 'project-toggle', `${width}/${theme}: queued close must not steal focus from the next action.`);
+    assert.equal(await browser.eval(`return document.querySelector('#project-settings').hidden;`), true);
+    assert.equal(await browser.eval(`return new Promise(resolve => {
+      const dialog = document.querySelector('#usage-dialog');
+      document.querySelector('#usage-open').click();
+      dialog.addEventListener('close', () => resolve(document.activeElement.id), { once: true });
+      document.querySelector('#usage-close').click();
+    });`), 'usage-open', 'Closing normally still returns to Usage.');
+    assert.equal(await browser.eval(`return new Promise(resolve => {
+      const dialog = document.querySelector('#usage-dialog');
+      document.querySelector('#usage-open').click();
+      dialog.addEventListener('close', () => resolve(dialog.contains(document.activeElement)), { once: true });
+      dialog.close(); dialog.showModal();
+    });`), true, 'A stale close event must not take focus out of a reopened modal.');
+    await browser.eval(`return new Promise(resolve => { const dialog=document.querySelector('#usage-dialog');dialog.addEventListener('close',resolve,{once:true});dialog.close(); });`);
+  }
+  assert.deepEqual((await app.board.state()).runs, []);
+  assert.deepEqual(browser.consoleMessages.filter(message => message.startsWith('EXCEPTION')), []);
+});
