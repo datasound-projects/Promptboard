@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add named sparse board-profile editing, exclusive task profile/agent choices and effective card agents. Keep shared columns/automations/Base intact; save with revision and paused-agent guards without starting work or changing Composer text/checks. Retain choices on copy and portable v5 backup/import with dispatch disabled. Live profile propagation and repository configuration remain pending.
+
 - Bind delayed initial prompt paste/Enter to the owned PTY, input epoch and native identity. Human drafts revoke automatic Enter; Stop/Pause/failure/replacement and pending input block stale writes/checkpoints. Contain unknown transport writes without retries or raw errors. Verify exact long Composer envelopes, Base instructions/MCPs and inherited tools in a disposable simulated CLI PTY.
 
 - Add Notify me column editing and explicit browser notification opt-in. Authenticate bounded receiver streams and task-scoped display receipts; preserve unconfirmed outcomes on loss, scoped cancellation and no automatic replay. Alert clicks open the exact task without agent actions. Tests use mocked desktop APIs in disposable browsers; native message delivery and explicit retries remain pending.

@@ -51,7 +51,13 @@ test('Base saved-resource actions, sidebar categories, agent cards and avatar dr
   await browser.until(`document.querySelector('#base-detail').textContent.includes('Save your edits')`, 'unsaved draft protected');
   assert.equal(tests, 0); assert.equal(await browser.eval(`return document.querySelector('#base-resource-name').value;`), 'Unsaved MCP name');
   await click('Cancel'); await browser.until(`document.querySelector('#base-resource-name')?.value === 'Browser MCP'`, 'saved MCP reopened');
-  await click('Test connection and discover tools'); await browser.until(`document.querySelector('.base-resource-form')?.textContent.includes('r2')`, 'successful discovery revision');
+  await click('Test connection and discover tools');
+  await browser.until(`document.querySelector('.base-resource-form')?.textContent.includes('r2')`, 'successful discovery revision')
+    .catch(async failure => {
+      const detail = await app.board.base.detail(mcp.id);
+      const editor = await browser.eval(`return { text: document.querySelector('#base-detail')?.textContent, errors: [...document.querySelectorAll('.inline-error')].map(node => node.textContent), buttons: [...document.querySelectorAll('#base-detail button')].map(node => ({ text: node.textContent, disabled: node.disabled })) };`).catch(() => null);
+      throw new Error(`${failure.message}; discovery calls ${tests}, saved revision ${detail.revision}, editor ${JSON.stringify(editor)}, console ${JSON.stringify(browser.consoleMessages)}`);
+    });
   await editName('After discovery'); await click('Save resource'); await browser.until(`document.querySelector('.base-resource-form')?.textContent.includes('r3')`, 'save after discovery');
   await click('Test connection and discover tools'); await browser.until(`document.querySelector('.base-resource-form')?.textContent.includes('r4')`, 'failed discovery revision');
   assert.equal((await app.board.base.detail(mcp.id)).connectionTest.status, 'failed');
@@ -106,7 +112,7 @@ test('Base saved-resource actions, sidebar categories, agent cards and avatar dr
   assert.deepEqual(browser.consoleMessages.filter(message => message.startsWith('EXCEPTION')), []);
 });
 
-test('terminal dock in a real browser: start, render, type, collapse, resize, separate sessions, reconnect, no HTML injection', { skip, timeout: 120000 }, async t => {
+async function dockFixture(t) {
   const temp = async prefix => { const dir = await realpath(await mkdtemp(join(tmpdir(), prefix))); t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })); return dir; };
   const bin = await temp('pb-browser-bin-');
   await writeFile(join(bin, 'claude'), `#!${process.execPath}\nrequire(${JSON.stringify(fake)});\n`); await chmod(join(bin, 'claude'), 0o755);
@@ -132,6 +138,13 @@ test('terminal dock in a real browser: start, render, type, collapse, resize, se
   const flood = await makeTask('Flood task', 'Print a lot. FLOOD');
   const codexTask = await makeTask('Codex task', 'Implement the feature. WRITE_FILE:codex-result.txt');
 
+  return { app, board, project, first, second, flood, codexTask, root, temp };
+}
+
+// Keep the shared-dialog/layout scenario separate from the live PTY/flood scenario.
+// Both retain their own total deadline and every component readiness/layout bound.
+test('Kanban entry, shared dialogs and project settings fit both themes and narrow screens in real Chrome', { skip, timeout: 90000 }, async t => {
+  const { app, board } = await dockFixture(t);
   const browser = await launch({ width: 1280, height: 900 });
   if (!browser) { t.skip('Chrome did not start.'); return; }
   t.after(() => browser.close());
@@ -198,6 +211,22 @@ test('terminal dock in a real browser: start, render, type, collapse, resize, se
   assert.equal(await browser.eval(`return document.querySelector('#project-settings').hidden && document.activeElement.id === 'project-toggle';`), true, 'Closing restores focus to the settings toggle.');
   await browser.resize(1280, 900);
   await shot('0-board');
+
+  assert.equal((await board.view()).runs.length, 0, 'Layout controls start no agents.');
+  assert.deepEqual(browser.consoleMessages.filter(message => message.startsWith('EXCEPTION')), []);
+});
+
+test('terminal dock in a real browser: start, render, type, collapse, resize, separate sessions, reconnect, no HTML injection', { skip, timeout: 120000 }, async t => {
+  const { app, board, project, first, second, flood, codexTask, root, temp } = await dockFixture(t);
+  const browser = await launch({ width: 1280, height: 900 });
+  if (!browser) { t.skip('Chrome did not start.'); return; }
+  t.after(() => browser.close());
+  const shots = process.env.PB_BROWSER_SHOTS;
+  const shot = async name => { if (shots) await writeFile(join(shots, `${name}.png`), await browser.screenshot()); };
+  await browser.goto(`${app.url}/#/kanban`);
+  await browser.until(`document.querySelector('#kanban-columns [data-column="executing"] .kanban-start')`, 'start buttons');
+  assert.equal(await browser.eval(`return typeof Terminal === 'function' && typeof WebglAddon === 'object';`), true, 'Pinned xterm assets load from the app.');
+  t.diagnostic('Terminal fixture and browser ready.');
 
   // Start the first run through the UI: one click on the card's Start button (no dialog).
   await browser.eval(`[...document.querySelectorAll('.kanban-card')].find(card => card.textContent.includes('First task')).querySelector('.kanban-start').click();`);
@@ -298,6 +327,8 @@ test('terminal dock in a real browser: start, render, type, collapse, resize, se
   await browser.until(`${text(firstRun)}.includes('you said: hello')`, 'scrollback replayed after reload');
   assert.equal((await board.view()).runs.length, runCount, 'A reload never starts a run.');
 
+  t.diagnostic('Typed input, Base assignment, separate sessions and reload verified.');
+
   // Sustained output: a third agent prints about 4 MB while the board stays responsive.
   await browser.eval(`[...document.querySelectorAll('.kanban-card')].find(card => card.textContent.includes('Flood task')).querySelector('.kanban-start').click();`);
   const floodRun = await (async () => { for (;;) { const run = (await board.view()).runs.find(item => item.taskId === flood.id); if (run) return run.id; await new Promise(r => setTimeout(r, 50)); } })();
@@ -319,6 +350,8 @@ test('terminal dock in a real browser: start, render, type, collapse, resize, se
   assert.equal(await browser.eval(`return document.querySelector('#workflow-dialog').open;`), true, 'Board controls work during sustained output.');
   await browser.eval(`document.querySelector('#workflow-dialog').close();`);
   await browser.until(`${text(floodRun)}.includes('flood line 39999')`, 'the flood finished rendering', 60000);
+
+  t.diagnostic('The 4 MB flood rendered and responsiveness passed.');
 
   // Stop one session from the dock (explicit confirmation); the other keeps running.
   await browser.eval(`document.querySelector('#dock-tab-${firstRun}').click();`);

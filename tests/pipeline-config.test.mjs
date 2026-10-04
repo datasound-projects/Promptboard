@@ -1,8 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { defaultPipelineConfig, normalizePipelineConfig, normalizePipelineStrategy, normalizePipelineAutomations, resolvePipelineStrategy } from '../src/pipeline-config.mjs';
+import { defaultPipelineConfig, normalizePipelineConfig, normalizePipelineStrategy, normalizePipelineAutomations, normalizePipelineTaskSelection, resolvePipelineStrategy } from '../src/pipeline-config.mjs';
 
 const invalid = fn => assert.throws(fn, { code: 'INVALID_PIPELINE_CONFIG' });
+
+test('task selections keep profiles and validated whole-task agent tuples exclusive and detached', () => {
+  const config = defaultPipelineConfig(); config.profiles.push({ id: 'cheap', name: 'Cheap', columns: {} });
+  assert.deepEqual(normalizePipelineTaskSelection(config), { profileId: null, agentOverride: null });
+  assert.deepEqual(normalizePipelineTaskSelection(config, { profileId: 'cheap' }), { profileId: 'cheap', agentOverride: null });
+  const input = { agentOverride: { agentOverride: 'codex', modelOverride: 'my-model', permissionMode: 'workspace-write' } };
+  const result = normalizePipelineTaskSelection(config, input); result.agentOverride.modelOverride = 'changed';
+  assert.equal(input.agentOverride.modelOverride, 'my-model');
+  for (const wrong of [null, [], { profileId: '' }, { profileId: 'foreign' }, { profileId: 12 }, { profileId: 'cheap', agentOverride: { agentOverride: 'claude' } },
+    { agentOverride: {} }, { agentOverride: false }, { agentOverride: { agentOverride: null } }, { agentOverride: { agentOverride: 'shell' } },
+    { agentOverride: { agentOverride: 'claude', autoSpawn: true } }, { agentOverride: { agentOverride: 'codex', modelOverride: '--flag' } }, { command: 'execute' }]) invalid(() => normalizePipelineTaskSelection(config, wrong));
+});
 
 test('pipeline defaults seed seven silent columns with roles and a plan exit target', () => {
   const config = defaultPipelineConfig();
