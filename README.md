@@ -37,6 +37,7 @@ Open **http://127.0.0.1:4318**. The navigation is **Compose | Kanban | Base**. P
 ## Kanban — take tasks from To Do to Done
 
 - Open an existing repository or create a project. Each task works in its own Git branch and worktree.
+- Inspect each project's own folder tree in the Workspace sidebar. Open files with syntax colors and line numbers, edit and save explicitly, or review an optional AI file proposal before saving. Drafts survive refresh/minimization and disk conflicts cannot silently replace them. See [project files](docs/workspace-files.md).
 - Drag a card to start its agent, or use **Autopilot** to run a queue one task at a time. Watch and interact through the built-in terminals.
 - Plan, build, review, and test. Reviews and passing tests must match the current commit before a merge. Merge manually, or explicitly enable automatic merging.
 - Choose providers and models per project or column. Customize columns, edit cards, and inspect run history.

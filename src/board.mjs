@@ -564,6 +564,9 @@ export class Board {
       if (!info?.isDirectory()) throw new BoardError(info ? 'This path is a file, not a folder.' : 'This folder does not exist.', info ? 'NOT_A_DIRECTORY' : 'PATH_NOT_FOUND');
     }
     try {
+      // An app-created empty folder is its own project, even when the projects
+      // container accidentally has a Git repository. Never inherit that parent.
+      if (created) await git(['init'], { cwd: path });
       const repository = await validateRepository(path).catch(async error => {
         if (!['NOT_A_REPOSITORY', 'NO_COMMITS'].includes(error.code)) throw error;
         await initRepository(path, { fallbackIdentity: true });
@@ -618,11 +621,12 @@ export class Board {
 
   async linkRepository(id, { path, expectedRevision }) {
     const repository = path === null ? null : await validateRepository(path);
+    const inspectionRoot = repository ? await realpath(path.trim()) : null;
     return this.store.update(state => {
       const project = this.#project(state, id);
       checkRevision(project, expectedRevision, 'This project');
       if (project.tasks.some(task => task.workspace)) throw conflict('Tasks in this project have worktrees in the current repository. Remove them before you change the link.', 'WORKSPACES_EXIST');
-      project.repository = repository && { path: path.trim(), root: repository.root, commonDir: repository.commonDir, linkedWorktree: repository.linkedWorktree, validatedAt: Date.now() };
+      project.repository = repository && { path: path.trim(), inspectionRoot, root: repository.root, commonDir: repository.commonDir, linkedWorktree: repository.linkedWorktree, validatedAt: Date.now() };
       // A different repository makes the recorded target branch meaningless.
       if (!repository || project.targetBranch?.root !== repository.root) project.targetBranch = null;
       // Default to the checked-out branch so agents can start right away; the user can change it.
