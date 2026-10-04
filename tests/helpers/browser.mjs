@@ -2,10 +2,11 @@
 // Launches a headless Chrome/Chromium with a throwaway profile. Returns null when no
 // browser is installed, so callers can skip.
 import { spawn } from 'node:child_process';
-import { access, mkdtemp, readFile } from 'node:fs/promises';
+import { access, mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { closeChrome, trackChrome } from './browser-cleanup.mjs';
+import { BrowserStartup } from './browser-startup.mjs';
 
 const CANDIDATES = {
   darwin: ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '/Applications/Chromium.app/Contents/MacOS/Chromium'],
@@ -24,22 +25,14 @@ export async function launch({ width = 1280, height = 900 } = {}) {
   if (!binary || typeof WebSocket !== 'function') return null;
   const profile = await mkdtemp(join(tmpdir(), 'pb-chrome-'));
   const chrome = trackChrome(spawn(binary, ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check',
-    '--disable-extensions', '--disable-background-networking', `--window-size=${width},${height}`, '--use-angle=swiftshader', '--enable-unsafe-swiftshader', 'about:blank'], { stdio: 'ignore' }));
-  let startupError;
-  chrome.on('error', error => { startupError = error; });
+    '--disable-extensions', '--disable-background-networking', `--window-size=${width},${height}`, '--use-angle=swiftshader', '--enable-unsafe-swiftshader', 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] }));
+  const startup = new BrowserStartup(chrome, profile);
   let socket;
   try {
-    let port;
-    for (const end = Date.now() + 15000; !port && Date.now() < end;) {
-      port = (await readFile(join(profile, 'DevToolsActivePort'), 'utf8').catch(() => '')).split('\n')[0];
-      if (startupError) throw startupError;
-      if (!port && (chrome.exitCode !== null || chrome.signalCode !== null)) throw new Error('Chrome exited before DevTools became available.');
-      if (!port) await new Promise(resolve => setTimeout(resolve, 100));
-    }
-    if (!port) throw new Error('Chrome did not expose DevTools within 15000ms.');
-    const pages = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+    const port = await startup.port();
+    const pages = await startup.wait(fetch(`http://127.0.0.1:${port}/json/list`, { signal: startup.controller.signal }).then(response => response.json()));
     socket = new WebSocket(pages.find(page => page.type === 'page').webSocketDebuggerUrl);
-    await new Promise((resolve, reject) => { socket.onopen = resolve; socket.onerror = reject; });
+    await startup.wait(new Promise((resolve, reject) => { socket.onopen = resolve; socket.onerror = () => reject(startup.failure('Chrome DevTools WebSocket connection failed.')); }));
     let id = 0;
     const waiting = new Map(), listeners = new Set();
     socket.onmessage = ({ data }) => {
@@ -48,7 +41,8 @@ export async function launch({ width = 1280, height = 900 } = {}) {
       else for (const listener of listeners) listener(message);
     };
     const send = (method, params = {}) => new Promise((resolve, reject) => { id++; waiting.set(id, { resolve, reject }); socket.send(JSON.stringify({ id, method, params })); });
-    await send('Page.enable'); await send('Runtime.enable'); await send('Log.enable');
+    await startup.wait(send('Page.enable')); await startup.wait(send('Runtime.enable')); await startup.wait(send('Log.enable'));
+    startup.close();
     const consoleMessages = [];
     listeners.add(message => {
       if (message.method === 'Runtime.consoleAPICalled') consoleMessages.push(message.params.args.map(arg => arg.value ?? arg.description).join(' '));
@@ -108,6 +102,7 @@ export async function launch({ width = 1280, height = 900 } = {}) {
     };
     return browser;
   } catch (error) {
+    startup.close();
     try { socket?.close(); } catch {}
     await closeChrome(chrome, profile);
     throw error;
