@@ -2,6 +2,8 @@
 
 `NativeMessageDispatch` privately connects a version 2 queued receipt to `Supervisor.sendNativeMessage`. It is not connected to board moves or an HTTP action. Enabled message rows, provider readiness verification, fresh/resumed session activation and live column scheduling remain pending. Composer, Base, CLI flags and the existing process-start queue are unchanged.
 
+The [private deferred scheduler](native-message-scheduler.md) now owns asynchronous enter handoff, exact configuration/target preflight and queued startup before this bridge. Board/HTTP/editor activation remains pending.
+
 The disposable smoke harness uses [captured task/session/run custody](native-message-target.md) for its preflight, including configuration, Base and workspace rechecks. This remains separate from native readiness and column scheduling.
 
 The caller supplies the recorded key/action, literal message and exact provider/logical-session/run/mode/hash tuple, plus a cancellation-aware task/configuration preflight. The bridge rereads the queued intent, requires the current application owner and exact scope, and acquires the journal's one dispatch grant before calling the owned Supervisor. Native input still requires its own history checkpoint and readiness checks. The native grant callback rechecks both preflight and the exact persisted dispatch. Submission and queue acceptance each require strict durable acknowledgement.

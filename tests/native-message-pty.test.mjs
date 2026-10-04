@@ -7,9 +7,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Board } from '../src/board.mjs';
-import { defaultPipelineConfig } from '../src/pipeline-config.mjs';
+import { defaultPipelineConfig, normalizePipelineAutomations } from '../src/pipeline-config.mjs';
 import { Supervisor } from '../src/supervisor.mjs';
 import { NativeMessageDispatch } from '../src/native-message-dispatch.mjs';
+import { NativeMessageScheduler } from '../src/native-message-scheduler.mjs';
+import { PipelineAutomations } from '../src/pipeline-automations.mjs';
 
 async function temp(t) { const path = await realpath(await mkdtemp(join(tmpdir(), 'pb-native-message-pty-'))); t.after(() => rm(path, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })); return path; }
 async function until(fn) { const deadline = Date.now() + 10000; for (;;) { if (await fn()) return; if (Date.now() > deadline) assert.fail('The offline native message fixture did not become ready.'); await new Promise(resolve => setTimeout(resolve, 50)); } }
@@ -51,6 +53,33 @@ test('private deferred transport uses a real owned PTY and exact native receipts
     assert.equal(receipt.status, 'confirmed'); assert.ok(receipt.submittedAt <= receipt.finishedAt); assert.equal(receipt.acceptedAt, undefined);
     grants.push(scope); deliveries.push(message); await untilSession();
   }
+  // A fixture-only row definition exercises private scheduling. The actual
+  // Board remains unchanged and still refuses enabled message rows below.
+  const schedulerRows = normalizePipelineAutomations({ onEnter: [{ id: 'scheduled-message', name: 'Scheduled review', enabled: true,
+    type: 'send_message', mode: 'deferred', message: '  Scheduled review {{title}} 😀\n' }] }).onEnter;
+  const schedulingBoard = { state: async () => {
+    const state = structuredClone(await board.state());
+    state.projects.find(row => row.id === project.id).pipeline.columns.find(row => row.id === 'executing').automations.onEnter = schedulerRows;
+    return state;
+  } };
+  const scheduler = new NativeMessageScheduler({ board: schedulingBoard, journal: board.automationJournal, supervisor: board.executor });
+  t.after(() => scheduler.shutdown());
+  const coordinator = new PipelineAutomations({ journal: board.automationJournal,
+    scheduleEnterMessage: (request, options) => scheduler.schedule({ ...request, runId: started.run.id }, options) });
+  t.after(() => coordinator.shutdown());
+  const schedulingState = await schedulingBoard.state(), schedulingProject = schedulingState.projects.find(row => row.id === project.id);
+  const schedulingTask = schedulingProject.tasks.find(row => row.id === task.id), schedulingKey = { projectId: project.id, taskId: task.id, transitionId: 'pty-scheduled' };
+  const journal = board.automationJournal, scheduledMove = await journal.beginMove({ ...schedulingKey,
+    taskRevision: schedulingTask.revision, projectRevision: schedulingProject.revision, from: { id: 'todo', name: 'To Do' },
+    to: { id: 'executing', name: 'Executing' }, onEnter: schedulerRows });
+  await journal.advance(schedulingKey); await journal.startLifecycle(schedulingKey); await journal.finishLifecycle(schedulingKey, { status: 'succeeded' });
+  const scheduledGroup = await coordinator.runGroup({ key: schedulingKey, trigger: 'enter', rows: schedulerRows,
+    context: { task: schedulingTask, project: schedulingProject } });
+  assert.equal(scheduledGroup.safeToAdvance, true); assert.equal(scheduledGroup.outcomes[0].status, 'scheduled');
+  await journal.advance(schedulingKey); assert.equal((await journal.read(schedulingKey)).status, 'completed');
+  assert.equal((await scheduler.wait(schedulingKey, scheduledMove.move.actions[0].id)).confirmed, true);
+  assert.equal((await journal.read(schedulingKey)).actions[0].delivery.status, 'confirmed');
+  deliveries.push('  Scheduled review Split Composer task 😀\n'); await untilSession();
   const rows = (await readFile(report, 'utf8')).trim().split('\n').map(JSON.parse);
   assert.equal(rows.filter(row => row.kind === 'initial').length, 1); assert.deepEqual(rows.filter(row => row.kind === 'submitted').map(row => row.text), deliveries);
   assert.ok(rows[0].text.includes('BASE_MESSAGE_LITERAL')); assert.ok(rows[0].text.includes('Exact Composer &lt;literal&gt;'));
