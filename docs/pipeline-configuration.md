@@ -1,6 +1,6 @@
 # Pipeline configuration foundation
 
-`src/pipeline-config.mjs` defines and validates the configuration consumed by the opt-in [main-session lifecycle](pipeline-lifecycle.md). The library itself remains pure. Enabled automation execution, advanced session strategies, native plan-exit auto-move, and repository-file reconciliation are subsequent changes. Legacy projects retain [the existing stage contract](agentic-kanban-contract.md).
+`src/pipeline-config.mjs` defines and validates the configuration consumed by the [main-session lifecycle](pipeline-lifecycle.md), which new app projects use by default. The library itself remains pure; execution, verified native plan routing and reviewed repository configuration use separate runtime services. Advanced session strategies remain pending. Saved legacy projects retain [the existing stage contract](agentic-kanban-contract.md).
 
 The [prompt and template foundation](pipeline-prompts.md) defines the separate first-spawn and automation input boundaries.
 
@@ -17,3 +17,8 @@ Automations retain their exact text and declared group order. The four types are
 The schema follows the column, automation, and sparse-profile behavior in [Kangentic workflows](https://www.kangentic.com/features/workflows/), [board configuration](https://www.kangentic.com/guide/board-config/), and [board profiles](https://www.kangentic.com/features/board-profiles/). Its field nesting is Promptboard's own versioned format. Direct Kangentic configuration import is not provided by this checkpoint.
 
 Deterministic tests cover silent defaults, renamed/reordered IDs, removed stage names, independent defaults, system roles, plan targets, sparse profiles, task override exclusivity, isolated conversation policies, unsafe values, exact automation text, ordering, duplicate names, limits, and header validation. They exercise configuration behavior; they do not establish working column transitions or automation execution.
+
+
+New projects created through the app’s authenticated project endpoint default to this empty seven-column pipeline, including opening a folder not already registered as a project. Selecting an already saved project keeps its workflow and settings. No project creation runs an agent or automation. Composer and split prompts arrive in To Do; title-only cards are supported on pipeline boards.
+
+The project endpoint accepts an explicit `workflowMode: "legacy"` for integrations that still require stage gates. Invalid modes fail before creating a folder or initializing an existing checkout. Lower-level metadata helpers keep their legacy default unless a mode is supplied; browser migration and backup import retain their saved policies and inert dispatch behavior. This default change does not add immediate/exit messages, cleanup, handoff or other pending parity features.
