@@ -599,7 +599,10 @@ export class Supervisor {
       if (!run?.config?.pipeline || run.id !== runId || run.config.provider !== session.provider || !ACTIVE.has(run.status) || remaining() <= 0)
         return { status: 'unavailable', confirmed: false, reason: 'The owned pipeline run is unavailable.' };
       result = await sendOwnedNativeMessage({ ...request, timeoutMs: remaining(), session, run,
-        owns: () => this.#ownsInitialInput(session, proc) && !session.messageInputUncertain,
+        // A pending hook changes readiness, not custody of this process. The
+        // transport drains hooks and checks pending input at each write boundary.
+        owns: () => this.#ownsInitialProcess(session, proc) && !session.initialInputUncertain && !session.messageInputUncertain
+          && !session.activity?.ended && !session.activity?.uncertain,
         readEvents: () => this.#readEvents(session) });
       if (session.messageInputUncertain) {
         const reason = 'Native message input remains unconfirmed. Check the terminal; no input will be retried.';

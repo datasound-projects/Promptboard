@@ -5,6 +5,7 @@ import { appendFile, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { sendOwnedNativeMessage } from '../src/native-message-input.mjs';
+import { NativeMessageReceipts } from '../src/native-message-receipts.mjs';
 import { SessionActivity } from '../src/session-activity.mjs';
 import { TerminalInputObservation } from '../src/terminal-input-observation.mjs';
 import { Supervisor } from '../src/supervisor.mjs';
@@ -241,4 +242,116 @@ test('cancellation bounds a hanging confirmation save after real native input ev
   } });
   assert.equal(result.status, 'cancelled'); assert.equal(result.confirmed, false); assert.equal(w.session.messageInputUncertain, true);
   release(true); await new Promise(resolve => setImmediate(resolve)); assert.equal(w.writes.filter(value => value === '\r').length, 1);
+});
+
+test('outer deadlines differ from explicit cancellation before native input', async t => {
+  for (const timeout of [true, false]) {
+    const w = await fixture(t), controller = new AbortController();
+    controller.abort(timeout ? new DOMException('PRIVATE deadline', 'TimeoutError') : new Error('PRIVATE cancellation'));
+    const result = await w.call({ signal: controller.signal });
+    assert.equal(result.status, timeout ? 'timed_out' : 'cancelled');
+    assert.doesNotMatch(JSON.stringify(result), /PRIVATE/);
+    assert.deepEqual(w.writes, []); assert.deepEqual(w.stages, []);
+  }
+});
+
+test('an outer deadline after paste stays unconfirmed without Enter or replay', async t => {
+  const w = await fixture(t), controller = new AbortController();
+  w.onWrite = () => controller.abort(new DOMException('PRIVATE deadline', 'TimeoutError'));
+  const result = await w.call({ signal: controller.signal });
+  assert.equal(result.status, 'unconfirmed'); assert.doesNotMatch(JSON.stringify(result), /PRIVATE/);
+  assert.equal(w.session.messageInputUncertain, true); assert.equal(w.writes.length, 1);
+  assert.ok(!w.writes.includes('\r'));
+  assert.equal((await w.call({ dispatchId: 'after-deadline' })).status, 'unavailable');
+  assert.equal(w.writes.length, 1);
+});
+
+test('pending publication of a valid owned Stop cannot revoke native receipt custody', { timeout: 10000 }, async t => {
+  const w = await fixture(t), eventsFile = join(w.dir, 'events.jsonl'); await writeFile(eventsFile, '');
+  Object.assign(w.session, { eventsFile, eventsOffset: 0, seq: 0, ring: [], ringBytes: 0,
+    subscribers: new Set(), status: 'running', turns: 0 });
+  let publishing, release;
+  const entered = new Promise(resolve => { publishing = resolve; });
+  const held = new Promise(resolve => { release = resolve; });
+  const supervisor = new Supervisor({ dataDir: w.dir, board: { run: async () => w.run,
+    updateRun: async (_id, change) => {
+      if (change.status === 'waiting_for_input') { publishing(); await held; }
+      return { ...w.run, ...change };
+    } } });
+  supervisor.sessions.set(w.run.id, w.session);
+  t.after(() => release());
+  const result = await supervisor.sendNativeMessage(w.run.id, { ...w.request, submitted: async () => {
+    await w.request.submitted();
+    await appendFile(eventsFile, JSON.stringify({ provider: 'claude', name: 'Stop', sessionId: nativeId }) + '\n');
+    const checkpoint = supervisor.checkpointMessage(w.run.id);
+    await entered; assert.equal(w.session.eventsPending, true);
+    await new Promise(resolve => setTimeout(resolve, 100)); release();
+    assert.equal((await checkpoint).status, 'unavailable');
+    return true;
+  } });
+  assert.equal(result.status, 'confirmed'); assert.equal(w.session.messageInputUncertain, undefined);
+  assert.equal(w.writes.filter(data => data === '\r').length, 1);
+});
+
+test('incomplete owned hooks block input until the budget without acquiring a grant', async t => {
+  const w = await fixture(t);
+  const result = await w.call({ timeoutMs: 100, readEvents: async () => { w.session.eventsPending = true; } });
+  assert.equal(result.status, 'timed_out'); assert.deepEqual(w.writes, []); assert.deepEqual(w.stages, []);
+});
+
+test('pending hooks during paste block Enter and leave sticky uncertainty without replay', async t => {
+  const w = await fixture(t); w.onWrite = () => { w.session.eventsPending = true; };
+  assert.equal((await w.call()).status, 'unconfirmed'); assert.equal(w.writes.length, 1);
+  assert.ok(!w.writes.includes('\r')); assert.equal(w.session.messageInputUncertain, true);
+  assert.equal((await w.call({ dispatchId: 'after-pending-hook' })).status, 'unavailable');
+  assert.equal(w.writes.length, 1);
+});
+
+test('native input confirmation waits for pending hooks before reading its receipt', async t => {
+  const w = await fixture(t); let pendingReads = 0;
+  const result = await w.call({ submitted: async () => {
+    await w.request.submitted(); w.session.eventsPending = true; return true;
+  }, readEvents: async () => {
+    if (w.session.eventsPending && ++pendingReads === 2) w.session.eventsPending = false;
+  }, confirmDelivery: async () => { assert.equal(w.session.eventsPending, false); return true; } });
+  assert.equal(result.status, 'confirmed'); assert.equal(pendingReads, 2);
+  assert.equal(w.writes.filter(data => data === '\r').length, 1);
+});
+
+test('a hook arriving during receipt read is drained before durable confirmation', async t => {
+  const w = await fixture(t); let pendingReads = 0, proofs = 0;
+  const verify = NativeMessageReceipts.prototype.verify;
+  t.after(() => { NativeMessageReceipts.prototype.verify = verify; });
+  NativeMessageReceipts.prototype.verify = async function (...args) {
+    const result = await verify.apply(this, args);
+    if (result.status === 'confirmed') { proofs++; w.session.eventsPending = true; }
+    return result;
+  };
+  const result = await w.call({ readEvents: async () => {
+    if (w.session.eventsPending && ++pendingReads === 2) w.session.eventsPending = false;
+  }, confirmDelivery: async () => { assert.equal(w.session.eventsPending, false); return true; } });
+  assert.equal(result.status, 'confirmed'); assert.equal(pendingReads, 2); assert.equal(proofs, 1);
+  assert.equal(w.writes.filter(data => data === '\r').length, 1);
+});
+
+test('hooks arriving during receipt read cannot hide changed identity or a stalled hook', async t => {
+  const verify = NativeMessageReceipts.prototype.verify;
+  t.after(() => { NativeMessageReceipts.prototype.verify = verify; });
+  for (const changed of [true, false]) {
+    const w = await fixture(t); let saves = 0;
+    NativeMessageReceipts.prototype.verify = async function (...args) {
+      const result = await verify.apply(this, args);
+      if (result.status === 'confirmed') w.session.eventsPending = true;
+      return result;
+    };
+    const result = await w.call({ timeoutMs: 2000, readEvents: async () => {
+      if (w.session.eventsPending && changed) {
+        w.session.nativeSessionId = 'different-native'; w.session.eventsPending = false;
+      }
+    }, confirmDelivery: async () => { saves++; return true; } });
+    assert.equal(result.status, 'unconfirmed'); assert.equal(saves, 0);
+    assert.equal(w.session.messageInputUncertain, true);
+    assert.equal(w.writes.filter(data => data === '\r').length, 1);
+    assert.equal((await w.call({ dispatchId: 'after-receipt-hook' })).status, 'unavailable');
+  }
 });

@@ -47,12 +47,14 @@ export async function sendOwnedNativeMessage({ session, run, owns, readEvents, g
   };
   const inputReady = () => {
     const terminal = session.terminalInput?.snapshot(), activity = session.activity?.snapshot();
-    return owner() && nativeId && !session.paste && !session.initialSubmitPending && !session.initialInputUncertain
+    return owner() && nativeId && !session.eventsPending && !session.paste && !session.initialSubmitPending && !session.initialInputUncertain
       && terminal?.bracketedPaste === true && !terminal.controlPending && !terminal.closed
       && !terminal.manualInputObserved && activity && !activity.permissionPending && !activity.uncertain
       && activity.phase !== 'ended' && activity.ready;
   };
-  const abort = () => signal?.aborted ? outcome('cancelled', 'Native message input was cancelled.')
+  const abort = () => signal?.aborted ? signal.reason?.name === 'TimeoutError'
+    ? outcome(touched ? 'unconfirmed' : 'timed_out', 'Native message delivery was not confirmed within its budget.')
+    : outcome('cancelled', 'Native message input was cancelled.')
     : expired() ? outcome(touched ? 'unconfirmed' : 'timed_out', 'Native message delivery was not confirmed within its budget.')
       : !owner() ? outcome('unconfirmed', 'Native input ownership changed. Check the terminal before another request.') : null;
   const write = data => {
@@ -100,7 +102,7 @@ export async function sendOwnedNativeMessage({ session, run, owns, readEvents, g
     const lifecycle = session.messageLifecycleEpoch;
     const pasteOwned = () => {
       const terminal = session.terminalInput?.snapshot(), activity = session.activity?.snapshot();
-      return owner() && session.messageLifecycleEpoch === lifecycle && terminal?.bracketedPaste === true
+      return owner() && !session.eventsPending && session.messageLifecycleEpoch === lifecycle && terminal?.bracketedPaste === true
         && !terminal.controlPending && !terminal.closed && !terminal.manualInputObserved
         && activity && !activity.permissionPending && !activity.uncertain && activity.phase !== 'ended';
     };
@@ -122,7 +124,15 @@ export async function sendOwnedNativeMessage({ session, run, owns, readEvents, g
     if (await bounded(submitted) !== true) return outcome('unconfirmed', 'The durable submission marker was not acknowledged.');
     for (;;) {
       await events(); const stopped = abort(); if (stopped) return stopped;
+      if (session.eventsPending) { await delay(50); continue; }
       const proof = await bounded(() => reader.verify(ticket, message));
+      // Receipt I/O can overlap a new hook. Drain it before acknowledging the
+      // captured proof; a confirmed ticket is consumed and must not be re-read.
+      await events();
+      while (session.eventsPending) {
+        const stopped = abort(); if (stopped) return stopped;
+        await delay(50); await events();
+      }
       const stoppedAfterProof = abort(); if (stoppedAfterProof) return stoppedAfterProof;
       if (proof.status === 'confirmed') {
         if (confirmDelivery && await bounded(confirmDelivery) !== true)
