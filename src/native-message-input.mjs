@@ -22,6 +22,8 @@ function chunks(text) {
 export async function sendOwnedNativeMessage({ session, run, owns, readEvents, grant, submitted, accepted, signal,
   dispatchId, message, mode, timeoutMs = 150000 }) {
   if (!session?.pipeline || !run?.sessionId || !['claude', 'codex', 'gemini'].includes(session.provider)
+    || typeof session.proc?.write !== 'function' || typeof session.nativeSessionId !== 'string'
+    || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(session.nativeSessionId)
     || mode !== 'deferred' || typeof dispatchId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(dispatchId)
     || typeof message !== 'string' || !message.isWellFormed() || !message.trim()
     || Buffer.byteLength(message) > 65536 || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/.test(message)

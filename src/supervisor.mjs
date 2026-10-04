@@ -574,6 +574,7 @@ export class Supervisor {
   async sendNativeMessage(runId, request) {
     const session = this.sessions.get(runId), proc = session?.proc;
     if (!session?.pipeline || !proc) return { status: 'unavailable', confirmed: false, reason: 'The owned pipeline process is unavailable.' };
+    if (session.messageInputUncertain) return { status: 'unavailable', confirmed: false, reason: 'Native input remains unconfirmed for this process. No input will be retried.' };
     const timeoutMs = request?.timeoutMs ?? 150000, started = performance.now();
     if (!Number.isFinite(timeoutMs) || timeoutMs < 1 || timeoutMs > 150000 || this.#nativeMessageOwners.has(session))
       return { status: 'unavailable', confirmed: false, reason: 'This process cannot grant another native input attempt.' };

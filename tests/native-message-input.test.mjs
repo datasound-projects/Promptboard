@@ -130,12 +130,16 @@ test('throwing or cancelled partial writes are sticky unknown outcomes and publi
 });
 
 test('native queue acceptance alone never confirms submission or completion and unknown marker saves block further input', async t => {
-  const w = await fixture(t); w.mode = 'queue';
-  assert.equal((await w.call({ timeoutMs: 1300 })).status, 'unconfirmed');
+  const w = await fixture(t), queued = new AbortController(); w.mode = 'queue';
+  assert.equal((await w.call({ timeoutMs: 10000, signal: queued.signal, accepted: async () => {
+    w.stages.push(['accepted']); queued.abort(); return true;
+  } })).status, 'cancelled');
   assert.deepEqual(w.stages.map(row => row[0]), ['grant', 'submitted', 'accepted']);
   assert.equal(w.writes.filter(data => data === '\r').length, 1); assert.equal(w.session.messageInputUncertain, true);
-  for (const submitted of [async () => false, () => new Promise(() => {})]) {
-    const w = await fixture(t); assert.equal((await w.call({ submitted, timeoutMs: 1300 })).status, 'unconfirmed');
+  for (const hanging of [false, true]) {
+    const w = await fixture(t), controller = new AbortController();
+    const submitted = () => { if (!hanging) return false; controller.abort(); return new Promise(() => {}); };
+    assert.equal((await w.call({ submitted, signal: controller.signal, timeoutMs: 10000 })).status, hanging ? 'cancelled' : 'unconfirmed');
     assert.equal(w.session.messageInputUncertain, true); assert.equal(w.writes.filter(data => data === '\r').length, 1);
   }
 });
@@ -202,10 +206,19 @@ test('Supervisor budget covers preparation and final publication, retaining its 
     if ('turnComplete' in change) { entered(); await new Promise(resolve => { release = resolve; }); }
     return { ...w.run, ...change };
   };
-  const delivery = supervisor.sendNativeMessage(w.run.id, { ...w.request, timeoutMs: 1400 });
-  await publishing;
+  const controller = new AbortController();
+  const delivery = supervisor.sendNativeMessage(w.run.id, { ...w.request, timeoutMs: 10000, signal: controller.signal });
+  await Promise.race([publishing, delivery.then(() => assert.fail('Expected the owned publication callback to start.'))]);
   assert.equal((await supervisor.sendNativeMessage(w.run.id, { ...w.request, dispatchId: 'second' })).status, 'unavailable');
+  controller.abort();
   assert.equal((await delivery).status, 'unconfirmed'); assert.equal(w.session.messageInputUncertain, true);
   assert.equal((await supervisor.sendNativeMessage(w.run.id, { ...w.request, dispatchId: 'third' })).status, 'unavailable');
   release(); await new Promise(resolve => setImmediate(resolve)); assert.equal(w.writes.filter(data => data === '\r').length, 1);
+});
+
+test('a fresh process without an observed native ID acquires no grant and does not consume a later valid attempt', async t => {
+  const w = await fixture(t); delete w.session.nativeSessionId;
+  assert.equal((await w.call()).status, 'unavailable'); assert.deepEqual(w.writes, []); assert.deepEqual(w.stages, []);
+  w.session.nativeSessionId = nativeId;
+  assert.equal((await w.call()).status, 'confirmed');
 });
