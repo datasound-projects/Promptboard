@@ -1119,7 +1119,8 @@ function openHelp(privacy = false) {
     content.append(
       ...section('Saved on this computer', [
         'In this browser: your last 500 prompts and your view settings. Delete prompts in the sidebar.',
-        'In the Promptboard data folder: projects, cards, agent runs and their terminal output, plans, reviews, test results, timeline notes, task worktrees, and GitHub clones.',
+        'In the Promptboard data folder: boards, cards, agent runs and their terminal output, plans, reviews, test results, timeline notes, task worktrees, and GitHub clones.',
+        'New project repositories are created in Promptboard/projects in your home folder. Projects opened from another local folder stay at their original path.',
         'Base stores resource definitions, document revisions, agent avatars, source captures, and assignments locally. Exports include document and avatar content only when you select it.',
       ]),
       ...section('Sent to your AI provider', [

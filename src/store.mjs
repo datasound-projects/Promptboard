@@ -21,6 +21,11 @@ export function defaultDataDir(env = process.env, platform = process.platform) {
   return join(env.XDG_DATA_HOME || join(homedir(), '.local', 'share'), 'promptboard');
 }
 
+/** User-visible repositories created by New project. Existing imported folders stay in place. */
+export function defaultProjectsDir(env = process.env, home = homedir()) {
+  return env.PROMPTBOARD_PROJECTS_DIR || join(home, 'Promptboard', 'projects');
+}
+
 export function emptyState() {
   return { schema: STATE_SCHEMA, version: STATE_VERSION, revision: 0, settings: { execution: 'inactive' }, projects: [], runs: [], sessions: [], migrations: [], base: { revision: 0, resources: [], approvedRoots: [] } };
 }

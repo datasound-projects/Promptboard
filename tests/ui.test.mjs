@@ -878,6 +878,7 @@ test('projects keep separate boards; names are validated; deletion needs confirm
   const { $, win, choose } = ctx;
   await goTo(ctx, '#/kanban');
   assert.match($('#board-empty').textContent, /Create a project to start planning/);
+  assert.match($('#project-form-note').textContent, /Promptboard\/projects.*existing code.*Open folder.*stays at its current location/);
   assert.equal($('#card-new').disabled, true);
   assert.equal($('#project-delete').disabled, true);
   assert.equal($('#kanban-columns').hidden, true);

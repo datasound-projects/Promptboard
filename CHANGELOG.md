@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Store repositories created through New project under `~/Promptboard/projects` by default, with `PROMPTBOARD_PROJECTS_DIR` override support. Keep projects opened from existing local folders at their original absolute paths and explain both locations in the interface.
+
 - Expand Compose Task Type coverage for agentic coding with feature, integration, UI/UX, data, security, dependency, CI/CD/infrastructure and workflow-automation guidance.
 
 - Add neutral, documentation, testing, migration and performance Task Type choices to Compose, with distinct prompt guidance and history restoration support.
