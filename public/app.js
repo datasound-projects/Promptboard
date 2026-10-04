@@ -1380,24 +1380,49 @@ async function migrateBrowserBoard() {
   }
 }
 
+const projectPriorityFilters = new Map();
+function projectPriorityFilter(project = currentProject()) {
+  if (!project || project.workflowMode !== 'pipeline' || !taskPrioritySupported) return 'all';
+  if (!projectPriorityFilters.has(project.id)) {
+    let value = 'all'; try { value = localStorage.getItem(`promptboard.priority-filter.${project.id}`) || 'all'; } catch {}
+    projectPriorityFilters.set(project.id, ['all', '0', '1', '2', '3', '4'].includes(value) ? value : 'all');
+  }
+  return projectPriorityFilters.get(project.id);
+}
+function matchesPriority(task, filter) {
+  if (filter === 'all') return true;
+  const priority = task.priority === undefined ? 0 : task.priority;
+  return Number.isSafeInteger(priority) && priority >= 0 && priority <= 4 && String(priority) === filter;
+}
+function changePriorityFilter(select) {
+  const project = currentProject();
+  if (!project || project.workflowMode !== 'pipeline' || !taskPrioritySupported || !['all', '0', '1', '2', '3', '4'].includes(select.value)) return;
+  projectPriorityFilters.set(project.id, select.value); savePref(`promptboard.priority-filter.${project.id}`, select.value); renderBoard();
+}
+
 function renderBoard() {
   fitBoardHeight();
   renderProjectContext(currentProject());
   refreshPipelineArchive();
   const project = currentProject();
   const tasks = project?.tasks || [];
+  const timelineView = Boolean(project) && projectView() === 'timeline';
   $('#project-select').replaceChildren(...(board?.projects || []).map(item => option(item.id, item.name)));
   if (!project) $('#project-select').append(option('', board ? 'No projects yet' : 'Loading…'));
   $('#project-select').value = project?.id || '';
   $('#project-select').disabled = !project;
   $('#project-new').disabled = !board;
   for (const id of ['#project-rename', '#project-delete', '#card-new', '#agents-open']) $(id).disabled = !project;
-  $('#board-count').textContent = String(tasks.length).padStart(2, '0');
+  const priority = timelineView ? 'all' : projectPriorityFilter(project), visibleTasks = tasks.filter(task => matchesPriority(task, priority));
+  $('#board-count').textContent = priority === 'all' ? String(tasks.length).padStart(2, '0') : `${visibleTasks.length}/${tasks.length}`;
+  $('#board-count').setAttribute('aria-label', priority === 'all' ? 'Cards' : `${visibleTasks.length} of ${tasks.length} cards shown`);
+  $('#board-priority-filter').value = priority;
+  $('#board-priority-filter-summary').textContent = priority === 'all' ? 'All tasks shown.' : visibleTasks.length ? `${visibleTasks.length} of ${tasks.length} tasks shown.` : 'No tasks match this priority.';
   $('#board-empty').hidden = tasks.length > 0;
   $('#board-empty-text').textContent = !board ? 'Loading the board…' : project ? 'No tasks yet.' : 'Create a project to start planning.';
   $('#board-empty-note').textContent = project ? 'Choose New card, or add a generated prompt from the Compose page. New cards start in To Do.' : 'Each project gets its own board, from To Do to Done.';
   $('#empty-prompt-link').hidden = !project;
-  const timelineView = Boolean(project) && projectView() === 'timeline';
+  $('#board-priority-filter-field').hidden = !taskPrioritySupported || project?.workflowMode !== 'pipeline' || timelineView;
   $('#kanban-columns').hidden = !project || timelineView;
   if (timelineView) $('#board-empty').hidden = true;
   $('#timeline').hidden = !timelineView;
@@ -1475,8 +1500,9 @@ function renderColumn(column, tasks) {
   heading.append(stageIcon(column.id), column.title);
   const count = document.createElement('span');
   count.className = 'kanban-count kanban-column-count';
-  count.textContent = String(tasks.length);
-  count.setAttribute('aria-label', `${tasks.length} ${tasks.length === 1 ? 'card' : 'cards'}`);
+  const priority = projectPriorityFilter(), visible = tasks.filter(task => matchesPriority(task, priority));
+  count.textContent = priority === 'all' ? String(tasks.length) : `${visible.length}/${tasks.length}`;
+  count.setAttribute('aria-label', priority === 'all' ? `${tasks.length} ${tasks.length === 1 ? 'card' : 'cards'}` : `${visible.length} of ${tasks.length} cards shown`);
   const header = document.createElement('div');
   header.className = 'kanban-column-heading';
   header.append(heading, count);
@@ -1500,7 +1526,7 @@ function renderColumn(column, tasks) {
   list.dataset.column = column.id;
   list.setAttribute('aria-labelledby', heading.id);
   const done = column.role === 'done' || (!column.role && column.id === 'done');
-  list.append(...(done ? renderDoneList(tasks) : tasks.map((task, index) => renderCard(task, index, tasks.length))));
+  list.append(...(done ? renderDoneList(tasks) : visible.map((task, index) => renderCard(task, index, visible.length))));
   // Dropping on empty column space puts the card at the end of that column. All of Done is one drop zone.
   const accepts = event => dragId && (done || event.target === list) && (findTask(dragId)?.column === column.id || canMove(findTask(dragId)?.column, column.id));
   list.addEventListener('dragover', event => { if (accepts(event)) { event.preventDefault(); list.classList.add('drop-target'); } });
@@ -1535,7 +1561,8 @@ function renderDoneList(tasks) {
   zone.append(stageIcon('drop'), paragraph(currentProject()?.workflowMode === 'pipeline' ? 'Pauses the agent · archives the task' : 'Complete from Testing or Merge · no merge'));
   if (!tasks.length) return [zone];
   const finished = task => task.archivedAt || task.completion?.at || task.updatedAt || 0;
-  const recent = [...tasks].sort((a, b) => finished(b) - finished(a));
+  const priority = projectPriorityFilter();
+  const recent = tasks.filter(task => matchesPriority(task, priority)).sort((a, b) => finished(b) - finished(a));
   const viewAll = () => openDoneDialog(recent);
   const head = document.createElement('li');
   head.className = 'kanban-done-head';
@@ -1582,14 +1609,16 @@ function refreshPipelineArchive(opening = false) {
   if ($('#pipeline-archive').hidden) return;
   const tasks = project.tasks.filter(task => projectColumnsOf(project).find(column => column.id === task.column)?.role === 'done');
   const filter = $('#archive-filter').value.trim().toLocaleLowerCase(), sort = $('#archive-sort').value;
+  const priority = projectPriorityFilter(project);
+  $('#archive-priority-field').hidden = !taskPrioritySupported; $('#archive-priority-filter').value = priority;
   const observed = tasks.map(task => [task.id, task.number, task.revision, task.title, task.archivedAt, task.updatedAt, latestRun(task.id)?.usage, task.sessionId, (board.sessions || []).find(session => session.id === task.sessionId)]);
   const busy = archiveBulkJob?.running === true;
-  const signature = JSON.stringify([project.revision, observed, filter, sort, [...archiveSelected], busy, archiveBulkJob?.stop, archiveBulkJob?.items]);
+  const signature = JSON.stringify([project.revision, observed, filter, sort, priority, [...archiveSelected], busy, archiveBulkJob?.stop, archiveBulkJob?.items]);
   if (signature === archiveSignature) return;
   archiveSignature = signature;
   const focus = document.activeElement?.closest('[data-archive-task]'), action = document.activeElement?.dataset.archiveAction;
   const when = task => task.archivedAt || task.completion?.at || task.updatedAt || 0;
-  const rows = tasks.filter(task => /^#\d+$/.test(filter) ? taskNumberText(task) === filter : task.title.toLocaleLowerCase().includes(filter)).sort((a, b) => {
+  const rows = tasks.filter(task => matchesPriority(task, priority) && (/^#\d+$/.test(filter) ? taskNumberText(task) === filter : task.title.toLocaleLowerCase().includes(filter))).sort((a, b) => {
     const order = ['title', 'title-desc'].includes(sort) ? a.title.localeCompare(b.title) * (sort === 'title-desc' ? -1 : 1) : (sort === 'oldest' ? when(a) - when(b) : when(b) - when(a));
     return order || a.id.localeCompare(b.id);
   }).map(task => {
@@ -1617,7 +1646,7 @@ function refreshPipelineArchive(opening = false) {
   });
   $('#archive-rows').replaceChildren(...rows);
   $('#archive-empty').hidden = rows.length > 0;
-  $('#archive-empty').textContent = tasks.length ? 'No completed tasks match this title or task number.' : 'No completed tasks.';
+  $('#archive-empty').textContent = tasks.length ? priority === 'all' ? 'No completed tasks match this title or task number.' : 'No completed tasks match these filters.' : 'No completed tasks.';
   $('#done-dialog-heading').textContent = `Completed (${tasks.length})`;
   $('#archive-count').textContent = `${rows.length} of ${tasks.length} tasks`;
   $('#archive-title-header').setAttribute('aria-sort', sort === 'title' ? 'ascending' : sort === 'title-desc' ? 'descending' : 'none');
@@ -1872,7 +1901,10 @@ function renderCard(card, index, count) {
     event.preventDefault();
     event.stopPropagation();
     const id = dragId; dragId = null;
-    if (id && id !== card.id) placeCard(id, card.column, index);
+    if (id && id !== card.id) {
+      const position = currentProject().tasks.filter(task => task.column === card.column && task.id !== id).findIndex(task => task.id === card.id);
+      if (position >= 0) placeCard(id, card.column, position);
+    }
   });
   return item;
 }
@@ -1973,7 +2005,9 @@ async function moveWithin(id, step) {
   const card = findTask(id);
   if (!card) return;
   const column = currentProject().tasks.filter(task => task.column === card.column);
-  if (!await placeCard(id, card.column, column.indexOf(card) + step)) return;
+  const priority = projectPriorityFilter(), visible = column.filter(task => matchesPriority(task, priority));
+  const neighbor = visible[visible.indexOf(card) + step];
+  if (!neighbor || !await placeCard(id, card.column, column.indexOf(neighbor))) return;
   // Keep keyboard focus on the moved card. At either end, use the button that still works.
   const item = cardElement(id);
   const same = item?.querySelector(step < 0 ? '.kanban-move-up' : '.kanban-move-down');
@@ -3734,6 +3768,8 @@ bindAsyncForm('#card-form', saveCard);
 $('#card-cancel').addEventListener('click', () => $('#card-dialog').close());
 $('#card-dialog-close').addEventListener('click', () => $('#card-dialog').close());
 $('#done-dialog-close').addEventListener('click', () => $('#done-dialog').close());
+$('#board-priority-filter').addEventListener('change', event => changePriorityFilter(event.currentTarget));
+$('#archive-priority-filter').addEventListener('change', event => changePriorityFilter(event.currentTarget));
 $('#archive-filter').addEventListener('input', () => refreshPipelineArchive());
 $('#archive-sort').addEventListener('change', () => refreshPipelineArchive());
 $('#archive-sort-title').addEventListener('click', () => { $('#archive-sort').value = $('#archive-sort').value === 'title' ? 'title-desc' : 'title'; refreshPipelineArchive(); });

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Share keyboard priority filters between pipeline boards and completed tasks, with per-project browser preferences and visible/total counts. Keep saved task metadata, order and agent execution inert; translate explicit filtered keyboard moves and card drops to complete-column positions so hidden cards remain intact.
+
 - Add an opt-in disposable Codex busy-queue check with bounded native-turn evidence, exact follow-up confirmation and real offline PTY coverage. Verify the default Tab queue behavior separately from steering, preserve manual-input guards and report both replies and cleanup without enabling automatic immediate delivery.
 
 - Save task priority separately from prompt content, with keyboard pipeline editing and labeled card/archive badges. Preserve exact Composer prompts, content checks, task order and agent execution; migrate state to version 9 with exact original backups and export portable version 7 metadata. Custom levels, filters and backlog integration remain pending.
