@@ -1412,6 +1412,7 @@ function renderBoard() {
   $('#execution-status').textContent = board?.execution?.setupMessage ? `Agent runs are unavailable. ${board.execution.setupMessage}` : '';
   const columns = $('#kanban-columns');
   const focusedCard = document.activeElement?.closest('.kanban-card');
+  const focusedCardAction = focusedCard && document.activeElement.matches('button, select, a') ? document.activeElement : null;
   const focusedDisplay = document.activeElement?.dataset.cardDisplay;
   const focusedAutomation = document.activeElement?.dataset.automationStop;
   const confirming = [...columns.querySelectorAll('.kanban-card:has(.kanban-confirm)')].map(item => item.dataset.id);
@@ -1424,6 +1425,11 @@ function renderBoard() {
     if (item && card) confirmCardDelete(item, card, false);
   }
   if (confirmationFocus && focusedCard) [...(cardElement(focusedCard.dataset.id)?.querySelectorAll('.kanban-confirm button') || [])].find(button => button.textContent === confirmationFocus)?.focus({ preventScroll: true });
+  if (focusedCardAction && !confirmationFocus) {
+    const replacement = [...(cardElement(focusedCard.dataset.id)?.querySelectorAll('button, select, a') || [])].find(control => control.tagName === focusedCardAction.tagName
+      && control.className === focusedCardAction.className && control.getAttribute('aria-label') === focusedCardAction.getAttribute('aria-label'));
+    if (replacement && !replacement.disabled) replacement.focus({ preventScroll: true });
+  }
   if (focusedCard && focusedDisplay) [...(cardElement(focusedCard.dataset.id)?.querySelectorAll('[data-card-display]') || [])].find(input => input.dataset.cardDisplay === focusedDisplay)?.focus({ preventScroll: true });
   if (focusedAutomation) cardElement(focusedAutomation)?.querySelector('.kanban-stop-automations')?.focus({ preventScroll: true });
   for (const list of columns.querySelectorAll('.kanban-cards')) list.scrollTop = scroll.get(list.dataset.column) || 0;
