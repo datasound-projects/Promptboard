@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Remove default Compose model and browser generation deadlines across autonomous research, draft/review/repair and task splitting. Preserve Cancel, process cleanup, explicit programmatic deadlines and bounded optional-source retrieval. Invalid optional planning falls back to the original task with a warning. Align detailed prompt, split and verification size bounds; test all provider/settings combinations and long-running browser states.
+- Accept Codex's reported `max` effort and classify its account/model rejection explicitly. Disable ambient Codex MCPs/apps/plugins/hooks per generation invocation without altering CLI defaults or credentials. Track cancelled Compose provider cleanup through shutdown.
+
 - Bind delayed initial prompt paste/Enter to the owned PTY, input epoch and native identity. Human drafts revoke automatic Enter; Stop/Pause/failure/replacement and pending input block stale writes/checkpoints. Contain unknown transport writes without retries or raw errors. Verify exact long Composer envelopes, Base instructions/MCPs and inherited tools in a disposable simulated CLI PTY.
 
 - Add Notify me column editing and explicit browser notification opt-in. Authenticate bounded receiver streams and task-scoped display receipts; preserve unconfirmed outcomes on loss, scoped cancellation and no automatic replay. Alert clicks open the exact task without agent actions. Tests use mocked desktop APIs in disposable browsers; native message delivery and explicit retries remain pending.

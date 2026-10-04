@@ -70,7 +70,7 @@ test('source failure still permits generation; malformed assessment never invent
   const result = await context.prepare(body, { runner: runner([]) });
   assert.equal(result.state, 'ready'); assert.match(result.warnings.join(' '), /unavailable/); assert.ok(result.grounding.unresolvedQuestions.length);
   for (const model of [async () => ({ text: 'HACKED' }), async () => { throw new Error('SECRET_CLI_DIAGNOSTIC'); }]) {
-    const failed = await context.prepare(body, { runner: model }); assert.equal(failed.state, 'assessment-failed'); assert.equal(failed.calls, 1); assert.doesNotMatch(JSON.stringify(failed), /SECRET_CLI/);
+    const failed = await context.prepare(body, { runner: model }); assert.equal(failed.state, 'ready'); assert.equal(failed.calls, 1); assert.deepEqual(failed.grounding, {}); assert.equal(failed.evidence.length, 0); assert.match(failed.warnings.join(' '), /assessment was unavailable or invalid/); assert.doesNotMatch(JSON.stringify(failed), /SECRET_CLI/);
   }
   const topic = researchPlan('financial data'); Object.assign(topic.assessment, { actionable: false, goal: '', research: 'none', needsProject: false }); topic.questions = [];
   const noGoal = await context.prepare({ request: { input: 'financial data' }, sources: body.sources }, { runner: async () => ({ text: JSON.stringify(topic) }) });

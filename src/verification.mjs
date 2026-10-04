@@ -4,8 +4,9 @@
  * Wrap important text in backticks or double quotes to make its boundary explicit.
  */
 
-const MAX_SOURCE = 100_000;
-const MAX_OUTPUT = 64_000;
+import { COMPOSE_PROMPT_CHARS, VERIFICATION_OUTPUT_CHARS } from './compose-limits.mjs';
+const MAX_SOURCE = COMPOSE_PROMPT_CHARS;
+const MAX_OUTPUT = VERIFICATION_OUTPUT_CHARS;
 const FILE_EXTENSIONS = new Set(('astro bash bat c cc cfg cjs clj cmake cmd conf cpp cs css csv cts doc docx env fish fs fsx gif go gql graphql gz h hpp htm html ico ini ipynb java jpeg jpg js json json5 jsonl jsx kt kts less lock log lua m map md mdx mjs mm mts php pl png proto ps1 py pyi r rb res rs sass scala scss sh sql svelte svg swift tar tex toml ts tsv tsx txt vue wasm webp xml yaml yml zip zsh').split(' '));
 const FILE_NAMES = new Set(['Dockerfile', 'Containerfile', 'Makefile', 'Gemfile', 'Rakefile', 'Procfile', 'LICENSE', 'COPYING', '.env', '.gitignore', '.gitattributes', '.gitmodules', '.editorconfig', '.npmrc', '.nvmrc', '.prettierrc', '.eslintrc']);
 const DIRECTORY_NAMES = new Set(['src', 'lib', 'app', 'apps', 'api', 'bin', 'build', 'dist', 'doc', 'docs', 'examples', 'include', 'packages', 'public', 'scripts', 'test', 'tests', 'vendor', 'node_modules', '.github', '.git', '.config']);
@@ -13,7 +14,7 @@ const DELIMITED_KINDS = new Set(['fenced-code', 'inline-code', 'quoted-text']);
 
 function sourceText(input) {
   if (typeof input !== 'string') throw new TypeError('The source must be text.');
-  if (input.length > MAX_SOURCE) throw new RangeError('The source must contain at most 100,000 characters.');
+  if (input.length > MAX_SOURCE) throw new RangeError(`The source must contain at most ${MAX_SOURCE.toLocaleString('en-US')} characters.`);
   if (input.includes('\0')) throw new TypeError('The source must not contain a null character.');
   return input.replace(/\r\n/g, '\n');
 }
@@ -237,7 +238,7 @@ export function verifyPrompt(input, output, language = 'en') {
     ? !outputDelimited.has(literal.text) : !hasExactLiteral(normalized, literal)) : literals;
   const issues = [];
   if (!isText || !nonempty) issues.push({ rule: 'output-content', message: 'The model must return a nonempty text prompt.' });
-  if (isText && !withinBounds) issues.push({ rule: 'output-size', message: 'The model output must contain at most 64,000 characters.' });
+  if (isText && !withinBounds) issues.push({ rule: 'output-size', message: `The model output must contain at most ${MAX_OUTPUT.toLocaleString('en-US')} characters.` });
   if (isText && !noNull) issues.push({ rule: 'output-null', message: 'The model output must not contain a null character.' });
   if (validOutput) {
     for (const literal of missing) {

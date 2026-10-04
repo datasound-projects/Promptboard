@@ -7,6 +7,8 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { validateRequest } from './engine.mjs';
 import { runPipeline } from './pipeline.mjs';
+import { abortable } from './cancellation.mjs';
+import { COMPOSE_PROMPT_CHARS } from './compose-limits.mjs';
 import { buildSplitPrompt, parseSplit, splitCoverage } from './split.mjs';
 import { detectProviders, FAILURE_MESSAGES, killOwnedProcesses, makeTempDir, ProviderError, removeTempDir, resolveExecutable, runProvider, validateEffort } from './providers.mjs';
 import { AUTH_CAPABILITIES, logout, readAuthStatus, startLogin } from './auth.mjs';
@@ -69,17 +71,6 @@ async function jsonBody(req, limit = 1_048_576) {
   }
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); }
   catch { throw Object.assign(new Error('The request is not valid JSON.'), { status: 400 }); }
-}
-
-// Wait for a shared promise, but stop waiting when this request is cancelled.
-function abortable(promise, signal) {
-  if (!signal) return promise;
-  signal.throwIfAborted();
-  return new Promise((resolve, reject) => {
-    const onAbort = () => reject(new ProviderError('Generation was cancelled.', 'ABORTED'));
-    signal.addEventListener('abort', onAbort, { once: true });
-    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
-  });
 }
 
 export async function generate(request, { runner = runProvider, signal, catalogReader = discoverModels, onStage } = {}) {
@@ -288,7 +279,15 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
     const done = new Promise(resolve => { release = resolve; });
     busy = { kind, provider, stage: 'starting', startedAt: Date.now(), controller: new AbortController(), done };
     const job = busy;
-    return { job, release: () => { if (busy === job) busy = null; release(); } };
+    return { job, release: () => {
+      const free = () => { if (busy === job) busy = null; release(); };
+      if (!job.controller.signal.aborted || closing) { free(); return; }
+      // The UI can finish cancelling before provider pipes have closed. Keep the
+      // slot until tracked cleanup settles; a broken injected adapter is bounded.
+      let timer;
+      void Promise.race([Promise.allSettled([...tasks]), new Promise(resolve => { timer = setTimeout(resolve, 3500); timer.unref(); })])
+        .finally(() => { clearTimeout(timer); free(); });
+    } };
   };
   const baseRoutes = new BaseRoutes({ board, runner, claim, track, catalog: getCatalog, send, jsonBody, ...(mcpTester ? { mcpTester } : {}), imageGenerator });
   let composeContext;
@@ -444,7 +443,7 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
         job.provider = request.provider;
         validateEffort(request.provider, request.effort);
         if (request.effort) checkModelEffort(request.provider, request.model, request.effort, await abortable(getCatalog(request.provider), signal));
-        return send(res, 200, await track(context.prepare(body, { runner, signal, onStage: stage => { job.stage = stage; } })));
+        return send(res, 200, await track(context.prepare(body, { runner: call => track(runner(call)), signal, onStage: stage => { job.stage = stage; } })));
       } catch (error) {
         if (error.statusCode === 400 || error.status === 400) send(res, 400, { error: error.message, code: 'INVALID_REQUEST' });
         else if (pathname === '/api/compose/sources/document' && !claimed?.job.controller.signal.aborted && !error.status) send(res, 422, { error: error.message, code: 'DOCUMENT_FAILED' });
@@ -460,17 +459,16 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
       try {
         claimed = await claim('generate', null);
         const { job } = claimed;
-        const body = await jsonBody(req);
+        const body = await jsonBody(req, 2_097_152);
         let value;
-        try { value = validateRequest({ input: body?.prompt, provider: body?.provider, model: body?.model, effort: body?.effort, language: body?.language }); validateEffort(value.provider, value.effort); }
+        try { value = validateRequest({ input: body?.prompt, provider: body?.provider, model: body?.model, effort: body?.effort, language: body?.language }, { maxInputChars: COMPOSE_PROMPT_CHARS }); validateEffort(value.provider, value.effort); }
         catch (error) { throw Object.assign(error, { status: 400 }); }
-        if (value.input.length > 32_000) throw Object.assign(new Error('The prompt is too long to split. Use at most 32,000 characters.'), { status: 400 });
         Object.assign(job, { provider: value.provider, stage: 'split' });
         const cwd = await makeTempDir('ste-split-');
         const started = Date.now();
         let result;
         // The folder is removed before the answer is sent, so the job slot is free when the page gets it.
-        try { result = await track(runner({ provider: value.provider, model: value.model, effort: value.effort, prompt: buildSplitPrompt(value.input, value.language), cwd, signal: job.controller.signal, timeoutMs: 180_000 })); }
+        try { result = await track(abortable(track(runner({ provider: value.provider, model: value.model, effort: value.effort, prompt: buildSplitPrompt(value.input, value.language), cwd, signal: job.controller.signal, timeoutMs: null })), job.controller.signal)); }
         finally { await removeTempDir(cwd); }
         let tasks;
         try { tasks = parseSplit(result.text); } catch (error) { throw Object.assign(error, { status: 502, code: 'INVALID_OUTPUT' }); }
@@ -496,7 +494,7 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
         try { value = validateRequest(body); }
         catch (error) { throw Object.assign(error, { status: 400 }); }
         job.provider = value.provider;
-        const result = await track(generate(value, { runner, signal: job.controller.signal, catalogReader: provider => getCatalog(provider, { maxAgeMs: Infinity }),
+        const result = await track(generate(value, { runner: call => track(runner(call)), signal: job.controller.signal, catalogReader: provider => getCatalog(provider, { maxAgeMs: Infinity }),
           onStage: stage => { job.stage = stage; } }));
         send(res, 200, result);
       } catch (error) {

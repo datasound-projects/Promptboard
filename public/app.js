@@ -36,7 +36,6 @@ let progressTimer = null;
 let authInfo = null;
 let authBusy = false;
 let authSequence = 0;
-const GENERATION_CEILING_MS = 7.5 * 60 * 1000; // Above the server's 6-minute pipeline deadline.
 const STAGE_LABELS = { understanding: 'Understanding task', project: 'Reading project context', 'research-review': 'Checking research', retrieving: 'Finding relevant context', document: 'Preparing document', ready: 'Context ready', starting: 'Starting', models: 'Checking model options', draft: 'Drafting prompt', review: 'Reviewing requirements', repair: 'Repairing confirmed issues', 'repair-review': 'Verifying repaired prompt' };
 
 function safeText(value, max = MAX_PROMPT_BYTES) { return typeof value === 'string' ? value.slice(0, max) : ''; }
@@ -325,14 +324,14 @@ function updateQuality() {
   $('#quality-note').textContent = reviewed
     ? 'Automatic checks and a separate model review. Usually 2 CLI calls; up to 4 only when a check confirms a lost or changed requirement. Uses more time and CLI allowance.'
     : '1 CLI call, then automatic checks. No model review or repair. Check the meaning and every requirement yourself.';
-  $('#progress-note').textContent = reviewed ? 'Your CLI writes, reviews, and may revise the prompt. This can take a few minutes.' : 'Your CLI writes the prompt. Automatic checks follow.';
+  $('#progress-note').textContent = reviewed ? 'Your CLI writes, reviews, and may revise the prompt. You can cancel at any time.' : 'Your CLI writes the prompt. Automatic checks follow. You can cancel at any time.';
 }
 function updateEffort(preferred = '') {
   const provider = $('#provider').value;
   const model = chosenModel();
   const selected = catalog?.models?.find(item => item.id === (model || catalog.defaultModel));
   const unverified = model && !selected;
-  const choices = selected?.efforts || (unverified ? ({ codex: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'], claude: ['low', 'medium', 'high', 'xhigh', 'max'], agy: ['low', 'medium', 'high'], gemini: [] }[provider] || []) : []);
+  const choices = selected?.efforts || (unverified ? ({ codex: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'], claude: ['low', 'medium', 'high', 'xhigh', 'max'], agy: ['low', 'medium', 'high'], gemini: [] }[provider] || []) : []);
   const defaultEffort = model ? selected?.defaultEffort : catalog?.defaultEffort;
   $('#effort').replaceChildren(option('', defaultEffort ? `CLI default (${defaultEffort})` : 'CLI default (not reported)'));
   for (const level of choices) $('#effort').append(option(level, level === 'xhigh' ? 'Extra high (xhigh)' : level[0].toUpperCase() + level.slice(1)));
@@ -429,11 +428,12 @@ function setRunning(value) {
 }
 
 async function api(path, { method = 'GET', body, timeoutMs = 20000, signal } = {}) {
-  // A plain controller keeps this compatible with every fetch implementation; the timer bounds every request.
+  // Metadata requests are bounded. Compose model calls explicitly wait for completion or Cancel.
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  const forward = () => controller.abort();
+  const timer = timeoutMs === null ? undefined : setTimeout(() => controller.abort(), timeoutMs);
+  const forward = () => controller.abort(signal.reason);
   signal?.addEventListener('abort', forward, { once: true });
+  if (signal?.aborted) forward();
   try {
     const response = await fetch(path, { method, cache: 'no-store', signal: controller.signal,
       headers: { 'X-STE-Token': token, ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
@@ -707,8 +707,6 @@ async function generate(event) {
   const sequence = ++generationSequence;
   const ownController = new AbortController();
   controller = ownController;
-  let timedOut = false;
-  const ceiling = setTimeout(() => { timedOut = true; ownController.abort(); }, GENERATION_CEILING_MS);
   setRunning(true);
   startProgress();
   announce('Your CLI is engineering the prompt.');
@@ -750,10 +748,7 @@ async function generate(event) {
     if (previousResult) showResult(previousResult);
     else { currentResult = null; $('#output-empty').hidden = false; }
     // The request text stays in the input box on every failure path.
-    if (timedOut) {
-      $('#generation-error').textContent = 'The request took too long and was stopped. Your input is kept. Try again or use Fast mode.';
-      $('#generation-error').hidden = false;
-    } else if (error.name === 'AbortError' || failureCode === 'ABORTED') announce('Generation canceled. Your input is kept.');
+    if (error.name === 'AbortError' || failureCode === 'ABORTED') announce('Generation canceled. Your input is kept.');
     else {
       $('#generation-error').textContent = error.message || 'Generation failed. Your input is kept. Please try again.';
       $('#generation-error').hidden = false;
@@ -761,7 +756,6 @@ async function generate(event) {
       if (!failureCode && /token|session|403/i.test(error.message || '')) await loadProviders();
     }
   } finally {
-    clearTimeout(ceiling);
     if (sequence === generationSequence) {
       stopProgress();
       controller = null;
@@ -851,7 +845,7 @@ async function prepareContext(request) {
   $('#generate-label').textContent = 'Understanding task…';
   try {
     const signature = contextSignature();
-    const { response, data } = await api('/api/compose/prepare', { method: 'POST', body: { request, autonomous: $('#context-autonomous').checked, sources: contextSources() }, signal: own.signal, timeoutMs: 250000 });
+    const { response, data } = await api('/api/compose/prepare', { method: 'POST', body: { request, autonomous: $('#context-autonomous').checked, sources: contextSources() }, signal: own.signal, timeoutMs: null });
     if (own.signal.aborted) return;
     if (!response.ok) throw new Error(failureMessage(data, 'Preparation failed.'));
     if (signature !== contextSignature()) return null;
@@ -3296,7 +3290,7 @@ async function openSplit({ previewOnly = false } = {}) {
   $('#split-dialog').showModal();
   split.controller = new AbortController();
   let answer;
-  try { answer = await api('/api/split', { method: 'POST', body: { prompt: result.prompt, provider: result.provider, model: result.model || '', effort: result.effort || '', language: result.language || 'en' }, timeoutMs: 200000, signal: split.controller.signal }); }
+  try { answer = await api('/api/split', { method: 'POST', body: { prompt: result.prompt, provider: result.provider, model: result.model || '', effort: result.effort || '', language: result.language || 'en' }, timeoutMs: null, signal: split.controller.signal }); }
   catch { if (!split.controller.signal.aborted) $('#split-status').textContent = 'The app did not answer. Check that Promptboard is still running.'; return; }
   if (split.controller.signal.aborted || !$('#split-dialog').open) return;
   const { response, data } = answer;
