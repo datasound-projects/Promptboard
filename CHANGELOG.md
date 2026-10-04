@@ -4,6 +4,8 @@
 
 - Prepare private deferred native-message transport bound to one live pipeline process, exact native history and strict durable callback acknowledgements. Preserve literal Unicode, consume dispatch IDs once, cancel changed ownership/input before Enter, bound hanging callbacks and keep unknown writes sticky without clearing drafts or retrying. Block Stop-based completion during pending/unknown submission; column scheduling, immediate delivery and enabled message rows remain pending.
 
+- Move CLI connection/status/sign-in controls from Compose's More settings into the top-bar CLI dialog. Manage accounts independently of Compose's CLI/model selection, preserve pending sign-in through close/reopen, and keep model feedback beside generation controls. Retain installation guides and privacy help.
+
 - Observe bracketed-paste mode, incomplete controls and manual input privately per owned pipeline process. Bound metadata, close observations on Stop/exit and create fresh state on native resume, without dispatching input or enabling pending message rows.
 
 - Restore selected pipeline archive tasks through the common move path with captured task/settings revisions and individual outcomes. Preserve selection order across filtering, prevent duplicate groups, stop unstarted requests on stop/close/project changes, and keep lost responses reviewable without replay. Advertise server support to hide bulk controls on older processes; retain old-style moves and exact-ID idempotency. Bulk deletion remains pending.
