@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Observe bracketed-paste mode, incomplete controls and manual input privately per owned pipeline process. Bound metadata, close observations on Stop/exit and create fresh state on native resume, without dispatching input or enabling pending message rows.
+
 - Restore selected pipeline archive tasks through the common move path with captured task/settings revisions and individual outcomes. Preserve selection order across filtering, prevent duplicate groups, stop unstarted requests on stop/close/project changes, and keep lost responses reviewable without replay. Advertise server support to hide bulk controls on older processes; retain old-style moves and exact-ID idempotency. Bulk deletion remains pending.
 
 - Consume a queued initial prompt before nonempty human terminal input, including failed writes and input before startup. Clear paste timers so later startup events cannot append and submit the task into a human draft; retain empty/rejected-input behavior, exact Composer/Base artifacts and CLI tools.
