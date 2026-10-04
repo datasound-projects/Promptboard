@@ -134,7 +134,8 @@ export class PipelineAutomations {
       const receiver = schedule || this.deliverMessage;
       const result = await abortable(Promise.resolve().then(() => { signal.throwIfAborted(); return receiver({ actionId: context.actionId,
         taskId: context.task.id, projectId: context.project?.id, message, mode: row.mode, trigger: context.move.trigger,
-        ...(schedule ? { key: { projectId: key.projectId, taskId: key.taskId, transitionId: key.transitionId } } : {}) }, { signal }); }), signal);
+        ...(schedule ? { key: { projectId: key.projectId, taskId: key.taskId, transitionId: key.transitionId },
+          expectedTaskRevision: context.task.revision, expectedProjectRevision: context.project?.revision } : {}) }, { signal }); }), signal);
       signal.throwIfAborted();
       if (schedule) {
         const action = (await this.journal.read(key))?.actions.find(action => action.id === context.actionId);

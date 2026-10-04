@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add a private deferred enter-message scheduler that acknowledges durable handoff before queued startup/input, reserves per-run invocation FIFO, rechecks exact target/configuration custody and bounds cancellation/unknown saves without replay. Board/HTTP/editor activation, exit messages and busy/immediate delivery remain pending.
+
 - Capture private native-message task/session/run custody with content, configuration, Base and workspace rechecks. Keep compatible active moves on the same target, learn queued native identity once, and refuse changed/replaced targets before input. Use this check in the disposable smoke harness; actual column scheduling remains pending.
 
 - Render `{{taskNumber}}` as the saved `#N` identity across automation/custom spawn templates and `PROMPTBOARD_TASK_NUMBER`. Leave missing/malformed numbers empty without positional fallback; preserve numeric API/webhook fields and the exact default first task envelope.
