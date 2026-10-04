@@ -10,6 +10,7 @@ import { Supervisor } from '../src/supervisor.mjs';
 import { NativeMessageDispatch } from '../src/native-message-dispatch.mjs';
 import { captureNativeMessageTarget } from '../src/native-message-target.mjs';
 import { defaultPipelineConfig, normalizePipelineStrategy } from '../src/pipeline-config.mjs';
+import { ClaudeFolderTrust } from './claude-folder-trust.mjs';
 
 const option = (name, fallback) => {
   const at = process.argv.indexOf(`--${name}`);
@@ -41,25 +42,33 @@ const summary = (run, session) => ({ status: run.status, errorCode: run.errorCod
   manualInputObserved: session?.terminalInput?.snapshot().manualInputObserved === true });
 async function waitReady(runId, mayAnswer) {
   const answered = new Set();
-  for (;;) {
-    const run = await board.run(runId), session = supervisor.sessions.get(runId);
-    if (session?.proc?.pid) pids.add(session.proc.pid);
-    const state = summary(run, session);
-    if (cancelled.signal.aborted || state.ready && state.nativeIdentityObserved || ['failed', 'cancelled', 'interrupted'].includes(run.status) || Date.now() >= deadline) return state;
-    // Only fixed startup questions in this owned fixture; never answer a tool permission.
-    if (mayAnswer && !run.turns && session?.proc) {
-      const screen = (await supervisor.artifact(runId, 'output')).replace(/\x1b\[[0-9;?<>]*[A-Za-z]/g, '').replace(/\s+/g, '');
-      if (!answered.has('folder') && /trustthisfolder|Trustthisfolder\?/i.test(screen)) {
-        answered.add('folder');
-        if (provider === 'claude') { supervisor.input(runId, '\x1b[B'); await pause(400); }
-        supervisor.input(runId, '\r');
-      } else if (!answered.has('hooks') && /Hooksneedreview/i.test(screen)) {
-        answered.add('hooks'); supervisor.input(runId, '\x1b[B'); await pause(300);
-        supervisor.input(runId, '\x1b[B'); await pause(300); supervisor.input(runId, '\r');
+  const claudeTrust = mayAnswer && provider === 'claude' ? new ClaudeFolderTrust() : null;
+  try {
+    for (;;) {
+      const run = await board.run(runId), session = supervisor.sessions.get(runId);
+      if (session?.proc?.pid) pids.add(session.proc.pid);
+      const state = summary(run, session);
+      if (cancelled.signal.aborted || state.ready && state.nativeIdentityObserved || ['failed', 'cancelled', 'interrupted'].includes(run.status) || Date.now() >= deadline) return state;
+      // Only fixed startup questions in this owned fixture; never answer a tool permission.
+      if (mayAnswer && !run.turns && session?.proc) {
+        const output = await supervisor.artifact(runId, 'output');
+        const screen = output.replace(/\x1b\[[0-9;?<>]*[A-Za-z]/g, '').replace(/\s+/g, '');
+        if (claudeTrust && !answered.has('folder')) {
+          const input = await claudeTrust.observe(output, performance.now());
+          if (cancelled.signal.aborted || Date.now() >= deadline) continue;
+          if (input === 'down') supervisor.input(runId, '\x1b[B');
+          if (input === 'confirm') { answered.add('folder'); supervisor.input(runId, '\r'); }
+        } else if (provider !== 'claude' && !answered.has('folder') && /trustthisfolder|Trustthisfolder\?/i.test(screen)) {
+          answered.add('folder');
+          supervisor.input(runId, '\r');
+        } else if (!answered.has('hooks') && /Hooksneedreview/i.test(screen)) {
+          answered.add('hooks'); supervisor.input(runId, '\x1b[B'); await pause(300);
+          supervisor.input(runId, '\x1b[B'); await pause(300); supervisor.input(runId, '\r');
+        }
       }
+      await pause(100);
     }
-    await pause(100);
-  }
+  } finally { claudeTrust?.close(); }
 }
 try {
   dataDir = await realpath(await mkdtemp(join(tmpdir(), 'pb-live-native-data-')));
