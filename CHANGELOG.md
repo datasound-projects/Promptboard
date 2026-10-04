@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Default newly created/opened app projects to the empty seven-column pipeline. Keep saved and imported stage boards unchanged, retain explicit legacy creation for integrations, and reject invalid workflow choices before filesystem changes. Composer and split tasks still enter To Do without starting agents.
+
 - Enable configured deferred Send message to agent rows on active-column entry, keeping the same task conversation and Composer/Base input. Add capability-aware editing, delivery receipts and task-scoped Stop after placement completes. Persist pending references independently of history, migrate state to version 8 with exact backups, and recover interrupted delivery without replay. Add an opt-in actual-column live check; immediate/exit/slash delivery and full Kanban parity remain pending.
 
 - Add a private deferred enter-message scheduler that acknowledges durable handoff before queued startup/input, reserves per-run invocation FIFO, rechecks exact target/configuration custody and bounds cancellation/unknown saves without replay. Board/HTTP/editor activation, exit messages and busy/immediate delivery remain pending.

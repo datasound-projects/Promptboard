@@ -532,12 +532,14 @@ export class Board {
 
   // ---- Projects ----
 
-  async createProject({ name }) {
+  async createProject({ name, workflowMode = 'legacy' }) {
     const clean = text(name, 80, 'Project name');
+    if (!['legacy', 'pipeline'].includes(workflowMode)) throw new BoardError('Choose a legacy stage board or a column pipeline.', 'INVALID_INPUT');
     return this.store.update(state => {
       if (state.projects.length >= PROJECT_LIMIT) throw new BoardError(`A board can have at most ${PROJECT_LIMIT} projects.`, 'LIMIT');
       this.#nameError(state, clean);
       const project = newProject({ name: clean });
+      if (workflowMode === 'pipeline') Object.assign(project, { workflowMode, pipeline: defaultPipelineConfig() });
       state.projects.push(project);
       return project;
     });
@@ -549,8 +551,9 @@ export class Board {
    * folder. A folder that is not a repository yet gets `git init` and one empty first commit
    * (its files are never added). Then the project is linked to it.
    */
-  async createProjectWithRepository({ name, folder }) {
+  async createProjectWithRepository({ name, folder, workflowMode = 'legacy' }) {
     const clean = text(name, 80, 'Project name');
+    if (!['legacy', 'pipeline'].includes(workflowMode)) throw new BoardError('Choose a legacy stage board or a column pipeline.', 'INVALID_INPUT');
     this.#nameError(await this.state(), clean);
     let path, created = false;
     if (folder === 'new') {
@@ -578,7 +581,7 @@ export class Board {
         await initRepository(path, { fallbackIdentity: true });
         return null;
       });
-      const project = await this.createProject({ name: clean });
+      const project = await this.createProject({ name: clean, workflowMode });
       const linked = await this.linkRepository(project.id, { path, expectedRevision: project.revision });
       return { project: linked.project, folder: path, initialized: !repository, createdFolder: created };
     } catch (error) {

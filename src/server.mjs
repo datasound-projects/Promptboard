@@ -116,9 +116,9 @@ async function boardRoute(board, req, res, pathname, searchParams) {
   if (method === 'POST' && pathname === '/api/board/migrate') return view({ migrated: await board.migrateBrowserBoard((await body(BOARD_BODY_LIMIT)).board) });
   if (method === 'POST' && pathname === '/api/board/import') { const data = await body(BOARD_BODY_LIMIT); return view({ imported: await board.importBackup(data.backup, { replace: data.replace === true }) }); }
   if (method === 'POST' && pathname === '/api/projects') {
-    const { name, folder } = await body();
-    // Every project made in the app gets a Git repository: a new folder, or the chosen one.
-    return view(await board.createProjectWithRepository({ name, folder: folder === undefined ? 'new' : folder }));
+    const { name, folder, workflowMode = 'pipeline' } = await body();
+    // New app projects use column pipelines; an explicit legacy request preserves integrations.
+    return view(await board.createProjectWithRepository({ name, folder: folder === undefined ? 'new' : folder, workflowMode }));
   }
   if (method === 'POST' && pathname === '/api/folder/choose') return send(res, 200, await board.folderPicker());
   if (method === 'POST' && pathname === '/api/repository/validate') return send(res, 200, { repository: await board.validateRepository((await body()).path) });

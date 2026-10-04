@@ -374,7 +374,7 @@ test('board HTTP routes need the page token, resolve paths on the server, and ne
   const call = (method, path, body) => fetch(app.url + path, { method, headers: { 'x-ste-token': token, 'content-type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) }).then(async r => ({ status: r.status, data: await r.json() }));
   assert.equal((await fetch(app.url + '/api/board')).status, 403);
   assert.equal((await fetch(app.url + '/api/projects', { method: 'POST', headers: { 'x-ste-token': token, 'content-type': 'application/json', origin: 'https://evil.example' }, body: '{"name":"X"}' })).status, 403);
-  const created = await call('POST', '/api/projects', { name: 'Web' });
+  const created = await call('POST', '/api/projects', { name: 'Web', workflowMode: 'legacy' });
   assert.equal(created.status, 200);
   const project = created.data.project;
   // A project made in the app gets its own folder with a Git repository, inside the projects folder.

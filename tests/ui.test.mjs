@@ -802,7 +802,15 @@ async function goTo({ $, win, idle }, hash) {
   await until(() => $('#kanban-view').hidden === (hash !== '#/kanban'), `page ${hash}`);
   await idle();
 }
-async function newProject(ctx, name) { ctx.$('#project-new').click(); ctx.$('#project-name').value = name; submitForm(ctx, '#project-form'); await ctx.idle(); }
+// Stage-specific scenarios begin with a saved legacy board. New-default creation
+// is covered separately through authenticated HTTP and the actual browser form.
+async function savedStageProject(ctx, name) {
+  const { project } = await ctx.app.board.createProjectWithRepository({ name, folder: 'new', workflowMode: 'legacy' });
+  await ctx.win.__pbTest.loadBoard();
+  const select = ctx.$('#project-select'); select.value = project.id; select.dispatchEvent(new ctx.win.Event('change', { bubbles: true }));
+  if (ctx.$('#project-body').hidden) ctx.$('#project-toggle').click();
+  await ctx.idle();
+}
 async function newCard(ctx, title, prompt) { ctx.$('#card-new').click(); ctx.$('#card-title').value = title; ctx.$('#card-prompt').value = prompt; submitForm(ctx, '#card-form'); await ctx.idle(); }
 async function click(ctx, element) { element.click(); await ctx.idle(); }
 async function importFile(ctx, text) {
@@ -836,7 +844,7 @@ test('page navigation keeps unsaved prompt input, settings, and the current resu
   assert.equal($('.page-nav a[href="#/kanban"]').getAttribute('aria-current'), 'page');
   assert.equal($('.page-nav a[href="#/"]').hasAttribute('aria-current'), false);
   assert.match(win.document.title, /Kanban/);
-  await newProject(ctx, 'Alpha');
+  await savedStageProject(ctx, 'Alpha');
   $('#card-new').click();
   // Shortcuts from Kanban fields never start a generation or clear the prompt form.
   $('#card-prompt').dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true }));
@@ -932,10 +940,10 @@ test('projects keep separate boards; names are validated; deletion needs confirm
   assert.equal($('#card-new').disabled, true);
   assert.equal($('#project-delete').disabled, true);
   assert.equal($('#kanban-columns').hidden, true);
-  await newProject(ctx, 'Alpha');
+  await savedStageProject(ctx, 'Alpha');
   const alpha = $('#project-select').value;
   await newCard(ctx, 'A1', 'Prompt A1'); await newCard(ctx, 'A2', 'Prompt A2');
-  await newProject(ctx, 'Beta');
+  await savedStageProject(ctx, 'Beta');
   assert.notEqual($('#project-select').value, alpha);
   assert.deepEqual(titles($), []);
   assert.match($('#board-empty').textContent, /No tasks yet/);
@@ -1008,7 +1016,7 @@ test('seven stages render; cards are created, edited, duplicated, deleted, and r
   const ctx = await setup(t);
   const { $, win, copied } = ctx;
   await goTo(ctx, '#/kanban');
-  await newProject(ctx, 'Work');
+  await savedStageProject(ctx, 'Work');
   assert.deepEqual(Array.from($('#kanban-columns').querySelectorAll('h3'), heading => heading.textContent), ['To Do', 'Planning', 'Executing', 'Code Review', 'Testing', 'Merge', 'Done']);
   assert.match($('#kanban-columns [data-column="todo"] .kanban-column-note').textContent, /Never runs an agent/);
   assert.match($('#kanban-columns [data-column="done"] .kanban-column-note').textContent, /never runs an agent/);
@@ -1086,7 +1094,7 @@ test('a linked repository enables stage moves; invalid folders explain the probl
   const { $, win } = ctx;
   const repo = await gitRepo(t);
   await goTo(ctx, '#/kanban');
-  await newProject(ctx, 'Linked');
+  await savedStageProject(ctx, 'Linked');
   await newCard(ctx, 'Feature', 'Build the feature.');
   // The new project comes with its own Git repository in the projects folder.
   assert.match($('#repo-state').textContent, /Linked to \S+\/projects\/Linked\./);
@@ -1146,7 +1154,7 @@ test('backups: export round-trips, import validates, asks before replacing, and 
   const ctx = await setup(t);
   const { $, choose, downloads, blobs } = ctx;
   await goTo(ctx, '#/kanban');
-  await newProject(ctx, 'Current');
+  await savedStageProject(ctx, 'Current');
   await newCard(ctx, 'Keep me', 'Keep.');
   const before = JSON.stringify((await serverBoard(ctx)).projects);
   const withCard = changes => JSON.stringify({ ...legacy, projects: [{ ...legacy.projects[0], cards: [{ ...legacy.projects[0].cards[0], ...changes }] }] });
@@ -1327,7 +1335,7 @@ test('missing agent terminal support shows setup steps; the prompt editor still 
   await goTo(ctx, '#/kanban');
   assert.equal($('#execution-status').hidden, false);
   assert.match($('#execution-status').textContent, /Agent runs are unavailable\. Agent terminals need the node-pty package\. Run npm install/);
-  await newProject(ctx, 'Setup');
+  await savedStageProject(ctx, 'Setup');
   assert.match($('#kanban-columns [data-column="executing"] .kanban-column-note').textContent, /not set up/);
 });
 
@@ -1358,7 +1366,7 @@ async function linkedKanban(t, options = {}) {
   executor.board = ctx.app.board;
   const repo = await gitRepo(t);
   await ctx.idle();
-  await newProject(ctx, 'Flow');
+  await savedStageProject(ctx, 'Flow');
   const project = (await serverBoard(ctx)).projects[0];
   return { ...ctx, executor, repo, project };
 }
@@ -1696,7 +1704,7 @@ test('a folder that is not a Git repository is set up only after confirmation; i
   const ctx = await setup(t);
   const { $ } = ctx;
   await goTo(ctx, '#/kanban');
-  await newProject(ctx, 'Fresh');
+  await savedStageProject(ctx, 'Fresh');
   $('#repo-path').value = dir; submitForm(ctx, '#repo-form'); await ctx.idle();
   const offer = $('#repo-setup');
   assert.match(offer.textContent, /run git init and make one empty commit named “Initial commit”/);
@@ -1883,7 +1891,7 @@ async function agentFixture(t) {
     sink.write({ ping: true });
     return () => {};
   };
-  await newProject(ctx, 'Other');
+  await savedStageProject(ctx, 'Other');
   const board = ctx.app.board;
   const [flow, other] = (await serverBoard(ctx)).projects;
   const task = async (project, title) => (await board.createTask({ projectId: project.id, title, prompt: `Do ${title}.` })).id;
@@ -2528,7 +2536,7 @@ test('Start over in task details: says exactly what happens, takes a reason, and
 test('To Do prompt entry creates an exact task and optionally sends a draft to Composer', async t => {
   const ctx = await setup(t, { hash: '#/kanban' });
   const { $, win } = ctx;
-  await newProject(ctx, 'Prompt entry');
+  await savedStageProject(ctx, 'Prompt entry');
   $('.kanban-add-task').click();
   assert.equal(win.document.activeElement.id, 'card-prompt');
   submitForm(ctx, '#card-form'); await ctx.idle();
@@ -2585,7 +2593,7 @@ test('Agents toolbar configures each project, column overrides, custom agents, a
   const { $, choose, win } = ctx;
   await link(ctx);
   const projectId = (await serverBoard(ctx)).projects[0].id;
-  await newProject(ctx, 'Independent');
+  await savedStageProject(ctx, 'Independent');
   const otherBefore = (await serverBoard(ctx)).projects.find(project => project.id !== projectId);
   // Return to the linked project and add an agent column.
   const project = (await serverBoard(ctx)).projects.find(project => project.id === projectId);
@@ -2635,7 +2643,7 @@ test('Agents toolbar configures each project, column overrides, custom agents, a
 test('Task card menu edits content and saves independent display preferences with keyboard dismissal', async t => {
   const ctx = await setup(t, { hash: '#/kanban' });
   const { $, win } = ctx;
-  await newProject(ctx, 'Card design');
+  await savedStageProject(ctx, 'Card design');
   await newCard(ctx, 'Minimal task', 'Original prompt.');
   await newCard(ctx, 'Another task', 'Keep this card unchanged.');
   let card = cardItem(ctx, 'Minimal task');
@@ -2705,7 +2713,7 @@ test('Shared Settings uses live model catalogs, explicit saves, and model-specif
 test('Settings connects Composer and Kanban, with universal display defaults and per-card overrides', async t => {
   const ctx = await setup(t, { hash: '#/kanban' });
   const { $, win, choose } = ctx;
-  await newProject(ctx, 'Shared settings'); await newCard(ctx, 'Task', 'Do this.');
+  await savedStageProject(ctx, 'Shared settings'); await newCard(ctx, 'Task', 'Do this.');
   $('#app-settings-open').click(); await ctx.idle();
   $('#set-card-preview').click(); $('#set-card-spacing').click();
   let card = cardItem(ctx, 'Task');
@@ -2740,7 +2748,7 @@ test('Task saves ignore repeated submits and Split retries only unsaved cards', 
   const tasks = [{ title: 'First split task', prompt: 'Implement it.' }, { title: 'Second split task', prompt: 'Test it.' }];
   const ctx = await setup(t, { hash: '#/kanban', runner: request => ({ text: request.prompt.startsWith('# Task split') ? JSON.stringify({ tasks }) : 'Implement and test it.', reportedModels: ['m'] }) });
   const { $, win } = ctx;
-  await newProject(ctx, 'Retry tasks');
+  await savedStageProject(ctx, 'Retry tasks');
   $('.kanban-add-task').click(); $('#card-prompt').value = 'Create once.';
   submitForm(ctx, '#card-form'); submitForm(ctx, '#card-form'); await ctx.idle();
   assert.equal((await serverTasks(ctx)).length, 1);
@@ -2804,7 +2812,7 @@ test('Composer starts with an empty input and no bundled example feature', async
 
 test('interrupted dirty cards and completed cards delete through HTTP and stay deleted after reload', async t => {
   const ctx = await setup(t);
-  await goTo(ctx, '#/kanban'); await newProject(ctx, 'Deletion');
+  await goTo(ctx, '#/kanban'); await savedStageProject(ctx, 'Deletion');
   await newCard(ctx, 'Interrupted work', 'Keep my files.');
   const task = (await serverTasks(ctx))[0];
   const workspace = await ctx.app.board.ensureTaskWorktree(task.id);
@@ -2878,7 +2886,7 @@ test('Base is the third global page, preserves Compose and project state, and su
   assert.equal($('#base-error').hidden, true, $('#base-error').textContent);
   $('#skip-link').dispatchEvent(new win.MouseEvent('click', { bubbles: true, cancelable: true })); assert.equal(win.document.activeElement.id, 'base-view'); assert.equal(win.location.hash, '#/base');
   await goTo(ctx, '#/'); $('#prompt-input').value = 'An unfinished Compose draft.';
-  await goTo(ctx, '#/kanban'); await newProject(ctx, 'Persistent selection');
+  await goTo(ctx, '#/kanban'); await savedStageProject(ctx, 'Persistent selection');
   const selected = win.localStorage.getItem('promptboard.kanban.project');
   await goTo(ctx, '#/base'); await until(() => !$('#base-view').hidden, 'Base shown');
   assert.equal($('#prompt-input').value, 'An unfinished Compose draft.');
@@ -2902,7 +2910,7 @@ test('Base start-page preference applies only without an explicit route', async 
 
 test('Base skill creation and project assignment persist through the actual authenticated interface', async t => {
   const ctx = await setup(t, { hash: '#/kanban' }); const { $, win } = ctx;
-  await newProject(ctx, 'Base project');
+  await savedStageProject(ctx, 'Base project');
   const project = (await serverBoard(ctx)).projects[0];
   await goTo(ctx, '#/base'); await until(() => !$('#base-view').hidden && !$('#base-status').textContent.includes('Loading'), 'Base ready');
   $('#base-new-kind').value = 'skill'; byText($('#base-actions'), 'Create').click();
