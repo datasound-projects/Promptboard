@@ -3924,6 +3924,8 @@ function openColumns() {
 const draftAnchor = entry => { let anchor = 'todo'; for (const item of columnsDraft.list) { if (item === entry) return anchor; if (!item.custom && !item.hidden) anchor = item.id; } return anchor; };
 function renderColumns() {
   renderPipelineProfiles();
+  $('#columns-repository-actions').hidden = !columnsDraft.pipeline;
+  $('#columns-repository-read').disabled = !board?.projects.find(project => project.id === columnsDraft.project)?.repository;
   $('#columns-add').disabled = Boolean(columnsDraft.profileId);
   $('#columns-remove').disabled = Boolean(columnsDraft.profileId);
   $('#columns-use-pipeline').hidden = columnsDraft.pipeline;
@@ -4214,6 +4216,53 @@ async function saveColumns(event) {
   announce('Columns saved.');
 }
 $('#columns-open').addEventListener('click', openColumns);
+let repositoryPipelineReview = null, repositoryPipelineReadVersion = 0;
+async function readRepositoryPipeline() {
+  const projectId = columnsDraft.project, version = ++repositoryPipelineReadVersion;
+  repositoryPipelineReview = null;
+  $('#repository-pipeline-preview').replaceChildren(paragraph('Reading repository configuration…'));
+  $('#repository-pipeline-error').hidden = true; $('#repository-pipeline-apply').disabled = true;
+  if (!$('#repository-pipeline-dialog').open) $('#repository-pipeline-dialog').showModal();
+  try {
+    const { response, data } = await api(`/api/projects/${encodeURIComponent(projectId)}/repository-pipeline`);
+    if (version !== repositoryPipelineReadVersion || !$('#repository-pipeline-dialog').open) return;
+    if (!response.ok) throw new Error(data.error || 'Repository configuration could not be read.');
+    repositoryPipelineReview = { projectId, ...data };
+    const files = paragraph(data.files.map(file => `${file.name}: ${file.present ? 'found' : 'absent'}`).join(' · '), 'note');
+    const changes = document.createElement('ul');
+    for (const [key, label] of [['added', 'Add columns'], ['removed', 'Remove columns'], ['renamed', 'Rename columns'], ['profiles', 'Board profiles']]) {
+      const item = document.createElement('li'); item.textContent = `${label}: ${data.changes[key].join(', ') || 'none'}`; changes.append(item);
+    }
+    const definition = document.createElement('details'), summary = document.createElement('summary'); summary.textContent = 'Effective configuration';
+    const json = document.createElement('pre'); json.className = 'kanban-snapshot'; json.tabIndex = 0; json.textContent = JSON.stringify(data.pipeline, null, 2); definition.append(summary, json);
+    $('#repository-pipeline-preview').replaceChildren(files, paragraph(data.canonical ? 'Stable IDs reconcile the saved column list.' : 'Hand-written columns are additive; existing columns are retained.', 'note'), changes,
+      ...data.conflicts.map(text => paragraph(text, 'inline-error')), definition);
+    $('#repository-pipeline-apply').disabled = data.conflicts.length > 0;
+  } catch (error) {
+    if (version !== repositoryPipelineReadVersion || !$('#repository-pipeline-dialog').open) return;
+    $('#repository-pipeline-error').textContent = error.message; $('#repository-pipeline-error').hidden = false;
+  }
+}
+$('#columns-repository-read').addEventListener('click', readRepositoryPipeline);
+$('#repository-pipeline-close').addEventListener('click', () => $('#repository-pipeline-dialog').close());
+$('#repository-pipeline-cancel').addEventListener('click', () => $('#repository-pipeline-dialog').close());
+$('#repository-pipeline-dialog').addEventListener('close', () => {
+  // Native close events are queued. A rapid reopen already owns a newer read.
+  if (!$('#repository-pipeline-dialog').open) { ++repositoryPipelineReadVersion; repositoryPipelineReview = null; }
+});
+$('#repository-pipeline-apply').addEventListener('click', async () => {
+  const review = repositoryPipelineReview, version = repositoryPipelineReadVersion; if (!review) return;
+  $('#repository-pipeline-apply').disabled = true; $('#repository-pipeline-error').hidden = true;
+  try {
+    await boardCall('POST', `/api/projects/${encodeURIComponent(review.projectId)}/repository-pipeline`, { sourceRevision: review.sourceRevision, expectedProjectRevision: review.expectedProjectRevision, confirm: true });
+    if (review !== repositoryPipelineReview || version !== repositoryPipelineReadVersion) return;
+    $('#repository-pipeline-dialog').close(); $('#columns-dialog').close(); announce('Repository board configuration applied. No agent was started.');
+  } catch (error) {
+    if (review !== repositoryPipelineReview || version !== repositoryPipelineReadVersion) return;
+    $('#repository-pipeline-error').textContent = error.message; $('#repository-pipeline-error').hidden = false;
+    // Keep the reviewed snapshot visible. A stale snapshot must be read again, never retried with new revisions.
+  }
+});
 $('#columns-add').addEventListener('click', addColumn);
 $('#columns-form').addEventListener('submit', saveColumns);
 $('#columns-remove').addEventListener('click', () => {

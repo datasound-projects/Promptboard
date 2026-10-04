@@ -28,6 +28,7 @@ import { BaseDeliveryError } from './base-resolver.mjs';
 import { PipelineActions } from './pipeline-actions.mjs';
 import { PipelineNotifications, NotificationError } from './pipeline-notifications.mjs';
 import { notificationRoute } from './pipeline-notifications-http.mjs';
+import { RepositoryPipelineError } from './pipeline-repository.mjs';
 
 const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
 const assets = new Map([
@@ -137,6 +138,11 @@ async function boardRoute(board, req, res, pathname, searchParams) {
     if (method === 'POST' && action === 'autopilot') { const { action: command, confirm } = await body(); return view({ project: await board.controlAutopilot(id, { action: command, confirm }) }); }
     if (method === 'PATCH' && action === 'columns') return view({ project: await board.setColumns(id, await body()) });
     if (method === 'PATCH' && action === 'pipeline') return view({ project: await board.setPipeline(id, await body()) });
+    if (method === 'GET' && action === 'repository-pipeline') return send(res, 200, await board.previewRepositoryPipeline(id));
+    if (method === 'POST' && action === 'repository-pipeline') {
+      const { sourceRevision, expectedProjectRevision, confirm } = await body();
+      return view({ project: await board.applyRepositoryPipeline(id, { sourceRevision, expectedProjectRevision, confirm }) });
+    }
     if (method === 'PATCH' && action === 'workflow') return view({ project: await board.setWorkflow(id, await body()) });
     if (method === 'PATCH' && action === 'tests') return view({ project: await board.delivery.setTestCommands(id, await body()) });
     if (method === 'POST' && action === 'target-branch') return view({ project: await board.setTargetBranch(id, await body()) });
@@ -543,7 +549,7 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
       try { if ((await boardRoute(board, req, res, pathname, requestUrl.searchParams)) !== false) return; }
       catch (error) {
         // Board, store, and Git errors carry fixed messages; raw Git output is never returned.
-        const known = error instanceof BoardError || error instanceof GitHubError || error instanceof GitError || error instanceof StoreError || error instanceof AgentError || error instanceof DeliveryError || error instanceof BaseError || error instanceof BaseDeliveryError;
+        const known = error instanceof BoardError || error instanceof GitHubError || error instanceof GitError || error instanceof StoreError || error instanceof AgentError || error instanceof DeliveryError || error instanceof BaseError || error instanceof BaseDeliveryError || error instanceof RepositoryPipelineError;
         const status = known || error.status < 500 ? error.status || 500 : 500;
         return send(res, status, known || status < 500 ? { error: error.message, code: error.code || 'INVALID_REQUEST' } : { error: 'The board request failed.', code: 'BOARD_FAILED' });
       }
