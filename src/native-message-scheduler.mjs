@@ -1,4 +1,4 @@
-/** Private asynchronous enter-message scheduling. No Board/HTTP/editor activation. */
+/** Owned asynchronous deferred enter-message scheduling for Board transitions. */
 import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { NativeMessageDispatch } from './native-message-dispatch.mjs';
@@ -33,7 +33,7 @@ export class NativeMessageScheduler {
     const combined = AbortSignal.any([controller.signal, deadline.signal, ...(signal ? [signal] : [])]);
     const timer = setTimeout(() => deadline.abort(new DOMException('Scheduler budget expired.', 'TimeoutError')), Math.ceil(timeoutMs));
     const job = { key, actionId, runId, messageHash: hash(message), expectedTaskRevision, expectedProjectRevision,
-      controller, knownQueue: false, saveAttempted: false, blocked: false };
+      controller, knownQueue: false, saveAttempted: false, blocked: false, finished: false };
     this.jobs.set(identity, job);
     const remaining = () => timeoutMs - (performance.now() - started);
     const bounded = callback => new Promise((resolve, reject) => {
@@ -107,7 +107,7 @@ export class NativeMessageScheduler {
         job.blocked = result.blocked === true;
         return result;
       } catch { return await finishQueue(); }
-      finally { clearTimeout(timer); if (job.blocked) this.blockedRuns.add(runId); }
+      finally { clearTimeout(timer); job.finished = true; if (job.blocked) this.blockedRuns.add(runId); }
     })();
     // Reserve FIFO at invocation time, including preparation and queued startup.
     const tail = previous.catch(() => null).then(() => job.done);
@@ -118,6 +118,13 @@ export class NativeMessageScheduler {
 
   wait(key, actionId) { return this.jobs.get(ownerId(key, actionId))?.done ?? Promise.resolve(outcome('unavailable')); }
   cancel(key, actionId) { const job = this.jobs.get(ownerId(key, actionId)); job?.controller.abort('Scheduled message stopped.'); return Boolean(job); }
+  ownsTask(taskId) { return [...this.jobs.values()].some(job => job.key.taskId === taskId && !job.finished); }
+  cancelTask(taskId, { exceptTransitionId = null } = {}) {
+    const jobs = [...this.jobs.values()].filter(job => job.key.taskId === taskId && !job.finished && job.key.transitionId !== exceptTransitionId);
+    for (const job of jobs) job.controller.abort('Scheduled task messages stopped.');
+    return jobs.length > 0;
+  }
+  async waitTask(taskId) { await Promise.allSettled([...this.jobs.values()].filter(job => job.key.taskId === taskId).map(job => job.done)); }
   async shutdown() {
     this.stopping = true;
     for (const job of this.jobs.values()) job.controller.abort('shutdown');

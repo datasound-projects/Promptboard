@@ -43,8 +43,8 @@ Open **http://127.0.0.1:4318**. The navigation is **Compose | Kanban | Base**. P
 - Choose providers and models per project or column. Customize columns, edit cards, and inspect run history.
 - Pause stops a task's agent while keeping its conversation and files. Resume continues the captured native conversation in the same stage and workspace, without repeating the task prompt. Restart preserves session metadata without launching agents. Older Codex histories use [bounded exact-thread discovery](docs/codex-history-discovery.md). See [session persistence](docs/session-persistence.md) for limits.
 - Kanban agents inherit tools and MCPs configured in their CLI alongside selected Base resources. Native permissions and administrator policies still apply. Legacy Planning/Review retain their stage restrictions; pipeline permissions come from configuration. See [Base delivery](docs/base-delivery.md).
-- A private [deferred message scheduler](docs/native-message-scheduler.md) connects durable enter handoff, exact targets, queued startup and native transport; activation in Board/HTTP/editor remains pending.
-- Private [message target custody](docs/native-message-target.md) binds deferred transport preflight to the exact task, conversation, run and configuration; column-message scheduling remains pending.
+- A private [deferred message scheduler](docs/native-message-scheduler.md) connects configured deferred enter rows to the same task agent, with scoped Stop, separate delivery receipts and no-replay recovery. Immediate/exit/slash delivery remains pending.
+- Private [message target custody](docs/native-message-target.md) binds deferred transport preflight to the exact task, conversation, run and configuration; configured deferred enter scheduling uses this custody check.
 - [Stable task numbers](docs/task-numbers.md) persist project-local identities through edits, moves, archive, deletion and portable backups. Cards and archives show their saved number; search completed tasks by title or exact `#number`. `{{taskNumber}}` and `PROMPTBOARD_TASK_NUMBER` render `#N`; API metadata remains numeric.
 - Pipeline [task authoring](docs/pipeline-task-authoring.md) accepts a title without a prompt body. Creation enters To Do without starting agents; supplied Composer and split-task text stays exact.
 - [Board profiles](docs/pipeline-board-profiles.md) supply named per-column settings and exclusive task-wide agent choices on pipeline cards. Save without starting agents; pause active agents before changes. Composer and edited split tasks still enter To Do with exact prompts.
@@ -107,19 +107,19 @@ Read [SECURITY.md](SECURITY.md) before working with sensitive repositories. [Kan
 
 - [Kanban parity plan](docs/kanban-parity-plan.md): the Kangentic reference, implementation gaps, and acceptance checks.
 - [Column automation runtime](docs/pipeline-runtime-automations.md): ordered scripts/webhooks, durable outcomes, scoped Stop and no-replay recovery.
-- [Action editor and results](docs/pipeline-automation-editor.md): row switches, ordering/copying, task-scoped Stop and durable history; native messages and explicit retries remain pending.
+- [Action editor and results](docs/pipeline-automation-editor.md): row switches, ordering/copying, task-scoped Stop and durable history; deferred enter messages are available; immediate/exit messages and explicit retries remain pending.
 - [Browser column notifications](docs/pipeline-notifications.md): explicit browser permission, scoped display acknowledgements, task clicks and no replay after loss.
 - [Initial prompt ownership](docs/initial-prompt-ownership.md): cancel pending paste or delayed Enter after human input, enforce process ownership, contain unknown writes and retain exact Composer/Base input.
 - [Private terminal input observations](docs/terminal-input-observation.md): bounded paste-mode/control and manual-input evidence for owned pipeline processes, without granting delivery.
 - [Automation execution primitives](docs/pipeline-automation-actions.md): bounded script/webhook/notification adapters.
-- [Durable automation journal](docs/pipeline-automation-journal.md): atomic intent, ordered phases and interruption recovery; scheduler integration remains pending.
-- [Ordered automation groups](docs/pipeline-automation-coordinator.md): durable dispatch, exit budgets and owned cancellation; native message scheduling remains pending.
+- [Durable automation journal](docs/pipeline-automation-journal.md): atomic intent, ordered phases and interruption recovery; configured deferred enter scheduling uses its durable grants.
+- [Ordered automation groups](docs/pipeline-automation-coordinator.md): durable dispatch, exit budgets and owned cancellation; deferred enter messages are integrated; immediate/exit delivery remains pending.
 - [Native message receipts](docs/native-message-receipts.md): exact new conversation turns, queue acceptance and cancellation guards; terminal scheduling and durable receipt integration remain pending.
-- [Native receipt ownership](docs/native-message-custody.md): private Supervisor checkpoints bound to live processes, native identities and terminal input; message dispatch remains pending.
-- [Private deferred input](docs/native-message-input.md): one owned paste/Enter attempt, exact native confirmation after pending hooks settle, distinct deadline/cancellation outcomes and bounded callbacks without draft clearing or replay; column scheduling and enabled message rows remain pending.
-- [Journal-backed deferred delivery](docs/native-message-dispatch.md): exact dispatch scope, per-run ordering and durable native confirmation before releasing input; board scheduling remains pending.
+- [Native receipt ownership](docs/native-message-custody.md): private Supervisor checkpoints bound to live processes, native identities and terminal input; configured deferred enter delivery uses these ownership checkpoints.
+- [Private deferred input](docs/native-message-input.md): one owned paste/Enter attempt, exact native confirmation after pending hooks settle, distinct deadline/cancellation outcomes and bounded callbacks without draft clearing or replay; configured deferred enter rows use this transport; immediate/exit/slash delivery remains pending.
+- [Journal-backed deferred delivery](docs/native-message-dispatch.md): exact dispatch scope, per-run ordering and durable native confirmation before releasing input; configured deferred enter rows now use this bridge.
 - [Native-message live check](docs/live-native-messages.md): opt-in disposable provider checks with separate startup, input and durable-receipt results, plus an offline harness test.
-- [Asynchronous message journal](docs/pipeline-message-journal.md): scheduled dispatch and durable delivery stages survive completed placement; runtime scheduling and receipt display remain pending.
+- [Asynchronous message journal](docs/pipeline-message-journal.md): scheduled dispatch and durable delivery stages survive completed placement; configured deferred enter scheduling and separate receipt display are available.
 - [Changelog](CHANGELOG.md) · [CLI adapters](docs/cli-adapters.md) · [Verification](RELEASE-VERIFICATION.md)
 - [Contributing](CONTRIBUTING.md): `npm run check` and `npm test`. No frontend framework or build step.
 - `node bin/ste.mjs --help` for command-line usage; `node bin/ste.mjs --doctor` for CLI detection.

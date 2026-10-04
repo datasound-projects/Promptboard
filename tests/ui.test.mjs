@@ -344,6 +344,18 @@ test('pipeline action editing preserves literal definitions, validates headers, 
   const future = ctx.$('[data-automation-id="dormant-message"]'); assert.equal(future.querySelector('input[type="checkbox"]').disabled, true);
   assert.equal(future.querySelector('[data-field="type"] option[value="notify"]').disabled, false);
   assert.equal(future.querySelector('[data-field="type"] option[value="send_message"]').disabled, true);
+  // Changing arrival policy updates eligibility without mutating a saved message.
+  const automatic = ctx.$('#column-auto-spawn'); automatic.checked = true; automatic.dispatchEvent(new ctx.win.Event('change', { bubbles: true }));
+  let currentMessage = ctx.$('[data-automation-id="dormant-message"]');
+  assert.equal(currentMessage.querySelector('input[type="checkbox"]').disabled, false);
+  assert.equal(currentMessage.querySelector('input[type="checkbox"]').checked, false);
+  assert.equal(currentMessage.querySelector('[data-field="type"] option[value="send_message"]').disabled, false);
+  const off = ctx.$('#column-auto-spawn'); off.checked = false; off.dispatchEvent(new ctx.win.Event('change', { bubbles: true }));
+  currentMessage = ctx.$('[data-automation-id="dormant-message"]');
+  assert.equal(currentMessage.querySelector('input[type="checkbox"]').disabled, true);
+  assert.equal(currentMessage.querySelector('input[type="checkbox"]').checked, false);
+  assert.equal(currentMessage.querySelector('[data-field="message"]').value, savedMessage.message.replaceAll('\r\n', '\n'));
+
   assert.equal(ctx.$('#columns-editor img'), null); assert.equal(ctx.win.__actionPwned, undefined);
   exit().querySelector('.automation-add').click(); const added = exit().querySelectorAll('.automation-row')[2];
   added.querySelector('.danger').click(); assert.equal(exit().querySelectorAll('.automation-row').length, 2);
