@@ -10,7 +10,24 @@
 
 - Add neutral, documentation, testing, migration and performance Task Type choices to Compose, with distinct prompt guidance and history restoration support.
 
+- Connect queued journal receipts to private owned deferred input with exact scope/preflight checks, per-run FIFO and durable confirmation before releasing input. Preserve live queue tails during cancellation, use atomic queued-only outcomes and retain unknown acknowledgements as blocked ownership without replay. Keep column scheduling, live provider readiness and enabled message rows pending.
+
+- Prepare private deferred native-message transport bound to one live pipeline process, exact native history and strict durable callback acknowledgements. Preserve literal Unicode, consume dispatch IDs once, cancel changed ownership/input before Enter, bound hanging callbacks and keep unknown writes sticky without clearing drafts or retrying. Block Stop-based completion during pending/unknown submission; column scheduling, immediate delivery and enabled message rows remain pending.
+
+- Move CLI connection/status/sign-in controls from Compose's More settings into the top-bar CLI dialog. Manage accounts independently of Compose's CLI/model selection, preserve pending sign-in through close/reopen, and keep model feedback beside generation controls. Retain installation guides and privacy help.
+
+- Observe bracketed-paste mode, incomplete controls and manual input privately per owned pipeline process. Bound metadata, close observations on Stop/exit and create fresh state on native resume, without dispatching input or enabling pending message rows.
+
+- Restore selected pipeline archive tasks through the common move path with captured task/settings revisions and individual outcomes. Preserve selection order across filtering, prevent duplicate groups, stop unstarted requests on stop/close/project changes, and keep lost responses reviewable without replay. Advertise server support to hide bulk controls on older processes; retain old-style moves and exact-ID idempotency. Bulk deletion remains pending.
+
+- Consume a queued initial prompt before nonempty human terminal input, including failed writes and input before startup. Clear paste timers so later startup events cannot append and submit the task into a human draft; retain empty/rejected-input behavior, exact Composer/Base artifacts and CLI tools.
+
+- Make Compose grounding's main toggle authoritative, with deliberate legacy preference migration and one cancellable preparation/generation snapshot. Use relevant supplied guidance for simple and multilingual tasks, distinguish reference repositories from confirmed targets, share duplicate lookups without changing question IDs, and resolve questions only from retained quoted findings. Preserve provider errors, refresh mutable local context and keep existing UI, generation/review, limits and no-default-deadline behavior.
+
+- Browse completed pipeline tasks in a filtered table with keyboard title/archive-date sorting, retained conversation state and exact latest reported usage. Preserve old card actions, refresh focus and project scoping; use archive dates after task edits and retain the common restoration lifecycle without dispatching from browsing. Bulk operations and complete telemetry summaries remain pending.
+
 - Add read-only project file trees to the Kanban Workspace sidebar, with lazy folder expansion, checkout/task-worktree selection and centered file viewers. Preserve multiple files, minimized viewers, scroll and expansion during refresh. Display UTF-8 code with lexical highlighting and line numbers; bound reads and directory pages, refuse traversal/symlinks/credentials and never start agents or mutate board/repository state. Report observed updates without inventing per-file agent activity.
+- Allow title-only tasks in opt-in column pipelines, preserving empty or supplied descriptions through editing, copying, restart and portable backups. Keep new tasks in To Do without agents, retain legacy required bodies, and refine a title-only draft through Composer using its title. Native first input uses the existing escaped task envelope and CLI/Base delivery.
 
 - Run Chrome fixture files sequentially after the other tests, preserving scenario/file deadlines and failure exit codes. Keep non-browser concurrency at two; avoid concurrent renderer/PTY/Git fixture work during full verification.
 

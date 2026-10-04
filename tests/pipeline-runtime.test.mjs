@@ -62,6 +62,29 @@ test('a long Composer prompt is pasted and submitted once in a real owned PTY wi
   await w.board.executor.cancel(result.run.id);
 });
 
+test('pipeline process privately observes actual PTY modes and manual input, closes on Done and starts fresh on native resume', { skip: process.platform === 'win32' }, async t => {
+  const w = await world(t, true);
+  for (const provider of ['claude', 'gemini', 'codex']) {
+    const config = defaultPipelineConfig(); config.columns[2].strategy.agentOverride = provider; await w.configure(config);
+    const task = await w.board.createTask({ projectId: w.projectId, title: `${provider} private terminal observation`, prompt: '  Exact Composer\r\n' });
+    const first = await w.move(task.id, 'executing'); await until(async () => (await w.board.run(first.run.id)).turnComplete);
+    const session = w.board.executor.sessions.get(first.run.id), observed = session.terminalInput;
+    assert.deepEqual(observed.snapshot(), { bracketedPaste: null, controlPending: false, manualInputObserved: false, closed: false });
+    w.board.executor.input(first.run.id, ''); assert.equal(observed.snapshot().manualInputObserved, false);
+    // The offline CLI echoes these bytes; the observer receives real onData.
+    w.board.executor.input(first.run.id, '\x1b[?2004h\r');
+    await until(() => observed.snapshot().bracketedPaste === true); assert.equal(observed.snapshot().manualInputObserved, true);
+    w.board.executor.input(first.run.id, '\x1b[?2004l\r'); await until(() => observed.snapshot().bracketedPaste === false);
+    assert.doesNotMatch(JSON.stringify(await w.board.view()), /terminalInput|manualInputObserved|bracketedPaste/);
+    await w.move(task.id, 'done'); assert.equal(observed.snapshot().closed, true);
+    const restored = await w.move(task.id, 'executing');
+    const next = await until(() => w.board.executor.sessions.get(restored.run.id)?.terminalInput);
+    assert.notEqual(next, observed); assert.equal(next.snapshot().manualInputObserved, false); assert.equal(next.snapshot().bracketedPaste, null);
+    assert.equal(restored.run.sessionId, first.run.sessionId); assert.equal((await w.taskNow(task.id)).prompt, task.prompt);
+    await w.move(task.id, 'todo'); assert.equal(next.snapshot().closed, true);
+  }
+});
+
 test('v4 migration preserves logical conversations byte-for-byte and assigns legacy rules without launching', async t => {
   const dir = await temp(t), original = { ...emptyState(), version: 4, projects: [{ id: 'p', tasks: [{ id: 't', column: 'executing', prompt: '  Composer\r\ntext  ' }] }] };
   const run = { id: 'r', taskId: 't', projectId: 'p', status: 'suspended', config: { provider: 'claude' }, artifactsDir: 'runs/r', providerSessionId: 'native-exact' };
@@ -102,6 +125,16 @@ test('conversion is explicit and inert; role IDs control Composer entry and unre
   assert.equal((await w.projectNow()).pipeline.columns.length, 7);
   const changedRole = structuredClone(config); changedRole.columns[0].id = 'another-inbox';
   await assert.rejects(w.configure(changedRole), { code: 'PIPELINE_SYSTEM_ROLE_CHANGED' });
+});
+
+test('a title-only pipeline task starts with its escaped title envelope and inherited CLI tools, without filling its stored description', async t => {
+  const w = await world(t); await w.configure(defaultPipelineConfig());
+  const task = await w.board.createTask({ projectId: w.projectId, title: 'Fix <widget> & 😀' }); assert.equal(w.starts.length, 0);
+  await w.move(task.id, 'executing'); assert.equal(w.starts.length, 1);
+  const payload = w.starts[0]; assert.equal(payload.task.prompt, ''); assert.equal(payload.firstPrompt, '<task>\n  <title>Fix &lt;widget&gt; &amp; 😀</title>\n</task>');
+  const built = await buildSession({ provider: 'claude', stage: 'executing', config: payload.run.config, message: payload.firstPrompt,
+    runDir: await temp(t), eventsFile: join(await temp(t), 'events.jsonl'), sessionId: 'title-only-fixture', workspacePath: payload.workspace.path });
+  assert.ok(built.args.includes(payload.firstPrompt)); assert.ok(!built.args.includes('--strict-mcp-config')); assert.equal((await w.taskNow(task.id)).prompt, '');
 });
 
 test('compatible live moves retain one run without completing, committing, testing, merging, or replaying a prompt', async t => {

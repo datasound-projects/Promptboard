@@ -155,6 +155,47 @@ test('unknown tickets, absent/legacy sessions and unreported or mismatched paths
   assert.deepEqual(w.writes, []);
 });
 
+test('human input before initial paste consumes the automatic attempt before startup or its delayed timer', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  for (const timing of ['before-startup', 'after-startup']) for (const pipeline of [true, false]) {
+    const w = await fixture(t); w.session.paste = 'Private initial envelope';
+    if (timing === 'after-startup') await w.supervisor.checkpointMessage(w.run.id);
+    if (!pipeline) { w.session.pipeline = false; delete w.session.activity; }
+    w.supervisor.input(w.run.id, 'human partial draft');
+    assert.equal(w.session.paste, null);
+    if (!pipeline) w.session.pipeline = true;
+    await w.supervisor.checkpointMessage(w.run.id); t.mock.timers.tick(20000);
+    await w.emit({ name: 'SessionStart', sessionId: nativeId, transcriptPath: w.path });
+    await w.supervisor.checkpointMessage(w.run.id); t.mock.timers.tick(20000);
+    assert.deepEqual(w.writes, ['human partial draft']);
+    assert.ok(w.updates.some(row => row.lifecycle === 'initial-input-unconfirmed'));
+    assert.doesNotMatch(JSON.stringify(w.updates), /Private initial envelope|human partial draft/);
+  }
+});
+
+test('failed human transport before initial paste cannot restore automatic input ownership', async t => {
+  const w = await fixture(t); t.mock.timers.enable({ apis: ['setTimeout'] });
+  w.session.paste = 'Private initial envelope'; await w.supervisor.checkpointMessage(w.run.id);
+  const attempts = []; w.session.proc.write = text => { attempts.push(text); throw new Error('PRIVATE HUMAN TRANSPORT'); };
+  assert.throws(() => w.supervisor.input(w.run.id, 'human draft'), /PRIVATE HUMAN TRANSPORT/);
+  assert.equal(w.session.paste, null); t.mock.timers.tick(20000);
+  await w.emit({ name: 'SessionStart', sessionId: nativeId, transcriptPath: w.path });
+  await w.supervisor.checkpointMessage(w.run.id); t.mock.timers.tick(20000);
+  assert.deepEqual(attempts, ['human draft']);
+  assert.doesNotMatch(JSON.stringify(w.updates), /PRIVATE HUMAN TRANSPORT|Private initial envelope|human draft/);
+});
+
+test('empty or rejected human input does not consume the unchanged initial paste', async t => {
+  const w = await fixture(t); t.mock.timers.enable({ apis: ['setTimeout'] });
+  w.session.paste = 'Exact envelope'; await w.supervisor.checkpointMessage(w.run.id);
+  w.supervisor.input(w.run.id, '');
+  assert.throws(() => w.supervisor.input(w.run.id, null), { code: 'INPUT_TOO_LARGE' });
+  assert.throws(() => w.supervisor.input(w.run.id, 'x'.repeat(65537)), { code: 'INPUT_TOO_LARGE' });
+  t.mock.timers.tick(1500); t.mock.timers.tick(300);
+  assert.deepEqual(w.writes, ['', '\x1b[200~Exact envelope\x1b[201~', '\r']);
+  assert.ok(!w.updates.some(row => row.lifecycle === 'initial-input-unconfirmed'));
+});
+
 test('initial prompt submission cannot press Enter after a human draft changes the owned input epoch', async t => {
   const w = await fixture(t); t.mock.timers.enable({ apis: ['setTimeout'] });
   w.session.paste = 'Initial long prompt'; await w.supervisor.checkpointMessage(w.run.id);

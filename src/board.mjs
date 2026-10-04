@@ -70,9 +70,9 @@ function text(value, max, label) {
   if (!result || result.length > max) throw new BoardError(`${label} needs 1 to ${max} characters.`, 'INVALID_INPUT');
   return result;
 }
-function promptText(value, label) {
+function promptText(value, label, allowBlank = false) {
   // The prompt is kept exactly as given, including whitespace and line endings.
-  if (typeof value !== 'string' || !value.trim() || value.length > MAX_PROMPT) throw new BoardError(`${label} needs a prompt of 1 to ${MAX_PROMPT.toLocaleString('en-US')} characters.`, 'INVALID_INPUT');
+  if (typeof value !== 'string' || (!allowBlank && !value.trim()) || value.length > MAX_PROMPT) throw new BoardError(`${label} needs ${allowBlank ? 'a text prompt of at most' : 'a prompt of 1 to'} ${MAX_PROMPT.toLocaleString('en-US')} characters.`, 'INVALID_INPUT');
   return value;
 }
 const clip = (value, max) => typeof value === 'string' ? value.slice(0, max) : '';
@@ -140,7 +140,7 @@ function parseBackupData(data) {
         if (!card || typeof card !== 'object') throw new BoardError(`${cardLabel} is not valid.`, 'INVALID_BACKUP');
         if (pipeline && !columnIds.has(card.column)) throw new BoardError(`${cardLabel} refers to a missing pipeline column.`, 'INVALID_BACKUP');
         if ((!pipeline || data.version !== 5) && (card.profileId != null || card.agentOverride != null)) throw new BoardError('Task pipeline settings require a version 5 pipeline backup.', 'INVALID_BACKUP');
-        return { id: unique(card.id, cardLabel), title: text(card.title, 120, `${cardLabel} title`), prompt: promptText(card.prompt, cardLabel),
+        return { id: unique(card.id, cardLabel), title: text(card.title, 120, `${cardLabel} title`), prompt: promptText(card.prompt, cardLabel, Boolean(pipeline)),
           createdAt: time(card.createdAt), updatedAt: time(card.updatedAt ?? card.createdAt), checksOutdated: card.checksOutdated === true,
           source: normalizeSource(card.source), column: v2 && columnIds.has(card.column) ? card.column : 'todo', ...(v3 ? backupBaseScopes(card, true, columnIds) : {}),
           ...(pipeline && data.version === 5 ? normalizePipelineTaskSelection(pipeline, { profileId: card.profileId, agentOverride: card.agentOverride }) : {}) };
@@ -983,16 +983,18 @@ export class Board {
     return this.#locked(`transition:${id}`, () => this.#transition(id, request));
   }
 
-  async #transition(id, { column, index, expectedRevision, transitionId, decision, commitMessage, config = {}, handoffRunId = null, trigger = 'user' } = {}) {
+  async #transition(id, { column, index, expectedRevision, expectedProjectRevision = null, transitionId, decision, commitMessage, config = {}, handoffRunId = null, trigger = 'user' } = {}) {
     if (transitionId !== undefined && (typeof transitionId !== 'string' || !TRANSITION_ID.test(transitionId))) throw new BoardError('Send a valid transition ID.', 'INVALID_INPUT');
     if (decision !== undefined && decision !== 'start' && decision !== 'move') throw new BoardError('Choose start or move.', 'INVALID_INPUT');
+    if (expectedProjectRevision !== null && (!Number.isSafeInteger(expectedProjectRevision) || expectedProjectRevision < 0)) throw new BoardError('Send a valid board settings revision.', 'INVALID_INPUT');
     const automation = trigger === 'automation';
     const state = await this.state();
     const { project, task } = this.#task(state, id);
     if (project.workflowMode === 'pipeline') {
       if (Object.keys(config || {}).length) throw new BoardError('Configure the pipeline agent in Column Manager before moving this card.', 'PIPELINE_SETTINGS_REQUIRED');
-      return this.#locked(`run:${id}`, () => this.#pipelineTransition(id, { column, index, expectedRevision, transitionId, decision, trigger }));
+      return this.#locked(`run:${id}`, () => this.#pipelineTransition(id, { column, index, expectedRevision, expectedProjectRevision, transitionId, decision, trigger }));
     }
+    if (expectedProjectRevision !== null) throw new BoardError('Board settings revisions apply to column pipelines.', 'PIPELINE_REQUIRED');
     // The same request delivered twice (a double drop, a retried request) returns the first outcome.
     if (transitionId && task.lastTransition?.id === transitionId) {
       return { task, duplicate: true, ...(task.lastTransition.runId ? { run: state.runs.find(run => run.id === task.lastTransition.runId) } : {}) };
@@ -1513,10 +1515,11 @@ export class Board {
 
   // ---- Tasks ----
 
-  async createTask({ projectId, title, prompt, source = null, pipelineSettings, expectedProjectRevision }) {
-    const task = newTask({ title: text(title, 120, 'Title'), prompt: promptText(prompt, 'The task'), source: normalizeSource(source) });
+  async createTask({ projectId, title, prompt = '', source = null, pipelineSettings, expectedProjectRevision }) {
+    const task = newTask({ title: text(title, 120, 'Title'), prompt, source: normalizeSource(source) });
     return this.store.update(state => {
       const project = this.#project(state, projectId);
+      task.prompt = promptText(prompt, 'The task', project.workflowMode === 'pipeline');
       if (project.tasks.length >= TASK_LIMIT) throw new BoardError(`A project can have at most ${TASK_LIMIT} cards.`, 'LIMIT');
       if (pipelineSettings !== undefined) Object.assign(task, this.#taskPipelineSettings(state, project, pipelineSettings, expectedProjectRevision));
       if (project.workflowMode === 'pipeline') task.column = project.pipeline.columns.find(column => column.role === 'todo').id;
@@ -1554,7 +1557,7 @@ export class Board {
         }
       }
       const nextTitle = title === undefined ? task.title : text(title, 120, 'Title');
-      const nextPrompt = prompt === undefined ? task.prompt : promptText(prompt, 'The task');
+      const nextPrompt = prompt === undefined ? task.prompt : promptText(prompt, 'The task', project.workflowMode === 'pipeline');
       const contentChanged = nextTitle !== task.title || nextPrompt !== task.prompt;
       if (!contentChanged && !settingsChanged) return { task, changed: false };
       // Checks from generation apply only to the original text.
@@ -2080,7 +2083,7 @@ export class Board {
     if (!onExit.length && !onEnter.length) return this.#pipelineLifecycleTransition(taskId, request);
     if (this.automationsStopping) throw conflict('The application is shutting down. No column automation was started.', 'AUTOMATIONS_SHUTTING_DOWN');
     if (request.signal?.aborted) throw conflict('The automatic plan move was cancelled.', 'PLAN_ROUTE_CANCELLED');
-    if (request.expectedProjectRevision != null && project.revision !== request.expectedProjectRevision) throw conflict('The board changed after native plan approval.', 'REVISION_CONFLICT');
+    if (request.expectedProjectRevision != null && project.revision !== request.expectedProjectRevision) throw conflict('The board settings changed after this move was requested.', 'REVISION_CONFLICT');
     if (project.pipelineImport) throw conflict('Review and save the imported board configuration before running its automations.', 'PIPELINE_IMPORT_PENDING');
     if ([...onExit, ...onEnter].some(row => row.enabled && row.type === 'send_message')) throw conflict('Agent messages need the native delivery scheduler.', 'PIPELINE_FEATURE_PENDING');
     const active = this.#activeRun(state, taskId), controller = new AbortController();
@@ -2275,7 +2278,7 @@ export class Board {
     if (signal?.aborted) throw conflict('The automatic plan move was cancelled.', 'PLAN_ROUTE_CANCELLED');
     if (transitionId && task.lastTransition?.id === transitionId) return { task, duplicate: true };
     checkRevision(task, expectedRevision, 'This card');
-    if (expectedProjectRevision !== null && project.revision !== expectedProjectRevision) throw conflict('The board changed after native plan approval.', 'REVISION_CONFLICT');
+    if (expectedProjectRevision !== null && project.revision !== expectedProjectRevision) throw conflict('The board settings changed after this move was requested.', 'REVISION_CONFLICT');
     const target = project.pipeline.columns.find(item => item.id === column);
     if (!target) throw new BoardError('Choose a valid column.', 'INVALID_COLUMN');
     const move = { from: task.column, column, index, transitionId: transitionId || randomUUID(), by: trigger === 'automation' ? 'automation' : 'user' };

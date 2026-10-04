@@ -20,6 +20,8 @@ const providerInfo = {
 };
 
 let token = '';
+let pipelineTitleOnlySupported = false;
+let pipelineBulkRestoreSupported = false;
 let providers = [];
 let history = readHistory();
 let currentId = null;
@@ -37,7 +39,7 @@ let authInfo = null;
 let authBusy = false;
 let authSequence = 0;
 let workspaceFiles = null;
-const STAGE_LABELS = { understanding: 'Understanding task', project: 'Reading project context', 'research-review': 'Checking research', retrieving: 'Finding relevant context', document: 'Preparing document', ready: 'Context ready', starting: 'Starting', models: 'Checking model options', draft: 'Drafting prompt', review: 'Reviewing requirements', repair: 'Repairing confirmed issues', 'repair-review': 'Verifying repaired prompt' };
+const STAGE_LABELS = { understanding: 'Investigating task', project: 'Reading project context', 'research-review': 'Checking research', retrieving: 'Finding relevant context', document: 'Preparing document', ready: 'Context ready', starting: 'Starting', models: 'Checking model options', draft: 'Drafting prompt', review: 'Reviewing requirements', repair: 'Repairing confirmed issues', 'repair-review': 'Verifying repaired prompt' };
 
 function safeText(value, max = MAX_PROMPT_BYTES) { return typeof value === 'string' ? value.slice(0, max) : ''; }
 
@@ -285,6 +287,8 @@ async function loadProviders() {
     const session = await sessionResponse.json();
     const status = await providerResponse.json();
     token = safeText(session.token, 1000);
+    pipelineTitleOnlySupported = session.capabilities?.pipelineTitleOnly === true;
+    pipelineBulkRestoreSupported = session.capabilities?.pipelineBulkRestore === true;
     providers = Array.isArray(status.providers) ? status.providers.filter((item) => item && KNOWN_PROVIDERS.includes(item.id)) : [];
     if (!token) throw new Error('The local server did not return a session token.');
     browserNotifications?.resume();
@@ -297,12 +301,14 @@ async function loadProviders() {
       if (firstAvailable) $('#provider').value = firstAvailable.id;
     }
     updateProviderState();
-    loadAuth();
+    loadAuth(authInfo?.provider || $('#provider').value);
     loadBoard();
     if (currentPage() === 'base') baseView?.show();
     await loadModels({ model: chosenModel(), effort: $('#effort').value });
   } catch (error) {
     token = '';
+    pipelineTitleOnlySupported = false;
+    pipelineBulkRestoreSupported = false;
     browserNotifications?.stop();
     $('#cli-status-label').textContent = 'Server unavailable';
     $('#provider-note').textContent = 'Could not reach the local server. Restart the app, then reload this page.';
@@ -425,6 +431,7 @@ function setRunning(value) {
   updateEffort($('#effort').value);
   renderHistory();
   renderAuth();
+  contextLabel();
 }
 
 function composeCancellation(controller) {
@@ -434,17 +441,17 @@ function composeCancellation(controller) {
   return { id, dispose: () => controller.signal.removeEventListener('abort', cancel) };
 }
 
-async function api(path, { method = 'GET', body, timeoutMs = 20000, signal, compose = false } = {}) {
+async function api(path, { method = 'GET', body, timeoutMs = 20000, signal, compose = false, requestId } = {}) {
   // Metadata requests are bounded. Compose model calls explicitly wait for completion or Cancel.
   const controller = new AbortController();
-  const cancellation = compose ? composeCancellation(controller) : null;
+  const cancellation = compose && !requestId ? composeCancellation(controller) : null;
   const timer = timeoutMs === null ? undefined : setTimeout(() => controller.abort(), timeoutMs);
   const forward = () => controller.abort(signal.reason);
   signal?.addEventListener('abort', forward, { once: true });
   if (signal?.aborted) forward();
   try {
     const response = await fetch(path, { method, cache: 'no-store', signal: controller.signal,
-      headers: { 'X-STE-Token': token, ...(cancellation ? { 'X-STE-Compose-Id': cancellation.id } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+      headers: { 'X-STE-Token': token, ...(requestId || cancellation ? { 'X-STE-Compose-Id': requestId || cancellation.id } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
     let data = {};
     try { data = await response.json(); } catch {}
     return { response, data: data && typeof data === 'object' ? data : {} };
@@ -694,33 +701,38 @@ async function generate(event) {
   if (running || authBusy || modelsLoading || invalidEffort || !token || !selectedProvider()?.available) return;
   const request = settings();
   if (!request.input.trim()) { $('#prompt-input').focus(); return; }
-  if (contextNeeded()) {
-    if (!contextState.prepared || contextState.prepared.state === 'assessment-failed' || contextState.signature !== contextSignature()) {
-      const prepared = await prepareContext(request);
-      if (!prepared || prepared.state !== 'ready') return;
-    }
-    if (contextState.prepared.state !== 'ready') return;
-    request.grounding = contextState.prepared.grounding;
-  }
+  const snapshot = { signature: contextSignature(), enabled: contextNeeded(), sources: JSON.parse(JSON.stringify(contextSources())) };
   let generated = false;
   const autoSplit = $('#context-auto-split').checked;
   const previousResult = currentResult;
   $('#generation-error').hidden = true;
-  $('#output-empty').hidden = true;
-  $('#prompt-output').hidden = true;
-  $('#output-meta').hidden = true;
-  $('#lint-review').hidden = true;
-  $('#verification-status').hidden = true;
-  $('#verification-report').hidden = true;
   const sequence = ++generationSequence;
   const ownController = new AbortController();
   const cancellation = composeCancellation(ownController);
   controller = ownController;
   setRunning(true);
   startProgress();
-  announce('Your CLI is engineering the prompt.');
   let failureCode = '';
   try {
+    if (snapshot.enabled) {
+      // Refresh mutable folders on submission and respect remote/document cache lifetimes.
+      const age = Date.now() - contextState.preparedAt;
+      const mutable = snapshot.sources.some(source => source.type === 'local' || source.type === 'mcp' && age >= 10 * 60_000 || source.type === 'document' && age >= 30 * 60_000);
+      if (mutable || !contextState.prepared || contextState.prepared.state === 'assessment-failed' || contextState.signature !== snapshot.signature) {
+        const prepared = await prepareContext(request, { own: ownController, requestId: cancellation.id, sequence, snapshot });
+        if (!prepared || prepared.state !== 'ready') return;
+      }
+      if (contextState.prepared.state !== 'ready') return;
+      request.grounding = contextState.prepared.grounding;
+    }
+    if (ownController.signal.aborted || sequence !== generationSequence || snapshot.signature !== contextSignature()) return;
+    $('#output-empty').hidden = true;
+    $('#prompt-output').hidden = true;
+    $('#output-meta').hidden = true;
+    $('#lint-review').hidden = true;
+    $('#verification-status').hidden = true;
+    $('#verification-report').hidden = true;
+    announce('Your CLI is engineering the prompt.');
     const response = await fetch('/api/generate', {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'X-STE-Token': token, 'X-STE-Compose-Id': cancellation.id },
       body: JSON.stringify(request), signal: ownController.signal,
@@ -728,7 +740,7 @@ async function generate(event) {
     let data;
     try { data = await response.json(); } catch { throw new Error('The server returned an unreadable response. Your input is kept. Please try again.'); }
     // Ignore a response that belongs to an older submission.
-    if (sequence !== generationSequence) return;
+    if (sequence !== generationSequence || ownController.signal.aborted || snapshot.signature !== contextSignature()) return;
     if (!response.ok) {
       failureCode = typeof data.code === 'string' ? data.code : '';
       throw new Error(failureMessage(data, 'The CLI could not complete this prompt.'));
@@ -757,7 +769,7 @@ async function generate(event) {
     if (previousResult) showResult(previousResult);
     else { currentResult = null; $('#output-empty').hidden = false; }
     // The request text stays in the input box on every failure path.
-    if (error.name === 'AbortError' || failureCode === 'ABORTED') announce('Generation canceled. Your input is kept.');
+    if (ownController.signal.aborted || error.name === 'AbortError' || failureCode === 'ABORTED') announce('Generation canceled. Your input is kept.');
     else {
       $('#generation-error').textContent = error.message || 'Generation failed. Your input is kept. Please try again.';
       $('#generation-error').hidden = false;
@@ -777,24 +789,26 @@ async function generate(event) {
 }
 
 // ---- Optional Compose grounding: source contents live only in this tab's memory. ----
-const contextState = { sources: [], prepared: null, signature: '' };
+const contextState = { sources: [], prepared: null, preparedAt: 0, signature: '' };
 const CONTEXT_PREFS = 'promptboard.compose-context';
 function contextSources() {
-  return $('#context-use-sources').checked ? contextState.sources.filter(row => row.enabled).map(row => row.config.type === 'expert' ? { ...row.config, text: row.text || '' } : row.config) : [];
+  return contextNeeded() && $('#context-use-sources').checked ? contextState.sources.filter(row => row.enabled).map(row => row.config.type === 'expert' ? { ...row.config, text: row.text || '' } : row.config) : [];
 }
-function contextNeeded() { return $('#context-autonomous').checked || $('#context-use-sources').checked; }
+function contextNeeded() { return $('#context-autonomous').checked; }
 function contextSignature() { return JSON.stringify([settings(), $('#context-autonomous').checked, contextSources()]); }
 function contextReset() {
-  contextState.prepared = null; contextState.signature = '';
+  if (running) controller?.abort(); // Invalidate the whole operation, including an in-flight final draft.
+  contextState.prepared = null; contextState.preparedAt = 0; contextState.signature = '';
   $('#context-prepared').hidden = true;
   contextLabel();
 }
 function contextLabel() {
   const count = contextState.sources.filter(row => row.enabled).length;
   $('#context-source-count').textContent = `${count} ${count === 1 ? 'source' : 'sources'}`;
-  $('#context-summary').textContent = contextNeeded() || $('#context-auto-split').checked ? 'On' : 'Off';
-  $('#context-sources').hidden = !$('#context-use-sources').checked;
-  $('#context-use-sources').setAttribute('aria-expanded', String($('#context-use-sources').checked));
+  $('#context-summary').textContent = contextNeeded() ? 'On' : $('#context-auto-split').checked ? 'Auto-split only' : 'Off';
+  $('#context-use-sources').disabled = running || !contextNeeded();
+  $('#context-sources').hidden = !contextNeeded() || !$('#context-use-sources').checked;
+  $('#context-use-sources').setAttribute('aria-expanded', String(!$('#context-sources').hidden));
   if (!running) $('#generate-label').textContent = 'Generate prompt';
 }
 function contextError(message = '') { $('#context-error').textContent = message; $('#context-error').hidden = !message; }
@@ -813,6 +827,12 @@ function renderContextSources() {
     }, 'text-button');
     remove.setAttribute('aria-label', `Remove ${row.label}`);
     card.append(detailActions(label, remove));
+    if (row.config.type === 'local' && row.config.kind === 'repository') {
+      const role = document.createElement('label'); role.className = 'field-label'; role.append('Use as');
+      const select = document.createElement('select'); select.setAttribute('aria-label', `Use ${row.config.name} as`);
+      for (const [value, text] of [['reference', 'Reference'], ['target', 'Target project']]) { const option = document.createElement('option'); option.value = value; option.textContent = text; select.append(option); }
+      select.value = row.config.purpose || 'reference'; select.addEventListener('change', () => { row.config.purpose = select.value; contextReset(); }); role.append(select); card.append(role);
+    }
     if (row.config.type === 'expert') {
       const input = document.createElement('textarea'); input.rows = 4; input.maxLength = 20000; input.value = row.text || '';
       input.setAttribute('aria-label', 'Expert context'); input.placeholder = 'Relevant facts, constraints, or architecture notes…';
@@ -830,11 +850,11 @@ function addContextSource(config, label, text = '') {
   contextError(); renderContextSources(); contextReset();
 }
 function showContextPrepared(data) {
-  contextState.prepared = data; contextState.signature = contextSignature();
+  contextState.prepared = data; contextState.preparedAt = Date.now(); contextState.signature = contextSignature();
   $('#context-prepared').hidden = false;
   const research = data.research || {};
   $('#context-prepared-status').textContent = data.state === 'ready'
-    ? `${data.assessment?.research || 'No'} research · ${research.lookups || 0} targeted lookups. ${research.reason || 'Ready for generation.'}`
+    ? `Context ready · ${research.lookups || 0} targeted lookups. ${research.reason || 'Ready for generation.'}`
     : data.message;
   const notes = [...(data.warnings || []), ...(data.sources || []).filter(row => row.status !== 'retrieved').map(row => `${row.name}: ${row.status === 'not-needed' ? 'not needed for this task' : row.status === 'failed' ? 'unavailable' : 'no relevant material found'}.`)];
   $('#context-warnings').textContent = notes.join(' '); $('#context-warnings').hidden = !notes.length;
@@ -849,23 +869,21 @@ function showContextPrepared(data) {
   contextLabel();
   $('#context-prepared-heading').focus();
 }
-async function prepareContext(request) {
-  const own = new AbortController(); controller = own;
-  setRunning(true); startProgress(); contextError();
-  $('#generate-label').textContent = 'Understanding task…';
+async function prepareContext(request, { own, requestId, sequence, snapshot }) {
+  contextError();
+  $('#generate-label').textContent = 'Investigating task…';
+  const current = () => !own.signal.aborted && sequence === generationSequence && snapshot.signature === contextSignature();
   try {
-    const signature = contextSignature();
-    const { response, data } = await api('/api/compose/prepare', { method: 'POST', body: { request, autonomous: $('#context-autonomous').checked, sources: contextSources() }, signal: own.signal, timeoutMs: null, compose: true });
-    if (own.signal.aborted) return;
+    const { response, data } = await api('/api/compose/prepare', { method: 'POST', body: { request, autonomous: snapshot.enabled, sources: snapshot.sources }, signal: own.signal, timeoutMs: null, compose: true, requestId });
+    if (!current()) return null;
     if (!response.ok) throw new Error(failureMessage(data, 'Preparation failed.'));
-    if (signature !== contextSignature()) return null;
     showContextPrepared(data);
     return data;
   } catch (error) {
-    if (!own.signal.aborted) showContextPrepared({ state: 'assessment-failed', message: error.message + ' Retry before generation.', evidence: [], sources: [], warnings: [] });
-    else announce('Research canceled. Your task and sources are kept.');
+    if (current()) showContextPrepared({ state: 'assessment-failed', message: error.message + ' Retry before generation.', evidence: [], sources: [], warnings: [] });
+    else if (sequence === generationSequence) announce('Research canceled. Your task and sources are kept.');
     return null;
-  } finally { controller = null; stopProgress(); setRunning(false); contextLabel(); }
+  }
 }
 async function uploadContextDocument() {
   if (contextState.sources.length >= 8) { contextError('Remove a source before adding another document.'); return; }
@@ -887,13 +905,17 @@ async function uploadContextDocument() {
   } catch (error) { contextError(own.signal.aborted ? 'Document preparation stopped. Retry or continue without this document.' : error.message); }
   finally { clearTimeout(timer); cancellation.dispose(); controller = null; stopProgress(); setRunning(false); }
 }
+let contextPrefs = {};
+try { contextPrefs = JSON.parse(localStorage.getItem(CONTEXT_PREFS) || '{}') || {}; } catch {}
+const groundingEnabled = Object.hasOwn(contextPrefs, 'context-autonomous') ? contextPrefs['context-autonomous'] === true : contextPrefs['context-clarify'] === true || contextPrefs['context-use-sources'] === true;
 for (const id of ['context-autonomous', 'context-use-sources', 'context-auto-split']) {
-  try { const prefs = JSON.parse(localStorage.getItem(CONTEXT_PREFS) || '{}'); $(`#${id}`).checked = id === 'context-autonomous' ? (prefs[id] === true || (prefs[id] === undefined && prefs['context-clarify'] === true)) : prefs[id] === true; } catch {}
+  $(`#${id}`).checked = id === 'context-autonomous' ? groundingEnabled : contextPrefs[id] === true;
   $(`#${id}`).addEventListener('change', () => {
     savePref(CONTEXT_PREFS, JSON.stringify(Object.fromEntries(['context-autonomous', 'context-use-sources', 'context-auto-split'].map(key => [key, $(`#${key}`).checked]))));
     if (id === 'context-auto-split') contextLabel(); else contextReset();
   });
 }
+if (!Object.hasOwn(contextPrefs, 'context-autonomous') && groundingEnabled) savePref(CONTEXT_PREFS, JSON.stringify(Object.fromEntries(['context-autonomous', 'context-use-sources', 'context-auto-split'].map(key => [key, $(`#${key}`).checked]))));
 for (const id of ['compose-general', 'compose-context', 'advanced-options', 'context-custom', 'context-evidence', 'output-tools', 'output-info']) $(`#${id}`).addEventListener('toggle', () => $(`#${id} > summary`).setAttribute('aria-expanded', String($(`#${id}`).open)));
 $('#output-tools').addEventListener('keydown', event => {
   if (event.key === 'Escape') { event.preventDefault(); $('#output-tools').open = false; $('#output-tools > summary').focus(); }
@@ -922,10 +944,12 @@ $('#context-save-local').addEventListener('click', () => {
   const path = $('#context-local-path').value.trim(), kind = $('#context-local-kind').value;
   if (!path) { contextError('Choose or enter a local folder path.'); return; }
   const name = path.replace(/[\\/]+$/, '').split(/[\\/]/).at(-1).slice(0, 80);
-  addContextSource({ type: 'local', name, path, kind }, `${kind === 'repository' ? 'Project' : 'Knowledge'} · ${name}`);
+  const purpose = kind === 'repository' ? $('#context-local-purpose').value : 'reference';
+  addContextSource({ type: 'local', name, path, kind, purpose }, `${kind === 'repository' ? 'Project' : 'Knowledge'} · ${name}`);
   $('#context-local-path').value = ''; $('#context-local-fields').hidden = true;
   $('#context-add-local').setAttribute('aria-expanded', 'false');
 });
+$('#context-local-kind').addEventListener('change', () => { $('#context-local-purpose-field').hidden = $('#context-local-kind').value !== 'repository'; });
 $('#context-add-expert').addEventListener('click', () => addContextSource({ type: 'expert', name: 'Expert context' }, 'Expert context'));
 $('#context-save-mcp').addEventListener('click', () => {
   try {
@@ -941,35 +965,38 @@ contextLabel();
 
 // CLI connection panel. Installation and sign-in are reported separately; sign-in
 // actions use each CLI's own documented flow. No credentials pass through this page.
-async function loadAuth() {
+async function loadAuth(provider = $('#provider').value) {
+  // Account inspection is independent of Compose's generation settings.
+  if (authBusy && provider !== $('#connection-provider').value) return;
+  $('#connection-provider').value = provider;
   const sequence = ++authSequence;
-  const provider = $('#provider').value;
+  renderAuth();
   if (!token) return;
   try {
     const { response, data } = await api(`/api/auth?provider=${encodeURIComponent(provider)}`, { timeoutMs: 20000 });
-    if (sequence !== authSequence || provider !== $('#provider').value) return;
-    authInfo = response.ok ? data : { provider, installed: Boolean(selectedProvider()?.available), state: 'unknown', capabilities: null };
+    if (sequence !== authSequence || provider !== $('#connection-provider').value) return;
+    authInfo = response.ok ? data : { provider, installed: Boolean(providers.find(row => row.id === provider)?.available), state: 'unknown', capabilities: null };
     if (response.ok && typeof data.installed === 'boolean') {
-      const detected = selectedProvider();
+      const detected = providers.find(row => row.id === provider);
       const changed = Boolean(detected?.available) !== data.installed;
       if (detected) detected.available = data.installed;
       else providers.push({ id: provider, name: providerInfo[provider]?.name || provider, available: data.installed });
       const choice = [...$('#provider').options].find(option => option.value === provider);
       if (choice) choice.textContent = `${providerInfo[provider]?.name || provider}${data.installed ? '' : ' · not installed'}`;
       updateProviderState();
-      if (changed) loadModels({ model: chosenModel(), effort: $('#effort').value, refresh: data.installed });
+      if (changed && provider === $('#provider').value) loadModels({ model: chosenModel(), effort: $('#effort').value, refresh: data.installed });
     }
   } catch {
     if (sequence !== authSequence) return;
-    authInfo = { provider, installed: Boolean(selectedProvider()?.available), state: 'unknown', capabilities: null };
+    authInfo = { provider, installed: Boolean(providers.find(row => row.id === provider)?.available), state: 'unknown', capabilities: null };
   }
   renderAuth();
 }
 
 function renderAuth() {
-  const provider = $('#provider').value;
+  const provider = $('#connection-provider').value;
   const info = authInfo?.provider === provider ? authInfo : null;
-  const detected = selectedProvider();
+  const detected = providers.find(row => row.id === provider);
   const installed = info ? info.installed === true : Boolean(detected?.available);
   const caps = info?.capabilities || {};
   $('#connection-install').textContent = !detected && !info ? 'Checking CLI…' : installed ? `CLI installed${detected?.version ? ` · ${safeText(detected.version, 60)}` : ''}` : 'CLI not installed';
@@ -980,6 +1007,7 @@ function renderAuth() {
     : info.state === 'signed-out' ? `Signed out${info.stale ? ' · last check' : ''}`
     : caps.status === 'unsupported' ? 'Sign-in status: not reported by this CLI' : 'Sign-in status: unknown';
   const blocked = running || authBusy || !token || !installed;
+  $('#connection-provider').disabled = running || authBusy || !token;
   $('#auth-login').textContent = info?.state === 'signed-in' ? 'Reauthenticate' : 'Connect / Sign in';
   $('#auth-login').disabled = blocked || !info;
   $('#auth-device').hidden = !caps.device;
@@ -1007,13 +1035,14 @@ function setAuthBusy(value) { authBusy = value; renderAuth(); updateProviderStat
 
 async function afterAuthChange(message) {
   setAuthBusy(false);
-  await loadAuth();
-  loadModels({ model: chosenModel(), effort: $('#effort').value, refresh: true });
+  const provider = $('#connection-provider').value;
+  await loadAuth(provider);
+  if (provider === $('#provider').value) loadModels({ model: chosenModel(), effort: $('#effort').value, refresh: true });
   if (message) announce(message);
 }
 
 async function signIn(method) {
-  const provider = $('#provider').value;
+  const provider = $('#connection-provider').value;
   const caps = authInfo?.capabilities || {};
   const name = providerInfo[provider]?.name || 'This CLI';
   if (caps.login !== 'native') {
@@ -1023,7 +1052,7 @@ async function signIn(method) {
       codeBlock(caps.loginCommand || provider),
       ...(caps.loginNote ? [paragraph(caps.loginNote)] : []),
       paragraph('Then choose Check again.'),
-      detailActions(detailButton('Check again', () => { showAuthDetail(); loadAuth(); loadModels({ model: chosenModel(), effort: $('#effort').value, refresh: true }); })),
+      detailActions(detailButton('Check again', () => { showAuthDetail(); checkConnection(); })),
     );
     return;
   }
@@ -1066,7 +1095,7 @@ async function signIn(method) {
 }
 
 function signOut() {
-  const provider = $('#provider').value;
+  const provider = $('#connection-provider').value;
   const caps = authInfo?.capabilities || {};
   const name = providerInfo[provider]?.name || 'This CLI';
   if (caps.logout === 'terminal') {
@@ -1106,7 +1135,8 @@ function paragraph(content, className = '') {
 function openHelp(privacy = false) {
   const content = $('#dialog-content');
   content.replaceChildren();
-  $('#dialog-heading').textContent = privacy ? 'Your work. Your browser. Your CLI.' : 'A small tool. A straightforward setup.';
+  $('#dialog-heading').textContent = privacy ? 'Your work. Your browser. Your CLI.' : 'CLI connections';
+  $('#cli-connection').hidden = privacy;
   if (privacy) {
     // Facts about the current version only. Keep this in step with README "Privacy and data" and SECURITY.md.
     const section = (title, items) => {
@@ -1141,7 +1171,8 @@ function openHelp(privacy = false) {
       ]),
     );
   } else {
-    content.append(paragraph('Install one supported CLI on the same computer, then sign in through its terminal. The workbench uses that CLI’s configured model unless you select a model. Choose a supported effort and an output language before you generate.'));
+    const guides = document.createElement('details');
+    const summary = document.createElement('summary'); summary.textContent = 'Installation guides'; guides.append(summary);
     const list = document.createElement('div');
     list.className = 'setup-list';
     for (const [id, info] of Object.entries(providerInfo)) {
@@ -1164,7 +1195,7 @@ function openHelp(privacy = false) {
       card.append(heading, command, paragraph(info.signIn), link);
       list.append(card);
     }
-    content.append(list, paragraph('Restart the workbench if your PATH changes. Detection confirms the command exists; it does not verify your sign-in. CLI account limits and usage costs still apply.', 'dialog-note'));
+    guides.append(list, paragraph('Restart the workbench if your PATH changes. Detection confirms the command exists; it does not verify your sign-in. CLI account limits and usage costs still apply.', 'dialog-note'));
     const refresh = document.createElement('button');
     refresh.type = 'button';
     refresh.className = 'reload-button';
@@ -1175,7 +1206,7 @@ function openHelp(privacy = false) {
       await loadProviders();
       openHelp();
     });
-    content.append(refresh);
+    guides.append(refresh); content.append(guides);
   }
   if (!$('#help-dialog').open) $('#help-dialog').showModal();
 }
@@ -1345,6 +1376,7 @@ async function migrateBrowserBoard() {
 function renderBoard() {
   fitBoardHeight();
   renderProjectContext(currentProject());
+  refreshPipelineArchive();
   const project = currentProject();
   const tasks = project?.tasks || [];
   $('#project-select').replaceChildren(...(board?.projects || []).map(item => option(item.id, item.name)));
@@ -1493,11 +1525,11 @@ function timeAgo(at) {
 function renderDoneList(tasks) {
   const zone = document.createElement('li');
   zone.className = 'kanban-done-drop';
-  zone.append(stageIcon('drop'), paragraph('Complete from Testing or Merge · no merge'));
+  zone.append(stageIcon('drop'), paragraph(currentProject()?.workflowMode === 'pipeline' ? 'Pauses the agent · archives the task' : 'Complete from Testing or Merge · no merge'));
   if (!tasks.length) return [zone];
   // Card numbers follow creation order within the project, so they stay stable.
   const numbers = new Map([...currentProject().tasks].sort((a, b) => a.createdAt - b.createdAt).map((task, index) => [task.id, index + 1]));
-  const finished = task => task.completion?.at || task.updatedAt || 0;
+  const finished = task => task.archivedAt || task.completion?.at || task.updatedAt || 0;
   const recent = [...tasks].sort((a, b) => finished(b) - finished(a));
   const viewAll = () => openDoneDialog(recent, numbers);
   const head = document.createElement('li');
@@ -1517,11 +1549,117 @@ function renderDoneList(tasks) {
   all.append(button);
   return [zone, head, ...recent.slice(0, DONE_PREVIEW).map(task => renderDoneCard(task, numbers.get(task.id))), all];
 }
-function openDoneDialog(recent, numbers) {
-  $('#done-dialog-project').textContent = `${currentProject()?.name || ''} · Done`.toUpperCase();
+function openDoneDialog(recent, numbers, cards = false) {
+  const project = currentProject(), isPipeline = project?.workflowMode === 'pipeline', pipeline = isPipeline && !cards;
+  $('#done-dialog-project').textContent = `${project?.name || ''} · Done`.toUpperCase();
   $('#done-dialog-heading').textContent = `Completed (${recent.length})`;
-  $('#done-dialog-list').replaceChildren(...recent.map(task => renderDoneCard(task, numbers.get(task.id), false)));
+  $('#done-dialog').classList.toggle('pipeline-archive-open', pipeline);
+  $('#done-dialog-list').hidden = pipeline;
+  $('#pipeline-archive').hidden = !pipeline;
+  if (archiveProjectId !== project?.id) archiveSelected.clear();
+  archiveProjectId = isPipeline ? project.id : null; archiveSignature = '';
+  if (pipeline) {
+    $('#archive-filter').value = ''; $('#archive-sort').value = 'newest';
+    refreshPipelineArchive(true);
+  } else $('#done-dialog-list').replaceChildren(...recent.map(task => renderDoneCard(task, numbers.get(task.id), false)));
   $('#done-dialog').showModal();
+  if (cards) $('#done-dialog-list .kanban-open')?.focus();
+}
+let archiveProjectId = null, archiveSignature = '', archiveSelected = new Set(), archiveBulkJob = null;
+function refreshPipelineArchive(opening = false) {
+  if (!archiveProjectId || !opening && !$('#done-dialog').open) return;
+  const project = currentProject();
+  if (project?.id !== archiveProjectId || project.workflowMode !== 'pipeline') {
+    archiveProjectId = null;
+    if ($('#done-dialog').open) $('#done-dialog').close();
+    return;
+  }
+  if ($('#pipeline-archive').hidden) return;
+  const tasks = project.tasks.filter(task => projectColumnsOf(project).find(column => column.id === task.column)?.role === 'done');
+  const filter = $('#archive-filter').value.trim().toLocaleLowerCase(), sort = $('#archive-sort').value;
+  const observed = tasks.map(task => [task.id, task.revision, task.title, task.archivedAt, task.updatedAt, latestRun(task.id)?.usage, task.sessionId, (board.sessions || []).find(session => session.id === task.sessionId)]);
+  const busy = archiveBulkJob?.running === true;
+  const signature = JSON.stringify([project.revision, observed, filter, sort, [...archiveSelected], busy, archiveBulkJob?.stop, archiveBulkJob?.items]);
+  if (signature === archiveSignature) return;
+  archiveSignature = signature;
+  const focus = document.activeElement?.closest('[data-archive-task]'), action = document.activeElement?.dataset.archiveAction;
+  const when = task => task.archivedAt || task.completion?.at || task.updatedAt || 0;
+  const rows = tasks.filter(task => task.title.toLocaleLowerCase().includes(filter)).sort((a, b) => {
+    const order = ['title', 'title-desc'].includes(sort) ? a.title.localeCompare(b.title) * (sort === 'title-desc' ? -1 : 1) : (sort === 'oldest' ? when(a) - when(b) : when(b) - when(a));
+    return order || a.id.localeCompare(b.id);
+  }).map(task => {
+    const row = document.createElement('tr'); row.dataset.archiveTask = task.id;
+    const name = document.createElement('td'), archived = document.createElement('td'), conversationCell = document.createElement('td'), usage = document.createElement('td');
+    const open = detailButton(task.title, () => { $('#done-dialog').close(); openCard(task.id); }, 'text-button archive-title'); open.dataset.archiveAction = 'edit';
+    const details = detailButton('Details', () => { $('#done-dialog').close(); openTaskDetails(task.id); }, 'text-button'); details.dataset.archiveAction = 'details'; details.setAttribute('aria-label', `Details: ${task.title}`);
+    const restore = document.createElement('select'); restore.dataset.archiveAction = 'restore'; restore.setAttribute('aria-label', `Restore: ${task.title}`);
+    restore.append(option('', 'Restore to…'), ...projectColumnsOf(project).filter(column => ['todo', 'active'].includes(column.role)).map(column => option(column.id, column.title)));
+    restore.addEventListener('change', () => { if (restore.value) { $('#done-dialog').close(); placeCard(task.id, restore.value, null); } });
+    restore.disabled = busy;
+    const heading = document.createElement('div'); heading.className = 'archive-task-heading';
+    if (pipelineBulkRestoreSupported) {
+      const selected = document.createElement('input'); selected.type = 'checkbox'; selected.checked = archiveSelected.has(task.id); selected.disabled = busy; selected.dataset.archiveAction = 'select'; selected.setAttribute('aria-label', `Select: ${task.title}`);
+      selected.addEventListener('change', () => { selected.checked ? archiveSelected.add(task.id) : archiveSelected.delete(task.id); refreshPipelineArchive(); }); heading.append(selected);
+    }
+    heading.append(open);
+    const actions = document.createElement('div'); actions.className = 'archive-actions'; actions.append(details, restore); name.append(heading, actions);
+    const date = when(task); archived.textContent = date ? new Date(date).toLocaleString() : 'Unavailable';
+    const conversation = (board.sessions || []).find(session => session.id === task.sessionId && session.taskId === task.id && session.projectId === project.id);
+    conversationCell.textContent = !task.sessionId ? 'None retained' : conversation ? `${providerInfo[conversation.provider]?.name || conversation.provider} · ${conversation.status}` : 'Unavailable';
+    const run = latestRun(task.id), measured = run?.usage;
+    usage.textContent = measured && ['inputTokens', 'cachedTokens', 'outputTokens'].every(key => Number.isFinite(measured[key]) && measured[key] >= 0) ? usageText(run) : 'Unavailable';
+    row.append(name, archived, conversationCell, usage); return row;
+  });
+  $('#archive-rows').replaceChildren(...rows);
+  $('#archive-empty').hidden = rows.length > 0;
+  $('#archive-empty').textContent = tasks.length ? 'No completed tasks match this title.' : 'No completed tasks.';
+  $('#done-dialog-heading').textContent = `Completed (${tasks.length})`;
+  $('#archive-count').textContent = `${rows.length} of ${tasks.length} tasks`;
+  $('#archive-title-header').setAttribute('aria-sort', sort === 'title' ? 'ascending' : sort === 'title-desc' ? 'descending' : 'none');
+  $('#archive-date-header').setAttribute('aria-sort', sort === 'newest' ? 'descending' : sort === 'oldest' ? 'ascending' : 'none');
+  $('#archive-bulk').hidden = !pipelineBulkRestoreSupported;
+  const selectedCount = tasks.filter(task => archiveSelected.has(task.id)).length;
+  $('#archive-select-visible').disabled = busy || !rows.length; $('#archive-clear-selection').disabled = busy || !selectedCount;
+  $('#archive-restore-selected').disabled = busy || !selectedCount; $('#archive-restore-selected').textContent = `Restore selected (${selectedCount})`;
+  $('#archive-bulk-target').disabled = busy; $('#archive-stop-remaining').hidden = !busy; $('#archive-cards').disabled = busy;
+  $('#archive-stop-remaining').disabled = archiveBulkJob?.stop === true;
+  $('#archive-stop-remaining').textContent = archiveBulkJob?.stop ? 'Remaining stopped' : 'Stop remaining';
+  const choices = projectColumnsOf(project).filter(column => ['todo', 'active'].includes(column.role)), destination = $('#archive-bulk-target').value;
+  $('#archive-bulk-target').replaceChildren(...choices.map(column => option(column.id, column.title)));
+  if (choices.some(column => column.id === destination)) $('#archive-bulk-target').value = destination;
+  const results = archiveBulkJob?.projectId === project.id ? archiveBulkJob.items : [];
+  $('#archive-bulk-progress').hidden = !results.length;
+  $('#archive-bulk-progress').textContent = `${results.filter(item => item.status === 'restored').length} restored · ${results.filter(item => item.status === 'review').length} need review · ${results.filter(item => item.status === 'pending').length} not started${busy && results.length ? ' · Restoring…' : ''}`;
+  $('#archive-bulk-results').replaceChildren(...results.map(item => { const node = document.createElement('li'); node.textContent = `${item.title}: ${ { pending: 'Not started', restoring: 'Restoring…', restored: 'Restored', review: 'Needs review' }[item.status]}${item.reason ? ` · ${item.reason}` : ''}`; return node; }));
+  if (focus) {
+    const replacement = [...$('#archive-rows').children].find(row => row.dataset.archiveTask === focus.dataset.archiveTask);
+    ([...(replacement?.querySelectorAll('[data-archive-action]') || [])].find(node => node.dataset.archiveAction === action) || $('#archive-filter')).focus();
+  }
+}
+
+async function restoreArchiveSelection() {
+  const project = currentProject();
+  if (!pipelineBulkRestoreSupported || project?.id !== archiveProjectId || project.workflowMode !== 'pipeline' || !$('#done-dialog').open || archiveBulkJob?.running) return;
+  const column = projectColumnsOf(project).find(column => column.id === $('#archive-bulk-target').value && ['todo', 'active'].includes(column.role));
+  if (!column) return;
+  const items = [...archiveSelected].map(id => project.tasks.find(task => task.id === id)).filter(task => task && projectColumnsOf(project).find(column => column.id === task.column)?.role === 'done')
+    .map(task => ({ id: task.id, title: task.title, revision: task.revision, transitionId: newTransitionId(), status: 'pending' }));
+  if (!items.length) return;
+  const job = { projectId: project.id, revision: project.revision, column: column.id, running: true, stop: false, items };
+  archiveBulkJob = job; refreshPipelineArchive();
+  try {
+    for (const item of items) {
+      if (job.stop || currentProject()?.id !== job.projectId || !$('#done-dialog').open) break;
+      item.status = 'restoring'; refreshPipelineArchive();
+      try {
+        const response = await boardCall('POST', `/api/tasks/${encodeURIComponent(item.id)}/move`, { column: job.column, index: null, expectedRevision: item.revision, expectedProjectRevision: job.revision, transitionId: item.transitionId }, 180000);
+        const task = response.board?.projects.find(project => project.id === job.projectId)?.tasks.find(task => task.id === item.id);
+        if (response.task?.id === item.id && task?.column === job.column && !task.archivedAt) { item.status = 'restored'; archiveSelected.delete(item.id); }
+        else { item.status = 'review'; item.reason = 'The restore outcome was not confirmed. Check Details before trying again.'; }
+      } catch (error) { item.status = 'review'; item.reason = safeText(error.message, 500) || 'Check Details before trying again.'; }
+      if (currentProject()?.id === job.projectId) refreshPipelineArchive();
+    }
+  } finally { job.running = false; if (currentProject()?.id === job.projectId) refreshPipelineArchive(); }
 }
 function renderDoneCard(card, number, draggable = true) {
   const item = document.createElement('li');
@@ -1535,7 +1673,7 @@ function renderDoneCard(card, number, draggable = true) {
   tag.className = 'kanban-done-number';
   tag.textContent = `#${number}`;
   title.append(open, tag);
-  const when = card.completion?.at || card.updatedAt;
+  const when = card.archivedAt || card.completion?.at || card.updatedAt;
   const time = paragraph(when ? timeAgo(when) : '', 'kanban-done-time');
   if (when) time.title = new Date(when).toLocaleString();
   const reopen = labelledButton(detailButton('Reopen', () => reopenCard(card), 'text-button kanban-reopen'), `Reopen: ${card.title}`);
@@ -1883,6 +2021,7 @@ async function deleteCard(id) {
 }
 
 let quickTask = false, cardPipelineEditor = null, cardEditSnapshot = null;
+function canOmitTaskPrompt(project) { return project?.workflowMode === 'pipeline' && pipelineTitleOnlySupported; }
 function openCard(id = null, quick = false) {
   quickTask = quick;
   const project = currentProject();
@@ -1900,12 +2039,14 @@ function openCard(id = null, quick = false) {
   $('#card-title').required = !quick;
   $('#card-title').placeholder = quick ? 'Optional — derived from your prompt' : '';
   $('#card-title').value = card?.title || '';
+  $('#card-prompt').required = !canOmitTaskPrompt(project);
+  $('#card-prompt-label').textContent = canOmitTaskPrompt(project) ? 'Prompt (optional)' : 'Prompt';
   $('#card-prompt').value = card?.prompt || '';
   const status = card && cardStatus(card);
   $('#card-status').hidden = !card;
   $('#card-status').textContent = status?.text || '';
   $('#card-status').classList.toggle('needs-review', Boolean(status?.flag));
-  $('#card-note').textContent = !card?.source ? 'Write the task as your coding agent should receive it. Copy prompt copies this text exactly.'
+  $('#card-note').textContent = !card?.source ? (canOmitTaskPrompt(project) ? 'A title is enough. The agent receives the title and any prompt. Copy prompt copies the prompt text exactly.' : 'Write the task as your coding agent should receive it. Copy prompt copies this text exactly.')
     : card.checksOutdated ? 'This prompt was edited. The checks from generation apply to the original text only. Your prompt history is unchanged.'
     : 'Imported from Compose. Saving changes marks the previous checks as outdated. Your prompt history is unchanged.';
   $('#card-source').hidden = !card?.source;
@@ -1935,7 +2076,7 @@ async function saveCard(event) {
   const typed = $('#card-prompt').value;
   const title = $('#card-title').value.trim() || (quickTask ? typed.replace(/\s+/g, ' ').trim().slice(0, 80) : '');
   const error = !title ? 'Enter a short title.' : title.length > 120 ? 'Use a title of at most 120 characters.'
-    : !typed.trim() ? 'Enter the prompt for this task.' : typed.length > MAX_PROMPT_BYTES ? 'The prompt exceeds the 2 MiB limit.' : '';
+    : !typed.trim() && !canOmitTaskPrompt(project) ? 'Enter the prompt for this task.' : typed.length > MAX_PROMPT_BYTES ? 'The prompt exceeds the 2 MiB limit.' : '';
   if (error) { $('#card-error').textContent = error; $('#card-error').hidden = false; return; }
   let saved, message;
   try {
@@ -3520,7 +3661,8 @@ $('#import-confirm').addEventListener('click', () => confirmImported(true));
 $('#import-dismiss').addEventListener('click', () => confirmImported(false));
 $('#card-new').addEventListener('click', () => openCard());
 $('#card-refine').addEventListener('click', () => {
-  const prompt = $('#card-prompt').value;
+  const description = $('#card-prompt').value;
+  const prompt = currentProject()?.workflowMode === 'pipeline' && !description.trim() ? $('#card-title').value.trim() : description;
   if (!prompt.trim() || prompt.length > 100000) {
     $('#card-error').textContent = 'Enter a prompt of at most 100,000 characters for Composer.';
     $('#card-error').hidden = false;
@@ -3568,6 +3710,22 @@ bindAsyncForm('#card-form', saveCard);
 $('#card-cancel').addEventListener('click', () => $('#card-dialog').close());
 $('#card-dialog-close').addEventListener('click', () => $('#card-dialog').close());
 $('#done-dialog-close').addEventListener('click', () => $('#done-dialog').close());
+$('#archive-filter').addEventListener('input', () => refreshPipelineArchive());
+$('#archive-sort').addEventListener('change', () => refreshPipelineArchive());
+$('#archive-sort-title').addEventListener('click', () => { $('#archive-sort').value = $('#archive-sort').value === 'title' ? 'title-desc' : 'title'; refreshPipelineArchive(); });
+$('#archive-sort-date').addEventListener('click', () => { $('#archive-sort').value = $('#archive-sort').value === 'newest' ? 'oldest' : 'newest'; refreshPipelineArchive(); });
+$('#archive-select-visible').addEventListener('click', () => { if (archiveBulkJob?.running) return; for (const row of $('#archive-rows').children) archiveSelected.add(row.dataset.archiveTask); refreshPipelineArchive(); });
+$('#archive-clear-selection').addEventListener('click', () => { if (archiveBulkJob?.running) return; archiveSelected.clear(); refreshPipelineArchive(); });
+$('#archive-restore-selected').addEventListener('click', () => restoreArchiveSelection());
+$('#archive-stop-remaining').addEventListener('click', () => { if (archiveBulkJob) { archiveBulkJob.stop = true; refreshPipelineArchive(); } });
+$('#done-dialog').addEventListener('close', () => { if (archiveBulkJob?.running) archiveBulkJob.stop = true; });
+$('#archive-cards').addEventListener('click', () => {
+  const project = currentProject();
+  if (project?.id !== archiveProjectId) return;
+  const tasks = project.tasks.filter(task => projectColumnsOf(project).find(column => column.id === task.column)?.role === 'done');
+  const numbers = new Map([...project.tasks].sort((a, b) => a.createdAt - b.createdAt).map((task, index) => [task.id, index + 1]));
+  openDoneDialog(tasks.sort((a, b) => (b.archivedAt || b.updatedAt || 0) - (a.archivedAt || a.updatedAt || 0)), numbers, true);
+});
 $('#export-board').addEventListener('click', exportBoard);
 $('#import-board').addEventListener('click', () => $('#import-file').click());
 $('#import-file').addEventListener('change', importBoard);
@@ -3600,7 +3758,13 @@ $('#cancel-button').addEventListener('click', () => { if (!controller) return; $
 $('#auth-login').addEventListener('click', () => signIn('browser'));
 $('#auth-device').addEventListener('click', () => signIn('device'));
 $('#auth-logout').addEventListener('click', signOut);
-$('#auth-check').addEventListener('click', () => { loadAuth(); loadModels({ model: chosenModel(), effort: $('#effort').value, refresh: true }); });
+function checkConnection() {
+  const provider = $('#connection-provider').value;
+  loadAuth(provider);
+  if (provider === $('#provider').value) loadModels({ model: chosenModel(), effort: $('#effort').value, refresh: true });
+}
+$('#connection-provider').addEventListener('change', () => { showAuthDetail(); authInfo = null; loadAuth($('#connection-provider').value); renderAuth(); });
+$('#auth-check').addEventListener('click', checkConnection);
 $('#copy-button').addEventListener('click', async () => {
   if (!currentResult) return;
   try {

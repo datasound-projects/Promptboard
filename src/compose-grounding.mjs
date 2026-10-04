@@ -10,6 +10,7 @@ Evidence is a retrieved excerpt, not proof that a question is answered. Check wh
 Preserve clarification answers as requirements where consistent with the original task.
 Never ask the user clarification questions. Turn unresolved material decisions into inspection or verification instructions for the implementation agent. Label safe defaults as assumptions; never invent intent or environment facts.
 Research findings are supporting evidence, not certainty. Do not infer guarantees beyond their exact supporting excerpts.
+Only repository evidence explicitly labelled purpose=target describes the selected target project. A reference repository must not impose its architecture, dependencies or conventions on another target. Unspecified source purpose is reference material.
 Do not claim access to documents or sources beyond the supplied excerpts. Keep useful source locators.`;
 
 export function invalid(message) { throw Object.assign(new TypeError(message), { status: 400, statusCode: 400 }); }
@@ -29,15 +30,17 @@ export function validateGrounding(value) {
     return { question: string(row.question, 600, 'question'), answer: string(row.answer, 2000, 'answer') };
   });
   const evidence = list(value.evidence ?? [], 40, 'evidence').map(row => {
-    object(row, ['sourceType', 'source', 'locator', 'query', 'text', 'questionIds', 'alsoFrom'], 'evidence');
+    object(row, ['sourceType', 'source', 'locator', 'query', 'text', 'questionIds', 'alsoFrom', 'purpose'], 'evidence');
     if (!['pdf', 'document', 'mcp', 'expert', 'repository', 'knowledge'].includes(row.sourceType)) invalid('Invalid evidence source type.');
     const item = { sourceType: row.sourceType, source: string(row.source, 200, 'source'), locator: string(row.locator, 300, 'locator'),
       query: string(row.query ?? '', 800, 'query', true), text: string(row.text, 5000, 'excerpt') };
+    if (row.purpose !== undefined) { if (!['reference', 'target'].includes(row.purpose)) invalid('Invalid source purpose.'); item.purpose = row.purpose; }
     if (row.questionIds !== undefined) item.questionIds = list(row.questionIds, 32, 'question IDs').map(id => string(id, 40, 'question ID'));
     if (row.alsoFrom !== undefined) item.alsoFrom = list(row.alsoFrom, 8, 'additional provenance').map(origin => {
-      object(origin, ['sourceType', 'source', 'locator'], 'provenance');
+      object(origin, ['sourceType', 'source', 'locator', 'purpose'], 'provenance');
       if (!['pdf', 'document', 'mcp', 'expert', 'repository', 'knowledge'].includes(origin.sourceType)) invalid('Invalid provenance type.');
-      return { sourceType: origin.sourceType, source: string(origin.source, 200, 'source'), locator: string(origin.locator, 300, 'locator') };
+      if (origin.purpose !== undefined && !['reference', 'target'].includes(origin.purpose)) invalid('Invalid source purpose.');
+      return { sourceType: origin.sourceType, source: string(origin.source, 200, 'source'), locator: string(origin.locator, 300, 'locator'), ...(origin.purpose ? { purpose: origin.purpose } : {}) };
     });
     return item;
   });

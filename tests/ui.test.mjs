@@ -625,6 +625,44 @@ test('provider failures show a stable message with a supplied reset time, keep i
   assert.equal($('#generation-error').hidden, true);
 });
 
+test('top-bar CLI dialog owns connection controls without changing Compose selections or losing sign-in details', async t => {
+  const { $, choose, win, calls, authAdapter, idle } = await setup(t);
+  $('#prompt-input').value = 'Keep this exact Compose task.';
+  choose('#model', 'codex-two'); await idle();
+  assert.equal($('#prompt-form').contains($('#auth-login')), false);
+  assert.equal($('#advanced-options').querySelector('#connection-heading'), null);
+  assert.equal($('#help-dialog').contains($('#auth-login')), true);
+  assert.equal($('#compose-general').contains($('#model-note')), true);
+  $('#setup-help').click(); assert.equal($('#help-dialog').open, true);
+  assert.equal($('#setup-help').getAttribute('aria-controls'), 'help-dialog');
+  choose('#connection-provider', 'claude'); await until(() => $('#connection-auth').textContent === 'Signed in (fixture)', 'Claude connection state'); await idle();
+  assert.equal($('#provider').value, 'codex'); assert.equal($('#model').value, 'codex-two'); assert.equal($('#prompt-input').value, 'Keep this exact Compose task.');
+  assert.equal(calls.length, 0); assert.equal(authAdapter.log.some(row => row[0] === 'login' || row[0] === 'logout'), false);
+  $('#auth-login').click(); assert.equal($('#auth-detail code').textContent, 'claude auth login');
+  $('#close-dialog').click(); $('#privacy-help').click(); assert.equal($('#cli-connection').hidden, true);
+  $('#close-dialog').click(); $('#setup-help').click(); assert.equal($('#cli-connection').hidden, false); assert.equal($('#auth-detail code').textContent, 'claude auth login');
+  $('#close-dialog').click(); win.location.hash = '#/kanban'; await idle(); $('#setup-help').click();
+  assert.equal($('#help-dialog').open, true); assert.equal($('#connection-provider').value, 'claude');
+  assert.equal($('#provider').value, 'codex');
+  $('#auth-logout').click(); [...win.document.querySelectorAll('#auth-detail button')].find(button => button.textContent === 'Sign out').click();
+  await until(() => authAdapter.log.some(row => row[0] === 'logout'), 'selected account sign-out');
+  assert.deepEqual(authAdapter.log.filter(row => row[0] === 'logout'), [['logout', 'claude']]); assert.equal($('#provider').value, 'codex');
+});
+
+test('closing the CLI dialog preserves a pending device sign-in and locks its account identity', async t => {
+  let finish; const gate = new Promise(resolve => { finish = resolve; }); t.after(() => finish());
+  const authAdapter = fakeAuth({ login: async (provider, options) => { authAdapter.log.push(['login', provider, options.method]); options.onUpdate({ userCode: 'FIXTURE-CODE', verificationUrl: 'https://auth.example/device' }); await gate; return { state: 'signed-in' }; } });
+  const { $, choose } = await setup(t, { authAdapter });
+  $('#setup-help').click(); $('#auth-device').click();
+  await until(() => $('#auth-detail .auth-code')?.textContent === 'FIXTURE-CODE', 'device flow shown');
+  assert.equal($('#connection-provider').disabled, true);
+  $('#close-dialog').click(); choose('#provider', 'gemini'); $('#setup-help').click();
+  assert.equal($('#connection-provider').value, 'codex'); assert.equal($('#auth-detail .auth-code').textContent, 'FIXTURE-CODE');
+  assert.deepEqual(authAdapter.log.filter(row => row[0] === 'login'), [['login', 'codex', 'device']]);
+  finish(); await until(() => /confirmed the sign-in/.test($('#auth-detail').textContent), 'device flow completes', 6000);
+  assert.equal($('#provider').value, 'gemini'); assert.equal($('#connection-provider').value, 'codex');
+});
+
 test('connection panel separates install and sign-in, hands off terminal sign-in, and confirms sign-out', async t => {
   const authAdapter = fakeAuth({ status: async provider => (provider === 'codex' ? { state: 'signed-in', method: 'chatgpt' } : provider === 'claude' ? { state: 'signed-out' } : { state: 'unknown' }) });
   let lookups = 0;
