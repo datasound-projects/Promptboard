@@ -4,6 +4,8 @@
 
 - Render `{{taskNumber}}` as the saved `#N` identity across automation/custom spawn templates and `PROMPTBOARD_TASK_NUMBER`. Leave missing/malformed numbers empty without positional fallback; preserve numeric API/webhook fields and the exact default first task envelope.
 
+- Add an opt-in disposable private native-message smoke harness with bounded option validation, separate startup/native/durable-receipt reporting and owned-process cleanup. Test the exact harness offline with a simulated CLI and record the authorized live Codex confirmation and Claude startup limitation separately. Column-message scheduling remains pending.
+
 - Display saved task numbers on board/completed cards and in archive/edit/details metadata. Add exact `#number` lookup to the completed-task filter, retain literal title filtering otherwise and omit invented positional numbers on older servers. Preserve task titles, copied prompts and keyboard actions.
 
 - Retain native-message process custody during valid hook publication while blocking input and confirmation on pending hooks. Drain hooks arriving during receipt reads before durable confirmation. Report outer deadlines separately from explicit cancellation, keep attempted writes uncertain and never replay input. Column scheduling and enabled message rows remain pending.

@@ -116,6 +116,7 @@ Read [SECURITY.md](SECURITY.md) before working with sensitive repositories. [Kan
 - [Native receipt ownership](docs/native-message-custody.md): private Supervisor checkpoints bound to live processes, native identities and terminal input; message dispatch remains pending.
 - [Private deferred input](docs/native-message-input.md): one owned paste/Enter attempt, exact native confirmation after pending hooks settle, distinct deadline/cancellation outcomes and bounded callbacks without draft clearing or replay; column scheduling and enabled message rows remain pending.
 - [Journal-backed deferred delivery](docs/native-message-dispatch.md): exact dispatch scope, per-run ordering and durable native confirmation before releasing input; board scheduling remains pending.
+- [Native-message live check](docs/live-native-messages.md): opt-in disposable provider checks with separate startup, input and durable-receipt results, plus an offline harness test.
 - [Asynchronous message journal](docs/pipeline-message-journal.md): scheduled dispatch and durable delivery stages survive completed placement; runtime scheduling and receipt display remain pending.
 - [Changelog](CHANGELOG.md) · [CLI adapters](docs/cli-adapters.md) · [Verification](RELEASE-VERIFICATION.md)
 - [Contributing](CONTRIBUTING.md): `npm run check` and `npm test`. No frontend framework or build step.
