@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** Opt-in private transport check. Uses model quota in its own disposable repository only. */
+/** Opt-in native input/column check. Uses model quota in its own disposable repository only. */
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtemp, realpath, rm } from 'node:fs/promises';
@@ -24,15 +24,17 @@ const seconds = Number(option('timeout', '120'));
 if (!Number.isFinite(seconds) || seconds < 1 || seconds > 180) throw new Error('Timeout must be between 1 and 180 seconds.');
 const strategy = normalizePipelineStrategy({ agentOverride: provider, ...(model ? { modelOverride: model } : {}), ...(effort ? { effortOverride: effort } : {}) });
 const keep = process.argv.includes('--keep'), answerTrust = process.argv.includes('--answer-trust'), freshTrusted = process.argv.includes('--fresh-trusted');
+const columnAutomation = process.argv.includes('--column-automation');
 const cancelled = new AbortController(), stop = () => cancelled.abort('live-check-stopped');
 process.once('SIGINT', stop); process.once('SIGTERM', stop);
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
-const report = { provider, model: model || null, effort: effort || null, freshTrusted, initial: null, warmup: null,
+const report = { provider, model: model || null, effort: effort || null, freshTrusted, columnAutomation, initial: null, warmup: null,
   sameRun: false, message: null, exactPrompt: false, mainCheckoutClean: false, worktreeClean: false, processStopped: false };
 const root = await realpath(await mkdtemp(join(tmpdir(), 'pb-live-native-repo-')));
 let dataDir, supervisor, dispatch, board, project, task;
 const pids = new Set(), started = Date.now(), deadline = started + seconds * 1000;
+const message = 'Reply exactly PB_NATIVE_SECOND. Do not use tools or change any file.';
 const prompt = 'Reply exactly PB_NATIVE_FIRST. Do not use tools, change files, send messages or make other network requests. No plan is needed.';
 const summary = (run, session) => ({ status: run.status, errorCode: run.errorCode || null, turns: run.turns || 0,
   nativeIdentityObserved: Boolean(session?.nativeSessionId), ready: session?.activity?.snapshot().ready === true,
@@ -69,6 +71,8 @@ try {
   await board.setTargetBranch(project.id, { branch: 'trunk', expectedRevision: 2 });
   const pipeline = defaultPipelineConfig();
   for (const column of pipeline.columns) if (column.role === 'active') Object.assign(column.strategy, strategy);
+  if (columnAutomation) pipeline.columns.find(column => column.id === 'code_review').automations.onEnter = [
+    { id: 'live-column-message', name: 'Live column check', type: 'send_message', enabled: true, mode: 'deferred', message }];
   await board.setPipeline(project.id, { pipeline, expectedRevision: 3, confirm: true });
   task = await board.createTask({ projectId: project.id, title: 'Private native input smoke', prompt });
   if ((await board.state()).runs.length) throw new Error('Unexpected To Do run.');
@@ -90,27 +94,40 @@ try {
     let current = (await board.state()).projects.find(p => p.id === project.id).tasks.find(t => t.id === task.id);
     const moved = await board.transition(task.id, { column: 'code_review', expectedRevision: current.revision });
     report.sameRun = moved.continuedRunId === result.run.id;
-    const message = 'Reply exactly PB_NATIVE_SECOND. Do not use tools or change any file.';
-    const key = { projectId: project.id, taskId: task.id, transitionId: 'live-private-message' }, journal = board.automationJournal;
-    const target = captureNativeMessageTarget(await board.state(), { projectId: project.id, taskId: task.id, runId: result.run.id });
-    if (!report.sameRun || !target) throw new Error('The exact task conversation is unavailable.');
-    const scope = { provider: target.provider, sessionId: target.sessionId, runId: target.runId, mode: 'deferred', messageHash: createHash('sha256').update(message).digest('hex') };
-    current = (await board.state()).projects.find(p => p.id === project.id);
-    const { move } = await journal.beginMove({ ...key, taskRevision: current.tasks[0].revision, projectRevision: current.revision,
-      from: { id: 'executing', name: 'Executing' }, to: { id: 'code_review', name: 'Code Review' },
-      onEnter: [{ id: 'private-message', name: 'Private smoke', type: 'send_message', enabled: true, mode: 'deferred', message }] });
-    await journal.advance(key); await journal.startLifecycle(key); await journal.finishLifecycle(key, { status: 'succeeded' });
-    const actionId = move.actions[0].id; await journal.startAction(key, actionId); await journal.scheduleMessage(key, actionId, scope); await journal.advance(key);
-    dispatch = new NativeMessageDispatch({ journal, supervisor });
-    const delivered = await dispatch.deliver({ key, actionId, message, scope }, { signal: cancelled.signal, timeoutMs: Math.max(1, Math.min(10000, deadline - Date.now())),
-      preflight: async () => target.matches(await board.state()) });
-    const receipt = (await journal.read(key)).actions[0].delivery;
-    report.message = { status: delivered.status, confirmed: delivered.confirmed === true, receiptStatus: receipt.status, submitted: Boolean(receipt.submittedAt) };
+    if (columnAutomation) {
+      report.placementStatus = moved.automationMove.status;
+      const key = { projectId: project.id, taskId: task.id, transitionId: moved.automationMove.transitionId };
+      const receiptDeadline = Math.min(deadline, Date.now() + 10000);
+      let receipt;
+      do {
+        receipt = (await board.automationJournal.read(key)).actions.find(row => row.type === 'send_message')?.delivery;
+        if (receipt && !['queued', 'dispatching', 'submitted', 'accepted'].includes(receipt.status)) break;
+        await pause(50);
+      } while (!cancelled.signal.aborted && Date.now() < receiptDeadline);
+      report.message = { status: receipt?.status || 'unconfirmed', confirmed: receipt?.status === 'confirmed',
+        receiptStatus: receipt?.status || null, submitted: Boolean(receipt?.submittedAt) };
+    } else {
+      const key = { projectId: project.id, taskId: task.id, transitionId: 'live-private-message' }, journal = board.automationJournal;
+      const target = captureNativeMessageTarget(await board.state(), { projectId: project.id, taskId: task.id, runId: result.run.id });
+      if (!report.sameRun || !target) throw new Error('The exact task conversation is unavailable.');
+      const scope = { provider: target.provider, sessionId: target.sessionId, runId: target.runId, mode: 'deferred', messageHash: createHash('sha256').update(message).digest('hex') };
+      current = (await board.state()).projects.find(p => p.id === project.id);
+      const { move } = await journal.beginMove({ ...key, taskRevision: current.tasks[0].revision, projectRevision: current.revision,
+        from: { id: 'executing', name: 'Executing' }, to: { id: 'code_review', name: 'Code Review' },
+        onEnter: [{ id: 'private-message', name: 'Private smoke', type: 'send_message', enabled: true, mode: 'deferred', message }] });
+      await journal.advance(key); await journal.startLifecycle(key); await journal.finishLifecycle(key, { status: 'succeeded' });
+      const actionId = move.actions[0].id; await journal.startAction(key, actionId); await journal.scheduleMessage(key, actionId, scope); await journal.advance(key);
+      dispatch = new NativeMessageDispatch({ journal, supervisor });
+      const delivered = await dispatch.deliver({ key, actionId, message, scope }, { signal: cancelled.signal, timeoutMs: Math.max(1, Math.min(10000, deadline - Date.now())),
+        preflight: async () => target.matches(await board.state()) });
+      const receipt = (await journal.read(key)).actions[0].delivery;
+      report.message = { status: delivered.status, confirmed: delivered.confirmed === true, receiptStatus: receipt.status, submitted: Boolean(receipt.submittedAt) };
+    }
   }
 } catch (error) {
   report.errorCode = /^[A-Z0-9_]{1,80}$/.test(error.code || '') ? error.code : 'LIVE_CHECK_FAILED';
 } finally {
-  await dispatch?.shutdown(); await supervisor?.shutdown(1000);
+  await dispatch?.shutdown(); await board?.shutdownAutomations(); await supervisor?.shutdown(1000);
   report.cancelled = cancelled.signal.aborted;
   report.processStopped = [...pids].every(pid => { try { process.kill(pid, 0); return false; } catch { return true; } });
   if (board && task) {

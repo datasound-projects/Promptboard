@@ -2,6 +2,12 @@
 
 Real CLI runs, recorded separately from the simulated (fake-CLI) test suite. Each checkpoint names its smoke script and uses an installed, signed-in CLI in its own disposable repository. Nothing here ran against a user repository.
 
+## 4 October 2026 — configured deferred Code Review message
+
+The authorized `scripts/live-native-messages.mjs --provider codex --model gpt-6-luna --effort low --timeout 120 --answer-trust --fresh-trusted --column-automation` check passed on macOS arm64, Node.js 24.14.1 and Codex CLI 0.157.0. The real Board configuration contained an enabled deferred Code Review enter row. After a separate disposable trust warmup, the fresh conversation completed its first turn with no manual-input observation. Executing → Code Review retained the same run and completed placement. The row’s message was submitted, observed in the exact native conversation, and saved as a confirmed journal delivery. Original task text, clean main/worktree checks and owned-process shutdown all passed. No error code or raw CLI output was returned.
+
+This verifies actual configured deferred delivery, not completion of the second reply, native-resume input, broad provider startup, immediate/busy delivery or slash commands. Claude’s previously recorded startup limitation and Gemini’s earlier client block were not reverified here. The check did not change provider flags, Base delivery or inherited tools.
+
 ## 4 October 2026 — exact task/session target preflight
 
 A further authorized disposable Codex 0.157.0 check with `gpt-6-luna`, low effort and the captured task/session/run preflight confirmed native input and its durable receipt on the same process retained through Code Review. Startup trust was answered only in the disposable warmup; the fresh conversation retained the manual-input guard and received the message without manual input. Exact task text, clean main/worktree repositories and owned-process shutdown passed. This verifies the stronger private preflight and deferred input, not configured column scheduling or completion of the second reply. No provider flags or Base configuration changed, and Promptboard did not edit CLI credentials or global settings directly.

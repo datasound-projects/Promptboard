@@ -29,6 +29,8 @@ test('private deferred transport uses a real owned PTY and exact native receipts
   const project = await board.createProject({ name: 'Native transport' });
   await board.linkRepository(project.id, { path: root, expectedRevision: 1 }); await board.setTargetBranch(project.id, { branch: 'trunk', expectedRevision: 2 });
   const config = defaultPipelineConfig(); config.columns[2].strategy.agentOverride = 'claude';
+  config.columns.find(column => column.id === 'code_review').automations.onEnter = [{ id: 'configured-review',
+    name: 'Configured review', type: 'send_message', enabled: true, mode: 'deferred', message: 'Review {{taskNumber}} {{title}} 雪' }];
   await board.setPipeline(project.id, { pipeline: config, expectedRevision: 3, confirm: true });
   const resource = await board.base.create({ kind: 'skill', name: 'Literal Base', enabled: true, trust: 'trusted', content: { body: 'BASE_MESSAGE_LITERAL' }, configuration: {} });
   await board.base.apply({ changes: [{ target: { scope: 'project', projectId: project.id }, binding: { mode: 'extend', include: [{ resourceId: resource.id, required: true }], exclude: [] } }], expectedBaseRevision: (await board.state()).base.revision });
@@ -53,8 +55,8 @@ test('private deferred transport uses a real owned PTY and exact native receipts
     assert.equal(receipt.status, 'confirmed'); assert.ok(receipt.submittedAt <= receipt.finishedAt); assert.equal(receipt.acceptedAt, undefined);
     grants.push(scope); deliveries.push(message); await untilSession();
   }
-  // A fixture-only row definition exercises private scheduling. The actual
-  // Board remains unchanged and still refuses enabled message rows below.
+  // Exercise the private scheduler independently before the actual configured
+  // Board transition below.
   const schedulerRows = normalizePipelineAutomations({ onEnter: [{ id: 'scheduled-message', name: 'Scheduled review', enabled: true,
     type: 'send_message', mode: 'deferred', message: '  Scheduled review {{title}} 😀\n' }] }).onEnter;
   const schedulingBoard = { state: async () => {
@@ -80,6 +82,12 @@ test('private deferred transport uses a real owned PTY and exact native receipts
   assert.equal((await scheduler.wait(schedulingKey, scheduledMove.move.actions[0].id)).confirmed, true);
   assert.equal((await journal.read(schedulingKey)).actions[0].delivery.status, 'confirmed');
   deliveries.push('  Scheduled review Split Composer task 😀\n'); await untilSession();
+  t.after(() => board.shutdownAutomations());
+  const moved = await board.transition(task.id, { column: 'code_review', expectedRevision: (await board.state()).projects[0].tasks[0].revision });
+  assert.equal(moved.continuedRunId, started.run.id); assert.equal(moved.automationMove.status, 'completed');
+  await until(async () => !(await board.state()).projects[0].tasks[0].pendingAutomationMessages?.length);
+  assert.equal((await board.automationJournal.read({ projectId: project.id, taskId: task.id, transitionId: moved.automationMove.transitionId })).actions[0].delivery.status, 'confirmed');
+  deliveries.push('Review #1 Split Composer task 雪'); await untilSession();
   const rows = (await readFile(report, 'utf8')).trim().split('\n').map(JSON.parse);
   assert.equal(rows.filter(row => row.kind === 'initial').length, 1); assert.deepEqual(rows.filter(row => row.kind === 'submitted').map(row => row.text), deliveries);
   assert.ok(rows[0].text.includes('BASE_MESSAGE_LITERAL')); assert.ok(rows[0].text.includes('Exact Composer &lt;literal&gt;'));

@@ -22,6 +22,7 @@ const providerInfo = {
 let token = '';
 let pipelineTitleOnlySupported = false;
 let pipelineBulkRestoreSupported = false;
+let pipelineDeferredMessagesSupported = false;
 let providers = [];
 let history = readHistory();
 let currentId = null;
@@ -289,6 +290,7 @@ async function loadProviders() {
     token = safeText(session.token, 1000);
     pipelineTitleOnlySupported = session.capabilities?.pipelineTitleOnly === true;
     pipelineBulkRestoreSupported = session.capabilities?.pipelineBulkRestore === true;
+    pipelineDeferredMessagesSupported = session.capabilities?.pipelineDeferredMessages === true;
     providers = Array.isArray(status.providers) ? status.providers.filter((item) => item && KNOWN_PROVIDERS.includes(item.id)) : [];
     if (!token) throw new Error('The local server did not return a session token.');
     browserNotifications?.resume();
@@ -309,6 +311,7 @@ async function loadProviders() {
     token = '';
     pipelineTitleOnlySupported = false;
     pipelineBulkRestoreSupported = false;
+    pipelineDeferredMessagesSupported = false;
     browserNotifications?.stop();
     $('#cli-status-label').textContent = 'Server unavailable';
     $('#provider-note').textContent = 'Could not reach the local server. Restart the app, then reload this page.';
@@ -2033,7 +2036,7 @@ function openCard(id = null, quick = false) {
   const card = id ? project.tasks.find(item => item.id === id) : null;
   editingCardId = card?.id || null;
   cardEditSnapshot = { projectRevision: project.revision, card: card ? JSON.parse(JSON.stringify(card)) : null };
-  const settingsBusy = card && ((board?.runs || []).some(run => run.taskId === card.id && RUN_LIVE.includes(run.status)) || ['pending', 'running', 'blocked'].includes(card.automationMove?.status));
+  const settingsBusy = card && ((board?.runs || []).some(run => run.taskId === card.id && RUN_LIVE.includes(run.status)) || ['pending', 'running', 'blocked'].includes(card.automationMove?.status) || card.pendingAutomationMessages?.length);
   cardPipelineEditor = project.workflowMode === 'pipeline' ? pipelineTaskEditor(project, card || {}, 'card', Boolean(settingsBusy)) : null;
   $('#card-pipeline-settings').replaceChildren(...(cardPipelineEditor ? [cardPipelineEditor.node] : []));
   $('#card-dialog-project').textContent = `${card && taskNumberText(card) ? taskNumberText(card) + ' · ' : ''}${project.name} · ${columnTitle(card?.column || 'todo')}`;
@@ -2339,9 +2342,10 @@ function renderRunControls(card, run) {
   const active = run && RUN_LIVE.includes(run.status) ? run : null;
   const move = card.automationMove;
   if (move) {
-    const busy = ['pending', 'running', 'blocked'].includes(move.status);
+    const busy = ['pending', 'running', 'blocked'].includes(move.status) || Boolean(card.pendingAutomationMessages?.length);
     const phase = { exit: 'On exit', lifecycle: 'Session change', enter: 'On enter', complete: 'Recorded' }[move.phase];
-    const text = busy ? `Column automations: ${move.status === 'blocked' ? 'need attention' : phase}. ${move.reason || ''}` : `Automation move ${move.status}. Open Details for each action’s result.`;
+    const text = card.pendingAutomationMessages?.length && move.status === 'completed' ? 'Agent messages are pending. Open Details for delivery status.'
+      : busy ? `Column automations: ${move.status === 'blocked' ? 'need attention' : phase}. ${move.reason || ''}` : `Automation move ${move.status}. Open Details for each action’s result.`;
     box.append(paragraph(text, `automation-state${move.status === 'blocked' || move.status === 'failed' ? ' kanban-error' : ''}`));
     if (busy) {
       const stop = detailButton('Stop automations', () => stopColumnAutomations(card), 'kanban-stop-automations'); stop.dataset.automationStop = card.id;
@@ -2682,7 +2686,7 @@ function automationHistory(card, section) {
   };
   const refreshButton = detailButton('Refresh results', refresh);
   const controls = detailActions(refreshButton);
-  if (['pending', 'running', 'blocked'].includes(card.automationMove?.status)) controls.append(detailButton('Stop automations', async () => { await stopColumnAutomations(card); await refresh(); }));
+  if (['pending', 'running', 'blocked'].includes(card.automationMove?.status) || card.pendingAutomationMessages?.length) controls.append(detailButton('Stop automations', async () => { await stopColumnAutomations(card); await refresh(); }));
   const box = section('Column automations', content, controls);
   content.append(paragraph('Loading automation results…', 'note'));
   queueMicrotask(refresh);
@@ -2712,7 +2716,7 @@ async function openTaskDetails(taskId) {
   const override = detailButton('Configure this task in this column…', () => baseView?.openPicker({ scope: 'task-column', projectId: project.id, taskId: card.id, columnId: columnScope.value }));
   nodes.at(-1).append(detailActions(columnScope, override));
   if (project.workflowMode === 'pipeline') {
-    const busy = runs.some(run => RUN_LIVE.includes(run.status)) || ['pending', 'running', 'blocked'].includes(card.automationMove?.status);
+    const busy = runs.some(run => RUN_LIVE.includes(run.status)) || ['pending', 'running', 'blocked'].includes(card.automationMove?.status) || Boolean(card.pendingAutomationMessages?.length);
     const settings = pipelineTaskEditor(project, card, 'details', busy);
     const error = paragraph('', 'inline-error'); error.setAttribute('role', 'alert'); error.hidden = true;
     const save = detailButton('Save task agent settings', async () => {
@@ -4270,8 +4274,10 @@ function pipelineAutomationEditor(entry) {
   const heading = document.createElement('h3'); heading.textContent = 'Automations';
   section.append(heading, paragraph('Actions run in order when a card leaves or arrives. Saving this list runs nothing.', 'note'));
   const types = { run_script: 'Run script', webhook: 'Call webhook', send_message: 'Send message to agent', notify: 'Notify me' };
-  const supported = type => ['run_script', 'webhook', 'notify'].includes(type);
-  const defaults = type => ({ run_script: { script: '', timeoutMinutes: 10 }, webhook: { url: '', method: 'POST', body: '', headers: {} }, notify: { title: '{{title}}', body: '{{toColumn}}' } }[type]);
+  const supported = (type, trigger, row = null) => ['run_script', 'webhook', 'notify'].includes(type)
+    || type === 'send_message' && pipelineDeferredMessagesSupported && trigger === 'onEnter' && (!row || row.mode === 'deferred');
+  const defaults = type => ({ run_script: { script: '', timeoutMinutes: 10 }, webhook: { url: '', method: 'POST', body: '', headers: {} },
+    notify: { title: '{{title}}', body: '{{toColumn}}' }, send_message: { message: '', mode: 'deferred' } }[type]);
   const uniqueName = (column, stem) => {
     const used = new Set([...column.automations.onEnter, ...column.automations.onExit].map(row => row.name.trim().toLowerCase()));
     let name = stem; for (let number = 2; used.has(name.toLowerCase()); number++) name = `${stem} ${number}`;
@@ -4303,14 +4309,14 @@ function pipelineAutomationEditor(entry) {
     for (const [index, row] of rows.entries()) {
       const item = document.createElement('fieldset'); item.className = 'automation-row'; item.dataset.automationId = row.id;
       const caption = document.createElement('legend'); caption.textContent = `${index + 1}. ${types[row.type]}`;
-      const enabled = document.createElement('input'); enabled.type = 'checkbox'; enabled.checked = row.enabled; enabled.disabled = !supported(row.type) && !row.enabled;
-      enabled.setAttribute('aria-label', `Enable automation: ${row.name}`); enabled.addEventListener('change', () => { row.enabled = enabled.checked; enabled.disabled = !supported(row.type) && !row.enabled; });
+      const enabled = document.createElement('input'); enabled.type = 'checkbox'; enabled.checked = row.enabled; enabled.disabled = !supported(row.type, trigger, row) && !row.enabled;
+      enabled.setAttribute('aria-label', `Enable automation: ${row.name}`); enabled.addEventListener('change', () => { row.enabled = enabled.checked; enabled.disabled = !supported(row.type, trigger, row) && !row.enabled; });
       const switchLabel = document.createElement('label'); switchLabel.className = 'check-row'; switchLabel.append(enabled, ' Enabled');
       const type = document.createElement('select'); type.dataset.field = 'type'; type.setAttribute('aria-label', `Automation type: ${row.name}`);
-      for (const [value, title] of Object.entries(types)) { const choice = option(value, title); choice.disabled = !supported(value); type.append(choice); }
+      for (const [value, title] of Object.entries(types)) { const choice = option(value, title); choice.disabled = !supported(value, trigger); type.append(choice); }
       type.value = row.type;
       type.addEventListener('change', () => {
-        if (!supported(type.value)) return;
+        if (!supported(type.value, trigger)) return;
         columnsDraft.headerDrafts.delete(row.id);
         rows[index] = { id: row.id, name: row.name, type: type.value, enabled: row.enabled, ...defaults(type.value) };
         renderColumns(); $('#columns-editor').querySelector(`[data-automation-id="${row.id}"] [data-field="type"]`)?.focus();
@@ -4319,7 +4325,14 @@ function pipelineAutomationEditor(entry) {
       if (row.type === 'run_script') item.append(field(row, 'script', 'Script', { multiline: true, required: true }), field(row, 'timeoutMinutes', 'Timeout (minutes)', { numeric: true }), paragraph('Scripts run in the task worktree, or project checkout when it has none. Windows uses PowerShell; propagate a native command’s exit code with exit $LASTEXITCODE.', 'note'));
       else if (row.type === 'webhook') item.append(field(row, 'url', 'Webhook URL', { max: 8192, required: true }), field(row, 'method', 'HTTP method', { choices: ['GET', 'POST', 'PUT'] }), field(row, 'body', 'JSON body', { multiline: true }), field(row, 'headers', 'Headers (JSON object)', { multiline: true }));
       else if (row.type === 'notify') item.append(field(row, 'title', 'Notification title', { max: 500 }), field(row, 'body', 'Notification body', { multiline: true, max: 4000 }), paragraph('Enable browser notifications in Settings to receive this alert. A browser display event confirms delivery; missing permission, closed browsers or unsupported display events leave it unconfirmed.', 'note'));
-      else item.append(paragraph('Agent message delivery is not available yet. This saved row is preserved.', 'note'));
+      else if (pipelineDeferredMessagesSupported && trigger === 'onEnter') {
+        const delivery = field(row, 'mode', 'Delivery', { choices: ['deferred', 'immediate'] });
+        const select = delivery.querySelector('select');
+        select.options[0].textContent = 'After the current work finishes'; select.options[1].textContent = 'While the agent works (unavailable)'; select.options[1].disabled = true;
+        select.addEventListener('change', () => { enabled.disabled = !supported(row.type, trigger, row) && !row.enabled; });
+        item.append(field(row, 'message', 'Agent message', { multiline: true, required: true }), delivery,
+          paragraph('Send once to the same task conversation after its current work finishes. No agent or restored conversation means this message is skipped. Delivery is recorded in Details; it does not confirm task completion.', 'note'));
+      } else item.append(paragraph('Agent message delivery is not available for this action. This saved row is preserved.', 'note'));
       const buttons = [];
       for (const step of [-1, 1]) {
         const button = detailButton(step < 0 ? 'Move up' : 'Move down', () => {
@@ -4330,7 +4343,7 @@ function pipelineAutomationEditor(entry) {
       const copy = document.createElement('select'); copy.setAttribute('aria-label', `Copy automation: ${row.name}`); copy.append(option('', 'Copy action to…'));
       for (const column of columnsDraft.list) for (const destination of column.role === 'active' ? ['onExit', 'onEnter'] : ['onExit']) {
         const target = option(`${column.id}/${destination}`, `${column.name} · ${destination === 'onExit' ? 'On exit' : 'On enter'}`);
-        target.disabled = column.automations[destination].length >= 40; copy.append(target);
+        target.disabled = column.automations[destination].length >= 40 || row.type === 'send_message' && (column.role !== 'active' || destination !== 'onEnter'); copy.append(target);
       }
       copy.addEventListener('change', () => {
         const header = item.querySelector('[data-field="headers"]');

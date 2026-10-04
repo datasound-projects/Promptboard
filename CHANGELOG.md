@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Enable configured deferred Send message to agent rows on active-column entry, keeping the same task conversation and Composer/Base input. Add capability-aware editing, delivery receipts and task-scoped Stop after placement completes. Persist pending references independently of history, migrate state to version 8 with exact backups, and recover interrupted delivery without replay. Add an opt-in actual-column live check; immediate/exit/slash delivery and full Kanban parity remain pending.
+
 - Add a private deferred enter-message scheduler that acknowledges durable handoff before queued startup/input, reserves per-run invocation FIFO, rechecks exact target/configuration custody and bounds cancellation/unknown saves without replay. Board/HTTP/editor activation, exit messages and busy/immediate delivery remain pending.
 
 - Capture private native-message task/session/run custody with content, configuration, Base and workspace rechecks. Keep compatible active moves on the same target, learn queued native identity once, and refuse changed/replaced targets before input. Use this check in the disposable smoke harness; actual column scheduling remains pending.

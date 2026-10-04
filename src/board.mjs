@@ -24,6 +24,7 @@ import { renderPipelineSpawnPrompt } from './pipeline-templates.mjs';
 import { PipelineJournal } from './pipeline-journal.mjs';
 import { PipelineAutomations } from './pipeline-automations.mjs';
 import { PipelineActions } from './pipeline-actions.mjs';
+import { NativeMessageScheduler } from './native-message-scheduler.mjs';
 import { readRepositoryPipeline, resolveRepositoryPipeline, RepositoryPipelineError } from './pipeline-repository.mjs';
 
 export const COLUMNS = Object.freeze([
@@ -389,7 +390,9 @@ export class Board {
     this.recoveryPromise = null;
     this.delivery = new Delivery(this);
     this.automationJournal = new PipelineJournal(dataDir);
-    this.automations = new PipelineAutomations({ journal: this.automationJournal, actions: automationActions });
+    this.messageScheduler = null;
+    this.automations = new PipelineAutomations({ journal: this.automationJournal, actions: automationActions,
+      scheduleEnterMessage: (request, options) => this.#scheduleColumnMessage(request, options) });
     this.automationMoves = new Map();
     this.deferredPipelineStarts = new Map();
     this.automationsStopping = false;
@@ -408,9 +411,12 @@ export class Board {
   async state() {
     this.recoveryPromise ||= (async () => {
       const state = await this.store.read();
-      for (const project of state.projects) for (const task of project.tasks) if (task.automationMove
-        && !['completed', 'failed', 'cancelled', 'interrupted'].includes(task.automationMove.status)) {
-        const key = { projectId: project.id, taskId: task.id, transitionId: task.automationMove.transitionId };
+      for (const project of state.projects) for (const task of project.tasks) for (const key of [
+        ...(task.pendingAutomationMessages || []),
+        ...(task.automationMove && !['completed', 'failed', 'cancelled', 'interrupted'].includes(task.automationMove.status)
+          && !(task.pendingAutomationMessages || []).some(key => key.transitionId === task.automationMove.transitionId)
+          ? [{ projectId: project.id, taskId: task.id, transitionId: task.automationMove.transitionId }] : [])]) {
+        // Completed placement can still contain an unfinished asynchronous receipt.
         try {
           await this.automationJournal.recoverInterrupted(key);
           const move = await this.automationJournal.read(key);
@@ -857,8 +863,9 @@ export class Board {
 
   async #setPipeline(id, { pipeline = defaultPipelineConfig(), expectedRevision, confirm = false } = {}, sourceGuard = null) {
     const clean = normalizePipelineConfig(pipeline);
-    // Messages require the native scheduler; non-message actions use durable move grants.
-    for (const column of clean.columns) if ([...column.automations.onEnter, ...column.automations.onExit].some(row => row.enabled && row.type === 'send_message')) throw new BoardError('Agent messages need the native delivery scheduler, which is not available yet.', 'PIPELINE_FEATURE_PENDING', 409);
+    for (const column of clean.columns) if (column.automations.onExit.some(row => row.enabled && row.type === 'send_message')
+      || column.automations.onEnter.some(row => row.enabled && row.type === 'send_message' && row.mode !== 'deferred'))
+      throw new BoardError('Agent messages currently support deferred delivery on entry only.', 'PIPELINE_FEATURE_PENDING', 409);
     for (const column of clean.columns) for (const options of [{}, ...clean.profiles.map(profile => ({ profileId: profile.id }))]) {
       const strategy = resolvePipelineStrategy(clean, column.id, options);
       if (strategy.sessionTarget !== 'main' || strategy.sessionSpawnStrategy !== 'create_or_resume' || strategy.handoffContext) throw new BoardError('Isolated sessions, forced fresh sessions, and provider handoff are not available in this checkpoint.', 'PIPELINE_FEATURE_PENDING', 409);
@@ -877,7 +884,8 @@ export class Board {
       }
       if (project.workflowMode !== 'pipeline' && confirm !== true) throw new BoardError('Confirm switching this project from stage rules to a column pipeline.', 'CONFIRMATION_REQUIRED', 409);
       if (project.workflowMode === 'pipeline' && ['todo', 'done'].some(role => project.pipeline.columns.find(column => column.role === role).id !== clean.columns.find(column => column.role === role).id)) throw conflict('Rename the system columns without changing their stable IDs or roles.', 'PIPELINE_SYSTEM_ROLE_CHANGED');
-      if (project.tasks.some(task => this.automationMoves.has(task.id) || task.automationMove && !['completed', 'failed', 'cancelled', 'interrupted'].includes(task.automationMove.status))) throw conflict('Stop the project’s active automations before changing its pipeline configuration.', 'AUTOMATIONS_ACTIVE');
+      if (project.tasks.some(task => this.automationMoves.has(task.id) || task.pendingAutomationMessages?.length
+        || task.automationMove && !['completed', 'failed', 'cancelled', 'interrupted'].includes(task.automationMove.status))) throw conflict('Stop the project’s active automations before changing its pipeline configuration.', 'AUTOMATIONS_ACTIVE');
       if (project.tasks.some(task => this.#activeRun(state, task.id))) throw conflict('Pause the project’s agents before changing its pipeline configuration.', 'RUN_ACTIVE');
       if (project.autopilot?.status === 'running') throw conflict('Pause Autopilot before switching workflow mode.', 'AUTOPILOT_ACTIVE');
       const present = new Set(clean.columns.map(column => column.id));
@@ -1554,6 +1562,17 @@ export class Board {
   }
 
   async #updateTask(id, { title, prompt, expectedRevision, pipelineSettings, expectedProjectRevision }) {
+    if (this.messageScheduler?.ownsTask(id)) {
+      const { project, task } = this.#task(await this.state(), id);
+      checkRevision(task, expectedRevision, 'This card');
+      const nextTitle = title === undefined ? task.title : text(title, 120, 'Title');
+      const nextPrompt = prompt === undefined ? task.prompt : promptText(prompt, 'The task', project.workflowMode === 'pipeline');
+      if (nextTitle !== task.title || nextPrompt !== task.prompt) {
+        this.messageScheduler.cancelTask(id);
+        await this.messageScheduler.waitTask(id);
+        for (const key of task.pendingAutomationMessages || []) await this.#publishAutomationMove(key);
+      }
+    }
     return this.store.update(state => {
       const { project, task } = this.#task(state, id);
       checkRevision(task, expectedRevision, 'This card');
@@ -2099,7 +2118,8 @@ export class Board {
     if (request.signal?.aborted) throw conflict('The automatic plan move was cancelled.', 'PLAN_ROUTE_CANCELLED');
     if (request.expectedProjectRevision != null && project.revision !== request.expectedProjectRevision) throw conflict('The board settings changed after this move was requested.', 'REVISION_CONFLICT');
     if (project.pipelineImport) throw conflict('Review and save the imported board configuration before running its automations.', 'PIPELINE_IMPORT_PENDING');
-    if ([...onExit, ...onEnter].some(row => row.enabled && row.type === 'send_message')) throw conflict('Agent messages need the native delivery scheduler.', 'PIPELINE_FEATURE_PENDING');
+    if (onExit.some(row => row.enabled && row.type === 'send_message') || onEnter.some(row => row.enabled && row.type === 'send_message' && row.mode !== 'deferred'))
+      throw conflict('Agent messages currently support deferred delivery on entry only.', 'PIPELINE_FEATURE_PENDING');
     const active = this.#activeRun(state, taskId), controller = new AbortController();
     if (request.requiredRunId && active?.id !== request.requiredRunId) throw conflict('The approved conversation was stopped or replaced. The automatic move was cancelled.', 'PLAN_ROUTE_CANCELLED');
     if (request.requiredApproval && JSON.stringify(active?.activity?.planApproval) !== JSON.stringify(request.requiredApproval)) throw conflict('Native plan approval changed before the move.', 'PLAN_APPROVAL_STALE');
@@ -2146,7 +2166,8 @@ export class Board {
       const entered = this.#task(await this.state(), taskId);
       const enterContext = await this.#automationContext(taskId, onEnter, entered);
       const enters = await this.automations.runGroup({ key, trigger: 'enter', rows: onEnter, context: enterContext, signal,
-        canMessage: false, suppressMessages: from.role === 'done', onProgress: () => this.#publishAutomationMove(key) });
+        canMessage: to.role === 'active' && Boolean(this.#activeRun(await this.state(), taskId)),
+        suppressMessages: from.role === 'done', onProgress: () => this.#publishAutomationMove(key) });
       if (!enters.safeToAdvance) {
         job.blocked = !enters.cancelled || this.#automationWorkOwned(key);
         if (!job.blocked) await this.automationJournal.cancelMove(key);
@@ -2168,7 +2189,11 @@ export class Board {
       if (!job.blocked) {
         try {
           if (lifecycleGranted && !lifecycleFinished) await this.automationJournal.finishLifecycle(key, { status: signal.aborted ? 'cancelled' : 'failed', reason: 'The session lifecycle stopped before its outcome was confirmed.' });
-          else if (moveCreated) await this.automationJournal.cancelMove(key);
+          else if (moveCreated) {
+            this.messageScheduler?.cancelTask(taskId);
+            await this.messageScheduler?.waitTask(taskId);
+            await this.automationJournal.cancelMove(key);
+          }
           await this.#publishAutomationMove(key);
         } catch { job.blocked = groupEntered || lifecycleGranted; await this.#publishAutomationMove(key, 'blocked').catch(() => {}); }
         for (const [runId, payload] of this.deferredPipelineStarts) if (payload.run.taskId === taskId) {
@@ -2215,7 +2240,31 @@ export class Board {
   }
 
   #requireAutomationsStopped(task) {
-    if (this.automationMoves.has(task.id) || task.automationMove && !['completed', 'failed', 'cancelled', 'interrupted'].includes(task.automationMove.status)) throw conflict('Stop or resolve this card’s column automations before removing its task, project or workspace, or recording a separate completion.', 'AUTOMATIONS_ACTIVE');
+    if (this.automationMoves.has(task.id) || task.pendingAutomationMessages?.length
+      || task.automationMove && !['completed', 'failed', 'cancelled', 'interrupted'].includes(task.automationMove.status)) throw conflict('Stop or resolve this card’s column automations before removing its task, project or workspace, or recording a separate completion.', 'AUTOMATIONS_ACTIVE');
+  }
+
+  async #scheduleColumnMessage(request, options) {
+    if (this.automationsStopping || typeof this.executor?.sendNativeMessage !== 'function') return { scheduled: false };
+    const state = await this.state(), current = this.#task(state, request.taskId), run = this.#activeRun(state, request.taskId);
+    if (!run || current.project.id !== request.projectId || request.key.taskId !== request.taskId || request.key.projectId !== request.projectId)
+      return { scheduled: false };
+    // Publish the recovery reference before a scheduler can grant native input.
+    await this.store.update(draft => {
+      const { task, project } = this.#task(draft, request.taskId);
+      checkRevision(task, request.expectedTaskRevision, 'This card');
+      checkRevision(project, request.expectedProjectRevision, 'This project');
+      if (this.#activeRun(draft, task.id)?.id !== run.id) throw conflict('The message target changed before scheduling.', 'MESSAGE_TARGET_CHANGED');
+      const pending = task.pendingAutomationMessages ||= [];
+      if (!pending.some(key => key.transitionId === request.key.transitionId)) {
+        if (pending.length >= 1000) throw conflict('Stop or resolve earlier message deliveries before scheduling more.', 'MESSAGE_QUEUE_FULL');
+        pending.push(structuredClone(request.key));
+      }
+    });
+    this.messageScheduler ||= new NativeMessageScheduler({ board: this, journal: this.automationJournal, supervisor: this.executor });
+    const result = await this.messageScheduler.schedule({ ...request, runId: run.id }, options);
+    this.messageScheduler.wait(request.key, request.actionId).then(() => this.#publishAutomationMove(request.key)).catch(() => {});
+    return result;
   }
 
   async #publishAutomationMove(key, status = null) {
@@ -2223,6 +2272,9 @@ export class Board {
     if (!move) return;
     await this.store.update(state => {
       const task = this.#task(state, key.taskId).task;
+      if (!move.actions.some(action => action.delivery && ['queued', 'dispatching', 'submitted', 'accepted'].includes(action.delivery.status)
+        || action.type === 'send_message' && ['pending', 'running'].includes(action.status)))
+        task.pendingAutomationMessages = (task.pendingAutomationMessages || []).filter(row => row.transitionId !== key.transitionId);
       if (task.automationMove?.transitionId !== key.transitionId) return;
       task.automationMove = { ...key, status: status || move.status, phase: move.phase, updatedAt: move.updatedAt };
     });
@@ -2230,8 +2282,9 @@ export class Board {
 
   /** Revoke ongoing column work before waiting for task/run locks. */
   abortAutomationTask(taskId, { exceptTransitionId = null } = {}) {
+    const messages = this.messageScheduler?.cancelTask(taskId, { exceptTransitionId }) || false;
     const job = this.automationMoves.get(taskId);
-    if (!job || job.key.transitionId === exceptTransitionId) return false;
+    if (!job || job.key.transitionId === exceptTransitionId) return messages;
     job.controller.abort('automation stopped'); this.automations.cancel(job.key);
     return true;
   }
@@ -2239,12 +2292,14 @@ export class Board {
   async automationRuns(taskId) {
     const task = this.#task(await this.state(), taskId).task;
     const moves = [];
-    for (const key of task.automationMoves || []) {
+    const keys = [...(task.automationMoves || [])];
+    for (const key of task.pendingAutomationMessages || []) if (!keys.some(row => row.transitionId === key.transitionId)) keys.push(key);
+    for (const key of keys) {
       const move = await this.automationJournal.read(key);
       if (!move) throw conflict('This automation history is unavailable. It cannot be replayed.', 'AUTOMATION_JOURNAL_MISSING');
       moves.push(move);
     }
-    return moves;
+    return moves.sort((left, right) => left.createdAt - right.createdAt);
   }
 
   async cancelAutomationMove(taskId, { confirm = false } = {}) {
@@ -2252,6 +2307,8 @@ export class Board {
     this.abortAutomationTask(taskId);
     return this.#locked(`run:${taskId}`, async () => {
       const task = this.#task(await this.state(), taskId).task, job = this.automationMoves.get(taskId);
+      await this.messageScheduler?.waitTask(taskId);
+      for (const pending of task.pendingAutomationMessages || []) await this.#publishAutomationMove(pending);
       const key = job?.key || (task.automationMove && { projectId: task.automationMove.projectId, taskId, transitionId: task.automationMove.transitionId });
       if (!key) return task;
       const group = this.automations.jobs.get(JSON.stringify([key.projectId, taskId]));
@@ -2283,6 +2340,7 @@ export class Board {
     this.automationsStopping = true;
     const jobs = [...this.automationMoves.values()];
     for (const job of jobs) job.controller.abort('shutdown');
+    await this.messageScheduler?.shutdown();
     await this.automations.shutdown();
     await Promise.allSettled(jobs.map(job => job.done));
   }
@@ -2301,6 +2359,9 @@ export class Board {
     if (requiredRunId && active?.id !== requiredRunId) throw conflict('The approved conversation was stopped or replaced. The automatic move was cancelled.', 'PLAN_ROUTE_CANCELLED');
     if (requiredApproval && JSON.stringify(active?.activity?.planApproval) !== JSON.stringify(requiredApproval)) throw conflict('Native plan approval changed before the move.', 'PLAN_APPROVAL_STALE');
     if (target.role !== 'active') {
+      this.messageScheduler?.cancelTask(taskId);
+      await this.messageScheduler?.waitTask(taskId);
+      for (const key of task.pendingAutomationMessages || []) await this.#publishAutomationMove(key);
       if (active) {
         if (!this.executor) throw new BoardError('The owned agent cannot be stopped.', 'EXECUTION_UNAVAILABLE', 503);
         const withinAutomationMove = this.automationMoves.get(taskId)?.key.transitionId;
