@@ -20,6 +20,7 @@ const providerInfo = {
 };
 
 let token = '';
+let pipelineTitleOnlySupported = false;
 let providers = [];
 let history = readHistory();
 let currentId = null;
@@ -286,6 +287,7 @@ async function loadProviders() {
     const session = await sessionResponse.json();
     const status = await providerResponse.json();
     token = safeText(session.token, 1000);
+    pipelineTitleOnlySupported = session.capabilities?.pipelineTitleOnly === true;
     providers = Array.isArray(status.providers) ? status.providers.filter((item) => item && KNOWN_PROVIDERS.includes(item.id)) : [];
     if (!token) throw new Error('The local server did not return a session token.');
     browserNotifications?.resume();
@@ -304,6 +306,7 @@ async function loadProviders() {
     await loadModels({ model: chosenModel(), effort: $('#effort').value });
   } catch (error) {
     token = '';
+    pipelineTitleOnlySupported = false;
     browserNotifications?.stop();
     $('#cli-status-label').textContent = 'Server unavailable';
     $('#provider-note').textContent = 'Could not reach the local server. Restart the app, then reload this page.';
@@ -1885,6 +1888,7 @@ async function deleteCard(id) {
 }
 
 let quickTask = false, cardPipelineEditor = null, cardEditSnapshot = null;
+function canOmitTaskPrompt(project) { return project?.workflowMode === 'pipeline' && pipelineTitleOnlySupported; }
 function openCard(id = null, quick = false) {
   quickTask = quick;
   const project = currentProject();
@@ -1902,12 +1906,14 @@ function openCard(id = null, quick = false) {
   $('#card-title').required = !quick;
   $('#card-title').placeholder = quick ? 'Optional — derived from your prompt' : '';
   $('#card-title').value = card?.title || '';
+  $('#card-prompt').required = !canOmitTaskPrompt(project);
+  $('#card-prompt-label').textContent = canOmitTaskPrompt(project) ? 'Prompt (optional)' : 'Prompt';
   $('#card-prompt').value = card?.prompt || '';
   const status = card && cardStatus(card);
   $('#card-status').hidden = !card;
   $('#card-status').textContent = status?.text || '';
   $('#card-status').classList.toggle('needs-review', Boolean(status?.flag));
-  $('#card-note').textContent = !card?.source ? 'Write the task as your coding agent should receive it. Copy prompt copies this text exactly.'
+  $('#card-note').textContent = !card?.source ? (canOmitTaskPrompt(project) ? 'A title is enough. The agent receives the title and any prompt. Copy prompt copies the prompt text exactly.' : 'Write the task as your coding agent should receive it. Copy prompt copies this text exactly.')
     : card.checksOutdated ? 'This prompt was edited. The checks from generation apply to the original text only. Your prompt history is unchanged.'
     : 'Imported from Compose. Saving changes marks the previous checks as outdated. Your prompt history is unchanged.';
   $('#card-source').hidden = !card?.source;
@@ -1937,7 +1943,7 @@ async function saveCard(event) {
   const typed = $('#card-prompt').value;
   const title = $('#card-title').value.trim() || (quickTask ? typed.replace(/\s+/g, ' ').trim().slice(0, 80) : '');
   const error = !title ? 'Enter a short title.' : title.length > 120 ? 'Use a title of at most 120 characters.'
-    : !typed.trim() ? 'Enter the prompt for this task.' : typed.length > MAX_PROMPT_BYTES ? 'The prompt exceeds the 2 MiB limit.' : '';
+    : !typed.trim() && !canOmitTaskPrompt(project) ? 'Enter the prompt for this task.' : typed.length > MAX_PROMPT_BYTES ? 'The prompt exceeds the 2 MiB limit.' : '';
   if (error) { $('#card-error').textContent = error; $('#card-error').hidden = false; return; }
   let saved, message;
   try {
@@ -3522,7 +3528,8 @@ $('#import-confirm').addEventListener('click', () => confirmImported(true));
 $('#import-dismiss').addEventListener('click', () => confirmImported(false));
 $('#card-new').addEventListener('click', () => openCard());
 $('#card-refine').addEventListener('click', () => {
-  const prompt = $('#card-prompt').value;
+  const description = $('#card-prompt').value;
+  const prompt = currentProject()?.workflowMode === 'pipeline' && !description.trim() ? $('#card-title').value.trim() : description;
   if (!prompt.trim() || prompt.length > 100000) {
     $('#card-error').textContent = 'Enter a prompt of at most 100,000 characters for Composer.';
     $('#card-error').hidden = false;

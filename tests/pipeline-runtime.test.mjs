@@ -104,6 +104,16 @@ test('conversion is explicit and inert; role IDs control Composer entry and unre
   await assert.rejects(w.configure(changedRole), { code: 'PIPELINE_SYSTEM_ROLE_CHANGED' });
 });
 
+test('a title-only pipeline task starts with its escaped title envelope and inherited CLI tools, without filling its stored description', async t => {
+  const w = await world(t); await w.configure(defaultPipelineConfig());
+  const task = await w.board.createTask({ projectId: w.projectId, title: 'Fix <widget> & 😀' }); assert.equal(w.starts.length, 0);
+  await w.move(task.id, 'executing'); assert.equal(w.starts.length, 1);
+  const payload = w.starts[0]; assert.equal(payload.task.prompt, ''); assert.equal(payload.firstPrompt, '<task>\n  <title>Fix &lt;widget&gt; &amp; 😀</title>\n</task>');
+  const built = await buildSession({ provider: 'claude', stage: 'executing', config: payload.run.config, message: payload.firstPrompt,
+    runDir: await temp(t), eventsFile: join(await temp(t), 'events.jsonl'), sessionId: 'title-only-fixture', workspacePath: payload.workspace.path });
+  assert.ok(built.args.includes(payload.firstPrompt)); assert.ok(!built.args.includes('--strict-mcp-config')); assert.equal((await w.taskNow(task.id)).prompt, '');
+});
+
 test('compatible live moves retain one run without completing, committing, testing, merging, or replaying a prompt', async t => {
   const w = await world(t); await w.configure(defaultPipelineConfig());
   w.board.delivery.commit = w.board.delivery.prepareMergeRun = w.board.delivery.testingContext = () => assert.fail('A column name must not perform a delivery action.');
