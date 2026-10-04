@@ -12,7 +12,7 @@ import { budgetEvidence } from '../src/compose-retrieval.mjs';
 import { researchPlan, researchReview, questTask, questText } from './helpers/compose-fixtures.mjs';
 
 async function folder(t) { const root = await mkdtemp(join(tmpdir(), 'pb-compose-local-')); t.after(() => rm(root, { recursive: true, force: true })); return root; }
-const source = path => ({ type: 'local', kind: 'repository', name: 'Project', path });
+const source = path => ({ type: 'local', kind: 'repository', purpose: 'target', name: 'Project', path });
 const internal = (id, query = 'QuestDB Python ILP ingestion') => ({ id, question: `Verify ${query}`, reason: 'Affects the requested ingestion implementation.', sourceHint: 'context7', libraryHint: 'QuestDB', query });
 const docs = () => ({ retrieve: async (source, queries) => queries.map(q => ({ sourceType: 'mcp', source: 'Context7 / QuestDB', locator: '/questdb/python', query: q.query, questionId: q.questionId, text: questText + ' The Python ILP client supports pandas DataFrames.' })) });
 
@@ -47,7 +47,7 @@ test('maximum-length internal questions remain valid unresolved inspection instr
   const plan = researchPlan(); plan.questions[0].question = 'q'.repeat(600);
   const grounding = researchGrounding(plan, [], null);
   assert.ok(grounding.unresolvedQuestions.every(q => q.length <= 600));
-  assert.ok(grounding.unresolvedQuestions.some(q => q.startsWith('Verify during implementation: q') && q.length === 600));
+  assert.ok(grounding.unresolvedQuestions.some(q => q.startsWith('Verify for this task: q') && q.length === 600));
 });
 
 test('long nested local paths retain bounded locators and relevant filenames', async t => {
@@ -157,7 +157,7 @@ test('cancelling a follow-up interrupts synthesis and prevents any further resea
 test('knowledge folders and selected documents remain local sources with distinct provenance', async t => {
   const root = await folder(t); await writeFile(join(root, 'chapter4.md'), 'Chapter 4 describes the QuestDB Python ILP ingestion algorithm and designated timestamp semantics.');
   const context = new ComposeContext(); const plan = researchPlan(); plan.questions[0].sourceHint = 'knowledge';
-  const result = await context.prepare({ request: { input: questTask }, sources: [{ ...source(root), kind: 'knowledge', name: 'LLMWiki' }] }, { runner: async c => ({ text: JSON.stringify(c.prompt.startsWith('# Compose context preparation') ? plan : researchReview(c.prompt)) }) });
+  const result = await context.prepare({ request: { input: questTask }, sources: [{ ...source(root), kind: 'knowledge', purpose: 'reference', name: 'LLMWiki' }] }, { runner: async c => ({ text: JSON.stringify(c.prompt.startsWith('# Compose context preparation') ? plan : researchReview(c.prompt)) }) });
   assert.ok(result.evidence.some(row => row.sourceType === 'knowledge' && row.source === 'LLMWiki' && row.locator.includes('chapter4.md')));
   assert.deepEqual(result.grounding.userAnswers, []);
 });

@@ -133,9 +133,9 @@
             <details class="advanced compose-context compose-settings-category" id="compose-context">
               <summary aria-expanded="false"><span>Context grounding</span><span class="advanced-summary" id="context-summary">Off</span><span class="details-plus" aria-hidden="true">＋</span></summary>
               <div class="advanced-body">
-                <p class="note">Compose assesses your goal and gathers only context that improves the prompt. It never asks you clarification questions.</p>
-                <label class="check-option"><input type="checkbox" id="context-autonomous"><span><strong>Autonomous context research</strong><small>Understand the task, research only what matters, then generate.</small></span></label>
-                <label class="check-option"><input type="checkbox" id="context-use-sources" aria-controls="context-sources" aria-expanded="false"><span><strong>Use context sources</strong><small id="context-source-count">0 sources</small></span></label>
+                <p class="note">Investigate the task before writing. Use relevant selected sources when available. Questions stay internal.</p>
+                <label class="check-option"><input type="checkbox" id="context-autonomous"><span><strong>Enable context grounding</strong><small>Understand the full request and investigate only what matters.</small></span></label>
+                <label class="check-option"><input type="checkbox" id="context-use-sources" aria-controls="context-sources" aria-expanded="false" disabled><span><strong>Use selected sources</strong><small id="context-source-count">0 sources</small></span></label>
                 <div id="context-sources" hidden>
                   <div id="context-source-list" class="context-source-list"></div>
                   <div class="detail-actions">
@@ -154,6 +154,7 @@
                   </div>
                   <div id="context-local-fields" class="context-source" hidden>
                     <label class="field-label" for="context-local-kind">Folder contains<select id="context-local-kind"><option value="repository">Project / repository</option><option value="knowledge">Documentation, wiki, or Skills</option></select></label>
+                    <label class="field-label" for="context-local-purpose" id="context-local-purpose-field">Use as<select id="context-local-purpose"><option value="reference">Reference</option><option value="target">Target project</option></select></label>
                     <label class="field-label" for="context-local-path">Local folder path<input id="context-local-path" type="text" maxlength="2000" placeholder="Absolute path to a selected folder"></label>
                     <div class="detail-actions"><button type="button" class="secondary-button" id="context-pick-local">Choose folder…</button><button type="button" class="secondary-button" id="context-save-local">Add folder</button></div>
                     <p class="note">Read-only access to a bounded set of relevant text files. Secrets, dependency folders and symlinks are excluded. Only selected excerpts reach your CLI. Skill files remain reference data.</p>

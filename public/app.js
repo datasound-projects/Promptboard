@@ -39,7 +39,7 @@ let authInfo = null;
 let authBusy = false;
 let authSequence = 0;
 let workspaceFiles = null;
-const STAGE_LABELS = { understanding: 'Understanding task', project: 'Reading project context', 'research-review': 'Checking research', retrieving: 'Finding relevant context', document: 'Preparing document', ready: 'Context ready', starting: 'Starting', models: 'Checking model options', draft: 'Drafting prompt', review: 'Reviewing requirements', repair: 'Repairing confirmed issues', 'repair-review': 'Verifying repaired prompt' };
+const STAGE_LABELS = { understanding: 'Investigating task', project: 'Reading project context', 'research-review': 'Checking research', retrieving: 'Finding relevant context', document: 'Preparing document', ready: 'Context ready', starting: 'Starting', models: 'Checking model options', draft: 'Drafting prompt', review: 'Reviewing requirements', repair: 'Repairing confirmed issues', 'repair-review': 'Verifying repaired prompt' };
 
 function safeText(value, max = MAX_PROMPT_BYTES) { return typeof value === 'string' ? value.slice(0, max) : ''; }
 
@@ -432,6 +432,7 @@ function setRunning(value) {
   updateEffort($('#effort').value);
   renderHistory();
   renderAuth();
+  contextLabel();
 }
 
 function composeCancellation(controller) {
@@ -441,17 +442,17 @@ function composeCancellation(controller) {
   return { id, dispose: () => controller.signal.removeEventListener('abort', cancel) };
 }
 
-async function api(path, { method = 'GET', body, timeoutMs = 20000, signal, compose = false } = {}) {
+async function api(path, { method = 'GET', body, timeoutMs = 20000, signal, compose = false, requestId } = {}) {
   // Metadata requests are bounded. Compose model calls explicitly wait for completion or Cancel.
   const controller = new AbortController();
-  const cancellation = compose ? composeCancellation(controller) : null;
+  const cancellation = compose && !requestId ? composeCancellation(controller) : null;
   const timer = timeoutMs === null ? undefined : setTimeout(() => controller.abort(), timeoutMs);
   const forward = () => controller.abort(signal.reason);
   signal?.addEventListener('abort', forward, { once: true });
   if (signal?.aborted) forward();
   try {
     const response = await fetch(path, { method, cache: 'no-store', signal: controller.signal,
-      headers: { 'X-STE-Token': token, ...(cancellation ? { 'X-STE-Compose-Id': cancellation.id } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+      headers: { 'X-STE-Token': token, ...(requestId || cancellation ? { 'X-STE-Compose-Id': requestId || cancellation.id } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
     let data = {};
     try { data = await response.json(); } catch {}
     return { response, data: data && typeof data === 'object' ? data : {} };
@@ -701,33 +702,38 @@ async function generate(event) {
   if (running || authBusy || modelsLoading || invalidEffort || !token || !selectedProvider()?.available) return;
   const request = settings();
   if (!request.input.trim()) { $('#prompt-input').focus(); return; }
-  if (contextNeeded()) {
-    if (!contextState.prepared || contextState.prepared.state === 'assessment-failed' || contextState.signature !== contextSignature()) {
-      const prepared = await prepareContext(request);
-      if (!prepared || prepared.state !== 'ready') return;
-    }
-    if (contextState.prepared.state !== 'ready') return;
-    request.grounding = contextState.prepared.grounding;
-  }
+  const snapshot = { signature: contextSignature(), enabled: contextNeeded(), sources: JSON.parse(JSON.stringify(contextSources())) };
   let generated = false;
   const autoSplit = $('#context-auto-split').checked;
   const previousResult = currentResult;
   $('#generation-error').hidden = true;
-  $('#output-empty').hidden = true;
-  $('#prompt-output').hidden = true;
-  $('#output-meta').hidden = true;
-  $('#lint-review').hidden = true;
-  $('#verification-status').hidden = true;
-  $('#verification-report').hidden = true;
   const sequence = ++generationSequence;
   const ownController = new AbortController();
   const cancellation = composeCancellation(ownController);
   controller = ownController;
   setRunning(true);
   startProgress();
-  announce('Your CLI is engineering the prompt.');
   let failureCode = '';
   try {
+    if (snapshot.enabled) {
+      // Refresh mutable folders on submission and respect remote/document cache lifetimes.
+      const age = Date.now() - contextState.preparedAt;
+      const mutable = snapshot.sources.some(source => source.type === 'local' || source.type === 'mcp' && age >= 10 * 60_000 || source.type === 'document' && age >= 30 * 60_000);
+      if (mutable || !contextState.prepared || contextState.prepared.state === 'assessment-failed' || contextState.signature !== snapshot.signature) {
+        const prepared = await prepareContext(request, { own: ownController, requestId: cancellation.id, sequence, snapshot });
+        if (!prepared || prepared.state !== 'ready') return;
+      }
+      if (contextState.prepared.state !== 'ready') return;
+      request.grounding = contextState.prepared.grounding;
+    }
+    if (ownController.signal.aborted || sequence !== generationSequence || snapshot.signature !== contextSignature()) return;
+    $('#output-empty').hidden = true;
+    $('#prompt-output').hidden = true;
+    $('#output-meta').hidden = true;
+    $('#lint-review').hidden = true;
+    $('#verification-status').hidden = true;
+    $('#verification-report').hidden = true;
+    announce('Your CLI is engineering the prompt.');
     const response = await fetch('/api/generate', {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'X-STE-Token': token, 'X-STE-Compose-Id': cancellation.id },
       body: JSON.stringify(request), signal: ownController.signal,
@@ -735,7 +741,7 @@ async function generate(event) {
     let data;
     try { data = await response.json(); } catch { throw new Error('The server returned an unreadable response. Your input is kept. Please try again.'); }
     // Ignore a response that belongs to an older submission.
-    if (sequence !== generationSequence) return;
+    if (sequence !== generationSequence || ownController.signal.aborted || snapshot.signature !== contextSignature()) return;
     if (!response.ok) {
       failureCode = typeof data.code === 'string' ? data.code : '';
       throw new Error(failureMessage(data, 'The CLI could not complete this prompt.'));
@@ -764,7 +770,7 @@ async function generate(event) {
     if (previousResult) showResult(previousResult);
     else { currentResult = null; $('#output-empty').hidden = false; }
     // The request text stays in the input box on every failure path.
-    if (error.name === 'AbortError' || failureCode === 'ABORTED') announce('Generation canceled. Your input is kept.');
+    if (ownController.signal.aborted || error.name === 'AbortError' || failureCode === 'ABORTED') announce('Generation canceled. Your input is kept.');
     else {
       $('#generation-error').textContent = error.message || 'Generation failed. Your input is kept. Please try again.';
       $('#generation-error').hidden = false;
@@ -784,24 +790,26 @@ async function generate(event) {
 }
 
 // ---- Optional Compose grounding: source contents live only in this tab's memory. ----
-const contextState = { sources: [], prepared: null, signature: '' };
+const contextState = { sources: [], prepared: null, preparedAt: 0, signature: '' };
 const CONTEXT_PREFS = 'promptboard.compose-context';
 function contextSources() {
-  return $('#context-use-sources').checked ? contextState.sources.filter(row => row.enabled).map(row => row.config.type === 'expert' ? { ...row.config, text: row.text || '' } : row.config) : [];
+  return contextNeeded() && $('#context-use-sources').checked ? contextState.sources.filter(row => row.enabled).map(row => row.config.type === 'expert' ? { ...row.config, text: row.text || '' } : row.config) : [];
 }
-function contextNeeded() { return $('#context-autonomous').checked || $('#context-use-sources').checked; }
+function contextNeeded() { return $('#context-autonomous').checked; }
 function contextSignature() { return JSON.stringify([settings(), $('#context-autonomous').checked, contextSources()]); }
 function contextReset() {
-  contextState.prepared = null; contextState.signature = '';
+  if (running) controller?.abort(); // Invalidate the whole operation, including an in-flight final draft.
+  contextState.prepared = null; contextState.preparedAt = 0; contextState.signature = '';
   $('#context-prepared').hidden = true;
   contextLabel();
 }
 function contextLabel() {
   const count = contextState.sources.filter(row => row.enabled).length;
   $('#context-source-count').textContent = `${count} ${count === 1 ? 'source' : 'sources'}`;
-  $('#context-summary').textContent = contextNeeded() || $('#context-auto-split').checked ? 'On' : 'Off';
-  $('#context-sources').hidden = !$('#context-use-sources').checked;
-  $('#context-use-sources').setAttribute('aria-expanded', String($('#context-use-sources').checked));
+  $('#context-summary').textContent = contextNeeded() ? 'On' : $('#context-auto-split').checked ? 'Auto-split only' : 'Off';
+  $('#context-use-sources').disabled = running || !contextNeeded();
+  $('#context-sources').hidden = !contextNeeded() || !$('#context-use-sources').checked;
+  $('#context-use-sources').setAttribute('aria-expanded', String(!$('#context-sources').hidden));
   if (!running) $('#generate-label').textContent = 'Generate prompt';
 }
 function contextError(message = '') { $('#context-error').textContent = message; $('#context-error').hidden = !message; }
@@ -820,6 +828,12 @@ function renderContextSources() {
     }, 'text-button');
     remove.setAttribute('aria-label', `Remove ${row.label}`);
     card.append(detailActions(label, remove));
+    if (row.config.type === 'local' && row.config.kind === 'repository') {
+      const role = document.createElement('label'); role.className = 'field-label'; role.append('Use as');
+      const select = document.createElement('select'); select.setAttribute('aria-label', `Use ${row.config.name} as`);
+      for (const [value, text] of [['reference', 'Reference'], ['target', 'Target project']]) { const option = document.createElement('option'); option.value = value; option.textContent = text; select.append(option); }
+      select.value = row.config.purpose || 'reference'; select.addEventListener('change', () => { row.config.purpose = select.value; contextReset(); }); role.append(select); card.append(role);
+    }
     if (row.config.type === 'expert') {
       const input = document.createElement('textarea'); input.rows = 4; input.maxLength = 20000; input.value = row.text || '';
       input.setAttribute('aria-label', 'Expert context'); input.placeholder = 'Relevant facts, constraints, or architecture notes…';
@@ -837,11 +851,11 @@ function addContextSource(config, label, text = '') {
   contextError(); renderContextSources(); contextReset();
 }
 function showContextPrepared(data) {
-  contextState.prepared = data; contextState.signature = contextSignature();
+  contextState.prepared = data; contextState.preparedAt = Date.now(); contextState.signature = contextSignature();
   $('#context-prepared').hidden = false;
   const research = data.research || {};
   $('#context-prepared-status').textContent = data.state === 'ready'
-    ? `${data.assessment?.research || 'No'} research · ${research.lookups || 0} targeted lookups. ${research.reason || 'Ready for generation.'}`
+    ? `Context ready · ${research.lookups || 0} targeted lookups. ${research.reason || 'Ready for generation.'}`
     : data.message;
   const notes = [...(data.warnings || []), ...(data.sources || []).filter(row => row.status !== 'retrieved').map(row => `${row.name}: ${row.status === 'not-needed' ? 'not needed for this task' : row.status === 'failed' ? 'unavailable' : 'no relevant material found'}.`)];
   $('#context-warnings').textContent = notes.join(' '); $('#context-warnings').hidden = !notes.length;
@@ -856,23 +870,21 @@ function showContextPrepared(data) {
   contextLabel();
   $('#context-prepared-heading').focus();
 }
-async function prepareContext(request) {
-  const own = new AbortController(); controller = own;
-  setRunning(true); startProgress(); contextError();
-  $('#generate-label').textContent = 'Understanding task…';
+async function prepareContext(request, { own, requestId, sequence, snapshot }) {
+  contextError();
+  $('#generate-label').textContent = 'Investigating task…';
+  const current = () => !own.signal.aborted && sequence === generationSequence && snapshot.signature === contextSignature();
   try {
-    const signature = contextSignature();
-    const { response, data } = await api('/api/compose/prepare', { method: 'POST', body: { request, autonomous: $('#context-autonomous').checked, sources: contextSources() }, signal: own.signal, timeoutMs: null, compose: true });
-    if (own.signal.aborted) return;
+    const { response, data } = await api('/api/compose/prepare', { method: 'POST', body: { request, autonomous: snapshot.enabled, sources: snapshot.sources }, signal: own.signal, timeoutMs: null, compose: true, requestId });
+    if (!current()) return null;
     if (!response.ok) throw new Error(failureMessage(data, 'Preparation failed.'));
-    if (signature !== contextSignature()) return null;
     showContextPrepared(data);
     return data;
   } catch (error) {
-    if (!own.signal.aborted) showContextPrepared({ state: 'assessment-failed', message: error.message + ' Retry before generation.', evidence: [], sources: [], warnings: [] });
-    else announce('Research canceled. Your task and sources are kept.');
+    if (current()) showContextPrepared({ state: 'assessment-failed', message: error.message + ' Retry before generation.', evidence: [], sources: [], warnings: [] });
+    else if (sequence === generationSequence) announce('Research canceled. Your task and sources are kept.');
     return null;
-  } finally { controller = null; stopProgress(); setRunning(false); contextLabel(); }
+  }
 }
 async function uploadContextDocument() {
   if (contextState.sources.length >= 8) { contextError('Remove a source before adding another document.'); return; }
@@ -894,13 +906,17 @@ async function uploadContextDocument() {
   } catch (error) { contextError(own.signal.aborted ? 'Document preparation stopped. Retry or continue without this document.' : error.message); }
   finally { clearTimeout(timer); cancellation.dispose(); controller = null; stopProgress(); setRunning(false); }
 }
+let contextPrefs = {};
+try { contextPrefs = JSON.parse(localStorage.getItem(CONTEXT_PREFS) || '{}') || {}; } catch {}
+const groundingEnabled = Object.hasOwn(contextPrefs, 'context-autonomous') ? contextPrefs['context-autonomous'] === true : contextPrefs['context-clarify'] === true || contextPrefs['context-use-sources'] === true;
 for (const id of ['context-autonomous', 'context-use-sources', 'context-auto-split']) {
-  try { const prefs = JSON.parse(localStorage.getItem(CONTEXT_PREFS) || '{}'); $(`#${id}`).checked = id === 'context-autonomous' ? (prefs[id] === true || (prefs[id] === undefined && prefs['context-clarify'] === true)) : prefs[id] === true; } catch {}
+  $(`#${id}`).checked = id === 'context-autonomous' ? groundingEnabled : contextPrefs[id] === true;
   $(`#${id}`).addEventListener('change', () => {
     savePref(CONTEXT_PREFS, JSON.stringify(Object.fromEntries(['context-autonomous', 'context-use-sources', 'context-auto-split'].map(key => [key, $(`#${key}`).checked]))));
     if (id === 'context-auto-split') contextLabel(); else contextReset();
   });
 }
+if (!Object.hasOwn(contextPrefs, 'context-autonomous') && groundingEnabled) savePref(CONTEXT_PREFS, JSON.stringify(Object.fromEntries(['context-autonomous', 'context-use-sources', 'context-auto-split'].map(key => [key, $(`#${key}`).checked]))));
 for (const id of ['compose-general', 'compose-context', 'advanced-options', 'context-custom', 'context-evidence', 'output-tools', 'output-info']) $(`#${id}`).addEventListener('toggle', () => $(`#${id} > summary`).setAttribute('aria-expanded', String($(`#${id}`).open)));
 $('#output-tools').addEventListener('keydown', event => {
   if (event.key === 'Escape') { event.preventDefault(); $('#output-tools').open = false; $('#output-tools > summary').focus(); }
@@ -929,10 +945,12 @@ $('#context-save-local').addEventListener('click', () => {
   const path = $('#context-local-path').value.trim(), kind = $('#context-local-kind').value;
   if (!path) { contextError('Choose or enter a local folder path.'); return; }
   const name = path.replace(/[\\/]+$/, '').split(/[\\/]/).at(-1).slice(0, 80);
-  addContextSource({ type: 'local', name, path, kind }, `${kind === 'repository' ? 'Project' : 'Knowledge'} · ${name}`);
+  const purpose = kind === 'repository' ? $('#context-local-purpose').value : 'reference';
+  addContextSource({ type: 'local', name, path, kind, purpose }, `${kind === 'repository' ? 'Project' : 'Knowledge'} · ${name}`);
   $('#context-local-path').value = ''; $('#context-local-fields').hidden = true;
   $('#context-add-local').setAttribute('aria-expanded', 'false');
 });
+$('#context-local-kind').addEventListener('change', () => { $('#context-local-purpose-field').hidden = $('#context-local-kind').value !== 'repository'; });
 $('#context-add-expert').addEventListener('click', () => addContextSource({ type: 'expert', name: 'Expert context' }, 'Expert context'));
 $('#context-save-mcp').addEventListener('click', () => {
   try {
