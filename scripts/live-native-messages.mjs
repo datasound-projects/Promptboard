@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { Board } from '../src/board.mjs';
 import { Supervisor } from '../src/supervisor.mjs';
 import { NativeMessageDispatch } from '../src/native-message-dispatch.mjs';
+import { captureNativeMessageTarget } from '../src/native-message-target.mjs';
 import { defaultPipelineConfig, normalizePipelineStrategy } from '../src/pipeline-config.mjs';
 
 const option = (name, fallback) => {
@@ -91,7 +92,9 @@ try {
     report.sameRun = moved.continuedRunId === result.run.id;
     const message = 'Reply exactly PB_NATIVE_SECOND. Do not use tools or change any file.';
     const key = { projectId: project.id, taskId: task.id, transitionId: 'live-private-message' }, journal = board.automationJournal;
-    const scope = { provider, sessionId: result.run.sessionId, runId: result.run.id, mode: 'deferred', messageHash: createHash('sha256').update(message).digest('hex') };
+    const target = captureNativeMessageTarget(await board.state(), { projectId: project.id, taskId: task.id, runId: result.run.id });
+    if (!report.sameRun || !target) throw new Error('The exact task conversation is unavailable.');
+    const scope = { provider: target.provider, sessionId: target.sessionId, runId: target.runId, mode: 'deferred', messageHash: createHash('sha256').update(message).digest('hex') };
     current = (await board.state()).projects.find(p => p.id === project.id);
     const { move } = await journal.beginMove({ ...key, taskRevision: current.tasks[0].revision, projectRevision: current.revision,
       from: { id: 'executing', name: 'Executing' }, to: { id: 'code_review', name: 'Code Review' },
@@ -100,7 +103,7 @@ try {
     const actionId = move.actions[0].id; await journal.startAction(key, actionId); await journal.scheduleMessage(key, actionId, scope); await journal.advance(key);
     dispatch = new NativeMessageDispatch({ journal, supervisor });
     const delivered = await dispatch.deliver({ key, actionId, message, scope }, { signal: cancelled.signal, timeoutMs: Math.max(1, Math.min(10000, deadline - Date.now())),
-      preflight: async () => { const run = await board.run(result.run.id); return report.sameRun && run.taskId === task.id && run.sessionId === scope.sessionId && run.config.provider === provider; } });
+      preflight: async () => target.matches(await board.state()) });
     const receipt = (await journal.read(key)).actions[0].delivery;
     report.message = { status: delivered.status, confirmed: delivered.confirmed === true, receiptStatus: receipt.status, submitted: Boolean(receipt.submittedAt) };
   }

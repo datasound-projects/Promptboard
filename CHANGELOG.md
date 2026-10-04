@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Capture private native-message task/session/run custody with content, configuration, Base and workspace rechecks. Keep compatible active moves on the same target, learn queued native identity once, and refuse changed/replaced targets before input. Use this check in the disposable smoke harness; actual column scheduling remains pending.
+
 - Render `{{taskNumber}}` as the saved `#N` identity across automation/custom spawn templates and `PROMPTBOARD_TASK_NUMBER`. Leave missing/malformed numbers empty without positional fallback; preserve numeric API/webhook fields and the exact default first task envelope.
 
 - Add an opt-in disposable private native-message smoke harness with bounded option validation, separate startup/native/durable-receipt reporting and owned-process cleanup. Test the exact harness offline with a simulated CLI and record the authorized live Codex confirmation and Claude startup limitation separately. Column-message scheduling remains pending.
