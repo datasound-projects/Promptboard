@@ -21,7 +21,7 @@ Constraints: no lettering, no text, no watermark, no background, no objects, no 
 
 ## GitHub logo
 
-`docs/logo.png` is the README logo on GitHub only; the app does not use it. It was created with ChatGPT image generation on 2026-09-29 and supplied by the project owner, resized to 480 px.
+`docs/readme-logo.png` is the original PNG supplied by the project owner, displayed at 140 px in the GitHub README. The app does not use it. `docs/logo.png` is the 480 px version used by the social preview renderer.
 
 ## GitHub social preview
 
