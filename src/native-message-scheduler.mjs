@@ -14,7 +14,7 @@ export class NativeMessageScheduler {
   constructor({ board, journal, supervisor }) {
     if (typeof board?.state !== 'function' || !journal) throw new TypeError('Use an owned Board and message journal.');
     this.board = board; this.journal = journal; this.dispatch = new NativeMessageDispatch({ journal, supervisor });
-    this.jobs = new Map(); this.tails = new Map(); this.blockedRuns = new Set(); this.stopping = false;
+    this.jobs = new Map(); this.completed = new Map(); this.tails = new Map(); this.blockedRuns = new Set(); this.stopping = false;
   }
 
   schedule({ key, actionId, runId, message, mode, expectedTaskRevision, expectedProjectRevision }, { signal = null, timeoutMs = 150000 } = {}) {
@@ -24,7 +24,7 @@ export class NativeMessageScheduler {
       || ![expectedTaskRevision, expectedProjectRevision].every(value => Number.isSafeInteger(value) && value > 0)
       || !Number.isFinite(timeoutMs) || timeoutMs < 1 || timeoutMs > 150000) return Promise.resolve({ scheduled: false });
     key = Object.fromEntries(['projectId', 'taskId', 'transitionId'].map(field => [field, key[field]]));
-    const identity = ownerId(key, actionId), existing = this.jobs.get(identity);
+    const identity = ownerId(key, actionId), existing = this.jobs.get(identity) || this.completed.get(identity);
     if (existing) return existing.runId === runId && existing.messageHash === hash(message)
       && existing.expectedTaskRevision === expectedTaskRevision && existing.expectedProjectRevision === expectedProjectRevision
       ? existing.handoff : Promise.resolve({ scheduled: false });
@@ -107,7 +107,15 @@ export class NativeMessageScheduler {
         job.blocked = result.blocked === true;
         return result;
       } catch { return await finishQueue(); }
-      finally { clearTimeout(timer); job.finished = true; if (job.blocked) this.blockedRuns.add(runId); }
+      finally {
+        clearTimeout(timer); job.finished = true;
+        if (job.blocked) this.blockedRuns.add(runId);
+        else {
+          this.jobs.delete(identity);
+          this.completed.set(identity, job);
+          if (this.completed.size > 1000) this.completed.delete(this.completed.keys().next().value);
+        }
+      }
     })();
     // Reserve FIFO at invocation time, including preparation and queued startup.
     const tail = previous.catch(() => null).then(() => job.done);
@@ -116,7 +124,7 @@ export class NativeMessageScheduler {
     return job.handoff;
   }
 
-  wait(key, actionId) { return this.jobs.get(ownerId(key, actionId))?.done ?? Promise.resolve(outcome('unavailable')); }
+  wait(key, actionId) { const identity = ownerId(key, actionId); return (this.jobs.get(identity) || this.completed.get(identity))?.done ?? Promise.resolve(outcome('unavailable')); }
   cancel(key, actionId) { const job = this.jobs.get(ownerId(key, actionId)); job?.controller.abort('Scheduled message stopped.'); return Boolean(job); }
   ownsTask(taskId) { return [...this.jobs.values()].some(job => job.key.taskId === taskId && !job.finished); }
   cancelTask(taskId, { exceptTransitionId = null } = {}) {

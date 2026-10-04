@@ -76,6 +76,57 @@ test('duplicate handoffs share one owner and changed requests cannot alter its l
   assert.deepEqual(w.writes, [request.message]); assert.equal(w.scheduler.schedule(request), first);
 });
 
+test('more than 1000 completed messages do not exhaust active capacity or replay evicted receipts', async t => {
+  const w = await fixture(t), template = await w.journal.read(w.key), moves = new Map();
+  // Controlled durable-receipt contract for a long-run capacity check. The other
+  // scenarios in this file exercise the actual filesystem journal and grants.
+  const action = key => moves.get(key.transitionId)?.actions[0];
+  const journal = {
+    read: async key => structuredClone(moves.get(key.transitionId)),
+    scheduleMessage: async (key, _id, scope) => {
+      const row = action(key);
+      if (row.status !== 'running') return { accepted: false };
+      row.status = 'scheduled'; row.delivery = { ...scope, status: 'queued' };
+      return { accepted: true, delivery: structuredClone(row.delivery) };
+    },
+    startMessageDelivery: async key => {
+      const row = action(key);
+      if (row.delivery.status !== 'queued') return { accepted: false };
+      row.delivery.status = 'dispatching'; return { accepted: true, delivery: structuredClone(row.delivery) };
+    },
+    markMessageSubmitted: async key => { action(key).delivery.status = 'submitted'; return true; },
+    finishMessageDelivery: async (key, _id, result) => { action(key).delivery.status = result.status; return true; },
+  };
+  const scheduler = new NativeMessageScheduler({ board: w.board, journal, supervisor: { sendNativeMessage: w.deliver } });
+  t.after(() => scheduler.shutdown());
+  let first, firstHandoff;
+  for (let i = 0; i < 1001; i++) {
+    const key = { ...w.key, transitionId: `long-run-${i}` }, request = { ...w.request(), key };
+    moves.set(key.transitionId, { ...structuredClone(template), ...key });
+    const handoff = scheduler.schedule(request);
+    assert.equal((await handoff).scheduled, true, `Message ${i} must have available capacity.`);
+    assert.equal((await scheduler.wait(key, request.actionId)).confirmed, true);
+    if (i === 0) { first = request; firstHandoff = handoff; assert.equal(scheduler.schedule(request), firstHandoff); }
+  }
+  assert.equal(w.writes.length, 1001);
+  assert.equal(scheduler.jobs.size, 0);
+  assert.equal(scheduler.completed.size, 1000);
+  assert.deepEqual(await scheduler.schedule(first), { scheduled: false });
+  assert.equal(w.writes.length, 1001, 'The evicted in-memory owner still has a terminal receipt and cannot supply input again.');
+});
+
+test('finished uncertain scheduling remains an active owner and cannot be evicted into completed capacity', async t => {
+  const w = await fixture(t), schedule = w.journal.scheduleMessage.bind(w.journal);
+  w.journal.scheduleMessage = async (...args) => { await schedule(...args); throw new Error('Lost acknowledgement'); };
+  assert.deepEqual(await w.scheduler.schedule(w.request()), { scheduled: false });
+  assert.equal((await w.scheduler.wait(w.key, w.request().actionId)).blocked, true);
+  assert.equal(w.scheduler.jobs.size, 1);
+  assert.equal(w.scheduler.completed.size, 0);
+  assert.equal(w.scheduler.blockedRuns.has(w.run.id), true);
+  assert.equal((await w.receipt()).status, 'queued');
+  assert.deepEqual(w.writes, []);
+});
+
 test('settings changes while a run is queued cancel the captured target without retargeting or input', async t => {
   const w = await fixture(t, { queued: true }); await w.scheduler.schedule(w.request());
   w.state.base.revision++; w.activate();
