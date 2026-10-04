@@ -650,6 +650,19 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
 .kanban-done-all:hover { color: var(--ink); border-color: var(--line-strong); }
 .kanban-done-all .kanban-stage-icon { color: var(--subtle); }
 .kanban-done-list { display: flex; flex-direction: column; gap: 10px; max-height: 60vh; margin: 16px 0 0; padding: 0; overflow-y: auto; list-style: none; }
+.done-dialog.pipeline-archive-open { width: min(960px, calc(100vw - 32px)); max-width: 960px; }
+.archive-toolbar { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 20px; }
+.archive-toolbar > label { flex: 1 1 220px; min-width: 0; }
+.archive-table-scroll { max-height: 55vh; overflow: auto; border: 1px solid var(--line); border-radius: 8px; }
+.archive-table { width: 100%; min-width: 720px; table-layout: fixed; border-collapse: collapse; text-align: left; }
+.archive-table th, .archive-table td { padding: 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.archive-table th { font-size: 12px; }
+.archive-table td { font-size: 12px; overflow-wrap: anywhere; }
+.archive-table th:first-child { width: 34%; }
+.archive-title { display: block; width: 100%; max-width: 100%; white-space: normal; text-align: left; overflow-wrap: anywhere; }
+.archive-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.archive-actions select { max-width: 100%; min-height: 36px; padding: 6px 8px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--surface); color: var(--text); font: inherit; }
+#pipeline-archive #archive-count { margin: 12px 0; }
 .kanban-done-all-count { min-width: 22px; padding: 0 7px; border-radius: 999px; background: var(--surface-3); color: var(--ink); font: 600 12px/1.7 var(--mono); }
 .kanban-column .kanban-cards:empty::after { content: "Drop cards here"; display: flex; align-items: center; justify-content: center; height: 72px; border: 1.5px dashed color-mix(in srgb, var(--stage) 35%, var(--line)); border-radius: 10px; color: var(--subtle); font-size: 12px; }
 .kanban-column .kanban-cards.drop-target { outline: 2px dashed var(--stage); background: color-mix(in srgb, var(--stage) 8%, transparent); }
