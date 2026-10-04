@@ -23,6 +23,7 @@ import { renderPipelineSpawnPrompt } from './pipeline-templates.mjs';
 import { PipelineJournal } from './pipeline-journal.mjs';
 import { PipelineAutomations } from './pipeline-automations.mjs';
 import { PipelineActions } from './pipeline-actions.mjs';
+import { readRepositoryPipeline, resolveRepositoryPipeline, RepositoryPipelineError } from './pipeline-repository.mjs';
 
 export const COLUMNS = Object.freeze([
   { id: 'todo', title: 'To Do', agent: false },
@@ -841,7 +842,9 @@ export class Board {
   }
 
   /** Explicit conversion/configuration; saving settings never dispatches agents. */
-  async setPipeline(id, { pipeline = defaultPipelineConfig(), expectedRevision, confirm = false } = {}) {
+  setPipeline(id, input = {}) { return this.#setPipeline(id, input); }
+
+  async #setPipeline(id, { pipeline = defaultPipelineConfig(), expectedRevision, confirm = false } = {}, sourceGuard = null) {
     const clean = normalizePipelineConfig(pipeline);
     // Messages require the native scheduler; non-message actions use durable move grants.
     for (const column of clean.columns) if ([...column.automations.onEnter, ...column.automations.onExit].some(row => row.enabled && row.type === 'send_message')) throw new BoardError('Agent messages need the native delivery scheduler, which is not available yet.', 'PIPELINE_FEATURE_PENDING', 409);
@@ -849,9 +852,18 @@ export class Board {
       const strategy = resolvePipelineStrategy(clean, column.id, options);
       if (strategy.sessionTarget !== 'main' || strategy.sessionSpawnStrategy !== 'create_or_resume' || strategy.handoffContext) throw new BoardError('Isolated sessions, forced fresh sessions, and provider handoff are not available in this checkpoint.', 'PIPELINE_FEATURE_PENDING', 409);
     }
-    return this.store.update(state => {
+    return this.store.update(async state => {
       const project = this.#project(state, id);
       checkRevision(project, expectedRevision, 'This project');
+      let repositoryShared = null;
+      if (sourceGuard) {
+        if (project.workflowMode !== 'pipeline' || project.repository?.root !== sourceGuard.root) throw conflict('The linked pipeline project changed. Review its configuration again.', 'REPOSITORY_PIPELINE_CHANGED');
+        const snapshot = await readRepositoryPipeline(sourceGuard.root);
+        if (snapshot.sourceRevision !== sourceGuard.sourceRevision) throw conflict('Repository configuration changed after review. Read and review it again.', 'REPOSITORY_PIPELINE_CHANGED');
+        const resolved = resolveRepositoryPipeline(snapshot, project.repositoryPipeline?.shared || project.pipeline);
+        if (JSON.stringify(resolved.pipeline) !== JSON.stringify(clean)) throw conflict('The reviewed definition no longer matches this board.', 'REPOSITORY_PIPELINE_CHANGED');
+        repositoryShared = resolved.shared;
+      }
       if (project.workflowMode !== 'pipeline' && confirm !== true) throw new BoardError('Confirm switching this project from stage rules to a column pipeline.', 'CONFIRMATION_REQUIRED', 409);
       if (project.workflowMode === 'pipeline' && ['todo', 'done'].some(role => project.pipeline.columns.find(column => column.role === role).id !== clean.columns.find(column => column.role === role).id)) throw conflict('Rename the system columns without changing their stable IDs or roles.', 'PIPELINE_SYSTEM_ROLE_CHANGED');
       if (project.tasks.some(task => this.automationMoves.has(task.id) || task.automationMove && !['completed', 'failed', 'cancelled', 'interrupted'].includes(task.automationMove.status))) throw conflict('Stop the project’s active automations before changing its pipeline configuration.', 'AUTOMATIONS_ACTIVE');
@@ -877,8 +889,40 @@ export class Board {
       }
       for (const columnId of Object.keys(project.pendingImport?.baseColumns || {})) if (!present.has(columnId)) { delete project.pendingImport.baseColumns[columnId]; state.base.revision++; }
       project.revision++;
+      if (sourceGuard) project.repositoryPipeline = { sourceRevision: sourceGuard.sourceRevision, appliedAt: Date.now(), shared: repositoryShared };
+      else delete project.repositoryPipeline;
       return project;
     });
+  }
+
+  /** A read-only, bounded repository snapshot for explicit review. */
+  async previewRepositoryPipeline(id) {
+    const project = this.#project(await this.state(), id);
+    if (project.workflowMode !== 'pipeline') throw conflict('Switch this project to a column pipeline before reading repository configuration.', 'PIPELINE_SETTINGS_REQUIRED');
+    if (!project.repository) throw conflict('Link this project to a repository first.', 'REPOSITORY_REQUIRED');
+    const root = project.repository.root, revision = project.revision;
+    const repository = await validateRepository(root);
+    if (repository.root !== root || repository.commonDir !== project.repository.commonDir) throw conflict('The linked repository changed. Review its link first.', 'REPOSITORY_PIPELINE_ROOT_CHANGED');
+    const snapshot = await readRepositoryPipeline(root), result = resolveRepositoryPipeline(snapshot, project.repositoryPipeline?.shared || project.pipeline);
+    const current = this.#project(await this.state(), id);
+    if (current.revision !== revision || current.repository?.root !== root) throw conflict('The project changed while configuration was read. Review it again.', 'REPOSITORY_PIPELINE_CHANGED');
+    const before = project.pipeline, present = new Set(result.pipeline.columns.map(column => column.id));
+    const removed = before.columns.filter(column => !present.has(column.id));
+    return { sourceRevision: snapshot.sourceRevision, expectedProjectRevision: revision, canonical: result.canonical,
+      files: snapshot.files.map(({ name, hash }) => ({ name, present: hash !== null })), pipeline: result.pipeline,
+      changes: { added: result.pipeline.columns.filter(column => !before.columns.some(item => item.id === column.id)).map(column => column.name),
+        removed: removed.map(column => column.name), renamed: result.pipeline.columns.filter(column => before.columns.some(item => item.id === column.id && item.name !== column.name)).map(column => column.name),
+        profiles: result.pipeline.profiles.map(profile => profile.name) },
+      conflicts: removed.filter(column => current.tasks.some(task => task.column === column.id)).map(column => `Move tasks out of ${column.name} before applying its removal.`) };
+  }
+
+  async applyRepositoryPipeline(id, { sourceRevision, expectedProjectRevision, confirm = false } = {}) {
+    if (confirm !== true) throw new BoardError('Review and confirm applying repository configuration.', 'CONFIRMATION_REQUIRED', 409);
+    if (typeof sourceRevision !== 'string' || !/^[a-f0-9]{64}$/.test(sourceRevision)) throw new RepositoryPipelineError('Include the exact reviewed configuration revision.');
+    const reviewed = await this.previewRepositoryPipeline(id);
+    if (reviewed.sourceRevision !== sourceRevision || reviewed.expectedProjectRevision !== expectedProjectRevision) throw conflict('Configuration or project changed after review. Read and review it again.', 'REPOSITORY_PIPELINE_CHANGED');
+    const root = this.#project(await this.state(), id).repository.root;
+    return this.#setPipeline(id, { pipeline: reviewed.pipeline, expectedRevision: expectedProjectRevision }, { root, sourceRevision });
   }
 
   async setWorkflow(id, { workflow, agentDefaults, expectedRevision }) {
