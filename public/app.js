@@ -1339,9 +1339,10 @@ async function loadBoard({ ifChanged = false } = {}) {
       if (!response.ok || !data.board) throw new Error(typeof data.error === 'string' ? data.error : 'The app could not read the board.');
       acceptBoard(data.board);
       $('#kanban-load-warning').hidden = true;
-      if (board.recovery) showLoadWarning(board.recovery.restoredFromBackup
+      if (board.recovery?.quarantined) showLoadWarning(board.recovery.restoredFromBackup
         ? 'The board file was damaged, so the last good copy was restored. The damaged file was kept in the app data folder.'
         : 'The board file was damaged and no good copy was found, so the board starts empty. The damaged file was kept in the app data folder.');
+      else if (board.recovery?.restoredFromBackup) showLoadWarning('The board file was missing, so the last good copy was restored.');
       await migrateBrowserBoard();
     } catch (error) {
       showLoadWarning(`The board could not be loaded. ${error.message}`);

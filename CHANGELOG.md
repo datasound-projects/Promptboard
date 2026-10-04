@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Do not report successful board-data migrations as corruption. Show damage warnings only for quarantined files and distinguish recovery of a missing board from a backup; preserve saved projects and tasks.
+
 - Add a private deferred enter-message scheduler that acknowledges durable handoff before queued startup/input, reserves per-run invocation FIFO, rechecks exact target/configuration custody and bounds cancellation/unknown saves without replay. Board/HTTP/editor activation, exit messages and busy/immediate delivery remain pending.
 
 - Capture private native-message task/session/run custody with content, configuration, Base and workspace rechecks. Keep compatible active moves on the same target, learn queued native identity once, and refuse changed/replaced targets before input. Use this check in the disposable smoke harness; actual column scheduling remains pending.
