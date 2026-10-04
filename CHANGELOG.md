@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add an opt-in disposable private native-message smoke harness with bounded option validation, separate startup/native/durable-receipt reporting and owned-process cleanup. Test the exact harness offline with a simulated CLI and record the authorized live Codex confirmation and Claude startup limitation separately. Column-message scheduling remains pending.
+
 - Retain native-message process custody during valid hook publication while blocking input and confirmation on pending hooks. Drain hooks arriving during receipt reads before durable confirmation. Report outer deadlines separately from explicit cancellation, keep attempted writes uncertain and never replay input. Column scheduling and enabled message rows remain pending.
 
 - Allocate stable project-local task numbers atomically across Composer creation, duplication and browser migration. Retain numbers through moves/archive/restore and never recycle deleted numbers. Migrate state to version 7 with an exact original backup; portable version 6 exports preserve numbers/counters and older backups remain importable. Number display remains a separate UI step.
