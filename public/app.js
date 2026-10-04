@@ -4241,7 +4241,7 @@ function renderPipelineColumns() {
     else nodes.push(paragraph('This system role never starts an agent; profiles do not change that rule.', 'note'));
   } else if (entry.role === 'active') {
     const automatic = document.createElement('input'); automatic.type = 'checkbox'; automatic.checked = entry.strategy.autoSpawn !== false; automatic.id = 'column-auto-spawn';
-    automatic.addEventListener('change', () => { entry.strategy.autoSpawn = automatic.checked; });
+    automatic.addEventListener('change', () => { entry.strategy.autoSpawn = automatic.checked; renderColumns(); $('#column-auto-spawn')?.focus(); });
     const label = document.createElement('label'); label.className = 'check-row'; label.append(automatic, ' Start or resume an agent when a card arrives'); nodes.push(label);
     const provider = document.createElement('select'); provider.setAttribute('aria-label', 'Column agent');
     provider.append(option('', 'Use project agent'), ...['claude', 'codex', 'gemini'].map(id => option(id, board?.execution?.providers?.[id]?.name || id)));
@@ -4275,7 +4275,7 @@ function pipelineAutomationEditor(entry) {
   section.append(heading, paragraph('Actions run in order when a card leaves or arrives. Saving this list runs nothing.', 'note'));
   const types = { run_script: 'Run script', webhook: 'Call webhook', send_message: 'Send message to agent', notify: 'Notify me' };
   const supported = (type, trigger, row = null) => ['run_script', 'webhook', 'notify'].includes(type)
-    || type === 'send_message' && pipelineDeferredMessagesSupported && trigger === 'onEnter' && (!row || row.mode === 'deferred');
+    || type === 'send_message' && pipelineDeferredMessagesSupported && entry.strategy.autoSpawn !== false && trigger === 'onEnter' && (!row || row.mode === 'deferred');
   const defaults = type => ({ run_script: { script: '', timeoutMinutes: 10 }, webhook: { url: '', method: 'POST', body: '', headers: {} },
     notify: { title: '{{title}}', body: '{{toColumn}}' }, send_message: { message: '', mode: 'deferred' } }[type]);
   const uniqueName = (column, stem) => {
@@ -4309,7 +4309,8 @@ function pipelineAutomationEditor(entry) {
     for (const [index, row] of rows.entries()) {
       const item = document.createElement('fieldset'); item.className = 'automation-row'; item.dataset.automationId = row.id;
       const caption = document.createElement('legend'); caption.textContent = `${index + 1}. ${types[row.type]}`;
-      const enabled = document.createElement('input'); enabled.type = 'checkbox'; enabled.checked = row.enabled; enabled.disabled = !supported(row.type, trigger, row) && !row.enabled;
+      const manualMessage = row.type === 'send_message' && trigger === 'onEnter' && entry.strategy.autoSpawn === false;
+      const enabled = document.createElement('input'); enabled.type = 'checkbox'; enabled.checked = row.enabled && !manualMessage; enabled.disabled = manualMessage || !supported(row.type, trigger, row) && !row.enabled;
       enabled.setAttribute('aria-label', `Enable automation: ${row.name}`); enabled.addEventListener('change', () => { row.enabled = enabled.checked; enabled.disabled = !supported(row.type, trigger, row) && !row.enabled; });
       const switchLabel = document.createElement('label'); switchLabel.className = 'check-row'; switchLabel.append(enabled, ' Enabled');
       const type = document.createElement('select'); type.dataset.field = 'type'; type.setAttribute('aria-label', `Automation type: ${row.name}`);
@@ -4333,6 +4334,7 @@ function pipelineAutomationEditor(entry) {
         item.append(field(row, 'message', 'Agent message', { multiline: true, required: true }), delivery,
           paragraph('Send once to the same task conversation after its current work finishes. No agent or restored conversation means this message is skipped. Delivery is recorded in Details; it does not confirm task completion.', 'note'));
       } else item.append(paragraph('Agent message delivery is not available for this action. This saved row is preserved.', 'note'));
+      if (manualMessage) item.append(paragraph('Start an agent here is off. This message is preserved and will not run.', 'note'));
       const buttons = [];
       for (const step of [-1, 1]) {
         const button = detailButton(step < 0 ? 'Move up' : 'Move down', () => {

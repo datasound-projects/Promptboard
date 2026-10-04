@@ -35,12 +35,22 @@ for (const olderServer of [false, true]) test(`column message editor ${olderServ
   assert.equal(await browser.eval(`return document.querySelector('[data-trigger="onEnter"] [data-field="type"] option[value="send_message"]').disabled;`), olderServer);
   assert.equal(await browser.eval(`return document.querySelector('[data-trigger="onExit"] .automation-add')!==null;`), true);
   if (olderServer) {
+    for (const width of [1280, 390]) { await browser.resize(width, 900); for (const theme of ['light', 'dark']) {
+      await browser.eval(`document.documentElement.dataset.theme='${theme}';`);
+      assert.equal(await browser.eval(`return document.querySelector('[data-trigger="onEnter"] [data-field="type"] option[value="send_message"]').disabled;`), true);
+    } }
     assert.equal((await app.board.state()).runs.length, 0); await enter('#columns-close'); return;
   }
   await browser.eval(`const type=document.querySelector('[data-trigger="onEnter"] [data-field="type"]'); type.value='send_message'; type.dispatchEvent(new Event('change',{bubbles:true}));`);
   const literal = 'Review {{taskNumber}} <img src=x onerror="window.__messagePwned=1"> 雪';
   await browser.eval(`const input=document.querySelector('[data-field="message"]'); input.value=${JSON.stringify(literal)}; input.dispatchEvent(new Event('input',{bubbles:true}));`);
   assert.equal(await browser.eval(`return document.querySelector('[data-field="mode"]').value==='deferred' && document.querySelector('[data-field="mode"] option[value="immediate"]').disabled;`), true);
+  await browser.eval(`document.getElementById('column-auto-spawn').focus();`); await browser.key(' ', 'Space', 32);
+  await browser.until(`document.querySelector('[data-trigger="onEnter"] .automation-row input[type="checkbox"]').disabled`, 'manual-column message off');
+  assert.equal(await browser.eval(`return document.querySelector('[data-trigger="onEnter"] .automation-row input[type="checkbox"]').checked;`), false);
+  await browser.key(' ', 'Space', 32);
+  await browser.until(`!document.querySelector('[data-trigger="onEnter"] .automation-row input[type="checkbox"]').disabled`, 'automatic arrival restores eligibility');
+  assert.equal(await browser.eval(`return document.querySelector('[data-field="message"]').value;`), literal);
   for (const width of [1280, 390]) {
     await browser.resize(width, 900);
     for (const theme of ['light', 'dark']) {
