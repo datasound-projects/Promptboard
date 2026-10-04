@@ -1300,3 +1300,8 @@ button.timeline-task:hover { text-decoration: underline; }
   body:has(#prompt-view:not([hidden])) .topbar .page-nav { order: 3; flex-basis: 100%; justify-content: center; padding: 0; margin: 0; }
   body:has(#prompt-view:not([hidden])) .topbar :is(.icon-button, .help-pill) { width: 44px; min-width: 44px; height: 44px; }
 }
+
+.archive-task-heading { display: flex; align-items: flex-start; gap: 8px; }
+.archive-task-heading .archive-title { flex: 1; min-width: 0; }
+.archive-task-heading input { flex: none; width: 16px; height: 16px; margin-top: 4px; }
+.archive-bulk-results { max-height: 25vh; overflow: auto; padding-left: 20px; overflow-wrap: anywhere; font-size: 12px; }

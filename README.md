@@ -49,6 +49,7 @@ Open **http://127.0.0.1:4318**. The navigation is **Compose | Kanban | Base**. P
 - Pipeline [activity observations](docs/pipeline-activity.md) show outstanding work separately from response completion, with agent-scoped permission waits, explicit provider coverage and native approval evidence.
 - [Queued destinations](docs/pipeline-queue.md) apply the latest settings without losing FIFO position; manual columns park agents and retain their conversations.
 - [Completed pipeline tasks](docs/pipeline-completed-tasks.md) can be filtered and sorted by title or archive date. Restore uses the destination's settings; the card view retains Copy, Duplicate and Delete actions.
+- [Bulk restore](docs/pipeline-bulk-restore.md) processes selected archive rows in order with task/settings revision checks, individual outcomes and Stop remaining. Unknown responses are not retried automatically.
 - [Live settings](docs/pipeline-live-settings.md) wait for native turn completion before resuming the exact conversation with new settings or Base resources.
 - [Native approved plans](docs/pipeline-native-plan.md) route Claude/Gemini cards to their configured target while preserving live implementation. Codex currently requires an explicit move.
 - Pipeline first input uses a [task envelope](docs/pipeline-prompts.md) preserving engineered prompt content, with selected Base resources and inherited CLI tools. Column automations and advanced session strategies are still being implemented.

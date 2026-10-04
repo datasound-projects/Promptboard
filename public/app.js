@@ -21,6 +21,7 @@ const providerInfo = {
 
 let token = '';
 let pipelineTitleOnlySupported = false;
+let pipelineBulkRestoreSupported = false;
 let providers = [];
 let history = readHistory();
 let currentId = null;
@@ -288,6 +289,7 @@ async function loadProviders() {
     const status = await providerResponse.json();
     token = safeText(session.token, 1000);
     pipelineTitleOnlySupported = session.capabilities?.pipelineTitleOnly === true;
+    pipelineBulkRestoreSupported = session.capabilities?.pipelineBulkRestore === true;
     providers = Array.isArray(status.providers) ? status.providers.filter((item) => item && KNOWN_PROVIDERS.includes(item.id)) : [];
     if (!token) throw new Error('The local server did not return a session token.');
     browserNotifications?.resume();
@@ -307,6 +309,7 @@ async function loadProviders() {
   } catch (error) {
     token = '';
     pipelineTitleOnlySupported = false;
+    pipelineBulkRestoreSupported = false;
     browserNotifications?.stop();
     $('#cli-status-label').textContent = 'Server unavailable';
     $('#provider-note').textContent = 'Could not reach the local server. Restart the app, then reload this page.';
@@ -1548,6 +1551,7 @@ function openDoneDialog(recent, numbers, cards = false) {
   $('#done-dialog').classList.toggle('pipeline-archive-open', pipeline);
   $('#done-dialog-list').hidden = pipeline;
   $('#pipeline-archive').hidden = !pipeline;
+  if (archiveProjectId !== project?.id) archiveSelected.clear();
   archiveProjectId = isPipeline ? project.id : null; archiveSignature = '';
   if (pipeline) {
     $('#archive-filter').value = ''; $('#archive-sort').value = 'newest';
@@ -1556,7 +1560,7 @@ function openDoneDialog(recent, numbers, cards = false) {
   $('#done-dialog').showModal();
   if (cards) $('#done-dialog-list .kanban-open')?.focus();
 }
-let archiveProjectId = null, archiveSignature = '';
+let archiveProjectId = null, archiveSignature = '', archiveSelected = new Set(), archiveBulkJob = null;
 function refreshPipelineArchive(opening = false) {
   if (!archiveProjectId || !opening && !$('#done-dialog').open) return;
   const project = currentProject();
@@ -1569,7 +1573,8 @@ function refreshPipelineArchive(opening = false) {
   const tasks = project.tasks.filter(task => projectColumnsOf(project).find(column => column.id === task.column)?.role === 'done');
   const filter = $('#archive-filter').value.trim().toLocaleLowerCase(), sort = $('#archive-sort').value;
   const observed = tasks.map(task => [task.id, task.revision, task.title, task.archivedAt, task.updatedAt, latestRun(task.id)?.usage, task.sessionId, (board.sessions || []).find(session => session.id === task.sessionId)]);
-  const signature = JSON.stringify([project.revision, observed, filter, sort]);
+  const busy = archiveBulkJob?.running === true;
+  const signature = JSON.stringify([project.revision, observed, filter, sort, [...archiveSelected], busy, archiveBulkJob?.stop, archiveBulkJob?.items]);
   if (signature === archiveSignature) return;
   archiveSignature = signature;
   const focus = document.activeElement?.closest('[data-archive-task]'), action = document.activeElement?.dataset.archiveAction;
@@ -1585,7 +1590,14 @@ function refreshPipelineArchive(opening = false) {
     const restore = document.createElement('select'); restore.dataset.archiveAction = 'restore'; restore.setAttribute('aria-label', `Restore: ${task.title}`);
     restore.append(option('', 'Restore to…'), ...projectColumnsOf(project).filter(column => ['todo', 'active'].includes(column.role)).map(column => option(column.id, column.title)));
     restore.addEventListener('change', () => { if (restore.value) { $('#done-dialog').close(); placeCard(task.id, restore.value, null); } });
-    const actions = document.createElement('div'); actions.className = 'archive-actions'; actions.append(details, restore); name.append(open, actions);
+    restore.disabled = busy;
+    const heading = document.createElement('div'); heading.className = 'archive-task-heading';
+    if (pipelineBulkRestoreSupported) {
+      const selected = document.createElement('input'); selected.type = 'checkbox'; selected.checked = archiveSelected.has(task.id); selected.disabled = busy; selected.dataset.archiveAction = 'select'; selected.setAttribute('aria-label', `Select: ${task.title}`);
+      selected.addEventListener('change', () => { selected.checked ? archiveSelected.add(task.id) : archiveSelected.delete(task.id); refreshPipelineArchive(); }); heading.append(selected);
+    }
+    heading.append(open);
+    const actions = document.createElement('div'); actions.className = 'archive-actions'; actions.append(details, restore); name.append(heading, actions);
     const date = when(task); archived.textContent = date ? new Date(date).toLocaleString() : 'Unavailable';
     const conversation = (board.sessions || []).find(session => session.id === task.sessionId && session.taskId === task.id && session.projectId === project.id);
     conversationCell.textContent = !task.sessionId ? 'None retained' : conversation ? `${providerInfo[conversation.provider]?.name || conversation.provider} · ${conversation.status}` : 'Unavailable';
@@ -1600,10 +1612,49 @@ function refreshPipelineArchive(opening = false) {
   $('#archive-count').textContent = `${rows.length} of ${tasks.length} tasks`;
   $('#archive-title-header').setAttribute('aria-sort', sort === 'title' ? 'ascending' : sort === 'title-desc' ? 'descending' : 'none');
   $('#archive-date-header').setAttribute('aria-sort', sort === 'newest' ? 'descending' : sort === 'oldest' ? 'ascending' : 'none');
+  $('#archive-bulk').hidden = !pipelineBulkRestoreSupported;
+  const selectedCount = tasks.filter(task => archiveSelected.has(task.id)).length;
+  $('#archive-select-visible').disabled = busy || !rows.length; $('#archive-clear-selection').disabled = busy || !selectedCount;
+  $('#archive-restore-selected').disabled = busy || !selectedCount; $('#archive-restore-selected').textContent = `Restore selected (${selectedCount})`;
+  $('#archive-bulk-target').disabled = busy; $('#archive-stop-remaining').hidden = !busy; $('#archive-cards').disabled = busy;
+  $('#archive-stop-remaining').disabled = archiveBulkJob?.stop === true;
+  $('#archive-stop-remaining').textContent = archiveBulkJob?.stop ? 'Remaining stopped' : 'Stop remaining';
+  const choices = projectColumnsOf(project).filter(column => ['todo', 'active'].includes(column.role)), destination = $('#archive-bulk-target').value;
+  $('#archive-bulk-target').replaceChildren(...choices.map(column => option(column.id, column.title)));
+  if (choices.some(column => column.id === destination)) $('#archive-bulk-target').value = destination;
+  const results = archiveBulkJob?.projectId === project.id ? archiveBulkJob.items : [];
+  $('#archive-bulk-progress').hidden = !results.length;
+  $('#archive-bulk-progress').textContent = `${results.filter(item => item.status === 'restored').length} restored · ${results.filter(item => item.status === 'review').length} need review · ${results.filter(item => item.status === 'pending').length} not started${busy && results.length ? ' · Restoring…' : ''}`;
+  $('#archive-bulk-results').replaceChildren(...results.map(item => { const node = document.createElement('li'); node.textContent = `${item.title}: ${ { pending: 'Not started', restoring: 'Restoring…', restored: 'Restored', review: 'Needs review' }[item.status]}${item.reason ? ` · ${item.reason}` : ''}`; return node; }));
   if (focus) {
     const replacement = [...$('#archive-rows').children].find(row => row.dataset.archiveTask === focus.dataset.archiveTask);
     ([...(replacement?.querySelectorAll('[data-archive-action]') || [])].find(node => node.dataset.archiveAction === action) || $('#archive-filter')).focus();
   }
+}
+
+async function restoreArchiveSelection() {
+  const project = currentProject();
+  if (!pipelineBulkRestoreSupported || project?.id !== archiveProjectId || project.workflowMode !== 'pipeline' || !$('#done-dialog').open || archiveBulkJob?.running) return;
+  const column = projectColumnsOf(project).find(column => column.id === $('#archive-bulk-target').value && ['todo', 'active'].includes(column.role));
+  if (!column) return;
+  const items = [...archiveSelected].map(id => project.tasks.find(task => task.id === id)).filter(task => task && projectColumnsOf(project).find(column => column.id === task.column)?.role === 'done')
+    .map(task => ({ id: task.id, title: task.title, revision: task.revision, transitionId: newTransitionId(), status: 'pending' }));
+  if (!items.length) return;
+  const job = { projectId: project.id, revision: project.revision, column: column.id, running: true, stop: false, items };
+  archiveBulkJob = job; refreshPipelineArchive();
+  try {
+    for (const item of items) {
+      if (job.stop || currentProject()?.id !== job.projectId || !$('#done-dialog').open) break;
+      item.status = 'restoring'; refreshPipelineArchive();
+      try {
+        const response = await boardCall('POST', `/api/tasks/${encodeURIComponent(item.id)}/move`, { column: job.column, index: null, expectedRevision: item.revision, expectedProjectRevision: job.revision, transitionId: item.transitionId }, 180000);
+        const task = response.board?.projects.find(project => project.id === job.projectId)?.tasks.find(task => task.id === item.id);
+        if (response.task?.id === item.id && task?.column === job.column && !task.archivedAt) { item.status = 'restored'; archiveSelected.delete(item.id); }
+        else { item.status = 'review'; item.reason = 'The restore outcome was not confirmed. Check Details before trying again.'; }
+      } catch (error) { item.status = 'review'; item.reason = safeText(error.message, 500) || 'Check Details before trying again.'; }
+      if (currentProject()?.id === job.projectId) refreshPipelineArchive();
+    }
+  } finally { job.running = false; if (currentProject()?.id === job.projectId) refreshPipelineArchive(); }
 }
 function renderDoneCard(card, number, draggable = true) {
   const item = document.createElement('li');
@@ -3658,6 +3709,11 @@ $('#archive-filter').addEventListener('input', () => refreshPipelineArchive());
 $('#archive-sort').addEventListener('change', () => refreshPipelineArchive());
 $('#archive-sort-title').addEventListener('click', () => { $('#archive-sort').value = $('#archive-sort').value === 'title' ? 'title-desc' : 'title'; refreshPipelineArchive(); });
 $('#archive-sort-date').addEventListener('click', () => { $('#archive-sort').value = $('#archive-sort').value === 'newest' ? 'oldest' : 'newest'; refreshPipelineArchive(); });
+$('#archive-select-visible').addEventListener('click', () => { if (archiveBulkJob?.running) return; for (const row of $('#archive-rows').children) archiveSelected.add(row.dataset.archiveTask); refreshPipelineArchive(); });
+$('#archive-clear-selection').addEventListener('click', () => { if (archiveBulkJob?.running) return; archiveSelected.clear(); refreshPipelineArchive(); });
+$('#archive-restore-selected').addEventListener('click', () => restoreArchiveSelection());
+$('#archive-stop-remaining').addEventListener('click', () => { if (archiveBulkJob) { archiveBulkJob.stop = true; refreshPipelineArchive(); } });
+$('#done-dialog').addEventListener('close', () => { if (archiveBulkJob?.running) archiveBulkJob.stop = true; });
 $('#archive-cards').addEventListener('click', () => {
   const project = currentProject();
   if (project?.id !== archiveProjectId) return;

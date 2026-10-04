@@ -135,7 +135,7 @@ The first end-to-end milestone is a task moving Planning → Executing → Code 
 
 ## Decisions for migration
 
-The [completed pipeline table](pipeline-completed-tasks.md) adds inert title filtering and keyboard title/archive-date sorting, retained-context visibility and exact latest reported usage, with old card actions preserved. Bulk operations, complete per-session telemetry/cost/change summaries, expired-context warnings and archive search remain pending.
+The [completed pipeline table](pipeline-completed-tasks.md) adds inert title filtering and keyboard title/archive-date sorting, retained-context visibility and exact latest reported usage, with old card actions preserved. [Bulk restore](pipeline-bulk-restore.md) now adds selection-ordered common transitions with task/settings revisions, individual outcomes, scoped stop and no automatic retry after unknown responses. Bulk deletion, complete per-session telemetry/cost/change summaries, expired-context warnings and archive search remain pending.
 
 The [column automation runtime](pipeline-runtime-automations.md) now integrates exit/lifecycle/enter scripts and webhooks, authenticated receipts/Stop, exact metadata, verified workspaces, queued FIFO holds and task-scoped no-replay recovery. State version 6 preserves version 5 pipeline configuration and native sessions with an original backup. The [action editor](pipeline-automation-editor.md) now provides script/webhook switches, ordering, copying, draft deletion, scoped Stop and escaped durable results. The [browser notification receiver](pipeline-notifications.md) now provides explicit permission, scoped display acknowledgements and no-replay loss/cancellation. Explicit retries and native message scheduling remain pending.
 
