@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Scope each Kanban file tree to its selected project folder, including folders inside a parent repository; give newly created projects their own repository. Add explicit editing/saving with draft preservation and disk-conflict checks, plus an optional tool-disabled single-file AI proposal panel with review, cancellation and explicit Save. Keep project agents, Git actions, Compose and Base independent.
+
 - Prepare private deferred native-message transport bound to one live pipeline process, exact native history and strict durable callback acknowledgements. Preserve literal Unicode, consume dispatch IDs once, cancel changed ownership/input before Enter, bound hanging callbacks and keep unknown writes sticky without clearing drafts or retrying. Block Stop-based completion during pending/unknown submission; column scheduling, immediate delivery and enabled message rows remain pending.
 
 - Move CLI connection/status/sign-in controls from Compose's More settings into the top-bar CLI dialog. Manage accounts independently of Compose's CLI/model selection, preserve pending sign-in through close/reopen, and keep model feedback beside generation controls. Retain installation guides and privacy help.

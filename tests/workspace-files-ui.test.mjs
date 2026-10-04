@@ -13,10 +13,10 @@ function setup(t, adapter) {
   win.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
   win.HTMLDialogElement.prototype.close = function () { this.open = false; };
   win.eval(script);
-  const ui = win.PromptboardFiles.create({ request: async (url, signal) => {
-    calls.push({ url, signal });
+  const ui = win.PromptboardFiles.create({ request: async (url, signal, options = {}) => {
+    calls.push({ url, signal, options });
     const parsed = new URL(url, 'http://local'), id = parsed.pathname.split('/')[3], path = parsed.searchParams.get('path'), workspace = parsed.searchParams.get('workspace');
-    if (adapter) return adapter({ parsed, id, path, workspace, signal });
+    if (adapter) return adapter({ parsed, id, path, workspace, signal, options });
     const base = { project: { id, name: id }, path, workspace: { id: workspace, name: workspace ? 'Task checkout' : 'Project checkout' } };
     if (parsed.pathname.endsWith('/files')) return { ...base, scopes: [{ id: '', name: 'Project checkout' }, { id: 'task_1', name: 'Actual task branch' }], entries: path ? [{ name: 'index.js', kind: 'file', blocked: false }] : [{ name: 'src', kind: 'directory', blocked: false }, { name: 'readme.md', kind: 'file', blocked: false }], next: null, truncated: false };
     return { ...base, version: id + path, text: `const value = "${id}";\n// Read-only\n`, unchanged: false };
@@ -125,4 +125,73 @@ test('aborted old directory responses cannot repopulate a replacement project ro
   const p = project('p_one'); const host = mount(p); host.querySelector('button').click(); await settle();
   const replaced = { ...p, repository: { root: '/projects/replaced' } }; ui.sync([replaced]); mount(replaced);
   release(); await settle(); assert.equal($('.workspace-files:last-child').textContent.includes('old-secret'), false);
+});
+
+function enterDraft(win, $, text) {
+  $('[aria-label="Edit file"]').click(); const editor = $('.file-editor'); editor.value = text; editor.dispatchEvent(new win.Event('input', { bubbles: true }));
+}
+
+test('explicit edits survive refresh, minimize, tab switching and navigation; close warns before discarding', async t => {
+  const { ui, mount, $, ticks, win } = setup(t), p = project('p_one');
+  const host = mount(p); host.querySelector('button').click(); await settle(); $('[data-file-path="readme.md"]').click(); await settle();
+  enterDraft(win, $, 'manual draft');
+  await ticks[0](); await settle(); assert.equal($('.file-editor').value, 'manual draft'); assert.match($('.file-status').textContent, /Unsaved draft/);
+  $('[aria-label="Minimize file viewer"]').click(); $('.file-viewer-chip button').click(); await settle(); assert.equal($('.file-editor').value, 'manual draft');
+  ui.setVisible(false); ui.setVisible(true); $('.file-viewer-chip button').click(); await settle(); assert.equal($('.file-editor').value, 'manual draft');
+  $('[aria-label="Close file viewer"]').click(); assert.equal($('#workspace-file-viewer').open, true); assert.equal($('.file-close-confirm').hidden, false);
+  $('[aria-label="Keep file draft"]').click(); assert.equal($('.file-close-confirm').hidden, true);
+  ui.sync([{ ...p, repository: { root: '/different' } }]); assert.equal($('#workspace-file-viewer').open, true); assert.match($('.file-status').textContent, /draft is kept/); assert.equal($('.file-save').disabled, true);
+  $('[aria-label="Close file viewer"]').click(); $('[aria-label="Discard draft and close file"]').click(); assert.equal($('#workspace-file-viewer').open, false);
+});
+
+test('external edits never replace an unsaved draft; conflict requires explicit reconciliation', async t => {
+  let version = 'original';
+  const { mount, $, ticks, win } = setup(t, async ({ parsed, id }) => parsed.pathname.endsWith('/files')
+    ? { scopes: [{ id: '', name: 'Project checkout' }], entries: [{ name: 'index.js', kind: 'file' }], next: null }
+    : { project: { id, name: id }, version, scopeVersion: 'scope', text: version });
+  const host = mount(project('p_one')); host.querySelector('button').click(); await settle(); $('[data-file-path="index.js"]').click(); await settle();
+  enterDraft(win, $, 'mine'); version = 'agent change'; await ticks[0](); await settle();
+  assert.equal($('.file-editor').value, 'mine'); assert.match($('.file-status').textContent, /changed on disk/); assert.equal($('.file-save').disabled, true);
+  $('[aria-label="Discard draft and reload disk file"]').click(); await settle(); assert.equal($('.file-editor').value, 'agent change'); assert.equal($('.file-close-confirm').hidden, true);
+});
+
+test('relinking a subfolder inside the same Git root replaces its tree and closes only clean viewers', async t => {
+  const { ui, mount, $ } = setup(t); const p = { ...project('p_one'), repository: { root: '/repo', path: '/repo/one' } };
+  const host = mount(p); host.querySelector('button').click(); await settle(); $('[data-file-path="readme.md"]').click(); await settle();
+  const replaced = { ...p, repository: { root: '/repo', path: '/repo/two' } }; ui.sync([replaced]);
+  assert.equal($('#workspace-file-viewer').open, false); assert.notEqual(ui.mount(replaced), host);
+});
+
+test('saving requires explicit action and retains drafts on error; AI proposal requires Use then Save', async t => {
+  let disk = 'const original = 1;', version = 'v1', saves = 0, models = 0, rejectSave = true;
+  const { mount, $, win, calls } = setup(t, async ({ parsed, id, options }) => {
+    if (parsed.pathname.endsWith('/files')) return { scopes: [{ id: '', name: 'Project checkout' }], entries: [{ name: 'index.js', kind: 'file' }], next: null };
+    if (parsed.pathname.endsWith('/file-proposal')) { models++; assert.equal(options.timeoutMs, null); assert.equal(options.body.text, 'my draft'); return { text: 'const proposed = 2;', summary: 'Changed constant' }; }
+    if (options.method === 'PUT') { saves++; if (rejectSave) throw new Error('Permission denied'); disk = options.body.text; version = 'v2'; return { version, scopeVersion: 'scope' }; }
+    return { project: { id, name: id }, text: disk, version, scopeVersion: 'scope', unchanged: false };
+  });
+  const host = mount(project('p_one')); host.querySelector('button').click(); await settle(); $('[data-file-path="index.js"]').click(); await settle();
+  enterDraft(win, $, 'my draft'); assert.equal(saves, 0); assert.equal(models, 0);
+  $('.file-save').click(); await settle(); assert.equal(saves, 1); assert.equal($('.file-editor').value, 'my draft'); assert.match($('.file-status').textContent, /Permission denied/);
+  $('[aria-label="Show AI file panel"]').click(); const input = $('[aria-label="Describe the change to this file"]'); input.value = 'Change constant'; input.dispatchEvent(new win.Event('input'));
+  $('[aria-label="Propose changes to this file"]').click(); await settle();
+  assert.equal(models, 1); assert.equal(saves, 1); assert.equal(disk, 'const original = 1;'); assert.match($('.file-status').textContent, /AI proposal/); assert.match($('.file-code').textContent, /proposed/);
+  $('[aria-label="Compare AI proposal with current draft"]').click(); assert.match($('.file-code').textContent, /my draft/);
+  $('[aria-label="Use AI proposal in draft"]').click(); assert.equal($('.file-editor').value, 'const proposed = 2;'); assert.equal(saves, 1);
+  rejectSave = false; $('.file-save').click(); await settle(); assert.equal(disk, 'const proposed = 2;'); assert.equal($('.file-save').disabled, true);
+  assert.equal(calls.filter(c => c.options.method === 'POST').length, 1);
+});
+
+test('cancelled proposals ignore late results, preserve draft and can be retried; minimize cancels provider request', async t => {
+  let release; const delayed = new Promise(resolve => { release = resolve; }); let aiSignal;
+  const { mount, $, win } = setup(t, async ({ parsed, id, options, signal }) => {
+    if (parsed.pathname.endsWith('/files')) return { scopes: [{ id: '', name: 'Project checkout' }], entries: [{ name: 'index.js', kind: 'file' }], next: null };
+    if (options.method === 'POST') { aiSignal = signal; return delayed; }
+    return { project: { id, name: id }, text: 'const original = 1;', version: 'v1', scopeVersion: 'scope' };
+  });
+  const host = mount(project('p_one')); host.querySelector('button').click(); await settle(); $('[data-file-path="index.js"]').click(); await settle();
+  enterDraft(win, $, 'mine'); $('[aria-label="Show AI file panel"]').click(); const input = $('[aria-label="Describe the change to this file"]'); input.value = 'Change it'; input.dispatchEvent(new win.Event('input'));
+  $('[aria-label="Propose changes to this file"]').click(); await settle(); assert.equal($('.file-editor').readOnly, true);
+  $('[aria-label="Cancel file AI proposal"]').click(); assert.equal(aiSignal.aborted, true); assert.equal($('.file-editor').readOnly, false);
+  release({ text: 'Late unwanted result', summary: 'Too late' }); await settle(); assert.equal($('.file-editor').value, 'mine'); assert.equal($('[aria-label="Use AI proposal in draft"]').hidden, true);
 });

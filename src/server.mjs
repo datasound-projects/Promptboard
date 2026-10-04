@@ -29,7 +29,8 @@ import { PipelineActions } from './pipeline-actions.mjs';
 import { PipelineNotifications, NotificationError } from './pipeline-notifications.mjs';
 import { notificationRoute } from './pipeline-notifications-http.mjs';
 import { RepositoryPipelineError } from './pipeline-repository.mjs';
-import { inspectWorkspace, WorkspaceFileError } from './workspace-files.mjs';
+import { inspectWorkspace, saveWorkspaceFile, WorkspaceFileError } from './workspace-files.mjs';
+import { proposeWorkspaceFile, validateFileProposalRequest } from './workspace-file-ai.mjs';
 
 const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
 const assets = new Map([
@@ -131,6 +132,7 @@ async function boardRoute(board, req, res, pathname, searchParams) {
   const [, kind, id, action = ''] = match;
   const expected = () => Number(searchParams.get('expectedRevision'));
   if (kind === 'projects') {
+    if (method === 'PUT' && action === 'file') return send(res, 200, await saveWorkspaceFile(board, id, await body(4 * 1024 * 1024)));
     if (method === 'GET' && ['files', 'file'].includes(action)) return send(res, 200, await inspectWorkspace(board, id, {
       path: searchParams.get('path') || '', workspace: searchParams.get('workspace') || '',
       offset: searchParams.get('offset') || '0', version: searchParams.get('version') || '', file: action === 'file',
@@ -552,8 +554,24 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
       }
       return;
     }
+    const fileAi = pathname.match(/^\/api\/projects\/([A-Za-z0-9_-]{1,100})\/file-proposal$/);
+    if (req.method === 'POST' && fileAi) {
+      let claimed;
+      const abort = () => { if (!res.writableEnded) claimed?.job.controller.abort(); };
+      res.once('close', abort);
+      try {
+        const value = validateFileProposalRequest(await jsonBody(req, 4 * 1024 * 1024));
+        claimed = await claim('file-proposal', value.provider);
+        const { job } = claimed; job.stage = 'proposing-file-edit';
+        if (res.destroyed) job.controller.abort();
+        if (value.effort) checkModelEffort(value.provider, value.model, value.effort, await abortable(getCatalog(value.provider), job.controller.signal));
+        return send(res, 200, await track(proposeWorkspaceFile(board, fileAi[1], value, { runner: call => track(runner(call)), signal: job.controller.signal })));
+      } catch (error) { const failure = failureBody(error, 'The AI file proposal failed. Your file and draft are unchanged.'); send(res, failure.status, failure.body); }
+      finally { res.off('close', abort); claimed?.release(); }
+      return;
+    }
     if (/^\/api\/(board|projects|tasks|runs|github)(\/|$)/.test(pathname) || pathname === '/api/repository/validate' || pathname === '/api/folder/choose' || pathname === '/api/settings') {
-      try { if ((await boardRoute(board, req, res, pathname, requestUrl.searchParams)) !== false) return; }
+      try { if ((await track(boardRoute(board, req, res, pathname, requestUrl.searchParams))) !== false) return; }
       catch (error) {
         // Board, store, and Git errors carry fixed messages; raw Git output is never returned.
         const known = error instanceof BoardError || error instanceof GitHubError || error instanceof GitError || error instanceof StoreError || error instanceof AgentError || error instanceof DeliveryError || error instanceof BaseError || error instanceof BaseDeliveryError || error instanceof RepositoryPipelineError || error instanceof WorkspaceFileError;
