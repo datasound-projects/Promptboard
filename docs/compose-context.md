@@ -61,7 +61,7 @@ The original task remains unchanged in its own field. The final Compose engine r
 
 PDF extraction has a 30-second deadline and 128 MiB worker heap limit. Each MCP session has a 30-second deadline, 1 MB response cap and 100,000-character usable-text cap. Identical MCP queries are cached for ten minutes, up to 64 results. Compose's planning, synthesis, generation, review, repair and splitting model calls wait for completion or Cancel by default: neither the browser nor the server imposes a generation deadline. The finite call/query/round budgets still prevent research loops. Programmatic callers may supply an explicit pipeline/preparation deadline. Other provider consumers retain their existing bounded defaults.
 
-Cancel/disconnect propagates to provider processes, MCP connections/process groups, local reads and PDF workers. A non-cooperative adapter cannot hold the Compose job slot after cancellation, and late promise rejections are observed. The existing shared CLI job slot prevents overlapping generation/auth/preparation jobs. Optional-source failures preserve the task and allow final generation with explicit unknowns. Invalid intent assessment contributes no facts or invented objective. Provider failures, account limits and interrupted connections can still stop generation; Compose never changes the selected provider, model or effort to hide such failures.
+Request-scoped Cancel/disconnect propagates to provider processes, MCP connections/process groups, local reads and PDF workers. A non-cooperative adapter cannot hold the Compose job slot after cancellation, and late promise rejections are observed. The existing shared CLI job slot prevents overlapping generation/auth/preparation jobs. Optional-source failures preserve the task and allow final generation with explicit unknowns. Invalid intent assessment contributes no facts or invented objective. Provider failures, account limits and interrupted connections can still stop generation; Compose never changes the selected provider, model or effort to hide such failures.
 
 Source material—including PDFs, MCP responses, repository files, wiki/skill text and expert context—is untrusted JSON data behind explicit boundaries in planning, synthesis, generation, review and repair. Model calls receive no execution permission through this feature. Source commands are inert; no task, skill, code, deployment, or repository mutation is automatically executed.
 
@@ -75,6 +75,7 @@ Documents/local files stay local except for the selected excerpts sent through t
 
 Compose-only routes use the existing session token and host/origin protection:
 
+- `POST /api/compose/cancel`: bounded, session-protected cancellation for a matching client-generated request ID; stale cancellations cannot stop another job.
 - `POST /api/compose/prepare`: `{ request, autonomous, sources }`; the legacy `clarify` flag remains accepted as an alias but never produces user questions.
 - `POST /api/compose/folder/choose`: opens the local folder picker; typed paths are also supported.
 - `POST /api/compose/sources/document?name=guide.pdf&from=40&to=55`: bounded raw upload.

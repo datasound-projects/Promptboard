@@ -293,6 +293,18 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
         .finally(() => { clearTimeout(timer); free(); });
     } };
   };
+  const cancelledCompose = new Map();
+  const composeId = value => {
+    if (value !== undefined && (typeof value !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value))) throw Object.assign(new Error('Invalid Compose request ID.'), { status: 400 });
+    return value?.toLowerCase();
+  };
+  const claimCompose = async (req, res) => {
+    const id = composeId(req.headers['x-ste-compose-id']);
+    const claimed = await claim('generate', null);
+    claimed.job.composeId = id;
+    if (res.destroyed || (id && cancelledCompose.get(id) > Date.now())) claimed.job.controller.abort();
+    return claimed;
+  };
   const baseRoutes = new BaseRoutes({ board, runner, claim, track, catalog: getCatalog, send, jsonBody, ...(mcpTester ? { mcpTester } : {}), imageGenerator });
   let composeContext;
   const getCompose = () => composeContext ??= import('./compose-context.mjs').then(({ ComposeContext }) => new ComposeContext(composeMcp ? { mcp: composeMcp } : {}));
@@ -408,6 +420,19 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
         return send(res, status, body);
       } finally { claimed?.release(); }
     }
+    if (req.method === 'POST' && pathname === '/api/compose/cancel') {
+      try {
+        const body = await jsonBody(req, 1024);
+        if (!body || Object.keys(body).length !== 1 || !body.id) throw Object.assign(new Error('Provide the Compose request ID.'), { status: 400 });
+        const id = composeId(body.id), now = Date.now();
+        for (const [key, expires] of cancelledCompose) if (expires <= now) cancelledCompose.delete(key);
+        cancelledCompose.set(id, now + 60000);
+        if (cancelledCompose.size > 64) cancelledCompose.delete(cancelledCompose.keys().next().value);
+        const matched = busy?.kind === 'generate' && busy.composeId === id;
+        if (matched) busy.controller.abort();
+        return send(res, 200, { cancelled: Boolean(matched) });
+      } catch (error) { return send(res, error.status || 400, { error: error.message }); }
+    }
     if (pathname.startsWith('/api/compose/')) {
       let claimed;
       const abort = () => { if (!res.writableEnded) claimed?.job.controller.abort(); };
@@ -416,8 +441,9 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
         const documentId = pathname.match(/^\/api\/compose\/sources\/document\/([a-zA-Z0-9-]{1,80})$/)?.[1];
         if (req.method === 'DELETE' && documentId) { (await getCompose()).documents.delete(documentId); return send(res, 200, { removed: true }); }
         if (req.method !== 'POST' || !['/api/compose/prepare', '/api/compose/sources/document', '/api/compose/mcp/test', '/api/compose/folder/choose'].includes(pathname)) return send(res, 404, { error: 'This Compose route does not exist.' });
-        claimed = await claim('generate', null);
+        claimed = await claimCompose(req, res);
         const { job } = claimed;
+        job.controller.signal.throwIfAborted();
         if (pathname === '/api/compose/folder/choose') return send(res, 200, await folderPicker());
         const context = await getCompose();
         const signal = job.controller.signal;
@@ -461,8 +487,9 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
       const abort = () => { if (!res.writableEnded) claimed?.job.controller.abort(); };
       res.once('close', abort);
       try {
-        claimed = await claim('generate', null);
+        claimed = await claimCompose(req, res);
         const { job } = claimed;
+        job.controller.signal.throwIfAborted();
         const body = await jsonBody(req, 2_097_152);
         let value;
         try { value = validateRequest({ input: body?.prompt, provider: body?.provider, model: body?.model, effort: body?.effort, language: body?.language }, { maxInputChars: COMPOSE_PROMPT_CHARS }); validateEffort(value.provider, value.effort); }
@@ -491,8 +518,9 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
       const abort = () => { if (!res.writableEnded) claimed?.job.controller.abort(); };
       res.once('close', abort);
       try {
-        claimed = await claim('generate', null);
+        claimed = await claimCompose(req, res);
         const { job } = claimed;
+        job.controller.signal.throwIfAborted();
         const body = await jsonBody(req);
         let value;
         try { value = validateRequest(body); }

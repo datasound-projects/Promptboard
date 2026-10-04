@@ -427,20 +427,28 @@ function setRunning(value) {
   renderAuth();
 }
 
-async function api(path, { method = 'GET', body, timeoutMs = 20000, signal } = {}) {
+function composeCancellation(controller) {
+  const id = crypto.randomUUID();
+  const cancel = () => { void api('/api/compose/cancel', { method: 'POST', body: { id }, timeoutMs: 5000 }).catch(() => {}); };
+  controller.signal.addEventListener('abort', cancel, { once: true });
+  return { id, dispose: () => controller.signal.removeEventListener('abort', cancel) };
+}
+
+async function api(path, { method = 'GET', body, timeoutMs = 20000, signal, compose = false } = {}) {
   // Metadata requests are bounded. Compose model calls explicitly wait for completion or Cancel.
   const controller = new AbortController();
+  const cancellation = compose ? composeCancellation(controller) : null;
   const timer = timeoutMs === null ? undefined : setTimeout(() => controller.abort(), timeoutMs);
   const forward = () => controller.abort(signal.reason);
   signal?.addEventListener('abort', forward, { once: true });
   if (signal?.aborted) forward();
   try {
     const response = await fetch(path, { method, cache: 'no-store', signal: controller.signal,
-      headers: { 'X-STE-Token': token, ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+      headers: { 'X-STE-Token': token, ...(cancellation ? { 'X-STE-Compose-Id': cancellation.id } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
     let data = {};
     try { data = await response.json(); } catch {}
     return { response, data: data && typeof data === 'object' ? data : {} };
-  } finally { clearTimeout(timer); signal?.removeEventListener('abort', forward); }
+  } finally { clearTimeout(timer); cancellation?.dispose(); signal?.removeEventListener('abort', forward); }
 }
 
 function formatElapsed(ms) { const total = Math.max(0, Math.floor(ms / 1000)); return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`; }
@@ -706,6 +714,7 @@ async function generate(event) {
   $('#verification-report').hidden = true;
   const sequence = ++generationSequence;
   const ownController = new AbortController();
+  const cancellation = composeCancellation(ownController);
   controller = ownController;
   setRunning(true);
   startProgress();
@@ -713,7 +722,7 @@ async function generate(event) {
   let failureCode = '';
   try {
     const response = await fetch('/api/generate', {
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-STE-Token': token },
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-STE-Token': token, 'X-STE-Compose-Id': cancellation.id },
       body: JSON.stringify(request), signal: ownController.signal,
     });
     let data;
@@ -756,6 +765,7 @@ async function generate(event) {
       if (!failureCode && /token|session|403/i.test(error.message || '')) await loadProviders();
     }
   } finally {
+    cancellation.dispose();
     if (sequence === generationSequence) {
       stopProgress();
       controller = null;
@@ -845,7 +855,7 @@ async function prepareContext(request) {
   $('#generate-label').textContent = 'Understanding task…';
   try {
     const signature = contextSignature();
-    const { response, data } = await api('/api/compose/prepare', { method: 'POST', body: { request, autonomous: $('#context-autonomous').checked, sources: contextSources() }, signal: own.signal, timeoutMs: null });
+    const { response, data } = await api('/api/compose/prepare', { method: 'POST', body: { request, autonomous: $('#context-autonomous').checked, sources: contextSources() }, signal: own.signal, timeoutMs: null, compose: true });
     if (own.signal.aborted) return;
     if (!response.ok) throw new Error(failureMessage(data, 'Preparation failed.'));
     if (signature !== contextSignature()) return null;
@@ -864,10 +874,10 @@ async function uploadContextDocument() {
   if (file.size > 20 * 1024 * 1024) { contextError('Choose a document up to 20 MiB.'); return; }
   const params = new URLSearchParams({ name: file.name });
   for (const [name, id] of [['from', 'context-page-from'], ['to', 'context-page-to']]) if ($(`#${id}`).value) params.set(name, $(`#${id}`).value);
-  const own = new AbortController(); controller = own; setRunning(true); startProgress(); contextError();
+  const own = new AbortController(); const cancellation = composeCancellation(own); controller = own; setRunning(true); startProgress(); contextError();
   const timer = setTimeout(() => own.abort(), 65000);
   try {
-    const response = await fetch(`/api/compose/sources/document?${params}`, { method: 'POST', headers: { 'X-STE-Token': token, 'Content-Type': file.type || (/\.pdf$/i.test(file.name) ? 'application/pdf' : 'text/plain') }, body: file, signal: own.signal });
+    const response = await fetch(`/api/compose/sources/document?${params}`, { method: 'POST', headers: { 'X-STE-Token': token, 'X-STE-Compose-Id': cancellation.id, 'Content-Type': file.type || (/\.pdf$/i.test(file.name) ? 'application/pdf' : 'text/plain') }, body: file, signal: own.signal });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'Document preparation failed.');
     const doc = data.document;
@@ -875,7 +885,7 @@ async function uploadContextDocument() {
     $('#context-file').value = ''; $('#context-document-fields').hidden = true;
     $('#context-add-document').setAttribute('aria-expanded', 'false');
   } catch (error) { contextError(own.signal.aborted ? 'Document preparation stopped. Retry or continue without this document.' : error.message); }
-  finally { clearTimeout(timer); controller = null; stopProgress(); setRunning(false); }
+  finally { clearTimeout(timer); cancellation.dispose(); controller = null; stopProgress(); setRunning(false); }
 }
 for (const id of ['context-autonomous', 'context-use-sources', 'context-auto-split']) {
   try { const prefs = JSON.parse(localStorage.getItem(CONTEXT_PREFS) || '{}'); $(`#${id}`).checked = id === 'context-autonomous' ? (prefs[id] === true || (prefs[id] === undefined && prefs['context-clarify'] === true)) : prefs[id] === true; } catch {}
@@ -3318,7 +3328,7 @@ async function openSplit({ previewOnly = false } = {}) {
   const own = new AbortController();
   split.controller = own;
   let answer;
-  try { answer = await api('/api/split', { method: 'POST', body: { prompt: result.prompt, provider: result.provider, model: result.model || '', effort: result.effort || '', language: result.language || 'en' }, timeoutMs: null, signal: own.signal }); }
+  try { answer = await api('/api/split', { method: 'POST', body: { prompt: result.prompt, provider: result.provider, model: result.model || '', effort: result.effort || '', language: result.language || 'en' }, timeoutMs: null, signal: own.signal, compose: true }); }
   catch { if (split.controller === own && !own.signal.aborted) $('#split-status').textContent = 'The app did not answer. Check that Promptboard is still running.'; return; }
   if (own.signal.aborted || split.controller !== own || !$('#split-dialog').open) return;
   const { response, data } = answer;

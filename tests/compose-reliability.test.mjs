@@ -148,3 +148,41 @@ test('HTTP disconnect frees generation, preparation and split jobs even when an 
     waiting = false; const next = await app.post('/api/generate', { input: 'Add a parser.', quality: 'fast' }); assert.equal(next.status, 200); assert.equal((await next.json()).prompt, 'Add a parser.');
   }
 });
+
+test('explicit Compose cancellation stops each owned stage without a disconnect and cannot cancel a replacement request', async t => {
+  let held, ready, complete; const calls = [];
+  const app = await httpApp(t, { runner: async call => {
+    calls.push(call); held = call; ready();
+    await new Promise((resolve, reject) => { complete = resolve; call.signal.addEventListener('abort', () => reject(call.signal.reason), { once: true }); });
+    return { text: 'Add a parser.' };
+  } });
+  const owned = (path, body, id) => app.post(path, body, { headers: { 'x-ste-token': app.token, 'content-type': 'application/json', 'x-ste-compose-id': id } });
+  const ids = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()];
+  for (const [i, [path, body]] of [['/api/generate', { input: 'Add a parser.', quality: 'fast' }], ['/api/compose/prepare', { request: { input: questTask }, sources: [] }], ['/api/split', { prompt: 'Add a parser.' }]].entries()) {
+    const started = new Promise(resolve => { ready = resolve; });
+    const result = owned(path, body, ids[i]); await started;
+    const cancelled = await app.post('/api/compose/cancel', { id: ids[i] });
+    assert.equal(cancelled.status, 200); assert.equal((await cancelled.json()).cancelled, true);
+    assert.equal(held.signal.aborted, true);
+    assert.equal((await (await result).json()).code, 'ABORTED');
+  }
+  const id = crypto.randomUUID(), started = new Promise(resolve => { ready = resolve; });
+  const replacement = owned('/api/generate', { input: 'Add a parser.', quality: 'fast' }, id); await started;
+  for (const stale of [...ids, crypto.randomUUID()]) {
+    assert.equal((await (await app.post('/api/compose/cancel', { id: stale })).json()).cancelled, false);
+    assert.equal(held.signal.aborted, false);
+  }
+  complete(); assert.equal((await (await replacement).json()).prompt, 'Add a parser.');
+  assert.equal(calls.length, 4);
+});
+
+test('Compose cancellation is protected, bounded and remembers an early Cancel before the request is claimed', async t => {
+  let calls = 0; const app = await httpApp(t, { runner: async () => { calls++; return { text: 'Add a parser.' }; } });
+  assert.equal((await fetch(app.url + '/api/compose/cancel', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: crypto.randomUUID() }) })).status, 403);
+  for (const body of [{}, { id: 'invalid' }, { id: crypto.randomUUID(), extra: true }, { id: 'a'.repeat(2000) }]) assert.ok((await app.post('/api/compose/cancel', body)).status >= 400);
+  const id = crypto.randomUUID(); assert.equal((await app.post('/api/compose/cancel', { id })).status, 200);
+  const post = key => app.post('/api/generate', { input: 'Add a parser.', quality: 'fast' }, { headers: { 'x-ste-token': app.token, 'content-type': 'application/json', 'x-ste-compose-id': key } });
+  assert.equal((await (await post(id)).json()).code, 'ABORTED'); assert.equal(calls, 0);
+  assert.equal((await post('invalid')).status, 400); assert.equal(calls, 0);
+  assert.equal((await post(crypto.randomUUID())).status, 200); assert.equal(calls, 1);
+});
