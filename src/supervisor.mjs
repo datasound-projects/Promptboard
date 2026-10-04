@@ -19,6 +19,7 @@ import { BaseDeliveryError, checkBaseRevocations } from './base-resolver.mjs';
 import { SessionActivity } from './session-activity.mjs';
 import { NativeMessageReceipts } from './native-message-receipts.mjs';
 import { TerminalInputObservation } from './terminal-input-observation.mjs';
+import { sendOwnedNativeMessage } from './native-message-input.mjs';
 
 const RING_BYTES = 1024 * 1024; // Live scrollback kept per run for reconnects.
 const LOG_BYTES = 20 * 1024 * 1024; // Output log file cap per run.
@@ -43,6 +44,7 @@ export async function loadPty(requireFrom = import.meta.url) {
 
 export class Supervisor {
   #messageTickets = new WeakMap();
+  #nativeMessageOwners = new WeakSet();
   constructor({ board, dataDir, ptyLoader = loadPty, resolver = resolveExecutable, nodePath = process.execPath, basePreparer = prepareBase }) {
     this.board = board;
     this.dataDir = dataDir;
@@ -339,7 +341,7 @@ export class Supervisor {
 
   #schedulePlanRoute(session) {
     const approval = session.activity?.planApproval;
-    if (!approval || !session.proc || session.cancelled || session.suspending || session.failure || session.launchFailed || this.stopping || session.planRouting) return;
+    if (!approval || !session.proc || session.cancelled || session.suspending || session.failure || session.launchFailed || session.messageInputPending || session.messageInputUncertain || this.#nativeMessageOwners.has(session) || this.stopping || session.planRouting) return;
     const key = JSON.stringify(approval);
     if (session.publishedPlanApprovalKey !== key) return; // Retry observation persistence before accepting the move.
     if (key === session.planRouteKey) return;
@@ -384,6 +386,8 @@ export class Supervisor {
             // Stop, failure or permission event must not finish/fail its parent.
             if (event.agentId || event.subordinate) continue;
           }
+          if (session.pipeline && (!event.provider || event.provider === session.provider))
+            session.messageLifecycleEpoch = (session.messageLifecycleEpoch || 0) + 1;
           await this.#locateUsage(session, event);
           await this.#signal(session, interpretEvent(session.provider, event));
           // Keep hook paths private. The receipt reader still validates the exact
@@ -408,7 +412,8 @@ export class Supervisor {
 
   #activity(session) {
     const activity = session.activity.snapshot();
-    return session.eventsPending ? { ...activity, ready: false, uncertain: true, phase: activity.phase === 'ended' ? 'ended' : 'working' } : activity;
+    if (session.eventsPending) return { ...activity, ready: false, uncertain: true, phase: activity.phase === 'ended' ? 'ended' : 'working' };
+    return session.messageInputPending || this.#nativeMessageOwners.has(session) ? { ...activity, ready: false } : activity;
   }
 
   /** Find the CLI's own session file once: Claude names it in hook payloads, Codex by thread ID. */
@@ -471,8 +476,9 @@ export class Supervisor {
       const planning = !session.pipeline && session.stage === 'planning', reviewing = !session.pipeline && session.stage === 'code_review';
       if (signal.message) await writeFile(join(session.runDir, planning ? 'plan.md' : reviewing ? 'review.md' : 'last-message.md'), signal.message, { mode: 0o600 });
       await this.#setStatus(session, 'waiting_for_input', {
-        turns: session.turns, turnComplete: !session.initialInputUncertain, ...(planning && signal.message ? { hasPlan: true, planExcerpt: signal.message } : {}), ...(reviewing && signal.message ? { hasReview: true } : {}),
-        waitingReason: session.initialInputUncertain ? 'The agent finished a turn, but initial prompt input remains unconfirmed. Check the terminal; automatic advancement is blocked.'
+        turns: session.turns, turnComplete: !session.initialInputUncertain && !session.messageInputPending && !session.messageInputUncertain, ...(planning && signal.message ? { hasPlan: true, planExcerpt: signal.message } : {}), ...(reviewing && signal.message ? { hasReview: true } : {}),
+        waitingReason: session.messageInputUncertain ? 'Native message input remains unconfirmed. Check the terminal; automatic advancement is blocked.'
+          : session.initialInputUncertain ? 'The agent finished a turn, but initial prompt input remains unconfirmed. Check the terminal; automatic advancement is blocked.'
           : planning ? (signal.message ? 'The plan is ready. Review it, continue in the terminal, or approve it.' : 'The agent finished its turn without a plan message. Continue in the terminal.')
           : reviewing ? 'The review is ready. Check the findings, then confirm to record them.'
           : session.pipeline ? 'The agent finished its turn. Continue in the terminal or move the card.' : 'The agent finished its turn. Review the work, continue in the terminal, or confirm the stage.',
@@ -564,6 +570,56 @@ export class Supervisor {
     if (session.status === 'waiting_for_input' && /\r|\n/.test(data)) this.#setStatus(session, 'running', { waitingReason: '' });
   }
 
+  /** Private transport seam, not an HTTP action or connected column scheduler. */
+  async sendNativeMessage(runId, request) {
+    const session = this.sessions.get(runId), proc = session?.proc;
+    if (!session?.pipeline || !proc) return { status: 'unavailable', confirmed: false, reason: 'The owned pipeline process is unavailable.' };
+    if (session.messageInputUncertain) return { status: 'unavailable', confirmed: false, reason: 'Native input remains unconfirmed for this process. No input will be retried.' };
+    const timeoutMs = request?.timeoutMs ?? 150000, started = performance.now();
+    if (!Number.isFinite(timeoutMs) || timeoutMs < 1 || timeoutMs > 150000 || this.#nativeMessageOwners.has(session))
+      return { status: 'unavailable', confirmed: false, reason: 'This process cannot grant another native input attempt.' };
+    this.#nativeMessageOwners.add(session);
+    const remaining = () => timeoutMs - (performance.now() - started);
+    const bounded = callback => new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (fn, value) => { if (settled) return; settled = true; clearInterval(timer); fn(value); };
+      const timer = setInterval(() => {
+        if (request?.signal?.aborted || remaining() <= 0 || !this.#ownsInitialProcess(session, proc)) finish(reject, new Error('native input budget'));
+      }, 25);
+      Promise.resolve().then(() => {
+        if (request?.signal?.aborted || remaining() <= 0 || !this.#ownsInitialProcess(session, proc)) throw new Error('native input budget');
+        return callback();
+      }).then(value => finish(resolve, value), error => finish(reject, error));
+    });
+    let result;
+    try {
+      let run;
+      try { run = await bounded(() => this.board.run(runId)); await bounded(() => this.#readEvents(session)); }
+      catch { return { status: 'unavailable', confirmed: false, reason: 'The owned pipeline lifecycle is unavailable.' }; }
+      if (!run?.config?.pipeline || run.id !== runId || run.config.provider !== session.provider || !ACTIVE.has(run.status) || remaining() <= 0)
+        return { status: 'unavailable', confirmed: false, reason: 'The owned pipeline run is unavailable.' };
+      result = await sendOwnedNativeMessage({ ...request, timeoutMs: remaining(), session, run,
+        owns: () => this.#ownsInitialInput(session, proc) && !session.messageInputUncertain,
+        readEvents: () => this.#readEvents(session) });
+      if (session.messageInputUncertain) {
+        const reason = 'Native message input remains unconfirmed. Check the terminal; no input will be retried.';
+        this.#push(session, { messageInput: { status: 'unconfirmed', reason } });
+        await bounded(() => this.board.updateRun(runId, { lifecycle: 'message-input-unconfirmed', waitingReason: reason, turnComplete: false })).catch(() => {});
+      } else if (result.confirmed && this.#ownsInitialInput(session, proc)) {
+        // A receipt proves input only. Completion still requires the independently
+        // observed main Stop, never queue acceptance or transport success.
+        try {
+          await bounded(() => this.board.updateRun(runId, { turnComplete: Boolean(session.activity?.parentComplete) }));
+          await bounded(() => this.#publishActivity(session));
+        } catch {
+          session.messageInputUncertain = true; session.activity.uncertain = true;
+          result = { status: 'unconfirmed', confirmed: false, reason: 'Native input outcome publication was not acknowledged. No input will be retried.' };
+        }
+      }
+      return result;
+    } finally { this.#nativeMessageOwners.delete(session); }
+  }
+
   /** Internal read-only receipt custody; these opaque tickets are never HTTP data. */
   async checkpointMessage(runId) {
     const session = this.sessions.get(runId);
@@ -571,6 +627,7 @@ export class Supervisor {
     if (session.initialSubmitPending) return { status: 'unavailable', reason: 'initial_input_pending' };
     try { await this.#readEvents(session); }
     catch { return { status: 'unavailable', reason: 'events_unavailable' }; }
+    if (session.messageInputPending || session.messageInputUncertain || this.#nativeMessageOwners.has(session)) return { status: 'unavailable', reason: 'message_input_pending' };
     const nativeId = session.nativeSessionId, proc = session.proc;
     const epoch = () => !this.stopping && this.sessions.get(runId) === session && session.proc === proc && proc
       && !session.cancelled && !session.suspending && !session.exiting && !session.failure && !session.launchFailed && !session.activity?.ended

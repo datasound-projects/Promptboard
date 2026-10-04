@@ -62,6 +62,8 @@ Report problems privately through GitHub: **Security → Report a vulnerability*
 
 ## Limits
 
+**Deferred native input is a private seam.** The caller must acknowledge an exact durable grant before bytes and persist the outcome before advancing work. Supervisor ownership, completed/settled main activity, observed paste mode and an untouched human draft are independent requirements. One attempt consumes its dispatch ID; partial/unknown writes stay uncertain and block automatic completion even after Stop. Cancellation and deadlines bound persistence/event callbacks; late acknowledgements cannot revive input. Native turns confirm exact message text only, not task completion. This path never clears drafts, presses Esc, retries, changes CLI flags or uses an unrelated shared-server queue. Column scheduling and enabled message rows remain pending. See [the transport contract](docs/native-message-input.md).
+
 **Exact Codex history lookup.** Per-run usage and read-only receipt custody search only bounded canonical session date folders for the observed thread. A complete bounded UTF-8 metadata header must match that exact ID; a provided source must be CLI. Descendant symlinks, malformed, ambiguous, reverted or compressed files cannot supply a substitute history. Lookup paths remain in owned process memory, outside public run updates and portable backups. This evidence does not grant terminal writes or permissions.
 
 - An agent in Executing can run any command its CLI allows in the task worktree, with your user's permissions. Review what it asks to do.
