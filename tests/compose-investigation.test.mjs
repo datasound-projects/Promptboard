@@ -122,6 +122,20 @@ test('two material questions share one lookup while retaining both evidence asso
   assert.equal(result.sources[0].status, 'retrieved');
 });
 
+test('a semantically selected MCP source accepts translated queries without an exact task keyword', async t => {
+  const looked = [], context = new ComposeContext({ mcp: { retrieve: async (source, queries) => { looked.push(...queries); return queries.map(q => ({ source: 'English style guide', locator: '/style', text: 'Prefer active voice and plain language.', query: q.query, questionId: q.questionId })); } } }); t.after(() => context.close());
+  const input = 'Przeredaguj wiadomość zgodnie z wybranym poradnikiem.';
+  const plan = planFor(input, [question('r7', 'active voice plain language', 's1')], { complexity: 'simple', research: 'light', entities: ['wiadomość'] });
+  const body = { request: { input, language: 'pl' }, sources: [{ type: 'mcp', name: 'English style guide', transport: 'streamable-http', endpoint: 'https://example.com/mcp' }] };
+  const result = await context.prepare(body, { runner: reviewer(plan) });
+  assert.equal(looked.length, 1); assert.equal(looked[0].query, 'active voice plain language'); assert.match(result.evidence[0].text, /active voice/);
+  assert.equal(result.sources[0].status, 'retrieved');
+  looked.length = 0; plan.questions = [question('r3', 'CSS layout typography', 'mcp')];
+  const unrelated = await context.prepare(body, { runner: reviewer(plan) }); assert.equal(looked.length, 0); assert.equal(unrelated.research.lookups, 0);
+  plan.questions = [question('r5', 'style guide /Users/private/local-notes.md', 's1')];
+  const privateQuery = await context.prepare(body, { runner: reviewer(plan) }); assert.equal(looked.length, 0); assert.equal(privateQuery.research.lookups, 0); assert.match(privateQuery.warnings.join(' '), /private path/);
+});
+
 test('target checkpoint preserves nonsequential IDs and allocates follow-up IDs without collisions', async t => {
   const root = await mkdtemp(join(tmpdir(), 'pb-grounding-roles-')); t.after(() => rm(root, { recursive: true, force: true }));
   await writeFile(join(root, 'README.md'), 'The existing application uses FastAPI authentication middleware.');

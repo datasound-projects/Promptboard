@@ -96,7 +96,7 @@ export class ComposeContext {
           const topic = new Set(terms([request.input, ...plan.assessment.entities, ...evidence().map(item => item.text)].join(' ')));
           const grouped = new Map();
           for (const query of qs.filter(query => query.kind !== 'choice' && relevant(query, source, row, id)
-            && (source.type !== 'mcp' || terms(query.query).some(word => topic.has(word)))).map(query => ({ ...query, questionId: query.id,
+            && (source.type !== 'mcp' || query.sourceHint.toLowerCase() === id || terms(query.query).some(word => topic.has(word)))).map(query => ({ ...query, questionId: query.id,
               allowPreview: [id, row.name.toLowerCase()].includes(query.sourceHint.toLowerCase()) }))) {
             if (source.type === 'mcp' && !safeExternalQuery(query.query)) {
               if (!warnings.includes('An external lookup containing a private path, credential-like text, code, or contact detail was skipped.')) warnings.push('An external lookup containing a private path, credential-like text, code, or contact detail was skipped.');
