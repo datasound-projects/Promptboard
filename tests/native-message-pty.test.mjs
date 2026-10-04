@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { Board } from '../src/board.mjs';
 import { defaultPipelineConfig } from '../src/pipeline-config.mjs';
 import { Supervisor } from '../src/supervisor.mjs';
+import { NativeMessageDispatch } from '../src/native-message-dispatch.mjs';
 
 async function temp(t) { const path = await realpath(await mkdtemp(join(tmpdir(), 'pb-native-message-pty-'))); t.after(() => rm(path, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })); return path; }
 async function until(fn) { const deadline = Date.now() + 10000; for (;;) { if (await fn()) return; if (Date.now() > deadline) assert.fail('The offline native message fixture did not become ready.'); await new Promise(resolve => setTimeout(resolve, 50)); } }
@@ -34,10 +36,20 @@ test('private deferred transport uses a real owned PTY and exact native receipts
   const session = await untilSession();
   async function untilSession() { await until(() => board.executor.sessions.get(started.run.id)?.activity?.snapshot().ready && board.executor.sessions.get(started.run.id).terminalInput.snapshot().bracketedPaste === true); return board.executor.sessions.get(started.run.id); }
   const grants = [], deliveries = [];
+  const dispatch = new NativeMessageDispatch({ journal: board.automationJournal, supervisor: board.executor }); t.after(() => dispatch.shutdown());
   for (const [index, message] of ['  Review 😀\n' + 'literal '.repeat(170), 'Then test this task\n'].entries()) {
-    const result = await board.executor.sendNativeMessage(started.run.id, { dispatchId: `pty-${index}`, mode: 'deferred', message, timeoutMs: 7000,
-      grant: async scope => { grants.push(scope); return true; }, submitted: async () => true, accepted: async () => { assert.fail('This fixture records native turns, not queue acceptance.'); } });
-    assert.deepEqual(result, { status: 'confirmed', confirmed: true }); deliveries.push(message); await untilSession();
+    const current = (await board.state()).projects.find(row => row.id === project.id), key = { projectId: project.id, taskId: task.id, transitionId: `pty-${index}` };
+    const scope = { provider: 'claude', sessionId: started.run.sessionId, runId: started.run.id, mode: 'deferred', messageHash: createHash('sha256').update(message).digest('hex') };
+    const journal = board.automationJournal, { move } = await journal.beginMove({ ...key, taskRevision: current.tasks[0].revision, projectRevision: current.revision,
+      from: { id: 'todo', name: 'To Do' }, to: { id: 'executing', name: 'Executing' }, onEnter: [{ id: 'message', name: 'Literal message', enabled: true, type: 'send_message', mode: 'deferred', message }] });
+    await journal.advance(key); await journal.startLifecycle(key); await journal.finishLifecycle(key, { status: 'succeeded' });
+    const actionId = move.actions[0].id; await journal.startAction(key, actionId); await journal.scheduleMessage(key, actionId, scope); await journal.advance(key);
+    const result = await dispatch.deliver({ key, actionId, message, scope }, { timeoutMs: 7000, preflight: async () => {
+      const run = await board.run(started.run.id); return run.sessionId === scope.sessionId && run.config.provider === scope.provider && run.taskId === task.id;
+    } });
+    assert.equal(result.confirmed, true); const receipt = (await journal.read(key)).actions[0].delivery;
+    assert.equal(receipt.status, 'confirmed'); assert.ok(receipt.submittedAt <= receipt.finishedAt); assert.equal(receipt.acceptedAt, undefined);
+    grants.push(scope); deliveries.push(message); await untilSession();
   }
   const rows = (await readFile(report, 'utf8')).trim().split('\n').map(JSON.parse);
   assert.equal(rows.filter(row => row.kind === 'initial').length, 1); assert.deepEqual(rows.filter(row => row.kind === 'submitted').map(row => row.text), deliveries);
