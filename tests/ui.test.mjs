@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { JSDOM } from 'jsdom';
@@ -32,16 +32,34 @@ function fakeAuth(overrides = {}) {
 }
 async function setup(t, { catalogReader = async id => ({ provider: id, ...catalogs[id], note: 'Native model options.' }), storage, prefs = {}, kanban, hash = '', generationResponse, authAdapter = fakeAuth(), runner, dataDir, executor = 'auto', folderPicker, usageReader } = {}) {
   // Every page gets a private board folder unless a test shares one to simulate a reload.
-  if (!dataDir) { dataDir = await mkdtemp(join(tmpdir(), 'pb-ui-')); t.after(() => rm(dataDir, { recursive: true, force: true })); }
+  const ownsDataDir = !dataDir;
+  if (!dataDir) dataDir = await mkdtemp(join(tmpdir(), 'pb-ui-'));
+  let app, win, pending = 0;
+  const intervals = [];
+  // One ordered teardown owns the page, server and folder, including setup failures.
+  // Windows cannot delete a checkout while an in-flight Git process holds its cwd.
+  t.after(async () => {
+    try {
+      if (win) {
+        for (const { id } of intervals) win.clearInterval(id);
+        // Some scenarios intentionally hold a model lookup; keep teardown bounded.
+        for (let idle = 0, end = Date.now() + 3000; idle < 3 && Date.now() < end;) { await new Promise(resolve => setTimeout(resolve, 10)); idle = pending ? 0 : idle + 1; }
+        for (const session of win.promptboardDock?.sessions.values() || []) { session.closed = true; session.abort?.abort(); }
+        win.close();
+      }
+    } finally {
+      try { await app?.close(); }
+      finally { if (ownsDataDir) await rm(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
+    }
+  });
   const calls = [];
   const requests = [];
-  const app = await startServer({ port: 0, dataDir, executor, authAdapter, usageReader, ...(folderPicker ? { folderPicker } : {}), detector: async () => Object.keys(catalogs).map(id => ({ id, available: true })), catalogReader,
+  app = await startServer({ port: 0, dataDir, executor, authAdapter, usageReader, ...(folderPicker ? { folderPicker } : {}), detector: async () => Object.keys(catalogs).map(id => ({ id, available: true })), catalogReader,
     runner: runner ? async request => { calls.push(request); return runner(request); } : async request => { calls.push(request); return { text: request.prompt.includes('prose in Polish') ? 'Dodaj test.' : request.prompt.includes('prose in German') ? 'Füge einen Test hinzu.' : 'Add a test.', reportedModels: ['actual-model'], durationMs: 3 }; } });
   const dom = new JSDOM(await readFile(new URL('../public/index.html', import.meta.url), 'utf8'), { url: app.url + hash, runScripts: 'outside-only' });
-  const win = dom.window;
-  const intervals = [], nativeInterval = win.setInterval.bind(win);
-  win.setInterval = (fn, ms, ...args) => { intervals.push({ fn, ms }); return nativeInterval(fn, ms, ...args); };
-  let pending = 0;
+  win = dom.window;
+  const nativeInterval = win.setInterval.bind(win);
+  win.setInterval = (fn, ms, ...args) => { const id = nativeInterval(fn, ms, ...args); intervals.push({ fn, ms, id }); return id; };
   win.fetch = (url, options) => {
     pending++;
     const done = response => { pending--; return response; };
@@ -77,13 +95,6 @@ async function setup(t, { catalogReader = async id => ({ provider: id, ...catalo
   // Browsers share one global scope across classic scripts; jsdom's eval does not, so evaluate them together.
   // Test-only export appended by the harness (not part of the app): reload the board and read the token.
   win.eval(`${await readFile(new URL('../public/app.js', import.meta.url), 'utf8')}\n${await readFile(new URL('../public/dock.js', import.meta.url), 'utf8')}\nwindow.__pbTest = { loadBoard, refreshRepositoryPipelineStatus, get token() { return token; } };`);
-  t.after(async () => {
-    // A request can still be in flight when a test ends (for example a model refresh). Its handler
-    // would then touch a closed window. Wait until the page is idle for a few ticks, then close.
-    for (let idle = 0, end = Date.now() + 3000; idle < 3 && Date.now() < end;) { await new Promise(resolve => setTimeout(resolve, 10)); idle = pending ? 0 : idle + 1; }
-    for (const session of win.promptboardDock?.sessions.values() || []) { session.closed = true; session.abort?.abort(); }
-    win.close(); await app.close();
-  });
   const $ = selector => win.document.querySelector(selector);
   const choose = (id, value) => { $(id).value = value; $(id).dispatchEvent(new win.Event('change', { bubbles: true })); };
   const radio = language => { $(`input[name="language"][value="${language}"]`).checked = true; $(`input[name="language"][value="${language}"]`).dispatchEvent(new win.Event('change')); };
@@ -104,6 +115,16 @@ async function setup(t, { catalogReader = async id => ({ provider: id, ...catalo
   };
   return { win, intervals, $, choose, radio, quality, submit, calls, requests, downloads, blobs, copied: () => copied, authAdapter, app, dataDir, idle };
 }
+
+test('owned UI teardown closes its page and server before deleting the disposable data folder', async t => {
+  const ctx = await setup(t, { executor: null }), close = ctx.app.close; let closes = 0;
+  ctx.app.close = async (...args) => {
+    closes++; await access(ctx.dataDir);
+    assert.equal(ctx.win.document, undefined, 'The owned page is closed before its server.');
+    return close(...args);
+  };
+  t.after(async () => { assert.equal(closes, 1); await assert.rejects(access(ctx.dataDir), { code: 'ENOENT' }); });
+});
 
 test('repository change polling preserves editor drafts and applies only after a fresh explicit review', async t => {
   const ctx = await setup(t, { executor: null, hash: '#/kanban' });
