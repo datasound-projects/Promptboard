@@ -13,7 +13,7 @@ import { researchPlan, researchReview, questTask, questText, pdfFixture } from '
 
 const efforts = { codex: ['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'], claude: ['', 'low', 'medium', 'high', 'xhigh', 'max'], gemini: [''], agy: ['', 'low', 'medium', 'high'] };
 const details = ['super-short', 'concise', 'detailed', 'extremely-detailed'];
-const tasks = ['build', 'debug', 'refactor', 'review', 'architecture', 'agent-workflow', 'research'];
+const tasks = ['unspecified', 'build', 'feature', 'debug', 'refactor', 'review', 'architecture', 'integration', 'ui-ux', 'data', 'testing', 'security', 'performance', 'migration', 'dependencies', 'devops', 'automation', 'documentation', 'agent-workflow', 'research'];
 const review = call => {
   const data = JSON.parse(call.prompt.split('# Review data\n')[1]);
   return JSON.stringify({ covered: data.units.map(unit => unit.id), requirements: [], criteria: Object.fromEntries(REVIEW_CRITERIA.map(key => [key, 'pass'])), issues: [] });
@@ -55,7 +55,7 @@ test('Compose HTTP settings matrix: all providers, details, languages, quality m
       assert.deepEqual(settings, { language, detail, task: current.task, options: current.options, terminology: current.terminology });
     }
   }
-  assert.equal(index, 96); assert.equal(seenTasks.size, 7);
+  assert.equal(index, 96); assert.equal(seenTasks.size, tasks.length);
   for (const provider of Object.keys(efforts)) assert.deepEqual([...seenEfforts[provider]].sort(), [...efforts[provider]].sort());
   assert.equal((await app.post('/api/generate', { input: lengthTask(100001) })).status, 400);
 });

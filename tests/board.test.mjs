@@ -5,7 +5,7 @@ import { access, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } fr
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Board, canTransition, COLUMNS } from '../src/board.mjs';
-import { Store, STATE_VERSION } from '../src/store.mjs';
+import { defaultProjectsDir, Store, STATE_VERSION } from '../src/store.mjs';
 import { initRepository, validateRepository } from '../src/git.mjs';
 import { startServer } from '../src/server.mjs';
 
@@ -414,6 +414,11 @@ test('starting the server does not create or touch board files', async t => {
   await mkdir(dataDir);
 });
 
+test('the managed project root is Promptboard/projects and keeps its environment override', () => {
+  assert.equal(defaultProjectsDir({}, '/Users/example'), join('/Users/example', 'Promptboard', 'projects'));
+  assert.equal(defaultProjectsDir({ PROMPTBOARD_PROJECTS_DIR: '/Volumes/Code/Promptboard' }, '/Users/example'), '/Volumes/Code/Promptboard');
+});
+
 test('every project made in the app has a Git repository: new folders, existing folders, no identity, and safe clean-up', { skip: process.platform === 'win32' }, async t => {
   const dataDir = await temp(t, 'pb-data-');
   const projectsDir = join(dataDir, 'My Projects');
@@ -442,6 +447,8 @@ test('every project made in the app has a Git repository: new folders, existing 
   await mkdir(existing);
   await writeFile(join(existing, 'notes.txt'), 'mine\n');
   const opened = await board.createProjectWithRepository({ name: 'Existing', folder: existing });
+  assert.equal(opened.folder, existing, 'An imported project stays at its existing path.');
+  assert.equal(opened.project.repository.root, await realpath(existing));
   assert.equal(opened.initialized, true);
   assert.equal(execFileSync('git', ['status', '--porcelain'], { cwd: existing, encoding: 'utf8' }).trim(), '?? notes.txt');
   await assert.rejects(board.createProjectWithRepository({ name: 'Missing', folder: join(dataDir, 'nope') }), { code: 'PATH_NOT_FOUND' });

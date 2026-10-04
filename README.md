@@ -30,8 +30,8 @@ Open **http://127.0.0.1:4318**. The navigation is **Compose | Kanban | Base**. P
 - Copy it, add it to Kanban, or split it into smaller, editable To Do tasks.
 
 <p align="center">
-  <img src="docs/compose-demo.gif" width="960" alt="Dark-mode Compose demo: enter a request, generate a structured prompt, edit and save it, then split it into three To Do tasks.">
-  <br><sub>Idea → prompt → optional edits → tasks</sub>
+  <img src="docs/compose-demo.gif" width="960" alt="Dark-mode Compose demo: enter a request, choose Add a feature and generation settings, generate a structured prompt, edit and save it, then use More to split it into three To Do tasks.">
+  <br><sub>Idea → settings → prompt → optional edits → tasks</sub>
 </p>
 
 ## Kanban — take tasks from To Do to Done
@@ -56,8 +56,8 @@ Open **http://127.0.0.1:4318**. The navigation is **Compose | Kanban | Base**. P
 - Pipeline first input uses a [task envelope](docs/pipeline-prompts.md) preserving engineered prompt content, with selected Base resources and inherited CLI tools. Column automations and advanced session strategies are still being implemented.
 
 <p align="center">
-  <img src="docs/kanban-demo.gif" width="960" alt="Dark-mode Kanban demo: consent to Autopilot, run a task through Executing, Code Review, Testing and Merge, and finish in Done with agent terminal tabs.">
-  <br><sub>To Do → Execute → Review → Test → Merge → Done</sub>
+  <img src="docs/kanban-demo.gif" width="960" alt="Dark-mode Kanban demo: browse the project workspace and sidebar settings, edit and save a file, consent to Autopilot, run a task through Executing, Code Review, Testing and Merge, and finish in Done with agent terminal tabs.">
+  <br><sub>Project setup → To Do → Execute → Review → Test → Merge → Done</sub>
 </p>
 
 ## Base — store once, reuse where you need it
@@ -68,11 +68,11 @@ Open **http://127.0.0.1:4318**. The navigation is **Compose | Kanban | Base**. P
 - Edit linked Markdown wikis, import text sources, and optionally generate reviewable wiki drafts. **Run details** shows the pinned resources and what was actually supplied.
 
 <p align="center">
-  <img src="docs/base-demo.gif" width="960" alt="Dark-mode Base demo: browse the shared resource library, inspect skill instructions, view equipped agent cards, preview a project assignment, and save it without starting an agent.">
+  <img src="docs/base-demo.gif" width="960" alt="Dark-mode Base demo: browse the shared resource library, inspect skill instructions and linked knowledge pages, view equipped agent cards, preview a project assignment, and save it without starting an agent.">
   <br><sub>Store → configure → assign optionally → inspect delivery</sub>
 </p>
 
-<sub>All demos use the real interface in dark mode with simulated model responses and agents. The local Git workflow and Base resource delivery are real. Edited for speed; each GIF is under 12 seconds.</sub>
+<sub>All demos use the real interface in dark mode with simulated model responses and agents. File saves, the local Git workflow and Base resource delivery are real. Edited for speed; each GIF is under 12 seconds.</sub>
 
 ## Supported CLIs
 
@@ -92,7 +92,7 @@ Open the top-bar **CLIs installed** control to manage CLI connections, sign-in a
 
 - **Settings** works across all three pages: theme, start page, agent defaults, terminal preferences, project workflows, and GitHub connection through the GitHub CLI.
 - **Usage**, beside Settings, refreshes every minute. It shows available model/token totals, tool counts, cost estimates, allowance, and lightweight charts from local CLI records. Missing metrics stay marked unavailable; estimates are not invoices.
-- Promptboard runs on **127.0.0.1**, with no analytics or telemetry. Compose history stays in your browser; boards, Base resources, logs, and worktrees stay in the local data folder.
+- Promptboard runs on **127.0.0.1**, with no analytics or telemetry. Compose history stays in your browser; boards, Base resources, logs, and worktrees stay in the local data folder. New project repositories live under `~/Promptboard/projects`, so other local tools can open them directly. Projects opened from an existing local folder remain at their original path.
 - Prompts and selected context may be sent to your provider through its CLI. Explicit MCP tests may start a trusted server or contact its endpoint.
 - Optional AI avatars use **OpenAI Images**, require a server-side `OPENAI_API_KEY`, and have separate API billing. No image key is stored in Base. [Avatar setup](docs/base-delivery.md#agent-profiles-native-subagents-and-avatars).
 
@@ -121,6 +121,7 @@ Read [SECURITY.md](SECURITY.md) before working with sensitive repositories. [Kan
 - `node bin/ste.mjs --help` for command-line usage; `node bin/ste.mjs --doctor` for CLI detection.
 - `npm start -- --port 4320` to use another port.
 - `node scripts/record-demo.mjs` regenerates all three demos with Chrome and ffmpeg, without paid model calls.
+- `node scripts/create-social-preview.mjs` renders the minimal Compose, Kanban and Base GitHub preview at 1280×640.
 
 ## License
 

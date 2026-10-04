@@ -7,7 +7,7 @@ import { verifyPrompt } from '../src/verification.mjs';
 import { validateRequest } from '../src/engine.mjs';
 import { parseEvaluationArgs, runEvaluation } from '../scripts/evaluate.mjs';
 
-test('the corpus spans all supported tasks, languages, detail levels, and both splits', () => {
+test('the corpus spans the core task families, languages, detail levels, and both splits', () => {
   assert.equal(new Set(cases.map(item => item.id)).size, cases.length);
   assert.deepEqual(new Set(cases.map(item => item.task)), new Set(['build', 'debug', 'refactor', 'review', 'architecture', 'agent-workflow', 'research']));
   assert.deepEqual(new Set(cases.map(item => item.language)), new Set(['en', 'de', 'pl']));

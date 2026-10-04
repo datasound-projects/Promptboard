@@ -202,10 +202,12 @@ test('Kanban entry, shared dialogs and project settings fit both themes and narr
   await browser.resize(1280, 900);
   await browser.eval(`document.querySelector('#project-toggle').click();`);
   await browser.until(`!document.querySelector('#project-settings').hidden`, 'settings expanded');
-  assert.equal(await browser.layout(`const panel = document.querySelector('#project-settings').getBoundingClientRect(); const board = document.querySelector('.kanban-board').getBoundingClientRect(); return panel.left >= board.right && Math.abs(panel.top - board.top) < 2;`), true, 'Desktop settings sit beside the board.');
+  assert.equal(await browser.layout(`const panel = document.querySelector('#project-settings').getBoundingClientRect(); const sidebar = document.querySelector('#sidebar').getBoundingClientRect(); const board = document.querySelector('.kanban-board').getBoundingClientRect(); return document.querySelector('#workspace-panel').contains(document.querySelector('#project-settings')) && panel.left >= sidebar.left && panel.right <= sidebar.right && board.left >= sidebar.right;`), true, 'Desktop project settings stay inside the navigation sidebar.');
   await shot('0-settings-desktop');
   await browser.resize(390, 844);
-  assert.equal(await browser.layout(`const panel = document.querySelector('#project-settings').getBoundingClientRect(); return panel.left >= 0 && panel.right <= innerWidth && panel.bottom <= innerHeight;`), true, 'Settings fit a phone viewport.');
+  await browser.eval(`document.querySelector('#menu-toggle').click();`);
+  await browser.until(`getComputedStyle(document.querySelector('#sidebar')).visibility === 'visible'`, 'project sidebar opened on phone');
+  assert.equal(await browser.layout(`const panel = document.querySelector('#project-settings').getBoundingClientRect(); const sidebar = document.querySelector('#sidebar').getBoundingClientRect(); return panel.left >= sidebar.left && panel.right <= sidebar.right && sidebar.left >= 0 && sidebar.right <= innerWidth;`), true, 'Project settings fit the phone sidebar.');
   await shot('0-settings-phone');
   await browser.eval(`document.querySelector('#project-settings-close').focus(); document.querySelector('#project-settings-close').click();`);
   assert.equal(await browser.eval(`return document.querySelector('#project-settings').hidden && document.activeElement.id === 'project-toggle';`), true, 'Closing restores focus to the settings toggle.');
