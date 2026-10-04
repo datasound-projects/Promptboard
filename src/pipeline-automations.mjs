@@ -23,10 +23,11 @@ function abortable(promise, signal) {
 }
 
 export class PipelineAutomations {
-  constructor({ journal, actions = new PipelineActions(), deliverMessage = null }) {
+  constructor({ journal, actions = new PipelineActions(), deliverMessage = null, scheduleEnterMessage = null }) {
     if (!journal) fail('Automation groups need their durable journal.', 'AUTOMATION_JOURNAL_REQUIRED');
     if (deliverMessage !== null && typeof deliverMessage !== 'function') fail('Use a session message delivery callback.', 'MESSAGE_SCHEDULER_REQUIRED');
-    this.journal = journal; this.actions = actions; this.deliverMessage = deliverMessage;
+    if (scheduleEnterMessage !== null && typeof scheduleEnterMessage !== 'function') fail('Use a durable enter-message scheduler.', 'MESSAGE_SCHEDULER_REQUIRED');
+    this.journal = journal; this.actions = actions; this.deliverMessage = deliverMessage; this.scheduleEnterMessage = scheduleEnterMessage;
     this.jobs = new Map(); this.stopping = false;
   }
 
@@ -62,7 +63,7 @@ export class PipelineAutomations {
     job.promise = Promise.resolve().then(async () => {
       const group = trigger === 'exit' ? 'onExit' : 'onEnter';
       const definitions = normalizePipelineAutomations({ [group]: rows })[group];
-      if (canMessage && !suppressMessages && definitions.some(row => row.enabled && row.type === 'send_message') && !this.deliverMessage)
+      if (canMessage && !suppressMessages && definitions.some(row => row.enabled && row.type === 'send_message') && !this.deliverMessage && !(trigger === 'enter' && this.scheduleEnterMessage))
         fail('Agent messages need the session delivery scheduler.', 'MESSAGE_SCHEDULER_REQUIRED');
       const move = await this.journal.read(key);
       if (!move) fail('Record this move before running an automation group.', 'AUTOMATION_MOVE_MISSING');
@@ -97,12 +98,17 @@ export class PipelineAutomations {
         let result;
         if (external.aborted || deadline?.aborted || dispatchRemaining !== null && dispatchRemaining <= 0)
           result = { status: external.aborted ? 'cancelled' : 'timed_out', reason: 'The move stopped or its exit budget expired before dispatch.' };
-        else if (row.type === 'send_message') result = await this.#message(row, ctx, combined, messageTimeoutMs);
+        else if (row.type === 'send_message') result = await this.#message(row, ctx, combined, messageTimeoutMs, key);
         else {
           try { result = await this.actions.run(row, ctx, { signal: combined, timeoutMs: dispatchRemaining === null ? null : Math.max(1, dispatchRemaining) }); }
           catch { result = { status: 'failed', errorCode: 'AUTOMATION_START_FAILED', reason: 'The automation could not start with this task context.' }; }
         }
-        await this.journal.finishAction(key, action.id, result);
+        // A verified scheduler already committed the separate delivery intent.
+        // Every other outcome must be acknowledged; false can mean a callback
+        // persisted a queue but lost its acknowledgement. Never advance that row.
+        const scheduled = row.type === 'send_message' && trigger === 'enter' && this.scheduleEnterMessage && result.status === 'scheduled';
+        if (!scheduled && await this.journal.finishAction(key, action.id, result) !== true)
+          fail('The action outcome was not acknowledged. Stop its owned work before advancing.', 'AUTOMATION_OUTCOME_UNSAVED');
         cleanupUnconfirmed ||= this.actions.jobs.has(action.id);
       }
       const final = await this.journal.read(key);
@@ -117,16 +123,28 @@ export class PipelineAutomations {
     return job.promise;
   }
 
-  async #message(row, context, parentSignal, timeoutMs) {
+  async #message(row, context, parentSignal, timeoutMs, key) {
     const controller = new AbortController(), timer = setTimeout(() => controller.abort(new DOMException('Message acknowledgement budget expired.', 'TimeoutError')), Math.ceil(timeoutMs));
     const signal = AbortSignal.any([parentSignal, controller.signal]);
     const startedAt = performance.now();
     try {
       signal.throwIfAborted();
       const message = renderPipelineTemplate(row.message, pipelineTemplateVariables(context));
-      const result = await abortable(Promise.resolve().then(() => { signal.throwIfAborted(); return this.deliverMessage({ actionId: context.actionId,
-        taskId: context.task.id, projectId: context.project?.id, message, mode: row.mode, trigger: context.move.trigger }, { signal }); }), signal);
+      const schedule = context.move.trigger === 'enter' && this.scheduleEnterMessage;
+      const receiver = schedule || this.deliverMessage;
+      const result = await abortable(Promise.resolve().then(() => { signal.throwIfAborted(); return receiver({ actionId: context.actionId,
+        taskId: context.task.id, projectId: context.project?.id, message, mode: row.mode, trigger: context.move.trigger,
+        ...(schedule ? { key: { projectId: key.projectId, taskId: key.taskId, transitionId: key.transitionId } } : {}) }, { signal }); }), signal);
       signal.throwIfAborted();
+      if (schedule) {
+        const action = (await this.journal.read(key))?.actions.find(action => action.id === context.actionId);
+        signal.throwIfAborted();
+        const messageHash = createHash('sha256').update(message).digest('hex');
+        if (result?.scheduled === true && action?.status === 'scheduled' && action.delivery?.messageHash === messageHash
+          && action.delivery.mode === row.mode && ['provider', 'sessionId', 'runId'].every(field => action.delivery[field] === result[field]))
+          return { status: 'scheduled', durationMs: Math.round(performance.now() - startedAt) };
+        return { status: 'unconfirmed', reason: 'Enter message scheduling was not confirmed.', durationMs: Math.round(performance.now() - startedAt) };
+      }
       return { status: result?.confirmed === true ? 'succeeded' : 'unconfirmed', ...(result?.confirmed === true ? {} : { reason: 'Agent message delivery was not confirmed.' }), durationMs: Math.round(performance.now() - startedAt) };
     } catch {
       const timed = signal.aborted && signal.reason?.name === 'TimeoutError';
