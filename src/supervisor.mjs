@@ -18,6 +18,7 @@ import { prepareBase } from './base-context.mjs';
 import { BaseDeliveryError, checkBaseRevocations } from './base-resolver.mjs';
 import { SessionActivity } from './session-activity.mjs';
 import { NativeMessageReceipts } from './native-message-receipts.mjs';
+import { TerminalInputObservation } from './terminal-input-observation.mjs';
 
 const RING_BYTES = 1024 * 1024; // Live scrollback kept per run for reconnects.
 const LOG_BYTES = 20 * 1024 * 1024; // Output log file cap per run.
@@ -227,7 +228,10 @@ export class Supervisor {
     const session = { runId, taskId: run.taskId, stage: run.stage, provider: run.config.provider, proc, seq: 0, ring: [], ringBytes: 0,
       subscribers: new Set(), log, logBytes: 0, eventsFile, eventsOffset: 0, runDir, paste: built.paste, turns: 0, status: 'running', startedAt: Date.now(), sessionId,
       pipeline: run.config.pipeline === true, inputEpoch: 0, resumeNativeId: run.resumeFrom?.nativeSessionId, baseCleanup: baseDelivery.cleanup, baseManifest: supplied };
-    if (session.pipeline) session.activity = new SessionActivity(session.provider);
+    if (session.pipeline) {
+      session.activity = new SessionActivity(session.provider);
+      session.terminalInput = new TerminalInputObservation();
+    }
     this.sessions.set(runId, session);
     session.exited = new Promise(resolve => { session.resolveExit = resolve; });
     // Listen before any await so early output and fast exits are never lost.
@@ -316,6 +320,7 @@ export class Supervisor {
   }
 
   #output(session, data) {
+    session.terminalInput?.observeOutput(data);
     session.activity?.output();
     this.#push(session, { data });
     if (session.logBytes < LOG_BYTES) {
@@ -485,6 +490,7 @@ export class Supervisor {
     clearTimeout(session.pasteTimer); clearTimeout(session.pasteReadyTimer); clearTimeout(session.initialSubmitTimer);
     session.initialSubmitPending = false;
     session.nativeReceiptReader?.close();
+    session.terminalInput?.close();
     if (!session.proc) return;
     killPidGroup(session.proc.pid, 'SIGTERM');
     clearTimeout(session.killTimer);
@@ -496,6 +502,7 @@ export class Supervisor {
     session.exiting = true;
     clearTimeout(session.pasteReadyTimer); clearTimeout(session.initialSubmitTimer); session.initialSubmitPending = false;
     session.nativeReceiptReader?.close();
+    session.terminalInput?.close();
     clearInterval(session.poll); clearInterval(session.usagePoll); clearTimeout(session.pasteTimer); clearTimeout(session.watchdog);
     // Read the last lifecycle events (for example a final Stop) and usage before the session closes.
     await this.#readEvents(session).catch(() => {});
@@ -542,6 +549,7 @@ export class Supervisor {
     const session = this.#session(runId);
     if (session.suspending) throw new AgentError('The agent is being paused. Wait for it to exit before resuming.', 'SESSION_SUSPENDING', 409);
     if (data) {
+      session.terminalInput?.manualInput(data);
       session.inputEpoch++; session.activity?.input();
       const initialPastePending = Boolean(session.paste);
       if (initialPastePending) {
