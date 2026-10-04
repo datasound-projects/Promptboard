@@ -983,16 +983,18 @@ export class Board {
     return this.#locked(`transition:${id}`, () => this.#transition(id, request));
   }
 
-  async #transition(id, { column, index, expectedRevision, transitionId, decision, commitMessage, config = {}, handoffRunId = null, trigger = 'user' } = {}) {
+  async #transition(id, { column, index, expectedRevision, expectedProjectRevision = null, transitionId, decision, commitMessage, config = {}, handoffRunId = null, trigger = 'user' } = {}) {
     if (transitionId !== undefined && (typeof transitionId !== 'string' || !TRANSITION_ID.test(transitionId))) throw new BoardError('Send a valid transition ID.', 'INVALID_INPUT');
     if (decision !== undefined && decision !== 'start' && decision !== 'move') throw new BoardError('Choose start or move.', 'INVALID_INPUT');
+    if (expectedProjectRevision !== null && (!Number.isSafeInteger(expectedProjectRevision) || expectedProjectRevision < 0)) throw new BoardError('Send a valid board settings revision.', 'INVALID_INPUT');
     const automation = trigger === 'automation';
     const state = await this.state();
     const { project, task } = this.#task(state, id);
     if (project.workflowMode === 'pipeline') {
       if (Object.keys(config || {}).length) throw new BoardError('Configure the pipeline agent in Column Manager before moving this card.', 'PIPELINE_SETTINGS_REQUIRED');
-      return this.#locked(`run:${id}`, () => this.#pipelineTransition(id, { column, index, expectedRevision, transitionId, decision, trigger }));
+      return this.#locked(`run:${id}`, () => this.#pipelineTransition(id, { column, index, expectedRevision, expectedProjectRevision, transitionId, decision, trigger }));
     }
+    if (expectedProjectRevision !== null) throw new BoardError('Board settings revisions apply to column pipelines.', 'PIPELINE_REQUIRED');
     // The same request delivered twice (a double drop, a retried request) returns the first outcome.
     if (transitionId && task.lastTransition?.id === transitionId) {
       return { task, duplicate: true, ...(task.lastTransition.runId ? { run: state.runs.find(run => run.id === task.lastTransition.runId) } : {}) };
@@ -2081,7 +2083,7 @@ export class Board {
     if (!onExit.length && !onEnter.length) return this.#pipelineLifecycleTransition(taskId, request);
     if (this.automationsStopping) throw conflict('The application is shutting down. No column automation was started.', 'AUTOMATIONS_SHUTTING_DOWN');
     if (request.signal?.aborted) throw conflict('The automatic plan move was cancelled.', 'PLAN_ROUTE_CANCELLED');
-    if (request.expectedProjectRevision != null && project.revision !== request.expectedProjectRevision) throw conflict('The board changed after native plan approval.', 'REVISION_CONFLICT');
+    if (request.expectedProjectRevision != null && project.revision !== request.expectedProjectRevision) throw conflict('The board settings changed after this move was requested.', 'REVISION_CONFLICT');
     if (project.pipelineImport) throw conflict('Review and save the imported board configuration before running its automations.', 'PIPELINE_IMPORT_PENDING');
     if ([...onExit, ...onEnter].some(row => row.enabled && row.type === 'send_message')) throw conflict('Agent messages need the native delivery scheduler.', 'PIPELINE_FEATURE_PENDING');
     const active = this.#activeRun(state, taskId), controller = new AbortController();
@@ -2276,7 +2278,7 @@ export class Board {
     if (signal?.aborted) throw conflict('The automatic plan move was cancelled.', 'PLAN_ROUTE_CANCELLED');
     if (transitionId && task.lastTransition?.id === transitionId) return { task, duplicate: true };
     checkRevision(task, expectedRevision, 'This card');
-    if (expectedProjectRevision !== null && project.revision !== expectedProjectRevision) throw conflict('The board changed after native plan approval.', 'REVISION_CONFLICT');
+    if (expectedProjectRevision !== null && project.revision !== expectedProjectRevision) throw conflict('The board settings changed after this move was requested.', 'REVISION_CONFLICT');
     const target = project.pipeline.columns.find(item => item.id === column);
     if (!target) throw new BoardError('Choose a valid column.', 'INVALID_COLUMN');
     const move = { from: task.column, column, index, transitionId: transitionId || randomUUID(), by: trigger === 'automation' ? 'automation' : 'user' };

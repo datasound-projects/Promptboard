@@ -185,8 +185,8 @@ async function boardRoute(board, req, res, pathname, searchParams) {
     if (method === 'DELETE' && !action) return view({ deleted: await board.deleteTask(id, { expectedRevision: expected(), keepFiles: searchParams.get('keepFiles') === 'true' }) ?? true });
     if (method === 'POST' && action === 'move') {
       // Only the fields a person can choose; the trigger is always the user here.
-      const { column, index, expectedRevision, transitionId, decision, commitMessage, config, handoffRunId } = await body();
-      return view(await board.transition(id, { column, index, expectedRevision, transitionId, decision, commitMessage, config, handoffRunId }));
+      const { column, index, expectedRevision, expectedProjectRevision, transitionId, decision, commitMessage, config, handoffRunId } = await body();
+      return view(await board.transition(id, { column, index, expectedRevision, expectedProjectRevision, transitionId, decision, commitMessage, config, handoffRunId }));
     }
     if (method === 'GET' && action === 'automations') return send(res, 200, { moves: await board.automationRuns(id) });
     if (method === 'POST' && action === 'cancel-automations') return view({ task: await board.cancelAutomationMove(id, await body()) });
@@ -339,7 +339,7 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
     const pathname = requestUrl.pathname;
     const isApi = pathname.startsWith('/api/') && pathname !== '/api/session' && pathname !== '/api/providers';
     if (isApi && req.headers['x-ste-token'] !== token) return send(res, 403, { error: 'Reload this page before you try again.' });
-    if (req.method === 'GET' && pathname === '/api/session') return send(res, 200, { token, capabilities: { pipelineTitleOnly: true } });
+    if (req.method === 'GET' && pathname === '/api/session') return send(res, 200, { token, capabilities: { pipelineTitleOnly: true, pipelineBulkRestore: true } });
     if (/^\/api\/notifications(?:\/|$)/.test(pathname)) {
       try { return await notificationRoute(notifications, req, res, pathname, { jsonBody, send }); }
       catch (error) {

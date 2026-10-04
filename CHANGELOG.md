@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Restore selected pipeline archive tasks through the common move path with captured task/settings revisions and individual outcomes. Preserve selection order across filtering, prevent duplicate groups, stop unstarted requests on stop/close/project changes, and keep lost responses reviewable without replay. Advertise server support to hide bulk controls on older processes; retain old-style moves and exact-ID idempotency. Bulk deletion remains pending.
+
 - Browse completed pipeline tasks in a filtered table with keyboard title/archive-date sorting, retained conversation state and exact latest reported usage. Preserve old card actions, refresh focus and project scoping; use archive dates after task edits and retain the common restoration lifecycle without dispatching from browsing. Bulk operations and complete telemetry summaries remain pending.
 
 - Add read-only project file trees to the Kanban Workspace sidebar, with lazy folder expansion, checkout/task-worktree selection and centered file viewers. Preserve multiple files, minimized viewers, scroll and expansion during refresh. Display UTF-8 code with lexical highlighting and line numbers; bound reads and directory pages, refuse traversal/symlinks/credentials and never start agents or mutate board/repository state. Report observed updates without inventing per-file agent activity.
