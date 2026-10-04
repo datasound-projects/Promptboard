@@ -1214,6 +1214,7 @@ const SELECTED_PROJECT_KEY = 'promptboard.kanban.project';
 const IMPORT_LIMIT_BYTES = 20 * 1024 * 1024;
 let board = null; // The server's board view.
 let boardLoading = null;
+let repositoryPipelineWatch = { key: null, result: null, loading: null, checkedAt: 0 };
 let editingCardId = null;
 let projectFormMode = 'new';
 let dragId = null;
@@ -1382,6 +1383,8 @@ function renderBoard() {
   if (focusedAutomation) cardElement(focusedAutomation)?.querySelector('.kanban-stop-automations')?.focus({ preventScroll: true });
   for (const list of columns.querySelectorAll('.kanban-cards')) list.scrollTop = scroll.get(list.dataset.column) || 0;
   renderRepository(project);
+  renderRepositoryPipelineStatus();
+  refreshRepositoryPipelineStatus().catch(() => {});
   const branch = project?.targetBranch?.name;
   $('#project-summary').textContent = project ? [project.name, project.repository ? project.repository.root.split(/[\\/]/).pop() + (branch ? ` → ${branch}` : '') : 'Not linked', workflowSummary(project)].join(' · ') : '';
   $('#project-summary').title = $('#project-summary').textContent;
@@ -4168,6 +4171,7 @@ setInterval(() => {
   // Discover moves accepted by native plan routing or another board window too.
   // An unchanged revision keeps the current DOM and keyboard focus intact.
   loadBoard({ ifChanged: true }).catch(() => {});
+  refreshRepositoryPipelineStatus().catch(() => {});
 }, 2000);
 
 $('#columns-use-pipeline').addEventListener('click', () => {
@@ -4207,6 +4211,52 @@ async function saveColumns(event) {
   announce('Columns saved.');
 }
 $('#columns-open').addEventListener('click', openColumns);
+function repositoryPipelineWatchKey() {
+  const project = currentProject(), applied = project?.repositoryPipeline?.sourceRevision;
+  return project?.workflowMode === 'pipeline' && project.repository && typeof applied === 'string' && /^[a-f0-9]{64}$/.test(applied)
+    ? JSON.stringify([project.id, project.repository.root, applied]) : null;
+}
+function renderRepositoryPipelineStatus() {
+  const banner = $('#repository-pipeline-warning'), result = repositoryPipelineWatch.key === repositoryPipelineWatchKey() ? repositoryPipelineWatch.result : null;
+  const visible = Boolean(result && (result.changed || result.errorCode));
+  if (!visible && banner.contains(document.activeElement)) $('#columns-open').focus({ preventScroll: true });
+  banner.hidden = !visible;
+  $('#repository-pipeline-warning-text').textContent = result?.errorCode
+    ? 'Repository configuration could not be checked. The saved board is unchanged. Review the files before applying.'
+    : visible ? 'Repository configuration changed. Review it before applying. The saved board is unchanged.' : '';
+}
+async function refreshRepositoryPipelineStatus({ force = false } = {}) {
+  const key = repositoryPipelineWatchKey();
+  if (key !== repositoryPipelineWatch.key) repositoryPipelineWatch = { key, result: null, loading: null, checkedAt: 0 };
+  renderRepositoryPipelineStatus();
+  if (!key || !token || document.hidden || currentPage() !== 'kanban') return;
+  const watch = repositoryPipelineWatch, projectId = currentProject().id, expectedRevision = currentProject().revision;
+  if (watch.loading) return watch.loading;
+  if (!force && Date.now() - watch.checkedAt < 2000) return;
+  watch.loading = (async () => {
+    try {
+      const { response, data } = await api(`/api/projects/${encodeURIComponent(projectId)}/repository-pipeline-status`);
+      if (watch !== repositoryPipelineWatch || key !== repositoryPipelineWatchKey() || currentProject().revision !== expectedRevision || document.hidden || currentPage() !== 'kanban') return;
+      if (!response.ok) {
+        // A changing project is retried on the next poll, never shown as a source error.
+        if (data.code === 'REPOSITORY_PIPELINE_CHANGED') return;
+        throw new Error('Repository status is unavailable.');
+      }
+      if (!data.watching || data.projectId !== projectId || data.expectedProjectRevision !== currentProject().revision || data.appliedSourceRevision !== currentProject().repositoryPipeline.sourceRevision) return;
+      watch.result = data; renderRepositoryPipelineStatus();
+    } catch {
+      if (watch === repositoryPipelineWatch && key === repositoryPipelineWatchKey() && currentProject().revision === expectedRevision && !document.hidden && currentPage() === 'kanban') {
+        watch.result = { errorCode: 'REPOSITORY_STATUS_UNAVAILABLE' }; renderRepositoryPipelineStatus();
+      }
+    } finally { watch.loading = null; watch.checkedAt = Date.now(); }
+  })();
+  return watch.loading;
+}
+$('#repository-pipeline-warning-review').addEventListener('click', () => {
+  // An open editor owns its unsaved draft; only a different project's draft must be replaced.
+  if (!$('#columns-dialog').open || columnsDraft.project !== currentProject()?.id) openColumns();
+  readRepositoryPipeline();
+});
 let repositoryPipelineReview = null, repositoryPipelineReadVersion = 0;
 async function readRepositoryPipeline() {
   const projectId = columnsDraft.project, version = ++repositoryPipelineReadVersion;

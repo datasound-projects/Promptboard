@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Detect changes to previously applied repository board sources with bounded, read-only polling for the selected visible Kanban project. Offer a fresh review; preserve saved settings, exact Composer text, Base, sessions and open drafts. Reject stale project/source responses, report unreadable files without their contents, and clear the banner on source recovery. Automatic export/application and retained ghost columns remain pending.
+
 - Add explicit reviewed application of repository `promptboard.json` and personal overrides to opt-in pipelines. Preserve stable identities and sparse profiles; replace personal automation groups as a unit. Recheck bounded file/root custody and exact review/project revisions; retain paused-agent, automation and occupied-column guards without dispatching or changing Composer/Base. Automatic file synchronization and retained ghost columns remain pending.
 
 - Add named sparse board-profile editing, exclusive task profile/agent choices and effective card agents. Keep shared columns/automations/Base intact; save with revision and paused-agent guards without starting work or changing Composer text/checks. Retain choices on copy and portable v5 backup/import with dispatch disabled. Live profile propagation and repository configuration remain pending.

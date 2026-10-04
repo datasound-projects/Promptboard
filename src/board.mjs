@@ -916,6 +916,26 @@ export class Board {
       conflicts: removed.filter(column => current.tasks.some(task => task.column === column.id)).map(column => `Move tasks out of ${column.name} before applying its removal.`) };
   }
 
+  /** Detect external changes to a previously accepted source without changing state. */
+  async repositoryPipelineStatus(id) {
+    const project = this.#project(await this.state(), id), applied = project.repositoryPipeline?.sourceRevision;
+    if (project.workflowMode !== 'pipeline' || !project.repository || typeof applied !== 'string' || !/^[a-f0-9]{64}$/.test(applied)) return { projectId: id, watching: false };
+    const root = project.repository.root, revision = project.revision;
+    let snapshot, errorCode = null;
+    try {
+      snapshot = await readRepositoryPipeline(root);
+      resolveRepositoryPipeline(snapshot, project.repositoryPipeline.shared || project.pipeline);
+    } catch (error) {
+      if (!(error instanceof RepositoryPipelineError) && error.code !== 'INVALID_PIPELINE_CONFIG') throw error;
+      errorCode = error.code;
+    }
+    const current = this.#project(await this.state(), id);
+    if (current.revision !== revision || current.repository?.root !== root || current.repositoryPipeline?.sourceRevision !== applied) throw conflict('The project changed while configuration was checked. Check it again.', 'REPOSITORY_PIPELINE_CHANGED');
+    return { projectId: id, watching: true, expectedProjectRevision: revision, appliedSourceRevision: applied,
+      checkedSourceRevision: snapshot?.sourceRevision || null, changed: snapshot ? snapshot.sourceRevision !== applied : null,
+      files: snapshot?.files.map(({ name, hash }) => ({ name, present: hash !== null })) || [], errorCode };
+  }
+
   async applyRepositoryPipeline(id, { sourceRevision, expectedProjectRevision, confirm = false } = {}) {
     if (confirm !== true) throw new BoardError('Review and confirm applying repository configuration.', 'CONFIRMATION_REQUIRED', 409);
     if (typeof sourceRevision !== 'string' || !/^[a-f0-9]{64}$/.test(sourceRevision)) throw new RepositoryPipelineError('Include the exact reviewed configuration revision.');

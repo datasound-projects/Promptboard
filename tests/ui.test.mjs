@@ -76,7 +76,7 @@ async function setup(t, { catalogReader = async id => ({ provider: id, ...catalo
   win.eval(await readFile(new URL('../public/base.js', import.meta.url), 'utf8'));
   // Browsers share one global scope across classic scripts; jsdom's eval does not, so evaluate them together.
   // Test-only export appended by the harness (not part of the app): reload the board and read the token.
-  win.eval(`${await readFile(new URL('../public/app.js', import.meta.url), 'utf8')}\n${await readFile(new URL('../public/dock.js', import.meta.url), 'utf8')}\nwindow.__pbTest = { loadBoard, get token() { return token; } };`);
+  win.eval(`${await readFile(new URL('../public/app.js', import.meta.url), 'utf8')}\n${await readFile(new URL('../public/dock.js', import.meta.url), 'utf8')}\nwindow.__pbTest = { loadBoard, refreshRepositoryPipelineStatus, get token() { return token; } };`);
   t.after(async () => {
     // A request can still be in flight when a test ends (for example a model refresh). Its handler
     // would then touch a closed window. Wait until the page is idle for a few ticks, then close.
@@ -104,6 +104,88 @@ async function setup(t, { catalogReader = async id => ({ provider: id, ...catalo
   };
   return { win, intervals, $, choose, radio, quality, submit, calls, requests, downloads, blobs, copied: () => copied, authAdapter, app, dataDir, idle };
 }
+
+test('repository change polling preserves editor drafts and applies only after a fresh explicit review', async t => {
+  const ctx = await setup(t, { executor: null, hash: '#/kanban' });
+  Object.defineProperty(ctx.win.document, 'hidden', { configurable: true, value: false });
+  const { project } = await ctx.app.board.createProjectWithRepository({ name: 'Watched draft', folder: 'new' }), pipeline = defaultPipelineConfig();
+  for (const column of pipeline.columns) column.strategy.autoSpawn = false;
+  await ctx.app.board.setPipeline(project.id, { pipeline, expectedRevision: project.revision, confirm: true });
+  const task = await ctx.app.board.createTask({ projectId: project.id, title: 'Split', prompt: '  Exact 😀\r\n' }), team = repositoryPipelineDefinition(pipeline);
+  await writeFile(join(project.repository.root, 'promptboard.json'), JSON.stringify(team));
+  await ctx.app.board.applyRepositoryPipeline(project.id, { ...await ctx.app.board.previewRepositoryPipeline(project.id), confirm: true });
+  await ctx.win.__pbTest.loadBoard(); await ctx.idle({ requireComplete: true });
+  ctx.$('#columns-open').click(); ctx.$('#column-name').value = 'My unsaved draft'; ctx.$('#column-name').dispatchEvent(new ctx.win.Event('input')); ctx.$('#column-name').focus();
+  const before = structuredClone(await ctx.app.board.state());
+  team.columns[2].description = '<img src=x onerror=evil> new external configuration'; await writeFile(join(project.repository.root, 'promptboard.json'), JSON.stringify(team));
+  await ctx.win.__pbTest.refreshRepositoryPipelineStatus({ force: true });
+  assert.equal(ctx.$('#repository-pipeline-warning').hidden, false); assert.equal(ctx.$('#column-name').value, 'My unsaved draft'); assert.equal(ctx.win.document.activeElement.id, 'column-name'); assert.equal(ctx.$('#repository-pipeline-warning img'), null);
+  assert.deepEqual(await ctx.app.board.state(), before);
+  ctx.$('#repository-pipeline-warning-review').click(); await until(() => !ctx.$('#repository-pipeline-apply').disabled, 'fresh review from detected change');
+  assert.equal(ctx.$('#column-name').value, 'My unsaved draft'); assert.equal(ctx.$('#repository-pipeline-dialog').open, true); assert.equal(ctx.$('#repository-pipeline-preview img'), null);
+  ctx.$('#repository-pipeline-cancel').click(); assert.equal(ctx.$('#column-name').value, 'My unsaved draft'); assert.deepEqual(await ctx.app.board.state(), before);
+  ctx.$('#repository-pipeline-warning-review').click(); await until(() => !ctx.$('#repository-pipeline-apply').disabled, 'explicit second review');
+  ctx.$('#repository-pipeline-apply').click(); await until(() => !ctx.$('#columns-dialog').open, 'explicit apply'); await ctx.idle({ requireComplete: true }); await ctx.win.__pbTest.refreshRepositoryPipelineStatus({ force: true });
+  assert.equal(ctx.$('#repository-pipeline-warning').hidden, true); const saved = (await ctx.app.board.state()).projects[0]; assert.equal(saved.pipeline.columns[2].description, team.columns[2].description); assert.equal(saved.tasks[0].prompt, task.prompt); assert.deepEqual((await ctx.app.board.state()).runs, []);
+});
+
+test('a late repository status response cannot show another project’s warning; hidden and Compose views make no status request', async t => {
+  const ctx = await setup(t, { executor: null, hash: '#/kanban' });
+  Object.defineProperty(ctx.win.document, 'hidden', { configurable: true, value: false });
+  const { project } = await ctx.app.board.createProjectWithRepository({ name: 'Watch A', folder: 'new' }), pipeline = defaultPipelineConfig();
+  for (const column of pipeline.columns) column.strategy.autoSpawn = false;
+  await ctx.app.board.setPipeline(project.id, { pipeline, expectedRevision: project.revision, confirm: true });
+  await writeFile(join(project.repository.root, 'promptboard.json'), JSON.stringify(repositoryPipelineDefinition(pipeline)));
+  await ctx.app.board.applyRepositoryPipeline(project.id, { ...await ctx.app.board.previewRepositoryPipeline(project.id), confirm: true });
+  const second = await ctx.app.board.createProject({ name: 'Watch B' });
+  await ctx.win.__pbTest.loadBoard(); await ctx.idle({ requireComplete: true });
+  const original = ctx.win.fetch, held = Promise.withResolvers(); let polls = 0;
+  ctx.win.fetch = (url, options) => { if (url.endsWith('/repository-pipeline-status')) { polls++; return held.promise; } return original(url, options); };
+  const pending = ctx.win.__pbTest.refreshRepositoryPipelineStatus({ force: true }); await until(() => polls === 1, 'owned status request');
+  const status = await ctx.app.board.repositoryPipelineStatus(project.id);
+  ctx.choose('#project-select', second.id); held.resolve(Response.json({ ...status, changed: true })); await pending;
+  assert.equal(ctx.$('#repository-pipeline-warning').hidden, true); assert.equal(ctx.$('#project-select').value, second.id);
+  ctx.choose('#project-select', project.id); await ctx.win.__pbTest.refreshRepositoryPipelineStatus({ force: true }); const before = polls;
+  ctx.win.location.hash = '#/'; await ctx.win.__pbTest.refreshRepositoryPipelineStatus({ force: true }); assert.equal(polls, before);
+  ctx.win.location.hash = '#/kanban'; Object.defineProperty(ctx.win.document, 'hidden', { configurable: true, value: true }); await ctx.win.__pbTest.refreshRepositoryPipelineStatus({ force: true }); assert.equal(polls, before);
+  Object.defineProperty(ctx.win.document, 'hidden', { configurable: true, value: false }); ctx.win.fetch = original;
+});
+
+test('an ordinary project edit cannot start duplicate repository polls or accept a stale status result', async t => {
+  const ctx = await setup(t, { executor: null, hash: '#/kanban' });
+  Object.defineProperty(ctx.win.document, 'hidden', { configurable: true, value: false });
+  const { project } = await ctx.app.board.createProjectWithRepository({ name: 'Watch revision', folder: 'new' }), pipeline = defaultPipelineConfig();
+  for (const column of pipeline.columns) column.strategy.autoSpawn = false;
+  await ctx.app.board.setPipeline(project.id, { pipeline, expectedRevision: project.revision, confirm: true });
+  await writeFile(join(project.repository.root, 'promptboard.json'), JSON.stringify(repositoryPipelineDefinition(pipeline)));
+  await ctx.app.board.applyRepositoryPipeline(project.id, { ...await ctx.app.board.previewRepositoryPipeline(project.id), confirm: true });
+  await ctx.win.__pbTest.loadBoard(); await ctx.idle({ requireComplete: true });
+  const original = ctx.win.fetch, held = Promise.withResolvers(), old = await ctx.app.board.repositoryPipelineStatus(project.id); let polls = 0;
+  ctx.win.fetch = (url, options) => { if (url.endsWith('/repository-pipeline-status')) { polls++; return held.promise; } return original(url, options); };
+  const pending = ctx.win.__pbTest.refreshRepositoryPipelineStatus({ force: true }); await until(() => polls === 1, 'single owned poll');
+  await ctx.app.board.renameProject(project.id, { name: 'Ordinary name edit', expectedRevision: old.expectedProjectRevision }); await ctx.win.__pbTest.loadBoard();
+  assert.equal(polls, 1, 'A project revision cannot bypass the existing in-flight request.');
+  held.resolve(Response.json({ ...old, changed: true })); await pending;
+  assert.equal(ctx.$('#repository-pipeline-warning').hidden, true, 'The old revision cannot display its change result.');
+  ctx.win.fetch = original; await ctx.win.__pbTest.refreshRepositoryPipelineStatus({ force: true }); assert.equal(ctx.$('#repository-pipeline-warning').hidden, true); assert.deepEqual((await ctx.app.board.state()).runs, []);
+});
+
+test('repository status failures are literal, preserve the saved board and clear after the source recovers', async t => {
+  const ctx = await setup(t, { executor: null, hash: '#/kanban' });
+  Object.defineProperty(ctx.win.document, 'hidden', { configurable: true, value: false });
+  const { project } = await ctx.app.board.createProjectWithRepository({ name: 'Watch errors', folder: 'new' }), pipeline = defaultPipelineConfig();
+  for (const column of pipeline.columns) column.strategy.autoSpawn = false;
+  await ctx.app.board.setPipeline(project.id, { pipeline, expectedRevision: project.revision, confirm: true });
+  const bytes = JSON.stringify(repositoryPipelineDefinition(pipeline)); await writeFile(join(project.repository.root, 'promptboard.json'), bytes);
+  await ctx.app.board.applyRepositoryPipeline(project.id, { ...await ctx.app.board.previewRepositoryPipeline(project.id), confirm: true });
+  await ctx.win.__pbTest.loadBoard(); await ctx.idle({ requireComplete: true }); const before = structuredClone(await ctx.app.board.state());
+  await writeFile(join(project.repository.root, 'promptboard.json'), 'PRIVATE <img src=x>'); await ctx.win.__pbTest.refreshRepositoryPipelineStatus({ force: true });
+  assert.equal(ctx.$('#repository-pipeline-warning').hidden, false); assert.ok(ctx.$('#repository-pipeline-warning-text').textContent.includes('could not be checked')); assert.ok(!ctx.$('#repository-pipeline-warning').textContent.includes('PRIVATE')); assert.equal(ctx.$('#repository-pipeline-warning img'), null);
+  await writeFile(join(project.repository.root, 'promptboard.json'), bytes); await ctx.win.__pbTest.refreshRepositoryPipelineStatus({ force: true }); assert.equal(ctx.$('#repository-pipeline-warning').hidden, true);
+  const original = ctx.win.fetch; ctx.win.fetch = (url, options) => url.endsWith('/repository-pipeline-status') ? Promise.resolve(Response.json({ error: '<img src=x> PRIVATE' }, { status: 503 })) : original(url, options);
+  await ctx.win.__pbTest.refreshRepositoryPipelineStatus({ force: true }); assert.equal(ctx.$('#repository-pipeline-warning').hidden, false); assert.ok(!ctx.$('#repository-pipeline-warning').textContent.includes('PRIVATE')); assert.equal(ctx.$('#repository-pipeline-warning img'), null);
+  ctx.win.fetch = original; await ctx.win.__pbTest.refreshRepositoryPipelineStatus({ force: true }); assert.equal(ctx.$('#repository-pipeline-warning').hidden, true); assert.deepEqual(await ctx.app.board.state(), before);
+});
 
 test('repository configuration review preserves Column Manager drafts and applies literal shared/local definitions without starting agents', async t => {
   const ctx = await setup(t, { executor: null, hash: '#/kanban' });

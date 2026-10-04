@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { link, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { link, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Board } from '../src/board.mjs';
@@ -21,8 +21,61 @@ async function world(t) {
   const pipeline = defaultPipelineConfig(); for (const column of pipeline.columns) column.strategy.autoSpawn = false;
   await board.setPipeline(project.id, { pipeline, expectedRevision: 2, confirm: true });
   const current = async () => (await board.state()).projects.find(item => item.id === project.id);
-  return { root, board, projectId: project.id, pipeline, current };
+  return { root, dataDir, board, projectId: project.id, pipeline, current };
 }
+
+test('repository change detection observes atomic shared edits, personal addition/removal and reverts without changing state or files', async t => {
+  const w = await world(t), task = await w.board.createTask({ projectId: w.projectId, title: 'Composer split', prompt: '  Exact 😀\r\n' });
+  assert.deepEqual(await w.board.repositoryPipelineStatus(w.projectId), { projectId: w.projectId, watching: false });
+  const team = repositoryPipelineDefinition(w.pipeline), bytes = JSON.stringify(team);
+  await writeFile(join(w.root, 'promptboard.json'), bytes);
+  await w.board.applyRepositoryPipeline(w.projectId, { ...await w.board.previewRepositoryPipeline(w.projectId), confirm: true });
+  const before = structuredClone(await w.board.state()), source = before.projects[0].repositoryPipeline.sourceRevision;
+  w.board.executor = { start() { assert.fail('A poll must not start.'); }, validate() { assert.fail('A poll must not probe a CLI.'); }, cancel() { assert.fail('A poll must not signal.'); } };
+  const unchanged = await w.board.repositoryPipelineStatus(w.projectId);
+  assert.equal(unchanged.watching, true); assert.equal(unchanged.changed, false); assert.equal(unchanged.errorCode, null); assert.equal(unchanged.appliedSourceRevision, source); assert.equal(unchanged.expectedProjectRevision, before.projects[0].revision);
+  team.columns[2].strategy.autoSpawn = true;
+  await write(w.root, 'replacement.json', team); await rename(join(w.root, 'replacement.json'), join(w.root, 'promptboard.json'));
+  assert.equal((await w.board.repositoryPipelineStatus(w.projectId)).changed, true);
+  await writeFile(join(w.root, 'promptboard.json'), bytes);
+  assert.equal((await w.board.repositoryPipelineStatus(w.projectId)).changed, false, 'Restoring identical source bytes clears the change.');
+  await write(w.root, 'promptboard.local.json', { version: 1, columns: [{ name: 'Executing', strategy: { autoSpawn: true } }] });
+  assert.equal((await w.board.repositoryPipelineStatus(w.projectId)).changed, true);
+  await rm(join(w.root, 'promptboard.local.json'));
+  assert.equal((await w.board.repositoryPipelineStatus(w.projectId)).changed, false);
+  assert.deepEqual(await w.board.state(), before); assert.equal((await w.current()).tasks[0].prompt, task.prompt); assert.equal(await readFile(join(w.root, 'promptboard.json'), 'utf8'), bytes);
+  const reopened = new Board({ dataDir: w.dataDir }); assert.equal((await reopened.repositoryPipelineStatus(w.projectId)).changed, false);
+  assert.equal((await reopened.exportBackup()).projects[0].repositoryPipeline, undefined, 'Portable imports cannot grant file monitoring.');
+  const current = await w.current(); await w.board.setPipeline(w.projectId, { pipeline: current.pipeline, expectedRevision: current.revision });
+  assert.equal((await w.board.repositoryPipelineStatus(w.projectId)).watching, false, 'A normal saved draft ends the accepted file baseline.');
+});
+
+test('unreadable or removed repository configuration never rewrites the saved board or returns file content', async t => {
+  const w = await world(t); await write(w.root, 'promptboard.json', repositoryPipelineDefinition(w.pipeline));
+  await w.board.applyRepositoryPipeline(w.projectId, { ...await w.board.previewRepositoryPipeline(w.projectId), confirm: true });
+  const before = structuredClone(await w.board.state());
+  await writeFile(join(w.root, 'promptboard.json'), 'SECRET_BAD_JSON <img src=x>');
+  const invalid = await w.board.repositoryPipelineStatus(w.projectId); assert.equal(invalid.changed, null); assert.equal(invalid.errorCode, 'INVALID_REPOSITORY_PIPELINE'); assert.ok(!JSON.stringify(invalid).includes('SECRET'));
+  await write(w.root, 'promptboard.json', { version: 1, columns: [{ name: 'Invalid', strategy: { unknown: 'SECRET' } }] });
+  const schema = await w.board.repositoryPipelineStatus(w.projectId); assert.equal(schema.changed, true); assert.equal(schema.errorCode, 'INVALID_PIPELINE_CONFIG'); assert.ok(!JSON.stringify(schema).includes('SECRET'));
+  await rm(join(w.root, 'promptboard.json'));
+  const missing = await w.board.repositoryPipelineStatus(w.projectId); assert.equal(missing.changed, true); assert.equal(missing.errorCode, 'REPOSITORY_PIPELINE_NOT_FOUND'); assert.ok(missing.files.every(file => !file.present));
+  await mkdir(join(w.root, 'promptboard.json')); assert.equal((await w.board.repositoryPipelineStatus(w.projectId)).errorCode, 'INVALID_REPOSITORY_PIPELINE');
+  assert.deepEqual(await w.board.state(), before);
+});
+
+test('repository status refuses a changed project snapshot and stays inert while agents or automations own a task', async t => {
+  const w = await world(t), task = await w.board.createTask({ projectId: w.projectId, title: 'Owned', prompt: 'Exact' });
+  await write(w.root, 'promptboard.json', repositoryPipelineDefinition(w.pipeline));
+  await w.board.applyRepositoryPipeline(w.projectId, { ...await w.board.previewRepositoryPipeline(w.projectId), confirm: true });
+  await w.board.store.update(state => { const run = { id: 'observed-run', projectId: w.projectId, taskId: task.id, stage: 'executing', status: 'queued', config: { provider: 'claude', pipeline: true } }; state.runs.push(run); attachSession(state, run); });
+  w.board.automationMoves.set(task.id, {}); w.board.executor = { start() { assert.fail('No start.'); }, validate() { assert.fail('No probe.'); }, cancel() { assert.fail('No signal.'); } };
+  const before = structuredClone(await w.board.state()); assert.equal((await w.board.repositoryPipelineStatus(w.projectId)).changed, false); assert.deepEqual(await w.board.state(), before);
+  const state = w.board.state.bind(w.board); let reads = 0;
+  w.board.state = async () => { if (++reads === 2) await w.board.renameProject(w.projectId, { name: 'Concurrent edit', expectedRevision: before.projects[0].revision }); return state(); };
+  await assert.rejects(w.board.repositoryPipelineStatus(w.projectId), { code: 'REPOSITORY_PIPELINE_CHANGED' });
+  assert.equal((await state()).projects[0].repositoryPipeline.sourceRevision, before.projects[0].repositoryPipeline.sourceRevision);
+});
 
 test('repository config preserves sparse local values, replaces both automation groups, and resolves profile/plan names without mutating sources', () => {
   const current = defaultPipelineConfig(), team = repositoryPipelineDefinition(current);
