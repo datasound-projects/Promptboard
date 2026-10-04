@@ -51,7 +51,7 @@ test('IDE-style project folders and editor in Chrome: native typing, explicit sa
   assert.equal(await readFile(join(root, 'one', 'src', 'index.js'), 'utf8'), 'const project = "external";\n');
   assert.match(await browser.eval('return document.querySelector(".file-code").textContent;'), /AI proposal/);
   await browser.eval('document.querySelector("[aria-label=\\"Use AI proposal in draft\\"]").click();'); assert.equal(await browser.eval('return document.querySelector(".file-save").disabled;'), false);
-  const screenshot = await browser.send('Page.captureScreenshot', { format: 'png' }); await writeFile('/private/tmp/promptboard-workspace-editor-desktop.png', Buffer.from(screenshot.data, 'base64'));
+  const screenshot = await browser.send('Page.captureScreenshot', { format: 'png' }); await writeFile(join(root, 'editor-desktop.png'), Buffer.from(screenshot.data, 'base64'));
   await browser.eval('document.querySelector(".file-save").click();'); await browser.until('document.querySelector(".file-status").textContent.includes("Saved")', 'AI proposal explicitly saved');
   assert.equal(await readFile(join(root, 'one', 'src', 'index.js'), 'utf8'), 'const project = "AI proposal";\n');
   mode = 'cancel'; await browser.eval('document.querySelector("[aria-label=\\"Propose changes to this file\\"]").click();'); await browser.until('!document.querySelector("[aria-label=\\"Cancel file AI proposal\\"]").hidden', 'AI in progress');
@@ -63,6 +63,6 @@ test('IDE-style project folders and editor in Chrome: native typing, explicit sa
   assert.equal(await readFile(join(root, 'one', 'src', 'index.js'), 'utf8'), 'const project = "AI proposal";\n');
   await browser.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
   assert.equal(await browser.layout('const d=document.querySelector("#workspace-file-viewer").getBoundingClientRect(); return d.width<=390 && d.left>=0 && d.right<=390;'), true);
-  await browser.eval('document.documentElement.dataset.theme="light";'); const mobile = await browser.send('Page.captureScreenshot', { format: 'png' }); await writeFile('/private/tmp/promptboard-workspace-editor-mobile.png', Buffer.from(mobile.data, 'base64'));
+  await browser.eval('document.documentElement.dataset.theme="light";'); const mobile = await browser.send('Page.captureScreenshot', { format: 'png' }); await writeFile(join(root, 'editor-mobile.png'), Buffer.from(mobile.data, 'base64'));
   assert.deepEqual(await app.board.store.read(), before); assert.deepEqual(browser.consoleMessages.filter(x => x.includes('EXCEPTION')), []); assert.equal(one.repository.root, root);
 });
