@@ -12,12 +12,37 @@ for (const [args, message] of [
   [['--timeout', '181'], /Timeout must be between 1 and 180 seconds/],
   [['--model', '-untrusted-flag'], /Use a model ID without spaces or command flags/],
   [['--effort', 'unsupported'], /effort/],
+  [['--provider', 'claude', '--column-automation', '--busy-queue'], /Busy queue requires provider codex and --column-automation/],
+  [['--provider', 'codex', '--busy-queue'], /Busy queue requires provider codex and --column-automation/],
 ]) test(`live native smoke rejects ${args[0]} before filesystem setup or a CLI launch`, () => {
   const missing = join(tmpdir(), 'pb-live-native-options-missing-directory', 'never-created');
   const result = spawnSync(process.execPath, [script, ...args], { encoding: 'utf8', timeout: 10000,
     env: { ...process.env, TMPDIR: missing, TMP: missing, TEMP: missing } });
   assert.equal(result.status, 1); assert.equal(result.stdout, '');
   assert.match(result.stderr, message); assert.doesNotMatch(result.stderr, /ENOENT|AUTH_REQUIRED/);
+});
+
+for (const steers of [false, true]) test(`the offline Codex busy check ${steers ? 'refuses steering' : 'proves queued completion'} and retains its manual guard`, { skip: process.platform === 'win32', timeout: 25000 }, async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'pb-live-codex-queue-'));
+  t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+  const bin = join(dir, 'bin'), capture = join(dir, 'messages.jsonl'); await mkdir(bin);
+  const fixture = fileURLToPath(new URL('./fixtures/fake-codex-queue.cjs', import.meta.url));
+  await writeFile(join(bin, 'codex'), `#!${process.execPath}\nrequire(${JSON.stringify(fixture)});\n`, { mode: 0o700 });
+  const result = spawnSync(process.execPath, [script, '--provider', 'codex', '--timeout', '18', '--column-automation', '--busy-queue'], {
+    encoding: 'utf8', timeout: 22000, env: { ...process.env, PATH: bin + delimiter + process.env.PATH,
+      TMPDIR: dir, TMP: dir, TEMP: dir, CODEX_HOME: join(dir, 'codex-fixture'), FAKE_NATIVE_MESSAGE_REPORT: capture,
+      ...(steers ? { FAKE_CODEX_QUEUE_STEERS: '1' } : {}), GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' } });
+  assert.equal(result.status, 0, result.stderr); const report = JSON.parse(result.stdout);
+  assert.equal(report.initial.ready, true); assert.equal(report.sameRun, true); assert.equal(report.message.confirmed, true);
+  assert.equal(report.busy.observed, true); assert.equal(report.busy.pasted, true); assert.equal(report.busy.queuedBeforeCompletion, true);
+  assert.equal(report.busy.manualInputObserved, true); assert.equal(report.busy.key, 'Tab'); assert.equal(report.errorCode, undefined);
+  assert.equal(report.busy.sequenceValid, !steers); assert.equal(report.busy.nextReplyComplete, !steers);
+  if (!steers) assert.equal(report.busy.firstReplyComplete, true);
+  for (const key of ['exactPrompt', 'mainCheckoutClean', 'worktreeClean', 'processStopped']) assert.equal(report[key], true, key);
+  const records = (await readFile(capture, 'utf8')).trim().split('\n').map(JSON.parse);
+  const submitted = records.filter(row => row.kind === 'submitted'); assert.equal(submitted.length, 2);
+  assert.deepEqual(submitted.map(row => [row.key, row.busy]), [['\r', false], ['\t', true]]);
+  assert.deepEqual((await readdir(dir)).filter(name => /^pb-live-native-(data|repo)-/.test(name)), []);
 });
 
 for (const columnAutomation of [false, true]) test(`the live smoke harness confirms exact ${columnAutomation ? 'configured column' : 'private'} delivery and cleans up with an offline owned CLI`, { skip: process.platform === 'win32', timeout: 30000 }, async t => {

@@ -11,6 +11,7 @@ import { NativeMessageDispatch } from '../src/native-message-dispatch.mjs';
 import { captureNativeMessageTarget } from '../src/native-message-target.mjs';
 import { defaultPipelineConfig, normalizePipelineStrategy } from '../src/pipeline-config.mjs';
 import { ClaudeFolderTrust } from './claude-folder-trust.mjs';
+import { CODEX_BUSY_MESSAGE, CODEX_QUEUED_MESSAGE, CodexBusyEvidenceReader } from './codex-busy-evidence.mjs';
 
 const option = (name, fallback) => {
   const at = process.argv.indexOf(`--${name}`);
@@ -26,16 +27,18 @@ if (!Number.isFinite(seconds) || seconds < 1 || seconds > 180) throw new Error('
 const strategy = normalizePipelineStrategy({ agentOverride: provider, ...(model ? { modelOverride: model } : {}), ...(effort ? { effortOverride: effort } : {}) });
 const keep = process.argv.includes('--keep'), answerTrust = process.argv.includes('--answer-trust'), freshTrusted = process.argv.includes('--fresh-trusted');
 const columnAutomation = process.argv.includes('--column-automation');
+const busyQueue = process.argv.includes('--busy-queue');
+if (busyQueue && (provider !== 'codex' || !columnAutomation)) throw new Error('Busy queue requires provider codex and --column-automation.');
 const cancelled = new AbortController(), stop = () => cancelled.abort('live-check-stopped');
 process.once('SIGINT', stop); process.once('SIGTERM', stop);
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
-const report = { provider, model: model || null, effort: effort || null, freshTrusted, columnAutomation, initial: null, warmup: null,
+const report = { provider, model: model || null, effort: effort || null, freshTrusted, columnAutomation, busyQueue, initial: null, warmup: null,
   sameRun: false, message: null, exactPrompt: false, mainCheckoutClean: false, worktreeClean: false, processStopped: false };
 const root = await realpath(await mkdtemp(join(tmpdir(), 'pb-live-native-repo-')));
 let dataDir, supervisor, dispatch, board, project, task;
 const pids = new Set(), started = Date.now(), deadline = started + seconds * 1000;
-const message = 'Reply exactly PB_NATIVE_SECOND. Do not use tools or change any file.';
+const message = busyQueue ? CODEX_BUSY_MESSAGE : 'Reply exactly PB_NATIVE_SECOND. Do not use tools or change any file.';
 const prompt = 'Reply exactly PB_NATIVE_FIRST. Do not use tools, change files, send messages or make other network requests. No plan is needed.';
 const summary = (run, session) => ({ status: run.status, errorCode: run.errorCode || null, turns: run.turns || 0,
   nativeIdentityObserved: Boolean(session?.nativeSessionId), ready: session?.activity?.snapshot().ready === true,
@@ -69,6 +72,42 @@ async function waitReady(runId, mayAnswer) {
       await pause(100);
     }
   } finally { claudeTrust?.close(); }
+}
+async function observeBusyQueue(runId) {
+  const session = supervisor.sessions.get(runId), path = session?.usage?.tail.path;
+  report.busy = { observed: false, key: 'Tab', pasted: false, queuedBeforeCompletion: false,
+    firstReplyComplete: false, nextReplyComplete: false, interrupted: false, exactNextInput: false, sequenceValid: false };
+  if (!report.sameRun || !report.message?.confirmed || !path || !session?.nativeSessionId) throw new Error('Busy queue prerequisite unavailable.');
+  const nativeId = session.nativeSessionId, proc = session.proc, reader = new CodexBusyEvidenceReader(path, nativeId);
+  const stopped = () => cancelled.signal.aborted || Date.now() >= deadline || supervisor.stopping || supervisor.sessions.get(runId) !== session
+    || !proc || session.proc !== proc || session.nativeSessionId !== nativeId || session.cancelled || session.suspending || session.exiting || session.failure || session.launchFailed;
+  let evidence;
+  do {
+    evidence = await reader.read();
+    if (evidence.busy || evidence.firstReplyComplete || stopped()) break;
+    await pause(50);
+  } while (!stopped());
+  if (!evidence.busy || stopped()) throw new Error('No owned busy turn observed.');
+  report.busy.observed = true;
+  // Deliberate manual input in this owned fixture only. Never clear its guard.
+  const safeTerminal = () => { const terminal = session.terminalInput.snapshot(), activity = session.activity.snapshot();
+    return terminal.bracketedPaste === true && !terminal.controlPending && !terminal.closed && !session.eventsPending
+      && activity.phase !== 'ended' && !activity.permissionPending && !activity.uncertain; };
+  if (!safeTerminal() || session.terminalInput.snapshot().manualInputObserved) throw new Error('Owned terminal unavailable.');
+  supervisor.input(runId, '\x1b[200~' + CODEX_QUEUED_MESSAGE + '\x1b[201~'); report.busy.pasted = true;
+  await pause(1000);
+  evidence = await reader.read();
+  if (!evidence.busy || stopped() || !safeTerminal()) throw new Error('Busy turn changed before queue key.');
+  // Codex 0.157.0's default Tab binding queues; Enter can steer the current turn.
+  supervisor.input(runId, '\t'); report.busy.queuedBeforeCompletion = true;
+  do {
+    evidence = await reader.read();
+    Object.assign(report.busy, { firstReplyComplete: evidence.firstReplyComplete, nextReplyComplete: evidence.nextReplyComplete,
+      interrupted: evidence.interrupted, exactNextInput: evidence.nextInputObserved, sequenceValid: evidence.sequenceValid });
+    if (evidence.nextReplyComplete || evidence.interrupted || evidence.steered || stopped()) break;
+    await pause(100);
+  } while (!stopped());
+  report.busy.manualInputObserved = session.terminalInput.snapshot().manualInputObserved;
 }
 try {
   dataDir = await realpath(await mkdtemp(join(tmpdir(), 'pb-live-native-data-')));
@@ -132,6 +171,7 @@ try {
       const receipt = (await journal.read(key)).actions[0].delivery;
       report.message = { status: delivered.status, confirmed: delivered.confirmed === true, receiptStatus: receipt.status, submitted: Boolean(receipt.submittedAt) };
     }
+    if (busyQueue) await observeBusyQueue(result.run.id);
   }
 } catch (error) {
   report.errorCode = /^[A-Z0-9_]{1,80}$/.test(error.code || '') ? error.code : 'LIVE_CHECK_FAILED';
