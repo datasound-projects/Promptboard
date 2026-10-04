@@ -35,7 +35,7 @@ test('a timeout reaches a terminal state with a stable code, and the next reques
 });
 
 test('the pipeline deadline is reported as a timeout, not an unknown error', async t => {
-  // AbortSignal.timeout rejects with a TimeoutError DOMException when the six-minute deadline passes.
+  // Explicit caller deadlines still reject with a TimeoutError DOMException.
   await assert.rejects(runPipeline(validateRequest({ input: 'Add a test.', quality: 'fast' }), {
     // Like a real CLI process, keep the event loop alive: AbortSignal.timeout alone does not, and Node can exit first.
     runner: ({ signal }) => new Promise((_, reject) => {
@@ -164,6 +164,7 @@ async function fixture(t) {
   // A fake Codex CLI that ignores SIGTERM and hangs, for both `exec` and `app-server`.
   await writeFile(join(dir, 'codex'), `#!${process.execPath}
 const fs = require('node:fs');
+if (process.argv[2] === 'mcp') { process.stdout.write('[]'); process.exit(0); }
 process.on('SIGTERM', () => {});
 fs.appendFileSync(${JSON.stringify(report)}, JSON.stringify({ pid: process.pid, cwd: process.cwd(), args: process.argv.slice(2) }) + '\\n');
 process.stdin.resume();
