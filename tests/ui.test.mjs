@@ -916,6 +916,7 @@ test('projects keep separate boards; names are validated; deletion needs confirm
   const { $, win, choose } = ctx;
   await goTo(ctx, '#/kanban');
   assert.match($('#board-empty').textContent, /Create a project to start planning/);
+  assert.match($('#project-form-note').textContent, /Promptboard\/projects.*existing code.*Open folder.*stays at its current location/);
   assert.equal($('#card-new').disabled, true);
   assert.equal($('#project-delete').disabled, true);
   assert.equal($('#kanban-columns').hidden, true);
@@ -1258,6 +1259,16 @@ test('Compose exposes three quiet settings groups, restores its summary, and kee
   const { $, win, choose, submit, idle } = await setup(t);
   const groups = [...win.document.querySelectorAll('#settings-body > details')];
   assert.deepEqual(groups.map(group => group.querySelector('summary > span').textContent), ['General settings', 'Context grounding', 'More settings']);
+  assert.deepEqual([...$('#task').options].map(item => [item.value, item.textContent]), [
+    ['unspecified', 'No specification'], ['build', 'Build something'], ['feature', 'Add a feature'], ['debug', 'Debug a problem'],
+    ['refactor', 'Refactor code'], ['review', 'Review code'], ['architecture', 'Design architecture'],
+    ['integration', 'Integrate a service or API'], ['ui-ux', 'Change UI or UX'], ['data', 'Change data or database'],
+    ['testing', 'Create or improve tests'], ['security', 'Improve security'], ['performance', 'Optimize performance'],
+    ['migration', 'Migrate or upgrade'], ['dependencies', 'Update dependencies'], ['devops', 'Configure CI/CD or infrastructure'],
+    ['automation', 'Automate a workflow'], ['documentation', 'Write documentation'],
+    ['agent-workflow', 'Create an agent workflow'], ['research', 'Research an approach'],
+  ]);
+  assert.equal($('#task').value, 'build');
   assert.ok(groups.every(group => !group.open));
   assert.equal($('#prompt-view .step'), null); assert.equal($('#prompt-view img'), null);
   choose('#provider', 'claude'); await idle();
@@ -1278,13 +1289,17 @@ test('Compose exposes three quiet settings groups, restores its summary, and kee
   assert.equal($('#compose-general-summary').textContent, 'Claude Code · Detailed');
 });
 
-test('the Kanban header exposes a collapsible settings panel outside the board', async t => {
+test('the Kanban sidebar owns one quiet collapsible project settings panel', async t => {
   const { $ } = await setup(t);
   assert.equal($('#project-toggle').getAttribute('aria-controls'), 'project-settings');
+  assert.ok($('#workspace-panel').contains($('#project-toggle')));
+  assert.ok($('#workspace-panel').contains($('#project-settings')));
   assert.ok($('#project-settings').contains($('#project-body')));
   assert.equal($('.kanban-board').contains($('#project-settings')), false);
   if ($('#project-settings').hidden) $('#project-toggle').click();
   assert.equal($('#project-settings').hidden, false);
+  assert.equal($('#project-settings .toolbar-cell:first-child').querySelector('#project-select') !== null, true, 'Existing project controls remain available to application logic.');
+  assert.equal($('#project-settings .project-backup').open, false);
   $('#project-settings-close').click();
   assert.equal($('#project-settings').hidden, true);
   assert.equal($('#project-toggle').getAttribute('aria-expanded'), 'false');

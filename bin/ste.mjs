@@ -1,10 +1,9 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
 import { startServer, generate } from '../src/server.mjs';
 import { buildPrompt, validateRequest } from '../src/engine.mjs';
 import { detectProviders, killOwnedProcesses, removeOwnedTempDirsSync } from '../src/providers.mjs';
+import { defaultProjectsDir } from '../src/store.mjs';
 import { VERSION } from '../src/version.mjs';
 
 const help = `Promptboard ${VERSION}
@@ -63,8 +62,9 @@ async function main() {
     const port = options.port === undefined ? 4318 : Number(options.port);
     let app;
     try {
-      // New projects get their own Git repository here (visible in your home folder).
-      app = await startServer({ port, projectsDir: process.env.PROMPTBOARD_PROJECTS_DIR || join(homedir(), 'Promptboard Projects') });
+      // New projects get their own Git repository in a stable, user-visible folder.
+      // Projects opened from another local path remain at that path.
+      app = await startServer({ port, projectsDir: defaultProjectsDir() });
     } catch (error) {
       if (error.code === 'EADDRINUSE') {
         throw new Error(`Port ${port} is already in use. If Promptboard is already running, open http://127.0.0.1:${port}.\nOr start on another port: npm start -- --port ${port === 4320 ? 4321 : 4320}`);
