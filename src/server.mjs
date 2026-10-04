@@ -165,6 +165,10 @@ async function boardRoute(board, req, res, pathname, searchParams) {
     if (method === 'POST' && action === 'pause') return view({ run: await board.pauseRun(id, await body()) });
   } else {
     if (method === 'PATCH' && !action) return view(await board.updateTask(id, await body()));
+    if (method === 'POST' && action === 'pipeline-settings') {
+      const { profileId, agentOverride, expectedRevision, expectedProjectRevision } = await body();
+      return view(await board.updateTask(id, { pipelineSettings: { profileId, agentOverride }, expectedRevision, expectedProjectRevision }));
+    }
     if (method === 'DELETE' && !action) return view({ deleted: await board.deleteTask(id, { expectedRevision: expected(), keepFiles: searchParams.get('keepFiles') === 'true' }) ?? true });
     if (method === 'POST' && action === 'move') {
       // Only the fields a person can choose; the trigger is always the user here.

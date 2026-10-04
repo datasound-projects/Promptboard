@@ -192,3 +192,21 @@ test('background server polling migrates only its disposable test data without a
   assert.equal(saved.version, STATE_VERSION); assert.equal(saved.projects[0].id, 'isolated-fixture');
   assert.match(app.board.dataDir, /pb-server-fixture-/);
 });
+
+test('task pipeline settings require local authentication and exact revisions, and never execute on save', async t => {
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
+  const { token } = await fetch(app.url + '/api/session').then(response => response.json());
+  const project = await app.board.createProject({ name: 'Task settings' }), pipeline = defaultPipelineConfig();
+  pipeline.profiles = [{ id: 'profile', name: 'Profile', columns: {} }];
+  await app.board.setPipeline(project.id, { pipeline, expectedRevision: 1, confirm: true });
+  const task = await app.board.createTask({ projectId: project.id, title: 'Exact', prompt: '  Exact Composer\r\n' });
+  const url = app.url + `/api/tasks/${task.id}/pipeline-settings`, data = { profileId: 'profile', expectedRevision: 1, expectedProjectRevision: 2 };
+  const post = (body = data, extra = {}) => fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', 'x-ste-token': token, ...extra }, body: JSON.stringify(body) });
+  assert.equal((await post(data, { 'x-ste-token': '' })).status, 403);
+  assert.equal((await post(data, { Origin: 'https://foreign.test' })).status, 403);
+  assert.equal((await post({ ...data, expectedProjectRevision: 1 })).status, 409);
+  assert.equal((await post({ ...data, agentOverride: { agentOverride: 'codex' } })).status, 400);
+  const response = await post(); assert.equal(response.status, 200); const saved = await response.json();
+  assert.equal(saved.task.profileId, 'profile'); assert.equal(saved.task.prompt, task.prompt); assert.equal(saved.task.contentRevision, 1); assert.deepEqual(saved.board.runs, []);
+  assert.equal((await post()).status, 409); assert.equal((await app.board.state()).projects[0].tasks[0].revision, 2);
+});

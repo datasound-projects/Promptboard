@@ -8,7 +8,7 @@ import { copyFile, mkdir, open, readdir, readFile, rename, rm } from 'node:fs/pr
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { migrateSessions } from './sessions.mjs';
-import { normalizePipelineConfig } from './pipeline-config.mjs';
+import { normalizePipelineConfig, normalizePipelineTaskSelection } from './pipeline-config.mjs';
 
 export const STATE_SCHEMA = 'promptboard.state';
 export const STATE_VERSION = 6;
@@ -43,6 +43,7 @@ function checkShape(data) {
     if (project.workflowMode === 'pipeline') {
       const config = normalizePipelineConfig(project.pipeline);
       if (project.tasks.some(task => !config.columns.some(column => column.id === task.column))) throw new Error('Task refers to a missing pipeline column.');
+      for (const task of project.tasks) normalizePipelineTaskSelection(config, { profileId: task.profileId, agentOverride: task.agentOverride });
     }
     if (data.version === STATE_VERSION) for (const task of project.tasks) {
       const validKey = key => key && typeof key === 'object' && key.projectId === project.id && key.taskId === task.id

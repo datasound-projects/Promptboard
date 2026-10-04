@@ -961,6 +961,14 @@ button.timeline-task:hover { text-decoration: underline; }
 .columns-layout { display: grid; grid-template-columns: 230px 1fr; gap: 18px; min-height: 360px; }
 @media (max-width: 720px) { .columns-layout { grid-template-columns: 1fr; } }
 .columns-side { display: flex; flex-direction: column; gap: 8px; }
+#columns-profiles { display: grid; gap: 8px; min-width: 0; }
+#columns-profiles[hidden] { display: none; }
+#columns-profiles .detail-actions, .pipeline-task-modes { display: flex; flex-wrap: wrap; gap: 8px; }
+#columns-profiles .field-label[hidden] { display: none; }
+.pipeline-task-pins { display: grid; gap: 10px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.profile-strategy-field { display: grid; gap: 6px; }
+.profile-strategy-field select, .profile-strategy-field input, .pipeline-task-settings input:not([type="radio"]) { min-width: 0; width: 100%; }
+.pipeline-task-pins[hidden], .profile-strategy-field [hidden] { display: none; }
 .columns-list { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
 .columns-row { display: flex; align-items: center; gap: 4px; }
 .columns-item { display: flex; flex: 1; align-items: center; gap: 8px; min-width: 0; padding: 7px 8px; border: 1px solid transparent; border-radius: 8px; background: none; text-align: left; }

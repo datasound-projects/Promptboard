@@ -37,9 +37,13 @@ test('automation editing, Stop and receipt history work by keyboard in light/dar
   await browser.until(`!document.querySelector('#columns-dialog').open`, 'saved without executing');
   assert.equal((await app.board.state()).runs.length, 0); assert.equal((await app.board.automationRuns(task.id)).length, 0);
   let calls = 0;
-  app.board.automations.actions.fetcher = (_url, { signal }) => new Promise((_resolve, reject) => { calls++; const abort = () => reject(new Error('Owned fixture stopped.')); signal.addEventListener('abort', abort, { once:true }); if (signal.aborted) abort(); });
+  const dispatched = Promise.withResolvers();
+  app.board.automations.actions.fetcher = (_url, { signal }) => new Promise((_resolve, reject) => { calls++; dispatched.resolve(); const abort = () => reject(new Error('Owned fixture stopped.')); signal.addEventListener('abort', abort, { once:true }); if (signal.aborted) abort(); });
   const moving = app.board.transition(task.id, { column: 'code_review', expectedRevision: 1 }), cancelled = assert.rejects(moving, { code: 'AUTOMATION_MOVE_CANCELLED' });
-  await browser.until(`document.querySelector('[data-id="${task.id}"] .kanban-stop-automations')`, 'poll displays owned pending work'); assert.equal(calls, 1);
+  await browser.until(`document.querySelector('[data-id="${task.id}"] .kanban-stop-automations')`, 'poll displays owned pending work');
+  // Pending intent is visible before dispatch. This scenario tests cancelling an
+  // active webhook, so observe the owned fetch itself before asserting or stopping.
+  await dispatched.promise; assert.equal(calls, 1);
   for (const theme of ['light', 'dark']) {
     await browser.eval(`document.documentElement.dataset.theme='${theme}'; const stop = document.querySelector('[data-id="${task.id}"] .kanban-stop-automations'); stop.scrollIntoView({block:'center',inline:'center'}); stop.focus();`);
     assert.equal(await browser.layout(`const r=document.activeElement.getBoundingClientRect(); return document.activeElement.classList.contains('kanban-stop-automations') && r.left>=0 && r.right<=innerWidth && r.top>=0 && r.bottom<=innerHeight;`), true);
@@ -151,6 +155,9 @@ test('column pipeline conversion and editing work by keyboard in both themes and
   }
   await app.board.updateRun('activity-display-fixture', { activity: { phase: 'waiting', permissionPending: true, ready: false } });
   await browser.eval(`await loadBoard();`);
+  // A joined background poll can still contain the previous working snapshot.
+  // Observe the exact new native wait and its rendered message before asserting.
+  await browser.until(`board.runs.find(run => run.id === 'activity-display-fixture')?.activity?.phase === 'waiting' && document.querySelector('[data-id="${card.id}"]').textContent.includes('needs your answer')`, 'current permission wait rendered');
   assert.equal(await browser.eval(`return agentState(board.runs.find(run => run.id === 'activity-display-fixture'));`), 'awaits_you');
   assert.ok((await browser.eval(`return document.querySelector('[data-id="${card.id}"]').textContent;`)).includes('needs your answer'));
   for (const status of ['pending', 'failed', 'interrupted']) {
@@ -173,4 +180,50 @@ test('column pipeline conversion and editing work by keyboard in both themes and
     assert.doesNotMatch(text, /started the/);
   }
   assert.ok(!browser.consoleMessages.some(message => message.startsWith('EXCEPTION')), browser.consoleMessages.join('\n'));
+});
+
+test('board profiles and task agent choices work by keyboard in both themes and narrow Chrome without starting agents', { skip: !chrome, timeout: 90000 }, async t => {
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] }), pipeline = defaultPipelineConfig();
+  const project = await app.board.createProject({ name: 'Profile browser' }); for (const column of pipeline.columns) column.strategy.autoSpawn = false;
+  pipeline.columns[2].strategy.modelOverride = 'column-pin';
+  pipeline.columns[2].automations.onEnter = [{ id: 'shared', name: 'Shared alert', type: 'notify', enabled: false, title: '{{title}}', body: 'Literal body' }];
+  await app.board.setPipeline(project.id, { pipeline, expectedRevision: 1, confirm: true });
+  const prompt = '  Exact Composer <literal>\r\n😀  ', task = await app.board.createTask({ projectId: project.id, title: 'Profile task', prompt });
+  const browser = await launch(); if (!browser) { t.skip('Chrome did not start.'); return; } t.after(() => browser.close());
+  const enter = async selector => {
+    await browser.eval(`const button = document.querySelector(${JSON.stringify(selector)}); button.scrollIntoView({block:'center'}); button.focus();`);
+    await browser.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' });
+    await browser.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+  };
+  const choose = (selector, value) => browser.eval(`const node = document.querySelector(${JSON.stringify(selector)}); node.value = ${JSON.stringify(value)}; node.dispatchEvent(new Event('change',{bubbles:true}));`);
+  const shot = async name => { if (process.env.PB_BROWSER_SHOTS) { await mkdir(process.env.PB_BROWSER_SHOTS, { recursive: true }); await writeFile(join(process.env.PB_BROWSER_SHOTS, name+'.png'), await browser.screenshot()); } };
+  await browser.goto(app.url+'/#/kanban'); await browser.until(`document.querySelector('[data-id="${task.id}"]')`, 'task displayed');
+  await enter('#columns-open'); await enter('#columns-profile-new');
+  await browser.eval(`const name = document.querySelector('#columns-profile-name'); name.value = 'Economy <img src=x>'; name.dispatchEvent(new Event('input',{bubbles:true}));`);
+  assert.equal(await browser.eval(`return document.querySelector('#column-name').disabled && document.querySelector('#columns-add').disabled && document.querySelector('#columns-remove').disabled && [...document.querySelectorAll('.column-automations input, .column-automations button')].every(control=>control.disabled) && !document.querySelector('#columns-profiles img');`), true);
+  await choose('#profile-modelOverride-mode','default'); await choose('#profile-effortOverride-mode','override'); await choose('#profile-effortOverride-value','low');
+  for (const width of [1280,390]) for (const theme of ['light','dark']) {
+    await browser.resize(width,900); await browser.eval(`document.documentElement.dataset.theme='${theme}'; const field=document.querySelector('#profile-modelOverride-mode'); field.scrollIntoView({block:'center'}); field.focus();`);
+    assert.equal(await browser.layout(`const d=document.querySelector('#columns-dialog'), r=document.activeElement.getBoundingClientRect(); return d.scrollWidth<=d.clientWidth && r.left>=0 && r.right<=innerWidth && r.top>=0 && r.bottom<=innerHeight && document.activeElement.id==='profile-modelOverride-mode';`), true);
+    await shot('board-profile-'+width+'-'+theme);
+  }
+  await enter('#columns-form button[type="submit"]'); await browser.until(`!document.querySelector('#columns-dialog').open`, 'profile saved');
+  const profile = (await app.board.state()).projects[0].pipeline.profiles[0]; assert.equal(profile.columns.executing.modelOverride,null); assert.equal(profile.columns.executing.effortOverride,'low');
+  await enter(`[data-id="${task.id}"] .kanban-open`); await choose('#card-pipeline-profile',profile.id);
+  for (const width of [1280,390]) for (const theme of ['light','dark']) {
+    await browser.resize(width,900); await browser.eval(`document.documentElement.dataset.theme='${theme}'; const field=document.querySelector('#card-pipeline-profile'); field.scrollIntoView({block:'center'}); field.focus();`);
+    assert.equal(await browser.layout(`const d=document.querySelector('#card-dialog'),r=document.activeElement.getBoundingClientRect(); return d.scrollWidth<=d.clientWidth && r.left>=0 && r.right<=innerWidth && r.top>=0 && r.bottom<=innerHeight;`),true); await shot('task-profile-'+width+'-'+theme);
+  }
+  await enter('#card-save'); await browser.until(`!document.querySelector('#card-dialog').open`, 'task profile saved');
+  assert.equal((await app.board.state()).projects[0].tasks[0].profileId,profile.id);
+  await enter(`[data-id="${task.id}"] .kanban-more-toggle`); await enter(`[data-id="${task.id}"] .kanban-details`);
+  await browser.until(`document.querySelector('#details-pipeline-profile')`, 'task settings shown');
+  await browser.eval(`const radio=document.querySelector('#details-pipeline-mode-override'); radio.focus();`); await browser.key(' ','Space',32);
+  await browser.until(`document.querySelector('#details-pipeline-mode-override').checked`, 'exclusive override selected');
+  await choose('#details-pipeline-agentOverride','codex'); await choose('#details-pipeline-permissionMode','workspace-write');
+  await enter('#task-pipeline-save'); await browser.until(`document.querySelector('[data-id="${task.id}"] .pipeline-task-choice')?.textContent==='Task-wide agent override'`, 'saved task override');
+  const saved = (await app.board.state()).projects[0].tasks[0]; assert.equal(saved.profileId,null); assert.equal(saved.agentOverride.agentOverride,'codex'); assert.equal(saved.agentOverride.permissionMode,'workspace-write'); assert.equal(saved.prompt,prompt); assert.equal(saved.contentRevision,1);
+  assert.deepEqual((await app.board.state()).runs,[]); assert.equal((await app.board.automationRuns(task.id)).length,0);
+  assert.equal(await browser.eval(`const ids=[...document.querySelectorAll('#card-dialog [id], #task-dialog [id], #columns-dialog [id]')].map(node=>node.id); return new Set(ids).size===ids.length;`),true);
+  assert.deepEqual(browser.consoleMessages.filter(message=>message.startsWith('EXCEPTION')),[]);
 });

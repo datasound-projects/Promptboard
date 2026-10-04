@@ -132,7 +132,7 @@ test('pipeline backups preserve structure and Base scopes but restore with dispa
   const w = await world(t), config = defaultPipelineConfig(); config.columns[2].name = 'Build'; await w.configure(config);
   const card = await w.board.createTask({ projectId: w.projectId, title: 'Saved split task', prompt: '  CRLF\r\nexact  ' });
   await w.move(card.id, 'testing', { decision: 'move' });
-  const backup = await w.board.exportBackup(); assert.equal(backup.version, 4);
+  const backup = await w.board.exportBackup(); assert.equal(backup.version, 5);
   const other = new Board({ dataDir: await temp(t), executor: { start() { assert.fail('Import must not execute.'); } } });
   await other.importBackup(backup);
   const saved = (await other.state()).projects[0]; assert.equal(saved.workflowMode, 'pipeline'); assert.equal(saved.pipeline.columns[2].name, 'Build');
@@ -920,4 +920,106 @@ test('an approved-plan target with auto-start off parks the native conversation 
   assert.equal((await w.taskNow(card.id)).column, 'executing'); assert.equal((await w.taskNow(card.id)).sessionId, original.sessionId);
   assert.equal((await w.board.state()).runs.filter(run => run.taskId === card.id).length, 1);
   const output = await readFile(join(w.dataDir, original.artifactsDir, 'output.log'), 'utf8'); assert.doesNotMatch(output, /you said:.*Proceed with implementing/);
+});
+
+test('board profiles save exclusive task settings without changing Composer bytes or starting agents, and drive an explicit arrival', async t => {
+  const w = await world(t), config = defaultPipelineConfig();
+  config.profiles = [{ id: 'economy', name: 'Economy', columns: { executing: { agentOverride: 'codex', modelOverride: 'profile-model', effortOverride: 'high', autoSpawn: false } } }];
+  await w.configure(config);
+  const mcp = await w.board.base.create({ kind: 'mcp', name: 'Profile tools', enabled: true, trust: 'trusted', configuration: { transport: 'stdio', command: process.execPath, args: ['--version'] } });
+  await w.board.base.apply({ changes: [{ target: { scope: 'project', projectId: w.projectId }, binding: { mode: 'extend', include: [{ resourceId: mcp.id, required: true }], exclude: [] } }], expectedBaseRevision: (await w.board.state()).base.revision });
+  const prompt = '  Engineered <literal> & {{title}}\r\n  Split task 😀  ';
+  const card = await w.board.createTask({ projectId: w.projectId, title: 'From Composer', prompt });
+  const edited = await w.board.updateTask(card.id, { pipelineSettings: { profileId: 'economy' }, expectedProjectRevision: (await w.projectNow()).revision, expectedRevision: card.revision });
+  assert.equal(edited.task.prompt, prompt); assert.equal(edited.task.contentRevision, 1); assert.equal(edited.task.checksOutdated, false); assert.equal(edited.task.column, 'todo');
+  assert.equal(w.starts.length, 0); assert.deepEqual((await w.board.state()).runs, []);
+  const copy = await w.board.duplicateTask(card.id); assert.equal(copy.profileId, 'economy'); assert.equal(copy.prompt, prompt); assert.equal(copy.workspace, null);
+  await w.move(card.id, 'executing'); assert.equal(w.starts.length, 0, 'A profile can make a shared automatic column manual.');
+  const view = await w.board.view(), shown = view.projects[0].tasks.find(task => task.id === card.id);
+  assert.equal(shown.pipelineAgent.provider, 'codex'); assert.equal(shown.pipelineAgent.model, 'profile-model'); assert.equal(shown.pipelineAgent.policy, 'manual');
+  const preview = await w.board.previewBase({ target: { scope: 'task', projectId: w.projectId, taskId: card.id } }); assert.equal(preview.provider, 'codex');
+  assert.equal((await w.board.baseView()).targets.find(item => item.target.scope === 'task' && item.target.taskId === card.id).provider, 'codex');
+  const started = { run: await w.board.requestRun(card.id, { stage: 'executing', consent: true }) };
+  assert.equal(started.run.config.provider, 'codex'); assert.equal(started.run.config.model, 'profile-model'); assert.equal(started.run.config.effort, 'high');
+  assert.ok(started.run.baseManifest.resources.some(resource => resource.resourceId === mcp.id));
+  const built = await buildSession({ provider: 'codex', stage: 'executing', config: started.run.config, message: pipelineTaskEnvelope(card), runDir: await temp(t) });
+  assert.ok(!built.args.includes('--strict-mcp-config')); assert.equal((await w.taskNow(card.id)).prompt, prompt);
+});
+
+test('board profiles reject stale, foreign, conflicting or unsafe task choices atomically', async t => {
+  const w = await world(t), config = defaultPipelineConfig(); config.profiles = [{ id: 'p', name: 'Profile', columns: {} }]; await w.configure(config);
+  const card = await w.board.createTask({ projectId: w.projectId, title: 'Exact', prompt: '  Exact\r\n' });
+  const projectRevision = (await w.projectNow()).revision, before = structuredClone(await w.board.state());
+  for (const pipelineSettings of [{ profileId: 'missing' }, { profileId: 'p', agentOverride: { agentOverride: 'codex' } }, { agentOverride: { agentOverride: 'claude', permissionMode: 'yolo' } }, { agentOverride: { agentOverride: 'codex', modelOverride: '--flag' } }, { autoSpawn: true }]) {
+    await assert.rejects(w.board.updateTask(card.id, { title: 'Must not save', pipelineSettings, expectedRevision: 1, expectedProjectRevision: projectRevision }), { code: 'INVALID_PIPELINE_CONFIG' });
+    assert.deepEqual(await w.board.state(), before);
+  }
+  for (const values of [{ expectedRevision: 99, expectedProjectRevision: projectRevision }, { expectedRevision: 1, expectedProjectRevision: projectRevision - 1 }]) await assert.rejects(w.board.updateTask(card.id, { pipelineSettings: { profileId: 'p' }, ...values }), { code: 'REVISION_CONFLICT' });
+  await assert.rejects(w.board.updateTask(card.id, { pipelineSettings: {}, expectedProjectRevision: projectRevision }), { code: 'REVISION_REQUIRED' });
+  await assert.rejects(w.board.createTask({ projectId: w.projectId, title: 'Unsafe creation', prompt: 'Exact', pipelineSettings: { profileId: 'missing' }, expectedProjectRevision: projectRevision }), { code: 'INVALID_PIPELINE_CONFIG' });
+  assert.deepEqual(await w.board.state(), before); assert.equal(w.starts.length, 0);
+});
+
+test('board profiles keep active runs and automation ownership unchanged and allow future pins only after pause', async t => {
+  const w = await world(t); await w.configure(defaultPipelineConfig());
+  const card = await w.board.createTask({ projectId: w.projectId, title: 'Pinned', prompt: 'Original' }), started = await w.move(card.id, 'executing');
+  const save = () => w.board.updateTask(card.id, { pipelineSettings: { agentOverride: { agentOverride: 'codex' } }, expectedRevision: (w.board.store.state.projects[0].tasks.find(task => task.id === card.id)).revision, expectedProjectRevision: w.board.store.state.projects[0].revision });
+  await assert.rejects(save(), { code: 'RUN_ACTIVE' }); await w.board.updateRun(started.run.id, { status: 'suspended' });
+  w.board.automationMoves.set(card.id, {}); await assert.rejects(save(), { code: 'AUTOMATIONS_ACTIVE' }); w.board.automationMoves.delete(card.id);
+  const before = structuredClone(await w.board.run(started.run.id));
+  const result = await save(); assert.equal(result.task.agentOverride.agentOverride, 'codex'); assert.equal(result.task.profileId, null);
+  assert.deepEqual(await w.board.run(started.run.id), before); assert.equal(w.starts.length, 1); assert.equal(result.task.contentRevision, 1);
+});
+
+test('board profiles rename stable choices and deletion returns tasks to Default without invalidating their text or Base', async t => {
+  const w = await world(t), config = defaultPipelineConfig();
+  for (const column of config.columns) column.strategy.autoSpawn = false;
+  config.profiles = [{ id: 'profile', name: 'Before', columns: { executing: { modelOverride: 'pinned' } } }]; await w.configure(config);
+  const card = await w.board.createTask({ projectId: w.projectId, title: 'Profile task', prompt: '  Keep exact\r\n', pipelineSettings: { profileId: 'profile' }, expectedProjectRevision: (await w.projectNow()).revision });
+  const baseBefore = structuredClone((await w.board.state()).base); config.profiles[0].name = 'After'; await w.configure(config);
+  assert.equal((await w.taskNow(card.id)).profileId, 'profile'); assert.equal((await w.taskNow(card.id)).revision, 1);
+  config.profiles = []; await w.configure(config);
+  const saved = await w.taskNow(card.id); assert.equal(saved.profileId, null); assert.equal(saved.revision, 2); assert.equal(saved.contentRevision, 1); assert.equal(saved.prompt, card.prompt); assert.equal(saved.checksOutdated, false);
+  assert.deepEqual((await w.board.state()).base, baseBefore); assert.equal(w.starts.length, 0);
+  const reload = new Board({ dataDir: w.dataDir }); assert.equal((await reload.state()).projects[0].tasks[0].profileId, null);
+});
+
+test('board profiles and whole-task pins round-trip through v5 backups without sessions or imported dispatch', async t => {
+  const w = await world(t), config = defaultPipelineConfig(); config.profiles = [{ id: 'p', name: 'Portable', columns: { planning: { permissionMode: null }, executing: { agentOverride: 'codex' } } }]; await w.configure(config);
+  const rev = (await w.projectNow()).revision, prompt = '  Portable 😀\r\n{{title}} ';
+  await w.board.createTask({ projectId: w.projectId, title: 'Profile', prompt, pipelineSettings: { profileId: 'p' }, expectedProjectRevision: rev });
+  await w.board.createTask({ projectId: w.projectId, title: 'Pin', prompt, pipelineSettings: { agentOverride: { agentOverride: 'claude', modelOverride: 'custom', effortOverride: 'max', permissionMode: 'default' } }, expectedProjectRevision: rev });
+  const backup = await w.board.exportBackup(); assert.equal(backup.version, 5); assert.equal(backup.projects[0].tasks[0].profileId, 'p');
+  const imported = new Board({ dataDir: await temp(t) }); await imported.importBackup(backup, { replace: true });
+  const project = (await imported.state()).projects[0]; assert.equal(project.tasks[0].profileId, 'p'); assert.deepEqual(project.tasks[1].agentOverride, backup.projects[0].tasks[1].agentOverride);
+  assert.equal(project.tasks[1].prompt, prompt); assert.equal(project.tasks[1].workspace, null); assert.deepEqual((await imported.state()).sessions, []);
+  assert.ok(project.pipeline.columns.every(column => column.strategy.autoSpawn === false)); assert.ok(project.pipeline.profiles.every(profile => Object.values(profile.columns).every(strategy => strategy.autoSpawn === false)));
+  const again = await imported.exportBackup(); assert.deepEqual(again.projects[0].pipeline, config); assert.equal(again.projects[0].tasks[0].profileId, 'p');
+  const invalid = structuredClone(backup); invalid.projects[0].tasks[0].profileId = 'foreign'; await assert.rejects(imported.importBackup(invalid, { replace: true }), { code: 'INVALID_BACKUP' });
+  const old = structuredClone(backup); old.version = 4; for (const task of old.projects[0].tasks) { delete task.profileId; delete task.agentOverride; }
+  await imported.importBackup(old, { replace: true }); assert.equal((await imported.state()).projects[0].tasks[0].profileId, null);
+});
+
+test('board profiles apply actual native launch flags and paused same-provider changes resume context without replaying Composer or Base', { skip: process.platform === 'win32' }, async t => {
+  const report = join(await temp(t), 'profile-launches.jsonl'), previous = process.env.FAKE_AGENT_REPORT;
+  process.env.FAKE_AGENT_REPORT = report; t.after(() => { if (previous === undefined) delete process.env.FAKE_AGENT_REPORT; else process.env.FAKE_AGENT_REPORT = previous; });
+  const w = await world(t, true), config = defaultPipelineConfig(); for (const column of config.columns) column.strategy.autoSpawn = false;
+  config.profiles = [{ id: 'p', name: 'Native profile', columns: { executing: { agentOverride: 'claude', modelOverride: 'profile-one', effortOverride: 'low', permissionMode: 'default', autoSpawn: true } } }]; await w.configure(config);
+  const mcp = await w.board.base.create({ kind: 'mcp', name: 'Native profile tool', enabled: true, trust: 'trusted', configuration: { transport: 'stdio', command: process.execPath, args: ['--version'] } });
+  await w.board.base.apply({ changes: [{ target: { scope: 'project', projectId: w.projectId }, binding: { mode: 'extend', include: [{ resourceId: mcp.id, required: true }], exclude: [] } }], expectedBaseRevision: (await w.board.state()).base.revision });
+  const prompt = '  Original Composer <literal>\r\n😀  ', card = await w.board.createTask({ projectId: w.projectId, title: 'Native profile task', prompt, pipelineSettings: { profileId: 'p' }, expectedProjectRevision: (await w.projectNow()).revision });
+  const first = await w.move(card.id, 'executing'); await until(async () => (await w.board.run(first.run.id)).turnComplete);
+  const nativeId = (await w.board.state()).sessions.find(session => session.id === first.run.sessionId).nativeSessionId;
+  await w.board.pauseRun(first.run.id, { confirm: true }); config.profiles[0].columns.executing.modelOverride = 'profile-two'; await w.configure(config);
+  const second = await w.board.resumeTask(card.id, { consent: true }); await until(async () => w.board.executor.sessions.get(second.id)?.sawEvent && (await w.board.run(second.id)).status === 'running');
+  await w.board.pauseRun(second.id, { confirm: true });
+  await w.board.updateTask(card.id, { pipelineSettings: { agentOverride: { agentOverride: 'claude', modelOverride: 'whole-task', effortOverride: 'high', permissionMode: 'default' } }, expectedRevision: (await w.taskNow(card.id)).revision, expectedProjectRevision: (await w.projectNow()).revision });
+  const third = await w.board.resumeTask(card.id, { consent: true }); await until(async () => w.board.executor.sessions.get(third.id)?.sawEvent && (await w.board.run(third.id)).status === 'running');
+  assert.equal(second.sessionId, first.run.sessionId); assert.equal(third.sessionId, first.run.sessionId);
+  assert.equal(second.providerSessionId, nativeId); assert.equal(third.providerSessionId, nativeId);
+  for (const run of [second, third]) { assert.equal(await readFile(join(w.dataDir, run.artifactsDir, 'prompt.md'), 'utf8'), ''); assert.ok(run.baseManifest.resources.some(resource => resource.resourceId === mcp.id)); }
+  const launches = (await readFile(report, 'utf8')).trim().split('\n').map(line => JSON.parse(line)); assert.equal(launches.length, 3);
+  assert.deepEqual(launches.map(launch => launch.args[launch.args.indexOf('--model') + 1]), ['profile-one', 'profile-two', 'whole-task']);
+  for (const launch of launches) { assert.ok(launch.args.includes('--mcp-config')); assert.ok(!launch.args.includes('--strict-mcp-config')); assert.ok(!launch.args.includes('--tools')); assert.ok(!launch.args.includes('--disallowedTools')); }
+  assert.equal((await w.taskNow(card.id)).prompt, prompt); assert.equal((await w.taskNow(card.id)).contentRevision, 1);
 });
