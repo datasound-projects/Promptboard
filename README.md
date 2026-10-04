@@ -5,7 +5,7 @@
 <h1 align="center">Promptboard</h1>
 
 <p align="center">
-  <b>Compose prompts. Run coding tasks. Reuse agent resources.</b><br>
+  <b>Compose wise prompts. Run coding tasks in a structured way. Reuse agent profiles and equip each with resources.</b><br>
   A local-first workspace for your coding CLI and your repositories.
 </p>
 
