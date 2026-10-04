@@ -1,6 +1,6 @@
 # Pipeline configuration foundation
 
-`src/pipeline-config.mjs` defines and validates the configuration consumed by the opt-in [main-session lifecycle](pipeline-lifecycle.md). The library itself remains pure. Enabled automation execution, advanced session strategies, native plan-exit auto-move, and repository-file reconciliation are subsequent changes. Legacy projects retain [the existing stage contract](agentic-kanban-contract.md).
+`src/pipeline-config.mjs` defines and validates the configuration consumed by the [main-session lifecycle](pipeline-lifecycle.md), which new app projects use by default. The library itself remains pure; execution, verified native plan routing and reviewed repository configuration use separate runtime services. Advanced session strategies remain pending. Saved legacy projects retain [the existing stage contract](agentic-kanban-contract.md).
 
 The [prompt and template foundation](pipeline-prompts.md) defines the separate first-spawn and automation input boundaries.
 

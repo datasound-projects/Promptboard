@@ -1,6 +1,6 @@
 # Pipeline task authoring
 
-An opt-in column pipeline accepts a task with a nonempty title and no prompt body, following Kangentic's [optional description](https://www.kangentic.com/guide/creating-tasks/) contract. The card editor labels the body optional; quick creation can still derive a title from a supplied prompt. When both are empty, creation is refused. Titles keep the existing 120-character bound and prompt bodies keep their existing type/size limits. Legacy stage boards retain their required prompt body.
+A column pipeline accepts a task with a nonempty title and no prompt body, following Kangentic's [optional description](https://www.kangentic.com/guide/creating-tasks/) contract. New app projects use this workflow by default; saved legacy projects retain their required prompt body. The card editor labels the pipeline body optional; quick creation can still derive a title from a supplied prompt. When both are empty, creation is refused. Titles keep the existing 120-character bound and prompt bodies keep their existing type/size limits.
 
 The server advertises title-only support in its existing session response. If the updated browser is served by an older running server without that capability, the editor keeps requiring a body. Updating source does not restart an existing app process.
 
@@ -10,4 +10,4 @@ Supplied prompt text retains its original whitespace and line endings. Editing a
 
 Refine in Composer uses the title when a pipeline draft has no meaningful body. It opens Composer without creating the card or starting an agent. A meaningful supplied body remains the exact Composer input. Existing Composer results and edited split tasks still enter To Do through their normal authoring path.
 
-This step adds title-only authoring. Task numbers, labels, priority, attachments, creation directly into active columns and backlog imports remain pending. Native column-message scheduling is a separate integration step; this feature does not enable message rows or advance tasks automatically.
+Stable [task numbers](task-numbers.md) are available on cards, details and completed tasks. Configured [deferred enter messages](native-message-scheduler.md) provide later instructions without changing the first Composer input. Labels, priority, attachments, creation directly into active columns and backlog imports remain pending. Creating a card or project still starts no work.
