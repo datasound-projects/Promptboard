@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Refresh the short dark-mode Compose, Kanban and Base demos with the current interface, including task settings, sidebar project setup and linked knowledge pages. Simplify the GitHub social preview around all three pages and add its repeatable renderer.
+
 - Move Kanban project settings into the project sidebar and keep the board at full width. Use one compact disclosure for repository, target branch, project agent and workflow controls; hide redundant project selection, shorten repository status and collapse backup actions while preserving keyboard and phone navigation.
 
 - Store repositories created through New project under `~/Promptboard/projects` by default, with `PROMPTBOARD_PROJECTS_DIR` override support. Keep projects opened from existing local folders at their original absolute paths and explain both locations in the interface.

@@ -75,21 +75,27 @@ try {
   await click('input[name="quality"][value="fast"]');
   await browser.eval(`setSettingsCollapsed(true); document.querySelector('#prompt-input').focus(); window.scrollTo(0,0);`);
   await encode('compose-demo', async () => {
-    await shot(0.8, 'Start with an idea');
+    await shot(0.6, 'Start with an idea');
     const words = REQUEST.split(' ');
     for (const progress of [6, 13, words.length]) {
       await browser.eval(`const input = document.querySelector('#prompt-input'); input.value = ${JSON.stringify(words.slice(0, progress).join(' '))}; input.dispatchEvent(new Event('input', { bubbles: true }));`);
       await shot(0.5, 'Describe the task');
     }
+    await click('#settings-toggle');
+    await browser.eval(`document.querySelector('#compose-general').open = true; const task = document.querySelector('#task'); task.value = 'feature'; task.dispatchEvent(new Event('change', { bubbles: true })); document.querySelector('.compose-settings-card').scrollIntoView({block:'start'});`);
+    await shot(1.6, 'Choose Add a feature, CLI, model and output settings');
+    await click('#settings-toggle');
+    await browser.eval(`document.querySelector('#generate-button').scrollIntoView({block:'center'});`);
     await click('#generate-button'); await shot(0.5, 'Generate a structured prompt');
     await browser.until(`document.querySelector('#prompt-output').textContent.includes('Acceptance checks') && !document.querySelector('#split-button').disabled`, 'generated prompt', 20000);
-    await browser.eval(`document.querySelector('#output-card').scrollIntoView({block:'start'});`); await shot(2.2, 'Review the structured result');
-    await click('#prompt-edit'); await browser.eval(`const edit = document.querySelector('#prompt-edit-text'); edit.value += '\\n\\nKeep the existing API response format.'; edit.setSelectionRange(edit.value.length - 37, edit.value.length); edit.scrollTop = edit.scrollHeight;`); await shot(1.5, 'Edit the result if needed');
+    await browser.eval(`document.querySelector('#output-card').scrollIntoView({block:'start'});`); await shot(1.8, 'Review the structured result');
+    await click('#prompt-edit'); await browser.eval(`const edit = document.querySelector('#prompt-edit-text'); edit.value += '\\n\\nKeep the existing API response format.'; edit.setSelectionRange(edit.value.length - 37, edit.value.length); edit.scrollTop = edit.scrollHeight;`); await shot(1.2, 'Edit the result if needed');
     await click('#prompt-edit-save'); await shot(0.7, 'Save your exact wording');
+    await click('#output-tools > summary'); await shot(0.6, 'More actions: split, export or add to Kanban');
     await click('#split-button');
     await browser.until(`document.querySelectorAll('#split-list .split-item').length === 3`, 'three proposed tasks', 20000);
     await browser.eval(`document.querySelector('#split-project').value = ''; document.querySelector('#split-project').dispatchEvent(new Event('change')); document.querySelector('#split-project-name').value = 'Shop app';`);
-    await shot(3.4, 'Split into three editable To Do tasks');
+    await shot(2.6, 'Split into three editable To Do tasks');
   });
   await browser.eval(`document.querySelector('#split-form').requestSubmit();`);
   await browser.until(`document.querySelector('#autopilot-dialog').open`, 'tasks saved', 20000);
@@ -109,27 +115,34 @@ try {
   await browser.eval(`location.hash = '#/base';`);
   await browser.until(`document.querySelector('#base-list').children.length === 8`, 'Base library');
   await encode('base-demo', async () => {
-    await shot(1.4, 'One shared library for all resource types');
+    await shot(1.2, 'One shared library for all resource types');
     await click('#base-categories [data-kind="skill"]'); await click(`#base-list [data-resource-id="${instruction.id}"]`);
     await browser.until(`document.querySelector('#base-skill-body')`, 'instruction editor');
-    await browser.eval(`document.querySelector('#base-skill-body').scrollIntoView({block:'center'});`); await shot(1.8, 'Reusable, editable instructions');
-    await click('#base-categories [data-kind="agent"]'); await browser.until(`document.querySelectorAll('#base-list > li').length === 2`, 'filtered agent cards'); await browser.eval(`window.scrollTo(0,0);`); await shot(2.6, 'Agent cards show configured resources');
+    await browser.eval(`document.querySelector('#base-skill-body').scrollIntoView({block:'center'});`); await shot(1.6, 'Reusable, editable instructions');
+    await click('#base-categories [data-kind="knowledge"]'); await click(`#base-list [data-resource-id="${wiki.id}"]`);
+    await browser.until(`document.querySelector('#base-wiki-markdown')`, 'wiki editor');
+    await browser.eval(`document.querySelector('#base-wiki-markdown').scrollIntoView({block:'center'});`); await shot(1.6, 'Linked knowledge pages keep shared context');
+    await click('#base-categories [data-kind="agent"]'); await browser.until(`document.querySelectorAll('#base-list > li').length === 2`, 'filtered agent cards'); await browser.eval(`window.scrollTo(0,0);`); await shot(2.2, 'Agent cards show configured resources');
     await browser.eval(`const card = [...document.querySelectorAll('.base-agent-card')].find(node => node.textContent.includes('Shop engineer')); [...card.querySelectorAll('button')].find(node => node.textContent === 'Apply to…').click();`);
     await browser.until(`document.querySelector('.base-apply-targets input')`, 'assignment targets');
-    await browser.eval(`const target = document.querySelector('[data-target-key=${JSON.stringify(`project:${project.id}::`)}]'); target.click();`); await shot(1.4, 'Choose a real project');
+    await browser.eval(`const target = document.querySelector('[data-target-key=${JSON.stringify(`project:${project.id}::`)}]'); target.click();`); await shot(1.2, 'Choose a real project');
     await clickText('Preview changes', "document.querySelector('#base-dialog')");
     await browser.until(`[...document.querySelectorAll('#base-dialog button')].some(node => node.textContent === 'Apply assignments' && !node.disabled)`, 'resolved resource preview');
-    await browser.eval(`document.querySelector('#base-dialog').scrollTop = document.querySelector('#base-dialog').scrollHeight;`); await shot(2.8, 'Preview the resolved instructions and context');
+    await browser.eval(`document.querySelector('#base-dialog').scrollTop = document.querySelector('#base-dialog').scrollHeight;`); await shot(2.4, 'Preview the resolved instructions and context');
     await clickText('Apply assignments', "document.querySelector('#base-dialog')"); await browser.until(`!document.querySelector('#base-dialog').open`, 'saved assignment');
-    await shot(1.6, 'Assigned by reference. No agent starts yet.');
+    await shot(1.4, 'Assigned by reference. No agent starts yet.');
   });
   // The following real task run consumes the profile and its pack through Base.
   project = (await app.board.view()).projects[0]; const taskId = project.tasks[0].id;
   await app.board.setAutopilot(project.id, { route: ['executing', 'code_review', 'testing', 'merge'], finish: 'merge', maxRework: 1, queue: [taskId], expectedRevision: project.revision });
   await browser.resize(1280,820);
-  await browser.eval(`location.hash = '#/kanban'; await loadBoard(); setProjectCollapsed(true); if (document.documentElement.dataset.sidebar !== 'collapsed') toggleSidebar(); document.documentElement.style.zoom = '1'; window.PromptboardDock?.setState('collapsed'); openAutopilot({first:[${JSON.stringify(taskId)}]});`);
+  await browser.eval(`location.hash = '#/kanban'; await loadBoard(); setProjectCollapsed(true); if (document.documentElement.dataset.sidebar === 'collapsed') toggleSidebar(); document.documentElement.style.zoom = '1'; window.PromptboardDock?.setState('collapsed');`);
   await encode('kanban-demo', async () => {
-    await shot(1.6, 'Choose the Autopilot route and consent');
+    await shot(0.8, 'Project workspace, board and To Do tasks');
+    await click('#project-toggle'); await shot(1.4, 'Project settings now live in the sidebar');
+    await click('#project-toggle');
+    await browser.eval(`toggleSidebar(); openAutopilot({first:[${JSON.stringify(taskId)}]});`);
+    await shot(1.2, 'Choose the Autopilot route and consent');
     await browser.eval(`document.querySelector('#autopilot-consent').checked = true; document.querySelector('#autopilot-form').requestSubmit();`);
     await browser.until(`!document.querySelector('#autopilot-dialog').open`, 'Autopilot started', 20000);
     const captured = new Set();
@@ -142,7 +155,7 @@ try {
       if (ready && !captured.has(task.column) && ['executing', 'code_review', 'testing', 'merge', 'done'].includes(task.column)) {
         await browser.eval(`await loadBoard(); const column = document.querySelector('.kanban-column[data-column="${task.column}"]'); column.scrollIntoView({block:'nearest',inline:'nearest'});`);
         if (run) await browser.eval(`window.PromptboardDock.open(${JSON.stringify(run.id)});`);
-        await shot(task.column === 'done' ? 2 : 1.6, `${task.column}: real workflow, simulated agent`); captured.add(task.column);
+        await shot(task.column === 'done' ? 1.6 : 1.1, `${task.column}: real workflow, simulated agent`); captured.add(task.column);
       }
       if (autopilot.status === 'finished') break;
       if (Date.now() > deadline) throw new Error('Autopilot did not finish.'); await pause(150);
@@ -150,7 +163,7 @@ try {
     if (!['executing','code_review','testing','merge','done'].every(stage => captured.has(stage))) throw new Error('A required workflow scene was missed.');
     const runs = (await app.board.view()).runs.filter(run => run.taskId === taskId);
     if (!runs.some(run => run.baseManifest?.supplied?.some(entry => entry.resourceId === instruction.id))) throw new Error('The selected Base skill was not actually supplied.');
-    await browser.eval(`window.PromptboardDock.setState('collapsed'); await loadBoard();`); await shot(1.6, 'Verified task merged and recorded in Done');
+    await browser.eval(`window.PromptboardDock.setState('collapsed'); await loadBoard();`); await shot(1.3, 'Verified task merged and recorded in Done');
   });
   const exceptions = browser.consoleMessages.filter(message => message.startsWith('EXCEPTION')); if (exceptions.length) throw new Error(exceptions.join('\n'));
   if (preview) await writeFile(join(preview, 'storyboards.json'), JSON.stringify(storyboards, null, 2));
