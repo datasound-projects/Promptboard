@@ -23,7 +23,7 @@ test('template variables use current task facts and do not invent branches, usag
   const project = { name: 'Project', repository: { root: join(tmpdir(), 'main-checkout') }, targetBranch: { name: 'trunk' } };
   const values = pipelineTemplateVariables({ task, project, port: 5000, move: { column: 'Review', fromColumn: 'Build', toColumn: 'Review', trigger: 'enter' } });
   assert.deepEqual(Object.keys(values), PIPELINE_VARIABLES);
-  assert.equal(values.taskNumber, '42'); assert.equal(values.description, ': Description'); assert.equal(values.labels, 'bug, priority');
+  assert.equal(values.taskNumber, '#42'); assert.equal(values.description, ': Description'); assert.equal(values.labels, 'bug, priority');
   assert.equal(values.projectPath, project.repository.root); assert.equal(values.worktreePath, task.workspace.path);
   assert.equal(values.baseBranch, 'task-base'); assert.equal(values.prState, 'draft'); assert.equal(values.issueKey, 'ISSUE-7'); assert.equal(values.port, '5000');
   assert.equal(values.column, 'Review'); assert.equal(values.fromColumn, 'Build'); assert.equal(values.trigger, 'enter');
@@ -78,4 +78,29 @@ test('invalid or oversized input fails without silent truncation, allocation, or
   assert.throws(() => renderPipelineTemplate('x', null), { code: 'INVALID_PIPELINE_TEMPLATE' });
   assert.throws(() => pipelineTemplateVariables({ task: { labels: 'broken' } }), { code: 'INVALID_PIPELINE_TEMPLATE' });
   assert.throws(() => pipelineTemplateVariables({ task: { prompt: {} } }), { code: 'INVALID_PIPELINE_TEMPLATE' });
+});
+
+test('saved task numbers render as #N in automation and spawn templates while first input stays exact', () => {
+  const task = { id: 'uuid-stays-routing-id', number: 42, title: 'Exact title', prompt: '  Literal {{taskNumber}}\r\n雪  ' };
+  const before = structuredClone(task), values = pipelineTemplateVariables({ task });
+  assert.equal(values.taskNumber, '#42');
+  assert.equal(renderPipelineTemplate('Review {{taskNumber}} {{taskId}}', values), 'Review #42 uuid-stays-routing-id');
+  assert.deepEqual(JSON.parse(renderPipelineTemplate('{"number":"{{taskNumber}}"}', values, 'json')), { number: '#42' });
+  assert.equal(renderPipelineTemplate('https://example.test/tasks/{{taskNumber}}', values, 'url'), 'https://example.test/tasks/%2342');
+  assert.equal(pipelineScriptEnvironment(values).PROMPTBOARD_TASK_NUMBER, '#42');
+  assert.equal(renderPipelineTemplate('task={{taskNumber}}', values, 'script'), 'task=42');
+  assert.equal(renderPipelineSpawnPrompt({ task }), pipelineTaskEnvelope(task));
+  assert.equal(renderPipelineSpawnPrompt({ task }, '{{taskNumber}} {{task_xml}}'), '#42 ' + pipelineTaskEnvelope(task));
+  assert.deepEqual(task, before);
+});
+
+test('task number templates preserve the largest valid identity and never invent missing or malformed numbers', () => {
+  const largest = Number.MAX_SAFE_INTEGER - 1;
+  assert.equal(pipelineTemplateVariables({ task: { number: largest } }).taskNumber, `#${largest}`);
+  for (const number of [undefined, null, 0, -1, 1.5, '42', '<img src=x>', Number.MAX_SAFE_INTEGER, Infinity, NaN, {}]) {
+    const values = pipelineTemplateVariables({ task: { number } });
+    assert.equal(values.taskNumber, '');
+    assert.equal(renderPipelineTemplate('{{taskNumber}}', values), '');
+    assert.equal(pipelineScriptEnvironment(values).PROMPTBOARD_TASK_NUMBER, '');
+  }
 });

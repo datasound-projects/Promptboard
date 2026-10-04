@@ -1,10 +1,12 @@
 # Pipeline prompt and template foundation
 
-`src/pipeline-templates.mjs` supplies pure rendering for the [opt-in column lifecycle](pipeline-lifecycle.md) and forthcoming automation services. Pipeline first-spawn rendering is integrated; legacy stage prompts remain unchanged. Automation message, script, and webhook execution is still pending.
+`src/pipeline-templates.mjs` supplies pure rendering for the [opt-in column lifecycle](pipeline-lifecycle.md) and [automation execution](pipeline-runtime-automations.md). Pipeline first-spawn rendering and script/webhook execution are integrated; legacy stage prompts remain unchanged. Native column-message scheduling remains pending.
 
 The default first-spawn template is `{{task_xml}}{{attachments}}`. It renders the title and exact task prompt as an XML envelope, followed by already resolved attachment paths. XML syntax is escaped; the stored Composer/split-task text is unchanged. Description whitespace, Markdown hard breaks, code indentation, trailing spaces, and CRLF line endings survive in the envelope body without added indentation. Empty descriptions are omitted. No stage instructions, column names, review/test directives, or invented context are added.
 
 The variable catalog includes task title/description, ID/number, project name/main checkout, task worktree/branch, effective base branch, PR and external issue references, labels, attachment paths, and an already reserved port. Move variables are available to automations; spawn rendering clears them. Missing facts are empty rather than guessed. Rendering allocates no port, resolves no path, reads no file or environment variable, and changes no task.
+
+`{{taskNumber}}` renders the saved project-local identity as `#N`, such as `#42`. Missing or malformed numbers render empty; array position and creation order never supply a substitute. The default first-spawn envelope still contains only the exact task title/description and attachments. Custom templates can explicitly include the number. `PROMPTBOARD_TASK_NUMBER` preserves `#N` for quoted shell expansion; inline script substitutions retain the existing metacharacter stripping, including `#`. Default webhook payloads and task APIs retain the numeric field.
 
 Automation templates substitute once and keep unknown placeholders visible. A task description containing `{{title}}` is task content, so it is never expanded again after insertion. Messages substitute literally. Webhook URL variables are percent-encoded; JSON-body variables are escaped for a JSON string. The execution service must validate rendered URLs, headers, and bodies before sending requests.
 
