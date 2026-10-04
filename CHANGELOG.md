@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Display saved task numbers on board/completed cards and in archive/edit/details metadata. Add exact `#number` lookup to the completed-task filter, retain literal title filtering otherwise and omit invented positional numbers on older servers. Preserve task titles, copied prompts and keyboard actions.
+
 - Allocate stable project-local task numbers atomically across Composer creation, duplication and browser migration. Retain numbers through moves/archive/restore and never recycle deleted numbers. Migrate state to version 7 with an exact original backup; portable version 6 exports preserve numbers/counters and older backups remain importable. Number display remains a separate UI step.
 
 - Refresh the short dark-mode Compose, Kanban and Base demos with the current interface, including task settings, sidebar project setup, explicit file editing and linked knowledge pages. Simplify the GitHub social preview around all three pages and add its repeatable renderer.

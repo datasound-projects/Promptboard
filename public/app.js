@@ -1527,11 +1527,9 @@ function renderDoneList(tasks) {
   zone.className = 'kanban-done-drop';
   zone.append(stageIcon('drop'), paragraph(currentProject()?.workflowMode === 'pipeline' ? 'Pauses the agent · archives the task' : 'Complete from Testing or Merge · no merge'));
   if (!tasks.length) return [zone];
-  // Card numbers follow creation order within the project, so they stay stable.
-  const numbers = new Map([...currentProject().tasks].sort((a, b) => a.createdAt - b.createdAt).map((task, index) => [task.id, index + 1]));
   const finished = task => task.archivedAt || task.completion?.at || task.updatedAt || 0;
   const recent = [...tasks].sort((a, b) => finished(b) - finished(a));
-  const viewAll = () => openDoneDialog(recent, numbers);
+  const viewAll = () => openDoneDialog(recent);
   const head = document.createElement('li');
   head.className = 'kanban-done-head';
   const expand = detailButton('', viewAll, 'kanban-done-expand');
@@ -1547,9 +1545,9 @@ function renderDoneList(tasks) {
   button.append(count);
   button.setAttribute('aria-label', `View all ${tasks.length} completed cards`);
   all.append(button);
-  return [zone, head, ...recent.slice(0, DONE_PREVIEW).map(task => renderDoneCard(task, numbers.get(task.id))), all];
+  return [zone, head, ...recent.slice(0, DONE_PREVIEW).map(task => renderDoneCard(task)), all];
 }
-function openDoneDialog(recent, numbers, cards = false) {
+function openDoneDialog(recent, cards = false) {
   const project = currentProject(), isPipeline = project?.workflowMode === 'pipeline', pipeline = isPipeline && !cards;
   $('#done-dialog-project').textContent = `${project?.name || ''} · Done`.toUpperCase();
   $('#done-dialog-heading').textContent = `Completed (${recent.length})`;
@@ -1561,7 +1559,7 @@ function openDoneDialog(recent, numbers, cards = false) {
   if (pipeline) {
     $('#archive-filter').value = ''; $('#archive-sort').value = 'newest';
     refreshPipelineArchive(true);
-  } else $('#done-dialog-list').replaceChildren(...recent.map(task => renderDoneCard(task, numbers.get(task.id), false)));
+  } else $('#done-dialog-list').replaceChildren(...recent.map(task => renderDoneCard(task, false)));
   $('#done-dialog').showModal();
   if (cards) $('#done-dialog-list .kanban-open')?.focus();
 }
@@ -1577,14 +1575,14 @@ function refreshPipelineArchive(opening = false) {
   if ($('#pipeline-archive').hidden) return;
   const tasks = project.tasks.filter(task => projectColumnsOf(project).find(column => column.id === task.column)?.role === 'done');
   const filter = $('#archive-filter').value.trim().toLocaleLowerCase(), sort = $('#archive-sort').value;
-  const observed = tasks.map(task => [task.id, task.revision, task.title, task.archivedAt, task.updatedAt, latestRun(task.id)?.usage, task.sessionId, (board.sessions || []).find(session => session.id === task.sessionId)]);
+  const observed = tasks.map(task => [task.id, task.number, task.revision, task.title, task.archivedAt, task.updatedAt, latestRun(task.id)?.usage, task.sessionId, (board.sessions || []).find(session => session.id === task.sessionId)]);
   const busy = archiveBulkJob?.running === true;
   const signature = JSON.stringify([project.revision, observed, filter, sort, [...archiveSelected], busy, archiveBulkJob?.stop, archiveBulkJob?.items]);
   if (signature === archiveSignature) return;
   archiveSignature = signature;
   const focus = document.activeElement?.closest('[data-archive-task]'), action = document.activeElement?.dataset.archiveAction;
   const when = task => task.archivedAt || task.completion?.at || task.updatedAt || 0;
-  const rows = tasks.filter(task => task.title.toLocaleLowerCase().includes(filter)).sort((a, b) => {
+  const rows = tasks.filter(task => /^#\d+$/.test(filter) ? taskNumberText(task) === filter : task.title.toLocaleLowerCase().includes(filter)).sort((a, b) => {
     const order = ['title', 'title-desc'].includes(sort) ? a.title.localeCompare(b.title) * (sort === 'title-desc' ? -1 : 1) : (sort === 'oldest' ? when(a) - when(b) : when(b) - when(a));
     return order || a.id.localeCompare(b.id);
   }).map(task => {
@@ -1601,7 +1599,7 @@ function refreshPipelineArchive(opening = false) {
       const selected = document.createElement('input'); selected.type = 'checkbox'; selected.checked = archiveSelected.has(task.id); selected.disabled = busy; selected.dataset.archiveAction = 'select'; selected.setAttribute('aria-label', `Select: ${task.title}`);
       selected.addEventListener('change', () => { selected.checked ? archiveSelected.add(task.id) : archiveSelected.delete(task.id); refreshPipelineArchive(); }); heading.append(selected);
     }
-    heading.append(open);
+    appendTaskNumber(heading, task); heading.append(open);
     const actions = document.createElement('div'); actions.className = 'archive-actions'; actions.append(details, restore); name.append(heading, actions);
     const date = when(task); archived.textContent = date ? new Date(date).toLocaleString() : 'Unavailable';
     const conversation = (board.sessions || []).find(session => session.id === task.sessionId && session.taskId === task.id && session.projectId === project.id);
@@ -1612,7 +1610,7 @@ function refreshPipelineArchive(opening = false) {
   });
   $('#archive-rows').replaceChildren(...rows);
   $('#archive-empty').hidden = rows.length > 0;
-  $('#archive-empty').textContent = tasks.length ? 'No completed tasks match this title.' : 'No completed tasks.';
+  $('#archive-empty').textContent = tasks.length ? 'No completed tasks match this title or task number.' : 'No completed tasks.';
   $('#done-dialog-heading').textContent = `Completed (${tasks.length})`;
   $('#archive-count').textContent = `${rows.length} of ${tasks.length} tasks`;
   $('#archive-title-header').setAttribute('aria-sort', sort === 'title' ? 'ascending' : sort === 'title-desc' ? 'descending' : 'none');
@@ -1661,7 +1659,15 @@ async function restoreArchiveSelection() {
     }
   } finally { job.running = false; if (currentProject()?.id === job.projectId) refreshPipelineArchive(); }
 }
-function renderDoneCard(card, number, draggable = true) {
+function taskNumberText(card) {
+  return Number.isSafeInteger(card.number) && card.number > 0 && card.number < Number.MAX_SAFE_INTEGER ? `#${card.number}` : '';
+}
+function appendTaskNumber(parent, card) {
+  const text = taskNumberText(card); if (!text) return;
+  const badge = document.createElement('span'); badge.className = 'task-number'; badge.textContent = text;
+  badge.setAttribute('aria-label', `Task number ${card.number}`); badge.title = `Task ${text}`; parent.append(badge);
+}
+function renderDoneCard(card, draggable = true) {
   const item = document.createElement('li');
   item.className = 'kanban-card kanban-done-card';
   item.dataset.id = card.id;
@@ -1669,10 +1675,7 @@ function renderDoneCard(card, number, draggable = true) {
   title.className = 'kanban-done-title';
   const open = detailButton(card.title, () => { $('#done-dialog').close(); openCard(card.id); }, 'kanban-open');
   open.title = card.title;
-  const tag = document.createElement('span');
-  tag.className = 'kanban-done-number';
-  tag.textContent = `#${number}`;
-  title.append(open, tag);
+  title.append(open); appendTaskNumber(title, card);
   const when = card.archivedAt || card.completion?.at || card.updatedAt;
   const time = paragraph(when ? timeAgo(when) : '', 'kanban-done-time');
   if (when) time.title = new Date(when).toLocaleString();
@@ -1785,6 +1788,7 @@ function renderCard(card, index, count) {
   badge.className = 'kanban-status';
   badge.textContent = status.text;
   const heading = document.createElement('h4');
+  appendTaskNumber(heading, card);
   heading.append(detailButton(card.title, () => openCard(card.id), 'kanban-open'));
   const labelled = (element, label) => { element.setAttribute('aria-label', label); return element; };
   const up = labelled(detailButton('↑', () => moveWithin(card.id, -1), 'kanban-move kanban-move-up'), `Move up: ${card.title}`);
@@ -1987,7 +1991,7 @@ async function duplicateCard(id) {
 function confirmCardDelete(item, card, focus = true) {
   const keep = detailButton('Keep card', () => {
     if (item.closest('#done-dialog')) {
-      const replacement = renderDoneCard(findTask(card.id) || card, Number(item.querySelector('.kanban-done-number').textContent.slice(1)), false);
+      const replacement = renderDoneCard(findTask(card.id) || card, false);
       item.replaceWith(replacement);
       replacement.querySelector('.kanban-more-toggle')?.focus();
     } else {
@@ -2032,7 +2036,7 @@ function openCard(id = null, quick = false) {
   const settingsBusy = card && ((board?.runs || []).some(run => run.taskId === card.id && RUN_LIVE.includes(run.status)) || ['pending', 'running', 'blocked'].includes(card.automationMove?.status));
   cardPipelineEditor = project.workflowMode === 'pipeline' ? pipelineTaskEditor(project, card || {}, 'card', Boolean(settingsBusy)) : null;
   $('#card-pipeline-settings').replaceChildren(...(cardPipelineEditor ? [cardPipelineEditor.node] : []));
-  $('#card-dialog-project').textContent = `${project.name} · ${columnTitle(card?.column || 'todo')}`;
+  $('#card-dialog-project').textContent = `${card && taskNumberText(card) ? taskNumberText(card) + ' · ' : ''}${project.name} · ${columnTitle(card?.column || 'todo')}`;
   $('#card-dialog-heading').textContent = card ? 'Edit card' : 'New card';
   $('#card-refine').hidden = Boolean(card);
   $('#card-refine').disabled = running;
@@ -2694,7 +2698,7 @@ async function openTaskDetails(taskId) {
   const status = cardStatus(card);
   const section = (title, ...nodes) => { const box = document.createElement('section'); const heading = document.createElement('h3'); heading.textContent = title; box.append(heading, ...nodes); return box; };
   const pre = text => { const block = document.createElement('pre'); block.textContent = text; return block; };
-  $('#task-dialog-stage').textContent = `${project.name} · ${columnTitle(card.column)}`.toUpperCase();
+  $('#task-dialog-stage').textContent = `${taskNumberText(card) ? taskNumberText(card) + ' · ' : ''}${project.name} · ${columnTitle(card.column)}`.toUpperCase();
   $('#task-dialog-heading').textContent = card.title;
   const nodes = [
     section('Status', paragraph(`${status.text}. Task text revision ${card.contentRevision ?? 1}.${status.flag ? ' Review the prompt before you run an agent on it.' : ''}`)),
@@ -3723,8 +3727,7 @@ $('#archive-cards').addEventListener('click', () => {
   const project = currentProject();
   if (project?.id !== archiveProjectId) return;
   const tasks = project.tasks.filter(task => projectColumnsOf(project).find(column => column.id === task.column)?.role === 'done');
-  const numbers = new Map([...project.tasks].sort((a, b) => a.createdAt - b.createdAt).map((task, index) => [task.id, index + 1]));
-  openDoneDialog(tasks.sort((a, b) => (b.archivedAt || b.updatedAt || 0) - (a.archivedAt || a.updatedAt || 0)), numbers, true);
+  openDoneDialog(tasks.sort((a, b) => (b.archivedAt || b.updatedAt || 0) - (a.archivedAt || a.updatedAt || 0)), true);
 });
 $('#export-board').addEventListener('click', exportBoard);
 $('#import-board').addEventListener('click', () => $('#import-file').click());
