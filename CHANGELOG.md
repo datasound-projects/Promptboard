@@ -12,6 +12,8 @@
 - Accept Codex's reported `max` effort and classify its account/model rejection explicitly. Disable ambient Codex MCPs/apps/plugins/hooks per generation invocation without altering CLI defaults or credentials. Track cancelled Compose provider cleanup through shutdown.
 - Keep accepted shutdown cleanup alive through its bounded outcome on Node 22, and prevent a cancelled split's late response/error from overwriting a replacement split.
 
+- Prepare asynchronous enter-message coordinator handoff: verify exact durable journal intent before releasing placement, keep native delivery receipts separate, and stop on lost outcome acknowledgements without replay. Preserve exit confirmation, manual/restore suppression and Composer/Base/CLI delivery. Actual native scheduling, readiness and enabled message rows remain pending.
+
 - Add explicit reviewed application of repository `promptboard.json` and personal overrides to opt-in pipelines. Preserve stable identities and sparse profiles; replace personal automation groups as a unit. Recheck bounded file/root custody and exact review/project revisions; retain paused-agent, automation and occupied-column guards without dispatching or changing Composer/Base. Automatic file synchronization and retained ghost columns remain pending.
 
 - Add named sparse board-profile editing, exclusive task profile/agent choices and effective card agents. Keep shared columns/automations/Base intact; save with revision and paused-agent guards without starting work or changing Composer text/checks. Retain choices on copy and portable v5 backup/import with dispatch disabled. Live profile propagation and repository configuration remain pending.

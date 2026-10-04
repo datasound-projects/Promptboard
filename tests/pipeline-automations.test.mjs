@@ -4,6 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
+import { createHash } from 'node:crypto';
 import { PipelineJournal } from '../src/pipeline-journal.mjs';
 import { PipelineActions } from '../src/pipeline-actions.mjs';
 import { PipelineAutomations } from '../src/pipeline-automations.mjs';
@@ -171,7 +172,7 @@ test('the exit deadline starts when a group is accepted, including a delay befor
   const journal = { read: async () => snapshot,
     skipAction: async (_key, id, reason) => { const action = snapshot.actions.find(item => item.id === id); action.status = 'skipped'; action.outcome = { reason }; },
     startAction: async (_key, id) => { snapshot.actions.find(item => item.id === id).status = 'running'; return { accepted: true }; },
-    finishAction: async (_key, id, result) => { snapshot.actions.find(item => item.id === id).status = result.status; } };
+    finishAction: async (_key, id, result) => { snapshot.actions.find(item => item.id === id).status = result.status; return true; } };
   const actions = { jobs: new Map(), run: async () => { calls++; return { status: 'succeeded' }; }, shutdown: async () => {} };
   const runner = new PipelineAutomations({ journal, actions }); t.after(() => runner.shutdown());
   const pending = runner.runGroup({ key: input, trigger: 'exit', rows: input.onExit, context: metadata(input), exitBudgetMs: 40 });
@@ -187,4 +188,119 @@ test('an exit budget exhausted while progress blocks the event loop cannot dispa
     progressCalled = true; const end = performance.now() + 1050; while (performance.now() < end) {} // Hold timer callbacks past the real deadline.
   } });
   assert.equal(progressCalled, true); assert.equal(calls, 0); assert.equal(result.outcomes[0].status, 'timed_out'); assert.equal(result.safeToAdvance, true);
+});
+
+const scheduledScope = request => ({ provider: 'claude', sessionId: 'logical-session', runId: 'owned-run', mode: request.mode,
+  messageHash: createHash('sha256').update(request.message).digest('hex') });
+const schedulingAck = scope => ({ scheduled: true, provider: scope.provider, sessionId: scope.sessionId, runId: scope.runId });
+
+test('enter scheduling completes placement before fresh startup and keeps queued/submitted/confirmed delivery distinct without replay', async t => {
+  const input = move('async-enter', 'task', { onEnter: [row('first', { type: 'send_message', mode: 'immediate', message: '  Review {{title}}\r\n😀 {{unknown}}  ' }),
+    row('second', { type: 'send_message', mode: 'deferred', message: 'Next' }), row('notice')] }), queued = []; let notices = 0, starts = 0;
+  const ctx = await fixture(t, input, { actions: new PipelineActions({ notifier: () => { notices++; return { confirmed: true }; } }) }); await enter(ctx.journal, input);
+  ctx.runner.deliverMessage = () => assert.fail('Enter scheduling must not wait for a fresh agent receipt.');
+  ctx.runner.scheduleEnterMessage = async (request, { signal }) => {
+    signal.throwIfAborted(); assert.equal(starts, 0);
+    assert.deepEqual(request.key, { projectId: input.projectId, taskId: input.taskId, transitionId: input.transitionId });
+    const scope = scheduledScope(request), saved = await ctx.journal.scheduleMessage(request.key, request.actionId, scope); assert.equal(saved.accepted, true);
+    queued.push({ ...request, key: { ...request.key }, scope }); request.key.taskId = 'mutated-callback-copy';
+    return { ...schedulingAck(scope), confirmed: true }; // A callback cannot promote a queue acknowledgement into delivery.
+  };
+  const result = await ctx.runner.runGroup({ ...ctx, trigger: 'enter', rows: input.onEnter });
+  assert.equal(result.safeToAdvance, true); assert.deepEqual(result.outcomes.map(action => action.status), ['scheduled', 'scheduled', 'succeeded']);
+  assert.ok(result.outcomes.slice(0, 2).every(action => action.delivery.status === 'queued'));
+  assert.equal(queued[0].message, `  Review ${ctx.context.task.title}\r\n😀 {{unknown}}  `); assert.equal(notices, 1); assert.equal(starts, 0);
+  await ctx.journal.advance(input); assert.equal((await ctx.journal.read(input)).phase, 'complete'); starts++; // Only the caller releases the fresh startup after placement.
+  const duplicate = await ctx.runner.runGroup({ ...ctx, trigger: 'enter', rows: input.onEnter }); assert.equal(duplicate.safeToAdvance, false); assert.equal(queued.length, 2);
+  assert.equal((await ctx.journal.startMessageDelivery(input, queued[0].actionId)).accepted, true);
+  await ctx.journal.markMessageSubmitted(input, queued[0].actionId); assert.equal((await ctx.journal.read(input)).actions[0].delivery.status, 'submitted');
+  await ctx.journal.finishMessageDelivery(input, queued[0].actionId, { status: 'confirmed' });
+  const delivered = await ctx.journal.read(input); assert.equal(delivered.status, 'completed'); assert.equal(delivered.actions[0].delivery.status, 'confirmed'); assert.equal(delivered.actions[1].delivery.status, 'queued'); assert.equal(starts, 1);
+});
+
+test('a scheduling claim without exact persisted intent is unconfirmed and cannot fabricate delivery success', async t => {
+  for (const reply of [{ scheduled: true, provider: 'claude', sessionId: 'logical-session', runId: 'owned-run' }, { confirmed: true }]) {
+    const input = move(`false-claim-${Boolean(reply.scheduled)}`, 'task', { onEnter: [row('message', { type: 'send_message', message: 'Exact' }), row('later')] }); let effects = 0;
+    const ctx = await fixture(t, input, { scheduleEnterMessage: () => reply, actions: new PipelineActions({ notifier: () => { effects++; return { confirmed: true }; } }) }); await enter(ctx.journal, input);
+    const result = await ctx.runner.runGroup({ ...ctx, trigger: 'enter', rows: input.onEnter });
+    assert.deepEqual(result.outcomes.map(action => action.status), ['unconfirmed', 'succeeded']); assert.equal(result.outcomes[0].delivery, undefined); assert.equal(effects, 1);
+  }
+});
+
+test('wrong durable message hash, mode or acknowledged session/run/provider blocks advancement and later effects', async t => {
+  for (const mismatch of ['messageHash', 'mode', 'provider', 'sessionId', 'runId']) {
+    const input = move(`wrong-${mismatch}`, 'task', { onEnter: [row('message', { type: 'send_message', message: 'Exact', mode: 'deferred' }), row('never')] }); let effects = 0;
+    const ctx = await fixture(t, input, { actions: new PipelineActions({ notifier: () => { effects++; return { confirmed: true }; } }) }); await enter(ctx.journal, input);
+    ctx.runner.scheduleEnterMessage = async request => {
+      const scope = scheduledScope(request), ack = schedulingAck(scope);
+      if (mismatch === 'messageHash') scope.messageHash = '0'.repeat(64);
+      else if (mismatch === 'mode') scope.mode = 'immediate';
+      else ack[mismatch] = mismatch === 'provider' ? 'codex' : 'wrong-owner';
+      await ctx.journal.scheduleMessage(request.key, request.actionId, scope); return ack;
+    };
+    await assert.rejects(ctx.runner.runGroup({ ...ctx, trigger: 'enter', rows: input.onEnter }), { code: 'AUTOMATION_OUTCOME_UNSAVED' });
+    const saved = await ctx.journal.read(input); assert.equal(saved.phase, 'enter'); assert.deepEqual(saved.actions.map(action => action.status), ['scheduled', 'pending']); assert.equal(effects, 0);
+    await assert.rejects(ctx.journal.advance(input), { code: 'JOURNAL_ORDER' });
+    await ctx.journal.finishMessageDelivery(input, saved.actions[0].id, { status: 'cancelled', reason: 'Owned fixture queue revoked without writes.' }); await ctx.journal.cancelMove(input);
+  }
+});
+
+test('cancellation after durable scheduling but before its acknowledgement cannot invent cleanup, advance or accept a late acknowledgement', async t => {
+  const input = move('schedule-cancel', 'task', { onEnter: [row('message', { type: 'send_message', message: 'Exact' }), row('never')] }), held = Promise.withResolvers(); let scope, actionId, effects = 0;
+  t.after(() => held.resolve(schedulingAck(scope || { provider: 'claude', sessionId: 'logical-session', runId: 'owned-run' })));
+  const ctx = await fixture(t, input, { actions: new PipelineActions({ notifier: () => { effects++; return { confirmed: true }; } }) }); await enter(ctx.journal, input);
+  ctx.runner.scheduleEnterMessage = async request => { scope = scheduledScope(request); actionId = request.actionId; await ctx.journal.scheduleMessage(request.key, request.actionId, scope); return held.promise; };
+  const pending = ctx.runner.runGroup({ ...ctx, trigger: 'enter', rows: input.onEnter }), rejected = assert.rejects(pending, { code: 'AUTOMATION_OUTCOME_UNSAVED' });
+  await until(async () => (await ctx.journal.read(input)).actions[0].status === 'scheduled'); ctx.runner.cancel(input); await rejected;
+  held.resolve(schedulingAck(scope)); await new Promise(resolve => setTimeout(resolve, 20));
+  const saved = await ctx.journal.read(input); assert.equal(saved.phase, 'enter'); assert.equal(saved.actions[0].delivery.status, 'queued'); assert.equal(saved.actions[1].status, 'pending'); assert.equal(effects, 0);
+  await assert.rejects(ctx.journal.cancelMove(input), { code: 'JOURNAL_WORK_ACTIVE' });
+  await ctx.journal.finishMessageDelivery(input, actionId, { status: 'cancelled', reason: 'Owned fixture queue stopped without any transport.' }); await ctx.journal.cancelMove(input);
+});
+
+test('a timed-out scheduler cannot acquire a late queue grant after the row outcome is saved', async t => {
+  const input = move('schedule-timeout', 'task', { onEnter: [row('message', { type: 'send_message', message: 'Exact' })] }), held = Promise.withResolvers(); let late;
+  const ctx = await fixture(t, input, { scheduleEnterMessage: async request => {
+    await held.promise; late = await ctx.journal.scheduleMessage(request.key, request.actionId, scheduledScope(request)); return schedulingAck(scheduledScope(request));
+  } }); await enter(ctx.journal, input); t.after(() => held.resolve());
+  const result = await ctx.runner.runGroup({ ...ctx, trigger: 'enter', rows: input.onEnter, messageTimeoutMs: 100 }); assert.equal(result.outcomes[0].status, 'timed_out');
+  held.resolve(); await until(() => late); assert.equal(late.accepted, false); assert.equal((await ctx.journal.read(input)).actions[0].delivery, undefined);
+});
+
+test('a persisted last-row queue with a timed-out or failed acknowledgement cannot authorize placement or replay', async t => {
+  for (const timeout of [false, true]) {
+    const input = move(`saved-unacknowledged-${timeout}`, 'task', { onEnter: [row('message', { type: 'send_message', message: 'Exact' })] }), held = Promise.withResolvers();
+    const ctx = await fixture(t, input, { scheduleEnterMessage: async request => {
+      const scope = scheduledScope(request); assert.equal((await ctx.journal.scheduleMessage(request.key, request.actionId, scope)).accepted, true);
+      if (timeout) await held.promise;
+      else throw new Error('PRIVATE SCHEDULER FAILURE');
+      return schedulingAck(scope);
+    } }); await enter(ctx.journal, input); t.after(() => held.resolve());
+    await assert.rejects(ctx.runner.runGroup({ ...ctx, trigger: 'enter', rows: input.onEnter, messageTimeoutMs: 100 }), { code: 'AUTOMATION_OUTCOME_UNSAVED' });
+    held.resolve(); const saved = await ctx.journal.read(input); assert.equal(saved.phase, 'enter'); assert.equal(saved.actions[0].delivery.status, 'queued');
+    const duplicate = await ctx.runner.runGroup({ ...ctx, trigger: 'enter', rows: input.onEnter }); assert.equal(duplicate.safeToAdvance, false); assert.equal(duplicate.duplicate, true);
+    await ctx.journal.finishMessageDelivery(input, saved.actions[0].id, { status: 'cancelled', reason: 'Owned fixture queue stopped.' }); await ctx.journal.cancelMove(input);
+  }
+});
+
+test('exit messages still require confirmation and cannot use the enter scheduler; manual/restored messages never schedule', async t => {
+  const input = move('exit-schedule', 'task', { onExit: [row('notice'), row('message', { type: 'send_message', message: 'Exit' })] }); let scheduled = 0, effects = 0;
+  const ctx = await fixture(t, input, { scheduleEnterMessage: () => { scheduled++; return { scheduled: true }; }, actions: new PipelineActions({ notifier: () => { effects++; return { confirmed: true }; } }) });
+  await assert.rejects(ctx.runner.runGroup({ ...ctx, trigger: 'exit', rows: input.onExit }), { code: 'MESSAGE_SCHEDULER_REQUIRED' }); assert.equal(effects, 0);
+  ctx.runner.deliverMessage = () => ({ confirmed: true }); const result = await ctx.runner.runGroup({ ...ctx, trigger: 'exit', rows: input.onExit }); assert.equal(result.outcomes[1].status, 'succeeded'); assert.equal(scheduled, 0);
+  for (const restored of [false, true]) {
+    const key = move(`suppressed-schedule-${restored}`, 'other', { onEnter: [row('message', { type: 'send_message', message: 'Never' })] }); await ctx.journal.beginMove(key); await enter(ctx.journal, key);
+    const skipped = await ctx.runner.runGroup({ key, context: metadata(key), trigger: 'enter', rows: key.onEnter, canMessage: restored, suppressMessages: restored }); assert.equal(skipped.outcomes[0].status, 'skipped');
+  }
+  assert.equal(scheduled, 0);
+});
+
+test('a false normal outcome acknowledgement stops the group and cannot replay the effect or start later rows', async t => {
+  const input = move('false-save', 'task', { onExit: [row('effect'), row('never')] }); let effects = 0;
+  const ctx = await fixture(t, input, { actions: new PipelineActions({ notifier: () => { effects++; return { confirmed: true }; } }) }), finish = ctx.journal.finishAction.bind(ctx.journal);
+  ctx.journal.finishAction = () => Promise.resolve(false);
+  await assert.rejects(ctx.runner.runGroup({ ...ctx, trigger: 'exit', rows: input.onExit }), { code: 'AUTOMATION_OUTCOME_UNSAVED' }); assert.equal(effects, 1);
+  const saved = await ctx.journal.read(input); assert.deepEqual(saved.actions.map(action => action.status), ['running', 'pending']);
+  await assert.rejects(ctx.runner.runGroup({ ...ctx, trigger: 'exit', rows: input.onExit }), { code: 'AUTOMATION_GROUP_INTERRUPTED' }); assert.equal(effects, 1);
+  ctx.journal.finishAction = finish; await finish(input, saved.actions[0].id, { status: 'unconfirmed' }); await ctx.journal.cancelMove(input);
 });
