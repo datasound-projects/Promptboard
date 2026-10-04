@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Capture private native-message task/session/run custody with content, configuration, Base and workspace rechecks. Keep compatible active moves on the same target, learn queued native identity once, and refuse changed/replaced targets before input. Use this check in the disposable smoke harness; actual column scheduling remains pending.
+
 - Add an opt-in disposable private native-message smoke harness with bounded option validation, separate startup/native/durable-receipt reporting and owned-process cleanup. Test the exact harness offline with a simulated CLI and record the authorized live Codex confirmation and Claude startup limitation separately. Column-message scheduling remains pending.
 
 - Display saved task numbers on board/completed cards and in archive/edit/details metadata. Add exact `#number` lookup to the completed-task filter, retain literal title filtering otherwise and omit invented positional numbers on older servers. Preserve task titles, copied prompts and keyboard actions.

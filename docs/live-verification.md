@@ -2,6 +2,10 @@
 
 Real CLI runs, recorded separately from the simulated (fake-CLI) test suite. Each checkpoint names its smoke script and uses an installed, signed-in CLI in its own disposable repository. Nothing here ran against a user repository.
 
+## 4 October 2026 — exact task/session target preflight
+
+A further authorized disposable Codex 0.157.0 check with `gpt-6-luna`, low effort and the captured task/session/run preflight confirmed native input and its durable receipt on the same process retained through Code Review. Startup trust was answered only in the disposable warmup; the fresh conversation retained the manual-input guard and received the message without manual input. Exact task text, clean main/worktree repositories and owned-process shutdown passed. This verifies the stronger private preflight and deferred input, not configured column scheduling or completion of the second reply. No provider flags, Base configuration or credentials changed.
+
 ## 4 October 2026 — private deferred native input
 
 Source: reviewed native-message fix `0b92e9d`, subsequently merged as #64. macOS arm64, Node.js 24.14.1; Codex CLI 0.157.0 and Claude Code 2.1.287. These runs used the restored `scripts/live-native-messages.mjs` harness in disposable repositories. The harness itself is a separate review step from the transport fix.
