@@ -69,3 +69,28 @@ test('stopping the smoke harness shuts down its owned CLI before reporting and r
   assert.deepEqual((await readdir(dir)).filter(name => /^pb-live-native-(data|repo)-/.test(name)), []);
   assert.equal((await readFile(capture, 'utf8')).trim().split('\n').map(JSON.parse).filter(row => row.kind === 'submitted').length, 0);
 });
+
+test('startup trust waits for the actual positive selection and a fresh process retains its manual-input guard', { skip: process.platform === 'win32', timeout: 30000 }, async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'pb-live-harness-trust-'));
+  t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+  const bin = join(dir, 'bin'), capture = join(dir, 'messages.jsonl'); await mkdir(bin);
+  const fixture = fileURLToPath(new URL('./fixtures/fake-native-message.cjs', import.meta.url));
+  await writeFile(join(bin, 'claude'), `#!${process.execPath}\nrequire(${JSON.stringify(fixture)});\n`, { mode: 0o700 });
+  const result = spawnSync(process.execPath, [script, '--provider', 'claude', '--timeout', '20', '--answer-trust', '--fresh-trusted', '--column-automation'], {
+    encoding: 'utf8', timeout: 25000, env: { ...process.env, PATH: bin + delimiter + process.env.PATH,
+      TMPDIR: dir, TMP: dir, TEMP: dir, FAKE_NATIVE_MESSAGE_REPORT: capture, FAKE_NATIVE_STARTUP_TRUST: '1',
+      GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' } });
+  assert.equal(result.status, 0, result.stderr); const report = JSON.parse(result.stdout);
+  assert.equal(report.warmup?.ready, true); assert.equal(report.warmup.manualInputObserved, true);
+  assert.equal(report.initial.ready, true); assert.equal(report.initial.manualInputObserved, false);
+  assert.equal(report.sameRun, true); assert.equal(report.placementStatus, 'completed');
+  assert.deepEqual(report.message, { status: 'confirmed', confirmed: true, receiptStatus: 'confirmed', submitted: true });
+  for (const key of ['exactPrompt', 'mainCheckoutClean', 'worktreeClean', 'processStopped']) assert.equal(report[key], true, key);
+  const records = (await readFile(capture, 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.deepEqual(records.filter(row => row.kind === 'navigation').map(row => row.selected), ['yes']);
+  assert.deepEqual(records.filter(row => row.kind === 'trust-confirmation').map(row => row.selected), ['yes']);
+  assert.equal(records.filter(row => row.kind === 'initial').length, 2);
+  assert.equal(records.filter(row => row.kind === 'submitted').length, 1);
+  assert.equal(records.some(row => row.kind === 'reset'), false);
+  assert.deepEqual((await readdir(dir)).filter(name => /^pb-live-native-(data|repo)-/.test(name)), []);
+});
