@@ -11,6 +11,9 @@ export function trackChrome(chrome) {
 // Only stop the child launched by this fixture. Never remove its profile until
 // close confirms that the process has released it; Windows may release locks later.
 export async function closeChrome(chrome, profile, { timeout = 5000, remove = rm } = {}) {
+  // Chrome subprocesses can inherit stderr. Close our reader so an inherited pipe
+  // cannot keep ChildProcess.close pending after the owned browser has exited.
+  chrome.stderr?.destroy();
   const lifetime = lifetimes.get(chrome);
   if (lifetime ? !lifetime.closed : chrome.exitCode === null && chrome.signalCode === null) {
     await new Promise((resolve, reject) => {
