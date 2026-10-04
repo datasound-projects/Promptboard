@@ -4,6 +4,8 @@
 
 - Render `{{taskNumber}}` as the saved `#N` identity across automation/custom spawn templates and `PROMPTBOARD_TASK_NUMBER`. Leave missing/malformed numbers empty without positional fallback; preserve numeric API/webhook fields and the exact default first task envelope.
 
+- Display saved task numbers on board/completed cards and in archive/edit/details metadata. Add exact `#number` lookup to the completed-task filter, retain literal title filtering otherwise and omit invented positional numbers on older servers. Preserve task titles, copied prompts and keyboard actions.
+
 - Retain native-message process custody during valid hook publication while blocking input and confirmation on pending hooks. Drain hooks arriving during receipt reads before durable confirmation. Report outer deadlines separately from explicit cancellation, keep attempted writes uncertain and never replay input. Column scheduling and enabled message rows remain pending.
 
 - Allocate stable project-local task numbers atomically across Composer creation, duplication and browser migration. Retain numbers through moves/archive/restore and never recycle deleted numbers. Migrate state to version 7 with an exact original backup; portable version 6 exports preserve numbers/counters and older backups remain importable. Number display remains a separate UI step.
