@@ -10,6 +10,8 @@ Two integration requirements apply to every step: Composer must continue inserti
 
 The user also confirmed that Kanban agents should inherit tools, MCP servers, and extensions configured in their underlying CLI. Implement ambient CLI inheritance for writing stages alongside Base delivery as a separate compatibility step. Retain the current read-only legacy stage restrictions and do not change CLI configuration files.
 
+Keyboard focus survives background card refreshes. Usage dialog close events are queued by the browser: they restore focus when needed, but preserve a subsequent project action or a reopened modal. These controls never start agents. Real-browser regressions exercise both themes and desktop/phone widths.
+
 ## Default board behavior
 
 The following layout is the product requirement supplied by the user. Column names are editable; behavior should attach to a role or setting rather than the display name.
