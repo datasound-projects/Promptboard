@@ -14,6 +14,8 @@ test('Workspace inspection in real Chrome: import, nested tree, multiple viewers
   await writeFile(join(root, 'src', 'nested', filename), original);
   await writeFile(join(root, 'readme.md'), '# Imported project\n<img src=x onerror="window.INJECTED=true">');
   await writeFile(join(root, 'binary.png'), Buffer.from([0, 1, 2, 3]));
+  const deepParts = ['deep', ...Array.from({ length: 16 }, (_, i) => `level-${i}`)];
+  await mkdir(join(root, ...deepParts), { recursive: true }); await writeFile(join(root, ...deepParts, 'leaf.txt'), 'Nested file');
   let calls = 0;
   const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [], folderPicker: async () => ({ path: root }), runner: async () => { calls++; throw new Error('File inspection cannot run a model.'); } });
   const browser = await launch(); assert.ok(browser); t.after(() => browser.close());
@@ -26,6 +28,16 @@ test('Workspace inspection in real Chrome: import, nested tree, multiple viewers
   assert.ok(project.repository);
   await browser.eval('document.querySelector(".file-tree-toggle").click();');
   await browser.until('!!document.querySelector("[data-file-path=src]")', 'root directory');
+  for (let i = 1; i <= deepParts.length; i++) {
+    const selector = `[data-file-path="${deepParts.slice(0, i).join('/')}"]`;
+    await browser.until(`!!document.querySelector(${JSON.stringify(selector)})`, 'deep folder');
+    await browser.eval(`document.querySelector(${JSON.stringify(selector)}).click();`);
+  }
+  const leaf = `[data-file-path="${deepParts.join('/')}/leaf.txt"]`;
+  await browser.until(`!!document.querySelector(${JSON.stringify(leaf)})`, 'deep leaf');
+  assert.equal(await browser.layout(`return document.querySelector(${JSON.stringify(leaf)}).getBoundingClientRect().width >= 120;`), true);
+  assert.equal(await browser.layout('const el = document.querySelector(".workspace-files-body"); return el.scrollWidth > el.clientWidth;'), true);
+  await browser.eval('document.querySelector("[data-file-path=deep]").click();');
   // Native keyboard activation of expansion and file opening.
   await browser.eval('document.querySelector("[data-file-path=src]").focus();');
   assert.equal(await browser.eval('return document.activeElement.dataset.filePath;'), 'src');
