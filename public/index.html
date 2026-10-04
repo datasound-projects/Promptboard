@@ -449,6 +449,7 @@
         <p class="verification-status" id="card-status" hidden></p>
         <label class="field-label" for="card-title">Title<input id="card-title" type="text" maxlength="120" autocomplete="off" required></label>
         <label class="field-label" for="card-prompt">Prompt<textarea id="card-prompt" spellcheck="false" required></textarea></label>
+        <div id="card-pipeline-settings"></div>
         <p class="note" id="card-note"></p>
         <details class="kanban-source" id="card-source" hidden><summary>Source details</summary><ul id="card-source-list"></ul></details>
         <p class="inline-error" id="card-error" role="alert" hidden></p>
@@ -476,6 +477,7 @@
         <button type="button" class="secondary-button" id="columns-use-pipeline">Switch to a column pipeline…</button>
         <div class="columns-layout">
           <div class="columns-side">
+            <div id="columns-profiles" hidden></div>
             <p class="history-label"><span>COLUMNS</span></p>
             <ol class="columns-list" id="columns-list" aria-label="Columns, left to right"></ol>
             <button type="button" class="secondary-button columns-add" id="columns-add">＋ Add column</button>

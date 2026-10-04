@@ -2705,3 +2705,57 @@ test('Base saves a linked wiki and official MCP preset, then groups them in a pa
   assert.deepEqual(pack.configuration.resources.map(ref => ref.resourceId).sort(), [wiki.id, mcp.id].sort());
   assert.equal((await serverBoard(ctx)).runs.length, 0); assert.equal(ctx.calls.length, 0, 'Library edits never invoke the generation runner.');
 });
+
+test('board profile editor shares structure and automations, retains sparse values, and saves task choices without changing exact prompts', async t => {
+  const ctx = await setup(t, { executor: null, hash: '#/kanban' }), pipeline = defaultPipelineConfig();
+  const project = await ctx.app.board.createProject({ name: 'Profiles UI' });
+  for (const column of pipeline.columns) column.strategy.autoSpawn = false;
+  pipeline.columns[2].strategy.modelOverride = 'column-pin';
+  pipeline.columns[2].automations.onEnter = [{ id: 'shared', name: 'Shared notification', type: 'notify', enabled: false, title: '{{title}}', body: 'Literal body' }];
+  await ctx.app.board.setPipeline(project.id, { pipeline, expectedRevision: 1, confirm: true });
+  const prompt = '  Exact Composer split <literal>\r\n😀  ';
+  const task = await ctx.app.board.createTask({ projectId: project.id, title: 'Exact task', prompt });
+  await ctx.win.__pbTest.loadBoard(); await ctx.idle({ requireComplete: true });
+  ctx.$('#columns-open').click(); ctx.$('#columns-profile-new').click();
+  const malicious = 'Economy <img src=x>'; ctx.$('#columns-profile-name').value = malicious; ctx.$('#columns-profile-name').dispatchEvent(new ctx.win.Event('input'));
+  assert.equal(ctx.$('#columns-add').disabled, true); assert.equal(ctx.$('#column-name').disabled, true); assert.equal(ctx.$('#columns-remove').disabled, true);
+  assert.equal(ctx.$('#columns-editor img'), null); assert.ok([...ctx.win.document.querySelectorAll('#columns-editor .column-automations input, #columns-editor .column-automations button')].every(control => control.disabled));
+  ctx.choose('#profile-modelOverride-mode', 'default'); ctx.choose('#profile-effortOverride-mode', 'override'); ctx.choose('#profile-effortOverride-value', 'low');
+  ctx.choose('#profile-autoSpawn-mode', 'override'); ctx.choose('#profile-autoSpawn-value', 'false');
+  ctx.choose('#profile-agentOverride-mode', 'override'); ctx.choose('#profile-agentOverride-value', 'codex');
+  submitForm(ctx, '#columns-form'); await ctx.idle({ requireComplete: true }); assert.equal(ctx.$('#columns-dialog').open, false);
+  let saved = (await ctx.app.board.state()).projects[0], profile = saved.pipeline.profiles[0];
+  assert.equal(profile.name, malicious); assert.deepEqual(profile.columns.executing, { autoSpawn: false, agentOverride: 'codex', modelOverride: null, effortOverride: 'low' });
+  assert.deepEqual(saved.pipeline.columns[2].automations, pipeline.columns[2].automations); assert.equal(saved.pipeline.columns[2].strategy.modelOverride, 'column-pin');
+  ctx.$(`[data-id="${task.id}"] .kanban-open`).click(); ctx.choose('#card-pipeline-profile', profile.id);
+  submitForm(ctx, '#card-form'); await ctx.idle({ requireComplete: true });
+  let card = (await ctx.app.board.state()).projects[0].tasks[0]; assert.equal(card.profileId, profile.id); assert.equal(card.contentRevision, 1); assert.equal(card.prompt, prompt); assert.equal(card.checksOutdated, false);
+  ctx.$(`[data-id="${task.id}"] .kanban-open`).click(); ctx.$('#card-pipeline-mode-override').click();
+  assert.equal(ctx.$('#card-pipeline-profile').value, ''); assert.equal(ctx.$('#card-pipeline-profile').disabled, true);
+  ctx.choose('#card-pipeline-agentOverride', 'codex'); ctx.$('#card-pipeline-modelOverride').value = 'whole-task'; ctx.$('#card-pipeline-modelOverride').dispatchEvent(new ctx.win.Event('input'));
+  ctx.choose('#card-pipeline-permissionMode', 'workspace-write'); submitForm(ctx, '#card-form'); await ctx.idle({ requireComplete: true });
+  card = (await ctx.app.board.state()).projects[0].tasks[0]; assert.equal(card.profileId, null); assert.deepEqual(card.agentOverride, { agentOverride: 'codex', modelOverride: 'whole-task', permissionMode: 'workspace-write' }); assert.equal(card.prompt, prompt); assert.equal(card.contentRevision, 1);
+  ctx.$('#columns-open').click(); ctx.choose('#columns-profile', profile.id); ctx.$('#columns-profile-duplicate').click();
+  const duplicateId = ctx.$('#columns-profile').value; assert.notEqual(duplicateId, profile.id);
+  ctx.choose('#profile-modelOverride-mode', 'inherit'); submitForm(ctx, '#columns-form'); await ctx.idle({ requireComplete: true });
+  saved = (await ctx.app.board.state()).projects[0]; assert.equal(Object.hasOwn(saved.pipeline.profiles[1].columns.executing, 'modelOverride'), false); assert.equal(saved.pipeline.profiles[0].columns.executing.modelOverride, null);
+  ctx.$('#card-new').click(); ctx.$('#card-title').value = 'New profile task'; ctx.$('#card-prompt').value = 'New literal'; ctx.choose('#card-pipeline-profile', duplicateId);
+  submitForm(ctx, '#card-form'); await ctx.idle({ requireComplete: true }); const newCard = (await ctx.app.board.state()).projects[0].tasks[1]; assert.equal(newCard.profileId, duplicateId); assert.equal(newCard.column, 'todo');
+  ctx.$('#columns-open').click(); ctx.choose('#columns-profile', duplicateId); ctx.$('#columns-profile-delete').click(); ctx.$('#columns-profile-delete-confirm').click();
+  submitForm(ctx, '#columns-form'); await ctx.idle({ requireComplete: true }); assert.equal((await ctx.app.board.state()).projects[0].tasks[1].profileId, null);
+  assert.deepEqual((await ctx.app.board.state()).runs, []); assert.equal((await ctx.app.board.automationRuns(task.id)).length, 0); assert.equal(ctx.$('#columns-profiles img'), null);
+});
+
+test('board profile task drafts retain choices on stale revisions and legacy cards keep the original editor', async t => {
+  const ctx = await setup(t, { executor: null, hash: '#/kanban' }), pipeline = defaultPipelineConfig();
+  const project = await ctx.app.board.createProject({ name: 'Stale profiles' });
+  for (const column of pipeline.columns) column.strategy.autoSpawn = false;
+  pipeline.profiles = [{ id: 'profile', name: 'Profile', columns: {} }]; await ctx.app.board.setPipeline(project.id, { pipeline, expectedRevision: 1, confirm: true });
+  const task = await ctx.app.board.createTask({ projectId: project.id, title: 'Old title', prompt: '  Keep exact\r\n' });
+  await ctx.win.__pbTest.loadBoard(); await ctx.idle({ requireComplete: true }); ctx.$(`[data-id="${task.id}"] .kanban-open`).click(); ctx.choose('#card-pipeline-profile', 'profile');
+  await ctx.app.board.updateTask(task.id, { title: 'Concurrent title', expectedRevision: 1 }); await ctx.win.__pbTest.loadBoard();
+  submitForm(ctx, '#card-form'); await ctx.idle({ requireComplete: true }); assert.equal(ctx.$('#card-dialog').open, true); assert.equal(ctx.$('#card-pipeline-profile').value, 'profile'); assert.match(ctx.$('#card-error').textContent, /changed/);
+  assert.equal((await ctx.app.board.state()).projects[0].tasks[0].title, 'Concurrent title'); assert.equal((await ctx.app.board.state()).projects[0].tasks[0].profileId, undefined);
+  ctx.$('#card-cancel').click(); const legacy = await ctx.app.board.createProject({ name: 'Legacy' }); await ctx.win.__pbTest.loadBoard(); await ctx.idle({ requireComplete: true });
+  [...ctx.win.document.querySelectorAll('#workspace-list .workspace-item')].find(button => button.textContent.includes(legacy.name)).click(); ctx.$('#card-new').click(); assert.equal(ctx.$('#card-pipeline-settings').children.length, 0);
+});

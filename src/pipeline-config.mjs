@@ -127,6 +127,22 @@ export function normalizePipelineConfig(input) {
   return { version: 1, columns, profiles: normalizedProfiles };
 }
 
+/** One task selection; validating or saving this definition never starts an agent. */
+export function normalizePipelineTaskSelection(config, input = {}) {
+  keys(input, ['profileId', 'agentOverride'], 'Task pipeline settings');
+  const profileId = input.profileId === undefined || input.profileId === null ? null : idOf(input.profileId);
+  const agentOverride = input.agentOverride === undefined || input.agentOverride === null ? null : input.agentOverride;
+  if (profileId && agentOverride) fail('Choose a board profile or a task-wide agent override, not both.');
+  if (profileId && !config.profiles.some(profile => profile.id === profileId)) fail('Choose an existing board profile.');
+  if (agentOverride !== null) {
+    keys(agentOverride, ['agentOverride', 'modelOverride', 'effortOverride', 'permissionMode'], 'Task-wide agent override');
+    const own = normalizePipelineStrategy(agentOverride);
+    if (!own.agentOverride) fail('Choose the agent for a task-wide override.');
+    return { profileId: null, agentOverride: Object.fromEntries(['agentOverride', 'modelOverride', 'effortOverride', 'permissionMode'].filter(key => own[key] != null).map(key => [key, own[key]])) };
+  }
+  return { profileId, agentOverride: null };
+}
+
 /** Profiles change strategy only; task-wide agent pins and a profile are mutually exclusive. */
 export function resolvePipelineStrategy(config, columnId, { profileId = null, agentOverride = null } = {}) {
   const column = config.columns.find(column => column.id === columnId);

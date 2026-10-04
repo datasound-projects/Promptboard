@@ -1875,13 +1875,17 @@ async function deleteCard(id) {
   ($('#kanban-columns .kanban-open') || $('#card-new')).focus();
 }
 
-let quickTask = false;
+let quickTask = false, cardPipelineEditor = null, cardEditSnapshot = null;
 function openCard(id = null, quick = false) {
   quickTask = quick;
   const project = currentProject();
   if (!project) return;
   const card = id ? project.tasks.find(item => item.id === id) : null;
   editingCardId = card?.id || null;
+  cardEditSnapshot = { projectRevision: project.revision, card: card ? JSON.parse(JSON.stringify(card)) : null };
+  const settingsBusy = card && ((board?.runs || []).some(run => run.taskId === card.id && RUN_LIVE.includes(run.status)) || ['pending', 'running', 'blocked'].includes(card.automationMove?.status));
+  cardPipelineEditor = project.workflowMode === 'pipeline' ? pipelineTaskEditor(project, card || {}, 'card', Boolean(settingsBusy)) : null;
+  $('#card-pipeline-settings').replaceChildren(...(cardPipelineEditor ? [cardPipelineEditor.node] : []));
   $('#card-dialog-project').textContent = `${project.name} · ${columnTitle(card?.column || 'todo')}`;
   $('#card-dialog-heading').textContent = card ? 'Edit card' : 'New card';
   $('#card-refine').hidden = Boolean(card);
@@ -1930,12 +1934,17 @@ async function saveCard(event) {
   try {
     if (card) {
       // A textarea turns \r\n into \n. Keep the stored text when nothing else changed.
-      const prompt = typed === card.prompt.replace(/\r\n?/g, '\n') ? card.prompt : typed;
-      const result = await boardCall('PATCH', `/api/tasks/${encodeURIComponent(card.id)}`, { title, prompt, expectedRevision: card.revision });
+      const original = cardPipelineEditor && cardEditSnapshot?.card || card;
+      const prompt = typed === original.prompt.replace(/\r\n?/g, '\n') ? original.prompt : typed;
+      const settings = cardPipelineEditor?.value();
+      const changedSettings = settings && JSON.stringify(settings) !== JSON.stringify(pipelineTaskChoice(original));
+      const result = await boardCall('PATCH', `/api/tasks/${encodeURIComponent(card.id)}`, { title, prompt, expectedRevision: original.revision,
+        ...(changedSettings ? { pipelineSettings: settings, expectedProjectRevision: cardEditSnapshot.projectRevision } : {}) });
       saved = result.task;
       message = !result.changed ? 'No changes to save.' : saved.checksOutdated && card.source ? `Saved “${title}”. The previous checks are now marked as outdated.` : `Saved “${title}”.`;
     } else {
-      saved = (await boardCall('POST', '/api/tasks', { projectId: project.id, title, prompt: typed })).task;
+      saved = (await boardCall('POST', '/api/tasks', { projectId: project.id, title, prompt: typed,
+        ...(cardPipelineEditor ? { pipelineSettings: cardPipelineEditor.value(), expectedProjectRevision: cardEditSnapshot.projectRevision } : {}) })).task;
       message = `Added “${title}” to To Do.`;
     }
   } catch (failure) { $('#card-error').textContent = failure.message; $('#card-error').hidden = false; return; }
@@ -2171,6 +2180,10 @@ $('#agents-filter').addEventListener('change', () => { savePref(AGENTS_FILTER_KE
 function renderRunControls(card, run) {
   const box = document.createElement('div');
   box.className = 'kanban-run';
+  if (currentProject()?.workflowMode === 'pipeline' && (card.profileId || card.agentOverride)) {
+    const profile = currentProject().pipeline.profiles.find(item => item.id === card.profileId);
+    box.append(paragraph(profile ? `Profile: ${profile.name}` : 'Task-wide agent override', 'run-agent pipeline-task-choice'));
+  }
   const active = run && RUN_LIVE.includes(run.status) ? run : null;
   const move = card.automationMove;
   if (move) {
@@ -2211,6 +2224,7 @@ function renderRunControls(card, run) {
     if (projectColumnsOf().find(column => column.id === card.column)?.role === 'active') {
       const start = labelled(detailButton('Start agent', () => startStage(card, card.column), 'primary kanban-start'), 'Start agent');
       start.disabled = !board?.execution?.available || !currentProject()?.repository; box.append(start);
+      box.append(paragraph(`Next run: ${agentText(card.pipelineAgent || currentProject()?.effectiveWorkflow?.[card.column])}`, 'run-agent'));
     }
   } else if (card.column === 'merge') {
     const target = currentProject()?.targetBranch?.name || 'target';
@@ -2222,7 +2236,7 @@ function renderRunControls(card, run) {
     start.disabled = !board?.execution?.available || !currentProject()?.repository;
     if (start.disabled) start.title = !board?.execution?.available ? 'Agent terminals are not set up.' : 'Link a repository first.';
     box.append(start);
-    const selected = currentProject()?.effectiveWorkflow?.[card.column];
+    const selected = card.pipelineAgent || currentProject()?.effectiveWorkflow?.[card.column];
     box.append(paragraph(`Next run: ${agentText(selected)}`, 'run-agent'));
   }
   if (run && !active) box.append(labelled(detailButton('View output', () => window.PromptboardDock?.open(run.id), 'kanban-terminal'), 'View saved agent output'));
@@ -2545,6 +2559,19 @@ async function openTaskDetails(taskId) {
   columnScope.value = card.column;
   const override = detailButton('Configure this task in this column…', () => baseView?.openPicker({ scope: 'task-column', projectId: project.id, taskId: card.id, columnId: columnScope.value }));
   nodes.at(-1).append(detailActions(columnScope, override));
+  if (project.workflowMode === 'pipeline') {
+    const busy = runs.some(run => RUN_LIVE.includes(run.status)) || ['pending', 'running', 'blocked'].includes(card.automationMove?.status);
+    const settings = pipelineTaskEditor(project, card, 'details', busy);
+    const error = paragraph('', 'inline-error'); error.setAttribute('role', 'alert'); error.hidden = true;
+    const save = detailButton('Save task agent settings', async () => {
+      save.disabled = true; error.hidden = true;
+      try {
+        await boardCall('POST', `/api/tasks/${encodeURIComponent(card.id)}/pipeline-settings`, { ...settings.value(), expectedRevision: card.revision, expectedProjectRevision: project.revision });
+        await openTaskDetails(card.id); announce('Task agent settings saved. No agent was started.');
+      } catch (failure) { error.textContent = failure.message; error.hidden = false; save.disabled = false; }
+    }); save.id = 'task-pipeline-save'; save.disabled = busy;
+    nodes.push(section('Task agent settings', settings.node, ...(busy ? [paragraph('Pause the agent and finish or stop column automations before changing these settings.', 'note')] : []), save, error));
+  }
   const planRun = [...runs].reverse().find(run => run.stage === 'planning' && run.hasPlan);
   if (planRun) {
     const approved = card.planApproval?.runId === planRun.id && card.planApproval.contentRevision === (card.contentRevision ?? 1);
@@ -3755,11 +3782,118 @@ async function saveAutopilot(start) {
 $('#autopilot-open').addEventListener('click', openAutopilot);
 
 // ---- Column Manager ----
+const pipelineTaskChoice = task => ({ profileId: task.profileId || null, agentOverride: task.agentOverride ? JSON.parse(JSON.stringify(task.agentOverride)) : null });
+const PIPELINE_PERMISSIONS = [['', 'Use agent default'], ['default', 'Ask for permission'], ['plan', 'Plan mode'], ['acceptEdits', 'Claude: accept file edits'], ['workspace-write', 'Codex: write in workspace'], ['auto_edit', 'Gemini: accept file edits']];
+function pipelineTaskEditor(project, task, prefix, disabled = false) {
+  const choice = pipelineTaskChoice(task), node = document.createElement('fieldset'); node.className = 'settings-group pipeline-task-settings';
+  const render = focus => {
+    const legend = document.createElement('legend'); legend.textContent = 'How this task runs';
+    const modes = document.createElement('div'); modes.className = 'pipeline-task-modes';
+    for (const [mode, title] of [['profile', 'Column settings'], ['override', 'Agent override']]) {
+      const label = document.createElement('label'); label.className = 'check-row';
+      const radio = document.createElement('input'); radio.type = 'radio'; radio.name = `${prefix}-pipeline-mode`; radio.value = mode; radio.id = `${prefix}-pipeline-mode-${mode}`;
+      radio.disabled = disabled; radio.checked = mode === (choice.agentOverride ? 'override' : 'profile');
+      radio.addEventListener('change', () => {
+        choice.profileId = null;
+        choice.agentOverride = mode === 'override' ? { agentOverride: project.effectiveWorkflow?.executing?.provider || project.agentDefaults?.provider || board?.settings?.defaultAgent?.provider || 'claude' } : null;
+        render(radio.id);
+      }); label.append(radio, title); modes.append(label);
+    }
+    const label = document.createElement('label'); label.className = 'field-label';
+    const profiles = document.createElement('select'); profiles.id = `${prefix}-pipeline-profile`; profiles.append(option('', 'Default'), ...project.pipeline.profiles.map(profile => option(profile.id, profile.name)));
+    profiles.value = choice.profileId || ''; profiles.disabled = disabled || Boolean(choice.agentOverride) || !project.pipeline.profiles.length;
+    profiles.addEventListener('change', () => { choice.profileId = profiles.value || null; choice.agentOverride = null; }); label.append('Profile', profiles);
+    const fields = document.createElement('fieldset'); fields.className = 'pipeline-task-pins'; fields.disabled = disabled || !choice.agentOverride; fields.hidden = !choice.agentOverride;
+    const pins = choice.agentOverride || {};
+    for (const [key, title, choices] of [
+      ['agentOverride', 'Agent', ['claude', 'codex', 'gemini'].map(id => [id, board?.execution?.providers?.[id]?.name || id])],
+      ['modelOverride', 'Model ID', null], ['effortOverride', 'Effort', [['', 'Use agent default'], ...['low', 'medium', 'high', 'xhigh', 'max'].map(value => [value, value])]],
+      ['permissionMode', 'Permissions', PIPELINE_PERMISSIONS],
+    ]) {
+      const control = document.createElement(choices ? 'select' : 'input'); control.id = `${prefix}-pipeline-${key}`;
+      if (choices) control.append(...choices.map(([value, text]) => option(value, text))); else { control.maxLength = 100; control.placeholder = 'Use agent default'; }
+      control.value = pins[key] || (key === 'agentOverride' ? 'claude' : '');
+      const update = () => {
+        if (!choice.agentOverride) return;
+        if (key === 'agentOverride') { choice.agentOverride = { agentOverride: control.value }; render(control.id); }
+        else if (control.value) choice.agentOverride[key] = control.value;
+        else delete choice.agentOverride[key];
+      };
+      control.addEventListener(choices ? 'change' : 'input', update);
+      const field = document.createElement('label'); field.className = 'field-label'; field.append(title, control); fields.append(field);
+    }
+    node.replaceChildren(legend, modes, label, fields, paragraph('Column settings follow the selected profile. An agent override pins the agent, model, effort and permissions across every column. Saving starts no agent.', 'note'));
+    if (focus) node.querySelector(`#${focus}`)?.focus();
+  };
+  render(); return { node, value: () => pipelineTaskChoice(choice) };
+}
+
+function renderPipelineProfiles() {
+  const box = $('#columns-profiles'); box.hidden = !columnsDraft.pipeline;
+  if (!columnsDraft.pipeline) { box.replaceChildren(); return; }
+  const selected = columnsDraft.profiles.find(profile => profile.id === columnsDraft.profileId);
+  const field = document.createElement('label'); field.className = 'field-label';
+  const picker = document.createElement('select'); picker.id = 'columns-profile'; picker.append(option('', 'Default'), ...columnsDraft.profiles.map(profile => option(profile.id, profile.name))); picker.value = selected?.id || '';
+  picker.addEventListener('change', () => { columnsDraft.profileId = picker.value || null; renderColumns(); $('#columns-profile').focus(); }); field.append('Profile', picker);
+  const create = duplicate => {
+    if (columnsDraft.profiles.length >= 30) return;
+    const base = duplicate ? `${selected.name.slice(0, 65)} copy` : 'New profile'; let name = base;
+    for (let n = 2; columnsDraft.profiles.some(profile => profile.name.toLowerCase() === name.toLowerCase()); n++) name = `${base} ${n}`;
+    const profile = { id: `p_${globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random().toString(36).slice(2)}`}`, name, columns: duplicate ? JSON.parse(JSON.stringify(selected.columns)) : {} };
+    columnsDraft.profiles.push(profile); columnsDraft.profileId = profile.id; renderColumns(); $('#columns-profile-rename').click();
+  };
+  const add = detailButton('New', () => create(false)); add.id = 'columns-profile-new'; add.disabled = columnsDraft.profiles.length >= 30;
+  const actions = detailActions(add), renameField = document.createElement('label'); renameField.className = 'field-label'; renameField.hidden = true;
+  if (selected) {
+    const name = document.createElement('input'); name.id = 'columns-profile-name'; name.maxLength = 80; name.value = selected.name;
+    name.addEventListener('input', () => { selected.name = name.value; picker.selectedOptions[0].textContent = name.value; const legend = $('#columns-editor .profile-strategy legend'); if (legend) legend.textContent = `${name.value} · strategy`; });
+    name.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); renameField.hidden = true; picker.focus(); } }); renameField.append('Profile name', name);
+    const duplicate = detailButton('Duplicate', () => create(true)); duplicate.id = 'columns-profile-duplicate'; duplicate.disabled = columnsDraft.profiles.length >= 30;
+    const rename = detailButton('Rename', () => { renameField.hidden = false; name.focus(); name.select(); }); rename.id = 'columns-profile-rename';
+    const remove = detailButton('Delete', () => {
+      const confirm = paragraph('Deleting this profile returns its tasks to Default when you save.');
+      const yes = detailButton('Delete profile', () => { columnsDraft.profiles = columnsDraft.profiles.filter(profile => profile.id !== selected.id); columnsDraft.profileId = null; renderColumns(); $('#columns-profile').focus(); }, 'danger'); yes.id = 'columns-profile-delete-confirm';
+      actions.replaceChildren(confirm, yes, detailButton('Cancel', () => { renderColumns(); $('#columns-profile').focus(); }));
+    }, 'danger'); remove.id = 'columns-profile-delete'; actions.append(duplicate, rename, remove);
+  }
+  box.replaceChildren(field, actions, renameField);
+}
+
+function profileStrategyEditor(entry, profile) {
+  const box = document.createElement('fieldset'); box.className = 'settings-group profile-strategy';
+  const legend = document.createElement('legend'); legend.textContent = `${profile.name} · strategy`; box.append(legend, paragraph('Inherit uses the column setting. Default clears its pin. Override uses the value below. Automations stay shared.', 'note'));
+  const strategy = profile.columns[entry.id] || {}, set = (key, value) => {
+    const own = profile.columns[entry.id] ||= {};
+    if (value === undefined) delete own[key]; else own[key] = value;
+    if (!Object.keys(own).length) delete profile.columns[entry.id];
+  };
+  for (const [key, title, choices] of [
+    ['autoSpawn', 'Start or resume on arrival', [['true', 'Yes'], ['false', 'No']]],
+    ['agentOverride', 'Agent', ['claude', 'codex', 'gemini'].map(id => [id, board?.execution?.providers?.[id]?.name || id])],
+    ['modelOverride', 'Model ID', null], ['effortOverride', 'Effort', ['low', 'medium', 'high', 'xhigh', 'max'].map(value => [value, value])],
+    ['permissionMode', 'Permissions', PIPELINE_PERMISSIONS.filter(([value]) => value)],
+    ['planExitTargetId', 'After native plan approval', columnsDraft.list.filter(column => column.role === 'active' && column.id !== entry.id).map(column => [column.id, column.name])],
+  ]) {
+    const field = document.createElement('label'); field.className = 'field-label profile-strategy-field'; field.append(title);
+    const mode = document.createElement('select'); mode.id = `profile-${key}-mode`; mode.setAttribute('aria-label', `${title}: value source`);
+    mode.append(option('inherit', 'Inherit column'), option('default', 'Use default'), option('override', 'Override'));
+    mode.value = Object.hasOwn(strategy, key) ? strategy[key] === null ? 'default' : 'override' : 'inherit';
+    const input = document.createElement(choices ? 'select' : 'input'); input.id = `profile-${key}-value`; input.setAttribute('aria-label', `${title}: override value`);
+    if (choices) input.append(...choices.map(([value, label]) => option(value, label))); else input.maxLength = 100;
+    const present = strategy[key] ?? entry.strategy[key]; input.value = present == null ? choices?.[0]?.[0] || '' : String(present);
+    if (choices && input.selectedIndex < 0) input.selectedIndex = 0;
+    const change = () => { input.disabled = input.hidden = mode.value !== 'override'; input.required = mode.value === 'override'; set(key, mode.value === 'inherit' ? undefined : mode.value === 'default' ? null : key === 'autoSpawn' ? input.value === 'true' : input.value); };
+    mode.addEventListener('change', change); input.addEventListener(choices ? 'change' : 'input', change); input.disabled = input.hidden = mode.value !== 'override'; input.required = !input.disabled;
+    field.append(mode, input); box.append(field);
+  }
+  return box;
+}
+
 // Built-in stages keep their order and rules (rename, recolour; Planning can be hidden). Custom columns
 // go anywhere between To Do and Done and are attached to the built-in stage on their left.
 const COLUMN_COLOR_NAMES = { gray: 'Gray', red: 'Red', orange: 'Orange', amber: 'Amber', green: 'Green', teal: 'Teal', blue: 'Blue', violet: 'Violet', pink: 'Pink' };
 const BUILTIN_DEFAULT_COLORS = { todo: 'gray', planning: 'violet', executing: 'blue', code_review: 'amber', testing: 'teal', merge: 'orange', done: 'green' };
-const columnsDraft = { list: [], selected: null, project: null, revision: null, pipeline: false, profiles: [], headerDrafts: new Map() };
+const columnsDraft = { list: [], selected: null, project: null, revision: null, pipeline: false, profiles: [], profileId: null, headerDrafts: new Map() };
 const builtinTitle = id => board?.columns?.find(column => column.id === id)?.title || id;
 function openColumns() {
   columnsDraft.headerDrafts.clear();
@@ -3770,6 +3904,7 @@ function openColumns() {
   columnsDraft.revision = project.revision;
   columnsDraft.pipeline = project.workflowMode === 'pipeline';
   columnsDraft.profiles = JSON.parse(JSON.stringify(project.pipeline?.profiles || []));
+  columnsDraft.profileId = null;
   columnsDraft.list = JSON.parse(JSON.stringify(columnsDraft.pipeline ? project.pipeline.columns : layout));
   columnsDraft.selected = columnsDraft.list.find(entry => entry.custom)?.id || 'executing';
   $('#columns-project').textContent = `${project.name} · COLUMNS`;
@@ -3779,6 +3914,9 @@ function openColumns() {
 }
 const draftAnchor = entry => { let anchor = 'todo'; for (const item of columnsDraft.list) { if (item === entry) return anchor; if (!item.custom && !item.hidden) anchor = item.id; } return anchor; };
 function renderColumns() {
+  renderPipelineProfiles();
+  $('#columns-add').disabled = Boolean(columnsDraft.profileId);
+  $('#columns-remove').disabled = Boolean(columnsDraft.profileId);
   $('#columns-use-pipeline').hidden = columnsDraft.pipeline;
   $('#columns-mode-note').textContent = columnsDraft.pipeline
     ? 'Columns control the agent’s session. Moves send no stage instructions. Pause agents before changing settings. Claude and Gemini can move approved native plans to the configured target; Codex requires an explicit move.'
@@ -3872,6 +4010,7 @@ function renderColumnEditor() {
 }
 function renderPipelineColumns() {
   const list = columnsDraft.list;
+  const profile = columnsDraft.profiles.find(item => item.id === columnsDraft.profileId);
   $('#columns-list').replaceChildren(...list.map((entry, index) => {
     const row = document.createElement('li'); row.className = 'columns-row';
     const button = detailButton(entry.name, () => { columnsDraft.selected = entry.id; renderColumns(); }, 'columns-item');
@@ -3883,12 +4022,13 @@ function renderPipelineColumns() {
         $(`#columns-list [data-move="${entry.id}${step}"]`)?.focus();
       }, 'icon-button');
       move.dataset.move = `${entry.id}${step}`; move.setAttribute('aria-label', `${step < 0 ? 'Move left' : 'Move right'}: ${entry.name}`);
-      move.disabled = step < 0 ? index <= 1 : index >= list.length - 2; row.append(move);
+      move.disabled = Boolean(profile) || (step < 0 ? index <= 1 : index >= list.length - 2); row.append(move);
     }
     return row;
   }));
   const entry = list.find(column => column.id === columnsDraft.selected) || list[0];
   $('#columns-remove').hidden = entry.role !== 'active';
+  $('#columns-remove').disabled = Boolean(profile);
   const editor = $('#columns-editor');
   const field = (title, input) => { const label = document.createElement('label'); label.className = 'field-label'; label.append(title, input); return label; };
   const name = document.createElement('input'); name.id = 'column-name'; name.maxLength = 80; name.value = entry.name;
@@ -3899,7 +4039,12 @@ function renderPipelineColumns() {
   color.append(...Object.entries(COLUMN_COLOR_NAMES).map(([value, label]) => option(value, label))); color.value = entry.color;
   color.addEventListener('change', () => { entry.color = color.value; });
   const nodes = [field('Name', name), field('Description', description), field('Colour', color)];
-  if (entry.role === 'active') {
+  if (profile) {
+    name.disabled = description.disabled = color.disabled = true;
+    nodes.push(paragraph('Column structure, automations and Base assignments are shared. Select Default to edit them.', 'note'));
+    if (entry.role === 'active') nodes.push(profileStrategyEditor(entry, profile));
+    else nodes.push(paragraph('This system role never starts an agent; profiles do not change that rule.', 'note'));
+  } else if (entry.role === 'active') {
     const automatic = document.createElement('input'); automatic.type = 'checkbox'; automatic.checked = entry.strategy.autoSpawn !== false; automatic.id = 'column-auto-spawn';
     automatic.addEventListener('change', () => { entry.strategy.autoSpawn = automatic.checked; });
     const label = document.createElement('label'); label.className = 'check-row'; label.append(automatic, ' Start or resume an agent when a card arrives'); nodes.push(label);
@@ -3922,8 +4067,10 @@ function renderPipelineColumns() {
     nodes.push(paragraph('Live moves retain the CLI’s current permissions. New model, effort or Base settings wait for the current turn before resuming. Permissions apply on startup/resume. Pause before editing this board or switching providers.', 'note'));
   } else nodes.push(paragraph(entry.role === 'todo' ? 'The holding role never starts agents. Returning a card stops its agent and resets the current session; files and historical output are kept.'
     : 'The completion role pauses the agent and archives its task, preserving the conversation and worktree for restoration.', 'note'));
-  nodes.push(pipelineAutomationEditor(entry));
-  if (projectColumnsOf().some(column => column.id === entry.id)) nodes.push(basePicker({ target: { scope: 'column', projectId: currentProject().id, columnId: entry.id }, inactive: entry.role !== 'active' }));
+  const automations = pipelineAutomationEditor(entry);
+  if (profile) for (const control of automations.querySelectorAll('input, textarea, select, button')) control.disabled = true;
+  nodes.push(automations);
+  if (!profile && projectColumnsOf().some(column => column.id === entry.id)) nodes.push(basePicker({ target: { scope: 'column', projectId: currentProject().id, columnId: entry.id }, inactive: entry.role !== 'active' }));
   editor.replaceChildren(...nodes);
 }
 
@@ -4031,6 +4178,7 @@ $('#columns-use-pipeline').addEventListener('click', () => {
 });
 
 function addColumn() {
+  if (columnsDraft.profileId) return;
   const list = columnsDraft.list;
   const at = Math.min(Math.max(list.findIndex(entry => entry.id === columnsDraft.selected) + 1, 1), list.length - 1);
   const taken = new Set(list.map(entry => (entry.name || entry.title || builtinTitle(entry.id)).toLowerCase()));
@@ -4060,6 +4208,7 @@ $('#columns-open').addEventListener('click', openColumns);
 $('#columns-add').addEventListener('click', addColumn);
 $('#columns-form').addEventListener('submit', saveColumns);
 $('#columns-remove').addEventListener('click', () => {
+  if (columnsDraft.profileId) return;
   const index = columnsDraft.list.findIndex(entry => entry.id === columnsDraft.selected);
   if (index < 0 || (columnsDraft.pipeline ? columnsDraft.list[index].role !== 'active' : !columnsDraft.list[index].custom)) return;
   const [removed] = columnsDraft.list.splice(index, 1);

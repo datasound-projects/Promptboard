@@ -18,7 +18,7 @@ import { ensureClone, fastForward, fetchAndCompare, viewRepository } from './git
 import { buildTimeline } from './timeline.mjs';
 import { Base, normalizeBinding, listTargets, remapBaseScopes } from './base.mjs';
 import { checkBaseRevocations, deliveryFor, profileDefaults, resolveBase } from './base-resolver.mjs';
-import { defaultPipelineConfig, normalizePipelineConfig, resolvePipelineStrategy } from './pipeline-config.mjs';
+import { defaultPipelineConfig, normalizePipelineConfig, normalizePipelineTaskSelection, resolvePipelineStrategy } from './pipeline-config.mjs';
 import { renderPipelineSpawnPrompt } from './pipeline-templates.mjs';
 import { PipelineJournal } from './pipeline-journal.mjs';
 import { PipelineAutomations } from './pipeline-automations.mjs';
@@ -96,8 +96,8 @@ export function parseBackup(data) {
 }
 function parseBackupData(data) {
   const v1 = data?.version === 1 && (data.kind === undefined || data.kind === 'kanban-backup');
-  const v2 = [2, 3, 4].includes(data?.version) && data.kind === 'promptboard-backup';
-  const v3 = [3, 4].includes(data?.version) && data.kind === 'promptboard-backup';
+  const v2 = [2, 3, 4, 5].includes(data?.version) && data.kind === 'promptboard-backup';
+  const v3 = [3, 4, 5].includes(data?.version) && data.kind === 'promptboard-backup';
   if (!data || typeof data !== 'object' || (!v1 && !v2) || !Array.isArray(data.projects)) throw new BoardError('The data is not a Promptboard or version 1 Kanban board.', 'INVALID_BACKUP');
   if (data.projects.length > PROJECT_LIMIT) throw new BoardError(`A board can have at most ${PROJECT_LIMIT} projects.`, 'INVALID_BACKUP');
   const ids = new Set();
@@ -115,8 +115,8 @@ function parseBackupData(data) {
     const name = text(project.name, 80, `${label} name`);
     if (names.has(name.toLowerCase())) throw new BoardError(`${label} repeats the project name “${name}”.`, 'INVALID_BACKUP');
     names.add(name.toLowerCase());
-    if (data.version === 4 && project.workflowMode !== undefined && !['legacy', 'pipeline'].includes(project.workflowMode)) throw new BoardError('Unknown backup workflow mode.', 'INVALID_BACKUP');
-    const pipeline = data.version === 4 && project.workflowMode === 'pipeline' ? normalizePipelineConfig(project.pipeline) : null;
+    if ([4, 5].includes(data.version) && project.workflowMode !== undefined && !['legacy', 'pipeline'].includes(project.workflowMode)) throw new BoardError('Unknown backup workflow mode.', 'INVALID_BACKUP');
+    const pipeline = [4, 5].includes(data.version) && project.workflowMode === 'pipeline' ? normalizePipelineConfig(project.pipeline) : null;
     const columnLayout = !pipeline && v2 && Array.isArray(project.columnLayout) && project.columnLayout.length ? normalizeColumns(project.columnLayout) : null;
     const columnIds = new Set(pipeline ? pipeline.columns.map(column => column.id) : [...COLUMN_IDS, ...(columnLayout || []).filter(entry => entry.custom).map(entry => entry.id)]);
     return {
@@ -138,9 +138,11 @@ function parseBackupData(data) {
         const cardLabel = `${label}, card ${cardIndex + 1}`;
         if (!card || typeof card !== 'object') throw new BoardError(`${cardLabel} is not valid.`, 'INVALID_BACKUP');
         if (pipeline && !columnIds.has(card.column)) throw new BoardError(`${cardLabel} refers to a missing pipeline column.`, 'INVALID_BACKUP');
+        if ((!pipeline || data.version !== 5) && (card.profileId != null || card.agentOverride != null)) throw new BoardError('Task pipeline settings require a version 5 pipeline backup.', 'INVALID_BACKUP');
         return { id: unique(card.id, cardLabel), title: text(card.title, 120, `${cardLabel} title`), prompt: promptText(card.prompt, cardLabel),
           createdAt: time(card.createdAt), updatedAt: time(card.updatedAt ?? card.createdAt), checksOutdated: card.checksOutdated === true,
-          source: normalizeSource(card.source), column: v2 && columnIds.has(card.column) ? card.column : 'todo', ...(v3 ? backupBaseScopes(card, true, columnIds) : {}) };
+          source: normalizeSource(card.source), column: v2 && columnIds.has(card.column) ? card.column : 'todo', ...(v3 ? backupBaseScopes(card, true, columnIds) : {}),
+          ...(pipeline && data.version === 5 ? normalizePipelineTaskSelection(pipeline, { profileId: card.profileId, agentOverride: card.agentOverride }) : {}) };
       }),
     };
   });
@@ -438,7 +440,8 @@ export class Board {
     const state = await this.state();
     return { revision: state.revision, columns: COLUMNS, transitions: TRANSITIONS, settings: state.settings, runs: state.runs.slice(-500), sessions: state.sessions.slice(-500),
       baseRevision: state.base?.revision || 0,
-      projects: state.projects.map(project => ({ ...project, columns: projectColumns(project), transitions: projectTransitions(project), effectiveWorkflow: effectiveWorkflow(project, state.settings.defaultAgent, state) })),
+      projects: state.projects.map(project => ({ ...project, columns: projectColumns(project), transitions: projectTransitions(project), effectiveWorkflow: effectiveWorkflow(project, state.settings.defaultAgent, state),
+        ...(project.workflowMode === 'pipeline' ? { tasks: project.tasks.map(task => ({ ...task, pipelineAgent: effectiveWorkflow(project, state.settings.defaultAgent, state, task)[task.column] })) } : {}) })),
       execution: this.executor?.describe ? await this.executor.describe() : { available: Boolean(this.executor) }, recovery: this.store.recovery };
   }
 
@@ -450,8 +453,9 @@ export class Board {
     const targets = listTargets(state).map(item => {
       const target = item.target;
       const project = target.projectId ? this.#project(state, target.projectId) : null;
+      const task = target.taskId ? this.#task(state, target.taskId).task : null;
       const columnId = target.columnId || 'executing';
-      const settings = effectiveWorkflow(project || {}, state.settings.defaultAgent, state)[columnId];
+      const settings = effectiveWorkflow(project || {}, state.settings.defaultAgent, state, task)[columnId];
       const column = project && projectColumns(project).find(entry => entry.id === columnId);
       return { ...item, label: item.name, revision: item.baseRevision, provider: settings?.provider || 'claude', columnActive: target.columnId ? column?.agent === true : true };
     });
@@ -476,7 +480,7 @@ export class Board {
       entity[target.columnId ? 'profileId' : 'agentProfileId'] = profileId || null;
     }
     const columnId = target.columnId || task?.column || 'executing';
-    const settings = effectiveWorkflow(project || {}, state.settings.defaultAgent, state)[columnId] || effectiveWorkflow(project || {}, state.settings.defaultAgent, state).executing;
+    const settings = effectiveWorkflow(project || {}, state.settings.defaultAgent, state, task)[columnId] || effectiveWorkflow(project || {}, state.settings.defaultAgent, state, task).executing;
     return { provider: settings.provider, manifest: resolveBase({ state, project, task, columnId, provider: settings.provider }) };
   }
 
@@ -855,10 +859,15 @@ export class Board {
       if (project.autopilot?.status === 'running') throw conflict('Pause Autopilot before switching workflow mode.', 'AUTOPILOT_ACTIVE');
       const present = new Set(clean.columns.map(column => column.id));
       if (project.tasks.some(task => !present.has(task.column))) throw conflict('Move every card out of columns being removed first.', 'COLUMN_NOT_EMPTY');
-      for (const task of project.tasks) resolvePipelineStrategy(clean, task.column, task);
+      const removedProfiles = new Set((project.pipeline?.profiles || []).filter(profile => !clean.profiles.some(item => item.id === profile.id)).map(profile => profile.id));
+      for (const task of project.tasks) {
+        if (removedProfiles.has(task.profileId)) { task.profileId = null; task.revision++; task.updatedAt = Date.now(); }
+        normalizePipelineTaskSelection(clean, { profileId: task.profileId, agentOverride: task.agentOverride });
+        resolvePipelineStrategy(clean, task.column, task);
+      }
       project.workflowMode = 'pipeline'; project.pipeline = clean;
       for (const column of clean.columns.filter(column => column.role === 'active')) {
-        for (const task of [null, ...clean.profiles.map(profile => ({ profileId: profile.id }))]) {
+        for (const task of [null, ...clean.profiles.map(profile => ({ profileId: profile.id })), ...project.tasks.filter(task => task.agentOverride)]) {
           resolveConfig(column.id, effectiveWorkflow(project, state.settings.defaultAgent, state, task)[column.id]);
         }
       }
@@ -1440,27 +1449,54 @@ export class Board {
 
   // ---- Tasks ----
 
-  async createTask({ projectId, title, prompt, source = null }) {
+  async createTask({ projectId, title, prompt, source = null, pipelineSettings, expectedProjectRevision }) {
     const task = newTask({ title: text(title, 120, 'Title'), prompt: promptText(prompt, 'The task'), source: normalizeSource(source) });
     return this.store.update(state => {
       const project = this.#project(state, projectId);
       if (project.tasks.length >= TASK_LIMIT) throw new BoardError(`A project can have at most ${TASK_LIMIT} cards.`, 'LIMIT');
+      if (pipelineSettings !== undefined) Object.assign(task, this.#taskPipelineSettings(state, project, pipelineSettings, expectedProjectRevision));
       if (project.workflowMode === 'pipeline') task.column = project.pipeline.columns.find(column => column.role === 'todo').id;
       project.tasks.push(task); // Composer/new cards always enter the To Do role without a run.
       return task;
     });
   }
 
-  async updateTask(id, { title, prompt, expectedRevision }) {
+  updateTask(id, input) {
+    return input.pipelineSettings === undefined ? this.#updateTask(id, input) : this.#locked(`run:${id}`, () => this.#updateTask(id, input));
+  }
+
+  #taskPipelineSettings(state, project, input, expectedProjectRevision) {
+    if (project.workflowMode !== 'pipeline') throw new BoardError('Task pipeline settings require a column pipeline.', 'PIPELINE_SETTINGS_REQUIRED', 409);
+    if (!Number.isSafeInteger(expectedProjectRevision) || expectedProjectRevision < 1) throw new BoardError('Send the project revision for task pipeline settings.', 'INVALID_INPUT');
+    checkRevision(project, expectedProjectRevision, 'This project');
+    const selection = normalizePipelineTaskSelection(project.pipeline, input);
+    for (const column of project.pipeline.columns.filter(column => column.role === 'active')) resolveConfig(column.id, effectiveWorkflow(project, state.settings.defaultAgent, state, selection)[column.id]);
+    return selection;
+  }
+
+  async #updateTask(id, { title, prompt, expectedRevision, pipelineSettings, expectedProjectRevision }) {
     return this.store.update(state => {
-      const { task } = this.#task(state, id);
+      const { project, task } = this.#task(state, id);
       checkRevision(task, expectedRevision, 'This card');
+      let selection, settingsChanged = false;
+      if (pipelineSettings !== undefined) {
+        if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1) throw new BoardError('Send the card revision for task pipeline settings.', 'INVALID_INPUT');
+        selection = this.#taskPipelineSettings(state, project, pipelineSettings, expectedProjectRevision);
+        const previous = normalizePipelineTaskSelection(project.pipeline, { profileId: task.profileId, agentOverride: task.agentOverride });
+        settingsChanged = JSON.stringify(previous) !== JSON.stringify(selection);
+        if (settingsChanged) {
+          this.#requireAutomationsStopped(task);
+          if (this.#activeRun(state, id)) throw conflict('Pause this card’s agent before changing its pipeline settings.', 'RUN_ACTIVE');
+        }
+      }
       const nextTitle = title === undefined ? task.title : text(title, 120, 'Title');
       const nextPrompt = prompt === undefined ? task.prompt : promptText(prompt, 'The task');
-      if (nextTitle === task.title && nextPrompt === task.prompt) return { task, changed: false };
+      const contentChanged = nextTitle !== task.title || nextPrompt !== task.prompt;
+      if (!contentChanged && !settingsChanged) return { task, changed: false };
       // Checks from generation apply only to the original text.
       // A content change also makes any earlier plan approval stale.
-      Object.assign(task, { title: nextTitle, prompt: nextPrompt, updatedAt: Date.now(), checksOutdated: task.checksOutdated || Boolean(task.source), revision: task.revision + 1, contentRevision: (task.contentRevision ?? 1) + 1 });
+      Object.assign(task, { title: nextTitle, prompt: nextPrompt, updatedAt: Date.now(), revision: task.revision + 1,
+        ...(contentChanged ? { checksOutdated: task.checksOutdated || Boolean(task.source), contentRevision: (task.contentRevision ?? 1) + 1 } : {}), ...(settingsChanged ? selection : {}) });
       return { task, changed: true };
     });
   }
@@ -1471,6 +1507,7 @@ export class Board {
       if (project.tasks.length >= TASK_LIMIT) throw new BoardError(`A project can have at most ${TASK_LIMIT} cards.`, 'LIMIT');
       const copy = newTask({ title: `${task.title.slice(0, 113)} (copy)`, prompt: task.prompt, source: structuredClone(task.source), checksOutdated: task.checksOutdated });
       if (project.workflowMode === 'pipeline') copy.column = project.pipeline.columns.find(column => column.role === 'todo').id;
+      if (project.workflowMode === 'pipeline' && (task.profileId || task.agentOverride)) Object.assign(copy, normalizePipelineTaskSelection(project.pipeline, { profileId: task.profileId, agentOverride: task.agentOverride }));
       if (task.baseBinding) copy.baseBinding = structuredClone(task.baseBinding);
       if (task.baseColumns) copy.baseColumns = structuredClone(task.baseColumns);
       project.tasks.splice(project.tasks.indexOf(task) + 1, 0, copy); // A copy starts in To Do with no workspace.
@@ -1578,7 +1615,7 @@ export class Board {
     const state = await this.state();
     const base = await this.base.export({ includeContent: includeBaseContent });
     if ((await this.state()).base.revision !== state.base.revision) throw conflict('Base changed while the backup was being prepared. Export it again.', 'BASE_REVISION_CONFLICT');
-    return { application: 'Promptboard', kind: 'promptboard-backup', version: state.projects.some(project => project.workflowMode === 'pipeline') ? 4 : 3, exportedAt: new Date().toISOString(),
+    return { application: 'Promptboard', kind: 'promptboard-backup', version: state.projects.some(project => project.workflowMode === 'pipeline') ? 5 : 3, exportedAt: new Date().toISOString(),
       base, baseGlobal: backupBaseScopes(state.settings.pendingBaseImport || state.settings),
       projects: state.projects.map(project => ({ id: project.id, name: project.name, createdAt: project.createdAt,
         ...(project.workflowMode === 'pipeline' ? { workflowMode: 'pipeline', pipeline: project.pipelineImport || project.pipeline } : {}),
@@ -1587,7 +1624,8 @@ export class Board {
         agentDefaults: project.agentDefaults || null, workflow: project.workflow || {}, testCommands: project.testCommands || [], timelineNotes: project.timelineNotes || [], columnLayout: project.columnLayout || [],
         // Workspaces and runs are machine-specific and are not exported.
         tasks: project.tasks.map(task => ({ id: task.id, title: task.title, prompt: task.prompt, source: task.source, checksOutdated: task.checksOutdated,
-          createdAt: task.createdAt, updatedAt: task.updatedAt, column: task.column, ...backupBaseScopes(task, true) })) })) };
+          createdAt: task.createdAt, updatedAt: task.updatedAt, column: task.column, ...backupBaseScopes(task, true),
+          ...(project.workflowMode === 'pipeline' ? normalizePipelineTaskSelection(project.pipelineImport || project.pipeline, { profileId: task.profileId, agentOverride: task.agentOverride }) : {}) })) })) };
   }
 
   /**
@@ -1597,7 +1635,7 @@ export class Board {
   async importBackup(data, { replace = false } = {}) {
     const parsed = parseBackup(data);
     const preparedBase = parsed.base ? await this.base.prepareImport(parsed.base) : null;
-    if ([3, 4].includes(data.version) && !preparedBase) throw new BoardError('This backup is missing its Base resource library.', 'INVALID_BACKUP');
+    if ([3, 4, 5].includes(data.version) && !preparedBase) throw new BoardError('This backup is missing its Base resource library.', 'INVALID_BACKUP');
     if (preparedBase) {
       for (const incoming of parsed.projects) {
         Object.assign(incoming, remapBaseScopes(incoming, preparedBase.remap));
@@ -1618,7 +1656,8 @@ export class Board {
       else delete state.settings.pendingBaseImport;
       state.projects = parsed.projects.map(incoming => {
         const project = newProject(incoming);
-        project.tasks = incoming.tasks.map(task => ({ ...newTask(task), ...backupBaseScopes(task, true) }));
+        project.tasks = incoming.tasks.map(task => ({ ...newTask(task), ...backupBaseScopes(task, true),
+          ...(incoming.pipeline ? normalizePipelineTaskSelection(incoming.pipeline, { profileId: task.profileId, agentOverride: task.agentOverride }) : {}) }));
         if (incoming.pipeline) {
           project.workflowMode = 'pipeline'; project.pipelineImport = incoming.pipeline;
           project.pipeline = structuredClone(incoming.pipeline);
