@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Run Chrome fixture files sequentially after the other tests, preserving scenario/file deadlines and failure exit codes. Keep non-browser concurrency at two; avoid concurrent renderer/PTY/Git fixture work during full verification.
+
+- Detect changes to previously applied repository board sources with bounded, read-only polling for the selected visible Kanban project. Offer a fresh review; preserve saved settings, exact Composer text, Base, sessions and open drafts. Reject stale project/source responses, report unreadable files without their contents, and clear the banner on source recovery. Automatic export/application and retained ghost columns remain pending.
+
 - Remove default Compose model and browser generation deadlines across autonomous research, draft/review/repair and task splitting. Preserve Cancel, process cleanup, explicit programmatic deadlines and bounded optional-source retrieval. Invalid optional planning falls back to the original task with a warning. Align detailed prompt, split and verification size bounds; test all provider/settings combinations and long-running browser states.
 - Accept Codex's reported `max` effort and classify its account/model rejection explicitly. Disable ambient Codex MCPs/apps/plugins/hooks per generation invocation without altering CLI defaults or credentials. Track cancelled Compose provider cleanup through shutdown.
 - Keep accepted shutdown cleanup alive through its bounded outcome on Node 22, and prevent a cancelled split's late response/error from overwriting a replacement split.

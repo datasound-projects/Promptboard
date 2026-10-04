@@ -48,6 +48,17 @@ export function git(args, { cwd, config = [], timeoutMs = 20000 } = {}) {
 
 export const lines = text => text.split('\n').map(line => line.trimEnd()).filter(Boolean);
 
+/** Recheck an already linked checkout's identity, without branch/HEAD discovery. */
+export async function repositoryIdentity(input) {
+  if (typeof input !== 'string' || !input.trim() || input.length > 4096 || input.includes('\0') || !isAbsolute(input.trim())) throw fail('INVALID_PATH');
+  try {
+    const paths = lines(await git(['rev-parse', '--path-format=absolute', '--show-toplevel', '--git-common-dir'], { cwd: input.trim() }));
+    if (paths.length !== 2 || paths.some(path => !isAbsolute(path) || path.includes('\0'))) throw fail('GIT_FAILED');
+    const [root, commonDir] = await Promise.all(paths.map(path => realpath(path)));
+    return { root, commonDir };
+  } catch (error) { throw fail(error.code === 'GIT_MISSING' ? 'GIT_MISSING' : 'GIT_FAILED'); }
+}
+
 /**
  * Validate a folder for linking. Returns the repository root, the common Git directory
  * (valid for linked worktrees, where .git is a file), and the local branches.
