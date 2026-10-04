@@ -35,7 +35,8 @@ export function pipelineTemplateVariables({ task, project = null, attachmentPath
   if (port !== null && (!Number.isInteger(port) || port < 1 || port > 65535)) fail('Use an already reserved port from 1 to 65535.');
   const description = string(task.prompt ?? task.description), pr = task.evidence?.pullRequest || task.pullRequest || {}, external = task.externalSource || {};
   const values = { task_xml: pipelineTaskEnvelope(task), title: string(task.title), description: description.trim() ? `: ${description}` : '',
-    taskId: string(task.id), taskNumber: string(task.number), projectPath: string(project?.repository?.root), projectName: string(project?.name),
+    taskId: string(task.id), taskNumber: Number.isSafeInteger(task.number) && task.number > 0 && task.number < Number.MAX_SAFE_INTEGER ? `#${task.number}` : '',
+    projectPath: string(project?.repository?.root), projectName: string(project?.name),
     worktreePath: string(task.workspace?.path), branchName: string(task.workspace?.branch), baseBranch: string(task.baseBranch || project?.targetBranch?.name),
     prUrl: string(pr.url), prNumber: string(pr.number), prState: string(pr.isDraft ? 'draft' : pr.state).toLowerCase(),
     issueKey: string(external.key), issueUrl: string(external.url), labels: string((task.labels || []).join(', ')),
