@@ -17,12 +17,31 @@ test('repository board review works by keyboard in both themes and narrow Chrome
   const task = await app.board.createTask({ projectId: project.id, title: 'Exact Composer', prompt: '  Literal 😀\r\n' }), team = repositoryPipelineDefinition(pipeline);
   team.columns[2].description = '<img src=x onerror="window.__configPwned=1">'; await writeFile(join(project.repository.root, 'promptboard.json'), JSON.stringify(team));
   const browser = await launch(); if (!browser) { t.skip('Chrome did not start.'); return; } t.after(() => browser.close());
+  // Observe this request's completion rather than spending the 10s DOM deadline
+  // on Git validation. The app still owns its unchanged 20s abort deadline.
+  // Return the original fetch promise/response, so the observation cannot change it.
+  await browser.send('Page.addScriptToEvaluateOnNewDocument', { source: `
+    window.__repositoryReads = [];
+    const nativeFetch = window.fetch;
+    window.fetch = function (...args) {
+      const result = Reflect.apply(nativeFetch, this, args);
+      if (typeof args[0] === 'string' && /^\\/api\\/projects\\/[^/]+\\/repository-pipeline$/.test(args[0]) && (!args[1]?.method || args[1].method === 'GET'))
+        window.__repositoryReads.push(result.then(response => response.clone().text()).catch(() => null));
+      return result;
+    };
+  ` });
   const enter = async id => { if (id) await browser.eval(`const node=document.getElementById(${JSON.stringify(id)}); node.scrollIntoView({block:'center'}); node.focus();`); await browser.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' }); await browser.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 }); };
+  const read = async () => {
+    const count = await browser.eval('return window.__repositoryReads.length;');
+    await enter('columns-repository-read');
+    await browser.until(`window.__repositoryReads.length === ${count + 1}`, 'owned repository read dispatched');
+    await browser.eval(`await window.__repositoryReads[${count}]; return true;`);
+  };
   await browser.goto(`${app.url}/#/kanban`); await browser.until(`document.querySelector('[data-id="${task.id}"]')`, 'task ready'); await enter('columns-open');
   for (const width of [1280, 390]) {
     await browser.resize(width, 900);
     for (const theme of ['light', 'dark']) {
-      await browser.eval(`document.documentElement.dataset.theme='${theme}';`); await enter('columns-repository-read');
+      await browser.eval(`document.documentElement.dataset.theme='${theme}';`); await read();
       await browser.until(`!document.getElementById('repository-pipeline-apply').disabled`, `repository definition read at ${width}px ${theme}`).catch(async error => {
         const state = await browser.eval(`return { columnsOpen:document.getElementById('columns-dialog').open, reviewOpen:document.getElementById('repository-pipeline-dialog').open, focus:document.activeElement.id, error:document.getElementById('repository-pipeline-error').textContent, preview:document.getElementById('repository-pipeline-preview').textContent };`);
         throw new Error(`${error.message}; state ${JSON.stringify(state)}; console ${JSON.stringify(browser.consoleMessages)}`);
@@ -36,7 +55,7 @@ test('repository board review works by keyboard in both themes and narrow Chrome
       await enter('repository-pipeline-cancel'); await browser.until(`!document.getElementById('repository-pipeline-dialog').open`, 'review closed');
     }
   }
-  await enter('columns-repository-read'); await browser.until(`!document.getElementById('repository-pipeline-apply').disabled`, 'final review'); await enter('repository-pipeline-apply');
+  await read(); await browser.until(`!document.getElementById('repository-pipeline-apply').disabled`, 'final review'); await enter('repository-pipeline-apply');
   await browser.until(`!document.getElementById('columns-dialog').open && !document.getElementById('repository-pipeline-dialog').open`, 'review applied');
   const saved=(await app.board.state()).projects[0]; assert.equal(saved.tasks[0].prompt, task.prompt); assert.equal(saved.pipeline.columns[2].description, team.columns[2].description); assert.deepEqual((await app.board.state()).runs, []);
   assert.deepEqual(browser.consoleMessages.filter(message=>message.startsWith('EXCEPTION')), []);
