@@ -666,6 +666,9 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
 .done-dialog.pipeline-archive-open { width: min(960px, calc(100vw - 32px)); max-width: 960px; }
 .archive-toolbar { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 20px; }
 .archive-toolbar > label { flex: 1 1 220px; min-width: 0; }
+.priority-filter-toolbar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 16px; padding: 8px 12px; border-top: 1px solid var(--line); }
+.priority-filter-toolbar > label { flex: 0 1 220px; min-width: 0; }
+.priority-filter-toolbar > .note { flex: 1 1 140px; margin: 0 0 8px; }
 .archive-table-scroll { max-height: 55vh; overflow: auto; border: 1px solid var(--line); border-radius: 8px; }
 .archive-table { width: 100%; min-width: 720px; table-layout: fixed; border-collapse: collapse; text-align: left; }
 .archive-table th, .archive-table td { padding: 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
