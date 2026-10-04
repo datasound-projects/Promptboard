@@ -19,7 +19,7 @@ import { BaseDeliveryError, checkBaseRevocations } from './base-resolver.mjs';
 import { SessionActivity } from './session-activity.mjs';
 import { NativeMessageReceipts } from './native-message-receipts.mjs';
 import { TerminalInputObservation } from './terminal-input-observation.mjs';
-import { sendOwnedNativeMessage } from './native-message-input.mjs';
+import { nativeMessageInputReadiness, sendOwnedNativeMessage } from './native-message-input.mjs';
 
 const RING_BYTES = 1024 * 1024; // Live scrollback kept per run for reconnects.
 const LOG_BYTES = 20 * 1024 * 1024; // Output log file cap per run.
@@ -570,7 +570,15 @@ export class Supervisor {
     if (session.status === 'waiting_for_input' && /\r|\n/.test(data)) this.#setStatus(session, 'running', { waitingReason: '' });
   }
 
-  /** Private transport seam, not an HTTP action or connected column scheduler. */
+  /** Private cached observation: no input, hook processing, grant or session selection. */
+  nativeMessageReadiness(runId) {
+    const session = this.sessions.get(runId), proc = session?.proc;
+    if (!session?.pipeline || !this.#ownsInitialProcess(session, proc)) return 'unavailable';
+    if (this.#nativeMessageOwners.has(session)) return 'waiting';
+    return nativeMessageInputReadiness(session, () => this.#ownsInitialProcess(session, proc));
+  }
+
+  /** Private transport seam used by the connected deferred column scheduler. */
   async sendNativeMessage(runId, request) {
     const session = this.sessions.get(runId), proc = session?.proc;
     if (!session?.pipeline || !proc) return { status: 'unavailable', confirmed: false, reason: 'The owned pipeline process is unavailable.' };
