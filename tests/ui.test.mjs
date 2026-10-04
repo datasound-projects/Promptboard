@@ -12,6 +12,49 @@ const gitIn = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8
 import { VERSION } from '../src/version.mjs';
 import { defaultPipelineConfig } from '../src/pipeline-config.mjs';
 import { repositoryPipelineDefinition } from '../src/pipeline-repository.mjs';
+import { Board } from '../src/board.mjs';
+
+test('a successful saved-board migration preserves projects and tasks without a corruption warning', async t => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'pb-ui-migration-'));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const savedBoard = new Board({ dataDir });
+  const project = await savedBoard.createProject({ name: 'Existing project' });
+  const task = await savedBoard.createTask({ projectId: project.id, title: 'Existing task', prompt: 'Keep this exact task.\r\n' });
+  const path = join(dataDir, 'state.json');
+  const previous = JSON.parse(await readFile(path, 'utf8'));
+  previous.version = 6;
+  delete previous.projects[0].nextTaskNumber;
+  delete previous.projects[0].tasks[0].number;
+  const original = JSON.stringify(previous);
+  await writeFile(path, original);
+  const ctx = await setup(t, { dataDir, executor: null, hash: '#/kanban' });
+  await ctx.win.__pbTest.loadBoard(); await ctx.idle({ requireComplete: true });
+  assert.equal(ctx.app.board.store.recovery.migratedFromVersion, 6);
+  assert.equal(ctx.$('#kanban-load-warning').hidden, true);
+  const saved = await ctx.app.board.state();
+  assert.equal(saved.projects[0].id, project.id);
+  assert.equal(saved.projects[0].tasks[0].id, task.id);
+  assert.equal(saved.projects[0].tasks[0].prompt, task.prompt);
+  assert.equal(await readFile(join(dataDir, ctx.app.board.store.recovery.migrationBackup), 'utf8'), original);
+});
+
+test('board recovery warnings distinguish real corruption, missing primary and healthy migration', async t => {
+  const ctx = await setup(t, { executor: null, hash: '#/kanban' });
+  const cases = [
+    [{ quarantined: 'state.corrupt-test.json', restoredFromBackup: true, migratedFromVersion: 6 }, /damaged, so the last good copy was restored/],
+    [{ quarantined: 'state.corrupt-test.json', restoredFromBackup: false }, /damaged and no good copy was found/],
+    [{ quarantined: null, restoredFromBackup: true }, /missing, so the last good copy was restored/],
+    [{ migratedFromVersion: 6, migrationBackup: 'state.pre-migration-test.json' }, null],
+    [null, null],
+  ];
+  for (const [recovery, expected] of cases) {
+    ctx.app.board.store.recovery = recovery;
+    await ctx.win.__pbTest.loadBoard(); await ctx.idle({ requireComplete: true });
+    const warning = ctx.$('#kanban-load-warning');
+    assert.equal(warning.hidden, expected === null);
+    if (expected) assert.match(warning.textContent, expected);
+  }
+});
 
 const catalogs = {
   codex: { source: 'cli', defaultModel: 'codex-one', defaultEffort: 'medium', models: [{ id: 'codex-one', name: 'Codex One', efforts: ['low', 'medium', 'high', 'xhigh'] }, { id: 'codex-two', name: 'Codex Two', efforts: ['low'] }] },
