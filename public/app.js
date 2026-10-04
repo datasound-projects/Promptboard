@@ -3173,9 +3173,9 @@ function workspaceMenuFor(project, card) {
 }
 function renderWorkspace(current) {
   const projects = board?.projects || [];
-  workspaceFiles ??= window.PromptboardFiles?.create({ request: async (path, signal) => {
-    const { response, data } = await api(path, { signal });
-    if (!response.ok) throw new Error(data.error || 'The project file could not be read.');
+  workspaceFiles ??= window.PromptboardFiles?.create({ request: async (path, signal, options = {}) => {
+    const { response, data } = await api(path, { ...options, signal });
+    if (!response.ok) throw Object.assign(new Error(data.error || 'The project file request failed.'), { code: data.code });
     return data;
   } }) || null;
   workspaceFiles?.sync(projects);
@@ -3616,7 +3616,7 @@ async function openFolderAsProject(path) {
   const pathError = message => { $('#workspace-path-form').hidden = false; $('#workspace-path').value = path; $('#workspace-path-error').textContent = message; $('#workspace-path-error').hidden = false; $('#workspace-path').focus(); };
   if (!path.startsWith('/') && !/^[A-Za-z]:[\\/]/.test(path)) { pathError('Enter the absolute path of the project folder.'); return; }
   const clean = path.length > 1 ? path.replace(/[\\/]+$/, '') : path;
-  const existing = board.projects.find(project => project.repository && [project.repository.path, project.repository.root].map(item => item.replace(/[\\/]+$/, '')).includes(clean));
+  const existing = board.projects.find(project => project.repository && (project.repository.path || project.repository.root).replace(/[\\/]+$/, '') === clean);
   $('#workspace-path-form').hidden = true;
   setSidebar(false);
   if (existing) { selectProject(existing.id); announce(`“${existing.name}” already uses this folder. Showing its board.`); return; }

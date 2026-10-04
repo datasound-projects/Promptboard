@@ -11,6 +11,7 @@
 - Expand Compose Task Type coverage for agentic coding with feature, integration, UI/UX, data, security, dependency, CI/CD/infrastructure and workflow-automation guidance.
 
 - Add neutral, documentation, testing, migration and performance Task Type choices to Compose, with distinct prompt guidance and history restoration support.
+- Scope each Kanban file tree to its selected project folder, including folders inside a parent repository; give newly created projects their own repository. Add explicit editing/saving with draft preservation and disk-conflict checks, plus an optional tool-disabled single-file AI proposal panel with review, cancellation and explicit Save. Keep project agents, Git actions, Compose and Base independent.
 
 - Connect queued journal receipts to private owned deferred input with exact scope/preflight checks, per-run FIFO and durable confirmation before releasing input. Preserve live queue tails during cancellation, use atomic queued-only outcomes and retain unknown acknowledgements as blocked ownership without replay. Keep column scheduling, live provider readiness and enabled message rows pending.
 

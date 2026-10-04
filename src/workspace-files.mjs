@@ -1,8 +1,8 @@
-/** Read-only, bounded inspection of explicitly linked project checkouts/worktrees. */
+/** Bounded file access within explicitly linked project folders/worktrees. */
 import { constants } from 'node:fs';
-import { lstat, open, opendir, realpath } from 'node:fs/promises';
-import { isAbsolute, join, relative, sep } from 'node:path';
-import { createHash } from 'node:crypto';
+import { access, lstat, open, opendir, realpath, rename, unlink } from 'node:fs/promises';
+import { dirname, isAbsolute, join, relative, sep } from 'node:path';
+import { createHash, randomUUID } from 'node:crypto';
 import { git, listWorktrees } from './git.mjs';
 
 export const FILE_LIMITS = Object.freeze({ bytes: 512 * 1024, lines: 20_000, entries: 5000, page: 250, depth: 64 });
@@ -45,16 +45,19 @@ async function context(board, projectId, workspace) {
   if (!project) fail('This project no longer exists.', 'NOT_FOUND', 404);
   if (!project.repository?.root) fail('Link a local project folder before inspecting files.', 'REPOSITORY_REQUIRED', 409);
   const scopes = [{ id: '', name: 'Project checkout' }, ...project.tasks.filter(t => t.workspace?.status === 'ready').map(t => ({ id: t.id, name: `${t.title} · ${t.workspace.branch}` }))];
-  let root = project.repository.root, scope = scopes[0];
+  const repositoryRoot = project.repository.root;
+  const selected = project.repository.inspectionRoot || (project.repository.path ? await realpath(project.repository.path) : repositoryRoot);
+  if (!isAbsolute(selected) || !inside(repositoryRoot, selected)) fail('Relink this project to a folder inside its repository.', 'FILE_ROOT_CHANGED', 409);
+  let root = selected, scope = scopes[0];
   if (workspace) {
     const task = project.tasks.find(t => t.id === workspace && t.workspace?.status === 'ready');
-    if (!task || task.workspace.repositoryRoot !== root || task.workspace.commonDir !== project.repository.commonDir) fail('This task worktree is unavailable.', 'FILE_WORKSPACE_UNAVAILABLE', 409);
-    const registered = (await listWorktrees(root)).find(w => w.path === task.workspace.path && w.branch === task.workspace.branch);
+    if (!task || task.workspace.repositoryRoot !== repositoryRoot || task.workspace.commonDir !== project.repository.commonDir) fail('This task worktree is unavailable.', 'FILE_WORKSPACE_UNAVAILABLE', 409);
+    const registered = (await listWorktrees(repositoryRoot)).find(w => w.path === task.workspace.path && w.branch === task.workspace.branch);
     const physical = await realpath(task.workspace.path).catch(() => null);
     if (!registered || physical !== task.workspace.path) fail('This task worktree changed or was removed.', 'FILE_WORKSPACE_UNAVAILABLE', 409);
     const common = (await git(['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: task.workspace.path })).trim();
     if (await realpath(common) !== project.repository.commonDir) fail('This folder belongs to another repository.', 'FILE_WORKSPACE_UNAVAILABLE', 409);
-    root = task.workspace.path; scope = scopes.find(s => s.id === workspace);
+    root = join(task.workspace.path, relative(repositoryRoot, selected)); scope = scopes.find(s => s.id === workspace);
   }
   return { root, scopes, project: { id: project.id, name: project.name }, workspace: scope };
 }
@@ -66,7 +69,7 @@ export async function inspectWorkspace(board, projectId, { path = '', workspace 
   if (typeof version !== 'string' || version && !/^[a-f0-9]{64}$/.test(version)) fail('Invalid file version.', 'FILE_VERSION_INVALID');
   try {
     const ctx = await context(board, projectId, workspace), item = await target(ctx.root, parts);
-    const identity = { project: ctx.project, workspace: ctx.workspace, path };
+    const identity = { project: ctx.project, workspace: ctx.workspace, path, scopeVersion: createHash('sha256').update(ctx.root).digest('hex') };
     if (!file) {
       if (!item.info.isDirectory()) fail('This path is not a folder.', 'FILE_NOT_DIRECTORY');
       const entries = [], directory = await opendir(item.path);
@@ -96,7 +99,7 @@ export async function inspectWorkspace(board, projectId, { path = '', workspace 
       const after = await handle.stat(), final = await target(ctx.root, parts);
       if (!same(before, final.info) || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs || after.size !== final.info.size || after.mtimeMs !== final.info.mtimeMs || after.ctimeMs !== final.info.ctimeMs) fail('This file is being updated. Refresh to read a stable version.', 'FILE_CHANGED', 409);
       let text;
-      try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, size)); } catch { fail('This file is not UTF-8 text. Open it in your editor.', 'FILE_UNSUPPORTED', 415); }
+      try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes.subarray(0, size)); } catch { fail('This file is not UTF-8 text. Open it in your editor.', 'FILE_UNSUPPORTED', 415); }
       if (/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(text)) fail('Binary files are not displayed by this viewer.', 'FILE_UNSUPPORTED', 415);
       if (text.split('\n').length > FILE_LIMITS.lines) fail('This file has too many lines for the viewer. Open it in your editor.', 'FILE_TOO_LARGE', 413);
       const revision = createHash('sha256').update(bytes.subarray(0, size)).digest('hex');
@@ -107,4 +110,52 @@ export async function inspectWorkspace(board, projectId, { path = '', workspace 
     if (['ENOENT', 'ENOTDIR'].includes(error.code)) fail('This file or folder was removed or is unavailable.', 'FILE_NOT_FOUND', 404);
     fail('This file or folder could not be inspected. Check its permissions and project link.', 'FILE_UNAVAILABLE', 403);
   }
+}
+
+export function validateFileText(text) {
+  if (typeof text !== 'string') fail('Provide UTF-8 file contents.', 'FILE_TEXT_INVALID');
+  if (Buffer.byteLength(text, 'utf8') > FILE_LIMITS.bytes || text.split('\n').length > FILE_LIMITS.lines) fail('The edited file exceeds the viewer limits.', 'FILE_TOO_LARGE', 413);
+  if (/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(text) || /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(text)) fail('Provide valid UTF-8 text without binary control characters.', 'FILE_TEXT_INVALID');
+  return text;
+}
+
+const saves = new Map();
+/** Optimistic conflict checking, serialized saves and atomic replacement; never create files. */
+export async function saveWorkspaceFile(board, projectId, value, { signal } = {}) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) fail('Provide a file edit.', 'FILE_TEXT_INVALID');
+  const { path, workspace = '', version, scopeVersion, text } = value;
+  validateFileText(text);
+  if (!/^[a-f0-9]{64}$/.test(version || '') || !/^[a-f0-9]{64}$/.test(scopeVersion || '')) fail('Read the current file before saving.', 'FILE_VERSION_INVALID');
+  const parts = parsePath(path);
+  if (!parts.length) fail('Choose an existing file.', 'FILE_PATH_INVALID');
+  const ctx = await context(board, projectId, workspace), lock = join(ctx.root, ...parts);
+  if (createHash('sha256').update(ctx.root).digest('hex') !== scopeVersion) fail('The project folder changed. Reload this file before saving.', 'FILE_CONFLICT', 409);
+  const previous = saves.get(lock) || Promise.resolve();
+  const pending = previous.catch(() => {}).then(async () => {
+    let temp;
+    try {
+      signal?.throwIfAborted();
+      const current = await inspectWorkspace(board, projectId, { path, workspace, file: true });
+      if (current.version !== version || current.scopeVersion !== scopeVersion) fail('This file changed on disk or the project was relinked. Your draft is kept. Reload and reconcile before saving.', 'FILE_CONFLICT', 409);
+      const item = await target(ctx.root, parts), parent = await lstat(dirname(item.path));
+      if (!item.info.isFile() || item.info.nlink !== 1) fail('Only regular files without hard links can be saved.', 'FILE_UNSUPPORTED', 415);
+      if (!(item.info.mode & 0o222) || !await access(item.path, constants.W_OK).then(() => true, () => false)) fail('This file is read-only. Your draft is kept.', 'FILE_READ_ONLY', 403);
+      temp = join(dirname(item.path), `.promptboard-save-${randomUUID()}.tmp`);
+      const handle = await open(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW || 0), 0o600);
+      try { await handle.writeFile(text, 'utf8'); await handle.chmod(item.info.mode & 0o777); await handle.sync(); } finally { await handle.close(); }
+      signal?.throwIfAborted();
+      // Recheck custody and bytes immediately before replacement. External editors do not share our lock.
+      const latest = await inspectWorkspace(board, projectId, { path, workspace, file: true });
+      const checked = await target(ctx.root, parts);
+      if (latest.version !== version || latest.scopeVersion !== scopeVersion || !same(item.info, checked.info)
+        || !same(parent, await lstat(dirname(item.path)))) fail('This file changed while saving. Your draft is kept. Reload and reconcile before saving.', 'FILE_CONFLICT', 409);
+      await rename(temp, item.path); temp = null;
+      return { ...current, text, version: createHash('sha256').update(text).digest('hex'), bytes: Buffer.byteLength(text), unchanged: false, saved: true };
+    } catch (error) {
+      if (error instanceof WorkspaceFileError || signal?.aborted) throw error;
+      fail('The file could not be saved. Your draft is kept. Check permissions and the project link.', 'FILE_SAVE_FAILED', 409);
+    } finally { if (temp) await unlink(temp).catch(() => {}); }
+  });
+  saves.set(lock, pending);
+  try { return await pending; } finally { if (saves.get(lock) === pending) saves.delete(lock); }
 }
