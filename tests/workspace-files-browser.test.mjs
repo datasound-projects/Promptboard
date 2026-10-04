@@ -51,7 +51,7 @@ test('Workspace inspection in real Chrome: import, nested tree, multiple viewers
   await browser.until('!!document.querySelector(".file-token-keyword")', 'highlighted code');
   assert.equal(await browser.eval('return document.querySelector("#workspace-file-title").textContent;'), project.name);
   assert.match(await browser.eval('return document.querySelector(".file-location").textContent;'), /Project checkout \/ src\/nested\/index\.js/);
-  assert.equal(await browser.eval('return [...document.querySelectorAll(".file-line-text")].map(n => n.textContent === "\\u200b" ? "" : n.textContent).join("\\n");'), original);
+  assert.equal(await browser.eval('return [...document.querySelectorAll(".file-line-text")].map(n => n.textContent).join("\\n");'), original);
   await browser.eval('document.querySelector(".file-code").scrollTop = 220;');
   await writeFile(join(root, 'src', 'nested', filename), original.replaceAll('hello', 'world'));
   await browser.until('document.querySelector(".file-line-text").textContent.includes("world")', 'live file update', 15_000);

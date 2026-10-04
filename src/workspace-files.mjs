@@ -50,7 +50,8 @@ async function context(board, projectId, workspace) {
     const task = project.tasks.find(t => t.id === workspace && t.workspace?.status === 'ready');
     if (!task || task.workspace.repositoryRoot !== root || task.workspace.commonDir !== project.repository.commonDir) fail('This task worktree is unavailable.', 'FILE_WORKSPACE_UNAVAILABLE', 409);
     const registered = (await listWorktrees(root)).find(w => w.path === task.workspace.path && w.branch === task.workspace.branch);
-    if (!registered || await realpath(task.workspace.path) !== task.workspace.path) fail('This task worktree changed or was removed.', 'FILE_WORKSPACE_UNAVAILABLE', 409);
+    const physical = await realpath(task.workspace.path).catch(() => null);
+    if (!registered || physical !== task.workspace.path) fail('This task worktree changed or was removed.', 'FILE_WORKSPACE_UNAVAILABLE', 409);
     const common = (await git(['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: task.workspace.path })).trim();
     if (await realpath(common) !== project.repository.commonDir) fail('This folder belongs to another repository.', 'FILE_WORKSPACE_UNAVAILABLE', 409);
     root = task.workspace.path; scope = scopes.find(s => s.id === workspace);

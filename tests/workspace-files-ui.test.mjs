@@ -57,7 +57,7 @@ test('multiple project/file identities minimize, restore, switch, close and Esca
 });
 
 test('source and filenames remain inert text, with exact visible code, line numbers and lexical colors', async t => {
-  const filename = '<img onerror=alert(1)>.js', source = 'const html = "<script>window.HACKED = true</script>";\n// comment';
+  const filename = '<img onerror=alert(1)>.js', source = 'const html = "<script>window.HACKED = true</script>";\n\n// comment\n';
   const { mount, $, win } = setup(t, async ({ parsed, id }) => parsed.pathname.endsWith('/files')
     ? { scopes: [{ id: '', name: 'Project checkout' }], entries: [{ name: filename, kind: 'file' }], next: null }
     : { project: { id, name: '<script>Project</script>' }, text: source, version: 'a' });
@@ -65,7 +65,7 @@ test('source and filenames remain inert text, with exact visible code, line numb
   host.querySelector('.file-tree-row').click(); await settle();
   assert.equal(win.HACKED, undefined); assert.equal($('img'), null); assert.equal($('script'), null);
   assert.equal([...win.document.querySelectorAll('.file-line-text')].map(el => el.textContent).join('\n'), source);
-  assert.equal(win.document.querySelectorAll('.file-line-number').length, 2);
+  assert.equal(win.document.querySelectorAll('.file-line-number').length, 4);
   assert.ok($('.file-token-keyword')); assert.ok($('.file-token-string')); assert.ok($('.file-token-comment'));
 });
 

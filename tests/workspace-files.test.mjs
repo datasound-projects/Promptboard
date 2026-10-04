@@ -148,6 +148,6 @@ test('inspects the actual registered task worktree without creating or repairing
   await assert.rejects(inspectWorkspace(app.board, project.id, { workspace: 'wrong' }), error => error.code === 'FILE_WORKSPACE_UNAVAILABLE');
   assert.deepEqual(await app.board.store.read(), before);
   await rm(path, { recursive: true, force: true });
-  await assert.rejects(inspectWorkspace(app.board, project.id, { workspace: task.id }), error => error.code === 'FILE_NOT_FOUND');
+  await assert.rejects(inspectWorkspace(app.board, project.id, { workspace: task.id }), error => error.code === 'FILE_WORKSPACE_UNAVAILABLE');
   assert.deepEqual(await app.board.store.read(), before);
 });

@@ -31,7 +31,6 @@ window.PromptboardFiles = (() => {
         }
         if (cursor < line.length) content.append(node('span', blockComment ? 'file-token-comment' : '', line.slice(cursor)));
       }
-      if (!line) content.append(document.createTextNode('\u200b'));
       row.append(number, content); fragment.append(row);
     }
     return fragment;
