@@ -56,7 +56,12 @@ test('Compose autonomous browser: one click, no user questions, restraint, mixed
   const pdf = pdfFixture(Array.from({ length: 60 }, (_, i) => i >= 39 && i <= 54 ? questText : 'EXCLUDED CSS typography only.')).toString('base64');
   await click('context-add-document'); await value('context-page-from', '40'); await value('context-page-to', '55');
   await browser.eval(`const bytes = Uint8Array.from(atob(${JSON.stringify(pdf)}), c => c.charCodeAt(0)); const dt = new DataTransfer(); dt.items.add(new File([bytes], 'architecture.pdf', { type: 'application/pdf' })); document.querySelector('#context-file').files = dt.files;`);
-  await click('context-upload'); await browser.until(`document.querySelector('#context-source-list').textContent.includes('pp. 40–55') && document.querySelector('#cancel-button').hidden`, 'PDF uploaded');
+  await click('context-upload');
+  // Extraction has a 30-second production deadline. Wait for the operation's
+  // terminal state rather than imposing the driver's generic 10-second UI bound.
+  await browser.until(`document.querySelector('#cancel-button').hidden && (document.querySelector('#context-source-list').textContent.includes('pp. 40–55') || !document.querySelector('#context-error').hidden)`, 'PDF upload completed', 40000);
+  assert.equal(await browser.eval(`return document.querySelector('#context-error').hidden ? '' : document.querySelector('#context-error').textContent;`), '', 'The real PDF upload must succeed.');
+  assert.equal(await browser.eval(`return document.querySelector('#context-source-list').textContent.includes('pp. 40–55');`), true);
   const firstSource = enabled => browser.eval(`const node = document.querySelector('#context-source-list input'); node.checked = ${enabled}; node.dispatchEvent(new Event('change'));`);
   await firstSource(false); await generate(); // PDF only.
   assert.match(await browser.eval(`return document.querySelector('#context-evidence-list').textContent;`), /page 4/);

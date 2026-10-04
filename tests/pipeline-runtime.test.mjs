@@ -38,6 +38,30 @@ async function world(t, native = false) {
   return { board, dataDir, root, starts, projectNow, taskNow, configure, move, projectId: project.id };
 }
 
+test('a long Composer prompt is pasted and submitted once in a real owned PTY with Base and CLI tools intact', { skip: process.platform === 'win32' }, async t => {
+  const w = await world(t), report = join(await temp(t), 'initial-input.jsonl'), previous = process.env.FAKE_INITIAL_INPUT_FILE;
+  process.env.FAKE_INITIAL_INPUT_FILE = report;
+  t.after(() => { if (previous === undefined) delete process.env.FAKE_INITIAL_INPUT_FILE; else process.env.FAKE_INITIAL_INPUT_FILE = previous; });
+  const fake = fileURLToPath(new URL('./fixtures/fake-initial-prompt.cjs', import.meta.url));
+  w.board.executor = new Supervisor({ board: w.board, dataDir: w.dataDir, resolver: async () => ({ command: process.execPath, prefix: [fake] }) });
+  t.after(() => w.board.executor.shutdown(500));
+  const config = defaultPipelineConfig(); for (const column of config.columns) column.strategy.autoSpawn = false; config.columns[2].strategy.autoSpawn = true; config.columns[2].strategy.agentOverride = 'claude';
+  await w.configure(config);
+  const skill = await w.board.base.create({ kind: 'skill', name: 'Initial Base instruction', enabled: true, trust: 'trusted', content: { body: 'BASE_INITIAL_LITERAL' }, configuration: {} });
+  const mcp = await w.board.base.create({ kind: 'mcp', name: 'Initial Base tool', enabled: true, trust: 'trusted', configuration: { transport: 'stdio', command: process.execPath, args: ['--version'] } });
+  await w.board.base.apply({ changes: [{ target: { scope: 'project', projectId: w.projectId }, binding: { mode: 'extend', include: [{ resourceId: skill.id, required: true }, { resourceId: mcp.id, required: true }], exclude: [] } }], expectedBaseRevision: (await w.board.state()).base.revision });
+  const prompt = '  Exact engineered <literal> & prompt\r\n' + 'long literal 😀 '.repeat(8000) + '\r\n  End ';
+  const task = await w.board.createTask({ projectId: w.projectId, title: 'Long Composer', prompt }); assert.equal((await w.board.state()).runs.length, 0);
+  const result = await w.move(task.id, 'executing');
+  await until(async () => (await w.board.run(result.run.id)).turnComplete);
+  const rows = (await readFile(report, 'utf8')).trim().split('\n').map(JSON.parse), submitted = rows.filter(row => row.kind === 'submitted');
+  assert.equal(submitted.length, 1); assert.equal(submitted[0].submissions, 1); assert.ok(submitted[0].text.startsWith(pipelineTaskEnvelope(task))); assert.ok(submitted[0].text.includes('BASE_INITIAL_LITERAL'));
+  assert.ok(rows[0].args.includes('--mcp-config')); assert.ok(!rows[0].args.includes('--strict-mcp-config')); assert.ok(!rows[0].args.includes('--tools')); assert.ok(!rows[0].args.includes('--disallowedTools'));
+  const run = await w.board.run(result.run.id); assert.equal(submitted[0].text, await readFile(join(w.dataDir, run.artifactsDir, 'prompt.md'), 'utf8')); assert.equal(run.baseManifest.deliveryState, 'supplied'); assert.ok(run.baseManifest.resources.some(row => row.resourceId === mcp.id && row.delivery === 'native-mcp'));
+  assert.equal((await w.taskNow(task.id)).prompt, prompt);
+  await w.board.executor.cancel(result.run.id);
+});
+
 test('v4 migration preserves logical conversations byte-for-byte and assigns legacy rules without launching', async t => {
   const dir = await temp(t), original = { ...emptyState(), version: 4, projects: [{ id: 'p', tasks: [{ id: 't', column: 'executing', prompt: '  Composer\r\ntext  ' }] }] };
   const run = { id: 'r', taskId: 't', projectId: 'p', status: 'suspended', config: { provider: 'claude' }, artifactsDir: 'runs/r', providerSessionId: 'native-exact' };
