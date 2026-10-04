@@ -20,7 +20,7 @@ function chunks(text) {
 }
 
 export async function sendOwnedNativeMessage({ session, run, owns, readEvents, grant, submitted, accepted, signal,
-  dispatchId, message, mode, timeoutMs = 150000 }) {
+  dispatchId, message, mode, timeoutMs = 150000, confirmDelivery = null }) {
   if (!session?.pipeline || !run?.sessionId || !['claude', 'codex', 'gemini'].includes(session.provider)
     || typeof session.proc?.write !== 'function' || typeof session.nativeSessionId !== 'string'
     || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(session.nativeSessionId)
@@ -30,6 +30,7 @@ export async function sendOwnedNativeMessage({ session, run, owns, readEvents, g
     || message.trimStart().startsWith('/')
     || session.provider === 'codex' && /^<(?:environment_context|user_instructions)>/.test(message)
     || ![owns, readEvents, grant, submitted, accepted].every(callback => typeof callback === 'function')
+    || confirmDelivery !== null && typeof confirmDelivery !== 'function'
     || !Number.isFinite(timeoutMs) || timeoutMs < 1 || timeoutMs > 150000)
     return outcome('unavailable', 'This native input request is unsupported.');
   let custody = attempts.get(session);
@@ -123,7 +124,12 @@ export async function sendOwnedNativeMessage({ session, run, owns, readEvents, g
       await events(); const stopped = abort(); if (stopped) return stopped;
       const proof = await bounded(() => reader.verify(ticket, message));
       const stoppedAfterProof = abort(); if (stoppedAfterProof) return stoppedAfterProof;
-      if (proof.status === 'confirmed') { proved = true; return outcome('confirmed'); }
+      if (proof.status === 'confirmed') {
+        if (confirmDelivery && await bounded(confirmDelivery) !== true)
+          return outcome('unconfirmed', 'The durable native confirmation was not acknowledged. No input will be retried.');
+        const stoppedAfterSave = abort(); if (stoppedAfterSave) return stoppedAfterSave;
+        proved = true; return outcome('confirmed');
+      }
       if (proof.status === 'accepted' && !queueAccepted) {
         if (await bounded(accepted) !== true) return outcome('unconfirmed', 'The native queue receipt was not acknowledged.');
         queueAccepted = true;
