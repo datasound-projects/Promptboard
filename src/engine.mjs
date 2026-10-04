@@ -1,6 +1,7 @@
 /** Prompt construction and advisory prose checks. No model or shell calls occur here. */
 
 import { validateGrounding, groundingRules } from './compose-grounding.mjs';
+import { COMPOSE_INPUT_CHARS } from './compose-limits.mjs';
 
 const PROVIDERS = new Set(['codex', 'claude', 'gemini', 'agy']);
 const DETAILS = new Set(['super-short', 'concise', 'detailed', 'extremely-detailed']);
@@ -36,13 +37,13 @@ function choice(body, field, fallback, values) {
 }
 
 /** Normalize only the request envelope. Keep the user's source text byte-for-byte. */
-export function validateRequest(body) {
+export function validateRequest(body, { maxInputChars = COMPOSE_INPUT_CHARS } = {}) {
   if (!plainObject(body)) fail('The request must be a JSON object.');
   for (const field of Object.keys(body)) {
     if (!FIELDS.has(field)) fail('The request contains an unknown field.');
   }
   if (typeof body.input !== 'string' || !body.input.trim()) fail('Enter a prompt.');
-  if (body.input.length > 100_000) fail('The prompt must contain at most 100,000 characters.');
+  if (body.input.length > maxInputChars) fail(`The prompt must contain at most ${maxInputChars.toLocaleString('en-US')} characters.`);
   if (body.input.includes('\u0000')) fail('The prompt must not contain a null character.');
 
   const model = body.model === undefined ? '' : body.model;

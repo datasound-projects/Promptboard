@@ -7,6 +7,7 @@ import { ComposeMcp, validateMcp } from './compose-mcp.mjs';
 import { ComposeLocal, validateLocal } from './compose-local.mjs';
 import { buildIndex, chunkPages, search, budgetEvidence, terms } from './compose-retrieval.mjs';
 import { RESEARCH_LIMITS, safeExternalQuery, validateResearchPlan, buildResearchPrompt, buildResearchReviewPrompt, validateResearchReview, researchGrounding } from './compose-research.mjs';
+import { abortable } from './cancellation.mjs';
 
 export function validatePreparation(body) {
   object(body, ['request', 'autonomous', 'clarify', 'sources'], 'preparation');
@@ -33,25 +34,17 @@ export function validatePreparation(body) {
 export const buildPlanPrompt = buildResearchPrompt;
 const priority = source => source.type === 'local' ? 0 : source.type === 'expert' ? 1 : source.type === 'document' ? 2 : source.preset === 'context7' ? 3 : 4;
 const relevant = (query, source, row) => ['all', source.type, source.kind, source.preset, row.name.toLowerCase()].includes(query.sourceHint.toLowerCase());
-function abortable(promise, signal) {
-  signal.throwIfAborted();
-  return new Promise((resolve, reject) => {
-    const abort = () => reject(signal.reason);
-    signal.addEventListener('abort', abort, { once: true });
-    Promise.resolve(promise).then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
-  });
-}
 
 export class ComposeContext {
   constructor({ documents = new ComposeDocuments(), mcp = new ComposeMcp(), local = new ComposeLocal() } = {}) { this.documents = documents; this.mcp = mcp; this.local = local; }
   close() { this.documents.close(); this.mcp.close?.(); this.local.close(); }
-  async prepare(body, { runner, signal, onStage = () => {}, timeoutMs = 240_000 } = {}) {
+  async prepare(body, { runner, signal, onStage = () => {}, timeoutMs = null } = {}) {
     const { request, autonomous, sources } = validatePreparation(body);
     const empty = { evidence: [], warnings: [], sources: [], calls: 0, research: { lookups: 0, rounds: 0 } };
     if (obviouslyNonActionable(request.input)) return { ...empty, state: 'non-actionable', message: NO_TASK[request.language] };
     if (!autonomous && !sources.length) return { ...empty, state: 'ready', grounding: {} };
     validateEffort(request.provider, request.effort);
-    const controller = new AbortController(), deadline = setTimeout(() => controller.abort(new DOMException('Research time budget expired.', 'TimeoutError')), timeoutMs);
+    const controller = new AbortController(), deadline = timeoutMs === null ? undefined : setTimeout(() => controller.abort(new DOMException('Research time budget expired.', 'TimeoutError')), timeoutMs);
     const combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
     const started = Date.now(), warnings = [], usable = [], descriptions = [], outcomes = new Map(), seen = new Set(), candidates = [];
     let calls = 0, lookups = 0, rounds = 0, plan, review;
@@ -59,8 +52,8 @@ export class ComposeContext {
       combined.throwIfAborted();
       if (calls >= 4) throw new Error('Planning call budget reached.');
       const cwd = await makeTempDir('ste-compose-research-');
-      const duration = Math.min(90_000, Math.max(1, timeoutMs - (Date.now() - started)));
-      const modelSignal = AbortSignal.any([combined, AbortSignal.timeout(duration)]);
+      const duration = timeoutMs === null ? null : Math.min(90_000, Math.max(1, timeoutMs - (Date.now() - started)));
+      const modelSignal = duration === null ? combined : AbortSignal.any([combined, AbortSignal.timeout(duration)]);
       try {
         modelSignal.throwIfAborted();
         calls++;
@@ -81,7 +74,7 @@ export class ComposeContext {
       try { plan = validateResearchPlan(await model(buildResearchPrompt(request, descriptions))); }
       catch (error) {
         if (signal?.aborted) throw signal.reason;
-        return { ...empty, calls, state: 'assessment-failed', message: 'Task assessment failed or returned an invalid plan. Retry before generation.' };
+        return { ...empty, calls, state: 'ready', grounding: {}, warnings: ['Task assessment was unavailable or invalid. Continue with the original task; no research facts or objective were invented.'] };
       }
       if (!plan.assessment.actionable) return { ...empty, calls, assessment: plan.assessment, state: 'non-actionable', message: NO_TASK[request.language] };
       plan.questions = plan.questions.map((q, i) => ({ ...q, id: `r${i + 1}` }));
@@ -193,9 +186,10 @@ export class ComposeContext {
     } catch (error) {
       if (signal?.aborted) throw signal.reason;
       if (!plan) throw error;
-      warnings.push('Research reached its time budget. Generate using available evidence and explicit unresolved inspection instructions.');
+      const expired = timeoutMs !== null && controller.signal.aborted;
+      warnings.push(expired ? 'Research reached its requested time budget. Generate using available evidence and explicit unresolved inspection instructions.' : 'Research could not finish. Generate using available evidence and explicit unresolved inspection instructions.');
       const grounding = researchGrounding(plan, evidence(), review);
-      return { state: 'ready', assessment: plan.assessment, grounding, evidence: grounding.evidence, warnings, sources: [...outcomes.values()], calls, research: { lookups, rounds, reason: 'Time budget reached.' } };
+      return { state: 'ready', assessment: plan.assessment, grounding, evidence: grounding.evidence, warnings, sources: [...outcomes.values()], calls, research: { lookups, rounds, reason: expired ? 'Requested time budget reached.' : 'Research incomplete.' } };
     } finally { clearTimeout(deadline); }
   }
 }

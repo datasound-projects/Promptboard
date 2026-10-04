@@ -54,6 +54,7 @@ test('Codex: only the verified usage-limit text is quota; 429 retries are rate l
   assert.equal(code('codex', { stdout: failed('unexpected status 401 Unauthorized: token expired') }), 'AUTH_REQUIRED');
   assert.equal(code('codex', { stdout: failed('stream disconnected before completion: connection reset') }), 'NETWORK_ERROR');
   assert.equal(code('codex', { stdout: failed('unexpected status 503 Service Unavailable') }), 'PROVIDER_UNAVAILABLE');
+  assert.equal(code('codex', { stdout: failed(JSON.stringify({ type: 'error', status: 400, error: { type: 'invalid_request_error', message: "The 'test-model' model is not supported when using Codex with a ChatGPT account." } })) }), 'MODEL_UNAVAILABLE');
   assert.equal(code('codex', { stdout: failed('Something unusual happened.') }), null);
   // Codex exec does not supply a structured reset time; none is invented.
   assert.equal(classifyProviderFailure('codex', { stdout: failed("You've hit your usage limit. Try again at 3:05 PM.") }).resetsAt, undefined);
@@ -77,7 +78,7 @@ test('real CLI processes return stable codes without leaking diagnostics', { ski
     process.stderr.write('SECRET_TOKEN_abc');
     process.exit(1);`));
   await writeFile(join(dir, 'gemini'), fake(`process.stderr.write(JSON.stringify({ error: { type: 'TerminalQuotaError', message: 'SECRET_TOKEN_abc' } })); process.exit(1);`));
-  await writeFile(join(dir, 'codex'), fake(`process.stdout.write(JSON.stringify({ type: 'turn.failed', error: { message: 'mystery SECRET_TOKEN_abc' } }) + '\\n'); process.exit(1);`));
+  await writeFile(join(dir, 'codex'), fake(`if (process.argv[2] === 'mcp') { process.stdout.write('[]'); process.exit(0); } process.stdout.write(JSON.stringify({ type: 'turn.failed', error: { message: 'mystery SECRET_TOKEN_abc' } }) + '\\n'); process.exit(1);`));
   for (const name of ['claude', 'gemini', 'codex']) await chmod(join(dir, name), 0o700);
   await writeFile(join(dir, 'package.json'), '{"type":"commonjs"}');
   process.env.PATH = dir;
