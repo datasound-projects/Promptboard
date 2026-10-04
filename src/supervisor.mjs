@@ -543,7 +543,14 @@ export class Supervisor {
     if (session.suspending) throw new AgentError('The agent is being paused. Wait for it to exit before resuming.', 'SESSION_SUSPENDING', 409);
     if (data) {
       session.inputEpoch++; session.activity?.input();
-      if (session.initialSubmitPending) this.#initialInputUnconfirmed(session);
+      const initialPastePending = Boolean(session.paste);
+      if (initialPastePending) {
+        // A human owns the input before transport, even if their write fails.
+        // Startup events must never append the task to their partial draft.
+        session.paste = null;
+        clearTimeout(session.pasteTimer); clearTimeout(session.pasteReadyTimer);
+      }
+      if (initialPastePending || session.initialSubmitPending) this.#initialInputUnconfirmed(session);
     }
     session.proc.write(data);
     if (session.status === 'waiting_for_input' && /\r|\n/.test(data)) this.#setStatus(session, 'running', { waitingReason: '' });
