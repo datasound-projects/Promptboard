@@ -84,6 +84,8 @@ Open **http://127.0.0.1:4318**. The navigation is **Compose | Kanban | Base**. P
 
 Compose and Kanban use your CLI's existing sign-in and billing. MCP delivery depends on the provider and stage. Native Base subagents currently support **Claude Code writing stages**. See [Base delivery and limits](docs/base-delivery.md).
 
+Open the top-bar **CLIs installed** control to manage CLI connections, sign-in and installation guides from any page. Choosing an account there does not change Compose's CLI/model selection. Compose's **More settings** contains generation details and brief options.
+
 <details>
 <summary><b>Settings, usage, and privacy</b></summary>
 
