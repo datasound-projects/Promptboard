@@ -646,6 +646,15 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
 .kanban-done-title { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
 .kanban-done-title .kanban-open { flex: 1; min-width: 0; overflow: hidden; font-size: 13.5px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; overflow-wrap: normal; }
 .task-number { flex: none; color: var(--muted); font: 12px/1.5 var(--mono); white-space: nowrap; }
+.task-priority { flex: none; padding: 1px 5px; border: 1px solid currentColor; border-radius: 4px; font: 11px/1.5 var(--mono); white-space: nowrap; }
+.priority-1 { color: #2563eb; }
+.priority-2 { color: #906400; }
+.priority-3 { color: #c04d0c; }
+.priority-4 { color: #d32b3c; }
+[data-theme="dark"] .priority-1 { color: #86b4ff; }
+[data-theme="dark"] .priority-2 { color: #efd06a; }
+[data-theme="dark"] .priority-3 { color: #ffb177; }
+[data-theme="dark"] .priority-4 { color: #ff929e; }
 .kanban-card h4 { display: flex; align-items: baseline; gap: 8px; }
 .kanban-card h4 .kanban-open { flex: 1; min-width: 0; }
 .kanban-done-preview, .kanban-done-time { margin: 6px 0 0; color: var(--subtle); font-size: 12px; }

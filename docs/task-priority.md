@@ -1,0 +1,11 @@
+# Task priority
+
+Pipeline card creation and editing now offer Kangentic's five default priority levels: None, Low, Medium, High and Urgent. Priority is saved as an integer from 0 through 4. None is the default for Composer, split tasks and new cards; no task text is synthesized. Invalid strings, nulls, booleans, fractions and out-of-range integers are rejected before changing state or cancelling pending message delivery.
+
+Priority is metadata. Changing it increments the card revision and update time while retaining its content revision, exact prompt bytes, source checks, plan evidence, Base selection and task order. It does not start, interrupt or reconfigure an agent, dispatch an automation, sort tasks or change the session queue. A stale card revision still rejects the edit. Copies, ordinary moves, archive and restoration retain priority.
+
+Nonzero priorities appear as labeled color badges on active cards, completed cards and the completed table. The labels remain readable without relying on color. The editor uses the native keyboard-accessible select. The server advertises `taskPriority`; older server sessions hide the control and omit the unsupported field from requests. Saved legacy tasks retain their original authoring interface; their priority metadata is supported by the API and backup.
+
+State version 9 adds None to older tasks while retaining identities, revisions, native references, saved order and extensions. Atomic migration preserves the exact original file in a pre-migration backup. Newer state versions remain refused without modification. Portable version 7 preserves priority, stable task numbers and deletion counters. Older version 1–6 imports default to None; import still disables execution and carries no native process/workspace grants. Invalid version 7 priority metadata rejects the whole import before publishing changes.
+
+This checkpoint implements the default levels. Custom priority names, ordering and colors, priority filtering, shared backlog metadata, labels and attachments remain pending. It is not full Kanban parity.

@@ -23,6 +23,7 @@ let token = '';
 let pipelineTitleOnlySupported = false;
 let pipelineBulkRestoreSupported = false;
 let pipelineDeferredMessagesSupported = false;
+let taskPrioritySupported = false;
 let providers = [];
 let history = readHistory();
 let currentId = null;
@@ -291,6 +292,7 @@ async function loadProviders() {
     pipelineTitleOnlySupported = session.capabilities?.pipelineTitleOnly === true;
     pipelineBulkRestoreSupported = session.capabilities?.pipelineBulkRestore === true;
     pipelineDeferredMessagesSupported = session.capabilities?.pipelineDeferredMessages === true;
+    taskPrioritySupported = session.capabilities?.taskPriority === true;
     providers = Array.isArray(status.providers) ? status.providers.filter((item) => item && KNOWN_PROVIDERS.includes(item.id)) : [];
     if (!token) throw new Error('The local server did not return a session token.');
     browserNotifications?.resume();
@@ -312,6 +314,7 @@ async function loadProviders() {
     pipelineTitleOnlySupported = false;
     pipelineBulkRestoreSupported = false;
     pipelineDeferredMessagesSupported = false;
+    taskPrioritySupported = false;
     browserNotifications?.stop();
     $('#cli-status-label').textContent = 'Server unavailable';
     $('#provider-note').textContent = 'Could not reach the local server. Restart the app, then reload this page.';
@@ -1603,7 +1606,7 @@ function refreshPipelineArchive(opening = false) {
       const selected = document.createElement('input'); selected.type = 'checkbox'; selected.checked = archiveSelected.has(task.id); selected.disabled = busy; selected.dataset.archiveAction = 'select'; selected.setAttribute('aria-label', `Select: ${task.title}`);
       selected.addEventListener('change', () => { selected.checked ? archiveSelected.add(task.id) : archiveSelected.delete(task.id); refreshPipelineArchive(); }); heading.append(selected);
     }
-    appendTaskNumber(heading, task); heading.append(open);
+    appendTaskNumber(heading, task); heading.append(open); appendTaskPriority(heading, task);
     const actions = document.createElement('div'); actions.className = 'archive-actions'; actions.append(details, restore); name.append(heading, actions);
     const date = when(task); archived.textContent = date ? new Date(date).toLocaleString() : 'Unavailable';
     const conversation = (board.sessions || []).find(session => session.id === task.sessionId && session.taskId === task.id && session.projectId === project.id);
@@ -1671,6 +1674,12 @@ function appendTaskNumber(parent, card) {
   const badge = document.createElement('span'); badge.className = 'task-number'; badge.textContent = text;
   badge.setAttribute('aria-label', `Task number ${card.number}`); badge.title = `Task ${text}`; parent.append(badge);
 }
+function appendTaskPriority(parent, card) {
+  if (!Number.isSafeInteger(card.priority) || card.priority < 1 || card.priority > 4) return;
+  const label = ['None', 'Low', 'Medium', 'High', 'Urgent'][card.priority];
+  const badge = document.createElement('span'); badge.className = `task-priority priority-${card.priority}`;
+  badge.textContent = label; badge.setAttribute('aria-label', `Priority: ${label}`); parent.append(badge);
+}
 function renderDoneCard(card, draggable = true) {
   const item = document.createElement('li');
   item.className = 'kanban-card kanban-done-card';
@@ -1679,7 +1688,7 @@ function renderDoneCard(card, draggable = true) {
   title.className = 'kanban-done-title';
   const open = detailButton(card.title, () => { $('#done-dialog').close(); openCard(card.id); }, 'kanban-open');
   open.title = card.title;
-  title.append(open); appendTaskNumber(title, card);
+  title.append(open); appendTaskNumber(title, card); appendTaskPriority(title, card);
   const when = card.archivedAt || card.completion?.at || card.updatedAt;
   const time = paragraph(when ? timeAgo(when) : '', 'kanban-done-time');
   if (when) time.title = new Date(when).toLocaleString();
@@ -1794,6 +1803,7 @@ function renderCard(card, index, count) {
   const heading = document.createElement('h4');
   appendTaskNumber(heading, card);
   heading.append(detailButton(card.title, () => openCard(card.id), 'kanban-open'));
+  appendTaskPriority(heading, card);
   const labelled = (element, label) => { element.setAttribute('aria-label', label); return element; };
   const up = labelled(detailButton('↑', () => moveWithin(card.id, -1), 'kanban-move kanban-move-up'), `Move up: ${card.title}`);
   const down = labelled(detailButton('↓', () => moveWithin(card.id, 1), 'kanban-move kanban-move-down'), `Move down: ${card.title}`);
@@ -2050,6 +2060,8 @@ function openCard(id = null, quick = false) {
   $('#card-prompt').required = !canOmitTaskPrompt(project);
   $('#card-prompt-label').textContent = canOmitTaskPrompt(project) ? 'Prompt (optional)' : 'Prompt';
   $('#card-prompt').value = card?.prompt || '';
+  $('#card-priority-field').hidden = !taskPrioritySupported || project.workflowMode !== 'pipeline';
+  $('#card-priority').value = Number.isSafeInteger(card?.priority) && card.priority >= 0 && card.priority <= 4 ? String(card.priority) : '0';
   const status = card && cardStatus(card);
   $('#card-status').hidden = !card;
   $('#card-status').textContent = status?.text || '';
@@ -2087,6 +2099,7 @@ async function saveCard(event) {
     : !typed.trim() && !canOmitTaskPrompt(project) ? 'Enter the prompt for this task.' : typed.length > MAX_PROMPT_BYTES ? 'The prompt exceeds the 2 MiB limit.' : '';
   if (error) { $('#card-error').textContent = error; $('#card-error').hidden = false; return; }
   let saved, message;
+  const priority = !$('#card-priority-field').hidden ? { priority: Number($('#card-priority').value) } : {};
   try {
     if (card) {
       // A textarea turns \r\n into \n. Keep the stored text when nothing else changed.
@@ -2095,11 +2108,13 @@ async function saveCard(event) {
       const settings = cardPipelineEditor?.value();
       const changedSettings = settings && JSON.stringify(settings) !== JSON.stringify(pipelineTaskChoice(original));
       const result = await boardCall('PATCH', `/api/tasks/${encodeURIComponent(card.id)}`, { title, prompt, expectedRevision: original.revision,
+        ...priority,
         ...(changedSettings ? { pipelineSettings: settings, expectedProjectRevision: cardEditSnapshot.projectRevision } : {}) });
       saved = result.task;
       message = !result.changed ? 'No changes to save.' : saved.checksOutdated && card.source ? `Saved “${title}”. The previous checks are now marked as outdated.` : `Saved “${title}”.`;
     } else {
       saved = (await boardCall('POST', '/api/tasks', { projectId: project.id, title, prompt: typed,
+        ...priority,
         ...(cardPipelineEditor ? { pipelineSettings: cardPipelineEditor.value(), expectedProjectRevision: cardEditSnapshot.projectRevision } : {}) })).task;
       message = `Added “${title}” to To Do.`;
     }

@@ -119,6 +119,7 @@ Read [SECURITY.md](SECURITY.md) before working with sensitive repositories. [Kan
 - [Native receipt ownership](docs/native-message-custody.md): private Supervisor checkpoints bound to live processes, native identities and terminal input; configured deferred enter delivery uses these ownership checkpoints.
 - [Private deferred input](docs/native-message-input.md): one owned paste/Enter attempt, exact native confirmation after pending hooks settle, distinct deadline/cancellation outcomes and bounded callbacks without draft clearing or replay; configured deferred enter rows use this transport; immediate/exit/slash delivery remains pending.
 - [Journal-backed deferred delivery](docs/native-message-dispatch.md): exact dispatch scope, per-run ordering and durable native confirmation before releasing input; configured deferred enter rows now use this bridge.
+- [Task priority](docs/task-priority.md): default levels, keyboard pipeline editing and card/archive badges, saved independently of Composer text and agent execution.
 - [Native-message live check](docs/live-native-messages.md): opt-in disposable provider checks with separate startup, input and durable-receipt results, plus an offline harness test.
 - [Asynchronous message journal](docs/pipeline-message-journal.md): scheduled dispatch and durable delivery stages survive completed placement; configured deferred enter scheduling and separate receipt display are available.
 - [Changelog](CHANGELOG.md) · [CLI adapters](docs/cli-adapters.md) · [Verification](RELEASE-VERIFICATION.md)
