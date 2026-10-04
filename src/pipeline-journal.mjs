@@ -309,6 +309,16 @@ export class PipelineJournal {
     });
   }
 
+  async finishQueuedMessageDelivery(key, actionId, result) {
+    const saved = deliveryOutcome(result);
+    if (saved.status === 'confirmed') fail('Queued input cannot supply native confirmation.', 'JOURNAL_ORDER');
+    return this.#deliveryChange(key, actionId, delivery => {
+      if (delivery.status !== 'queued') return { changed: false, value: false };
+      delivery.status = saved.status; delivery.finishedAt = Date.now(); delivery.outcome = saved;
+      return { changed: true, value: true };
+    });
+  }
+
   async skipAction(key, actionId, reason) {
     const saved = outcome({ status: 'skipped', reason });
     return this.#change(key, move => {
