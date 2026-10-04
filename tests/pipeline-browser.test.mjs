@@ -155,6 +155,9 @@ test('column pipeline conversion and editing work by keyboard in both themes and
   }
   await app.board.updateRun('activity-display-fixture', { activity: { phase: 'waiting', permissionPending: true, ready: false } });
   await browser.eval(`await loadBoard();`);
+  // A joined background poll can still contain the previous working snapshot.
+  // Observe the exact new native wait and its rendered message before asserting.
+  await browser.until(`board.runs.find(run => run.id === 'activity-display-fixture')?.activity?.phase === 'waiting' && document.querySelector('[data-id="${card.id}"]').textContent.includes('needs your answer')`, 'current permission wait rendered');
   assert.equal(await browser.eval(`return agentState(board.runs.find(run => run.id === 'activity-display-fixture'));`), 'awaits_you');
   assert.ok((await browser.eval(`return document.querySelector('[data-id="${card.id}"]').textContent;`)).includes('needs your answer'));
   for (const status of ['pending', 'failed', 'interrupted']) {
