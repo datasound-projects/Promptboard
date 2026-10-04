@@ -77,6 +77,15 @@ test('repository status refuses a changed project snapshot and stays inert while
   assert.equal((await state()).projects[0].repositoryPipeline.sourceRevision, before.projects[0].repositoryPipeline.sourceRevision);
 });
 
+test('fresh repository review retains the linked Git identity guard when the configured checkout root changes', async t => {
+  const w = await world(t), elsewhere = await temp(t);
+  await write(w.root, 'promptboard.json', repositoryPipelineDefinition(w.pipeline));
+  const before = structuredClone(await w.board.state());
+  git(w.root, 'config', 'core.worktree', elsewhere);
+  await assert.rejects(w.board.previewRepositoryPipeline(w.projectId), { code: 'REPOSITORY_PIPELINE_ROOT_CHANGED' });
+  assert.deepEqual(await w.board.state(), before);
+});
+
 test('repository config preserves sparse local values, replaces both automation groups, and resolves profile/plan names without mutating sources', () => {
   const current = defaultPipelineConfig(), team = repositoryPipelineDefinition(current);
   team.columns[2].strategy = { agentOverride: 'codex', modelOverride: 'team-model', effortOverride: 'high' };

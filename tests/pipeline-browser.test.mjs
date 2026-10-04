@@ -22,12 +22,20 @@ test('external repository changes show a keyboard review banner across themes an
     const nativeFetch = window.fetch;
     window.fetch = function (...args) {
       const result = Reflect.apply(nativeFetch, this, args);
-      if (typeof args[0] === 'string' && args[0].endsWith('/repository-pipeline')) window.__repositoryReads.push(result.then(response => response.clone().text()).catch(() => null));
+      if (typeof args[0] === 'string' && args[0].endsWith('/repository-pipeline')) window.__repositoryReads.push(result.then(async response => ({ status: response.status, data: await response.clone().json() })).catch(error => ({ error: error.name })));
       if (typeof args[0] === 'string' && args[0].endsWith('/repository-pipeline-status')) result.then(response => response.clone().text()).catch(() => null).then(() => window.__statusReads++);
       return result;
     };
   ` });
   const enter = async id => { await browser.eval(`const node=document.getElementById(${JSON.stringify(id)}); node.scrollIntoView({block:'center'}); node.focus();`); await browser.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' }); await browser.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 }); };
+  const reviewed = async label => {
+    const read = await browser.eval('return await window.__repositoryReads.at(-1);');
+    assert.equal(read.status, 200, `${label}: ${JSON.stringify(read)}`);
+    await browser.until(`!document.getElementById('repository-pipeline-apply').disabled`, label).catch(async error => {
+      const state = await browser.eval(`return { open:document.getElementById('repository-pipeline-dialog').open, preview:document.getElementById('repository-pipeline-preview').textContent, error:document.getElementById('repository-pipeline-error').textContent, focus:document.activeElement.id };`);
+      throw new Error(`${error.message}; state ${JSON.stringify(state)}; console ${JSON.stringify(browser.consoleMessages)}`);
+    });
+  };
   await browser.send('Page.bringToFront'); await browser.goto(`${app.url}/#/kanban`);
   await browser.until(`document.querySelector('[data-id="${task.id}"]') && window.__statusReads > 0`, 'accepted repository monitor ready');
   const before = structuredClone(await app.board.state());
@@ -52,12 +60,10 @@ test('external repository changes show a keyboard review banner across themes an
   await browser.until(`document.getElementById('repository-pipeline-warning-text').textContent.includes('configuration changed')`, 'recovered definition detected');
   // An open editor retains its draft during background reads and opens review
   // through its own repository button while the modal owns keyboard focus.
-  await enter('columns-repository-read'); await browser.until(`window.__repositoryReads.length > 0`, 'fresh reviewed read dispatched'); await browser.eval('await window.__repositoryReads.at(-1); return true;');
-  await browser.until(`!document.getElementById('repository-pipeline-apply').disabled`, 'fresh definition reviewed');
+  await enter('columns-repository-read'); await browser.until(`window.__repositoryReads.length > 0`, 'fresh reviewed read dispatched'); await reviewed('fresh definition reviewed');
   assert.equal(await browser.eval(`return document.getElementById('column-name').value==='Unsaved keyboard draft' && !document.querySelector('#repository-pipeline-preview img') && !window.__watchPwned;`), true);
   await enter('repository-pipeline-cancel'); await enter('columns-close');
-  await enter('repository-pipeline-warning-review'); await browser.until(`window.__repositoryReads.length === 2`, 'banner keyboard action dispatched'); await browser.eval('await window.__repositoryReads.at(-1); return true;');
-  await browser.until(`!document.getElementById('repository-pipeline-apply').disabled`, 'banner opens fresh review');
+  await enter('repository-pipeline-warning-review'); await browser.until(`window.__repositoryReads.length === 2`, 'banner keyboard action dispatched'); await reviewed('banner opens fresh review');
   await enter('repository-pipeline-cancel'); await enter('columns-close');
   await writeFile(join(project.repository.root, 'promptboard.json'), bytes); await browser.until(`document.getElementById('repository-pipeline-warning').hidden`, 'unchanged original bytes clear banner');
   assert.deepEqual(await app.board.state(), before); assert.deepEqual(browser.consoleMessages.filter(message => message.startsWith('EXCEPTION')), []);

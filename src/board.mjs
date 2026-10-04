@@ -11,7 +11,7 @@ import { attachSession, attachResumedRun, LIVE_SESSION_STATUSES, recoverSessions
 import { access, mkdir, readdir, realpath, rm, stat } from 'node:fs/promises';
 import { join, relative, isAbsolute } from 'node:path';
 import { Store } from './store.mjs';
-import { branchExists, commitExists, git, GitError, initRepository, listWorktrees, validateRepository } from './git.mjs';
+import { branchExists, commitExists, git, GitError, initRepository, listWorktrees, repositoryIdentity, validateRepository } from './git.mjs';
 import { ADAPTERS, resolveConfig, validateResumeId } from './agents.mjs';
 import { Delivery } from './delivery.mjs';
 import { ensureClone, fastForward, fetchAndCompare, viewRepository } from './github.mjs';
@@ -901,7 +901,7 @@ export class Board {
     if (project.workflowMode !== 'pipeline') throw conflict('Switch this project to a column pipeline before reading repository configuration.', 'PIPELINE_SETTINGS_REQUIRED');
     if (!project.repository) throw conflict('Link this project to a repository first.', 'REPOSITORY_REQUIRED');
     const root = project.repository.root, revision = project.revision;
-    const repository = await validateRepository(root);
+    const repository = await repositoryIdentity(root);
     if (repository.root !== root || repository.commonDir !== project.repository.commonDir) throw conflict('The linked repository changed. Review its link first.', 'REPOSITORY_PIPELINE_ROOT_CHANGED');
     const snapshot = await readRepositoryPipeline(root), result = resolveRepositoryPipeline(snapshot, project.repositoryPipeline?.shared || project.pipeline);
     const current = this.#project(await this.state(), id);

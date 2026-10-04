@@ -41,6 +41,8 @@ After file application, Promptboard retains the team definition separately from 
 
 Reads accept only the two fixed root filenames, regular single-link files up to 4 MiB each, and fatal UTF-8 JSON. Symlinks, hardlinks, special files, changing descriptor/path identity and replaced roots are rejected. Review records an opaque source revision over both files and root identity. Apply requires confirmation, the exact project revision and the reviewed source revision; it rereads the sources inside the serialized definition update. File/project changes require a fresh explicit review. Existing active/queued agent, automation ownership, occupied-column, profile-choice, Base and native tuple guards still apply. Tasks and prompt bytes are not rewritten, moved or replayed.
 
+An explicit fresh review rechecks the already linked checkout root and common Git directory with one read-only `git rev-parse` invocation and canonical filesystem paths. It does not repeat initial-link branch, HEAD or current-branch discovery. New links still receive full repository validation. The fixed request deadline and file/source guards are unchanged. See [Git's path/checkout identity options](https://git-scm.com/docs/git-rev-parse).
+
 The HTTP endpoints are authenticated `GET /api/projects/:id/repository-pipeline` for review and `POST` to the same endpoint for apply with `sourceRevision`, `expectedProjectRevision` and `confirm: true`. They use existing Host, Origin and page-token protections. No client-provided path, CLI command or execution grant is accepted.
 
 ## Detecting external changes
