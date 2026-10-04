@@ -5,7 +5,7 @@ import { COMPOSE_INPUT_CHARS } from './compose-limits.mjs';
 
 const PROVIDERS = new Set(['codex', 'claude', 'gemini', 'agy']);
 const DETAILS = new Set(['super-short', 'concise', 'detailed', 'extremely-detailed']);
-const TASKS = new Set(['unspecified', 'build', 'debug', 'refactor', 'review', 'architecture', 'agent-workflow', 'research', 'documentation', 'testing', 'migration', 'performance']);
+const TASKS = new Set(['unspecified', 'build', 'feature', 'debug', 'refactor', 'review', 'architecture', 'integration', 'ui-ux', 'data', 'testing', 'security', 'performance', 'migration', 'dependencies', 'devops', 'automation', 'documentation', 'agent-workflow', 'research']);
 const FIELDS = new Set(['input', 'provider', 'model', 'effort', 'language', 'quality', 'detail', 'task', 'options', 'terminology', 'grounding']);
 const OPTION_DEFAULTS = Object.freeze({
   acceptanceChecks: true,
@@ -183,6 +183,10 @@ Keep implementation, analysis, review, research, and documentation scope distinc
 Tell the target agent to inspect the relevant project conventions before it changes code.
 Keep the change within the stated scope.
 Define the requested behavior and deliverable.`,
+  feature: `Frame the task as a new or extended product capability.
+Define the user-visible behavior, integration points, and observable acceptance conditions supported by the source.
+Ask the target agent to fit the feature into the existing architecture and conventions.
+Do not broaden the feature beyond the requested capability.`,
   debug: `Preserve the reported error, reproduction steps, and expected behavior.
 Separate observed facts from suspected causes.
 Ask the target agent to identify the cause before it selects a fix.
@@ -200,6 +204,18 @@ Do not request edits unless the source requests them.`,
 Ask for components, data flow, interfaces, and relevant tradeoffs.
 Label missing scale, cost, or reliability targets.
 Avoid a fixed technology choice unless the request supplies one.`,
+  integration: `State the external or internal systems and the required data exchange.
+Ask the target agent to verify the actual interface, authentication, error behavior, and compatibility before implementation.
+Cover relevant failure handling and test boundaries without inventing service capabilities.
+Keep credentials and secrets out of code and output.`,
+  'ui-ux': `State the intended user interaction and visible result.
+Cover relevant loading, empty, error, keyboard, accessibility, and responsive states when the source or existing interface supports them.
+Ask the target agent to follow the project's design system and interaction patterns.
+Do not request a broader redesign unless the source requests it.`,
+  data: `State the required data shape, lifecycle, ownership, and consistency behavior supplied by the source.
+Ask the target agent to inspect existing schemas, storage patterns, and migration conventions.
+Preserve data and compatibility requirements, and identify destructive operations explicitly.
+Do not invent fields, retention rules, or migration guarantees.`,
   'agent-workflow': `State each necessary agent role and its scope.
 Define the input, output, and completion condition for each stage.
 Make dependencies and handoffs explicit.
@@ -219,10 +235,26 @@ Do not request code behavior changes unless the source requests them.`,
 Ask the target agent to follow the project's existing test conventions.
 Prefer deterministic checks with clear expected results.
 Do not change production behavior unless the source requires it.`,
+  security: `State the asset, trust boundary, permission, or reported risk in scope.
+Ask the target agent to verify the risk with evidence before it changes behavior.
+Prefer least privilege and preserve required compatibility.
+Do not claim a vulnerability or security guarantee without evidence.`,
   migration: `Preserve the supplied current state, target state, and compatibility constraints.
 Make the migration order and validation points explicit.
 Include rollback or recovery requirements only when the source or identified risk supports them.
 Do not invent versions, schemas, or compatibility guarantees.`,
+  dependencies: `State why the dependency change is needed and preserve supplied version or compatibility constraints.
+Ask the target agent to inspect manifests, lockfiles, release notes, and affected APIs.
+Keep the dependency change as small as the request permits and verify the relevant build and tests.
+Do not invent target versions or claim compatibility without checking it.`,
+  devops: `State the target environment, delivery goal, and supplied operational constraints.
+Ask the target agent to inspect existing CI, deployment, infrastructure, and secret-management conventions.
+Define relevant validation and recovery steps without exposing credentials.
+Do not assume a cloud, environment, or release process that the source does not identify.`,
+  automation: `State the workflow trigger, inputs, actions, outputs, and completion condition.
+Cover relevant permissions, repeat execution, failure handling, and observability.
+Ask the target agent to integrate with existing automation conventions and safeguards.
+Do not automate destructive or external actions beyond the user's stated scope.`,
   performance: `Preserve the behavior and resource constraints that must remain unchanged.
 Ask the target agent to identify and measure the relevant bottleneck before it optimizes.
 Define before-and-after verification from supplied or discoverable metrics.

@@ -13,7 +13,7 @@ test('request defaults are explicit and source text is preserved', () => {
 
 test('all supported providers, tasks, and detail modes validate', () => {
   for (const provider of ['codex', 'claude', 'gemini', 'agy']) {
-    for (const task of ['unspecified', 'build', 'debug', 'refactor', 'review', 'architecture', 'agent-workflow', 'research', 'documentation', 'testing', 'migration', 'performance']) {
+    for (const task of ['unspecified', 'build', 'feature', 'debug', 'refactor', 'review', 'architecture', 'integration', 'ui-ux', 'data', 'testing', 'security', 'performance', 'migration', 'dependencies', 'devops', 'automation', 'documentation', 'agent-workflow', 'research']) {
       for (const detail of ['super-short', 'concise', 'detailed', 'extremely-detailed']) {
         const request = validateRequest({ input: 'Do the task.', provider, task, detail });
         assert.equal(request.provider, provider);
@@ -100,7 +100,7 @@ test('task guidance and selected aids change the prompt contract', () => {
   assert.ok(prompt.includes('Keep explicit user instructions even when an optional aid is disabled.'));
 });
 
-test('new task types provide distinct guidance and no specification stays neutral', () => {
+test('specialized task types provide distinct guidance and no specification stays neutral', () => {
   const input = 'Improve the project output.';
   const cases = [
     ['unspecified', 'Do not impose a task category'],
@@ -108,6 +108,14 @@ test('new task types provide distinct guidance and no specification stays neutra
     ['testing', 'existing test conventions'],
     ['migration', 'migration order and validation points'],
     ['performance', 'measure the relevant bottleneck'],
+    ['feature', 'new or extended product capability'],
+    ['integration', 'required data exchange'],
+    ['ui-ux', 'intended user interaction'],
+    ['data', 'data shape, lifecycle, ownership'],
+    ['security', 'asset, trust boundary, permission'],
+    ['dependencies', 'manifests, lockfiles, release notes'],
+    ['devops', 'existing CI, deployment, infrastructure'],
+    ['automation', 'workflow trigger, inputs, actions'],
   ];
   for (const [task, guidance] of cases) assert.match(buildPrompt({ input, task }), new RegExp(guidance));
   const neutral = buildPrompt({ input, task: 'unspecified' });

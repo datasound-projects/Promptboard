@@ -13,7 +13,7 @@ import { researchPlan, researchReview, questTask, questText, pdfFixture } from '
 
 const efforts = { codex: ['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'], claude: ['', 'low', 'medium', 'high', 'xhigh', 'max'], gemini: [''], agy: ['', 'low', 'medium', 'high'] };
 const details = ['super-short', 'concise', 'detailed', 'extremely-detailed'];
-const tasks = ['unspecified', 'build', 'debug', 'refactor', 'review', 'architecture', 'agent-workflow', 'research', 'documentation', 'testing', 'migration', 'performance'];
+const tasks = ['unspecified', 'build', 'feature', 'debug', 'refactor', 'review', 'architecture', 'integration', 'ui-ux', 'data', 'testing', 'security', 'performance', 'migration', 'dependencies', 'devops', 'automation', 'documentation', 'agent-workflow', 'research'];
 const review = call => {
   const data = JSON.parse(call.prompt.split('# Review data\n')[1]);
   return JSON.stringify({ covered: data.units.map(unit => unit.id), requirements: [], criteria: Object.fromEntries(REVIEW_CRITERIA.map(key => [key, 'pass'])), issues: [] });

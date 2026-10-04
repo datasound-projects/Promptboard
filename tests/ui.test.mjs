@@ -1221,10 +1221,13 @@ test('Compose exposes three quiet settings groups, restores its summary, and kee
   const groups = [...win.document.querySelectorAll('#settings-body > details')];
   assert.deepEqual(groups.map(group => group.querySelector('summary > span').textContent), ['General settings', 'Context grounding', 'More settings']);
   assert.deepEqual([...$('#task').options].map(item => [item.value, item.textContent]), [
-    ['unspecified', 'No specification'], ['build', 'Build something'], ['debug', 'Debug a problem'], ['refactor', 'Refactor code'],
-    ['review', 'Review code'], ['architecture', 'Design architecture'], ['agent-workflow', 'Create an agent workflow'],
-    ['research', 'Research an approach'], ['documentation', 'Write documentation'], ['testing', 'Create or improve tests'],
-    ['migration', 'Migrate or upgrade'], ['performance', 'Optimize performance'],
+    ['unspecified', 'No specification'], ['build', 'Build something'], ['feature', 'Add a feature'], ['debug', 'Debug a problem'],
+    ['refactor', 'Refactor code'], ['review', 'Review code'], ['architecture', 'Design architecture'],
+    ['integration', 'Integrate a service or API'], ['ui-ux', 'Change UI or UX'], ['data', 'Change data or database'],
+    ['testing', 'Create or improve tests'], ['security', 'Improve security'], ['performance', 'Optimize performance'],
+    ['migration', 'Migrate or upgrade'], ['dependencies', 'Update dependencies'], ['devops', 'Configure CI/CD or infrastructure'],
+    ['automation', 'Automate a workflow'], ['documentation', 'Write documentation'],
+    ['agent-workflow', 'Create an agent workflow'], ['research', 'Research an approach'],
   ]);
   assert.equal($('#task').value, 'build');
   assert.ok(groups.every(group => !group.open));
