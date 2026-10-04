@@ -101,7 +101,7 @@ test('mixed project, PDF chapter, expert context and Context7 preserve provenanc
   const plan = researchPlan(questTask, { complexity: 'complex', research: 'deep', needsProject: true });
   let checkpoints = 0;
   const result = await context.prepare({ request: { input: questTask }, sources: [
-    { type: 'local', kind: 'repository', name: 'Project', path: root }, { type: 'document', id: doc.id }, { type: 'expert', name: 'Architecture', text: questText }, { type: 'mcp', preset: 'context7' },
+    { type: 'local', kind: 'repository', purpose: 'target', name: 'Project', path: root }, { type: 'document', id: doc.id }, { type: 'expert', name: 'Architecture', text: questText }, { type: 'mcp', preset: 'context7' },
   ] }, { runner: async call => {
     assert.equal(call.timeoutMs, null);
     if (call.prompt.startsWith('# Compose context preparation')) return { text: JSON.stringify(plan) };

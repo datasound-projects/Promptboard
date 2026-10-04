@@ -481,8 +481,8 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
           return send(res, 200, await track(context.mcp.retrieve(body, [], { signal, discoveryOnly: true })));
         }
         const { validatePreparation } = await import('./compose-context.mjs');
-        const { request } = validatePreparation(body);
-        if (obviouslyNonActionable(request.input)) return send(res, 200, await context.prepare(body, { runner, signal }));
+        const { request, autonomous } = validatePreparation(body);
+        if (!autonomous || obviouslyNonActionable(request.input)) return send(res, 200, await context.prepare(body, { runner, signal }));
         job.provider = request.provider;
         validateEffort(request.provider, request.effort);
         if (request.effort) checkModelEffort(request.provider, request.model, request.effort, await abortable(getCatalog(request.provider), signal));

@@ -70,8 +70,9 @@ export function budgetEvidence(candidates, budget = CONTEXT_CHARS) {
     if (existing) {
       const backup = JSON.stringify(existing);
       existing.questionIds = [...new Set([...(existing.questionIds || []), ...(item.questionIds || [])])].slice(0, 32);
-      if (existing.source !== item.source || existing.locator !== item.locator || existing.sourceType !== item.sourceType) {
-        const origin = { sourceType: item.sourceType, source: item.source, locator: item.locator };
+      if (!item.provisional) delete existing.provisional;
+      if (existing.source !== item.source || existing.locator !== item.locator || existing.sourceType !== item.sourceType || existing.purpose !== item.purpose) {
+        const origin = { sourceType: item.sourceType, source: item.source, locator: item.locator, ...(item.purpose ? { purpose: item.purpose } : {}) };
         existing.alsoFrom ??= [];
         if (!existing.alsoFrom.some(o => JSON.stringify(o) === JSON.stringify(origin)) && existing.alsoFrom.length < 8) existing.alsoFrom.push(origin);
       }

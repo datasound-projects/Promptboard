@@ -10,11 +10,13 @@ const SKIP = new Set(['.git', 'node_modules', 'vendor', '.venv', 'venv', 'dist',
 const TEXT = new Set(['.md', '.txt', '.json', '.js', '.mjs', '.cjs', '.jsx', '.ts', '.tsx', '.py', '.toml', '.yaml', '.yml', '.rs', '.go', '.java', '.sql', '.html', '.css', '.cs', '.rb', '.php', '.sh', '.mod', '.c', '.h', '.cpp', '.kt', '.swift', '.vue', '.svelte']);
 const SECRET_FILE = /(^|\/)(\.env(?:\..*)?|\.npmrc|\.pypirc|credentials(?:\..*)?|secrets?(?:\..*)?|id_rsa.*|id_ed25519.*|.*\.(?:pem|key|p12|pfx)|.*\.lock|package-lock\.json|pnpm-lock\.yaml|yarn\.lock)$/i;
 export function validateLocal(source) {
-  object(source, ['type', 'name', 'path', 'kind'], 'local folder');
+  object(source, ['type', 'name', 'path', 'kind', 'purpose'], 'local folder');
   if (source.type !== 'local' || !['repository', 'knowledge'].includes(source.kind)) invalid('Choose a repository or documentation folder.');
   string(source.path, 2000, 'local folder path'); string(source.name, 80, 'local source name');
   if (!isAbsolute(source.path) || source.path === '/' || source.path.replace(/\/$/, '') === homedir() || /^[A-Za-z]:[\\/]?$/.test(source.path)) invalid('Choose a specific project or documentation folder, not a home or filesystem root.');
-  return { ...source };
+  if (source.purpose !== undefined && !['reference', 'target'].includes(source.purpose)) invalid('Choose Reference or Target project.');
+  if (source.kind === 'knowledge' && source.purpose === 'target') invalid('Knowledge folders are reference material.');
+  return { ...source, purpose: source.purpose ?? 'reference' };
 }
 export function redactLocal(text) {
   return text.replace(/-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/g, '[private key omitted]')
@@ -25,13 +27,13 @@ const inside = (root, path) => { const rel = relative(root, path); return rel !=
 export class ComposeLocal {
   cache = new Map();
   close() { this.cache.clear(); }
-  async index(source, { signal } = {}) {
+  async index(source, { signal, refresh = false } = {}) {
     const cfg = validateLocal(source); signal?.throwIfAborted();
     const root = await realpath(cfg.path);
     if (root === homedir() || relative(root, join(root, '..')) === '') invalid('Choose a specific local folder.');
     if (!(await lstat(root)).isDirectory()) invalid('Choose a local folder.');
     const cached = this.cache.get(root);
-    if (cached && Date.now() - cached.at < 30_000) return cached.value;
+    if (!refresh && cached && Date.now() - cached.at < 30_000) return cached.value;
     const files = []; let entries = 0, truncated = false;
     const walk = async (dir, depth) => {
       signal?.throwIfAborted();
@@ -85,10 +87,11 @@ export class ComposeLocal {
       if (source.kind === 'repository' && /framework|dependencies|architecture|project|repository|existing|manifest/i.test(query.query)) {
         for (const row of value.index.rows.filter(row => /(^|\/)(package.json|pyproject.toml|Cargo.toml|README.md|AGENTS.md)$/i.test(row.file)).slice(0, 3)) if (!rows.some(item => item.file === row.file && item.start === row.start)) rows.push({ ...row, score: 10 });
       }
+      if (!rows.length && query.allowPreview) rows.push(...value.index.rows.slice(0, 1).map(row => ({ ...row, text: row.text.slice(0, 1200), score: 0, provisional: true })));
       for (const row of rows.slice(0, 5)) {
         const file = row.file.length > 260 ? `${row.file.slice(0, 100)}…${row.file.slice(-159)}` : row.file;
-        results.push({ sourceType: source.kind === 'repository' ? 'repository' : 'knowledge', source: source.name,
-          locator: `${file} · characters ${row.start + 1}–${row.end}`, query: query.query, text: row.text, score: row.score, questionIds: [query.questionId] });
+        results.push({ sourceType: source.kind === 'repository' ? 'repository' : 'knowledge', purpose: source.purpose ?? 'reference', source: source.name,
+          locator: `${file} · characters ${row.start + 1}–${row.end}`, query: query.query, text: row.text, score: row.score, questionIds: query.questionIds || [query.questionId], ...(row.provisional ? { provisional: true } : {}) });
       }
     }
     return { evidence: results, truncated: value.truncated, inventory: value.inventory };
