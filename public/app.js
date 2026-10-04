@@ -3315,11 +3315,12 @@ async function openSplit({ previewOnly = false } = {}) {
   $('#split-add').disabled = true;
   $('#split-status').textContent = `${providerInfo[result.provider]?.name || result.provider} is splitting the prompt into tasks… This is one CLI call.`;
   $('#split-dialog').showModal();
-  split.controller = new AbortController();
+  const own = new AbortController();
+  split.controller = own;
   let answer;
-  try { answer = await api('/api/split', { method: 'POST', body: { prompt: result.prompt, provider: result.provider, model: result.model || '', effort: result.effort || '', language: result.language || 'en' }, timeoutMs: null, signal: split.controller.signal }); }
-  catch { if (!split.controller.signal.aborted) $('#split-status').textContent = 'The app did not answer. Check that Promptboard is still running.'; return; }
-  if (split.controller.signal.aborted || !$('#split-dialog').open) return;
+  try { answer = await api('/api/split', { method: 'POST', body: { prompt: result.prompt, provider: result.provider, model: result.model || '', effort: result.effort || '', language: result.language || 'en' }, timeoutMs: null, signal: own.signal }); }
+  catch { if (split.controller === own && !own.signal.aborted) $('#split-status').textContent = 'The app did not answer. Check that Promptboard is still running.'; return; }
+  if (own.signal.aborted || split.controller !== own || !$('#split-dialog').open) return;
   const { response, data } = answer;
   if (!response.ok) { $('#split-status').textContent = ''; $('#split-error').textContent = data.error || 'The prompt could not be split.'; $('#split-error').hidden = false; return; }
   split.tasks = data.tasks.map(task => ({ ...task, included: true }));

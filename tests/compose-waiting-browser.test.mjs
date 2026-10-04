@@ -46,6 +46,9 @@ test('Compose waits beyond old browser deadlines in generation, research and spl
       await browser.send('Emulation.setVirtualTimePolicy', { policy: 'advance', budget: 660000, maxVirtualTimeTaskStarvationCount: 1000 });
       await Promise.race([expired, new Promise((resolve, reject) => { timer = setTimeout(() => reject(new Error('Virtual time did not advance.')), 15000); timer.unref(); })]);
     } finally { clearTimeout(timer); unsubscribe(); }
+    // Budget expiry pauses Chrome's virtual clock. Permit network-driven UI
+    // completion again before retrying; retain a finite virtual-time budget.
+    await browser.send('Emulation.setVirtualTimePolicy', { policy: 'pauseIfNetworkFetchesPending', budget: 10000 });
   };
   await click('generate-button'); await waitPending('draft');
   await advanceElevenMinutes();
@@ -77,7 +80,9 @@ test('Compose waits beyond old browser deadlines in generation, research and spl
   await click('split-close');
   for (let i = 0; !splitting.call.signal.aborted && i < 100; i++) await new Promise(resolve => setTimeout(resolve, 20));
   assert.equal(splitting.call.signal.aborted, true); hold = ''; pending = null;
-  await click('split-button'); await browser.until(`document.querySelectorAll('#split-list .split-item').length === 1`, 'manual split after cancellation');
+  await click('split-button');
+  try { await browser.until(`document.querySelectorAll('#split-list .split-item').length === 1`, 'manual split after cancellation'); }
+  catch (error) { throw new Error(`${error.message}; ${JSON.stringify(await browser.eval(`return { status: document.querySelector('#split-status').textContent, error: document.querySelector('#split-error').textContent, open: document.querySelector('#split-dialog').open };`))}; calls=${calls.map(row => row.stage).join(',')}`); }
   assert.equal(await browser.eval(`return document.querySelector('#split-error').hidden;`), true);
   assert.doesNotMatch(browser.consoleMessages.join('\n'), /EXCEPTION/);
 });

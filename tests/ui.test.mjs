@@ -2169,6 +2169,34 @@ test('“How your data is used” describes the current app in four short sectio
   assert.doesNotMatch(text, /not active yet|does not send cards/, 'No outdated statement about agent runs.');
 });
 
+test('a cancelled split cannot overwrite a new split with a late result or error', async t => {
+  const ctx = await setup(t, { executor: null });
+  const { $, win } = ctx;
+  ctx.quality('fast'); $('#prompt-input').value = 'Add a test.'; ctx.submit();
+  await until(() => !$('#split-button').disabled, 'generated prompt');
+  const originalFetch = win.fetch;
+  for (const outcome of ['result', 'error']) {
+    const pending = [];
+    win.fetch = (url, options) => url === '/api/split'
+      ? new Promise((resolve, reject) => pending.push({ resolve, reject, signal: options.signal }))
+      : originalFetch(url, options);
+    $('#split-button').click(); await until(() => pending.length === 1, 'first split request');
+    $('#split-close').click(); assert.equal(pending[0].signal.aborted, true);
+    $('#split-button').click(); await until(() => pending.length === 2, 'replacement split request');
+    if (outcome === 'result') pending[0].resolve(Response.json({ tasks: [{ title: 'Stale task', prompt: 'Stale prompt.' }] }));
+    else pending[0].reject(new Error('Old request failed late.'));
+    await new Promise(resolve => setTimeout(resolve, 30));
+    assert.equal($('#split-list').children.length, 0);
+    assert.match($('#split-status').textContent, /is splitting the prompt/);
+    assert.equal($('#split-error').hidden, true);
+    pending[1].resolve(Response.json({ tasks: [{ title: 'Current task', prompt: 'Add a test.' }], coverage: { status: 'pass', protectedCount: 0, issues: [] } }));
+    await until(() => $('#split-list').children.length === 1, 'current split result');
+    assert.equal($('#split-list .split-title').value, 'Current task');
+    $('#split-close').click();
+  }
+  win.fetch = originalFetch;
+});
+
 test('Split into tasks (optional): ordered, editable tasks become To Do cards, then Autopilot opens with them first', { skip: process.platform === 'win32' }, async t => {
   const tasks = [{ title: 'Add the parser', prompt: 'Add `src/parser.ts`.' }, { title: 'Test the parser', prompt: 'Test `src/parser.ts`.' }, { title: 'Write docs', prompt: 'Document the parser.' }];
   const ctx = await linkedKanban(t, { hash: '', runner: request => ({ text: request.prompt.startsWith('# Task split') ? JSON.stringify({ tasks }) : 'Add, test, and document `src/parser.ts`.', reportedModels: ['m'] }) });

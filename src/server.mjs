@@ -556,7 +556,11 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
     board.githubLogin.cancel('The app stopped.');
     board.delivery.stopAllTests();
     const settle = Promise.allSettled([...tasks, ...lookups.values(), busy?.done, automations, agents].filter(Boolean));
-    await Promise.race([settle, new Promise(resolve => setTimeout(resolve, graceMs).unref())]);
+    // An accepted shutdown must keep Node alive even when a broken adapter has
+    // no remaining handles. Observe cleanup or reach this bounded terminal state.
+    let cleanupTimer;
+    try { await Promise.race([settle, new Promise(resolve => { cleanupTimer = setTimeout(resolve, graceMs); })]); }
+    finally { clearTimeout(cleanupTimer); }
     killOwnedProcesses('SIGKILL');
     server.closeAllConnections();
     await listening;
