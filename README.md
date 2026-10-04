@@ -56,7 +56,7 @@ Open **http://127.0.0.1:4318**. The navigation is **Compose | Kanban | Base**. P
 - Pipeline first input uses a [task envelope](docs/pipeline-prompts.md) preserving engineered prompt content, with selected Base resources and inherited CLI tools. Column automations and advanced session strategies are still being implemented.
 
 <p align="center">
-  <img src="docs/kanban-demo.gif" width="960" alt="Dark-mode Kanban demo: browse the project workspace and sidebar settings, consent to Autopilot, run a task through Executing, Code Review, Testing and Merge, and finish in Done with agent terminal tabs.">
+  <img src="docs/kanban-demo.gif" width="960" alt="Dark-mode Kanban demo: browse the project workspace and sidebar settings, edit and save a file, consent to Autopilot, run a task through Executing, Code Review, Testing and Merge, and finish in Done with agent terminal tabs.">
   <br><sub>Project setup → To Do → Execute → Review → Test → Merge → Done</sub>
 </p>
 
@@ -72,7 +72,7 @@ Open **http://127.0.0.1:4318**. The navigation is **Compose | Kanban | Base**. P
   <br><sub>Store → configure → assign optionally → inspect delivery</sub>
 </p>
 
-<sub>All demos use the real interface in dark mode with simulated model responses and agents. The local Git workflow and Base resource delivery are real. Edited for speed; each GIF is under 12 seconds.</sub>
+<sub>All demos use the real interface in dark mode with simulated model responses and agents. File saves, the local Git workflow and Base resource delivery are real. Edited for speed; each GIF is under 12 seconds.</sub>
 
 ## Supported CLIs
 

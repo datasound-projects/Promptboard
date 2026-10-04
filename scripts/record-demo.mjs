@@ -6,7 +6,7 @@
  * Optional: PB_DEMO_PREVIEW_DIR=/absolute/path keeps storyboard stills for review.
  */
 import { execFileSync } from 'node:child_process';
-import { chmod, copyFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -101,6 +101,11 @@ try {
   await browser.until(`document.querySelector('#autopilot-dialog').open`, 'tasks saved', 20000);
   await browser.eval(`document.querySelector('#autopilot-dialog').close();`);
   let project = (await app.board.view()).projects[0];
+  const checkout = project.repository.path || project.repository.root;
+  await mkdir(join(checkout, 'src'), { recursive: true });
+  await writeFile(join(checkout, 'src/auth.ts'), 'export const LOGIN_LIMIT = 5;\n\nexport type LoginRequest = {\n  email: string;\n  password: string;\n};\n\nexport type Session = {\n  userId: string;\n  expiresAt: number;\n};\n');
+  execFileSync('git', ['add', 'src/auth.ts'], { cwd: checkout });
+  execFileSync('git', ['commit', '-m', 'Seed demo authentication types'], { cwd: checkout, stdio: 'ignore' });
   await app.board.delivery.setTestCommands(project.id, { commands: [{ command: `${process.execPath} -e "process.exit(0)"`, label: 'Unit tests (demo)' }], expectedRevision: project.revision });
   project = (await app.board.view()).projects[0];
   await app.board.setColumns(project.id, { columns: project.columns.map(column => column.id === 'planning' ? { id: 'planning', hidden: true } : { id: column.id }), expectedRevision: project.revision });
@@ -138,11 +143,27 @@ try {
   await browser.resize(1280,820);
   await browser.eval(`location.hash = '#/kanban'; await loadBoard(); setProjectCollapsed(true); if (document.documentElement.dataset.sidebar === 'collapsed') toggleSidebar(); document.documentElement.style.zoom = '1'; window.PromptboardDock?.setState('collapsed');`);
   await encode('kanban-demo', async () => {
-    await shot(0.8, 'Project workspace, board and To Do tasks');
-    await click('#project-toggle'); await shot(1.4, 'Project settings now live in the sidebar');
+    await shot(0.6, 'Project workspace, board and To Do tasks');
+    await click('#project-toggle'); await shot(1.2, 'Project settings now live in the sidebar');
     await click('#project-toggle');
+    await click('#workspace-list .file-tree-toggle');
+    await browser.until(`document.querySelector('[data-file-path="src"]')`, 'project source folder');
+    await click('[data-file-path="src"]');
+    await browser.until(`document.querySelector('[data-file-path="src/auth.ts"]')`, 'authentication file');
+    await click('[data-file-path="src/auth.ts"]');
+    await browser.until(`document.querySelector('.file-code').textContent.includes('LOGIN_LIMIT')`, 'file preview');
+    await click('[aria-label="Edit file"]');
+    await browser.eval(`const edit = document.querySelector('.file-editor'); edit.value += '\\n// Keep the existing API response format.\\n'; edit.dispatchEvent(new Event('input', { bubbles: true }));`);
+    await click('.file-save');
+    await browser.until(`document.querySelector('.file-status').textContent.includes('Saved')`, 'explicit file save');
+    await click('[aria-label="Show AI file panel"]');
+    await shot(1.6, 'Edit and save project files; AI proposals stay optional');
+    await click('[aria-label="Close file viewer"]');
+    if (!(await readFile(join(checkout, 'src/auth.ts'), 'utf8')).includes('// Keep the existing API response format.')) throw new Error('The explicit file edit did not reach disk.');
+    execFileSync('git', ['add', 'src/auth.ts'], { cwd: checkout });
+    execFileSync('git', ['commit', '-m', 'Save the demo file edit'], { cwd: checkout, stdio: 'ignore' });
     await browser.eval(`toggleSidebar(); openAutopilot({first:[${JSON.stringify(taskId)}]});`);
-    await shot(1.2, 'Choose the Autopilot route and consent');
+    await shot(1.0, 'Choose the Autopilot route and consent');
     await browser.eval(`document.querySelector('#autopilot-consent').checked = true; document.querySelector('#autopilot-form').requestSubmit();`);
     await browser.until(`!document.querySelector('#autopilot-dialog').open`, 'Autopilot started', 20000);
     const captured = new Set();
@@ -163,11 +184,11 @@ try {
     if (!['executing','code_review','testing','merge','done'].every(stage => captured.has(stage))) throw new Error('A required workflow scene was missed.');
     const runs = (await app.board.view()).runs.filter(run => run.taskId === taskId);
     if (!runs.some(run => run.baseManifest?.supplied?.some(entry => entry.resourceId === instruction.id))) throw new Error('The selected Base skill was not actually supplied.');
-    await browser.eval(`window.PromptboardDock.setState('collapsed'); await loadBoard();`); await shot(1.3, 'Verified task merged and recorded in Done');
+    await browser.eval(`window.PromptboardDock.setState('collapsed'); await loadBoard();`); await shot(1.1, 'Verified task merged and recorded in Done');
   });
   const exceptions = browser.consoleMessages.filter(message => message.startsWith('EXCEPTION')); if (exceptions.length) throw new Error(exceptions.join('\n'));
   if (preview) await writeFile(join(preview, 'storyboards.json'), JSON.stringify(storyboards, null, 2));
-  console.log('Verified: three To Do tasks, one real verified merge, and pinned Base instruction delivery.');
+  console.log('Verified: three To Do tasks, an explicit project file save, one real verified merge, and pinned Base instruction delivery.');
 } finally {
   await browser?.close(); await app?.close(); await rm(work, { recursive: true, force: true });
 }

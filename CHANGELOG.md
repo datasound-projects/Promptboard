@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Refresh the short dark-mode Compose, Kanban and Base demos with the current interface, including task settings, sidebar project setup and linked knowledge pages. Simplify the GitHub social preview around all three pages and add its repeatable renderer.
+- Refresh the short dark-mode Compose, Kanban and Base demos with the current interface, including task settings, sidebar project setup, explicit file editing and linked knowledge pages. Simplify the GitHub social preview around all three pages and add its repeatable renderer.
 
 - Move Kanban project settings into the project sidebar and keep the board at full width. Use one compact disclosure for repository, target branch, project agent and workflow controls; hide redundant project selection, shorten repository status and collapse backup actions while preserving keyboard and phone navigation.
 
