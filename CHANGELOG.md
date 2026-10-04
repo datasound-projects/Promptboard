@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Remove default Compose model and browser generation deadlines across autonomous research, draft/review/repair and task splitting. Preserve Cancel, process cleanup, explicit programmatic deadlines and bounded optional-source retrieval. Invalid optional planning falls back to the original task with a warning. Align detailed prompt, split and verification size bounds; test all provider/settings combinations and long-running browser states.
+- Accept Codex's reported `max` effort and classify its account/model rejection explicitly. Disable ambient Codex MCPs/apps/plugins/hooks per generation invocation without altering CLI defaults or credentials. Track cancelled Compose provider cleanup through shutdown.
+- Keep accepted shutdown cleanup alive through its bounded outcome on Node 22, and prevent a cancelled split's late response/error from overwriting a replacement split.
+
+- Add explicit reviewed application of repository `promptboard.json` and personal overrides to opt-in pipelines. Preserve stable identities and sparse profiles; replace personal automation groups as a unit. Recheck bounded file/root custody and exact review/project revisions; retain paused-agent, automation and occupied-column guards without dispatching or changing Composer/Base. Automatic file synchronization and retained ghost columns remain pending.
+
 - Add named sparse board-profile editing, exclusive task profile/agent choices and effective card agents. Keep shared columns/automations/Base intact; save with revision and paused-agent guards without starting work or changing Composer text/checks. Retain choices on copy and portable v5 backup/import with dispatch disabled. Live profile propagation and repository configuration remain pending.
 
 - Bind delayed initial prompt paste/Enter to the owned PTY, input epoch and native identity. Human drafts revoke automatic Enter; Stop/Pause/failure/replacement and pending input block stale writes/checkpoints. Contain unknown transport writes without retries or raw errors. Verify exact long Composer envelopes, Base instructions/MCPs and inherited tools in a disposable simulated CLI PTY.

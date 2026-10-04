@@ -4,8 +4,9 @@
  * prompt and gets no tools (the same restricted adapters as Compose).
  */
 import { verifyPrompt } from './verification.mjs';
+import { COMPOSE_PROMPT_CHARS } from './compose-limits.mjs';
 
-export const SPLIT_LIMITS = Object.freeze({ tasks: 12, title: 120, prompt: 32_000 });
+export const SPLIT_LIMITS = Object.freeze({ tasks: 12, title: 120, prompt: COMPOSE_PROMPT_CHARS });
 const LANGUAGE = { en: 'English', de: 'German', pl: 'Polish' };
 
 export function buildSplitPrompt(prompt, language = 'en') {

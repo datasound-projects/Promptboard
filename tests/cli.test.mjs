@@ -16,6 +16,7 @@ test('headless SIGTERM stops the provider and removes its temporary working fold
   try {
     await writeFile(executable, `#!${process.execPath}
 const fs = require('node:fs');
+if (process.argv[2] === 'mcp') { process.stdout.write('[]'); process.exit(0); }
 fs.writeFileSync(${JSON.stringify(reportPath + '.tmp')}, JSON.stringify({ pid: process.pid, cwd: process.cwd() }));
 fs.renameSync(${JSON.stringify(reportPath + '.tmp')}, ${JSON.stringify(reportPath)});
 process.stdin.resume();
@@ -65,6 +66,7 @@ test('headless output gates flagged drafts and JSON preserves the report', {
   try {
     const executable = join(dir, 'codex');
     await writeFile(executable, `#!${process.execPath}
+if (process.argv[2] === 'mcp') { process.stdout.write('[]'); process.exit(0); }
 process.stdin.resume();
 process.stdin.on('end', () => process.stdout.write(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'Keep the file.' } })));
 `);

@@ -141,7 +141,7 @@ test('missing repository context defers generic external architecture research',
 test('research deadline is bounded even when an injected runner does not settle', async () => {
   const context = new ComposeContext();
   const result = await context.prepare({ request: { input: questTask }, sources: [] }, { timeoutMs: 50, runner: async () => new Promise(() => {}) });
-  assert.equal(result.state, 'assessment-failed'); assert.equal(result.calls, 1);
+  assert.equal(result.state, 'ready'); assert.equal(result.calls, 1); assert.deepEqual(result.grounding, {}); assert.match(result.warnings.join(' '), /assessment was unavailable/);
 });
 
 test('cancelling a follow-up interrupts synthesis and prevents any further research', async () => {

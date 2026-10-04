@@ -40,6 +40,7 @@ export function buildCommand({ provider, model, effort = '', policyPath } = {}) 
   if (provider === 'codex') {
     args = ['exec', '--sandbox', 'read-only', '--skip-git-repo-check', '--ephemeral', '--color', 'never',
       '--config', 'approval_policy="never"', '--config', 'web_search="disabled"',
+      '--config', 'features.apps=false', '--config', 'features.plugins=false', '--config', 'features.hooks=false',
       '--disable', 'shell_tool', '--disable', 'unified_exec', '--json'];
   } else if (provider === 'claude') {
     // stream-json exposes documented rate_limit_event and assistant error codes.
@@ -173,7 +174,9 @@ export function execute({ command, args, cwd, input = '', signal, timeoutMs, max
       hardTimer.unref();
     };
     const abort = () => fail(new ProviderError('Generation was cancelled.', 'ABORTED'));
-    const timer = setTimeout(() => fail(new ProviderError('The CLI took too long. Try again or use a faster model.', 'TIMEOUT')), timeoutMs);
+    // Compose explicitly passes null: a healthy CLI runs until completion or Cancel.
+    // Detection/authentication and other callers retain their bounded timeouts.
+    const timer = timeoutMs === null ? undefined : setTimeout(() => fail(new ProviderError('The CLI took too long. Try again or use a faster model.', 'TIMEOUT')), timeoutMs);
     signal?.addEventListener('abort', abort, { once: true });
     if (signal?.aborted) abort();
     child.stdout.on('data', chunk => {
@@ -332,6 +335,7 @@ export function classifyProviderFailure(provider, { stdout = '', stderr = '', ex
     if (/(?:last status|unexpected status):? 401\b|\bNot logged in\b/i.test(messages)) return failure('AUTH_REQUIRED');
     if (/(?:last status|unexpected status):? 5\d\d\b/i.test(messages)) return failure('PROVIDER_UNAVAILABLE');
     if (/stream disconnected before completion|error sending request/i.test(messages)) return failure('NETWORK_ERROR');
+    if (/The ['’][^'’\n]{1,100}['’] model is not supported when using Codex|model ['’][^'’\n]{1,100}['’] (?:was not found|does not exist|is not available)/i.test(messages)) return failure('MODEL_UNAVAILABLE');
     return null;
   }
   if (provider === 'agy') {
@@ -360,7 +364,7 @@ export async function runProvider({ provider, model, effort = '', prompt, cwd, s
     throw new ProviderError('Provide a non-empty prompt at most 2 MiB.', 'INVALID_INPUT');
   }
   if (typeof cwd !== 'string' || !isAbsolute(cwd)) throw new ProviderError('Use an isolated absolute working directory.', 'INVALID_CWD');
-  if (!Number.isInteger(timeoutMs) || timeoutMs < 10 || timeoutMs > 600000) throw new ProviderError('Timeout must be 10–600000 milliseconds.', 'INVALID_TIMEOUT');
+  if (timeoutMs !== null && (!Number.isInteger(timeoutMs) || timeoutMs < 10 || timeoutMs > 600000)) throw new ProviderError('Timeout must be null or 10–600000 milliseconds.', 'INVALID_TIMEOUT');
   if (signal?.aborted) throw new ProviderError('Generation was cancelled.', 'ABORTED');
   const executable = await resolveExecutable(provider);
   if (!executable) throw new ProviderError(`${PROVIDERS[provider].name} was not found. Install it and sign in from your terminal.`, 'NOT_INSTALLED');
@@ -374,6 +378,18 @@ export async function runProvider({ provider, model, effort = '', prompt, cwd, s
       await writeFile(policyPath, GEMINI_POLICY, { mode: 0o600 });
     }
     const { args } = buildCommand({ provider, model, effort, policyPath });
+    if (provider === 'codex') {
+      // Read configuration names only; `mcp list` does not connect to servers.
+      // Disable inherited MCPs for this invocation, without editing user config.
+      // Compose's selected read-only sources are retrieved by its own adapter.
+      const metadata = await execute({ command: executable.command, args: [...executable.prefix, 'mcp', 'list', '--json'], cwd, signal, timeoutMs: 5000, maxStdout: 128_000 });
+      let servers;
+      try { servers = JSON.parse(metadata.stdout); } catch { throw failure('POLICY_DENIED'); }
+      if (!Array.isArray(servers) || servers.length > 100 || servers.some(row => typeof row?.name !== 'string' || !/^[A-Za-z0-9_.-]{1,100}$/.test(row.name) || !['stdio', 'streamable_http'].includes(row.transport?.type))) throw failure('POLICY_DENIED');
+      // Each override layer must contain a complete transport to pass Codex's
+      // bootstrap validation. Use inert placeholders, never credentials in argv.
+      if (servers.length) args.push('--config', `mcp_servers={${servers.map(server => `${JSON.stringify(server.name)}={enabled=false,${server.transport.type === 'stdio' ? `command=${JSON.stringify(process.execPath)}` : 'url="https://127.0.0.1/"'}}`).join(',')}}`);
+    }
     let result;
     try {
       result = await execute({ command: executable.command, args: [...executable.prefix, ...args], cwd, input: prepareInput(provider, prompt), signal, timeoutMs, env: provider === 'claude' && effort ? { CLAUDE_CODE_EFFORT_LEVEL: effort } : {} });
@@ -388,7 +404,7 @@ export async function runProvider({ provider, model, effort = '', prompt, cwd, s
 }
 
 export function validateEffort(provider, effort = '') {
-  const levels = { codex: ['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh'], claude: ['', 'low', 'medium', 'high', 'xhigh', 'max'], agy: ['', 'low', 'medium', 'high'], gemini: [''] };
+  const levels = { codex: ['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'], claude: ['', 'low', 'medium', 'high', 'xhigh', 'max'], agy: ['', 'low', 'medium', 'high'], gemini: [''] };
   if (!levels[provider]?.includes(effort)) throw new ProviderError('This CLI does not support that effort setting.', 'INVALID_EFFORT');
 }
 

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { verifyPrompt } from '../src/verification.mjs';
+import { COMPOSE_PROMPT_CHARS } from '../src/compose-limits.mjs';
 import { access } from 'node:fs/promises';
 import { buildPrompt, lintPrompt, validateRequest } from '../src/engine.mjs';
 import { runPipeline, parseReview, sourceUnits, REVIEW_CRITERIA, buildRepairPrompt, buildReviewPrompt, repairReasons } from '../src/pipeline.mjs';
@@ -215,7 +216,7 @@ test('total deadline aborts a pending provider call', async () => {
 
 test('an oversized initial draft is rejected before model review', async () => {
   let calls = 0;
-  await assert.rejects(runPipeline(request, { runner: async () => { calls++; return { text: 'a'.repeat(32001) }; } }), /too large/);
+  await assert.rejects(runPipeline(request, { runner: async () => { calls++; return { text: 'a'.repeat(COMPOSE_PROMPT_CHARS + 1) }; } }), /too large/);
   assert.equal(calls, 1);
 });
 

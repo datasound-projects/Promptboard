@@ -11,6 +11,7 @@ import { fakeGh } from './fixtures/fake-gh.mjs';
 const gitIn = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
 import { VERSION } from '../src/version.mjs';
 import { defaultPipelineConfig } from '../src/pipeline-config.mjs';
+import { repositoryPipelineDefinition } from '../src/pipeline-repository.mjs';
 
 const catalogs = {
   codex: { source: 'cli', defaultModel: 'codex-one', defaultEffort: 'medium', models: [{ id: 'codex-one', name: 'Codex One', efforts: ['low', 'medium', 'high', 'xhigh'] }, { id: 'codex-two', name: 'Codex Two', efforts: ['low'] }] },
@@ -104,6 +105,46 @@ async function setup(t, { catalogReader = async id => ({ provider: id, ...catalo
   return { win, intervals, $, choose, radio, quality, submit, calls, requests, downloads, blobs, copied: () => copied, authAdapter, app, dataDir, idle };
 }
 
+test('repository configuration review preserves Column Manager drafts and applies literal shared/local definitions without starting agents', async t => {
+  const ctx = await setup(t, { executor: null, hash: '#/kanban' });
+  const { project } = await ctx.app.board.createProjectWithRepository({ name: 'Repository review', folder: 'new' }), pipeline = defaultPipelineConfig();
+  for (const column of pipeline.columns) column.strategy.autoSpawn = false;
+  await ctx.app.board.setPipeline(project.id, { pipeline, expectedRevision: project.revision, confirm: true });
+  const task = await ctx.app.board.createTask({ projectId: project.id, title: 'Exact', prompt: '  Composer 😀\r\n' });
+  const team = repositoryPipelineDefinition(pipeline), name = 'Build <img src=x onerror=evil>';
+  team.columns[2].name = name; team.columns[1].strategy.planExitTarget = name;
+  await writeFile(join(project.repository.root, 'promptboard.json'), JSON.stringify(team));
+  await writeFile(join(project.repository.root, 'promptboard.local.json'), JSON.stringify({ version: 1, columns: [{ name, color: 'green' }] }));
+  await ctx.win.__pbTest.loadBoard(); ctx.$('#columns-open').click(); ctx.$('#column-name').value = 'Unsaved'; ctx.$('#column-name').dispatchEvent(new ctx.win.Event('input'));
+  ctx.$('#columns-repository-read').click(); await until(() => !ctx.$('#repository-pipeline-apply').disabled, 'reviewed config ready');
+  assert.ok(ctx.$('#repository-pipeline-preview').textContent.includes(name)); assert.equal(ctx.$('#repository-pipeline-preview img'), null);
+  assert.equal((await ctx.app.board.state()).projects[0].pipeline.columns[2].name, 'Executing'); assert.equal(ctx.$('#column-name').value, 'Unsaved');
+  ctx.$('#repository-pipeline-apply').click(); await until(() => !ctx.$('#repository-pipeline-dialog').open, 'applied review closed');
+  const saved = (await ctx.app.board.state()).projects[0]; assert.equal(saved.pipeline.columns[2].name, name); assert.equal(saved.pipeline.columns[2].color, 'green');
+  assert.equal(saved.tasks[0].prompt, task.prompt); assert.deepEqual((await ctx.app.board.state()).runs, []); assert.equal(ctx.$('#columns-dialog').open, false);
+});
+
+test('stale repository review stays visible and cannot retry with newer revisions; closing it keeps the unsaved column draft', async t => {
+  const ctx = await setup(t, { executor: null, hash: '#/kanban' });
+  const { project } = await ctx.app.board.createProjectWithRepository({ name: 'Stale config', folder: 'new' }), pipeline = defaultPipelineConfig();
+  for (const column of pipeline.columns) column.strategy.autoSpawn = false;
+  await ctx.app.board.setPipeline(project.id, { pipeline, expectedRevision: project.revision, confirm: true });
+  const team = repositoryPipelineDefinition(pipeline); await writeFile(join(project.repository.root, 'promptboard.json'), JSON.stringify(team));
+  await ctx.win.__pbTest.loadBoard(); ctx.$('#columns-open').click(); ctx.$('#column-name').value = 'My draft'; ctx.$('#column-name').dispatchEvent(new ctx.win.Event('input'));
+  ctx.$('#columns-repository-read').click(); await until(() => !ctx.$('#repository-pipeline-apply').disabled, 'first review');
+  team.columns[2].description = 'New external definition'; await writeFile(join(project.repository.root, 'promptboard.json'), JSON.stringify(team));
+  ctx.$('#repository-pipeline-apply').click(); await until(() => !ctx.$('#repository-pipeline-error').hidden, 'stale review rejected');
+  assert.equal(ctx.$('#repository-pipeline-dialog').open, true); assert.equal(ctx.$('#repository-pipeline-apply').disabled, true);
+  assert.ok(ctx.$('#repository-pipeline-error').textContent.includes('changed after review')); assert.equal((await ctx.app.board.state()).projects[0].pipeline.columns[2].description, '');
+  ctx.$('#repository-pipeline-cancel').click(); assert.equal(ctx.$('#columns-dialog').open, true); assert.equal(ctx.$('#column-name').value, 'My draft');
+  ctx.$('#columns-repository-read').click();
+  // A native close event from the old dialog can arrive after showModal reopens it.
+  ctx.$('#repository-pipeline-dialog').dispatchEvent(new ctx.win.Event('close'));
+  await until(() => !ctx.$('#repository-pipeline-apply').disabled, 'fresh explicit review survives the queued old close');
+  ctx.$('#repository-pipeline-apply').click(); await until(() => !ctx.$('#repository-pipeline-dialog').open, 'fresh review applied');
+  assert.equal((await ctx.app.board.state()).projects[0].pipeline.columns[2].description, 'New external definition'); assert.deepEqual((await ctx.app.board.state()).runs, []);
+});
+
 test('a pipeline revision conflict after an exit webhook never creates an automatic new move or repeats its effect', async t => {
   const ctx = await setup(t, { executor: null, hash: '#/kanban' }), pipeline = defaultPipelineConfig();
   const project = await ctx.app.board.createProject({ name: 'No replay' });
@@ -120,8 +161,10 @@ test('a pipeline revision conflict after an exit webhook never creates an automa
   await ctx.win.__pbTest.loadBoard(); await ctx.idle({ requireComplete: true });
   const selector = ctx.$(`[data-id="${task.id}"] .kanban-move-to`); assert.ok(selector);
   selector.value = 'code_review'; selector.dispatchEvent(new ctx.win.Event('change', { bubbles: true }));
-  await until(() => effects === 1 && ctx.$('#announcement').textContent.includes('changed since'), 'visible conflicted move');
+  // Settle the actual request/journal writes before the UI assertion deadline.
+  // This fixture already gives request completion its own bounded failure check.
   await ctx.idle({ requireComplete: true });
+  await until(() => effects === 1 && ctx.$('#announcement').textContent.includes('changed since'), 'visible conflicted move');
   assert.equal(effects, 1); const saved = (await ctx.app.board.state()).projects[0].tasks[0];
   assert.equal(saved.column, 'todo'); assert.equal(saved.title, 'Edited during exit'); assert.equal(saved.prompt, task.prompt);
   const history = await ctx.app.board.automationRuns(task.id); assert.equal(history.length, 1); assert.equal(history[0].actions[0].status, 'succeeded'); assert.equal(history[0].lifecycle.status, 'failed');
@@ -2167,6 +2210,36 @@ test('“How your data is used” describes the current app in four short sectio
   const text = $('#dialog-content').textContent;
   assert.match(text, /when you approve a stage \(or it starts automatically\), the agent CLI gets the card text/);
   assert.doesNotMatch(text, /not active yet|does not send cards/, 'No outdated statement about agent runs.');
+});
+
+test('a cancelled split cannot overwrite a new split with a late result or error', async t => {
+  const ctx = await setup(t, { executor: null });
+  const { $, win } = ctx;
+  ctx.quality('fast'); $('#prompt-input').value = 'Add a test.'; ctx.submit();
+  await until(() => !$('#split-button').disabled, 'generated prompt');
+  const originalFetch = win.fetch;
+  for (const outcome of ['result', 'error']) {
+    const pending = [];
+    win.fetch = (url, options) => url === '/api/split'
+      ? new Promise((resolve, reject) => pending.push({ resolve, reject, signal: options.signal }))
+      : originalFetch(url, options);
+    $('#split-button').click(); await until(() => pending.length === 1, 'first split request');
+    $('#split-close').click(); assert.equal(pending[0].signal.aborted, true);
+    $('#split-button').click(); await until(() => pending.length === 2, 'replacement split request');
+    $('#split-dialog').dispatchEvent(new win.Event('close'));
+    assert.equal(pending[1].signal.aborted, false, 'A queued native close from the previous dialog cannot abort its replacement.');
+    if (outcome === 'result') pending[0].resolve(Response.json({ tasks: [{ title: 'Stale task', prompt: 'Stale prompt.' }] }));
+    else pending[0].reject(new Error('Old request failed late.'));
+    await new Promise(resolve => setTimeout(resolve, 30));
+    assert.equal($('#split-list').children.length, 0);
+    assert.match($('#split-status').textContent, /is splitting the prompt/);
+    assert.equal($('#split-error').hidden, true);
+    pending[1].resolve(Response.json({ tasks: [{ title: 'Current task', prompt: 'Add a test.' }], coverage: { status: 'pass', protectedCount: 0, issues: [] } }));
+    await until(() => $('#split-list').children.length === 1, 'current split result');
+    assert.equal($('#split-list .split-title').value, 'Current task');
+    $('#split-close').click();
+  }
+  win.fetch = originalFetch;
 });
 
 test('Split into tasks (optional): ordered, editable tasks become To Do cards, then Autopilot opens with them first', { skip: process.platform === 'win32' }, async t => {
