@@ -25,6 +25,8 @@ Do not add model or performance claims without evidence.
 
 `scripts/live-flow.mjs --provider claude|codex` runs one task through every stage with a real, signed-in CLI in a disposable repository. `scripts/live-agents.mjs` checks a single stage. Both use your provider quota and never run in CI. Record results in `docs/live-verification.md`.
 
+`scripts/live-native-messages.mjs --provider claude|codex|gemini` checks the private deferred native-message bridge in its own disposable board. Read [the smoke-check contract](docs/live-native-messages.md) before running it; startup, native input, durable receipts and subsequent task completion are separate results. This opt-in command uses provider quota and never runs live in CI.
+
 ## Releasing (maintainers)
 
 1. Run the checks above, the live flow for each supported CLI, and update `RELEASE-VERIFICATION.md`.

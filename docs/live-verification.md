@@ -1,6 +1,19 @@
 # Live provider verification log
 
-Real CLI runs, recorded separately from the simulated (fake-CLI) test suite. Each run used `scripts/live-agents.mjs`, which creates and deletes its own disposable repository and uses the installed, signed-in CLI. Nothing here ran against a user repository.
+Real CLI runs, recorded separately from the simulated (fake-CLI) test suite. Each checkpoint names its smoke script and uses an installed, signed-in CLI in its own disposable repository. Nothing here ran against a user repository.
+
+## 4 October 2026 — private deferred native input
+
+Source: reviewed native-message fix `0b92e9d`, subsequently merged as #64. macOS arm64, Node.js 24.14.1; Codex CLI 0.157.0 and Claude Code 2.1.287. These runs used the restored `scripts/live-native-messages.mjs` harness in disposable repositories. The harness itself is a separate review step from the transport fix.
+
+| Provider | Check | Result | Evidence |
+| --- | --- | --- | --- |
+| Codex (`gpt-6-luna`, effort `low`) | Completed warmup with startup answers, fresh conversation in the same trusted worktree, Executing → Code Review, one private deferred message | Pass for private input | Fresh process had one completed turn, observed native identity and readiness, without manual input. Code Review retained the same run. Message submission, native input confirmation and durable journal confirmation were observed separately. Original task prompt retained; main checkout and worktree clean; all owned processes stopped. |
+| Claude (`haiku`) | Fixed startup answer, followed by startup-only diagnostics | Startup blocked; native delivery unverified | The answered fixture exited with code 1 before a native identity or completed turn. An unanswered fixture remained at the folder-trust question. No private message was attempted. Prompt and both Git trees remained unchanged; all owned processes stopped. This result does not establish an authentication failure. |
+
+Codex's account model catalog was queried through the existing bounded metadata adapter before the check; no inference turn was sent by discovery. Model and effort overrides affected only the disposable board. The warmup received no native message and was stopped/reset through the common To Do lifecycle before the fresh conversation. No input guard was cleared, CLI settings changed, human draft removed or unknown input retried.
+
+The Codex result proves private message input and its saved receipt. It does not prove completion of the second reply, configured column-message scheduling, native-resume delivery, first-startup reconciliation or immediate/slash delivery. Gemini's earlier provider/client startup block remains separately documented below; it was not reverified by this checkpoint.
 
 ## 29 September 2026 — PB-02 adapters
 
