@@ -48,3 +48,19 @@ test('Process exit before close still keeps the Chrome profile until close', asy
   await pending;
   assert.equal(removed, true);
 });
+
+test('Inherited diagnostic pipes cannot hold cleanup after the owned browser exits', async t => {
+  const profile = await mkdtemp(join(tmpdir(), 'pb-chrome-pipe-'));
+  t.after(() => rm(profile, { recursive: true, force: true }));
+  const script = `const { spawn } = require('node:child_process');
+    const descendant = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 2000)'], { stdio: ['ignore', 'ignore', 'inherit'] });
+    descendant.once('spawn', () => process.stderr.write('ready'));
+    setInterval(() => {}, 1000);`;
+  const child = trackChrome(spawn(process.execPath, ['-e', script], { stdio: ['ignore', 'ignore', 'pipe'] }));
+  t.after(() => closeChrome(child, profile));
+  await new Promise((resolve, reject) => { child.stderr.once('data', resolve); child.once('error', reject); });
+  await closeChrome(child, profile, { timeout: 1000 });
+  assert.equal(child.stderr.destroyed, true);
+  assert.ok(child.exitCode !== null || child.signalCode !== null);
+  await assert.rejects(access(profile), { code: 'ENOENT' });
+});
