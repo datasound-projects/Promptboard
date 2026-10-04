@@ -33,15 +33,19 @@ test('delayed usage dialog close events preserve subsequent project settings foc
   for (const width of [1280, 390]) for (const theme of ['light', 'dark']) {
     await browser.resize(width, 844);
     await browser.eval(`document.documentElement.dataset.theme=${JSON.stringify(theme)}; if(innerWidth<=730&&!document.querySelector('#sidebar').classList.contains('open'))document.querySelector('#menu-toggle').click();`);
-    assert.equal(await browser.eval(`return new Promise(resolve => {
+    assert.equal(await browser.layout(`const sidebar=document.querySelector('#sidebar'),r=sidebar.getBoundingClientRect();return getComputedStyle(sidebar).visibility==='visible' && r.left>=0 && r.right<=innerWidth;`), true, 'The project drawer is painted and visible before focusing its controls.');
+    assert.deepEqual(await browser.eval(`return new Promise(resolve => {
       const dialog = document.querySelector('#usage-dialog');
       document.querySelector('#usage-open').click();
-      dialog.addEventListener('close', () => resolve(document.activeElement.id), { once: true });
+      let buttonFocused, actionFocused;
+      dialog.addEventListener('close', () => resolve({ buttonFocused, actionFocused, final: document.activeElement.id }), { once: true });
       document.querySelector('#usage-close').click();
       if(document.querySelector('#project-settings').hidden)document.querySelector('#project-toggle').click();
       document.querySelector('#project-settings-close').focus();
+      buttonFocused = document.activeElement.id === 'project-settings-close';
       document.querySelector('#project-settings-close').click();
-    });`), 'project-toggle', `${width}/${theme}: queued close must not steal focus from the next action.`);
+      actionFocused = document.activeElement.id === 'project-toggle';
+    });`), { buttonFocused: true, actionFocused: true, final: 'project-toggle' }, `${width}/${theme}: queued close must not steal focus from the next action.`);
     assert.equal(await browser.eval(`return document.querySelector('#project-settings').hidden;`), true);
     assert.equal(await browser.eval(`return new Promise(resolve => {
       const dialog = document.querySelector('#usage-dialog');
