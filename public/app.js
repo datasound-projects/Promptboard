@@ -36,6 +36,7 @@ let progressTimer = null;
 let authInfo = null;
 let authBusy = false;
 let authSequence = 0;
+let workspaceFiles = null;
 const STAGE_LABELS = { understanding: 'Understanding task', project: 'Reading project context', 'research-review': 'Checking research', retrieving: 'Finding relevant context', document: 'Preparing document', ready: 'Context ready', starting: 'Starting', models: 'Checking model options', draft: 'Drafting prompt', review: 'Reviewing requirements', repair: 'Repairing confirmed issues', 'repair-review': 'Verifying repaired prompt' };
 
 function safeText(value, max = MAX_PROMPT_BYTES) { return typeof value === 'string' ? value.slice(0, max) : ''; }
@@ -1185,6 +1186,7 @@ function currentPage() { return location.hash === '#/kanban' ? 'kanban' : locati
 function showPage() {
   const page = currentPage();
   const kanban = page === 'kanban', base = page === 'base';
+  workspaceFiles?.setVisible(kanban);
   $('#prompt-view').hidden = page !== 'compose';
   $('#kanban-view').hidden = !kanban;
   $('#base-view').hidden = !base;
@@ -3029,6 +3031,14 @@ function workspaceMenuFor(project, card) {
 }
 function renderWorkspace(current) {
   const projects = board?.projects || [];
+  workspaceFiles ??= window.PromptboardFiles?.create({ request: async (path, signal) => {
+    const { response, data } = await api(path, { signal });
+    if (!response.ok) throw new Error(data.error || 'The project file could not be read.');
+    return data;
+  } }) || null;
+  workspaceFiles?.sync(projects);
+  workspaceFiles?.setVisible(currentPage() === 'kanban');
+  const fileFocus = document.activeElement?.closest('.workspace-files') ? document.activeElement : null;
   if (workspaceMenu && !projects.some(project => project.id === workspaceMenu.id)) workspaceMenu = null;
   $('#workspace-count').textContent = String(projects.length).padStart(2, '0');
   $('#workspace-empty').hidden = projects.length > 0;
@@ -3064,9 +3074,11 @@ function renderWorkspace(current) {
     toggle.setAttribute('aria-expanded', String(open));
     toggle.setAttribute('aria-controls', `workspace-menu-${project.id}`);
     item.append(button, toggle);
+    if (project.repository && workspaceFiles) item.append(workspaceFiles.mount(project));
     if (open) { item.classList.add('menu-open'); item.append(workspaceMenuFor(project, button)); }
     return item;
   }));
+  if (fileFocus?.isConnected) fileFocus.focus({ preventScroll: true });
 }
 
 function renderRepository(project) {

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add read-only project file trees to the Kanban Workspace sidebar, with lazy folder expansion, checkout/task-worktree selection and centered file viewers. Preserve multiple files, minimized viewers, scroll and expansion during refresh. Display UTF-8 code with lexical highlighting and line numbers; bound reads and directory pages, refuse traversal/symlinks/credentials and never start agents or mutate board/repository state. Report observed updates without inventing per-file agent activity.
+
 - Remove default Compose model and browser generation deadlines across autonomous research, draft/review/repair and task splitting. Preserve Cancel, process cleanup, explicit programmatic deadlines and bounded optional-source retrieval. Invalid optional planning falls back to the original task with a warning. Align detailed prompt, split and verification size bounds; test all provider/settings combinations and long-running browser states.
 - Accept Codex's reported `max` effort and classify its account/model rejection explicitly. Disable ambient Codex MCPs/apps/plugins/hooks per generation invocation without altering CLI defaults or credentials. Track cancelled Compose provider cleanup through shutdown.
 - Keep accepted shutdown cleanup alive through its bounded outcome on Node 22, and prevent a cancelled split's late response/error from overwriting a replacement split.

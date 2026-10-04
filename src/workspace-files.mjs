@@ -1,0 +1,109 @@
+/** Read-only, bounded inspection of explicitly linked project checkouts/worktrees. */
+import { constants } from 'node:fs';
+import { lstat, open, opendir, realpath } from 'node:fs/promises';
+import { isAbsolute, join, relative, sep } from 'node:path';
+import { createHash } from 'node:crypto';
+import { git, listWorktrees } from './git.mjs';
+
+export const FILE_LIMITS = Object.freeze({ bytes: 512 * 1024, lines: 20_000, entries: 5000, page: 250, depth: 64 });
+export class WorkspaceFileError extends Error {
+  constructor(message, code, status = 400) { super(message); this.code = code; this.status = status; }
+}
+const fail = (message, code, status) => { throw new WorkspaceFileError(message, code, status); };
+const same = (a, b) => a.dev === b.dev && a.ino === b.ino;
+const inside = (root, path) => { const part = relative(root, path); return part === '' || (!isAbsolute(part) && part !== '..' && !part.startsWith('..' + sep)); };
+const protectedName = input => {
+  const name = input.replace(/[. ]+$/, ''); // Windows aliases must not bypass protection.
+  return name.toLowerCase() === '.git' || /^(?:\.env(?:\..+)?|\.npmrc|\.netrc|\.pypirc|credentials(?:\.json)?|id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?|.+\.(?:pem|key|p12|pfx))$/i.test(name)
+    && !/^\.env\.(?:example|sample|template)$/i.test(name);
+};
+
+function parsePath(value = '') {
+  if (typeof value !== 'string' || value.length > 4096 || /[\\\x00-\x1f\x7f]/.test(value) || isAbsolute(value)) fail('Choose a relative project path.', 'FILE_PATH_INVALID');
+  const parts = value ? value.split('/') : [];
+  if (parts.length > FILE_LIMITS.depth || parts.some(p => !p || p === '.' || p === '..' || p.includes(':'))) fail('Choose a relative project path.', 'FILE_PATH_INVALID');
+  if (parts.some(protectedName)) fail('Git internals and credential files are not available in the viewer.', 'FILE_PROTECTED', 403);
+  return parts;
+}
+
+async function target(root, parts) {
+  let path = root, info = await lstat(root);
+  if (!info.isDirectory() || info.isSymbolicLink() || await realpath(root) !== root) fail('The project folder changed. Relink it before inspection.', 'FILE_ROOT_CHANGED', 409);
+  for (let i = 0; i < parts.length; i++) {
+    path = join(path, parts[i]); info = await lstat(path);
+    if (info.isSymbolicLink()) fail('Symbolic links are not followed by the viewer.', 'FILE_LINK_BLOCKED', 403);
+    if (i < parts.length - 1 && !info.isDirectory()) fail('This folder is unavailable.', 'FILE_NOT_FOUND', 404);
+  }
+  if (!inside(root, await realpath(path))) fail('This path is outside the selected project.', 'FILE_PATH_INVALID', 403);
+  return { path, info };
+}
+
+async function context(board, projectId, workspace) {
+  // Store reads do not recover tasks, create worktrees, or mutate board state.
+  const state = await board.store.read();
+  const project = state.projects.find(p => p.id === projectId);
+  if (!project) fail('This project no longer exists.', 'NOT_FOUND', 404);
+  if (!project.repository?.root) fail('Link a local project folder before inspecting files.', 'REPOSITORY_REQUIRED', 409);
+  const scopes = [{ id: '', name: 'Project checkout' }, ...project.tasks.filter(t => t.workspace?.status === 'ready').map(t => ({ id: t.id, name: `${t.title} · ${t.workspace.branch}` }))];
+  let root = project.repository.root, scope = scopes[0];
+  if (workspace) {
+    const task = project.tasks.find(t => t.id === workspace && t.workspace?.status === 'ready');
+    if (!task || task.workspace.repositoryRoot !== root || task.workspace.commonDir !== project.repository.commonDir) fail('This task worktree is unavailable.', 'FILE_WORKSPACE_UNAVAILABLE', 409);
+    const registered = (await listWorktrees(root)).find(w => w.path === task.workspace.path && w.branch === task.workspace.branch);
+    if (!registered || await realpath(task.workspace.path) !== task.workspace.path) fail('This task worktree changed or was removed.', 'FILE_WORKSPACE_UNAVAILABLE', 409);
+    const common = (await git(['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: task.workspace.path })).trim();
+    if (await realpath(common) !== project.repository.commonDir) fail('This folder belongs to another repository.', 'FILE_WORKSPACE_UNAVAILABLE', 409);
+    root = task.workspace.path; scope = scopes.find(s => s.id === workspace);
+  }
+  return { root, scopes, project: { id: project.id, name: project.name }, workspace: scope };
+}
+
+export async function inspectWorkspace(board, projectId, { path = '', workspace = '', file = false, offset = '0', version = '' } = {}) {
+  const parts = parsePath(path);
+  if (typeof workspace !== 'string' || workspace.length > 100 || !/^[A-Za-z0-9_-]*$/.test(workspace)) fail('Choose a project checkout or task worktree.', 'FILE_WORKSPACE_INVALID');
+  if (!/^\d{1,4}$/.test(String(offset)) || Number(offset) >= FILE_LIMITS.entries) fail('Invalid directory page.', 'FILE_PAGE_INVALID');
+  if (typeof version !== 'string' || version && !/^[a-f0-9]{64}$/.test(version)) fail('Invalid file version.', 'FILE_VERSION_INVALID');
+  try {
+    const ctx = await context(board, projectId, workspace), item = await target(ctx.root, parts);
+    const identity = { project: ctx.project, workspace: ctx.workspace, path };
+    if (!file) {
+      if (!item.info.isDirectory()) fail('This path is not a folder.', 'FILE_NOT_DIRECTORY');
+      const entries = [], directory = await opendir(item.path);
+      let truncated = false;
+      for await (const entry of directory) {
+        if (entries.length === FILE_LIMITS.entries) { truncated = true; break; }
+        const kind = entry.isSymbolicLink() ? 'link' : entry.isDirectory() ? 'directory' : entry.isFile() ? 'file' : 'unsupported';
+        const blocked = protectedName(entry.name) || /[\\:\x00-\x1f\x7f]/.test(entry.name) || ['link', 'unsupported'].includes(kind);
+        entries.push({ name: entry.name, kind, blocked });
+      }
+      const checked = await target(ctx.root, parts);
+      if (!same(item.info, checked.info)) fail('This folder changed during inspection. Refresh to try again.', 'FILE_CHANGED', 409);
+      entries.sort((a, b) => (a.kind !== 'directory') - (b.kind !== 'directory') || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+      const start = Number(offset), page = entries.slice(start, start + FILE_LIMITS.page);
+      return { ...identity, scopes: ctx.scopes, entries: page, next: start + page.length < entries.length ? start + page.length : null, truncated };
+    }
+    if (!parts.length || !item.info.isFile()) fail('Only regular text files can be opened.', 'FILE_UNSUPPORTED', 415);
+    if (item.info.size > FILE_LIMITS.bytes) fail('This file exceeds the 512 KiB viewer limit. Open it in your editor.', 'FILE_TOO_LARGE', 413);
+    const handle = await open(item.path, constants.O_RDONLY | (constants.O_NOFOLLOW || 0) | (constants.O_NONBLOCK || 0));
+    try {
+      const before = await handle.stat(), checked = await target(ctx.root, parts);
+      if (!before.isFile() || !same(before, item.info) || !same(before, checked.info)) fail('This file changed during inspection. Try again.', 'FILE_CHANGED', 409);
+      const bytes = Buffer.alloc(FILE_LIMITS.bytes + 1);
+      let size = 0;
+      while (size < bytes.length) { const read = await handle.read(bytes, size, bytes.length - size, size); if (!read.bytesRead) break; size += read.bytesRead; }
+      if (size > FILE_LIMITS.bytes) fail('This file exceeds the 512 KiB viewer limit. Open it in your editor.', 'FILE_TOO_LARGE', 413);
+      const after = await handle.stat(), final = await target(ctx.root, parts);
+      if (!same(before, final.info) || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs || after.size !== final.info.size || after.mtimeMs !== final.info.mtimeMs || after.ctimeMs !== final.info.ctimeMs) fail('This file is being updated. Refresh to read a stable version.', 'FILE_CHANGED', 409);
+      let text;
+      try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, size)); } catch { fail('This file is not UTF-8 text. Open it in your editor.', 'FILE_UNSUPPORTED', 415); }
+      if (/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(text)) fail('Binary files are not displayed by this viewer.', 'FILE_UNSUPPORTED', 415);
+      if (text.split('\n').length > FILE_LIMITS.lines) fail('This file has too many lines for the viewer. Open it in your editor.', 'FILE_TOO_LARGE', 413);
+      const revision = createHash('sha256').update(bytes.subarray(0, size)).digest('hex');
+      return { ...identity, version: revision, bytes: size, modifiedAt: after.mtimeMs, unchanged: revision === version, ...(revision === version ? {} : { text }) };
+    } finally { await handle.close(); }
+  } catch (error) {
+    if (error instanceof WorkspaceFileError) throw error;
+    if (['ENOENT', 'ENOTDIR'].includes(error.code)) fail('This file or folder was removed or is unavailable.', 'FILE_NOT_FOUND', 404);
+    fail('This file or folder could not be inspected. Check its permissions and project link.', 'FILE_UNAVAILABLE', 403);
+  }
+}

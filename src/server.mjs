@@ -29,6 +29,7 @@ import { PipelineActions } from './pipeline-actions.mjs';
 import { PipelineNotifications, NotificationError } from './pipeline-notifications.mjs';
 import { notificationRoute } from './pipeline-notifications-http.mjs';
 import { RepositoryPipelineError } from './pipeline-repository.mjs';
+import { inspectWorkspace, WorkspaceFileError } from './workspace-files.mjs';
 
 const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
 const assets = new Map([
@@ -39,6 +40,7 @@ const assets = new Map([
   ['/base.js', ['base.js', 'text/javascript; charset=utf-8']],
   ['/prefs.js', ['prefs.js', 'text/javascript; charset=utf-8']],
   ['/notifications.js', ['notifications.js', 'text/javascript; charset=utf-8']],
+  ['/workspace-files.js', ['workspace-files.js', 'text/javascript; charset=utf-8']],
   ['/nerd.png', ['nerd.png', 'image/png']],
   ['/kanban-mascot.png', ['kanban-mascot.png', 'image/png']],
   ['/dock.js', ['dock.js', 'text/javascript; charset=utf-8']],
@@ -129,6 +131,10 @@ async function boardRoute(board, req, res, pathname, searchParams) {
   const [, kind, id, action = ''] = match;
   const expected = () => Number(searchParams.get('expectedRevision'));
   if (kind === 'projects') {
+    if (method === 'GET' && ['files', 'file'].includes(action)) return send(res, 200, await inspectWorkspace(board, id, {
+      path: searchParams.get('path') || '', workspace: searchParams.get('workspace') || '',
+      offset: searchParams.get('offset') || '0', version: searchParams.get('version') || '', file: action === 'file',
+    }));
     if (method === 'PATCH' && !action) return view({ project: await board.renameProject(id, await body()) });
     if (method === 'DELETE' && !action) return view({ deleted: await board.deleteProject(id, { expectedRevision: expected() }) ?? true });
     if (method === 'POST' && action === 'repository') return view(await board.linkRepository(id, await body()));
@@ -549,7 +555,7 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
       try { if ((await boardRoute(board, req, res, pathname, requestUrl.searchParams)) !== false) return; }
       catch (error) {
         // Board, store, and Git errors carry fixed messages; raw Git output is never returned.
-        const known = error instanceof BoardError || error instanceof GitHubError || error instanceof GitError || error instanceof StoreError || error instanceof AgentError || error instanceof DeliveryError || error instanceof BaseError || error instanceof BaseDeliveryError || error instanceof RepositoryPipelineError;
+        const known = error instanceof BoardError || error instanceof GitHubError || error instanceof GitError || error instanceof StoreError || error instanceof AgentError || error instanceof DeliveryError || error instanceof BaseError || error instanceof BaseDeliveryError || error instanceof RepositoryPipelineError || error instanceof WorkspaceFileError;
         const status = known || error.status < 500 ? error.status || 500 : 500;
         return send(res, status, known || status < 500 ? { error: error.message, code: error.code || 'INVALID_REQUEST' } : { error: 'The board request failed.', code: 'BOARD_FAILED' });
       }
