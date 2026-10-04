@@ -33,7 +33,7 @@ async function fixture(t) {
 
 test('board backup v3 preserves scope references and exact task text, with an explicit document-content choice', async t => {
   const { source, project, task, instruction, profile } = await fixture(t);
-  const ordinary = await source.exportBackup(); assert.equal(ordinary.version, 6); assert.equal(ordinary.base.includesContent, false);
+  const ordinary = await source.exportBackup(); assert.equal(ordinary.version, 7); assert.equal(ordinary.base.includesContent, false);
   assert.equal(JSON.stringify(ordinary).includes('Private instruction content.'), false);
   const portable = await source.exportBackup({ includeBaseContent: true });
   assert.equal(portable.base.includesContent, true); assert.ok(JSON.stringify(portable).includes('Private instruction content.'));

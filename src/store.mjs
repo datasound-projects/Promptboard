@@ -10,9 +10,10 @@ import { join } from 'node:path';
 import { migrateSessions } from './sessions.mjs';
 import { normalizePipelineConfig, normalizePipelineTaskSelection } from './pipeline-config.mjs';
 import { assignTaskNumbers, validateTaskNumbers } from './task-numbers.mjs';
+import { taskPriority } from './task-priority.mjs';
 
 export const STATE_SCHEMA = 'promptboard.state';
-export const STATE_VERSION = 8;
+export const STATE_VERSION = 9;
 const STATE_FILE = 'state.json';
 
 export function defaultDataDir(env = process.env, platform = process.platform) {
@@ -38,7 +39,7 @@ export class StoreError extends Error {
 function checkShape(data) {
   if (!data || typeof data !== 'object' || data.schema !== STATE_SCHEMA) throw new Error('Unknown state file.');
   if (data.version > STATE_VERSION) throw new StoreError('The board was saved by a newer Promptboard version. Update the app; the file was not changed.', 'STATE_VERSION_UNSUPPORTED');
-  if (![2, 3, 4, 5, 6, 7, STATE_VERSION].includes(data.version) || !Array.isArray(data.projects) || !Array.isArray(data.runs)) throw new Error('Unsupported state shape.');
+  if (![2, 3, 4, 5, 6, 7, 8, STATE_VERSION].includes(data.version) || !Array.isArray(data.projects) || !Array.isArray(data.runs)) throw new Error('Unsupported state shape.');
   if (data.version >= 3 && (!data.base || !Array.isArray(data.base.resources) || !Array.isArray(data.base.approvedRoots) || !Number.isSafeInteger(data.base.revision) || data.base.revision < 0)) throw new Error('Invalid Base registry shape.');
   if (data.version >= 4 && (!Array.isArray(data.sessions) || data.sessions.some(session => !session || typeof session !== 'object'
     || typeof session.id !== 'string' || !session.id || typeof session.taskId !== 'string' || typeof session.projectId !== 'string'
@@ -52,6 +53,7 @@ function checkShape(data) {
       for (const task of project.tasks) normalizePipelineTaskSelection(config, { profileId: task.profileId, agentOverride: task.agentOverride });
     }
     if (data.version >= 7) validateTaskNumbers(project);
+    if (data.version >= 9) for (const task of project.tasks) taskPriority(task.priority);
     if (data.version >= 6) for (const task of project.tasks) {
       const validKey = key => key && typeof key === 'object' && key.projectId === project.id && key.taskId === task.id
         && typeof key.transitionId === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(key.transitionId);
@@ -98,7 +100,9 @@ export function migrateState(data) {
     for (const project of state.projects) assignTaskNumbers(project);
     state.migrations.push({ kind: 'state-v6-to-v7', at: Date.now() });
   }
-  state.migrations.push({ kind: 'state-v7-to-v8', at: Date.now() });
+  if (state.version < 8) state.migrations.push({ kind: 'state-v7-to-v8', at: Date.now() });
+  for (const project of state.projects) for (const task of project.tasks) task.priority = taskPriority(task.priority);
+  state.migrations.push({ kind: 'state-v8-to-v9', at: Date.now() });
   state.version = STATE_VERSION;
   return state;
 }

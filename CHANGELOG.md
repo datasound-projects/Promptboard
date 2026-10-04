@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Save task priority separately from prompt content, with keyboard pipeline editing and labeled card/archive badges. Preserve exact Composer prompts, content checks, task order and agent execution; migrate state to version 9 with exact original backups and export portable version 7 metadata. Custom levels, filters and backlog integration remain pending.
+
 - Make the opt-in disposable Claude live check wait for a settled folder-trust screen and verify the current positive selection before Enter. Preserve manual-input guards and separate trust warmup from fresh-process delivery; never confirm a stale or reset negative answer.
 
 - Release native message scheduler capacity after known completion, retaining a bounded recent-completion cache and durable replay protection. Keep uncertain owners and blocked-run barriers intact so long-running boards can deliver more than 1,000 messages without restarting.

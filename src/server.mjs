@@ -341,7 +341,7 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
     const pathname = requestUrl.pathname;
     const isApi = pathname.startsWith('/api/') && pathname !== '/api/session' && pathname !== '/api/providers';
     if (isApi && req.headers['x-ste-token'] !== token) return send(res, 403, { error: 'Reload this page before you try again.' });
-    if (req.method === 'GET' && pathname === '/api/session') return send(res, 200, { token, capabilities: { pipelineTitleOnly: true, pipelineBulkRestore: true, pipelineDeferredMessages: true } });
+    if (req.method === 'GET' && pathname === '/api/session') return send(res, 200, { token, capabilities: { pipelineTitleOnly: true, pipelineBulkRestore: true, pipelineDeferredMessages: true, taskPriority: true } });
     if (/^\/api\/notifications(?:\/|$)/.test(pathname)) {
       try { return await notificationRoute(notifications, req, res, pathname, { jsonBody, send }); }
       catch (error) {

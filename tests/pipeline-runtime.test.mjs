@@ -165,7 +165,7 @@ test('pipeline backups preserve structure and Base scopes but restore with dispa
   const w = await world(t), config = defaultPipelineConfig(); config.columns[2].name = 'Build'; await w.configure(config);
   const card = await w.board.createTask({ projectId: w.projectId, title: 'Saved split task', prompt: '  CRLF\r\nexact  ' });
   await w.move(card.id, 'testing', { decision: 'move' });
-  const backup = await w.board.exportBackup(); assert.equal(backup.version, 6);
+  const backup = await w.board.exportBackup(); assert.equal(backup.version, 7);
   const other = new Board({ dataDir: await temp(t), executor: { start() { assert.fail('Import must not execute.'); } } });
   await other.importBackup(backup);
   const saved = (await other.state()).projects[0]; assert.equal(saved.workflowMode, 'pipeline'); assert.equal(saved.pipeline.columns[2].name, 'Build');
@@ -1022,7 +1022,7 @@ test('board profiles and whole-task pins round-trip through v5 backups without s
   const rev = (await w.projectNow()).revision, prompt = '  Portable 😀\r\n{{title}} ';
   await w.board.createTask({ projectId: w.projectId, title: 'Profile', prompt, pipelineSettings: { profileId: 'p' }, expectedProjectRevision: rev });
   await w.board.createTask({ projectId: w.projectId, title: 'Pin', prompt, pipelineSettings: { agentOverride: { agentOverride: 'claude', modelOverride: 'custom', effortOverride: 'max', permissionMode: 'default' } }, expectedProjectRevision: rev });
-  const backup = await w.board.exportBackup(); assert.equal(backup.version, 6); assert.equal(backup.projects[0].tasks[0].profileId, 'p');
+  const backup = await w.board.exportBackup(); assert.equal(backup.version, 7); assert.equal(backup.projects[0].tasks[0].profileId, 'p');
   const imported = new Board({ dataDir: await temp(t) }); await imported.importBackup(backup, { replace: true });
   const project = (await imported.state()).projects[0]; assert.equal(project.tasks[0].profileId, 'p'); assert.deepEqual(project.tasks[1].agentOverride, backup.projects[0].tasks[1].agentOverride);
   assert.equal(project.tasks[1].prompt, prompt); assert.equal(project.tasks[1].workspace, null); assert.deepEqual((await imported.state()).sessions, []);
