@@ -1702,13 +1702,16 @@ export class Board {
       if (key !== `github:issue:${externalSource.id}`) throw new BoardError('The issue identity is inconsistent.', 'INVALID_BACKLOG_IMPORT');
       return { key, issue, externalSource };
     });
-    const imageSignal = AbortSignal.timeout(30000);
+    const imageSignal = AbortSignal.timeout(30000); let importedImageBytes = 0;
     for (const row of issues) {
       if (!includeAttachments || captured.backlogImported.some(item => item.key === row.key)) continue;
       row.attachments = [];
       for (const url of inlineImageURLs(row.issue.prompt)) {
         const image = await this.imageDownloader(url, { signal: imageSignal }); imageSignal.throwIfAborted();
-        row.attachments.push(await this.taskFiles.upload(projectId, image));
+        const decoded = decodeAttachment(image); importedImageBytes += decoded.descriptor.size;
+        if (importedImageBytes > 24 * 1024 * 1024) throw new BoardError('Selected issue images exceed 24 MiB. Import fewer issues or uncheck images.', 'TASK_FILES_LIMIT', 413);
+        const attachment = await this.taskFiles.upload(projectId, image);
+        if (!row.attachments.some(item => item.id === attachment.id)) row.attachments.push(attachment);
         taskFileFields({ attachments: row.attachments });
       }
     }
@@ -2084,7 +2087,10 @@ export class Board {
       let size = 0;
       for (const row of data.taskAttachmentBlobs) {
         if (!row || typeof row.projectId !== 'string') throw new BoardError('Invalid attachment ownership.', 'INVALID_BACKUP');
-        const decoded = decodeAttachment(row.attachment), key = `${row.projectId}:${decoded.descriptor.id}`, descriptor = expected.get(key);
+        const decoded = decodeAttachment(row.attachment);
+        const declared = taskFileFields({ attachments: [{ id: row.attachment.id, name: row.attachment.name, size: row.attachment.size, sha256: row.attachment.sha256 }] }).attachments[0];
+        if (JSON.stringify(declared) !== JSON.stringify(decoded.descriptor)) throw new BoardError('Attachment metadata does not match its bytes.', 'INVALID_BACKUP');
+        const key = `${row.projectId}:${decoded.descriptor.id}`, descriptor = expected.get(key);
         if (!descriptor || JSON.stringify(descriptor) !== JSON.stringify(decoded.descriptor)) throw new BoardError('Attachment bytes do not match the backup.', 'INVALID_BACKUP');
         expected.delete(key); size += decoded.bytes.length;
         if (size > 24 * 1024 * 1024) throw new BoardError('The backup attachment limit is 24 MiB.', 'INVALID_BACKUP');

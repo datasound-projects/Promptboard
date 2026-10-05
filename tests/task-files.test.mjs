@@ -108,3 +108,17 @@ test('file-bearing backup imports retain a strict concurrent board revision guar
   target.base.prepareImport = async (...args) => { const prepared = await prepare(...args); await target.store.update(state => { state.settings.userChange = 'preserved'; }); return prepared; };
   await assert.rejects(target.importBackup(portable), { code: 'REVISION_CONFLICT' }); const saved = await target.state(); assert.equal(saved.settings.userChange, 'preserved'); assert.deepEqual(saved.projects, []); assert.deepEqual(saved.base.resources, []);
 });
+
+test('GitHub image DNS lookup cancellation remains bounded without contacting a host', async () => {
+  const controller = new AbortController();
+  const pending = downloadGitHubImage('https://github.com/user-attachments/assets/abc123', { signal: controller.signal, lookupFn: () => new Promise(() => {}), requestFn: () => assert.fail('No request after aborted lookup') });
+  controller.abort(); await assert.rejects(pending, { code: 'TASK_FILE_IMPORT_FAILED' });
+});
+
+test('a maximum 4 MiB binary attachment decodes, persists, reads and exports without recursive-regex failure', async t => {
+  const w = await world(t), bytes = Buffer.alloc(4 * 1024 * 1024, 251), upload = input('maximum.bin', bytes), descriptor = await w.board.uploadTaskAttachment(w.project.id, upload);
+  assert.equal(descriptor.size, bytes.length); assert.deepEqual((await w.board.taskFiles.read(w.project.id, descriptor)).bytes, bytes);
+  await w.board.createTask({ projectId: w.project.id, title: 'Maximum', prompt: exact, attachments: [descriptor] });
+  assert.equal((await w.board.exportBackup()).taskAttachmentBlobs[0].attachment.base64, upload.base64);
+  assert.throws(() => decodeAttachment(input('too-large.bin', Buffer.alloc(4 * 1024 * 1024 + 1))), { code: 'TASK_FILES_LIMIT' });
+});

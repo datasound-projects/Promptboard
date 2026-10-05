@@ -95,7 +95,7 @@ for (const width of [1280, 390]) for (const theme of ['light', 'dark']) test(`Gi
   const owner = await w.owner(); assert.equal(owner.backlog.length, 2); assert.equal(owner.tasks.length, 1); assert.deepEqual(owner.tasks[0], w.composer);
   assert.deepEqual(owner.backlog.map(row => row.externalSource.id), [101,103]); assert.ok(owner.backlog.every(row => row.prompt === exact && row.priority === 0 && row.number === undefined && row.source === null));
   assert.equal(owner.labels[0].name, 'Bug'); assert.equal(owner.labels[0].color, '#abcdef'); assert.deepEqual(owner.backlog[0].externalSource.assignees, ['octo']); assert.equal(owner.revision, w.project.revision); assert.equal(owner.nextTaskNumber, 2);
-  const writes = await b.eval('return window.__writes;'); assert.equal(writes.length, 2); assert.deepEqual(writes[1].body, { keys: ['github:issue:101','github:issue:103'], state: 'all', page: 1, titleOverrides: {}, expectedImportRevision: 1, expectedBacklogRevision: 0, expectedLabelRevision: 0 });
+  const writes = await b.eval('return window.__writes;'); assert.equal(writes.length, 2); assert.deepEqual(writes[1].body, { keys: ['github:issue:101','github:issue:103'], state: 'all', page: 1, titleOverrides: {}, includeAttachments: true, expectedImportRevision: 1, expectedBacklogRevision: 0, expectedLabelRevision: 0 });
   await key(b, '#backlog-import-cancel'); await b.until('!document.getElementById("backlog-import-dialog").open', 'picker closed');
   assert.equal(await b.eval('return document.querySelector("#backlog-list .task-external-source").href;'), rows[0].html_url);
   const state = await w.app.board.state(); assert.deepEqual(state.runs, []); assert.deepEqual(state.sessions, []); assert.deepEqual(b.consoleMessages.filter(line => line.startsWith('EXCEPTION')), []);
@@ -193,4 +193,23 @@ test('an accepted import retains its project owner while close, Escape and proje
   const state = await w.app.board.state(), unchanged = state.projects.find(project => project.id === other.id);
   assert.equal((await w.owner()).backlog.length, 1); assert.deepEqual(unchanged.backlog, []); assert.deepEqual(unchanged.backlogImported, []); assert.equal(unchanged.backlogImportRevision, 0); assert.equal(unchanged.revision, other.revision);
   assert.ok(await b.eval(`return window.__writes.at(-1).url.includes(${JSON.stringify(w.project.id)});`)); assert.deepEqual(state.runs, []); assert.deepEqual(state.sessions, []);
+});
+
+test('inline-image imports abort drafts atomically on file errors and require explicit text-only selection to continue', { skip: !chrome, timeout: 60000 }, async t => {
+  const url = 'https://github.com/user-attachments/assets/abc123', body = exact + `![screenshot](${url})`, w = await setup(t, [issue(1, { body })], { saved: true, width: 390, theme: 'dark' }), { browser: b } = w;
+  w.app.board.imageDownloader = async () => { throw Object.assign(new Error('Image unavailable. Uncheck images to import text only.'), { code: 'TASK_FILE_IMPORT_FAILED', status: 409 }); };
+  await open(w); await ready(w); assert.equal(await b.eval('return document.getElementById("backlog-import-images").checked;'), true); await key(b, item(101), true);
+  const before = await w.app.board.state(); await key(b, '#backlog-import-submit'); await b.until('backlogImportDraft.blocked&&!backlogImportDraft.mutation', 'image failure requires review');
+  assert.deepEqual(await w.app.board.state(), before); assert.match(await b.eval('return document.getElementById("backlog-import-error").textContent;'), /Uncheck images/);
+  await key(b, '#backlog-import-refresh-choices'); await b.until('!backlogImportDraft.blocked', 'review unchanged import choices'); await key(b, '#backlog-import-images', true); assert.equal(await b.eval('return document.getElementById("backlog-import-images").checked;'), false);
+  await key(b, '#backlog-import-submit'); await b.until('!backlogImportDraft.mutation&&backlogImportDraft.imported.has("github:issue:101")', 'explicit text-only import');
+  const owner = await w.owner(); assert.equal(owner.backlog[0].prompt, body); assert.equal(owner.backlog[0].attachments, undefined); assert.deepEqual((await w.app.board.state()).runs, []); assert.deepEqual((await w.app.board.state()).sessions, []); assert.equal(owner.tasks[0].prompt, exact);
+});
+
+test('the import picker saves public inline-image bytes separately while retaining the exact issue and Composer prompts', { skip: !chrome, timeout: 60000 }, async t => {
+  const url = 'https://github.com/user-attachments/assets/abc123', body = exact + `<img src="${url}">`, w = await setup(t, [issue(1, { body })], { saved: true }), b = w.browser;
+  let downloads = 0; w.app.board.imageDownloader = async value => { assert.equal(value, url); downloads++; return { name: 'screenshot.png', base64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/lWQAAAAASUVORK5CYII=' }; };
+  await open(w); await ready(w); await key(b, item(101), true); await key(b, '#backlog-import-submit'); await b.until('!backlogImportDraft.mutation&&backlogImportDraft.imported.has("github:issue:101")', 'image import completed');
+  const owner = await w.owner(); assert.equal(downloads, 1); assert.equal(owner.backlog[0].prompt, body); assert.equal(owner.backlog[0].attachments[0].name, 'screenshot.png'); assert.equal(owner.tasks[0].prompt, exact); assert.deepEqual((await w.app.board.state()).runs, []); assert.deepEqual((await w.app.board.state()).sessions, []);
+  assert.equal((await w.app.board.taskAttachment(w.project.id, owner.backlog[0].attachments[0])).size, 68);
 });

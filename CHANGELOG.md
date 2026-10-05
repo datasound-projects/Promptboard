@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add private task/Backlog attachments, paste/drop authoring, safe raster previews and validated project-relative `@` references. Preserve literal prompts, copies and promotion; append paths with pre-launch custody checks, preserving Base/CLI tools. Add optional bounded GitHub inline-image imports and portable version 11 file bytes; state 13 retains existing sources/ledgers.
+
 - Cache saved GitHub preview pages across restarts and add explicit incremental Sync changes with freshness, bounded reads and retained failure snapshots. Preserve local edits, duplicate identities, exact Composer/split To Do inputs, Base and CLI tool inheritance. Imports still verify GitHub; sync starts no agents or task updates.
 
 - Add a keyboard GitHub Issues import picker with saved repositories, page filters, retained hidden selections, explicit short titles and original issue links. Keep imports inert, preserve Composer tasks and captured project ownership, and require explicit review after stale or unknown write results. Older servers hide the controls; persistent cache, incremental sync, attachments and other tracker adapters remain pending.

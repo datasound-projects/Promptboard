@@ -1,6 +1,6 @@
 # GitHub Issues import backend
 
-This step adds saved GitHub repository sources and selected-page issue imports to pipeline projects. The [source picker](backlog-github-import-ui.md) exposes these operations with explicit page selection. Persistent preview cache, incremental sync, attachment downloads and other tracker adapters follow separately.
+This step adds saved GitHub repository sources and selected-page issue imports to pipeline projects. The [source picker](backlog-github-import-ui.md) exposes these operations with explicit page selection. [Cached previews and explicit incremental sync](backlog-source-sync.md) are available; [task files](task-files.md) add optional public GitHub inline-image capture with a text-only fallback. Other tracker adapters remain pending.
 
 Authenticated POST `backlog/sources/github-issues` accepts a repository name/HTTPS URL and `expectedImportRevision`. The existing non-interactive GitHub CLI verifies read access before the source is saved. Source removal uses DELETE `backlog/sources/:sourceId` with the same revision. A project can save 20 sources. These operations do not change board settings, Base assignments, pending messages or agent sessions.
 

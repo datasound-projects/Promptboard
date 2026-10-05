@@ -1056,3 +1056,18 @@ test('board profiles apply actual native launch flags and paused same-provider c
   for (const launch of launches) { assert.ok(launch.args.includes('--mcp-config')); assert.ok(!launch.args.includes('--strict-mcp-config')); assert.ok(!launch.args.includes('--tools')); assert.ok(!launch.args.includes('--disallowedTools')); }
   assert.equal((await w.taskNow(card.id)).prompt, prompt); assert.equal((await w.taskNow(card.id)).contentRevision, 1);
 });
+
+test('pipeline attachment paths preserve exact prompts and Base/tool inheritance; queued edits and missing delivery files are refused', async t => {
+  const w = await world(t); await w.configure(defaultPipelineConfig());
+  const prompt = '  exact {{attachments}}\r\n雪  ', attachment = await w.board.uploadTaskAttachment(w.projectId, { name: 'plan.txt', base64: Buffer.from('attachment context').toString('base64') });
+  const task = await w.board.createTask({ projectId: w.projectId, title: 'Attachment task', prompt, attachments: [attachment], fileReferences: ['README.md'] });
+  assert.equal(w.starts.length, 0); await w.move(task.id, 'executing'); const payload = w.starts[0], current = await w.taskNow(task.id);
+  assert.equal(payload.task.prompt, prompt); assert.equal(current.prompt, prompt);
+  const paths = await w.board.prepareTaskFiles(payload.run); assert.equal(paths.length, 2); assert.equal(paths[1], join(current.workspace.path, 'README.md'));
+  assert.equal(payload.firstPrompt, pipelineTaskEnvelope(current) + '\n' + paths.join('\n'));
+  const built = await buildSession({ provider: 'claude', stage: 'executing', config: payload.run.config, message: payload.firstPrompt, runDir: join(w.dataDir, payload.run.artifactsDir), eventsFile: join(w.dataDir, payload.run.artifactsDir, 'events.jsonl'), sessionId: '00000000-0000-4000-8000-000000000001', workspacePath: current.workspace.path, baseDelivery: { manifest: {}, sections: '', tools: [] } });
+  assert.ok(!built.args.includes('--strict-mcp-config')); assert.ok(built.args.includes(payload.firstPrompt));
+  await assert.rejects(w.board.updateTask(task.id, { attachments: [], expectedRevision: current.revision }), { code: 'RUN_ACTIVE' });
+  assert.equal((await w.taskNow(task.id)).contentRevision, current.contentRevision);
+  await rm(paths[0]); await assert.rejects(w.board.prepareTaskFiles(payload.run), { code: 'TASK_FILE_MISSING' });
+});

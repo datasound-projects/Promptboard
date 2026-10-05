@@ -39,7 +39,7 @@ export function taskFileFields(value = {}) {
 export const taskFilesEqual = (a, b) => JSON.stringify({ attachments: a.attachments || [], fileReferences: a.fileReferences || [] }) === JSON.stringify({ attachments: b.attachments || [], fileReferences: b.fileReferences || [] });
 export function decodeAttachment(input) {
   if (!input || typeof input !== 'object' || typeof input.base64 !== 'string' || input.base64.length > Math.ceil(TASK_FILE_LIMITS.bytes / 3) * 4
-    || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(input.base64)) fail('Send a bounded, canonical base64 attachment.', 'TASK_FILES_LIMIT', 413);
+    || input.base64.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(input.base64)) fail('Send a bounded, canonical base64 attachment.', 'TASK_FILES_LIMIT', 413);
   const bytes = Buffer.from(input.base64, 'base64'), name = filename(input.name);
   if (bytes.length > TASK_FILE_LIMITS.bytes || bytes.toString('base64') !== input.base64) fail('This attachment exceeds 4 MiB.', 'TASK_FILES_LIMIT', 413);
   const sha256 = hash(bytes); return { bytes, descriptor: { id: `${sha256}-${hash(name)}`, name, size: bytes.length, sha256 } };
@@ -74,7 +74,7 @@ export class TaskFiles {
     taskFileFields({ attachments: [descriptor] });
     try {
       const dir = await this.directory(projectId), path = join(dir, `${descriptor.id}-${descriptor.name}`), before = await lstat(path);
-      if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || before.size !== descriptor.size) fail('Attachment bytes changed. Upload the file again.', 'TASK_FILES_CHANGED', 409);
+      if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || before.size !== descriptor.size) fail('Attachment bytes changed. Restore the file or attach it under a new name.', 'TASK_FILES_CHANGED', 409);
       const parent = await lstat(dir);
       const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW || 0) | (constants.O_NONBLOCK || 0));
       try {
@@ -84,7 +84,7 @@ export class TaskFiles {
         const after = await handle.stat(), final = await lstat(path);
         if (!same(opened, final) || opened.size !== after.size || opened.mtimeMs !== after.mtimeMs || opened.ctimeMs !== after.ctimeMs
           || after.size !== final.size || after.ctimeMs !== final.ctimeMs || final.isSymbolicLink() || final.nlink !== 1 || size !== descriptor.size || hash(bytes.subarray(0, size)) !== descriptor.sha256)
-          fail('Attachment bytes changed. Upload the file again.', 'TASK_FILES_CHANGED', 409);
+          fail('Attachment bytes changed. Restore the file or attach it under a new name.', 'TASK_FILES_CHANGED', 409);
         if (!same(parent, await lstat(await this.directory(projectId)))) fail('Attachment storage changed.', 'TASK_FILES_CHANGED', 409);
         return { path, bytes: bytes.subarray(0, size) };
       } finally { await handle.close(); }

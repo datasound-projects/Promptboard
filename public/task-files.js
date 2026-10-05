@@ -20,16 +20,16 @@
       const route = action => `/api/projects/${encodeURIComponent(owner)}/${action}`;
       const release = () => { for (const url of urls) URL.revokeObjectURL(url); urls.clear(); };
       const render = () => {
-        list.replaceChildren();
+        release(); list.replaceChildren();
         for (const file of files) {
-          const row = el('li'); row.append(el('span', `${file.name} · ${Math.ceil(file.size / 1024)} KiB`));
+          const row = el('li'); let previewURL; row.append(el('span', `${file.name} · ${Math.ceil(file.size / 1024)} KiB`));
           row.append(button(`Preview / download ${file.name}`, async () => {
             const captured = generation, projectId = owner;
             try {
               const response = await api(`/api/projects/${encodeURIComponent(projectId)}/attachment-read`, { method: 'POST', body: file });
               if (captured !== generation) return;
-              const bytes = Uint8Array.from(atob(response.attachment.base64), ch => ch.charCodeAt(0)), type = imageType(bytes), url = URL.createObjectURL(new Blob([bytes], { type: type || 'application/octet-stream' })); urls.add(url);
-              if (type) { const image = el('img'); image.src = url; image.alt = `Preview of ${file.name}`; image.className = 'task-file-preview'; row.append(image); }
+              const bytes = Uint8Array.from(atob(response.attachment.base64), ch => ch.charCodeAt(0)), type = imageType(bytes), url = URL.createObjectURL(new Blob([bytes], { type: type || 'application/octet-stream' })); if (previewURL) { URL.revokeObjectURL(previewURL); urls.delete(previewURL); } previewURL = url; urls.add(url); row.querySelectorAll('img,a').forEach(node => node.remove());
+              if (type) { const image = el('img'); image.src = `data:${type};base64,${response.attachment.base64}`; image.alt = `Preview of ${file.name}`; image.className = 'task-file-preview'; image.addEventListener('error', () => { if (captured === generation) failure(new Error('Image preview is unavailable. Download the file to inspect it.')); }); row.append(image); }
               const download = el('a', `Download ${file.name}`, 'text-button'); download.href = url; download.download = file.name; row.append(download);
             } catch (problem) { if (captured === generation) failure(problem); }
           }), button(`Remove ${file.name}`, () => { if (busy) return; files = files.filter(value => value.id !== file.id); release(); render(); })); list.append(row);
@@ -57,7 +57,7 @@
       }
       async function addReference(path, insert = false) {
         if (!owner || busy) return;
-        const captured = generation; error.hidden = true;
+        const captured = generation; error.hidden = true; busy = true; render();
         try {
           const next = [...new Set([...refs, path])];
           await api(route('file-references'), { method: 'POST', body: { fileReferences: next } });
@@ -66,6 +66,7 @@
           if (insert && marker) { prompt.setRangeText(`@${path} `, marker.start, marker.end, 'end'); prompt.dispatchEvent(new Event('input', { bubbles: true })); prompt.focus(); }
           choices.hidden = true; render(); message(`Added reference ${path}.`);
         } catch (problem) { if (captured === generation) failure(problem); }
+        finally { if (captured === generation) { busy = false; render(); } }
       }
       refRow.append(reference, button('Add reference', () => addReference(reference.value))); reference.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); addReference(reference.value); } });
       host.append(legend, el('p', 'Choose files, paste images or drop files here. Type @ in the prompt to choose project files.', 'note'), input, refRow, list, choices, status, error);
@@ -81,9 +82,14 @@
         const query = match[1], slash = query.lastIndexOf('/'), folder = slash < 0 ? '' : query.slice(0, slash), prefix = query.slice(slash + 1), captured = generation;
         marker = { start: prompt.selectionStart - query.length - 1, end: prompt.selectionStart }; const capturedMarker = marker;
         try {
-          const data = await api(route('files') + '?path=' + encodeURIComponent(folder));
-          if (captured !== generation || marker !== capturedMarker) return;
-          suggestions = data.entries.filter(row => !row.blocked && row.name.toLowerCase().startsWith(prefix.toLowerCase())).slice(0, 20).map(row => folder ? `${folder}/${row.name}` : row.name); selected = 0;
+          const matches = []; let offset = 0;
+          for (let page = 0; page < 20; page++) {
+            const data = await api(route('files') + '?path=' + encodeURIComponent(folder) + '&offset=' + offset);
+            if (captured !== generation || marker !== capturedMarker) return;
+            matches.push(...data.entries.filter(row => !row.blocked && row.name.toLowerCase().startsWith(prefix.toLowerCase())).map(row => folder ? `${folder}/${row.name}` : row.name));
+            if (matches.length >= 20 || data.next === null) break; offset = data.next;
+          }
+          suggestions = matches.slice(0, 20); selected = 0;
           choices.replaceChildren(...suggestions.map((path, index) => { const node = button(path, () => addReference(path, true)); node.setAttribute('role', 'option'); node.setAttribute('aria-selected', String(index === 0)); return node; })); choices.hidden = !suggestions.length;
         } catch (problem) { if (captured === generation && marker === capturedMarker) failure(problem); }
       });
