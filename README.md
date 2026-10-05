@@ -22,6 +22,8 @@ npm start
 
 Open **http://127.0.0.1:4318**. The navigation is **Compose | Kanban | Base**. Press **Ctrl+C** to stop.
 
+If you already have a `Promptboard` folder, use [Update an existing installation](#update-an-existing-installation) below.
+
 ### Update an existing installation
 
 Stop Promptboard with **Ctrl+C**, open a terminal in its `Promptboard` folder, then run:
