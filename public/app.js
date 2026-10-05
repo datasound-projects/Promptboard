@@ -25,6 +25,7 @@ let pipelineBulkRestoreSupported = false;
 let pipelineDeferredMessagesSupported = false;
 let taskPrioritySupported = false;
 let taskLabelsSupported = false;
+let pipelineBacklogSupported = false;
 let providers = [];
 let history = readHistory();
 let currentId = null;
@@ -295,6 +296,7 @@ async function loadProviders() {
     pipelineDeferredMessagesSupported = session.capabilities?.pipelineDeferredMessages === true;
     taskPrioritySupported = session.capabilities?.taskPriority === true;
     taskLabelsSupported = session.capabilities?.taskLabels === true;
+    pipelineBacklogSupported = session.capabilities?.pipelineBacklog === true;
     providers = Array.isArray(status.providers) ? status.providers.filter((item) => item && KNOWN_PROVIDERS.includes(item.id)) : [];
     if (!token) throw new Error('The local server did not return a session token.');
     browserNotifications?.resume();
@@ -318,6 +320,7 @@ async function loadProviders() {
     pipelineDeferredMessagesSupported = false;
     taskPrioritySupported = false;
     taskLabelsSupported = false;
+    pipelineBacklogSupported = false;
     browserNotifications?.stop();
     $('#cli-status-label').textContent = 'Server unavailable';
     $('#provider-note').textContent = 'Could not reach the local server. Restart the app, then reload this page.';
@@ -1424,7 +1427,7 @@ function matchesLabel(task, filter) {
   return filter === 'none' ? ids.length === 0 : ids.includes(filter.slice(6));
 }
 function matchesTaskFilters(task, project = currentProject()) {
-  return matchesPriority(task, projectPriorityFilter(project)) && matchesLabel(task, projectLabelFilter(project));
+  return matchesPriority(task, projectPriorityFilter(project)) && matchesLabel(task, projectLabelFilter(project)) && matchesTaskSearch(task, project);
 }
 function renderLabelFilter(select, project, value) {
   const entries = [['all', 'All labels'], ['none', 'Unlabeled'], ...projectLabels(project).map(label => [`label:${label.id}`, label.name])];
@@ -1439,6 +1442,18 @@ function changeLabelFilter(select) {
   projectLabelFilters.set(project.id, select.value); savePref(`promptboard.label-filter.${project.id}`, select.value); renderBoard();
 }
 
+const projectSearches = new Map();
+function projectSearch(project = currentProject()) {
+  if (!pipelineBacklogSupported || project?.workflowMode !== 'pipeline') return '';
+  return projectSearches.get(project.id) || '';
+}
+function matchesTaskSearch(task, project = currentProject(), query = projectSearch(project)) {
+  const search = query.trim().toLocaleLowerCase();
+  if (!search) return true;
+  const names = projectLabels(project).filter(label => task.labelIds?.includes(label.id)).map(label => label.name);
+  return [task.title, task.prompt, ...names].some(text => typeof text === 'string' && text.toLocaleLowerCase().includes(search));
+}
+
 function renderBoard() {
   fitBoardHeight();
   refreshTaskDetailLabels();
@@ -1447,6 +1462,9 @@ function renderBoard() {
   const project = currentProject();
   const tasks = project?.tasks || [];
   const timelineView = Boolean(project) && projectView() === 'timeline';
+  const backlogAvailable = pipelineBacklogSupported && project?.workflowMode === 'pipeline';
+  const backlogView = backlogAvailable && projectView() === 'backlog';
+  const displayed = backlogView ? project.backlog || [] : tasks;
   $('#board-labels-toolbar').hidden = !taskLabelsSupported || project?.workflowMode !== 'pipeline' || timelineView;
   $('#project-select').replaceChildren(...(board?.projects || []).map(item => option(item.id, item.name)));
   if (!project) $('#project-select').append(option('', board ? 'No projects yet' : 'Loading…'));
@@ -1455,26 +1473,35 @@ function renderBoard() {
   $('#project-new').disabled = !board;
   for (const id of ['#project-rename', '#project-delete', '#card-new', '#agents-open']) $(id).disabled = !project;
   const priority = timelineView ? 'all' : projectPriorityFilter(project), label = timelineView ? 'all' : projectLabelFilter(project);
-  const filtered = priority !== 'all' || label !== 'all', visibleTasks = tasks.filter(task => matchesPriority(task, priority) && matchesLabel(task, label));
-  $('#board-count').textContent = !filtered ? String(tasks.length).padStart(2, '0') : `${visibleTasks.length}/${tasks.length}`;
-  $('#board-count').setAttribute('aria-label', !filtered ? 'Cards' : `${visibleTasks.length} of ${tasks.length} cards shown`);
+  const filtered = priority !== 'all' || label !== 'all' || !timelineView && Boolean(projectSearch(project).trim());
+  const visibleTasks = displayed.filter(task => matchesPriority(task, priority) && matchesLabel(task, label) && (timelineView || matchesTaskSearch(task, project)));
+  $('#board-search-field').hidden = !backlogAvailable || timelineView;
+  if ($('#board-search').value !== projectSearch(project)) $('#board-search').value = projectSearch(project);
+  $('#board-count').textContent = !filtered ? String(displayed.length).padStart(2, '0') : `${visibleTasks.length}/${displayed.length}`;
+  $('#board-count').setAttribute('aria-label', !filtered ? 'Cards' : `${visibleTasks.length} of ${displayed.length} cards shown`);
   $('#board-priority-filter').value = priority;
-  const summary = !filtered ? 'All tasks shown.' : visibleTasks.length ? `${visibleTasks.length} of ${tasks.length} tasks shown.` : label === 'all' ? 'No tasks match this priority.' : 'No tasks match these filters.';
+  const summary = !filtered ? 'All tasks shown.' : visibleTasks.length ? `${visibleTasks.length} of ${displayed.length} tasks shown.` : label === 'all' && !projectSearch(project).trim() ? 'No tasks match this priority.' : 'No tasks match these filters.';
   $('#board-priority-filter-summary').textContent = summary;
   renderLabelFilter($('#board-label-filter'), project, label);
   $('#board-label-filter-summary').textContent = summary;
-  $('#board-empty').hidden = tasks.length > 0;
+  $('#board-empty').hidden = displayed.length > 0;
   $('#board-empty-text').textContent = !board ? 'Loading the board…' : project ? 'No tasks yet.' : 'Create a project to start planning.';
   $('#board-empty-note').textContent = project ? 'Choose New card, or add a generated prompt from the Compose page. New cards start in To Do.' : 'Each project gets its own board, from To Do to Done.';
   $('#empty-prompt-link').hidden = !project;
   $('#board-priority-filter-field').hidden = !taskPrioritySupported || project?.workflowMode !== 'pipeline' || timelineView;
-  $('#kanban-columns').hidden = !project || timelineView;
-  if (timelineView) $('#board-empty').hidden = true;
+  $('#board-filter-toolbar').hidden = $('#board-priority-filter-field').hidden && $('#board-search-field').hidden;
+  $('#kanban-columns').hidden = !project || timelineView || backlogView;
+  $('#backlog').hidden = !backlogView;
+  $('#view-backlog').hidden = !backlogAvailable;
+  $('#view-backlog').setAttribute('aria-selected', String(backlogView));
+  $('#backlog-new').hidden = !backlogView;
+  if (backlogView) renderBacklog(project);
+  if (timelineView || backlogView) $('#board-empty').hidden = true;
   $('#timeline').hidden = !timelineView;
-  $('#view-board').setAttribute('aria-selected', String(!timelineView));
+  $('#view-board').setAttribute('aria-selected', String(!timelineView && !backlogView));
   $('#view-timeline').setAttribute('aria-selected', String(timelineView));
   $('#view-timeline').disabled = !project;
-  for (const id of ['#autopilot-open', '#columns-open', '#agents-open', '#board-left', '#board-right', '#card-new']) $(id).hidden = timelineView;
+  for (const id of ['#autopilot-open', '#columns-open', '#agents-open', '#board-left', '#board-right', '#card-new']) $(id).hidden = timelineView || backlogView;
   $('#columns-open').disabled = !project;
   if (project?.workflowMode === 'pipeline') $('#autopilot-open').hidden = true;
   // Missing terminal support never blocks the board or the prompt editor; it only disables runs.
@@ -1512,6 +1539,7 @@ function renderBoard() {
   renderWorkspace(project);
   renderAgents(project);
   renderAutopilotBar(project);
+  if (timelineView || backlogView) $('#autopilot-bar').hidden = true;
   if (timelineView) { $('#autopilot-bar').hidden = true; refreshTimeline(project); }
   updateBoardScroll();
   window.PromptboardDock?.sync();
@@ -1551,7 +1579,7 @@ function renderColumn(column, tasks) {
   heading.append(stageIcon(column.id), column.title);
   const count = document.createElement('span');
   count.className = 'kanban-count kanban-column-count';
-  const filtered = projectPriorityFilter() !== 'all' || projectLabelFilter() !== 'all', visible = tasks.filter(task => matchesTaskFilters(task));
+  const filtered = projectPriorityFilter() !== 'all' || projectLabelFilter() !== 'all' || Boolean(projectSearch().trim()), visible = tasks.filter(task => matchesTaskFilters(task));
   count.textContent = !filtered ? String(tasks.length) : `${visible.length}/${tasks.length}`;
   count.setAttribute('aria-label', !filtered ? `${tasks.length} ${tasks.length === 1 ? 'card' : 'cards'}` : `${visible.length} of ${tasks.length} cards shown`);
   const header = document.createElement('div');
@@ -1670,7 +1698,7 @@ function refreshPipelineArchive(opening = false) {
   archiveSignature = signature;
   const focus = document.activeElement?.closest('[data-archive-task]'), action = document.activeElement?.dataset.archiveAction;
   const when = task => task.archivedAt || task.completion?.at || task.updatedAt || 0;
-  const rows = tasks.filter(task => matchesTaskFilters(task, project) && (/^#\d+$/.test(filter) ? taskNumberText(task) === filter : task.title.toLocaleLowerCase().includes(filter))).sort((a, b) => {
+  const rows = tasks.filter(task => matchesPriority(task, priority) && matchesLabel(task, label) && (/^#\d+$/.test(filter) ? taskNumberText(task) === filter : matchesTaskSearch(task, project, filter))).sort((a, b) => {
     const order = ['title', 'title-desc'].includes(sort) ? a.title.localeCompare(b.title) * (sort === 'title-desc' ? -1 : 1) : (sort === 'oldest' ? when(a) - when(b) : when(b) - when(a));
     return order || a.id.localeCompare(b.id);
   }).map(task => {
@@ -1698,7 +1726,7 @@ function refreshPipelineArchive(opening = false) {
   });
   $('#archive-rows').replaceChildren(...rows);
   $('#archive-empty').hidden = rows.length > 0;
-  $('#archive-empty').textContent = tasks.length ? priority === 'all' ? 'No completed tasks match this title or task number.' : 'No completed tasks match these filters.' : 'No completed tasks.';
+  $('#archive-empty').textContent = tasks.length ? 'No completed tasks match these filters.' : 'No completed tasks.';
   $('#done-dialog-heading').textContent = `Completed (${tasks.length})`;
   $('#archive-count').textContent = `${rows.length} of ${tasks.length} tasks`;
   $('#archive-title-header').setAttribute('aria-sort', sort === 'title' ? 'ascending' : sort === 'title-desc' ? 'descending' : 'none');
@@ -4764,16 +4792,175 @@ $('#columns-remove').addEventListener('click', () => {
 });
 for (const id of ['#columns-cancel', '#columns-close']) $(id).addEventListener('click', () => $('#columns-dialog').close());
 
+// ---- Local backlog: separate drafts, no agent settings or session controls ----
+let backlogDraft = null, backlogOperation = null, backlogSignature = '', backlogDelete = null, backlogDrag = null;
+function backlogPath(projectId, id = null) { return `/api/projects/${encodeURIComponent(projectId)}/backlog${id ? '/' + encodeURIComponent(id) : ''}`; }
+function backlogRow(id) { return [...$('#backlog-list').children].find(row => row.dataset.backlogId === id); }
+function renderBacklog(project) {
+  const items = project.backlog || [], sort = $('#backlog-sort').value;
+  const visible = items.filter(item => matchesTaskFilters(item, project));
+  if (sort === 'newest') visible.sort((a, b) => b.createdAt - a.createdAt);
+  if (sort === 'priority') visible.sort((a, b) => b.priority - a.priority);
+  if (sort === 'title') visible.sort((a, b) => a.title.localeCompare(b.title));
+  const signature = JSON.stringify([project.id, project.backlogRevision, project.labelRevision, projectPriorityFilter(project), projectLabelFilter(project), projectSearch(project), sort, Boolean(backlogOperation), backlogDelete]);
+  if (signature === backlogSignature) return;
+  backlogSignature = signature;
+  const focus = document.activeElement?.closest('[data-backlog-id]'), action = document.activeElement?.dataset.backlogAction;
+  const list = $('#backlog-list'), scroll = list.scrollTop;
+  $('#backlog-empty').hidden = visible.length > 0;
+  $('#backlog-empty').textContent = items.length ? 'No drafts match these filters.' : 'No backlog drafts yet. Choose New draft to collect work for later.';
+  list.replaceChildren(...visible.map((item, index) => {
+    const row = document.createElement('li'); row.className = 'backlog-item'; row.dataset.backlogId = item.id;
+    const heading = document.createElement('div'); heading.className = 'backlog-item-heading';
+    const button = (text, action, callback, className = 'text-button') => { const node = detailButton(text, callback, className); node.dataset.backlogAction = action; node.disabled = Boolean(backlogOperation); return node; };
+    heading.append(button(item.title, 'edit', () => openBacklogDraft(project.id, item.id), 'kanban-open'));
+    appendTaskPriority(heading, item); appendTaskLabels(heading, item, project);
+    const age = paragraph(`Created ${timeAgo(item.createdAt)}`, 'note'); age.title = new Date(item.createdAt).toLocaleString();
+    const actions = document.createElement('div'); actions.className = 'detail-actions';
+    actions.append(button('Add to To Do', 'promote', () => runBacklogOperation(project, async () => {
+      const result = await boardCall('POST', backlogPath(project.id, item.id) + '/promote', { expectedRevision: item.revision, expectedBacklogRevision: project.backlogRevision });
+      announce(`Added “${result.task.title}” to To Do.`);
+    })));
+    const reorder = (direction) => runBacklogOperation(project, async () => {
+      const neighbor = visible[index + direction]; if (!neighbor || sort !== 'manual') return;
+      const ids = items.map(entry => entry.id).filter(id => id !== item.id), target = ids.indexOf(neighbor.id);
+      ids.splice(target + (direction > 0 ? 1 : 0), 0, item.id);
+      await boardCall('PATCH', backlogPath(project.id), { ids, expectedBacklogRevision: project.backlogRevision });
+      announce(`Moved “${item.title}” ${direction > 0 ? 'down' : 'up'}.`);
+    });
+    for (const [text, action, direction, unavailable] of [['Move up', 'up', -1, index === 0], ['Move down', 'down', 1, index === visible.length - 1]]) {
+      const control = button(text, action, () => reorder(direction)); control.disabled ||= sort !== 'manual' || unavailable; actions.append(control);
+    }
+    actions.append(button('Delete', 'delete', () => { backlogDelete = { projectId: project.id, id: item.id }; renderBacklog(project); backlogRow(item.id)?.querySelector('[data-backlog-action=keep]')?.focus(); }));
+    row.append(heading, age);
+    if (item.prompt) row.append(paragraph(item.prompt, 'backlog-preview'));
+    if (item.source) row.append(paragraph(cardStatus(item).text, 'note'));
+    row.append(actions);
+    if (backlogDelete?.projectId === project.id && backlogDelete.id === item.id) {
+      const confirm = document.createElement('div'); confirm.className = 'detail-actions';
+      confirm.append(paragraph('Delete this draft? This cannot be undone.', 'note'), button('Delete draft', 'confirm-delete', () => runBacklogOperation(project, async () => {
+        await boardCall('DELETE', backlogPath(project.id, item.id), { expectedRevision: item.revision, expectedBacklogRevision: project.backlogRevision });
+        backlogDelete = null; announce(`Deleted “${item.title}”.`);
+      }), 'danger'), button('Keep draft', 'keep', () => { backlogDelete = null; renderBacklog(project); }));
+      row.append(confirm);
+    }
+    row.draggable = sort === 'manual' && !backlogOperation;
+    row.addEventListener('dragstart', event => {
+      if (!row.draggable || event.target.closest('button, input, select, textarea, a')) { event.preventDefault(); return; }
+      backlogDrag = { id: item.id, projectId: project.id, revision: project.backlogRevision };
+      event.dataTransfer?.setData('text/plain', item.id);
+    });
+    row.addEventListener('dragend', () => { backlogDrag = null; });
+    row.addEventListener('dragover', event => { if (backlogDrag?.projectId === project.id && row.draggable) event.preventDefault(); });
+    row.addEventListener('drop', event => {
+      const dragged = backlogDrag; backlogDrag = null;
+      if (!row.draggable || !dragged || dragged.projectId !== project.id || dragged.revision !== project.backlogRevision || dragged.id === item.id) return;
+      event.preventDefault();
+      runBacklogOperation(project, async () => {
+        const ids = items.map(entry => entry.id).filter(id => id !== dragged.id); if (ids.length !== items.length - 1) return;
+        ids.splice(ids.indexOf(item.id), 0, dragged.id);
+        await boardCall('PATCH', backlogPath(project.id), { ids, expectedBacklogRevision: dragged.revision });
+        announce('Backlog order saved.');
+      });
+    });
+    return row;
+  }));
+  list.scrollTop = scroll;
+  if (focus && action) backlogRow(focus.dataset.backlogId)?.querySelector(`[data-backlog-action="${action}"]`)?.focus({ preventScroll: true });
+  $('#backlog-new').disabled = Boolean(backlogOperation);
+}
+async function runBacklogOperation(project, operation) {
+  if (backlogOperation) return;
+  const operationId = {}; backlogOperation = operationId; $('#backlog-error').hidden = true; renderBoard();
+  try { await operation(); }
+  catch (error) { if (currentProject()?.id === project.id) { $('#backlog-error').textContent = error.message; $('#backlog-error').hidden = false; } }
+  finally { if (backlogOperation === operationId) backlogOperation = null; renderBoard(); }
+}
+function openBacklogDraft(projectId = currentProject()?.id, id = null) {
+  const project = board?.projects.find(row => row.id === projectId);
+  if (!pipelineBacklogSupported || project?.workflowMode !== 'pipeline') return;
+  const item = id ? project.backlog.find(row => row.id === id) : null;
+  if (id && !item) return;
+  backlogDraft = { projectId, item: item ? JSON.parse(JSON.stringify(item)) : null, listRevision: project.backlogRevision, labelRevision: project.labelRevision, labelOrder: [...(item?.labelIds || [])] };
+  $('#backlog-dialog-project').textContent = `${project.name} · Backlog`;
+  $('#backlog-dialog-heading').textContent = item ? 'Edit backlog draft' : 'New backlog draft';
+  $('#backlog-title').value = item?.title || ''; $('#backlog-prompt').value = item?.prompt || '';
+  $('#backlog-priority-field').hidden = !taskPrioritySupported; $('#backlog-priority').value = String(item?.priority || 0);
+  $('#backlog-labels-field').hidden = !taskLabelsSupported;
+  const choices = $('#backlog-label-choices'); choices.replaceChildren();
+  if (taskLabelsSupported) for (const label of projectLabels(project)) {
+    const node = document.createElement('label'), checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.checked = backlogDraft.labelOrder.includes(label.id); checkbox.dataset.labelId = label.id;
+    checkbox.setAttribute('aria-label', `Assign label: ${label.name}`);
+    checkbox.addEventListener('change', () => {
+      if (checkbox.checked && backlogDraft.labelOrder.length >= 20) { checkbox.checked = false; announce('A draft can have up to 20 labels.'); return; }
+      backlogDraft.labelOrder = backlogDraft.labelOrder.filter(id => id !== label.id); if (checkbox.checked) backlogDraft.labelOrder.push(label.id);
+    });
+    node.append(checkbox, labelBadge(label)); choices.append(node);
+  }
+  if (!choices.children.length) choices.append(paragraph('No project labels yet. Manage labels from the board toolbar.', 'note'));
+  $('#backlog-source').textContent = item?.source ? `${sourceSummary(item.source)} · ${cardStatus(item).text}` : '';
+  $('#backlog-reload').textContent = item ? 'Reload draft' : 'Refresh choices'; $('#backlog-draft-error').hidden = true;
+  if (!$('#backlog-dialog').open) $('#backlog-dialog').showModal(); $('#backlog-title').focus();
+}
+async function saveBacklogDraft(event) {
+  event.preventDefault(); const draft = backlogDraft; if (!draft) return;
+  const title = $('#backlog-title').value.trim(), typed = $('#backlog-prompt').value;
+  const error = !title ? 'Enter a short title.' : title.length > 120 ? 'Use a title of at most 120 characters.' : typed.length > MAX_PROMPT_BYTES ? 'The prompt exceeds the 2 MiB limit.' : '';
+  if (error) { $('#backlog-draft-error').textContent = error; $('#backlog-draft-error').hidden = false; return; }
+  // Native textareas normalize newlines; an unchanged prompt keeps its original bytes.
+  const prompt = draft.item && typed === draft.item.prompt.replace(/\r\n?/g, '\n') ? draft.item.prompt : typed;
+  const data = { title, prompt, ...(!$('#backlog-priority-field').hidden ? { priority: Number($('#backlog-priority').value) } : {}),
+    ...(!$('#backlog-labels-field').hidden ? { labelIds: draft.labelOrder, expectedLabelRevision: draft.labelRevision } : {}) };
+  try {
+    await boardCall(draft.item ? 'PATCH' : 'POST', backlogPath(draft.projectId, draft.item?.id), { ...data,
+      ...(draft.item ? { expectedRevision: draft.item.revision } : { expectedBacklogRevision: draft.listRevision, expectedLabelRevision: draft.labelRevision }) });
+    $('#backlog-dialog').close(); announce(`Saved “${title}” in Backlog.`);
+  } catch (error) { $('#backlog-draft-error').textContent = error.message; $('#backlog-draft-error').hidden = false; }
+}
+$('#backlog-new').addEventListener('click', () => openBacklogDraft());
+$('#backlog-sort').addEventListener('change', () => renderBoard());
+$('#backlog-dialog').addEventListener('close', () => {
+  const dialog = $('#backlog-dialog');
+  // Native close events are queued: a subsequent action may have opened a new
+  // draft or moved keyboard focus before this event is dispatched.
+  if (dialog.open) return;
+  const draft = backlogDraft; backlogDraft = null;
+  if (currentProject()?.id === draft?.projectId && (document.activeElement === document.body || dialog.contains(document.activeElement))) {
+    (draft.item && backlogRow(draft.item.id)?.querySelector('[data-backlog-action=edit]') || $('#backlog-new')).focus({ preventScroll: true });
+  }
+});
+for (const id of ['backlog-close', 'backlog-cancel']) $(`#${id}`).addEventListener('click', () => $('#backlog-dialog').close());
+$('#backlog-reload').addEventListener('click', async () => {
+  const draft = backlogDraft; if (!draft) return;
+  const typed = !draft.item ? { title: $('#backlog-title').value, prompt: $('#backlog-prompt').value, priority: $('#backlog-priority').value, labels: [...draft.labelOrder] } : null;
+  try {
+    await boardCall('GET', '/api/board');
+    if (backlogDraft !== draft || !$('#backlog-dialog').open) return;
+    const project = board.projects.find(project => project.id === draft.projectId);
+    if (!project || project.workflowMode !== 'pipeline') throw new Error('This project is unavailable.');
+    if (draft.item && !project.backlog.some(item => item.id === draft.item.id)) throw new Error('This draft is no longer in Backlog. Check the board.');
+    openBacklogDraft(draft.projectId, draft.item?.id);
+    if (typed) {
+      $('#backlog-title').value = typed.title; $('#backlog-prompt').value = typed.prompt; $('#backlog-priority').value = typed.priority;
+      backlogDraft.labelOrder = typed.labels.filter(id => projectLabels(project).some(label => label.id === id));
+      for (const checkbox of $('#backlog-label-choices').querySelectorAll('input')) checkbox.checked = backlogDraft.labelOrder.includes(checkbox.dataset.labelId);
+    }
+  } catch (error) { if (backlogDraft === draft) { $('#backlog-draft-error').textContent = error.message; $('#backlog-draft-error').hidden = false; } }
+});
+bindAsyncForm('#backlog-form', saveBacklogDraft);
+
 // ---- Timeline ----
 // One project's history from the server: recorded moves, runs, evidence, completions, Git commits,
 // and the user's notes. The page never adds events of its own.
 const PROJECT_VIEW_KEY = 'promptboard.project-view';
 const timeline = { projectId: null, events: [], loadedAt: 0, loading: null, editing: null, scrolledFor: null };
 const EVENT_LABELS = { restart: 'Started over', created: 'Created', moved: 'Moved', run: 'Agent run', review: 'Review', tests: 'Tests', pull_request: 'Pull request', completed: 'Completed', commit: 'Commit', note: 'Note' };
-function projectView() { try { return localStorage.getItem(PROJECT_VIEW_KEY) === 'timeline' ? 'timeline' : 'board'; } catch { return 'board'; } }
+function projectView() { try { const view = localStorage.getItem(PROJECT_VIEW_KEY); return ['timeline', 'backlog'].includes(view) ? view : 'board'; } catch { return 'board'; } }
 function setProjectView(view) { savePref(PROJECT_VIEW_KEY, view); timeline.loadedAt = 0; renderBoard(); if (view === 'timeline') $('#timeline-track').focus({ preventScroll: true }); }
 $('#view-board').addEventListener('click', () => setProjectView('board'));
 $('#view-timeline').addEventListener('click', () => setProjectView('timeline'));
+$('#view-backlog').addEventListener('click', () => setProjectView('backlog'));
+$('#board-search').addEventListener('input', event => { const project = currentProject(); if (project && pipelineBacklogSupported) { projectSearches.set(project.id, event.currentTarget.value); renderBoard(); } });
 $('#timeline-filter').addEventListener('change', () => renderTimeline(currentProject()));
 
 /** Reload at most every 2 seconds while the timeline is shown; board refreshes call this often. */
