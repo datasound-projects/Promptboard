@@ -1,6 +1,7 @@
 /** Local backlog drafts own no column, session, workspace or execution configuration. */
 import { taskPriority } from './task-priority.mjs';
 import { taskLabelIds } from './task-labels.mjs';
+import { externalIssueSource } from './backlog-imports.mjs';
 
 export const BACKLOG_LIMIT = 1000;
 const fail = () => { const error = new Error('Use a valid backlog item and revision.'); error.code = 'INVALID_BACKLOG'; error.status = 400; throw error; };
@@ -22,12 +23,13 @@ export function backlogItems(value, labels) {
   const ids = new Set();
   return value.map(row => {
     if (!row || typeof row !== 'object' || Array.isArray(row) || !stableId(row.id) || ids.has(row.id)
-      || Object.keys(row).some(key => !['id', 'title', 'prompt', 'priority', 'labelIds', 'source', 'checksOutdated', 'createdAt', 'updatedAt', 'revision'].includes(key))
+      || Object.keys(row).some(key => !['id', 'title', 'prompt', 'priority', 'labelIds', 'source', 'externalSource', 'checksOutdated', 'createdAt', 'updatedAt', 'revision'].includes(key))
       || !Number.isSafeInteger(row.revision) || row.revision < 1 || typeof row.checksOutdated !== 'boolean'
       || !Number.isSafeInteger(row.createdAt) || row.createdAt < 0 || !Number.isSafeInteger(row.updatedAt) || row.updatedAt < 0
       || row.source !== null && (!row.source || typeof row.source !== 'object' || Array.isArray(row.source))
       || !Array.isArray(row.labelIds)) fail();
     ids.add(row.id);
+    if (row.externalSource !== undefined) externalIssueSource(row.externalSource);
     return { ...row, title: backlogTitle(row.title), prompt: backlogPrompt(row.prompt), priority: taskPriority(row.priority), labelIds: taskLabelIds(row.labelIds, labels) };
   });
 }

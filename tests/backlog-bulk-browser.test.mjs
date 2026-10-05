@@ -19,7 +19,9 @@ async function fixture(t, { width = 1280, theme = 'light', older = false } = {})
   await app.board.setLabels(project.id, { labels: [{ id: 'bug', name: 'Literal <img src=x> 雪', color: '#123456' }], expectedLabelRevision: 0 });
   const exact = '  Composer\r\n雪 {{title}}  ', items = [];
   for (const [index, title] of ['First', 'Hidden second', 'Third'].entries()) items.push(await app.board.createBacklogItem(project.id, { title, prompt: exact, priority: 4, labelIds: index === 1 ? [] : ['bug'], expectedLabelRevision: 1, expectedBacklogRevision: index }));
+  t.diagnostic(`Bulk fixture ${width}/${theme}: disposable board seeded.`);
   const browser = await launch(); assert.ok(browser); t.after(() => browser.close());
+  t.diagnostic(`Bulk fixture ${width}/${theme}: Chrome attached.`);
   await browser.send('Page.addScriptToEvaluateOnNewDocument', { source: `
     localStorage.setItem('ste-prompt-engineer.theme',${JSON.stringify(theme)});window.__requests=[];
     const nativeFetch=window.fetch;window.fetch=async function(...args){
@@ -30,7 +32,10 @@ async function fixture(t, { width = 1280, theme = 'light', older = false } = {})
       if(args[0]==='/api/session'&&${JSON.stringify(older)}){const data=await response.json();delete data.capabilities.pipelineBacklogBulk;return new Response(JSON.stringify(data),{status:response.status,headers:response.headers});}
       return response;
     };` });
-  await browser.goto(app.url + '/#/kanban'); await browser.resize(width, 900); await enter(browser, '#view-backlog'); await browser.until('document.querySelectorAll("#backlog-list > li").length===3', 'bulk rows');
+  await browser.goto(app.url + '/#/kanban');
+  t.diagnostic(`Bulk fixture ${width}/${theme}: page loaded.`);
+  await browser.resize(width, 900); await enter(browser, '#view-backlog'); await browser.until('document.querySelectorAll("#backlog-list > li").length===3', 'bulk rows');
+  t.diagnostic(`Bulk fixture ${width}/${theme}: backlog rendered.`);
   const begin = async () => { await enter(browser, '#backlog-select-visible'); await enter(browser, '#backlog-promote-selected'); await browser.until('window.__requests.length===1&&typeof window.__release==="function"', 'held first promotion'); };
   const finish = async () => { await browser.eval('window.__release();'); await browser.until('document.getElementById("backlog-stop-remaining").hidden', 'bulk settled'); };
   return { app, project, items, exact, browser, begin, finish };

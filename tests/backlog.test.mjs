@@ -117,7 +117,7 @@ test('backlog and board capacity and safe revision limits refuse changes while p
 test('portable backlog metadata round-trips inertly; injected execution fields, duplicate identities and malformed imports reject without publication', async t => {
   const w = await world(t), item = await w.board.createBacklogItem(w.project.id, { title: 'Backup', prompt: exact, labelIds: ['bug'], expectedLabelRevision: 1, expectedBacklogRevision: 0 });
   await w.board.createTask({ projectId: w.project.id, title: 'Board card', prompt: exact });
-  const backup = await w.board.exportBackup(); assert.equal(backup.version, 9); assert.deepEqual(backup.projects[0].backlog, [item]);
+  const backup = await w.board.exportBackup(); assert.equal(backup.version, 10); assert.deepEqual(backup.projects[0].backlog, [item]);
   const imported = new Board({ dataDir: await directory(t) }); await imported.importBackup(backup);
   const before = await imported.state(); assert.deepEqual(before.projects[0].backlog, [item]); assert.equal(before.projects[0].backlogRevision, 0);
   assert.deepEqual(before.runs, []); assert.deepEqual(before.sessions, []);
@@ -140,11 +140,11 @@ test('v10 migration keeps existing labels, exact prompts, Base and native state 
   saved.privateExtension = { exact: 'retained' }; saved.runs.push({ id: 'retained-run', taskId: task.id, providerSessionId: 'native-fixture', status: 'suspended' });
   const dir = await directory(t), bytes = JSON.stringify(saved, null, 2); await writeFile(join(dir, 'state.json'), bytes);
   const store = new Store(dir), migrated = await store.read();
-  assert.equal(migrated.version, 11); assert.equal(STATE_VERSION, 11);
+  assert.equal(migrated.version, 12); assert.equal(STATE_VERSION, 12);
   assert.deepEqual(migrated.projects, saved.projects.map(project => ({ ...project, backlog: [], backlogRevision: 0 })));
   assert.deepEqual(migrated.runs, saved.runs); assert.deepEqual(migrated.sessions, saved.sessions); assert.deepEqual(migrated.base, saved.base); assert.deepEqual(migrated.privateExtension, saved.privateExtension);
   assert.equal(await readFile(join(dir, store.recovery.migrationBackup), 'utf8'), bytes);
-  const futureDir = await directory(t), future = JSON.stringify({ ...saved, version: 12 }); await writeFile(join(futureDir, 'state.json'), future);
+  const futureDir = await directory(t), future = JSON.stringify({ ...saved, version: STATE_VERSION + 1 }); await writeFile(join(futureDir, 'state.json'), future);
   await assert.rejects(new Store(futureDir).read(), { code: 'STATE_VERSION_UNSUPPORTED' }); assert.equal(await readFile(join(futureDir, 'state.json'), 'utf8'), future);
 });
 
