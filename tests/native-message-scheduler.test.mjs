@@ -253,9 +253,9 @@ test('lost queued-outcome acknowledgement blocks later scheduling instead of rel
 
 
 test('long queued startup and busy readiness waits preserve the later native delivery budget', { timeout: 10000 }, async t => {
-  const w = await fixture(t, { queued: true }); let ready = false, readinessReads = 0, deliveredBudget = 0;
-  w.supervisor.nativeMessageReadiness = async () => { readinessReads++; return ready ? 'ready' : 'waiting'; };
-  w.handler(async (runId, request) => { deliveredBudget = request.timeoutMs; return w.deliver(runId, request); });
+  const w = await fixture(t, { queued: true }); let ready = false, readinessReads = 0, deliveredBudget = 0, readyAt = 0, deliveredAt = 0;
+  w.supervisor.nativeMessageReadiness = async () => { readinessReads++; if (ready) readyAt = performance.now(); return ready ? 'ready' : 'waiting'; };
+  w.handler(async (runId, request) => { deliveredAt = performance.now(); deliveredBudget = request.timeoutMs; return w.deliver(runId, request); });
   assert.equal((await w.scheduler.schedule(w.request(), { timeoutMs: 300, waitForReadiness: true })).scheduled, true);
   await new Promise(resolve => setTimeout(resolve, 500));
   assert.equal((await w.receipt()).status, 'queued'); assert.deepEqual(w.writes, []); assert.equal(readinessReads, 0);
@@ -263,7 +263,11 @@ test('long queued startup and busy readiness waits preserve the later native del
   assert.ok(readinessReads > 0); assert.equal((await w.receipt()).status, 'queued'); assert.deepEqual(w.writes, []);
   ready = true;
   assert.equal((await w.scheduler.wait(w.key, w.request().actionId)).confirmed, true);
-  assert.ok(deliveredBudget > 200 && deliveredBudget <= 300, 'Native delivery receives a fresh bounded attempt.');
+  assert.ok(readyAt > 0 && deliveredAt >= readyAt);
+  assert.ok(deliveredBudget > 0 && deliveredBudget <= 300, 'Native delivery stays within its bounded attempt.');
+  // Durable dispatch preparation consumes part of the fresh 300 ms budget.
+  // Account for that measured work instead of requiring a particular disk speed.
+  assert.ok(deliveredBudget >= 300 - (deliveredAt - readyAt) - 5, 'Queued/busy time is excluded from the fresh native budget.');
   assert.deepEqual(w.writes, [w.request().message]);
 });
 

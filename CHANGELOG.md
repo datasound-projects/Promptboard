@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add inert local backlog drafts with independent revisions, shared labels/priorities and atomic promotion into To Do through normal task creation. State version 11 and portable version 9 retain exact text and original migration backups. Backlog UI and active-column/import integrations follow separately.
+
 - Add a shared board/completed label filter with All labels, Unlabeled and project definitions. Combine priority/search, retain hidden tasks and archive selections, and reset removed/invalid label preferences without agent work.
 
 - Add keyboard task-label checkboxes, a shared name/color editor and readable badges on active/completed cards and task details. Keep nested card drafts, stale revision guards and exact prompts; hide unsupported controls on older servers.
