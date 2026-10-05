@@ -6,8 +6,9 @@ import { findChrome, launch } from './helpers/browser.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
 const chrome = await findChrome();
 async function enter(browser, selector) {
-  await browser.until(`document.querySelector(${JSON.stringify(selector)})`, 'bulk keyboard target');
+  await browser.until(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});return e&&!e.disabled&&e.getClientRects().length>0;})()`, 'available bulk keyboard target');
   await browser.eval(`const e=document.querySelector(${JSON.stringify(selector)});e.scrollIntoView({block:'center'});e.focus();`);
+  assert.equal(await browser.eval(`return document.activeElement===document.querySelector(${JSON.stringify(selector)});`), true);
   await browser.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' });
   await browser.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
 }
