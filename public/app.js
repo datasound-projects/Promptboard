@@ -1489,6 +1489,7 @@ function renderBoard() {
   $('#board-empty-note').textContent = project ? 'Choose New card, or add a generated prompt from the Compose page. New cards start in To Do.' : 'Each project gets its own board, from To Do to Done.';
   $('#empty-prompt-link').hidden = !project;
   $('#board-priority-filter-field').hidden = !taskPrioritySupported || project?.workflowMode !== 'pipeline' || timelineView;
+  $('#board-filter-toolbar').hidden = $('#board-priority-filter-field').hidden && $('#board-search-field').hidden;
   $('#kanban-columns').hidden = !project || timelineView || backlogView;
   $('#backlog').hidden = !backlogView;
   $('#view-backlog').hidden = !backlogAvailable;
