@@ -31,6 +31,50 @@ async function setup(t, rows, { width = 1280, theme = 'light', saved = false, ol
 async function open(w) { await key(w.browser, '#backlog-import'); await w.browser.until('document.getElementById("backlog-import-dialog").open', 'issue picker'); }
 async function ready(w) { await w.browser.until('backlogImportDraft && !backlogImportDraft.reading && !backlogImportDraft.mutation && document.querySelector("#backlog-import-list li")', 'source page loaded'); }
 
+for (const width of [1280, 390]) for (const theme of ['light', 'dark']) test(`persistent issue previews and explicit incremental sync retain inert state in ${width}/${theme}`, { skip: !chrome, timeout: 90000 }, async t => {
+  const rows = [issue(1)], w = await setup(t, rows, { width, theme, saved: true }), b = w.browser;
+  await open(w); await ready(w); const before = await w.app.board.state(), reads = w.calls.length;
+  assert.equal(await b.eval('return backlogImportDraft.cache.cached;'), false);
+  await key(b, '#backlog-import-cancel'); await b.until('!document.getElementById("backlog-import-dialog").open', 'closed cached picker');
+  await open(w); await ready(w); assert.equal(w.calls.length, reads);
+  assert.equal(await b.eval('return backlogImportDraft.cache.cached;'), true);
+  assert.match(await b.eval('return document.getElementById("backlog-import-freshness").textContent;'), /Cached page/);
+  rows.push(issue(2, { title: 'New literal <img src=x> issue', body: '  New exact\r\n雪  ' }));
+  await key(b, '#backlog-import-sync'); await b.until('!backlogImportDraft.reading && backlogImportDraft.cache?.changed===2', 'explicit changed-issue sync');
+  assert.equal(w.calls.length, reads + 2); assert.equal(typeof w.calls.at(-2).since, 'string'); assert.equal(w.calls.at(-1).since, undefined);
+  assert.equal(await b.eval('return document.querySelectorAll("#backlog-import-list li").length;'), 2);
+  assert.equal(await b.eval('return !!document.querySelector("#backlog-import-list img");'), false);
+  assert.deepEqual(await w.app.board.state(), before);
+  await key(b, item(102), true); assert.equal(await b.eval('return document.getElementById("backlog-import-sync").disabled;'), true);
+  assert.equal(await b.layout('const d=document.getElementById("backlog-import-dialog").getBoundingClientRect(),s=document.getElementById("backlog-import-sync").getBoundingClientRect();return d.left>=0&&d.right<=innerWidth&&s.left>=0&&s.right<=innerWidth;'), true);
+  await key(b, '#backlog-import-submit'); await b.until('!backlogImportDraft.mutation && backlogImportDraft.selected.size===0', 'fresh selected import after sync');
+  const state = await w.app.board.state(), owner = state.projects.find(row => row.id === w.project.id);
+  assert.equal(owner.backlog[0].prompt, rows[1].body); assert.equal(owner.tasks.find(row => row.id === w.composer.id).prompt, exact);
+  assert.deepEqual(state.base, before.base); assert.deepEqual(state.runs, []); assert.deepEqual(state.sessions, []);
+});
+
+test('failed incremental sync keeps the previous cached page and selections require explicit clearing before another sync', { skip: !chrome, timeout: 60000 }, async t => {
+  const w = await setup(t, [issue(1)], { saved: true }), b = w.browser; await open(w); await ready(w);
+  const reader = w.app.board.githubIssueReader, before = await w.app.board.state();
+  w.app.board.githubIssueReader = async () => { throw Object.assign(new Error('GitHub rate-limited this preview. Try again later.'), { code: 'GH_RATE_LIMITED', status: 429 }); };
+  await key(b, '#backlog-import-sync'); await b.until('!backlogImportDraft.reading && backlogImportDraft.readError', 'failed incremental read');
+  assert.equal(await b.eval('return document.querySelectorAll("#backlog-import-list li").length;'), 1); assert.match(await b.eval('return document.getElementById("backlog-import-error").textContent;'), /rate-limited/);
+  await key(b, item(101), true); assert.equal(await b.eval('return document.getElementById("backlog-import-submit").disabled;'), true);
+  const writes = await b.eval('return window.__writes.length;'); await b.eval('document.getElementById("backlog-import-sync").click();'); assert.equal(await b.eval('return window.__writes.length;'), writes);
+  await key(b, '#backlog-import-clear'); w.app.board.githubIssueReader = reader; await key(b, '#backlog-import-sync'); await ready(w);
+  assert.equal(await b.eval('return backlogImportDraft.readError;'), false); assert.deepEqual(await w.app.board.state(), before);
+});
+
+test('older cache capability keeps live preview and cannot submit a hidden incremental action', { skip: !chrome, timeout: 60000 }, async t => {
+  const w = await setup(t, [issue(1)], { saved: true }), b = w.browser;
+  await b.send('Page.addScriptToEvaluateOnNewDocument', { source: `const previous=window.fetch;window.fetch=async function(...args){const response=await Reflect.apply(previous,this,args);if(String(args[0]).endsWith('/api/session')){const data=await response.json();data.capabilities.pipelineBacklogSourceCache=false;return new Response(JSON.stringify(data),{status:response.status,headers:response.headers});}return response;};` });
+  await b.reload(); await key(b, '#view-backlog'); await open(w); await ready(w);
+  assert.equal(await b.eval('return document.getElementById("backlog-import-sync").hidden;'), true);
+  const before = await w.app.board.state(), reads = w.calls.length, writes = await b.eval('return window.__writes.length;');
+  await b.eval('document.getElementById("backlog-import-sync").click();'); assert.equal(w.calls.length, reads); assert.equal(await b.eval('return window.__writes.length;'), writes);
+  await key(b, '#backlog-import-refresh'); await ready(w); assert.equal(w.calls.length, reads + 1); assert.deepEqual(await w.app.board.state(), before);
+});
+
 for (const width of [1280, 390]) for (const theme of ['light', 'dark']) test(`GitHub issue import preserves hidden selection, exact metadata and Composer in ${width}/${theme}`, { skip: !chrome, timeout: 90000 }, async t => {
   const rows = [issue(1, { title: 'Literal <img src=x> 雪' }), issue(2, { state: 'closed', title: 'Closed feature', type: { name: 'Feature' }, assignees: [{ login: 'dependabot[bot]' }], labels: [{ name: 'Other', color: '654321' }] }), issue(3, { title: 'Hidden bug' })];
   const w = await setup(t, rows, { width, theme }), b = w.browser; await open(w);

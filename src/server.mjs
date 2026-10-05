@@ -128,11 +128,14 @@ async function boardRoute(board, req, res, pathname, searchParams) {
   const note = pathname.match(/^\/api\/projects\/([A-Za-z0-9_-]{1,100})\/timeline\/([A-Za-z0-9_-]{1,100})$/);
   if (note && method === 'PATCH') return send(res, 200, { note: await board.updateTimelineNote(note[1], note[2], await body()) });
   if (note && method === 'DELETE') return send(res, 200, { deleted: await board.deleteTimelineNote(note[1], note[2]) ?? true });
-  const importSource = pathname.match(/^\/api\/projects\/([A-Za-z0-9_-]{1,100})\/backlog\/sources\/([A-Za-z0-9_-]{1,100})(?:\/(import))?$/);
+  const importSource = pathname.match(/^\/api\/projects\/([A-Za-z0-9_-]{1,100})\/backlog\/sources\/([A-Za-z0-9_-]{1,100})(?:\/(import|preview|sync))?$/);
   if (importSource) {
     const [, projectId, sourceId, action] = importSource;
     if (sourceId === 'github-issues' && !action && method === 'POST') return view({ source: await board.connectBacklogGitHubSource(projectId, await body()) });
     if (action === 'import' && method === 'POST') return view(await board.importGitHubBacklogIssues(projectId, sourceId, await body()));
+    if (action === 'preview' && method === 'GET') return send(res, 200, await board.previewBacklogSource(projectId, sourceId, {
+      state: searchParams.get('state') || 'all', page: Number(searchParams.get('page') || '1'), refresh: searchParams.get('refresh') === '1' }));
+    if (action === 'sync' && method === 'POST') return send(res, 200, await board.syncBacklogSource(projectId, sourceId, await body()));
     if (!action && method === 'DELETE') return view({ deleted: await board.removeBacklogImportSource(projectId, sourceId, await body()) });
   }
   const issuePreview = pathname.match(/^\/api\/projects\/([A-Za-z0-9_-]{1,100})\/backlog\/import\/github-issues$/);
@@ -363,7 +366,7 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
     const pathname = requestUrl.pathname;
     const isApi = pathname.startsWith('/api/') && pathname !== '/api/session' && pathname !== '/api/providers';
     if (isApi && req.headers['x-ste-token'] !== token) return send(res, 403, { error: 'Reload this page before you try again.' });
-    if (req.method === 'GET' && pathname === '/api/session') return send(res, 200, { token, capabilities: { pipelineTitleOnly: true, pipelineBulkRestore: true, pipelineDeferredMessages: true, taskPriority: true, taskLabels: true, pipelineBacklog: true, pipelineBacklogBulk: true, pipelineBacklogColumns: true, pipelineBacklogImports: true } });
+    if (req.method === 'GET' && pathname === '/api/session') return send(res, 200, { token, capabilities: { pipelineTitleOnly: true, pipelineBulkRestore: true, pipelineDeferredMessages: true, taskPriority: true, taskLabels: true, pipelineBacklog: true, pipelineBacklogBulk: true, pipelineBacklogColumns: true, pipelineBacklogImports: true, pipelineBacklogSourceCache: true } });
     if (/^\/api\/notifications(?:\/|$)/.test(pathname)) {
       try { return await notificationRoute(notifications, req, res, pathname, { jsonBody, send }); }
       catch (error) {

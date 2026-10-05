@@ -46,14 +46,15 @@ function issue(row, source) {
 }
 
 /** One bounded page. A full page exposes another page even when every row was a pull request. */
-export async function listGitHubBacklogIssues({ repository, state = 'open', page = 1 }, { run = gh } = {}) {
+export async function listGitHubBacklogIssues({ repository, state = 'open', page = 1, since, signal }, { run = gh } = {}) {
   const source = githubIssueSource(repository);
   if (!['open', 'closed', 'all'].includes(state) || !Number.isSafeInteger(page) || page < 1 || page > 1000) fail('Choose Open, Closed or All and a page from 1 to 1000.');
-  const endpoint = `repos/${source.repository}/issues?state=${state}&sort=updated&direction=desc&per_page=100&page=${page}`;
+  if (since !== undefined && (typeof since !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(since) || !Number.isFinite(Date.parse(since)) || new Date(since).toISOString().replace('.000Z', 'Z') !== since)) fail('Use a valid incremental synchronization timestamp.');
+  const endpoint = `repos/${source.repository}/issues?state=${state}&sort=updated&direction=${since === undefined ? 'desc' : 'asc'}&per_page=100&page=${page}${since === undefined ? '' : '&since=' + encodeURIComponent(since)}`;
   let data;
   try {
     const raw = await run(['api', '--hostname', 'github.com', '--method', 'GET', '-H', 'Accept: application/vnd.github+json', '-H', 'X-GitHub-Api-Version: 2026-03-10', endpoint],
-      { timeoutMs: 30000, maxBuffer: 8 * 1024 * 1024 });
+      { timeoutMs: 30000, maxBuffer: 8 * 1024 * 1024, ...(signal ? { signal } : {}) });
     if (typeof raw !== 'string' || Buffer.byteLength(raw, 'utf8') > 8 * 1024 * 1024) fail('The issue page is too large to preview.', 'GH_ISSUES_RESPONSE_INVALID', 502);
     try { data = JSON.parse(raw); } catch { fail('GitHub returned an invalid issue page.', 'GH_ISSUES_RESPONSE_INVALID', 502); }
   } catch (error) {
@@ -76,4 +77,31 @@ export async function listGitHubBacklogIssues({ repository, state = 'open', page
   }
   return { source, state, page, items, pullRequests, unavailable, nextPage: data.length === 100 && page < 1000 ? page + 1 : null,
     pageLimitReached: data.length === 100 && page === 1000 };
+}
+
+/** Validate a persisted preview using the same literal metadata boundary as a live read. */
+export function githubIssuePreview(value, repository, state, page) {
+  const source = githubIssueSource(repository);
+  if (!value || value.source?.repository !== source.repository || value.state !== state || value.page !== page || !Array.isArray(value.items) || value.items.length > 100
+    || !Array.isArray(value.unavailable) || value.unavailable.length > 100 || !Number.isSafeInteger(value.pullRequests) || value.pullRequests < 0 || value.pullRequests > 100
+    || value.items.length + value.unavailable.length + value.pullRequests > 100 || ![null, page < 1000 ? page + 1 : null].includes(value.nextPage)
+    || typeof value.pageLimitReached !== 'boolean' || value.pageLimitReached && page !== 1000) fail('The saved issue preview is invalid. Refresh the source page.', 'BACKLOG_CACHE_INVALID', 409);
+  const ids = new Set();
+  const items = value.items.map(row => {
+    try {
+      const normalized = issue({ id: row.id, number: row.number, title: row.title, body: row.prompt, state: row.state, html_url: row.url,
+        labels: row.labels.map(label => ({ name: label.name, color: label.color.slice(1) })), assignees: row.assignees.map(login => ({ login })), type: row.type === null ? null : { name: row.type },
+        created_at: new Date(row.createdAt).toISOString(), updated_at: new Date(row.updatedAt).toISOString() }, source);
+      if (row.sourceKey !== normalized.sourceKey || ids.has(normalized.sourceKey) || !Number.isSafeInteger(row.createdAt) || !Number.isSafeInteger(row.updatedAt)
+        || row.labels.some(label => !/^#[a-f0-9]{6}$/.test(label.color))) throw new Error('Invalid identity.');
+      ids.add(normalized.sourceKey); return normalized;
+    } catch { fail('The saved issue preview is invalid. Refresh the source page.', 'BACKLOG_CACHE_INVALID', 409); }
+  });
+  const unavailable = value.unavailable.map(row => {
+    if (!row || row.number !== null && !positive(row.number)) fail('The saved issue preview is invalid.', 'BACKLOG_CACHE_INVALID', 409);
+    return { number: row.number, reason: 'This issue has unsupported or inconsistent metadata and was not included.' };
+  });
+  const count = items.length + unavailable.length + value.pullRequests;
+  if (value.nextPage !== (count === 100 && page < 1000 ? page + 1 : null) || value.pageLimitReached !== (count === 100 && page === 1000)) fail('The saved issue pagination is invalid.', 'BACKLOG_CACHE_INVALID', 409);
+  return { source, state, page, items, unavailable, pullRequests: value.pullRequests, nextPage: value.nextPage, pageLimitReached: value.pageLimitReached };
 }

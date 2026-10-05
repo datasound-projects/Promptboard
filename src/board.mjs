@@ -20,6 +20,7 @@ import { ADAPTERS, resolveConfig, validateResumeId } from './agents.mjs';
 import { Delivery } from './delivery.mjs';
 import { ensureClone, fastForward, fetchAndCompare, viewRepository } from './github.mjs';
 import { githubIssueSource, listGitHubBacklogIssues } from './backlog-github.mjs';
+import { BacklogCache } from './backlog-cache.mjs';
 import { backlogImportSources, backlogImportLedger, externalIssueSource, IMPORT_IDENTITY_LIMIT, validateBacklogImports } from './backlog-imports.mjs';
 import { buildTimeline } from './timeline.mjs';
 import { Base, normalizeBinding, listTargets, remapBaseScopes } from './base.mjs';
@@ -399,6 +400,7 @@ export class Board {
     this.hooksDir = join(dataDir, 'no-hooks'); // Empty: git worktree add runs no repository hooks.
     this.executor = executor; // PB-02 registers one. Null means execution is inactive.
     this.githubIssueReader = githubIssueReader;
+    this.backlogCache = new BacklogCache(dataDir);
     this.locks = new Map();
     this.recoveryPromise = null;
     this.delivery = new Delivery(this);
@@ -1709,6 +1711,30 @@ export class Board {
     const result = await this.githubIssueReader(input);
     this.#backlogProject(await this.state(), projectId);
     return result;
+  }
+  async #savedBacklogSource(projectId, sourceId, expectedImportRevision) {
+    const project = this.#backlogProject(await this.state(), projectId);
+    if (expectedImportRevision !== undefined) this.#checkBacklogImports(project, expectedImportRevision);
+    const source = project.backlogSources.find(row => row.id === sourceId);
+    if (!source) throw new BoardError('This import source does not exist.', 'NOT_FOUND', 404);
+    return source;
+  }
+  async previewBacklogSource(projectId, sourceId, input) {
+    const source = await this.#savedBacklogSource(projectId, sourceId);
+    const guard = async () => {
+      const current = await this.#savedBacklogSource(projectId, sourceId);
+      if (current.repository !== source.repository) throw conflict('The import source changed.', 'BACKLOG_IMPORT_REVISION_CONFLICT');
+    };
+    return this.backlogCache.preview(projectId, source, input, input => this.githubIssueReader(input), guard);
+  }
+  async syncBacklogSource(projectId, sourceId, { expectedImportRevision }) {
+    backlogRevision(expectedImportRevision);
+    const source = await this.#savedBacklogSource(projectId, sourceId, expectedImportRevision);
+    const guard = async () => {
+      const current = await this.#savedBacklogSource(projectId, sourceId, expectedImportRevision);
+      if (current.repository !== source.repository) throw conflict('The import source changed.', 'BACKLOG_IMPORT_REVISION_CONFLICT');
+    };
+    return this.backlogCache.sync(projectId, source, input => this.githubIssueReader(input), guard);
   }
   updateBacklogItem(projectId, id, { title, prompt, priority, labelIds, expectedLabelRevision, expectedRevision }) {
     return this.store.update(state => {

@@ -97,6 +97,9 @@ async function observeBusyQueue(runId) {
   supervisor.input(runId, '\x1b[200~' + CODEX_QUEUED_MESSAGE + '\x1b[201~'); report.busy.pasted = true;
   await pause(1000);
   evidence = await reader.read();
+  report.busy.queueGuard = { busy: evidence.busy, stopped: Boolean(stopped()), terminal: session.terminalInput.snapshot(),
+    phase: session.activity.snapshot().phase, permissionPending: session.activity.snapshot().permissionPending,
+    uncertain: session.activity.snapshot().uncertain, eventsPending: Boolean(session.eventsPending) };
   if (!evidence.busy || stopped() || !safeTerminal()) throw new Error('Busy turn changed before queue key.');
   // Codex 0.157.0's default Tab binding queues; Enter can steer the current turn.
   supervisor.input(runId, '\t'); report.busy.queuedBeforeCompletion = true;
@@ -154,6 +157,15 @@ try {
       } while (!cancelled.signal.aborted && Date.now() < receiptDeadline);
       report.message = { status: receipt?.status || 'unconfirmed', confirmed: receipt?.status === 'confirmed',
         receiptStatus: receipt?.status || null, submitted: Boolean(receipt?.submittedAt) };
+      // A durable receipt can appear before its transport callback returns.
+      // Deliberate manual input must not revoke that still-owned callback.
+      if (report.message.confirmed) {
+        while (board.messageScheduler?.ownsTask(task.id) && !cancelled.signal.aborted && Date.now() < receiptDeadline) await pause(25);
+        if (board.messageScheduler?.ownsTask(task.id) || cancelled.signal.aborted || Date.now() >= receiptDeadline) throw new Error('Native transport did not settle inside the receipt budget.');
+        const settled = await board.messageScheduler.wait(key, (await board.automationJournal.read(key)).actions.find(row => row.type === 'send_message').id);
+        report.message.transportSettled = settled.confirmed === true;
+        if (!report.message.transportSettled) throw new Error('The native receipt callback was not acknowledged.');
+      }
     } else {
       const key = { projectId: project.id, taskId: task.id, transitionId: 'live-private-message' }, journal = board.automationJournal;
       const target = captureNativeMessageTarget(await board.state(), { projectId: project.id, taskId: task.id, runId: result.run.id });
