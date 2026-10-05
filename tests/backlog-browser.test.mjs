@@ -8,7 +8,10 @@ const chrome = await findChrome();
 const select = (browser, id, value) => browser.eval(`const e=document.getElementById(${JSON.stringify(id)});e.value=${JSON.stringify(value)};e.dispatchEvent(new Event('change',{bubbles:true}));`);
 const search = (browser, value) => browser.eval(`const e=document.getElementById('board-search');e.value=${JSON.stringify(value)};e.dispatchEvent(new Event('input',{bubbles:true}));`);
 async function enter(browser, selector) {
-  await browser.until(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});return e&&!e.disabled&&e.getClientRects().length>0;})()`, 'available backlog keyboard target');
+  await browser.until(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});return e&&!e.disabled&&e.getClientRects().length>0;})()`, 'available backlog keyboard target').catch(async error => {
+    const observed = await browser.eval(`const e=document.querySelector(${JSON.stringify(selector)});return { selector:${JSON.stringify(selector)}, exists:!!e, disabled:e?.disabled, visible:!!e?.getClientRects().length, active:document.activeElement?.dataset.backlogAction, confirmation:backlogDelete, operation:!!backlogOperation, view:$('#backlog').hidden, error:$('#backlog-error').hidden?null:$('#backlog-error').textContent.slice(0,500), events:window.__backlogKeyboardEvents };`);
+    throw new Error(`${error.message}; keyboard diagnostics ${JSON.stringify(observed)}`);
+  });
   await browser.eval(`const e=document.querySelector(${JSON.stringify(selector)});e.scrollIntoView({block:'center'});e.focus();`);
   assert.equal(await browser.eval(`return document.activeElement===document.querySelector(${JSON.stringify(selector)});`), true);
   await browser.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' });
@@ -30,7 +33,7 @@ for (const width of [1280, 390]) for (const theme of ['light', 'dark']) {
     const card = await app.board.createTask({ projectId: project.id, title: 'Composer card', prompt: exact, labelIds: ['bug'], priority: 4, expectedLabelRevision: 1, source });
     const baseline = await app.board.state();
     const browser = await launch({ width, height: 900 }); assert.ok(browser); t.after(() => browser.close());
-    await browser.send('Page.addScriptToEvaluateOnNewDocument', { source: `localStorage.setItem('ste-prompt-engineer.theme',${JSON.stringify(theme)});localStorage.setItem('promptboard.kanban.project',${JSON.stringify(project.id)});window.__writes=[];const nativeFetch=window.fetch;window.fetch=function(...args){if(args[1]?.method&&!['GET','HEAD'].includes(args[1].method))window.__writes.push({url:args[0],body:JSON.parse(args[1].body)});return Reflect.apply(nativeFetch,this,args);};` });
+    await browser.send('Page.addScriptToEvaluateOnNewDocument', { source: `localStorage.setItem('ste-prompt-engineer.theme',${JSON.stringify(theme)});localStorage.setItem('promptboard.kanban.project',${JSON.stringify(project.id)});window.__backlogKeyboardEvents=[];for(const type of ['keydown','keypress','keyup','click','focusin'])document.addEventListener(type,event=>{if(event.target.closest?.('[data-backlog-id]')){window.__backlogKeyboardEvents.push({type,key:event.key,repeat:event.repeat,action:event.target.dataset.backlogAction,active:document.activeElement?.dataset.backlogAction});window.__backlogKeyboardEvents=window.__backlogKeyboardEvents.slice(-24);}},true);window.__writes=[];const nativeFetch=window.fetch;window.fetch=function(...args){if(args[1]?.method&&!['GET','HEAD'].includes(args[1].method))window.__writes.push({url:args[0],body:JSON.parse(args[1].body)});return Reflect.apply(nativeFetch,this,args);};` });
     await browser.goto(app.url + '/#/kanban'); await browser.resize(width, 900); await browser.until(`document.querySelector('[data-id="${card.id}"]')`, 'Composer board');
     assert.equal(await browser.eval('return innerWidth;'), width); assert.equal(await browser.eval("return document.documentElement.dataset.theme || 'light';"), theme);
     if (width === 390) assert.equal(await browser.layout('const p=document.getElementById("board-priority-filter").getBoundingClientRect(),s=document.getElementById("board-search").getBoundingClientRect();return p.width>0&&s.width>0&&Math.abs(p.top-s.top)<1&&p.left>=0&&s.right<=innerWidth;'), true, 'Phone filters share one row and leave room for the board.');
@@ -166,4 +169,31 @@ test('a stale new draft refreshes list and label choices explicitly while retain
   assert.equal(await browser.eval('return document.querySelectorAll("#backlog-label-choices input").length;'), 1);
   await enter(browser, '#backlog-form [type=submit]'); await browser.until('!document.getElementById("backlog-dialog").open', 'refreshed new draft save');
   const state = await app.board.state(); assert.equal(state.projects[0].backlog.length, 2); const saved = state.projects[0].backlog[1]; assert.equal(saved.title, 'My unsaved draft'); assert.equal(saved.prompt, 'typed 雪'); assert.equal(saved.priority, 3); assert.deepEqual(saved.labelIds, ['keep']); assert.deepEqual(state.projects[0].tasks, []); assert.deepEqual(state.runs, []);
+});
+
+test('queued backlog dialog close preserves later row focus and a reopened draft', { skip: !chrome, timeout: 60000 }, async t => {
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
+  const project = await app.board.createProject({ name: 'Backlog dialog ownership', workflowMode: 'pipeline' });
+  const item = await app.board.createBacklogItem(project.id, { title: 'Keep this draft', prompt: 'exact\r\nbody', expectedBacklogRevision: 0, expectedLabelRevision: 0 });
+  const browser = await launch(); assert.ok(browser); t.after(() => browser.close());
+  await browser.goto(app.url + '/#/kanban'); await enter(browser, '#view-backlog');
+  await browser.until(`document.querySelector(${JSON.stringify(row(item.id, 'delete'))})`, 'owned draft row');
+  const baseline = await app.board.state();
+  assert.equal(await browser.eval(`return new Promise(resolve => {
+    const dialog=$('#backlog-dialog');openBacklogDraft(${JSON.stringify(project.id)});
+    dialog.addEventListener('close',()=>resolve(document.activeElement.dataset.backlogAction),{once:true});
+    dialog.close();document.querySelector(${JSON.stringify(row(item.id, 'delete'))}).focus();
+  });`), 'delete', 'A queued close must not redirect the next Enter to New draft.');
+  await browser.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' });
+  await browser.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+  assert.equal(await browser.eval(`return document.activeElement===document.querySelector(${JSON.stringify(row(item.id, 'keep'))});`), true, 'Deletion still defaults to Keep draft.');
+  await enter(browser, row(item.id, 'keep'));
+  assert.deepEqual(await browser.eval(`return new Promise(resolve => {
+    const dialog=$('#backlog-dialog');openBacklogDraft(${JSON.stringify(project.id)});
+    dialog.addEventListener('close',()=>resolve({open:dialog.open,id:backlogDraft?.item?.id,focus:dialog.contains(document.activeElement)}),{once:true});
+    dialog.close();openBacklogDraft(${JSON.stringify(project.id)},${JSON.stringify(item.id)});
+  });`), { open: true, id: item.id, focus: true }, 'An old close event cannot discard or defocus a reopened editor.');
+  await browser.eval(`return new Promise(resolve=>{$('#backlog-dialog').addEventListener('close',resolve,{once:true});$('#backlog-dialog').close();});`);
+  assert.deepEqual(await app.board.state(), baseline);
+  assert.deepEqual(browser.consoleMessages.filter(line => line.startsWith('EXCEPTION')), []);
 });

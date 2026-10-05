@@ -23,3 +23,5 @@ State version 11 adds empty backlog metadata while preserving existing labels, t
 Checks cover exact text, independent metadata, stale edits, label updates, full-list order, same-ID concurrent promotion, publication failure, capacity/revision limits, inert portable import, migration backups and authenticated project-scoped HTTP. Browser checks cover both themes at actual desktop/phone widths, native keyboard authoring, shared search/filters, complete hidden-item order, stale/deleted drafts, captured project identity, inert views and exact promotion. Column-arrival checks also cover initial entry actions, configured startup, failed publication/arrival, duplicate prevention and captured destinations. Tracker imports remain separate work.
 
 The [GitHub Issues preview foundation](github-backlog-preview.md) exposes read-only, authenticated source pages. It does not yet provide a picker or create imported drafts.
+
+Queued native editor-close events preserve focus already moved to another action and leave a reopened draft intact. Normal closing still returns to the appropriate Backlog control; deletion defaults to Keep draft.
