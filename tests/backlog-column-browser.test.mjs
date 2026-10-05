@@ -34,7 +34,10 @@ async function fixture(t, { width = 1280, theme = 'light', older = false, autoSp
 for (const width of [1280, 390]) for (const theme of ['light', 'dark']) test(`chosen-column single/manual and bulk/Done promotion preserve exact drafts in ${width}/${theme}`, { skip: !chrome, timeout: 90000 }, async t => {
   const w = await fixture(t, { width, theme }), before = await w.app.board.state();
   assert.equal(await w.browser.eval('return innerWidth;'), width); assert.equal(await w.browser.eval("return document.documentElement.dataset.theme||'light';"), theme);
-  await w.browser.eval('document.getElementById("backlog-target").focus();'); await w.browser.type('Code Review');
+  await w.browser.until(`(async()=>{await new Promise(requestAnimationFrame);const e=document.getElementById('backlog-target');e.scrollIntoView({block:'center'});e.focus();return document.activeElement===e&&e.getClientRects().length>0;})()`, 'painted destination focus');
+  // A single unambiguous native typeahead key avoids the space opening a select
+  // popup or a slow runner resetting the multi-character search midway through.
+  await w.browser.type('c');
   await w.browser.key('Tab', 'Tab', 9);
   assert.equal(await w.browser.eval('return document.getElementById("backlog-target").value;'), 'code_review');
   assert.deepEqual(await w.app.board.state(), before, 'Choosing a column is inert.');
