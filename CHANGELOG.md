@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add project-shared label definitions, custom hex colors and task assignments through revision-checked metadata APIs. Preserve prompts, Base, pending messages and agent configuration; keep copies and portable backups consistent. State version 10 preserves an exact original migration backup. Label UI and backlog integration follow separately.
+
 - Keep deferred column messages queued while their owned agent waits for a slot or finishes its current work. Give the later native attempt a fresh bounded budget; preserve FIFO, Stop, target rechecks, human-input guards and no replay after uncertain outcomes.
 
 - Share keyboard priority filters between pipeline boards and completed tasks, with per-project browser preferences and visible/total counts. Keep saved task metadata, order and agent execution inert; translate explicit filtered keyboard moves and card drops to complete-column positions so hidden cards remain intact.

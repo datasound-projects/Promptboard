@@ -33,7 +33,7 @@ test('priority is inert metadata: Composer defaults, all levels, exact prompts, 
   assert.deepEqual(await board.state(), state);
 });
 
-test('invalid priorities reject create, edit and portable import without state changes; version 7 retains every level', async t => {
+test('invalid priorities reject create, edit and portable import without state changes; current backups retain every level', async t => {
   const { board, project } = await world(t);
   for (const priority of [0, 1, 2, 3, 4]) await board.createTask({ projectId: project.id, title: `Level ${priority}`, priority });
   const state = await board.state(), task = state.projects[0].tasks[0];
@@ -42,7 +42,7 @@ test('invalid priorities reject create, edit and portable import without state c
     await assert.rejects(board.updateTask(task.id, { priority, expectedRevision: task.revision }), { code: 'INVALID_TASK_PRIORITY' });
   }
   assert.deepEqual(await board.state(), state);
-  const backup = await board.exportBackup(); assert.equal(backup.version, 7);
+  const backup = await board.exportBackup(); assert.equal(backup.version, 8);
   const imported = new Board({ dataDir: await directory(t) }); await imported.importBackup(backup);
   const restored = await imported.state(); assert.deepEqual(restored.projects[0].tasks.map(row => row.priority), [0, 1, 2, 3, 4]); assert.deepEqual(restored.runs, []);
   const bad = structuredClone(backup); bad.projects[0].tasks[0].priority = 'urgent';
@@ -57,12 +57,12 @@ test('version 8 migration adds None without altering task identities, revisions,
     tasks: [{ id: 't', number: 11, prompt: '  Exact\r\n雪', revision: 7, contentRevision: 4, column: 'todo', extension: { retained: true },
       pendingAutomationMessages: [{ projectId: 'p', taskId: 't', transitionId: 'owned' }] }] }] };
   const bytes = JSON.stringify(original, null, 2); await writeFile(join(dir, 'state.json'), bytes);
-  const store = new Store(dir), saved = await store.read(); assert.equal(saved.version, 9); assert.equal(saved.revision, 33);
-  assert.deepEqual(saved.projects, original.projects.map(project => ({ ...project, tasks: project.tasks.map(task => ({ ...task, priority: 0 })) })));
-  assert.deepEqual(saved.extension, original.extension); assert.deepEqual(saved.migrations.map(row => row.kind), ['state-v8-to-v9']);
+  const store = new Store(dir), saved = await store.read(); assert.equal(saved.version, 10); assert.equal(saved.revision, 33);
+  assert.deepEqual(saved.projects, original.projects.map(project => ({ ...project, labels: [], labelRevision: 0, tasks: project.tasks.map(task => ({ ...task, priority: 0, labelIds: [] })) })));
+  assert.deepEqual(saved.extension, original.extension); assert.deepEqual(saved.migrations.map(row => row.kind), ['state-v8-to-v9', 'state-v9-to-v10']);
   assert.equal(await readFile(join(dir, store.recovery.migrationBackup), 'utf8'), bytes);
   assert.deepEqual(await new Store(dir).read(), saved);
-  const newer = JSON.stringify({ ...original, version: 10 }); const futureDir = await directory(t); await writeFile(join(futureDir, 'state.json'), newer);
+  const newer = JSON.stringify({ ...original, version: 11 }); const futureDir = await directory(t); await writeFile(join(futureDir, 'state.json'), newer);
   await assert.rejects(new Store(futureDir).read(), { code: 'STATE_VERSION_UNSUPPORTED' }); assert.equal(await readFile(join(futureDir, 'state.json'), 'utf8'), newer);
 });
 

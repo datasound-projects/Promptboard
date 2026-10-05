@@ -12,6 +12,8 @@ The user also confirmed that Kanban agents should inherit tools, MCP servers, an
 
 Keyboard focus survives background card refreshes. Usage dialog close events are queued by the browser: they restore focus when needed, but preserve a subsequent project action or a reopened modal. These controls never start agents. Real-browser regressions exercise both themes and desktop/phone widths.
 
+The [shared label metadata foundation](task-labels.md) adds project-wide names/colors and revision-checked task assignments without changing prompt content, agent configuration or pending messages. State version 10 and portable backup version 8 retain labels. Its editor, badges, filters and backlog integration follow separately.
+
 ## Default board behavior
 
 The following layout is the product requirement supplied by the user. Column names are editable; behavior should attach to a role or setting rather than the display name.
