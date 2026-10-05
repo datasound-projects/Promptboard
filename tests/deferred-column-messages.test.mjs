@@ -192,14 +192,14 @@ test('v7 migration keeps exact identities and extensions with an original byte-f
       prompt: '  Exact\r\n雪', revision: 9, extension: { saved: true } }] }] };
   const bytes = JSON.stringify(original, null, 3); await writeFile(join(dir, 'state.json'), bytes);
   const store = new Store(dir), saved = await store.read();
-  assert.equal(saved.version, 11); assert.equal(saved.revision, 27); assert.deepEqual(saved.projects, original.projects.map(project => ({ ...project, labels: [], labelRevision: 0, backlog: [], backlogRevision: 0, tasks: project.tasks.map(task => ({ ...task, priority: 0, labelIds: [] })) })));
-  assert.deepEqual(saved.extension, original.extension); assert.deepEqual(saved.migrations.map(row => row.kind), ['state-v7-to-v8', 'state-v8-to-v9', 'state-v9-to-v10', 'state-v10-to-v11']);
+  assert.equal(saved.version, 12); assert.equal(saved.revision, 27); assert.deepEqual(saved.projects, original.projects.map(project => ({ ...project, labels: [], labelRevision: 0, backlog: [], backlogRevision: 0, backlogSources: [], backlogImported: [], backlogImportRevision: 0, tasks: project.tasks.map(task => ({ ...task, priority: 0, labelIds: [] })) })));
+  assert.deepEqual(saved.extension, original.extension); assert.deepEqual(saved.migrations.map(row => row.kind), ['state-v7-to-v8', 'state-v8-to-v9', 'state-v9-to-v10', 'state-v10-to-v11', 'state-v11-to-v12']);
   assert.equal(await readFile(join(dir, store.recovery.migrationBackup), 'utf8'), bytes);
   assert.deepEqual(await new Store(dir).read(), saved);
 });
 
 test('v8 pending references reject cross-task, duplicate, excessive and executable metadata; newer state stays untouched', async t => {
-  const original = { ...emptyState(), projects: [{ id: 'p', nextTaskNumber: 2, labels: [], labelRevision: 0, backlog: [], backlogRevision: 0, tasks: [{ id: 't', number: 1, column: 'todo', labelIds: [] }] }] };
+  const original = { ...emptyState(), projects: [{ id: 'p', nextTaskNumber: 2, labels: [], labelRevision: 0, backlog: [], backlogRevision: 0, backlogSources: [], backlogImported: [], backlogImportRevision: 0, tasks: [{ id: 't', number: 1, column: 'todo', labelIds: [] }] }] };
   const key = { projectId: 'p', taskId: 't', transitionId: 'owned' };
   for (const references of [[{ ...key, taskId: 'other' }], [{ ...key, projectId: 'other' }], [key, key],
     [{ ...key, message: 'Never executable in state' }], [{ ...key, transitionId: '../outside' }],
@@ -207,7 +207,7 @@ test('v8 pending references reject cross-task, duplicate, excessive and executab
     const state = structuredClone(original); state.projects[0].tasks[0].pendingAutomationMessages = references;
     assert.throws(() => migrateState(state), /Invalid pending message references/);
   }
-  const dir = await temp(t), bytes = JSON.stringify({ ...original, version: 12 }); await writeFile(join(dir, 'state.json'), bytes);
+  const dir = await temp(t), bytes = JSON.stringify({ ...original, version: 13 }); await writeFile(join(dir, 'state.json'), bytes);
   await assert.rejects(new Store(dir).read(), { code: 'STATE_VERSION_UNSUPPORTED' });
   assert.equal(await readFile(join(dir, 'state.json'), 'utf8'), bytes); assert.deepEqual(await readdir(dir), ['state.json']);
 });

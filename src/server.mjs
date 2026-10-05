@@ -128,6 +128,13 @@ async function boardRoute(board, req, res, pathname, searchParams) {
   const note = pathname.match(/^\/api\/projects\/([A-Za-z0-9_-]{1,100})\/timeline\/([A-Za-z0-9_-]{1,100})$/);
   if (note && method === 'PATCH') return send(res, 200, { note: await board.updateTimelineNote(note[1], note[2], await body()) });
   if (note && method === 'DELETE') return send(res, 200, { deleted: await board.deleteTimelineNote(note[1], note[2]) ?? true });
+  const importSource = pathname.match(/^\/api\/projects\/([A-Za-z0-9_-]{1,100})\/backlog\/sources\/([A-Za-z0-9_-]{1,100})(?:\/(import))?$/);
+  if (importSource) {
+    const [, projectId, sourceId, action] = importSource;
+    if (sourceId === 'github-issues' && !action && method === 'POST') return view({ source: await board.connectBacklogGitHubSource(projectId, await body()) });
+    if (action === 'import' && method === 'POST') return view(await board.importGitHubBacklogIssues(projectId, sourceId, await body()));
+    if (!action && method === 'DELETE') return view({ deleted: await board.removeBacklogImportSource(projectId, sourceId, await body()) });
+  }
   const issuePreview = pathname.match(/^\/api\/projects\/([A-Za-z0-9_-]{1,100})\/backlog\/import\/github-issues$/);
   if (issuePreview && method === 'GET') return send(res, 200, await board.previewGitHubBacklogIssues(issuePreview[1], {
     repository: searchParams.get('repository'), state: searchParams.get('state') || 'open', page: Number(searchParams.get('page') || '1') }));

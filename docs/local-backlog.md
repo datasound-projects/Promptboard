@@ -25,3 +25,5 @@ Checks cover exact text, independent metadata, stale edits, label updates, full-
 The [GitHub Issues preview foundation](github-backlog-preview.md) exposes read-only, authenticated source pages. It does not yet provide a picker or create imported drafts.
 
 Queued native editor-close events preserve focus already moved to another action and leave a reopened draft intact. Normal closing still returns to the appropriate Backlog control; deletion defaults to Keep draft.
+
+The [GitHub Issues import backend](backlog-github-imports.md) adds saved sources, selected-page atomic imports and durable duplicate identities. Its picker, source cache and attachments remain separate work.
