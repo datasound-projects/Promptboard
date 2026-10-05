@@ -4,6 +4,8 @@
 
 - Add Backlog multi-selection and ordered To Do promotion or confirmed deletion, retaining hidden selections and captured revisions. Stop unstarted requests on cancellation, project/view changes, conflicts or unknown replies; report each result without replay or agent work.
 
+- Keep delayed Backlog editor-close events from stealing subsequent keyboard focus or discarding a reopened draft. Retain the safe Keep draft deletion focus.
+
 - Add a separate Backlog view with keyboard draft editing, shared label/priority filters and title/prompt/label search, filtered full-list ordering, sorting, explicit deletion and atomic Add to To Do. Preserve Composer routing, exact prompt bytes and stale-write guards; expand completed search to descriptions and labels. Bulk/active-column promotion and imports remain pending.
 
 - Add inert local backlog drafts with independent revisions, shared labels/priorities and atomic promotion into To Do through normal task creation. State version 11 and portable version 9 retain exact text and original migration backups. Backlog UI and active-column/import integrations follow separately.
