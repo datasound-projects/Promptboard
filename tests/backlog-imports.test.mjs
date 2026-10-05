@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Board } from '../src/board.mjs';
-import { Store, STATE_VERSION } from '../src/store.mjs';
+import { Store, STATE_VERSION, migrateState } from '../src/store.mjs';
 import { listGitHubBacklogIssues } from '../src/backlog-github.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
 const exact = '  Source Markdown 雪\r\n{{title}}\r\n  ';
@@ -147,4 +147,22 @@ test('explicit card copies preserve display provenance without allocating anothe
   const duplicate = await w.board.importGitHubBacklogIssues(w.project.id, w.source.id, await w.request()); assert.deepEqual(duplicate.created, []); assert.equal(duplicate.skipped[0].taskId, original.id);
   const backup = await w.board.exportBackup(), imported = await world(t); await imported.board.importBackup(backup, { replace: true });
   assert.deepEqual((await imported.board.state()).projects[0].tasks[0].externalSource, copy.externalSource);
+});
+
+
+test('older source metadata cannot publish a migrated state with orphan import identities', async t => {
+  const w = await world(t);
+  await w.board.importGitHubBacklogIssues(w.project.id, w.source.id, await w.request());
+  const saved = structuredClone(await w.board.state()); saved.version = 11;
+  for (const p of saved.projects) { delete p.backlogSources; delete p.backlogImported; delete p.backlogImportRevision; }
+  // A formerly unknown source field must not become recognized provenance without its ledger.
+  assert.throws(() => migrateState(saved), { code: 'INVALID_BACKLOG_IMPORT' });
+  const dir = await mkdtemp(join(tmpdir(), 'pb-import-invalid-migration-')); t.after(() => rm(dir, { recursive: true, force: true }));
+  const bytes = JSON.stringify(saved, null, 2); await writeFile(join(dir, 'state.json'), bytes);
+  await assert.rejects(new Store(dir).read(), { code: 'STATE_MIGRATION_FAILED' });
+  assert.equal(await readFile(join(dir, 'state.json'), 'utf8'), bytes);
+  const files = await readdir(dir), backup = files.find(name => name.startsWith('state.pre-migration-v11-'));
+  assert.ok(backup); assert.equal(await readFile(join(dir, backup), 'utf8'), bytes);
+  assert.equal(files.some(name => name.startsWith('state.corrupt-')), false);
+  assert.equal(files.some(name => name.includes('.tmp-')), false);
 });
