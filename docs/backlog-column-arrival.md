@@ -1,6 +1,8 @@
 # Backlog column arrival
 
-The project-scoped POST `/api/projects/:projectId/backlog/:itemId/promote-to-column` accepts a column ID and `expectedRevision`, `expectedBacklogRevision` and `expectedProjectRevision`. It requires the same local token and origin protections as other authoring routes. The Backlog UI's existing Add to To Do remains unchanged; choosing a destination in that UI is a separate step.
+Choose **Add to column** in Backlog, then use a draft's Add button or select drafts and use the bulk Add button. To Do is the default and starts no agent. Other destinations use their configured session rules and entry automations; auto-spawn can start an agent. The choice belongs to the current project for this page and writes no saved data. Older servers without the destination capability retain To Do-only promotion.
+
+The project-scoped POST `/api/projects/:projectId/backlog/:itemId/promote-to-column` accepts a column ID and `expectedRevision`, `expectedBacklogRevision` and `expectedProjectRevision`. It requires the same local token and origin protections as other authoring routes. Bulk operations capture the destination and settings revision at the start, disable destination changes during owned work, and stop unstarted requests on conflict, failed arrival, lost reply or project/view change. Failed arrivals display that a card was added to the board and needs review; they are never replayed.
 
 Promotion publishes the board card and removes the draft in one atomic state update. It preserves the draft ID, creation time, exact prompt, source/check metadata, priority and label order, assigning its board number once. Invalid columns, stale item/list/settings revisions, unreviewed imported execution configuration and unsupported immediate entry messages are refused before publication. Publication failure retains the complete draft and number counter, with no arrival effects.
 

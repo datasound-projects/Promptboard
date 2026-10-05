@@ -27,6 +27,7 @@ let taskPrioritySupported = false;
 let taskLabelsSupported = false;
 let pipelineBacklogSupported = false;
 let pipelineBacklogBulkSupported = false;
+let pipelineBacklogColumnsSupported = false;
 let providers = [];
 let history = readHistory();
 let currentId = null;
@@ -299,6 +300,7 @@ async function loadProviders() {
     taskLabelsSupported = session.capabilities?.taskLabels === true;
     pipelineBacklogSupported = session.capabilities?.pipelineBacklog === true;
     pipelineBacklogBulkSupported = pipelineBacklogSupported && session.capabilities?.pipelineBacklogBulk === true;
+    pipelineBacklogColumnsSupported = pipelineBacklogSupported && session.capabilities?.pipelineBacklogColumns === true;
     providers = Array.isArray(status.providers) ? status.providers.filter((item) => item && KNOWN_PROVIDERS.includes(item.id)) : [];
     if (!token) throw new Error('The local server did not return a session token.');
     browserNotifications?.resume();
@@ -324,6 +326,7 @@ async function loadProviders() {
     taskLabelsSupported = false;
     pipelineBacklogSupported = false;
     pipelineBacklogBulkSupported = false;
+    pipelineBacklogColumnsSupported = false;
     browserNotifications?.stop();
     $('#cli-status-label').textContent = 'Server unavailable';
     $('#provider-note').textContent = 'Could not reach the local server. Restart the app, then reload this page.';
@@ -4797,6 +4800,30 @@ $('#columns-remove').addEventListener('click', () => {
 for (const id of ['#columns-cancel', '#columns-close']) $(id).addEventListener('click', () => $('#columns-dialog').close());
 
 let backlogSelectionProject = null, backlogSelected = new Set(), backlogBulkJob = null, backlogBulkConfirm = null;
+const backlogDestinations = new Map();
+function backlogDestination(project) {
+  return project.columns.find(column => pipelineBacklogColumnsSupported && column.id === backlogDestinations.get(project.id)) || project.columns.find(column => column.role === 'todo');
+}
+function renderBacklogDestination(project) {
+  const field = $('#backlog-target-field'), select = $('#backlog-target'); field.hidden = !pipelineBacklogColumnsSupported;
+  const columns = project.columns, signature = JSON.stringify(columns.map(column => [column.id, column.title]));
+  const changed = select.dataset.choices !== signature, projectChanged = select.dataset.project !== project.id;
+  if (changed) { select.replaceChildren(...columns.map(column => option(column.id, column.title))); select.dataset.choices = signature; }
+  if (changed || projectChanged || document.activeElement !== select) select.value = backlogDestination(project).id;
+  select.dataset.project = project.id; select.disabled = Boolean(backlogOperation || backlogBulkJob?.running);
+  $('#backlog-arrival-note').textContent = pipelineBacklogColumnsSupported ? 'The selected column’s automations and session rules run when you add drafts.' : 'Drafts stay here until you add them to To Do.';
+}
+$('#backlog-target').addEventListener('change', () => {
+  const project = currentProject(); if (!pipelineBacklogColumnsSupported || !project || backlogOperation || backlogBulkJob?.running) return;
+  backlogDestinations.set(project.id, $('#backlog-target').value); renderBoard();
+});
+function backlogPromotionRequest(project, item, listRevision, target, projectRevision = project.revision) {
+  return { path: backlogPath(project.id, item.id) + (target.role === 'todo' ? '/promote' : '/promote-to-column'),
+    body: { expectedRevision: item.revision, expectedBacklogRevision: listRevision, ...(target.role !== 'todo' ? { column: target.id, expectedProjectRevision: projectRevision } : {}) } };
+}
+function checkBacklogArrival(response) {
+  if (response.arrival?.status === 'failed') throw new Error(`Card added to the board; column arrival failed: ${safeText(response.arrival.reason, 500)}. Review the card before another action.`);
+}
 function prepareBacklogSelection(project, showing) {
   if (backlogBulkJob?.running && (!showing || project?.id !== backlogBulkJob.projectId)) backlogBulkJob.stop = true;
   if (backlogSelectionProject !== project?.id) { backlogSelectionProject = project?.id || null; backlogSelected.clear(); backlogBulkConfirm = null; }
@@ -4810,7 +4837,7 @@ function renderBacklogBulk(project, visible) {
   $('#backlog-select-visible').disabled = busy || !visible.length;
   $('#backlog-clear-selection').disabled = busy || !count;
   $('#backlog-promote-selected').disabled = $('#backlog-delete-selected').disabled = busy || !count;
-  $('#backlog-promote-selected').textContent = `Add selected to To Do (${count})`;
+  $('#backlog-promote-selected').textContent = `Add selected to ${backlogDestination(project).title} (${count})`;
   $('#backlog-delete-selected').textContent = `Delete selected (${count})`;
   $('#backlog-stop-remaining').hidden = !backlogBulkJob?.running;
   $('#backlog-stop-remaining').disabled = backlogBulkJob?.stop === true;
@@ -4821,14 +4848,14 @@ function renderBacklogBulk(project, visible) {
   $('#backlog-bulk-progress').hidden = $('#backlog-bulk-results').hidden = !items.length;
   $('#backlog-bulk-progress').textContent = `${items.filter(item => ['promoted', 'deleted'].includes(item.status)).length} completed · ${items.filter(item => item.status === 'review').length} need review · ${items.filter(item => item.status === 'pending').length} not started${job?.running ? ' · Working…' : ''}${job?.reason ? ' · ' + job.reason : ''}`;
   $('#backlog-bulk-results').replaceChildren(...items.map(item => {
-    const row = document.createElement('li'); row.textContent = `${item.title}: ${{ pending: 'Not started', working: 'Working…', promoted: 'Added to To Do', deleted: 'Deleted', review: 'Needs review' }[item.status]}${item.reason ? ' · ' + item.reason : ''}`; return row;
+    const row = document.createElement('li'); row.textContent = `${item.title}: ${{ pending: 'Not started', working: 'Working…', promoted: 'Added to ' + job.target.title, deleted: 'Deleted', review: 'Needs review' }[item.status]}${item.reason ? ' · ' + item.reason : ''}`; return row;
   }));
 }
 function captureBacklogSelection() {
   const project = currentProject();
   if (!pipelineBacklogBulkSupported || project?.workflowMode !== 'pipeline' || projectView() !== 'backlog' || backlogBulkJob?.running || backlogOperation) return null;
   const items = [...backlogSelected].map(id => project.backlog.find(item => item.id === id)).filter(Boolean).map(item => ({ id: item.id, title: item.title, revision: item.revision, status: 'pending' }));
-  return items.length ? { projectId: project.id, listRevision: project.backlogRevision, items } : null;
+  return items.length ? { projectId: project.id, listRevision: project.backlogRevision, projectRevision: project.revision, target: { ...backlogDestination(project) }, items } : null;
 }
 async function runBacklogBulk(mode, captured = captureBacklogSelection()) {
   if (!captured || backlogBulkJob?.running || backlogOperation || currentProject()?.id !== captured.projectId || projectView() !== 'backlog' || !pipelineBacklogBulkSupported) return;
@@ -4838,13 +4865,15 @@ async function runBacklogBulk(mode, captured = captureBacklogSelection()) {
       if (job.stop || currentProject()?.id !== job.projectId || projectView() !== 'backlog') break;
       item.status = 'working'; renderBoard();
       try {
-        const response = await boardCall(mode === 'promote' ? 'POST' : 'DELETE', backlogPath(job.projectId, item.id) + (mode === 'promote' ? '/promote' : ''),
-          { expectedRevision: item.revision, expectedBacklogRevision: job.listRevision });
+        const request = backlogPromotionRequest({ id: job.projectId }, item, job.listRevision, job.target, job.projectRevision);
+        const response = await boardCall(mode === 'promote' ? 'POST' : 'DELETE', mode === 'promote' ? request.path : backlogPath(job.projectId, item.id),
+          mode === 'promote' ? request.body : { expectedRevision: item.revision, expectedBacklogRevision: job.listRevision });
+        if (mode === 'promote') checkBacklogArrival(response);
         const owner = response.board?.projects.find(project => project.id === job.projectId);
         const absent = owner && !owner.backlog.some(draft => draft.id === item.id);
         const task = owner?.tasks.find(task => task.id === item.id), todo = owner?.columns.find(column => column.role === 'todo');
-        const known = absent && (mode === 'delete' ? response.deleted === true : response.task?.id === item.id && task?.column === todo?.id);
-        if (!known) throw new Error('The outcome was not confirmed. Check Backlog and To Do before trying again.');
+        const known = absent && (mode === 'delete' ? response.deleted === true : response.task?.id === item.id && task && (job.target.role === 'todo' ? task.column === todo?.id : response.arrival?.status === 'completed'));
+        if (!known) throw new Error('The outcome was not confirmed. Check Backlog and the board before trying again.');
         item.status = mode === 'delete' ? 'deleted' : 'promoted'; if (backlogSelectionProject === job.projectId) backlogSelected.delete(item.id);
         if (owner.backlogRevision !== job.listRevision + 1) { job.stop = true; job.reason = 'The backlog changed during this batch. Remaining drafts were not started.'; }
         else job.listRevision++;
@@ -4869,6 +4898,7 @@ let backlogDraft = null, backlogOperation = null, backlogSignature = '', backlog
 function backlogPath(projectId, id = null) { return `/api/projects/${encodeURIComponent(projectId)}/backlog${id ? '/' + encodeURIComponent(id) : ''}`; }
 function backlogRow(id) { return [...$('#backlog-list').children].find(row => row.dataset.backlogId === id); }
 function renderBacklog(project) {
+  renderBacklogDestination(project);
   const items = project.backlog || [], sort = $('#backlog-sort').value;
   const visible = items.filter(item => matchesTaskFilters(item, project));
   if (sort === 'newest') visible.sort((a, b) => b.createdAt - a.createdAt);
@@ -4876,7 +4906,8 @@ function renderBacklog(project) {
   if (sort === 'title') visible.sort((a, b) => a.title.localeCompare(b.title));
   renderBacklogBulk(project, visible);
   const busy = Boolean(backlogOperation || backlogBulkJob?.running);
-  const signature = JSON.stringify([project.id, project.backlogRevision, project.labelRevision, projectPriorityFilter(project), projectLabelFilter(project), projectSearch(project), sort, busy, backlogDelete, [...backlogSelected]]);
+  const destination = backlogDestination(project);
+  const signature = JSON.stringify([project.id, project.backlogRevision, project.labelRevision, project.revision, projectPriorityFilter(project), projectLabelFilter(project), projectSearch(project), sort, busy, backlogDelete, [...backlogSelected], destination.id]);
   if (signature === backlogSignature) return;
   backlogSignature = signature;
   const focus = document.activeElement?.closest('[data-backlog-id]'), action = document.activeElement?.dataset.backlogAction;
@@ -4895,9 +4926,10 @@ function renderBacklog(project) {
     appendTaskPriority(heading, item); appendTaskLabels(heading, item, project);
     const age = paragraph(`Created ${timeAgo(item.createdAt)}`, 'note'); age.title = new Date(item.createdAt).toLocaleString();
     const actions = document.createElement('div'); actions.className = 'detail-actions';
-    actions.append(button('Add to To Do', 'promote', () => runBacklogOperation(project, async () => {
-      const result = await boardCall('POST', backlogPath(project.id, item.id) + '/promote', { expectedRevision: item.revision, expectedBacklogRevision: project.backlogRevision });
-      announce(`Added “${result.task.title}” to To Do.`);
+    actions.append(button('Add to ' + destination.title, 'promote', () => runBacklogOperation(project, async () => {
+      const request = backlogPromotionRequest(project, item, project.backlogRevision, destination);
+      const result = await boardCall('POST', request.path, request.body); checkBacklogArrival(result);
+      announce(`Added “${result.task.title}” to ${destination.title}.`);
     })));
     const reorder = (direction) => runBacklogOperation(project, async () => {
       const neighbor = visible[index + direction]; if (!neighbor || sort !== 'manual') return;
