@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Add revision-checked saved GitHub repository sources and atomic selected-issue backlog imports. Preserve exact descriptions, shared labels, assignees and original ticket provenance; retain duplicate identities across promotion, archive, deletion and reconnection. State 12 and portable 10 retain this inert metadata. Import UI, persistent cache and attachments follow separately.
+- Add revision-checked saved GitHub repository sources and atomic selected-issue backlog imports. Preserve exact descriptions, shared labels, assignees and original ticket provenance; retain duplicate identities across promotion, archive, deletion and reconnection. State 12 and portable 10 retain this inert metadata; completed migrations validate current provenance invariants before publishing, preserving originals on failure. Import UI, persistent cache and attachments follow separately.
 
 - Add an authenticated, read-only GitHub Issues preview API with bounded CLI requests, exact text, pagination, stable source identities and explicit malformed-item reports. It creates no drafts or agents; selective import and saved-source deduplication follow separately.
 

@@ -129,7 +129,8 @@ export function migrateState(data) {
   for (const project of state.projects) { project.backlogSources = []; project.backlogImported = []; project.backlogImportRevision = 0; }
   state.migrations.push({ kind: 'state-v11-to-v12', at: Date.now() });
   state.version = STATE_VERSION;
-  return state;
+  // New metadata must satisfy current invariants before any migrated bytes publish.
+  return checkShape(state);
 }
 
 export class Store {
@@ -183,7 +184,7 @@ export class Store {
           state = migrated;
           this.recovery = { ...this.recovery, migratedFromVersion: previousVersion, migrationBackup: backup };
         } catch {
-          throw new StoreError('The existing board could not be migrated. Its pre-migration data was preserved; fix folder permissions or free disk space and retry.', 'STATE_MIGRATION_FAILED');
+          throw new StoreError('The existing board could not be migrated safely. Its pre-migration data was preserved; check saved data, folder permissions and free disk space before retrying.', 'STATE_MIGRATION_FAILED');
         }
       }
       this.state = state;
