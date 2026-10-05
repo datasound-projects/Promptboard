@@ -10,7 +10,7 @@ import { COMPOSE_PROMPT_CHARS } from './compose-limits.mjs';
 
 // After these account-level failures, another call would fail the same way and could
 // consume more usage. Stop instead of retrying or repairing.
-const STOP_CODES = new Set(['QUOTA_EXHAUSTED', 'RATE_LIMITED', 'AUTH_REQUIRED', 'ACCOUNT_UNAVAILABLE', 'POLICY_DENIED', 'MODEL_UNAVAILABLE']);
+const STOP_CODES = new Set(['QUOTA_EXHAUSTED', 'RATE_LIMITED', 'AUTH_REQUIRED', 'ACCOUNT_UNAVAILABLE', 'POLICY_DENIED', 'MODEL_UNAVAILABLE', 'CLIENT_UNSUPPORTED']);
 
 export const REVIEW_CRITERIA = ['meaning', 'constraints', 'no-invention', 'conflicts', 'language', 'scope', 'clarity'];
 const MAX_UNITS = 128;

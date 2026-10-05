@@ -17,10 +17,16 @@ export function normalizeModels(provider, rows) {
     if (typeof id !== 'string' || !SAFE_ID.test(id) || row.hidden || seen.has(id)) return [];
     seen.add(id);
     let efforts = levels(provider === 'codex' ? row.supportedReasoningEfforts?.map(e => e.reasoningEffort) : row.supportedEffortLevels);
-    if (provider === 'agy') efforts = ['low', 'medium', 'high'];
+    let defaultEffort = text(row.defaultReasoningEffort || row.defaultEffort, 20);
+    if (provider === 'agy') {
+      // `agy models` returns effort-pinned slugs. A different --effort conflicts
+      // with the selected slug; an unsuffixed/custom ID reports no capabilities.
+      const pinned = id.match(/-(low|medium|high)$/)?.[1];
+      if (pinned) { efforts = [pinned]; defaultEffort = pinned; }
+    }
     if (provider === 'gemini' || row.supportsEffort === false) efforts = [];
     return [{ id, name: text(row.displayName || row.name || id), resolvedModel: text(row.resolvedModel, 100), efforts,
-      defaultEffort: text(row.defaultReasoningEffort || row.defaultEffort, 20), isDefault: row.isDefault === true }];
+      defaultEffort, isDefault: row.isDefault === true }];
   });
 }
 
@@ -28,7 +34,7 @@ export function parseAgyModels(stdout) {
   // `agy models` is a documented two-column plain-text list, not a JSON API.
   const clean = stdout.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
   return normalizeModels('agy', clean.split(/\r?\n/).flatMap(line => {
-    const match = line.trim().match(/^([A-Za-z0-9][A-Za-z0-9_.:/@+-]*-[A-Za-z0-9_.:/@+-]+)\s{2,}(.+)$/);
+    const match = line.trim().match(/^([A-Za-z0-9][A-Za-z0-9_.:/@+-]*-[A-Za-z0-9_.:/@+-]+)(?:\t+| {2,})(.+)$/);
     return match ? [{ id: match[1], name: match[2] }] : [];
   }));
 }

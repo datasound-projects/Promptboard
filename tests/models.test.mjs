@@ -17,6 +17,13 @@ test('model normalization preserves native effort choices and excludes unsafe or
   assert.deepEqual(normalizeModels('claude', [{ value: 'haiku', supportsEffort: false, supportedEffortLevels: ['high'] }])[0].efforts, []);
   assert.deepEqual(normalizeModels('gemini', [{ modelId: 'gemini-future', name: 'Future' }])[0].efforts, []);
   assert.deepEqual(parseAgyModels('Available models:\n  gemini-new-high    Gemini New (High)\n  claude-sonnet-4-6    Claude Sonnet\n').map(m => m.id), ['gemini-new-high', 'claude-sonnet-4-6']);
+  assert.deepEqual(parseAgyModels('Fetching available models...\n\u001b[32mgemini-3.8-flash-high\u001b[0m\tGemini 3.8 Flash (High)\nclaude-sonnet-5-5-low\tClaude Sonnet 5.5 (Low)\n').map(m => m.id), ['gemini-3.8-flash-high', 'claude-sonnet-5-5-low']);
+  const agyModels = parseAgyModels('gemini-3.8-flash-high\tGemini 3.8 Flash (High)\nclaude-sonnet-5-5-low\tClaude Sonnet 5.5 (Low)\ngpt-oss-120b-medium\tGPT-OSS 120B (Medium)\n');
+  assert.deepEqual(agyModels.map(model => model.efforts), [['high'], ['low'], ['medium']]);
+  assert.deepEqual(agyModels.map(model => model.defaultEffort), ['high', 'low', 'medium']);
+  assert.deepEqual(normalizeModels('agy', [{ id: 'custom-model' }])[0].efforts, []);
+  assert.throws(() => checkModelEffort('agy', agyModels[0].id, 'low', { models: agyModels }), { code: 'INVALID_EFFORT', status: 400 });
+  assert.doesNotThrow(() => checkModelEffort('agy', agyModels[0].id, 'high', { models: agyModels }));
   assert.throws(() => checkModelEffort('codex', 'future-model', 'high', { models }), { code: 'INVALID_EFFORT' });
   assert.doesNotThrow(() => checkModelEffort('codex', 'future-model', 'xhigh', { models }));
 });
@@ -31,7 +38,7 @@ const args = process.argv.slice(2), provider = basename(process.argv[1]);
 const send = value => process.stdout.write(JSON.stringify(value) + '\\n');
 if (provider === 'agy') {
   if (args.join(' ') !== 'models') process.exit(2);
-  process.stdout.write('gemini-example-high    Gemini Example (High)\\n');
+  process.stdout.write('gemini-example-high\\tGemini Example (High)\\n');
 } else {
   let initialized = false;
   createInterface({ input: process.stdin }).on('line', line => {
@@ -46,6 +53,7 @@ if (provider === 'agy') {
     } else if (provider === 'codex' && msg.method === 'config/read') send({ id: msg.id, result: { config: { model: 'model-two', model_reasoning_effort: 'high', api_key: 'NEVER_RETURN_THIS' } } });
     else if (provider === 'gemini' && msg.method === 'session/new' && initialized && args.includes('--experimental-acp')) {
       if (msg.params.mcpServers.length) process.exit(2);
+      if (args[args.indexOf('--approval-mode') + 1] === 'plan') process.exit(2);
       send({ id: msg.id, result: { sessionId: 'not-exposed', models: { currentModelId: 'gemini-example', availableModels: [{ modelId: 'gemini-example', name: 'Gemini Example' }] } } });
     } else process.exit(3);
   });
