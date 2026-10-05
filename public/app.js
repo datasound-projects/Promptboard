@@ -4897,7 +4897,7 @@ function openBacklogDraft(projectId = currentProject()?.id, id = null) {
   }
   if (!choices.children.length) choices.append(paragraph('No project labels yet. Manage labels from the board toolbar.', 'note'));
   $('#backlog-source').textContent = item?.source ? `${sourceSummary(item.source)} · ${cardStatus(item).text}` : '';
-  $('#backlog-reload').hidden = !item; $('#backlog-draft-error').hidden = true;
+  $('#backlog-reload').textContent = item ? 'Reload draft' : 'Refresh choices'; $('#backlog-draft-error').hidden = true;
   if (!$('#backlog-dialog').open) $('#backlog-dialog').showModal(); $('#backlog-title').focus();
 }
 async function saveBacklogDraft(event) {
@@ -4920,12 +4920,20 @@ $('#backlog-sort').addEventListener('change', () => renderBoard());
 $('#backlog-dialog').addEventListener('close', () => { const draft = backlogDraft; backlogDraft = null; if (currentProject()?.id === draft?.projectId) (draft.item && backlogRow(draft.item.id)?.querySelector('[data-backlog-action=edit]') || $('#backlog-new')).focus({ preventScroll: true }); });
 for (const id of ['backlog-close', 'backlog-cancel']) $(`#${id}`).addEventListener('click', () => $('#backlog-dialog').close());
 $('#backlog-reload').addEventListener('click', async () => {
-  const draft = backlogDraft; if (!draft?.item) return;
+  const draft = backlogDraft; if (!draft) return;
+  const typed = !draft.item ? { title: $('#backlog-title').value, prompt: $('#backlog-prompt').value, priority: $('#backlog-priority').value, labels: [...draft.labelOrder] } : null;
   try {
     await boardCall('GET', '/api/board');
     if (backlogDraft !== draft || !$('#backlog-dialog').open) return;
-    if (!board.projects.find(project => project.id === draft.projectId)?.backlog.some(item => item.id === draft.item.id)) throw new Error('This draft is no longer in Backlog. Check the board.');
-    openBacklogDraft(draft.projectId, draft.item.id);
+    const project = board.projects.find(project => project.id === draft.projectId);
+    if (!project || project.workflowMode !== 'pipeline') throw new Error('This project is unavailable.');
+    if (draft.item && !project.backlog.some(item => item.id === draft.item.id)) throw new Error('This draft is no longer in Backlog. Check the board.');
+    openBacklogDraft(draft.projectId, draft.item?.id);
+    if (typed) {
+      $('#backlog-title').value = typed.title; $('#backlog-prompt').value = typed.prompt; $('#backlog-priority').value = typed.priority;
+      backlogDraft.labelOrder = typed.labels.filter(id => projectLabels(project).some(label => label.id === id));
+      for (const checkbox of $('#backlog-label-choices').querySelectorAll('input')) checkbox.checked = backlogDraft.labelOrder.includes(checkbox.dataset.labelId);
+    }
   } catch (error) { if (backlogDraft === draft) { $('#backlog-draft-error').textContent = error.message; $('#backlog-draft-error').hidden = false; } }
 });
 bindAsyncForm('#backlog-form', saveBacklogDraft);

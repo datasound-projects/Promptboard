@@ -143,3 +143,21 @@ test('shared text search follows project label names and exact descriptions, and
   await enter(browser, '#done-dialog-close'); await search(browser, ''); assert.ok(await browser.eval(`return !!document.querySelector('[data-id="${task.id}"]');`));
   const state = await app.board.state(); assert.equal(state.projects[0].backlog[0].prompt, 'Unique description 雪'); assert.equal(state.projects[0].tasks[0].prompt, 'Unique description 雪'); assert.deepEqual(state.runs, []); assert.deepEqual(state.sessions, []);
 });
+
+test('a stale new draft refreshes list and label choices explicitly while retaining typed work', { skip: !chrome, timeout: 60000 }, async t => {
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
+  const project = await app.board.createProject({ name: 'New draft conflicts', workflowMode: 'pipeline' });
+  await app.board.setLabels(project.id, { labels: [{ id: 'keep', name: 'Keep', color: '#123456' }, { id: 'remove', name: 'Remove', color: '#654321' }], expectedLabelRevision: 0 });
+  const browser = await launch(); assert.ok(browser); t.after(() => browser.close()); await browser.goto(app.url + '/#/kanban');
+  await enter(browser, '#view-backlog'); await enter(browser, '#backlog-new'); await browser.until('document.getElementById("backlog-dialog").open', 'new conflict editor');
+  await browser.eval('document.getElementById("backlog-title").value="My unsaved draft";document.getElementById("backlog-prompt").value="typed 雪";for(const e of document.querySelectorAll("#backlog-label-choices input")){e.checked=true;e.dispatchEvent(new Event("change",{bubbles:true}));}');
+  await select(browser, 'backlog-priority', '3');
+  await app.board.createBacklogItem(project.id, { title: 'Other draft', expectedBacklogRevision: 0, expectedLabelRevision: 1 });
+  await enter(browser, '#backlog-form [type=submit]'); await browser.until('!document.getElementById("backlog-draft-error").hidden', 'new list conflict');
+  await app.board.setLabels(project.id, { labels: [{ id: 'keep', name: 'Renamed keep', color: '#abcdef' }], expectedLabelRevision: 1 });
+  await enter(browser, '#backlog-reload'); await browser.until('document.querySelector("#backlog-label-choices input[data-label-id=keep]")?.checked && document.getElementById("backlog-draft-error").hidden', 'explicit new choices refresh');
+  assert.equal(await browser.eval('return document.getElementById("backlog-title").value;'), 'My unsaved draft'); assert.equal(await browser.eval('return document.getElementById("backlog-prompt").value;'), 'typed 雪'); assert.equal(await browser.eval('return document.getElementById("backlog-priority").value;'), '3');
+  assert.equal(await browser.eval('return document.querySelectorAll("#backlog-label-choices input").length;'), 1);
+  await enter(browser, '#backlog-form [type=submit]'); await browser.until('!document.getElementById("backlog-dialog").open', 'refreshed new draft save');
+  const state = await app.board.state(); assert.equal(state.projects[0].backlog.length, 2); const saved = state.projects[0].backlog[1]; assert.equal(saved.title, 'My unsaved draft'); assert.equal(saved.prompt, 'typed 雪'); assert.equal(saved.priority, 3); assert.deepEqual(saved.labelIds, ['keep']); assert.deepEqual(state.projects[0].tasks, []); assert.deepEqual(state.runs, []);
+});
