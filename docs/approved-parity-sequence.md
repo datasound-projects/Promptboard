@@ -15,6 +15,8 @@ For every task: use isolated branches from current main; preserve unrelated comm
 
 ## Current checkpoint
 
+Task 1 draft PR: [#92](https://github.com/datasound-projects/Promptboard/pull/92).
+
 Task 1 recovery branch: `feat/backlog-source-sync-recovery`, based on main `fea77a7803152aad9fa49ab1179a1617cc95720d`. Persistent isolated worktree: `.claude/worktrees/backlog-source-sync-recovery` under the original checkout (already ignored by Git). The original checkout remains on `docs/readme-original-mascot`, HEAD `157e7a45638b179687d0fa5882b90ba5f22e0677`. Prior milestone PR #90 is merged. Tasks 2–8 have not started.
 
 An interrupted session removed the earlier `/private/tmp` worktree and logs before a commit/push. Its completed checks cannot certify this recovered tree. The implementation and regressions have been recovered; repeat all gates on this tree. Keep validation logs in the ignored worktree `.claude/validation` folder, rather than using temporary storage as the sole handoff.
