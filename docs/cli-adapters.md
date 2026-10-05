@@ -7,7 +7,7 @@ The app calls an installed CLI. Sign in to that CLI first. It uses the CLI's acc
 | Codex CLI | `codex exec … --json -` with the prompt on stdin | Read-only sandbox; no approval escalation; shell tools and web search disabled; ephemeral session. |
 | Claude Code | `claude --print --output-format stream-json --verbose …` with the prompt on stdin | Empty built-in tool list; deny all tools; empty strict MCP configuration; slash commands disabled; one turn; no session persistence. |
 | Antigravity CLI (`agy`) | `agy --input-format stream-json --output-format stream-json --sandbox …`; one JSON user event on stdin | Native terminal sandbox; existing tool permissions and managed settings stay in place. |
-| Gemini CLI | `gemini --output-format json …` in a non-TTY process with the prompt on stdin | Plan mode; extensions disabled; empty MCP allow list; a temporary wildcard deny policy. |
+| Gemini CLI | `gemini --output-format json …` in a non-TTY process with the prompt on stdin | Default approval mode; extensions disabled; empty MCP allow list; a temporary wildcard deny policy. Plan mode is not required: stable releases such as 0.30.0 gate it behind `experimental.plan`. |
 
 The app uses argument arrays and `shell: false`. Request text never becomes a shell command or command argument. The adapter caps input at 256 KiB, stdout at 2 MiB, and stderr at 64 KiB. The app limits the user's input to 100,000 characters. The adapter default timeout is two minutes; the app supplies a three-minute timeout. Cancellation terminates the child process group on POSIX. On Windows, termination targets the direct child. If a descendant keeps a pipe open after the CLI exits, the adapter stops waiting after 2 seconds. Raw error logs are not sent to the browser.
 
@@ -21,7 +21,7 @@ The token-protected `/api/models?provider=codex` endpoint reads metadata from th
 | --- | --- | --- |
 | Codex | App-server `initialize`, `initialized`, paginated `model/list`, then read-only `config/read` | `--config model_reasoning_effort="LEVEL"`; choices come from each model's `supportedReasoningEfforts` |
 | Claude | Streaming control `initialize`, reading only `models` from its response | `--effort LEVEL` and the same per-process `CLAUDE_CODE_EFFORT_LEVEL`; choices come from `supportedEffortLevels` |
-| Antigravity | `agy models`; parse the documented two-column slug/name list | Native `--effort low`, `medium`, or `high`; the CLI validates model/effort combinations |
+| Antigravity | `agy models`; parse the two-column slug/name list separated by tabs or at least two spaces | Effort-pinned slugs such as `gemini-3.8-flash-high` offer only their matching effort. Conflicting overrides are rejected before launch. Unsuffixed/custom IDs do not report effort capabilities. |
 | Gemini | ACP `initialize` and `session/new` with no tools requested; read `models.availableModels` | No effort override. Keep the CLI's configured thinking settings |
 
 Gemini ACP may create local session metadata. It does not receive a `session/prompt` call. We never return account objects, complete settings, secrets, or raw diagnostic output from discovery. If discovery is unavailable, the UI labels that state and keeps the CLI default and custom-ID entry usable. It does not substitute a guessed model catalog. Custom IDs and their effort support are unverified until the CLI accepts the run.
@@ -39,7 +39,8 @@ Failures return a stable `code` and a fixed message. Structured provider fields 
 | `QUOTA_EXHAUSTED` | Claude `rate_limit_event` rejected with `errorCode: "credits_required"`; Gemini `TerminalQuotaError`; Codex text `You've hit your usage limit` (verified in the installed binary) |
 | `RATE_LIMITED` | Other Claude rejections, assistant error `rate_limit`, or HTTP 429; Gemini `RetryableQuotaError`; Codex `last status: 429` |
 | `AUTH_REQUIRED` | Claude `authentication_failed` or HTTP 401; Gemini `FatalAuthenticationError` or exit code 41; Codex status 401; Antigravity `authentication required` |
-| `MODEL_UNAVAILABLE`, `PROVIDER_UNAVAILABLE`, `NETWORK_ERROR`, `POLICY_DENIED`, `ACCOUNT_UNAVAILABLE` | Documented Claude assistant error codes, Gemini error types, and HTTP status classes |
+| `MODEL_UNAVAILABLE`, `PROVIDER_UNAVAILABLE`, `NETWORK_ERROR`, `POLICY_DENIED`, `ACCOUNT_UNAVAILABLE` | Documented Claude assistant error codes and structured `stop_reason: "refusal"`, Gemini error types, and HTTP status classes |
+| `CLIENT_UNSUPPORTED` | Gemini account setup reports `IneligibleTierError` with backend reason `UNSUPPORTED_CLIENT`; choosing a different model cannot fix a client/account rejection |
 | `TIMEOUT`, `ABORTED` | App timers and cancellation |
 | `CLI_FAILED` / `UNKNOWN` | Anything else. It is not guessed. |
 
@@ -73,6 +74,17 @@ The app does not claim that every provider has identical policy semantics. It ke
 Use a current stable CLI. The adapters use documented headless commands. If an older version lacks a required flag, upgrade that CLI; the app will not remove the flag. macOS and Linux executables on an absolute PATH entry are supported. On Windows, native `.exe` installs and the standard npm package layouts are supported without executing `.cmd` through a shell. Custom wrappers and other install layouts may need a PATH fix. Windows behavior has not been tested on a Windows host.
 
 On 2026-09-28, the command contracts were checked against official sources. Local Codex `--help`, `exec --help`, and `features list` were also checked. Tests use fake CLI executables and real process pipes to check input handling, result parsing, output limits, cancellation, timeouts, policy cleanup, and error paths. These checks do **not** establish live model compatibility or prompt quality. No authenticated model call was made during development.
+
+On 2026-10-05, authenticated checks exercised the real `/api/models` and `/api/generate` endpoints with isolated app data. The request was to compose a short prompt for a Python integer-square function with one example:
+
+| Installed provider | Live Compose result |
+| --- | --- |
+| Claude Code | 11 of 12 catalog choices generated the test prompt after CLI sign-in. `claude-opus-5` answered a direct smoke request, but the provider refused the Compose brief with structured `stop_reason: "refusal"`; this now reports `POLICY_DENIED`. The configured default, a separate reviewed run, and all five reported effort levels were also checked. |
+| Antigravity CLI 1.2.14 | All 18 reported model slugs generated the test prompt. Reviewed generation passed. A conflicting slug/effort pair reproduced a native CLI error; model metadata now offers only the effort pinned by each slug and rejects conflicting overrides before launch. |
+| Codex CLI | All seven catalog choices generated the test prompt. Reviewed generation and the five reported effort levels passed. This machine's configured default was absent from the catalog and the provider rejected it as `MODEL_UNAVAILABLE`; no automatic model substitution was made. |
+| Gemini CLI 0.30.0 | Reproduced and fixed the experimental Plan Mode startup failure. The CLI then reached authentication, where the provider rejected this client/account combination with `UNSUPPORTED_CLIENT`. Live model discovery and generation remain unavailable for that account; Compose reports `CLIENT_UNSUPPORTED` rather than a generic CLI failure. |
+
+These checks establish the observed adapter behavior, not future model access or provider uptime. Regression fixtures also cover Gemini generation and discovery without requiring experimental settings. The [Claude CLI reference](https://code.claude.com/docs/en/cli-reference), [Antigravity headless reference](https://www.antigravity.google/docs/cli/headless/), and installed Gemini source/help were used to check the command contracts.
 
 ## API
 

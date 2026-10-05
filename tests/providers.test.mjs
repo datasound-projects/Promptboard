@@ -20,7 +20,7 @@ test('CLI commands narrow permissions and keep model values separate', () => {
   assert.throws(() => buildCommand({ provider: 'gemini' }), { code: 'INVALID_POLICY' });
   const gemini = buildCommand({ provider: 'gemini', policyPath: join(tmpdir(), 'policy.toml') });
   assert.ok(gemini.args.includes('--policy'));
-  assert.ok(gemini.args.includes('plan'));
+  assert.equal(gemini.args[gemini.args.indexOf('--approval-mode') + 1], 'default');
   for (const result of [codex, claude, gemini]) {
     assert.ok(!result.args.some(x => /dangerously|bypassPermissions|yolo|auto_edit/.test(x)));
   }
@@ -72,6 +72,10 @@ else if (input === 'FAIL') { process.stderr.write('SECRET_DO_NOT_RETURN'); proce
 else {
   const policyPath = args[args.indexOf('--policy') + 1];
   const policy = args.includes('--policy') ? readFileSync(policyPath, 'utf8') : null;
+  // Gemini 0.30 rejects plan mode unless experimental.plan is enabled.
+  if (args[args.indexOf('--approval-mode') + 1] === 'plan') {
+    process.stderr.write('Approval mode "plan" is only available when experimental.plan is enabled.'); process.exit(1);
+  }
   const data = JSON.stringify({ input, args, cwd: process.cwd(), effortEnv: process.env.CLAUDE_CODE_EFFORT_LEVEL, policy, policyPath: policy ? policyPath : null });
   if (basename(process.argv[1]) === 'codex') process.stdout.write(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: data }}));
   else if (basename(process.argv[1]) === 'claude') process.stdout.write(JSON.stringify({ result: data }));
@@ -235,6 +239,9 @@ test('each native effort flag is passed without changing the safety flags', () =
   }
   assert.throws(() => buildCommand({ provider: 'gemini', effort: 'high' }), { code: 'INVALID_EFFORT' });
   assert.throws(() => buildCommand({ provider: 'agy', effort: 'max' }), { code: 'INVALID_EFFORT' });
+  assert.throws(() => buildCommand({ provider: 'agy', model: 'gemini-3.8-flash-high', effort: 'low' }), { code: 'INVALID_EFFORT' });
+  assert.doesNotThrow(() => buildCommand({ provider: 'agy', model: 'gemini-3.8-flash-high', effort: 'high' }));
+  assert.doesNotThrow(() => buildCommand({ provider: 'agy', model: 'gemini-3.8-flash-high' }));
   assert.throws(() => buildCommand({ provider: 'claude', effort: 'ultracode' }), { code: 'INVALID_EFFORT' });
 });
 

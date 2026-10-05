@@ -13,6 +13,7 @@ import { VERSION } from '../src/version.mjs';
 import { defaultPipelineConfig } from '../src/pipeline-config.mjs';
 import { repositoryPipelineDefinition } from '../src/pipeline-repository.mjs';
 import { Board } from '../src/board.mjs';
+import { parseAgyModels } from '../src/models.mjs';
 
 test('a successful saved-board migration preserves projects and tasks without a corruption warning', async t => {
   const dataDir = await mkdtemp(join(tmpdir(), 'pb-ui-migration-'));
@@ -60,7 +61,7 @@ const catalogs = {
   codex: { source: 'cli', defaultModel: 'codex-one', defaultEffort: 'medium', models: [{ id: 'codex-one', name: 'Codex One', efforts: ['low', 'medium', 'high', 'xhigh'] }, { id: 'codex-two', name: 'Codex Two', efforts: ['low'] }] },
   claude: { source: 'cli', models: [{ id: 'opus', name: 'Opus', efforts: ['low', 'medium', 'high', 'max'] }, { id: 'haiku', name: 'Haiku', efforts: [] }] },
   gemini: { source: 'cli', models: [{ id: 'gemini-one', name: 'Gemini One', efforts: [] }] },
-  agy: { source: 'cli', models: [{ id: 'gemini-agy', name: 'Gemini AGY', efforts: ['low', 'medium', 'high'] }] },
+  agy: { source: 'cli', models: parseAgyModels('gemini-agy-high\tGemini AGY (High)\ngemini-agy-low\tGemini AGY (Low)\n') },
 };
 async function until(fn, label, ms = 3000) {
   const deadline = Date.now() + ms;
@@ -464,9 +465,15 @@ test('UI sends selected model, effort, and language through HTTP, then restores 
   choose('#provider', 'gemini'); await until(() => !$('#model').disabled, 'Gemini catalog');
   choose('#model', 'gemini-one'); assert.equal($('#effort').disabled, true);
   choose('#provider', 'agy'); await until(() => !$('#model').disabled, 'AGY catalog');
-  choose('#model', 'gemini-agy'); choose('#effort', 'high'); submit();
+  choose('#model', 'gemini-agy-high');
+  assert.deepEqual(Array.from($('#effort').options, x => x.value), ['', 'high']);
+  choose('#effort', 'high'); submit();
   await until(() => calls.length === 3 && !$('#generate-button').disabled, 'AGY result');
   assert.equal(calls[2].provider, 'agy'); assert.equal(calls[2].effort, 'high');
+  choose('#model', 'gemini-agy-low');
+  assert.deepEqual(Array.from($('#effort').options, x => x.value), ['', 'low']);
+  assert.equal($('#effort').value, '');
+  assert.equal($('#generate-button').disabled, false);
 });
 
 test('UI ignores stale model responses when the provider changes quickly', async t => {
@@ -479,7 +486,7 @@ test('UI ignores stale model responses when the provider changes quickly', async
   choose('#provider', 'claude');
   choose('#provider', 'agy');
   await until(() => !$('#model').disabled, 'newest provider catalog');
-  assert.ok(Array.from($('#model').options, x => x.value).includes('gemini-agy'));
+  assert.ok(Array.from($('#model').options, x => x.value).includes('gemini-agy-high'));
   release(); await new Promise(resolve => setTimeout(resolve, 30));
   assert.equal($('#provider').value, 'agy');
   assert.ok(!Array.from($('#model').options, x => x.value).includes('opus'));

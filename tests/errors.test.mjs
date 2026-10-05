@@ -35,6 +35,8 @@ test('Claude: structured assistant errors map to auth, model, account, overload,
   assert.equal(code('claude', { stdout: assistant('rate_limit') }), 'RATE_LIMITED');
   assert.equal(code('claude', { stdout: lines({ type: 'result', is_error: true, api_error_status: 401 }) }), 'AUTH_REQUIRED');
   assert.equal(code('claude', { stdout: assistant('unknown') }), null, 'Unknown failures stay unknown.');
+  assert.equal(code('claude', { stdout: lines({ type: 'assistant', error: 'invalid_request', message: { stop_reason: 'refusal', content: [{ text: 'PRIVATE provider diagnostics' }] } }, { type: 'result', is_error: true }) }), 'POLICY_DENIED');
+  assert.equal(code('claude', { stdout: lines({ type: 'result', is_error: true, stop_reason: 'refusal' }) }), 'POLICY_DENIED');
   assert.equal(code('claude', { stdout: 'not json' }), null);
 });
 
@@ -60,6 +62,16 @@ test('Codex: only the verified usage-limit text is quota; 429 retries are rate l
   assert.equal(classifyProviderFailure('codex', { stdout: failed("You've hit your usage limit. Try again at 3:05 PM.") }).resetsAt, undefined);
 });
 
+test('Gemini: an unsupported client rejection is distinct from sign-in and model access', () => {
+  const stderr = "Error authenticating: IneligibleTierError: This client is no longer supported.\n  reasonCode: 'UNSUPPORTED_CLIENT',\n  reasonMessage: 'SECRET_TOKEN_abc /Users/private/path'";
+  const error = classifyProviderFailure('gemini', { stderr, exitCode: 1 });
+  assert.equal(error.code, 'CLIENT_UNSUPPORTED');
+  assert.equal(error.message, FAILURE_MESSAGES.CLIENT_UNSUPPORTED);
+  assert.doesNotMatch(JSON.stringify(error), /SECRET_TOKEN|\/Users\/private/);
+  assert.equal(code('gemini', { stderr: 'IneligibleTierError: some other account problem', exitCode: 1 }), null);
+  assert.equal(code('gemini', { stderr: "reasonCode: 'UNSUPPORTED_CLIENT'", exitCode: 1 }), null);
+});
+
 test('Antigravity: the documented authentication-required result is auth', () => {
   const stdout = lines({ event: 'result', result: { status: 'ERROR', error: 'authentication required' } });
   assert.equal(code('agy', { stdout, exitCode: 1 }), 'AUTH_REQUIRED');
@@ -77,7 +89,10 @@ test('real CLI processes return stable codes without leaking diagnostics', { ski
     process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: true, api_error_status: 429, result: 'SECRET_TOKEN_abc /Users/private/path' }) + '\\n');
     process.stderr.write('SECRET_TOKEN_abc');
     process.exit(1);`));
-  await writeFile(join(dir, 'gemini'), fake(`process.stderr.write(JSON.stringify({ error: { type: 'TerminalQuotaError', message: 'SECRET_TOKEN_abc' } })); process.exit(1);`));
+  await writeFile(join(dir, 'gemini'), fake(`
+    if (input.includes('UNSUPPORTED')) process.stderr.write("IneligibleTierError: SECRET_TOKEN_abc /Users/private/path; reasonCode: 'UNSUPPORTED_CLIENT'");
+    else process.stderr.write(JSON.stringify({ error: { type: 'TerminalQuotaError', message: 'SECRET_TOKEN_abc' } }));
+    process.exit(1);`));
   await writeFile(join(dir, 'codex'), fake(`if (process.argv[2] === 'mcp') { process.stdout.write('[]'); process.exit(0); } process.stdout.write(JSON.stringify({ type: 'turn.failed', error: { message: 'mystery SECRET_TOKEN_abc' } }) + '\\n'); process.exit(1);`));
   for (const name of ['claude', 'gemini', 'codex']) await chmod(join(dir, name), 0o700);
   await writeFile(join(dir, 'package.json'), '{"type":"commonjs"}');
@@ -93,6 +108,7 @@ test('real CLI processes return stable codes without leaking diagnostics', { ski
   await check('claude', 'QUOTA please', 'QUOTA_EXHAUSTED');
   await check('claude', 'limit please', 'RATE_LIMITED');
   await check('gemini', 'anything', 'QUOTA_EXHAUSTED');
+  await check('gemini', 'UNSUPPORTED', 'CLIENT_UNSUPPORTED');
   await check('codex', 'anything', 'CLI_FAILED'); // Unknown failures remain unknown.
 });
 

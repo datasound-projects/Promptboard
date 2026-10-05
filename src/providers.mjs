@@ -36,6 +36,10 @@ export function buildCommand({ provider, model, effort = '', policyPath } = {}) 
   validateProvider(provider);
   model = validateModel(model);
   validateEffort(provider, effort);
+  if (provider === 'agy' && effort) {
+    const pinned = model.match(/-(low|medium|high)$/)?.[1];
+    if (pinned && effort !== pinned) throw new ProviderError('This Antigravity model fixes its effort level. Choose the matching effort or CLI default.', 'INVALID_EFFORT');
+  }
   let args;
   if (provider === 'codex') {
     args = ['exec', '--sandbox', 'read-only', '--skip-git-repo-check', '--ephemeral', '--color', 'never',
@@ -51,7 +55,9 @@ export function buildCommand({ provider, model, effort = '', policyPath } = {}) 
     args = ['--input-format', 'stream-json', '--output-format', 'stream-json', '--sandbox'];
   } else {
     // This adds a deny rule without replacing the user's settings or auth files.
-    args = ['--output-format', 'json', '--approval-mode', 'plan', '--extensions', 'none',
+    // Plan mode is experimental in stable Gemini releases. The wildcard policy
+    // denies tools in default mode too, without requiring a user setting change.
+    args = ['--output-format', 'json', '--approval-mode', 'default', '--extensions', 'none',
       '--allowed-mcp-server-names', '', '--allowed-tools', ''];
     if (typeof policyPath !== 'string' || !isAbsolute(policyPath) || policyPath.includes('\0')) {
       throw new ProviderError('Gemini needs an absolute deny-tools policy file path.', 'INVALID_POLICY');
@@ -273,8 +279,9 @@ export const FAILURE_MESSAGES = Object.freeze({
   MODEL_UNAVAILABLE: 'The selected model is not available to this CLI account. Refresh models or choose another model.',
   PROVIDER_UNAVAILABLE: 'The provider service is overloaded or unavailable. Try again later.',
   NETWORK_ERROR: 'The CLI could not reach its provider. Check your network connection, then try again.',
-  POLICY_DENIED: 'A CLI, sandbox, or organization policy blocked this request.',
+  POLICY_DENIED: 'A provider, CLI, sandbox, or organization policy blocked this request.',
   ACCOUNT_UNAVAILABLE: 'The provider reports a billing or account problem. Check the account in the provider console.',
+  CLIENT_UNSUPPORTED: 'The provider no longer supports this CLI for the current account. Check the provider’s supported clients and sign-in options, then try again.',
   TIMEOUT: 'The CLI took too long. Try again or use a faster model.',
   ABORTED: 'Generation was cancelled.',
   CLI_FAILED: 'The CLI failed for an unrecognized reason. Run the CLI in your terminal to see its diagnostics.',
@@ -314,6 +321,7 @@ export function classifyProviderFailure(provider, { stdout = '', stderr = '', ex
     const assistantError = events.filter(e => e.type === 'assistant' && typeof e.error === 'string').at(-1)?.error;
     if (CLAUDE_ERRORS[assistantError]) return failure(CLAUDE_ERRORS[assistantError]);
     const result = events.filter(e => e.type === 'result').at(-1) || firstJson(stdout);
+    if (result?.stop_reason === 'refusal' || events.some(e => e.type === 'assistant' && e.message?.stop_reason === 'refusal')) return failure('POLICY_DENIED');
     const code = httpCode(result?.api_error_status);
     return code ? failure(code) : null;
   }
@@ -322,6 +330,9 @@ export function classifyProviderFailure(provider, { stdout = '', stderr = '', ex
       const type = firstJson(text)?.error?.type;
       if (GEMINI_ERRORS[type]) return failure(GEMINI_ERRORS[type]);
     }
+    // Gemini can reject the client during Google account setup, before its JSON
+    // error formatter starts. Match the backend reason in the CLI diagnostic.
+    if (/\bIneligibleTierError\b/.test(stderr) && /reasonCode:\s*['"]UNSUPPORTED_CLIENT['"]/.test(stderr)) return failure('CLIENT_UNSUPPORTED');
     if (exitCode === 41) return failure('AUTH_REQUIRED'); // Documented FATAL_AUTHENTICATION_ERROR exit code.
     if (exitCode === 44) return failure('POLICY_DENIED'); // Documented sandbox error exit code.
     return null;

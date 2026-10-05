@@ -167,7 +167,7 @@ test('repair policy: blocking findings repair, advisory findings do not', () => 
 });
 
 test('provider stop codes and cancellation prevent every later model call', async () => {
-  for (const code of ['QUOTA_EXHAUSTED', 'AUTH_REQUIRED', 'MODEL_UNAVAILABLE', 'RATE_LIMITED']) {
+  for (const code of ['QUOTA_EXHAUSTED', 'AUTH_REQUIRED', 'MODEL_UNAVAILABLE', 'RATE_LIMITED', 'CLIENT_UNSUPPORTED']) {
     const bad = 'Change the file.';
     const result = await runPipeline(request, { runner: sequence([bad, Object.assign(new Error('x'), { code })]) });
     assert.equal(result.verification.calls, 2, code);
