@@ -1,12 +1,14 @@
 # Local backlog
 
-The Backlog view stages local drafts separately from the pipeline board, following Kangentic's [Backlog and imports](https://www.kangentic.com/guide/backlog/). Bulk operations, active-column promotion, attachments and tracker imports remain pending.
+The Backlog view stages local drafts separately from the pipeline board, following Kangentic's [Backlog and imports](https://www.kangentic.com/guide/backlog/). Bulk selection can add drafts to To Do or delete them. Active-column promotion, attachments and tracker imports remain pending.
 
 Choose **Backlog** in a pipeline project and **New draft** to save a title with optional prompt, priority and shared labels. Rows show creation age, priority and labels. Open a draft title to edit it. Saving and **Add to To Do** never start an agent. Composer and split tasks continue adding directly to To Do. Servers without the Backlog capability and legacy projects retain the Board view.
 
 Priority and label filters are shared with Board and completed tasks, using the existing per-project browser preferences. Board and Backlog share a search query per project for the current page; it searches title, exact prompt and assigned label names, ignoring case. Timeline stays unfiltered. Completed tasks have their own title/prompt/label search and exact #number lookup. Filtering and sorting write no saved data.
 
 Manual order supports drag-before and keyboard Move up/down, including filtered lists; each write includes the complete saved list so hidden drafts remain intact. Newest, highest-priority and title sorting disable manual movement. Add to To Do retains the draft ID and metadata. Delete requires an inline confirmation. Stale draft or catalog edits retain the typed content; Reload draft explicitly replaces it with current saved content. For a new draft, Refresh choices updates the saved list/catalog revisions and retains typed title, prompt, priority and surviving selected labels. An item removed or promoted elsewhere cannot be recreated by saving its old editor.
+
+Use native row checkboxes or Select visible to collect drafts; hidden selections remain selected. Bulk operations capture selection order and item/list revisions, process one request at a time and report each result. Delete selected asks for confirmation, explicitly including hidden drafts. Stop remaining lets the current request finish and sends no later requests. Switching view/project, a conflict, a lost reply or a concurrent backlog change stops unstarted work. Unknown outcomes stay reviewable; there is no automatic retry or replay. Older servers without the bulk capability keep single-draft actions.
 
 Pipeline projects own an ordered `backlog` list and independent `backlogRevision`. Each draft has a stable ID, title, optional exact prompt, default priority, shared project label IDs, generation source/check status, timestamps and item revision. Backlog items own no board number, column, workspace, session or execution configuration. Creating/editing/reordering/deleting drafts never invokes a provider or cancels pending board messages. Project and Base configuration revisions stay unchanged.
 
