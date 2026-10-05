@@ -281,8 +281,20 @@ test('Stop cancels a readiness wait without a native grant, input or replacement
   assert.equal((await w.receipt()).status, 'cancelled'); assert.deepEqual(w.writes, []); assert.equal(w.run.status, 'running');
 });
 
-test('a hanging readiness read is bounded and a late ready result cannot revive input', async t => {
+test('a hanging readiness read is bounded and a late ready result cannot revive input', { timeout: 10000 }, async t => {
   const w = await fixture(t), held = Promise.withResolvers(); let reads = 0;
+  t.signal.addEventListener('abort', () => held.resolve('ready'), { once: true });
+  // Isolate the 150 ms readiness boundary from filesystem publication speed.
+  // Other cases retain real durable journals and acknowledgement failures.
+  const move = await w.journal.read(w.key), action = move.actions[0];
+  w.journal.read = async () => structuredClone(move);
+  w.journal.scheduleMessage = async (_key, _id, scope) => {
+    assert.equal(action.status, 'running'); action.status = 'scheduled'; action.delivery = { ...scope, status: 'queued' };
+    return { accepted: true, delivery: structuredClone(action.delivery) };
+  };
+  w.journal.finishQueuedMessageDelivery = async (_key, _id, result) => {
+    assert.equal(action.delivery.status, 'queued'); action.delivery.status = result.status; return true;
+  };
   w.supervisor.nativeMessageReadiness = () => { reads++; return held.promise; };
   assert.equal((await w.scheduler.schedule(w.request(), { timeoutMs: 150, waitForReadiness: true })).scheduled, true);
   assert.equal((await w.scheduler.wait(w.key, w.request().actionId)).status, 'timed_out');
