@@ -209,7 +209,9 @@ test('Kanban entry, shared dialogs and project settings fit both themes and narr
   await browser.until(`getComputedStyle(document.querySelector('#sidebar')).visibility === 'visible'`, 'project sidebar opened on phone');
   assert.equal(await browser.layout(`const panel = document.querySelector('#project-settings').getBoundingClientRect(); const sidebar = document.querySelector('#sidebar').getBoundingClientRect(); return panel.left >= sidebar.left && panel.right <= sidebar.right && sidebar.left >= 0 && sidebar.right <= innerWidth;`), true, 'Project settings fit the phone sidebar.');
   await shot('0-settings-phone');
-  await browser.eval(`document.querySelector('#project-settings-close').focus(); document.querySelector('#project-settings-close').click();`);
+  assert.equal(await browser.layout(`const button=document.querySelector('#project-settings-close');button.focus();return document.activeElement===button && getComputedStyle(button).visibility==='visible' && button.getClientRects().length>0;`), true, 'The painted project close control accepts keyboard focus before activation.');
+  await browser.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' });
+  await browser.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
   assert.equal(await browser.layout(`return document.querySelector('#project-settings').hidden && document.activeElement.id === 'project-toggle';`), true, 'Closing restores focus to the settings toggle.');
   await browser.resize(1280, 900);
   await shot('0-board');
