@@ -89,7 +89,7 @@ test('v11 migration retains backlog, labels, native state and exact original bac
   for (const p of saved.projects) { delete p.backlogSources; delete p.backlogImported; delete p.backlogImportRevision; }
   saved.privateExtension = { exact: 'retained' }; const dir = await mkdtemp(join(tmpdir(), 'pb-import-migrate-')); t.after(() => rm(dir, { recursive: true, force: true }));
   const bytes = JSON.stringify(saved, null, 2); await writeFile(join(dir, 'state.json'), bytes); const store = new Store(dir), migrated = await store.read();
-  assert.equal(migrated.version, 12); assert.deepEqual(migrated.projects[0], { ...saved.projects[0], backlogSources: [], backlogImported: [], backlogImportRevision: 0 }); assert.deepEqual(migrated.base, saved.base); assert.deepEqual(migrated.sessions, saved.sessions); assert.deepEqual(migrated.privateExtension, saved.privateExtension);
+  assert.equal(migrated.version, 13); assert.deepEqual(migrated.projects[0], { ...saved.projects[0], backlogSources: [], backlogImported: [], backlogImportRevision: 0 }); assert.deepEqual(migrated.base, saved.base); assert.deepEqual(migrated.sessions, saved.sessions); assert.deepEqual(migrated.privateExtension, saved.privateExtension);
   assert.equal(await readFile(join(dir, store.recovery.migrationBackup), 'utf8'), bytes);
   const future = JSON.stringify({ ...saved, version: STATE_VERSION + 1 }); await writeFile(join(dir, 'state.json'), future); await assert.rejects(new Store(dir).read(), { code: 'STATE_VERSION_UNSUPPORTED' }); assert.equal(await readFile(join(dir, 'state.json'), 'utf8'), future);
 });

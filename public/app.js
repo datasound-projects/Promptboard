@@ -30,6 +30,9 @@ let pipelineBacklogBulkSupported = false;
 let pipelineBacklogColumnsSupported = false;
 let pipelineBacklogImportsSupported = false;
 let pipelineBacklogSourceCacheSupported = false;
+let taskFilesSupported = false;
+const cardFiles = window.PromptboardTaskFiles?.mount({ host: document.querySelector('#card-files'), prompt: document.querySelector('#card-prompt'), api: (...args) => taskFileRequest(...args), announce: text => announce(text) });
+const backlogFiles = window.PromptboardTaskFiles?.mount({ host: document.querySelector('#backlog-files'), prompt: document.querySelector('#backlog-prompt'), api: (...args) => taskFileRequest(...args), announce: text => announce(text) });
 let providers = [];
 let history = readHistory();
 let currentId = null;
@@ -295,6 +298,7 @@ async function loadProviders() {
     const session = await sessionResponse.json();
     const status = await providerResponse.json();
     token = safeText(session.token, 1000);
+    taskFilesSupported = session.capabilities?.taskFiles === true;
     pipelineTitleOnlySupported = session.capabilities?.pipelineTitleOnly === true;
     pipelineBulkRestoreSupported = session.capabilities?.pipelineBulkRestore === true;
     pipelineDeferredMessagesSupported = session.capabilities?.pipelineDeferredMessages === true;
@@ -463,6 +467,12 @@ function composeCancellation(controller) {
   const cancel = () => { void api('/api/compose/cancel', { method: 'POST', body: { id }, timeoutMs: 5000 }).catch(() => {}); };
   controller.signal.addEventListener('abort', cancel, { once: true });
   return { id, dispose: () => controller.signal.removeEventListener('abort', cancel) };
+}
+
+async function taskFileRequest(...args) {
+  const { response, data } = await api(...args);
+  if (!response.ok) throw new Error(data.error || 'File request failed.');
+  return data;
 }
 
 async function api(path, { method = 'GET', body, timeoutMs = 20000, signal, compose = false, requestId } = {}) {
@@ -2312,6 +2322,7 @@ function openCard(id = null, quick = false) {
   $('#card-prompt').required = !canOmitTaskPrompt(project);
   $('#card-prompt-label').textContent = canOmitTaskPrompt(project) ? 'Prompt (optional)' : 'Prompt';
   $('#card-prompt').value = card?.prompt || '';
+  cardFiles?.open(project.id, card || {}, taskFilesSupported);
   $('#card-priority-field').hidden = !taskPrioritySupported || project.workflowMode !== 'pipeline';
   $('#card-priority').value = Number.isSafeInteger(card?.priority) && card.priority >= 0 && card.priority <= 4 ? String(card.priority) : '0';
   renderCardLabels(project, card?.labelIds || []);
@@ -2363,13 +2374,13 @@ async function saveCard(event) {
       const settings = cardPipelineEditor?.value();
       const changedSettings = settings && JSON.stringify(settings) !== JSON.stringify(pipelineTaskChoice(original));
       const result = await boardCall('PATCH', `/api/tasks/${encodeURIComponent(card.id)}`, { title, prompt, expectedRevision: original.revision,
-        ...priority, ...labels,
+        ...priority, ...labels, ...cardFiles?.value(),
         ...(changedSettings ? { pipelineSettings: settings, expectedProjectRevision: cardEditSnapshot.projectRevision } : {}) });
       saved = result.task;
       message = !result.changed ? 'No changes to save.' : saved.checksOutdated && card.source ? `Saved “${title}”. The previous checks are now marked as outdated.` : `Saved “${title}”.`;
     } else {
       saved = (await boardCall('POST', '/api/tasks', { projectId: project.id, title, prompt: typed,
-        ...priority, ...labels,
+        ...priority, ...labels, ...cardFiles?.value(),
         ...(cardPipelineEditor ? { pipelineSettings: cardPipelineEditor.value(), expectedProjectRevision: cardEditSnapshot.projectRevision } : {}) })).task;
       message = `Added “${title}” to To Do.`;
     }
@@ -5012,6 +5023,7 @@ function openBacklogDraft(projectId = currentProject()?.id, id = null) {
   $('#backlog-dialog-project').textContent = `${project.name} · Backlog`;
   $('#backlog-dialog-heading').textContent = item ? 'Edit backlog draft' : 'New backlog draft';
   $('#backlog-title').value = item?.title || ''; $('#backlog-prompt').value = item?.prompt || '';
+  backlogFiles?.open(projectId, item || {}, taskFilesSupported);
   $('#backlog-priority-field').hidden = !taskPrioritySupported; $('#backlog-priority').value = String(item?.priority || 0);
   $('#backlog-labels-field').hidden = !taskLabelsSupported;
   const choices = $('#backlog-label-choices'); choices.replaceChildren();
@@ -5039,7 +5051,7 @@ async function saveBacklogDraft(event) {
   const data = { title, prompt, ...(!$('#backlog-priority-field').hidden ? { priority: Number($('#backlog-priority').value) } : {}),
     ...(!$('#backlog-labels-field').hidden ? { labelIds: draft.labelOrder, expectedLabelRevision: draft.labelRevision } : {}) };
   try {
-    await boardCall(draft.item ? 'PATCH' : 'POST', backlogPath(draft.projectId, draft.item?.id), { ...data,
+    await boardCall(draft.item ? 'PATCH' : 'POST', backlogPath(draft.projectId, draft.item?.id), { ...data, ...backlogFiles?.value(),
       ...(draft.item ? { expectedRevision: draft.item.revision } : { expectedBacklogRevision: draft.listRevision, expectedLabelRevision: draft.labelRevision }) });
     $('#backlog-dialog').close(); announce(`Saved “${title}” in Backlog.`);
   } catch (error) { $('#backlog-draft-error').textContent = error.message; $('#backlog-draft-error').hidden = false; }
@@ -5644,6 +5656,8 @@ function renderImportControls(draft) {
   select.disabled ||= !draft.sources.length || draft.selected.size > 0; $('#backlog-import-repository').disabled ||= draft.selected.size > 0; $('#backlog-import-remove-source').disabled ||= !source || draft.blocked || draft.selected.size > 0;
   $('#backlog-import-connect').disabled ||= draft.blocked || draft.selected.size > 0 || !$('#backlog-import-repository').value.trim();
   $('#backlog-import-refresh').disabled ||= !source;
+  $('#backlog-import-images-field').hidden = !taskFilesSupported;
+  $('#backlog-import-images').disabled = Boolean(draft.mutation || draft.reading);
   $('#backlog-import-sync').hidden = !pipelineBacklogSourceCacheSupported;
   $('#backlog-import-sync').disabled ||= !source || draft.selected.size > 0 || draft.blocked || !pipelineBacklogSourceCacheSupported;
   $('#backlog-import-previous').disabled ||= !source || draft.page <= 1 || draft.selected.size > 0;
@@ -5797,7 +5811,7 @@ $('#backlog-import-submit').addEventListener('click', () => {
   const draft = backlogImportDraft, source = draft && importSource(draft); if (!source || draft.readError || !importSelectedValid(draft)) return;
   const keys = [...draft.selected], titleOverrides = Object.fromEntries(keys.filter(key => draft.overrides.has(key)).map(key => [key, draft.overrides.get(key)]));
   runImportWrite(draft, async () => {
-    const result = await boardCall('POST', backlogPath(draft.projectId) + '/sources/' + encodeURIComponent(source.id) + '/import', { keys, state: 'all', page: draft.page, titleOverrides,
+    const result = await boardCall('POST', backlogPath(draft.projectId) + '/sources/' + encodeURIComponent(source.id) + '/import', { keys, state: 'all', page: draft.page, titleOverrides, ...(taskFilesSupported ? { includeAttachments: $('#backlog-import-images').checked } : {}),
       expectedImportRevision: draft.importRevision, expectedBacklogRevision: draft.backlogRevision, expectedLabelRevision: draft.labelRevision });
     if (!Array.isArray(result.created) || !Array.isArray(result.skipped)) throw new Error('The import reply is not confirmed. Review Backlog.');
     const confirmed = [...result.created.map(item => `github:issue:${item.externalSource?.id}`), ...result.skipped.map(item => item.key)];
@@ -5817,3 +5831,6 @@ $('#backlog-import-dialog').addEventListener('close', () => {
   const draft = backlogImportDraft; backlogImportDraft = null; draft?.controller?.abort();
   if (document.activeElement === document.body || dialog.contains(document.activeElement)) $('#backlog-import').focus({ preventScroll: true });
 });
+
+$('#card-dialog').addEventListener('close', () => { if (!$('#card-dialog').open) cardFiles?.close(); });
+$('#backlog-dialog').addEventListener('close', () => { if (!$('#backlog-dialog').open) backlogFiles?.close(); });

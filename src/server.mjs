@@ -41,6 +41,7 @@ const assets = new Map([
   ['/base.js', ['base.js', 'text/javascript; charset=utf-8']],
   ['/prefs.js', ['prefs.js', 'text/javascript; charset=utf-8']],
   ['/notifications.js', ['notifications.js', 'text/javascript; charset=utf-8']],
+  ['/task-files.js', ['task-files.js', 'text/javascript; charset=utf-8']],
   ['/workspace-files.js', ['workspace-files.js', 'text/javascript; charset=utf-8']],
   ['/nerd.png', ['nerd.png', 'image/png']],
   ['/kanban-mascot.png', ['kanban-mascot.png', 'image/png']],
@@ -156,6 +157,9 @@ async function boardRoute(board, req, res, pathname, searchParams) {
   const [, kind, id, action = ''] = match;
   const expected = () => Number(searchParams.get('expectedRevision'));
   if (kind === 'projects') {
+    if (method === 'POST' && action === 'attachments') return send(res, 200, { attachment: await board.uploadTaskAttachment(id, await body()) });
+    if (method === 'POST' && action === 'attachment-read') return send(res, 200, { attachment: await board.taskAttachment(id, await body()) });
+    if (method === 'POST' && action === 'file-references') return send(res, 200, await board.validateTaskFiles(id, await body()));
     if (method === 'PUT' && action === 'file') return send(res, 200, await saveWorkspaceFile(board, id, await body(4 * 1024 * 1024)));
     if (method === 'GET' && ['files', 'file'].includes(action)) return send(res, 200, await inspectWorkspace(board, id, {
       path: searchParams.get('path') || '', workspace: searchParams.get('workspace') || '',
@@ -366,7 +370,7 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
     const pathname = requestUrl.pathname;
     const isApi = pathname.startsWith('/api/') && pathname !== '/api/session' && pathname !== '/api/providers';
     if (isApi && req.headers['x-ste-token'] !== token) return send(res, 403, { error: 'Reload this page before you try again.' });
-    if (req.method === 'GET' && pathname === '/api/session') return send(res, 200, { token, capabilities: { pipelineTitleOnly: true, pipelineBulkRestore: true, pipelineDeferredMessages: true, taskPriority: true, taskLabels: true, pipelineBacklog: true, pipelineBacklogBulk: true, pipelineBacklogColumns: true, pipelineBacklogImports: true, pipelineBacklogSourceCache: true } });
+    if (req.method === 'GET' && pathname === '/api/session') return send(res, 200, { token, capabilities: { pipelineTitleOnly: true, pipelineBulkRestore: true, pipelineDeferredMessages: true, taskPriority: true, taskLabels: true, pipelineBacklog: true, pipelineBacklogBulk: true, pipelineBacklogColumns: true, pipelineBacklogImports: true, pipelineBacklogSourceCache: true, taskFiles: true } });
     if (/^\/api\/notifications(?:\/|$)/.test(pathname)) {
       try { return await notificationRoute(notifications, req, res, pathname, { jsonBody, send }); }
       catch (error) {

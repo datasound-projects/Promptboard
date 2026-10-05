@@ -140,7 +140,7 @@ test('v10 migration keeps existing labels, exact prompts, Base and native state 
   saved.privateExtension = { exact: 'retained' }; saved.runs.push({ id: 'retained-run', taskId: task.id, providerSessionId: 'native-fixture', status: 'suspended' });
   const dir = await directory(t), bytes = JSON.stringify(saved, null, 2); await writeFile(join(dir, 'state.json'), bytes);
   const store = new Store(dir), migrated = await store.read();
-  assert.equal(migrated.version, 12); assert.equal(STATE_VERSION, 12);
+  assert.equal(migrated.version, 13); assert.equal(STATE_VERSION, 13);
   assert.deepEqual(migrated.projects, saved.projects.map(project => ({ ...project, backlog: [], backlogRevision: 0 })));
   assert.deepEqual(migrated.runs, saved.runs); assert.deepEqual(migrated.sessions, saved.sessions); assert.deepEqual(migrated.base, saved.base); assert.deepEqual(migrated.privateExtension, saved.privateExtension);
   assert.equal(await readFile(join(dir, store.recovery.migrationBackup), 'utf8'), bytes);

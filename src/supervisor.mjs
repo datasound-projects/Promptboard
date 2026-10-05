@@ -199,10 +199,11 @@ export class Supervisor {
       currentResources: state.base?.resources || [], workspacePath: run.workspacePath, runDir, signal, approvedRoots: state.base?.approvedRoots || [] });
     onPrepared(baseDelivery);
     signal.throwIfAborted();
+    const attachmentPaths = this.board.prepareTaskFiles ? await this.board.prepareTaskFiles(run) : [];
     const plan = planRunId ? await readFile(join(this.dataDir, 'runs', planRunId, 'plan.md'), 'utf8').catch(() => null) : null;
     const message = run.config.pipeline
       ? [run.resumeFrom ? continuation || '' : firstPrompt, (!run.resumeFrom || run.baseChanged) ? baseDelivery.sections : ''].filter(Boolean).join('\n\n')
-      : run.resumeFrom ? continuation || '' : composeMessage(run.stage, task.prompt, plan, run.config.instructions || '', extra || '', baseDelivery.sections);
+      : run.resumeFrom ? continuation || '' : composeMessage(run.stage, task.prompt, plan, run.config.instructions || '', extra || '', baseDelivery.sections) + (attachmentPaths.length ? '\n' + attachmentPaths.join('\n') : '');
     // Stage instructions, the exact task text, and the plan are stored with the run.
     await writeFile(join(runDir, 'prompt.md'), message, { mode: 0o600 });
     await writeFile(join(runDir, 'task-prompt.txt'), task.prompt, { mode: 0o600 });
@@ -214,6 +215,7 @@ export class Supervisor {
     // Cancellation can arrive during CLI discovery or session preparation.
     if ((await this.board.run(runId)).status !== 'queued') { this.#endPending(runId); return; }
     signal.throwIfAborted();
+    if (this.board.prepareTaskFiles) await this.board.prepareTaskFiles(run);
     const currentBase = (await this.board.state()).base;
     checkBaseRevocations(run.baseManifest, currentBase?.resources || [], currentBase?.approvedRoots || []);
     const supplied = { ...baseDelivery.manifest, acceptedAt: run.baseManifest?.acceptedAt, deliveryState: 'supplied', suppliedAt: Date.now() };
