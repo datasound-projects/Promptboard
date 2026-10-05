@@ -8,7 +8,7 @@ const chrome = await findChrome();
 const select = (browser, id, value) => browser.eval(`const e=document.getElementById(${JSON.stringify(id)});e.value=${JSON.stringify(value)};e.dispatchEvent(new Event('change',{bubbles:true}));`);
 const search = (browser, value) => browser.eval(`const e=document.getElementById('board-search');e.value=${JSON.stringify(value)};e.dispatchEvent(new Event('input',{bubbles:true}));`);
 async function enter(browser, selector) {
-  await browser.until(`document.querySelector(${JSON.stringify(selector)})`, 'backlog keyboard target');
+  await browser.until(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});return e&&!e.disabled&&e.getClientRects().length>0;})()`, 'available backlog keyboard target');
   await browser.eval(`const e=document.querySelector(${JSON.stringify(selector)});e.scrollIntoView({block:'center'});e.focus();`);
   assert.equal(await browser.eval(`return document.activeElement===document.querySelector(${JSON.stringify(selector)});`), true);
   await browser.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' });
