@@ -69,9 +69,20 @@ test('pipeline completed table sorts archive dates, filters literal titles and s
   }
   assert.deepEqual(await app.board.state(), before, 'Opening, sorting and filtering must change no task, session or run.');
   await browser.eval(`const input=document.getElementById('archive-filter');input.value='Middle';input.dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('[data-archive-action="details"]').focus();`);
+  // An already-running refresh can legitimately hold the previous board revision.
+  // Capture that case explicitly; awaiting its coalesced promise is not a new read.
+  await browser.eval(`window.__archiveFetch=window.fetch;window.__archiveHoldNext=true;window.fetch=async (...args)=>{
+    const response=await window.__archiveFetch(...args);
+    if(window.__archiveHoldNext&&String(args[0]).endsWith('/api/board')){
+      window.__archiveHoldNext=false;window.__archiveHeld=true;await new Promise(resolve=>window.__archiveRelease=resolve);
+    }return response;
+  };window.__archiveRead=loadBoard();`);
+  await browser.until(`window.__archiveHeld===true`, 'captured earlier board read');
   const middle = (await app.board.state()).projects.find(p=>p.id===project.id).tasks.find(task=>task.id===tasks[2].id);
   await app.board.updateTask(middle.id, { title: 'Middle edited', prompt: middle.prompt, expectedRevision: middle.revision });
-  await browser.eval(`await loadBoard();`);
+  await browser.eval(`window.__archiveRelease();await window.__archiveRead;window.fetch=window.__archiveFetch;`);
+  assert.equal(await browser.eval(`return document.querySelector('.archive-title').textContent;`), 'Middle', 'The earlier read cannot include the later server edit.');
+  await browser.until(`(async()=>{await loadBoard();return document.querySelector('.archive-title')?.textContent==='Middle edited';})()`, 'edited archive revision rendered');
   assert.equal(await browser.eval(`return document.getElementById('archive-filter').value==='Middle' && document.getElementById('archive-sort').value==='title' && document.activeElement.dataset.archiveAction==='details' && document.activeElement.closest('tr').dataset.archiveTask===${JSON.stringify(middle.id)} && document.querySelector('.archive-title').textContent==='Middle edited';`), true);
   await browser.eval(`const input=document.getElementById('archive-filter');input.value='';input.dispatchEvent(new Event('input',{bubbles:true}));`);
   await browser.eval(`const restore=document.querySelector('[data-archive-task="${tasks[0].id}"] select');restore.value='executing';restore.dispatchEvent(new Event('change',{bubbles:true}));`);
