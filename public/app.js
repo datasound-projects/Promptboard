@@ -4919,7 +4919,16 @@ async function saveBacklogDraft(event) {
 }
 $('#backlog-new').addEventListener('click', () => openBacklogDraft());
 $('#backlog-sort').addEventListener('change', () => renderBoard());
-$('#backlog-dialog').addEventListener('close', () => { const draft = backlogDraft; backlogDraft = null; if (currentProject()?.id === draft?.projectId) (draft.item && backlogRow(draft.item.id)?.querySelector('[data-backlog-action=edit]') || $('#backlog-new')).focus({ preventScroll: true }); });
+$('#backlog-dialog').addEventListener('close', () => {
+  const dialog = $('#backlog-dialog');
+  // Native close events are queued: a subsequent action may have opened a new
+  // draft or moved keyboard focus before this event is dispatched.
+  if (dialog.open) return;
+  const draft = backlogDraft; backlogDraft = null;
+  if (currentProject()?.id === draft?.projectId && (document.activeElement === document.body || dialog.contains(document.activeElement))) {
+    (draft.item && backlogRow(draft.item.id)?.querySelector('[data-backlog-action=edit]') || $('#backlog-new')).focus({ preventScroll: true });
+  }
+});
 for (const id of ['backlog-close', 'backlog-cancel']) $(`#${id}`).addEventListener('click', () => $('#backlog-dialog').close());
 $('#backlog-reload').addEventListener('click', async () => {
   const draft = backlogDraft; if (!draft) return;
