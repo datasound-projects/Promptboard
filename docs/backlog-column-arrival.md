@@ -1,0 +1,11 @@
+# Backlog column arrival
+
+The project-scoped POST `/api/projects/:projectId/backlog/:itemId/promote-to-column` accepts a column ID and `expectedRevision`, `expectedBacklogRevision` and `expectedProjectRevision`. It requires the same local token and origin protections as other authoring routes. The Backlog UI's existing Add to To Do remains unchanged; choosing a destination in that UI is a separate step.
+
+Promotion publishes the board card and removes the draft in one atomic state update. It preserves the draft ID, creation time, exact prompt, source/check metadata, priority and label order, assigning its board number once. Invalid columns, stale item/list/settings revisions, unreviewed imported execution configuration and unsupported immediate entry messages are refused before publication. Publication failure retains the complete draft and number counter, with no arrival effects.
+
+After publication, the existing column lifecycle owns arrival. The initial To Do staging card does not run To Do departure automations. A manual active column runs its entry automations without an agent. Auto-spawn columns prepare the normal isolated workspace and configured agent, with Planning permissions, Base resources and ambient CLI tools handled by the existing runtime. Entry actions finish before a fresh process starts. Done archives without inventing a conversation; To Do remains inert.
+
+The response contains `task`, optional normal transition fields such as `run`, and `arrival.status`. `completed` confirms the arrival operation, not completion of the agent's work. `failed` contains a bounded `code` and `reason`: the card was already published and is retained at its actual current column with any owned history or artifacts. Inspect that card and its automation history before an explicit recovery action. Promotion never rolls back side effects, recreates a draft or automatically retries an arrival. Repeated and concurrent promotion requests cannot allocate another board number or another initial arrival.
+
+Composer and split tasks continue entering To Do without agent execution. The existing `/promote` endpoint still supports atomic To Do promotion only. No CLI flags, configuration files, input delivery rules, state schema or portable backup version change here.

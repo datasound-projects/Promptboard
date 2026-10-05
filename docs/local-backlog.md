@@ -1,6 +1,6 @@
 # Local backlog
 
-The Backlog view stages local drafts separately from the pipeline board, following Kangentic's [Backlog and imports](https://www.kangentic.com/guide/backlog/). Bulk selection can add drafts to To Do or delete them. Active-column promotion, attachments and tracker imports remain pending.
+The Backlog view stages local drafts separately from the pipeline board, following Kangentic's [Backlog and imports](https://www.kangentic.com/guide/backlog/). Bulk selection can add drafts to To Do or delete them. A separate [column-arrival API](backlog-column-arrival.md) supports chosen destinations; its UI picker, attachments and tracker imports remain pending.
 
 Choose **Backlog** in a pipeline project and **New draft** to save a title with optional prompt, priority and shared labels. Rows show creation age, priority and labels. Open a draft title to edit it. Saving and **Add to To Do** never start an agent. Composer and split tasks continue adding directly to To Do. Servers without the Backlog capability and legacy projects retain the Board view.
 
@@ -14,7 +14,7 @@ Pipeline projects own an ordered `backlog` list and independent `backlogRevision
 
 Authenticated endpoints under `/api/projects/:projectId/backlog` create items with POST and reorder the complete list with PATCH. Item PATCH and DELETE use `/:itemId`; POST `/:itemId/promote` moves one draft into To Do. Creation requires `expectedBacklogRevision` and `expectedLabelRevision`; item edits require `expectedRevision`, plus the label revision when assignments are supplied. Reorder/delete/promotion require the list revision; delete/promotion also require the item revision. Invalid, stale or cross-project requests publish nothing.
 
-Promotion uses the same task-creation implementation as Composer in one atomic state update: retain the draft ID, creation time, exact prompt, source/check status, priority and label order, allocate its board number once, append it to the project's To Do role and remove the backlog draft. A concurrent or repeated request cannot create a second card. Failed publication retains the draft, saved order and number counter. Active-column promotion is refused until it can use the common arrival lifecycle in a separate step. The promoted task follows normal configured Base and CLI inheritance when the user later starts or moves it.
+Promotion uses the same task-creation implementation as Composer in one atomic state update: retain the draft ID, creation time, exact prompt, source/check status, priority and label order, allocate its board number once, append it to the project's To Do role and remove the backlog draft. A concurrent or repeated request cannot create a second card. Failed publication retains the draft, saved order and number counter. The separate column-arrival endpoint then uses the common lifecycle and reports any failed arrival while retaining the published card. The promoted task follows normal configured Base and CLI inheritance when it runs.
 
 Shared label rename/recolor updates definitions without rewriting drafts. Removal detaches only the removed assignments and increments affected item and backlog metadata revisions, retaining exact content and check status. A project supports up to 1,000 backlog drafts alongside its existing board-card limit. Revision overflow is refused.
 

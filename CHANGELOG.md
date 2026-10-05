@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add a revision-checked backlog promotion API for chosen columns using the existing arrival lifecycle. Preserve published cards and report failed arrivals without replaying promotion; initial creation skips To Do exit actions. The destination picker remains separate UI work.
+
 - Add Backlog multi-selection and ordered To Do promotion or confirmed deletion, retaining hidden selections and captured revisions. Stop unstarted requests on cancellation, project/view changes, conflicts or unknown replies; report each result without replay or agent work.
 
 - Add a separate Backlog view with keyboard draft editing, shared label/priority filters and title/prompt/label search, filtered full-list ordering, sorting, explicit deletion and atomic Add to To Do. Preserve Composer routing, exact prompt bytes and stale-write guards; expand completed search to descriptions and labels. Bulk/active-column promotion and imports remain pending.

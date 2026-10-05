@@ -1656,10 +1656,42 @@ export class Board {
       checkRevision(item, expectedRevision, 'This backlog item');
       const todo = project.pipeline.columns.find(row => row.role === 'todo').id;
       if (column !== undefined && column !== todo) throw conflict('Choose the To Do column for backlog promotion.', 'BACKLOG_TARGET_UNSUPPORTED');
-      if (state.projects.some(owner => owner.tasks.some(task => task.id === id))) throw conflict('This item already has a board card.', 'REVISION_CONFLICT');
-      const task = this.#createTask(state, { ...item, projectId, expectedLabelRevision: project.labelRevision }, { id, createdAt: item.createdAt, checksOutdated: item.checksOutdated });
-      project.backlog = project.backlog.filter(row => row.id !== id); this.#advanceBacklog(project); return task;
+      return this.#publishBacklogTask(state, project, item);
     });
+  }
+
+  #publishBacklogTask(state, project, item) {
+    if (state.projects.some(owner => owner.tasks.some(task => task.id === item.id))) throw conflict('This item already has a board card.', 'REVISION_CONFLICT');
+    const task = this.#createTask(state, { ...item, projectId: project.id, expectedLabelRevision: project.labelRevision }, { id: item.id, createdAt: item.createdAt, checksOutdated: item.checksOutdated });
+    project.backlog = project.backlog.filter(row => row.id !== item.id); this.#advanceBacklog(project); return task;
+  }
+
+  /** Publish once, then use the existing arrival owner. Failed side effects never recreate a draft or replay promotion. */
+  promoteBacklogToColumn(projectId, id, { column, expectedRevision, expectedBacklogRevision, expectedProjectRevision }) {
+    backlogRevision(expectedBacklogRevision);
+    if (typeof column !== 'string' || !Number.isSafeInteger(expectedProjectRevision) || expectedProjectRevision < 1)
+      throw new BoardError('Choose a column and send the current board settings revision.', 'INVALID_INPUT');
+    return this.#locked(`transition:${id}`, () => this.#locked(`run:${id}`, async () => {
+      const task = await this.store.update(state => {
+        const project = this.#backlogProject(state, projectId, expectedBacklogRevision), item = project.backlog.find(row => row.id === id);
+        if (!item) throw new BoardError('This backlog item does not exist. Check the board before trying again.', 'NOT_FOUND', 404);
+        checkRevision(item, expectedRevision, 'This backlog item'); checkRevision(project, expectedProjectRevision, 'This project');
+        const target = project.pipeline.columns.find(row => row.id === column);
+        if (!target) throw new BoardError('Choose a valid column.', 'INVALID_COLUMN');
+        if (target.role !== 'todo' && project.pipelineImport) throw conflict('Review and save the imported board configuration before promoting into this column.', 'PIPELINE_IMPORT_PENDING');
+        if (target.automations.onEnter.some(row => row.enabled && row.type === 'send_message' && row.mode !== 'deferred'))
+          throw conflict('Agent messages currently support deferred delivery on entry only.', 'PIPELINE_FEATURE_PENDING');
+        return this.#publishBacklogTask(state, project, item);
+      });
+      if (task.column === column) return { task, arrival: { status: 'completed' } };
+      try {
+        const result = await this.#pipelineTransition(id, { column, expectedRevision: task.revision, expectedProjectRevision, initialArrival: true, trigger: 'user' });
+        return { ...result, arrival: { status: 'completed' } };
+      } catch (error) {
+        // Publication has already succeeded. Preserve its identity, artifacts and outcome for explicit review.
+        return { task: await this.#taskNow(id), arrival: { status: 'failed', code: error.code || 'ARRIVAL_FAILED', reason: String(error.message || 'Column arrival failed.').slice(0, 500) } };
+      }
+    }));
   }
 
   updateTask(id, input) {
@@ -2241,7 +2273,7 @@ export class Board {
     checkRevision(task, request.expectedRevision, 'This card');
     const from = project.pipeline.columns.find(column => column.id === task.column), to = project.pipeline.columns.find(column => column.id === request.column);
     if (!to) throw new BoardError('Choose a valid column.', 'INVALID_COLUMN');
-    const onExit = from.automations.onExit, onEnter = to.automations.onEnter;
+    const onExit = request.initialArrival ? [] : from.automations.onExit, onEnter = to.automations.onEnter;
     if (task.automationMove && !['completed', 'failed', 'cancelled', 'interrupted'].includes(task.automationMove.status)) throw conflict('Stop or resolve this card’s existing automation move first.', 'AUTOMATION_MOVE_ACTIVE');
     if (!onExit.length && !onEnter.length) return this.#pipelineLifecycleTransition(taskId, request);
     if (this.automationsStopping) throw conflict('The application is shutting down. No column automation was started.', 'AUTOMATIONS_SHUTTING_DOWN');
