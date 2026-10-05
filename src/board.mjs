@@ -19,6 +19,7 @@ import { branchExists, commitExists, git, GitError, initRepository, listWorktree
 import { ADAPTERS, resolveConfig, validateResumeId } from './agents.mjs';
 import { Delivery } from './delivery.mjs';
 import { ensureClone, fastForward, fetchAndCompare, viewRepository } from './github.mjs';
+import { listGitHubBacklogIssues } from './backlog-github.mjs';
 import { buildTimeline } from './timeline.mjs';
 import { Base, normalizeBinding, listTargets, remapBaseScopes } from './base.mjs';
 import { checkBaseRevocations, deliveryFor, profileDefaults, resolveBase } from './base-resolver.mjs';
@@ -386,7 +387,7 @@ const inside = (parent, child) => { const rel = relative(parent, child); return 
 const slug = value => value.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'task';
 
 export class Board {
-  constructor({ dataDir, executor = null, projectsDir = join(dataDir, 'projects'), automationActions = new PipelineActions() }) {
+  constructor({ dataDir, executor = null, projectsDir = join(dataDir, 'projects'), automationActions = new PipelineActions(), githubIssueReader = listGitHubBacklogIssues }) {
     this.dataDir = dataDir;
     this.projectsDir = projectsDir; // Where "New project" creates each project's own Git repository.
     this.store = new Store(dataDir);
@@ -394,6 +395,7 @@ export class Board {
     this.worktreeRoot = join(dataDir, 'worktrees');
     this.hooksDir = join(dataDir, 'no-hooks'); // Empty: git worktree add runs no repository hooks.
     this.executor = executor; // PB-02 registers one. Null means execution is inactive.
+    this.githubIssueReader = githubIssueReader;
     this.locks = new Map();
     this.recoveryPromise = null;
     this.delivery = new Delivery(this);
@@ -1613,6 +1615,12 @@ export class Board {
       if (project.backlog.length >= BACKLOG_LIMIT) throw conflict(`A project can have at most ${BACKLOG_LIMIT} backlog items.`, 'LIMIT');
       project.backlog.push(item); this.#advanceBacklog(project); return item;
     });
+  }
+  async previewGitHubBacklogIssues(projectId, input) {
+    this.#backlogProject(await this.state(), projectId);
+    const result = await this.githubIssueReader(input);
+    this.#backlogProject(await this.state(), projectId);
+    return result;
   }
   updateBacklogItem(projectId, id, { title, prompt, priority, labelIds, expectedLabelRevision, expectedRevision }) {
     return this.store.update(state => {

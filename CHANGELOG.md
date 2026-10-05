@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add an authenticated, read-only GitHub Issues preview API with bounded CLI requests, exact text, pagination, stable source identities and explicit malformed-item reports. It creates no drafts or agents; selective import and saved-source deduplication follow separately.
+
 - Add a Backlog destination picker and revision-checked promotion API for chosen columns using the existing arrival lifecycle. Capture destinations for single/bulk operations, preserve published cards and report failed arrivals without replaying promotion; initial creation skips To Do exit actions. Older servers retain To Do-only promotion.
 
 - Add Backlog multi-selection and ordered To Do promotion or confirmed deletion, retaining hidden selections and captured revisions. Stop unstarted requests on cancellation, project/view changes, conflicts or unknown replies; report each result without replay or agent work.
