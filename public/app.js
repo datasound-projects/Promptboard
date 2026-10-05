@@ -29,6 +29,7 @@ let pipelineBacklogSupported = false;
 let pipelineBacklogBulkSupported = false;
 let pipelineBacklogColumnsSupported = false;
 let pipelineBacklogImportsSupported = false;
+let pipelineBacklogSourceCacheSupported = false;
 let providers = [];
 let history = readHistory();
 let currentId = null;
@@ -303,6 +304,7 @@ async function loadProviders() {
     pipelineBacklogBulkSupported = pipelineBacklogSupported && session.capabilities?.pipelineBacklogBulk === true;
     pipelineBacklogColumnsSupported = pipelineBacklogSupported && session.capabilities?.pipelineBacklogColumns === true;
     pipelineBacklogImportsSupported = pipelineBacklogSupported && session.capabilities?.pipelineBacklogImports === true;
+    pipelineBacklogSourceCacheSupported = pipelineBacklogImportsSupported && session.capabilities?.pipelineBacklogSourceCache === true;
     providers = Array.isArray(status.providers) ? status.providers.filter((item) => item && KNOWN_PROVIDERS.includes(item.id)) : [];
     if (!token) throw new Error('The local server did not return a session token.');
     browserNotifications?.resume();
@@ -330,6 +332,7 @@ async function loadProviders() {
     pipelineBacklogBulkSupported = false;
     pipelineBacklogColumnsSupported = false;
     pipelineBacklogImportsSupported = false;
+    pipelineBacklogSourceCacheSupported = false;
     browserNotifications?.stop();
     $('#cli-status-label').textContent = 'Server unavailable';
     $('#provider-note').textContent = 'Could not reach the local server. Restart the app, then reload this page.';
@@ -5637,10 +5640,12 @@ function renderImportControls(draft) {
   const select = $('#backlog-import-source');
   if (select.dataset.choices !== signature) { select.replaceChildren(...draft.sources.map(row => option(row.id, row.repository))); if (!draft.sources.length) select.append(option('', 'No saved sources')); select.dataset.choices = signature; }
   if (document.activeElement !== select || !draft.sources.some(row => row.id === select.value)) select.value = draft.sourceId || '';
-  for (const id of ['source', 'connect', 'repository', 'remove-source', 'remove-confirmed', 'keep-source', 'refresh-choices', 'refresh', 'previous', 'next', 'select-visible', 'clear']) $(`#backlog-import-${id}`).disabled = busy;
+  for (const id of ['source', 'connect', 'repository', 'remove-source', 'remove-confirmed', 'keep-source', 'refresh-choices', 'refresh', 'sync', 'previous', 'next', 'select-visible', 'clear']) $(`#backlog-import-${id}`).disabled = busy;
   select.disabled ||= !draft.sources.length || draft.selected.size > 0; $('#backlog-import-repository').disabled ||= draft.selected.size > 0; $('#backlog-import-remove-source').disabled ||= !source || draft.blocked || draft.selected.size > 0;
   $('#backlog-import-connect').disabled ||= draft.blocked || draft.selected.size > 0 || !$('#backlog-import-repository').value.trim();
   $('#backlog-import-refresh').disabled ||= !source;
+  $('#backlog-import-sync').hidden = !pipelineBacklogSourceCacheSupported;
+  $('#backlog-import-sync').disabled ||= !source || draft.selected.size > 0 || draft.blocked || !pipelineBacklogSourceCacheSupported;
   $('#backlog-import-previous').disabled ||= !source || draft.page <= 1 || draft.selected.size > 0;
   $('#backlog-import-next').disabled ||= !source || !draft.nextPage || draft.selected.size > 0;
   $('#backlog-import-select-visible').disabled ||= !visible.some(item => !draft.imported.has(item.sourceKey));
@@ -5651,6 +5656,8 @@ function renderImportControls(draft) {
   $('#backlog-import-error').hidden = !draft.error; $('#backlog-import-error').textContent = draft.error || '';
   $('#backlog-import-progress').textContent = draft.mutation ? 'Saving…' : draft.reading ? 'Reading issues…' : `${visible.length} shown · ${draft.selected.size} selected${draft.selected.size ? ` · ${[...draft.selected].filter(key => !visible.some(item => item.sourceKey === key)).length} hidden` : ''}`;
   $('#backlog-import-page').textContent = source ? `Page ${draft.page}` : '';
+  $('#backlog-import-freshness').hidden = !source || !draft.cache;
+  $('#backlog-import-freshness').textContent = draft.cache ? `${draft.cache.cached ? 'Cached page' : 'Page checked'} · ${new Date(draft.cache.checkedAt).toLocaleString()}${draft.cache.syncedAt !== null ? ` · Changes checked ${new Date(draft.cache.syncedAt).toLocaleString()}` : ''}${draft.cache.changed !== null ? ` · ${draft.cache.changed} changed issues checked` : ''}. Imported tasks keep their local text; importing checks GitHub again.` : '';
   $('#backlog-import-remove-confirm').hidden = !draft.removeConfirm;
   $('#backlog-import-unavailable').hidden = !draft.unavailable && !draft.pageLimitReached;
   $('#backlog-import-unavailable').textContent = `${draft.unavailable || 0} source rows have unsupported metadata and were excluded.${draft.pageLimitReached ? ' The source page limit has been reached.' : ''}`;
@@ -5693,18 +5700,25 @@ function importFilterOptions(draft) {
     const select = $(`#backlog-import-${id}`), selected = select.value; select.replaceChildren(...choices.map(([value,name]) => option(value,name))); select.value = choices.some(([value]) => value === selected) ? selected : 'all';
   }
 }
-async function readImportPage(draft, page = draft.page) {
+async function readImportPage(draft, page = draft.page, mode = 'cached') {
   if (backlogImportDraft !== draft || draft.mutation || draft.reading) return;
   const source = importSource(draft); if (!source) return;
+  if (mode === 'sync' && (!pipelineBacklogSourceCacheSupported || draft.selected.size || draft.blocked)) return;
   draft.controller?.abort(); const controller = new AbortController(); draft.controller = controller; draft.reading = true; draft.error = ''; renderImportControls(draft);
   try {
-    const { response, data } = await api(`${backlogPath(draft.projectId)}/import/github-issues?repository=${encodeURIComponent(source.repository)}&state=all&page=${page}`, { signal: controller.signal, timeoutMs: 40000 });
+    const cachedPath = `${backlogPath(draft.projectId)}/sources/${encodeURIComponent(source.id)}`;
+    const path = !pipelineBacklogSourceCacheSupported ? `${backlogPath(draft.projectId)}/import/github-issues?repository=${encodeURIComponent(source.repository)}&state=all&page=${page}`
+      : mode === 'sync' ? cachedPath + '/sync' : `${cachedPath}/preview?state=all&page=${page}${mode === 'refresh' ? '&refresh=1' : ''}`;
+    const { response, data } = await api(path, { signal: controller.signal, timeoutMs: 40000,
+      ...(mode === 'sync' ? { method: 'POST', body: { expectedImportRevision: draft.importRevision } } : {}) });
     if (backlogImportDraft !== draft || controller.signal.aborted) return;
     if (!response.ok) throw new Error(typeof data.error === 'string' ? data.error : 'The source page could not be read.');
     if (data.source?.repository !== source.repository || !Array.isArray(data.items) || data.items.some(item => !item || typeof item.title !== 'string' || typeof item.prompt !== 'string' || !Array.isArray(item.labels) || !Array.isArray(item.assignees) || !Number.isSafeInteger(item.id) || item.id < 1 || !Number.isSafeInteger(item.number) || item.number < 1 || !['open','closed'].includes(item.state) || item.type !== null && typeof item.type !== 'string' || item.labels.some(label => !label || typeof label.name !== 'string') || item.assignees.some(login => typeof login !== 'string') || item.sourceKey !== `github:issue:${item.id}`)) throw new Error('The source returned an invalid issue page.');
     const oldKeys = new Set(data.items.map(item => item.sourceKey));
     for (const key of draft.selected) if (!oldKeys.has(key)) draft.selected.delete(key);
     draft.items = data.items; draft.page = page; draft.nextPage = data.nextPage; draft.unavailable = Array.isArray(data.unavailable) ? data.unavailable.length : 0; draft.pageLimitReached = data.pageLimitReached === true; draft.readError = false;
+    draft.cache = data.cache && Number.isSafeInteger(data.cache.checkedAt) && data.cache.checkedAt >= 0 && typeof data.cache.cached === 'boolean'
+      ? { cached: data.cache.cached, checkedAt: data.cache.checkedAt, syncedAt: Number.isSafeInteger(data.cache.syncedAt) && data.cache.syncedAt >= 0 ? data.cache.syncedAt : null, changed: Number.isSafeInteger(data.cache.changed) && data.cache.changed >= 0 ? data.cache.changed : null } : null;
     importFilterOptions(draft); renderImportRows(draft);
   } catch (error) { if (backlogImportDraft === draft && !controller.signal.aborted) { draft.readError = true; importError(draft, error.message); } }
   finally { if (backlogImportDraft === draft && draft.controller === controller) { draft.reading = false; renderImportControls(draft); } }
@@ -5742,13 +5756,13 @@ $('#backlog-import-connect-form').addEventListener('submit', async event => {
     const owner = importOwner(draft), wasKnown = draft.sources.some(source => source.id === result.source?.id);
     if (!owner || owner.backlogImportRevision !== draft.importRevision + (wasKnown ? 0 : 1) || !importSources(owner).some(source => source.id === result.source?.id)) throw new Error('The source reply is not confirmed. Review the saved sources.');
     if (backlogImportDraft !== draft) return;
-    captureImportChoices(draft, owner); draft.sourceId = result.source.id; draft.items = []; draft.page = 1; draft.nextPage = null; draft.selected.clear(); draft.removeConfirm = false; $('#backlog-import-repository').value = ''; renderImportRows(draft);
+    captureImportChoices(draft, owner); draft.sourceId = result.source.id; draft.items = []; draft.cache = null; draft.page = 1; draft.nextPage = null; draft.selected.clear(); draft.removeConfirm = false; $('#backlog-import-repository').value = ''; renderImportRows(draft);
   });
   if (connected && backlogImportDraft === draft && !draft.blocked) await readImportPage(draft, 1);
 });
 $('#backlog-import-source').addEventListener('change', async event => {
   const draft = backlogImportDraft; if (!draft || draft.mutation || draft.reading || draft.selected.size) { if (draft) event.currentTarget.value = draft.sourceId || ''; return; }
-  draft.sourceId = event.currentTarget.value; draft.items = []; draft.page = 1; draft.nextPage = null; draft.removeConfirm = false; draft.readError = false; renderImportRows(draft); await readImportPage(draft, 1);
+  draft.sourceId = event.currentTarget.value; draft.items = []; draft.cache = null; draft.page = 1; draft.nextPage = null; draft.removeConfirm = false; draft.readError = false; renderImportRows(draft); await readImportPage(draft, 1);
 });
 $('#backlog-import-refresh-choices').addEventListener('click', async () => {
   const draft = backlogImportDraft; if (!draft || draft.mutation || draft.reading) return;
@@ -5757,14 +5771,15 @@ $('#backlog-import-refresh-choices').addEventListener('click', async () => {
     const owner = importOwner(draft); if (!owner || owner.workflowMode !== 'pipeline') throw new Error('This project is unavailable.');
     captureImportChoices(draft, owner); draft.blocked = false; draft.error = ''; draft.removeConfirm = false;
     for (const key of draft.selected) if (draft.imported.has(key)) draft.selected.delete(key);
-    if (!importSource(draft)) { draft.sourceId = draft.sources[0]?.id || null; draft.items = []; draft.page = 1; draft.nextPage = null; draft.selected.clear(); }
+    if (!importSource(draft)) { draft.sourceId = draft.sources[0]?.id || null; draft.items = []; draft.cache = null; draft.page = 1; draft.nextPage = null; draft.selected.clear(); }
     renderImportRows(draft);
   } catch (error) { if (backlogImportDraft === draft) importError(draft, error.message, true); }
 });
 for (const id of ['search','state','type','assignee','label','hide-imported']) $(`#backlog-import-${id}`).addEventListener(id === 'search' ? 'input' : 'change', () => { if (backlogImportDraft) renderImportRows(backlogImportDraft); });
 $('#backlog-import-select-visible').addEventListener('click', () => { const draft = backlogImportDraft; if (!draft || draft.mutation || draft.reading) return; for (const item of importVisible(draft)) if (!draft.imported.has(item.sourceKey)) draft.selected.add(item.sourceKey); renderImportRows(draft); });
 $('#backlog-import-clear').addEventListener('click', () => { const draft = backlogImportDraft; if (!draft || draft.mutation || draft.reading) return; draft.selected.clear(); renderImportRows(draft); });
-$('#backlog-import-refresh').addEventListener('click', () => { if (backlogImportDraft) readImportPage(backlogImportDraft); });
+$('#backlog-import-refresh').addEventListener('click', () => { if (backlogImportDraft) readImportPage(backlogImportDraft, backlogImportDraft.page, 'refresh'); });
+$('#backlog-import-sync').addEventListener('click', () => { if (backlogImportDraft) readImportPage(backlogImportDraft, 1, 'sync'); });
 $('#backlog-import-previous').addEventListener('click', () => { const draft = backlogImportDraft; if (draft && !draft.selected.size && draft.page > 1) readImportPage(draft, draft.page - 1); });
 $('#backlog-import-next').addEventListener('click', () => { const draft = backlogImportDraft; if (draft && !draft.selected.size && draft.nextPage) readImportPage(draft, draft.nextPage); });
 $('#backlog-import-remove-source').addEventListener('click', () => { const draft = backlogImportDraft; if (!draft || draft.mutation || draft.reading || draft.blocked || draft.selected.size || !importSource(draft)) return; draft.removeConfirm = true; renderImportControls(draft); $('#backlog-import-keep-source').focus(); });
@@ -5775,7 +5790,7 @@ $('#backlog-import-remove-confirmed').addEventListener('click', () => {
     const result = await boardCall('DELETE', backlogPath(draft.projectId) + '/sources/' + encodeURIComponent(source.id), { expectedImportRevision: draft.importRevision });
     const owner = importOwner(draft); if (result.deleted !== true || !owner || owner.backlogImportRevision !== draft.importRevision + 1 || importSources(owner).some(row => row.id === source.id)) throw new Error('Source removal is not confirmed. Review saved sources.');
     if (backlogImportDraft !== draft) return;
-    captureImportChoices(draft, owner); draft.sourceId = draft.sources[0]?.id || null; draft.items = []; draft.selected.clear(); draft.page = 1; draft.nextPage = null; draft.removeConfirm = false;
+    captureImportChoices(draft, owner); draft.sourceId = draft.sources[0]?.id || null; draft.items = []; draft.cache = null; draft.selected.clear(); draft.page = 1; draft.nextPage = null; draft.removeConfirm = false;
   });
 });
 $('#backlog-import-submit').addEventListener('click', () => {

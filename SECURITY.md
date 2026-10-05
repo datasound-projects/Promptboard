@@ -80,6 +80,8 @@ Report problems privately through GitHub: **Security → Report a vulnerability*
 - Prompt boundaries and read-only modes are enforced by each CLI, not by an operating-system sandbox. A CLI bug can weaken them.
 - Prompt text, run output, plans, Base documents, and supplied context are stored unencrypted in the data folder and may be sent to your provider through its CLI. **Do not put API keys, tokens, passwords, or private code you cannot share with your provider into prompts, tasks, or resource documents.** Resource and board exports include document bodies only when requested; review them before sharing. Imports remap resource IDs and external-root references rather than reusing local access grants.
 
+**GitHub preview snapshots stay inert.** Saved-source caches are bounded, validated machine-local snapshots outside board state and portable backups. Ownership is checked before reads and atomic publication; file/directory links are refused. Explicit incremental reads share a bounded deadline and preserve previous cache/cursor on failed or incomplete reads. Fresh selected imports retain revision and provenance checks. Cached snapshots do not establish current remote access.
+
 ## Changes that need extra review
 
 - CLI flags, permission modes, hook or notify handling, and executable lookup.

@@ -22,9 +22,9 @@ const BRANCH = /^(?!-)(?!.*\.\.)[A-Za-z0-9._/-]{1,255}$/;
 const DEVICE_URL = 'https://github.com/login/device';
 
 /** GitHub CLI without a shell or prompts. Rejects with { missing, stderr } on failure. */
-export function gh(args, { cwd, timeoutMs = 120000, maxBuffer = 8 * 1024 * 1024 } = {}) {
+export function gh(args, { cwd, timeoutMs = 120000, maxBuffer = 8 * 1024 * 1024, signal } = {}) {
   return new Promise((resolve, reject) => {
-    execFile('gh', args, { cwd, shell: false, windowsHide: true, timeout: timeoutMs, maxBuffer, env: { ...process.env, GH_PROMPT_DISABLED: '1', GH_NO_UPDATE_NOTIFIER: '1', NO_COLOR: '1', GIT_TERMINAL_PROMPT: '0' } },
+    execFile('gh', args, { cwd, signal, shell: false, windowsHide: true, timeout: timeoutMs, maxBuffer, env: { ...process.env, GH_PROMPT_DISABLED: '1', GH_NO_UPDATE_NOTIFIER: '1', NO_COLOR: '1', GIT_TERMINAL_PROMPT: '0' } },
       (error, stdout, stderr) => error ? reject(Object.assign(new Error('gh failed'), { missing: error.code === 'ENOENT', stderr: String(stderr) })) : resolve(String(stdout)));
   });
 }

@@ -34,10 +34,47 @@ for (const steers of [false, true]) test(`the offline Codex busy check ${steers 
       ...(steers ? { FAKE_CODEX_QUEUE_STEERS: '1' } : {}), GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' } });
   assert.equal(result.status, 0, result.stderr); const report = JSON.parse(result.stdout);
   assert.equal(report.initial.ready, true); assert.equal(report.sameRun, true); assert.equal(report.message.confirmed, true);
-  assert.equal(report.busy.observed, true); assert.equal(report.busy.pasted, true); assert.equal(report.busy.queuedBeforeCompletion, true);
+  assert.equal(report.busy.observed, true); assert.equal(report.busy.pasted, true); assert.equal(report.busy.queuedBeforeCompletion, true, JSON.stringify(report));
   assert.equal(report.busy.manualInputObserved, true); assert.equal(report.busy.key, 'Tab'); assert.equal(report.errorCode, undefined);
   assert.equal(report.busy.sequenceValid, !steers); assert.equal(report.busy.nextReplyComplete, !steers);
   if (!steers) assert.equal(report.busy.firstReplyComplete, true);
+  for (const key of ['exactPrompt', 'mainCheckoutClean', 'worktreeClean', 'processStopped']) assert.equal(report[key], true, key);
+  const records = (await readFile(capture, 'utf8')).trim().split('\n').map(JSON.parse);
+  const submitted = records.filter(row => row.kind === 'submitted'); assert.equal(submitted.length, 2);
+  assert.deepEqual(submitted.map(row => [row.key, row.busy]), [['\r', false], ['\t', true]]);
+  assert.deepEqual((await readdir(dir)).filter(name => /^pb-live-native-(data|repo)-/.test(name)), []);
+});
+
+test('the busy smoke waits for the durable receipt callback before deliberate manual input', { skip: process.platform === 'win32', timeout: 25000 }, async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'pb-live-codex-queue-'));
+  t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+  const bin = join(dir, 'bin'), capture = join(dir, 'messages.jsonl'); await mkdir(bin);
+  const fixture = fileURLToPath(new URL('./fixtures/fake-codex-queue.cjs', import.meta.url));
+  await writeFile(join(bin, 'codex'), `#!${process.execPath}\nrequire(${JSON.stringify(fixture)});\n`, { mode: 0o700 });
+  const delayedScript = join(dir, 'delayed-receipt.mjs');
+  let harness = await readFile(script, 'utf8');
+  harness = harness.replace(/from '(\.\.?\/[^']+)'/g, (_, relative) => `from '${new URL(relative, new URL('../scripts/live-native-messages.mjs', import.meta.url)).href}'`);
+  const injectionPoint = "const moved = await board.transition(task.id, { column: 'code_review', expectedRevision: current.revision });";
+  assert.equal(harness.split(injectionPoint).length, 2);
+  harness = harness.replace(injectionPoint, `
+      const originalFinish = board.automationJournal.finishMessageDelivery.bind(board.automationJournal);
+      board.automationJournal.finishMessageDelivery = async (...args) => {
+        const value = await originalFinish(...args);
+        if (args[2]?.status === 'confirmed') await pause(350);
+        return value;
+      };
+      ${injectionPoint}`);
+  await writeFile(delayedScript, harness);
+  const result = spawnSync(process.execPath, [delayedScript, '--provider', 'codex', '--timeout', '18', '--column-automation', '--busy-queue'], {
+    encoding: 'utf8', timeout: 22000, env: { ...process.env, PATH: bin + delimiter + process.env.PATH,
+      TMPDIR: dir, TMP: dir, TEMP: dir, CODEX_HOME: join(dir, 'codex-fixture'), FAKE_NATIVE_MESSAGE_REPORT: capture,
+      GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' } });
+  assert.equal(result.status, 0, result.stderr); const report = JSON.parse(result.stdout);
+  assert.equal(report.initial.ready, true); assert.equal(report.sameRun, true); assert.equal(report.message.confirmed, true); assert.equal(report.message.transportSettled, true);
+  assert.equal(report.busy.observed, true); assert.equal(report.busy.pasted, true); assert.equal(report.busy.queuedBeforeCompletion, true, JSON.stringify(report));
+  assert.equal(report.busy.manualInputObserved, true); assert.equal(report.busy.key, 'Tab'); assert.equal(report.errorCode, undefined);
+  assert.equal(report.busy.sequenceValid, true); assert.equal(report.busy.nextReplyComplete, true);
+  assert.equal(report.busy.firstReplyComplete, true);
   for (const key of ['exactPrompt', 'mainCheckoutClean', 'worktreeClean', 'processStopped']) assert.equal(report[key], true, key);
   const records = (await readFile(capture, 'utf8')).trim().split('\n').map(JSON.parse);
   const submitted = records.filter(row => row.kind === 'submitted'); assert.equal(submitted.length, 2);
@@ -82,7 +119,7 @@ for (const columnAutomation of [false, true]) test(`the live smoke harness confi
   assert.equal(report.columnAutomation, columnAutomation);
   if (columnAutomation) assert.equal(report.placementStatus, 'completed');
   assert.equal(report.sameRun, true); assert.deepEqual(report.message,
-    { status: 'confirmed', confirmed: true, receiptStatus: 'confirmed', submitted: true });
+    { status: 'confirmed', confirmed: true, receiptStatus: 'confirmed', submitted: true, ...(columnAutomation ? { transportSettled: true } : {}) });
   for (const key of ['exactPrompt', 'mainCheckoutClean', 'worktreeClean', 'processStopped']) assert.equal(report[key], true, key);
   assert.equal(report.errorCode, undefined);
   const records = (await readFile(capture, 'utf8')).trim().split('\n').map(JSON.parse);
@@ -131,7 +168,7 @@ test('startup trust waits for the actual positive selection and a fresh process 
   assert.equal(report.warmup?.ready, true); assert.equal(report.warmup.manualInputObserved, true);
   assert.equal(report.initial.ready, true); assert.equal(report.initial.manualInputObserved, false);
   assert.equal(report.sameRun, true); assert.equal(report.placementStatus, 'completed');
-  assert.deepEqual(report.message, { status: 'confirmed', confirmed: true, receiptStatus: 'confirmed', submitted: true });
+  assert.deepEqual(report.message, { status: 'confirmed', confirmed: true, receiptStatus: 'confirmed', submitted: true, transportSettled: true });
   for (const key of ['exactPrompt', 'mainCheckoutClean', 'worktreeClean', 'processStopped']) assert.equal(report[key], true, key);
   const records = (await readFile(capture, 'utf8')).trim().split('\n').map(JSON.parse);
   assert.deepEqual(records.filter(row => row.kind === 'navigation').map(row => row.selected), ['yes']);

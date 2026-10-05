@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Cache saved GitHub preview pages across restarts and add explicit incremental Sync changes with freshness, bounded reads and retained failure snapshots. Preserve local edits, duplicate identities, exact Composer/split To Do inputs, Base and CLI tool inheritance. Imports still verify GitHub; sync starts no agents or task updates.
+
 - Add a keyboard GitHub Issues import picker with saved repositories, page filters, retained hidden selections, explicit short titles and original issue links. Keep imports inert, preserve Composer tasks and captured project ownership, and require explicit review after stale or unknown write results. Older servers hide the controls; persistent cache, incremental sync, attachments and other tracker adapters remain pending.
 
 - Add revision-checked saved GitHub repository sources and atomic selected-issue backlog imports. Preserve exact descriptions, shared labels, assignees and original ticket provenance; retain duplicate identities across promotion, archive, deletion and reconnection. State 12 and portable 10 retain this inert metadata; completed migrations validate current provenance invariants before publishing, preserving originals on failure. Import UI, persistent cache and attachments follow separately.
