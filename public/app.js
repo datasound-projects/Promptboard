@@ -1403,6 +1403,42 @@ function changePriorityFilter(select) {
   projectPriorityFilters.set(project.id, select.value); savePref(`promptboard.priority-filter.${project.id}`, select.value); renderBoard();
 }
 
+const projectLabelFilters = new Map();
+function validLabelFilter(value, project) {
+  return value === 'all' || value === 'none' || typeof value === 'string' && value.startsWith('label:') && projectLabels(project).some(label => value === `label:${label.id}`);
+}
+function projectLabelFilter(project = currentProject()) {
+  if (!project || project.workflowMode !== 'pipeline' || !taskLabelsSupported) return 'all';
+  if (!projectLabelFilters.has(project.id)) {
+    let value = 'all'; try { value = localStorage.getItem(`promptboard.label-filter.${project.id}`) || 'all'; } catch {}
+    projectLabelFilters.set(project.id, value);
+  }
+  const value = projectLabelFilters.get(project.id);
+  if (validLabelFilter(value, project)) return value;
+  // Deleted definitions and malformed preferences must never hide every task.
+  projectLabelFilters.set(project.id, 'all'); savePref(`promptboard.label-filter.${project.id}`, 'all'); return 'all';
+}
+function matchesLabel(task, filter) {
+  if (filter === 'all') return true;
+  const ids = Array.isArray(task.labelIds) ? task.labelIds : [];
+  return filter === 'none' ? ids.length === 0 : ids.includes(filter.slice(6));
+}
+function matchesTaskFilters(task, project = currentProject()) {
+  return matchesPriority(task, projectPriorityFilter(project)) && matchesLabel(task, projectLabelFilter(project));
+}
+function renderLabelFilter(select, project, value) {
+  const entries = [['all', 'All labels'], ['none', 'Unlabeled'], ...projectLabels(project).map(label => [`label:${label.id}`, label.name])];
+  // Retain native select focus and typeahead across unrelated board refreshes.
+  const signature = JSON.stringify(entries);
+  if (select.dataset.catalog !== signature) { select.replaceChildren(...entries.map(([id, name]) => option(id, name))); select.dataset.catalog = signature; }
+  select.value = value;
+}
+function changeLabelFilter(select) {
+  const project = currentProject();
+  if (!project || project.workflowMode !== 'pipeline' || !taskLabelsSupported || !validLabelFilter(select.value, project)) return;
+  projectLabelFilters.set(project.id, select.value); savePref(`promptboard.label-filter.${project.id}`, select.value); renderBoard();
+}
+
 function renderBoard() {
   fitBoardHeight();
   refreshTaskDetailLabels();
@@ -1418,11 +1454,15 @@ function renderBoard() {
   $('#project-select').disabled = !project;
   $('#project-new').disabled = !board;
   for (const id of ['#project-rename', '#project-delete', '#card-new', '#agents-open']) $(id).disabled = !project;
-  const priority = timelineView ? 'all' : projectPriorityFilter(project), visibleTasks = tasks.filter(task => matchesPriority(task, priority));
-  $('#board-count').textContent = priority === 'all' ? String(tasks.length).padStart(2, '0') : `${visibleTasks.length}/${tasks.length}`;
-  $('#board-count').setAttribute('aria-label', priority === 'all' ? 'Cards' : `${visibleTasks.length} of ${tasks.length} cards shown`);
+  const priority = timelineView ? 'all' : projectPriorityFilter(project), label = timelineView ? 'all' : projectLabelFilter(project);
+  const filtered = priority !== 'all' || label !== 'all', visibleTasks = tasks.filter(task => matchesPriority(task, priority) && matchesLabel(task, label));
+  $('#board-count').textContent = !filtered ? String(tasks.length).padStart(2, '0') : `${visibleTasks.length}/${tasks.length}`;
+  $('#board-count').setAttribute('aria-label', !filtered ? 'Cards' : `${visibleTasks.length} of ${tasks.length} cards shown`);
   $('#board-priority-filter').value = priority;
-  $('#board-priority-filter-summary').textContent = priority === 'all' ? 'All tasks shown.' : visibleTasks.length ? `${visibleTasks.length} of ${tasks.length} tasks shown.` : 'No tasks match this priority.';
+  const summary = !filtered ? 'All tasks shown.' : visibleTasks.length ? `${visibleTasks.length} of ${tasks.length} tasks shown.` : label === 'all' ? 'No tasks match this priority.' : 'No tasks match these filters.';
+  $('#board-priority-filter-summary').textContent = summary;
+  renderLabelFilter($('#board-label-filter'), project, label);
+  $('#board-label-filter-summary').textContent = summary;
   $('#board-empty').hidden = tasks.length > 0;
   $('#board-empty-text').textContent = !board ? 'Loading the board…' : project ? 'No tasks yet.' : 'Create a project to start planning.';
   $('#board-empty-note').textContent = project ? 'Choose New card, or add a generated prompt from the Compose page. New cards start in To Do.' : 'Each project gets its own board, from To Do to Done.';
@@ -1511,9 +1551,9 @@ function renderColumn(column, tasks) {
   heading.append(stageIcon(column.id), column.title);
   const count = document.createElement('span');
   count.className = 'kanban-count kanban-column-count';
-  const priority = projectPriorityFilter(), visible = tasks.filter(task => matchesPriority(task, priority));
-  count.textContent = priority === 'all' ? String(tasks.length) : `${visible.length}/${tasks.length}`;
-  count.setAttribute('aria-label', priority === 'all' ? `${tasks.length} ${tasks.length === 1 ? 'card' : 'cards'}` : `${visible.length} of ${tasks.length} cards shown`);
+  const filtered = projectPriorityFilter() !== 'all' || projectLabelFilter() !== 'all', visible = tasks.filter(task => matchesTaskFilters(task));
+  count.textContent = !filtered ? String(tasks.length) : `${visible.length}/${tasks.length}`;
+  count.setAttribute('aria-label', !filtered ? `${tasks.length} ${tasks.length === 1 ? 'card' : 'cards'}` : `${visible.length} of ${tasks.length} cards shown`);
   const header = document.createElement('div');
   header.className = 'kanban-column-heading';
   header.append(heading, count);
@@ -1572,8 +1612,7 @@ function renderDoneList(tasks) {
   zone.append(stageIcon('drop'), paragraph(currentProject()?.workflowMode === 'pipeline' ? 'Pauses the agent · archives the task' : 'Complete from Testing or Merge · no merge'));
   if (!tasks.length) return [zone];
   const finished = task => task.archivedAt || task.completion?.at || task.updatedAt || 0;
-  const priority = projectPriorityFilter();
-  const recent = tasks.filter(task => matchesPriority(task, priority)).sort((a, b) => finished(b) - finished(a));
+  const recent = tasks.filter(task => matchesTaskFilters(task)).sort((a, b) => finished(b) - finished(a));
   const viewAll = () => openDoneDialog(recent);
   const head = document.createElement('li');
   head.className = 'kanban-done-head';
@@ -1622,14 +1661,16 @@ function refreshPipelineArchive(opening = false) {
   const filter = $('#archive-filter').value.trim().toLocaleLowerCase(), sort = $('#archive-sort').value;
   const priority = projectPriorityFilter(project);
   $('#archive-priority-field').hidden = !taskPrioritySupported; $('#archive-priority-filter').value = priority;
+  const label = projectLabelFilter(project);
+  $('#archive-label-field').hidden = !taskLabelsSupported; renderLabelFilter($('#archive-label-filter'), project, label);
   const observed = tasks.map(task => [task.id, task.number, task.revision, task.title, task.archivedAt, task.updatedAt, latestRun(task.id)?.usage, task.sessionId, (board.sessions || []).find(session => session.id === task.sessionId)]);
   const busy = archiveBulkJob?.running === true;
-  const signature = JSON.stringify([project.revision, project.labelRevision, observed, filter, sort, priority, [...archiveSelected], busy, archiveBulkJob?.stop, archiveBulkJob?.items]);
+  const signature = JSON.stringify([project.revision, project.labelRevision, observed, filter, sort, priority, label, [...archiveSelected], busy, archiveBulkJob?.stop, archiveBulkJob?.items]);
   if (signature === archiveSignature) return;
   archiveSignature = signature;
   const focus = document.activeElement?.closest('[data-archive-task]'), action = document.activeElement?.dataset.archiveAction;
   const when = task => task.archivedAt || task.completion?.at || task.updatedAt || 0;
-  const rows = tasks.filter(task => matchesPriority(task, priority) && (/^#\d+$/.test(filter) ? taskNumberText(task) === filter : task.title.toLocaleLowerCase().includes(filter))).sort((a, b) => {
+  const rows = tasks.filter(task => matchesTaskFilters(task, project) && (/^#\d+$/.test(filter) ? taskNumberText(task) === filter : task.title.toLocaleLowerCase().includes(filter))).sort((a, b) => {
     const order = ['title', 'title-desc'].includes(sort) ? a.title.localeCompare(b.title) * (sort === 'title-desc' ? -1 : 1) : (sort === 'oldest' ? when(a) - when(b) : when(b) - when(a));
     return order || a.id.localeCompare(b.id);
   }).map(task => {
@@ -2042,7 +2083,7 @@ async function moveWithin(id, step) {
   const card = findTask(id);
   if (!card) return;
   const column = currentProject().tasks.filter(task => task.column === card.column);
-  const priority = projectPriorityFilter(), visible = column.filter(task => matchesPriority(task, priority));
+  const visible = column.filter(task => matchesTaskFilters(task));
   const neighbor = visible[visible.indexOf(card) + step];
   if (!neighbor || !await placeCard(id, card.column, column.indexOf(neighbor))) return;
   // Keep keyboard focus on the moved card. At either end, use the button that still works.
@@ -3915,6 +3956,8 @@ $('#card-dialog-close').addEventListener('click', () => $('#card-dialog').close(
 $('#done-dialog-close').addEventListener('click', () => $('#done-dialog').close());
 $('#board-priority-filter').addEventListener('change', event => changePriorityFilter(event.currentTarget));
 $('#archive-priority-filter').addEventListener('change', event => changePriorityFilter(event.currentTarget));
+$('#board-label-filter').addEventListener('change', event => changeLabelFilter(event.currentTarget));
+$('#archive-label-filter').addEventListener('change', event => changeLabelFilter(event.currentTarget));
 $('#archive-filter').addEventListener('input', () => refreshPipelineArchive());
 $('#archive-sort').addEventListener('change', () => refreshPipelineArchive());
 $('#archive-sort-title').addEventListener('click', () => { $('#archive-sort').value = $('#archive-sort').value === 'title' ? 'title-desc' : 'title'; refreshPipelineArchive(); });
