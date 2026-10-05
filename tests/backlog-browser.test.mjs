@@ -72,8 +72,12 @@ for (const width of [1280, 390]) for (const theme of ['light', 'dark']) {
     await browser.eval('document.getElementById("backlog-title").focus();'); await browser.type('Title only'); await enter(browser, '#backlog-form [type=submit]');
     await browser.until('!document.getElementById("backlog-dialog").open', 'title-only draft saved');
     owner = (await app.board.state()).projects[0]; const titleOnly = owner.backlog.find(item => item.title === 'Title only'); assert.ok(titleOnly); assert.equal(titleOnly.prompt, ''); assert.equal(owner.nextTaskNumber, 3);
+    await browser.until(`board?.projects.find(p=>p.id===${JSON.stringify(project.id)})?.backlogRevision===${owner.backlogRevision} && !document.getElementById('backlog-new').disabled`, 'published new draft visible before deletion');
     await select(browser, 'board-label-filter', 'all'); await enter(browser, row(titleOnly.id, 'delete')); await enter(browser, row(titleOnly.id, 'keep')); assert.ok((await app.board.state()).projects[0].backlog.some(item => item.id === titleOnly.id));
-    await enter(browser, row(titleOnly.id, 'delete')); await enter(browser, row(titleOnly.id, 'confirm-delete')); await browser.until(`!document.querySelector('[data-backlog-id="${titleOnly.id}"]') && !document.getElementById('backlog-new').disabled`, 'explicit draft deletion');
+    await enter(browser, row(titleOnly.id, 'delete')); await enter(browser, row(titleOnly.id, 'confirm-delete')); await browser.until(`!document.querySelector('[data-backlog-id="${titleOnly.id}"]') && !document.getElementById('backlog-new').disabled`, 'explicit draft deletion').catch(async error => {
+      const observed = await browser.eval('return { error:document.getElementById("backlog-error").textContent, hidden:document.getElementById("backlog-error").hidden, writes:window.__writes.slice(-3), revision:board?.revision, backlogRevision:board?.projects.find(p=>p.id===document.getElementById("project-select").value)?.backlogRevision };');
+      throw new Error(`${error.message}; deletion diagnostics ${JSON.stringify(observed)}; saved backlog revision ${(await app.board.state()).projects[0].backlogRevision}`);
+    });
     const state = await app.board.state(); assert.deepEqual(state.runs, []); assert.deepEqual(state.sessions, []); assert.equal(state.projects[0].revision, baseline.projects[0].revision);
     assert.deepEqual(browser.consoleMessages.filter(line => line.startsWith('EXCEPTION')), []);
   });
