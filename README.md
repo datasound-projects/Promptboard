@@ -1,6 +1,5 @@
 
 <h1 align="center">Promptboard</h1>
-
 <p align="center">
   <img src="docs/readme-logo.png" width="960" alt="Promptboard mascot">
 </p>
