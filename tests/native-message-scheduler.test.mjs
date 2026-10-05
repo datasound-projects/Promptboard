@@ -163,10 +163,15 @@ test('preparation deadlines bound hanging state reads and cannot resume after a 
   assert.equal(await w.receipt(), undefined);
 });
 
-test('lost scheduling acknowledgement keeps queued intent blocked without cancellation, input or late revival', async t => {
-  const w = await fixture(t), original = w.journal.scheduleMessage.bind(w.journal), held = Promise.withResolvers();
-  w.journal.scheduleMessage = async (...args) => { const saved = await original(...args); await held.promise; return saved; };
-  assert.deepEqual(await w.scheduler.schedule(w.request(), { timeoutMs: 100 }), { scheduled: false });
+test('lost scheduling acknowledgement keeps queued intent blocked without cancellation, input or late revival', { timeout: 10000 }, async t => {
+  const w = await fixture(t), original = w.journal.scheduleMessage.bind(w.journal), held = Promise.withResolvers(), published = Promise.withResolvers();
+  // Lose the acknowledgement after the actual durable write. A short wall-clock
+  // timer could instead race slow disk publication and exercise a different phase.
+  w.journal.scheduleMessage = async (...args) => { const saved = await original(...args); published.resolve(saved); await held.promise; return saved; };
+  const loss = new AbortController(), handoff = w.scheduler.schedule(w.request(), { signal: loss.signal });
+  const saved = await published.promise; assert.equal(saved.accepted, true); assert.equal(saved.delivery.status, 'queued');
+  loss.abort(new DOMException('Scheduling acknowledgement lost after publication.', 'TimeoutError'));
+  assert.deepEqual(await handoff, { scheduled: false });
   assert.equal((await w.scheduler.wait(w.key, w.request().actionId)).blocked, true);
   assert.equal((await w.receipt()).status, 'queued'); assert.deepEqual(w.writes, []);
   held.resolve(); await new Promise(resolve => setImmediate(resolve)); assert.deepEqual(w.writes, []);
