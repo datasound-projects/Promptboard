@@ -6,6 +6,17 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const outcome = (status, reason) => ({ status, confirmed: status === 'confirmed', ...(reason ? { reason } : {}) });
 const attempts = new WeakMap();
 
+/** Private observation only; the transport still rechecks before every input grant. */
+export function nativeMessageInputReadiness(session, owns) {
+  try {
+    const terminal = session?.terminalInput?.snapshot(), activity = session?.activity?.snapshot();
+    if (!owns() || session.initialInputUncertain || session.messageInputUncertain || terminal?.closed
+      || terminal?.manualInputObserved || activity?.uncertain || activity?.phase === 'ended') return 'unavailable';
+    return session.nativeSessionId && !session.eventsPending && !session.paste && !session.initialSubmitPending && !session.messageInputPending
+      && terminal?.bracketedPaste === true && !terminal.controlPending && activity && !activity.permissionPending && activity.ready ? 'ready' : 'waiting';
+  } catch { return 'unavailable'; }
+}
+
 // Keep UTF-8 code points and each bracketed-paste delimiter in one write.
 function chunks(text) {
   const result = []; let value = '', bytes = 0;
@@ -45,13 +56,7 @@ export async function sendOwnedNativeMessage({ session, run, owns, readEvents, g
     try { return Boolean(owns() && session.proc === proc && session.nativeSessionId === nativeId && session.inputEpoch === expectedEpoch); }
     catch { return false; }
   };
-  const inputReady = () => {
-    const terminal = session.terminalInput?.snapshot(), activity = session.activity?.snapshot();
-    return owner() && nativeId && !session.eventsPending && !session.paste && !session.initialSubmitPending && !session.initialInputUncertain
-      && terminal?.bracketedPaste === true && !terminal.controlPending && !terminal.closed
-      && !terminal.manualInputObserved && activity && !activity.permissionPending && !activity.uncertain
-      && activity.phase !== 'ended' && activity.ready;
-  };
+  const inputReady = () => nativeMessageInputReadiness(session, owner) === 'ready';
   const abort = () => signal?.aborted ? signal.reason?.name === 'TimeoutError'
     ? outcome(touched ? 'unconfirmed' : 'timed_out', 'Native message delivery was not confirmed within its budget.')
     : outcome('cancelled', 'Native message input was cancelled.')

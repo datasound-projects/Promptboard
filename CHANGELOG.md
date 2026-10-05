@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Keep deferred column messages queued while their owned agent waits for a slot or finishes its current work. Give the later native attempt a fresh bounded budget; preserve FIFO, Stop, target rechecks, human-input guards and no replay after uncertain outcomes.
+
 - Share keyboard priority filters between pipeline boards and completed tasks, with per-project browser preferences and visible/total counts. Keep saved task metadata, order and agent execution inert; translate explicit filtered keyboard moves and card drops to complete-column positions so hidden cards remain intact.
 
 - Queued Usage dialog close events preserve focus on subsequent project actions and reopened dialogs while normal closing still returns to Usage.

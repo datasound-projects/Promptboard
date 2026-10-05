@@ -36,12 +36,13 @@ async function fixture(t, { queued = false, count = 1, start = true } = {}) {
     return { status: 'confirmed', confirmed: true };
   };
   const deliver = handler;
-  const scheduler = new NativeMessageScheduler({ board, journal, supervisor: { sendNativeMessage: (...args) => handler(...args) } });
+  const supervisor = { sendNativeMessage: (...args) => handler(...args) };
+  const scheduler = new NativeMessageScheduler({ board, journal, supervisor });
   t.after(() => scheduler.shutdown());
   if (start) await journal.startAction(key, move.actions[0].id);
   const request = (index = 0) => ({ key, actionId: move.actions[index].id, runId: 'run', mode: 'deferred', message: `Review ${index} Literal 雪`,
     expectedTaskRevision: 2, expectedProjectRevision: 4 });
-  return { journal, scheduler, state, task, project, run, key, rows, move, writes, board, request, deliver,
+  return { journal, scheduler, state, task, project, run, key, rows, move, writes, board, supervisor, request, deliver,
     handler: fn => { handler = fn; }, activate: () => { run.status = state.sessions[0].status = 'running'; },
     receipt: async (index = 0) => (await journal.read(key)).actions[index].delivery };
 }
@@ -243,4 +244,83 @@ test('lost queued-outcome acknowledgement blocks later scheduling instead of rel
   await w.journal.startAction(w.key, w.move.actions[1].id);
   assert.deepEqual(await w.scheduler.schedule(w.request(1)), { scheduled: false });
   assert.deepEqual(w.writes, []); assert.equal((await w.receipt()).status, 'queued');
+});
+
+
+test('long queued startup and busy readiness waits preserve the later native delivery budget', { timeout: 10000 }, async t => {
+  const w = await fixture(t, { queued: true }); let ready = false, readinessReads = 0, deliveredBudget = 0;
+  w.supervisor.nativeMessageReadiness = async () => { readinessReads++; return ready ? 'ready' : 'waiting'; };
+  w.handler(async (runId, request) => { deliveredBudget = request.timeoutMs; return w.deliver(runId, request); });
+  assert.equal((await w.scheduler.schedule(w.request(), { timeoutMs: 300, waitForReadiness: true })).scheduled, true);
+  await new Promise(resolve => setTimeout(resolve, 500));
+  assert.equal((await w.receipt()).status, 'queued'); assert.deepEqual(w.writes, []); assert.equal(readinessReads, 0);
+  w.activate(); await new Promise(resolve => setTimeout(resolve, 500));
+  assert.ok(readinessReads > 0); assert.equal((await w.receipt()).status, 'queued'); assert.deepEqual(w.writes, []);
+  ready = true;
+  assert.equal((await w.scheduler.wait(w.key, w.request().actionId)).confirmed, true);
+  assert.ok(deliveredBudget > 200 && deliveredBudget <= 300, 'Native delivery receives a fresh bounded attempt.');
+  assert.deepEqual(w.writes, [w.request().message]);
+});
+
+test('Stop cancels a readiness wait without a native grant, input or replacement process', async t => {
+  const w = await fixture(t); let reads = 0;
+  w.supervisor.nativeMessageReadiness = async () => { reads++; return 'waiting'; };
+  assert.equal((await w.scheduler.schedule(w.request(), { waitForReadiness: true })).scheduled, true);
+  while (!reads) await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(w.scheduler.cancel(w.key, w.request().actionId), true);
+  assert.equal((await w.scheduler.wait(w.key, w.request().actionId)).status, 'cancelled');
+  assert.equal((await w.receipt()).status, 'cancelled'); assert.deepEqual(w.writes, []); assert.equal(w.run.status, 'running');
+});
+
+test('a hanging readiness read is bounded and a late ready result cannot revive input', async t => {
+  const w = await fixture(t), held = Promise.withResolvers(); let reads = 0;
+  w.supervisor.nativeMessageReadiness = () => { reads++; return held.promise; };
+  assert.equal((await w.scheduler.schedule(w.request(), { timeoutMs: 150, waitForReadiness: true })).scheduled, true);
+  assert.equal((await w.scheduler.wait(w.key, w.request().actionId)).status, 'timed_out');
+  assert.equal(reads, 1); assert.equal((await w.receipt()).status, 'timed_out'); assert.deepEqual(w.writes, []);
+  held.resolve('ready'); await new Promise(resolve => setImmediate(resolve)); assert.deepEqual(w.writes, []);
+});
+
+test('unavailable or malformed native readiness ends the queued intent without terminal input', async t => {
+  for (const result of ['unavailable', 'unknown', { status: 'ready' }]) {
+    const w = await fixture(t); w.supervisor.nativeMessageReadiness = async () => result;
+    assert.equal((await w.scheduler.schedule(w.request(), { waitForReadiness: true })).scheduled, true);
+    assert.equal((await w.scheduler.wait(w.key, w.request().actionId)).confirmed, false);
+    assert.equal((await w.receipt()).status, 'unconfirmed'); assert.deepEqual(w.writes, []);
+  }
+});
+
+test('FIFO readiness waits outlive the input budget and cancelling a later message preserves the earlier owner', async t => {
+  const w = await fixture(t, { count: 2 }); let ready = false;
+  w.supervisor.nativeMessageReadiness = async () => ready ? 'ready' : 'waiting';
+  assert.equal((await w.scheduler.schedule(w.request(0), { timeoutMs: 300, waitForReadiness: true })).scheduled, true);
+  await w.journal.startAction(w.key, w.move.actions[1].id);
+  assert.equal((await w.scheduler.schedule(w.request(1), { timeoutMs: 300, waitForReadiness: true })).scheduled, true);
+  await new Promise(resolve => setTimeout(resolve, 500));
+  assert.equal((await w.receipt(0)).status, 'queued'); assert.equal((await w.receipt(1)).status, 'queued'); assert.deepEqual(w.writes, []);
+  assert.equal(w.scheduler.cancel(w.key, w.move.actions[1].id), true);
+  assert.equal((await w.scheduler.wait(w.key, w.move.actions[1].id)).status, 'cancelled');
+  assert.equal((await w.receipt(0)).status, 'queued'); ready = true;
+  assert.equal((await w.scheduler.wait(w.key, w.move.actions[0].id)).confirmed, true);
+  assert.deepEqual(w.writes, [w.request(0).message]);
+});
+
+test('a Base registry change during readiness waiting ends the captured queue without retargeting', async t => {
+  const w = await fixture(t); let reads = 0;
+  w.supervisor.nativeMessageReadiness = async () => { reads++; return 'waiting'; };
+  assert.equal((await w.scheduler.schedule(w.request(), { waitForReadiness: true })).scheduled, true);
+  while (!reads) await new Promise(resolve => setTimeout(resolve, 5));
+  w.state.base.revision++;
+  assert.equal((await w.scheduler.wait(w.key, w.request().actionId)).confirmed, false);
+  assert.equal((await w.receipt()).status, 'unconfirmed'); assert.deepEqual(w.writes, []);
+});
+
+test('state reads remain bounded after accepted readiness handoff and cannot revive a timed-out queue', async t => {
+  const w = await fixture(t), held = Promise.withResolvers();
+  w.supervisor.nativeMessageReadiness = async () => 'ready';
+  assert.equal((await w.scheduler.schedule(w.request(), { timeoutMs: 150, waitForReadiness: true })).scheduled, true);
+  w.board.state = () => held.promise;
+  assert.equal((await w.scheduler.wait(w.key, w.request().actionId)).status, 'timed_out');
+  assert.equal((await w.receipt()).status, 'timed_out'); assert.deepEqual(w.writes, []);
+  held.resolve(structuredClone(w.state)); await new Promise(resolve => setImmediate(resolve)); assert.deepEqual(w.writes, []);
 });

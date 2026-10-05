@@ -355,3 +355,41 @@ test('hooks arriving during receipt read cannot hide changed identity or a stall
     assert.equal((await w.call({ dispatchId: 'after-receipt-hook' })).status, 'unavailable');
   }
 });
+
+test('Supervisor readiness observes owned lifecycle without I/O, input, grants or session selection', async t => {
+  for (const provider of ['claude', 'codex', 'gemini']) {
+    const w = await fixture(t, provider), supervisor = new Supervisor({ dataDir: w.dir, board: {
+      run: () => assert.fail('A cached observation must not select or read another run.'),
+      updateRun: () => assert.fail('A cached observation must not publish state.') } });
+    supervisor.sessions.set(w.run.id, w.session);
+    assert.equal(supervisor.nativeMessageReadiness('different-run'), 'unavailable');
+    assert.equal(supervisor.nativeMessageReadiness(w.run.id), 'ready');
+    w.session.activity.input(); assert.equal(supervisor.nativeMessageReadiness(w.run.id), 'waiting');
+    w.session.activity.observe({ name: provider === 'claude' ? 'Stop' : provider === 'gemini' ? 'AfterAgent' : 'agent-turn-complete' }, Date.now() - 2000);
+    w.session.activity.permission = true; assert.equal(supervisor.nativeMessageReadiness(w.run.id), 'waiting'); w.session.activity.permission = false;
+    w.session.eventsPending = true; assert.equal(supervisor.nativeMessageReadiness(w.run.id), 'waiting'); w.session.eventsPending = false;
+    w.session.initialSubmitPending = true; assert.equal(supervisor.nativeMessageReadiness(w.run.id), 'waiting'); w.session.initialSubmitPending = false;
+    delete w.session.nativeSessionId; assert.equal(supervisor.nativeMessageReadiness(w.run.id), 'waiting'); w.session.nativeSessionId = nativeId;
+    assert.equal(supervisor.nativeMessageReadiness(w.run.id), 'ready');
+    assert.equal(w.session.inputEpoch, 0); assert.deepEqual(w.writes, []); assert.deepEqual(w.stages, []);
+  }
+});
+
+test('readiness cannot waive human draft, uncertain input, termination or process ownership guards', async t => {
+  for (const change of [
+    w => w.session.terminalInput.manualInput('Human draft'),
+    w => w.session.terminalInput.close(),
+    w => { w.session.initialInputUncertain = true; },
+    w => { w.session.messageInputUncertain = true; },
+    w => { w.session.activity.uncertain = true; },
+    w => { w.session.activity.ended = true; },
+    w => { w.session.cancelled = true; },
+    w => { w.session.proc = null; },
+    w => { w.supervisor.stopping = true; },
+  ]) {
+    const w = await fixture(t); w.supervisor = new Supervisor({ dataDir: w.dir, board: {} });
+    w.supervisor.sessions.set(w.run.id, w.session); change(w);
+    assert.equal(w.supervisor.nativeMessageReadiness(w.run.id), 'unavailable');
+    assert.equal(w.session.inputEpoch, 0); assert.deepEqual(w.writes, []); assert.deepEqual(w.stages, []);
+  }
+});

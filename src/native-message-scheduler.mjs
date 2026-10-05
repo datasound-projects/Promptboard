@@ -13,32 +13,36 @@ const outcome = (status, blocked = false) => ({ status, confirmed: false, reason
 export class NativeMessageScheduler {
   constructor({ board, journal, supervisor }) {
     if (typeof board?.state !== 'function' || !journal) throw new TypeError('Use an owned Board and message journal.');
-    this.board = board; this.journal = journal; this.dispatch = new NativeMessageDispatch({ journal, supervisor });
+    this.board = board; this.journal = journal; this.supervisor = supervisor; this.dispatch = new NativeMessageDispatch({ journal, supervisor });
     this.jobs = new Map(); this.completed = new Map(); this.tails = new Map(); this.blockedRuns = new Set(); this.stopping = false;
   }
 
-  schedule({ key, actionId, runId, message, mode, expectedTaskRevision, expectedProjectRevision }, { signal = null, timeoutMs = 150000 } = {}) {
+  schedule({ key, actionId, runId, message, mode, expectedTaskRevision, expectedProjectRevision },
+    { signal = null, timeoutMs = 150000, waitForReadiness = typeof this.supervisor?.nativeMessageReadiness === 'function' } = {}) {
     if (this.stopping || !key || !['projectId', 'taskId', 'transitionId'].every(field => id(key[field])) || !id(actionId) || !id(runId)
       || mode !== 'deferred' || typeof message !== 'string' || !message.isWellFormed() || !message.trim() || Buffer.byteLength(message) > 65536
       || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/.test(message) || message.trimStart().startsWith('/')
       || ![expectedTaskRevision, expectedProjectRevision].every(value => Number.isSafeInteger(value) && value > 0)
-      || !Number.isFinite(timeoutMs) || timeoutMs < 1 || timeoutMs > 150000) return Promise.resolve({ scheduled: false });
+      || !Number.isFinite(timeoutMs) || timeoutMs < 1 || timeoutMs > 150000 || typeof waitForReadiness !== 'boolean'
+      || waitForReadiness && typeof this.supervisor?.nativeMessageReadiness !== 'function') return Promise.resolve({ scheduled: false });
     key = Object.fromEntries(['projectId', 'taskId', 'transitionId'].map(field => [field, key[field]]));
     const identity = ownerId(key, actionId), existing = this.jobs.get(identity) || this.completed.get(identity);
     if (existing) return existing.runId === runId && existing.messageHash === hash(message)
-      && existing.expectedTaskRevision === expectedTaskRevision && existing.expectedProjectRevision === expectedProjectRevision
+      && existing.expectedTaskRevision === expectedTaskRevision && existing.expectedProjectRevision === expectedProjectRevision && existing.waitForReadiness === waitForReadiness
       ? existing.handoff : Promise.resolve({ scheduled: false });
     if (this.jobs.size >= 1000 || this.blockedRuns.has(runId)) return Promise.resolve({ scheduled: false });
     const controller = new AbortController(), deadline = new AbortController(), started = performance.now();
     const combined = AbortSignal.any([controller.signal, deadline.signal, ...(signal ? [signal] : [])]);
-    const timer = setTimeout(() => deadline.abort(new DOMException('Scheduler budget expired.', 'TimeoutError')), Math.ceil(timeoutMs));
+    let timer = setTimeout(() => deadline.abort(new DOMException('Scheduler budget expired.', 'TimeoutError')), Math.ceil(timeoutMs)), phaseStarted = started;
     const job = { key, actionId, runId, messageHash: hash(message), expectedTaskRevision, expectedProjectRevision,
-      controller, knownQueue: false, saveAttempted: false, blocked: false, finished: false };
+      controller, waitForReadiness, knownQueue: false, saveAttempted: false, blocked: false, finished: false };
     this.jobs.set(identity, job);
-    const remaining = () => timeoutMs - (performance.now() - started);
-    const bounded = callback => new Promise((resolve, reject) => {
-      const finish = (fn, value) => { combined.removeEventListener('abort', abort); fn(value); };
+    const remaining = () => timeoutMs - (performance.now() - phaseStarted);
+    const bounded = (callback, readBudget = null) => new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (fn, value) => { if (settled) return; settled = true; clearTimeout(readTimer); combined.removeEventListener('abort', abort); fn(value); };
       const abort = () => finish(reject, new Error('Scheduled input stopped.'));
+      const readTimer = readBudget === null ? null : setTimeout(() => deadline.abort(new DOMException('Readiness observation budget expired.', 'TimeoutError')), Math.ceil(readBudget));
       combined.addEventListener('abort', abort, { once: true });
       Promise.resolve().then(() => { combined.throwIfAborted(); return callback(); }).then(value => finish(resolve, value), error => finish(reject, error));
       if (combined.aborted) abort();
@@ -85,6 +89,7 @@ export class NativeMessageScheduler {
         if (recorded?.ownerPid !== process.pid || receipt?.status !== 'scheduled' || receipt.delivery?.status !== 'queued'
           || !same(receipt.delivery, job.scope) || !preparingMatches(await bounded(() => this.board.state()))) return { scheduled: false };
         combined.throwIfAborted();
+        if (waitForReadiness) { clearTimeout(timer); timer = null; }
         return { scheduled: true, provider: target.provider, sessionId: target.sessionId, runId };
       } catch { return { scheduled: false }; }
     })();
@@ -96,12 +101,21 @@ export class NativeMessageScheduler {
         await bounded(() => previous);
         if (this.blockedRuns.has(runId)) return await finishQueue();
         for (;;) {
-          const state = await bounded(() => this.board.state());
+          const state = await bounded(() => this.board.state(), waitForReadiness ? timeoutMs : null);
           if (!job.target.matches(state)) return await finishQueue();
-          if (state.runs.find(row => row.id === runId).status !== 'queued') break;
+          if (state.runs.find(row => row.id === runId).status !== 'queued') {
+            if (!waitForReadiness) break;
+            const ready = await bounded(() => this.supervisor.nativeMessageReadiness(runId), timeoutMs);
+            if (ready === 'ready') break;
+            if (ready !== 'waiting') return await finishQueue();
+          }
           await delay(50, undefined, { signal: combined });
         }
         combined.throwIfAborted();
+        if (waitForReadiness) {
+          phaseStarted = performance.now();
+          timer = setTimeout(() => deadline.abort(new DOMException('Native delivery budget expired.', 'TimeoutError')), Math.ceil(timeoutMs));
+        }
         const result = await this.dispatch.deliver({ key, actionId, message, scope: job.scope },
           { signal: combined, timeoutMs: Math.max(1, remaining()), preflight: async () => job.target.matches(await bounded(() => this.board.state())) });
         job.blocked = result.blocked === true;
