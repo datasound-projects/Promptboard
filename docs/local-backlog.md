@@ -1,6 +1,12 @@
-# Local backlog storage
+# Local backlog
 
-This foundation implements inert local storage for the staging area described in Kangentic's [Backlog and imports](https://www.kangentic.com/guide/backlog/). The app's Backlog view, bulk operations, active-column promotion, attachments and tracker imports remain pending.
+The Backlog view stages local drafts separately from the pipeline board, following Kangentic's [Backlog and imports](https://www.kangentic.com/guide/backlog/). Bulk operations, active-column promotion, attachments and tracker imports remain pending.
+
+Choose **Backlog** in a pipeline project and **New draft** to save a title with optional prompt, priority and shared labels. Open a draft title to edit it. Saving and **Add to To Do** never start an agent. Composer and split tasks continue adding directly to To Do. Servers without the Backlog capability and legacy projects retain the Board view.
+
+Priority and label filters are shared with Board and completed tasks, using the existing per-project browser preferences. Board and Backlog share a search query per project for the current page; it searches title, exact prompt and assigned label names, ignoring case. Timeline stays unfiltered. Completed tasks have their own title/prompt/label search and exact #number lookup. Filtering and sorting write no saved data.
+
+Manual order supports drag-before and keyboard Move up/down, including filtered lists; each write includes the complete saved list so hidden drafts remain intact. Newest, highest-priority and title sorting disable manual movement. Add to To Do retains the draft ID and metadata. Delete requires an inline confirmation. Stale draft or catalog edits retain the typed content; Reload draft explicitly replaces it with current saved content. An item removed or promoted elsewhere cannot be recreated by saving its old editor.
 
 Pipeline projects own an ordered `backlog` list and independent `backlogRevision`. Each draft has a stable ID, title, optional exact prompt, default priority, shared project label IDs, generation source/check status, timestamps and item revision. Backlog items own no board number, column, workspace, session or execution configuration. Creating/editing/reordering/deleting drafts never invokes a provider or cancels pending board messages. Project and Base configuration revisions stay unchanged.
 
@@ -12,4 +18,4 @@ Shared label rename/recolor updates definitions without rewriting drafts. Remova
 
 State version 11 adds empty backlog metadata while preserving existing labels, task text, Base, native sessions and extensions, with an exact original migration backup. Future versions are refused unchanged. Portable version 9 retains backlog items and their exact metadata; older versions import an empty backlog. Malformed backlog records, injected execution fields, duplicate IDs and unknown label references reject the entire import. Portable import never runs agents or imports native session grants. Browser migration refuses a backup containing backlog data rather than silently discarding it; use portable import for that data.
 
-Checks cover exact text, independent metadata, stale edits, label updates, full-list order, same-ID concurrent promotion, publication failure, capacity/revision limits, inert portable import, migration backups and authenticated project-scoped HTTP. They do not certify the pending backlog UI or active-column/import integrations.
+Checks cover exact text, independent metadata, stale edits, label updates, full-list order, same-ID concurrent promotion, publication failure, capacity/revision limits, inert portable import, migration backups and authenticated project-scoped HTTP. Browser checks cover both themes at actual desktop/phone widths, native keyboard authoring, shared search/filters, complete hidden-item order, stale/deleted drafts, captured project identity, inert views and exact promotion. Active-column/import integrations remain separate work.
