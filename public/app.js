@@ -24,6 +24,7 @@ let pipelineTitleOnlySupported = false;
 let pipelineBulkRestoreSupported = false;
 let pipelineDeferredMessagesSupported = false;
 let taskPrioritySupported = false;
+let taskLabelsSupported = false;
 let providers = [];
 let history = readHistory();
 let currentId = null;
@@ -293,6 +294,7 @@ async function loadProviders() {
     pipelineBulkRestoreSupported = session.capabilities?.pipelineBulkRestore === true;
     pipelineDeferredMessagesSupported = session.capabilities?.pipelineDeferredMessages === true;
     taskPrioritySupported = session.capabilities?.taskPriority === true;
+    taskLabelsSupported = session.capabilities?.taskLabels === true;
     providers = Array.isArray(status.providers) ? status.providers.filter((item) => item && KNOWN_PROVIDERS.includes(item.id)) : [];
     if (!token) throw new Error('The local server did not return a session token.');
     browserNotifications?.resume();
@@ -315,6 +317,7 @@ async function loadProviders() {
     pipelineBulkRestoreSupported = false;
     pipelineDeferredMessagesSupported = false;
     taskPrioritySupported = false;
+    taskLabelsSupported = false;
     browserNotifications?.stop();
     $('#cli-status-label').textContent = 'Server unavailable';
     $('#provider-note').textContent = 'Could not reach the local server. Restart the app, then reload this page.';
@@ -1402,11 +1405,13 @@ function changePriorityFilter(select) {
 
 function renderBoard() {
   fitBoardHeight();
+  refreshTaskDetailLabels();
   renderProjectContext(currentProject());
   refreshPipelineArchive();
   const project = currentProject();
   const tasks = project?.tasks || [];
   const timelineView = Boolean(project) && projectView() === 'timeline';
+  $('#board-labels-toolbar').hidden = !taskLabelsSupported || project?.workflowMode !== 'pipeline' || timelineView;
   $('#project-select').replaceChildren(...(board?.projects || []).map(item => option(item.id, item.name)));
   if (!project) $('#project-select').append(option('', board ? 'No projects yet' : 'Loading…'));
   $('#project-select').value = project?.id || '';
@@ -1619,7 +1624,7 @@ function refreshPipelineArchive(opening = false) {
   $('#archive-priority-field').hidden = !taskPrioritySupported; $('#archive-priority-filter').value = priority;
   const observed = tasks.map(task => [task.id, task.number, task.revision, task.title, task.archivedAt, task.updatedAt, latestRun(task.id)?.usage, task.sessionId, (board.sessions || []).find(session => session.id === task.sessionId)]);
   const busy = archiveBulkJob?.running === true;
-  const signature = JSON.stringify([project.revision, observed, filter, sort, priority, [...archiveSelected], busy, archiveBulkJob?.stop, archiveBulkJob?.items]);
+  const signature = JSON.stringify([project.revision, project.labelRevision, observed, filter, sort, priority, [...archiveSelected], busy, archiveBulkJob?.stop, archiveBulkJob?.items]);
   if (signature === archiveSignature) return;
   archiveSignature = signature;
   const focus = document.activeElement?.closest('[data-archive-task]'), action = document.activeElement?.dataset.archiveAction;
@@ -1641,7 +1646,7 @@ function refreshPipelineArchive(opening = false) {
       const selected = document.createElement('input'); selected.type = 'checkbox'; selected.checked = archiveSelected.has(task.id); selected.disabled = busy; selected.dataset.archiveAction = 'select'; selected.setAttribute('aria-label', `Select: ${task.title}`);
       selected.addEventListener('change', () => { selected.checked ? archiveSelected.add(task.id) : archiveSelected.delete(task.id); refreshPipelineArchive(); }); heading.append(selected);
     }
-    appendTaskNumber(heading, task); heading.append(open); appendTaskPriority(heading, task);
+    appendTaskNumber(heading, task); heading.append(open); appendTaskPriority(heading, task); appendTaskLabels(heading, task, project);
     const actions = document.createElement('div'); actions.className = 'archive-actions'; actions.append(details, restore); name.append(heading, actions);
     const date = when(task); archived.textContent = date ? new Date(date).toLocaleString() : 'Unavailable';
     const conversation = (board.sessions || []).find(session => session.id === task.sessionId && session.taskId === task.id && session.projectId === project.id);
@@ -1715,6 +1720,31 @@ function appendTaskPriority(parent, card) {
   const badge = document.createElement('span'); badge.className = `task-priority priority-${card.priority}`;
   badge.textContent = label; badge.setAttribute('aria-label', `Priority: ${label}`); parent.append(badge);
 }
+function projectLabels(project) {
+  return Array.isArray(project?.labels) ? project.labels.filter(row => row && typeof row.id === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(row.id)
+    && typeof row.name === 'string' && row.name.trim() && row.name.length <= 60 && typeof row.color === 'string' && /^#[0-9a-f]{6}$/i.test(row.color)) : [];
+}
+function labelBadge(label) {
+  const badge = document.createElement('span'); badge.className = 'task-label'; badge.dataset.labelId = label.id;
+  badge.style.setProperty('--task-label-color', label.color);
+  const name = document.createElement('span'); name.textContent = label.name; badge.append(name);
+  badge.title = label.name; badge.setAttribute('aria-label', `Label: ${label.name}`); return badge;
+}
+function appendTaskLabels(parent, card, project = currentProject()) {
+  if (!taskLabelsSupported || project?.workflowMode !== 'pipeline' || !Array.isArray(card.labelIds)) return;
+  const labels = projectLabels(project), badges = card.labelIds.flatMap(id => { const label = labels.find(row => row.id === id); return label ? [labelBadge(label)] : []; });
+  if (!badges.length) return;
+  const group = document.createElement('div'); group.className = 'task-label-badges'; group.append(...badges); parent.append(group);
+}
+function refreshTaskDetailLabels() {
+  const box = $('#task-details-labels'), dialog = $('#task-dialog');
+  if (!box || !dialog.open) return;
+  const project = board?.projects.find(row => row.tasks.some(task => task.id === dialog.dataset.taskId));
+  const card = project?.tasks.find(task => task.id === dialog.dataset.taskId), summary = box.querySelector('[data-label-summary]');
+  summary.replaceChildren(); if (card) appendTaskLabels(summary, card, project);
+  if (!summary.childElementCount) summary.append(paragraph('None', 'note'));
+  box.hidden = !card || !taskLabelsSupported || project?.workflowMode !== 'pipeline';
+}
 function renderDoneCard(card, draggable = true) {
   const item = document.createElement('li');
   item.className = 'kanban-card kanban-done-card';
@@ -1723,7 +1753,7 @@ function renderDoneCard(card, draggable = true) {
   title.className = 'kanban-done-title';
   const open = detailButton(card.title, () => { $('#done-dialog').close(); openCard(card.id); }, 'kanban-open');
   open.title = card.title;
-  title.append(open); appendTaskNumber(title, card); appendTaskPriority(title, card);
+  title.append(open); appendTaskNumber(title, card); appendTaskPriority(title, card); appendTaskLabels(title, card);
   const when = card.archivedAt || card.completion?.at || card.updatedAt;
   const time = paragraph(when ? timeAgo(when) : '', 'kanban-done-time');
   if (when) time.title = new Date(when).toLocaleString();
@@ -1839,6 +1869,7 @@ function renderCard(card, index, count) {
   appendTaskNumber(heading, card);
   heading.append(detailButton(card.title, () => openCard(card.id), 'kanban-open'));
   appendTaskPriority(heading, card);
+  appendTaskLabels(heading, card);
   const labelled = (element, label) => { element.setAttribute('aria-label', label); return element; };
   const up = labelled(detailButton('↑', () => moveWithin(card.id, -1), 'kanban-move kanban-move-up'), `Move up: ${card.title}`);
   const down = labelled(detailButton('↓', () => moveWithin(card.id, 1), 'kanban-move kanban-move-down'), `Move down: ${card.title}`);
@@ -2078,7 +2109,95 @@ async function deleteCard(id) {
   ($('#kanban-columns .kanban-open') || $('#card-new')).focus();
 }
 
-let quickTask = false, cardPipelineEditor = null, cardEditSnapshot = null;
+let quickTask = false, cardPipelineEditor = null, cardEditSnapshot = null, labelManager = null;
+function selectedCardLabels() {
+  const checked = new Set([...$('#card-label-choices').querySelectorAll('input:checked')].map(input => input.dataset.labelId));
+  return (cardEditSnapshot?.labelOrder || []).filter(id => checked.has(id));
+}
+function renderCardLabels(project, selection) {
+  const field = $('#card-labels-field'); field.hidden = !taskLabelsSupported || project?.workflowMode !== 'pipeline';
+  const choices = $('#card-label-choices'); choices.replaceChildren();
+  if (field.hidden) return;
+  const labels = projectLabels(project), selected = new Set(selection);
+  cardEditSnapshot.labelRevision = project.labelRevision;
+  cardEditSnapshot.labelOrder = selection.filter(id => labels.some(row => row.id === id));
+  for (const label of labels) {
+    const control = document.createElement('label'), checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.dataset.labelId = label.id;
+    checkbox.checked = selected.has(label.id); checkbox.setAttribute('aria-label', `Assign label: ${label.name}`);
+    checkbox.addEventListener('change', () => {
+      if (checkbox.checked && selectedCardLabels().length >= 20) { checkbox.checked = false; announce('A task can have up to 20 labels.'); return; }
+      cardEditSnapshot.labelOrder = cardEditSnapshot.labelOrder.filter(id => id !== label.id);
+      if (checkbox.checked) cardEditSnapshot.labelOrder.push(label.id);
+    });
+    control.append(checkbox, labelBadge(label)); choices.append(control);
+  }
+  if (!labels.length) choices.append(paragraph('No project labels yet.', 'note'));
+}
+function addLabelDefinition(label = { id: crypto.randomUUID(), name: '', color: '#4585aa' }) {
+  const list = $('#label-definition-list');
+  if (list.children.length >= 100) { announce('A project can have up to 100 labels.'); return; }
+  const row = document.createElement('div'); row.className = 'label-definition'; row.dataset.labelId = label.id;
+  const nameField = document.createElement('label'); nameField.className = 'field-label'; nameField.append('Name');
+  const name = document.createElement('input'); name.type = 'text'; name.maxLength = 60; name.value = label.name; name.required = true; name.dataset.labelField = 'name'; name.autocomplete = 'off'; nameField.append(name);
+  const colorField = document.createElement('label'); colorField.className = 'field-label'; colorField.append('Color');
+  const color = document.createElement('input'); color.type = 'text'; color.maxLength = 7; color.value = label.color; color.placeholder = '#4585aa'; color.required = true; color.dataset.labelField = 'color'; color.autocomplete = 'off'; colorField.append(color);
+  const remove = detailButton('Remove', () => { const next = row.nextElementSibling || row.previousElementSibling; row.remove(); renumberLabelInputs(); (next?.querySelector('input') || $('#label-add')).focus(); }, 'text-button');
+  remove.setAttribute('aria-label', `Remove label: ${label.name || 'new label'}`);
+  name.addEventListener('input', () => remove.setAttribute('aria-label', `Remove label: ${name.value || 'new label'}`));
+  row.append(nameField, colorField, remove); list.append(row); renumberLabelInputs(); return name;
+}
+function renumberLabelInputs() {
+  [...$('#label-definition-list').children].forEach((row, index) => {
+    row.querySelector('[data-label-field="name"]').setAttribute('aria-label', `Label name ${index + 1}`);
+    row.querySelector('[data-label-field="color"]').setAttribute('aria-label', `Label color ${index + 1}`);
+  });
+}
+function showLabelDraft(project) {
+  labelManager.revision = project.labelRevision;
+  $('#label-definition-list').replaceChildren(); for (const label of projectLabels(project)) addLabelDefinition(label);
+  $('#labels-error').hidden = true;
+}
+function openLabelsDialog(fromCard = false) {
+  const project = fromCard ? board?.projects.find(row => row.id === cardEditSnapshot?.projectId) : currentProject();
+  if (!taskLabelsSupported || project?.workflowMode !== 'pipeline') return;
+  labelManager = { projectId: project.id, revision: project.labelRevision, opener: document.activeElement };
+  $('#labels-dialog-project').textContent = project.name; showLabelDraft(project);
+  if (!$('#labels-dialog').open) $('#labels-dialog').showModal();
+  ($('#label-definition-list input') || $('#label-add')).focus();
+}
+async function saveLabels(event) {
+  event.preventDefault(); const manager = labelManager;
+  if (!manager || !taskLabelsSupported) return;
+  const labels = [...$('#label-definition-list').children].map(row => ({ id: row.dataset.labelId,
+    name: row.querySelector('[data-label-field="name"]').value, color: row.querySelector('[data-label-field="color"]').value }));
+  const selection = $('#card-dialog').open && cardEditSnapshot?.projectId === manager.projectId ? selectedCardLabels() : null;
+  try {
+    const result = await boardCall('PATCH', `/api/projects/${encodeURIComponent(manager.projectId)}/labels`, { labels, expectedLabelRevision: manager.revision });
+    if (labelManager !== manager || !$('#labels-dialog').open) return;
+    if (selection) {
+      const original = cardEditSnapshot.card, refreshed = board.projects.find(project => project.id === manager.projectId);
+      const current = original && refreshed?.tasks.find(task => task.id === original.id);
+      if (current) {
+        const strip = task => { const copy = { ...task }; delete copy.revision; delete copy.updatedAt; delete copy.labelIds; return copy; };
+        const kept = original.labelIds.filter(id => result.project.labels.some(label => label.id === id));
+        // Refresh only our known catalog removal. Concurrent text/settings/metadata
+        // changes retain the stale-card guard and cannot be overwritten here.
+        if (JSON.stringify(strip(original)) === JSON.stringify(strip(current)) && JSON.stringify(kept) === JSON.stringify(current.labelIds)
+          && current.revision === original.revision + (kept.length !== original.labelIds.length ? 1 : 0)) cardEditSnapshot.card = JSON.parse(JSON.stringify(current));
+      }
+      renderCardLabels(result.project, selection);
+    }
+    $('#labels-dialog').close(); announce('Project labels saved.');
+  } catch (error) { if (labelManager === manager && $('#labels-dialog').open) { $('#labels-error').textContent = error.message; $('#labels-error').hidden = false; } }
+}
+async function reloadLabels() {
+  const manager = labelManager; if (!manager) return;
+  try {
+    await boardCall('GET', '/api/board'); if (labelManager !== manager || !$('#labels-dialog').open) return;
+    const project = board?.projects.find(row => row.id === manager.projectId);
+    if (!project) throw new Error('This project is unavailable.'); showLabelDraft(project);
+  } catch (error) { if (labelManager === manager) { $('#labels-error').textContent = error.message; $('#labels-error').hidden = false; } }
+}
 function canOmitTaskPrompt(project) { return project?.workflowMode === 'pipeline' && pipelineTitleOnlySupported; }
 function openCard(id = null, quick = false) {
   quickTask = quick;
@@ -2086,7 +2205,7 @@ function openCard(id = null, quick = false) {
   if (!project) return;
   const card = id ? project.tasks.find(item => item.id === id) : null;
   editingCardId = card?.id || null;
-  cardEditSnapshot = { projectRevision: project.revision, card: card ? JSON.parse(JSON.stringify(card)) : null };
+  cardEditSnapshot = { projectId: project.id, projectRevision: project.revision, card: card ? JSON.parse(JSON.stringify(card)) : null };
   const settingsBusy = card && ((board?.runs || []).some(run => run.taskId === card.id && RUN_LIVE.includes(run.status)) || ['pending', 'running', 'blocked'].includes(card.automationMove?.status) || card.pendingAutomationMessages?.length);
   cardPipelineEditor = project.workflowMode === 'pipeline' ? pipelineTaskEditor(project, card || {}, 'card', Boolean(settingsBusy)) : null;
   $('#card-pipeline-settings').replaceChildren(...(cardPipelineEditor ? [cardPipelineEditor.node] : []));
@@ -2102,6 +2221,7 @@ function openCard(id = null, quick = false) {
   $('#card-prompt').value = card?.prompt || '';
   $('#card-priority-field').hidden = !taskPrioritySupported || project.workflowMode !== 'pipeline';
   $('#card-priority').value = Number.isSafeInteger(card?.priority) && card.priority >= 0 && card.priority <= 4 ? String(card.priority) : '0';
+  renderCardLabels(project, card?.labelIds || []);
   const status = card && cardStatus(card);
   $('#card-status').hidden = !card;
   $('#card-status').textContent = status?.text || '';
@@ -2140,6 +2260,8 @@ async function saveCard(event) {
   if (error) { $('#card-error').textContent = error; $('#card-error').hidden = false; return; }
   let saved, message;
   const priority = !$('#card-priority-field').hidden ? { priority: Number($('#card-priority').value) } : {};
+  const labels = !$('#card-labels-field').hidden ? { labelIds: selectedCardLabels(), expectedLabelRevision: cardEditSnapshot.labelRevision } : {};
+  if (cardEditSnapshot.projectId !== project.id) { $('#card-error').textContent = 'This card belongs to another project. Reopen it before saving.'; $('#card-error').hidden = false; return; }
   try {
     if (card) {
       // A textarea turns \r\n into \n. Keep the stored text when nothing else changed.
@@ -2148,13 +2270,13 @@ async function saveCard(event) {
       const settings = cardPipelineEditor?.value();
       const changedSettings = settings && JSON.stringify(settings) !== JSON.stringify(pipelineTaskChoice(original));
       const result = await boardCall('PATCH', `/api/tasks/${encodeURIComponent(card.id)}`, { title, prompt, expectedRevision: original.revision,
-        ...priority,
+        ...priority, ...labels,
         ...(changedSettings ? { pipelineSettings: settings, expectedProjectRevision: cardEditSnapshot.projectRevision } : {}) });
       saved = result.task;
       message = !result.changed ? 'No changes to save.' : saved.checksOutdated && card.source ? `Saved “${title}”. The previous checks are now marked as outdated.` : `Saved “${title}”.`;
     } else {
       saved = (await boardCall('POST', '/api/tasks', { projectId: project.id, title, prompt: typed,
-        ...priority,
+        ...priority, ...labels,
         ...(cardPipelineEditor ? { pipelineSettings: cardPipelineEditor.value(), expectedProjectRevision: cardEditSnapshot.projectRevision } : {}) })).task;
       message = `Added “${title}” to To Do.`;
     }
@@ -2760,12 +2882,18 @@ async function openTaskDetails(taskId) {
   const pre = text => { const block = document.createElement('pre'); block.textContent = text; return block; };
   $('#task-dialog-stage').textContent = `${taskNumberText(card) ? taskNumberText(card) + ' · ' : ''}${project.name} · ${columnTitle(card.column)}`.toUpperCase();
   $('#task-dialog-heading').textContent = card.title;
+  const labelSummary = document.createElement('div'); labelSummary.dataset.labelSummary = 'true'; appendTaskLabels(labelSummary, card, project);
+  if (!labelSummary.childElementCount) labelSummary.append(paragraph('None', 'note'));
   const nodes = [
     section('Status', paragraph(`${status.text}. Task text revision ${card.contentRevision ?? 1}.${status.flag ? ' Review the prompt before you run an agent on it.' : ''}`)),
     section('Original prompt', pre(card.prompt)),
     section('Branch and worktree', taskLocation(card, project)),
     section('Base resources for future runs', basePicker({ target: { scope: 'task', projectId: project.id, taskId: card.id } }), paragraph('Task selections can narrow or opt out of inherited resources without changing the task text or approved evidence.')),
   ];
+  if (taskLabelsSupported && project.workflowMode === 'pipeline') {
+    const edit = detailButton('Edit labels', () => { $('#task-dialog').close(); openCard(card.id); }, 'text-button');
+    const labels = section('Labels', labelSummary, edit); labels.id = 'task-details-labels'; nodes.unshift(labels);
+  }
   const columnScope = document.createElement('select'); columnScope.setAttribute('aria-label', 'Column for task-specific Base resources');
   columnScope.append(...projectColumnsOf(project).map(column => option(column.id, column.title)));
   columnScope.value = card.column;
@@ -3771,6 +3899,17 @@ $('#prompt-edit-save').addEventListener('click', () => {
 });
 
 bindAsyncForm('#card-form', saveCard);
+bindAsyncForm('#labels-form', saveLabels);
+$('#labels-open').addEventListener('click', () => openLabelsDialog());
+$('#card-labels-manage').addEventListener('click', () => openLabelsDialog(true));
+$('#label-add').addEventListener('click', () => addLabelDefinition()?.focus());
+$('#labels-cancel').addEventListener('click', () => $('#labels-dialog').close());
+$('#labels-dialog-close').addEventListener('click', () => $('#labels-dialog').close());
+$('#labels-reload').addEventListener('click', reloadLabels);
+$('#labels-dialog').addEventListener('close', () => {
+  const dialog = $('#labels-dialog'), active = document.activeElement;
+  if (!dialog.open && (active === document.body || dialog.contains(active)) && labelManager?.opener?.isConnected) labelManager.opener.focus();
+});
 $('#card-cancel').addEventListener('click', () => $('#card-dialog').close());
 $('#card-dialog-close').addEventListener('click', () => $('#card-dialog').close());
 $('#done-dialog-close').addEventListener('click', () => $('#done-dialog').close());
