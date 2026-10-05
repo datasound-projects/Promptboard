@@ -159,3 +159,24 @@ export async function saveWorkspaceFile(board, projectId, value, { signal } = {}
   saves.set(lock, pending);
   try { return await pending; } finally { if (saves.get(lock) === pending) saves.delete(lock); }
 }
+
+/** References share the viewer's selected-folder, credential and symlink boundaries. */
+export function validateWorkspaceReference(path) {
+  const parts = parsePath(path);
+  if (!parts.length) fail('Choose a project file or folder.', 'FILE_PATH_INVALID');
+  return path;
+}
+export async function resolveWorkspaceReference(board, projectId, path, workspace = '') {
+  const parts = parsePath(validateWorkspaceReference(path));
+  try {
+    const ctx = await context(board, projectId, workspace), item = await target(ctx.root, parts);
+    if (!item.info.isFile() && !item.info.isDirectory()) fail('Only regular files and folders can be referenced.', 'FILE_UNSUPPORTED', 415);
+    if (item.info.isFile() && item.info.nlink !== 1) fail('Hard-linked files cannot be referenced.', 'FILE_LINK_BLOCKED', 403);
+    const checked = await target(ctx.root, parts);
+    if (!same(item.info, checked.info)) fail('This reference changed. Select it again.', 'FILE_CHANGED', 409);
+    return item.path;
+  } catch (error) {
+    if (error.code === 'ENOENT') fail(`Referenced path “${path}” is missing. Restore or remove it before starting an agent.`, 'TASK_FILE_MISSING', 409);
+    throw error;
+  }
+}

@@ -1,6 +1,6 @@
 # Local backlog
 
-The Backlog view stages local drafts separately from the pipeline board, following Kangentic's [Backlog and imports](https://www.kangentic.com/guide/backlog/). Bulk selection can add drafts to the chosen column or delete them. [Column arrival](backlog-column-arrival.md) applies the destination's configured automations and session rules. [GitHub issue import](backlog-github-import-ui.md) supplies saved-source page selection and deduplicated inert drafts. Persistent source caching, attachments and other tracker adapters remain pending.
+The Backlog view stages local drafts separately from the pipeline board, following Kangentic's [Backlog and imports](https://www.kangentic.com/guide/backlog/). Bulk selection can add drafts to the chosen column or delete them. [Column arrival](backlog-column-arrival.md) applies the destination's configured automations and session rules. [GitHub issue import](backlog-github-import-ui.md) supplies saved-source page selection and deduplicated inert drafts. [Source caching](backlog-source-sync.md) and [attachments/file references](task-files.md) are available. Other tracker adapters remain pending.
 
 Choose **Backlog** in a pipeline project and **New draft** to save a title with optional prompt, priority and shared labels. Rows show creation age, priority and labels. Open a draft title to edit it. Saving and **Add to To Do** never start an agent. Choose another **Add to column** destination to apply its arrival rules, including configured auto-spawn. Composer and split tasks continue adding directly to To Do. Servers without the Backlog capability and legacy projects retain the Board view; servers without destination support retain To Do-only promotion.
 
@@ -26,4 +26,4 @@ The [GitHub Issues preview foundation](github-backlog-preview.md) exposes read-o
 
 Queued native editor-close events preserve focus already moved to another action and leave a reopened draft intact. Normal closing still returns to the appropriate Backlog control; deletion defaults to Keep draft.
 
-The [GitHub Issues import backend](backlog-github-imports.md) adds saved sources, selected-page atomic imports and durable duplicate identities. Its picker, source cache and attachments remain separate work.
+The [GitHub Issues import backend](backlog-github-imports.md) adds saved sources, selected-page atomic imports and durable duplicate identities. Its [picker](backlog-github-import-ui.md), [source cache](backlog-source-sync.md) and [attachments](task-files.md) preserve the same inert-draft contract.

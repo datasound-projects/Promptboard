@@ -112,9 +112,9 @@ test('version 9 migration adds only empty label metadata and keeps exact origina
   const bytes = JSON.stringify(original, null, 2); await writeFile(join(dir, 'state.json'), bytes);
   const store = new Store(dir), state = await store.read(); assert.equal(state.version, STATE_VERSION); assert.equal(state.revision, original.revision);
   assert.deepEqual(state.projects, original.projects.map(project => ({ ...project, labels: [], labelRevision: 0, backlog: [], backlogRevision: 0, backlogSources: [], backlogImported: [], backlogImportRevision: 0, tasks: project.tasks.map(task => ({ ...task, labelIds: [] })) })));
-  assert.deepEqual(state.extension, original.extension); assert.deepEqual(state.migrations.map(row => row.kind), ['state-v9-to-v10', 'state-v10-to-v11', 'state-v11-to-v12']);
+  assert.deepEqual(state.extension, original.extension); assert.deepEqual(state.migrations.map(row => row.kind), ['state-v9-to-v10', 'state-v10-to-v11', 'state-v11-to-v12', 'state-v12-to-v13']);
   assert.equal(await readFile(join(dir, store.recovery.migrationBackup), 'utf8'), bytes); assert.deepEqual(await new Store(dir).read(), state);
-  const futureDir = await directory(t), future = JSON.stringify({ ...original, version: 13 }); await writeFile(join(futureDir, 'state.json'), future);
+  const futureDir = await directory(t), future = JSON.stringify({ ...original, version: 14 }); await writeFile(join(futureDir, 'state.json'), future);
   await assert.rejects(new Store(futureDir).read(), { code: 'STATE_VERSION_UNSUPPORTED' }); assert.equal(await readFile(join(futureDir, 'state.json'), 'utf8'), future);
 });
 

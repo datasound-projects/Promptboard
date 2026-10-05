@@ -52,7 +52,7 @@ test('v6 state migration assigns saved order once, preserves exact original back
     ] }], extension: { retain: true } };
   const bytes = JSON.stringify(state, null, 3); await writeFile(join(dataDir, 'state.json'), bytes);
   const store = new Store(dataDir), saved = await store.read();
-  assert.equal(saved.version, 12); assert.equal(saved.revision, 19); assert.equal(saved.projects[0].nextTaskNumber, 3);
+  assert.equal(saved.version, 13); assert.equal(saved.revision, 19); assert.equal(saved.projects[0].nextTaskNumber, 3);
   for (let index = 0; index < 2; index++) assert.deepEqual(saved.projects[0].tasks[index], { ...state.projects[0].tasks[index], number: index + 1, priority: 0, labelIds: [] });
   assert.deepEqual(saved.extension, state.extension); assert.equal(await readFile(join(dataDir, store.recovery.migrationBackup), 'utf8'), bytes);
   assert.deepEqual(await new Store(dataDir).read(), saved);

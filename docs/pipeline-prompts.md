@@ -17,3 +17,5 @@ Spawn templates omit unknown/empty variables and normalize whitespace only in li
 Tests cover exact prompt whitespace, XML boundaries, template text embedded in tasks, missing facts, prototype keys, Unicode URL/JSON escaping, environment naming, invalid/oversized inputs, and actual disposable POSIX shell runs with hostile task titles in quoted and unquoted substitutions. They verify rendering and command-injection resistance for those substitutions, not automation delivery or arbitrary authored scripts.
 
 Reference behavior: [Kangentic columns and automations](https://www.kangentic.com/features/workflows/). Planning integration must detect an approved, completed native plan-exit event, rather than equating a tool invocation or ordinary finished turn with plan approval; see the reference [approval-gate regression](https://github.com/kangentic/kangentic/blob/main/tests/unit/plan-exit-approval-gate.test.ts).
+
+Task attachments and file references are now resolved and revalidated by the [task file service](task-files.md), then passed as `attachmentPaths`; task prompt text remains literal.

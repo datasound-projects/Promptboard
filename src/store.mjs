@@ -13,10 +13,11 @@ import { assignTaskNumbers, validateTaskNumbers } from './task-numbers.mjs';
 import { taskPriority } from './task-priority.mjs';
 import { taskLabels, taskLabelIds, labelRevision } from './task-labels.mjs';
 import { validateBacklogs } from './backlog.mjs';
+import { taskFileFields } from './task-files.mjs';
 import { validateBacklogImports } from './backlog-imports.mjs';
 
 export const STATE_SCHEMA = 'promptboard.state';
-export const STATE_VERSION = 12;
+export const STATE_VERSION = 13;
 const STATE_FILE = 'state.json';
 
 export function defaultDataDir(env = process.env, platform = process.platform) {
@@ -42,7 +43,7 @@ export class StoreError extends Error {
 function checkShape(data) {
   if (!data || typeof data !== 'object' || data.schema !== STATE_SCHEMA) throw new Error('Unknown state file.');
   if (data.version > STATE_VERSION) throw new StoreError('The board was saved by a newer Promptboard version. Update the app; the file was not changed.', 'STATE_VERSION_UNSUPPORTED');
-  if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, STATE_VERSION].includes(data.version) || !Array.isArray(data.projects) || !Array.isArray(data.runs)) throw new Error('Unsupported state shape.');
+  if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, STATE_VERSION].includes(data.version) || !Array.isArray(data.projects) || !Array.isArray(data.runs)) throw new Error('Unsupported state shape.');
   if (data.version >= 3 && (!data.base || !Array.isArray(data.base.resources) || !Array.isArray(data.base.approvedRoots) || !Number.isSafeInteger(data.base.revision) || data.base.revision < 0)) throw new Error('Invalid Base registry shape.');
   if (data.version >= 4 && (!Array.isArray(data.sessions) || data.sessions.some(session => !session || typeof session !== 'object'
     || typeof session.id !== 'string' || !session.id || typeof session.taskId !== 'string' || typeof session.projectId !== 'string'
@@ -84,6 +85,7 @@ function checkShape(data) {
   }
   if (data.version >= 11) validateBacklogs(data.projects);
   if (data.version >= 12) validateBacklogImports(data.projects);
+  if (data.version >= 13) for (const project of data.projects) for (const task of project.tasks) taskFileFields(task);
   return { ...emptyState(), ...data };
 }
 
@@ -126,8 +128,11 @@ export function migrateState(data) {
     for (const project of state.projects) { project.backlog = []; project.backlogRevision = 0; }
     state.migrations.push({ kind: 'state-v10-to-v11', at: Date.now() });
   }
-  for (const project of state.projects) { project.backlogSources = []; project.backlogImported = []; project.backlogImportRevision = 0; }
-  state.migrations.push({ kind: 'state-v11-to-v12', at: Date.now() });
+  if (state.version < 12) {
+    for (const project of state.projects) { project.backlogSources = []; project.backlogImported = []; project.backlogImportRevision = 0; }
+    state.migrations.push({ kind: 'state-v11-to-v12', at: Date.now() });
+  }
+  if (state.version < 13) state.migrations.push({ kind: 'state-v12-to-v13', at: Date.now() });
   state.version = STATE_VERSION;
   // New metadata must satisfy current invariants before any migrated bytes publish.
   return checkShape(state);

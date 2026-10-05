@@ -11,6 +11,8 @@ import { attachSession, attachResumedRun, LIVE_SESSION_STATUSES, recoverSessions
 import { access, mkdir, readdir, realpath, rm, stat } from 'node:fs/promises';
 import { join, relative, isAbsolute } from 'node:path';
 import { Store } from './store.mjs';
+import { inlineImageURLs, downloadGitHubImage } from './task-file-imports.mjs';
+import { TaskFiles, taskFileFields, taskFilesEqual, decodeAttachment } from './task-files.mjs';
 import { taskPriority } from './task-priority.mjs';
 import { taskLabels, taskLabelIds, labelRevision } from './task-labels.mjs';
 import { BACKLOG_LIMIT, backlogItems, backlogPrompt, backlogRevision, backlogTitle, validateBacklogs } from './backlog.mjs';
@@ -105,8 +107,8 @@ export function parseBackup(data) {
 }
 function parseBackupData(data) {
   const v1 = data?.version === 1 && (data.kind === undefined || data.kind === 'kanban-backup');
-  const v2 = [2, 3, 4, 5, 6, 7, 8, 9, 10].includes(data?.version) && data.kind === 'promptboard-backup';
-  const v3 = [3, 4, 5, 6, 7, 8, 9, 10].includes(data?.version) && data.kind === 'promptboard-backup';
+  const v2 = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11].includes(data?.version) && data.kind === 'promptboard-backup';
+  const v3 = [3, 4, 5, 6, 7, 8, 9, 10, 11].includes(data?.version) && data.kind === 'promptboard-backup';
   if (!data || typeof data !== 'object' || (!v1 && !v2) || !Array.isArray(data.projects)) throw new BoardError('The data is not a Promptboard or version 1 Kanban board.', 'INVALID_BACKUP');
   if (data.projects.length > PROJECT_LIMIT) throw new BoardError(`A board can have at most ${PROJECT_LIMIT} projects.`, 'INVALID_BACKUP');
   const ids = new Set();
@@ -124,8 +126,8 @@ function parseBackupData(data) {
     const name = text(project.name, 80, `${label} name`);
     if (names.has(name.toLowerCase())) throw new BoardError(`${label} repeats the project name “${name}”.`, 'INVALID_BACKUP');
     names.add(name.toLowerCase());
-    if ([4, 5, 6, 7, 8, 9, 10].includes(data.version) && project.workflowMode !== undefined && !['legacy', 'pipeline'].includes(project.workflowMode)) throw new BoardError('Unknown backup workflow mode.', 'INVALID_BACKUP');
-    const pipeline = [4, 5, 6, 7, 8, 9, 10].includes(data.version) && project.workflowMode === 'pipeline' ? normalizePipelineConfig(project.pipeline) : null;
+    if ([4, 5, 6, 7, 8, 9, 10, 11].includes(data.version) && project.workflowMode !== undefined && !['legacy', 'pipeline'].includes(project.workflowMode)) throw new BoardError('Unknown backup workflow mode.', 'INVALID_BACKUP');
+    const pipeline = [4, 5, 6, 7, 8, 9, 10, 11].includes(data.version) && project.workflowMode === 'pipeline' ? normalizePipelineConfig(project.pipeline) : null;
     if (data.version >= 8 && (!Array.isArray(project.labels) || cards.some(card => !Array.isArray(card?.labelIds)))) throw new BoardError('Label metadata is missing from this backup.', 'INVALID_BACKUP');
     const labels = data.version >= 8 ? taskLabels(project.labels) : [];
     const columnLayout = !pipeline && v2 && Array.isArray(project.columnLayout) && project.columnLayout.length ? normalizeColumns(project.columnLayout) : null;
@@ -152,13 +154,13 @@ function parseBackupData(data) {
         const cardLabel = `${label}, card ${cardIndex + 1}`;
         if (!card || typeof card !== 'object') throw new BoardError(`${cardLabel} is not valid.`, 'INVALID_BACKUP');
         if (pipeline && !columnIds.has(card.column)) throw new BoardError(`${cardLabel} refers to a missing pipeline column.`, 'INVALID_BACKUP');
-        if ((!pipeline || ![5, 6, 7, 8, 9, 10].includes(data.version)) && (card.profileId != null || card.agentOverride != null)) throw new BoardError('Task pipeline settings require a version 5 or newer pipeline backup.', 'INVALID_BACKUP');
-        return { id: unique(card.id, cardLabel), title: text(card.title, 120, `${cardLabel} title`), prompt: promptText(card.prompt, cardLabel, Boolean(pipeline)),
+        if ((!pipeline || ![5, 6, 7, 8, 9, 10, 11].includes(data.version)) && (card.profileId != null || card.agentOverride != null)) throw new BoardError('Task pipeline settings require a version 5 or newer pipeline backup.', 'INVALID_BACKUP');
+        return { ...(data.version >= 11 ? taskFileFields(card) : {}), id: unique(card.id, cardLabel), title: text(card.title, 120, `${cardLabel} title`), prompt: promptText(card.prompt, cardLabel, Boolean(pipeline)),
           createdAt: time(card.createdAt), updatedAt: time(card.updatedAt ?? card.createdAt), checksOutdated: card.checksOutdated === true,
           ...(data.version >= 6 ? { number: card.number } : {}),
           labelIds: data.version >= 8 ? taskLabelIds(card.labelIds, labels) : [],
           priority: data.version >= 7 ? taskPriority(card.priority) : 0, source: normalizeSource(card.source), ...(data.version >= 10 && card.externalSource !== undefined ? { externalSource: externalIssueSource(card.externalSource) } : {}), column: v2 && columnIds.has(card.column) ? card.column : 'todo', ...(v3 ? backupBaseScopes(card, true, columnIds) : {}),
-          ...(pipeline && [5, 6, 7, 8, 9, 10].includes(data.version) ? normalizePipelineTaskSelection(pipeline, { profileId: card.profileId, agentOverride: card.agentOverride }) : {}) };
+          ...(pipeline && [5, 6, 7, 8, 9, 10, 11].includes(data.version) ? normalizePipelineTaskSelection(pipeline, { profileId: card.profileId, agentOverride: card.agentOverride }) : {}) };
       }),
     };
   });
@@ -194,9 +196,9 @@ function backupBaseScopes(entity, task = false, columnIds) {
 function newProject({ id = randomUUID(), name, createdAt = Date.now(), nextTaskNumber = 1, labels = [], backlog = [], backlogSources = [], backlogImported = [] }) {
   return { id, name, createdAt, nextTaskNumber, labels: taskLabels(labels), labelRevision: 0, backlog: backlogItems(backlog, labels), backlogRevision: 0, backlogSources: backlogImportSources(backlogSources), backlogImported: backlogImportLedger(backlogImported), backlogImportRevision: 0, revision: 1, repository: null, targetBranch: null, workflowMode: 'legacy', workflow: {}, pendingImport: null, tasks: [] };
 }
-function newTask({ id = randomUUID(), title, prompt, source = null, checksOutdated = false, createdAt = Date.now(), updatedAt = createdAt, column = 'todo', number, priority = 0, labelIds = [], externalSource }) {
+function newTask({ id = randomUUID(), title, prompt, source = null, checksOutdated = false, createdAt = Date.now(), updatedAt = createdAt, column = 'todo', number, priority = 0, labelIds = [], externalSource, attachments, fileReferences }) {
   // contentRevision changes only when the title or prompt changes; plan approvals refer to it.
-  return { id, title, prompt, source, ...(externalSource === undefined ? {} : { externalSource: externalIssueSource(externalSource) }), checksOutdated, createdAt, updatedAt, column, ...(number === undefined ? {} : { number }), priority: taskPriority(priority), labelIds: taskLabelIds(labelIds), revision: 1, contentRevision: 1, planApproval: null, workspace: null, retainedBranches: [], transitions: [] };
+  return { id, title, prompt, source, ...taskFileFields({ attachments, fileReferences }), ...(externalSource === undefined ? {} : { externalSource: externalIssueSource(externalSource) }), checksOutdated, createdAt, updatedAt, column, ...(number === undefined ? {} : { number }), priority: taskPriority(priority), labelIds: taskLabelIds(labelIds), revision: 1, contentRevision: 1, planApproval: null, workspace: null, retainedBranches: [], transitions: [] };
 }
 
 // Autopilot routes: stages a card visits, in board order. Executing is required (it does the work).
@@ -391,7 +393,7 @@ const inside = (parent, child) => { const rel = relative(parent, child); return 
 const slug = value => value.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'task';
 
 export class Board {
-  constructor({ dataDir, executor = null, projectsDir = join(dataDir, 'projects'), automationActions = new PipelineActions(), githubIssueReader = listGitHubBacklogIssues }) {
+  constructor({ dataDir, executor = null, projectsDir = join(dataDir, 'projects'), automationActions = new PipelineActions(), githubIssueReader = listGitHubBacklogIssues, imageDownloader = downloadGitHubImage }) {
     this.dataDir = dataDir;
     this.projectsDir = projectsDir; // Where "New project" creates each project's own Git repository.
     this.store = new Store(dataDir);
@@ -400,7 +402,9 @@ export class Board {
     this.hooksDir = join(dataDir, 'no-hooks'); // Empty: git worktree add runs no repository hooks.
     this.executor = executor; // PB-02 registers one. Null means execution is inactive.
     this.githubIssueReader = githubIssueReader;
+    this.imageDownloader = imageDownloader;
     this.backlogCache = new BacklogCache(dataDir);
+    this.taskFiles = new TaskFiles(dataDir);
     this.locks = new Map();
     this.recoveryPromise = null;
     this.delivery = new Delivery(this);
@@ -1582,10 +1586,33 @@ export class Board {
     if (project.labelRevision !== expected) throw conflict('Project labels changed. Reload the labels before saving.', 'LABEL_REVISION_CONFLICT');
   }
 
-  createTask(input) { return this.store.update(state => this.#createTask(state, input)); }
+  async uploadTaskAttachment(projectId, input) {
+    this.#project(await this.store.read(), projectId);
+    return this.taskFiles.upload(projectId, input);
+  }
+  async taskAttachment(projectId, input) {
+    this.#project(await this.store.read(), projectId);
+    const file = await this.taskFiles.read(projectId, input);
+    return { ...input, base64: file.bytes.toString('base64') };
+  }
+  async validateTaskFiles(projectId, fields, workspace = '') {
+    const normalized = taskFileFields(fields);
+    if ((normalized.attachments?.length || normalized.fileReferences?.length)) await this.taskFiles.resolve(this, projectId, normalized, workspace);
+    return normalized;
+  }
+  async prepareTaskFiles(run) {
+    const state = await this.store.read(), { project, task } = this.#task(state, run.taskId);
+    if (!(task.attachments?.length || task.fileReferences?.length)) return [];
+    if ((task.contentRevision ?? 1) !== run.promptRevision || task.workspace?.path !== run.workspacePath) throw conflict('The task changed while its files were being prepared.', 'REVISION_CONFLICT');
+    return this.taskFiles.resolve(this, project.id, task, task.id);
+  }
+  async createTask(input) {
+    await this.validateTaskFiles(input.projectId, input);
+    return this.store.update(state => this.#createTask(state, input));
+  }
 
-  #createTask(state, { projectId, title, prompt = '', source = null, pipelineSettings, expectedProjectRevision, priority = 0, labelIds, expectedLabelRevision }, identity = {}) {
-    const task = newTask({ ...identity, title: text(title, 120, 'Title'), prompt, source: normalizeSource(source), priority, labelIds });
+  #createTask(state, { projectId, title, prompt = '', source = null, pipelineSettings, expectedProjectRevision, priority = 0, labelIds, expectedLabelRevision, attachments, fileReferences }, identity = {}) {
+    const task = newTask({ ...identity, title: text(title, 120, 'Title'), prompt, source: normalizeSource(source), priority, labelIds, attachments, fileReferences });
     const project = this.#project(state, projectId);
     if (labelIds !== undefined) { this.#checkLabels(project, expectedLabelRevision); task.labelIds = taskLabelIds(labelIds, project.labels); }
     task.prompt = promptText(prompt, 'The task', project.workflowMode === 'pipeline');
@@ -1610,9 +1637,10 @@ export class Board {
     if (project.backlogRevision === Number.MAX_SAFE_INTEGER) throw conflict('The backlog revision limit has been reached.', 'LIMIT');
     project.backlogRevision++;
   }
-  async createBacklogItem(projectId, { title, prompt = '', priority = 0, labelIds = [], source = null, expectedLabelRevision, expectedBacklogRevision }) {
+  async createBacklogItem(projectId, { title, prompt = '', priority = 0, labelIds = [], source = null, expectedLabelRevision, expectedBacklogRevision, attachments, fileReferences }) {
+    const files = await this.validateTaskFiles(projectId, { attachments, fileReferences });
     backlogRevision(expectedBacklogRevision);
-    const item = { id: randomUUID(), title: backlogTitle(title), prompt: backlogPrompt(prompt), priority: taskPriority(priority), labelIds: taskLabelIds(labelIds),
+    const item = { ...files, id: randomUUID(), title: backlogTitle(title), prompt: backlogPrompt(prompt), priority: taskPriority(priority), labelIds: taskLabelIds(labelIds),
       source: normalizeSource(source), checksOutdated: false, createdAt: Date.now(), updatedAt: Date.now(), revision: 1 };
     return this.store.update(state => {
       const project = this.#backlogProject(state, projectId, expectedBacklogRevision);
@@ -1652,7 +1680,8 @@ export class Board {
       this.#advanceBacklogImports(project); return true;
     });
   }
-  async importGitHubBacklogIssues(projectId, sourceId, { keys, state: issueState = 'all', page = 1, titleOverrides = {}, expectedImportRevision, expectedBacklogRevision, expectedLabelRevision }) {
+  async importGitHubBacklogIssues(projectId, sourceId, { keys, state: issueState = 'all', page = 1, titleOverrides = {}, expectedImportRevision, expectedBacklogRevision, expectedLabelRevision, includeAttachments = true }) {
+    if (typeof includeAttachments !== 'boolean') throw new BoardError('Choose whether to import inline images.', 'INVALID_BACKLOG_IMPORT');
     backlogRevision(expectedBacklogRevision);
     if (!['open', 'closed', 'all'].includes(issueState) || !Number.isSafeInteger(page) || page < 1 || page > 1000) throw new BoardError('Choose a valid issue state and source page.', 'INVALID_BACKLOG_IMPORT');
     if (!Array.isArray(keys) || !keys.length || keys.length > 100 || new Set(keys).size !== keys.length || keys.some(key => typeof key !== 'string' || (!/^github:issue:[1-9][0-9]{0,15}$/.test(key) || !Number.isSafeInteger(Number(key.slice(13)))))
@@ -1673,12 +1702,25 @@ export class Board {
       if (key !== `github:issue:${externalSource.id}`) throw new BoardError('The issue identity is inconsistent.', 'INVALID_BACKLOG_IMPORT');
       return { key, issue, externalSource };
     });
+    const imageSignal = AbortSignal.timeout(30000); let importedImageBytes = 0;
+    for (const row of issues) {
+      if (!includeAttachments || captured.backlogImported.some(item => item.key === row.key)) continue;
+      row.attachments = [];
+      for (const url of inlineImageURLs(row.issue.prompt)) {
+        const image = await this.imageDownloader(url, { signal: imageSignal }); imageSignal.throwIfAborted();
+        const decoded = decodeAttachment(image); importedImageBytes += decoded.descriptor.size;
+        if (importedImageBytes > 24 * 1024 * 1024) throw new BoardError('Selected issue images exceed 24 MiB. Import fewer issues or uncheck images.', 'TASK_FILES_LIMIT', 413);
+        const attachment = await this.taskFiles.upload(projectId, image);
+        if (!row.attachments.some(item => item.id === attachment.id)) row.attachments.push(attachment);
+        taskFileFields({ attachments: row.attachments });
+      }
+    }
     return this.store.update(saved => {
       const project = this.#backlogProject(saved, projectId, expectedBacklogRevision);
       this.#checkBacklogImports(project, expectedImportRevision); this.#checkLabels(project, expectedLabelRevision);
       if (!project.backlogSources.some(row => row.id === sourceId && row.repository === source.repository)) throw conflict('The source changed while importing.', 'BACKLOG_IMPORT_REVISION_CONFLICT');
       const created = [], skipped = [], beforeLabels = project.labels.length;
-      for (const { key, issue, externalSource } of issues) {
+      for (const { key, issue, externalSource, attachments } of issues) {
         const duplicate = project.backlogImported.find(row => row.key === key);
         if (duplicate) { skipped.push({ key, taskId: duplicate.taskId }); continue; }
         if (project.backlog.length >= BACKLOG_LIMIT || project.backlogImported.length >= IMPORT_IDENTITY_LIMIT) throw conflict('The backlog or import identity limit has been reached.', 'LIMIT');
@@ -1693,7 +1735,7 @@ export class Board {
           if (labelIds.includes(existing.id)) throw new BoardError('The source repeats a label identity.', 'INVALID_BACKLOG_IMPORT');
           labelIds.push(existing.id);
         }
-        const now = Date.now(), item = { id: randomUUID(), title, prompt, priority: 0, labelIds, source: null, externalSource, checksOutdated: false, createdAt: now, updatedAt: now, revision: 1 };
+        const now = Date.now(), item = { ...(attachments?.length ? { attachments } : {}), id: randomUUID(), title, prompt, priority: 0, labelIds, source: null, externalSource, checksOutdated: false, createdAt: now, updatedAt: now, revision: 1 };
         project.backlog.push(item); project.backlogImported.push({ key, taskId: item.id, importedAt: now }); created.push(item);
       }
       if (created.length) {
@@ -1736,15 +1778,16 @@ export class Board {
     };
     return this.backlogCache.sync(projectId, source, input => this.githubIssueReader(input), guard);
   }
-  updateBacklogItem(projectId, id, { title, prompt, priority, labelIds, expectedLabelRevision, expectedRevision }) {
+  async updateBacklogItem(projectId, id, { title, prompt, priority, labelIds, expectedLabelRevision, expectedRevision, attachments, fileReferences }) {
+    const files = await this.validateTaskFiles(projectId, { attachments, fileReferences });
     return this.store.update(state => {
       const project = this.#backlogProject(state, projectId), item = project.backlog.find(row => row.id === id);
       if (!item) throw new BoardError('This backlog item does not exist. Reload the backlog.', 'NOT_FOUND', 404);
       checkRevision(item, expectedRevision, 'This backlog item');
       if (labelIds !== undefined) this.#checkLabels(project, expectedLabelRevision);
-      const next = { title: title === undefined ? item.title : backlogTitle(title), prompt: prompt === undefined ? item.prompt : backlogPrompt(prompt),
+      const next = { ...taskFileFields(item), ...files, title: title === undefined ? item.title : backlogTitle(title), prompt: prompt === undefined ? item.prompt : backlogPrompt(prompt),
         priority: priority === undefined ? item.priority : taskPriority(priority), labelIds: labelIds === undefined ? item.labelIds : taskLabelIds(labelIds, project.labels) };
-      const contentChanged = next.title !== item.title || next.prompt !== item.prompt;
+      const contentChanged = next.title !== item.title || next.prompt !== item.prompt || !taskFilesEqual(next, item);
       if (!contentChanged && next.priority === item.priority && JSON.stringify(next.labelIds) === JSON.stringify(item.labelIds)) return { item, changed: false };
       if (item.revision === Number.MAX_SAFE_INTEGER) throw conflict('The backlog item revision limit has been reached.', 'LIMIT');
       Object.assign(item, next, { revision: item.revision + 1, updatedAt: Date.now(), checksOutdated: item.checksOutdated || contentChanged && Boolean(item.source) });
@@ -1829,7 +1872,15 @@ export class Board {
     return selection;
   }
 
-  async #updateTask(id, { title, prompt, expectedRevision, pipelineSettings, expectedProjectRevision, priority, labelIds, expectedLabelRevision }) {
+  async #updateTask(id, { title, prompt, expectedRevision, pipelineSettings, expectedProjectRevision, priority, labelIds, expectedLabelRevision, attachments, fileReferences }) {
+    const captured = this.#task(await this.state(), id);
+    const files = await this.validateTaskFiles(captured.project.id, { attachments, fileReferences }, captured.task.workspace?.status === 'ready' ? id : '');
+    const filesChanged = !taskFilesEqual({ ...captured.task, ...files }, captured.task);
+    if (filesChanged) {
+      checkRevision(captured.task, expectedRevision, 'This card');
+      this.#requireAutomationsStopped(captured.task);
+      if (this.#activeRun(await this.state(), id)) throw conflict('Pause the agent before changing its files.', 'RUN_ACTIVE');
+    }
     if (priority !== undefined) taskPriority(priority);
     if (labelIds !== undefined) {
       const { project } = this.#task(await this.state(), id);
@@ -1840,7 +1891,7 @@ export class Board {
       checkRevision(task, expectedRevision, 'This card');
       const nextTitle = title === undefined ? task.title : text(title, 120, 'Title');
       const nextPrompt = prompt === undefined ? task.prompt : promptText(prompt, 'The task', project.workflowMode === 'pipeline');
-      if (nextTitle !== task.title || nextPrompt !== task.prompt) {
+      if (nextTitle !== task.title || nextPrompt !== task.prompt || filesChanged) {
         this.messageScheduler.cancelTask(id);
         await this.messageScheduler.waitTask(id);
         for (const key of task.pendingAutomationMessages || []) await this.#publishAutomationMove(key);
@@ -1865,11 +1916,12 @@ export class Board {
       const nextPrompt = prompt === undefined ? task.prompt : promptText(prompt, 'The task', project.workflowMode === 'pipeline');
       const nextPriority = priority === undefined ? taskPriority(task.priority) : taskPriority(priority);
       const nextLabels = taskLabelIds(labelIds === undefined ? task.labelIds : labelIds, project.labels);
-      const contentChanged = nextTitle !== task.title || nextPrompt !== task.prompt;
+      const contentChanged = nextTitle !== task.title || nextPrompt !== task.prompt || !taskFilesEqual({ ...task, ...files }, task);
+      if (!taskFilesEqual({ ...task, ...files }, task)) { this.#requireAutomationsStopped(task); if (this.#activeRun(state, id)) throw conflict('Pause the agent before changing its files.', 'RUN_ACTIVE'); }
       if (!contentChanged && !settingsChanged && nextPriority === taskPriority(task.priority) && JSON.stringify(nextLabels) === JSON.stringify(task.labelIds)) return { task, changed: false };
       // Checks from generation apply only to the original text.
       // A content change also makes any earlier plan approval stale.
-      Object.assign(task, { title: nextTitle, prompt: nextPrompt, priority: nextPriority, labelIds: nextLabels, updatedAt: Date.now(), revision: task.revision + 1,
+      Object.assign(task, { ...files, title: nextTitle, prompt: nextPrompt, priority: nextPriority, labelIds: nextLabels, updatedAt: Date.now(), revision: task.revision + 1,
         ...(contentChanged ? { checksOutdated: task.checksOutdated || Boolean(task.source), contentRevision: (task.contentRevision ?? 1) + 1 } : {}), ...(settingsChanged ? selection : {}) });
       return { task, changed: true };
     });
@@ -1879,7 +1931,7 @@ export class Board {
     return this.store.update(state => {
       const { project, task } = this.#task(state, id);
       if (project.tasks.length >= TASK_LIMIT) throw new BoardError(`A project can have at most ${TASK_LIMIT} cards.`, 'LIMIT');
-      const copy = newTask({ title: `${task.title.slice(0, 113)} (copy)`, prompt: task.prompt, source: structuredClone(task.source), checksOutdated: task.checksOutdated, priority: task.priority, labelIds: task.labelIds, ...(task.externalSource === undefined ? {} : { externalSource: structuredClone(task.externalSource) }) });
+      const copy = newTask({ ...taskFileFields(task), title: `${task.title.slice(0, 113)} (copy)`, prompt: task.prompt, source: structuredClone(task.source), checksOutdated: task.checksOutdated, priority: task.priority, labelIds: task.labelIds, ...(task.externalSource === undefined ? {} : { externalSource: structuredClone(task.externalSource) }) });
       if (project.workflowMode === 'pipeline') copy.column = project.pipeline.columns.find(column => column.role === 'todo').id;
       if (project.workflowMode === 'pipeline' && (task.profileId || task.agentOverride)) Object.assign(copy, normalizePipelineTaskSelection(project.pipeline, { profileId: task.profileId, agentOverride: task.agentOverride }));
       if (task.baseBinding) copy.baseBinding = structuredClone(task.baseBinding);
@@ -1999,7 +2051,16 @@ export class Board {
     const state = await this.state();
     const base = await this.base.export({ includeContent: includeBaseContent });
     if ((await this.state()).base.revision !== state.base.revision) throw conflict('Base changed while the backup was being prepared. Export it again.', 'BASE_REVISION_CONFLICT');
-    return { application: 'Promptboard', kind: 'promptboard-backup', version: 10, exportedAt: new Date().toISOString(),
+    const taskAttachmentBlobs = [], seen = new Set(); let attachmentBytes = 0;
+    const hasFiles = state.projects.some(p => [...p.tasks, ...p.backlog].some(t => t.attachments?.length || t.fileReferences?.length));
+    for (const project of state.projects) for (const task of [...project.tasks, ...project.backlog]) for (const descriptor of task.attachments || []) {
+      const key = `${project.id}:${descriptor.id}`; if (seen.has(key)) continue; seen.add(key);
+      attachmentBytes += descriptor.size;
+      if (attachmentBytes > 24 * 1024 * 1024) throw new BoardError('This backup exceeds the 24 MiB attachment limit. Export smaller boards separately.', 'TASK_FILES_LIMIT', 413);
+      taskAttachmentBlobs.push({ projectId: project.id, attachment: await this.taskAttachment(project.id, descriptor) });
+    }
+    if ((await this.state()).revision !== state.revision) throw conflict('The board changed while the backup was prepared. Export it again.', 'REVISION_CONFLICT');
+    return { application: 'Promptboard', kind: 'promptboard-backup', version: hasFiles ? 11 : 10, ...(hasFiles ? { taskAttachmentBlobs } : {}), exportedAt: new Date().toISOString(),
       base, baseGlobal: backupBaseScopes(state.settings.pendingBaseImport || state.settings),
       projects: state.projects.map(project => ({ id: project.id, name: project.name, createdAt: project.createdAt, nextTaskNumber: project.nextTaskNumber, labels: taskLabels(project.labels), backlog: backlogItems(project.backlog, project.labels), backlogSources: backlogImportSources(project.backlogSources), backlogImported: backlogImportLedger(project.backlogImported),
         ...(project.workflowMode === 'pipeline' ? { workflowMode: 'pipeline', pipeline: project.pipelineImport || project.pipeline } : {}),
@@ -2007,7 +2068,7 @@ export class Board {
         repository: project.repository ? { path: project.repository.path } : null, targetBranch: project.targetBranch ? { name: project.targetBranch.name } : null,
         agentDefaults: project.agentDefaults || null, workflow: project.workflow || {}, testCommands: project.testCommands || [], timelineNotes: project.timelineNotes || [], columnLayout: project.columnLayout || [],
         // Workspaces and runs are machine-specific and are not exported.
-        tasks: project.tasks.map(task => ({ id: task.id, number: task.number, title: task.title, prompt: task.prompt, priority: taskPriority(task.priority), labelIds: taskLabelIds(task.labelIds, project.labels), source: task.source, ...(task.externalSource === undefined ? {} : { externalSource: externalIssueSource(task.externalSource) }), checksOutdated: task.checksOutdated,
+        tasks: project.tasks.map(task => ({ ...taskFileFields(task), id: task.id, number: task.number, title: task.title, prompt: task.prompt, priority: taskPriority(task.priority), labelIds: taskLabelIds(task.labelIds, project.labels), source: task.source, ...(task.externalSource === undefined ? {} : { externalSource: externalIssueSource(task.externalSource) }), checksOutdated: task.checksOutdated,
           createdAt: task.createdAt, updatedAt: task.updatedAt, column: task.column, ...backupBaseScopes(task, true),
           ...(project.workflowMode === 'pipeline' ? normalizePipelineTaskSelection(project.pipelineImport || project.pipeline, { profileId: task.profileId, agentOverride: task.agentOverride }) : {}) })) })) };
   }
@@ -2018,8 +2079,30 @@ export class Board {
    */
   async importBackup(data, { replace = false } = {}) {
     const parsed = parseBackup(data);
+    const blobs = [];
+    if (data.version >= 11) {
+      if (!Array.isArray(data.taskAttachmentBlobs) || data.taskAttachmentBlobs.length > 2000) throw new BoardError('This backup needs its attachment bytes.', 'INVALID_BACKUP');
+      const expected = new Map();
+      for (const project of parsed.projects) for (const task of [...project.tasks, ...project.backlog]) for (const descriptor of task.attachments || []) expected.set(`${project.id}:${descriptor.id}`, descriptor);
+      let size = 0;
+      for (const row of data.taskAttachmentBlobs) {
+        if (!row || typeof row.projectId !== 'string') throw new BoardError('Invalid attachment ownership.', 'INVALID_BACKUP');
+        const decoded = decodeAttachment(row.attachment);
+        const declared = taskFileFields({ attachments: [{ id: row.attachment.id, name: row.attachment.name, size: row.attachment.size, sha256: row.attachment.sha256 }] }).attachments[0];
+        if (JSON.stringify(declared) !== JSON.stringify(decoded.descriptor)) throw new BoardError('Attachment metadata does not match its bytes.', 'INVALID_BACKUP');
+        const key = `${row.projectId}:${decoded.descriptor.id}`, descriptor = expected.get(key);
+        if (!descriptor || JSON.stringify(descriptor) !== JSON.stringify(decoded.descriptor)) throw new BoardError('Attachment bytes do not match the backup.', 'INVALID_BACKUP');
+        expected.delete(key); size += decoded.bytes.length;
+        if (size > 24 * 1024 * 1024) throw new BoardError('The backup attachment limit is 24 MiB.', 'INVALID_BACKUP');
+        blobs.push({ projectId: row.projectId, input: { name: decoded.descriptor.name, base64: decoded.bytes.toString('base64') } });
+      }
+      if (expected.size) throw new BoardError('This backup has missing attachment bytes.', 'INVALID_BACKUP');
+    } else if (data.projects.some(p => [...(p.tasks || []), ...(p.backlog || [])].some(t => t.attachments?.length || t.fileReferences?.length))) throw new BoardError('Task files require a version 11 backup.', 'INVALID_BACKUP');
+    const preImport = await this.state();
+    if (preImport.projects.length && !replace) throw conflict('Confirm that the import replaces the current board.', 'CONFIRMATION_REQUIRED');
+    if (this.#hasWorkspaceOrRun(preImport)) throw conflict('Tasks own worktrees or runs. Remove them before replacing the board.', 'WORKSPACES_EXIST');
     const preparedBase = parsed.base ? await this.base.prepareImport(parsed.base) : null;
-    if ([3, 4, 5, 6, 7, 8, 9, 10].includes(data.version) && !preparedBase) throw new BoardError('This backup is missing its Base resource library.', 'INVALID_BACKUP');
+    if ([3, 4, 5, 6, 7, 8, 9, 10, 11].includes(data.version) && !preparedBase) throw new BoardError('This backup is missing its Base resource library.', 'INVALID_BACKUP');
     if (preparedBase) {
       for (const incoming of parsed.projects) {
         Object.assign(incoming, remapBaseScopes(incoming, preparedBase.remap));
@@ -2032,7 +2115,10 @@ export class Board {
         if (profiles.some(profileId => resourceKinds.get(profileId) !== 'profile')) throw new BoardError('An imported agent profile reference points to another resource type.', 'INVALID_BACKUP');
       }
     }
+    for (const blob of blobs) await this.taskFiles.upload(blob.projectId, blob.input);
     return this.store.update(state => {
+      if (preparedBase && state.base.revision !== preparedBase.expectedBaseRevision) throw conflict('Base changed while importing. Read it again.', 'BASE_REVISION_CONFLICT');
+      if (data.version >= 11 && state.revision !== preImport.revision) throw conflict('The board changed while importing its files. Read it again.', 'REVISION_CONFLICT');
       if (state.projects.length && !replace) throw conflict('Confirm that the import replaces the current board.', 'CONFIRMATION_REQUIRED');
       if (this.#hasWorkspaceOrRun(state)) throw conflict('Tasks on the current board own worktrees or runs. Remove those worktrees before you replace the board.', 'WORKSPACES_EXIST');
       if (preparedBase) this.base.publishPreparedImport(state, preparedBase);
@@ -2506,7 +2592,11 @@ export class Board {
       if (request.requiredApproval && JSON.stringify(active?.activity?.planApproval) !== JSON.stringify(request.requiredApproval)) throw conflict('Native plan approval changed before its exit actions.', 'PLAN_APPROVAL_STALE');
     };
     await checkCurrent();
-    if (!rows.some(row => row.enabled && row.type === 'run_script')) return { task, project, cwd: null };
+    const filesRequested = rows.some(row => row.enabled && [row.message, row.script, row.url, row.body, row.title, ...Object.values(row.headers || {})]
+      .some(value => typeof value === 'string' && value.includes('{{attachments}}')));
+    const attachmentPaths = filesRequested ? await this.taskFiles.resolve(this, project.id, task, task.workspace?.status === 'ready' ? task.id : '') : [];
+    if (filesRequested) await checkCurrent();
+    if (!rows.some(row => row.enabled && row.type === 'run_script')) return { task, project, cwd: null, attachmentPaths };
     const repository = await this.#checkedRepository(project);
     let cwd = repository.root;
     if (task.workspace) {
@@ -2515,7 +2605,7 @@ export class Board {
       cwd = ws.path;
     }
     await checkCurrent();
-    return { task, project, cwd };
+    return { task, project, cwd, attachmentPaths };
   }
 
   #automationWorkOwned(key) {
@@ -2800,7 +2890,7 @@ export class Board {
         return record;
       });
       return { run, payload: { task: { id: task.id, title: task.title, prompt: task.prompt },
-        firstPrompt: renderPipelineSpawnPrompt({ task, project }) } };
+        firstPrompt: renderPipelineSpawnPrompt({ task, project, attachmentPaths: await this.taskFiles.resolve(this, project.id, task, task.id) }) } };
     }, { hold: this.automationMoves.get(taskId)?.queuedHold });
   }
 
@@ -2844,7 +2934,8 @@ export class Board {
     if (requireResume && !resume) throw conflict('This task has no unchanged native conversation to resume.', 'SESSION_NOT_RESUMABLE');
     const workspace = await this.ensureTaskWorktree(taskId);
     if (resume && workspace.path !== saved.workspacePath) throw conflict('The conversation belongs to another workspace.', 'SESSION_WORKSPACE_MISMATCH');
-    const firstPrompt = renderPipelineSpawnPrompt({ task: { ...task, workspace }, project });
+    const attachmentPaths = await this.taskFiles.resolve(this, project.id, task, task.id);
+    const firstPrompt = renderPipelineSpawnPrompt({ task: { ...task, workspace }, project, attachmentPaths });
     const run = await this.store.update(draft => {
       checkHandoff();
       const current = this.#task(draft, taskId), session = saved && draft.sessions.find(item => item.id === saved.id);
