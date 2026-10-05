@@ -339,6 +339,10 @@
         <div class="kanban-columns" id="kanban-columns" role="tabpanel" aria-labelledby="view-board" hidden></div>
         <section id="backlog" role="tabpanel" aria-labelledby="view-backlog" hidden>
           <div class="priority-filter-toolbar"><label class="field-label" for="backlog-sort">Order<select id="backlog-sort"><option value="manual">Manual</option><option value="newest">Newest first</option><option value="priority">Highest priority</option><option value="title">Title</option></select></label><p class="note">Drafts stay here until you add them to To Do.</p></div>
+          <div id="backlog-bulk" class="backlog-bulk" hidden><div class="detail-actions"><button type="button" class="secondary-button" id="backlog-select-visible">Select visible</button><button type="button" class="text-button" id="backlog-clear-selection">Clear selection</button><button type="button" class="secondary-button" id="backlog-promote-selected">Add selected to To Do</button><button type="button" class="text-button" id="backlog-delete-selected">Delete selected</button><button type="button" class="secondary-button" id="backlog-stop-remaining" hidden>Stop remaining</button></div>
+            <div id="backlog-bulk-confirm" hidden><p id="backlog-bulk-confirm-text"></p><div class="detail-actions"><button type="button" class="danger" id="backlog-bulk-confirm-delete">Delete drafts</button><button type="button" class="secondary-button" id="backlog-bulk-keep">Keep drafts</button></div></div>
+            <p class="note" id="backlog-bulk-progress" role="status" hidden></p><ul id="backlog-bulk-results" hidden></ul>
+          </div>
           <p class="note backlog-empty" id="backlog-empty" hidden></p><ol id="backlog-list" class="backlog-list"></ol>
           <p class="inline-error backlog-empty" id="backlog-error" role="alert" hidden></p>
         </section>
