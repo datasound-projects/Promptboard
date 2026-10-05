@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add a shared board/completed label filter with All labels, Unlabeled and project definitions. Combine priority/search, retain hidden tasks and archive selections, and reset removed/invalid label preferences without agent work.
+
 - Add keyboard task-label checkboxes, a shared name/color editor and readable badges on active/completed cards and task details. Keep nested card drafts, stale revision guards and exact prompts; hide unsupported controls on older servers.
 
 - Add project-shared label definitions, custom hex colors and task assignments through revision-checked metadata APIs. Preserve prompts, Base, pending messages and agent configuration; keep copies and portable backups consistent. State version 10 preserves an exact original migration backup. Label UI and backlog integration follow separately.

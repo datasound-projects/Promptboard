@@ -11,16 +11,31 @@
 
 ## Get started
 
-Install **Node.js 22+**, **Git**, and a [supported coding CLI](#supported-clis). Sign in to that CLI, then run:
+Install **Node.js 22.13+**, **Git**, and a [supported coding CLI](#supported-clis). Sign in to that CLI, then clone the latest published `main` branch:
 
 ```bash
-git clone https://github.com/datasound-projects/Promptboard.git
+git clone --branch main https://github.com/datasound-projects/Promptboard.git
 cd Promptboard
-npm install
+npm ci
 npm start
 ```
 
 Open **http://127.0.0.1:4318**. The navigation is **Compose | Kanban | Base**. Press **Ctrl+C** to stop.
+
+If you already have a `Promptboard` folder, use [Update an existing installation](#update-an-existing-installation) below.
+
+### Update an existing installation
+
+Stop Promptboard with **Ctrl+C**, open a terminal in its `Promptboard` folder, then run:
+
+```bash
+git switch main
+git pull --ff-only origin main
+npm ci
+npm start
+```
+
+These commands work in PowerShell and macOS/Linux terminals. Refresh your browser after restarting. Existing installations stay at their installed revision until you update them; `git log -1 --oneline` shows that revision.
 
 ## Compose — turn an idea into a clear prompt
 
@@ -45,7 +60,7 @@ Open **http://127.0.0.1:4318**. The navigation is **Compose | Kanban | Base**. P
 - Kanban agents inherit tools and MCPs configured in their CLI alongside selected Base resources. Native permissions and administrator policies still apply. Legacy Planning/Review retain their stage restrictions; pipeline permissions come from configuration. See [Base delivery](docs/base-delivery.md).
 - New app projects start with an empty seven-column pipeline. Existing stage boards retain their saved workflow; the project API accepts an explicit `workflowMode: "legacy"` for integrations. Creating a project or adding Composer/split tasks starts no agent.
 - A [deferred message scheduler](docs/native-message-scheduler.md) connects configured deferred enter rows to the same task agent, with scoped Stop, separate delivery receipts and no-replay recovery. Waiting for a queued or busy agent preserves the bounded input budget. Immediate/exit/slash delivery remains pending.
-- [Shared labels](docs/task-labels.md) provide task checkboxes, project-wide names/colors and badges with revision-checked saves. Label filters and backlog integration remain pending.
+- [Shared labels](docs/task-labels.md) provide task checkboxes, project-wide names/colors, badges and shared board/completed filters with revision-checked saves. Backlog integration remains pending.
 - Private [message target custody](docs/native-message-target.md) binds deferred transport preflight to the exact task, conversation, run and configuration; configured deferred enter scheduling uses this custody check.
 - [Stable task numbers](docs/task-numbers.md) persist project-local identities through edits, moves, archive, deletion and portable backups. Cards and archives show their saved number; search completed tasks by title or exact `#number`. `{{taskNumber}}` and `PROMPTBOARD_TASK_NUMBER` render `#N`; API metadata remains numeric.
 - Pipeline [task authoring](docs/pipeline-task-authoring.md) accepts a title without a prompt body. Creation enters To Do without starting agents; supplied Composer and split-task text stays exact.
