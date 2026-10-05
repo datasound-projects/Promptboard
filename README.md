@@ -11,16 +11,29 @@
 
 ## Get started
 
-Install **Node.js 22+**, **Git**, and a [supported coding CLI](#supported-clis). Sign in to that CLI, then run:
+Install **Node.js 22.13+**, **Git**, and a [supported coding CLI](#supported-clis). Sign in to that CLI, then clone the latest published `main` branch:
 
 ```bash
-git clone https://github.com/datasound-projects/Promptboard.git
+git clone --branch main https://github.com/datasound-projects/Promptboard.git
 cd Promptboard
-npm install
+npm ci
 npm start
 ```
 
 Open **http://127.0.0.1:4318**. The navigation is **Compose | Kanban | Base**. Press **Ctrl+C** to stop.
+
+### Update an existing installation
+
+Stop Promptboard with **Ctrl+C**, open a terminal in its `Promptboard` folder, then run:
+
+```bash
+git switch main
+git pull --ff-only origin main
+npm ci
+npm start
+```
+
+These commands work in PowerShell and macOS/Linux terminals. Refresh your browser after restarting. Existing installations stay at their installed revision until you update them; `git log -1 --oneline` shows that revision.
 
 ## Compose — turn an idea into a clear prompt
 
