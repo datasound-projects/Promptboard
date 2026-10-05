@@ -138,6 +138,7 @@ async function boardRoute(board, req, res, pathname, searchParams) {
       offset: searchParams.get('offset') || '0', version: searchParams.get('version') || '', file: action === 'file',
     }));
     if (method === 'PATCH' && !action) return view({ project: await board.renameProject(id, await body()) });
+    if (method === 'PATCH' && action === 'labels') return view({ project: await board.setLabels(id, await body()) });
     if (method === 'DELETE' && !action) return view({ deleted: await board.deleteProject(id, { expectedRevision: expected() }) ?? true });
     if (method === 'POST' && action === 'repository') return view(await board.linkRepository(id, await body()));
     if (method === 'POST' && action === 'init-repository') return view(await board.initAndLinkRepository(id, await body()));

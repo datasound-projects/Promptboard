@@ -76,6 +76,28 @@ test('configured Review/Testing/Merge enter messages retain one run and preserve
   assert.ok((await w.receipts()).every(move => move.actions[0].delivery.status === 'confirmed'));
 });
 
+test('label assignments and shared recoloring preserve a pending column message and its exact live target', async t => {
+  const w = await world(t); let ready = false, observed = 0;
+  w.board.executor.nativeMessageReadiness = () => { observed++; return ready ? 'ready' : 'waiting'; };
+  const initialProject = (await w.board.state()).projects.find(row => row.id === w.project.id);
+  await w.board.setLabels(w.project.id, { labels: [{ id: 'bug', name: 'Bug', color: '#c93451' }], expectedLabelRevision: 0 });
+  const start = await w.move('executing'), move = await w.move('code_review');
+  await until(() => observed > 0);
+  assert.deepEqual(w.writes, []); assert.equal((await w.receipts()).at(-1).actions[0].delivery.status, 'queued');
+  const before = await w.taskNow();
+  const edit = await w.board.updateTask(w.task.id, { labelIds: ['bug'], expectedLabelRevision: 1, expectedRevision: before.revision });
+  assert.equal(edit.task.contentRevision, before.contentRevision); assert.equal(edit.task.prompt, w.prompt);
+  await w.board.setLabels(w.project.id, { labels: [{ id: 'bug', name: 'Fix 雪', color: '#abcdef' }], expectedLabelRevision: 1 });
+  await new Promise(resolve => setTimeout(resolve, 120));
+  assert.equal((await w.receipts()).at(-1).actions[0].delivery.status, 'queued');
+  assert.equal((await w.board.state()).projects[0].revision, initialProject.revision);
+  ready = true; await w.settled();
+  assert.equal((await w.receipts()).at(-1).actions[0].delivery.status, 'confirmed');
+  assert.deepEqual(w.writes, [{ runId: start.run.id, message: 'Review #1 Split task' }]);
+  assert.equal(move.continuedRunId, start.run.id); assert.equal(w.starts.length, 1); assert.deepEqual(w.stops, []);
+  assert.equal(w.starts[0].firstPrompt, pipelineTaskEnvelope(w.task)); assert.equal(git(w.root, 'status', '--porcelain').trim(), '');
+});
+
 test('a fresh queued agent starts after all enter rows while message placement completes before native input', async t => {
   const w = await world(t, config => { config.columns.find(row => row.id === 'executing').automations.onEnter = [messageRow('execute', 'Continue {{title}}'),
     { id: 'notify', name: 'Notify', type: 'notify', enabled: true, title: 'Arrived', body: 'Task' }]; });
@@ -170,14 +192,14 @@ test('v7 migration keeps exact identities and extensions with an original byte-f
       prompt: '  Exact\r\n雪', revision: 9, extension: { saved: true } }] }] };
   const bytes = JSON.stringify(original, null, 3); await writeFile(join(dir, 'state.json'), bytes);
   const store = new Store(dir), saved = await store.read();
-  assert.equal(saved.version, 9); assert.equal(saved.revision, 27); assert.deepEqual(saved.projects, original.projects.map(project => ({ ...project, tasks: project.tasks.map(task => ({ ...task, priority: 0 })) })));
-  assert.deepEqual(saved.extension, original.extension); assert.deepEqual(saved.migrations.map(row => row.kind), ['state-v7-to-v8', 'state-v8-to-v9']);
+  assert.equal(saved.version, 10); assert.equal(saved.revision, 27); assert.deepEqual(saved.projects, original.projects.map(project => ({ ...project, labels: [], labelRevision: 0, tasks: project.tasks.map(task => ({ ...task, priority: 0, labelIds: [] })) })));
+  assert.deepEqual(saved.extension, original.extension); assert.deepEqual(saved.migrations.map(row => row.kind), ['state-v7-to-v8', 'state-v8-to-v9', 'state-v9-to-v10']);
   assert.equal(await readFile(join(dir, store.recovery.migrationBackup), 'utf8'), bytes);
   assert.deepEqual(await new Store(dir).read(), saved);
 });
 
 test('v8 pending references reject cross-task, duplicate, excessive and executable metadata; newer state stays untouched', async t => {
-  const original = { ...emptyState(), projects: [{ id: 'p', nextTaskNumber: 2, tasks: [{ id: 't', number: 1, column: 'todo' }] }] };
+  const original = { ...emptyState(), projects: [{ id: 'p', nextTaskNumber: 2, labels: [], labelRevision: 0, tasks: [{ id: 't', number: 1, column: 'todo', labelIds: [] }] }] };
   const key = { projectId: 'p', taskId: 't', transitionId: 'owned' };
   for (const references of [[{ ...key, taskId: 'other' }], [{ ...key, projectId: 'other' }], [key, key],
     [{ ...key, message: 'Never executable in state' }], [{ ...key, transitionId: '../outside' }],
@@ -185,7 +207,7 @@ test('v8 pending references reject cross-task, duplicate, excessive and executab
     const state = structuredClone(original); state.projects[0].tasks[0].pendingAutomationMessages = references;
     assert.throws(() => migrateState(state), /Invalid pending message references/);
   }
-  const dir = await temp(t), bytes = JSON.stringify({ ...original, version: 10 }); await writeFile(join(dir, 'state.json'), bytes);
+  const dir = await temp(t), bytes = JSON.stringify({ ...original, version: 11 }); await writeFile(join(dir, 'state.json'), bytes);
   await assert.rejects(new Store(dir).read(), { code: 'STATE_VERSION_UNSUPPORTED' });
   assert.equal(await readFile(join(dir, 'state.json'), 'utf8'), bytes); assert.deepEqual(await readdir(dir), ['state.json']);
 });
