@@ -2,7 +2,7 @@
 
 The Backlog view stages local drafts separately from the pipeline board, following Kangentic's [Backlog and imports](https://www.kangentic.com/guide/backlog/). Bulk operations, active-column promotion, attachments and tracker imports remain pending.
 
-Choose **Backlog** in a pipeline project and **New draft** to save a title with optional prompt, priority and shared labels. Open a draft title to edit it. Saving and **Add to To Do** never start an agent. Composer and split tasks continue adding directly to To Do. Servers without the Backlog capability and legacy projects retain the Board view.
+Choose **Backlog** in a pipeline project and **New draft** to save a title with optional prompt, priority and shared labels. Rows show creation age, priority and labels. Open a draft title to edit it. Saving and **Add to To Do** never start an agent. Composer and split tasks continue adding directly to To Do. Servers without the Backlog capability and legacy projects retain the Board view.
 
 Priority and label filters are shared with Board and completed tasks, using the existing per-project browser preferences. Board and Backlog share a search query per project for the current page; it searches title, exact prompt and assigned label names, ignoring case. Timeline stays unfiltered. Completed tasks have their own title/prompt/label search and exact #number lookup. Filtering and sorting write no saved data.
 

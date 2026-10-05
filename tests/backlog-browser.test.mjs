@@ -34,6 +34,7 @@ for (const width of [1280, 390]) for (const theme of ['light', 'dark']) {
     await browser.goto(app.url + '/#/kanban'); await browser.resize(width, 900); await browser.until(`document.querySelector('[data-id="${card.id}"]')`, 'Composer board');
     assert.equal(await browser.eval('return innerWidth;'), width); assert.equal(await browser.eval("return document.documentElement.dataset.theme || 'light';"), theme);
     await enter(browser, '#view-backlog'); await browser.until(`document.querySelector('[data-backlog-id="${first.id}"]')`, 'backlog list');
+    assert.ok(await browser.eval(`return document.querySelector('[data-backlog-id="${first.id}"]').textContent.includes('Created');`));
     await select(browser, 'board-label-filter', 'label:bug'); await select(browser, 'board-priority-filter', '4'); await search(browser, 'ENGINEERED');
     assert.deepEqual(await browser.eval('return [...document.querySelectorAll("#backlog-list > li")].map(e=>e.dataset.backlogId);'), [first.id, second.id]);
     assert.equal(await browser.eval('return document.getElementById("board-count").textContent;'), '2/3');

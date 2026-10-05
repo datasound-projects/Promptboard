@@ -4814,6 +4814,7 @@ function renderBacklog(project) {
     const button = (text, action, callback, className = 'text-button') => { const node = detailButton(text, callback, className); node.dataset.backlogAction = action; node.disabled = Boolean(backlogOperation); return node; };
     heading.append(button(item.title, 'edit', () => openBacklogDraft(project.id, item.id), 'kanban-open'));
     appendTaskPriority(heading, item); appendTaskLabels(heading, item, project);
+    const age = paragraph(`Created ${timeAgo(item.createdAt)}`, 'note'); age.title = new Date(item.createdAt).toLocaleString();
     const actions = document.createElement('div'); actions.className = 'detail-actions';
     actions.append(button('Add to To Do', 'promote', () => runBacklogOperation(project, async () => {
       const result = await boardCall('POST', backlogPath(project.id, item.id) + '/promote', { expectedRevision: item.revision, expectedBacklogRevision: project.backlogRevision });
@@ -4830,7 +4831,7 @@ function renderBacklog(project) {
       const control = button(text, action, () => reorder(direction)); control.disabled ||= sort !== 'manual' || unavailable; actions.append(control);
     }
     actions.append(button('Delete', 'delete', () => { backlogDelete = { projectId: project.id, id: item.id }; renderBacklog(project); backlogRow(item.id)?.querySelector('[data-backlog-action=keep]')?.focus(); }));
-    row.append(heading);
+    row.append(heading, age);
     if (item.prompt) row.append(paragraph(item.prompt, 'backlog-preview'));
     if (item.source) row.append(paragraph(cardStatus(item).text, 'note'));
     row.append(actions);
