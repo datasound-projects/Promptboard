@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/readme-logo.png" width="140" alt="Promptboard mascot">
+  <img src="docs/readme-logo.png" width="960" alt="Promptboard mascot">
 </p>
 
 <h1 align="center">Promptboard</h1>
