@@ -679,6 +679,9 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
 .archive-toolbar > label { flex: 1 1 220px; min-width: 0; }
 .priority-filter-toolbar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 16px; padding: 8px 12px; border-top: 1px solid var(--line); }
 .priority-filter-toolbar > label { flex: 0 1 220px; min-width: 0; }
+@media (max-width: 730px) {
+  #board-filter-toolbar > label { flex: 1 1 120px; }
+}
 .priority-filter-toolbar > .note { flex: 1 1 140px; margin: 0 0 8px; }
 .archive-table-scroll { max-height: 55vh; overflow: auto; border: 1px solid var(--line); border-radius: 8px; }
 .archive-table { width: 100%; min-width: 720px; table-layout: fixed; border-collapse: collapse; text-align: left; }
