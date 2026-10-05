@@ -50,8 +50,8 @@ test('v5 migration preserves pipeline configuration, exact Composer text, Base a
     sessions: [{ id: 's', taskId: 't', projectId: 'p', status: 'suspended', runIds: ['r'], artifacts: [], nativeSessionId: 'native-exact' }] };
   const bytes = JSON.stringify(original); await writeFile(join(dir, 'state.json'), bytes);
   const store = new Store(dir), migrated = await store.read();
-  assert.equal(migrated.version, STATE_VERSION); assert.equal(STATE_VERSION, 10);
-  assert.deepEqual(migrated.projects, original.projects.map(project => ({ ...project, nextTaskNumber: 2, labels: [], labelRevision: 0, tasks: project.tasks.map(task => ({ ...task, number: 1, priority: 0, labelIds: [] })) }))); assert.deepEqual(migrated.base, original.base);
+  assert.equal(migrated.version, STATE_VERSION); assert.equal(STATE_VERSION, 11);
+  assert.deepEqual(migrated.projects, original.projects.map(project => ({ ...project, nextTaskNumber: 2, labels: [], labelRevision: 0, backlog: [], backlogRevision: 0, tasks: project.tasks.map(task => ({ ...task, number: 1, priority: 0, labelIds: [] })) }))); assert.deepEqual(migrated.base, original.base);
   assert.deepEqual(migrated.runs, original.runs); assert.deepEqual(migrated.sessions, original.sessions);
   assert.equal(await readFile(join(dir, store.recovery.migrationBackup), 'utf8'), bytes);
   await assert.rejects(access(join(dir, 'automations')), { code: 'ENOENT' });
@@ -231,7 +231,7 @@ test('portable backups omit move grants and histories, and imported executable r
 
 test('v6 rejects forged cross-task grants and quarantines malformed summaries with their original bytes preserved', async t => {
   const key = { projectId: 'p', taskId: 't', transitionId: 'move' };
-  const original = { ...emptyState(), projects: [{ id: 'p', labels: [], labelRevision: 0, tasks: [{ id: 't', labelIds: [], automationMoves: [key], automationMove: { ...key, status: 'pending', phase: 'exit' } }] }] };
+  const original = { ...emptyState(), projects: [{ id: 'p', labels: [], labelRevision: 0, backlog: [], backlogRevision: 0, tasks: [{ id: 't', labelIds: [], automationMoves: [key], automationMove: { ...key, status: 'pending', phase: 'exit' } }] }] };
   for (const changed of [ { taskId: 'another' }, { updatedAt: -1 }, { reason: 'x'.repeat(501) }, { errorCode: 'raw private diagnostics' } ]) {
     const invalid = structuredClone(original); Object.assign(invalid.projects[0].tasks[0].automationMove, changed);
     assert.throws(() => migrateState(invalid), /Invalid task automation move/);

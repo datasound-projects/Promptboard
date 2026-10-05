@@ -128,6 +128,16 @@ async function boardRoute(board, req, res, pathname, searchParams) {
   const note = pathname.match(/^\/api\/projects\/([A-Za-z0-9_-]{1,100})\/timeline\/([A-Za-z0-9_-]{1,100})$/);
   if (note && method === 'PATCH') return send(res, 200, { note: await board.updateTimelineNote(note[1], note[2], await body()) });
   if (note && method === 'DELETE') return send(res, 200, { deleted: await board.deleteTimelineNote(note[1], note[2]) ?? true });
+  const backlog = pathname.match(/^\/api\/projects\/([A-Za-z0-9_-]{1,100})\/backlog(?:\/([A-Za-z0-9_-]{1,100})(?:\/(promote))?)?$/);
+  if (backlog) {
+    const [, projectId, itemId, action] = backlog;
+    if (!itemId && method === 'POST') return view({ item: await board.createBacklogItem(projectId, await body()) });
+    if (!itemId && method === 'PATCH') return view({ project: await board.reorderBacklog(projectId, await body()) });
+    if (itemId && !action && method === 'PATCH') return view(await board.updateBacklogItem(projectId, itemId, await body()));
+    if (itemId && !action && method === 'DELETE') return view({ deleted: await board.deleteBacklogItem(projectId, itemId, await body()) });
+    if (itemId && action === 'promote' && method === 'POST') return view({ task: await board.promoteBacklogItem(projectId, itemId, await body()) });
+    return false;
+  }
   if (!match) return false;
   const [, kind, id, action = ''] = match;
   const expected = () => Number(searchParams.get('expectedRevision'));

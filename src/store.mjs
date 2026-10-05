@@ -12,9 +12,10 @@ import { normalizePipelineConfig, normalizePipelineTaskSelection } from './pipel
 import { assignTaskNumbers, validateTaskNumbers } from './task-numbers.mjs';
 import { taskPriority } from './task-priority.mjs';
 import { taskLabels, taskLabelIds, labelRevision } from './task-labels.mjs';
+import { validateBacklogs } from './backlog.mjs';
 
 export const STATE_SCHEMA = 'promptboard.state';
-export const STATE_VERSION = 10;
+export const STATE_VERSION = 11;
 const STATE_FILE = 'state.json';
 
 export function defaultDataDir(env = process.env, platform = process.platform) {
@@ -40,7 +41,7 @@ export class StoreError extends Error {
 function checkShape(data) {
   if (!data || typeof data !== 'object' || data.schema !== STATE_SCHEMA) throw new Error('Unknown state file.');
   if (data.version > STATE_VERSION) throw new StoreError('The board was saved by a newer Promptboard version. Update the app; the file was not changed.', 'STATE_VERSION_UNSUPPORTED');
-  if (![2, 3, 4, 5, 6, 7, 8, 9, STATE_VERSION].includes(data.version) || !Array.isArray(data.projects) || !Array.isArray(data.runs)) throw new Error('Unsupported state shape.');
+  if (![2, 3, 4, 5, 6, 7, 8, 9, 10, STATE_VERSION].includes(data.version) || !Array.isArray(data.projects) || !Array.isArray(data.runs)) throw new Error('Unsupported state shape.');
   if (data.version >= 3 && (!data.base || !Array.isArray(data.base.resources) || !Array.isArray(data.base.approvedRoots) || !Number.isSafeInteger(data.base.revision) || data.base.revision < 0)) throw new Error('Invalid Base registry shape.');
   if (data.version >= 4 && (!Array.isArray(data.sessions) || data.sessions.some(session => !session || typeof session !== 'object'
     || typeof session.id !== 'string' || !session.id || typeof session.taskId !== 'string' || typeof session.projectId !== 'string'
@@ -80,6 +81,7 @@ function checkShape(data) {
         || Object.keys(task.automationMove).some(name => !['projectId', 'taskId', 'transitionId', 'status', 'phase', 'updatedAt', 'reason', 'errorCode'].includes(name)))) throw new Error('Invalid task automation move.');
     }
   }
+  if (data.version >= 11) validateBacklogs(data.projects);
   return { ...emptyState(), ...data };
 }
 
@@ -111,11 +113,15 @@ export function migrateState(data) {
     for (const project of state.projects) for (const task of project.tasks) task.priority = taskPriority(task.priority);
     state.migrations.push({ kind: 'state-v8-to-v9', at: Date.now() });
   }
-  for (const project of state.projects) {
-    project.labels = []; project.labelRevision = 0;
-    for (const task of project.tasks) task.labelIds = [];
+  if (state.version < 10) {
+    for (const project of state.projects) {
+      project.labels = []; project.labelRevision = 0;
+      for (const task of project.tasks) task.labelIds = [];
+    }
+    state.migrations.push({ kind: 'state-v9-to-v10', at: Date.now() });
   }
-  state.migrations.push({ kind: 'state-v9-to-v10', at: Date.now() });
+  for (const project of state.projects) { project.backlog = []; project.backlogRevision = 0; }
+  state.migrations.push({ kind: 'state-v10-to-v11', at: Date.now() });
   state.version = STATE_VERSION;
   return state;
 }
