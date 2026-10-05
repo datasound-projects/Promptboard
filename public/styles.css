@@ -1380,3 +1380,14 @@ button.timeline-task:hover { text-decoration: underline; }
 .backlog-bulk { padding: 10px 16px; border-top: 1px solid var(--line); }
 .backlog-bulk .detail-actions { flex-wrap: wrap; }
 #backlog-bulk-results { max-height: 25vh; overflow: auto; padding-left: 20px; overflow-wrap: anywhere; }
+
+/* GitHub import controls stay usable at the actual phone viewport. */
+#backlog-import-dialog{width:min(860px,calc(100% - 32px))}
+.backlog-import-filters{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:16px 0}
+.backlog-import-connect{display:flex;align-items:end;flex-wrap:wrap;gap:12px}.backlog-import-connect>.field-label{flex:1 1 220px;margin:0}
+.backlog-import-list{list-style:none;padding:0;margin:12px 0;display:grid;gap:12px}
+.backlog-import-row{border:1px solid var(--line);border-radius:8px;padding:12px;min-width:0;overflow-wrap:anywhere}
+.backlog-import-row-heading{display:flex;align-items:start;gap:10px}.backlog-import-row-heading>label{flex:1;min-width:0}
+.backlog-import-preview{white-space:pre-wrap;max-height:6rem;overflow:auto;font-size:.85rem}
+.task-external-source{font-size:.75rem;overflow-wrap:anywhere;max-width:100%}
+@media(max-width:730px){.backlog-import-filters{grid-template-columns:minmax(0,1fr)}#backlog-import-dialog .detail-actions>*{max-width:100%;white-space:normal;overflow-wrap:anywhere}}

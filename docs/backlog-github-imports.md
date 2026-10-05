@@ -1,6 +1,6 @@
 # GitHub Issues import backend
 
-This step adds saved GitHub repository sources and selected-page issue imports to pipeline projects. It is a backend foundation: the source picker, persistent preview cache, incremental sync, attachment downloads and other tracker adapters follow separately.
+This step adds saved GitHub repository sources and selected-page issue imports to pipeline projects. The [source picker](backlog-github-import-ui.md) exposes these operations with explicit page selection. Persistent preview cache, incremental sync, attachment downloads and other tracker adapters follow separately.
 
 Authenticated POST `backlog/sources/github-issues` accepts a repository name/HTTPS URL and `expectedImportRevision`. The existing non-interactive GitHub CLI verifies read access before the source is saved. Source removal uses DELETE `backlog/sources/:sourceId` with the same revision. A project can save 20 sources. These operations do not change board settings, Base assignments, pending messages or agent sessions.
 
@@ -12,4 +12,4 @@ Stable global issue identity survives promotion, Done archiving, card deletion, 
 
 State version 12 adds empty import catalogs/identities while preserving all version 11 backlog drafts, labels, tasks, Base and native state. Migration keeps an exact original backup, and newer versions are refused unchanged. Portable version 10 preserves source definitions, provenance and duplicate identities while retaining inert import behavior; older portable formats begin with empty import metadata. Browser migration cannot represent these fields and requires portable import instead.
 
-The [read-only preview foundation](github-backlog-preview.md) provides source pages. Kangentic's [Backlog and imports](https://www.kangentic.com/guide/backlog/) supplies the target workflow. The import UI/cache and inline source-link presentation are not complete in this backend step.
+The [read-only preview foundation](github-backlog-preview.md) provides source pages. Kangentic's [Backlog and imports](https://www.kangentic.com/guide/backlog/) supplies the target workflow. The picker adds inline source links and guarded selection; persistent caching and incremental synchronization remain pending.

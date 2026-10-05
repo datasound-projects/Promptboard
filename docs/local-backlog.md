@@ -1,6 +1,6 @@
 # Local backlog
 
-The Backlog view stages local drafts separately from the pipeline board, following Kangentic's [Backlog and imports](https://www.kangentic.com/guide/backlog/). Bulk selection can add drafts to the chosen column or delete them. [Column arrival](backlog-column-arrival.md) applies the destination's configured automations and session rules. Attachments and tracker imports remain pending.
+The Backlog view stages local drafts separately from the pipeline board, following Kangentic's [Backlog and imports](https://www.kangentic.com/guide/backlog/). Bulk selection can add drafts to the chosen column or delete them. [Column arrival](backlog-column-arrival.md) applies the destination's configured automations and session rules. [GitHub issue import](backlog-github-import-ui.md) supplies saved-source page selection and deduplicated inert drafts. Persistent source caching, attachments and other tracker adapters remain pending.
 
 Choose **Backlog** in a pipeline project and **New draft** to save a title with optional prompt, priority and shared labels. Rows show creation age, priority and labels. Open a draft title to edit it. Saving and **Add to To Do** never start an agent. Choose another **Add to column** destination to apply its arrival rules, including configured auto-spawn. Composer and split tasks continue adding directly to To Do. Servers without the Backlog capability and legacy projects retain the Board view; servers without destination support retain To Do-only promotion.
 
