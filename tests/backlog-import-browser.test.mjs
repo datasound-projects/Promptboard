@@ -4,6 +4,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { findChrome, launch } from './helpers/browser.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
+import { BoardError } from '../src/board.mjs';
 import { listGitHubBacklogIssues } from '../src/backlog-github.mjs';
 const chrome = await findChrome(), exact = '  Engineered source 雪\r\n{{title}}\r\n  ';
 const issue = (number, patch = {}) => ({ id: 100 + number, number, title: `Issue ${number}`, body: exact, state: 'open', html_url: `https://github.com/acme/app/issues/${number}`, labels: [{ name: 'Bug', color: 'ABCDEF' }], assignees: [{ login: 'octo' }], type: { name: 'Bug' }, created_at: '2026-10-01T00:00:00Z', updated_at: '2026-10-02T00:00:00Z', ...patch });
@@ -195,9 +196,9 @@ test('an accepted import retains its project owner while close, Escape and proje
   assert.ok(await b.eval(`return window.__writes.at(-1).url.includes(${JSON.stringify(w.project.id)});`)); assert.deepEqual(state.runs, []); assert.deepEqual(state.sessions, []);
 });
 
-test('inline-image imports abort drafts atomically on file errors and require explicit text-only selection to continue', { skip: !chrome, timeout: 60000 }, async t => {
+test('uncertain inline-image import responses require review before explicit text-only recovery', { skip: !chrome, timeout: 60000 }, async t => {
   const url = 'https://github.com/user-attachments/assets/abc123', body = exact + `![screenshot](${url})`, w = await setup(t, [issue(1, { body })], { saved: true, width: 390, theme: 'dark' }), { browser: b } = w;
-  w.app.board.imageDownloader = async () => { throw Object.assign(new Error('Image unavailable. Uncheck images to import text only.'), { code: 'TASK_FILE_IMPORT_FAILED', status: 409 }); };
+  w.app.board.imageDownloader = async () => { throw new BoardError('Image request failed unexpectedly. Uncheck images to import text only.', 'TASK_FILE_IMPORT_FAILED', 500); };
   await open(w); await ready(w); assert.equal(await b.eval('return document.getElementById("backlog-import-images").checked;'), true); await key(b, item(101), true);
   const before = await w.app.board.state(); await key(b, '#backlog-import-submit'); await b.until('backlogImportDraft.blocked&&!backlogImportDraft.mutation', 'image failure requires review');
   assert.deepEqual(await w.app.board.state(), before); assert.match(await b.eval('return document.getElementById("backlog-import-error").textContent;'), /Uncheck images/);
@@ -212,4 +213,16 @@ test('the import picker saves public inline-image bytes separately while retaini
   await open(w); await ready(w); await key(b, item(101), true); await key(b, '#backlog-import-submit'); await b.until('!backlogImportDraft.mutation&&backlogImportDraft.imported.has("github:issue:101")', 'image import completed');
   const owner = await w.owner(); assert.equal(downloads, 1); assert.equal(owner.backlog[0].prompt, body); assert.equal(owner.backlog[0].attachments[0].name, 'screenshot.png'); assert.equal(owner.tasks[0].prompt, exact); assert.deepEqual((await w.app.board.state()).runs, []); assert.deepEqual((await w.app.board.state()).sessions, []);
   assert.equal((await w.app.board.taskAttachment(w.project.id, owner.backlog[0].attachments[0])).size, 68);
+});
+
+test('confirmed inline-image failures preserve selections and allow only an explicit text-only retry without automatic replay', { skip: !chrome, timeout: 60000 }, async t => {
+  const url = 'https://github.com/user-attachments/assets/abc123', body = exact + `![screenshot](${url})`, w = await setup(t, [issue(1, { body })], { saved: true }), b = w.browser;
+  let downloads = 0; w.app.board.imageDownloader = async () => { downloads++; throw new BoardError('Image unavailable. Uncheck images to import text only.', 'TASK_FILE_IMPORT_FAILED', 409); };
+  await open(w); await ready(w); await key(b, item(101), true); const before = await w.app.board.state(); await key(b, '#backlog-import-submit');
+  await b.until('!backlogImportDraft.mutation&&backlogImportDraft.error.includes("Uncheck images")', 'confirmed image error');
+  assert.deepEqual(await w.app.board.state(), before); assert.equal(downloads, 1); assert.equal(await b.eval('return backlogImportDraft.blocked;'), false); assert.equal(await b.eval('return backlogImportDraft.selected.has("github:issue:101");'), true);
+  assert.equal(await b.eval('return window.__writes.length;'), 1);
+  await key(b, '#backlog-import-images', true); assert.equal((await w.owner()).backlog.length, 0); assert.equal(downloads, 1); assert.equal(await b.eval('return window.__writes.length;'), 1);
+  await key(b, '#backlog-import-submit'); await b.until('!backlogImportDraft.mutation&&backlogImportDraft.imported.has("github:issue:101")', 'manual text-only retry');
+  assert.equal(downloads, 1); assert.equal(await b.eval('return window.__writes.at(-1).body.includeAttachments;'), false); assert.equal((await w.owner()).backlog[0].prompt, body); assert.equal((await w.owner()).backlog[0].attachments, undefined); assert.deepEqual((await w.app.board.state()).runs, []);
 });

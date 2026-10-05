@@ -48,7 +48,7 @@ export class PipelineAutomations {
       return Promise.reject(new PipelineAutomationError('Finish or cancel the current automation group first.', 'AUTOMATION_GROUP_ACTIVE'));
     }
     let metadata;
-    try { rows = structuredClone(rows); metadata = structuredClone({ task: context?.task, project: context?.project, cwd: context?.cwd }); }
+    try { rows = structuredClone(rows); metadata = structuredClone({ task: context?.task, project: context?.project, cwd: context?.cwd, attachmentPaths: context?.attachmentPaths || [] }); }
     catch { return Promise.reject(new PipelineAutomationError('Use plain task metadata and automation definitions.', 'AUTOMATION_CONTEXT_INVALID')); }
     const controller = new AbortController(), external = AbortSignal.any([controller.signal, ...(signal ? [signal] : [])]);
     const groupStartedAt = performance.now();

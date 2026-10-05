@@ -242,3 +242,16 @@ test('v6 rejects forged cross-task grants and quarantines malformed summaries wi
     await assert.rejects(access(join(dir, 'state.json')), { code: 'ENOENT' });
   }
 });
+
+test('column templates explicitly resolve attachment paths without making unrelated moves depend on missing files', async t => {
+  const notifications = [], actions = new PipelineActions({ notifier: async notification => { notifications.push(notification); return { confirmed: true }; } }), w = await world(t, { actions });
+  w.config.columns.find(column => column.id === 'executing').automations.onEnter = [{ id: 'files', name: 'File context', enabled: true, type: 'notify', title: 'Context', body: '{{attachments}}' }];
+  w.config.columns.find(column => column.id === 'executing').automations.onExit = [{ id: 'literal', name: '{{attachments}}', enabled: true, type: 'notify', title: 'Literal name', body: 'No file template' }];
+  await w.configure(); const attachment = await w.board.uploadTaskAttachment(w.projectId, { name: 'context.txt', base64: Buffer.from('template context').toString('base64') });
+  const task = await w.board.createTask({ projectId: w.projectId, title: 'Files', prompt: '  exact {{attachments}}\r\n ', attachments: [attachment], fileReferences: ['README.md'] });
+  const paths = await w.board.taskFiles.resolve(w.board, w.projectId, task); await w.move(task.id, 'executing');
+  assert.equal(notifications.length, 1); assert.equal(notifications[0].body, '\n' + paths.join('\n')); assert.equal((await w.taskNow(task.id)).prompt, task.prompt); assert.equal(w.starts.length, 0);
+  await rm(paths[0]); await w.move(task.id, 'todo'); assert.equal((await w.taskNow(task.id)).column, 'todo'); assert.equal(w.starts.length, 0); assert.equal(notifications[1].body, 'No file template');
+  await assert.rejects(w.move(task.id, 'executing'), { code: 'TASK_FILE_MISSING' });
+  assert.equal((await w.taskNow(task.id)).automationMove.status, 'cancelled'); assert.equal(notifications.length, 2); assert.equal(w.starts.length, 0);
+});

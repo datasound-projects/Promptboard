@@ -66,7 +66,13 @@ export class TaskFiles {
       handle = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW || 0), 0o600);
       await handle.writeFile(bytes); await handle.sync();
     } catch (error) {
-      if (error.code !== 'EEXIST') { if (handle) await unlink(path).catch(() => {}); throw error; }
+      if (error.code !== 'EEXIST') {
+        if (handle) {
+          const owned = await handle.stat().catch(() => null), current = await lstat(path).catch(() => null);
+          if (owned && current && same(owned, current) && !current.isSymbolicLink()) await unlink(path).catch(() => {});
+        }
+        throw error;
+      }
     } finally { await handle?.close(); }
     await this.read(projectId, descriptor); return descriptor;
   }

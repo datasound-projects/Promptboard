@@ -2592,7 +2592,11 @@ export class Board {
       if (request.requiredApproval && JSON.stringify(active?.activity?.planApproval) !== JSON.stringify(request.requiredApproval)) throw conflict('Native plan approval changed before its exit actions.', 'PLAN_APPROVAL_STALE');
     };
     await checkCurrent();
-    if (!rows.some(row => row.enabled && row.type === 'run_script')) return { task, project, cwd: null };
+    const filesRequested = rows.some(row => row.enabled && [row.message, row.script, row.url, row.body, row.title, ...Object.values(row.headers || {})]
+      .some(value => typeof value === 'string' && value.includes('{{attachments}}')));
+    const attachmentPaths = filesRequested ? await this.taskFiles.resolve(this, project.id, task, task.workspace?.status === 'ready' ? task.id : '') : [];
+    if (filesRequested) await checkCurrent();
+    if (!rows.some(row => row.enabled && row.type === 'run_script')) return { task, project, cwd: null, attachmentPaths };
     const repository = await this.#checkedRepository(project);
     let cwd = repository.root;
     if (task.workspace) {
@@ -2601,7 +2605,7 @@ export class Board {
       cwd = ws.path;
     }
     await checkCurrent();
-    return { task, project, cwd };
+    return { task, project, cwd, attachmentPaths };
   }
 
   #automationWorkOwned(key) {

@@ -96,11 +96,12 @@ test('inline image capture rejects arbitrary hosts/private DNS and preserves sel
   w.board.imageDownloader = () => assert.fail('Duplicates do not redownload files'); const repeated = await w.board.importGitHubBacklogIssues(w.project.id, source.id, { ...request, expectedImportRevision: 2, expectedBacklogRevision: 1 }); assert.equal(repeated.skipped.length, 1);
 });
 
-test('attachment custody refuses symlink and hard-link substitution and changed storage directories', { skip: process.platform === 'win32' }, async t => {
+test('attachment custody refuses symlink and hard-link substitution and changed storage directories', async t => {
   const root = await temp(t), service = new TaskFiles(root), descriptor = await service.upload('p', input()), file = await service.read('p', descriptor), outside = join(await temp(t), 'outside');
-  await writeFile(outside, file.bytes); await unlink(file.path); await symlink(outside, file.path); await assert.rejects(service.read('p', descriptor), { code: 'TASK_FILES_CHANGED' });
-  await unlink(file.path); await link(outside, file.path); await assert.rejects(service.read('p', descriptor), { code: 'TASK_FILES_CHANGED' });
-  await unlink(file.path); await rm(join(root, 'task-files'), { recursive: true }); await symlink(await temp(t), join(root, 'task-files')); await assert.rejects(service.upload('p', input()), { code: 'TASK_FILES_STORAGE' });
+  await writeFile(outside, file.bytes); await unlink(file.path);
+  if (process.platform !== 'win32') { await symlink(outside, file.path); await assert.rejects(service.read('p', descriptor), { code: 'TASK_FILES_CHANGED' }); await unlink(file.path); }
+  await link(outside, file.path); await assert.rejects(service.read('p', descriptor), { code: 'TASK_FILES_CHANGED' });
+  await unlink(file.path); await rm(join(root, 'task-files'), { recursive: true }); await symlink(await temp(t), join(root, 'task-files'), process.platform === 'win32' ? 'junction' : 'dir'); await assert.rejects(service.upload('p', input()), { code: 'TASK_FILES_STORAGE' });
 });
 test('file-bearing backup imports retain a strict concurrent board revision guard', async t => {
   const w = await world(t), attachment = await w.board.uploadTaskAttachment(w.project.id, input()); await w.board.createTask({ projectId: w.project.id, title: 'Files', prompt: exact, attachments: [attachment] });
