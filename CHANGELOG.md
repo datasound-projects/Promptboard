@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Add a keyboard GitHub Issues import picker with saved repositories, page filters, retained hidden selections, explicit short titles and original issue links. Keep imports inert, preserve Composer tasks and captured project ownership, and require explicit review after stale or unknown write results. Older servers hide the controls; persistent cache, incremental sync, attachments and other tracker adapters remain pending.
+
+- Add revision-checked saved GitHub repository sources and atomic selected-issue backlog imports. Preserve exact descriptions, shared labels, assignees and original ticket provenance; retain duplicate identities across promotion, archive, deletion and reconnection. State 12 and portable 10 retain this inert metadata; completed migrations validate current provenance invariants before publishing, preserving originals on failure. Import UI, persistent cache and attachments follow separately.
+
+- Add an authenticated, read-only GitHub Issues preview API with bounded CLI requests, exact text, pagination, stable source identities and explicit malformed-item reports. It creates no drafts or agents; selective import and saved-source deduplication follow separately.
+
+- Add a Backlog destination picker and revision-checked promotion API for chosen columns using the existing arrival lifecycle. Capture destinations for single/bulk operations, preserve published cards and report failed arrivals without replaying promotion; initial creation skips To Do exit actions. Older servers retain To Do-only promotion.
+
 - Add Backlog multi-selection and ordered To Do promotion or confirmed deletion, retaining hidden selections and captured revisions. Stop unstarted requests on cancellation, project/view changes, conflicts or unknown replies; report each result without replay or agent work.
 
 - Keep delayed Backlog editor-close events from stealing subsequent keyboard focus or discarding a reopened draft. Retain the safe Keep draft deletion focus.

@@ -30,20 +30,30 @@ const complete = text => {
 };
 begin(args.at(-1)); capture({ kind: 'initial', text: args.at(-1) }); complete('PB_NATIVE_FIRST');
 process.stdout.write('\x1b[?2004h'); process.stdin.setRawMode?.(true);
-let buffer = ''; const decoder = new StringDecoder('utf8');
+const busyReply = Array.from({ length: 160 }, (_, n) => 'PB_BUSY_LINE_' + String(n + 1).padStart(3, '0')).concat('PB_BUSY_END').join('\n');
+let buffer = '', earlyCompletion = false; const decoder = new StringDecoder('utf8');
 process.stdin.on('data', bytes => {
   buffer += decoder.write(bytes);
   while (buffer.startsWith('\x1b[200~')) {
-    const end = buffer.indexOf('\x1b[201~'); if (end < 0 || buffer.length <= end + 6) return;
+    const end = buffer.indexOf('\x1b[201~'); if (end < 0) return;
+    if (buffer.length <= end + 6) {
+      if (process.env.FAKE_CODEX_QUEUE_ENDS_AFTER_PASTE && active && !earlyCompletion) {
+        earlyCompletion = true; capture({ kind: 'completed-before-key', text: buffer.slice(6, end) });
+        setTimeout(() => complete(busyReply), 100);
+      }
+      return;
+    }
     const key = buffer[end + 6], text = buffer.slice(6, end); buffer = buffer.slice(end + 7);
     capture({ kind: 'submitted', text, key, busy: Boolean(active) });
     if (key === '\t' && active) {
       if (process.env.FAKE_CODEX_QUEUE_STEERS) {
         append({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text }] } });
       } else queued = text;
+      // Success holds the owned busy turn until its queue key is accepted.
+      // The separate early-completion variant exercises refusal before that key.
+      setTimeout(() => complete(busyReply), 100);
     } else if (key === '\r' && !active) {
       begin(text);
-      setTimeout(() => complete(Array.from({ length: 160 }, (_, n) => 'PB_BUSY_LINE_' + String(n + 1).padStart(3, '0')).concat('PB_BUSY_END').join('\n')), 4000);
     } else throw new Error('Unexpected owned fixture input.');
   }
 });
