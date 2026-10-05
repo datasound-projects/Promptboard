@@ -67,6 +67,7 @@ test('bulk deletion confirms captured hidden drafts and refuses a stale selectio
   await enter(w.browser, '#backlog-bulk-confirm-delete'); await w.browser.until('window.__requests.length===1', 'held stale delete'); await w.finish();
   let state = await w.app.board.state(); assert.equal(state.projects[0].backlog.length, 3); assert.equal(state.projects[0].backlog[0].title, 'Concurrent edit'); assert.equal(await w.browser.eval('return window.__requests.length;'), 1);
   assert.ok(await w.browser.eval('return document.getElementById("backlog-bulk-progress").textContent.startsWith("0 completed · 1 need review · 2 not started");'));
+  await w.browser.until(`document.querySelector('[data-backlog-id="${w.items[0].id}"] .kanban-open')?.textContent==='Concurrent edit'`, 'fresh snapshot before explicit new delete');
   await w.browser.eval('window.__requests=[];window.__release=null;'); await enter(w.browser, '#backlog-delete-selected'); await enter(w.browser, '#backlog-bulk-confirm-delete'); await w.browser.until('window.__requests.length===1&&typeof window.__release==="function"', 'new explicit delete'); await w.finish();
   state = await w.app.board.state(); assert.deepEqual(state.projects[0].backlog, []); assert.deepEqual(state.projects[0].tasks, []); assert.equal(await w.browser.eval('return window.__requests.length;'), 3); assert.deepEqual(state.runs, []);
 });
