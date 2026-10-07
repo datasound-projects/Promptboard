@@ -388,6 +388,11 @@ globalThis.PromptboardOriginModel = (() => {
     return (entity.sourceIds || []).map(id => blueprint.sources.find(source => source.id === id)).filter(Boolean)
       .map(source => `${source.title || 'Untitled source'}${source.url ? ` <${source.url}>` : ''} — ${label('sourceVerification', source.verification)}${source.accessedAt ? `, accessed ${source.accessedAt}` : ''}`);
   }
+  // Testing plans carry into handoffs through their links to requirements and components.
+  function testLines(blueprint, requirementIds, componentIds) {
+    return blueprint.areas.filter(item => item.section === 'testing' && (item.requirementIds.some(id => requirementIds.includes(id)) || item.componentIds.some(id => componentIds.includes(id))))
+      .map(item => `${label('testing', item.area)}: ${item.title || 'Untitled'}${hasText(item.description) ? ` — ${clip(item.description, 400)}` : ''}`);
+  }
   function guardrails(blueprint) {
     return block('Project constraints', clip(blueprint.vision.constraints, 1500)) + block('Out of scope', clip(blueprint.vision.outOfScope, 1500));
   }
@@ -406,6 +411,7 @@ globalThis.PromptboardOriginModel = (() => {
         + block('Acceptance criteria', criteria(entry.acceptanceCriteria))
         + block('Related components', bullets(related.map(component => componentLine(blueprint, component))))
         + block('Accepted decisions to respect', bullets(decisionLines(blueprint, decision => decision.requirementIds.includes(id) || decision.componentIds.some(componentId => entry.componentIds.includes(componentId)))))
+        + block('Planned tests', bullets(testLines(blueprint, [id], [])))
         + block('Evidence', bullets(evidenceLines(blueprint, entry)));
     } else if (collection === 'components') {
       task = 'build';
@@ -451,6 +457,7 @@ globalThis.PromptboardOriginModel = (() => {
       + block('Components', bullets(components.map(component => componentLine(blueprint, component))))
       + block('Depends on', bullets(item.dependsOn.map(id => itemName(blueprint, 'items', id))))
       + block('Accepted decisions to respect', bullets(decisionLines(blueprint, decision => decision.componentIds.some(id => item.componentIds.includes(id)) || decision.requirementIds.some(id => item.requirementIds.includes(id)))))
+      + block('Planned tests', bullets(testLines(blueprint, item.requirementIds, item.componentIds)))
       + (milestone ? block(`Milestone: ${milestone.title}`, `Definition of done:\n${criteria(milestone.definitionOfDone) || '- Not recorded'}`) : '');
   }
 

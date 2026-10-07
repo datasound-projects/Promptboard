@@ -129,6 +129,9 @@ test('Compose and Kanban handoffs carry targeted context and the Origin referenc
   assert.match(tasks[1].prompt, /Origin reference: IMP-002 \(origin item i2\)/);
   assert.match(tasks[1].prompt, /## Depends on\n- IMP-001 Repository structure/);
   assert.match(tasks[1].prompt, /- A maintainer can publish/, 'Related requirement acceptance criteria are included.');
+  blueprint.areas.push({ id: 'test1', origin: 'human', section: 'testing', area: 'integration', title: 'Publish flow', description: 'Runs against a disposable database.', status: 'defined', componentIds: [], requirementIds: ['r1'], technologyIds: [], baseResourceIds: [] });
+  assert.match(Model.kanbanTasks(blueprint, ['i2'])[0].prompt, /## Planned tests\n- Integration tests: Publish flow — Runs against a disposable database\./, 'Testing plans carry into task generation.');
+  assert.match(Model.composeSpec(blueprint, 'requirements', 'r1').text, /## Planned tests\n- Integration tests: Publish flow/);
 });
 
 test('blueprint files initialize safely, persist per project and reject stale revisions', async t => {

@@ -66,7 +66,7 @@ Statuses describe stored project state. Origin has no confidence percentages or 
 ## Handoffs
 
 - **Send to Compose** (requirements, components, decisions, milestones and implementation items) fills the Compose request with that item, its direct relationships, accepted decisions that apply to it, its evidence and the project's constraints and out-of-scope list. Compose waits for you to review and choose Generate. An existing Compose draft is replaced only after a second, explicit confirmation.
-- **Create Kanban tasks** (Implementation Plan) creates one To Do card per selected item through the normal task API, dependencies first, then milestone and plan order. Each card prompt contains the item, its acceptance criteria, linked requirements with their criteria, components, dependencies, the milestone's definition of done and `Origin reference: IMP-00n (origin item <id>)`. The blueprint records the created card ID. No agent starts and no new board field is used. Creating cards for an item again adds another card.
+- **Create Kanban tasks** (Implementation Plan) creates one To Do card per selected item through the normal task API, dependencies first, then milestone and plan order. Each card prompt contains the item, its acceptance criteria, linked requirements with their criteria, components, dependencies, the milestone's definition of done, linked testing plans and `Origin reference: IMP-00n (origin item <id>)`. The blueprint records the created card ID. No agent starts and no new board field is used. Creating cards for an item again adds another card.
 
 ## Base
 
