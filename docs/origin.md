@@ -18,14 +18,17 @@ Origin is the planning layer before Compose and Kanban. It stores a structured *
 - Writes are serialized and atomic (temporary file, fsync, rename). The previous good file is kept as `….json.bak`.
 - A damaged file is renamed to `blueprint-<id>.corrupt-<time>-<random>.json` and the last good backup is restored and reported. Without a good backup the project is kept aside and not shown. A file from a newer Origin version is refused and never overwritten.
 - Saves are revision-checked (`expectedRevision`). A save from a stale window is refused instead of overwriting newer work.
-- **Delete from Origin** moves the file to `origin/deleted/`.
-- Board backups (Kanban **Export**) do not include blueprints. To keep a copy, copy the project's file from the `origin/` folder.
+- **Delete from Origin** moves the file to `origin/deleted/`. Linked Kanban cards and every snapshot stay.
+- Approved task context is saved once per send or update as `origin/snapshots/<origin id>/<snapshot id>.json` and never changed or pruned, so a card's history can always be read back.
+- **Two different backups.** A Kanban backup (Kanban **Export**) holds the board: every card with its saved prompt (the task's words and the context it was sent with), its Origin reference (`originSource`) and its prerequisites (`dependsOn`); cards stay usable without Origin. It does not hold Origin projects or snapshots. For a full Origin backup, copy the `origin/` folder (projects, snapshots, `deleted/` and `migration.json`) while the app is stopped.
 
 ### Upgrading from version 1, and rolling back
 
 Version 1 stored one blueprint per Kanban project in `origin/project-<kanban project id>.json`. On the first start of version 2, each valid version 1 file is copied once into an Origin project **with the same ID**, linked to that Kanban project when it still exists. Every record ID, `REQ`/`ADR`/`IMP` key, link and milestone order is kept. `origin/migration.json` records the upgrade, so it never runs again; a migrated project you delete later is not brought back. Damaged version 1 files, and empty ones whose Kanban project no longer exists, are skipped and listed there. A blueprint whose Kanban project is gone is named after its idea.
 
 The version 1 files are left unchanged. To roll back, run the previous Promptboard version: it reads the version 1 files as they were at the upgrade and ignores the version 2 files. Changes made after the upgrade (new projects, edits, links) exist only in the version 2 files and are not visible to the older version.
+
+Rolling back to a release from before tasks, handoff and change review: copy the `origin/` folder first. Kanban keeps every card and its prompt; an older version ignores `originSource` and `dependsOn` (so it no longer checks prerequisites before a start) and drops them from new backups. An older Origin drops task fields it does not know (such as `lostLinks`, `keptHash` or newer **Also include** links) the next time it saves, and the board state version (12) is unchanged, so no board migration is needed either way.
 
 ## Schema (version 2)
 
@@ -57,6 +60,13 @@ Every record has a stable `id` (`[A-Za-z0-9_-]{1,100}`) and an `origin`: `human`
 | Task (`items`) | key (`IMP-001`), title, description (what to do), acceptanceCriteria (done when), componentIds, layerId (only for a task without components), milestoneId, dependsOn (prerequisites), requirementIds, contextIds, workstream, status (kept, not shown), handoff, refinement, lostLinks (`{ collection: "components", name }` notes left by removed components) |
 
 `sequence` keeps the last issued REQ/ADR/IMP number, so deleted keys are not reused.
+
+Task details: `handoff` is `{ projectId, taskId, at, snapshotId, hash, keptHash }` once the task has a card (`hash` is the context it was sent with; `keptHash` the newer context you chose to keep without updating), `refinement` is `{ proposal, proposedAt, basis, originalDescription, acceptedAt }`, and `contextIds` lists records linked under **Also include** (`{ collection, id }`, collections: decisions, technologies, dependencies, areas, sources, assumptions, risks, customSections).
+
+```text
+Snapshot     { schema: "promptboard.origin-snapshot", version: 1, id, originId, itemId, key, revision, createdAt, instruction, context, body, included[], omitted[], hash }
+Kanban card  …existing fields, plus optional originSource { originProjectId, originTaskId, snapshotId, hash, key } and dependsOn [card ids of the same project]
+```
 
 Item statuses (under **More details**): **In progress**, **Defined**, **Needs decision**, **Based on an assumption**. A requirement is complete when it has a “done when”; a component when it says what it does.
 
@@ -106,15 +116,35 @@ One builder (`taskContext` in `public/origin-model.js`, served by `POST /api/ori
 - **Suggest tasks** (beside a component, a layer or Project-wide) asks the Compose split service, with your Compose settings, for tasks based only on that part of the design (the same context builder; never the whole blueprint), and tells it to leave missing choices as tasks to decide. Suggestions are shown first; edit their titles, untick the ones you do not want, optionally make each start after the one before, then **Add selected**. Nothing is called when you open or edit the blueprint.
 - In Kanban, a card with prerequisites shows **Waits for #n** until they are done, and its details list them. Leaving To Do (legacy boards) or entering an agent column (column pipelines) is refused with the reason while any prerequisite is not in Done, is part of a loop, or was deleted; manual and automatic starts are checked the same way, and nothing is merged to satisfy a prerequisite. **Remove prerequisite** (or **Clear** for a deleted one) is the only way to change the list. **Duplicate** makes a new card that keeps the prerequisites but not the Origin identity. Board backups keep both fields.
 
+## When the design changes
+
+The saved blueprint is the current design; each card keeps the context it was approved with.
+
+- When Tasks open (and after each save), Origin rebuilds the context of every sent task from the saved design and compares its hash with the card's. Only relevant content counts, so moving the map, renaming labels or editing an unrelated task flags nothing. A changed task shows **Context changed**.
+- Its editor lists what was added or is no longer included (a deleted record is named, never replaced by something else) and **Compare** shows the sent and current text side by side. Then choose:
+  - **Update context** gives the card the current context. It is checked again first: the design and the card must be exactly what you reviewed, the card must be idle in To Do (stop its work and move it back otherwise), and a prompt edited in Kanban is replaced only after a second, explicit click. A new snapshot is saved; earlier ones stay. Nothing starts.
+  - **Improve again** opens the task in Compose with its current context.
+  - **Keep current** leaves the card as it is; it is flagged again only if the context changes further.
+- Kanban progress is only read through the saved link; Origin never rewrites your design from Kanban.
+
+## Safety boundaries
+
+- Building, previewing and sending tasks is local and deterministic: no model call. Only **Improve with Compose**, **Suggest tasks** and Compose's own Generate call your CLI, and only when you start them, through Compose's services, limits and job slot.
+- Handoff creates idle To Do cards through the board service only: no agent, column automation, script, webhook or worktree. Agents receive the card's saved prompt through the existing delivery; moving a card between columns does not add the context again.
+- Every route checks the session token, validated IDs (`[A-Za-z0-9_-]{1,100}`), revisions and size limits (4 MB request bodies, 100 tasks per request, 50 prerequisites per card, a 60,000-character context). User text is stored and shown as text.
+- Secrets that look like keys, tokens, passwords, private keys or credentials in URLs are removed from task context; Base resources are never assigned by Origin.
+
 ## Base
 
 AI / Agents items can reference Base resources by ID. Origin reads the Base list only when that section needs it; it never creates, copies, changes or assigns Base resources. A reference to a deleted resource is shown as missing and kept until you remove it.
 
 ## Limits
 
-- AI research, AI suggestions and AI proposals are not implemented. The data model already distinguishes `human`, `ai` and `system` origins, and AI suggestions never count as blocking. All current issues are deterministic checks.
+- AI research is not implemented, and all issues are deterministic checks. Proposals and suggestions come only from **Improve with Compose** and **Suggest tasks** (Compose's services), never on their own, and Origin does not read or change project repositories for them.
 - Origin does not fetch sources. You open a source, check it and set its verification and access date. A failed or unsafe URL is never followed by the app.
 - One blueprint per project, edited from one window at a time; a second window gets a revision conflict instead of overwriting.
 - Board backups do not include blueprints. A project deleted from Origin moves to `origin/deleted/`; deleting a Kanban project leaves its Origin project in place, marked “Kanban project removed”.
 - Per project: up to 50 own sections and 300 own questions. Phase and section names hold up to 60 characters (own section titles 80); questions up to 500.
-- There is no undo history. Export the blueprint before large changes.
+- There is no undo history. Copy the project's file before large changes.
+- One send covers up to 100 tasks; **Suggest tasks** returns at most 12. Snapshots are never pruned, so the `origin/snapshots/` folder grows with each send and update.
+- A prerequisite counts as finished only when its card is in Done; Promptboard never merges anything to satisfy it.

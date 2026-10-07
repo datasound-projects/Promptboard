@@ -1643,6 +1643,25 @@ export class Board {
     });
   }
 
+  /**
+   * Give an Origin card newly approved context. Only an idle card in To Do changes, so running work is never
+   * fed new input; the card's own revision must match what the person reviewed. Nothing starts.
+   */
+  refreshOriginTask(taskId, { prompt, snapshotId, hash, expectedRevision } = {}) {
+    return this.store.update(state => {
+      const { project, task } = this.#task(state, taskId);
+      checkRevision(task, expectedRevision, 'This card');
+      if (!task.originSource) throw new BoardError('This card did not come from Origin.', 'INVALID_INPUT');
+      const todo = project.workflowMode === 'pipeline' ? project.pipeline.columns.find(column => column.role === 'todo')?.id : 'todo';
+      const moving = task.automationMove && !['completed', 'failed', 'cancelled', 'interrupted'].includes(task.automationMove.status);
+      if (task.column !== todo || this.#activeRun(state, taskId) || moving) throw conflict('Only an idle card in To Do can take new context. Stop its work and move it back to To Do first.', 'CARD_BUSY');
+      const next = promptText(prompt, 'The task', project.workflowMode === 'pipeline');
+      Object.assign(task, { prompt: next, updatedAt: Date.now(), revision: task.revision + 1, contentRevision: (task.contentRevision ?? 1) + 1, checksOutdated: task.checksOutdated || Boolean(task.source),
+        originSource: originSourceOf({ ...task.originSource, snapshotId, hash }) });
+      return task;
+    });
+  }
+
   /** Remove one prerequisite from a card, for example one whose card was deleted. Only this explicit action changes the list. */
   clearPrerequisite(taskId, { prerequisiteId, expectedRevision } = {}) {
     return this.store.update(state => {

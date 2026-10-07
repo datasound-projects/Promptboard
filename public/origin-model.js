@@ -243,7 +243,8 @@ globalThis.PromptboardOriginModel = (() => {
     blueprint.items = collection('items', v => {
       const h = obj(v.handoff), hash = typeof h.hash === 'string' && /^[a-f0-9]{64}$/.test(h.hash) ? h.hash : '';
       const handoff = isObject(v.handoff) && ID.test(h.projectId) && ID.test(h.taskId) && Number.isSafeInteger(h.at)
-        ? { projectId: h.projectId, taskId: h.taskId, at: h.at, snapshotId: typeof h.snapshotId === 'string' && ID.test(h.snapshotId) ? h.snapshotId : '', hash } : (v.handoff === undefined || v.handoff === null ? null : (fix(), null));
+        ? { projectId: h.projectId, taskId: h.taskId, at: h.at, snapshotId: typeof h.snapshotId === 'string' && ID.test(h.snapshotId) ? h.snapshotId : '', hash,
+          keptHash: typeof h.keptHash === 'string' && /^[a-f0-9]{64}$/.test(h.keptHash) ? h.keptHash : '' } : (v.handoff === undefined || v.handoff === null ? null : (fix(), null));
       // A removed component leaves a note on its tasks, so the missing link stays visible until relinked.
       const lost = v.lostLinks === undefined || v.lostLinks === null ? [] : Array.isArray(v.lostLinks) ? v.lostLinks : (fix(), []);
       const lostLinks = lost.slice(0, 20).map(obj).filter(entry => entry.collection === 'components' && typeof entry.name === 'string').map(entry => ({ collection: 'components', name: str(entry.name, NAME) }));

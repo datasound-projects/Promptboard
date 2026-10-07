@@ -821,3 +821,42 @@ test('Origin refines tasks through Compose only when asked, keeps your words unt
   assert.equal((await app.board.view()).projects.length, 0, 'Nothing is sent to Kanban.');
   assert.deepEqual(browser.consoleMessages.filter(message => message.startsWith('EXCEPTION')), []);
 });
+
+test('Origin flags only sent tasks whose context changed, compares, and updates the idle card after review', { skip: !await findChrome(), timeout: 120000 }, async t => {
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
+  const kanban = await app.board.createProject({ name: 'Shop', workflowMode: 'pipeline' });
+  const store = new OriginStore(app.board.store.dir);
+  let record = await store.create({ name: 'Shop design' });
+  record = await store.link(record.id, { expectedRevision: record.revision, kanbanProjectId: kanban.id });
+  record = await store.write(record.id, { expectedRevision: record.revision, blueprint: { idea: 'Shop',
+    technologies: [{ id: 'pg', name: 'PostgreSQL', status: 'selected' }, { id: 'react', name: 'React', status: 'selected' }],
+    layers: [{ id: 'data', name: 'Data', technologyIds: ['pg'] }, { id: 'ui', name: 'Interface', technologyIds: ['react'] }],
+    components: [{ id: 'db', name: 'Database', type: 'database', purpose: 'Storage', layerId: 'data' }, { id: 'web', name: 'Web app', type: 'client', purpose: 'Shop', layerId: 'ui' }],
+    items: [{ id: 'schema', key: 'IMP-001', title: 'Schema', acceptanceCriteria: 'Tables exist', componentIds: ['db'] }, { id: 'grid', key: 'IMP-002', title: 'Grid', acceptanceCriteria: 'Grid shows', componentIds: ['web'] }], sequence: { items: 2 } } });
+  const token = (await (await fetch(`${app.url}/api/session`)).json()).token;
+  const sent = await fetch(`${app.url}/api/origin/projects/${record.id}/handoff`, { method: 'POST', headers: { 'X-STE-Token': token, 'Content-Type': 'application/json' }, body: JSON.stringify({ expectedRevision: record.revision, itemIds: ['schema', 'grid'] }) });
+  assert.equal(sent.status, 200);
+  record = await store.read(record.id);
+  record.blueprint.technologies.push({ id: 'ts', name: 'TimescaleDB', status: 'selected' }); record.blueprint.layers[0].technologyIds.push('ts');
+  record = await store.write(record.id, { expectedRevision: record.revision, blueprint: record.blueprint });
+  const browser = await launch({ width: 1280, height: 900 }); assert.ok(browser); t.after(() => browser.close());
+  const { ev, wait, saved, section, open } = pageTools(browser);
+  await browser.goto(`${app.url}/#/origin`);
+  await wait(`document.querySelector('.origin-map')`, 'map');
+  await section('plan');
+  await wait(`[...document.querySelectorAll('#origin-main .origin-row')].some(r => r.textContent.includes('Context changed'))`, 'changed chip');
+  assert.deepEqual(await ev(`return [...document.querySelectorAll('#origin-main .origin-row')].filter(r => r.textContent.includes('Context changed')).map(r => r.querySelector('.origin-row-title').textContent);`), ['Schema'], 'Only the task in the changed layer is flagged.');
+  await open('Schema');
+  await wait(`document.querySelector('#origin-drawer .origin-changed')`, 'review panel');
+  assert.match(await ev(`return document.querySelector('#origin-drawer .origin-changed').textContent;`), /Context changed since it was sent to Kanban #1[\s\S]*Added: TimescaleDB/);
+  await ev(`document.querySelector('#origin-drawer .origin-changed details').open = true;`);
+  assert.match(await ev(`return [...document.querySelectorAll('#origin-drawer .origin-compare pre')].map(p => p.textContent).join('|');`), /Stack: PostgreSQL\n[\s\S]*\|[\s\S]*Stack: PostgreSQL, TimescaleDB/);
+  await ev(`[...document.querySelectorAll('#origin-drawer .origin-changed button')].find(b => b.textContent === 'Update context').click();`);
+  await wait(`!document.querySelector('#origin-drawer .origin-changed') && ![...document.querySelectorAll('#origin-main .origin-row')].some(r => r.textContent.includes('Context changed'))`, 'updated', 15000);
+  const cards = (await app.board.view()).projects[0].tasks;
+  assert.match(cards[0].prompt, /Stack: PostgreSQL, TimescaleDB/);
+  assert.doesNotMatch(cards[1].prompt, /TimescaleDB/);
+  assert.equal((await app.board.view()).runs.length, 0);
+  await saved();
+  assert.deepEqual(browser.consoleMessages.filter(message => message.startsWith('EXCEPTION')), []);
+});

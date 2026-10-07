@@ -112,7 +112,7 @@ window.PromptboardOrigin = (() => {
     let section = pref(SECTION_KEY) || 'overview';
     let open = null, connectFrom = null, planSelection = new Set(), handoffBusy = false, lastHandoff = '';
     let views = { map: null, canvas: null }, mapLinkFrom = null, selectedLink = null, taskMilestone = '', taskView = pref(TASK_VIEW_KEY, 'layers');
-    let contextView = { itemId: null, open: false, loading: false, revision: 0, data: null, error: '' };
+    let contextView = { itemId: null, open: false, loading: false, revision: 0, data: null, error: '' }, drawerMessage = null;
     let saveTimer = null, saving = null, changeCount = 0, savedCount = 0, saveState = 'saved', saveMessage = '', dirtySince = 0, shownSaveError = '';
     let baseResources = null, baseLoading = null, focusAfter = null, renderFrame = 0, uid = 0;
     const bp = () => record.blueprint;
@@ -164,6 +164,7 @@ window.PromptboardOrigin = (() => {
           record.revision = data.revision; savedCount = target;
           if (data.project) projects = projects.map(item => (item.id === id ? data.project : item));
           saveState = changeCount === savedCount ? 'saved' : 'dirty'; saveMessage = '';
+          if (saveState === 'saved' && (section === 'plan' || open?.collection === 'items')) void refreshContextStatus();
           dirtySince = saveState === 'saved' ? 0 : Date.now();
           if (saveState === 'dirty') saveTimer = setTimeout(() => { void save(); }, SAVE_DELAY);
           return true;
@@ -207,6 +208,7 @@ window.PromptboardOrigin = (() => {
       if (!force && id === projectId && (record || loading)) return loading;
       projectId = id; record = null; loadError = null; open = null; connectFrom = null; planSelection = new Set(); lastHandoff = '';
       views = { map: null, canvas: null }; mapLinkFrom = null; selectedLink = null; taskMilestone = ''; contextView = { itemId: null, open: false, loading: false, revision: 0, data: null, error: '' };
+      contextStatus = { revision: -1, loading: false, map: new Map() };
       changeCount = savedCount = 0; dirtySince = 0; saveState = 'saved'; showNotice(''); showError('');
       renderDrawer();
       if (!id) { render(); return null; }
@@ -871,9 +873,10 @@ window.PromptboardOrigin = (() => {
       }),
       items: item => {
         const home = M.taskHome(bp(), item), component = bp().components.find(entry => entry.id === home.componentId);
+        if (item.handoff && contextStatus.revision !== record.revision) void refreshContextStatus();
         return {
           title: ['title', 'Task — e.g. Build the sign-in form'],
-          essentials: [...lostNotes(item), proposalPanel(item), field('What to do', area(item, 'description', 'What to build or change, in a few lines')),
+          essentials: [...lostNotes(item), sentPanel(item, drawerMessage), proposalPanel(item), field('What to do', area(item, 'description', 'What to build or change, in a few lines')),
             field('Done when', area(item, 'acceptanceCriteria', 'One check per line — e.g. “A user can sign in with email”'), 'These checks travel with the task into Compose and Kanban.'),
             contextPreview(item)].filter(Boolean),
           more: [group('Components', linkChips(item, 'componentIds', 'components', { empty: 'Add components in Architecture first.' }), 'The first component is where the task is listed.'),
@@ -907,6 +910,7 @@ window.PromptboardOrigin = (() => {
       if (!entry) { open = null; drawer.hidden = true; drawer.replaceChildren(); view.dataset.drawer = 'closed'; return; }
       const focusKey = restore && drawer.contains(document.activeElement) ? document.activeElement.dataset.focusKey : null;
       const scroll = drawer.querySelector('.origin-drawer-body')?.scrollTop || 0;
+      drawerMessage = el('p', 'origin-inline-error'); drawerMessage.hidden = true; drawerMessage.setAttribute('role', 'alert');
       const spec = DRAWER[open.collection](entry), collection = open.collection;
       const head = el('div', 'origin-drawer-head');
       const top = el('div', 'origin-drawer-top');
@@ -925,7 +929,7 @@ window.PromptboardOrigin = (() => {
         more.addEventListener('toggle', () => setPref(MORE_KEY, more.open ? 'open' : 'closed'));
         body.append(more);
       }
-      const message = el('p', 'origin-inline-error'); message.hidden = true; message.setAttribute('role', 'alert');
+      const message = drawerMessage;
       const foot = el('div', 'origin-drawer-foot');
       const left = el('div', 'origin-inline-actions');
       if (collection === 'items') left.append(improveButton(entry, message));
@@ -1348,7 +1352,8 @@ window.PromptboardOrigin = (() => {
         const place = where ? (home.componentId ? blueprint.components.find(entry => entry.id === home.componentId)?.name : blueprint.layers.find(entry => entry.id === home.layerId)?.name) || 'Project-wide' : '';
         return { title: item.title, fallback: 'Untitled task', tone: item.lostLinks?.length ? 'attention' : checks ? 'defined' : 'progress',
           sub: [place, clip(firstLine(item.description), 90), after.length && `after ${after.join(', ')}`, checks ? `done when: ${plural(checks, 'check')}` : 'No “done when” yet'].filter(Boolean).join(' · '),
-          meta: [key(item), handoffChip(item, cards), item.refinement?.proposal && !item.refinement.acceptedAt ? chip('Proposal to review', 'accent') : item.refinement?.acceptedAt ? chip('Refined', 'muted') : null, item.lostLinks?.length ? chip('Link missing', 'warn') : null] };
+          meta: [key(item), handoffChip(item, cards), item.refinement?.proposal && !item.refinement.acceptedAt ? chip('Proposal to review', 'accent') : item.refinement?.acceptedAt ? chip('Refined', 'muted') : null, item.lostLinks?.length ? chip('Link missing', 'warn') : null,
+            contextStatus.revision === record.revision && contextStatus.map.get(item.id)?.status === 'changed' ? chip('Context changed', 'warn') : null] };
       };
     }
     function lostNotes(item) {
@@ -1406,6 +1411,7 @@ window.PromptboardOrigin = (() => {
     }
     function planSection() {
       const blueprint = bp(), cards = kanbanCards(), nodes = [];
+      if (contextStatus.revision !== record.revision) void refreshContextStatus();
       if (lastHandoff) { const done = el('p', 'origin-callout ok', lastHandoff); done.setAttribute('role', 'status'); done.append(' ', button('Open Kanban', () => app.openKanban(project()?.kanbanProjectId), 'origin-link')); nodes.push(done); }
       if (taskMilestone && taskMilestone !== 'none' && !blueprint.milestones.some(entry => entry.id === taskMilestone)) taskMilestone = '';
       const leading = item => {
@@ -1976,6 +1982,54 @@ window.PromptboardOrigin = (() => {
       control.prepend(icon(ICON.arrow, 14));
       return control;
     }
+    // ---- Later design changes: sent tasks whose context changed, checked against the saved design ----
+    let contextStatus = { revision: -1, loading: false, map: new Map() };
+    async function refreshContextStatus() {
+      if (contextStatus.loading || !record?.exists || changeCount !== savedCount || !bp().items.some(item => item.handoff)) return;
+      const revision = record.revision;
+      contextStatus = { ...contextStatus, loading: true };
+      const { response, data } = await app.api(`/api/origin/projects/${encodeURIComponent(projectId)}/context-status`, { method: 'POST', body: { expectedRevision: revision }, timeoutMs: 30000 })
+        .catch(() => ({ response: { ok: false }, data: {} }));
+      contextStatus = response.ok && record?.revision === revision ? { revision, loading: false, map: new Map(data.tasks.map(task => [task.itemId, task])) } : { ...contextStatus, loading: false, revision };
+      if (section === 'plan') renderMain();
+      if (open?.collection === 'items') renderDrawer();
+    }
+    function sentPanel(item, message) {
+      const status = contextStatus.map.get(item.id);
+      if (!item.handoff || !status || contextStatus.revision !== record.revision || status.status !== 'changed') return null;
+      const box = el('div', 'origin-callout warn origin-changed');
+      box.append(el('p', 'origin-proposal-title', `Context changed since it was sent to Kanban #${status.cardNumber}`));
+      const changes = [...status.added.map(name => `Added: ${name}`), ...status.removed.map(name => `No longer included: ${name}`)];
+      if (changes.length) { const list = el('ul', 'origin-context-warnings'); for (const line of changes) list.append(el('li', '', line)); box.append(list); }
+      const compare = el('details', 'origin-context-exact');
+      const grid = el('div', 'origin-compare');
+      const side = (title, text) => { const column = el('div'); column.append(el('p', 'origin-field-label', title), el('pre', 'origin-context-text', text || 'Not available for this card.')); return column; };
+      grid.append(side('Sent', status.sent), side('Now', status.now));
+      compare.append(el('summary', '', 'Compare'), grid);
+      const update = button('Update context', async () => {
+        if (status.edited && update.dataset.confirm !== 'true') {
+          update.dataset.confirm = 'true'; update.textContent = 'Replace the edited card prompt?'; update.classList.add('danger');
+          message.textContent = 'The card’s prompt was edited in Kanban. Compare first; replacing it discards that edit.'; message.hidden = false; return;
+        }
+        update.disabled = true;
+        const { response, data } = await app.api(`/api/origin/projects/${encodeURIComponent(projectId)}/update-context`, { method: 'POST', timeoutMs: 30000,
+          body: { expectedRevision: record.revision, itemId: item.id, expectedHash: status.hash, expectedCardRevision: status.cardRevision, replaceEdited: update.dataset.confirm === 'true' } })
+          .catch(() => ({ response: { ok: false }, data: { error: 'The app did not answer. Nothing was changed.' } }));
+        if (!response.ok) { message.textContent = typeof data.error === 'string' ? data.error : 'The card could not be updated.'; message.hidden = false; update.disabled = false; contextStatus.revision = -1; void refreshContextStatus(); return; }
+        const saved = data.blueprint.items.find(entry => entry.id === item.id);
+        if (saved) item.handoff = saved.handoff;
+        record.revision = data.revision;
+        await app.ensureBoard();
+        app.announce(`Kanban #${status.cardNumber} now has the current context. It stays in To Do; nothing started.`);
+        contextStatus.revision = -1; void refreshContextStatus();
+      }, 'origin-primary', status.idle ? 'Replace the card’s prompt with the current context. The card stays idle in To Do.' : 'Stop its work and move the card back to To Do first.');
+      update.disabled = !status.idle;
+      const keep = button('Keep current', () => { item.handoff.keptHash = status.hash; changed({ structure: true, drawer: true }); app.announce('Kept the card as it is. It is flagged again only if the context changes further.'); }, 'origin-link');
+      const actions = el('div', 'origin-inline-actions'); actions.append(update, improveButton(item, message, 'Improve again'), keep);
+      box.append(...(status.idle ? [] : [el('p', 'origin-hint', 'The card is no longer idle in To Do. Stop its work and move it back to update it.')]), compare, actions);
+      return box;
+    }
+
     // ---- Compose refinement: optional, one task to one proposal; nothing changes until you accept ----
     const basisOf = item => JSON.stringify([item.title, item.description, item.acceptanceCriteria]).slice(0, 100000);
     async function taskBodyFor(itemId) {
@@ -1986,8 +2040,8 @@ window.PromptboardOrigin = (() => {
       const built = data.tasks[0];
       return built.tooLarge ? { error: built.error } : { body: built.body };
     }
-    function improveButton(item, message) {
-      const control = button('Improve with Compose', async () => {
+    function improveButton(item, message, label = 'Improve with Compose') {
+      const control = button(label, async () => {
         const prepared = await taskBodyFor(item.id);
         if (prepared.error) { message.textContent = prepared.error; message.hidden = false; return; }
         const spec = { text: prepared.body, task: 'feature', origin: { originId: projectId, itemId: item.id, key: item.key, title: item.title, basis: basisOf(item) } };

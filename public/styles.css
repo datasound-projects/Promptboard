@@ -1732,6 +1732,12 @@ button.timeline-task:hover { text-decoration: underline; }
 .origin-suggestion { padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; }
 .origin-suggestion-title { flex: 1; min-width: 0; height: 32px; padding: 0 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--og-glass-2); color: var(--ink); font-size: 13.5px; }
 .origin-suggestion details summary { margin-top: 6px; color: var(--muted); font-size: 12.5px; cursor: pointer; }
+/* Context changed since a task was sent */
+.origin-changed { display: grid; gap: 8px; }
+.origin-changed .origin-inline-actions { flex-wrap: wrap; }
+.origin-compare { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 8px; }
+.origin-compare .origin-field-label { margin: 0 0 4px; }
+@media (max-width: 730px) { .origin-compare { grid-template-columns: minmax(0, 1fr); } }
 /* The component editor's own short task list */
 .origin-component-tasks { display: grid; gap: 4px; }
 .origin-mini-row { display: flex; align-items: center; gap: 10px; min-height: 36px; padding: 0 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--og-glass); color: var(--text); font-size: 13.5px; text-align: left; }

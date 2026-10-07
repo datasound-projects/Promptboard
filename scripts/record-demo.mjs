@@ -223,8 +223,11 @@ try {
     for (const [from, to] of [['Web app', 'API'], ['API', 'PostgreSQL']]) { await click('#origin-connect'); await node(from, ' '); await node(to, ' '); await closeDrawer(); }
     await browser.until(`document.querySelectorAll('.origin-edge').length === 2`, 'connected blocks');
     await shot(1.4, 'Sketch the building blocks and how they connect');
-    for (const [name, purpose] of [['Web app', 'Catalog, cart and checkout pages'], ['API', 'Accounts, orders and payments'], ['PostgreSQL', 'Stores customers, products and orders']]) {
+    // Two layers group the blocks; each block picks its layer in its editor.
+    for (const layer of ['Frontend', 'Backend']) await quick('layers', layer);
+    for (const [name, purpose, layer] of [['Web app', 'Catalog, cart and checkout pages', 'Frontend'], ['API', 'Accounts, orders and payments', 'Backend'], ['PostgreSQL', 'Stores customers, products and orders', 'Backend']]) {
       await node(name, 'Enter'); await field('What it does', purpose);
+      await browser.eval(`const box = [...document.querySelectorAll('#origin-drawer .origin-field')].find(node => node.querySelector('.origin-field-label')?.textContent === 'Layer'); const select = box.querySelector('select'); select.value = [...select.options].find(option => option.textContent === ${JSON.stringify(layer)}).value; select.dispatchEvent(new Event('change', { bubbles: true }));`);
     }
     await closeDrawer();
     await section('decisions'); await quick('decisions', 'Database');
@@ -236,11 +239,21 @@ try {
     for (const [area, text] of [['authentication', 'Email magic links, rate-limited'], ['secrets', 'Environment variables on the host'], ['input_validation', 'Schema checks on every API route']]) await browser.eval(`const input = document.querySelector('.origin-topic[data-area=${JSON.stringify(area)}] input'); input.value = ${JSON.stringify(text)}; input.dispatchEvent(new Event('input', { bubbles: true }));`);
     await browser.eval(`document.activeElement?.blur(); window.scrollTo(0,0);`);
     await shot(0.9, 'Answer one question per topic');
-    await section('plan'); await quick('milestones', 'Foundation');
-    for (const step of ['Login', 'Product catalog', 'Checkout']) await browser.eval(`const input = document.querySelector('.origin-milestone .origin-quick input'); input.value = ${JSON.stringify(step)}; input.form.requestSubmit();`);
-    await browser.until(`document.querySelectorAll('.origin-milestone .origin-row').length === 3`, 'ordered steps');
+    // Tasks: one per building block, grouped by layer; the block and its layer come with the task.
+    await section('plan');
+    for (const [name, title] of [['Web app', 'Product catalog page'], ['API', 'Checkout endpoint'], ['PostgreSQL', 'Orders schema']]) {
+      await browser.eval(`const input = [...document.querySelectorAll('.origin-task-component')].find(block => block.querySelector('.origin-task-component-name')?.textContent === ${JSON.stringify(name)}).querySelector('.origin-quick input'); input.value = ${JSON.stringify(title)}; input.form.requestSubmit();`);
+    }
+    await browser.until(`document.querySelectorAll('#origin-main .origin-task-group .origin-row').length === 3`, 'component tasks');
     await browser.eval(`document.activeElement?.blur(); window.scrollTo(0,0);`);
-    await shot(1.0, 'Order the build, then send steps to Compose or Kanban');
+    await shot(1.2, 'Prepare tasks by layer and component');
+    await browser.eval(`[...document.querySelectorAll('#origin-main .origin-row-open')].find(row => row.textContent.includes('Checkout endpoint')).click();`);
+    await browser.until(`document.querySelector('#origin-drawer-title')?.value === 'Checkout endpoint'`, 'task editor');
+    await field('Done when', 'A paid order reaches the order list\nA declined card shows a clear message');
+    await browser.eval(`document.querySelector('#origin-drawer .origin-context').open = true;`);
+    await browser.until(`document.querySelector('#origin-drawer .origin-context-names')`, 'context summary', 20000);
+    await shot(1.6, 'Each task carries just the context it needs');
+    await closeDrawer();
     await section('overview');
     await browser.until(`document.querySelector('#origin-view').dataset.save === 'saved'`, 'blueprint saved', 20000);
     await shot(2.0, 'See the whole project before any agent starts');
@@ -249,7 +262,8 @@ try {
   const [shop] = await new OriginStore(join(work, 'data')).list();
   if (shop?.kanbanProjectId !== project.id) throw new Error('The Origin project was not linked to the Kanban project.');
   const blueprint = shop.blueprint;
-  if (blueprint.requirements.length !== 3 || blueprint.components.length !== 3 || blueprint.connections.length !== 2 || blueprint.items.length !== 3) throw new Error('The Origin blueprint was not saved as shown.');
+  if (blueprint.requirements.length !== 3 || blueprint.components.length !== 3 || blueprint.connections.length !== 2 || blueprint.items.length !== 3 || blueprint.layers.length !== 2
+    || !blueprint.items.every(item => item.componentIds.length === 1)) throw new Error('The Origin blueprint was not saved as shown.');
   const exceptions = browser.consoleMessages.filter(message => message.startsWith('EXCEPTION')); if (exceptions.length) throw new Error(exceptions.join('\n'));
   if (preview) await writeFile(join(preview, 'storyboards.json'), JSON.stringify(storyboards, null, 2));
   console.log('Verified: three To Do tasks, an explicit project file save, one real verified merge, pinned Base instruction delivery and a saved Origin blueprint.');

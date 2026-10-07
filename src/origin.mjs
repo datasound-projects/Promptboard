@@ -275,12 +275,20 @@ export class OriginStore {
       const dir = join(this.dir, 'snapshots', escapeId(validId(originId)));
       await mkdir(dir, { recursive: true, mode: 0o700 });
       const id = randomUUID(), snapshot = { schema: 'promptboard.origin-snapshot', version: 1, id, originId, itemId: built.itemId, key: built.key, revision, createdAt: Date.now(),
-        instruction: built.instruction, context: built.context, included: built.included, omitted: built.omitted, hash: built.hash };
+        instruction: built.instruction, context: built.context, body: built.body, included: built.included, omitted: built.omitted, hash: built.hash };
       try {
-        const handle = await open(join(dir, `${id}.json`), 'wx', 0o600);
+        const handle = await open(join(dir, `${escapeId(id)}.json`), 'wx', 0o600);
         try { await handle.writeFile(`${JSON.stringify(snapshot, null, 1)}\n`); await handle.sync(); } finally { await handle.close(); }
       } catch { throw new OriginError('The task context could not be saved. Check free disk space and folder permissions. Nothing was sent.', 'ORIGIN_WRITE_FAILED', 500); }
       return { id, hash: built.hash };
+    });
+  }
+
+  /** A saved snapshot, or null when it is missing; snapshots are never changed. */
+  readSnapshot(originId, snapshotId) {
+    if (!snapshotId) return Promise.resolve(null);
+    return this.#serial(async () => {
+      try { return JSON.parse(await readFile(join(this.dir, 'snapshots', escapeId(validId(originId)), `${escapeId(validId(snapshotId))}.json`), 'utf8')); } catch { return null; }
     });
   }
 
@@ -293,7 +301,8 @@ export class OriginStore {
         const item = blueprint.items.find(entry => entry.id === link.itemId);
         if (!item) continue;
         const same = item.handoff?.projectId === link.projectId && item.handoff.taskId === link.taskId;
-        const next = { projectId: link.projectId, taskId: link.taskId, at: same ? item.handoff.at : Date.now(), snapshotId: link.snapshotId || (same ? item.handoff.snapshotId : ''), hash: link.hash || (same ? item.handoff.hash : '') };
+        const next = { projectId: link.projectId, taskId: link.taskId, at: same ? item.handoff.at : Date.now(), snapshotId: link.snapshotId || (same ? item.handoff.snapshotId : ''), hash: link.hash || (same ? item.handoff.hash : ''),
+          keptHash: !link.hash && same ? item.handoff.keptHash || '' : '' };
         if (JSON.stringify(next) !== JSON.stringify(item.handoff)) { item.handoff = next; changed = true; }
       }
       return changed ? this.#save(record, { blueprint }) : record;
@@ -405,6 +414,58 @@ async function handoff({ origin, board, originId, input }) {
   return { status: 200, body: { revision: saved.revision, blueprint: saved.blueprint, destination: { id: destination.id, name: destination.name }, results } };
 }
 
+/** What a card was sent with: the saved body, or (for older snapshots) the same body rebuilt from the snapshot. */
+const sentBody = (snapshot, record, itemId) => (!snapshot ? null : snapshot.body ?? Model.taskBody({ ...snapshot, itemId }, { projectName: record.name }));
+const todoOf = project => (project.workflowMode === 'pipeline' ? project.pipeline.columns.find(column => column.role === 'todo')?.id : 'todo');
+
+/**
+ * Which sent tasks would now receive different context. Only relevant content counts (the same hash as
+ * the snapshot), so unrelated edits and diagram moves change nothing. Kanban progress is only read.
+ */
+async function contextStatus({ origin, board, originId, input }) {
+  const record = await origin.read(originId);
+  if (!record || record.damaged) throw new OriginError('This Origin project no longer exists. Choose another project.', 'NOT_FOUND', 404);
+  if (record.revision !== input.expectedRevision) throw new OriginError('The blueprint has newer changes. Let it save, then check again.', 'ORIGIN_REVISION_CONFLICT', 409);
+  const projects = (await board.state()).projects, tasks = [];
+  for (const item of record.blueprint.items.filter(entry => entry.handoff)) {
+    const destination = projects.find(project => project.id === item.handoff.projectId), card = destination?.tasks.find(task => task.id === item.handoff.taskId);
+    if (!card) { tasks.push({ itemId: item.id, key: item.key, status: 'card-removed' }); continue; }
+    const built = buildContext(record, item.id), snapshot = await origin.readSnapshot(originId, item.handoff.snapshotId);
+    const sent = item.handoff.hash || card.originSource?.hash || '', body = sentBody(snapshot, record, item.id);
+    const before = new Set((snapshot?.included || []).map(entry => entry.name)), after = new Set(built.included.map(entry => entry.name));
+    tasks.push({ itemId: item.id, key: item.key, status: !sent ? 'unknown' : built.hash === sent ? 'current' : built.hash === item.handoff.keptHash ? 'kept' : 'changed',
+      hash: built.hash, sentHash: sent, cardId: card.id, cardNumber: card.number, cardRevision: card.revision, idle: card.column === todoOf(destination), edited: body !== null && card.prompt !== body,
+      added: [...after].filter(name => !before.has(name)), removed: snapshot ? [...before].filter(name => !after.has(name)) : [],
+      sent: snapshot ? `${snapshot.instruction}\n\n${snapshot.context}` : '', now: built.tooLarge ? '' : `${built.instruction}\n\n${built.context}`, error: built.error || '' });
+  }
+  return { status: 200, body: { revision: record.revision, tasks } };
+}
+
+/**
+ * Give one sent card the task's current context, after review. The design and the card must be what the
+ * person saw; only an idle card in To Do changes; a prompt edited in Kanban is replaced only when they
+ * confirm. Earlier snapshots stay for history.
+ */
+async function updateContext({ origin, board, originId, input }) {
+  const record = await origin.read(originId);
+  if (!record || record.damaged) throw new OriginError('This Origin project no longer exists. Choose another project.', 'NOT_FOUND', 404);
+  if (record.revision !== input.expectedRevision) throw new OriginError('The blueprint has newer changes. Let it save, then review again.', 'ORIGIN_REVISION_CONFLICT', 409);
+  const item = record.blueprint.items.find(entry => entry.id === input.itemId);
+  if (!item?.handoff) throw new OriginError('This task has no Kanban card to update.', 'NOT_FOUND', 404);
+  const destination = (await board.state()).projects.find(project => project.id === item.handoff.projectId), card = destination?.tasks.find(task => task.id === item.handoff.taskId);
+  if (!card) throw new OriginError('Its Kanban card was deleted. Send the task again to create a new one.', 'CARD_REMOVED', 409);
+  const built = buildContext(record, item.id);
+  if (built.tooLarge) throw new OriginError(built.error, 'CONTEXT_TOO_LARGE', 409);
+  if (built.hash !== input.expectedHash) throw new OriginError('The design changed again. Review the new context first.', 'CONTEXT_CHANGED_AGAIN', 409);
+  if (card.revision !== input.expectedCardRevision) throw new OriginError('The card changed in Kanban. Review it again.', 'REVISION_CONFLICT', 409);
+  const body = sentBody(await origin.readSnapshot(originId, item.handoff.snapshotId), record, item.id);
+  if (body !== null && card.prompt !== body && input.replaceEdited !== true) throw new OriginError('The card’s prompt was edited in Kanban. Compare both, then confirm to replace it.', 'CARD_EDITED', 409);
+  const snapshot = await origin.snapshot(originId, built, record.revision);
+  const task = await board.refreshOriginTask(card.id, { prompt: built.body, snapshotId: snapshot.id, hash: snapshot.hash, expectedRevision: card.revision });
+  const saved = await origin.recordHandoff(originId, [{ itemId: item.id, projectId: destination.id, taskId: card.id, snapshotId: snapshot.id, hash: snapshot.hash }]);
+  return { status: 200, body: { revision: saved.revision, blueprint: saved.blueprint, task: { id: task.id, number: task.number, revision: task.revision } } };
+}
+
 /** The project as the page sees it: its Kanban link is resolved against the current board. */
 function view(record, kanban) {
   const linked = record.kanbanProjectId ? kanban.find(project => project.id === record.kanbanProjectId) : null;
@@ -442,7 +503,7 @@ export async function originRoute({ origin, board, req, res, pathname, jsonBody,
     const linked = await origin.link(created.id, { expectedRevision: created.revision, kanbanProjectId: made.project.id });
     return send(res, 200, { project: view(linked, await kanban()), blueprint: linked.blueprint });
   }
-  const match = pathname.match(/^\/api\/origin\/projects\/([A-Za-z0-9_-]{1,100})(?:\/(link|delete|context|handoff))?$/);
+  const match = pathname.match(/^\/api\/origin\/projects\/([A-Za-z0-9_-]{1,100})(?:\/(link|delete|context|handoff|context-status|update-context))?$/);
   if (!match) return send(res, 404, { error: 'This Origin route does not exist.' });
   const [, originId, action] = match;
   if (!action && req.method === 'GET') {
@@ -482,6 +543,10 @@ export async function originRoute({ origin, board, req, res, pathname, jsonBody,
     const { record, tasks } = await origin.context(originId, { expectedRevision: input.expectedRevision, itemIds: input.itemIds });
     return send(res, 200, { revision: record.revision, tasks: tasks.map(({ itemId, key, title, body: text, instruction, context, included, omitted, warnings, tooLarge, error, hash, size }) =>
       ({ itemId, key, title, body: text, instruction, context, included, omitted, warnings, tooLarge, error: error || '', hash, size })) });
+  }
+  if ((action === 'context-status' || action === 'update-context') && req.method === 'POST') {
+    const { status, body: result } = await (action === 'context-status' ? contextStatus : updateContext)({ origin, board, originId, input: await body() });
+    return send(res, status, result);
   }
   if (action === 'handoff' && req.method === 'POST') {
     const { status, body: result } = await handoff({ origin, board, originId, input: await body() });

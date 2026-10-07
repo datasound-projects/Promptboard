@@ -545,3 +545,143 @@ test('the context endpoint builds from the saved revision, removes secrets from 
   assert.deepEqual([file.schema, file.itemId, file.hash, file.instruction, file.revision], ['promptboard.origin-snapshot', 'i2', task.hash, task.instruction, saved.revision]);
   assert.notEqual((await store.snapshot(created.id, { ...task, omitted: [] }, saved.revision)).id, snap.id);
 });
+
+function journeyBlueprint() {
+  return { idea: 'Shop', vision: { summary: 'A small shop', constraints: 'EU hosting only', outOfScope: 'Mobile apps' },
+    technologies: [{ id: 'react', name: 'React', status: 'selected' }, { id: 'node', name: 'Node.js', version: '22', status: 'selected' }, { id: 'pg', name: 'PostgreSQL', version: '16', status: 'selected' }],
+    layers: [{ id: 'ui', name: 'Interface', technologyIds: ['react'], constraints: 'WCAG AA' }, { id: 'svc', name: 'Service', technologyIds: ['node'], constraints: 'Validate every input' },
+      { id: 'data', name: 'Data', technologyIds: ['pg'], constraints: 'Migrations are reversible' }],
+    components: [{ id: 'web', name: 'Web app', type: 'client', purpose: 'Shop front', layerId: 'ui', interfaces: 'Browser' }, { id: 'api', name: 'API', type: 'api', purpose: 'Business rules', layerId: 'svc', interfaces: 'REST /products' },
+      { id: 'db', name: 'Database', type: 'database', purpose: 'Storage', layerId: 'data' }],
+    connections: [{ id: 'c1', from: 'web', to: 'api', label: 'calls', protocol: 'HTTPS' }, { id: 'c2', from: 'api', to: 'db', label: 'stores', protocol: 'SQL' }],
+    items: [{ id: 'grid', key: 'IMP-001', title: 'Product grid', description: 'Show products', acceptanceCriteria: 'Twenty products per page', componentIds: ['web'] },
+      { id: 'schema', key: 'IMP-002', title: 'Product schema', acceptanceCriteria: 'Migration applies and rolls back', componentIds: ['db'] },
+      { id: 'endpoint', key: 'IMP-003', title: 'Products endpoint', componentIds: ['api'] }], sequence: { items: 3 } };
+}
+
+test('journey: three user-defined layers; one task refined through Compose, one sent directly; a stack change flags only the affected task', async t => {
+  const calls = [];
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [{ id: 'codex', available: true }],
+    runner: async call => { calls.push(call.prompt); return { text: 'Render the product grid from GET /products, twenty per page, with an empty state.' }; } });
+  const { token } = (await api(app, '/api/session')).data;
+  const kanban = await app.board.createProject({ name: 'Shop', workflowMode: 'pipeline' });
+  const store = new OriginStore(app.board.store.dir);
+  let record = await store.create({ name: 'Shop design' });
+  record = await store.link(record.id, { expectedRevision: record.revision, kanbanProjectId: kanban.id });
+  record = await store.write(record.id, { expectedRevision: record.revision, blueprint: journeyBlueprint() });
+  const post = (path, body) => api(app, `/api/origin/projects/${record.id}/${path}`, { method: 'POST', token, body: { expectedRevision: record.revision, ...body } });
+  const save = async change => { change(record.blueprint); record = await store.write(record.id, { expectedRevision: record.revision, blueprint: record.blueprint }); };
+  // Each component task gets its own layer's stack and rules; empty optional fields block nothing.
+  const [grid, schema] = (await post('context', { itemIds: ['grid', 'schema'] })).data.tasks;
+  assert.match(grid.context, /## Layer: Interface\nStack: React/);
+  assert.match(grid.context, /## Shared rules for Interface\nWCAG AA/);
+  assert.doesNotMatch(grid.context, /PostgreSQL|Validate every input/);
+  assert.match(schema.context, /Stack: PostgreSQL 16/);
+  assert.equal(schema.tooLarge, false);
+  // IMP-001 is refined through Compose's own generate service, and the accepted result stays on the same task.
+  const refined = await api(app, '/api/generate', { method: 'POST', token, body: { input: grid.body, quality: 'fast', provider: 'codex', model: '', effort: '', language: 'en' } });
+  assert.equal(refined.status, 200, JSON.stringify(refined.data));
+  await save(blueprint => Object.assign(blueprint.items[0], { description: refined.data.prompt, refinement: { proposal: refined.data.prompt, proposedAt: Date.now(), basis: '', originalDescription: 'Show products', acceptedAt: Date.now() } }));
+  // IMP-001 (refined) and IMP-002 (direct) are sent: no model call, idle To Do cards with their own context.
+  const before = calls.length;
+  assert.equal((await post('handoff', { itemIds: ['grid', 'schema'] })).status, 200);
+  assert.equal(calls.length, before, 'Sending calls no model.');
+  const view = await app.board.view(), todo = view.projects[0].pipeline.columns.find(column => column.role === 'todo').id, cards = view.projects[0].tasks;
+  assert.deepEqual(cards.map(card => [card.title, card.column]), [['IMP-001 Product grid', todo], ['IMP-002 Product schema', todo]]);
+  assert.match(cards[0].prompt, /^# IMP-001 Product grid\n\n## What to do\nRender the product grid from GET \/products/);
+  assert.match(cards[0].prompt, /Stack: React/);
+  assert.match(cards[1].prompt, /Stack: PostgreSQL 16/);
+  assert.doesNotMatch(cards[1].prompt, /React|WCAG/);
+  assert.equal(view.runs.length, 0, 'Nothing starts.');
+  record = await store.read(record.id);
+  // Moving the map or editing an unrelated task flags nothing.
+  await save(blueprint => { blueprint.layout.map.nodes = { architecture: { x: 40, y: 40 } }; blueprint.items[2].description = 'Unrelated edit'; });
+  let status = (await post('context-status', {})).data.tasks;
+  assert.deepEqual(status.map(task => [task.key, task.status]), [['IMP-001', 'current'], ['IMP-002', 'current']]);
+  // Changing the Data layer's stack flags only the task in that layer.
+  await save(blueprint => { blueprint.technologies.push({ id: 'ts', name: 'TimescaleDB', status: 'selected' }); blueprint.layers[2].technologyIds.push('ts'); });
+  status = (await post('context-status', {})).data.tasks;
+  assert.deepEqual(status.map(task => [task.key, task.status]), [['IMP-001', 'current'], ['IMP-002', 'changed']]);
+  assert.deepEqual([status[1].added, status[1].removed, status[1].idle, status[1].edited], [['TimescaleDB'], [], true, false]);
+  assert.match(status[1].sent, /Stack: PostgreSQL 16\n/);
+  assert.match(status[1].now, /Stack: PostgreSQL 16, TimescaleDB/);
+  assert.equal((await app.board.view()).projects[0].tasks[0].prompt, cards[0].prompt, 'An unrelated card is untouched.');
+  // Updating is checked again against what was reviewed, keeps the card idle, and keeps the earlier snapshot.
+  assert.equal((await post('update-context', { itemId: 'schema', expectedHash: 'f'.repeat(64), expectedCardRevision: status[1].cardRevision })).data.code, 'CONTEXT_CHANGED_AGAIN');
+  assert.equal((await post('update-context', { itemId: 'schema', expectedHash: status[1].hash, expectedCardRevision: status[1].cardRevision })).status, 200);
+  record = await store.read(record.id);
+  let card = (await app.board.view()).projects[0].tasks[1];
+  assert.match(card.prompt, /Stack: PostgreSQL 16, TimescaleDB/);
+  assert.equal(card.column, todo);
+  assert.notEqual(card.originSource.snapshotId, cards[1].originSource.snapshotId);
+  const snapshots = await readdir(join(app.board.store.dir, 'origin', 'snapshots', record.id));
+  assert.ok(snapshots.includes(`${cards[1].originSource.snapshotId}.json`) && snapshots.includes(`${card.originSource.snapshotId}.json`), 'The earlier snapshot is kept for history.');
+  assert.equal((await post('context-status', {})).data.tasks[1].status, 'current');
+  // A prompt edited in Kanban is replaced only after confirmation.
+  await app.board.updateTask(card.id, { prompt: `${card.prompt}\nMy own note.`, expectedRevision: card.revision });
+  await save(blueprint => { blueprint.layers[2].constraints = 'Migrations are reversible and reviewed'; });
+  status = (await post('context-status', {})).data.tasks;
+  assert.deepEqual([status[1].status, status[1].edited], ['changed', true]);
+  assert.equal((await post('update-context', { itemId: 'schema', expectedHash: status[1].hash, expectedCardRevision: status[1].cardRevision })).data.code, 'CARD_EDITED');
+  // Keep current: no longer flagged until the context changes again.
+  await save(blueprint => { blueprint.items[1].handoff.keptHash = status[1].hash; });
+  assert.equal((await post('context-status', {})).data.tasks[1].status, 'kept');
+  // Work that left To Do is never fed new input.
+  card = (await app.board.view()).projects[0].tasks[1];
+  const done = (await app.board.view()).projects[0].pipeline.columns.find(column => column.role === 'done').id;
+  assert.equal((await api(app, `/api/tasks/${card.id}/move`, { method: 'POST', token, body: { column: done, expectedRevision: card.revision } })).status, 200);
+  const moved = (await app.board.view()).projects[0].tasks[1];
+  assert.equal(moved.prompt, card.prompt, 'A column move neither changes nor repeats the delivered context.');
+  card = moved;
+  await save(blueprint => { blueprint.layers[2].constraints = 'Changed again'; });
+  status = (await post('context-status', {})).data.tasks;
+  assert.equal(status[1].idle, false);
+  assert.equal((await post('update-context', { itemId: 'schema', expectedHash: status[1].hash, expectedCardRevision: status[1].cardRevision, replaceEdited: true })).data.code, 'CARD_BUSY');
+  // Deleting the Origin project keeps the cards and every snapshot.
+  await store.remove(record.id, { expectedRevision: record.revision });
+  assert.equal((await app.board.view()).projects[0].tasks.length, 2);
+  assert.ok((await readdir(join(app.board.store.dir, 'origin', 'snapshots', record.id))).length >= 3);
+});
+
+test('handoff finds To Do by role on a renamed pipeline column and on a legacy board', async t => {
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
+  const { token } = (await api(app, '/api/session')).data;
+  const pipeline = await app.board.createProject({ name: 'Renamed', workflowMode: 'pipeline' });
+  await app.board.store.update(state => { state.projects.find(project => project.id === pipeline.id).pipeline.columns.find(column => column.role === 'todo').name = 'Inbox'; });
+  const legacy = await app.board.createProject({ name: 'Legacy', workflowMode: 'legacy' });
+  const store = new OriginStore(app.board.store.dir);
+  for (const [kanban, column] of [[pipeline, null], [legacy, 'todo']]) {
+    let record = await store.create({ name: `${kanban.name} design` });
+    record = await store.link(record.id, { expectedRevision: record.revision, kanbanProjectId: kanban.id });
+    record = await store.write(record.id, { expectedRevision: record.revision, blueprint: { items: [{ id: 'a', key: 'IMP-001', title: 'First' }], sequence: { items: 1 } } });
+    const response = await api(app, `/api/origin/projects/${record.id}/handoff`, { method: 'POST', token, body: { expectedRevision: record.revision, itemIds: ['a'] } });
+    assert.equal(response.status, 200, JSON.stringify(response.data));
+    const project = (await app.board.view()).projects.find(entry => entry.id === kanban.id);
+    const todo = column || project.pipeline.columns.find(entry => entry.role === 'todo').id;
+    assert.deepEqual(project.tasks.map(task => [task.title, task.column]), [['IMP-001 First', todo]]);
+  }
+});
+
+test('Origin task routes refuse hostile input, unsafe identifiers and oversized payloads', async t => {
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
+  const { token } = (await api(app, '/api/session')).data;
+  const kanban = await app.board.createProject({ name: 'Shop', workflowMode: 'pipeline' });
+  const store = new OriginStore(app.board.store.dir);
+  let record = await store.create({ name: 'Shop design' });
+  record = await store.link(record.id, { expectedRevision: record.revision, kanbanProjectId: kanban.id });
+  record = await store.write(record.id, { expectedRevision: record.revision, blueprint: { items: [{ id: 'a', key: 'IMP-001', title: '<img src=x onerror=alert(1)>' }], sequence: { items: 1 } } });
+  const post = (path, body, auth = token) => api(app, `/api/origin/projects/${record.id}/${path}`, { method: 'POST', token: auth, body });
+  for (const body of [{ expectedRevision: record.revision, itemIds: 'a' }, { expectedRevision: record.revision, itemIds: [] }, { expectedRevision: record.revision, itemIds: Array.from({ length: 101 }, () => 'a') },
+    { expectedRevision: record.revision, itemIds: ['../a'] }, { expectedRevision: 'one', itemIds: ['a'] }]) {
+    assert.equal((await post('context', body)).status, 400, JSON.stringify(body));
+  }
+  assert.equal((await post('handoff', { expectedRevision: record.revision, itemIds: ['<script>'] })).status, 400);
+  assert.equal((await post('update-context', { expectedRevision: record.revision, itemId: '../../etc' })).status, 404);
+  assert.equal((await post('handoff', { expectedRevision: record.revision, itemIds: ['a'] }, 'wrong-token')).status, 403);
+  const huge = await fetch(`${app.url}/api/origin/projects/${record.id}/context`, { method: 'POST', headers: { 'X-STE-Token': token, 'Content-Type': 'application/json' }, body: JSON.stringify({ pad: 'x'.repeat(5 * 1024 * 1024) }) });
+  assert.equal(huge.status, 413);
+  await assert.rejects(app.board.createOriginTasks(kanban.id, { originProjectId: '../x', tasks: [{ originTaskId: 'a', title: 'x', prompt: 'x' }] }), { code: 'INVALID_INPUT' });
+  // Hostile text is stored and sent as text.
+  assert.equal((await post('handoff', { expectedRevision: record.revision, itemIds: ['a'] })).status, 200);
+  assert.equal((await app.board.view()).projects[0].tasks[0].title, 'IMP-001 <img src=x onerror=alert(1)>');
+});
