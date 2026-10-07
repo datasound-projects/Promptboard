@@ -72,7 +72,8 @@ window.PromptboardOrigin = (() => {
   const ICON = { edit: 'M4 20h4L19 9l-4-4L4 16v4zM13.5 6.5l4 4', plus: 'M12 5v14M5 12h14', minus: 'M5 12h14', fit: 'M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5', grip: 'M20 10L10 20M20 15l-5 5M20 4L4 20', close: 'M6 6l12 12M18 6 6 18', dots: 'M5 12h.01M12 12h.01M19 12h.01', arrow: 'M5 12h14M13 6l6 6-6 6', link: 'M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1' };
   function autoGrow(area) {
     const fit = () => { if (!area.isConnected) return; area.style.height = 'auto'; area.style.height = `${area.scrollHeight + 2}px`; };
-    area.addEventListener('input', fit); requestAnimationFrame(fit);
+    // Measured again when Origin is shown: a field drawn while the page was hidden has no height yet.
+    area.addEventListener('input', fit); area.addEventListener('origin-fit', fit); requestAnimationFrame(fit);
     return area;
   }
 
@@ -239,6 +240,7 @@ window.PromptboardOrigin = (() => {
     }
     async function show() {
       visible = true;
+      requestAnimationFrame(() => { for (const area of view.querySelectorAll('textarea')) area.dispatchEvent(new Event('origin-fit')); });
       await app.ensureBoard();
       if (!(await refreshProjects())) { render(); return; }
       const stored = pref(PROJECT_KEY);
@@ -871,9 +873,9 @@ window.PromptboardOrigin = (() => {
         const home = M.taskHome(bp(), item), component = bp().components.find(entry => entry.id === home.componentId);
         return {
           title: ['title', 'Task — e.g. Build the sign-in form'],
-          essentials: [...lostNotes(item), field('What to do', area(item, 'description', 'What to build or change, in a few lines')),
+          essentials: [...lostNotes(item), proposalPanel(item), field('What to do', area(item, 'description', 'What to build or change, in a few lines')),
             field('Done when', area(item, 'acceptanceCriteria', 'One check per line — e.g. “A user can sign in with email”'), 'These checks travel with the task into Compose and Kanban.'),
-            contextPreview(item)],
+            contextPreview(item)].filter(Boolean),
           more: [group('Components', linkChips(item, 'componentIds', 'components', { empty: 'Add components in Architecture first.' }), 'The first component is where the task is listed.'),
             component ? el('p', 'origin-hint', `Layer: ${bp().layers.find(layer => layer.id === home.layerId)?.name || 'none'} — from ${component.name || 'its component'}.`)
               : bp().layers.length ? field('Layer', select(item, 'layerId', [['', 'Whole project'], ...bp().layers.map(layer => [layer.id, layer.name || 'Unnamed layer'])], { structure: true })) : null,
@@ -883,6 +885,7 @@ window.PromptboardOrigin = (() => {
             group('Also include', contextLinks(item), 'Decisions, research, planning answers or your own sections this task needs. Nothing else is added on its own.'),
             field('Workstream', input(item, 'workstream', { max: 80, placeholder: 'Backend, UI…' })),
             (() => { const box = el('div', 'origin-inline-actions'); box.append(button('Move up', () => moveTask(item, -1), 'origin-ghost'), button('Move down', () => moveTask(item, 1), 'origin-ghost')); return box; })(),
+            originalNote(item),
             item.handoff ? el('p', 'origin-hint', `Sent to Kanban on ${new Date(item.handoff.at).toLocaleString()}.`) : null].filter(Boolean),
         };
       },
@@ -925,7 +928,8 @@ window.PromptboardOrigin = (() => {
       const message = el('p', 'origin-inline-error'); message.hidden = true; message.setAttribute('role', 'alert');
       const foot = el('div', 'origin-drawer-foot');
       const left = el('div', 'origin-inline-actions');
-      if (COMPOSABLE.has(collection)) left.append(composeButton(collection, entry.id, message));
+      if (collection === 'items') left.append(improveButton(entry, message));
+      else if (COMPOSABLE.has(collection)) left.append(composeButton(collection, entry.id, message));
       if (collection === 'items') { const send = button('Send to Kanban', () => void openHandoff([entry.id]), 'origin-ghost', 'Create its To Do card. No agent starts.'); send.id = 'origin-drawer-handoff'; left.append(send); }
       foot.append(left, deleteControl(collection, entry));
       drawer.replaceChildren(head, body, message, foot);
@@ -1344,7 +1348,7 @@ window.PromptboardOrigin = (() => {
         const place = where ? (home.componentId ? blueprint.components.find(entry => entry.id === home.componentId)?.name : blueprint.layers.find(entry => entry.id === home.layerId)?.name) || 'Project-wide' : '';
         return { title: item.title, fallback: 'Untitled task', tone: item.lostLinks?.length ? 'attention' : checks ? 'defined' : 'progress',
           sub: [place, clip(firstLine(item.description), 90), after.length && `after ${after.join(', ')}`, checks ? `done when: ${plural(checks, 'check')}` : 'No “done when” yet'].filter(Boolean).join(' · '),
-          meta: [key(item), handoffChip(item, cards), item.refinement?.proposal && !item.refinement.acceptedAt ? chip('Proposal to review', 'accent') : null, item.lostLinks?.length ? chip('Link missing', 'warn') : null] };
+          meta: [key(item), handoffChip(item, cards), item.refinement?.proposal && !item.refinement.acceptedAt ? chip('Proposal to review', 'accent') : item.refinement?.acceptedAt ? chip('Refined', 'muted') : null, item.lostLinks?.length ? chip('Link missing', 'warn') : null] };
       };
     }
     function lostNotes(item) {
@@ -1431,19 +1435,23 @@ window.PromptboardOrigin = (() => {
         const homes = new Map(blueprint.items.map(item => [item.id, M.taskHome(blueprint, item)]));
         const at = (componentId, layerId) => visible.filter(item => homes.get(item.id).componentId === componentId && homes.get(item.id).layerId === layerId);
         const taskGroup = (title, lead, ...children) => { const box = el('section', 'origin-task-group'); const head = el('div', 'origin-task-group-head'); head.append(title); if (lead) head.append(lead); box.append(head, ...children); return box; };
-        nodes.push(taskGroup(el('h3', '', 'Project-wide'), el('p', '', 'Tasks that belong to no single component or layer.'),
+        const suggest = (scope, label) => { const control = button('Suggest tasks', () => openSuggest(scope), 'origin-link origin-suggest', `Ask your CLI to propose tasks for ${label}. Nothing is added until you choose.`); return control; };
+        const projectLead = el('p', '', 'Tasks that belong to no single component or layer. '); projectLead.append(suggest({}, 'the project’s requirements'));
+        nodes.push(taskGroup(el('h3', '', 'Project-wide'), projectLead,
           ...rows(at('', '')), quickAdd('Add a project-wide task — e.g. “Set up continuous integration”', value => newTask(value), { id: 'items-project' })));
         const componentBlock = component => {
           const box = el('div', 'origin-task-component'); box.dataset.component = component.id;
           const name = button(component.name || 'Unnamed component', () => openDrawer('components', component.id), 'origin-task-component-name', 'Open this component');
-          box.append(name, ...rows(at(component.id, component.layerId || '')),
+          const head = el('div', 'origin-task-component-head'); head.append(name, suggest({ componentId: component.id }, component.name || 'this component'));
+          box.append(head, ...rows(at(component.id, component.layerId || '')),
             quickAdd(`Add a task for ${clip(component.name || 'this component', 40)}…`, value => newTask(value, { componentIds: [component.id] }), { id: `items-c-${component.id}` }));
           return box;
         };
         for (const layer of blueprint.layers) {
           const stack = layer.technologyIds.map(id => blueprint.technologies.find(entry => entry.id === id)).filter(Boolean);
           const title = button(layer.name || 'Unnamed layer', () => openDrawer('layers', layer.id), 'origin-task-layer-name', 'Open this layer');
-          const lead = el('p'); lead.append(...(stack.length ? stack.map(entry => chip(`${entry.name}${entry.status === 'candidate' ? ' (candidate)' : ''}`, entry.status === 'selected' ? 'accent' : 'muted')) : [el('span', '', 'No stack chosen yet.')]));
+          const lead = el('p'); lead.append(...(stack.length ? stack.map(entry => chip(`${entry.name}${entry.status === 'candidate' ? ' (candidate)' : ''}`, entry.status === 'selected' ? 'accent' : 'muted')) : [el('span', '', 'No stack chosen yet.')]),
+            suggest({ layerId: layer.id }, `the ${layer.name || 'unnamed'} layer`));
           nodes.push(taskGroup(title, lead, ...blueprint.components.filter(component => component.layerId === layer.id).map(componentBlock),
             el('h4', 'origin-task-sub', 'Whole layer'), ...rows(at('', layer.id)),
             quickAdd(`Add a task for the whole ${clip(layer.name || 'layer', 30)} layer…`, value => newTask(value, { layerId: layer.id }), { id: `items-l-${layer.id}` })));
@@ -1464,7 +1472,8 @@ window.PromptboardOrigin = (() => {
         send.id = 'origin-kanban-handoff'; send.disabled = !count || handoffBusy;
         bar.append(el('span', 'origin-selection-text', count ? `${plural(count, 'task')} selected` : 'Select tasks to send them to Kanban'),
           button('Select all drafts', () => { planSelection = new Set(visible.filter(item => !item.handoff).map(item => item.id)); renderMain(); }, 'origin-link'),
-          count ? button('Clear', () => { planSelection = new Set(); renderMain(); }, 'origin-link') : '', send);
+          count ? button('Clear', () => { planSelection = new Set(); renderMain(); }, 'origin-link') : '',
+          count ? Object.assign(button('Improve with Compose', () => openImprove([...planSelection]), 'origin-ghost', 'Get a Compose proposal for each selected task. Optional.'), { id: 'origin-improve' }) : '', send);
         nodes.push(bar);
       }
       return nodes;
@@ -1967,6 +1976,185 @@ window.PromptboardOrigin = (() => {
       control.prepend(icon(ICON.arrow, 14));
       return control;
     }
+    // ---- Compose refinement: optional, one task to one proposal; nothing changes until you accept ----
+    const basisOf = item => JSON.stringify([item.title, item.description, item.acceptanceCriteria]).slice(0, 100000);
+    async function taskBodyFor(itemId) {
+      if (!(await flush())) return { error: 'Save the blueprint first, then try again.' };
+      const { response, data } = await app.api(`/api/origin/projects/${encodeURIComponent(projectId)}/context`, { method: 'POST', body: { expectedRevision: record.revision, itemIds: [itemId] }, timeoutMs: 30000 })
+        .catch(() => ({ response: { ok: false }, data: {} }));
+      if (!response.ok) return { error: typeof data.error === 'string' ? data.error : 'The task context could not be built.' };
+      const built = data.tasks[0];
+      return built.tooLarge ? { error: built.error } : { body: built.body };
+    }
+    function improveButton(item, message) {
+      const control = button('Improve with Compose', async () => {
+        const prepared = await taskBodyFor(item.id);
+        if (prepared.error) { message.textContent = prepared.error; message.hidden = false; return; }
+        const spec = { text: prepared.body, task: 'feature', origin: { originId: projectId, itemId: item.id, key: item.key, title: item.title, basis: basisOf(item) } };
+        let result = app.toCompose(spec);
+        if (result === 'draft') {
+          if (control.dataset.confirm !== 'true') {
+            control.dataset.confirm = 'true'; control.textContent = 'Replace Compose draft?'; control.classList.add('danger');
+            message.textContent = 'Compose already has unsaved text. Click again to replace it, or copy that text first.'; message.hidden = false;
+            return;
+          }
+          result = app.toCompose({ ...spec, replace: true });
+        }
+        if (result === 'busy') { message.textContent = 'Compose is generating a prompt. Wait for it or cancel it, then try again.'; message.hidden = false; return; }
+        app.announce(`Opened ${item.key} in Compose with its context. Choose Generate there, then Use in Origin task. Nothing was generated yet.`);
+      }, 'origin-ghost origin-compose', 'Refine the instruction in Compose with this task’s context. You review the result before it changes anything.');
+      control.prepend(icon(ICON.arrow, 14));
+      return control;
+    }
+    /** Compose hands a result back: it becomes a proposal on the same task, to accept, edit or reject. */
+    async function receiveProposal({ originId, itemId, text, basis }) {
+      if (originId !== projectId) {
+        if (!projects.length) await refreshProjects();
+        if (!projects.some(entry => entry.id === originId)) return 'That Origin project no longer exists.';
+        if (projectId && !(await flush())) return 'Origin has unsaved changes in another project. Save them first.';
+        setPref(PROJECT_KEY, originId); await load(originId);
+      }
+      const item = record?.exists ? bp().items.find(entry => entry.id === itemId) : null;
+      if (!item) return 'That Origin task no longer exists.';
+      item.refinement = { proposal: String(text).slice(0, 100000), proposedAt: Date.now(), basis, originalDescription: '', acceptedAt: null };
+      section = 'plan'; setPref(SECTION_KEY, section);
+      changed({ structure: true });
+      openDrawer('items', item.id);
+      return 'ok';
+    }
+    function proposalPanel(item) {
+      const refinement = item.refinement;
+      if (!refinement?.proposal || refinement.acceptedAt) return null;
+      const box = el('div', 'origin-proposal');
+      box.append(el('p', 'origin-proposal-title', 'Proposal from Compose'));
+      if (refinement.basis && refinement.basis !== basisOf(item)) box.append(el('p', 'origin-hint', 'The task changed after this proposal was made. Read it again before you use it.'));
+      const text = el('textarea'); text.value = refinement.proposal; text.rows = 6; text.dataset.focusKey = 'proposal'; text.setAttribute('aria-label', 'Proposed instruction (you can edit it)');
+      text.addEventListener('input', () => { refinement.proposal = text.value; changed(); });
+      const actions = el('div', 'origin-inline-actions');
+      actions.append(button('Use as What to do', () => {
+        Object.assign(refinement, { originalDescription: item.description, acceptedAt: Date.now() });
+        item.description = refinement.proposal;
+        changed({ structure: true, drawer: true });
+        app.announce('Proposal used. Done when, links and the original text are kept.');
+      }, 'origin-primary'), button('Reject', () => { item.refinement = null; changed({ structure: true, drawer: true }); app.announce('Proposal rejected.'); }, 'origin-link'));
+      box.append(autoGrow(text), actions);
+      return box;
+    }
+    function originalNote(item) {
+      const refinement = item.refinement;
+      if (!refinement?.acceptedAt) return null;
+      const box = el('div', 'origin-field'); box.append(el('span', 'origin-field-label', 'Before Compose'), el('p', 'origin-hint', clip(refinement.originalDescription, 400) || '(empty)'),
+        button('Restore the original', () => { item.description = refinement.originalDescription; item.refinement = null; changed({ structure: true, drawer: true }); }, 'origin-link'));
+      return box;
+    }
+    // Several tasks: Compose's own settings and job slot, one task at a time, with progress and Cancel.
+    let improveDialog = null;
+    function openImprove(ids) {
+      const blueprint = bp(), list = ids.map(id => blueprint.items.find(item => item.id === id)).filter(Boolean);
+      if (!list.length) return;
+      improveDialog ??= (() => { const dialog = el('dialog', 'origin-modal'); dialog.id = 'origin-improve-dialog'; dialog.setAttribute('aria-labelledby', 'origin-improve-heading'); document.body.append(dialog); return dialog; })();
+      const dialog = improveDialog, settings = app.composeSettings();
+      const heading = el('h2', '', `Improve ${plural(list.length, 'task')} with Compose`); heading.id = 'origin-improve-heading';
+      const rows = new Map(), table = el('ol', 'origin-handoff-list');
+      for (const item of list) { const status = el('span', 'origin-chip muted', 'Waiting'); const li = el('li'); const line = el('div', 'origin-handoff-line'); line.append(el('span', 'origin-handoff-title', `${item.key} ${item.title.trim() || 'Untitled task'}`), status); li.append(line); rows.set(item.id, status); table.append(li); }
+      const progress = el('p', 'origin-hint'); progress.setAttribute('role', 'status');
+      const start = button('Start', () => void run(), 'origin-primary'); start.id = 'origin-improve-start';
+      const cancel = button('Cancel', () => { job?.abort(); }, 'origin-ghost'); cancel.hidden = true; cancel.id = 'origin-improve-cancel';
+      const close = button('Close', () => dialog.close(), 'origin-ghost');
+      let job = null;
+      const mark = (id, text, tone) => { const node = rows.get(id); node.textContent = text; node.className = `origin-chip ${tone}`; };
+      async function run() {
+        if (app.composeRunning()) { progress.textContent = 'Compose is generating a prompt. Wait for it or cancel it, then start again.'; return; }
+        job = new AbortController(); start.disabled = true; cancel.hidden = false; close.disabled = true;
+        let done = 0;
+        for (const item of list) {
+          if (job.signal.aborted) break;
+          mark(item.id, 'Working…', 'accent'); progress.textContent = `Improving ${done + 1} of ${list.length}…`;
+          const basis = basisOf(item), prepared = await taskBodyFor(item.id);
+          if (prepared.error) { mark(item.id, 'Not improved', 'warn'); progress.textContent = prepared.error; continue; }
+          const { response, data } = await app.api('/api/generate', { method: 'POST', body: { ...settings, input: prepared.body }, timeoutMs: null, compose: true, signal: job.signal })
+            .catch(error => ({ response: { ok: false }, data: { error: job.signal.aborted || error?.name === 'AbortError' ? '' : 'The app did not answer.' } }));
+          if (job.signal.aborted) { mark(item.id, 'Cancelled', 'muted'); break; }
+          if (!response.ok || typeof data.prompt !== 'string' || !data.prompt.trim()) {
+            mark(item.id, 'Failed', 'warn'); progress.textContent = `${typeof data.error === 'string' && data.error ? data.error : 'The CLI returned no result.'} Finished proposals are kept.`; break;
+          }
+          // Late answers never overwrite your text: they arrive as proposals.
+          const current = bp().items.find(entry => entry.id === item.id);
+          if (current) { current.refinement = { proposal: data.prompt.slice(0, 100000), proposedAt: Date.now(), basis, originalDescription: '', acceptedAt: null }; changed(); }
+          mark(item.id, 'Proposal ready', 'ok'); done++;
+        }
+        if (job.signal.aborted) progress.textContent = `Cancelled. ${plural(done, 'proposal')} kept.`;
+        else if (!progress.textContent.endsWith('kept.')) progress.textContent = `${plural(done, 'proposal')} ready to review. Nothing was changed or sent.`;
+        for (const [id, node] of rows) if (node.textContent === 'Waiting') mark(id, 'Not started', 'muted');
+        job = null; cancel.hidden = true; close.disabled = false;
+        renderMain(); renderDrawer();
+      }
+      const actions = el('div', 'origin-modal-actions'); actions.append(close, cancel, start);
+      const x = button('', () => { if (!job) dialog.close(); }, 'origin-icon origin-modal-close'); x.setAttribute('aria-label', 'Close'); x.append(icon(ICON.close));
+      dialog.replaceChildren(x, el('p', 'origin-eyebrow', 'Compose'), heading,
+        el('p', 'origin-modal-lead', `Uses your Compose settings (${settings.provider || 'CLI default'}${settings.model ? ` · ${settings.model}` : ''}). Each task gets a proposal built from its own words and context; nothing is changed or sent until you accept it.`),
+        table, progress, actions);
+      dialog.addEventListener('cancel', event => { if (job) event.preventDefault(); });
+      dialog.showModal(); start.focus();
+    }
+    // Suggest tasks: the split service proposes tasks from one component, one layer or the project's requirements.
+    let suggestDialog = null;
+    function openSuggest(scope) {
+      const blueprint = bp(), component = blueprint.components.find(entry => entry.id === scope.componentId), layer = blueprint.layers.find(entry => entry.id === scope.layerId);
+      const where = component ? component.name || 'this component' : layer ? `the ${layer.name || 'unnamed'} layer` : 'the project’s requirements';
+      suggestDialog ??= (() => { const dialog = el('dialog', 'origin-modal'); dialog.id = 'origin-suggest-dialog'; dialog.setAttribute('aria-labelledby', 'origin-suggest-heading'); document.body.append(dialog); return dialog; })();
+      const dialog = suggestDialog, settings = app.composeSettings();
+      const heading = el('h2', '', 'Suggest tasks'); heading.id = 'origin-suggest-heading';
+      const body = el('div', 'origin-suggestions'), progress = el('p', 'origin-hint'); progress.setAttribute('role', 'status');
+      const chain = el('label', 'origin-check-row'); const chainBox = el('input'); chainBox.type = 'checkbox'; chainBox.id = 'origin-suggest-chain'; chain.append(chainBox, el('span', '', 'Each starts after the one before')); chain.hidden = true;
+      const start = button('Suggest', () => void run(), 'origin-primary'); start.id = 'origin-suggest-start';
+      const accept = button('Add selected', () => addSelected(), 'origin-primary'); accept.id = 'origin-suggest-add'; accept.hidden = true;
+      const cancel = button('Cancel', () => { if (job) job.abort(); else dialog.close(); }, 'origin-ghost');
+      let job = null, picks = [];
+      async function run() {
+        if (app.composeRunning()) { progress.textContent = 'Compose is generating a prompt. Wait for it or cancel it, then try again.'; return; }
+        if (!(await flush())) { progress.textContent = 'Save the blueprint first, then try again.'; return; }
+        job = new AbortController(); start.disabled = true; progress.textContent = 'Asking your CLI for suggestions…';
+        const brief = M.suggestionBrief(bp(), { ...scope, projectName: project()?.name || '' });
+        const { response, data } = await app.api('/api/split', { method: 'POST', timeoutMs: null, compose: true, signal: job.signal,
+          body: { prompt: brief, provider: settings.provider, model: settings.model || '', effort: settings.effort || '', language: settings.language || 'en' } })
+          .catch(error => ({ response: { ok: false }, data: { error: job?.signal.aborted || error?.name === 'AbortError' ? 'Cancelled. Nothing was added.' : 'The app did not answer.' } }));
+        job = null; start.disabled = false;
+        if (!response.ok || !Array.isArray(data.tasks)) { progress.textContent = typeof data.error === 'string' ? data.error : 'No suggestions came back. Nothing was added.'; return; }
+        picks = data.tasks.map(task => ({ use: true, title: task.title.slice(0, 200), prompt: task.prompt }));
+        body.replaceChildren(...picks.map((pick, index) => {
+          const row = el('div', 'origin-suggestion'); const box = el('input'); box.type = 'checkbox'; box.checked = true; box.setAttribute('aria-label', `Add suggestion ${index + 1}`);
+          box.addEventListener('change', () => { pick.use = box.checked; accept.disabled = !picks.some(entry => entry.use && entry.title.trim()); });
+          const title = el('input', 'origin-suggestion-title'); title.value = pick.title; title.maxLength = 200; title.setAttribute('aria-label', `Title of suggestion ${index + 1}`);
+          title.addEventListener('input', () => { pick.title = title.value; accept.disabled = !picks.some(entry => entry.use && entry.title.trim()); });
+          const detail = el('details'); detail.append(el('summary', '', 'What to do'), el('pre', 'origin-context-text', pick.prompt));
+          const head = el('div', 'origin-handoff-line'); head.append(box, title); row.append(head, detail);
+          return row;
+        }));
+        progress.textContent = `${plural(picks.length, 'suggestion')}. Edit or untick them; nothing is added until you choose.`;
+        start.hidden = true; accept.hidden = false; chain.hidden = picks.length < 2;
+      }
+      function addSelected() {
+        const chosen = picks.filter(pick => pick.use && pick.title.trim());
+        if (!chosen.length) return;
+        const links = component ? { componentIds: [component.id] } : layer ? { layerId: layer.id } : {};
+        let previous = null;
+        for (const pick of chosen) {
+          const item = newTask(pick.title.trim(), { ...links, description: pick.prompt, dependsOn: chainBox.checked && previous ? [previous.id] : [] });
+          previous = item;
+        }
+        dialog.close();
+        app.announce(`${plural(chosen.length, 'task')} added from suggestions. Review each before sending it.`);
+      }
+      const x = button('', () => { if (!job) dialog.close(); }, 'origin-icon origin-modal-close'); x.setAttribute('aria-label', 'Close'); x.append(icon(ICON.close));
+      const actions = el('div', 'origin-modal-actions'); actions.append(cancel, start, accept);
+      dialog.replaceChildren(x, el('p', 'origin-eyebrow', 'Compose'), heading,
+        el('p', 'origin-modal-lead', `Asks your CLI (${settings.provider || 'CLI default'}) to propose tasks from ${where}, using only its design. Missing choices stay open as tasks to decide. Nothing is added until you choose.`),
+        body, chain, progress, actions);
+      dialog.addEventListener('cancel', event => { if (job) event.preventDefault(); });
+      dialog.showModal(); start.focus();
+    }
+
     // ---- Send to Kanban: one review panel; the server builds the context and creates each card once ----
     let handoffDialog = null;
     async function openHandoff(ids = [...planSelection]) {
@@ -2064,7 +2252,7 @@ window.PromptboardOrigin = (() => {
       if (open) { event.preventDefault(); closeDrawer(); }
     });
 
-    return { show, leave };
+    return { show, leave, receiveProposal };
   }
 
   return { create };

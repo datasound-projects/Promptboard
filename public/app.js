@@ -36,6 +36,7 @@ let currentId = null;
 let currentResult = null;
 let controller = null;
 let running = false;
+let composeOrigin = null;
 let copyTimer;
 let catalog = null;
 let modelsLoading = false;
@@ -451,6 +452,7 @@ function setRunning(value) {
   $('#kanban-button').disabled = value || !currentResult;
   $('#split-button').disabled = value || !currentResult;
   $('#report-button').disabled = value || !currentResult?.verification;
+  renderComposeOrigin();
   $('#refresh-models').disabled = value || authBusy || modelsLoading;
   $('#model').disabled = value || modelsLoading;
   updateEffort($('#effort').value);
@@ -537,6 +539,7 @@ function clearOutput() {
 
 function showResult(result) {
   currentResult = result;
+  renderComposeOrigin();
   $('#output-tools').hidden = running;
   $('#output-info').open = false;
   closePromptEditor();
@@ -705,6 +708,7 @@ function restoreEntry(entry) {
 
 function newPrompt() {
   if (running) return;
+  composeOrigin = null; renderComposeOrigin();
   showPromptPage();
   contextReset();
   currentId = null;
@@ -810,7 +814,8 @@ async function generate(event) {
       updateProviderState();
     }
   }
-  if (generated && autoSplit) await openSplit({ previewOnly: true });
+  // A prompt that belongs to an Origin task stays one task: it goes back as one proposal, never split.
+  if (generated && autoSplit && !composeOrigin) await openSplit({ previewOnly: true });
 }
 
 // ---- Optional Compose grounding: source contents live only in this tab's memory. ----
@@ -1271,10 +1276,28 @@ function showPage() {
 }
 function showPromptPage() { if (currentPage() !== 'compose') location.hash = '#/'; }
 // Origin handoff: targeted context only. Compose waits for the person to review it and choose Generate.
-function prefillCompose({ text, task, replace = false }) {
+// A prompt prefilled from an Origin task remembers it (composeOrigin), so its result can go back as a proposal to review.
+function renderComposeOrigin() {
+  const bar = $('#compose-origin');
+  if (!bar) return;
+  bar.hidden = !composeOrigin;
+  if (!composeOrigin) return;
+  $('#compose-origin-text').textContent = `From Origin · ${composeOrigin.key} ${composeOrigin.title || 'Untitled task'}`;
+  $('#compose-origin-use').disabled = running || !currentResult;
+}
+$('#compose-origin-use')?.addEventListener('click', async () => {
+  if (!composeOrigin || !currentResult) return;
+  const result = await originView?.receiveProposal({ ...composeOrigin, text: currentResult.prompt });
+  if (result !== 'ok') { announce(result || 'The result could not be added to the Origin task.'); return; }
+  composeOrigin = null; renderComposeOrigin(); location.hash = '#/origin';
+});
+$('#compose-origin-back')?.addEventListener('click', () => { location.hash = '#/origin'; });
+$('#compose-origin-unlink')?.addEventListener('click', () => { composeOrigin = null; renderComposeOrigin(); });
+function prefillCompose({ text, task, replace = false, origin = null }) {
   if (running) return 'busy';
   const input = $('#prompt-input');
   if (!replace && input.value.trim() && input.value !== text) return 'draft';
+  composeOrigin = origin; renderComposeOrigin();
   currentId = null;
   clearOutput();
   input.value = String(text).slice(0, 100000);
@@ -5511,7 +5534,9 @@ window.PromptboardBaseView = baseView;
 // Origin owns its blueprint requests. It reaches Compose and Kanban only through these explicit seams,
 // which prefill or create through the existing validated APIs and never start an agent.
 originView = window.PromptboardOrigin?.create({ api, announce, closeSidebar: () => setSidebar(false), ensureBoard: options => loadBoard(options),
-  projects: () => board?.projects || [], createTask: body => boardCall('POST', '/api/tasks', body), toCompose: prefillCompose,
+  projects: () => board?.projects || [], toCompose: prefillCompose,
+  // Batch refinement and suggestions reuse Compose's own settings and job slot; Origin adds no prompt generator.
+  composeSettings: () => { const { input, ...rest } = settings(); return rest; }, composeRunning: () => running,
   openKanban: projectId => { if (projectId) savePref(SELECTED_PROJECT_KEY, projectId); location.hash = '#/kanban'; } }) || null;
 // Start page applies only when the URL contains no explicit route.
 if (!location.hash && uiPref('startPage') !== 'compose') location.hash = `#/${uiPref('startPage')}`;

@@ -749,3 +749,75 @@ test('Origin Send to Kanban asks before including prerequisites, never duplicate
   await wait(`location.hash === '#/kanban' && [...document.querySelectorAll('.task-waits')].some(n => n.textContent === 'Waits for #1')`, 'waiting badge on the card');
   assert.deepEqual(browser.consoleMessages.filter(message => message.startsWith('EXCEPTION')), []);
 });
+
+test('Origin refines tasks through Compose only when asked, keeps your words until you accept, and adds suggestions you choose', { skip: !await findChrome(), timeout: 150000 }, async t => {
+  const calls = [];
+  const app = await startTestServer(t, { port: 0, detector: async () => [{ id: 'codex', available: true }], authAdapter: { installed: async () => true, status: async () => ({ state: 'signed-in' }) },
+    runner: async call => {
+      calls.push(call.prompt);
+      if (call.prompt.startsWith('# Task split')) return { text: JSON.stringify({ tasks: [{ title: 'Create the orders table', prompt: 'Add the orders table.' }, { title: 'Decide the payment provider', prompt: 'Choose and record the payment provider.' }] }) };
+      return { text: 'Build the orders endpoint with validation and tests.' };
+    } });
+  const store = new OriginStore(app.board.store.dir);
+  const created = await store.create({ name: 'Shop design' });
+  await store.write(created.id, { expectedRevision: 1, blueprint: { idea: 'Shop', components: [{ id: 'api', name: 'API', type: 'api', purpose: 'Rules' }],
+    items: [{ id: 'i1', key: 'IMP-001', title: 'Orders endpoint', description: 'Make orders work', acceptanceCriteria: 'Orders can be placed', componentIds: ['api'] },
+      { id: 'i2', key: 'IMP-002', title: 'Order emails', componentIds: ['api'] }], sequence: { items: 2 } } });
+  const browser = await launch({ width: 1280, height: 900 }); assert.ok(browser); t.after(() => browser.close());
+  const { ev, wait, saved, section, open, press } = pageTools(browser);
+  const file = async () => (await blueprintFile(app, created.id)).blueprint;
+  // Compose's own settings are used: here its fast, single-pass mode.
+  await browser.goto(app.url);
+  await wait(`!document.querySelector('#generate-button').disabled`, 'Compose ready', 20000);
+  await ev(`document.querySelector('[name="quality"][value="fast"]').click();`);
+  await ev(`location.hash = '#/origin';`);
+  await wait(`document.querySelector('.origin-map')`, 'Origin');
+  await section('plan'); await open('Orders endpoint');
+  await press('Improve with Compose', '#origin-drawer');
+  await wait(`location.hash === '#/' && !document.querySelector('#compose-origin').hidden`, 'Compose with the task');
+  assert.equal(await ev(`return document.querySelector('#compose-origin-text').textContent;`), 'From Origin · IMP-001 Orders endpoint');
+  assert.match(await ev(`return document.querySelector('#prompt-input').value;`), /^# IMP-001 Orders endpoint\n\n## What to do\nMake orders work\n\n## Done when\nOrders can be placed\n\n---\n\n# Context from the Origin design/);
+  assert.equal(calls.length, 0, 'Opening Compose generates nothing.');
+  await ev(`document.querySelector('#generate-button').click();`);
+  await wait(`document.querySelector('#cancel-button').hidden && !document.querySelector('#prompt-output').hidden && !document.querySelector('#compose-origin-use').disabled`, 'generated', 20000);
+  assert.equal(calls.length, 1);
+  await ev(`document.querySelector('#compose-origin-use').click();`);
+  await wait(`location.hash === '#/origin' && document.querySelector('#origin-drawer .origin-proposal textarea')`, 'proposal on the task');
+  assert.equal(await ev(`return document.querySelector('#origin-drawer .origin-proposal textarea').value;`), 'Build the orders endpoint with validation and tests.');
+  assert.equal((await file()).items[0].description, 'Make orders work', 'A proposal changes nothing on its own.');
+  await ev(`const t = document.querySelector('#origin-drawer .origin-proposal textarea'); t.value = 'Build the orders endpoint with validation.'; t.dispatchEvent(new Event('input', { bubbles: true }));`);
+  await press('Use as What to do', '#origin-drawer');
+  await saved();
+  let first = (await file()).items[0];
+  assert.deepEqual([first.description, first.acceptanceCriteria, first.refinement.originalDescription, typeof first.refinement.acceptedAt, first.componentIds], ['Build the orders endpoint with validation.', 'Orders can be placed', 'Make orders work', 'number', ['api']]);
+  await ev(`document.querySelector('#origin-drawer [aria-label="Close editor"]').click();`);
+
+  // Several tasks: one proposal each, through Compose's job slot; your text stays until you accept.
+  await ev(`[...document.querySelectorAll('#origin-main .origin-row')].find(r => r.textContent.includes('IMP-002')).querySelector('.origin-check').click();`);
+  await ev(`document.querySelector('#origin-improve').click();`);
+  await wait(`document.querySelector('#origin-improve-dialog')?.open`, 'improve dialog');
+  await ev(`document.querySelector('#origin-improve-start').click();`);
+  await wait(`[...document.querySelectorAll('#origin-improve-dialog .origin-chip')].map(n => n.textContent).join() === 'Proposal ready'`, 'batch done', 20000);
+  await ev(`[...document.querySelectorAll('#origin-improve-dialog button')].find(b => b.textContent === 'Close').click();`);
+  await saved();
+  const second = (await file()).items[1];
+  assert.deepEqual([second.description, second.refinement.proposal, second.refinement.acceptedAt], ['', 'Build the orders endpoint with validation and tests.', null]);
+  assert.equal(calls.length, 2);
+  assert.match(await ev(`return [...document.querySelectorAll('#origin-main .origin-row')].find(r => r.textContent.includes('IMP-002')).textContent;`), /Proposal to review/);
+
+  // Suggest tasks from one component: shown first, edited, and only the chosen ones are added.
+  await ev(`[...document.querySelectorAll('.origin-task-component')].find(b => b.dataset.component === 'api').querySelector('.origin-suggest').click();`);
+  await wait(`document.querySelector('#origin-suggest-dialog')?.open`, 'suggest dialog');
+  assert.equal(calls.length, 2, 'Opening Suggest calls nothing.');
+  await ev(`document.querySelector('#origin-suggest-start').click();`);
+  await wait(`document.querySelectorAll('#origin-suggest-dialog .origin-suggestion').length === 2`, 'suggestions', 20000);
+  assert.match(calls[2], /^# Task split[\s\S]*Plan implementation tasks for the component “API” in Shop design/);
+  await ev(`const rows = document.querySelectorAll('#origin-suggest-dialog .origin-suggestion'); rows[1].querySelector('input[type=checkbox]').click(); const t = rows[0].querySelector('.origin-suggestion-title'); t.value = 'Create the orders table now'; t.dispatchEvent(new Event('input', { bubbles: true }));`);
+  await ev(`document.querySelector('#origin-suggest-add').click();`);
+  await saved();
+  const added = (await file()).items.at(-1);
+  assert.deepEqual([added.key, added.title, added.description, added.componentIds, (await file()).items.length], ['IMP-003', 'Create the orders table now', 'Add the orders table.', ['api'], 3]);
+  assert.equal(calls.length, 3, 'Editing and choosing call nothing else.');
+  assert.equal((await app.board.view()).projects.length, 0, 'Nothing is sent to Kanban.');
+  assert.deepEqual(browser.consoleMessages.filter(message => message.startsWith('EXCEPTION')), []);
+});

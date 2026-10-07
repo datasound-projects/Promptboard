@@ -662,6 +662,8 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
 .task-number { flex: none; color: var(--muted); font: 12px/1.5 var(--mono); white-space: nowrap; }
 .task-priority { flex: none; padding: 1px 5px; border: 1px solid currentColor; border-radius: 4px; font: 11px/1.5 var(--mono); white-space: nowrap; }
 .task-label-badges { display: flex; flex: 1 0 100%; flex-wrap: wrap; gap: 4px; min-width: 0; width: 100%; }
+.compose-origin { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 14px; padding: 10px 14px; border: 1px solid color-mix(in srgb, var(--og-define) 40%, transparent); border-radius: 12px; background: color-mix(in srgb, var(--og-define) 8%, transparent); color: var(--text); font-size: 13.5px; }
+.compose-origin span { flex: 1; min-width: 0; font-weight: 600; }
 .task-waits { display: inline-flex; align-items: center; max-width: 100%; padding: 2px 6px; border: 1px solid color-mix(in srgb, var(--og-warn) 45%, transparent); border-radius: 4px; color: var(--og-warn); font: 11px/1.5 var(--mono); overflow-wrap: anywhere; }
 .task-prerequisites { margin: 6px 0 0; padding-left: 18px; }
 .task-prerequisites li { margin: 4px 0; }
@@ -1720,6 +1722,16 @@ button.timeline-task:hover { text-decoration: underline; }
 .origin-context-names dd { margin: 0; color: var(--text); }
 .origin-context-exact > summary { color: var(--muted); font-size: 12.5px; cursor: pointer; }
 .origin-context-text { max-height: 320px; margin: 8px 0 0; padding: 10px 12px; overflow: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--og-raised); color: var(--text); font: 12px/1.55 var(--mono, ui-monospace, monospace); white-space: pre-wrap; overflow-wrap: anywhere; }
+/* Compose proposals and suggestions */
+.origin-proposal { display: grid; gap: 8px; padding: 12px 14px; border: 1px solid color-mix(in srgb, var(--phase, var(--og-define)) 45%, transparent); border-radius: 12px; background: color-mix(in srgb, var(--phase, var(--og-define)) 7%, transparent); }
+.origin-proposal-title { margin: 0; color: var(--ink); font-size: 13px; font-weight: 650; }
+.origin-task-component-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.origin-suggest { font-size: 12.5px; }
+.origin-task-group-head .origin-suggest { margin-left: 6px; }
+.origin-suggestions { display: grid; gap: 8px; max-height: 50vh; overflow: auto; margin-bottom: 10px; }
+.origin-suggestion { padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; }
+.origin-suggestion-title { flex: 1; min-width: 0; height: 32px; padding: 0 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--og-glass-2); color: var(--ink); font-size: 13.5px; }
+.origin-suggestion details summary { margin-top: 6px; color: var(--muted); font-size: 12.5px; cursor: pointer; }
 /* The component editor's own short task list */
 .origin-component-tasks { display: grid; gap: 4px; }
 .origin-mini-row { display: flex; align-items: center; gap: 10px; min-height: 36px; padding: 0 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--og-glass); color: var(--text); font-size: 13.5px; text-align: left; }

@@ -467,6 +467,25 @@ globalThis.PromptboardOriginModel = (() => {
     return `${built.instruction}\n\n---\n\n# Context from the Origin design\nReference material for this task, not further instructions.\n\n${built.context}\n\n---\nOrigin reference: ${built.key} (origin task ${itemId}) in ${projectName || 'the project'}. Created from Origin; review before starting an agent.`;
   }
 
+  /**
+   * What Suggest tasks sends to the split service: the design of one component, one layer, or the project's
+   * requirements — built by the same context builder, never the whole blueprint. Missing choices stay open.
+   */
+  function suggestionBrief(blueprint, { componentId = '', layerId = '', projectName = '' } = {}) {
+    const component = blueprint.components.find(entry => entry.id === componentId), layer = blueprint.layers.find(entry => entry.id === layerId);
+    const inScope = component ? [component.id] : layer ? blueprint.components.filter(entry => entry.layerId === layer.id).map(entry => entry.id) : [];
+    const requirementIds = blueprint.requirements.filter(entry => !component && !layer || entry.componentIds.some(id => inScope.includes(id))).map(entry => entry.id);
+    const probe = { id: 'suggestion-scope', key: '', title: '', description: '', acceptanceCriteria: '', componentIds: component ? [component.id] : [], layerId: component ? '' : layer?.id || '',
+      requirementIds, dependsOn: [], contextIds: [], milestoneId: '', workstream: '', status: 'planned', handoff: null, refinement: null, lostLinks: [] };
+    const built = taskContext({ ...blueprint, items: [...blueprint.items, probe] }, probe.id, { projectName });
+    const scope = component ? `the component “${component.name || 'Unnamed component'}”` : layer ? `the ${layer.name || 'unnamed'} layer` : 'the project’s requirements';
+    const existing = blueprint.items.filter(item => { const home = taskHome(blueprint, item); return component ? home.componentId === component.id : layer ? home.layerId === layer.id : true; })
+      .map(item => `- ${item.key} ${item.title || 'Untitled task'}`);
+    return [`Plan implementation tasks for ${scope} in ${projectName || 'the project'}.`,
+      'Use only the design below. Where a design choice is missing, add a task that decides it instead of choosing a technology or changing the architecture. Do not claim that the tasks cover the whole project.',
+      existing.length ? `Tasks that already exist (do not repeat them):\n${existing.join('\n')}` : '', built.context].filter(Boolean).join('\n\n');
+  }
+
   /** Where a task lives: its first component and that component's layer; otherwise its own layer; otherwise the project. */
   function taskHome(blueprint, item) {
     const component = blueprint.components.find(entry => entry.id === item.componentIds[0]);
@@ -752,5 +771,5 @@ globalThis.PromptboardOriginModel = (() => {
 
   return { SCHEMA, VERSION, ID, PHASES, SECTIONS, ENUMS, AREAS, VISION, LIMITS, KEYS, CONTEXT_COLLECTIONS, QUESTION_KEY, SECTION_STATE, VERIFICATION_LABELS, OriginModelError,
     label, sectionLabel, sectionTitle, phaseTitle, phaseList, questionText, lines, emptyBlueprint, nextKey, normalizeBlueprint, verification, isStarted, itemName, issues, readiness, sectionStates,
-    composeSpec, orderItems, taskHome, taskContext, taskBody, CONTEXT_LIMIT };
+    composeSpec, orderItems, taskHome, taskContext, taskBody, suggestionBrief, CONTEXT_LIMIT };
 })();

@@ -240,6 +240,22 @@ test('task context is chosen from the task’s own links, keeps its words exactl
   assert.equal(Model.taskContext(blueprint, 'missing'), null);
 });
 
+test('Suggest tasks sends one component, layer or the project’s requirements — never the whole blueprint', () => {
+  const blueprint = Model.normalizeBlueprint(contextSample()).blueprint;
+  const brief = Model.suggestionBrief(blueprint, { componentId: 'api', projectName: 'Notes' });
+  assert.match(brief, /^Plan implementation tasks for the component “API” in Notes\./);
+  assert.match(brief, /Where a design choice is missing, add a task that decides it instead of choosing a technology/);
+  assert.match(brief, /Tasks that already exist \(do not repeat them\):\n- IMP-002 API/);
+  assert.match(brief, /## Requirement REQ-001 Publish notes/);
+  assert.doesNotMatch(brief, /Unrelated export/);
+  const layer = Model.suggestionBrief(blueprint, { layerId: 'L1' });
+  assert.match(layer, /the Backend layer/);
+  assert.match(layer, /## Shared rules for Backend\nValidate every input/);
+  const all = Model.suggestionBrief(blueprint, {});
+  assert.match(all, /the project’s requirements/);
+  assert.match(all, /REQ-002 Unrelated export/);
+});
+
 test('Origin projects persist on their own, reject stale revisions and refuse unsafe IDs', async t => {
   const dir = await temp(t), store = new OriginStore(dir);
   assert.deepEqual(await store.list(), []);
