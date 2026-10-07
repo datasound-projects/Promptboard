@@ -6,7 +6,7 @@
 // text. Nothing here starts an agent, calls a model or fetches a source.
 window.PromptboardOrigin = (() => {
   const M = globalThis.PromptboardOriginModel;
-  const SECTION_KEY = 'promptboard.origin.section', MORE_KEY = 'promptboard.origin.more';
+  const SECTION_KEY = 'promptboard.origin.section', MORE_KEY = 'promptboard.origin.more', PROJECT_KEY = 'promptboard.origin.project';
   const SAVE_DELAY = 700, SAVE_MAX_WAIT = 3000;
   const NODE_W = 184, NODE_H = 58, GAP_X = 270, GAP_Y = 100;
   // The sidebar reads top to bottom as the order of work.
@@ -94,7 +94,16 @@ window.PromptboardOrigin = (() => {
     const projectSelect = el('select', 'origin-project-select'); projectSelect.id = 'origin-project'; projectSelect.setAttribute('aria-label', 'Project');
     const newProject = button('New project', () => openNewProject(), 'origin-ghost origin-new', 'Start a new project here');
     newProject.id = 'origin-new-project'; newProject.prepend(icon(ICON.plus, 15));
-    projectBox.append(projectSelect, newProject);
+    // Project menu: rename, connect to Kanban, delete. The link chip shows where tasks go.
+    const menu = el('details', 'origin-menu'); menu.id = 'origin-project-menu';
+    const menuSummary = el('summary', 'origin-icon'); menuSummary.setAttribute('aria-label', 'Project options'); menuSummary.title = 'Project options'; menuSummary.append(icon(ICON.dots));
+    const menuList = el('div', 'origin-menu-list');
+    menuList.append(button('Rename…', () => { menu.open = false; openRename(); }, 'origin-menu-item'), button('Connect to Kanban…', () => { menu.open = false; openConnect(); }, 'origin-menu-item'),
+      button('Delete from Origin…', () => { menu.open = false; openDelete(); }, 'origin-menu-item danger'));
+    menu.append(menuSummary, menuList);
+    const linkChip = button('', () => { const linked = project(); if (linked?.kanban?.exists) app.openKanban(linked.kanbanProjectId); else openConnect(); }, 'origin-link-pill');
+    linkChip.id = 'origin-kanban-link';
+    projectBox.append(projectSelect, menu, linkChip, newProject);
     const statusBox = el('div', 'origin-header-status');
     const readinessButton = button('', () => openSection('overview'), 'origin-pill'); readinessButton.id = 'origin-readiness';
     const saveStatus = el('span', 'origin-save'); saveStatus.id = 'origin-save'; saveStatus.setAttribute('role', 'status'); saveStatus.setAttribute('aria-live', 'polite');
@@ -106,13 +115,14 @@ window.PromptboardOrigin = (() => {
     const drawer = el('aside', 'origin-drawer'); drawer.id = 'origin-drawer'; drawer.hidden = true; drawer.tabIndex = -1; drawer.setAttribute('aria-labelledby', 'origin-drawer-title');
     view.append(heading, header, errorBox, notice, main, drawer);
 
-    let projectId = null, record = null, loading = null, loadError = null, visible = false;
+    let projects = [], projectId = null, record = null, loading = null, loadError = null, visible = false;
     let section = ORDER.includes(pref(SECTION_KEY)) ? pref(SECTION_KEY) : 'overview';
     let open = null, connectFrom = null, planSelection = new Set(), handoffBusy = false, lastHandoff = '';
     let saveTimer = null, saving = null, changeCount = 0, savedCount = 0, saveState = 'saved', saveMessage = '', dirtySince = 0, shownSaveError = '';
     let baseResources = null, baseLoading = null, focusAfter = null, renderFrame = 0, uid = 0;
     const bp = () => record.blueprint;
-    const project = () => app.projects().find(item => item.id === projectId) || null;
+    const project = () => projects.find(item => item.id === projectId) || null;
+    const kanbanTasks = () => new Map(app.projects().flatMap(item => item.tasks.map(task => [task.id, task])));
     const showError = message => { errorBox.textContent = message; errorBox.hidden = !message; };
     const showNotice = message => { notice.textContent = message; notice.hidden = !message; };
 
@@ -146,6 +156,7 @@ window.PromptboardOrigin = (() => {
         if (id !== projectId) return false;
         if (response.ok) {
           record.revision = data.revision; savedCount = target;
+          if (data.project) projects = projects.map(item => (item.id === id ? data.project : item));
           saveState = changeCount === savedCount ? 'saved' : 'dirty'; saveMessage = '';
           dirtySince = saveState === 'saved' ? 0 : Date.now();
           if (saveState === 'dirty') saveTimer = setTimeout(() => { void save(); }, SAVE_DELAY);
@@ -198,10 +209,11 @@ window.PromptboardOrigin = (() => {
         if (id !== projectId) return;
         if (!response.ok) {
           loadError = typeof data.error === 'string' ? data.error : 'The blueprint could not be loaded. Board, Compose and Base data are unaffected.';
-          if (response.status === 404) await app.ensureBoard({ ifChanged: true });
+          if (response.status === 404) await refreshProjects();
           return;
         }
-        record = { exists: data.exists, revision: data.revision, blueprint: data.blueprint || M.emptyBlueprint() };
+        record = { exists: true, revision: data.revision, blueprint: data.blueprint || M.emptyBlueprint() };
+        if (data.project) projects = projects.map(item => (item.id === id ? data.project : item));
         const notes = [];
         if (data.recovery?.quarantined) notes.push(data.recovery.restoredFromBackup ? 'The blueprint file was damaged, so the last good copy was restored. The damaged file was kept in the app data folder.' : 'The blueprint file was damaged and no good copy was found. The damaged file was kept in the app data folder.');
         else if (data.recovery?.restoredFromBackup) notes.push('The blueprint file was missing, so the last good copy was restored.');
@@ -212,14 +224,22 @@ window.PromptboardOrigin = (() => {
       try { await attempt; } finally { if (loading === attempt) loading = null; main.removeAttribute('aria-busy'); if (id === projectId) render(); }
     }
 
+    /** Origin's own project list. Its selection is independent of the project selected in Kanban. */
+    async function refreshProjects() {
+      const { response, data } = await app.api('/api/origin/projects', { timeoutMs: 30000 }).catch(() => ({ response: { ok: false }, data: {} }));
+      if (!response.ok) { showError(typeof data.error === 'string' ? data.error : 'Origin projects could not be loaded. Board, Compose and Base data are unaffected.'); return false; }
+      projects = Array.isArray(data.projects) ? data.projects : [];
+      return true;
+    }
     async function show() {
       visible = true;
       await app.ensureBoard();
-      const projects = app.projects(), current = app.currentProjectId();
-      const id = projects.some(item => item.id === projectId) ? (current && current !== projectId ? current : projectId) : current;
+      if (!(await refreshProjects())) { render(); return; }
+      const stored = pref(PROJECT_KEY);
+      const id = projects.some(item => item.id === projectId) ? projectId : projects.some(item => item.id === stored) ? stored : projects[0]?.id || null;
       if (id !== projectId || !record && !loading) {
-        if (projectId && !(await flush())) { renderProjects(); return; }
-        await load(id || null);
+        if (projectId && projects.some(item => item.id === projectId) && !(await flush())) { renderProjects(); return; }
+        await load(id);
       } else render();
     }
     async function leave() { visible = false; connectFrom = null; await flush(); }
@@ -227,7 +247,7 @@ window.PromptboardOrigin = (() => {
     async function switchProject(id) {
       if (id === projectId) return;
       if (!(await flush())) { projectSelect.value = projectId; showError('This blueprint has unsaved changes. Save or reload it before switching projects.'); return; }
-      app.selectProject(id);
+      setPref(PROJECT_KEY, id);
       await load(id);
     }
     projectSelect.addEventListener('change', () => { void switchProject(projectSelect.value); });
@@ -235,10 +255,15 @@ window.PromptboardOrigin = (() => {
     // ---- Rendering ----
     function render() { renderProjects(); renderMain(); renderSave(); renderDrawer(); }
     function renderProjects() {
-      const projects = app.projects();
       projectSelect.replaceChildren(...projects.map(item => Object.assign(el('option', '', item.name), { value: item.id })));
       projectSelect.value = projectId || '';
-      projectSelect.hidden = !projects.length;
+      const current = project();
+      projectSelect.hidden = menu.hidden = linkChip.hidden = !current;
+      if (!current) return;
+      const linked = current.kanban;
+      linkChip.replaceChildren(el('span', `origin-link-dot${linked?.exists ? ' on' : ''}`), el('span', '', linked?.exists ? `Kanban · ${linked.name}` : linked ? 'Kanban project removed' : 'Not on Kanban'));
+      linkChip.title = linked?.exists ? 'Open this project on Kanban' : 'Connect this project to Kanban';
+      linkChip.dataset.state = linked?.exists ? 'linked' : linked ? 'missing' : 'none';
     }
     function renderDerived() {
       view.dataset.empty = String(!record?.exists);
@@ -328,10 +353,9 @@ window.PromptboardOrigin = (() => {
       const phase = PHASE_OF[section];
       main.className = `origin-main phase-${phase.id}${['overview', 'architecture'].includes(section) ? ' origin-wide' : ''}`;
       view.dataset.section = section;
-      if (!projectId) { main.className = 'origin-main phase-define'; main.replaceChildren(startState(true)); renderDerived(); return; }
+      if (!projectId) { main.className = 'origin-main phase-define'; main.replaceChildren(startState()); renderDerived(); return; }
       if (loadError && !record) { main.replaceChildren(errorState()); renderDerived(); return; }
       if (!record) return;
-      if (!record.exists) { main.className = 'origin-main phase-define'; main.replaceChildren(startState(false)); renderDerived(); return; }
       const y = window.scrollY;
       main.replaceChildren(sectionHeader(), el('div', 'origin-next-slot'), ...(SECTIONS[section] || SECTIONS.overview)());
       renderDerived();
@@ -364,29 +388,29 @@ window.PromptboardOrigin = (() => {
       for (const phase of PHASES) { const step = el('li', `phase-${phase.id}`); step.append(el('span', 'origin-flow-dot'), phase.label); strip.append(step); }
       return strip;
     }
-    function startState(withName) {
+    // The only start screen: Origin has no projects yet. Later projects come from New project.
+    function startState() {
       const box = el('div', 'origin-hero');
-      box.append(el('p', 'origin-eyebrow', withName ? 'Origin · New project' : `Origin · ${project()?.name || ''}`), el('h2', '', 'What do you want to build?'),
-        el('p', 'origin-hero-lead', 'Describe it in a few sentences. Origin turns it into a clear project map — goals, building blocks, decisions and a build plan — before any agent starts.'));
+      box.append(el('p', 'origin-eyebrow', 'Origin · New project'), el('h2', '', 'What do you want to build?'),
+        el('p', 'origin-hero-lead', 'Describe it in a few sentences. Origin turns it into a clear project map — goals, building blocks, decisions and tasks — before any agent starts.'));
       const form = el('form', 'origin-hero-form');
-      let name = null;
-      if (withName) { name = el('input'); name.id = 'origin-first-project'; name.maxLength = 80; name.autocomplete = 'off'; name.placeholder = 'Project name'; name.setAttribute('aria-label', 'Project name'); form.append(name); }
+      const name = el('input'); name.id = 'origin-first-project'; name.maxLength = 80; name.autocomplete = 'off'; name.placeholder = 'Project name'; name.setAttribute('aria-label', 'Project name');
       const idea = el('textarea', 'origin-idea'); idea.id = 'origin-idea'; idea.rows = 4; idea.maxLength = 20000; idea.placeholder = 'A web app that helps small teams…';
       idea.setAttribute('aria-label', 'What do you want to build?');
+      const kanban = kanbanOption('origin-first-kanban');
       const error = el('p', 'origin-inline-error'); error.hidden = true; error.setAttribute('role', 'alert');
       const start = el('button', 'origin-primary', 'Start blueprint'); start.type = 'submit'; start.id = 'origin-start'; start.append(icon(ICON.arrow, 16));
-      const blank = button('Start with an empty map', () => void begin(''), 'origin-link'); blank.id = 'origin-start-empty';
-      const actions = el('div', 'origin-hero-actions'); actions.append(start, blank, el('span', 'origin-hint', '⌘/Ctrl + Enter'));
-      form.append(idea, actions, error);
-      async function begin(text) {
+      const actions = el('div', 'origin-hero-actions'); actions.append(start, el('span', 'origin-hint', '⌘/Ctrl + Enter'));
+      form.append(name, idea, kanban.box, actions, error);
+      form.addEventListener('submit', async event => {
+        event.preventDefault();
         error.hidden = true;
-        if (withName && !name.value.trim()) { error.textContent = 'Give the project a name first.'; error.hidden = false; name.focus(); return; }
-        start.disabled = blank.disabled = true;
-        try { if (withName) await createProject(name.value, text); else await startBlueprint(text); }
+        if (!name.value.trim()) { error.textContent = 'Give the project a name first.'; error.hidden = false; name.focus(); return; }
+        start.disabled = true;
+        try { await createProject(name.value, idea.value, kanban.input.checked); }
         catch (failure) { error.textContent = failure.message; error.hidden = false; }
-        finally { start.disabled = blank.disabled = false; }
-      }
-      form.addEventListener('submit', event => { event.preventDefault(); void begin(idea.value); });
+        finally { start.disabled = false; }
+      });
       idea.addEventListener('keydown', event => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); form.requestSubmit(); } });
       box.append(form, flowStrip());
       return box;
@@ -396,52 +420,139 @@ window.PromptboardOrigin = (() => {
       box.append(el('h2', '', 'This blueprint is unavailable'), el('p', 'origin-hero-lead', loadError), button('Try again', () => void load(projectId, { force: true }), 'origin-primary'));
       return box;
     }
-    async function createProject(name, idea) {
-      const created = await app.createProject(name.trim());
-      app.selectProject(created.id);
-      await load(created.id);
-      await startBlueprint(idea);
+    /** The one integration choice when creating: on by default, as before. */
+    function kanbanOption(id) {
+      const box = el('label', 'origin-check-row'); const input = el('input'); input.type = 'checkbox'; input.id = id; input.checked = true;
+      const text = el('span'); text.append(el('strong', '', 'Also create a Kanban project and Git repository'), el('small', 'origin-hint', 'Turn off to plan in Origin only. You can connect Kanban later.'));
+      box.append(input, text);
+      return { box, input };
     }
-    async function startBlueprint(idea) {
-      if (!record || record.exists) return;
-      record.exists = true;
-      record.blueprint.idea = idea.trim();
-      if (idea.trim() && !record.blueprint.vision.summary) record.blueprint.vision.summary = idea.trim();
+    async function createProject(name, description, createKanban) {
+      const { response, data } = await app.api('/api/origin/projects', { method: 'POST', body: { name: name.trim(), description: description.trim(), createKanban }, timeoutMs: 120000 })
+        .catch(() => ({ response: { ok: false }, data: {} }));
+      if (!response.ok || !data.project) throw new Error(typeof data.error === 'string' ? data.error : 'The project could not be created. Nothing was changed.');
+      projects = [...projects.filter(item => item.id !== data.project.id), data.project];
+      if (createKanban) await app.ensureBoard({ ifChanged: true });
+      setPref(PROJECT_KEY, data.project.id);
       section = 'overview'; setPref(SECTION_KEY, section);
-      changeCount++;
-      const saved = await save();
-      if (!saved && saveState !== 'conflict') { record.exists = false; changeCount = savedCount; saveState = 'saved'; renderMain(); throw new Error(saveMessage || 'The blueprint could not be saved.'); }
-      focusAfter = () => main.querySelector('h2');
-      renderMain(); renderSave();
-      if (saved) app.announce(`Blueprint started for ${project()?.name || 'this project'}.`);
+      await load(data.project.id);
+      if (data.kanbanError) showNotice(`“${data.project.name}” was created in Origin, but the Kanban project was not: ${data.kanbanError.message} Use Connect to Kanban to try again or to choose an existing project.`);
+      app.announce(`${data.project.name} created${data.project.kanban?.exists ? ' in Origin and on Kanban' : ' in Origin'}.`);
     }
-    let projectDialog = null;
-    function openNewProject() {
-      projectDialog ??= (() => { const dialog = el('dialog', 'origin-modal'); dialog.id = 'origin-new-dialog'; dialog.setAttribute('aria-labelledby', 'origin-new-heading'); document.body.append(dialog); return dialog; })();
-      const dialog = projectDialog;
-      const heading = el('h2', '', 'New project'); heading.id = 'origin-new-heading';
+    const dialogs = {};
+    function modal(id, { eyebrow = 'Origin', title, lead = '', body = [] }) {
+      dialogs[id] ??= (() => { const dialog = el('dialog', 'origin-modal'); dialog.id = id; dialog.setAttribute('aria-labelledby', `${id}-heading`); document.body.append(dialog); return dialog; })();
+      const dialog = dialogs[id];
+      const heading = el('h2', '', title); heading.id = `${id}-heading`;
+      const close = button('', () => dialog.close(), 'origin-icon origin-modal-close'); close.setAttribute('aria-label', 'Close'); close.append(icon(ICON.close));
+      dialog.replaceChildren(close, el('p', 'origin-eyebrow', eyebrow), heading, ...(lead ? [el('p', 'origin-modal-lead', lead)] : []), ...body);
+      dialog.showModal();
+      return dialog;
+    }
+    /** A form inside a dialog: one submit, one inline error, never a second confirmation. */
+    function dialogForm(dialogId, fields, submitText, run, { danger = false } = {}) {
       const form = el('form', 'origin-modal-form');
-      const name = el('input'); name.id = 'origin-new-name'; name.maxLength = 80; name.autocomplete = 'off'; name.placeholder = 'Project name'; name.required = true;
-      const idea = el('textarea'); idea.id = 'origin-new-idea'; idea.rows = 4; idea.maxLength = 20000; idea.placeholder = 'What do you want to build? (optional — you can write it later)';
       const error = el('p', 'origin-inline-error'); error.hidden = true; error.setAttribute('role', 'alert');
-      const create = el('button', 'origin-primary', 'Create project'); create.type = 'submit'; create.id = 'origin-new-create';
-      const actions = el('div', 'origin-modal-actions'); actions.append(button('Cancel', () => dialog.close(), 'origin-ghost'), create);
-      form.append(field('Name', name), field('Idea', idea), error, actions);
+      const submit = el('button', danger ? 'origin-primary danger' : 'origin-primary', submitText); submit.type = 'submit'; submit.id = `${dialogId}-submit`;
+      const actions = el('div', 'origin-modal-actions'); actions.append(button('Cancel', () => dialogs[dialogId]?.close(), 'origin-ghost'), submit);
+      form.append(...fields, error, actions);
       form.addEventListener('submit', async event => {
         event.preventDefault();
-        if (!name.value.trim()) { error.textContent = 'Give the project a name.'; error.hidden = false; name.focus(); return; }
-        create.disabled = true; error.hidden = true;
-        try {
-          if (!(await flush())) throw new Error('This blueprint has unsaved changes. Save or reload it first.');
-          await createProject(name.value, idea.value);
-          dialog.close();
-        } catch (failure) { error.textContent = failure.message; error.hidden = false; }
-        finally { create.disabled = false; }
+        submit.disabled = true; error.hidden = true;
+        try { if (await run() !== false) dialogs[dialogId]?.close(); }
+        catch (failure) { error.textContent = failure.message; error.hidden = false; }
+        finally { submit.disabled = false; }
       });
-      const close = button('', () => dialog.close(), 'origin-icon origin-modal-close'); close.setAttribute('aria-label', 'Close'); close.append(icon(ICON.close));
-      dialog.replaceChildren(close, el('p', 'origin-eyebrow', 'Origin'), heading, el('p', 'origin-modal-lead', 'Every project starts with a blueprint. Name it, describe the idea, then shape it step by step. No agent starts.'), form);
-      dialog.showModal();
+      return form;
+    }
+    async function call(path, body, failure) {
+      const { response, data } = await app.api(path, { method: 'POST', body, timeoutMs: 120000 }).catch(() => ({ response: { ok: false }, data: {} }));
+      if (!response.ok) throw new Error(typeof data.error === 'string' ? data.error : failure);
+      return data;
+    }
+    function openNewProject() {
+      const name = el('input'); name.id = 'origin-new-name'; name.maxLength = 80; name.autocomplete = 'off'; name.placeholder = 'Project name';
+      const idea = el('textarea'); idea.id = 'origin-new-idea'; idea.rows = 4; idea.maxLength = 20000; idea.placeholder = 'What do you want to build? (optional)';
+      const kanban = kanbanOption('origin-new-kanban');
+      modal('origin-new-dialog', { title: 'New project', lead: 'Name it and describe the idea. You shape the design step by step; no agent starts.',
+        body: [dialogForm('origin-new-dialog', [field('Name', name), field('Description', idea), kanban.box], 'Create project', async () => {
+          if (!name.value.trim()) { name.focus(); throw new Error('Give the project a name.'); }
+          if (!(await flush())) throw new Error('This blueprint has unsaved changes. Save or reload it first.');
+          await createProject(name.value, idea.value, kanban.input.checked);
+        })] });
       name.focus();
+    }
+    function openRename() {
+      const current = project(); if (!current) return;
+      const name = el('input'); name.id = 'origin-rename-name'; name.maxLength = 80; name.value = current.name;
+      modal('origin-rename-dialog', { title: 'Rename project', body: [dialogForm('origin-rename-dialog', [field('Name', name)], 'Rename', async () => {
+        if (!(await flush())) throw new Error('This blueprint has unsaved changes. Save or reload it first.');
+        const { response, data } = await app.api(`/api/origin/projects/${encodeURIComponent(current.id)}`, { method: 'PATCH', body: { expectedRevision: record.revision, name: name.value }, timeoutMs: 30000 })
+          .catch(() => ({ response: { ok: false }, data: {} }));
+        if (!response.ok) throw new Error(typeof data.error === 'string' ? data.error : 'The project could not be renamed.');
+        record.revision = data.revision; projects = projects.map(item => (item.id === current.id ? data.project : item));
+        render(); app.announce(`Renamed to ${data.project.name}.`);
+      })] });
+      name.select();
+    }
+    /** Connect to an existing Kanban project or a new one. The destination is shown before anything links. */
+    function openConnect({ then } = {}) {
+      const current = project(); if (!current) return;
+      const taken = new Set(projects.filter(item => item.id !== current.id && item.kanbanProjectId).map(item => item.kanbanProjectId));
+      const choices = app.projects().filter(item => !taken.has(item.id));
+      const mode = (value, text, checked) => { const label = el('label', 'origin-radio'); const radio = el('input'); radio.type = 'radio'; radio.name = 'origin-connect-mode'; radio.value = value; radio.checked = checked; label.append(radio, el('span', '', text)); return { label, radio }; };
+      const existing = mode('existing', 'An existing Kanban project', choices.length > 0), fresh = mode('new', 'A new Kanban project with its own Git repository', !choices.length);
+      existing.radio.disabled = !choices.length;
+      const pick = el('select'); pick.id = 'origin-connect-project'; pick.setAttribute('aria-label', 'Kanban project');
+      pick.append(...choices.map(item => Object.assign(el('option', '', item.name), { value: item.id })));
+      if (current.kanban?.exists) pick.value = current.kanbanProjectId;
+      const name = el('input'); name.id = 'origin-connect-name'; name.maxLength = 80; name.value = current.name; name.setAttribute('aria-label', 'New Kanban project name');
+      const destination = el('p', 'origin-callout');
+      const sync = () => {
+        pick.disabled = !existing.radio.checked; name.disabled = !fresh.radio.checked;
+        destination.textContent = existing.radio.checked ? `Tasks from “${current.name}” will go to Kanban › ${pick.selectedOptions[0]?.textContent || '—'}.` : `A Kanban project “${name.value.trim() || current.name}” and its Git repository will be created.`;
+      };
+      for (const control of [existing.radio, fresh.radio, pick, name]) control.addEventListener('input', sync);
+      sync();
+      const unlink = current.kanbanProjectId ? button('Remove link', async () => {
+        if (!(await flush())) return;
+        const data = await call(`/api/origin/projects/${encodeURIComponent(current.id)}/link`, { expectedRevision: record.revision, kanbanProjectId: null }, 'The link could not be removed.').catch(failure => { showError(failure.message); return null; });
+        if (!data) return;
+        record.revision = data.revision; projects = projects.map(item => (item.id === current.id ? data.project : item));
+        dialogs['origin-connect-dialog']?.close(); render(); app.announce('Kanban link removed. Kanban work is unchanged.');
+      }, 'origin-link') : null;
+      modal('origin-connect-dialog', { title: 'Connect to Kanban', lead: 'Choose where this project’s tasks go. Nothing is created or sent until you choose Connect.',
+        body: [dialogForm('origin-connect-dialog', [existing.label, pick, fresh.label, name, destination, ...(unlink ? [unlink] : [])], 'Connect', async () => {
+          if (!(await flush())) throw new Error('This blueprint has unsaved changes. Save or reload it first.');
+          const body = existing.radio.checked ? { expectedRevision: record.revision, kanbanProjectId: pick.value } : { expectedRevision: record.revision, createKanban: true, name: name.value };
+          if (existing.radio.checked && !pick.value) throw new Error('Choose a Kanban project.');
+          const data = await call(`/api/origin/projects/${encodeURIComponent(current.id)}/link`, body, 'The project could not be connected. The design is unchanged.');
+          record.revision = data.revision; projects = projects.map(item => (item.id === current.id ? data.project : item));
+          await app.ensureBoard({ ifChanged: true });
+          render(); app.announce(`Connected to Kanban › ${data.project.kanban?.name || ''}.`);
+          then?.();
+        })] });
+      (existing.radio.checked ? pick : name).focus();
+    }
+    function openDelete() {
+      const current = project(); if (!current) return;
+      const linked = current.kanban?.exists;
+      const also = el('label', 'origin-check-row'); const alsoInput = el('input'); alsoInput.type = 'checkbox'; alsoInput.id = 'origin-delete-kanban';
+      const alsoText = el('span'); alsoText.append(el('strong', '', `Also remove the Kanban project “${current.kanban?.name || ''}”`), el('small', 'origin-hint', 'Kanban’s own checks apply: running work or task worktrees block it. Repository folders are never deleted.'));
+      also.append(alsoInput, alsoText); also.hidden = !linked;
+      modal('origin-delete-dialog', { title: `Delete “${current.name}” from Origin?`,
+        lead: linked ? 'This removes the design from Origin. Its Kanban project and tasks stay unless you also choose to remove them.' : 'This removes the design from Origin. Repository folders and worktrees are never deleted.',
+        body: [dialogForm('origin-delete-dialog', [also], 'Delete from Origin', async () => {
+          await flush();
+          const data = await call(`/api/origin/projects/${encodeURIComponent(current.id)}/delete`, { expectedRevision: record.revision, deleteKanban: alsoInput.checked, expectedKanbanRevision: current.kanban?.revision },
+            'The project could not be deleted. Nothing was removed.');
+          projects = projects.filter(item => item.id !== current.id);
+          if (data.kanbanDeleted) await app.ensureBoard({ ifChanged: true });
+          const next = projects[0]?.id || null;
+          setPref(PROJECT_KEY, next || '');
+          await load(next);
+          app.announce(`${current.name} was deleted from Origin${data.kanbanDeleted ? ' and Kanban' : '; its Kanban work stays'}.`);
+        }, { danger: true })] });
     }
 
     // ---- Controls ----
@@ -933,7 +1044,7 @@ window.PromptboardOrigin = (() => {
       const blueprint = bp();
       const tasks = new Map(app.projects().flatMap(item => item.tasks.map(task => [task.id, task])));
       const nodes = [quickAdd('Add a milestone — e.g. “Foundation”', value => add('milestones', BLANK.milestones(value)), { id: 'milestones' })];
-      if (lastHandoff) { const done = el('p', 'origin-callout ok', lastHandoff); done.setAttribute('role', 'status'); done.append(' ', button('Open Kanban', () => app.openKanban(), 'origin-link')); nodes.push(done); }
+      if (lastHandoff) { const done = el('p', 'origin-callout ok', lastHandoff); done.setAttribute('role', 'status'); done.append(' ', button('Open Kanban', () => app.openKanban(project()?.kanbanProjectId), 'origin-link')); nodes.push(done); }
       const leading = item => {
         const box = el('input', 'origin-check'); box.type = 'checkbox'; box.checked = planSelection.has(item.id); box.setAttribute('aria-label', `Select ${item.key} for Kanban`);
         box.addEventListener('change', () => { if (box.checked) planSelection.add(item.id); else planSelection.delete(item.id); renderMain(); });
@@ -1258,7 +1369,9 @@ window.PromptboardOrigin = (() => {
     function openHandoff() {
       const blueprint = bp(), selection = [...planSelection].filter(id => blueprint.items.some(item => item.id === id));
       if (!selection.length) return;
-      const target = project(), tasks = M.kanbanTasks(blueprint, selection, target?.name || '');
+      const target = project(), destination = target?.kanban?.exists ? target.kanbanProjectId : null;
+      if (!destination) { openConnect({ then: openHandoff }); return; }
+      const tasks = M.kanbanTasks(blueprint, selection, target?.name || '');
       handoffDialog ??= (() => { const dialog = el('dialog', 'origin-modal'); dialog.id = 'origin-handoff-dialog'; dialog.setAttribute('aria-labelledby', 'origin-handoff-heading'); document.body.append(dialog); return dialog; })();
       const dialog = handoffDialog;
       const heading = el('h2', '', 'Create Kanban tasks'); heading.id = 'origin-handoff-heading';
@@ -1270,9 +1383,9 @@ window.PromptboardOrigin = (() => {
         const created = [];
         try {
           for (const task of tasks) {
-            const result = await app.createTask({ projectId, title: task.title, prompt: task.prompt });
+            const result = await app.createTask({ projectId: destination, title: task.title, prompt: task.prompt });
             const item = bp().items.find(entry => entry.id === task.itemId);
-            if (item && result?.task?.id) { item.handoff = { projectId, taskId: result.task.id, at: Date.now() }; created.push(task.title); changed(); }
+            if (item && result?.task?.id) { item.handoff = { projectId: destination, taskId: result.task.id, at: Date.now(), snapshotId: '', hash: '' }; created.push(task.title); changed(); }
           }
         } catch (failure) {
           error.textContent = `${failure.message}${created.length ? ` ${plural(created.length, 'card')} already created: ${created.join(', ')}.` : ' No card was created.'}`;
@@ -1281,14 +1394,14 @@ window.PromptboardOrigin = (() => {
         if (!error.hidden) { renderMain(); return; }
         dialog.close();
         planSelection = new Set();
-        lastHandoff = `Created ${plural(created.length, 'card')} in To Do of ${target?.name || 'this project'}, dependencies first. No agent started.`;
+        lastHandoff = `Created ${plural(created.length, 'card')} in To Do of ${target?.kanban?.name || 'the Kanban project'}, dependencies first. No agent started.`;
         app.announce(lastHandoff);
         renderMain();
       }, 'origin-primary');
       confirm.id = 'origin-handoff-confirm';
       const close = button('', () => dialog.close(), 'origin-icon origin-modal-close'); close.setAttribute('aria-label', 'Close'); close.append(icon(ICON.close));
       const actions = el('div', 'origin-modal-actions'); actions.append(button('Cancel', () => dialog.close(), 'origin-ghost'), confirm);
-      dialog.replaceChildren(close, el('p', 'origin-eyebrow', `Kanban · ${target?.name || ''}`), heading,
+      dialog.replaceChildren(close, el('p', 'origin-eyebrow', `Kanban · ${target?.kanban?.name || ''}`), heading,
         el('p', 'origin-modal-lead', 'Each step becomes one To Do card, dependencies first, with its “done when”, linked requirements and components, and an Origin reference. No agent starts — you start work from Kanban.'),
         steps, error, actions);
       dialog.showModal();

@@ -4,7 +4,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { findChrome, launch } from './helpers/browser.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
-import { originFileName } from '../src/origin.mjs';
+import { OriginStore, blueprintFileName } from '../src/origin.mjs';
 
 const J = JSON.stringify;
 // Page helpers: every action goes through the rendered controls.
@@ -34,7 +34,8 @@ function pageTools(browser) {
   };
   return tools;
 }
-async function blueprintFile(app, projectId) { return JSON.parse(await readFile(join(app.board.store.dir, 'origin', originFileName(projectId)), 'utf8')); }
+async function blueprintFile(app, originId) { return JSON.parse(await readFile(join(app.board.store.dir, 'origin', blueprintFileName(originId)), 'utf8')); }
+const originId = ev => ev(`return localStorage.getItem('promptboard.origin.project');`);
 
 test('Origin in real Chrome: quick entry, mind map, diagram, evidence, readiness, persistence and explicit handoffs', { skip: !await findChrome(), timeout: 180000 }, async t => {
   const generated = [];
@@ -57,9 +58,14 @@ test('Origin in real Chrome: quick entry, mind map, diagram, evidence, readiness
 
   // Untrusted text stays text, on the start screen and in the mind map.
   const hostile = '<img src=x onerror="window.__pwned=1">Release hub';
-  await ev(`document.querySelector('#origin-idea').value = ${J(hostile)}; document.querySelector('#origin-start').click();`);
+  // An Origin-only project: the existing Kanban project of the same name is untouched until linked.
+  assert.equal(await ev(`return document.querySelector('#origin-first-kanban').checked;`), true, 'Creating Kanban work stays the default.');
+  await ev(`document.querySelector('#origin-first-project').value = 'Demo project'; document.querySelector('#origin-first-kanban').checked = false; document.querySelector('#origin-idea').value = ${J(hostile)}; document.querySelector('#origin-start').click();`);
   await wait(`document.querySelectorAll('.origin-nav-item').length === 15 && document.querySelector('.origin-map')`, 'mind map');
   await saved();
+  assert.equal((await app.board.view()).projects.length, 1, 'No Kanban project is created for an Origin-only project.');
+  assert.equal(await ev(`return document.querySelector('#origin-kanban-link').textContent;`), 'Not on Kanban');
+  const blueprintId = await originId(ev);
   assert.equal(await ev(`return document.querySelector('#origin-section-heading').textContent;`), 'Overview');
   assert.equal(await ev(`return document.querySelectorAll('.origin-map-section').length;`), 14);
   assert.match(await ev(`return document.querySelector('.origin-map-center').textContent;`), /Release hub/);
@@ -156,7 +162,7 @@ test('Origin in real Chrome: quick entry, mind map, diagram, evidence, readiness
   await wait(`document.querySelector('#origin-drawer').hidden`, 'Escape closes the editor');
   await section('overview');
   await saved();
-  const file = await blueprintFile(app, project.id);
+  const file = await blueprintFile(app, blueprintId);
   assert.equal(file.blueprint.components.length, 2); assert.equal(file.blueprint.connections.length, 1);
   assert.deepEqual(file.blueprint.requirements[0].componentIds, [file.blueprint.components.find(item => item.name === 'API').id], 'The deleted block’s link was removed.');
 
@@ -168,7 +174,11 @@ test('Origin in real Chrome: quick entry, mind map, diagram, evidence, readiness
   // Kanban handoff: explicit, ordered, To Do, no run.
   await section('plan'); await press('Select all not sent');
   await ev(`document.querySelector('#origin-kanban-handoff').click();`);
-  await wait(`document.querySelector('#origin-handoff-dialog')?.open`, 'handoff dialog');
+  // Not linked yet: the destination is chosen and shown before anything is sent.
+  await wait(`document.querySelector('#origin-connect-dialog')?.open`, 'connect dialog');
+  assert.match(await ev(`return document.querySelector('#origin-connect-dialog .origin-callout').textContent;`), /Kanban › Demo project/);
+  await ev(`document.querySelector('#origin-connect-dialog-submit').click();`);
+  await wait(`document.querySelector('#origin-handoff-dialog')?.open && document.querySelector('#origin-kanban-link').textContent === 'Kanban · Demo project'`, 'handoff dialog after connecting');
   assert.deepEqual(await ev(`return [...document.querySelectorAll('#origin-handoff-dialog li')].map(li => li.textContent);`), ['IMP-001 Repository structure', 'IMP-002 Publish API']);
   await ev(`document.querySelector('#origin-handoff-confirm').click();`);
   await wait(`!document.querySelector('#origin-handoff-dialog').open && document.querySelector('#origin-main .origin-callout.ok')`, 'handoff done', 15000);
@@ -184,7 +194,7 @@ test('Origin in real Chrome: quick entry, mind map, diagram, evidence, readiness
   assert.match(saved1.tasks[2].prompt, /Origin reference: IMP-002 \(origin item [A-Za-z0-9_-]+\)/);
   assert.equal(view.runs.length, 0, 'No agent starts.');
   assert.match(await ev(`return document.querySelector('#origin-main').textContent;`), /In Kanban #3/);
-  assert.equal((await blueprintFile(app, project.id)).blueprint.items.filter(item => item.handoff?.taskId).length, 2);
+  assert.equal((await blueprintFile(app, blueprintId)).blueprint.items.filter(item => item.handoff?.taskId).length, 2);
 
   // Compose handoff: targeted prefill only; nothing is generated.
   await section('requirements'); await open('Publish release notes');
@@ -251,41 +261,41 @@ test('Origin in real Chrome: quick entry, mind map, diagram, evidence, readiness
   assert.deepEqual(browser.consoleMessages.filter(message => message.startsWith('EXCEPTION') || /Failed to load|Refused/.test(message)), []);
 });
 
-test('Origin contains damaged blueprint files and stale saves without touching board data', { skip: !await findChrome(), timeout: 90000 }, async t => {
+test('Origin restores a damaged project file and refuses stale saves without touching board data', { skip: !await findChrome(), timeout: 90000 }, async t => {
   const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
   const project = await app.board.createProject({ name: 'Damaged', workflowMode: 'pipeline' });
   await app.board.createTask({ projectId: project.id, title: 'Board card', prompt: 'Still here.' });
-  const dir = join(app.board.store.dir, 'origin');
-  await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, originFileName(project.id)), '{"schema":"promptboard.origin", broken');
+  const store = new OriginStore(app.board.store.dir);
+  const created = await store.create({ name: 'Damaged plan' });
+  await store.write(created.id, { expectedRevision: 1, blueprint: { idea: 'Good copy' } });
+  await store.write(created.id, { expectedRevision: 2, blueprint: { idea: 'Newest' } });
+  await writeFile(join(app.board.store.dir, 'origin', blueprintFileName(created.id)), '{"schema":"promptboard.origin", broken');
   const statePath = join(app.board.store.dir, 'state.json'), stateBefore = await readFile(statePath);
   const browser = await launch({ width: 1280, height: 900 }); assert.ok(browser); t.after(() => browser.close());
   const { ev, wait, saved, section } = pageTools(browser);
   await browser.goto(`${app.url}/#/origin`);
-  await wait(`document.querySelector('#origin-start')`, 'start screen after damage');
-  assert.match(await ev(`return document.querySelector('#origin-notice').textContent;`), /damaged and no good copy was found/);
-  await ev(`document.querySelector('#origin-start-empty').click();`);
-  await wait(`document.querySelectorAll('.origin-nav-item').length === 15`, 'started with an empty map');
-  await saved();
-  assert.ok((await readFile(statePath)).equals(stateBefore), 'Board state is untouched by Origin recovery and saves.');
+  await wait(`document.querySelector('.origin-map') && !document.querySelector('#origin-notice').hidden`, 'restored project');
+  assert.match(await ev(`return document.querySelector('#origin-notice').textContent;`), /damaged, so the last good copy was restored/);
+  assert.ok((await readFile(statePath)).equals(stateBefore), 'Board state is untouched by Origin recovery.');
 
   // Another window saves first: this window refuses to overwrite and offers an explicit choice.
   const token = await ev(`return (await (await fetch('/api/session')).json()).token;`);
-  const current = await (await fetch(`${app.url}/api/origin/projects/${project.id}`, { headers: { 'X-STE-Token': token } })).json();
-  const other = await fetch(`${app.url}/api/origin/projects/${project.id}`, { method: 'PUT', headers: { 'X-STE-Token': token, 'Content-Type': 'application/json' }, body: JSON.stringify({ expectedRevision: current.revision, blueprint: { ...current.blueprint, idea: 'Saved elsewhere' } }) });
+  const current = await (await fetch(`${app.url}/api/origin/projects/${created.id}`, { headers: { 'X-STE-Token': token } })).json();
+  const other = await fetch(`${app.url}/api/origin/projects/${created.id}`, { method: 'PUT', headers: { 'X-STE-Token': token, 'Content-Type': 'application/json' }, body: JSON.stringify({ expectedRevision: current.revision, blueprint: { ...current.blueprint, idea: 'Saved elsewhere' } }) });
   assert.equal(other.status, 200);
   await section('vision');
   await ev(`const t = document.querySelector('#origin-main textarea'); t.value = 'Local edit'; t.dispatchEvent(new Event('input', { bubbles: true }));`);
   await wait(`document.querySelector('#origin-view').dataset.save === 'conflict'`, 'conflict shown', 15000);
   assert.match(await ev(`return document.querySelector('#origin-error').textContent;`), /changed in another window/);
-  assert.equal((await blueprintFile(app, project.id)).blueprint.idea, 'Saved elsewhere', 'The newer save was not overwritten.');
+  assert.equal((await blueprintFile(app, created.id)).blueprint.idea, 'Saved elsewhere', 'The newer save was not overwritten.');
   await ev(`[...document.querySelectorAll('#origin-save button')].find(b => b.textContent === 'Reload saved version').click();`);
   await wait(`document.querySelector('#origin-view').dataset.save === 'saved' && document.querySelector('#origin-error').hidden`, 'reloaded saved version');
   assert.equal((await app.board.view()).projects[0].tasks[0].prompt, 'Still here.');
+  assert.ok((await readFile(statePath)).equals(stateBefore));
   assert.deepEqual(browser.consoleMessages.filter(message => message.startsWith('EXCEPTION')), []);
 });
 
-test('Origin starts the first project, adds another from New project and opens a block with a real click', { skip: !await findChrome(), timeout: 90000 }, async t => {
+test('Origin creates projects with or without Kanban, renames, deletes and opens a block with a real click', { skip: !await findChrome(), timeout: 120000 }, async t => {
   const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
   const browser = await launch({ width: 1280, height: 900 }); assert.ok(browser); t.after(() => browser.close());
   const { ev, wait, saved, section, quick } = pageTools(browser);
@@ -294,22 +304,37 @@ test('Origin starts the first project, adds another from New project and opens a
   await ev(`document.querySelector('#origin-start').click();`);
   assert.match(await browser.until(`document.querySelector('#origin-main .origin-inline-error:not([hidden])')?.textContent`, 'name required'), /name/);
   await ev(`document.querySelector('#origin-first-project').value = 'Atlas'; document.querySelector('#origin-idea').value = 'An internal API gateway.'; document.querySelector('#origin-start').click();`);
-  await wait(`document.querySelectorAll('.origin-nav-item').length === 15`, 'project and blueprint created', 20000);
+  await wait(`document.querySelectorAll('.origin-nav-item').length === 15 && document.querySelector('#origin-kanban-link').textContent === 'Kanban · Atlas'`, 'project with Kanban', 20000);
   await saved();
-  const atlas = (await app.board.view()).projects.find(item => item.name === 'Atlas');
-  assert.ok(atlas?.repository, 'The project is created like Kanban → New project.');
+  const atlasKanban = (await app.board.view()).projects.find(item => item.name === 'Atlas');
+  assert.ok(atlasKanban?.repository, 'Kanban → New project behaviour: a project with its own repository.');
+  const atlasId = await originId(ev);
 
-  // New project is always one click away.
+  // New project without Kanban: no board change at all.
+  const boardBefore = await readFile(join(app.board.store.dir, 'state.json'));
   await ev(`document.querySelector('#origin-new-project').click();`);
   await wait(`document.querySelector('#origin-new-dialog')?.open && document.activeElement?.id === 'origin-new-name'`, 'new project dialog');
-  await ev(`document.querySelector('#origin-new-name').value = 'Beacon'; document.querySelector('#origin-new-idea').value = 'A status page.'; document.querySelector('#origin-new-create').click();`);
+  await ev(`document.querySelector('#origin-new-name').value = 'Beacon'; document.querySelector('#origin-new-idea').value = 'A status page.'; document.querySelector('#origin-new-kanban').checked = false; document.querySelector('#origin-new-dialog-submit').click();`);
   await wait(`!document.querySelector('#origin-new-dialog').open && document.querySelector('.origin-map-center')?.textContent.includes('Beacon')`, 'second project started', 20000);
   await saved();
-  const beacon = (await app.board.view()).projects.find(item => item.name === 'Beacon');
-  assert.equal((await blueprintFile(app, atlas.id)).blueprint.vision.summary, 'An internal API gateway.');
-  assert.equal((await blueprintFile(app, beacon.id)).blueprint.vision.summary, 'A status page.', 'Each project has its own blueprint.');
-  await ev(`const s = document.querySelector('#origin-project'); s.value = ${J(atlas.id)}; s.dispatchEvent(new Event('change', { bubbles: true }));`);
-  await wait(`document.querySelector('.origin-map-center')?.textContent.includes('Atlas')`, 'switched back');
+  assert.ok((await readFile(join(app.board.store.dir, 'state.json'))).equals(boardBefore), 'An Origin-only project leaves the board untouched.');
+  const beaconId = await originId(ev);
+  assert.equal((await blueprintFile(app, atlasId)).blueprint.vision.summary, 'An internal API gateway.');
+  assert.equal((await blueprintFile(app, beaconId)).blueprint.vision.summary, 'A status page.', 'Each project has its own blueprint.');
+
+  // Rename from the project menu.
+  await ev(`document.querySelector('#origin-project-menu summary').click(); [...document.querySelectorAll('.origin-menu-item')].find(b => b.textContent === 'Rename…').click();`);
+  await wait(`document.querySelector('#origin-rename-dialog')?.open`, 'rename dialog');
+  await ev(`document.querySelector('#origin-rename-name').value = 'Beacon status'; document.querySelector('#origin-rename-dialog-submit').click();`);
+  await wait(`[...document.querySelectorAll('#origin-project option')].some(o => o.textContent === 'Beacon status')`, 'renamed');
+
+  // Delete from Origin: the Origin-only project goes; nothing on the board changes.
+  await ev(`document.querySelector('#origin-project-menu summary').click(); [...document.querySelectorAll('.origin-menu-item')].find(b => b.textContent === 'Delete from Origin…').click();`);
+  await wait(`document.querySelector('#origin-delete-dialog')?.open`, 'delete dialog');
+  assert.equal(await ev(`return document.querySelector('#origin-delete-kanban').closest('label').hidden;`), true, 'No Kanban choice for an unlinked project.');
+  await ev(`document.querySelector('#origin-delete-dialog-submit').click();`);
+  await wait(`!document.querySelector('#origin-delete-dialog').open && document.querySelector('.origin-map-center')?.textContent.includes('Atlas')`, 'back to Atlas');
+  assert.deepEqual([...await ev(`return [...document.querySelectorAll('#origin-project option')].map(o => o.textContent);`)], ['Atlas']);
 
   await section('architecture');
   await quick('Gateway', 'components');
@@ -317,6 +342,16 @@ test('Origin starts the first project, adds another from New project and opens a
   const point = await ev(`const r = document.querySelector('.origin-node').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 };`);
   await browser.click(point.x, point.y);
   await wait(`document.querySelector('#origin-drawer-title')?.value === 'Gateway'`, 'editor opened by a real click');
+  await ev(`document.querySelector('#origin-drawer [aria-label="Close editor"]').click();`);
+
+  // Delete with the linked Kanban project: an explicit, separate choice.
+  await saved();
+  await ev(`document.querySelector('#origin-project-menu summary').click(); [...document.querySelectorAll('.origin-menu-item')].find(b => b.textContent === 'Delete from Origin…').click();`);
+  await wait(`document.querySelector('#origin-delete-dialog')?.open && !document.querySelector('#origin-delete-kanban').closest('label').hidden`, 'delete dialog with Kanban choice');
+  assert.equal(await ev(`return document.querySelector('#origin-delete-kanban').checked;`), false, 'Kanban work is kept by default.');
+  await ev(`document.querySelector('#origin-delete-kanban').checked = true; document.querySelector('#origin-delete-dialog-submit').click();`);
+  await wait(`!document.querySelector('#origin-delete-dialog').open && document.querySelector('#origin-first-project')`, 'start screen after deleting the last project');
+  assert.equal((await app.board.view()).projects.length, 0, 'The linked Kanban project was removed through Kanban.');
   assert.equal((await app.board.view()).runs.length, 0);
   assert.deepEqual(browser.consoleMessages.filter(message => message.startsWith('EXCEPTION')), []);
 });

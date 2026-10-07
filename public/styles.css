@@ -1710,6 +1710,28 @@ dialog.origin-modal::backdrop { background: rgb(4 4 8 / .55); backdrop-filter: b
 .origin-modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 8px; }
 .origin-handoff-list { margin: 0 0 16px; padding-left: 22px; color: var(--text); font-size: 13.5px; line-height: 1.9; }
 
+/* Project menu, Kanban link and project dialogs */
+.origin-menu { position: relative; }
+.origin-menu > summary { list-style: none; cursor: pointer; }
+.origin-menu > summary::-webkit-details-marker { display: none; }
+.origin-menu-list { position: absolute; z-index: 20; top: calc(100% + 6px); left: 0; display: grid; min-width: 210px; padding: 6px; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--og-raised); box-shadow: 0 16px 40px rgb(0 0 0 / .28); }
+.origin-menu-item { padding: 8px 10px; border: 0; border-radius: 8px; background: none; color: var(--text); font-size: 13px; text-align: left; }
+.origin-menu-item:hover, .origin-menu-item:focus-visible { background: var(--og-glass-2); color: var(--ink); }
+.origin-menu-item.danger { color: var(--error); }
+.origin-link-pill { display: inline-flex; align-items: center; gap: 7px; height: 28px; max-width: 260px; padding: 0 11px; border: 1px solid var(--line); border-radius: 999px; background: var(--og-glass); color: var(--muted); font-size: 12px; font-weight: 550; white-space: nowrap; }
+.origin-link-pill span:last-child { overflow: hidden; text-overflow: ellipsis; }
+.origin-link-pill:hover { border-color: var(--line-strong); color: var(--ink); }
+.origin-link-pill[data-state="missing"] { color: var(--og-warn); }
+.origin-link-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; border: 1.5px solid var(--line-strong); }
+.origin-link-dot.on { border-color: var(--og-ok); background: var(--og-ok); }
+.origin-check-row { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; }
+.origin-check-row input { flex: none; width: 16px; height: 16px; margin: 2px 0 0; accent-color: var(--og-define); }
+.origin-check-row span { display: grid; gap: 2px; color: var(--text); font-size: 13.5px; }
+.origin-radio { display: flex; align-items: center; gap: 9px; color: var(--text); font-size: 13.5px; cursor: pointer; }
+.origin-radio input { accent-color: var(--og-define); }
+.origin-primary.danger { background: var(--error); color: #fff; box-shadow: none; }
+.origin-hero-form .origin-check-row { margin-top: 4px; }
+
 /* Optional sections */
 .origin-switch { position: relative; display: inline-flex; align-items: center; gap: 10px; color: var(--muted); font-size: 13px; cursor: pointer; }
 .origin-switch input { position: absolute; opacity: 0; width: 1px; height: 1px; }
@@ -1722,7 +1744,9 @@ dialog.origin-modal::backdrop { background: rgb(4 4 8 / .55); backdrop-filter: b
 @media (prefers-reduced-motion: reduce) { .origin-drawer { animation: none; } .origin-main, .origin-primary { transition: none; } }
 @media (max-width: 1100px) { .origin-panels { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 730px) {
-  .origin-header { padding: 10px 16px; }
+  .origin-header { flex-wrap: wrap; padding: 10px 16px; }
+  .origin-project { flex-wrap: wrap; row-gap: 8px; }
+  .origin-link-pill { max-width: 170px; }
   .origin-header-status .origin-save span:not(.origin-save-dot) { display: none; }
   .origin-main { padding: 26px 16px 32px; }
   .origin-banner { margin: 12px 16px 0; }

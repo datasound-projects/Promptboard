@@ -348,8 +348,8 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
     if (res.destroyed || (id && cancelledCompose.get(id) > Date.now())) claimed.job.controller.abort();
     return claimed;
   };
-  // Origin blueprints live in their own files; the route only reads the board to check the project.
-  const origin = new OriginStore(dataDir);
+  // Origin projects live in their own files; Kanban changes go only through the board service.
+  const origin = new OriginStore(dataDir, { kanbanProjects: async () => (await board.state()).projects });
   const baseRoutes = new BaseRoutes({ board, runner, claim, track, catalog: getCatalog, send, jsonBody, ...(mcpTester ? { mcpTester } : {}), imageGenerator });
   let composeContext;
   const getCompose = () => composeContext ??= import('./compose-context.mjs').then(({ ComposeContext }) => new ComposeContext(composeMcp ? { mcp: composeMcp } : {}));

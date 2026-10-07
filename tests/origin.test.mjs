@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chmod, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import '../public/origin-model.js';
-import { OriginStore, originFileName } from '../src/origin.mjs';
+import { OriginStore, blueprintFileName, originFileName } from '../src/origin.mjs';
 import { STATE_VERSION } from '../src/store.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
 
@@ -138,54 +138,98 @@ test('Compose and Kanban handoffs carry targeted context and the Origin referenc
   assert.match(Model.composeSpec(blueprint, 'requirements', 'r1').text, /## Planned tests\n- Integration tests: Publish flow/);
 });
 
-test('blueprint files initialize safely, persist per project and reject stale revisions', async t => {
+test('Origin projects persist on their own, reject stale revisions and refuse unsafe IDs', async t => {
   const dir = await temp(t), store = new OriginStore(dir);
-  assert.deepEqual(await store.read('p1'), { exists: false, revision: 0, createdAt: null, updatedAt: null, blueprint: null, repairs: 0, recovery: null });
-  const saved = await store.write('p1', { expectedRevision: 0, blueprint: sample() });
-  assert.equal(saved.revision, 1);
-  await assert.rejects(store.write('p1', { expectedRevision: 0, blueprint: sample() }), { code: 'ORIGIN_REVISION_CONFLICT', status: 409 });
-  await store.write('P1', { expectedRevision: 0, blueprint: { idea: 'Other project' } });
+  assert.deepEqual(await store.list(), []);
+  const atlas = await store.create({ name: '  Atlas  ', description: 'An internal API gateway.' });
+  assert.match(atlas.id, /^[0-9a-f-]{36}$/); assert.equal(atlas.name, 'Atlas'); assert.equal(atlas.revision, 1); assert.equal(atlas.kanbanProjectId, null);
+  assert.equal(atlas.blueprint.vision.summary, 'An internal API gateway.');
+  const saved = await store.write(atlas.id, { expectedRevision: 1, blueprint: sample() });
+  assert.equal(saved.revision, 2);
+  await assert.rejects(store.write(atlas.id, { expectedRevision: 1, blueprint: sample() }), { code: 'ORIGIN_REVISION_CONFLICT', status: 409 });
+  const beacon = await store.create({ name: 'Beacon' });
   const reloaded = new OriginStore(dir);
-  assert.equal((await reloaded.read('p1')).blueprint.components.length, 3);
-  assert.equal((await reloaded.read('P1')).blueprint.idea, 'Other project');
-  assert.deepEqual((await readdir(join(dir, 'origin'))).sort(), ['project-_p1.json', 'project-p1.json']);
-  assert.equal(originFileName('a_B'), 'project-a___b.json');
+  assert.deepEqual((await reloaded.list()).map(record => record.name), ['Atlas', 'Beacon']);
+  assert.equal((await reloaded.read(atlas.id)).blueprint.components.length, 3);
+  assert.equal((await reloaded.read(beacon.id)).blueprint.components.length, 0, 'Each project has its own blueprint.');
+  assert.equal(blueprintFileName('a_B'), 'blueprint-a___b.json'); assert.equal(originFileName('a_B'), 'project-a___b.json');
   for (const bad of ['../state', 'a/b', '', 'x'.repeat(101), 'a.b']) await assert.rejects(store.read(bad), { code: 'INVALID_PROJECT' });
-  const file = JSON.parse(await readFile(join(dir, 'origin', 'project-p1.json'), 'utf8'));
-  assert.equal(file.schema, 'promptboard.origin'); assert.equal(file.version, 1); assert.equal(file.projectId, 'p1');
+  for (const name of ['', ' ', 'x'.repeat(81), 'nul\0']) await assert.rejects(store.create({ name }), { code: 'INVALID_INPUT' });
+  const file = JSON.parse(await readFile(join(dir, 'origin', blueprintFileName(atlas.id)), 'utf8'));
+  assert.deepEqual([file.schema, file.version, file.originId, file.project.name], ['promptboard.origin', 2, atlas.id, 'Atlas']);
+  // Renaming and linking keep the blueprint; one Kanban project belongs to one Origin project.
+  const renamed = await store.update(atlas.id, { expectedRevision: 2, name: 'Atlas gateway' });
+  assert.equal(renamed.blueprint.components.length, 3);
+  const linked = await store.link(atlas.id, { expectedRevision: 3, kanbanProjectId: 'k1' });
+  assert.equal(linked.kanbanProjectId, 'k1');
+  await assert.rejects(store.link(beacon.id, { expectedRevision: 1, kanbanProjectId: 'k1' }), { code: 'ALREADY_LINKED' });
+  // Removal moves the file aside; a stale save cannot recreate it.
+  await store.remove(beacon.id, { expectedRevision: 1 });
+  assert.deepEqual((await store.list()).map(record => record.id), [atlas.id]);
+  await assert.rejects(store.write(beacon.id, { expectedRevision: 1, blueprint: {} }), { code: 'NOT_FOUND', status: 404 });
+  assert.equal((await readdir(join(dir, 'origin', 'deleted'))).length, 1);
 });
 
-test('damaged blueprint files are contained and newer files are never overwritten', async t => {
-  const dir = await temp(t), store = new OriginStore(dir), path = join(dir, 'origin', 'project-p1.json');
-  await store.write('p1', { expectedRevision: 0, blueprint: { idea: 'First' } });
-  await store.write('p1', { expectedRevision: 1, blueprint: { idea: 'Second' } });
+test('damaged Origin files are contained and newer files are never overwritten', async t => {
+  const dir = await temp(t), store = new OriginStore(dir);
+  const created = await store.create({ name: 'Notes' }), path = join(dir, 'origin', blueprintFileName(created.id));
+  await store.write(created.id, { expectedRevision: 1, blueprint: { idea: 'First' } });
+  await store.write(created.id, { expectedRevision: 2, blueprint: { idea: 'Second' } });
   await writeFile(path, '{ "schema": "promptboard.origin", broken');
-  const recovered = await store.read('p1');
+  const recovered = await store.read(created.id);
   assert.equal(recovered.blueprint.idea, 'First', 'The last good backup is used.');
   assert.equal(recovered.recovery.restoredFromBackup, true);
-  assert.match(recovered.recovery.quarantined, /^project-p1\.corrupt-\d+-[a-f0-9]{8}\.json$/);
+  assert.match(recovered.recovery.quarantined, /^blueprint-[a-z0-9_-]+\.corrupt-\d+-[a-f0-9]{8}\.json$/);
   assert.equal(await readFile(join(dir, 'origin', recovered.recovery.quarantined), 'utf8'), '{ "schema": "promptboard.origin", broken');
+  assert.equal((await store.read(created.id)).recovery, null, 'The restored copy is saved.');
   await writeFile(path, 'not json'); await writeFile(`${path}.bak`, 'not json either');
-  const empty = await store.read('p1');
-  assert.equal(empty.exists, false); assert.equal(empty.recovery.restoredFromBackup, false);
-  assert.equal((await store.write('p1', { expectedRevision: 0, blueprint: { idea: 'Fresh' } })).revision, 1);
-  const newer = JSON.stringify({ schema: 'promptboard.origin', version: 2, projectId: 'p1', revision: 9, blueprint: {} });
-  await writeFile(path, newer);
-  await assert.rejects(store.read('p1'), { code: 'ORIGIN_VERSION_UNSUPPORTED' });
-  await assert.rejects(store.write('p1', { expectedRevision: 9, blueprint: {} }), { code: 'ORIGIN_VERSION_UNSUPPORTED' });
-  assert.equal(await readFile(path, 'utf8'), newer);
+  const lost = await store.read(created.id);
+  assert.equal(lost.damaged, true); assert.equal(lost.recovery.restoredFromBackup, false);
+  assert.deepEqual(await store.list(), [], 'A project with no good copy is kept aside, not shown.');
+  const other = await store.create({ name: 'Newer' }), otherPath = join(dir, 'origin', blueprintFileName(other.id));
+  const newer = JSON.stringify({ schema: 'promptboard.origin', version: 3, originId: other.id, project: { name: 'Newer' }, revision: 9, blueprint: {} });
+  await writeFile(otherPath, newer);
+  await assert.rejects(store.read(other.id), { code: 'ORIGIN_VERSION_UNSUPPORTED' });
+  await assert.rejects(store.write(other.id, { expectedRevision: 9, blueprint: {} }), { code: 'ORIGIN_VERSION_UNSUPPORTED' });
+  assert.equal(await readFile(otherPath, 'utf8'), newer);
 });
 
-test('a failed blueprint write reports an error and keeps the previous file', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, async t => {
-  const dir = await mkdtemp(join(tmpdir(), 'pb-origin-')), store = new OriginStore(dir), path = join(dir, 'origin', 'project-p1.json');
+test('a failed Origin write reports an error and keeps the previous file', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'pb-origin-')), store = new OriginStore(dir);
   t.after(async () => { await chmod(join(dir, 'origin'), 0o700).catch(() => {}); await rm(dir, { recursive: true, force: true }); });
-  await store.write('p1', { expectedRevision: 0, blueprint: { idea: 'Kept' } });
+  const created = await store.create({ name: 'Kept' }), path = join(dir, 'origin', blueprintFileName(created.id));
+  await store.write(created.id, { expectedRevision: 1, blueprint: { idea: 'Kept' } });
   const before = await readFile(path, 'utf8');
   await chmod(join(dir, 'origin'), 0o500);
-  await assert.rejects(store.write('p1', { expectedRevision: 1, blueprint: { idea: 'Lost?' } }), { code: 'ORIGIN_WRITE_FAILED', status: 500 });
+  await assert.rejects(store.write(created.id, { expectedRevision: 2, blueprint: { idea: 'Lost?' } }), { code: 'ORIGIN_WRITE_FAILED', status: 500 });
   await chmod(join(dir, 'origin'), 0o700);
   assert.equal(await readFile(path, 'utf8'), before);
-  assert.equal((await store.read('p1')).blueprint.idea, 'Kept');
+  assert.equal((await store.read(created.id)).blueprint.idea, 'Kept');
+});
+
+test('version 1 blueprints migrate once with every ID kept, and the version 1 files stay for rollback', async t => {
+  const dir = await temp(t);
+  await mkdir(join(dir, 'origin'), { recursive: true });
+  const legacy = { schema: 'promptboard.origin', version: 1, projectId: 'p1', revision: 4, createdAt: 10, updatedAt: 20, blueprint: sample() };
+  const legacyText = JSON.stringify(legacy);
+  await writeFile(join(dir, 'origin', originFileName('p1')), legacyText);
+  await writeFile(join(dir, 'origin', originFileName('gone')), JSON.stringify({ ...legacy, projectId: 'gone', blueprint: { idea: 'Orphan' } }));
+  await writeFile(join(dir, 'origin', originFileName('empty')), JSON.stringify({ ...legacy, projectId: 'empty', blueprint: {} }));
+  await writeFile(join(dir, 'origin', originFileName('bad')), 'not json');
+  const store = new OriginStore(dir, { kanbanProjects: async () => [{ id: 'p1', name: 'Notes' }] });
+  const [gone, notes] = (await store.list()).sort((a, b) => a.id.localeCompare(b.id));
+  assert.deepEqual([notes.id, notes.name, notes.kanbanProjectId, notes.revision], ['p1', 'Notes', 'p1', 4]);
+  assert.deepEqual([gone.id, gone.name, gone.kanbanProjectId], ['gone', 'Orphan', null]);
+  assert.deepEqual(notes.blueprint.requirements.map(item => [item.id, item.key]), [['r1', 'REQ-001'], ['r2', 'REQ-002']]);
+  assert.deepEqual(notes.blueprint.items.map(item => [item.id, item.key, item.milestoneId]), [['i2', 'IMP-002', 'm2'], ['i1', 'IMP-001', 'm1']]);
+  assert.deepEqual(notes.blueprint.milestones.map(item => item.id), ['m1', 'm2'], 'Milestone order is kept.');
+  assert.equal(await readFile(join(dir, 'origin', originFileName('p1')), 'utf8'), legacyText, 'The version 1 file is untouched for rollback.');
+  const marker = JSON.parse(await readFile(join(dir, 'origin', 'migration.json'), 'utf8'));
+  // An empty blueprint whose Kanban project is gone is not brought over; its file stays.
+  assert.deepEqual([marker.migrated.length, marker.skipped], [2, [originFileName('bad'), originFileName('empty')]]);
+  // A migrated project that is deleted later is never resurrected from its version 1 file.
+  await store.remove('p1', { expectedRevision: 4 });
+  assert.deepEqual((await new OriginStore(dir, { kanbanProjects: async () => [{ id: 'p1', name: 'Notes' }] }).list()).map(record => record.id), ['gone']);
 });
 
 async function api(app, path, { method = 'GET', body, token } = {}) {
@@ -193,45 +237,64 @@ async function api(app, path, { method = 'GET', body, token } = {}) {
   return { status: response.status, data: await response.json() };
 }
 
-test('the Origin API is authenticated, project-scoped and leaves board state byte-identical', async t => {
+test('Origin-only projects have no Kanban or Git side effects; linking and deletion use the board service', async t => {
   const app = await startTestServer(t, { port: 0, executor: null });
   const { token } = (await api(app, '/api/session')).data;
-  const project = await app.board.createProject({ name: 'Existing project' });
-  await app.board.createTask({ projectId: project.id, title: 'Existing task', prompt: 'Keep me.' });
-  const statePath = join(app.board.store.dir, 'state.json');
+  const existing = await app.board.createProject({ name: 'Existing project' });
+  await app.board.createTask({ projectId: existing.id, title: 'Existing task', prompt: 'Keep me.' });
+  const statePath = join(app.board.store.dir, 'state.json'), projectsDir = join(app.board.store.dir, 'projects');
   const before = await readFile(statePath);
-  const stateFiles = async () => (await readdir(app.board.store.dir)).filter(name => name.startsWith('state')).sort();
-  const filesBefore = await stateFiles();
   assert.equal(JSON.parse(before).version, STATE_VERSION); assert.equal(STATE_VERSION, 12);
-  assert.equal((await api(app, `/api/origin/projects/${project.id}`)).status, 403, 'The session token is required.');
+  assert.equal((await api(app, '/api/origin/projects')).status, 403, 'The session token is required.');
   assert.equal((await api(app, '/api/origin/projects/unknown', { token })).status, 404);
   assert.equal((await api(app, '/api/origin/projects/..%2Fstate', { token })).status, 404);
-  const empty = await api(app, `/api/origin/projects/${project.id}`, { token });
-  assert.equal(empty.status, 200); assert.equal(empty.data.exists, false); assert.equal(empty.data.blueprint, null);
-  const saved = await api(app, `/api/origin/projects/${project.id}`, { method: 'PUT', token, body: { expectedRevision: 0, blueprint: sample() } });
-  assert.equal(saved.status, 200); assert.equal(saved.data.revision, 1); assert.equal(saved.data.repairs, 0);
-  assert.equal((await api(app, `/api/origin/projects/${project.id}`, { method: 'PUT', token, body: { expectedRevision: 0, blueprint: sample() } })).status, 409);
-  assert.equal((await api(app, `/api/origin/projects/${project.id}`, { method: 'PUT', token, body: { expectedRevision: 1, blueprint: [] } })).status, 400);
-  assert.equal((await api(app, `/api/origin/projects/${project.id}`, { method: 'PUT', token, body: { expectedRevision: 1, blueprint: { requirements: Array.from({ length: 501 }, (_, i) => ({ id: `r${i}` })) } } })).data.code, 'ORIGIN_INVALID');
-  const loaded = await api(app, `/api/origin/projects/${project.id}`, { token });
-  assert.equal(loaded.data.blueprint.requirements[0].key, 'REQ-001');
-  const after = await readFile(statePath);
-  assert.ok(after.equals(before), 'Origin never rewrites the board state file.');
-  assert.deepEqual(await stateFiles(), filesBefore, 'No board backup or migration file is created by Origin.');
-  // A deleted project leaves an orphaned blueprint file; Origin reports the missing project without failing.
-  await app.board.deleteProject(project.id, { expectedRevision: project.revision });
-  assert.equal((await api(app, `/api/origin/projects/${project.id}`, { token })).status, 404);
-  assert.ok((await readdir(join(app.board.store.dir, 'origin'))).includes(originFileName(project.id)));
+  // Origin only: the board file and the projects folder stay exactly as they were.
+  const solo = await api(app, '/api/origin/projects', { method: 'POST', token, body: { name: 'Atlas', description: 'A gateway.', createKanban: false } });
+  assert.equal(solo.status, 200); assert.equal(solo.data.project.kanban, null);
+  assert.ok((await readFile(statePath)).equals(before), 'Origin-only creation never touches the board.');
+  assert.equal(await readdir(projectsDir).then(entries => entries.length, () => 0), 0, 'No repository folder is created.');
+  assert.equal((await api(app, '/api/origin/projects', { method: 'POST', token, body: { name: 'x'.repeat(81) } })).status, 400);
+  // Saving the blueprint keeps the board byte-identical and rejects stale or invalid input.
+  const id = solo.data.project.id;
+  const saved = await api(app, `/api/origin/projects/${id}`, { method: 'PUT', token, body: { expectedRevision: 1, blueprint: sample() } });
+  assert.equal(saved.status, 200); assert.equal(saved.data.revision, 2); assert.equal(saved.data.repairs, 0);
+  assert.equal((await api(app, `/api/origin/projects/${id}`, { method: 'PUT', token, body: { expectedRevision: 1, blueprint: sample() } })).status, 409);
+  assert.equal((await api(app, `/api/origin/projects/${id}`, { method: 'PUT', token, body: { expectedRevision: 2, blueprint: [] } })).status, 400);
+  assert.equal((await api(app, `/api/origin/projects/${id}`, { method: 'PUT', token, body: { expectedRevision: 2, blueprint: { requirements: Array.from({ length: 501 }, (_, i) => ({ id: `r${i}` })) } } })).data.code, 'ORIGIN_INVALID');
+  assert.ok((await readFile(statePath)).equals(before), 'Origin never rewrites the board state file.');
+  // Creating with Kanban goes through the board's own project and repository service.
+  const both = await api(app, '/api/origin/projects', { method: 'POST', token, body: { name: 'Beacon', createKanban: true } });
+  assert.equal(both.status, 200, JSON.stringify(both.data)); assert.deepEqual([both.data.project.kanban.exists, both.data.project.kanban.name], [true, 'Beacon']);
+  const kanbanBeacon = (await app.board.view()).projects.find(project => project.name === 'Beacon');
+  assert.ok(kanbanBeacon.repository, 'The Kanban project has its repository.');
+  // A name clash does not lose the Origin project; it can be linked later without a duplicate.
+  const clash = await api(app, '/api/origin/projects', { method: 'POST', token, body: { name: 'Existing project', createKanban: true } });
+  assert.equal(clash.status, 200); assert.equal(clash.data.project.kanban, null); assert.ok(clash.data.kanbanError.message);
+  assert.equal((await app.board.view()).projects.filter(project => project.name === 'Existing project').length, 1);
+  const link = await api(app, `/api/origin/projects/${clash.data.project.id}/link`, { method: 'POST', token, body: { expectedRevision: 1, kanbanProjectId: existing.id } });
+  assert.equal(link.status, 200); assert.equal(link.data.project.kanban.name, 'Existing project');
+  assert.equal((await api(app, `/api/origin/projects/${id}/link`, { method: 'POST', token, body: { expectedRevision: 2, kanbanProjectId: existing.id } })).data.code, 'ALREADY_LINKED');
+  // Delete from Origin keeps Kanban work by default.
+  assert.equal((await api(app, `/api/origin/projects/${clash.data.project.id}/delete`, { method: 'POST', token, body: { expectedRevision: 2 } })).status, 200);
+  assert.ok((await app.board.view()).projects.some(project => project.id === existing.id), 'Linked Kanban work stays.');
+  // Removing the linked Kanban project is a separate choice and uses Kanban's own checks.
+  const staleKanban = await api(app, `/api/origin/projects/${both.data.project.id}/delete`, { method: 'POST', token, body: { expectedRevision: 2, deleteKanban: true, expectedKanbanRevision: kanbanBeacon.revision + 5 } });
+  assert.equal(staleKanban.status, 409);
+  assert.equal((await api(app, `/api/origin/projects/${both.data.project.id}`, { token })).status, 200, 'A refused Kanban deletion removes nothing.');
+  const removed = await api(app, `/api/origin/projects/${both.data.project.id}/delete`, { method: 'POST', token, body: { expectedRevision: 2, deleteKanban: true, expectedKanbanRevision: kanbanBeacon.revision } });
+  assert.deepEqual([removed.status, removed.data.kanbanDeleted], [200, true]);
+  assert.equal((await app.board.view()).projects.some(project => project.name === 'Beacon'), false);
+  assert.equal((await api(app, `/api/origin/projects/${both.data.project.id}`, { method: 'PUT', token, body: { expectedRevision: 2, blueprint: {} } })).status, 404, 'A stale autosave cannot recreate a deleted project.');
+  assert.deepEqual((await api(app, '/api/origin/projects', { token })).data.projects.map(project => project.name), ['Atlas']);
 });
 
-test('projects from older board versions open in Origin without a blueprint and keep their board data', async t => {
+test('boards from older versions keep their data while Origin starts empty', async t => {
   const legacy = { schema: 'promptboard.state', version: 6, revision: 3, settings: { execution: 'inactive' }, runs: [], sessions: [], migrations: [], base: { revision: 0, resources: [], approvedRoots: [] },
     projects: [{ id: 'legacy-project', name: 'Legacy', createdAt: 1, revision: 1, repository: null, targetBranch: null, workflowMode: 'legacy', workflow: {}, pendingImport: null,
       tasks: [{ id: 'legacy-task', title: 'Old card', prompt: 'Old prompt', source: null, checksOutdated: false, createdAt: 1, updatedAt: 1, column: 'todo', revision: 1, contentRevision: 1, planApproval: null, workspace: null, retainedBranches: [], transitions: [] }] }] };
   const app = await startTestServer(t, { port: 0, executor: null, initialState: legacy });
   const { token } = (await api(app, '/api/session')).data;
-  const read = await api(app, '/api/origin/projects/legacy-project', { token });
-  assert.equal(read.status, 200); assert.equal(read.data.exists, false);
+  assert.deepEqual((await api(app, '/api/origin/projects', { token })).data.projects, []);
   const board = (await api(app, '/api/board', { token })).data.board;
   assert.equal(board.projects[0].tasks[0].prompt, 'Old prompt');
   assert.equal(JSON.parse(await readFile(join(app.board.store.dir, 'state.json'), 'utf8')).version, STATE_VERSION);

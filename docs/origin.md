@@ -2,23 +2,38 @@
 
 Origin is the planning layer before Compose and Kanban. It stores a structured **project blueprint** for each Promptboard project: requirements, architecture components and their connections, technologies, dependencies, decisions, assumptions, sources and the implementation plan. The blueprint is the source of truth; diagrams, readiness and issue lists are views computed from it.
 
+## Projects
+
+- An **Origin project** has its own stable ID, a name, an optional description and an optional link to one Kanban project. It does not need a Kanban project.
+- **New project** asks for a name, an optional description and one option: **Also create a Kanban project and Git repository** (on by default, as before). With it on, the Kanban project is created through Kanban's normal project and repository service and linked. With it off, nothing is created on the board, no repository folder and no Git repository.
+- If creating the Kanban project fails (for example its name is already used), the Origin project is kept and the page says why. **Connect to Kanban** (project menu or the link pill in the header) links an existing Kanban project or creates a new one. The destination is shown before anything is linked; projects are never linked because their names match. One Kanban project belongs to at most one Origin project.
+- Origin's project selection is its own; it does not follow the project selected in Kanban.
+- **Delete from Origin** (project menu) removes the Origin project after one confirmation. Its linked Kanban project and tasks stay. Removing the Kanban project too is a separate checkbox; it uses Kanban's own deletion checks, so running work or task worktrees block it and nothing is removed. Repository folders and worktrees are never deleted. A deleted project cannot be recreated by a stale save from another window.
+
 ## Storage
 
-- One file per project: `<data folder>/origin/project-<project id>.json`. The data folder is the same one that holds `state.json` (on macOS `~/Library/Application Support/Promptboard`).
-- The file name comes only from the validated project ID (`[A-Za-z0-9_-]{1,100}`). Uppercase letters and `_` are escaped (`A` → `_a`, `_` → `__`) so IDs that differ only in case never share a file on case-insensitive file systems.
-- Origin never writes `state.json`, never changes the board state version (still 12) and never writes Base, session, backlog or journal files. Main-branch Promptboard ignores the `origin/` folder, so you can switch versions without migration.
+- One file per Origin project: `<data folder>/origin/blueprint-<origin id>.json`. The data folder is the same one that holds `state.json` (on macOS `~/Library/Application Support/Promptboard`).
+- File names come only from validated IDs (`[A-Za-z0-9_-]{1,100}`). Uppercase letters and `_` are escaped (`A` → `_a`, `_` → `__`) so IDs that differ only in case never share a file on case-insensitive file systems.
+- Origin never writes `state.json`, never changes the board state version (still 12) and never writes Base, session, backlog or journal files. Kanban projects are created or removed only through the board service.
 - Writes are serialized and atomic (temporary file, fsync, rename). The previous good file is kept as `….json.bak`.
-- A missing file means “no blueprint yet”. A damaged file is renamed to `project-<id>.corrupt-<time>-<random>.json`; the last good backup is used when it is valid, otherwise Origin starts empty and says so. A file from a newer Origin version is refused and never overwritten.
+- A damaged file is renamed to `blueprint-<id>.corrupt-<time>-<random>.json` and the last good backup is restored and reported. Without a good backup the project is kept aside and not shown. A file from a newer Origin version is refused and never overwritten.
 - Saves are revision-checked (`expectedRevision`). A save from a stale window is refused instead of overwriting newer work.
-- Deleting or renaming a project does not touch its blueprint. A deleted project's blueprint file stays in `origin/` as an orphan; you can delete it by hand.
+- **Delete from Origin** moves the file to `origin/deleted/`.
 - Board backups (Kanban **Export**) do not include blueprints. To keep a copy, copy the project's file from the `origin/` folder.
 
-## Schema (version 1)
+### Upgrading from version 1, and rolling back
+
+Version 1 stored one blueprint per Kanban project in `origin/project-<kanban project id>.json`. On the first start of version 2, each valid version 1 file is copied once into an Origin project **with the same ID**, linked to that Kanban project when it still exists. Every record ID, `REQ`/`ADR`/`IMP` key, link and milestone order is kept. `origin/migration.json` records the upgrade, so it never runs again; a migrated project you delete later is not brought back. Damaged version 1 files, and empty ones whose Kanban project no longer exists, are skipped and listed there. A blueprint whose Kanban project is gone is named after its idea.
+
+The version 1 files are left unchanged. To roll back, run the previous Promptboard version: it reads the version 1 files as they were at the upgrade and ignores the version 2 files. Changes made after the upgrade (new projects, edits, links) exist only in the version 2 files and are not visible to the older version.
+
+## Schema (version 2)
 
 ```text
-OriginFile   { schema: "promptboard.origin", version: 1, projectId, revision, createdAt, updatedAt, blueprint }
-Blueprint    { idea, vision, sections, sequence, requirements[], components[], connections[], technologies[],
-               dependencies[], decisions[], assumptions[], sources[], risks[], areas[], milestones[], items[] }
+OriginFile   { schema: "promptboard.origin", version: 2, originId, project: { name, description, kanbanProjectId }, revision, createdAt, updatedAt, blueprint }
+Blueprint    { idea, vision, sections, sequence, labels, customSections[], questions[], answers, questionText, layers[],
+               requirements[], components[], connections[], technologies[], dependencies[], decisions[], assumptions[], sources[],
+               risks[], areas[], milestones[], items[], layout }
 ```
 
 Every record has a stable `id` (`[A-Za-z0-9_-]{1,100}`) and an `origin`: `human` (entered in the page), `ai` (AI suggestion) or `system` (reserved for detected records). Relationships are stored as ID lists, never as copied text. Unknown fields are dropped, invalid values fall back to safe defaults and references to missing records are removed on load and save.
@@ -55,8 +70,8 @@ Statuses describe stored project state. Origin has no confidence percentages or 
 
 ## Using Origin
 
-- Open **Origin** in the top navigation. It plans the project selected in Kanban; the header selector switches projects for both pages, and **New project** creates one (with its own repository folder, like Kanban → New project) and starts its blueprint.
-- Without a blueprint, describe what you want to build and choose **Start blueprint**, or **Start with an empty map**. With no projects at all, the same screen also asks for a project name. There is no import: every blueprint starts in Origin.
+- Open **Origin** in the top navigation. The header shows the Origin project, its menu (Rename, Connect to Kanban, Delete from Origin), a pill with its Kanban link and **New project**.
+- With no Origin projects yet, Origin asks for a name, what you want to build and the Kanban option, then opens the project map. There is no import: every blueprint starts in Origin.
 - The sidebar groups the 15 sections by phase: Define, Design, Operate, Decide, Build. Each shows a state dot and a count. Arrow keys, Home and End move between sections. Data, AI / Agents, Deployment and Observability can be marked **Not needed for this project**.
 - The **Overview** is a mind map of the blueprint. Branches open their section; leaves open their record. **Next steps** lists blocking points first, then advice; **At a glance** shows the readiness counts.
 - List sections add an entry when you type a line and press Enter, and keep focus there for the next one. Clicking an entry opens the side editor: essentials first, the rest under **More details** (that choice is remembered). Escape closes it. Delete asks for a second click and removes every link to the deleted record.

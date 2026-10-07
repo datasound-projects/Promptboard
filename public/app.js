@@ -5479,9 +5479,8 @@ window.PromptboardBaseView = baseView;
 // Origin owns its blueprint requests. It reaches Compose and Kanban only through these explicit seams,
 // which prefill or create through the existing validated APIs and never start an agent.
 originView = window.PromptboardOrigin?.create({ api, announce, closeSidebar: () => setSidebar(false), ensureBoard: options => loadBoard(options),
-  projects: () => board?.projects || [], currentProjectId: () => currentProject()?.id || null, selectProject: id => savePref(SELECTED_PROJECT_KEY, id),
-  createProject: async name => (await boardCall('POST', '/api/projects', { name })).project, createTask: body => boardCall('POST', '/api/tasks', body),
-  toCompose: prefillCompose, openKanban: () => { location.hash = '#/kanban'; } }) || null;
+  projects: () => board?.projects || [], createTask: body => boardCall('POST', '/api/tasks', body), toCompose: prefillCompose,
+  openKanban: projectId => { if (projectId) savePref(SELECTED_PROJECT_KEY, projectId); location.hash = '#/kanban'; } }) || null;
 // Start page applies only when the URL contains no explicit route.
 if (!location.hash && uiPref('startPage') !== 'compose') location.hash = `#/${uiPref('startPage')}`;
 showPage();

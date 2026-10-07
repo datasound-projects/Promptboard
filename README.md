@@ -46,7 +46,7 @@ These commands work in PowerShell and macOS/Linux terminals. Refresh your browse
 
 ## Origin — design the project before execution
 
-- Every project starts here: describe what you want to build, or start with an empty map. **New project** is always in the Origin header.
+- Every project starts here: name it, describe what you want to build, and choose whether to also create its Kanban project and Git repository. **New project** is always in the Origin header; **Connect to Kanban** links one later.
 - The sidebar orders the work: **Define → Design → Operate → Decide → Build**. The **Overview** draws the whole blueprint as a mind map, with next steps and plain counts — no quality scores.
 - Each section is a short list: type a line, press Enter, click an entry for its details. Security, Testing and other planning sections ask one question per topic.
 - Sketch building blocks and their connections, record decisions with their reason, keep assumptions separate from facts, and link sources you have verified.

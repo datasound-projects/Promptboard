@@ -197,10 +197,15 @@ try {
   const field = (label, value) => browser.eval(`const box = [...document.querySelectorAll('#origin-drawer .origin-field')].find(node => node.querySelector('.origin-field-label')?.textContent === ${JSON.stringify(label)}); const control = box.querySelector('input, textarea, select'); control.value = ${JSON.stringify(value)}; control.dispatchEvent(new Event(control.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true }));`);
   const closeDrawer = () => browser.eval(`document.querySelector('#origin-drawer [aria-label="Close editor"]')?.click();`);
   await encode('origin-demo', async () => {
-    await browser.eval(`const idea = document.querySelector('#origin-idea'); idea.value = ${JSON.stringify(IDEA)}; idea.focus();`);
+    await browser.eval(`document.querySelector('#origin-first-project').value = 'Shop app'; document.querySelector('#origin-first-kanban').checked = false; const idea = document.querySelector('#origin-idea'); idea.value = ${JSON.stringify(IDEA)}; idea.focus();`);
     await shot(1.2, 'Every project starts in Origin');
     await click('#origin-start');
     await browser.until(`document.querySelector('.origin-map') && document.querySelector('#origin-view').dataset.save === 'saved'`, 'project map', 20000);
+    // The shop's Kanban project already exists; connect it through the page's own dialog.
+    await click('#origin-kanban-link');
+    await browser.until(`document.querySelector('#origin-connect-dialog')?.open`, 'connect dialog');
+    await click('#origin-connect-dialog-submit');
+    await browser.until(`document.querySelector('#origin-kanban-link').textContent === 'Kanban · Shop app'`, 'linked to Kanban');
     await shot(1.0, 'The idea becomes a project map');
     await section('requirements');
     for (const title of ['Customers sign in with email', 'Browse and search products', 'Check out with a card']) await quick('requirements', title);
@@ -241,7 +246,9 @@ try {
     await shot(2.0, 'See the whole project before any agent starts');
   });
   const { OriginStore } = await import('../src/origin.mjs');
-  const blueprint = (await new OriginStore(join(work, 'data')).read(project.id)).blueprint;
+  const [shop] = await new OriginStore(join(work, 'data')).list();
+  if (shop?.kanbanProjectId !== project.id) throw new Error('The Origin project was not linked to the Kanban project.');
+  const blueprint = shop.blueprint;
   if (blueprint.requirements.length !== 3 || blueprint.components.length !== 3 || blueprint.connections.length !== 2 || blueprint.items.length !== 3) throw new Error('The Origin blueprint was not saved as shown.');
   const exceptions = browser.consoleMessages.filter(message => message.startsWith('EXCEPTION')); if (exceptions.length) throw new Error(exceptions.join('\n'));
   if (preview) await writeFile(join(preview, 'storyboards.json'), JSON.stringify(storyboards, null, 2));

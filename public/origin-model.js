@@ -4,15 +4,19 @@
 // page (derived state). Pure functions only: verification, issues and readiness are always derived
 // from stored records and are never stored themselves, so they cannot become stale or invented.
 globalThis.PromptboardOriginModel = (() => {
-  const SCHEMA = 'promptboard.origin', VERSION = 1;
+  const SCHEMA = 'promptboard.origin', VERSION = 2;
   const ID = /^[A-Za-z0-9_-]{1,100}$/, DATE = /^\d{4}-\d{2}-\d{2}$/;
   const NAME = 200, TEXT = 20000;
 
+  // The sidebar order of work. Labels can be renamed per project; IDs never change.
+  const PHASES = [['define', 'Define', ['overview', 'vision', 'requirements']], ['design', 'Design', ['architecture', 'technology', 'dependencies', 'data', 'ai']],
+    ['operate', 'Operate', ['security', 'testing', 'deployment', 'observability']], ['decide', 'Decide', ['research', 'decisions']], ['build', 'Build', ['plan']]]
+    .map(([id, label, sections]) => ({ id, label, sections }));
   const SECTIONS = [
     ['overview', 'Overview'], ['vision', 'Vision & Scope'], ['requirements', 'Requirements'], ['architecture', 'Architecture'],
     ['technology', 'Technology'], ['dependencies', 'Dependencies'], ['data', 'Data', true], ['ai', 'AI / Agents', true],
     ['security', 'Security'], ['testing', 'Testing'], ['deployment', 'Deployment', true], ['observability', 'Observability', true],
-    ['research', 'Research'], ['decisions', 'Decisions'], ['plan', 'Implementation Plan'],
+    ['research', 'Research'], ['decisions', 'Decisions'], ['plan', 'Tasks'],
   ].map(([id, label, optional = false]) => ({ id, label, optional }));
 
   // [stored value, label]. The first entry is the default.
@@ -43,18 +47,26 @@ globalThis.PromptboardOriginModel = (() => {
     observability: [['logs', 'Logs'], ['metrics', 'Metrics'], ['traces', 'Traces'], ['alerts', 'Alerts'], ['dashboards', 'Dashboards'], ['slos', 'SLOs'], ['health_checks', 'Health checks'], ['ai_metrics', 'AI metrics'], ['model_metrics', 'Model metrics'], ['cost_usage', 'Cost / usage metrics']],
   };
   const VISION = ['summary', 'problem', 'goal', 'users', 'useCases', 'inScope', 'outOfScope', 'successCriteria', 'constraints', 'architectureSummary'];
-  const LIMITS = { requirements: 500, components: 200, connections: 1000, technologies: 300, dependencies: 500, decisions: 300, assumptions: 300, sources: 500, risks: 300, areas: 1000, milestones: 100, items: 1000 };
+  const LIMITS = { requirements: 500, components: 200, connections: 1000, technologies: 300, dependencies: 500, decisions: 300, assumptions: 300, sources: 500, risks: 300, areas: 1000, milestones: 100, items: 1000,
+    layers: 50, customSections: 50, questions: 300 };
+  // Records a task can link through More details, beyond its components, requirements and prerequisites.
+  const CONTEXT_COLLECTIONS = ['decisions', 'technologies', 'dependencies', 'areas', 'sources', 'assumptions', 'risks'];
+  const QUESTION_KEY = /^(section|vision|topic|field):[A-Za-z0-9_:-]{1,100}$/;
   const KEYS = { requirements: 'REQ', decisions: 'ADR', items: 'IMP' };
 
   class OriginModelError extends Error { constructor(message) { super(message); this.code = 'ORIGIN_INVALID'; this.status = 400; } }
   const label = (name, value) => ((ENUMS[name] || AREAS[name] || []).find(([id]) => id === value) || [value, value])[1];
   const sectionLabel = id => SECTIONS.find(section => section.id === id)?.label || id;
+  /** The project's own names: renamed built-in sections and phases, and custom section titles. */
+  const sectionTitle = (blueprint, id) => blueprint?.labels?.sections?.[id] || blueprint?.customSections?.find(section => section.id === id)?.title || sectionLabel(id);
+  const phaseTitle = (blueprint, id) => blueprint?.labels?.phases?.[id] || PHASES.find(phase => phase.id === id)?.label || id;
   const formatKey = (prefix, number) => `${prefix}-${String(number).padStart(3, '0')}`;
   const keyNumber = (key, prefix) => { const match = typeof key === 'string' ? key.match(new RegExp(`^${prefix}-(\\d{1,6})$`)) : null; return match ? Number(match[1]) : 0; };
   const lines = text => String(text || '').split(/\r?\n/).map(line => line.replace(/^\s*(?:[-*•]|\d+[.)])\s*/, '').trim()).filter(Boolean);
 
   function emptyBlueprint() {
     return { idea: '', vision: Object.fromEntries(VISION.map(key => [key, ''])), sections: {}, sequence: { requirements: 0, decisions: 0, items: 0 },
+      labels: { phases: {}, sections: {} }, answers: {}, questionText: {}, layout: { map: { width: null, height: null, nodes: {}, links: [] } },
       ...Object.fromEntries(Object.keys(LIMITS).map(name => [name, []])) };
   }
 
@@ -135,12 +147,54 @@ globalThis.PromptboardOriginModel = (() => {
     for (const { id, optional } of SECTIONS) if (optional && obj(sections[id]).notApplicable === true) blueprint.sections[id] = { notApplicable: true };
     const sequence = obj(source.sequence);
 
+    // Per-project wording: renamed phases and sections, custom sections and their questions. Behaviour
+    // always follows the stable built-in IDs, never the editable labels.
+    const builtinIds = new Set(SECTIONS.map(section => section.id)), phaseIds = PHASES.map(phase => phase.id);
+    const labels = obj(source.labels), labelPhases = obj(labels.phases), labelSections = obj(labels.sections);
+    blueprint.labels = { phases: {}, sections: {} };
+    for (const id of phaseIds) { const value = str(labelPhases[id], 60).trim(); if (value) blueprint.labels.phases[id] = value; }
+    for (const id of builtinIds) { const value = str(labelSections[id], 60).trim(); if (value) blueprint.labels.sections[id] = value; }
+    for (const key of [...Object.keys(labelPhases), ...Object.keys(labelSections)]) if (!phaseIds.includes(key) && !builtinIds.has(key)) fix();
+    blueprint.customSections = collection('customSections', v => ({ phase: phaseIds.includes(v.phase) ? v.phase : (fix(), 'define'), title: str(v.title, 80),
+      description: str(v.description, 2000), notApplicable: v.notApplicable === true }))
+      .filter(entry => { if (!builtinIds.has(entry.id)) return true; fix(); return false; });
+    const sectionIds = new Set([...builtinIds, ...blueprint.customSections.map(entry => entry.id)]);
+    blueprint.questions = collection('questions', v => {
+      const scope = v.scope === 'component' ? 'component' : v.scope === 'section' ? 'section' : (fix(), 'section');
+      const sectionId = scope === 'section' && typeof v.sectionId === 'string' && sectionIds.has(v.sectionId) ? v.sectionId : '';
+      if (scope === 'section' && !sectionId) fix();
+      return { scope, sectionId, text: str(v.text, 500) };
+    }).filter(entry => entry.scope === 'component' || entry.sectionId);
+    const questionIds = scope => new Set(blueprint.questions.filter(entry => entry.scope === scope).map(entry => entry.id));
+    const sectionQuestions = questionIds('section'), componentQuestions = questionIds('component');
+    // Answers belong to a question ID, so renaming a question never detaches or moves its answer.
+    const answers = (value, allowed) => {
+      const result = {};
+      for (const [key, text] of Object.entries(obj(value))) {
+        if (!allowed.has(key)) { fix(); continue; }
+        const answer = str(text);
+        if (answer) result[key] = answer;
+      }
+      return result;
+    };
+    blueprint.answers = answers(source.answers, sectionQuestions);
+    const edited = Object.entries(obj(source.questionText));
+    if (edited.length > 500) throw new OriginModelError('A blueprint can have at most 500 edited questions.');
+    blueprint.questionText = {};
+    for (const [key, text] of edited) {
+      if (!QUESTION_KEY.test(key)) { fix(); continue; }
+      const value = str(text, 500).trim();
+      if (value) blueprint.questionText[key] = value;
+    }
+    blueprint.layers = collection('layers', v => ({ name: str(v.name, 80), description: str(v.description, 2000), technologyIds: refs(v.technologyIds, ids.technologies), constraints: str(v.constraints) }));
+
     blueprint.requirements = collection('requirements', v => ({ key: str(v.key, 20), title: str(v.title, NAME), description: str(v.description),
       type: pick(v.type, ENUMS.requirementType), priority: pick(v.priority, ENUMS.priority), status: pick(v.status, ENUMS.itemStatus),
       acceptanceCriteria: str(v.acceptanceCriteria), componentIds: refs(v.componentIds, ids.components), sourceIds: refs(v.sourceIds, ids.sources) }));
     blueprint.components = collection('components', v => ({ name: str(v.name, NAME), type: pick(v.type, ENUMS.componentType), purpose: str(v.purpose),
       responsibilities: str(v.responsibilities), technologyIds: refs(v.technologyIds, ids.technologies), interfaces: str(v.interfaces), dataHandled: str(v.dataHandled),
-      status: pick(v.status, ENUMS.itemStatus), notes: str(v.notes), sourceIds: refs(v.sourceIds, ids.sources), x: num(v.x), y: num(v.y) }));
+      status: pick(v.status, ENUMS.itemStatus), notes: str(v.notes), sourceIds: refs(v.sourceIds, ids.sources), x: num(v.x), y: num(v.y),
+      layerId: one(v.layerId, ids.layers), answers: answers(v.answers, componentQuestions) }));
     blueprint.connections = collection('connections', v => ({ from: one(v.from, ids.components), to: one(v.to, ids.components),
       label: str(v.label, 80), protocol: str(v.protocol, 80), notes: str(v.notes, 2000) }))
       .filter(connection => { const valid = connection.from && connection.to && connection.from !== connection.to; if (!valid) fix(); return valid; });
@@ -165,13 +219,48 @@ globalThis.PromptboardOriginModel = (() => {
         baseResourceIds: external(v.baseResourceIds) };
     });
     blueprint.milestones = collection('milestones', v => ({ title: str(v.title, NAME), goal: str(v.goal), definitionOfDone: str(v.definitionOfDone) }));
+    const contextRefs = value => {
+      if (value === undefined || value === null) return [];
+      if (!Array.isArray(value)) { fix(); return []; }
+      const list = [];
+      for (const entry of value.slice(0, 100)) {
+        const ref = obj(entry);
+        if (CONTEXT_COLLECTIONS.includes(ref.collection) && ids[ref.collection].has(ref.id) && !list.some(item => item.collection === ref.collection && item.id === ref.id)) list.push({ collection: ref.collection, id: ref.id });
+        else fix();
+      }
+      if (value.length > 100) fix();
+      return list;
+    };
+    const stamp = value => (Number.isSafeInteger(value) && value > 0 ? value : null);
     blueprint.items = collection('items', v => {
-      const handoff = isObject(v.handoff) && ID.test(v.handoff.projectId) && ID.test(v.handoff.taskId) && Number.isSafeInteger(v.handoff.at)
-        ? { projectId: v.handoff.projectId, taskId: v.handoff.taskId, at: v.handoff.at } : (v.handoff === undefined || v.handoff === null ? null : (fix(), null));
+      const h = obj(v.handoff), hash = typeof h.hash === 'string' && /^[a-f0-9]{64}$/.test(h.hash) ? h.hash : '';
+      const handoff = isObject(v.handoff) && ID.test(h.projectId) && ID.test(h.taskId) && Number.isSafeInteger(h.at)
+        ? { projectId: h.projectId, taskId: h.taskId, at: h.at, snapshotId: typeof h.snapshotId === 'string' && ID.test(h.snapshotId) ? h.snapshotId : '', hash } : (v.handoff === undefined || v.handoff === null ? null : (fix(), null));
+      const r = obj(v.refinement);
+      const refinement = isObject(v.refinement) ? { proposal: str(r.proposal, 100000), proposedAt: stamp(r.proposedAt), basis: str(r.basis, 100000), originalDescription: str(r.originalDescription, 100000), acceptedAt: stamp(r.acceptedAt) }
+        : (v.refinement === undefined || v.refinement === null ? null : (fix(), null));
       return { key: str(v.key, 20), milestoneId: one(v.milestoneId, ids.milestones), workstream: str(v.workstream, 80), title: str(v.title, NAME), description: str(v.description),
         acceptanceCriteria: str(v.acceptanceCriteria), dependsOn: refs(v.dependsOn, ids.items, v.id), requirementIds: refs(v.requirementIds, ids.requirements),
-        componentIds: refs(v.componentIds, ids.components), status: pick(v.status, ENUMS.workStatus), handoff };
+        componentIds: refs(v.componentIds, ids.components), layerId: one(v.layerId, ids.layers), contextIds: contextRefs(v.contextIds), status: pick(v.status, ENUMS.workStatus), handoff, refinement };
     });
+    // Layout is presentation only: node positions and decorative map links never mean dependencies.
+    const layout = obj(source.layout), map = obj(layout.map), nodeKeys = new Set(['center', ...sectionIds]);
+    const size = (value, min, max) => { if (value === undefined || value === null) return null; if (typeof value !== 'number' || !Number.isFinite(value)) { fix(); return null; } return Math.max(min, Math.min(max, Math.round(value))); };
+    const nodeEntries = Object.entries(obj(map.nodes)), rawLinks = map.links === undefined ? [] : Array.isArray(map.links) ? map.links : (fix(), []);
+    if (nodeEntries.length > 300 || rawLinks.length > 300) throw new OriginModelError('A project map can have at most 300 nodes and 300 links.');
+    const nodes = {};
+    for (const [key, value] of nodeEntries) {
+      const point = obj(value), x = num(point.x), y = num(point.y);
+      if (nodeKeys.has(key) && x !== null && y !== null) nodes[key] = { x, y }; else fix();
+    }
+    const links = [], linkIds = new Set();
+    for (const value of rawLinks) {
+      const link = obj(value);
+      if (typeof link.id === 'string' && ID.test(link.id) && !linkIds.has(link.id) && nodeKeys.has(link.from) && nodeKeys.has(link.to) && link.from !== link.to) {
+        linkIds.add(link.id); links.push({ id: link.id, from: link.from, to: link.to, label: str(link.label, 80) });
+      } else fix();
+    }
+    blueprint.layout = { map: { width: size(map.width, 480, 4000), height: size(map.height, 320, 4000), nodes, links } };
     // Stable, unique display keys. A missing or duplicate key gets the next number; numbers are not reused.
     for (const [name, prefix] of Object.entries(KEYS)) {
       const stored = Number.isSafeInteger(sequence[name]) && sequence[name] > 0 ? sequence[name] : 0;
@@ -485,7 +574,7 @@ globalThis.PromptboardOriginModel = (() => {
     });
   }
 
-  return { SCHEMA, VERSION, ID, SECTIONS, ENUMS, AREAS, VISION, LIMITS, KEYS, SECTION_STATE, VERIFICATION_LABELS, OriginModelError,
-    label, sectionLabel, lines, emptyBlueprint, nextKey, normalizeBlueprint, verification, isStarted, itemName, issues, readiness, sectionStates,
+  return { SCHEMA, VERSION, ID, PHASES, SECTIONS, ENUMS, AREAS, VISION, LIMITS, KEYS, CONTEXT_COLLECTIONS, QUESTION_KEY, SECTION_STATE, VERIFICATION_LABELS, OriginModelError,
+    label, sectionLabel, sectionTitle, phaseTitle, lines, emptyBlueprint, nextKey, normalizeBlueprint, verification, isStarted, itemName, issues, readiness, sectionStates,
     composeSpec, orderItems, kanbanTasks };
 })();
