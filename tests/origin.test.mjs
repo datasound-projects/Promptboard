@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import '../public/origin-model.js';
@@ -167,6 +167,18 @@ test('damaged blueprint files are contained and newer files are never overwritte
   await assert.rejects(store.read('p1'), { code: 'ORIGIN_VERSION_UNSUPPORTED' });
   await assert.rejects(store.write('p1', { expectedRevision: 9, blueprint: {} }), { code: 'ORIGIN_VERSION_UNSUPPORTED' });
   assert.equal(await readFile(path, 'utf8'), newer);
+});
+
+test('a failed blueprint write reports an error and keeps the previous file', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'pb-origin-')), store = new OriginStore(dir), path = join(dir, 'origin', 'project-p1.json');
+  t.after(async () => { await chmod(join(dir, 'origin'), 0o700).catch(() => {}); await rm(dir, { recursive: true, force: true }); });
+  await store.write('p1', { expectedRevision: 0, blueprint: { idea: 'Kept' } });
+  const before = await readFile(path, 'utf8');
+  await chmod(join(dir, 'origin'), 0o500);
+  await assert.rejects(store.write('p1', { expectedRevision: 1, blueprint: { idea: 'Lost?' } }), { code: 'ORIGIN_WRITE_FAILED', status: 500 });
+  await chmod(join(dir, 'origin'), 0o700);
+  assert.equal(await readFile(path, 'utf8'), before);
+  assert.equal((await store.read('p1')).blueprint.idea, 'Kept');
 });
 
 async function api(app, path, { method = 'GET', body, token } = {}) {

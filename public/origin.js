@@ -973,7 +973,8 @@ window.PromptboardOrigin = (() => {
           group('Unverified claims', found.filter(issue => issue.kind === 'unverified'), 'None.'),
           group('Conflicts', found.filter(issue => issue.kind === 'conflict'), 'None.'),
           group('Missing information', found.filter(issue => issue.kind === 'missing' && issue.blocking), 'None.'),
-          group('Suggestions', found.filter(issue => !issue.blocking && issue.kind !== 'conflict' && issue.kind !== 'unresolved' && issue.kind !== 'unverified'), 'None.'),
+          group('Recorded risks', found.filter(issue => issue.rule === 'recorded' && issue.kind === 'risk'), 'No open risks recorded.'),
+          group('Suggestions', found.filter(issue => !issue.blocking && !['conflict', 'unresolved', 'unverified', 'risk'].includes(issue.kind)), 'None.'),
           el('p', 'note', 'Detected items come from fixed rules over saved records. Origin has no AI research yet.'));
       }
       const close = button('×', () => setInspector(false), 'icon-button origin-inspector-close'); close.setAttribute('aria-label', 'Close inspector');
@@ -986,7 +987,7 @@ window.PromptboardOrigin = (() => {
       for (const [fieldName, enumName] of [['type', collection === 'requirements' ? 'requirementType' : collection === 'components' ? 'componentType' : collection === 'dependencies' ? 'dependencyType' : ''], ['status', { requirements: 'itemStatus', components: 'itemStatus', areas: 'itemStatus', technologies: 'techStatus', decisions: 'decisionStatus', assumptions: 'assumptionStatus', risks: 'riskStatus', items: 'workStatus' }[collection]], ['verification', collection === 'sources' ? 'sourceVerification' : ''], ['category', collection === 'technologies' ? 'techCategory' : '']]) {
         if (enumName && entry[fieldName]) badges.append(badge(M.label(enumName, entry[fieldName])));
       }
-      if (entry.sourceIds) badges.append(verificationBadge(M.verification(entry, blueprint.sources)));
+      if (entry.sourceIds && (entry.sourceIds.length || ['technologies', 'dependencies'].includes(collection))) badges.append(verificationBadge(M.verification(entry, blueprint.sources)));
       if (entry.origin === 'ai') badges.append(badge('AI suggestion', 'ai'));
       nodes.push(badges);
       const prose = entry.purpose || entry.description || entry.decision || entry.statement || entry.claim || entry.goal || '';
@@ -1099,7 +1100,14 @@ window.PromptboardOrigin = (() => {
       try { data = JSON.parse(await file.text()); } catch { showError('This file is not valid JSON. Nothing was imported.'); return; }
       const blueprint = data?.schema === M.SCHEMA && data.blueprint ? data.blueprint : data;
       if (!blueprint || typeof blueprint !== 'object' || Array.isArray(blueprint)) { showError('This file does not contain an Origin blueprint. Nothing was imported.'); return; }
-      if (record.exists && !window.confirm('Importing replaces this project’s blueprint. Export it first if you want to keep it. Replace the blueprint?')) return;
+      if (!record.exists) { await applyImport(blueprint); return; }
+      // Replacing an existing blueprint needs an explicit inline confirmation.
+      const replace = button('Replace blueprint', () => void applyImport(blueprint), 'secondary-button');
+      notice.replaceChildren(`Importing “${file.name}” replaces this project’s blueprint. Export it first if you want to keep it. `, replace, ' ', button('Cancel', () => showNotice(''), 'text-button'));
+      notice.hidden = false; replace.focus();
+    });
+    async function applyImport(blueprint) {
+      showNotice('');
       if (!(await flush()) && saveState !== 'conflict') return;
       const { response, data: result } = await app.api(`/api/origin/projects/${encodeURIComponent(projectId)}`, { method: 'PUT', body: { expectedRevision: record.revision, blueprint }, timeoutMs: 30000 })
         .catch(() => ({ response: { ok: false }, data: {} }));
@@ -1107,7 +1115,7 @@ window.PromptboardOrigin = (() => {
       await load(projectId, { force: true });
       showNotice(`Blueprint imported${result.repairs ? `; ${plural(result.repairs, 'invalid entry', 'invalid entries')} or broken links were removed` : ''}.`);
       app.announce('Blueprint imported.');
-    });
+    }
 
     // ---- Keyboard ----
     view.addEventListener('keydown', event => {
