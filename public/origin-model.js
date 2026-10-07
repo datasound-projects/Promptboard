@@ -440,11 +440,12 @@ globalThis.PromptboardOriginModel = (() => {
     return { title, task, text: clip(`${header}\n${body}${guardrails(blueprint)}`, 100000) };
   }
 
-  function itemBody(blueprint, item) {
+  function itemBody(blueprint, item, { heading = true } = {}) {
     const milestone = blueprint.milestones.find(entry => entry.id === item.milestoneId);
     const requirements = item.requirementIds.map(id => blueprint.requirements.find(entry => entry.id === id)).filter(Boolean);
     const components = item.componentIds.map(id => blueprint.components.find(entry => entry.id === id)).filter(Boolean);
-    return block('Work item', `${item.key} ${item.title}${item.workstream ? `\nWorkstream: ${item.workstream}` : ''}\n\n${clip(item.description)}`)
+    const summary = `${item.workstream ? `Workstream: ${item.workstream}\n\n` : ''}${clip(item.description)}`;
+    return (heading ? block('Work item', `${item.key} ${item.title}\n${summary}`) : `Implement ${item.key} ${item.title || 'Untitled item'}.\n\n${hasText(summary) ? `${summary.trim()}\n\n` : ''}`)
       + block('Acceptance criteria', criteria(item.acceptanceCriteria))
       + block('Requirements', requirements.map(entry => `- ${entry.key} ${entry.title}${lines(entry.acceptanceCriteria).length ? `\n${lines(entry.acceptanceCriteria).map(line => `  - ${clip(line, 300)}`).join('\n')}` : ''}`).join('\n'))
       + block('Components', bullets(components.map(component => componentLine(blueprint, component))))
@@ -473,7 +474,7 @@ globalThis.PromptboardOriginModel = (() => {
   function kanbanTasks(blueprint, selected, projectName = '') {
     return orderItems(blueprint, selected).map(id => {
       const item = blueprint.items.find(entry => entry.id === id);
-      const prompt = clip(`${itemBody(blueprint, item)}${guardrails(blueprint)}\n---\nOrigin reference: ${item.key} (origin item ${item.id}) in the ${projectName || 'project'} blueprint. Created from Origin; review before starting an agent.`, 100000);
+      const prompt = clip(`${itemBody(blueprint, item, { heading: false })}${guardrails(blueprint)}\n---\nOrigin reference: ${item.key} (origin item ${item.id}) in the ${projectName || 'project'} blueprint. Created from Origin; review before starting an agent.`, 100000);
       return { itemId: id, title: `${item.key} ${item.title || 'Untitled item'}`.slice(0, 120), prompt };
     });
   }

@@ -1270,6 +1270,24 @@ function showPage() {
   window.scrollTo(0, 0);
 }
 function showPromptPage() { if (currentPage() !== 'compose') location.hash = '#/'; }
+// Origin handoff: targeted context only. Compose waits for the person to review it and choose Generate.
+function prefillCompose({ text, task, replace = false }) {
+  if (running) return 'busy';
+  const input = $('#prompt-input');
+  if (!replace && input.value.trim() && input.value !== text) return 'draft';
+  currentId = null;
+  clearOutput();
+  input.value = String(text).slice(0, 100000);
+  if (KNOWN_TASKS.includes(task)) { $('#task').value = task; $('#task').dispatchEvent(new Event('change', { bubbles: true })); }
+  updateCount();
+  renderHistory();
+  location.hash = '#/';
+  showPage();
+  input.focus();
+  input.setSelectionRange(0, 0);
+  input.scrollTop = 0;
+  return 'ok';
+}
 function basePicker(options) { return baseView?.picker(options) || document.createElement('div'); }
 
 // Kanban (PB-01): the local app stores the board in its data folder. Seven fixed stages;
@@ -5458,6 +5476,13 @@ $('#autopilot-form').addEventListener('submit', event => { event.preventDefault(
 baseView = window.PromptboardBase?.create({ api, announce, ensureBoard: loadBoard, refreshBoard: loadBoard, agentFields, readAgentFields, closeSidebar: () => setSidebar(false),
   acceptBoard: next => { acceptBoard(next); renderBoard(); } }) || null;
 window.PromptboardBaseView = baseView;
+// Origin owns its blueprint requests. It reaches Compose and Kanban only through these explicit seams,
+// which prefill or create through the existing validated APIs and never start an agent.
+originView = window.PromptboardOrigin?.create({ api, announce, closeSidebar: () => setSidebar(false), ensureBoard: options => loadBoard(options),
+  projects: () => board?.projects || [], currentProjectId: () => currentProject()?.id || null, selectProject: id => savePref(SELECTED_PROJECT_KEY, id),
+  createProject: async name => (await boardCall('POST', '/api/projects', { name })).project, createTask: body => boardCall('POST', '/api/tasks', body),
+  toCompose: prefillCompose, openKanban: () => { location.hash = '#/kanban'; },
+  openFolder: () => { location.hash = '#/kanban'; showPage(); $('#workspace-open').click(); } }) || null;
 // Start page applies only when the URL contains no explicit route.
 if (!location.hash && uiPref('startPage') !== 'compose') location.hash = `#/${uiPref('startPage')}`;
 showPage();
