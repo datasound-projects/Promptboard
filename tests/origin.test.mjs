@@ -138,6 +138,41 @@ test('Compose and Kanban handoffs carry targeted context and the Origin referenc
   assert.match(Model.composeSpec(blueprint, 'requirements', 'r1').text, /## Planned tests\n- Integration tests: Publish flow/);
 });
 
+test('projects reword phases, sections and questions; behaviour follows IDs and answers stay with their question', () => {
+  const blueprint = sample();
+  Object.assign(blueprint, {
+    labels: { phases: { define: 'Discover', bogus: 'x' }, sections: { requirements: 'Must-haves', nope: 'x' } },
+    customSections: [{ id: 'cs1', phase: 'design', title: 'Accessibility', description: 'WCAG AA' }, { id: 'requirements', phase: 'define', title: 'Clash' }, { id: 'cs2', phase: 'nowhere', title: 'Later' }],
+    questions: [{ id: 'q1', scope: 'section', sectionId: 'cs1', text: 'Which screen readers?' }, { id: 'q2', scope: 'component', text: 'Who owns it?' }, { id: 'q3', scope: 'section', sectionId: 'gone', text: 'Orphan' }],
+    answers: { q1: 'VoiceOver and NVDA', q2: 'wrong scope', q9: 'unknown' },
+    questionText: { 'section:requirements': 'What must it do?', 'vision:goal': 'Why now?', 'bad key': 'x' },
+  });
+  blueprint.components[1].answers = { q2: 'Platform team', q1: 'wrong scope' };
+  const { blueprint: clean, repairs } = Model.normalizeBlueprint(blueprint);
+  assert.deepEqual(clean.labels, { phases: { define: 'Discover' }, sections: { requirements: 'Must-haves' } });
+  assert.deepEqual(clean.customSections.map(entry => [entry.id, entry.phase]), [['cs1', 'design'], ['cs2', 'define']], 'A custom section never takes a built-in ID.');
+  assert.deepEqual(clean.questions.map(entry => entry.id), ['q1', 'q2']);
+  assert.deepEqual([clean.answers, clean.components[1].answers], [{ q1: 'VoiceOver and NVDA' }, { q2: 'Platform team' }], 'Answers only belong to questions of their own scope.');
+  assert.deepEqual(Object.keys(clean.questionText), ['section:requirements', 'vision:goal']);
+  assert.ok(repairs >= 9, `every dropped entry is counted (${repairs})`);
+  assert.deepEqual([Model.sectionTitle(clean, 'requirements'), Model.sectionTitle(clean, 'cs1'), Model.sectionTitle(clean, 'vision'), Model.phaseTitle(clean, 'define')], ['Must-haves', 'Accessibility', 'Vision & Scope', 'Discover']);
+  assert.deepEqual(Model.phaseList(clean).map(phase => phase.sections.at(-1)), ['cs2', 'cs1', 'observability', 'decisions', 'plan']);
+  assert.equal(Model.questionText(clean, 'vision:goal', 'What is the goal?'), 'Why now?');
+  // Renaming changes no checks: issues and readiness are those of the unrenamed blueprint.
+  const plain = Model.normalizeBlueprint(sample()).blueprint, shape = list => list.map(issue => [issue.id, issue.kind, issue.blocking]);
+  assert.deepEqual(shape(Model.issues(clean)), shape(Model.issues(plain)));
+  assert.equal(Model.readiness(clean).state, Model.readiness(plain).state);
+  // Rewording a question keeps its answer; a new unanswered question shows the section in progress.
+  clean.questions[0].text = 'Which assistive tech?';
+  assert.equal(Model.normalizeBlueprint(clean).blueprint.answers.q1, 'VoiceOver and NVDA');
+  assert.deepEqual([Model.sectionStates(clean).cs1, Model.sectionStates(clean).cs2], ['defined', 'empty']);
+  assert.doesNotMatch(Model.kanbanTasks(clean, ['i1'], 'Notes')[0].prompt, /Accessibility|VoiceOver/, 'Custom notes are not assumed to apply to every task.');
+  clean.questions.push({ id: 'q4', origin: 'human', scope: 'section', sectionId: 'cs1', text: 'Contrast?' });
+  assert.equal(Model.sectionStates(clean).cs1, 'progress');
+  clean.customSections[0].notApplicable = true;
+  assert.equal(Model.sectionStates(clean).cs1, 'na');
+});
+
 test('Origin projects persist on their own, reject stale revisions and refuse unsafe IDs', async t => {
   const dir = await temp(t), store = new OriginStore(dir);
   assert.deepEqual(await store.list(), []);

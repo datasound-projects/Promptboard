@@ -355,3 +355,109 @@ test('Origin creates projects with or without Kanban, renames, deletes and opens
   assert.equal((await app.board.view()).runs.length, 0);
   assert.deepEqual(browser.consoleMessages.filter(message => message.startsWith('EXCEPTION')), []);
 });
+
+test('Origin rewords phases, sections and questions in place, and keeps custom sections and answers', { skip: !await findChrome(), timeout: 120000 }, async t => {
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
+  await app.board.createProject({ name: 'Board work', workflowMode: 'pipeline' });
+  const store = new OriginStore(app.board.store.dir);
+  const created = await store.create({ name: 'Wording', description: 'A small notes app' });
+  await store.write(created.id, { expectedRevision: 1, blueprint: { idea: 'A small notes app', components: [{ id: 'api', name: 'API', type: 'api', purpose: 'Business rules' }] } });
+  const statePath = join(app.board.store.dir, 'state.json'), stateBefore = await readFile(statePath);
+  const browser = await launch({ width: 1280, height: 900 }); assert.ok(browser); t.after(() => browser.close());
+  const { ev, wait, saved, section, press, open } = pageTools(browser);
+  // Rewording goes through the pencil: it opens a field, Enter saves and Escape cancels.
+  const reword = async (key, value, finish = 'Enter') => {
+    await ev(`document.querySelector('[data-edit=${J(key)}]').click();`);
+    await wait(`document.activeElement?.matches('.origin-inline-input')`, `editing ${key}`);
+    await ev(`const i = document.activeElement; i.value = ${J(value)}; i.dispatchEvent(new KeyboardEvent('keydown', { key: ${J(finish)}, bubbles: true }));`);
+  };
+  const navLabels = () => ev(`return [...document.querySelectorAll('.origin-nav-label')].map(n => n.textContent);`);
+  await browser.goto(`${app.url}/#/origin`);
+  await wait(`document.querySelectorAll('.origin-nav-item').length === 15 && document.querySelector('.origin-map')`, 'navigator');
+
+  await reword('phase:define', 'Discover');
+  await wait(`document.querySelector('.phase-define .origin-phase-name')?.textContent === 'Discover'`, 'phase renamed');
+  await section('requirements');
+  await reword('title', 'Must-haves');
+  await wait(`document.querySelector('#origin-section-heading')?.textContent === 'Must-haves' && document.activeElement?.dataset.edit === 'title'`, 'section renamed, focus back on the pencil');
+  assert.ok((await navLabels()).includes('Must-haves'));
+  await reword('section:requirements', 'What must the app do?');
+  await wait(`document.querySelector('.origin-question')?.textContent === 'What must the app do?'`, 'guiding question reworded');
+  await reword('section:requirements', 'Thrown away', 'Escape');
+  assert.equal(await ev(`return document.querySelector('.origin-question').textContent;`), 'What must the app do?', 'Escape keeps the saved wording.');
+
+  // An answer stays with its question when the question is reworded.
+  await section('vision');
+  await ev(`const t = [...document.querySelectorAll('.origin-q')].find(q => q.querySelector('[data-edit="vision:goal"]')).querySelector('textarea'); t.value = 'Fewer lost notes'; t.dispatchEvent(new Event('input', { bubbles: true }));`);
+  await reword('vision:goal', 'Why now?');
+  await wait(`[...document.querySelectorAll('.origin-q-label')].some(l => l.textContent === 'Why now?')`, 'vision question reworded');
+  assert.equal(await ev(`return [...document.querySelectorAll('.origin-q')].find(q => q.querySelector('[data-edit="vision:goal"]')).querySelector('textarea').value;`), 'Fewer lost notes');
+
+  // A custom section in Design, with a description and a question of its own.
+  await ev(`document.querySelector('.origin-phase.phase-design .origin-phase-add').click();`);
+  await wait(`document.activeElement?.matches('#origin-main .origin-inline-input')`, 'new section title is editable');
+  await ev(`const i = document.activeElement; i.value = 'Accessibility'; i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));`);
+  await wait(`document.querySelectorAll('.origin-nav-item').length === 16 && document.querySelector('#origin-section-heading')?.textContent === 'Accessibility'`, 'custom section in the sidebar');
+  assert.equal(await ev(`return document.querySelector('.origin-phase.phase-design li:last-child .origin-nav-label').textContent;`), 'Accessibility');
+  await ev(`const t = document.querySelector('#origin-main textarea'); t.value = 'WCAG AA for every screen'; t.dispatchEvent(new Event('input', { bubbles: true }));`);
+  await press('＋ Add a question', '#origin-main');
+  await wait(`document.activeElement?.matches('.origin-inline-input')`, 'new question is editable');
+  await ev(`const i = document.activeElement; i.value = 'Which screen readers?'; i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));`);
+  await wait(`document.querySelector('[data-question] .origin-q-label')?.textContent === 'Which screen readers?'`, 'question added');
+  const questionId = await ev(`return document.querySelector('[data-question]').dataset.question;`);
+  await ev(`const t = document.querySelector('[data-question] textarea'); t.value = 'VoiceOver and NVDA'; t.dispatchEvent(new Event('input', { bubbles: true }));`);
+  await reword(`question:${questionId}`, 'Which assistive tech?');
+  await wait(`document.querySelector('[data-question] .origin-q-label')?.textContent === 'Which assistive tech?'`, 'question reworded');
+  assert.equal(await ev(`return document.querySelector('[data-question] textarea').value;`), 'VoiceOver and NVDA');
+
+  // Component questions: asked for every component, answered per component; field labels can be reworded too.
+  await section('architecture');
+  await open('API');
+  await press('＋ Add a question for every component', '#origin-drawer');
+  await wait(`document.activeElement?.matches('#origin-drawer .origin-inline-input')`, 'component question is editable');
+  await ev(`const i = document.activeElement; i.value = 'Who owns it?'; i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));`);
+  await wait(`document.querySelector('#origin-drawer [data-question] .origin-q-label')?.textContent === 'Who owns it?'`, 'component question added');
+  await ev(`const t = document.querySelector('#origin-drawer [data-question] textarea'); t.value = 'Platform team'; t.dispatchEvent(new Event('input', { bubbles: true }));`);
+  await reword('field:components:purpose', 'Its job');
+  await wait(`[...document.querySelectorAll('#origin-drawer .origin-field-label')].some(l => l.textContent === 'Its job')`, 'component field reworded');
+  assert.equal(await ev(`return [...document.querySelectorAll('#origin-drawer .origin-field')].find(f => f.querySelector('.origin-field-label')?.textContent === 'Its job').querySelector('textarea').value;`), 'Business rules');
+  await saved();
+
+  let file = (await blueprintFile(app, created.id)).blueprint;
+  const component = file.questions.find(question => question.scope === 'component');
+  assert.deepEqual(file.labels, { phases: { define: 'Discover' }, sections: { requirements: 'Must-haves' } });
+  assert.deepEqual(file.customSections.map(entry => [entry.phase, entry.title, entry.description]), [['design', 'Accessibility', 'WCAG AA for every screen']]);
+  assert.deepEqual([file.answers[questionId], file.components[0].answers[component.id], file.vision.goal], ['VoiceOver and NVDA', 'Platform team', 'Fewer lost notes']);
+  assert.deepEqual(file.questionText, { 'section:requirements': 'What must the app do?', 'vision:goal': 'Why now?', 'field:components:purpose': 'Its job' });
+
+  // The map shows the custom section; a question with an answer is deleted only on a second click.
+  await section('overview');
+  await wait(`document.querySelectorAll('.origin-map-section').length === 15`, 'custom branch on the map');
+  assert.match(await ev(`return document.querySelector('.origin-map').textContent;`), /Accessibility[\s\S]*VoiceOver and NVDA/);
+  await section(file.customSections[0].id);
+  await ev(`document.querySelector('[data-question] .origin-q-remove').click();`);
+  assert.equal(await ev(`return document.querySelector('[data-question] .origin-q-remove').textContent;`), 'Delete with its answer?');
+  await ev(`document.querySelector('[data-question] .origin-q-remove').click();`);
+  await wait(`!document.querySelector('#origin-main [data-question]')`, 'question deleted');
+  // Clearing a name brings back the built-in one.
+  await section('requirements');
+  await reword('title', '');
+  await wait(`document.querySelector('#origin-section-heading')?.textContent === 'Requirements'`, 'built-in name restored');
+  await saved();
+
+  // Everything survives a reload; deleting the section asks first because it has a description.
+  await browser.reload();
+  await wait(`document.querySelectorAll('.origin-nav-item').length === 16`, 'reloaded with the custom section');
+  assert.equal(await ev(`return document.querySelector('.phase-define .origin-phase-name').textContent;`), 'Discover');
+  await section(file.customSections[0].id);
+  assert.equal(await ev(`return document.querySelectorAll('#origin-main [data-question]').length;`), 0);
+  await press('Delete section', '#origin-main');
+  await press('Delete the section and what you wrote in it?', '#origin-main');
+  await wait(`document.querySelectorAll('.origin-nav-item').length === 15 && document.querySelector('#origin-section-heading')?.textContent === 'Overview'`, 'section deleted');
+  await saved();
+  file = (await blueprintFile(app, created.id)).blueprint;
+  assert.deepEqual([file.customSections, file.labels.sections, Object.keys(file.answers)], [[], {}, []]);
+  assert.equal(file.components[0].answers[component.id], 'Platform team', 'Component answers are kept.');
+  assert.ok((await readFile(statePath)).equals(stateBefore), 'Rewording never touches board data.');
+  assert.deepEqual(browser.consoleMessages.filter(message => message.startsWith('EXCEPTION')), []);
+});

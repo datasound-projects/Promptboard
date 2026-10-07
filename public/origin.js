@@ -9,16 +9,7 @@ window.PromptboardOrigin = (() => {
   const SECTION_KEY = 'promptboard.origin.section', MORE_KEY = 'promptboard.origin.more', PROJECT_KEY = 'promptboard.origin.project';
   const SAVE_DELAY = 700, SAVE_MAX_WAIT = 3000;
   const NODE_W = 184, NODE_H = 58, GAP_X = 270, GAP_Y = 100;
-  // The sidebar reads top to bottom as the order of work.
-  const PHASES = [
-    ['define', 'Define', ['overview', 'vision', 'requirements']],
-    ['design', 'Design', ['architecture', 'technology', 'dependencies', 'data', 'ai']],
-    ['operate', 'Operate', ['security', 'testing', 'deployment', 'observability']],
-    ['decide', 'Decide', ['research', 'decisions']],
-    ['build', 'Build', ['plan']],
-  ].map(([id, label, sections], index) => ({ id, label, sections, number: String(index + 1).padStart(2, '0') }));
-  const PHASE_OF = Object.fromEntries(PHASES.flatMap(phase => phase.sections.map(id => [id, phase])));
-  const ORDER = PHASES.flatMap(phase => phase.sections);
+  // Built-in guiding questions. Each project can reword them; the wording never changes what a section does.
   const QUESTION = {
     overview: 'Your whole project on one map. Click any branch to work on it.',
     vision: 'Why does this exist, and who is it for?',
@@ -47,7 +38,7 @@ window.PromptboardOrigin = (() => {
   const COMPOSABLE = new Set(['requirements', 'components', 'decisions', 'milestones', 'items']);
   const BLANK = {
     requirements: title => ({ title, description: '', type: 'functional', priority: 'should', status: 'draft', acceptanceCriteria: '', componentIds: [], sourceIds: [] }),
-    components: name => ({ name, type: 'service', purpose: '', responsibilities: '', technologyIds: [], interfaces: '', dataHandled: '', status: 'draft', notes: '', sourceIds: [], x: null, y: null }),
+    components: name => ({ name, type: 'service', purpose: '', responsibilities: '', technologyIds: [], interfaces: '', dataHandled: '', status: 'draft', notes: '', sourceIds: [], x: null, y: null, layerId: '', answers: {} }),
     technologies: name => ({ name, category: 'other', purpose: '', version: '', status: 'candidate', reason: '', alternatives: '', sourceIds: [] }),
     dependencies: name => ({ name, type: 'package', version: '', requiredBy: [], dependsOn: [], sourceIds: [], notes: '' }),
     decisions: title => ({ title, context: '', decision: '', alternatives: '', reason: '', consequences: '', status: 'proposed', date: today(), supersededBy: '', componentIds: [], technologyIds: [], requirementIds: [], dependencyIds: [], sourceIds: [] }),
@@ -77,7 +68,7 @@ window.PromptboardOrigin = (() => {
     const path = document.createElementNS(svg.namespaceURI, 'path'); path.setAttribute('d', d); svg.append(path);
     return svg;
   }
-  const ICON = { plus: 'M12 5v14M5 12h14', close: 'M6 6l12 12M18 6 6 18', dots: 'M5 12h.01M12 12h.01M19 12h.01', arrow: 'M5 12h14M13 6l6 6-6 6', link: 'M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1' };
+  const ICON = { edit: 'M4 20h4L19 9l-4-4L4 16v4zM13.5 6.5l4 4', plus: 'M12 5v14M5 12h14', close: 'M6 6l12 12M18 6 6 18', dots: 'M5 12h.01M12 12h.01M19 12h.01', arrow: 'M5 12h14M13 6l6 6-6 6', link: 'M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1' };
   function autoGrow(area) {
     const fit = () => { if (!area.isConnected) return; area.style.height = 'auto'; area.style.height = `${area.scrollHeight + 2}px`; };
     area.addEventListener('input', fit); requestAnimationFrame(fit);
@@ -116,11 +107,18 @@ window.PromptboardOrigin = (() => {
     view.append(heading, header, errorBox, notice, main, drawer);
 
     let projects = [], projectId = null, record = null, loading = null, loadError = null, visible = false;
-    let section = ORDER.includes(pref(SECTION_KEY)) ? pref(SECTION_KEY) : 'overview';
+    let section = pref(SECTION_KEY) || 'overview';
     let open = null, connectFrom = null, planSelection = new Set(), handoffBusy = false, lastHandoff = '';
     let saveTimer = null, saving = null, changeCount = 0, savedCount = 0, saveState = 'saved', saveMessage = '', dirtySince = 0, shownSaveError = '';
     let baseResources = null, baseLoading = null, focusAfter = null, renderFrame = 0, uid = 0;
     const bp = () => record.blueprint;
+    // The sidebar reads top to bottom as the order of work, in this project's own names.
+    const phases = () => M.phaseList(record?.exists ? bp() : null).map((phase, index) => ({ ...phase, number: String(index + 1).padStart(2, '0') }));
+    const order = () => phases().flatMap(phase => phase.sections);
+    const phaseOf = id => phases().find(phase => phase.sections.includes(id)) || phases()[0];
+    const sectionName = id => M.sectionTitle(record?.exists ? bp() : null, id);
+    const isCustom = id => Boolean(record?.exists && bp().customSections.some(entry => entry.id === id));
+    const topicName = (id, topic) => M.questionText(bp(), `topic:${id}:${topic}`, M.label(id, topic));
     const project = () => projects.find(item => item.id === projectId) || null;
     const kanbanTasks = () => new Map(app.projects().flatMap(item => item.tasks.map(task => [task.id, task])));
     const showError = message => { errorBox.textContent = message; errorBox.hidden = !message; };
@@ -240,7 +238,10 @@ window.PromptboardOrigin = (() => {
       if (id !== projectId || !record && !loading) {
         if (projectId && projects.some(item => item.id === projectId) && !(await flush())) { renderProjects(); return; }
         await load(id);
-      } else render();
+      } else {
+        // Only Origin writes the blueprint, so an open editor is left as it is; redrawing it would drop a pending confirmation.
+        renderProjects(); renderMain(); renderSave();
+      }
     }
     async function leave() { visible = false; connectFrom = null; await flush(); }
 
@@ -281,29 +282,39 @@ window.PromptboardOrigin = (() => {
       const counts = { vision: M.VISION.filter(key => key !== 'architectureSummary' && blueprint.vision[key].trim()).length, requirements: blueprint.requirements.length,
         architecture: blueprint.components.length, technology: blueprint.technologies.length, dependencies: blueprint.dependencies.length,
         research: blueprint.sources.length + blueprint.assumptions.length + blueprint.risks.length, decisions: blueprint.decisions.length, plan: blueprint.items.length };
-      return counts[id] ?? (M.AREAS[id] ? blueprint.areas.filter(item => item.section === id).length : 0);
+      if (counts[id] !== undefined) return counts[id];
+      if (M.AREAS[id]) return blueprint.areas.filter(item => item.section === id).length;
+      return blueprint.questions.filter(question => question.sectionId === id && blueprint.answers[question.id]?.trim()).length;
     }
     function renderNavigator(states) {
+      // A rename in progress is never thrown away by a redraw.
+      if (navigator.contains(document.activeElement) && document.activeElement.matches('.origin-inline-input')) return;
       const focused = navigator.contains(document.activeElement) ? document.activeElement.dataset.section : null;
-      const groups = PHASES.map(phase => {
+      const groups = phases().map(phase => {
         const box = el('div', `origin-phase phase-${phase.id}`);
-        const label = el('p', 'origin-phase-label'); label.append(el('span', 'origin-phase-number', phase.number), phase.label);
+        const label = el('div', 'origin-phase-label');
+        const builtin = M.PHASES.find(entry => entry.id === phase.id).label;
+        const add = button('', () => addSection(phase.id), 'origin-icon origin-phase-add', `Add a section to ${phase.label}`);
+        add.setAttribute('aria-label', `Add a section to ${phase.label}`); add.append(icon(ICON.plus, 13));
+        label.append(el('span', 'origin-phase-number', phase.number),
+          renamable(el('span', 'origin-phase-name', phase.label), { key: `phase:${phase.id}`, value: phase.label, fallback: builtin, label: `${phase.label} name`, max: 60,
+            onSave: value => { if (value) bp().labels.phases[phase.id] = value; else delete bp().labels.phases[phase.id]; changed({ structure: true }); } }), add);
         const list = el('ul');
         for (const id of phase.sections) {
           const meaning = M.SECTION_STATE[states[id]][1];
           const item = el('button', 'origin-nav-item'); item.type = 'button'; item.dataset.section = id; item.title = meaning;
           if (id === section) item.setAttribute('aria-current', 'page');
           const dot = el('span', 'origin-dot'); dot.dataset.state = states[id]; dot.setAttribute('aria-hidden', 'true');
-          item.append(dot, el('span', 'origin-nav-label', M.sectionLabel(id)), el('span', 'sr-only', `, ${meaning}`));
+          item.append(dot, el('span', 'origin-nav-label', sectionName(id)), el('span', 'sr-only', `, ${meaning}`));
           const count = id === 'overview' ? 0 : sectionCount(id);
           if (count) item.append(el('span', 'origin-nav-count', String(count)));
           item.addEventListener('click', () => { openSection(id); app.closeSidebar(); });
           item.addEventListener('keydown', event => {
-            const index = ORDER.indexOf(id);
-            const next = { ArrowDown: index + 1, ArrowUp: index - 1, Home: 0, End: ORDER.length - 1 }[event.key];
+            const ids = order(), index = ids.indexOf(id);
+            const next = { ArrowDown: index + 1, ArrowUp: index - 1, Home: 0, End: ids.length - 1 }[event.key];
             if (next === undefined) return;
             event.preventDefault();
-            navigator.querySelector(`[data-section="${ORDER[(next + ORDER.length) % ORDER.length]}"]`)?.focus();
+            navigator.querySelector(`[data-section="${CSS.escape(ids[(next + ids.length) % ids.length])}"]`)?.focus();
           });
           const entry = el('li'); entry.append(item); list.append(entry);
         }
@@ -311,7 +322,7 @@ window.PromptboardOrigin = (() => {
         return box;
       });
       navigator.replaceChildren(...groups);
-      if (focused) navigator.querySelector(`[data-section="${focused}"]`)?.focus();
+      if (focused) navigator.querySelector(`[data-section="${CSS.escape(focused)}"]`)?.focus();
     }
     // One clear next step per section, taken from the deterministic checks.
     function nextStep(found) {
@@ -327,7 +338,7 @@ window.PromptboardOrigin = (() => {
     }
 
     function openSection(id) {
-      if (!ORDER.includes(id)) return;
+      if (!order().includes(id)) return;
       section = id; setPref(SECTION_KEY, id); connectFrom = null;
       if (open && sectionOf(open) !== id) { open = null; renderDrawer(); }
       renderMain();
@@ -350,33 +361,85 @@ window.PromptboardOrigin = (() => {
 
     function renderMain() {
       if (renderFrame) { cancelAnimationFrame(renderFrame); renderFrame = 0; }
-      const phase = PHASE_OF[section];
+      if (record?.exists && !order().includes(section)) section = 'overview';
+      const phase = phaseOf(section);
       main.className = `origin-main phase-${phase.id}${['overview', 'architecture'].includes(section) ? ' origin-wide' : ''}`;
       view.dataset.section = section;
       if (!projectId) { main.className = 'origin-main phase-define'; main.replaceChildren(startState()); renderDerived(); return; }
       if (loadError && !record) { main.replaceChildren(errorState()); renderDerived(); return; }
       if (!record) return;
       const y = window.scrollY;
-      main.replaceChildren(sectionHeader(), el('div', 'origin-next-slot'), ...(SECTIONS[section] || SECTIONS.overview)());
+      const body = isCustom(section) ? customSection(section) : [...(SECTIONS[section] || SECTIONS.overview)(), ...(section === 'overview' ? [] : questionsBlock(section))];
+      main.replaceChildren(sectionHeader(), el('div', 'origin-next-slot'), ...body);
       renderDerived();
       markSelected();
       if (Math.abs(window.scrollY - y) > 1) window.scrollTo(0, y);
       if (focusAfter) { const target = focusAfter(); focusAfter = null; target?.focus({ preventScroll: true }); target?.scrollIntoView?.({ block: 'nearest' }); }
     }
+    // The heading and guiding question are the project's own words; the pencil rewords them in place.
     function sectionHeader() {
-      const phase = PHASE_OF[section];
+      const phase = phaseOf(section), custom = bp().customSections.find(entry => entry.id === section);
       const head = el('div', 'origin-section-head');
       const text = el('div', 'origin-section-text');
-      const title = el('h2', '', M.sectionLabel(section)); title.id = 'origin-section-heading'; title.tabIndex = -1;
-      text.append(el('p', 'origin-eyebrow', `${phase.number} · ${phase.label}`), title, el('p', 'origin-question', QUESTION[section]));
+      const heading = el('h2', '', sectionName(section)); heading.id = 'origin-section-heading'; heading.tabIndex = -1;
+      const builtin = M.sectionLabel(section);
+      const rename = section === 'overview' ? heading : renamable(heading, { key: 'title', value: sectionName(section), fallback: custom ? 'New section' : builtin, label: 'section name', max: custom ? 80 : 60,
+        onSave: value => {
+          if (custom) custom.title = value || 'New section';
+          else if (value) bp().labels.sections[section] = value; else delete bp().labels.sections[section];
+          changed({ structure: true });
+        } });
+      text.append(el('p', 'origin-eyebrow', `${phase.number} · ${phase.label}`), rename);
+      if (!custom) {
+        const key = `section:${section}`, wording = M.questionText(bp(), key, QUESTION[section]);
+        text.append(section === 'overview' ? el('p', 'origin-question', wording) : renamable(el('p', 'origin-question', wording), { key, value: wording, fallback: QUESTION[section], label: 'guiding question', max: 500,
+          onSave: value => setQuestion(key, value) }));
+      }
       head.append(text);
-      if (M.SECTIONS.find(item => item.id === section).optional) {
-        const toggle = el('label', 'origin-switch'); const box = el('input'); box.type = 'checkbox'; box.setAttribute('role', 'switch'); box.checked = Boolean(bp().sections[section]?.notApplicable);
-        box.addEventListener('change', () => { if (box.checked) bp().sections[section] = { notApplicable: true }; else delete bp().sections[section]; changed({ structure: true }); });
+      const optional = custom || M.SECTIONS.find(item => item.id === section).optional;
+      if (optional) {
+        const toggle = el('label', 'origin-switch'); const box = el('input'); box.type = 'checkbox'; box.setAttribute('role', 'switch');
+        box.checked = Boolean(custom ? custom.notApplicable : bp().sections[section]?.notApplicable);
+        box.addEventListener('change', () => {
+          if (custom) custom.notApplicable = box.checked;
+          else if (box.checked) bp().sections[section] = { notApplicable: true }; else delete bp().sections[section];
+          changed({ structure: true });
+        });
         toggle.append(box, el('span', 'origin-switch-track'), el('span', '', 'Not needed for this project'));
         head.append(toggle);
       }
       return head;
+    }
+    function setQuestion(key, value, redraw = false) {
+      if (value) bp().questionText[key] = value; else delete bp().questionText[key];
+      changed({ structure: true, drawer: redraw });
+    }
+    // Inline rewording: the pencil swaps the text for a field. Enter or leaving it saves, Escape cancels,
+    // and an empty field brings back the built-in wording. Saved answers stay with their question.
+    function renamable(node, { key, value, fallback, label, max, onSave }) {
+      const row = el('span', 'origin-editable');
+      const edit = button('', () => {
+        const control = el('input', `origin-inline-input${node.tagName === 'H2' ? ' heading' : ''}`); control.maxLength = max; control.value = value; control.placeholder = fallback; control.setAttribute('aria-label', label);
+        let done = false;
+        const finish = (keep, refocus) => {
+          if (done) return;
+          done = true;
+          const next = control.value.trim().replace(/\s+/g, ' ');
+          control.replaceWith(node); edit.hidden = false;
+          if (keep && next !== value) onSave(next === fallback ? '' : next);
+          if (refocus) view.querySelector(`[data-edit="${CSS.escape(key)}"]`)?.focus({ preventScroll: true });
+        };
+        control.addEventListener('keydown', event => {
+          if (event.key === 'Enter') { event.preventDefault(); finish(true, true); }
+          else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); finish(false, true); }
+        });
+        control.addEventListener('blur', () => finish(true, false));
+        node.replaceWith(control); edit.hidden = true;
+        control.focus(); control.select();
+      }, 'origin-icon origin-edit', `Edit ${label}`);
+      edit.dataset.edit = key; edit.setAttribute('aria-label', `Edit ${label}`); edit.append(icon(ICON.edit, 13));
+      row.append(node, edit);
+      return row;
     }
     function markSelected() {
       for (const node of main.querySelectorAll('[data-id]')) node.classList.toggle('selected', node.dataset.id === open?.id);
@@ -385,7 +448,7 @@ window.PromptboardOrigin = (() => {
     // ---- Start: every project begins here ----
     function flowStrip() {
       const strip = el('ol', 'origin-flow'); strip.setAttribute('aria-label', 'How Origin works');
-      for (const phase of PHASES) { const step = el('li', `phase-${phase.id}`); step.append(el('span', 'origin-flow-dot'), phase.label); strip.append(step); }
+      for (const phase of phases()) { const step = el('li', `phase-${phase.id}`); step.append(el('span', 'origin-flow-dot'), phase.label); strip.append(step); }
       return strip;
     }
     // The only start screen: Origin has no projects yet. Later projects come from New project.
@@ -722,8 +785,9 @@ window.PromptboardOrigin = (() => {
       }),
       components: item => ({
         title: ['name', 'Component name'],
-        essentials: [field('Type', select(item, 'type', M.ENUMS.componentType, { structure: true })), field('What it does', area(item, 'purpose', 'Its job in one or two sentences')), group('Connects to', connectionsEditor(item))],
-        more: [field('Responsibilities', area(item, 'responsibilities', 'One per line')), field('Interfaces', area(item, 'interfaces', 'APIs, events, files…')), field('Data it handles', area(item, 'dataHandled')),
+        essentials: [field('Type', select(item, 'type', M.ENUMS.componentType, { structure: true })), ask(item, 'purpose', 'What it does', 'Its job in one or two sentences'), group('Connects to', connectionsEditor(item)),
+          componentQuestions(item)],
+        more: [ask(item, 'responsibilities', 'Responsibilities', 'One per line'), ask(item, 'interfaces', 'Interfaces', 'APIs, events, files…'), ask(item, 'dataHandled', 'Data it handles'),
           group('Technologies', linkChips(item, 'technologyIds', 'technologies', { empty: 'Add technologies in Technology first.' })), field('Status', select(item, 'status', M.ENUMS.itemStatus)), field('Notes', area(item, 'notes')), evidence(item)],
       }),
       technologies: item => ({
@@ -770,7 +834,7 @@ window.PromptboardOrigin = (() => {
       }),
       areas: item => ({
         title: ['title', 'Your approach'],
-        essentials: [field('Topic', select(item, 'area', M.AREAS[item.section], { structure: true })), field('Details', area(item, 'description', 'Anything an agent should know')), ...(item.section === 'ai' ? [baseField(item)] : [])],
+        essentials: [field('Topic', select(item, 'area', M.AREAS[item.section].map(([value]) => [value, topicName(item.section, value)]), { structure: true })), field('Details', area(item, 'description', 'Anything an agent should know')), ...(item.section === 'ai' ? [baseField(item)] : [])],
         more: [field('Status', select(item, 'status', M.ENUMS.itemStatus)), group('Components', linkChips(item, 'componentIds', 'components')),
           group(item.section === 'testing' ? 'Requirements covered' : 'Requirements', linkChips(item, 'requirementIds', 'requirements')), group('Technologies', linkChips(item, 'technologyIds', 'technologies'))],
       }),
@@ -914,7 +978,13 @@ window.PromptboardOrigin = (() => {
       overview: () => [mindMap(), overviewPanels()],
       vision() {
         const vision = bp().vision, grid = el('div', 'origin-q-grid');
-        const question = (key2, text, placeholder, wide = false) => { const box = el('label', `origin-q${wide ? ' wide' : ''}`); box.append(el('span', 'origin-q-label', text), area(vision, key2, placeholder)); return box; };
+        const question = (key2, text, placeholder, wide = false) => {
+          const box = el('div', `origin-q${wide ? ' wide' : ''}`), key = `vision:${key2}`, wording = M.questionText(bp(), key, text);
+          const control = area(vision, key2, placeholder, { label: wording });
+          box.append(renamable(el('span', 'origin-q-label', wording), { key, value: wording, fallback: text, label: 'question', max: 500, onSave: value => setQuestion(key, value) }), control);
+          box.addEventListener('click', event => { if (event.target === box) control.focus(); });
+          return box;
+        };
         grid.append(question('summary', 'In one sentence, what is it?', 'A web app that…', true), question('problem', 'What problem does it solve?', 'What is broken or missing today'),
           question('goal', 'What is the goal?', 'What changes once it exists'), question('users', 'Who is it for?', 'One group per line'), question('useCases', 'What will they do with it?', 'One use case per line'),
           question('inScope', 'What is included?', 'One item per line'), question('outOfScope', 'What is not included?', 'One item per line — agents get this as a guardrail'),
@@ -998,10 +1068,11 @@ window.PromptboardOrigin = (() => {
         id === 'security' ? ' topics answered. This shows which security decisions exist — not how secure the project is.' : ' topics answered. Skip what does not apply.');
       nodes.push(progress);
       const topicList = el('ul', 'origin-topics');
-      for (const [area2, label] of topics) {
+      for (const [area2, builtin] of topics) {
         const row = el('li', 'origin-topic'); row.dataset.area = area2;
+        const key = `topic:${id}:${area2}`, label = topicName(id, area2);
         const name = el('span', 'origin-topic-label'); const dot = el('span', 'origin-dot'); dot.dataset.state = answered.has(area2) ? 'defined' : 'empty'; dot.setAttribute('aria-hidden', 'true');
-        name.append(dot, label);
+        name.append(dot, renamable(el('span', '', label), { key, value: label, fallback: builtin, label: `${label} topic`, max: 500, onSave: value => setQuestion(key, value) }));
         const answers = el('div', 'origin-answers');
         const own = items.filter(item => item.area === area2);
         for (const item of own.length ? own : [null]) answers.append(answerRow(id, area2, label, item, dot));
@@ -1038,6 +1109,97 @@ window.PromptboardOrigin = (() => {
       });
       row.append(control, more);
       return row;
+    }
+
+    // ---- The project's own sections and questions ----
+    function addSection(phaseId) {
+      if (bp().customSections.length >= M.LIMITS.customSections) { app.announce(`A project can have at most ${M.LIMITS.customSections} sections of its own.`); return; }
+      const entry = { id: newId(), origin: 'human', phase: phaseId, title: 'New section', description: '', notApplicable: false };
+      bp().customSections.push(entry);
+      section = entry.id; setPref(SECTION_KEY, section); open = null; renderDrawer();
+      changed({ structure: true });
+      app.closeSidebar();
+      main.querySelector('[data-edit="title"]')?.click();
+    }
+    function customSection(id) {
+      const entry = bp().customSections.find(item => item.id === id), nodes = [];
+      if (entry.notApplicable) nodes.push(el('p', 'origin-callout', 'Marked as not needed. Anything already written is kept.'));
+      const about = el('div', 'origin-q wide'), control = area(entry, 'description', 'What belongs in this section', { max: 2000, label: 'What this section is about' });
+      about.append(el('span', 'origin-q-label', 'What is this section about?'), control);
+      about.addEventListener('click', event => { if (event.target === about) control.focus(); });
+      const remove = button('Delete section', () => deleteSection(entry, remove), 'origin-link origin-delete origin-section-delete');
+      nodes.push(about, ...questionsBlock(id), remove);
+      return nodes;
+    }
+    function deleteSection(entry, control) {
+      const blueprint = bp(), asked = blueprint.questions.filter(question => question.sectionId === entry.id);
+      const written = entry.description.trim() || asked.some(question => blueprint.answers[question.id]?.trim());
+      if (written && control.dataset.confirm !== 'true') { control.dataset.confirm = 'true'; control.textContent = 'Delete the section and what you wrote in it?'; control.classList.add('danger'); return; }
+      blueprint.customSections = blueprint.customSections.filter(item => item !== entry);
+      blueprint.questions = blueprint.questions.filter(question => question.sectionId !== entry.id);
+      for (const question of asked) delete blueprint.answers[question.id];
+      delete blueprint.layout?.map?.nodes?.[entry.id];
+      section = 'overview'; setPref(SECTION_KEY, section);
+      app.announce('Section deleted.');
+      changed({ structure: true });
+      main.querySelector('h2')?.focus({ preventScroll: true });
+    }
+    // Your own questions, answered in place. An answer belongs to its question, so rewording keeps it.
+    function questionsBlock(id) {
+      const asked = bp().questions.filter(question => question.scope === 'section' && question.sectionId === id), nodes = [];
+      if (asked.length) {
+        const grid = el('div', 'origin-q-grid origin-own-questions');
+        grid.append(...asked.map(question => questionCard(question, bp().answers)));
+        nodes.push(subhead(isCustom(id) ? 'Questions' : 'Your questions'), grid);
+      }
+      nodes.push(button('＋ Add a question', () => addQuestion('section', id), 'origin-link origin-add-question'));
+      return nodes;
+    }
+    function componentQuestions(item) {
+      item.answers ||= {};
+      const asked = bp().questions.filter(question => question.scope === 'component');
+      const box = el('div', 'origin-own-questions');
+      if (asked.length) box.append(el('small', 'origin-hint', 'Your questions are asked for every component; each keeps its own answers.'), ...asked.map(question => questionCard(question, item.answers)));
+      box.append(button('＋ Add a question for every component', () => addQuestion('component'), 'origin-link origin-add-question'));
+      return box;
+    }
+    function questionCard(question, answers) {
+      const box = el('div', 'origin-q wide'); box.dataset.question = question.id;
+      const control = area(answers, question.id, 'Your answer', { label: question.text });
+      const remove = button('Delete', () => removeQuestion(question, remove), 'origin-link origin-q-remove');
+      remove.setAttribute('aria-label', `Delete question: ${question.text}`);
+      const head = el('div', 'origin-q-head');
+      head.append(renamable(el('span', 'origin-q-label', question.text), { key: `question:${question.id}`, value: question.text, fallback: '', label: 'question', max: 500,
+        onSave: value => { if (!value) return; question.text = value; changed({ structure: true, drawer: question.scope === 'component' }); } }), remove);
+      box.append(head, control);
+      box.addEventListener('click', event => { if (event.target === box) control.focus(); });
+      return box;
+    }
+    function addQuestion(scope, sectionId = '') {
+      if (bp().questions.length >= M.LIMITS.questions) { app.announce(`A project can have at most ${M.LIMITS.questions} questions of its own.`); return; }
+      const question = { id: newId(), origin: 'human', scope, sectionId, text: 'New question' };
+      bp().questions.push(question);
+      changed({ structure: true, drawer: scope === 'component' });
+      view.querySelector(`[data-edit="question:${CSS.escape(question.id)}"]`)?.click();
+    }
+    // A question with an answer is deleted only after a second, explicit click.
+    function removeQuestion(question, control) {
+      const blueprint = bp();
+      const answered = question.scope === 'section' ? Boolean(blueprint.answers[question.id]?.trim()) : blueprint.components.some(item => item.answers?.[question.id]?.trim());
+      if (answered && control.dataset.confirm !== 'true') { control.dataset.confirm = 'true'; control.textContent = question.scope === 'section' ? 'Delete with its answer?' : 'Delete with every answer?'; control.classList.add('danger'); return; }
+      blueprint.questions = blueprint.questions.filter(item => item !== question);
+      delete blueprint.answers[question.id];
+      for (const item of blueprint.components) delete item.answers?.[question.id];
+      app.announce('Question deleted.');
+      changed({ structure: true, drawer: question.scope === 'component' });
+    }
+    // A component field whose label is a guiding question the project can reword.
+    function ask(item, key, fallback, placeholder = '') {
+      const wordKey = `field:components:${key}`, wording = M.questionText(bp(), wordKey, fallback);
+      const box = el('div', 'origin-field');
+      box.append(renamable(el('span', 'origin-field-label', wording), { key: wordKey, value: wording, fallback, label: 'question', max: 500, onSave: value => setQuestion(wordKey, value, true) }),
+        area(item, key, placeholder, { label: wording }));
+      return box;
     }
 
     function planSection() {
@@ -1107,7 +1269,13 @@ window.PromptboardOrigin = (() => {
           ...blueprint.risks.filter(item => item.status === 'open').map(item => entry('risks', item, `Risk: ${item.title || 'untitled'}`))];
         case 'decisions': return blueprint.decisions.map(item => entry('decisions', item, item.decision.trim() ? `${item.title || 'Decision'} → ${firstLine(item.decision)}` : `${item.title || 'Decision'} ?`));
         case 'plan': return blueprint.milestones.length ? blueprint.milestones.map(item => entry('milestones', item, item.title || 'Untitled milestone')) : blueprint.items.map(item => entry('items', item, item.title || 'Untitled step'));
-        default: return blueprint.areas.filter(item => item.section === id && item.title.trim()).map(item => entry('areas', item, `${M.label(id, item.area)}: ${item.title}`));
+        default: {
+          if (M.AREAS[id]) return blueprint.areas.filter(item => item.section === id && item.title.trim()).map(item => entry('areas', item, `${topicName(id, item.area)}: ${item.title}`));
+          const answers = blueprint.questions.filter(question => question.sectionId === id && blueprint.answers[question.id]?.trim())
+            .map(question => ({ label: firstLine(blueprint.answers[question.id]), target: { section: id } }));
+          const about = blueprint.customSections.find(item => item.id === id)?.description.trim();
+          return answers.length || !about ? answers : [{ label: firstLine(about), target: { section: id } }];
+        }
       }
     }
     function mindMap() {
@@ -1130,22 +1298,25 @@ window.PromptboardOrigin = (() => {
       if (lines.length > 3) { lines.length = 3; lines[2] = `${lines[2].slice(0, 36)}…`; }
       const centerH = 64 + Math.max(lines.length, 1) * 20;
       let maxHalf = centerH / 2 + 20;
-      for (const [side, ids] of [[-1, MAP_LEFT], [1, MAP_RIGHT]]) {
+      // Custom sections join the shorter side, so built-in branches keep their places.
+      const left = [...MAP_LEFT], right = [...MAP_RIGHT];
+      for (const entry of blueprint.customSections) (left.length <= right.length ? left : right).push(entry.id);
+      for (const [side, ids] of [[-1, left], [1, right]]) {
         const blocks = ids.map(id => { const all = leaves(id), shown = all.slice(0, MAX); return { id, shown, extra: all.length - shown.length, height: Math.max(1, shown.length + (all.length > MAX ? 1 : 0)) * LEAF_H }; });
         const total = blocks.reduce((sum, block) => sum + block.height, 0) + GAP * (blocks.length - 1);
         maxHalf = Math.max(maxHalf, total / 2 + 24);
         let y = -total / 2;
         for (const block of blocks) {
-          const cy = y + block.height / 2, phase = PHASE_OF[block.id].id, state = states[block.id];
+          const cy = y + block.height / 2, phase = phaseOf(block.id).id, state = states[block.id];
           const inner = side * (SX - SECTION_W / 2), outer = side * (SX + SECTION_W / 2);
           make('path', { d: curve(side * CENTER_W / 2, Math.max(-centerH / 2 + 14, Math.min(centerH / 2 - 14, cy * 0.16)), inner, cy, side * 70), class: `origin-map-link phase-${phase}${state === 'empty' || state === 'na' ? ' faint' : ''}` }, links);
           const node = make('g', { class: `origin-map-section phase-${phase} state-${state}`, transform: `translate(${side * SX - SECTION_W / 2} ${cy - SECTION_H / 2})` }, nodes);
           make('rect', { width: SECTION_W, height: SECTION_H, rx: SECTION_H / 2 }, node);
           make('circle', { cx: 20, cy: SECTION_H / 2, r: 4.5, class: 'origin-map-dot' }, node);
-          const label = make('text', { x: 36, y: SECTION_H / 2 + 5, class: 'origin-map-label' }, node); label.textContent = block.id === 'plan' ? 'Build plan' : M.sectionLabel(block.id);
+          const label = make('text', { x: 36, y: SECTION_H / 2 + 5, class: 'origin-map-label' }, node); label.textContent = clip(sectionName(block.id), 18);
           const count = block.id === 'vision' ? 0 : sectionCount(block.id);
           if (count) { const number = make('text', { x: SECTION_W - 18, y: SECTION_H / 2 + 4.5, 'text-anchor': 'end', class: 'origin-map-count' }, node); number.textContent = String(count); }
-          clickable(node, `${M.sectionLabel(block.id)}: ${M.SECTION_STATE[state][1]}${count ? `, ${count}` : ''}`, () => openSection(block.id));
+          clickable(node, `${sectionName(block.id)}: ${M.SECTION_STATE[state][1]}${count ? `, ${count}` : ''}`, () => openSection(block.id));
           block.shown.forEach((leaf, index) => {
             const ly = y + index * LEAF_H + LEAF_H / 2, lx = outer + side * 34;
             make('path', { d: curve(outer, cy, lx, ly, side * 16), class: `origin-map-link leaf phase-${phase}` }, links);
@@ -1158,7 +1329,7 @@ window.PromptboardOrigin = (() => {
           if (block.extra > 0) {
             const ly = y + block.shown.length * LEAF_H + LEAF_H / 2;
             const more = make('text', { x: outer + side * 43, y: ly + 4, 'text-anchor': side < 0 ? 'end' : 'start', class: 'origin-map-more' }, nodes); more.textContent = `+${block.extra} more`;
-            clickable(more, `${block.extra} more in ${M.sectionLabel(block.id)}`, () => openSection(block.id));
+            clickable(more, `${block.extra} more in ${sectionName(block.id)}`, () => openSection(block.id));
           }
           y += block.height + GAP;
         }
@@ -1187,7 +1358,7 @@ window.PromptboardOrigin = (() => {
         for (const issue of steps) {
           const li = el('li'); const go = button('', () => focusTarget(issue.target), `origin-step${issue.blocking ? '' : ' advisory'}`);
           const dot = el('span', 'origin-dot'); dot.dataset.state = issue.kind === 'unresolved' ? 'decision' : issue.blocking ? 'attention' : 'empty'; dot.setAttribute('aria-hidden', 'true');
-          go.append(dot, el('span', 'origin-step-text', issue.title), el('span', 'origin-step-where', M.sectionLabel(issue.target?.collection ? sectionOf(issue.target) || issue.target.section : issue.target?.section)), icon(ICON.arrow, 14));
+          go.append(dot, el('span', 'origin-step-text', issue.title), el('span', 'origin-step-where', sectionName(issue.target?.collection ? sectionOf(issue.target) || issue.target.section : issue.target?.section)), icon(ICON.arrow, 14));
           go.title = `${{ system: 'Detected', human: 'Recorded by you', ai: 'AI suggestion' }[issue.origin]}${issue.action ? ` · ${issue.action}` : ''}`;
           li.append(go); ol.append(li);
         }

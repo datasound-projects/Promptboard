@@ -1413,7 +1413,11 @@ button.timeline-task:hover { text-decoration: underline; }
 /* Sidebar: the work in order, grouped by phase. */
 .origin-nav { flex: 1 1 auto; min-height: 0; display: grid; align-content: start; gap: 12px; margin: 0 -6px; padding: 2px 6px 12px; overflow: auto; scrollbar-width: none; }
 .origin-phase ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 1px; }
-.origin-phase-label { display: flex; align-items: center; gap: 8px; margin: 0 10px 5px; color: var(--subtle); font-size: 10.5px; font-weight: 650; letter-spacing: .13em; text-transform: uppercase; }
+.origin-phase-label { display: flex; align-items: center; gap: 8px; min-height: 22px; margin: 0 4px 5px 10px; color: var(--subtle); font-size: 10.5px; font-weight: 650; letter-spacing: .13em; text-transform: uppercase; }
+.origin-phase-add { width: 22px; height: 22px; margin-left: auto; border-radius: 7px; opacity: 0; transition: opacity .12s; }
+.origin-phase-label:hover .origin-phase-add, .origin-phase-label:focus-within .origin-phase-add { opacity: 1; }
+.origin-phase-label .origin-edit { width: 20px; height: 20px; }
+.origin-phase-label .origin-inline-input { width: 130px; padding: 2px 6px; font-size: 12px; letter-spacing: 0; }
 .origin-phase-number { color: var(--phase); font-variant-numeric: tabular-nums; }
 .origin-nav-item { display: flex; align-items: center; gap: 11px; width: 100%; height: 32px; padding: 0 10px; border: 0; border-radius: 9px; background: transparent; color: var(--muted); font-size: 13.5px; text-align: left; transition: background .12s, color .12s; }
 .origin-nav-item:hover { background: var(--og-glass-2); color: var(--ink); }
@@ -1619,6 +1623,25 @@ button.timeline-task:hover { text-decoration: underline; }
 .origin-q textarea { width: 100%; min-height: 26px; padding: 0; border: 0; background: transparent; color: var(--text); font-size: 14px; line-height: 1.6; resize: none; overflow: hidden; outline: none; }
 .origin-q.wide textarea { font-size: 16px; }
 .origin-q textarea::placeholder, .origin-answer input::placeholder { color: var(--subtle); opacity: .8; }
+
+/* Rewording in place: a pencil appears on hover or focus; the text becomes a field while editing. */
+.origin-editable { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; }
+.origin-edit { flex: none; width: 26px; height: 26px; border-radius: 7px; opacity: 0; transition: opacity .12s; }
+.origin-editable:hover .origin-edit, .origin-edit:focus-visible, .origin-q:hover .origin-edit, .origin-topic:hover .origin-edit, .origin-field:hover .origin-edit { opacity: 1; }
+@media (hover: none) { .origin-edit, .origin-phase-add, .origin-q-remove { opacity: .6; } }
+.origin-inline-input { width: min(100%, 460px); min-width: 0; padding: 4px 9px; border: 1px solid color-mix(in srgb, var(--phase, var(--og-define)) 55%, transparent); border-radius: 9px; background: var(--og-glass-2); color: var(--ink); font: inherit; outline: none; box-shadow: 0 0 0 4px color-mix(in srgb, var(--phase, var(--og-define)) 11%, transparent); }
+.origin-section-text { flex: 1 1 280px; min-width: 0; }
+.origin-section-text > .origin-editable { display: flex; }
+.origin-section-text .origin-inline-input { font-size: 15px; }
+.origin-section-text .origin-inline-input.heading { margin: 6px 0 4px; font-size: 24px; font-weight: 650; letter-spacing: -.02em; }
+.origin-q-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.origin-q-remove { font-size: 12px; opacity: 0; transition: opacity .12s; }
+.origin-q:hover .origin-q-remove, .origin-q-remove:focus-visible, .origin-q-remove.danger { opacity: 1; }
+.origin-q-remove.danger { color: var(--error); }
+.origin-own-questions { display: grid; gap: 10px; }
+.origin-own-questions + .origin-add-question, .origin-add-question { margin-top: 14px; font-size: 13px; }
+.origin-drawer .origin-own-questions .origin-add-question { margin-top: 0; justify-self: start; }
+.origin-section-delete { display: flex; margin-top: 30px; }
 
 /* Planning topics */
 .origin-progress { margin: 0 0 12px; color: var(--muted); font-size: 13.5px; }

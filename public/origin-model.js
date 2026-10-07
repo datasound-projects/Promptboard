@@ -58,8 +58,16 @@ globalThis.PromptboardOriginModel = (() => {
   const label = (name, value) => ((ENUMS[name] || AREAS[name] || []).find(([id]) => id === value) || [value, value])[1];
   const sectionLabel = id => SECTIONS.find(section => section.id === id)?.label || id;
   /** The project's own names: renamed built-in sections and phases, and custom section titles. */
-  const sectionTitle = (blueprint, id) => blueprint?.labels?.sections?.[id] || blueprint?.customSections?.find(section => section.id === id)?.title || sectionLabel(id);
+  const sectionTitle = (blueprint, id) => {
+    const custom = blueprint?.customSections?.find(section => section.id === id);
+    return blueprint?.labels?.sections?.[id] || (custom ? custom.title.trim() || 'Untitled section' : sectionLabel(id));
+  };
   const phaseTitle = (blueprint, id) => blueprint?.labels?.phases?.[id] || PHASES.find(phase => phase.id === id)?.label || id;
+  /** The sidebar for one project: its phase names, built-in sections first, then its own sections. */
+  const phaseList = blueprint => PHASES.map(phase => ({ id: phase.id, label: phaseTitle(blueprint, phase.id),
+    sections: [...phase.sections, ...(blueprint?.customSections || []).filter(section => section.phase === phase.id).map(section => section.id)] }));
+  /** A guiding question in the project's own words, or the built-in wording. */
+  const questionText = (blueprint, key, fallback) => blueprint?.questionText?.[key] || fallback;
   const formatKey = (prefix, number) => `${prefix}-${String(number).padStart(3, '0')}`;
   const keyNumber = (key, prefix) => { const match = typeof key === 'string' ? key.match(new RegExp(`^${prefix}-(\\d{1,6})$`)) : null; return match ? Number(match[1]) : 0; };
   const lines = text => String(text || '').split(/\r?\n/).map(line => line.replace(/^\s*(?:[-*•]|\d+[.)])\s*/, '').trim()).filter(Boolean);
@@ -355,7 +363,7 @@ globalThis.PromptboardOriginModel = (() => {
     }
     for (const [key, list] of names) if (list.length > 1) {
       const collection = key.startsWith('technology:') ? 'technologies' : 'dependencies';
-      add(`duplicate-${collection}`, 'conflict', `“${list[0].name.trim()}” is listed ${list.length} times in ${sectionLabel(COLLECTION_SECTION[collection])}.`, target(collection, list[1].id), { action: 'Merge or remove the duplicate.' });
+      add(`duplicate-${collection}`, 'conflict', `“${list[0].name.trim()}” is listed ${list.length} times in ${sectionTitle(blueprint, COLLECTION_SECTION[collection])}.`, target(collection, list[1].id), { action: 'Merge or remove the duplicate.' });
     }
     for (const decision of blueprint.decisions) {
       const name = itemName(blueprint, 'decisions', decision.id);
@@ -443,6 +451,12 @@ globalThis.PromptboardOriginModel = (() => {
     };
     for (const section of Object.keys(AREAS)) complete[section] = blueprint.areas.filter(item => item.section === section).every(item => item.status === 'defined');
     const ready = readiness(blueprint, found);
+    // A custom section is complete when every question it asks has an answer.
+    for (const custom of blueprint.customSections) {
+      const asked = blueprint.questions.filter(question => question.scope === 'section' && question.sectionId === custom.id);
+      const answered = asked.filter(question => hasText(blueprint.answers[question.id])).length;
+      states[custom.id] = custom.notApplicable ? 'na' : !hasText(custom.description) && !answered ? 'empty' : answered === asked.length ? 'defined' : 'progress';
+    }
     for (const { id } of SECTIONS) {
       const related = found.filter(issue => issue.target?.section === id && id !== 'overview');
       if (id === 'overview') states[id] = { not_started: 'empty', attention: 'attention', decompose: 'defined', ready: 'defined' }[ready.state];
@@ -575,6 +589,6 @@ globalThis.PromptboardOriginModel = (() => {
   }
 
   return { SCHEMA, VERSION, ID, PHASES, SECTIONS, ENUMS, AREAS, VISION, LIMITS, KEYS, CONTEXT_COLLECTIONS, QUESTION_KEY, SECTION_STATE, VERIFICATION_LABELS, OriginModelError,
-    label, sectionLabel, sectionTitle, phaseTitle, lines, emptyBlueprint, nextKey, normalizeBlueprint, verification, isStarted, itemName, issues, readiness, sectionStates,
+    label, sectionLabel, sectionTitle, phaseTitle, phaseList, questionText, lines, emptyBlueprint, nextKey, normalizeBlueprint, verification, isStarted, itemName, issues, readiness, sectionStates,
     composeSpec, orderItems, kanbanTasks };
 })();
