@@ -224,3 +224,42 @@ test('Origin contains damaged blueprint files and stale saves without touching b
   assert.equal((await app.board.view()).projects[0].tasks[0].prompt, 'Still here.');
   assert.deepEqual(browser.consoleMessages.filter(message => message.startsWith('EXCEPTION')), []);
 });
+
+test('Origin creates its first project, imports an exported blueprint and opens a diagram node by double-click', { skip: !await findChrome(), timeout: 90000 }, async t => {
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
+  const browser = await launch({ width: 1280, height: 900 }); assert.ok(browser); t.after(() => browser.close());
+  const { ev, wait, saved, section } = pageTools(browser);
+  await browser.goto(`${app.url}/#/origin`);
+  await wait(`document.querySelector('#origin-new-project')`, 'first-project form');
+  assert.equal(await ev(`return [...document.querySelectorAll('#origin-main button')].some(b => b.textContent === 'Import project context');`), false, 'Import needs a project first.');
+  await ev(`document.querySelector('#origin-new-project').value = 'Atlas'; document.querySelector('#origin-idea').value = 'An internal API gateway.'; [...document.querySelectorAll('#origin-main button')].find(b => b.textContent === 'Start project blueprint').click();`);
+  await wait(`document.querySelectorAll('.origin-nav-item').length === 15`, 'project and blueprint created', 20000);
+  await saved();
+  const project = (await app.board.view()).projects.find(item => item.name === 'Atlas');
+  assert.ok(project?.repository, 'The project is created like Kanban → New project.');
+
+  const exported = { schema: 'promptboard.origin', version: 1, kind: 'export', blueprint: { vision: { summary: '<b>Imported</b>' },
+    components: [{ id: 'gw', name: 'Gateway', purpose: 'Routes' }, { id: 'st', name: 'Store', purpose: 'Keeps' }],
+    connections: [{ id: 'k1', from: 'gw', to: 'st', label: 'reads' }, { id: 'k2', from: 'gw', to: 'deleted' }], requirements: [{ id: 'r1', title: 'Imported requirement' }] } };
+  const file = join(app.board.store.dir, 'export.json');
+  await writeFile(file, JSON.stringify(exported));
+  const { root } = await browser.send('DOM.getDocument');
+  const { nodeId } = await browser.send('DOM.querySelector', { nodeId: root.nodeId, selector: '#origin-import-file' });
+  await browser.send('DOM.setFileInputFiles', { nodeId, files: [file] });
+  await wait(`[...document.querySelectorAll('#origin-notice button')].some(b => b.textContent === 'Replace blueprint')`, 'inline import confirmation');
+  await ev(`[...document.querySelectorAll('#origin-notice button')].find(b => b.textContent === 'Replace blueprint').click();`);
+  await wait(`document.querySelector('#origin-notice').textContent.startsWith('Blueprint imported')`, 'imported');
+  assert.match(await ev(`return document.querySelector('#origin-notice').textContent;`), /invalid entries or broken links were removed/);
+  const stored = await blueprintFile(app, project.id);
+  assert.deepEqual(stored.blueprint.connections.map(item => item.id), ['k1']);
+  assert.equal(stored.blueprint.requirements[0].key, 'REQ-001');
+
+  await section('architecture');
+  for (let i = 0; i < 2; i++) {
+    const point = await ev(`const r = [...document.querySelectorAll('.origin-node')].find(n => n.textContent.includes('Store')).getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 };`);
+    await browser.click(point.x, point.y);
+  }
+  await wait(`document.querySelector('#origin-main .origin-editor input')?.value === 'Store'`, 'editor opened by double-click');
+  assert.equal((await app.board.view()).runs.length, 0);
+  assert.deepEqual(browser.consoleMessages.filter(message => message.startsWith('EXCEPTION')), []);
+});

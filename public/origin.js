@@ -83,7 +83,7 @@ window.PromptboardOrigin = (() => {
     let section = M.SECTIONS.some(item => item.id === pref(SECTION_KEY)) ? pref(SECTION_KEY) : 'overview';
     let selected = null, editing = null, inspectorTab = 'intel', connectFrom = null, planSelection = new Set(), handoffBusy = false, lastHandoff = '';
     let saveTimer = null, saving = null, changeCount = 0, savedCount = 0, saveState = 'saved', saveMessage = '', dirtySince = 0, shownSaveError = '';
-    let baseResources = null, baseLoading = null, focusAfter = null, refreshRow = null;
+    let baseResources = null, baseLoading = null, focusAfter = null, refreshRow = null, lastActivation = { id: null, at: 0 };
     const bp = () => record.blueprint;
     const project = () => app.projects().find(item => item.id === projectId) || null;
 
@@ -233,10 +233,10 @@ window.PromptboardOrigin = (() => {
       projectSelect.replaceChildren(...projects.map(item => Object.assign(el('option', '', item.name), { value: item.id })));
       projectSelect.value = projectId || '';
       projectLabel.hidden = !projects.length;
-      heading.textContent = 'Origin';
     }
     function renderDerived() {
       view.dataset.empty = String(!record?.exists);
+      tools.hidden = !record;
       inspectorToggle.hidden = !record?.exists;
       if (!record?.exists) { navigator.replaceChildren(el('p', 'note', record ? 'Start a blueprint to open its sections.' : 'Choose a project to plan.')); statusbar.replaceChildren(); statusbar.hidden = true; readinessButton.hidden = true; inspector.replaceChildren(); return; }
       const found = M.issues(bp()), ready = M.readiness(bp(), found), states = M.sectionStates(bp(), found);
@@ -362,8 +362,9 @@ window.PromptboardOrigin = (() => {
     }
     function startLinks(withManual = true) {
       const links = el('div', 'origin-start-links');
-      links.append(button('Open existing repository', () => app.openFolder(), 'text-button'), button('Import project context', () => importFile.click(), 'text-button', 'Import an exported Origin blueprint (JSON)'));
-      if (withManual) links.append(button('Start manually', () => void startBlueprint(''), 'text-button'));
+      links.append(button('Open existing repository', () => app.openFolder(), 'text-button'));
+      // Import and manual start need a project; without one, the form above creates it first.
+      if (withManual) links.append(button('Import project context', () => importFile.click(), 'text-button', 'Import an exported Origin blueprint (JSON)'), button('Start manually', () => void startBlueprint(''), 'text-button'));
       return links;
     }
     function emptyState() {
@@ -875,6 +876,10 @@ window.PromptboardOrigin = (() => {
         if (states.has(component.id)) { const mark = make('text', { x: NODE_W - 14, y: 22, 'text-anchor': 'middle', class: 'origin-node-mark' }, node); mark.textContent = states.get(component.id) === 'unresolved' ? '?' : '!'; }
         const title = make('title', {}, node); title.textContent = component.purpose || component.name || 'Component';
         const activate = () => {
+          // The first click re-renders the diagram, so a double-click is detected here rather than by the DOM event.
+          const now = Date.now();
+          if (connectFrom === null && lastActivation.id === component.id && now - lastActivation.at < 450) { lastActivation = { id: null, at: 0 }; toggleEditor('components', component.id); return; }
+          lastActivation = { id: component.id, at: now };
           if (connectFrom === null) { selected = { collection: 'components', id: component.id }; inspectorTab = 'details'; focusAfter = () => main.querySelector(`.origin-node[data-id="${CSS.escape(component.id)}"]`); renderMain(); return; }
           if (!connectFrom) { connectFrom = component.id; focusAfter = () => main.querySelector(`.origin-node[data-id="${CSS.escape(component.id)}"]`); renderMain(); return; }
           if (connectFrom === component.id) return;
@@ -908,7 +913,6 @@ window.PromptboardOrigin = (() => {
         };
         node.addEventListener('pointerup', finish);
         node.addEventListener('pointercancel', () => { drag = null; renderMain(); });
-        node.addEventListener('dblclick', () => toggleEditor('components', component.id));
         node.addEventListener('keydown', event => {
           const step = { ArrowLeft: [-20, 0], ArrowRight: [20, 0], ArrowUp: [0, -20], ArrowDown: [0, 20] }[event.key];
           if (event.key === 'Enter') { event.preventDefault(); if (connectFrom === null) toggleEditor('components', component.id); else activate(); }
@@ -982,7 +986,9 @@ window.PromptboardOrigin = (() => {
     }
     function details(collection, entry) {
       const blueprint = bp(), nodes = [];
-      nodes.push(el('p', 'eyebrow', NOUN[collection].toUpperCase()), el('h3', 'origin-detail-title', M.itemName(blueprint, collection, entry.id) || (collection === 'connections' ? 'Connection' : 'Untitled')));
+      const componentName = id => blueprint.components.find(item => item.id === id)?.name || 'Unnamed component';
+      const title = collection === 'connections' ? `${componentName(entry.from)} → ${componentName(entry.to)}` : M.itemName(blueprint, collection, entry.id) || 'Untitled';
+      nodes.push(el('p', 'eyebrow', NOUN[collection].toUpperCase()), el('h3', 'origin-detail-title', title));
       const badges = el('div', 'origin-badges');
       for (const [fieldName, enumName] of [['type', collection === 'requirements' ? 'requirementType' : collection === 'components' ? 'componentType' : collection === 'dependencies' ? 'dependencyType' : ''], ['status', { requirements: 'itemStatus', components: 'itemStatus', areas: 'itemStatus', technologies: 'techStatus', decisions: 'decisionStatus', assumptions: 'assumptionStatus', risks: 'riskStatus', items: 'workStatus' }[collection]], ['verification', collection === 'sources' ? 'sourceVerification' : ''], ['category', collection === 'technologies' ? 'techCategory' : '']]) {
         if (enumName && entry[fieldName]) badges.append(badge(M.label(enumName, entry[fieldName])));
@@ -1001,7 +1007,7 @@ window.PromptboardOrigin = (() => {
       }
       for (const [fieldName, value] of Object.entries(entry)) {
         const target = typeof REFS[fieldName] === 'function' ? REFS[fieldName](collection) : REFS[fieldName];
-        if (!target || collection === 'connections' && ['from', 'to'].includes(fieldName) && false) continue;
+        if (!target) continue;
         const ids = Array.isArray(value) ? value : value ? [value] : [];
         row(REF_LABELS[fieldName], ids.filter(id => blueprint[target]?.some(item => item.id === id)).map(id => ref(target, id)));
       }
@@ -1126,8 +1132,7 @@ window.PromptboardOrigin = (() => {
     });
     readinessButton.addEventListener('click', () => { selected = null; inspectorTab = 'intel'; if (!inspectorOpen()) setInspector(true); renderInspector(); });
 
-    return { show, leave, flush, refresh: () => { if (visible) { renderProjects(); renderDerived(); } },
-      state: () => ({ projectId, revision: record?.revision ?? null, exists: Boolean(record?.exists), section, saveState, blueprint: record?.blueprint || null }) };
+    return { show, leave };
   }
 
   return { create };
