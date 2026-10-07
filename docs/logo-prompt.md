@@ -25,4 +25,4 @@ Constraints: no lettering, no text, no watermark, no background, no objects, no 
 
 ## GitHub social preview
 
-`docs/social-preview.png` uses the same supplied mascot with a minimal overview of Compose, Kanban and Base. The 1280×640 card is rendered with `node scripts/create-social-preview.mjs`; no new image generation is needed. Upload this PNG in the repository's General settings under Social preview after regenerating it.
+`docs/social-preview.png` uses the same supplied mascot with a minimal dark overview of Origin, Compose, Kanban and Base. The 1280×640 card is rendered with `node scripts/create-social-preview.mjs`; no new image generation is needed. Upload this PNG in the repository's General settings under Social preview after regenerating it.

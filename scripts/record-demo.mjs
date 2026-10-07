@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** Three dark-mode README demos, each <=12s. Requires Chrome and ffmpeg.
+/** Four dark-mode README demos, each <=12s. Requires Chrome and ffmpeg.
  * Model responses and coding CLIs are simulated; UI, persistence, Git worktrees,
  * review/test gates and resource delivery use the real app in disposable folders.
  * Run: node scripts/record-demo.mjs
@@ -16,6 +16,7 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 const work = await mkdtemp(join(tmpdir(), 'pb-demo-'));
 const preview = process.env.PB_DEMO_PREVIEW_DIR;
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+const IDEA = 'An online shop where customers sign in, browse products and check out. Two developers, launch in three months.';
 const REQUEST = 'Add login to the shop. Use `src/auth.ts`. Limit attempts to 5 per minute. No new dependencies.';
 const PROMPT = '# Goal\nAdd login to the shop.\n\n# Work\n1. Use `src/auth.ts` for the login route.\n2. Limit attempts to 5 per minute.\n3. Write tests and API docs.\n\n# Constraints\nDo not add dependencies.\n\n# Acceptance checks\nA correct login returns a session. The sixth attempt is refused.';
 const TASKS = [
@@ -67,6 +68,8 @@ try {
     authAdapter: { installed: async () => true, status: async () => ({ state: 'signed-in', method: 'demo' }) },
     usageReader: { get: async () => ({ updatedAt: Date.now(), providers: [] }) },
   });
+  // The Autopilot scene runs a stage board, which the project API still creates on explicit request.
+  await app.board.createProjectWithRepository({ name: 'Shop app', folder: 'new', workflowMode: 'legacy' });
   browser = await launch({ width: 1280, height: 820 }); if (!browser) throw new Error('Chrome was not found.');
   await browser.resize(1280, 820); await browser.goto(app.url);
   await browser.eval(`localStorage.setItem('ste-prompt-engineer.theme', 'dark'); localStorage.setItem('promptboard.settings.dock-start', 'collapsed'); localStorage.setItem('promptboard.dock.height', '200'); localStorage.setItem('promptboard.settings.open-terminal', '0'); localStorage.setItem('promptboard.project-panel', 'collapsed');`);
@@ -94,7 +97,7 @@ try {
     await click('#output-tools > summary'); await shot(0.6, 'More actions: split, export or add to Kanban');
     await click('#split-button');
     await browser.until(`document.querySelectorAll('#split-list .split-item').length === 3`, 'three proposed tasks', 20000);
-    await browser.eval(`document.querySelector('#split-project').value = ''; document.querySelector('#split-project').dispatchEvent(new Event('change')); document.querySelector('#split-project-name').value = 'Shop app';`);
+    await browser.eval(`const target = document.querySelector('#split-project'); target.value = [...target.options].find(option => option.textContent === 'Shop app').value; target.dispatchEvent(new Event('change'));`);
     await shot(2.6, 'Split into three editable To Do tasks');
   });
   await browser.eval(`document.querySelector('#split-form').requestSubmit();`);
@@ -186,9 +189,63 @@ try {
     if (!runs.some(run => run.baseManifest?.supplied?.some(entry => entry.resourceId === instruction.id))) throw new Error('The selected Base skill was not actually supplied.');
     await browser.eval(`window.PromptboardDock.setState('collapsed'); await loadBoard();`); await shot(1.1, 'Verified task merged and recorded in Done');
   });
+  // Origin plans the same shop through the real page: every entry is typed into the UI and saved.
+  await browser.eval(`if (document.documentElement.dataset.sidebar === 'collapsed') toggleSidebar(); location.hash = '#/origin'; window.scrollTo(0,0);`);
+  await browser.until(`document.querySelector('#origin-idea')`, 'Origin start screen');
+  const section = async id => { await browser.eval(`document.querySelector('.origin-nav-item[data-section=${JSON.stringify(id)}]').click(); window.scrollTo(0,0);`); await browser.until(`document.querySelector('#origin-section-heading')`, `Origin ${id}`); };
+  const quick = (id, text) => browser.eval(`const input = document.querySelector('[data-quick=${JSON.stringify(id)}]'); input.value = ${JSON.stringify(text)}; input.form.requestSubmit();`);
+  const field = (label, value) => browser.eval(`const box = [...document.querySelectorAll('#origin-drawer .origin-field')].find(node => node.querySelector('.origin-field-label')?.textContent === ${JSON.stringify(label)}); const control = box.querySelector('input, textarea, select'); control.value = ${JSON.stringify(value)}; control.dispatchEvent(new Event(control.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true }));`);
+  const closeDrawer = () => browser.eval(`document.querySelector('#origin-drawer [aria-label="Close editor"]')?.click();`);
+  await encode('origin-demo', async () => {
+    await browser.eval(`const idea = document.querySelector('#origin-idea'); idea.value = ${JSON.stringify(IDEA)}; idea.focus();`);
+    await shot(1.2, 'Every project starts in Origin');
+    await click('#origin-start');
+    await browser.until(`document.querySelector('.origin-map') && document.querySelector('#origin-view').dataset.save === 'saved'`, 'project map', 20000);
+    await shot(1.0, 'The idea becomes a project map');
+    await section('requirements');
+    for (const title of ['Customers sign in with email', 'Browse and search products', 'Check out with a card']) await quick('requirements', title);
+    await browser.eval(`document.querySelector('#origin-main .origin-row-open').click();`);
+    await browser.until(`!document.querySelector('#origin-drawer').hidden`, 'requirement editor');
+    await field('Done when', 'A magic link arrives within one minute\nThe sixth failed attempt is refused');
+    await shot(1.4, 'Type a line, press Enter; add details only where needed');
+    for (const [index, checks] of [[1, 'Search finds a product by name'], [2, 'A paid order reaches the order list']]) {
+      await browser.eval(`document.querySelectorAll('#origin-main .origin-row-open')[${index}].click();`);
+      await field('Done when', checks);
+    }
+    await closeDrawer(); await section('architecture');
+    for (const [name, type] of [['Web app', 'client'], ['API', 'api'], ['PostgreSQL', 'database']]) { await browser.eval(`document.querySelector('.origin-canvas-tools select').value = ${JSON.stringify(type)};`); await quick('components', name); }
+    const node = (name, key) => browser.eval(`[...document.querySelectorAll('.origin-node')].find(node => node.textContent.includes(${JSON.stringify(name)})).dispatchEvent(new KeyboardEvent('keydown', { key: ${JSON.stringify(key)}, bubbles: true }));`);
+    for (const [from, to] of [['Web app', 'API'], ['API', 'PostgreSQL']]) { await click('#origin-connect'); await node(from, ' '); await node(to, ' '); await closeDrawer(); }
+    await browser.until(`document.querySelectorAll('.origin-edge').length === 2`, 'connected blocks');
+    await shot(1.4, 'Sketch the building blocks and how they connect');
+    for (const [name, purpose] of [['Web app', 'Catalog, cart and checkout pages'], ['API', 'Accounts, orders and payments'], ['PostgreSQL', 'Stores customers, products and orders']]) {
+      await node(name, 'Enter'); await field('What it does', purpose);
+    }
+    await closeDrawer();
+    await section('decisions'); await quick('decisions', 'Database');
+    await browser.until(`document.querySelector('#origin-drawer-title')?.value === 'Database'`, 'decision editor');
+    await field('Decision', 'PostgreSQL'); await field('Why', 'Orders and stock are relational');
+    await browser.eval(`[...document.querySelectorAll('#origin-drawer .origin-seg button')].find(node => node.textContent === 'Accepted').click();`);
+    await shot(1.0, 'Record decisions with their reason');
+    await closeDrawer(); await section('security');
+    for (const [area, text] of [['authentication', 'Email magic links, rate-limited'], ['secrets', 'Environment variables on the host'], ['input_validation', 'Schema checks on every API route']]) await browser.eval(`const input = document.querySelector('.origin-topic[data-area=${JSON.stringify(area)}] input'); input.value = ${JSON.stringify(text)}; input.dispatchEvent(new Event('input', { bubbles: true }));`);
+    await browser.eval(`document.activeElement?.blur(); window.scrollTo(0,0);`);
+    await shot(0.9, 'Answer one question per topic');
+    await section('plan'); await quick('milestones', 'Foundation');
+    for (const step of ['Login', 'Product catalog', 'Checkout']) await browser.eval(`const input = document.querySelector('.origin-milestone .origin-quick input'); input.value = ${JSON.stringify(step)}; input.form.requestSubmit();`);
+    await browser.until(`document.querySelectorAll('.origin-milestone .origin-row').length === 3`, 'ordered steps');
+    await browser.eval(`document.activeElement?.blur(); window.scrollTo(0,0);`);
+    await shot(1.0, 'Order the build, then send steps to Compose or Kanban');
+    await section('overview');
+    await browser.until(`document.querySelector('#origin-view').dataset.save === 'saved'`, 'blueprint saved', 20000);
+    await shot(2.0, 'See the whole project before any agent starts');
+  });
+  const { OriginStore } = await import('../src/origin.mjs');
+  const blueprint = (await new OriginStore(join(work, 'data')).read(project.id)).blueprint;
+  if (blueprint.requirements.length !== 3 || blueprint.components.length !== 3 || blueprint.connections.length !== 2 || blueprint.items.length !== 3) throw new Error('The Origin blueprint was not saved as shown.');
   const exceptions = browser.consoleMessages.filter(message => message.startsWith('EXCEPTION')); if (exceptions.length) throw new Error(exceptions.join('\n'));
   if (preview) await writeFile(join(preview, 'storyboards.json'), JSON.stringify(storyboards, null, 2));
-  console.log('Verified: three To Do tasks, an explicit project file save, one real verified merge, and pinned Base instruction delivery.');
+  console.log('Verified: three To Do tasks, an explicit project file save, one real verified merge, pinned Base instruction delivery and a saved Origin blueprint.');
 } finally {
   await browser?.close(); await app?.close(); await rm(work, { recursive: true, force: true });
 }
