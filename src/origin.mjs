@@ -10,9 +10,10 @@
  * ID is kept), records that in migration.json, and leaves the version 1 files unchanged for rollback.
  */
 import '../public/origin-model.js';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { copyFile, mkdir, open, readdir, readFile, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
+import { redactLocal } from './compose-local.mjs';
 
 const Model = globalThis.PromptboardOriginModel;
 export const ORIGIN_DIR = 'origin';
@@ -253,6 +254,36 @@ export class OriginStore {
     });
   }
 
+  /** Task context from the saved revision only, so a preview never describes unsaved edits. */
+  context(originId, { expectedRevision, itemIds } = {}) {
+    try {
+      validId(originId); expected(expectedRevision);
+      if (!Array.isArray(itemIds) || !itemIds.length || itemIds.length > 100) throw new OriginError('Choose 1 to 100 tasks.', 'INVALID_INPUT');
+      for (const id of itemIds) validId(id, 'Choose a valid task.');
+    } catch (error) { return Promise.reject(error); }
+    return this.#serial(async () => {
+      const record = await this.#require(originId);
+      if (record.revision !== expectedRevision) throw new OriginError('The blueprint has newer changes. Let it save, then try again.', 'ORIGIN_REVISION_CONFLICT', 409);
+      const tasks = [...new Set(itemIds)].map(id => buildContext(record, id) || (() => { throw new OriginError('A selected task no longer exists. Reload the project.', 'NOT_FOUND', 404); })());
+      return { record, tasks };
+    });
+  }
+
+  /** Save the approved context of one task as an immutable snapshot; references alone cannot rebuild an older revision. */
+  snapshot(originId, built, revision) {
+    return this.#serial(async () => {
+      const dir = join(this.dir, 'snapshots', escapeId(validId(originId)));
+      await mkdir(dir, { recursive: true, mode: 0o700 });
+      const id = randomUUID(), snapshot = { schema: 'promptboard.origin-snapshot', version: 1, id, originId, itemId: built.itemId, key: built.key, revision, createdAt: Date.now(),
+        instruction: built.instruction, context: built.context, included: built.included, omitted: built.omitted, hash: built.hash };
+      try {
+        const handle = await open(join(dir, `${id}.json`), 'wx', 0o600);
+        try { await handle.writeFile(`${JSON.stringify(snapshot, null, 1)}\n`); await handle.sync(); } finally { await handle.close(); }
+      } catch { throw new OriginError('The task context could not be saved. Check free disk space and folder permissions. Nothing was sent.', 'ORIGIN_WRITE_FAILED', 500); }
+      return { id, hash: built.hash };
+    });
+  }
+
   /** Remove the Origin project. The file moves to origin/deleted/; Kanban work and snapshots are untouched. */
   remove(originId, { expectedRevision } = {}) {
     try { validId(originId); expected(expectedRevision); } catch (error) { return Promise.reject(error); }
@@ -268,6 +299,20 @@ export class OriginStore {
       return { id: originId, deleted: true };
     });
   }
+}
+
+/**
+ * Context for one task from a saved blueprint. The task's own words are kept exactly; the context part
+ * has recognizable secrets removed, as for other model-bound text. The hash covers both and nothing
+ * cosmetic (no positions or labels), so it changes only when what the task would receive changes.
+ */
+export function buildContext(record, itemId) {
+  const built = Model.taskContext(record.blueprint, itemId, { projectName: record.name });
+  if (!built) return null;
+  const context = redactLocal(built.context);
+  const warnings = redactLocal(built.instruction) === built.instruction ? built.warnings : [...built.warnings, 'The task text looks like it contains a secret. Remove it before sending.'];
+  const hash = createHash('sha256').update(`${built.instruction}\u0000${context}`).digest('hex');
+  return { ...built, context, warnings, hash, body: built.tooLarge ? '' : Model.taskBody({ ...built, context }, { projectName: record.name }) };
 }
 
 /** The project as the page sees it: its Kanban link is resolved against the current board. */
@@ -307,7 +352,7 @@ export async function originRoute({ origin, board, req, res, pathname, jsonBody,
     const linked = await origin.link(created.id, { expectedRevision: created.revision, kanbanProjectId: made.project.id });
     return send(res, 200, { project: view(linked, await kanban()), blueprint: linked.blueprint });
   }
-  const match = pathname.match(/^\/api\/origin\/projects\/([A-Za-z0-9_-]{1,100})(?:\/(link|delete))?$/);
+  const match = pathname.match(/^\/api\/origin\/projects\/([A-Za-z0-9_-]{1,100})(?:\/(link|delete|context))?$/);
   if (!match) return send(res, 404, { error: 'This Origin route does not exist.' });
   const [, originId, action] = match;
   if (!action && req.method === 'GET') {
@@ -341,6 +386,12 @@ export async function originRoute({ origin, board, req, res, pathname, jsonBody,
     }
     const saved = await origin.link(originId, { expectedRevision: input.expectedRevision, kanbanProjectId });
     return send(res, 200, { project: view(saved, await kanban()), revision: saved.revision });
+  }
+  if (action === 'context' && req.method === 'POST') {
+    const input = await body();
+    const { record, tasks } = await origin.context(originId, { expectedRevision: input.expectedRevision, itemIds: input.itemIds });
+    return send(res, 200, { revision: record.revision, tasks: tasks.map(({ itemId, key, title, body: text, instruction, context, included, omitted, warnings, tooLarge, error, hash, size }) =>
+      ({ itemId, key, title, body: text, instruction, context, included, omitted, warnings, tooLarge, error: error || '', hash, size })) });
   }
   if (action === 'delete' && req.method === 'POST') {
     const input = await body();

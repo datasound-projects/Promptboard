@@ -1707,6 +1707,16 @@ button.timeline-task:hover { text-decoration: underline; }
 .origin-task-group .origin-list { margin-top: 4px; }
 .origin-callout.warn { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; border-color: color-mix(in srgb, var(--og-warn) 40%, transparent); background: color-mix(in srgb, var(--og-warn) 8%, transparent); color: var(--text); }
 .origin-lost .origin-link-add { margin-left: auto; }
+/* Context included: what a task carries, before anything is sent */
+.origin-context { border: 1px solid var(--line); border-radius: 12px; background: var(--og-glass); }
+.origin-context > summary { padding: 10px 14px; color: var(--text); font-size: 13px; font-weight: 600; cursor: pointer; }
+.origin-context > :not(summary) { margin: 0 14px 12px; }
+.origin-context-warnings { padding-left: 18px; color: var(--og-warn); font-size: 12.5px; }
+.origin-context-names { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; font-size: 12.5px; }
+.origin-context-names dt { color: var(--subtle); }
+.origin-context-names dd { margin: 0; color: var(--text); }
+.origin-context-exact > summary { color: var(--muted); font-size: 12.5px; cursor: pointer; }
+.origin-context-text { max-height: 320px; margin: 8px 0 0; padding: 10px 12px; overflow: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--og-raised); color: var(--text); font: 12px/1.55 var(--mono, ui-monospace, monospace); white-space: pre-wrap; overflow-wrap: anywhere; }
 /* The component editor's own short task list */
 .origin-component-tasks { display: grid; gap: 4px; }
 .origin-mini-row { display: flex; align-items: center; gap: 10px; min-height: 36px; padding: 0 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--og-glass); color: var(--text); font-size: 13.5px; text-align: left; }

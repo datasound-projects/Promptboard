@@ -111,6 +111,7 @@ window.PromptboardOrigin = (() => {
     let section = pref(SECTION_KEY) || 'overview';
     let open = null, connectFrom = null, planSelection = new Set(), handoffBusy = false, lastHandoff = '';
     let views = { map: null, canvas: null }, mapLinkFrom = null, selectedLink = null, taskMilestone = '', taskView = pref(TASK_VIEW_KEY, 'layers');
+    let contextView = { itemId: null, open: false, loading: false, revision: 0, data: null, error: '' };
     let saveTimer = null, saving = null, changeCount = 0, savedCount = 0, saveState = 'saved', saveMessage = '', dirtySince = 0, shownSaveError = '';
     let baseResources = null, baseLoading = null, focusAfter = null, renderFrame = 0, uid = 0;
     const bp = () => record.blueprint;
@@ -204,7 +205,7 @@ window.PromptboardOrigin = (() => {
     async function load(id, { force = false } = {}) {
       if (!force && id === projectId && (record || loading)) return loading;
       projectId = id; record = null; loadError = null; open = null; connectFrom = null; planSelection = new Set(); lastHandoff = '';
-      views = { map: null, canvas: null }; mapLinkFrom = null; selectedLink = null; taskMilestone = '';
+      views = { map: null, canvas: null }; mapLinkFrom = null; selectedLink = null; taskMilestone = ''; contextView = { itemId: null, open: false, loading: false, revision: 0, data: null, error: '' };
       changeCount = savedCount = 0; dirtySince = 0; saveState = 'saved'; showNotice(''); showError('');
       renderDrawer();
       if (!id) { render(); return null; }
@@ -871,13 +872,15 @@ window.PromptboardOrigin = (() => {
         return {
           title: ['title', 'Task — e.g. Build the sign-in form'],
           essentials: [...lostNotes(item), field('What to do', area(item, 'description', 'What to build or change, in a few lines')),
-            field('Done when', area(item, 'acceptanceCriteria', 'One check per line — e.g. “A user can sign in with email”'), 'These checks travel with the task into Compose and Kanban.')],
+            field('Done when', area(item, 'acceptanceCriteria', 'One check per line — e.g. “A user can sign in with email”'), 'These checks travel with the task into Compose and Kanban.'),
+            contextPreview(item)],
           more: [group('Components', linkChips(item, 'componentIds', 'components', { empty: 'Add components in Architecture first.' }), 'The first component is where the task is listed.'),
             component ? el('p', 'origin-hint', `Layer: ${bp().layers.find(layer => layer.id === home.layerId)?.name || 'none'} — from ${component.name || 'its component'}.`)
               : bp().layers.length ? field('Layer', select(item, 'layerId', [['', 'Whole project'], ...bp().layers.map(layer => [layer.id, layer.name || 'Unnamed layer'])], { structure: true })) : null,
             group('Starts after', linkChips(item, 'dependsOn', 'items', { exclude: item.id, empty: 'No other tasks yet.' }), 'Only these prerequisites set the build order.'),
             field('Milestone', select(item, 'milestoneId', [['', 'Unscheduled'], ...bp().milestones.map(milestone => [milestone.id, milestone.title || 'Untitled milestone'])], { structure: true })),
             group('Requirements', linkChips(item, 'requirementIds', 'requirements')),
+            group('Also include', contextLinks(item), 'Decisions, research, planning answers or your own sections this task needs. Nothing else is added on its own.'),
             field('Workstream', input(item, 'workstream', { max: 80, placeholder: 'Backend, UI…' })),
             (() => { const box = el('div', 'origin-inline-actions'); box.append(button('Move up', () => moveTask(item, -1), 'origin-ghost'), button('Move down', () => moveTask(item, 1), 'origin-ghost')); return box; })(),
             item.handoff ? el('p', 'origin-hint', `Sent to Kanban on ${new Date(item.handoff.at).toLocaleString()}.`) : null].filter(Boolean),
@@ -1239,6 +1242,88 @@ window.PromptboardOrigin = (() => {
       const box = el('div', 'origin-field');
       box.append(renamable(el('span', 'origin-field-label', wording), { key: wordKey, value: wording, fallback, label: 'question', max: 500, onSave: value => setQuestion(wordKey, value, true) }),
         area(item, key, placeholder, { label: wording }));
+      return box;
+    }
+
+    // ---- Context included: built on the server from the saved blueprint, shown before anything is sent ----
+    const CONTEXT_NAMES = { components: 'Components', layers: 'Layer', technologies: 'Technologies', requirements: 'Requirements', items: 'Starts after', decisions: 'Decisions',
+      dependencies: 'Dependencies', areas: 'Planning answers', milestones: 'Milestone', risks: 'Risks', assumptions: 'Assumptions', sources: 'Evidence', customSections: 'Your sections' };
+    function contextPreview(item) {
+      const box = el('details', 'origin-context'), mine = contextView.itemId === item.id;
+      box.open = mine && contextView.open;
+      box.append(el('summary', '', 'Context included'));
+      box.addEventListener('toggle', () => {
+        if (box.open === (contextView.itemId === item.id && contextView.open)) return;
+        contextView = { ...contextView, itemId: item.id, open: box.open };
+        if (box.open && (!mine || !contextView.data || contextView.revision !== record.revision)) void loadContext(item.id);
+      });
+      if (!box.open) return box;
+      if (contextView.loading) { box.append(el('p', 'origin-hint', 'Building the context from the saved blueprint…')); return box; }
+      if (contextView.error) { box.append(el('p', 'origin-inline-error', contextView.error), button('Try again', () => void loadContext(item.id), 'origin-link')); return box; }
+      const data = contextView.data;
+      if (!data) return box;
+      if (contextView.revision !== record.revision || changeCount !== savedCount) {
+        const stale = el('p', 'origin-hint'); stale.append('Changed since this preview. ', button('Refresh', () => void loadContext(item.id), 'origin-link')); box.append(stale);
+      }
+      if (data.tooLarge) box.append(el('p', 'origin-callout warn', data.error));
+      if (data.warnings.length) { const list = el('ul', 'origin-context-warnings'); for (const warning of data.warnings) list.append(el('li', '', warning)); box.append(list); }
+      const groups = new Map();
+      for (const entry of data.included) groups.set(entry.collection, [...(groups.get(entry.collection) || []), entry.name]);
+      const names = el('dl', 'origin-context-names');
+      for (const [collection, list] of groups) names.append(el('dt', '', CONTEXT_NAMES[collection] || collection), el('dd', '', list.join(', ')));
+      box.append(groups.size ? names : el('p', 'origin-hint', 'Only the project’s purpose, scope and constraints. Link components or requirements to add more.'));
+      if (data.omitted.length) box.append(el('p', 'origin-hint', `Left out for size: ${data.omitted.join(', ')}.`));
+      if (!data.tooLarge) {
+        const exact = el('details', 'origin-context-exact'); exact.append(el('summary', '', 'Exact text'), el('pre', 'origin-context-text', data.body));
+        box.append(exact);
+      }
+      return box;
+    }
+    async function loadContext(itemId) {
+      contextView = { ...contextView, itemId, open: true, loading: true, error: '' };
+      if (open?.id === itemId) renderDrawer();
+      const ready = await flush();
+      const { response, data } = ready ? await app.api(`/api/origin/projects/${encodeURIComponent(projectId)}/context`, { method: 'POST', body: { expectedRevision: record.revision, itemIds: [itemId] }, timeoutMs: 30000 })
+        .catch(() => ({ response: { ok: false }, data: {} })) : { response: { ok: false }, data: { error: 'Save the blueprint first, then open the context again.' } };
+      if (contextView.itemId !== itemId) return;
+      contextView = response.ok ? { ...contextView, loading: false, revision: data.revision, data: data.tasks[0], error: '' }
+        : { ...contextView, loading: false, data: null, error: typeof data.error === 'string' ? data.error : 'The context could not be built.' };
+      if (open?.id === itemId) renderDrawer();
+    }
+    // Links beyond the task's own components and requirements; nothing else is guessed.
+    function contextLinks(item) {
+      item.contextIds ||= [];
+      const blueprint = bp(), box = el('div', 'origin-links');
+      const nameOf = ({ collection, id }) => {
+        if (collection === 'customSections') return M.sectionTitle(blueprint, id);
+        if (collection === 'areas') { const area = blueprint.areas.find(entry => entry.id === id); return area ? `${topicName(area.section, area.area)}: ${area.title}` : ''; }
+        return M.itemName(blueprint, collection, id);
+      };
+      for (const ref of item.contextIds) {
+        const name = nameOf(ref) || 'Removed record';
+        const tag = el('span', 'origin-chip origin-link-chip'); tag.append(el('span', '', name));
+        const remove = button('', () => { item.contextIds = item.contextIds.filter(entry => entry !== ref); changed({ drawer: true }); }, 'origin-chip-x');
+        remove.setAttribute('aria-label', `Unlink ${name}`); remove.dataset.focusKey = 'context:add'; remove.append(icon(ICON.close, 12));
+        tag.append(remove); box.append(tag);
+      }
+      if (item.contextIds.length >= 100) return box;
+      const pick = el('select', 'origin-link-add'); pick.setAttribute('aria-label', 'Also include'); pick.dataset.focusKey = 'context:add';
+      pick.append(Object.assign(el('option', '', item.contextIds.length ? '＋ Add' : '＋ Link…'), { value: '' }));
+      const taken = new Set(item.contextIds.map(ref => `${ref.collection}:${ref.id}`));
+      for (const collection of M.CONTEXT_COLLECTIONS) {
+        const records = collection === 'areas' ? blueprint.areas.filter(entry => entry.title.trim()) : collection === 'technologies' ? blueprint.technologies.filter(entry => entry.status !== 'rejected') : blueprint[collection];
+        const options = records.filter(entry => !taken.has(`${collection}:${entry.id}`));
+        if (!options.length) continue;
+        const group2 = el('optgroup'); group2.label = CONTEXT_NAMES[collection];
+        group2.append(...options.map(entry => Object.assign(el('option', '', nameOf({ collection, id: entry.id }) || 'Untitled'), { value: `${collection}:${entry.id}` })));
+        pick.append(group2);
+      }
+      pick.addEventListener('change', () => {
+        if (!pick.value) return;
+        const [collection, id] = [pick.value.slice(0, pick.value.indexOf(':')), pick.value.slice(pick.value.indexOf(':') + 1)];
+        item.contextIds = [...item.contextIds, { collection, id }]; changed({ drawer: true });
+      });
+      box.append(pick);
       return box;
     }
 
@@ -1659,10 +1744,14 @@ window.PromptboardOrigin = (() => {
         wrap.style.height = `${Math.max(320, sizing.height + event.clientY - sizing.y)}px`;
         wrap.classList.add('sized');
       });
+      // The size comes from where the pointer is released: the last move event may have been coalesced away.
       grip.addEventListener('pointerup', event => {
         if (!sizing || event.pointerId !== sizing.id) return;
         const done = sizing; sizing = null;
-        if (done.moved) { const rect = wrap.getBoundingClientRect(); setSize(rect.width, rect.height); }
+        if (!done.moved && event.clientX === done.x && event.clientY === done.y) return;
+        wrap.style.width = `${Math.max(480, done.width + event.clientX - done.x)}px`;
+        wrap.style.height = `${Math.max(320, done.height + event.clientY - done.y)}px`;
+        const rect = wrap.getBoundingClientRect(); setSize(rect.width, rect.height);
       });
       grip.addEventListener('pointercancel', () => { sizing = null; renderMain(); });
       grip.addEventListener('keydown', event => {

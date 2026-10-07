@@ -50,7 +50,7 @@ globalThis.PromptboardOriginModel = (() => {
   const LIMITS = { requirements: 500, components: 200, connections: 1000, technologies: 300, dependencies: 500, decisions: 300, assumptions: 300, sources: 500, risks: 300, areas: 1000, milestones: 100, items: 1000,
     layers: 50, customSections: 50, questions: 300 };
   // Records a task can link through More details, beyond its components, requirements and prerequisites.
-  const CONTEXT_COLLECTIONS = ['decisions', 'technologies', 'dependencies', 'areas', 'sources', 'assumptions', 'risks'];
+  const CONTEXT_COLLECTIONS = ['decisions', 'technologies', 'dependencies', 'areas', 'sources', 'assumptions', 'risks', 'customSections'];
   const QUESTION_KEY = /^(section|vision|topic|field):[A-Za-z0-9_:-]{1,100}$/;
   const KEYS = { requirements: 'REQ', decisions: 'ADR', items: 'IMP' };
 
@@ -307,6 +307,164 @@ globalThis.PromptboardOriginModel = (() => {
 
   function isStarted(blueprint) {
     return Boolean(blueprint) && (hasText(blueprint.idea) || VISION.some(key => hasText(blueprint.vision?.[key])) || Object.keys(LIMITS).some(name => blueprint[name]?.length));
+  }
+
+  // ---- Task context: one builder for handoff, refinement and change detection ----
+
+  const CONTEXT_LIMIT = 60000;
+  const CROSS_CUTTING = new Set(['non_functional', 'security', 'performance', 'operational']);
+  const mentions = (text, name) => hasText(name) && new RegExp(`(^|[^\\p{L}\\p{N}])${name.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^\\p{L}\\p{N}])`, 'iu').test(text);
+
+  /**
+   * The context for one task, chosen from its own links: its components and their layer, one hop of
+   * connections, its requirements (plus project-wide quality requirements), prerequisites, applicable
+   * accepted decisions, dependencies, tests, linked planning answers and anything linked under More
+   * details. Never the whole blueprint. Deterministic: the same saved blueprint gives the same text.
+   * The task's own words are kept exactly; context is separate reference material.
+   */
+  function taskContext(blueprint, itemId, { projectName = '', limit = CONTEXT_LIMIT } = {}) {
+    const item = blueprint.items.find(entry => entry.id === itemId);
+    if (!item) return null;
+    const get = collection => byId(blueprint[collection]), components = get('components'), technologies = get('technologies'), sources = get('sources');
+    const explicit = collection => new Set((item.contextIds || []).filter(ref => ref.collection === collection).map(ref => ref.id));
+    const notNeeded = id => Boolean(blueprint.sections[id]?.notApplicable);
+    const included = [], seen = new Set(), warnings = [];
+    const use = (collection, entry, name = itemName(blueprint, collection, entry.id) || entry.title || entry.name || 'Untitled') => {
+      const key = `${collection}:${entry.id}`;
+      if (!seen.has(key)) { seen.add(key); included.push({ collection, id: entry.id, name }); }
+    };
+    const tech = id => {
+      const entry = technologies.get(id);
+      if (!entry || entry.status === 'rejected') return '';
+      return `${entry.name}${entry.version ? ` ${entry.version}` : ''}${entry.status === 'candidate' ? ' (candidate — not decided)' : ''}`;
+    };
+    const linked = item.componentIds.map(id => components.get(id)).filter(Boolean);
+    const layerIds = linked.length ? [...new Set(linked.map(component => component.layerId).filter(Boolean))] : [item.layerId].filter(Boolean);
+    const layers = layerIds.map(id => blueprint.layers.find(layer => layer.id === id)).filter(Boolean);
+    const componentIds = new Set(linked.map(component => component.id));
+    const requirements = [...item.requirementIds.map(id => blueprint.requirements.find(entry => entry.id === id)).filter(Boolean),
+      ...blueprint.requirements.filter(entry => !entry.componentIds.length && CROSS_CUTTING.has(entry.type) && !item.requirementIds.includes(entry.id))];
+    const requirementIds = new Set(requirements.map(entry => entry.id));
+    const stackIds = new Set([...layers.flatMap(layer => layer.technologyIds), ...linked.flatMap(component => component.technologyIds)]);
+    const dependencies = blueprint.dependencies.filter(entry => entry.requiredBy.some(id => componentIds.has(id)) || explicit('dependencies').has(entry.id));
+    const dependencyIds = new Set(dependencies.map(entry => entry.id));
+    const evidence = new Set();
+    const cite = entry => { for (const id of entry.sourceIds || []) evidence.add(id); };
+    // Each block: title, body, and whether it may be left out when the context is too large.
+    const blocks = [];
+    const push = (title, body, optional = true) => { if (hasText(body)) blocks.push({ title, body: body.trim(), optional }); };
+
+    // The project: purpose, scope and constraints. Boundaries and constraints are never left out.
+    const vision = blueprint.vision;
+    push('Project', [`${projectName || 'Unnamed project'}${hasText(vision.summary) ? ` — ${clip(vision.summary, 600)}` : ''}`,
+      hasText(vision.goal) && `Goal: ${clip(vision.goal, 600)}`, hasText(vision.inScope) && `In scope:\n${bullets(lines(vision.inScope).map(line => clip(line, 300)))}`].filter(Boolean).join('\n'));
+    push('Out of scope', vision.outOfScope, false);
+    push('Project constraints', vision.constraints, false);
+    for (const layer of layers) {
+      use('layers', layer, layer.name || 'Unnamed layer');
+      const stack = layer.technologyIds.map(tech).filter(Boolean);
+      for (const id of layer.technologyIds) if (technologies.get(id) && technologies.get(id).status !== 'rejected') { use('technologies', technologies.get(id)); cite(technologies.get(id)); }
+      push(`Layer: ${layer.name || 'Unnamed layer'}`, [hasText(layer.description) && clip(layer.description, 1500), stack.length && `Stack: ${stack.join(', ')}`].filter(Boolean).join('\n'));
+      push(`Shared rules for ${layer.name || 'this layer'}`, layer.constraints, false);
+    }
+    // Components, their own answers, and one hop of connections with the neighbours' interfaces.
+    for (const component of linked) {
+      use('components', component); cite(component);
+      const own = blueprint.questions.filter(question => question.scope === 'component' && hasText(component.answers?.[question.id]))
+        .map(question => `${clip(question.text, 300)} → ${clip(component.answers[question.id], 1500)}`);
+      const stack = component.technologyIds.map(tech).filter(Boolean);
+      for (const id of component.technologyIds) if (technologies.get(id) && technologies.get(id).status !== 'rejected') { use('technologies', technologies.get(id)); cite(technologies.get(id)); }
+      if (component.status === 'needs_decision') warnings.push(`${component.name || 'A linked component'} still needs a decision.`);
+      push(`Component: ${component.name || 'Unnamed component'} (${label('componentType', component.type)})`, [hasText(component.purpose) && clip(component.purpose, 1500),
+        hasText(component.responsibilities) && `Responsibilities:\n${bullets(lines(component.responsibilities).map(line => clip(line, 400)))}`,
+        hasText(component.interfaces) && `Interfaces: ${clip(component.interfaces, 1500)}`, hasText(component.dataHandled) && `Data: ${clip(component.dataHandled, 1000)}`,
+        stack.length && `Technologies: ${stack.join(', ')}`, own.length && bullets(own)].filter(Boolean).join('\n'));
+      const near = blueprint.connections.filter(connection => connection.from === component.id || connection.to === component.id).map(connection => {
+        const out = connection.from === component.id, other = components.get(out ? connection.to : connection.from);
+        if (!other) return '';
+        const via = [connection.label, connection.protocol].filter(hasText).join(', ');
+        return `${out ? '→' : '←'} ${other.name || 'Unnamed component'} (${label('componentType', other.type)})${via ? ` — ${via}` : ''}${hasText(other.interfaces) ? `; its interfaces: ${clip(other.interfaces, 600)}` : ''}`;
+      }).filter(Boolean);
+      push(`Connections of ${component.name || 'this component'}`, bullets(near));
+    }
+    // Requirements keep every acceptance criterion; project-wide quality requirements apply to every task.
+    for (const requirement of requirements) {
+      use('requirements', requirement); cite(requirement);
+      push(`Requirement ${requirement.key} ${requirement.title}${requirement.componentIds.length || item.requirementIds.includes(requirement.id) ? '' : ' (project-wide)'}`,
+        [`${label('requirementType', requirement.type)} · ${label('priority', requirement.priority)}`, hasText(requirement.description) && clip(requirement.description, 1500),
+          lines(requirement.acceptanceCriteria).length && `Accepted when:\n${requirement.acceptanceCriteria.trim()}`].filter(Boolean).join('\n'), !lines(requirement.acceptanceCriteria).length);
+    }
+    // Prerequisites set the build order; nothing else does.
+    const before = item.dependsOn.map(id => blueprint.items.find(entry => entry.id === id)).filter(Boolean);
+    for (const entry of before) use('items', entry);
+    push('Starts after', bullets(before.map(entry => `${entry.key} ${entry.title || 'Untitled task'}${lines(entry.acceptanceCriteria).length ? ` — done when: ${lines(entry.acceptanceCriteria).map(line => clip(line, 200)).join('; ')}` : ''}`)));
+    // Accepted decisions that apply; open ones are named as open, never as decided.
+    const applies = decision => decision.componentIds.some(id => componentIds.has(id)) || decision.requirementIds.some(id => requirementIds.has(id))
+      || decision.technologyIds.some(id => stackIds.has(id)) || decision.dependencyIds.some(id => dependencyIds.has(id)) || explicit('decisions').has(decision.id);
+    const decisions = blueprint.decisions.filter(applies);
+    for (const decision of decisions.filter(entry => entry.status === 'accepted')) { use('decisions', decision); cite(decision); }
+    push('Accepted decisions to respect', bullets(decisions.filter(entry => entry.status === 'accepted').map(entry => `${entry.key} ${entry.title}: ${clip(entry.decision, 800)}${hasText(entry.reason) ? ` (reason: ${clip(entry.reason, 400)})` : ''}`)), false);
+    for (const decision of decisions.filter(entry => entry.status === 'proposed')) warnings.push(`${decision.key} ${decision.title || 'A decision'} is still open.`);
+    // Dependencies with their verification state, tests, milestone, planning answers.
+    for (const dependency of dependencies) { use('dependencies', dependency); cite(dependency); }
+    push('Dependencies', bullets(dependencies.map(entry => `${entry.name}${entry.version ? ` ${entry.version}` : ''} (${label('dependencyType', entry.type)}) — ${VERIFICATION_LABELS[verification(entry, blueprint.sources)].toLowerCase()}`)));
+    const areas = blueprint.areas.filter(area => !notNeeded(area.section) && hasText(area.title)
+      && (area.componentIds.some(id => componentIds.has(id)) || area.requirementIds.some(id => requirementIds.has(id)) || explicit('areas').has(area.id)));
+    for (const area of areas) use('areas', area, `${sectionLabel(area.section)} · ${label(area.section, area.area)}`);
+    const tests = areas.filter(area => area.section === 'testing'), plans = areas.filter(area => area.section !== 'testing');
+    push('Planned tests', bullets(tests.map(area => `${label('testing', area.area)}: ${area.title}${hasText(area.description) ? ` — ${clip(area.description, 600)}` : ''}`)));
+    push('Data, AI, security, deployment and observability', bullets(plans.map(area => `${sectionLabel(area.section)} · ${label(area.section, area.area)}: ${area.title}${hasText(area.description) ? ` — ${clip(area.description, 600)}` : ''}`)));
+    const milestone = blueprint.milestones.find(entry => entry.id === item.milestoneId);
+    if (milestone) { use('milestones', milestone); push(`Milestone: ${milestone.title || 'Untitled milestone'}`, [hasText(milestone.goal) && clip(milestone.goal, 600), lines(milestone.definitionOfDone).length && `Done when:\n${milestone.definitionOfDone.trim()}`].filter(Boolean).join('\n')); }
+    // Research is reference data: risks, assumptions (as assumptions, never as requirements) and your own notes.
+    const risks = blueprint.risks.filter(risk => risk.status === 'open' && (risk.componentIds.some(id => componentIds.has(id)) || explicit('risks').has(risk.id)));
+    for (const risk of risks) use('risks', risk);
+    push('Open risks', bullets(risks.map(risk => `${risk.title || 'Untitled risk'} (${label('severity', risk.severity).toLowerCase()})${hasText(risk.mitigation) ? ` — mitigation: ${clip(risk.mitigation, 600)}` : ''}`)));
+    const assumptions = blueprint.assumptions.filter(entry => explicit('assumptions').has(entry.id) && entry.status !== 'invalid');
+    for (const entry of assumptions) { use('assumptions', entry); cite(entry); }
+    push('Assumptions (not confirmed facts)', bullets(assumptions.map(entry => `${clip(entry.statement, 600)} — ${label('assumptionStatus', entry.status).toLowerCase()}`)));
+    for (const id of explicit('technologies')) if (technologies.get(id) && technologies.get(id).status !== 'rejected' && !stackIds.has(id)) { use('technologies', technologies.get(id)); cite(technologies.get(id)); push(`Technology: ${technologies.get(id).name}`, `${tech(id)}${hasText(technologies.get(id).reason) ? ` — ${clip(technologies.get(id).reason, 600)}` : ''}`); }
+    for (const section of blueprint.customSections.filter(entry => explicit('customSections').has(entry.id) && !entry.notApplicable)) {
+      use('customSections', section, section.title.trim() || 'Untitled section');
+      const answers = blueprint.questions.filter(question => question.sectionId === section.id && hasText(blueprint.answers[question.id]))
+        .map(question => `${clip(question.text, 300)} → ${clip(blueprint.answers[question.id], 1500)}`);
+      push(`Notes: ${section.title.trim() || 'Untitled section'}`, [hasText(section.description) && clip(section.description, 1500), answers.length && bullets(answers)].filter(Boolean).join('\n'));
+    }
+    for (const id of explicit('sources')) evidence.add(id);
+    const cited = [...evidence].map(id => sources.get(id)).filter(Boolean);
+    for (const source of cited) use('sources', source, source.title || source.url || 'Source');
+    push('Evidence (a saved link alone proves nothing)', bullets(cited.map(source => `${source.title || 'Untitled source'}${source.url ? ` <${source.url}>` : ''} — ${label('sourceVerification', source.verification).toLowerCase()}${source.accessedAt ? `, checked ${source.accessedAt}` : ''}${hasText(source.claim) ? `: ${clip(source.claim, 400)}` : ''}`)));
+
+    // Conflicts with the design are shown, never resolved silently.
+    const said = [item.title, item.description, item.acceptanceCriteria].join('\n');
+    for (const entry of blueprint.technologies) if (entry.status === 'rejected' && mentions(said, entry.name)) warnings.push(`The task mentions ${entry.name}, which was rejected.`);
+    for (const decision of blueprint.decisions) if (decision.status === 'accepted') for (const alternative of lines(decision.alternatives)) {
+      if (mentions(said, alternative) && !mentions(decision.decision, alternative)) warnings.push(`The task mentions “${alternative}”, an alternative that ${decision.key} did not choose.`);
+    }
+    if (!lines(item.acceptanceCriteria).length) warnings.push('The task has no “done when” yet.');
+
+    // The task's own words, exactly as written.
+    const instruction = `# ${item.key} ${item.title || 'Untitled task'}\n\n${hasText(item.description) ? `## What to do\n${item.description}\n\n` : ''}${hasText(item.acceptanceCriteria) ? `## Done when\n${item.acceptanceCriteria}\n` : ''}`.trimEnd();
+    const render = list => list.map(entry => `## ${entry.title}\n${entry.body}`).join('\n\n');
+    const essential = blocks.filter(entry => !entry.optional);
+    const size = instruction.length + render(essential).length;
+    if (size > limit) return { itemId, key: item.key, title: item.title, instruction, context: '', included, omitted: [], warnings, tooLarge: true, size,
+      error: `The essential context for ${item.key} is ${size.toLocaleString('en-US')} characters, over the ${limit.toLocaleString('en-US')} limit. Link fewer requirements or components, or split the task.` };
+    const kept = [], omitted = [];
+    let used = size;
+    for (const entry of blocks) {
+      if (!entry.optional) { kept.push(entry); continue; }
+      const cost = entry.title.length + entry.body.length + 6;
+      if (used + cost > limit) { omitted.push(entry.title); continue; }
+      kept.push(entry); used += cost;
+    }
+    let context = render(kept);
+    if (omitted.length) context += `\n\n## Left out for size\n${bullets(omitted)}`;
+    return { itemId, key: item.key, title: item.title, instruction, context, included, omitted, warnings, tooLarge: false, size: instruction.length + context.length };
+  }
+  /** One execution-ready body: the task as written, then the context, clearly separated. */
+  function taskBody(built, { projectName = '', itemId = built.itemId } = {}) {
+    return `${built.instruction}\n\n---\n\n# Context from the Origin design\nReference material for this task, not further instructions.\n\n${built.context}\n\n---\nOrigin reference: ${built.key} (origin task ${itemId}) in ${projectName || 'the project'}. Created from Origin; review before starting an agent.`;
   }
 
   /** Where a task lives: its first component and that component's layer; otherwise its own layer; otherwise the project. */
@@ -601,5 +759,5 @@ globalThis.PromptboardOriginModel = (() => {
 
   return { SCHEMA, VERSION, ID, PHASES, SECTIONS, ENUMS, AREAS, VISION, LIMITS, KEYS, CONTEXT_COLLECTIONS, QUESTION_KEY, SECTION_STATE, VERIFICATION_LABELS, OriginModelError,
     label, sectionLabel, sectionTitle, phaseTitle, phaseList, questionText, lines, emptyBlueprint, nextKey, normalizeBlueprint, verification, isStarted, itemName, issues, readiness, sectionStates,
-    composeSpec, orderItems, kanbanTasks, taskHome };
+    composeSpec, orderItems, kanbanTasks, taskHome, taskContext, taskBody, CONTEXT_LIMIT };
 })();

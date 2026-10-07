@@ -670,3 +670,33 @@ test('Origin Tasks: layers, component task lists, grouping, filters, order, and 
   assert.match(await groupText('Project-wide'), /Old card[\s\S]*Card removed/);
   assert.deepEqual(browser.consoleMessages.filter(message => message.startsWith('EXCEPTION')), []);
 });
+
+test('Origin shows the context a task carries, from the saved blueprint, and adds only what you link', { skip: !await findChrome(), timeout: 90000 }, async t => {
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
+  const store = new OriginStore(app.board.store.dir);
+  const created = await store.create({ name: 'Notes' });
+  await store.write(created.id, { expectedRevision: 1, blueprint: { idea: 'Notes', vision: { summary: 'Shared notes', constraints: 'EU hosting only' },
+    components: [{ id: 'api', name: 'API', type: 'api', purpose: 'Rules' }],
+    requirements: [{ id: 'r1', key: 'REQ-001', title: 'Publish', acceptanceCriteria: 'A maintainer can publish', componentIds: ['api'] }],
+    decisions: [{ id: 'd1', key: 'ADR-001', title: 'Logging', decision: 'JSON lines', status: 'accepted' }],
+    items: [{ id: 'i1', key: 'IMP-001', title: 'Publish endpoint', description: 'Add POST /notes.', acceptanceCriteria: 'Returns 201', componentIds: ['api'], requirementIds: ['r1'] }], sequence: { items: 1 } } });
+  const browser = await launch({ width: 1280, height: 900 }); assert.ok(browser); t.after(() => browser.close());
+  const { ev, wait, saved, section, open, link } = pageTools(browser);
+  await browser.goto(`${app.url}/#/origin`);
+  await wait(`document.querySelector('.origin-map')`, 'map');
+  await section('plan'); await open('Publish endpoint');
+  await ev(`document.querySelector('#origin-drawer .origin-context').open = true;`);
+  await wait(`document.querySelector('#origin-drawer .origin-context-names')`, 'context summary');
+  const names = () => ev(`return Object.fromEntries([...document.querySelectorAll('#origin-drawer .origin-context-names dt')].map(dt => [dt.textContent, dt.nextElementSibling.textContent]));`);
+  assert.deepEqual(await names(), { Components: 'API', Requirements: 'REQ-001 Publish' });
+  assert.match(await ev(`return document.querySelector('#origin-drawer .origin-context-text').textContent;`), /^# IMP-001 Publish endpoint\n\n## What to do\nAdd POST \/notes\.[\s\S]*## Project constraints\nEU hosting only/);
+  assert.doesNotMatch(await ev(`return document.querySelector('#origin-drawer .origin-context-text').textContent;`), /ADR-001/, 'An unrelated decision is not guessed in.');
+  // Linking a decision under More details adds exactly that; the preview says when it is out of date.
+  await link('Also include', 'ADR-001 Logging');
+  await saved();
+  await wait(`document.querySelector('#origin-drawer .origin-context')?.textContent.includes('Changed since this preview')`, 'stale preview noticed');
+  await ev(`[...document.querySelectorAll('#origin-drawer .origin-context button')].find(b => b.textContent === 'Refresh').click();`);
+  await wait(`document.querySelector('#origin-drawer .origin-context-names')?.textContent.includes('ADR-001 Logging')`, 'refreshed with the linked decision');
+  assert.deepEqual((await blueprintFile(app, created.id)).blueprint.items[0].contextIds, [{ collection: 'decisions', id: 'd1' }]);
+  assert.deepEqual(browser.consoleMessages.filter(message => message.startsWith('EXCEPTION')), []);
+});

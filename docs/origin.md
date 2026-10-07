@@ -84,6 +84,20 @@ Statuses describe stored project state. Origin has no confidence percentages or 
 - **Layers** (in Architecture) are optional groups such as Frontend, Backend or Data. Each has a stack (selected technologies; candidates stay marked as candidates) and shared rules. Pick a component's layer in its editor; deleting a layer keeps its components and tasks.
 - The architecture canvas supports zoom, Fit and panning like the map, keeps the view still while you move a block, and supports click to edit, drag or arrow keys to move, **Connect** (choose the starting block, then the block it connects to) and **Arrange** by dependency level. Connections are named in the block's editor. Positions are stored on the components; the records stay the source of truth.
 
+## Task context
+
+One builder (`taskContext` in `public/origin-model.js`, served by `POST /api/origin/projects/:id/context`) decides what a task carries, for the preview, for Kanban and for Compose. It is local and deterministic; no model is called to build, preview or send it.
+
+- The task's own words come first, exactly as written: title, **What to do**, **Done when**. Context follows under its own heading as reference material, not further instructions.
+- Always included: the project's purpose, in-scope list, **out of scope** and **constraints**.
+- From the task's links: its components (purpose, responsibilities, interfaces, data, technologies and their answers to your component questions), one hop of their connections with the neighbours' interfaces, the layer of each component (or the task's own layer) with its stack and shared rules, linked requirements with every acceptance criterion, prerequisites (**Starts after**), accepted decisions that apply to those components, requirements, technologies or dependencies, dependencies with their verification state, linked testing and planning answers (not from sections marked not needed), open risks on those components, the milestone's definition of done, and the evidence behind included records with its verification state.
+- Project-wide quality requirements (non-functional, security, performance, operational, linked to no component) apply to every task. Everything else must be linked; **Also include** under More details adds decisions, technologies, dependencies, planning answers, sources, assumptions, risks or your own sections. Nothing is guessed.
+- Selected technologies are named; candidates are marked “candidate — not decided”; rejected ones are left out. Assumptions are labelled as assumptions; open decisions and conflicts (the task mentions a rejected technology, or an alternative an accepted decision did not choose) are shown as warnings, never resolved.
+- Records are deduplicated by ID and only one hop is followed. Positions and labels never change the context. Recognizable secrets (keys, tokens, passwords, private keys, credentials in URLs) are removed from the context part; if the task's own text looks like it holds a secret, a warning asks you to remove it.
+- The context is capped at 60,000 characters. Optional parts are dropped first and named under “Left out for size”; acceptance criteria, constraints, out of scope, shared rules and accepted decisions are never cut. If those alone exceed the cap, the task cannot be sent and the message says how to narrow it.
+- **Context included** in the task editor shows the readable names, warnings and the exact text, built from the saved revision; it says when the preview is out of date.
+- Each built context has a hash over the instruction and the context only, so it changes when what the task would receive changes.
+
 ## Handoffs
 
 - **Send to Compose** (requirements, components, decisions, milestones and tasks) fills the Compose request with that item, its direct relationships, accepted decisions that apply to it, its evidence and the project's constraints and out-of-scope list. Compose waits for you to review and choose Generate. An existing Compose draft is replaced only after a second, explicit confirmation.

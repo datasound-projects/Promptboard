@@ -189,6 +189,57 @@ test('tasks live with their first component, its layer, their own layer or the p
   assert.deepEqual(Model.readiness(clean).rows.find(row => row.id === 'plan'), { id: 'plan', label: 'Tasks', value: '4 tasks · 0 in Kanban', section: 'plan' });
 });
 
+function contextSample() {
+  const blueprint = sample();
+  Object.assign(blueprint.vision, { outOfScope: 'Mobile apps', constraints: 'EU hosting only' });
+  blueprint.technologies.push({ id: 't3', name: 'MongoDB', status: 'rejected' }, { id: 't4', name: 'Valkey', status: 'candidate' });
+  blueprint.layers = [{ id: 'L1', name: 'Backend', technologyIds: ['t1', 't3', 't4'], constraints: 'Validate every input' }];
+  blueprint.components[1].layerId = 'L1';
+  blueprint.components[1].interfaces = 'REST /notes';
+  blueprint.requirements.push({ id: 'r3', key: 'REQ-003', title: 'Fast pages', type: 'performance', acceptanceCriteria: 'p95 under 200 ms' });
+  blueprint.decisions.push({ id: 'd2', key: 'ADR-002', title: 'Cache', status: 'proposed', componentIds: ['api'] }, { id: 'd3', key: 'ADR-003', title: 'Logging', decision: 'JSON lines', status: 'accepted' });
+  blueprint.areas = [{ id: 'a1', section: 'security', area: 'secrets', title: 'Vault for keys', componentIds: ['api'] }, { id: 'a2', section: 'deployment', area: 'hosting', title: 'Fly.io', componentIds: ['api'] },
+    { id: 'a3', section: 'observability', area: 'logs', title: 'Not linked' }];
+  blueprint.sections = { deployment: { notApplicable: true } };
+  blueprint.customSections = [{ id: 'cs1', phase: 'design', title: 'Accessibility', description: 'WCAG AA' }];
+  blueprint.questions = [{ id: 'q1', scope: 'section', sectionId: 'cs1', text: 'Screen readers?' }];
+  blueprint.answers = { q1: 'VoiceOver' };
+  blueprint.items[0].description = 'Add POST /notes.\n  Keep it small — not MongoDB.';
+  blueprint.items.push({ id: 'i3', key: 'IMP-003', title: 'Request logging', layerId: 'L1' });
+  return blueprint;
+}
+
+test('task context is chosen from the task’s own links, keeps its words exactly, and never sends the whole blueprint', () => {
+  const blueprint = Model.normalizeBlueprint(contextSample()).blueprint;
+  const built = Model.taskContext(blueprint, 'i2', { projectName: 'Notes' });
+  assert.equal(built.instruction, '# IMP-002 API\n\n## What to do\nAdd POST /notes.\n  Keep it small — not MongoDB.\n\n## Done when\nPublishing works', 'The task text is kept exactly.');
+  for (const expected of [/## Out of scope\nMobile apps/, /## Project constraints\nEU hosting only/, /Stack: Node\.js 22, Valkey \(candidate — not decided\)/, /## Shared rules for Backend\nValidate every input/,
+    /## Connections of API\n- ← Web Client \(Client\) — calls, HTTPS\n- → PostgreSQL \(Database\) — stores, SQL/, /Accepted when:\n- A maintainer can publish\n- Readers see it/,
+    /## Requirement REQ-003 Fast pages \(project-wide\)/, /## Starts after\n- IMP-001 Repository structure/, /ADR-001 Database: PostgreSQL/, /Security · Secrets: Vault for keys/, /Node\.js releases <https:\/\/nodejs\.org[^>]*> — verified/]) {
+    assert.match(built.context, expected);
+  }
+  for (const absent of [/MongoDB \(/, /REQ-002/, /Fly\.io/, /Not linked/, /ADR-003/, /Accessibility/, /Repository structure — done when/]) assert.doesNotMatch(built.context, absent);
+  assert.deepEqual(built.warnings, ['ADR-002 Cache is still open.', 'The task mentions MongoDB, which was rejected.', 'The task mentions “MongoDB”, an alternative that ADR-001 did not choose.']);
+  // Explicit links add exactly what was linked; a layer-level task gets its layer without components.
+  blueprint.items.find(item => item.id === 'i2').contextIds = [{ collection: 'customSections', id: 'cs1' }, { collection: 'decisions', id: 'd3' }];
+  const linked = Model.taskContext(blueprint, 'i2', { projectName: 'Notes' });
+  assert.match(linked.context, /## Notes: Accessibility\nWCAG AA\n- Screen readers\? → VoiceOver/);
+  assert.match(linked.context, /ADR-003 Logging: JSON lines/);
+  assert.match(Model.taskContext(blueprint, 'i3').context, /## Layer: Backend[\s\S]*## Shared rules for Backend/);
+  // Deterministic, and blind to layout.
+  blueprint.layout.map.nodes = { vision: { x: 10, y: 10 } }; blueprint.components[1].x = 999;
+  assert.equal(Model.taskContext(blueprint, 'i2', { projectName: 'Notes' }).context, linked.context);
+  // Too large: optional parts go first; essentials are never cut, and an oversized essential part is refused.
+  const small = Model.taskContext(blueprint, 'i2', { projectName: 'Notes', limit: 900 });
+  assert.equal(small.tooLarge, false);
+  assert.ok(small.omitted.length > 0 && /Left out for size/.test(small.context));
+  assert.match(small.context, /Accepted when:\n- A maintainer can publish/);
+  const tiny = Model.taskContext(blueprint, 'i2', { projectName: 'Notes', limit: 100 });
+  assert.equal(tiny.tooLarge, true);
+  assert.match(tiny.error, /over the 100 limit/);
+  assert.equal(Model.taskContext(blueprint, 'missing'), null);
+});
+
 test('Origin projects persist on their own, reject stale revisions and refuse unsafe IDs', async t => {
   const dir = await temp(t), store = new OriginStore(dir);
   assert.deepEqual(await store.list(), []);
@@ -366,4 +417,40 @@ test('Kanban handoff uses the existing task API: To Do cards, ordered, no agent 
   assert.deepEqual(saved.tasks.map(task => [task.title, task.column]), [['IMP-001 Repository structure', todo], ['IMP-002 API', todo]]);
   assert.match(saved.tasks[1].prompt, /origin item i2/);
   assert.equal(view.runs.length, 0, 'No agent starts.');
+});
+
+test('the context endpoint builds from the saved revision, removes secrets from context and saves immutable snapshots', async t => {
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
+  const store = new OriginStore(app.board.store.dir);
+  const created = await store.create({ name: 'Notes' });
+  const blueprint = contextSample();
+  blueprint.components[1].interfaces = 'REST /notes with api_key=sk-live-123456';
+  blueprint.items[0].acceptanceCriteria = 'Publishing works\npassword: hunter2';
+  const saved = await store.write(created.id, { expectedRevision: 1, blueprint });
+  const token = (await api(app, '/api/session')).data.token;
+  const stale = await api(app, `/api/origin/projects/${created.id}/context`, { method: 'POST', token, body: { expectedRevision: 1, itemIds: ['i2'] } });
+  assert.deepEqual([stale.status, stale.data.code], [409, 'ORIGIN_REVISION_CONFLICT'], 'Unsaved edits are never described.');
+  const { status, data } = await api(app, `/api/origin/projects/${created.id}/context`, { method: 'POST', token, body: { expectedRevision: saved.revision, itemIds: ['i2'] } });
+  assert.equal(status, 200);
+  const [task] = data.tasks;
+  assert.match(task.context, /api_key=\[redacted\]/);
+  assert.doesNotMatch(task.context, /sk-live-123456/);
+  assert.match(task.instruction, /password: hunter2/, 'The task’s own words are not rewritten.');
+  assert.ok(task.warnings.includes('The task text looks like it contains a secret. Remove it before sending.'));
+  assert.ok(task.body.startsWith(task.instruction) && task.body.includes('# Context from the Origin design') && /^[a-f0-9]{64}$/.test(task.hash));
+  assert.equal((await api(app, `/api/origin/projects/${created.id}/context`, { method: 'POST', token, body: { expectedRevision: saved.revision, itemIds: ['nope'] } })).status, 404);
+  // Layout changes keep the hash; content changes move it.
+  const record = await store.read(created.id);
+  record.blueprint.layout.map.nodes = { vision: { x: 5, y: 5 } };
+  const moved = await store.write(created.id, { expectedRevision: record.revision, blueprint: record.blueprint });
+  const again = (await api(app, `/api/origin/projects/${created.id}/context`, { method: 'POST', token, body: { expectedRevision: moved.revision, itemIds: ['i2'] } })).data.tasks[0];
+  assert.equal(again.hash, task.hash);
+  moved.blueprint.requirements[0].acceptanceCriteria += '\nAnd an RSS feed';
+  const edited = await store.write(created.id, { expectedRevision: moved.revision, blueprint: moved.blueprint });
+  assert.notEqual((await store.context(created.id, { expectedRevision: edited.revision, itemIds: ['i2'] })).tasks[0].hash, task.hash);
+  // A snapshot is written once and never overwritten.
+  const snap = await store.snapshot(created.id, { ...task, omitted: [] }, saved.revision);
+  const file = JSON.parse(await readFile(join(app.board.store.dir, 'origin', 'snapshots', created.id, `${snap.id}.json`), 'utf8'));
+  assert.deepEqual([file.schema, file.itemId, file.hash, file.instruction, file.revision], ['promptboard.origin-snapshot', 'i2', task.hash, task.instruction, saved.revision]);
+  assert.notEqual((await store.snapshot(created.id, { ...task, omitted: [] }, saved.revision)).id, snap.id);
 });
