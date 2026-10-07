@@ -1,120 +1,123 @@
 'use strict';
 
-// Origin: the project blueprint workspace. It owns its blueprint requests and receives explicit
-// application seams (authenticated API, projects, Compose prefill, Kanban task creation).
-// All user text is rendered as DOM text. Nothing here starts an agent, calls a model or fetches a source.
+// Origin: the project blueprint workspace. Every section is a short list you type into, one drawer edits
+// one record, and the Overview draws the whole blueprint as a mind map. Origin owns its blueprint requests
+// and reaches Compose and Kanban only through explicit application seams. All user text is rendered as DOM
+// text. Nothing here starts an agent, calls a model or fetches a source.
 window.PromptboardOrigin = (() => {
   const M = globalThis.PromptboardOriginModel;
-  const SECTION_KEY = 'promptboard.origin.section', INSPECTOR_KEY = 'promptboard.origin.inspector';
+  const SECTION_KEY = 'promptboard.origin.section', MORE_KEY = 'promptboard.origin.more';
   const SAVE_DELAY = 700, SAVE_MAX_WAIT = 3000;
-  const NODE_W = 176, NODE_H = 58, GAP_X = 300, GAP_Y = 100;
+  const NODE_W = 184, NODE_H = 58, GAP_X = 270, GAP_Y = 100;
+  // The sidebar reads top to bottom as the order of work.
+  const PHASES = [
+    ['define', 'Define', ['overview', 'vision', 'requirements']],
+    ['design', 'Design', ['architecture', 'technology', 'dependencies', 'data', 'ai']],
+    ['operate', 'Operate', ['security', 'testing', 'deployment', 'observability']],
+    ['decide', 'Decide', ['research', 'decisions']],
+    ['build', 'Build', ['plan']],
+  ].map(([id, label, sections], index) => ({ id, label, sections, number: String(index + 1).padStart(2, '0') }));
+  const PHASE_OF = Object.fromEntries(PHASES.flatMap(phase => phase.sections.map(id => [id, phase])));
+  const ORDER = PHASES.flatMap(phase => phase.sections);
+  const QUESTION = {
+    overview: 'Your whole project on one map. Click any branch to work on it.',
+    vision: 'Why does this exist, and who is it for?',
+    requirements: 'What must it do — and how will you know it works?',
+    architecture: 'What are the building blocks, and how do they connect?',
+    technology: 'What will you build it with, and why?',
+    dependencies: 'What does it rely on that you do not build yourself?',
+    data: 'What data does it handle, and where does it live?',
+    ai: 'Where does AI help, and how is it kept in check?',
+    security: 'How is it protected?',
+    testing: 'How will you prove it works?',
+    deployment: 'Where and how does it run?',
+    observability: 'How will you see what is happening?',
+    research: 'What did you check, what are you assuming, and what could go wrong?',
+    decisions: 'What have you decided, and why?',
+    plan: 'In what order will you build it?',
+  };
+  const MAP_LEFT = ['vision', 'requirements', 'architecture', 'technology', 'dependencies', 'data', 'ai'];
+  const MAP_RIGHT = ['security', 'testing', 'deployment', 'observability', 'research', 'decisions', 'plan'];
   const NOUN = { requirements: 'Requirement', components: 'Component', connections: 'Connection', technologies: 'Technology', dependencies: 'Dependency', decisions: 'Decision',
-    assumptions: 'Assumption', sources: 'Source', risks: 'Risk', areas: 'Planning item', milestones: 'Milestone', items: 'Implementation item' };
-  // Reference fields → the collection they point to. Used for deletes, details and “referenced by”.
+    assumptions: 'Assumption', sources: 'Source', risks: 'Risk', areas: 'Approach', milestones: 'Milestone', items: 'Step' };
+  // Reference fields → the collection they point to. Used for deletes and “used by”.
   const REFS = { componentIds: 'components', technologyIds: 'technologies', requirementIds: 'requirements', dependencyIds: 'dependencies', sourceIds: 'sources',
     requiredBy: 'components', dependsOn: owner => (owner === 'dependencies' ? 'dependencies' : 'items'), supersededBy: 'decisions', decisionId: 'decisions',
     milestoneId: 'milestones', from: 'components', to: 'components' };
-  const REF_LABELS = { componentIds: 'Components', technologyIds: 'Technologies', requirementIds: 'Requirements', dependencyIds: 'Dependencies', sourceIds: 'Evidence',
-    requiredBy: 'Required by', dependsOn: 'Depends on', supersededBy: 'Superseded by', decisionId: 'Decision', milestoneId: 'Milestone', from: 'From', to: 'To' };
   const COMPOSABLE = new Set(['requirements', 'components', 'decisions', 'milestones', 'items']);
-  const SECTION_INTRO = {
-    overview: 'What are we building, why, for whom, and how ready is the blueprint?',
-    vision: 'Problem, goal, users and boundaries. Lists take one entry per line.',
-    requirements: 'Structured requirements with acceptance criteria. Editing a requirement never starts an agent.',
-    architecture: 'Components and their connections. The diagram is a view of these records.',
-    technology: 'Selected technologies, why they were chosen and the evidence behind them.',
-    dependencies: 'Packages, services, APIs and tools the system relies on. Unverified entries are highlighted.',
-    data: 'Data sources, storage, flows, retention, privacy and ownership. Mark the section not applicable when it does not matter.',
-    ai: 'Models, agents, tools, knowledge and guardrails. Reference Base resources instead of copying them.',
-    security: 'Which security decisions are defined. Origin shows coverage; it never claims a project is secure.',
-    testing: 'Test strategy by area. Linked requirements carry into implementation items and tasks.',
-    deployment: 'Environments, runtime, configuration and recovery, linked to the components they serve.',
-    observability: 'Logs, metrics, alerts and usage signals. Optional for small projects.',
-    research: 'Sources with explicit verification, and assumptions kept separate from facts.',
-    decisions: 'Architecture decision records with their rationale, so later work does not undo them by accident.',
-    plan: 'Milestones and ordered implementation items. Send selected items to Kanban To Do or one item to Compose.',
+  const BLANK = {
+    requirements: title => ({ title, description: '', type: 'functional', priority: 'should', status: 'draft', acceptanceCriteria: '', componentIds: [], sourceIds: [] }),
+    components: name => ({ name, type: 'service', purpose: '', responsibilities: '', technologyIds: [], interfaces: '', dataHandled: '', status: 'draft', notes: '', sourceIds: [], x: null, y: null }),
+    technologies: name => ({ name, category: 'other', purpose: '', version: '', status: 'candidate', reason: '', alternatives: '', sourceIds: [] }),
+    dependencies: name => ({ name, type: 'package', version: '', requiredBy: [], dependsOn: [], sourceIds: [], notes: '' }),
+    decisions: title => ({ title, context: '', decision: '', alternatives: '', reason: '', consequences: '', status: 'proposed', date: today(), supersededBy: '', componentIds: [], technologyIds: [], requirementIds: [], dependencyIds: [], sourceIds: [] }),
+    assumptions: statement => ({ statement, reason: '', impact: '', status: 'open', decisionId: '', sourceIds: [] }),
+    sources: text => { const url = safeUrl(text); return { title: url ? hostOf(url) : text, url, type: 'documentation', claim: '', accessedAt: today(), verification: 'unverified', notes: '' }; },
+    risks: title => ({ title, description: '', kind: 'risk', severity: 'medium', mitigation: '', status: 'open', componentIds: [] }),
+    milestones: title => ({ title, goal: '', definitionOfDone: '' }),
+    items: title => ({ milestoneId: '', workstream: '', title, description: '', acceptanceCriteria: '', dependsOn: [], requirementIds: [], componentIds: [], status: 'planned', handoff: null }),
+    areas: (title, section, area) => ({ section, area, title, description: '', status: 'defined', componentIds: [], requirementIds: [], technologyIds: [], baseResourceIds: [] }),
   };
 
   const el = (tag, className = '', text) => { const node = document.createElement(tag); if (className) node.className = className; if (text !== undefined) node.textContent = text; return node; };
-  const button = (text, onClick, className = 'secondary-button', title = '') => { const node = el('button', className, text); node.type = 'button'; if (title) node.title = title; node.addEventListener('click', onClick); return node; };
+  const button = (text, onClick, className = 'origin-ghost', title = '') => { const node = el('button', className, text); node.type = 'button'; if (title) node.title = title; node.addEventListener('click', onClick); return node; };
+  const chip = (text, tone = '') => el('span', `origin-chip${tone ? ` ${tone}` : ''}`, text);
   const pref = (key, fallback = '') => { try { return localStorage.getItem(key) ?? fallback; } catch { return fallback; } };
   const setPref = (key, value) => { try { localStorage.setItem(key, value); } catch {} };
   const newId = () => globalThis.crypto?.randomUUID?.() || `o${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`;
-  const today = () => new Date().toLocaleDateString('en-CA');
-  const safeUrl = value => { try { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password ? url.href : ''; } catch { return ''; } };
+  function today() { return new Date().toLocaleDateString('en-CA'); }
+  function safeUrl(value) { try { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password ? url.href : ''; } catch { return ''; } }
+  function hostOf(value) { try { return new URL(value).hostname.replace(/^www\./, ''); } catch { return ''; } }
   const plural = (count, word, many = `${word}s`) => `${count} ${count === 1 ? word : many}`;
-  const badge = (text, kind = '') => el('span', `origin-badge${kind ? ` origin-badge-${kind}` : ''}`, text);
-  const verificationBadge = state => badge(M.VERIFICATION_LABELS[state], state);
-  const field = (name, control, hint = '') => { const label = el('label', 'field-label origin-field'); label.append(name, control); if (hint) label.append(el('small', '', hint)); return label; };
+  const firstLine = text => M.lines(text)[0] || '';
+  const clip = (text, max) => { const value = String(text || '').trim(); return value.length > max ? `${value.slice(0, max - 1)}…` : value; };
+  function icon(d, size = 16) {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    for (const [name, value] of Object.entries({ viewBox: '0 0 24 24', width: size, height: size, fill: 'none', stroke: 'currentColor', 'stroke-width': '1.8', 'stroke-linecap': 'round', 'aria-hidden': 'true' })) svg.setAttribute(name, value);
+    const path = document.createElementNS(svg.namespaceURI, 'path'); path.setAttribute('d', d); svg.append(path);
+    return svg;
+  }
+  const ICON = { plus: 'M12 5v14M5 12h14', close: 'M6 6l12 12M18 6 6 18', dots: 'M5 12h.01M12 12h.01M19 12h.01', arrow: 'M5 12h14M13 6l6 6-6 6', link: 'M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1' };
+  function autoGrow(area) {
+    const fit = () => { if (!area.isConnected) return; area.style.height = 'auto'; area.style.height = `${area.scrollHeight + 2}px`; };
+    area.addEventListener('input', fit); requestAnimationFrame(fit);
+    return area;
+  }
 
   function create(app) {
     const view = document.querySelector('#origin-view'), navigator = document.querySelector('#origin-nav');
     if (!view || !navigator) return null;
     view.replaceChildren();
+    const heading = el('h1', 'sr-only', 'Origin'); heading.id = 'origin-heading';
     const header = el('header', 'origin-header');
-    const titleBox = el('div', 'origin-title'), heading = el('h1', '', 'Origin'); heading.id = 'origin-heading';
-    const projectSelect = el('select'); projectSelect.id = 'origin-project'; projectSelect.setAttribute('aria-label', 'Project');
-    const projectLabel = el('label', 'origin-project'); projectLabel.append(el('span', 'small-label', 'Project'), projectSelect);
-    titleBox.append(heading, projectLabel);
+    const projectBox = el('div', 'origin-project');
+    const projectSelect = el('select', 'origin-project-select'); projectSelect.id = 'origin-project'; projectSelect.setAttribute('aria-label', 'Project');
+    const newProject = button('New project', () => openNewProject(), 'origin-ghost origin-new', 'Start a new project here');
+    newProject.id = 'origin-new-project'; newProject.prepend(icon(ICON.plus, 15));
+    projectBox.append(projectSelect, newProject);
     const statusBox = el('div', 'origin-header-status');
-    const readinessButton = el('button', 'origin-readiness'); readinessButton.type = 'button'; readinessButton.id = 'origin-readiness';
+    const readinessButton = button('', () => openSection('overview'), 'origin-pill'); readinessButton.id = 'origin-readiness';
     const saveStatus = el('span', 'origin-save'); saveStatus.id = 'origin-save'; saveStatus.setAttribute('role', 'status'); saveStatus.setAttribute('aria-live', 'polite');
-    const tools = el('details', 'origin-tools'); const toolsSummary = el('summary', 'secondary-button', 'Blueprint'); toolsSummary.title = 'Export or import this blueprint';
-    const toolsMenu = el('div', 'origin-tools-menu');
-    const importFile = el('input'); importFile.type = 'file'; importFile.accept = '.json,application/json'; importFile.hidden = true; importFile.id = 'origin-import-file';
-    toolsMenu.append(button('Export blueprint (JSON)', () => exportBlueprint(), 'text-button'), button('Import blueprint…', () => importFile.click(), 'text-button'), importFile);
-    tools.append(toolsSummary, toolsMenu);
-    const inspectorToggle = button('', () => setInspector(!inspectorOpen()), 'icon-button origin-inspector-toggle');
-    inspectorToggle.id = 'origin-inspector-toggle'; inspectorToggle.setAttribute('aria-controls', 'origin-inspector');
-    inspectorToggle.append(svgIcon('M3.5 4.5h17v15h-17zM15 4.5v15'));
-    statusBox.append(readinessButton, saveStatus, tools, inspectorToggle);
-    header.append(titleBox, statusBox);
-    const errorBox = el('p', 'inline-error origin-error'); errorBox.id = 'origin-error'; errorBox.setAttribute('role', 'alert'); errorBox.hidden = true;
-    const notice = el('p', 'note origin-notice'); notice.id = 'origin-notice'; notice.setAttribute('role', 'status'); notice.hidden = true;
-    const layout = el('div', 'origin-layout');
+    statusBox.append(readinessButton, saveStatus);
+    header.append(projectBox, statusBox);
+    const errorBox = el('p', 'origin-banner origin-error'); errorBox.id = 'origin-error'; errorBox.setAttribute('role', 'alert'); errorBox.hidden = true;
+    const notice = el('p', 'origin-banner'); notice.id = 'origin-notice'; notice.setAttribute('role', 'status'); notice.hidden = true;
     const main = el('section', 'origin-main'); main.id = 'origin-main'; main.setAttribute('aria-labelledby', 'origin-section-heading');
-    const inspector = el('aside', 'origin-inspector'); inspector.id = 'origin-inspector'; inspector.setAttribute('aria-label', 'Inspector'); inspector.tabIndex = -1;
-    const scrim = button('', () => setInspector(false), 'origin-inspector-scrim'); scrim.setAttribute('aria-label', 'Close inspector'); scrim.hidden = true;
-    layout.append(main, inspector);
-    const statusbar = el('footer', 'origin-statusbar'); statusbar.id = 'origin-statusbar';
-    view.append(header, errorBox, notice, layout, scrim, statusbar);
+    const drawer = el('aside', 'origin-drawer'); drawer.id = 'origin-drawer'; drawer.hidden = true; drawer.tabIndex = -1; drawer.setAttribute('aria-labelledby', 'origin-drawer-title');
+    view.append(heading, header, errorBox, notice, main, drawer);
 
     let projectId = null, record = null, loading = null, loadError = null, visible = false;
-    let section = M.SECTIONS.some(item => item.id === pref(SECTION_KEY)) ? pref(SECTION_KEY) : 'overview';
-    let selected = null, editing = null, inspectorTab = 'intel', connectFrom = null, planSelection = new Set(), handoffBusy = false, lastHandoff = '';
+    let section = ORDER.includes(pref(SECTION_KEY)) ? pref(SECTION_KEY) : 'overview';
+    let open = null, connectFrom = null, planSelection = new Set(), handoffBusy = false, lastHandoff = '';
     let saveTimer = null, saving = null, changeCount = 0, savedCount = 0, saveState = 'saved', saveMessage = '', dirtySince = 0, shownSaveError = '';
-    let baseResources = null, baseLoading = null, focusAfter = null, refreshRow = null, lastActivation = { id: null, at: 0 };
+    let baseResources = null, baseLoading = null, focusAfter = null, renderFrame = 0, uid = 0;
     const bp = () => record.blueprint;
     const project = () => app.projects().find(item => item.id === projectId) || null;
-
-    function svgIcon(d) {
-      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('fill', 'none'); svg.setAttribute('stroke', 'currentColor'); svg.setAttribute('stroke-width', '1.6'); svg.setAttribute('aria-hidden', 'true');
-      const path = document.createElementNS(svg.namespaceURI, 'path'); path.setAttribute('d', d); svg.append(path); return svg;
-    }
     const showError = message => { errorBox.textContent = message; errorBox.hidden = !message; };
     const showNotice = message => { notice.textContent = message; notice.hidden = !message; };
 
-    // ---- Inspector visibility: a column on desktop, a drawer on narrow screens ----
-    const narrow = () => window.innerWidth <= 1100;
-    let drawerOpen = false;
-    function inspectorOpen() { return narrow() ? drawerOpen : pref(INSPECTOR_KEY) !== 'collapsed'; }
-    function setInspector(open) {
-      if (narrow()) { drawerOpen = open; if (open) inspector.focus(); else if (view.contains(document.activeElement) && inspector.contains(document.activeElement)) inspectorToggle.focus(); }
-      else setPref(INSPECTOR_KEY, open ? 'expanded' : 'collapsed');
-      syncInspector();
-    }
-    function syncInspector() {
-      const open = inspectorOpen();
-      view.dataset.inspector = open ? 'open' : 'closed';
-      scrim.hidden = !(narrow() && open);
-      inspectorToggle.setAttribute('aria-expanded', String(open));
-      inspectorToggle.setAttribute('aria-label', open ? 'Hide inspector' : 'Show inspector');
-      inspectorToggle.title = open ? 'Hide inspector' : 'Show inspector';
-    }
-    window.addEventListener('resize', syncInspector);
-
     // ---- Saving: debounced, revision-checked autosave with a visible state ----
-    function changed({ structure = false } = {}) {
+    function changed({ structure = false, drawer: redraw = false } = {}) {
       if (!record?.exists) return;
       changeCount++;
       if (saveState !== 'conflict') { saveState = 'dirty'; saveMessage = ''; }
@@ -123,8 +126,13 @@ window.PromptboardOrigin = (() => {
       clearTimeout(saveTimer);
       saveTimer = setTimeout(() => { void save(); }, Date.now() - dirtySince >= SAVE_MAX_WAIT ? 0 : SAVE_DELAY);
       renderSave();
-      refreshRow?.();
-      if (structure) renderMain(); else renderDerived();
+      if (structure) renderMain(); else scheduleRender();
+      if (redraw) renderDrawer();
+    }
+    // Typing in the page must keep its focus, so the page is redrawn only when focus is elsewhere.
+    function scheduleRender() {
+      if (renderFrame) return;
+      renderFrame = requestAnimationFrame(() => { renderFrame = 0; if (main.contains(document.activeElement)) renderDerived(); else renderMain(); });
     }
     async function save({ force = false } = {}) {
       clearTimeout(saveTimer); saveTimer = null;
@@ -153,13 +161,13 @@ window.PromptboardOrigin = (() => {
       saveStatus.replaceChildren();
       view.dataset.save = saveState;
       if (!record?.exists) return;
-      const text = { saved: 'Saved', dirty: 'Unsaved changes', saving: 'Saving…', error: 'Not saved', conflict: 'Changed in another window' }[saveState];
+      const text = { saved: 'Saved', dirty: 'Editing…', saving: 'Saving…', error: 'Not saved', conflict: 'Changed in another window' }[saveState];
       const dot = el('span', 'origin-save-dot'); dot.setAttribute('aria-hidden', 'true');
       saveStatus.append(dot, el('span', '', text));
       saveStatus.title = saveMessage || (saveState === 'saved' ? `Saved revision ${record.revision}` : text);
-      if (saveState === 'error') saveStatus.append(button('Retry', () => void save({ force: true }), 'text-button'));
-      if (saveState === 'conflict') saveStatus.append(button('Reload saved version', () => void load(projectId, { force: true }), 'text-button'),
-        button('Keep mine', () => void keepMine(), 'text-button', 'Save this window’s version over the newer saved one'));
+      if (saveState === 'error') saveStatus.append(button('Retry', () => void save({ force: true }), 'origin-link'));
+      if (saveState === 'conflict') saveStatus.append(button('Reload saved version', () => void load(projectId, { force: true }), 'origin-link'),
+        button('Keep mine', () => void keepMine(), 'origin-link', 'Save this window’s version over the newer saved one'));
       // Only save problems are shown or cleared here; other messages keep their own lifetime.
       const message = ['error', 'conflict'].includes(saveState) ? saveMessage : '';
       if (message !== shownSaveError) { if (message || errorBox.textContent === shownSaveError) showError(message); shownSaveError = message; }
@@ -180,10 +188,11 @@ window.PromptboardOrigin = (() => {
     // ---- Loading ----
     async function load(id, { force = false } = {}) {
       if (!force && id === projectId && (record || loading)) return loading;
-      projectId = id; record = null; loadError = null; selected = null; editing = null; connectFrom = null; planSelection = new Set(); lastHandoff = '';
+      projectId = id; record = null; loadError = null; open = null; connectFrom = null; planSelection = new Set(); lastHandoff = '';
       changeCount = savedCount = 0; dirtySince = 0; saveState = 'saved'; showNotice(''); showError('');
+      renderDrawer();
       if (!id) { render(); return null; }
-      main.replaceChildren(el('p', 'note origin-loading', 'Loading blueprint…')); main.setAttribute('aria-busy', 'true');
+      main.replaceChildren(el('p', 'origin-empty-note', 'Loading blueprint…')); main.setAttribute('aria-busy', 'true');
       const attempt = (async () => {
         const { response, data } = await app.api(`/api/origin/projects/${encodeURIComponent(id)}`, { timeoutMs: 30000 }).catch(() => ({ response: { ok: false, status: 0 }, data: {} }));
         if (id !== projectId) return;
@@ -205,7 +214,6 @@ window.PromptboardOrigin = (() => {
 
     async function show() {
       visible = true;
-      syncInspector();
       await app.ensureBoard();
       const projects = app.projects(), current = app.currentProjectId();
       const id = projects.some(item => item.id === projectId) ? (current && current !== projectId ? current : projectId) : current;
@@ -225,220 +233,356 @@ window.PromptboardOrigin = (() => {
     projectSelect.addEventListener('change', () => { void switchProject(projectSelect.value); });
 
     // ---- Rendering ----
-    function render() {
-      renderProjects(); renderMain(); renderSave(); syncInspector();
-    }
+    function render() { renderProjects(); renderMain(); renderSave(); renderDrawer(); }
     function renderProjects() {
       const projects = app.projects();
       projectSelect.replaceChildren(...projects.map(item => Object.assign(el('option', '', item.name), { value: item.id })));
       projectSelect.value = projectId || '';
-      projectLabel.hidden = !projects.length;
+      projectSelect.hidden = !projects.length;
     }
     function renderDerived() {
       view.dataset.empty = String(!record?.exists);
-      tools.hidden = !record;
-      inspectorToggle.hidden = !record?.exists;
-      if (!record?.exists) { navigator.replaceChildren(el('p', 'note', record ? 'Start a blueprint to open its sections.' : 'Choose a project to plan.')); statusbar.replaceChildren(); statusbar.hidden = true; readinessButton.hidden = true; inspector.replaceChildren(); return; }
+      if (!record?.exists) { navigator.replaceChildren(el('p', 'origin-nav-empty', record || !projectId ? 'Your blueprint sections appear here once you start.' : 'Loading…')); readinessButton.hidden = true; return; }
       const found = M.issues(bp()), ready = M.readiness(bp(), found), states = M.sectionStates(bp(), found);
       renderNavigator(states);
       readinessButton.hidden = false;
-      readinessButton.replaceChildren(el('span', `origin-state origin-state-${ready.state}`, ready.label));
-      readinessButton.title = ready.reasons.join(' ');
       readinessButton.dataset.state = ready.state;
-      renderStatusbar(found);
-      if (!inspector.contains(document.activeElement) || inspectorTab === 'intel') renderInspector(found, ready);
+      readinessButton.replaceChildren(el('span', 'origin-pill-dot'), el('span', '', ready.state === 'attention' ? `${plural(ready.blocking.length, 'thing')} to resolve` : ready.label));
+      readinessButton.title = `${ready.label}. ${ready.reasons.join(' ')}`;
+      main.querySelector('.origin-next-slot')?.replaceChildren(...nextStep(found));
+    }
+    function sectionCount(id) {
+      const blueprint = bp();
+      const counts = { vision: M.VISION.filter(key => key !== 'architectureSummary' && blueprint.vision[key].trim()).length, requirements: blueprint.requirements.length,
+        architecture: blueprint.components.length, technology: blueprint.technologies.length, dependencies: blueprint.dependencies.length,
+        research: blueprint.sources.length + blueprint.assumptions.length + blueprint.risks.length, decisions: blueprint.decisions.length, plan: blueprint.items.length };
+      return counts[id] ?? (M.AREAS[id] ? blueprint.areas.filter(item => item.section === id).length : 0);
     }
     function renderNavigator(states) {
-      const list = el('ul', 'origin-nav-list');
-      for (const item of M.SECTIONS) {
-        const [glyph, meaning] = M.SECTION_STATE[states[item.id]];
-        const entry = el('li'), open = el('button', 'origin-nav-item'); open.type = 'button'; open.dataset.section = item.id;
-        if (item.id === section) open.setAttribute('aria-current', 'page');
-        const mark = el('span', `origin-glyph origin-glyph-${states[item.id]}`, glyph); mark.setAttribute('aria-hidden', 'true');
-        open.append(mark, el('span', 'origin-nav-label', item.label), el('span', 'sr-only', `, ${meaning}`));
-        open.title = meaning;
-        open.addEventListener('click', () => { openSection(item.id); app.closeSidebar(); });
-        open.addEventListener('keydown', event => {
-          const index = M.SECTIONS.findIndex(entry => entry.id === item.id);
-          const next = { ArrowDown: index + 1, ArrowUp: index - 1, Home: 0, End: M.SECTIONS.length - 1 }[event.key];
-          if (next === undefined) return;
-          event.preventDefault();
-          navigator.querySelectorAll('.origin-nav-item')[(next + M.SECTIONS.length) % M.SECTIONS.length]?.focus();
-        });
-        entry.append(open); list.append(entry);
-      }
       const focused = navigator.contains(document.activeElement) ? document.activeElement.dataset.section : null;
-      navigator.replaceChildren(list);
+      const groups = PHASES.map(phase => {
+        const box = el('div', `origin-phase phase-${phase.id}`);
+        const label = el('p', 'origin-phase-label'); label.append(el('span', 'origin-phase-number', phase.number), phase.label);
+        const list = el('ul');
+        for (const id of phase.sections) {
+          const meaning = M.SECTION_STATE[states[id]][1];
+          const item = el('button', 'origin-nav-item'); item.type = 'button'; item.dataset.section = id; item.title = meaning;
+          if (id === section) item.setAttribute('aria-current', 'page');
+          const dot = el('span', 'origin-dot'); dot.dataset.state = states[id]; dot.setAttribute('aria-hidden', 'true');
+          item.append(dot, el('span', 'origin-nav-label', M.sectionLabel(id)), el('span', 'sr-only', `, ${meaning}`));
+          const count = id === 'overview' ? 0 : sectionCount(id);
+          if (count) item.append(el('span', 'origin-nav-count', String(count)));
+          item.addEventListener('click', () => { openSection(id); app.closeSidebar(); });
+          item.addEventListener('keydown', event => {
+            const index = ORDER.indexOf(id);
+            const next = { ArrowDown: index + 1, ArrowUp: index - 1, Home: 0, End: ORDER.length - 1 }[event.key];
+            if (next === undefined) return;
+            event.preventDefault();
+            navigator.querySelector(`[data-section="${ORDER[(next + ORDER.length) % ORDER.length]}"]`)?.focus();
+          });
+          const entry = el('li'); entry.append(item); list.append(entry);
+        }
+        box.append(label, list);
+        return box;
+      });
+      navigator.replaceChildren(...groups);
       if (focused) navigator.querySelector(`[data-section="${focused}"]`)?.focus();
     }
-    function renderStatusbar(found) {
-      statusbar.hidden = false;
-      const count = (test) => found.filter(test).length;
-      const parts = [
-        plural(count(issue => issue.kind === 'unresolved'), 'unresolved decision'),
-        plural(count(issue => issue.kind === 'unverified' && /^(technology|dependency)/.test(issue.rule)), 'unverified technology or dependency', 'unverified technologies or dependencies'),
-        plural(count(issue => issue.kind === 'conflict'), 'conflict'),
-        plural(bp().assumptions.filter(item => item.status === 'open').length, 'open assumption'),
-      ];
-      const next = found.find(issue => issue.blocking) || found[0];
-      const children = parts.map(text => el('span', 'origin-status-item', text));
-      if (next) { const action = button(`Next: ${next.title}`, () => focusTarget(next.target), 'text-button origin-next'); action.title = next.action || next.title; children.push(action); }
-      else children.push(el('span', 'origin-status-item', 'No open issues'));
-      statusbar.replaceChildren(...children);
+    // One clear next step per section, taken from the deterministic checks.
+    function nextStep(found) {
+      if (section === 'overview') return [];
+      const list = found.filter(issue => issue.target?.section === section && issue.origin === 'system');
+      const next = list.find(issue => issue.blocking) || list[0];
+      if (!next) return [];
+      const bar = el('div', `origin-next${next.blocking ? '' : ' advisory'}`);
+      bar.append(el('span', 'origin-next-label', next.blocking ? 'Next' : 'Tip'), el('span', 'origin-next-text', next.title));
+      if (list.length > 1) bar.append(button(`+${list.length - 1} more`, () => openSection('overview'), 'origin-link origin-next-more', 'See every open point on the Overview'));
+      if (next.target?.id) { const fix = button('Open', () => focusTarget(next.target), 'origin-link origin-next-open'); fix.append(icon(ICON.arrow, 14)); bar.append(fix); }
+      return [bar];
     }
 
     function openSection(id) {
-      if (!M.SECTIONS.some(item => item.id === id)) return;
-      section = id; setPref(SECTION_KEY, id); editing = null; connectFrom = null;
+      if (!ORDER.includes(id)) return;
+      section = id; setPref(SECTION_KEY, id); connectFrom = null;
+      if (open && sectionOf(open) !== id) { open = null; renderDrawer(); }
       renderMain();
-      main.querySelector('h2')?.focus();
+      window.scrollTo(0, 0);
+      main.querySelector('h2')?.focus({ preventScroll: true });
+    }
+    function sectionOf(target) {
+      if (target.collection === 'areas') return bp().areas.find(item => item.id === target.id)?.section;
+      return { requirements: 'requirements', components: 'architecture', connections: 'architecture', technologies: 'technology', dependencies: 'dependencies', decisions: 'decisions',
+        assumptions: 'research', sources: 'research', risks: 'research', milestones: 'plan', items: 'plan' }[target.collection];
     }
     function focusTarget(target) {
       if (!target) return;
-      const sectionId = target.collection === 'areas' ? bp().areas.find(item => item.id === target.id)?.section || target.section : target.section;
-      if (target.collection === 'connections') { editing = target.id; section = 'architecture'; }
-      else if (target.id) { selected = { collection: target.collection, id: target.id }; editing = target.id; inspectorTab = 'details'; }
-      section = sectionId || section; setPref(SECTION_KEY, section);
-      focusAfter = () => main.querySelector('.origin-editor input, .origin-editor textarea, .origin-editor select') || main.querySelector('h2');
-      renderMain();
+      if (target.collection === 'connections') { const connection = bp().connections.find(item => item.id === target.id); target = connection ? { collection: 'components', id: connection.from } : { section: 'architecture' }; }
+      const id = target.collection ? sectionOf(target) || target.section : target.section;
+      if (id && id !== section) { section = id; setPref(SECTION_KEY, id); renderMain(); window.scrollTo(0, 0); }
+      if (target.collection && target.id) openDrawer(target.collection, target.id);
+      else main.querySelector('h2')?.focus();
     }
 
     function renderMain() {
-      refreshRow = null;
-      if (!projectId) { main.replaceChildren(noProjectState()); renderDerived(); return; }
+      if (renderFrame) { cancelAnimationFrame(renderFrame); renderFrame = 0; }
+      const phase = PHASE_OF[section];
+      main.className = `origin-main phase-${phase.id}${['overview', 'architecture'].includes(section) ? ' origin-wide' : ''}`;
+      view.dataset.section = section;
+      if (!projectId) { main.className = 'origin-main phase-define'; main.replaceChildren(startState(true)); renderDerived(); return; }
       if (loadError && !record) { main.replaceChildren(errorState()); renderDerived(); return; }
       if (!record) return;
-      if (!record.exists) { main.replaceChildren(emptyState()); renderDerived(); return; }
-      const scroll = main.scrollTop;
-      const content = (SECTIONS[section] || SECTIONS.overview)();
-      main.replaceChildren(sectionHeader(), ...content);
-      main.scrollTop = scroll;
+      if (!record.exists) { main.className = 'origin-main phase-define'; main.replaceChildren(startState(false)); renderDerived(); return; }
+      const y = window.scrollY;
+      main.replaceChildren(sectionHeader(), el('div', 'origin-next-slot'), ...(SECTIONS[section] || SECTIONS.overview)());
       renderDerived();
-      if (focusAfter) { const target = focusAfter(); focusAfter = null; target?.focus(); target?.scrollIntoView?.({ block: 'nearest' }); }
+      markSelected();
+      if (Math.abs(window.scrollY - y) > 1) window.scrollTo(0, y);
+      if (focusAfter) { const target = focusAfter(); focusAfter = null; target?.focus({ preventScroll: true }); target?.scrollIntoView?.({ block: 'nearest' }); }
     }
     function sectionHeader() {
-      const box = el('div', 'origin-section-head');
+      const phase = PHASE_OF[section];
+      const head = el('div', 'origin-section-head');
+      const text = el('div', 'origin-section-text');
       const title = el('h2', '', M.sectionLabel(section)); title.id = 'origin-section-heading'; title.tabIndex = -1;
-      const intro = el('p', 'note', SECTION_INTRO[section]);
-      const text = el('div'); text.append(title, intro);
-      box.append(text);
-      const meta = M.SECTIONS.find(item => item.id === section);
-      if (meta.optional) {
-        const toggle = el('label', 'check-row origin-na'); const box2 = el('input'); box2.type = 'checkbox'; box2.checked = Boolean(bp().sections[section]?.notApplicable);
-        box2.addEventListener('change', () => { if (box2.checked) bp().sections[section] = { notApplicable: true }; else delete bp().sections[section]; changed(); });
-        toggle.append(box2, 'Not applicable to this project'); box.append(toggle);
+      text.append(el('p', 'origin-eyebrow', `${phase.number} · ${phase.label}`), title, el('p', 'origin-question', QUESTION[section]));
+      head.append(text);
+      if (M.SECTIONS.find(item => item.id === section).optional) {
+        const toggle = el('label', 'origin-switch'); const box = el('input'); box.type = 'checkbox'; box.setAttribute('role', 'switch'); box.checked = Boolean(bp().sections[section]?.notApplicable);
+        box.addEventListener('change', () => { if (box.checked) bp().sections[section] = { notApplicable: true }; else delete bp().sections[section]; changed({ structure: true }); });
+        toggle.append(box, el('span', 'origin-switch-track'), el('span', '', 'Not needed for this project'));
+        head.append(toggle);
       }
-      return box;
+      return head;
+    }
+    function markSelected() {
+      for (const node of main.querySelectorAll('[data-id]')) node.classList.toggle('selected', node.dataset.id === open?.id);
     }
 
-    // ---- Empty, error and project states ----
-    function noProjectState() {
-      const box = el('div', 'origin-empty');
-      const projects = app.projects();
-      box.append(el('p', 'eyebrow', 'ORIGIN'), el('h2', '', 'Start with the project, not the prompt.'));
-      if (projects.length) { box.append(el('p', 'note', 'Choose a project in the header to open its blueprint.')); return box; }
-      box.append(el('p', 'intro-description', 'Origin plans one Promptboard project. Name the project and describe what you want to create.'));
-      const name = el('input'); name.id = 'origin-new-project'; name.maxLength = 80; name.autocomplete = 'off'; name.placeholder = 'Project name';
-      const idea = ideaInput();
-      const error = el('p', 'inline-error'); error.hidden = true; error.setAttribute('role', 'alert');
-      const start = button('Start project blueprint', async () => {
-        if (!name.value.trim()) { error.textContent = 'Enter a project name.'; error.hidden = false; name.focus(); return; }
-        start.disabled = true;
-        try {
-          const created = await app.createProject(name.value.trim());
-          app.selectProject(created.id);
-          await load(created.id);
-          await startBlueprint(idea.value);
-        } catch (failure) { error.textContent = failure.message; error.hidden = false; }
-        finally { start.disabled = false; }
-      }, 'copy-button');
-      box.append(field('Project name', name), field('What do you want to create?', idea), el('p', 'note', 'Creates a Promptboard project with its own repository folder, like Kanban → New project. No agent starts.'), start, error, startLinks(false));
-      return box;
+    // ---- Start: every project begins here ----
+    function flowStrip() {
+      const strip = el('ol', 'origin-flow'); strip.setAttribute('aria-label', 'How Origin works');
+      for (const phase of PHASES) { const step = el('li', `phase-${phase.id}`); step.append(el('span', 'origin-flow-dot'), phase.label); strip.append(step); }
+      return strip;
     }
-    function ideaInput() {
-      const idea = el('textarea', 'origin-idea'); idea.id = 'origin-idea'; idea.rows = 5; idea.maxLength = 20000; idea.placeholder = 'Describe the product, system, or idea…';
-      idea.setAttribute('aria-label', 'What do you want to create?');
-      return idea;
-    }
-    function startLinks(withManual = true) {
-      const links = el('div', 'origin-start-links');
-      links.append(button('Open existing repository', () => app.openFolder(), 'text-button'));
-      // Import and manual start need a project; without one, the form above creates it first.
-      if (withManual) links.append(button('Import project context', () => importFile.click(), 'text-button', 'Import an exported Origin blueprint (JSON)'), button('Start manually', () => void startBlueprint(''), 'text-button'));
-      return links;
-    }
-    function emptyState() {
-      const box = el('div', 'origin-empty');
-      const idea = ideaInput();
-      const start = button('Start project blueprint', () => void startBlueprint(idea.value), 'copy-button');
-      start.id = 'origin-start';
-      box.append(el('p', 'eyebrow', `ORIGIN · ${(project()?.name || '').toUpperCase()}`), el('h2', '', 'Start with the project, not the prompt.'),
-        field('What do you want to create?', idea), start, startLinks(true),
-        el('p', 'note', 'The blueprint is saved locally for this project. Nothing is generated and no agent starts.'));
+    function startState(withName) {
+      const box = el('div', 'origin-hero');
+      box.append(el('p', 'origin-eyebrow', withName ? 'Origin · New project' : `Origin · ${project()?.name || ''}`), el('h2', '', 'What do you want to build?'),
+        el('p', 'origin-hero-lead', 'Describe it in a few sentences. Origin turns it into a clear project map — goals, building blocks, decisions and a build plan — before any agent starts.'));
+      const form = el('form', 'origin-hero-form');
+      let name = null;
+      if (withName) { name = el('input'); name.id = 'origin-first-project'; name.maxLength = 80; name.autocomplete = 'off'; name.placeholder = 'Project name'; name.setAttribute('aria-label', 'Project name'); form.append(name); }
+      const idea = el('textarea', 'origin-idea'); idea.id = 'origin-idea'; idea.rows = 4; idea.maxLength = 20000; idea.placeholder = 'A web app that helps small teams…';
+      idea.setAttribute('aria-label', 'What do you want to build?');
+      const error = el('p', 'origin-inline-error'); error.hidden = true; error.setAttribute('role', 'alert');
+      const start = el('button', 'origin-primary', 'Start blueprint'); start.type = 'submit'; start.id = 'origin-start'; start.append(icon(ICON.arrow, 16));
+      const blank = button('Start with an empty map', () => void begin(''), 'origin-link'); blank.id = 'origin-start-empty';
+      const actions = el('div', 'origin-hero-actions'); actions.append(start, blank, el('span', 'origin-hint', '⌘/Ctrl + Enter'));
+      form.append(idea, actions, error);
+      async function begin(text) {
+        error.hidden = true;
+        if (withName && !name.value.trim()) { error.textContent = 'Give the project a name first.'; error.hidden = false; name.focus(); return; }
+        start.disabled = blank.disabled = true;
+        try { if (withName) await createProject(name.value, text); else await startBlueprint(text); }
+        catch (failure) { error.textContent = failure.message; error.hidden = false; }
+        finally { start.disabled = blank.disabled = false; }
+      }
+      form.addEventListener('submit', event => { event.preventDefault(); void begin(idea.value); });
+      idea.addEventListener('keydown', event => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); form.requestSubmit(); } });
+      box.append(form, flowStrip());
       return box;
     }
     function errorState() {
-      const box = el('div', 'origin-empty');
-      box.append(el('h2', '', 'The blueprint is unavailable'), el('p', 'note', loadError), button('Try again', () => void load(projectId, { force: true })));
+      const box = el('div', 'origin-hero');
+      box.append(el('h2', '', 'This blueprint is unavailable'), el('p', 'origin-hero-lead', loadError), button('Try again', () => void load(projectId, { force: true }), 'origin-primary'));
       return box;
+    }
+    async function createProject(name, idea) {
+      const created = await app.createProject(name.trim());
+      app.selectProject(created.id);
+      await load(created.id);
+      await startBlueprint(idea);
     }
     async function startBlueprint(idea) {
       if (!record || record.exists) return;
       record.exists = true;
       record.blueprint.idea = idea.trim();
       if (idea.trim() && !record.blueprint.vision.summary) record.blueprint.vision.summary = idea.trim();
-      section = idea.trim() ? 'vision' : 'overview'; setPref(SECTION_KEY, section);
+      section = 'overview'; setPref(SECTION_KEY, section);
       changeCount++;
       const saved = await save();
-      if (!saved && saveState !== 'conflict') { record.exists = false; changeCount = savedCount; saveState = 'saved'; showError(saveMessage); }
+      if (!saved && saveState !== 'conflict') { record.exists = false; changeCount = savedCount; saveState = 'saved'; renderMain(); throw new Error(saveMessage || 'The blueprint could not be saved.'); }
       focusAfter = () => main.querySelector('h2');
       renderMain(); renderSave();
       if (saved) app.announce(`Blueprint started for ${project()?.name || 'this project'}.`);
     }
+    let projectDialog = null;
+    function openNewProject() {
+      projectDialog ??= (() => { const dialog = el('dialog', 'origin-modal'); dialog.id = 'origin-new-dialog'; dialog.setAttribute('aria-labelledby', 'origin-new-heading'); document.body.append(dialog); return dialog; })();
+      const dialog = projectDialog;
+      const heading = el('h2', '', 'New project'); heading.id = 'origin-new-heading';
+      const form = el('form', 'origin-modal-form');
+      const name = el('input'); name.id = 'origin-new-name'; name.maxLength = 80; name.autocomplete = 'off'; name.placeholder = 'Project name'; name.required = true;
+      const idea = el('textarea'); idea.id = 'origin-new-idea'; idea.rows = 4; idea.maxLength = 20000; idea.placeholder = 'What do you want to build? (optional — you can write it later)';
+      const error = el('p', 'origin-inline-error'); error.hidden = true; error.setAttribute('role', 'alert');
+      const create = el('button', 'origin-primary', 'Create project'); create.type = 'submit'; create.id = 'origin-new-create';
+      const actions = el('div', 'origin-modal-actions'); actions.append(button('Cancel', () => dialog.close(), 'origin-ghost'), create);
+      form.append(field('Name', name), field('Idea', idea), error, actions);
+      form.addEventListener('submit', async event => {
+        event.preventDefault();
+        if (!name.value.trim()) { error.textContent = 'Give the project a name.'; error.hidden = false; name.focus(); return; }
+        create.disabled = true; error.hidden = true;
+        try {
+          if (!(await flush())) throw new Error('This blueprint has unsaved changes. Save or reload it first.');
+          await createProject(name.value, idea.value);
+          dialog.close();
+        } catch (failure) { error.textContent = failure.message; error.hidden = false; }
+        finally { create.disabled = false; }
+      });
+      const close = button('', () => dialog.close(), 'origin-icon origin-modal-close'); close.setAttribute('aria-label', 'Close'); close.append(icon(ICON.close));
+      dialog.replaceChildren(close, el('p', 'origin-eyebrow', 'Origin'), heading, el('p', 'origin-modal-lead', 'Every project starts with a blueprint. Name it, describe the idea, then shape it step by step. No agent starts.'), form);
+      dialog.showModal();
+      name.focus();
+    }
 
-    // ---- Editing helpers ----
-    function text(target, key, { max = 20000, rows = 0, placeholder = '', type = 'text', label } = {}) {
-      const control = el(rows ? 'textarea' : 'input');
-      if (rows) control.rows = rows; else control.type = type;
-      if (type !== 'date') control.maxLength = max;
-      control.value = target[key] || ''; control.placeholder = placeholder; control.spellcheck = rows > 0;
-      if (label) control.setAttribute('aria-label', label);
+    // ---- Controls ----
+    const field = (label, control, hint = '') => { const box = el('label', 'origin-field'); box.append(el('span', 'origin-field-label', label), control); if (hint) box.append(el('small', 'origin-hint', hint)); return box; };
+    function group(label, control, hint = '') {
+      const box = el('div', 'origin-field'); box.setAttribute('role', 'group');
+      const title = el('span', 'origin-field-label', label); title.id = `origin-group-${++uid}`; box.setAttribute('aria-labelledby', title.id);
+      box.append(title, control); if (hint) box.append(el('small', 'origin-hint', hint));
+      return box;
+    }
+    function input(target, key, { max = 200, placeholder = '', type = 'text', label } = {}) {
+      const control = el('input'); control.type = type; if (type !== 'date') control.maxLength = max;
+      control.value = target[key] || ''; control.placeholder = placeholder; control.dataset.focusKey = key; if (label) control.setAttribute('aria-label', label);
       control.addEventListener('input', () => { target[key] = control.value; changed(); });
       return control;
     }
-    function choice(target, key, list, { onChange, label } = {}) {
+    function area(target, key, placeholder = '', { max = 20000, label } = {}) {
+      const control = el('textarea'); control.rows = 2; control.maxLength = max; control.value = target[key] || ''; control.placeholder = placeholder; control.dataset.focusKey = key;
+      if (label) control.setAttribute('aria-label', label);
+      control.addEventListener('input', () => { target[key] = control.value; changed(); });
+      return autoGrow(control);
+    }
+    function select(target, key, list, { structure = false, onChange, label } = {}) {
       const control = el('select');
       for (const [value, name] of list) control.append(Object.assign(el('option', '', name), { value }));
-      control.value = target[key];
-      if (label) control.setAttribute('aria-label', label);
-      control.addEventListener('change', () => { target[key] = control.value; changed({ structure: Boolean(onChange) }); onChange?.(); });
+      control.value = target[key]; control.dataset.focusKey = key; if (label) control.setAttribute('aria-label', label);
+      control.addEventListener('change', () => { target[key] = control.value; onChange?.(); changed({ drawer: structure }); });
       return control;
     }
-    function links(target, key, collection, { exclude, name = item => M.itemName(bp(), collection, item.id) || 'Untitled', options = bp()[collection], empty } = {}) {
-      const box = el('details', 'origin-links'), summary = el('summary'), list = el('div', 'origin-link-list');
-      const update = () => {
-        const names = target[key].map(id => options.find(item => item.id === id)).filter(Boolean).map(name);
-        summary.textContent = names.length ? names.join(', ') : 'None linked';
-        summary.title = summary.textContent;
-      };
-      const choices = options.filter(item => item.id !== exclude);
-      if (!choices.length) list.append(el('p', 'note', empty || `No ${M.sectionLabel(collection).toLowerCase()} to link yet.`));
-      for (const item of choices) {
-        const row = el('label', 'check-row'), box2 = el('input'); box2.type = 'checkbox'; box2.checked = target[key].includes(item.id);
-        box2.addEventListener('change', () => { target[key] = box2.checked ? [...target[key], item.id] : target[key].filter(id => id !== item.id); update(); changed(); });
-        row.append(box2, name(item)); list.append(row);
-      }
-      box.append(summary, list); update();
+    function segmented(target, key, list, { onChange, structure = false } = {}) {
+      const box = el('div', 'origin-seg'); box.setAttribute('role', 'radiogroup');
+      const choose = option => { target[key] = option.dataset.value; paint(); onChange?.(); changed({ drawer: structure }); };
+      const options = list.map(([value, name]) => { const option = button(name, () => choose(option), ''); option.setAttribute('role', 'radio'); option.dataset.value = value; option.dataset.focusKey = `${key}:${value}`; return option; });
+      const paint = () => { for (const option of options) { const on = option.dataset.value === target[key]; option.setAttribute('aria-checked', String(on)); option.tabIndex = on ? 0 : -1; } if (!options.some(option => option.tabIndex === 0)) options[0].tabIndex = 0; };
+      box.addEventListener('keydown', event => {
+        const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[event.key];
+        if (!step) return;
+        event.preventDefault();
+        const index = options.findIndex(option => option.dataset.value === target[key]);
+        const next = options[(index + step + options.length) % options.length];
+        choose(next); (drawer.querySelector(`[data-focus-key="${CSS.escape(next.dataset.focusKey)}"]`) || next).focus();
+      });
+      box.append(...options); paint();
       return box;
     }
+    function linkChips(target, key, collection, { options = bp()[collection], exclude, name = item => M.itemName(bp(), collection, item.id) || 'Untitled', empty } = {}) {
+      const box = el('div', 'origin-links');
+      const linked = target[key].map(id => options.find(item => item.id === id)).filter(Boolean);
+      for (const item of linked) {
+        const tag = el('span', 'origin-chip origin-link-chip'); tag.append(el('span', '', name(item)));
+        const remove = button('', () => { target[key] = target[key].filter(id => id !== item.id); changed({ drawer: true }); }, 'origin-chip-x'); remove.append(icon(ICON.close, 12));
+        remove.setAttribute('aria-label', `Unlink ${name(item)}`); remove.dataset.focusKey = `${key}:add`;
+        tag.append(remove); box.append(tag);
+      }
+      const choices = options.filter(item => item.id !== exclude && !target[key].includes(item.id));
+      if (choices.length) {
+        const pick = el('select', 'origin-link-add'); pick.setAttribute('aria-label', 'Add a link'); pick.dataset.focusKey = `${key}:add`;
+        pick.append(Object.assign(el('option', '', linked.length ? '＋ Add' : '＋ Link…'), { value: '' }), ...choices.map(item => Object.assign(el('option', '', name(item)), { value: item.id })));
+        pick.addEventListener('change', () => { if (!pick.value) return; target[key] = [...target[key], pick.value]; changed({ drawer: true }); });
+        box.append(pick);
+      } else if (!linked.length) box.append(el('span', 'origin-hint', empty || 'Nothing to link yet.'));
+      return box;
+    }
+    function evidence(item) {
+      const state = M.verification(item, bp().sources);
+      return group('Evidence', linkChips(item, 'sourceIds', 'sources', { empty: 'Add sources in Research to back this up.' }),
+        { verified: '✓ Backed by a source you verified.', conflict: 'A linked source contradicts this.', outdated: 'Only outdated evidence so far.' }[state] || 'Not verified yet — link a source you checked. A link alone verifies nothing.');
+    }
+    function urlField(item) {
+      const control = el('input'); control.type = 'url'; control.maxLength = 2000; control.value = item.url; control.placeholder = 'https://…'; control.dataset.focusKey = 'url';
+      const error = el('small', 'origin-inline-error'); error.hidden = true;
+      const openLink = el('a', 'origin-link origin-open-link', 'Open ↗'); openLink.target = '_blank'; openLink.rel = 'noopener noreferrer';
+      const sync = () => { const url = safeUrl(item.url); openLink.hidden = !url; if (url) openLink.href = url; else openLink.removeAttribute('href'); };
+      control.addEventListener('input', () => {
+        const value = control.value.trim(), valid = !value || Boolean(safeUrl(value));
+        error.hidden = valid; error.textContent = valid ? '' : 'Use an http or https link without a user name or password. It is saved once it is valid.';
+        control.setAttribute('aria-invalid', String(!valid));
+        if (valid && item.url !== value) { item.url = value; changed(); }
+        sync();
+      });
+      sync();
+      const box = field('Link', control); box.append(error, openLink);
+      return box;
+    }
+    function quickAdd(placeholder, onAdd, { id = section, extra, max = 200 } = {}) {
+      const form = el('form', 'origin-quick');
+      const control = el('input'); control.placeholder = placeholder; control.maxLength = max; control.autocomplete = 'off'; control.setAttribute('aria-label', placeholder); control.dataset.quick = id;
+      form.append(icon(ICON.plus, 16), control);
+      if (extra) form.append(extra);
+      form.append(el('kbd', 'origin-kbd', '↵'));
+      form.addEventListener('submit', event => {
+        event.preventDefault();
+        const value = control.value.trim();
+        if (!value) return;
+        control.value = '';
+        focusAfter = () => main.querySelector(`[data-quick="${CSS.escape(id)}"]`);
+        onAdd(value);
+      });
+      return form;
+    }
+    function add(collection, entry, { keyed = false, edit = false } = {}) {
+      const item = { id: newId(), origin: 'human', ...entry };
+      if (keyed) item.key = M.nextKey(bp(), collection);
+      bp()[collection].push(item);
+      changed({ structure: true });
+      if (edit) openDrawer(collection, item.id);
+      app.announce(`${NOUN[collection]} added.`);
+      return item;
+    }
+    // A list of records. Each row opens the drawer.
+    function list(collection, items, describe, empty, { leading } = {}) {
+      if (!items.length) return el('p', 'origin-empty-note', empty);
+      const box = el('ol', 'origin-list');
+      for (const item of items) {
+        const { title, fallback, sub = '', meta = [], tone = 'progress' } = describe(item);
+        const row = el('li', 'origin-row'); row.dataset.id = item.id;
+        if (leading) row.append(leading(item));
+        const openRow = el('button', 'origin-row-open'); openRow.type = 'button';
+        const dot = el('span', 'origin-dot'); dot.dataset.state = tone; dot.setAttribute('aria-hidden', 'true');
+        const text = el('span', 'origin-row-text'); text.append(el('span', 'origin-row-title', title?.trim() ? title : fallback));
+        if (sub) text.append(el('span', 'origin-row-sub', sub));
+        const tags = el('span', 'origin-row-meta'); tags.append(...meta.filter(Boolean));
+        if (item.origin === 'ai') tags.append(chip('AI suggestion', 'accent'));
+        openRow.append(dot, text, tags);
+        openRow.addEventListener('click', () => openDrawer(collection, item.id));
+        row.append(openRow); box.append(row);
+      }
+      return box;
+    }
+    const subhead = (title, lead) => { const box = el('div', 'origin-subhead'); box.append(el('h3', '', title)); if (lead) box.append(el('p', '', lead)); return box; };
+    const key = item => el('span', 'origin-key', item.key);
+
+    // ---- Deleting keeps every remaining link valid ----
     function referencesTo(collection, id) {
       const found = [];
-      for (const [owner, list] of Object.entries(bp())) {
-        if (!Array.isArray(list)) continue;
-        for (const entry of list) for (const [field2, value] of Object.entries(entry)) {
-          const targetCollection = typeof REFS[field2] === 'function' ? REFS[field2](owner) : REFS[field2];
+      for (const [owner, records] of Object.entries(bp())) {
+        if (!Array.isArray(records)) continue;
+        for (const entry of records) for (const [name, value] of Object.entries(entry)) {
+          const targetCollection = typeof REFS[name] === 'function' ? REFS[name](owner) : REFS[name];
           if (targetCollection !== collection) continue;
-          if (Array.isArray(value) ? value.includes(id) : value === id) found.push({ owner, entry, field: field2 });
+          if (Array.isArray(value) ? value.includes(id) : value === id) found.push({ owner, entry, field: name });
         }
       }
       return found;
@@ -446,365 +590,507 @@ window.PromptboardOrigin = (() => {
     function removeEntity(collection, id) {
       const references = referencesTo(collection, id);
       bp()[collection] = bp()[collection].filter(item => item.id !== id);
-      for (const { owner, entry, field: field2 } of references) {
+      for (const { owner, entry, field: name } of references) {
         if (owner === 'connections') bp().connections = bp().connections.filter(item => item !== entry);
-        else if (Array.isArray(entry[field2])) entry[field2] = entry[field2].filter(value => value !== id);
-        else entry[field2] = '';
+        else if (Array.isArray(entry[name])) entry[name] = entry[name].filter(value => value !== id);
+        else entry[name] = '';
       }
       planSelection.delete(id);
-      if (selected?.id === id) selected = null;
-      if (editing === id) editing = null;
+      if (open?.id === id) open = null;
       return references.length;
     }
+
+    // ---- Drawer: edit one record. Essentials first, everything else under “More details”. ----
+    const DRAWER = {
+      requirements: item => ({
+        title: ['title', 'What must it do?'],
+        essentials: [group('Priority', segmented(item, 'priority', [['must', 'Must'], ['should', 'Should'], ['could', 'Could']])),
+          field('Done when', area(item, 'acceptanceCriteria', 'One check per line — e.g. “A user can reset their password”'), 'These checks travel with the work into Compose and Kanban.')],
+        more: [field('Type', select(item, 'type', M.ENUMS.requirementType)), field('Status', select(item, 'status', M.ENUMS.itemStatus)), field('Description', area(item, 'description')),
+          group('Built by', linkChips(item, 'componentIds', 'components', { empty: 'Add components in Architecture first.' })), evidence(item)],
+      }),
+      components: item => ({
+        title: ['name', 'Component name'],
+        essentials: [field('Type', select(item, 'type', M.ENUMS.componentType, { structure: true })), field('What it does', area(item, 'purpose', 'Its job in one or two sentences')), group('Connects to', connectionsEditor(item))],
+        more: [field('Responsibilities', area(item, 'responsibilities', 'One per line')), field('Interfaces', area(item, 'interfaces', 'APIs, events, files…')), field('Data it handles', area(item, 'dataHandled')),
+          group('Technologies', linkChips(item, 'technologyIds', 'technologies', { empty: 'Add technologies in Technology first.' })), field('Status', select(item, 'status', M.ENUMS.itemStatus)), field('Notes', area(item, 'notes')), evidence(item)],
+      }),
+      technologies: item => ({
+        title: ['name', 'Technology'],
+        essentials: [group('Status', segmented(item, 'status', M.ENUMS.techStatus)), field('Category', select(item, 'category', M.ENUMS.techCategory, { structure: true })), field('Why this one?', area(item, 'reason', 'The reason it fits this project'))],
+        more: [field('Version', input(item, 'version', { max: 80, placeholder: 'e.g. 22' })), field('Purpose', area(item, 'purpose')), field('Alternatives considered', area(item, 'alternatives', 'One per line')), evidence(item),
+          el('p', 'origin-hint', `Used by: ${bp().components.filter(component => component.technologyIds.includes(item.id)).map(component => component.name || 'Unnamed').join(', ') || 'no component yet'}.`)],
+      }),
+      dependencies: item => ({
+        title: ['name', 'Dependency'],
+        essentials: [field('Type', select(item, 'type', M.ENUMS.dependencyType)), field('Version', input(item, 'version', { max: 80, placeholder: 'e.g. ^4.2' })), group('Needed by', linkChips(item, 'requiredBy', 'components', { empty: 'Add components in Architecture first.' }))],
+        more: [group('Depends on', linkChips(item, 'dependsOn', 'dependencies', { exclude: item.id })), evidence(item), field('Notes', area(item, 'notes'))],
+      }),
+      decisions: item => ({
+        title: ['title', 'Topic — e.g. Database'],
+        essentials: [group('Status', segmented(item, 'status', M.ENUMS.decisionStatus, { structure: true, onChange: () => { if (item.status === 'accepted' && !item.date) item.date = today(); } })),
+          field('Decision', area(item, 'decision', 'What you chose')), field('Why', area(item, 'reason', 'The reason — so nobody undoes it by accident')),
+          item.status === 'accepted' ? el('p', 'origin-callout', 'Accepted. To change it later, record a new decision that supersedes this one, so the reasoning is kept.') : null].filter(Boolean),
+        more: [field('Context', area(item, 'context')), field('Alternatives', area(item, 'alternatives', 'One per line')), field('Consequences', area(item, 'consequences')), field('Date', input(item, 'date', { type: 'date' })),
+          field('Superseded by', select(item, 'supersededBy', [['', 'None'], ...bp().decisions.filter(other => other.id !== item.id).map(other => [other.id, M.itemName(bp(), 'decisions', other.id)])])),
+          group('Applies to components', linkChips(item, 'componentIds', 'components')), group('Technologies', linkChips(item, 'technologyIds', 'technologies')),
+          group('Requirements', linkChips(item, 'requirementIds', 'requirements')), group('Dependencies', linkChips(item, 'dependencyIds', 'dependencies')), evidence(item)],
+      }),
+      assumptions: item => ({
+        title: ['statement', 'What do you assume?'], max: 2000,
+        essentials: [field('If it is wrong…', area(item, 'impact', 'What breaks or has to change')),
+          item.status === 'converted' ? el('p', 'origin-callout', 'Turned into a decision.') : group('Status', segmented(item, 'status', [['open', 'Open'], ['validated', 'Holds'], ['invalid', 'Invalid']], { structure: true })),
+          item.decisionId ? button(`Open ${M.itemName(bp(), 'decisions', item.decisionId)}`, () => focusTarget({ collection: 'decisions', id: item.decisionId }), 'origin-ghost')
+            : button('Make it a decision', () => convertAssumption(item), 'origin-ghost', 'Create a proposed decision from this assumption')],
+        more: [field('Why you assume it', area(item, 'reason')), evidence(item)],
+      }),
+      sources: item => ({
+        title: ['title', 'Source title'],
+        essentials: [urlField(item), group('Checked?', segmented(item, 'verification', M.ENUMS.sourceVerification, { structure: true }), 'Mark it Verified only after you read it. Origin never fetches links.'),
+          field('What it supports', area(item, 'claim', 'The claim this source backs up or contradicts', { max: 4000 }))],
+        more: [field('Type', select(item, 'type', M.ENUMS.sourceType)), field('Date checked', input(item, 'accessedAt', { type: 'date' })), field('Notes', area(item, 'notes')),
+          el('p', 'origin-hint', `Evidence for: ${referencesTo('sources', item.id).map(({ owner, entry }) => M.itemName(bp(), owner, entry.id)).filter(Boolean).join(', ') || 'nothing linked yet'}.`)],
+      }),
+      risks: item => ({
+        title: ['title', 'What could go wrong?'],
+        essentials: [group('Severity', segmented(item, 'severity', [['high', 'High'], ['medium', 'Medium'], ['low', 'Low']])), field('How you reduce it', area(item, 'mitigation'))],
+        more: [field('Kind', select(item, 'kind', M.ENUMS.riskKind)), field('Status', select(item, 'status', M.ENUMS.riskStatus)), field('Description', area(item, 'description')),
+          group('Affects', linkChips(item, 'componentIds', 'components'))],
+      }),
+      areas: item => ({
+        title: ['title', 'Your approach'],
+        essentials: [field('Topic', select(item, 'area', M.AREAS[item.section], { structure: true })), field('Details', area(item, 'description', 'Anything an agent should know')), ...(item.section === 'ai' ? [baseField(item)] : [])],
+        more: [field('Status', select(item, 'status', M.ENUMS.itemStatus)), group('Components', linkChips(item, 'componentIds', 'components')),
+          group(item.section === 'testing' ? 'Requirements covered' : 'Requirements', linkChips(item, 'requirementIds', 'requirements')), group('Technologies', linkChips(item, 'technologyIds', 'technologies'))],
+      }),
+      milestones: item => ({
+        title: ['title', 'Milestone'],
+        essentials: [field('Goal', area(item, 'goal', 'What is true when this milestone is reached')), field('Done when', area(item, 'definitionOfDone', 'One check per line'))],
+        more: [(() => { const box = el('div', 'origin-inline-actions'); box.append(button('Move earlier', () => moveMilestone(item, -1), 'origin-ghost'), button('Move later', () => moveMilestone(item, 1), 'origin-ghost')); return box; })(),
+          el('p', 'origin-hint', 'Deleting a milestone keeps its steps; they move to Unscheduled.')],
+      }),
+      items: item => ({
+        title: ['title', 'Step'],
+        essentials: [field('Done when', area(item, 'acceptanceCriteria', 'One check per line')), group('Starts after', linkChips(item, 'dependsOn', 'items', { exclude: item.id, empty: 'No other steps yet.' }))],
+        more: [field('Milestone', select(item, 'milestoneId', [['', 'Unscheduled'], ...bp().milestones.map(milestone => [milestone.id, milestone.title || 'Untitled milestone'])])),
+          field('Workstream', input(item, 'workstream', { max: 80, placeholder: 'Backend, UI…' })), field('Description', area(item, 'description')),
+          group('Requirements', linkChips(item, 'requirementIds', 'requirements')), group('Components', linkChips(item, 'componentIds', 'components')), field('Status', select(item, 'status', M.ENUMS.workStatus)),
+          item.handoff ? el('p', 'origin-hint', `Sent to Kanban on ${new Date(item.handoff.at).toLocaleString()}. Sending it again adds another card.`) : null].filter(Boolean),
+      }),
+    };
+    function openDrawer(collection, id) {
+      open = { collection, id };
+      renderDrawer({ restore: false });
+      markSelected();
+      drawer.querySelector('.origin-drawer-title')?.focus();
+    }
+    function closeDrawer() {
+      const was = open;
+      open = null; renderDrawer();
+      if (renderFrame) renderMain(); else markSelected();
+      if (was) main.querySelector(`[data-id="${CSS.escape(was.id)}"] .origin-row-open, .origin-node[data-id="${CSS.escape(was.id)}"], .origin-milestone[data-id="${CSS.escape(was.id)}"] .origin-milestone-title`)?.focus({ preventScroll: true });
+    }
+    function renderDrawer({ restore = true } = {}) {
+      const entry = open && record?.exists ? bp()[open.collection]?.find(item => item.id === open.id) : null;
+      if (!entry) { open = null; drawer.hidden = true; drawer.replaceChildren(); view.dataset.drawer = 'closed'; return; }
+      const focusKey = restore && drawer.contains(document.activeElement) ? document.activeElement.dataset.focusKey : null;
+      const scroll = drawer.querySelector('.origin-drawer-body')?.scrollTop || 0;
+      const spec = DRAWER[open.collection](entry), collection = open.collection;
+      const head = el('div', 'origin-drawer-head');
+      const top = el('div', 'origin-drawer-top');
+      const close = button('', closeDrawer, 'origin-icon', 'Close (Esc)'); close.setAttribute('aria-label', 'Close editor'); close.append(icon(ICON.close));
+      top.append(el('p', 'origin-eyebrow', `${NOUN[collection]}${entry.key ? ` · ${entry.key}` : ''}`), close);
+      const [titleKey, placeholder] = spec.title;
+      const title = el('input', 'origin-drawer-title'); title.id = 'origin-drawer-title'; title.maxLength = spec.max || 200; title.value = entry[titleKey] || ''; title.placeholder = placeholder;
+      title.dataset.focusKey = titleKey; title.setAttribute('aria-label', `${NOUN[collection]} title`);
+      title.addEventListener('input', () => { entry[titleKey] = title.value; changed(); });
+      head.append(top, title);
+      const body = el('div', 'origin-drawer-body');
+      body.append(...spec.essentials);
+      if (spec.more?.length) {
+        const more = el('details', 'origin-more'); more.open = pref(MORE_KEY) === 'open';
+        more.append(el('summary', '', 'More details'), ...spec.more);
+        more.addEventListener('toggle', () => setPref(MORE_KEY, more.open ? 'open' : 'closed'));
+        body.append(more);
+      }
+      const message = el('p', 'origin-inline-error'); message.hidden = true; message.setAttribute('role', 'alert');
+      const foot = el('div', 'origin-drawer-foot');
+      const left = el('div', 'origin-inline-actions');
+      if (COMPOSABLE.has(collection)) left.append(composeButton(collection, entry.id, message));
+      foot.append(left, deleteControl(collection, entry));
+      drawer.replaceChildren(head, body, message, foot);
+      drawer.hidden = false; view.dataset.drawer = 'open';
+      body.scrollTop = scroll;
+      if (focusKey) drawer.querySelector(`[data-focus-key="${CSS.escape(focusKey)}"]`)?.focus();
+    }
+    drawer.addEventListener('keydown', event => { if (event.key === 'Escape' && !event.defaultPrevented) { event.preventDefault(); event.stopPropagation(); closeDrawer(); } });
     function deleteControl(collection, item) {
       const remove = button('Delete', () => {
         if (remove.dataset.confirm !== 'true') {
           const count = referencesTo(collection, item.id).length;
-          remove.dataset.confirm = 'true'; remove.textContent = count ? `Delete and remove ${plural(count, 'link')}` : 'Confirm delete'; remove.classList.add('danger');
+          remove.dataset.confirm = 'true'; remove.textContent = count ? `Delete and unlink ${plural(count, 'reference')}?` : 'Delete — are you sure?'; remove.classList.add('danger');
           return;
         }
         const count = removeEntity(collection, item.id);
+        open = null; renderDrawer();
         app.announce(`${NOUN[collection]} deleted${count ? `; ${plural(count, 'link')} removed` : ''}.`);
         changed({ structure: true });
-        main.querySelector('h2')?.focus();
-      }, 'text-button origin-delete');
+        main.querySelector('h2')?.focus({ preventScroll: true });
+      }, 'origin-link origin-delete');
       return remove;
     }
-    function toggleEditor(collection, id) {
-      const opening = editing !== id;
-      editing = opening ? id : null;
-      if (opening) { selected = { collection, id }; inspectorTab = 'details'; }
-      focusAfter = opening ? () => main.querySelector(`.origin-row[data-id="${CSS.escape(id)}"] .origin-editor :is(input, textarea, select)`)
-        : () => main.querySelector(`.origin-row[data-id="${CSS.escape(id)}"] .origin-row-open`);
-      renderMain();
-    }
-    function rowList(collection, items, { summary, editor, empty, leading } = {}) {
-      const list = el('ol', 'origin-list');
-      if (!items.length) { list.append(el('li', 'origin-empty-row', empty)); return list; }
-      for (const item of items) {
-        const row = el('li', 'origin-row'); row.dataset.id = item.id;
-        if (selected?.id === item.id) row.classList.add('selected');
-        const head = el('div', 'origin-row-head');
-        const open = el('button', 'origin-row-open'); open.type = 'button'; open.setAttribute('aria-expanded', String(editing === item.id));
-        const paint = () => { open.replaceChildren(...summary(item)); if (item.origin === 'ai') open.append(badge('AI suggestion', 'ai')); };
-        paint();
-        open.addEventListener('click', () => toggleEditor(collection, item.id));
-        if (leading) head.append(leading(item));
-        head.append(open); row.append(head);
-        if (editing === item.id) {
-          refreshRow = paint;
-          const form = el('div', 'origin-editor'); form.setAttribute('role', 'group'); form.setAttribute('aria-label', `Edit ${NOUN[collection].toLowerCase()}`);
-          form.append(...editor(item));
-          const actions = el('div', 'detail-actions origin-editor-actions');
-          if (COMPOSABLE.has(collection)) actions.append(composeButton(collection, item.id));
-          actions.append(deleteControl(collection, item), button('Close', () => toggleEditor(collection, item.id), 'text-button'));
-          form.append(actions);
-          form.addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); toggleEditor(collection, item.id); } });
-          row.append(form);
-        }
-        list.append(row);
+    function connectionsEditor(item) {
+      const blueprint = bp(), box = el('div', 'origin-connections');
+      const name = id => blueprint.components.find(component => component.id === id)?.name || 'Unnamed component';
+      for (const connection of blueprint.connections.filter(entry => entry.from === item.id)) {
+        const row = el('div', 'origin-connection');
+        const label = input(connection, 'label', { max: 80, placeholder: 'calls', label: `How it uses ${name(connection.to)}` }); label.dataset.focusKey = `label:${connection.id}`;
+        const protocol = input(connection, 'protocol', { max: 80, placeholder: 'HTTPS', label: `Protocol to ${name(connection.to)}` }); protocol.dataset.focusKey = `protocol:${connection.id}`;
+        const remove = button('', () => { bp().connections = bp().connections.filter(entry => entry !== connection); changed({ structure: true, drawer: true }); }, 'origin-icon origin-small', 'Remove connection');
+        remove.setAttribute('aria-label', `Remove connection to ${name(connection.to)}`); remove.append(icon(ICON.close, 14)); remove.dataset.focusKey = 'connect';
+        row.append(el('span', 'origin-connection-target', `→ ${name(connection.to)}`), label, protocol, remove);
+        box.append(row);
       }
-      return list;
-    }
-    const grid = (...nodes) => { const box = el('div', 'origin-grid'); box.append(...nodes); return box; };
-    const card = (title, ...nodes) => { const box = el('section', 'origin-card'); if (title) box.append(el('h3', '', title)); box.append(...nodes); return box; };
-    const toolbar = (...nodes) => { const box = el('div', 'origin-toolbar'); box.append(...nodes.filter(Boolean)); return box; };
-    const key = item => el('span', 'origin-key', item.key);
-    const titleText = (value, fallback) => el('span', 'origin-row-title', value?.trim() ? value : fallback);
-    const statusBadge = (enumName, value, warn = []) => badge(M.label(enumName, value), warn.includes(value) ? 'warn' : value === 'defined' || value === 'accepted' || value === 'verified' ? 'ok' : '');
-    function add(collection, entry, { keyed = false, at } = {}) {
-      const item = { id: newId(), origin: 'human', ...entry };
-      if (keyed) item.key = M.nextKey(bp(), collection);
-      if (at === undefined) bp()[collection].push(item); else bp()[collection].splice(at, 0, item);
-      editing = item.id; selected = { collection, id: item.id }; inspectorTab = 'details';
-      focusAfter = () => main.querySelector(`.origin-row[data-id="${CSS.escape(item.id)}"] .origin-editor :is(input, textarea, select)`);
-      changed({ structure: true });
-      return item;
-    }
-    function evidence(item) {
-      const state = M.verification(item, bp().sources);
-      const box = el('div', 'origin-evidence');
-      box.append(field('Evidence (sources)', links(item, 'sourceIds', 'sources', { empty: 'Add sources in Research first.' })), el('p', 'note', ''));
-      box.lastChild.append('Verification: ', verificationBadge(state), state === 'verified' ? ' — supported by a verified source.' : ' — link a verified source in Research. A URL alone does not verify a claim.');
+      const others = blueprint.components.filter(component => component.id !== item.id);
+      if (others.length) {
+        const pick = el('select', 'origin-link-add'); pick.setAttribute('aria-label', 'Connect to a component'); pick.dataset.focusKey = 'connect';
+        pick.append(Object.assign(el('option', '', '＋ Connect to…'), { value: '' }), ...others.map(component => Object.assign(el('option', '', component.name || 'Unnamed component'), { value: component.id })));
+        pick.addEventListener('change', () => {
+          if (!pick.value) return;
+          const connection = { id: newId(), origin: 'human', from: item.id, to: pick.value, label: 'calls', protocol: '', notes: '' };
+          bp().connections.push(connection);
+          changed({ structure: true, drawer: true });
+          drawer.querySelector(`[data-focus-key="label:${CSS.escape(connection.id)}"]`)?.focus();
+        });
+        box.append(pick);
+      } else box.append(el('span', 'origin-hint', 'Add another component to connect them.'));
+      const users = blueprint.connections.filter(entry => entry.to === item.id).map(entry => name(entry.from));
+      if (users.length) box.append(el('small', 'origin-hint', `Used by ${users.join(', ')}.`));
       return box;
+    }
+    function convertAssumption(item) {
+      const decision = { id: newId(), origin: 'human', ...BLANK.decisions(item.statement.slice(0, 200)), key: M.nextKey(bp(), 'decisions'),
+        context: [item.statement, item.reason && `Reason: ${item.reason}`, item.impact && `Impact if false: ${item.impact}`].filter(Boolean).join('\n'), sourceIds: [...item.sourceIds] };
+      bp().decisions.push(decision);
+      item.status = 'converted'; item.decisionId = decision.id;
+      section = 'decisions'; setPref(SECTION_KEY, section);
+      changed({ structure: true });
+      openDrawer('decisions', decision.id);
+      app.announce(`Assumption turned into ${decision.key}. Decide it, then accept or reject it.`);
+    }
+    function moveMilestone(item, step) {
+      const milestones = bp().milestones, index = milestones.indexOf(item), next = index + step;
+      if (next < 0 || next >= milestones.length) return;
+      milestones.splice(index, 1); milestones.splice(next, 0, item);
+      changed({ structure: true, drawer: true });
+    }
+    function baseField(item) {
+      if (!baseResources) {
+        baseLoading ??= app.api('/api/base', { timeoutMs: 30000 }).then(({ response, data }) => {
+          baseResources = response.ok && Array.isArray(data.resources) ? data.resources.map(resource => ({ id: resource.id, title: resource.name, kind: resource.type || resource.kind })) : [];
+          if (!response.ok) baseResources.failed = true;
+        }).catch(() => { baseResources = Object.assign([], { failed: true }); }).finally(() => { baseLoading = null; if (visible) renderDrawer(); });
+        return group('Base resources', el('span', 'origin-hint', 'Loading Base…'));
+      }
+      const known = new Set(baseResources.map(resource => resource.id));
+      const options = [...baseResources, ...item.baseResourceIds.filter(id => !known.has(id)).map(id => ({ id, title: `Missing Base resource (${id})`, kind: 'missing' }))];
+      return group('Base resources', linkChips(item, 'baseResourceIds', 'base', { options, name: resource => `${resource.title}${resource.kind && resource.kind !== 'missing' ? ` · ${resource.kind}` : ''}`,
+        empty: baseResources.failed ? 'Base could not be read. Saved references are kept.' : 'Base has no resources yet.' }), 'Referenced, never copied or changed. Nothing is assigned to an agent.');
     }
 
     // ---- Sections ----
     const SECTIONS = {
-      overview() {
-        const blueprint = bp(), found = M.issues(blueprint), ready = M.readiness(blueprint, found);
-        const read = (title, value, target) => { const box = card(title); box.append(value?.trim() ? el('p', 'origin-prose', value) : el('p', 'note', 'Not defined yet.')); if (target) box.append(button('Edit in Vision & Scope', () => openSection('vision'), 'text-button')); return box; };
-        const objective = card('What are we building?', field('Project objective', text(blueprint.vision, 'summary', { rows: 3, placeholder: 'One or two sentences.' })));
-        const components = blueprint.components;
-        const architecture = card('Architecture summary', field('Summary', text(blueprint.vision, 'architectureSummary', { rows: 3, placeholder: 'How the main parts fit together.' })),
-          el('p', 'note', components.length ? `${plural(components.length, 'component')} · ${plural(blueprint.connections.length, 'connection')}: ${components.slice(0, 8).map(item => item.name || 'Unnamed').join(', ')}${components.length > 8 ? '…' : ''}` : 'No components yet.'),
-          button('Open Architecture', () => openSection('architecture'), 'text-button'));
-        const unresolved = found.filter(issue => issue.kind === 'unresolved');
-        const decisions = card('Unresolved decisions', issueList(unresolved, 'No unresolved decisions.'));
-        const risks = blueprint.risks.slice().sort((a, b) => ['high', 'medium', 'low'].indexOf(a.severity) - ['high', 'medium', 'low'].indexOf(b.severity));
-        const riskCard = card('Major risks', toolbar(button('＋ Risk', () => add('risks', { title: '', description: '', kind: 'risk', severity: 'medium', mitigation: '', status: 'open', componentIds: [] }), 'secondary-button')),
-          rowList('risks', risks, { empty: 'No risks recorded.',
-            summary: item => [badge(M.label('severity', item.severity), item.severity === 'high' ? 'warn' : ''), titleText(item.title, 'Untitled risk'), badge(M.label('riskKind', item.kind)), statusBadge('riskStatus', item.status)],
-            editor: item => [field('Title', text(item, 'title', { max: 200 })), grid(field('Kind', choice(item, 'kind', M.ENUMS.riskKind)), field('Severity', choice(item, 'severity', M.ENUMS.severity)), field('Status', choice(item, 'status', M.ENUMS.riskStatus))),
-              field('Description', text(item, 'description', { rows: 3 })), field('Mitigation', text(item, 'mitigation', { rows: 2 })), field('Affected components', links(item, 'componentIds', 'components')),
-              el('p', 'note', item.origin === 'ai' ? 'AI suggestion. Review it before relying on it.' : 'Human-entered. System-detected problems appear in the Inspector.')] }));
-        const readinessCard = card('Implementation readiness', readinessTable(ready));
-        return [grid(objective, read('Why?', blueprint.vision.problem, true), read('For whom?', blueprint.vision.users, true)),
-          grid(read('Key outcomes', blueprint.vision.successCriteria, true), read('Scope', [blueprint.vision.inScope && `In scope:\n${blueprint.vision.inScope}`, blueprint.vision.outOfScope && `Out of scope:\n${blueprint.vision.outOfScope}`].filter(Boolean).join('\n\n'), true), read('Constraints', blueprint.vision.constraints, true)),
-          grid(architecture, decisions), readinessCard, riskCard];
-      },
+      overview: () => [mindMap(), overviewPanels()],
       vision() {
-        const vision = bp().vision;
-        const area = (key2, name, hint, rows = 3, placeholder = '') => field(name, text(vision, key2, { rows, placeholder }), hint);
-        return [card('', area('summary', 'Project objective', 'One or two sentences.', 2),
-          grid(area('problem', 'Problem', 'What is wrong or missing today?'), area('goal', 'Goal', 'What changes when this exists?')),
-          grid(area('users', 'Target users', 'One user group per line.'), area('useCases', 'Use cases', 'One use case per line.')),
-          grid(area('inScope', 'In scope', 'One item per line.'), area('outOfScope', 'Out of scope', 'One item per line. Compose and Kanban handoffs carry this as a guardrail.')),
-          grid(area('successCriteria', 'Success criteria', 'Observable outcomes, one per line.'), area('constraints', 'Constraints', 'Budget, platform, compliance, deadlines. One per line.')))];
+        const vision = bp().vision, grid = el('div', 'origin-q-grid');
+        const question = (key2, text, placeholder, wide = false) => { const box = el('label', `origin-q${wide ? ' wide' : ''}`); box.append(el('span', 'origin-q-label', text), area(vision, key2, placeholder)); return box; };
+        grid.append(question('summary', 'In one sentence, what is it?', 'A web app that…', true), question('problem', 'What problem does it solve?', 'What is broken or missing today'),
+          question('goal', 'What is the goal?', 'What changes once it exists'), question('users', 'Who is it for?', 'One group per line'), question('useCases', 'What will they do with it?', 'One use case per line'),
+          question('inScope', 'What is included?', 'One item per line'), question('outOfScope', 'What is not included?', 'One item per line — agents get this as a guardrail'),
+          question('successCriteria', 'How will you know it worked?', 'Observable outcomes, one per line'), question('constraints', 'Any limits?', 'Budget, deadlines, platforms, compliance…'));
+        return [grid];
       },
-      requirements() {
-        const filter = pref('promptboard.origin.requirement-filter', 'all');
-        const type = el('select'); type.setAttribute('aria-label', 'Filter requirements by type');
-        for (const [value, name] of [['all', 'All types'], ...M.ENUMS.requirementType]) type.append(Object.assign(el('option', '', name), { value }));
-        type.value = M.ENUMS.requirementType.some(([id]) => id === filter) ? filter : 'all';
-        type.addEventListener('change', () => { setPref('promptboard.origin.requirement-filter', type.value); renderMain(); });
-        const items = bp().requirements.filter(item => type.value === 'all' || item.type === type.value);
-        return [toolbar(button('＋ Requirement', () => add('requirements', { title: '', description: '', type: type.value === 'all' ? 'functional' : type.value, priority: 'should', status: 'draft', acceptanceCriteria: '', componentIds: [], sourceIds: [] }, { keyed: true }), 'secondary-button'), field('Type', type)),
-          rowList('requirements', items, { empty: bp().requirements.length ? 'No requirements of this type.' : 'No requirements yet. Add what the system must do and how you will know it works.',
-            summary: item => [key(item), titleText(item.title, 'Untitled requirement'), badge(M.label('requirementType', item.type)), badge(M.label('priority', item.priority)), statusBadge('itemStatus', item.status, ['needs_decision', 'assumption']),
-              ...(M.lines(item.acceptanceCriteria).length ? [] : [badge('No criteria', 'warn')])],
-            editor: item => [field('Title', text(item, 'title', { max: 200 })),
-              grid(field('Type', choice(item, 'type', M.ENUMS.requirementType)), field('Priority', choice(item, 'priority', M.ENUMS.priority)), field('Status', choice(item, 'status', M.ENUMS.itemStatus))),
-              field('Description', text(item, 'description', { rows: 3 })), field('Acceptance criteria', text(item, 'acceptanceCriteria', { rows: 4 }), 'One criterion per line.'),
-              field('Related components', links(item, 'componentIds', 'components')), evidence(item)] })];
-      },
+      requirements: () => [quickAdd('Add a requirement — e.g. “People can sign in with email”', value => add('requirements', BLANK.requirements(value), { keyed: true })),
+        list('requirements', bp().requirements, item => {
+          const checks = M.lines(item.acceptanceCriteria).length;
+          return { title: item.title, fallback: 'Untitled requirement', tone: item.status === 'needs_decision' ? 'decision' : checks ? 'defined' : 'progress',
+            sub: checks ? `Done when: ${plural(checks, 'check')}` : 'No “done when” yet', meta: [key(item), chip(M.label('priority', item.priority), item.priority === 'must' ? 'accent' : '')] };
+        }, 'Nothing yet. Add what the project must do, one line each.')],
       architecture() {
         const blueprint = bp();
-        const name = id => blueprint.components.find(item => item.id === id)?.name || 'Unnamed component';
-        return [diagram(),
-          el('h3', 'origin-subheading', 'Components'),
-          rowList('components', blueprint.components, { empty: 'No components yet.',
-            summary: item => [titleText(item.name, 'Unnamed component'), badge(M.label('componentType', item.type)), statusBadge('itemStatus', item.status, ['needs_decision', 'assumption']),
-              el('span', 'origin-row-meta', `${plural(blueprint.connections.filter(connection => connection.from === item.id).length, 'dependency', 'dependencies')} · used by ${blueprint.connections.filter(connection => connection.to === item.id).length}`)],
-            editor: item => componentEditor(item) }),
-          el('h3', 'origin-subheading', 'Connections'),
-          rowList('connections', blueprint.connections, { empty: 'No connections yet. Use Connect on the diagram or add dependencies in a component.',
-            summary: item => [titleText(`${name(item.from)} → ${name(item.to)}`), el('span', 'origin-row-meta', [item.label, item.protocol].filter(Boolean).join(' · '))],
-            editor: item => [grid(field('From', choice(item, 'from', blueprint.components.map(component => [component.id, component.name || 'Unnamed component']))),
-              field('To', choice(item, 'to', blueprint.components.map(component => [component.id, component.name || 'Unnamed component'])))),
-            grid(field('Relationship', text(item, 'label', { max: 80, placeholder: 'calls, stores, publishes…' })), field('Protocol / interface', text(item, 'protocol', { max: 80, placeholder: 'HTTPS, SQL, gRPC…' }))),
-            field('Notes', text(item, 'notes', { rows: 2, max: 2000 }))] })];
+        const name = id => blueprint.components.find(component => component.id === id)?.name || 'Unnamed';
+        return [canvas(), subhead('Components', 'Click one to describe it and connect it to others.'),
+          list('components', blueprint.components, item => {
+            const out = blueprint.connections.filter(connection => connection.from === item.id).map(connection => name(connection.to));
+            return { title: item.name, fallback: 'Unnamed component', tone: item.status === 'needs_decision' ? 'decision' : item.purpose.trim() ? 'defined' : 'progress',
+              sub: item.purpose.trim() ? clip(item.purpose, 110) : 'What does it do?', meta: [out.length ? el('span', 'origin-row-note', `→ ${clip(out.join(', '), 40)}`) : null, chip(M.label('componentType', item.type))] };
+          }, 'No components yet. Add the main building blocks above.')];
       },
       technology() {
-        const blueprint = bp(), groups = M.ENUMS.techCategory.filter(([id]) => blueprint.technologies.some(item => item.category === id));
-        const category = el('select'); category.setAttribute('aria-label', 'Category for the new technology');
+        const blueprint = bp();
+        const category = el('select', 'origin-quick-select'); category.setAttribute('aria-label', 'Category');
         for (const [value, name] of M.ENUMS.techCategory) category.append(Object.assign(el('option', '', name), { value }));
-        const nodes = [toolbar(button('＋ Technology', () => add('technologies', { name: '', category: category.value, purpose: '', version: '', status: 'candidate', reason: '', alternatives: '', sourceIds: [] }), 'secondary-button'), field('Category', category))];
-        if (!groups.length) nodes.push(el('p', 'note origin-empty-row', 'No technologies yet. Record each choice with its reason and evidence.'));
-        for (const [id, label] of groups) nodes.push(el('h3', 'origin-subheading', label), rowList('technologies', blueprint.technologies.filter(item => item.category === id), {
-          summary: item => [titleText(`${item.name}${item.version ? ` ${item.version}` : ''}`, 'Unnamed technology'), statusBadge('techStatus', item.status), ...(item.status === 'rejected' ? [] : [verificationBadge(M.verification(item, blueprint.sources))])],
-          editor: item => [grid(field('Name', text(item, 'name', { max: 200 })), field('Version', text(item, 'version', { max: 80 }))),
-            grid(field('Category', choice(item, 'category', M.ENUMS.techCategory, { onChange: () => {} })), field('Status', choice(item, 'status', M.ENUMS.techStatus))),
-            field('Purpose', text(item, 'purpose', { rows: 2 })), field('Reason selected', text(item, 'reason', { rows: 2 })), field('Alternatives considered', text(item, 'alternatives', { rows: 2 }), 'One per line.'),
-            evidence(item), el('p', 'note', `Used by: ${blueprint.components.filter(component => component.technologyIds.includes(item.id)).map(component => component.name || 'Unnamed').join(', ') || 'no component yet'}.`)] }));
+        category.value = pref('promptboard.origin.tech-category', 'frameworks');
+        category.addEventListener('change', () => setPref('promptboard.origin.tech-category', category.value));
+        const nodes = [quickAdd('Add a technology — e.g. “PostgreSQL”', value => add('technologies', { ...BLANK.technologies(value), category: category.value }), { extra: category })];
+        const groups = M.ENUMS.techCategory.filter(([id]) => blueprint.technologies.some(item => item.category === id));
+        if (!groups.length) nodes.push(el('p', 'origin-empty-note', 'Nothing chosen yet. Add languages, frameworks, databases and services — with the reason for each.'));
+        for (const [id, label] of groups) nodes.push(subhead(label), list('technologies', blueprint.technologies.filter(item => item.category === id), item => {
+          const state = M.verification(item, blueprint.sources);
+          return { title: `${item.name}${item.version ? ` ${item.version}` : ''}`, fallback: 'Unnamed technology', tone: { selected: 'defined', candidate: 'progress', rejected: 'empty' }[item.status],
+            sub: item.reason.trim() ? clip(item.reason, 110) : 'Why this one?', meta: [item.status === 'rejected' ? null : chip(M.VERIFICATION_LABELS[state], state === 'verified' ? 'ok' : state === 'unverified' ? 'muted' : 'warn'), chip(M.label('techStatus', item.status), item.status === 'selected' ? 'accent' : '')] };
+        }, ''));
         return nodes;
       },
       dependencies() {
         const blueprint = bp();
-        return [toolbar(button('＋ Dependency', () => add('dependencies', { name: '', type: 'package', version: '', requiredBy: [], dependsOn: [], sourceIds: [], notes: '' }), 'secondary-button')),
-          rowList('dependencies', blueprint.dependencies, { empty: 'No dependencies yet.',
-            summary: item => { const state = M.verification(item, blueprint.sources); return [titleText(`${item.name}${item.version ? ` ${item.version}` : ''}`, 'Unnamed dependency'), badge(M.label('dependencyType', item.type)), verificationBadge(state), el('span', 'origin-row-meta', `required by ${item.requiredBy.length}`)]; },
-            editor: item => [grid(field('Name', text(item, 'name', { max: 200 })), field('Version', text(item, 'version', { max: 80 })), field('Type', choice(item, 'type', M.ENUMS.dependencyType))),
-              grid(field('Required by', links(item, 'requiredBy', 'components')), field('Depends on', links(item, 'dependsOn', 'dependencies', { exclude: item.id }))),
-              evidence(item), field('Notes', text(item, 'notes', { rows: 2 }))] })];
+        const type = el('select', 'origin-quick-select'); type.setAttribute('aria-label', 'Type');
+        for (const [value, name] of M.ENUMS.dependencyType) type.append(Object.assign(el('option', '', name), { value }));
+        return [quickAdd('Add a dependency — e.g. “Stripe API”', value => add('dependencies', { ...BLANK.dependencies(value), type: type.value }), { extra: type }),
+          list('dependencies', blueprint.dependencies, item => {
+            const state = M.verification(item, blueprint.sources);
+            const users = item.requiredBy.map(id => blueprint.components.find(component => component.id === id)?.name).filter(Boolean);
+            return { title: `${item.name}${item.version ? ` ${item.version}` : ''}`, fallback: 'Unnamed dependency', tone: state === 'verified' ? 'defined' : state === 'unverified' ? 'progress' : 'attention',
+              sub: users.length ? `Needed by ${clip(users.join(', '), 80)}` : 'Not linked to a component yet', meta: [chip(M.VERIFICATION_LABELS[state], state === 'verified' ? 'ok' : state === 'unverified' ? 'muted' : 'warn'), chip(M.label('dependencyType', item.type))] };
+          }, 'No dependencies yet. List packages, services, APIs and tools you rely on.')];
       },
       research() {
         const blueprint = bp();
-        const usedBy = id => referencesTo('sources', id).map(({ owner, entry }) => M.itemName(blueprint, owner, entry.id)).filter(Boolean);
-        return [el('h3', 'origin-subheading', 'Sources'),
-          toolbar(button('＋ Source', () => add('sources', { title: '', url: '', type: 'documentation', claim: '', accessedAt: today(), verification: 'unverified', notes: '' }), 'secondary-button'),
-            el('p', 'note', 'Prefer official documentation, repositories, standards and primary sources. Origin does not fetch sources; you check them and set the verification.')),
-          rowList('sources', blueprint.sources, { empty: 'No sources yet.',
-            summary: item => [titleText(item.title || item.url, 'Untitled source'), badge(M.label('sourceType', item.type)), badge(M.label('sourceVerification', item.verification), item.verification === 'verified' ? 'ok' : item.verification === 'unverified' ? '' : 'warn'), el('span', 'origin-row-meta', item.accessedAt ? `accessed ${item.accessedAt}` : 'no access date')],
-            editor: item => [field('Title', text(item, 'title', { max: 200 })), urlField(item),
-              grid(field('Source type', choice(item, 'type', M.ENUMS.sourceType)), field('Verification', choice(item, 'verification', M.ENUMS.sourceVerification)), field('Date accessed', text(item, 'accessedAt', { type: 'date' }))),
-              field('Relevant claim', text(item, 'claim', { rows: 2, max: 4000 }), 'What this source supports or contradicts.'), field('Notes', text(item, 'notes', { rows: 2 })),
-              el('p', 'note', `Evidence for: ${usedBy(item.id).join(', ') || 'nothing linked yet'}.`)] }),
-          el('h3', 'origin-subheading', 'Assumptions'),
-          toolbar(button('＋ Assumption', () => add('assumptions', { statement: '', reason: '', impact: '', status: 'open', decisionId: '', sourceIds: [] }), 'secondary-button'),
-            el('p', 'note', 'Assumptions stay visible until they are resolved, marked invalid or turned into a decision.')),
-          rowList('assumptions', blueprint.assumptions, { empty: 'No assumptions recorded.',
-            summary: item => [badge('ASSUMPTION', 'assumption'), titleText(item.statement, 'Untitled assumption'), statusBadge('assumptionStatus', item.status, ['open', 'invalid'])],
-            editor: item => [field('Assumption', text(item, 'statement', { rows: 2, max: 2000 })), grid(field('Reason', text(item, 'reason', { rows: 2 })), field('Impact if false', text(item, 'impact', { rows: 2 }))),
-              field('Status', choice(item, 'status', M.ENUMS.assumptionStatus)),
-              toolbar(button('Resolve: it holds', () => { item.status = 'validated'; changed({ structure: true }); }), button('Mark invalid', () => { item.status = 'invalid'; changed({ structure: true }); }),
-                item.decisionId ? button(`Open ${M.itemName(blueprint, 'decisions', item.decisionId)}`, () => focusTarget({ section: 'decisions', collection: 'decisions', id: item.decisionId }), 'text-button')
-                  : button('Convert to decision', () => convertAssumption(item))),
-              evidence(item)] })];
+        return [subhead('Sources', 'Official docs, repositories and standards. Mark one Verified only after you checked it.'),
+          quickAdd('Paste a link or name a source…', value => add('sources', BLANK.sources(value)), { id: 'sources', max: 2000 }),
+          list('sources', blueprint.sources, item => ({ title: item.title || item.url, fallback: 'Untitled source', tone: { verified: 'defined', unverified: 'progress' }[item.verification] || 'attention',
+            sub: [hostOf(item.url), item.claim.trim() && clip(item.claim, 80)].filter(Boolean).join(' · '), meta: [chip(M.label('sourceVerification', item.verification), item.verification === 'verified' ? 'ok' : item.verification === 'unverified' ? 'muted' : 'warn')] }), 'No sources yet.'),
+          subhead('Assumptions', 'What you believe but have not confirmed. They stay visible until they hold, fail or become a decision.'),
+          quickAdd('Add an assumption — e.g. “Under 5,000 users at launch”', value => add('assumptions', BLANK.assumptions(value)), { id: 'assumptions', max: 2000 }),
+          list('assumptions', blueprint.assumptions, item => ({ title: item.statement, fallback: 'Untitled assumption', tone: { open: 'decision', invalid: 'attention' }[item.status] || 'defined',
+            sub: item.impact.trim() ? `If wrong: ${clip(item.impact, 90)}` : '', meta: [chip(M.label('assumptionStatus', item.status), item.status === 'open' ? 'warn' : item.status === 'invalid' ? 'muted' : 'ok')] }), 'No assumptions recorded.'),
+          subhead('Risks', 'What could go wrong, and how you reduce it.'),
+          quickAdd('Add a risk…', value => add('risks', BLANK.risks(value)), { id: 'risks' }),
+          list('risks', blueprint.risks, item => ({ title: item.title, fallback: 'Untitled risk', tone: item.status === 'open' ? (item.severity === 'high' ? 'attention' : 'progress') : 'defined',
+            sub: item.mitigation.trim() ? clip(item.mitigation, 90) : 'No mitigation yet', meta: [chip(M.label('severity', item.severity), item.severity === 'high' ? 'warn' : 'muted'), item.status === 'open' ? null : chip(M.label('riskStatus', item.status), 'ok')] }), 'No risks recorded.')];
       },
-      decisions() {
-        const blueprint = bp();
-        return [toolbar(button('＋ Decision', () => add('decisions', { title: '', context: '', decision: '', alternatives: '', reason: '', consequences: '', status: 'proposed', date: today(), supersededBy: '', componentIds: [], technologyIds: [], requirementIds: [], dependencyIds: [], sourceIds: [] }, { keyed: true }), 'secondary-button')),
-          rowList('decisions', blueprint.decisions, { empty: 'No decisions yet. Record important choices with their alternatives and reasons.',
-            summary: item => [key(item), titleText(item.title, 'Untitled decision'), el('span', 'origin-row-meta', item.decision ? `→ ${item.decision.split('\n')[0].slice(0, 80)}` : ''), statusBadge('decisionStatus', item.status, ['proposed']), el('span', 'origin-row-meta', item.date)],
-            editor: item => [field('Title', text(item, 'title', { max: 200, placeholder: 'Database' })),
-              grid(field('Status', choice(item, 'status', M.ENUMS.decisionStatus, { onChange: () => { if (item.status === 'accepted' && !item.date) item.date = today(); } })), field('Date', text(item, 'date', { type: 'date' })),
-                field('Superseded by', choice(item, 'supersededBy', [['', 'None'], ...blueprint.decisions.filter(other => other.id !== item.id).map(other => [other.id, M.itemName(blueprint, 'decisions', other.id)])]))),
-              item.status === 'accepted' ? el('p', 'note origin-accepted', 'Accepted. Change this decision through a new decision record so its rationale is kept.') : '',
-              field('Context', text(item, 'context', { rows: 2 })), field('Decision', text(item, 'decision', { rows: 2 })),
-              grid(field('Alternatives', text(item, 'alternatives', { rows: 3 }), 'One per line.'), field('Reason', text(item, 'reason', { rows: 3 }))), field('Consequences', text(item, 'consequences', { rows: 2 })),
-              grid(field('Components', links(item, 'componentIds', 'components')), field('Technologies', links(item, 'technologyIds', 'technologies'))),
-              grid(field('Requirements', links(item, 'requirementIds', 'requirements')), field('Dependencies', links(item, 'dependencyIds', 'dependencies'))), evidence(item)].filter(Boolean) })];
-      },
+      decisions: () => [quickAdd('Add a decision — e.g. “Database”', value => add('decisions', BLANK.decisions(value), { keyed: true, edit: true })),
+        list('decisions', bp().decisions, item => ({ title: item.title, fallback: 'Untitled decision', tone: { proposed: 'decision', accepted: 'defined' }[item.status] || 'empty',
+          sub: item.decision.trim() ? `→ ${clip(firstLine(item.decision), 100)}` : 'Not decided yet', meta: [key(item), chip(M.label('decisionStatus', item.status), { accepted: 'ok', proposed: 'warn' }[item.status] || 'muted')] }),
+        'No decisions yet. Record what you chose and why, so later work does not undo it.')],
       plan: () => planSection(),
     };
     for (const id of Object.keys(M.AREAS)) SECTIONS[id] = () => areaSection(id);
 
-    function componentEditor(item) {
-      const blueprint = bp();
-      const others = blueprint.components.filter(component => component.id !== item.id);
-      const outgoing = blueprint.connections.filter(connection => connection.from === item.id), incoming = blueprint.connections.filter(connection => connection.to === item.id);
-      const name = id => blueprint.components.find(component => component.id === id)?.name || 'Unnamed component';
-      const depends = el('div', 'origin-connections');
-      for (const connection of outgoing) {
-        const row = el('div', 'origin-connection-row');
-        row.append(el('span', 'origin-row-title', `→ ${name(connection.to)}`), text(connection, 'label', { max: 80, placeholder: 'relationship', label: `Relationship to ${name(connection.to)}` }),
-          text(connection, 'protocol', { max: 80, placeholder: 'protocol', label: `Protocol to ${name(connection.to)}` }),
-          button('Remove', () => { bp().connections = bp().connections.filter(entry => entry !== connection); changed({ structure: true }); }, 'text-button'));
-        depends.append(row);
-      }
-      const target = el('select'); target.setAttribute('aria-label', 'New dependency target');
-      target.append(Object.assign(el('option', '', 'Choose a component…'), { value: '' }), ...others.map(component => Object.assign(el('option', '', component.name || 'Unnamed component'), { value: component.id })));
-      depends.append(toolbar(target, button('Add dependency', () => {
-        if (!target.value) { target.focus(); return; }
-        bp().connections.push({ id: newId(), origin: 'human', from: item.id, to: target.value, label: 'calls', protocol: '', notes: '' });
-        focusAfter = () => main.querySelector(`.origin-row[data-id="${CSS.escape(item.id)}"] .origin-connection-row:last-of-type input`);
-        changed({ structure: true });
-      })));
-      return [grid(field('Name', text(item, 'name', { max: 200 })), field('Type', choice(item, 'type', M.ENUMS.componentType)), field('Status', choice(item, 'status', M.ENUMS.itemStatus))),
-        field('Purpose', text(item, 'purpose', { rows: 2 })), field('Responsibilities', text(item, 'responsibilities', { rows: 3 }), 'One per line.'),
-        grid(field('Interfaces', text(item, 'interfaces', { rows: 2 })), field('Data handled', text(item, 'dataHandled', { rows: 2 }))),
-        field('Technologies', links(item, 'technologyIds', 'technologies', { empty: 'Add technologies in Technology first.' })),
-        field('Depends on', depends), el('p', 'note', `Used by: ${incoming.map(connection => `${name(connection.from)}${connection.label ? ` (${connection.label})` : ''}`).join(', ') || 'no component'}.`),
-        field('Notes', text(item, 'notes', { rows: 2 })), evidence(item)];
-    }
-    function urlField(item) {
-      const control = el('input'); control.type = 'url'; control.maxLength = 2000; control.value = item.url; control.placeholder = 'https://…';
-      const error = el('small', 'origin-field-error'); error.hidden = true;
-      const open = el('a', 'text-button origin-open-link', 'Open source ↗'); open.target = '_blank'; open.rel = 'noopener noreferrer';
-      const sync = () => { const url = safeUrl(item.url); open.hidden = !url; if (url) open.href = url; else open.removeAttribute('href'); };
-      control.addEventListener('input', () => {
-        const value = control.value.trim(), valid = !value || Boolean(safeUrl(value));
-        error.hidden = valid; error.textContent = valid ? '' : 'Use an http or https address without a user name or password. It is not saved until it is valid.';
-        control.setAttribute('aria-invalid', String(!valid));
-        if (valid && item.url !== value) { item.url = value; changed(); }
-        sync();
-      });
-      sync();
-      const box = field('URL', control); box.append(error, open);
-      return box;
-    }
-    function convertAssumption(item) {
-      const decision = add('decisions', { title: item.statement.slice(0, 200), context: [item.statement, item.reason && `Reason: ${item.reason}`, item.impact && `Impact if false: ${item.impact}`].filter(Boolean).join('\n'),
-        decision: '', alternatives: '', reason: '', consequences: '', status: 'proposed', date: today(), supersededBy: '', componentIds: [], technologyIds: [], requirementIds: [], dependencyIds: [], sourceIds: [...item.sourceIds] }, { keyed: true });
-      item.status = 'converted'; item.decisionId = decision.id;
-      section = 'decisions'; setPref(SECTION_KEY, section);
-      changed({ structure: true });
-      app.announce(`Assumption converted to ${decision.key}. Complete the decision and accept or reject it.`);
-    }
-
+    // Planning topics: one question per topic, answered in place.
     function areaSection(id) {
-      const blueprint = bp(), areas = M.AREAS[id], items = blueprint.areas.filter(item => item.section === id);
+      const blueprint = bp(), topics = M.AREAS[id], items = blueprint.areas.filter(item => item.section === id);
+      const answered = new Set(items.filter(item => item.title.trim()).map(item => item.area));
       const nodes = [];
-      if (blueprint.sections[id]?.notApplicable) nodes.push(el('p', 'note origin-na-note', 'Marked not applicable. Existing entries are kept and still count in the blueprint.'));
-      const area = el('select'); area.setAttribute('aria-label', 'Area for the new item');
-      for (const [value, name] of areas) area.append(Object.assign(el('option', '', name), { value }));
-      nodes.push(toolbar(button('＋ Item', () => add('areas', { section: id, area: area.value, title: '', description: '', status: 'draft', componentIds: [], requirementIds: [], technologyIds: [], baseResourceIds: [] }), 'secondary-button'), field('Area', area)));
-      if (id === 'security') {
-        const covered = new Set(items.filter(item => item.status === 'defined').map(item => item.area));
-        const coverage = el('ul', 'origin-coverage');
-        for (const [value, name] of areas) { const entry = el('li', covered.has(value) ? 'covered' : ''); entry.append(el('span', 'origin-glyph', covered.has(value) ? '✓' : '○'), ` ${name}`); entry.title = covered.has(value) ? 'A defined security item exists' : 'No defined item yet'; coverage.append(entry); }
-        nodes.push(card(`Security decisions defined: ${covered.size} / ${areas.length} areas`, coverage, el('p', 'note', 'Coverage shows which decisions exist. It is not an assessment of security.')));
+      if (blueprint.sections[id]?.notApplicable) nodes.push(el('p', 'origin-callout', 'Marked as not needed. Anything already written is kept.'));
+      const progress = el('p', 'origin-progress'); progress.append(el('strong', '', `${answered.size} of ${topics.length}`),
+        id === 'security' ? ' topics answered. This shows which security decisions exist — not how secure the project is.' : ' topics answered. Skip what does not apply.');
+      nodes.push(progress);
+      const topicList = el('ul', 'origin-topics');
+      for (const [area2, label] of topics) {
+        const row = el('li', 'origin-topic'); row.dataset.area = area2;
+        const name = el('span', 'origin-topic-label'); const dot = el('span', 'origin-dot'); dot.dataset.state = answered.has(area2) ? 'defined' : 'empty'; dot.setAttribute('aria-hidden', 'true');
+        name.append(dot, label);
+        const answers = el('div', 'origin-answers');
+        const own = items.filter(item => item.area === area2);
+        for (const item of own.length ? own : [null]) answers.append(answerRow(id, area2, label, item, dot));
+        if (own.length) {
+          const another = button('＋ Another', () => { const extra = answerRow(id, area2, label, null, dot); answers.insertBefore(extra, another); extra.querySelector('input').focus(); }, 'origin-link origin-another');
+          answers.append(another);
+        }
+        row.append(name, answers);
+        topicList.append(row);
       }
-      const used = areas.filter(([value]) => items.some(item => item.area === value));
-      if (!used.length) nodes.push(el('p', 'note origin-empty-row', 'No items yet.'));
-      for (const [value, name] of used) nodes.push(el('h3', 'origin-subheading', name), rowList('areas', items.filter(item => item.area === value), {
-        summary: item => [titleText(item.title, 'Untitled item'), statusBadge('itemStatus', item.status, ['needs_decision', 'assumption']),
-          el('span', 'origin-row-meta', [item.componentIds.length && plural(item.componentIds.length, 'component'), item.requirementIds.length && plural(item.requirementIds.length, 'requirement'), item.baseResourceIds.length && plural(item.baseResourceIds.length, 'Base resource')].filter(Boolean).join(' · '))],
-        editor: item => [grid(field('Title', text(item, 'title', { max: 200 })), field('Area', choice(item, 'area', areas, { onChange: () => {} })), field('Status', choice(item, 'status', M.ENUMS.itemStatus))),
-          field('Description', text(item, 'description', { rows: 3 })),
-          grid(field('Components', links(item, 'componentIds', 'components')), field(id === 'testing' ? 'Requirements covered' : 'Requirements', links(item, 'requirementIds', 'requirements'))),
-          field('Technologies', links(item, 'technologyIds', 'technologies')),
-          ...(id === 'ai' ? [baseField(item)] : [])] }));
+      nodes.push(topicList);
       return nodes;
     }
-    function baseField(item) {
-      const box = el('div', 'origin-base');
-      if (!baseResources) {
-        box.append(el('p', 'note', baseLoading ? 'Loading Base resources…' : 'Base resources are read when needed.'));
-        baseLoading ??= app.api('/api/base', { timeoutMs: 30000 }).then(({ response, data }) => {
-          baseResources = response.ok && Array.isArray(data.resources) ? data.resources.map(resource => ({ id: resource.id, title: resource.name, kind: resource.type || resource.kind })) : [];
-          if (!response.ok) baseResources.failed = true;
-        }).catch(() => { baseResources = Object.assign([], { failed: true }); }).finally(() => { baseLoading = null; if (visible) renderMain(); });
-        return box;
-      }
-      const known = new Set(baseResources.map(resource => resource.id));
-      const options = [...baseResources, ...item.baseResourceIds.filter(id => !known.has(id)).map(id => ({ id, title: `Missing Base resource (${id})`, kind: 'missing' }))];
-      box.append(field('Base resources (referenced, not copied)', links(item, 'baseResourceIds', 'base', { options, name: resource => `${resource.title}${resource.kind && resource.kind !== 'missing' ? ` · ${resource.kind}` : ''}`, empty: baseResources.failed ? 'Base could not be read. Saved references are kept.' : 'Base has no resources yet.' })),
-        el('p', 'note', 'Origin only stores resource IDs. It never creates, copies or changes Base resources, and nothing is assigned to an agent.'));
-      return box;
+    function answerRow(id, area2, label, item, dot) {
+      const row = el('div', 'origin-answer'); if (item) row.dataset.id = item.id;
+      const control = el('input'); control.maxLength = 200; control.value = item?.title || ''; control.placeholder = `Your approach to ${label.toLowerCase()}…`; control.setAttribute('aria-label', `${label}: your approach`);
+      let bound = item;
+      const more = button('', () => { if (bound) openDrawer('areas', bound.id); }, 'origin-icon origin-small origin-answer-more', 'Details');
+      more.setAttribute('aria-label', `Details for ${label}`); more.append(icon(ICON.dots)); more.hidden = !bound;
+      control.addEventListener('input', () => {
+        if (!bound) {
+          if (!control.value.trim()) return;
+          bound = { id: newId(), origin: 'human', ...BLANK.areas('', id, area2) };
+          bp().areas.push(bound); row.dataset.id = bound.id; more.hidden = false;
+        }
+        bound.title = control.value;
+        dot.dataset.state = bp().areas.some(entry => entry.section === id && entry.area === area2 && entry.title.trim()) ? 'defined' : 'empty';
+        changed();
+      });
+      // An answer cleared back to nothing disappears, unless it carries details.
+      control.addEventListener('blur', () => {
+        if (!bound || bound.title.trim() || bound.description.trim() || bound.componentIds.length || bound.requirementIds.length || bound.technologyIds.length || bound.baseResourceIds.length) return;
+        removeEntity('areas', bound.id); bound = null; delete row.dataset.id; more.hidden = true; changed();
+      });
+      row.append(control, more);
+      return row;
     }
 
     function planSection() {
       const blueprint = bp();
       const tasks = new Map(app.projects().flatMap(item => item.tasks.map(task => [task.id, task])));
-      const handoffText = item => { if (!item.handoff) return null; const task = tasks.get(item.handoff.taskId); return badge(task ? `In Kanban${task.number ? ` #${task.number}` : ''}` : 'Sent to Kanban (card removed)', task ? 'ok' : 'warn'); };
+      const nodes = [quickAdd('Add a milestone — e.g. “Foundation”', value => add('milestones', BLANK.milestones(value)), { id: 'milestones' })];
+      if (lastHandoff) { const done = el('p', 'origin-callout ok', lastHandoff); done.setAttribute('role', 'status'); done.append(' ', button('Open Kanban', () => app.openKanban(), 'origin-link')); nodes.push(done); }
       const leading = item => {
-        const box2 = el('input'); box2.type = 'checkbox'; box2.className = 'origin-select'; box2.checked = planSelection.has(item.id); box2.setAttribute('aria-label', `Select ${item.key} for Kanban`);
-        box2.addEventListener('change', () => { if (box2.checked) planSelection.add(item.id); else planSelection.delete(item.id); renderMain(); });
-        return box2;
+        const box = el('input', 'origin-check'); box.type = 'checkbox'; box.checked = planSelection.has(item.id); box.setAttribute('aria-label', `Select ${item.key} for Kanban`);
+        box.addEventListener('change', () => { if (box.checked) planSelection.add(item.id); else planSelection.delete(item.id); renderMain(); });
+        return box;
       };
-      const itemRows = items => rowList('items', items, { leading, empty: 'No items.',
-        summary: item => [key(item), titleText(item.title, 'Untitled item'), statusBadge('workStatus', item.status), ...(item.workstream ? [badge(item.workstream)] : []),
-          ...(item.dependsOn.length ? [el('span', 'origin-row-meta', `after ${item.dependsOn.map(id => blueprint.items.find(entry => entry.id === id)?.key).filter(Boolean).join(', ')}`)] : []), handoffText(item)].filter(Boolean),
-        editor: item => [field('Title', text(item, 'title', { max: 200 })),
-          grid(field('Milestone', choice(item, 'milestoneId', [['', 'Unscheduled'], ...blueprint.milestones.map(milestone => [milestone.id, milestone.title || 'Untitled milestone'])], { onChange: () => {} })),
-            field('Workstream', text(item, 'workstream', { max: 80, placeholder: 'Backend, UI…' })), field('Status', choice(item, 'status', M.ENUMS.workStatus))),
-          field('Description', text(item, 'description', { rows: 3 })), field('Acceptance criteria', text(item, 'acceptanceCriteria', { rows: 3 }), 'One per line.'),
-          grid(field('Depends on', links(item, 'dependsOn', 'items', { exclude: item.id })), field('Requirements', links(item, 'requirementIds', 'requirements'))),
-          field('Components', links(item, 'componentIds', 'components')),
-          item.handoff ? el('p', 'note', `Sent to Kanban on ${new Date(item.handoff.at).toLocaleString()}. Creating tasks again adds another card.`) : ''].filter(Boolean) });
-      const count = planSelection.size;
-      const send = button(`Create Kanban tasks (${count})`, () => openHandoff(), 'copy-button', 'Create To Do cards for the selected items. No agent starts.');
-      send.id = 'origin-kanban-handoff'; send.disabled = !count || handoffBusy;
-      const nodes = [toolbar(button('＋ Milestone', () => add('milestones', { title: '', goal: '', definitionOfDone: '' }), 'secondary-button'),
-        button('＋ Item', () => add('items', { milestoneId: blueprint.milestones.at(-1)?.id || '', workstream: '', title: '', description: '', acceptanceCriteria: '', dependsOn: [], requirementIds: [], componentIds: [], status: 'planned', handoff: null }, { keyed: true }), 'secondary-button'),
-        button('Select items not sent', () => { planSelection = new Set(blueprint.items.filter(item => !item.handoff).map(item => item.id)); renderMain(); }, 'text-button'),
-        count ? button('Clear selection', () => { planSelection = new Set(); renderMain(); }, 'text-button') : null, send)];
-      if (lastHandoff) { const done = el('p', 'note origin-handoff-result', lastHandoff); done.setAttribute('role', 'status'); done.append(' ', button('Open Kanban', () => app.openKanban(), 'text-button')); nodes.push(done); }
-      blueprint.milestones.forEach((milestone, index) => {
-        const head = el('div', 'origin-milestone');
-        const items = blueprint.items.filter(item => item.milestoneId === milestone.id);
-        head.append(rowList('milestones', [milestone], {
-          summary: item => [el('span', 'origin-key', `M${index + 1}`), titleText(item.title, 'Untitled milestone'), el('span', 'origin-row-meta', plural(items.length, 'item'))],
-          editor: item => [field('Title', text(item, 'title', { max: 200 })), field('Goal', text(item, 'goal', { rows: 2 })), field('Definition of done', text(item, 'definitionOfDone', { rows: 3 }), 'One per line.'),
-            toolbar(button('Move up', () => moveMilestone(item, -1)), button('Move down', () => moveMilestone(item, 1))), el('p', 'note', 'Deleting a milestone moves its items to Unscheduled.')] }));
-        head.append(itemRows(items));
-        nodes.push(head);
-      });
-      const unscheduled = blueprint.items.filter(item => !item.milestoneId);
-      if (unscheduled.length || !blueprint.milestones.length) nodes.push(el('h3', 'origin-subheading', blueprint.milestones.length ? 'Unscheduled' : 'Items'), itemRows(unscheduled));
+      const describe = item => {
+        const task = item.handoff && tasks.get(item.handoff.taskId);
+        const after = item.dependsOn.map(id => blueprint.items.find(entry => entry.id === id)?.key).filter(Boolean);
+        const checks = M.lines(item.acceptanceCriteria).length;
+        return { title: item.title, fallback: 'Untitled step', tone: item.status === 'done' ? 'defined' : checks ? 'defined' : 'progress',
+          sub: [after.length && `after ${after.join(', ')}`, checks ? `done when: ${plural(checks, 'check')}` : 'No “done when” yet'].filter(Boolean).join(' · '),
+          meta: [key(item), item.status === 'planned' ? null : chip(M.label('workStatus', item.status), item.status === 'done' ? 'ok' : 'muted'),
+            item.handoff ? chip(task ? `In Kanban${task.number ? ` #${task.number}` : ''}` : 'Card removed', task ? 'ok' : 'warn') : null] };
+      };
+      const groups = blueprint.milestones.map((milestone, index) => ({ milestone, index }));
+      if (!groups.length || blueprint.items.some(item => !item.milestoneId)) groups.push({ milestone: null });
+      const timeline = el('ol', 'origin-timeline');
+      for (const { milestone, index } of groups) {
+        const stage = el('li', 'origin-milestone'); if (milestone) stage.dataset.id = milestone.id;
+        const items = blueprint.items.filter(item => (item.milestoneId || '') === (milestone?.id || ''));
+        const head = el('div', 'origin-milestone-head');
+        head.append(el('span', 'origin-milestone-marker', milestone ? String(index + 1) : '·'));
+        if (milestone) {
+          const title = el('button', 'origin-milestone-title'); title.type = 'button';
+          title.append(el('span', 'origin-row-title', milestone.title || 'Untitled milestone'));
+          if (milestone.goal.trim()) title.append(el('span', 'origin-row-sub', clip(milestone.goal, 120)));
+          title.addEventListener('click', () => openDrawer('milestones', milestone.id));
+          head.append(title);
+        } else head.append(el('span', 'origin-milestone-title static', blueprint.milestones.length ? 'Unscheduled' : 'Steps'));
+        head.append(el('span', 'origin-count', plural(items.length, 'step')));
+        stage.append(head, list('items', items, describe, milestone ? 'No steps yet.' : 'Add the first step — or create milestones above to group steps.', { leading }),
+          quickAdd(milestone ? `Add a step to ${clip(milestone.title || 'this milestone', 40)}…` : 'Add a step…', value => add('items', { ...BLANK.items(value), milestoneId: milestone?.id || '' }, { keyed: true }), { id: `items-${milestone?.id || 'none'}` }));
+        timeline.append(stage);
+      }
+      nodes.push(timeline);
+      if (blueprint.items.length) {
+        const count = planSelection.size, bar = el('div', 'origin-selection');
+        const send = button(count ? `Create ${plural(count, 'Kanban task')}` : 'Create Kanban tasks', () => openHandoff(), 'origin-primary', 'Create To Do cards for the selected steps. No agent starts.');
+        send.id = 'origin-kanban-handoff'; send.disabled = !count || handoffBusy;
+        bar.append(el('span', 'origin-selection-text', count ? `${plural(count, 'step')} selected` : 'Select steps to send to Kanban'),
+          button('Select all not sent', () => { planSelection = new Set(blueprint.items.filter(item => !item.handoff).map(item => item.id)); renderMain(); }, 'origin-link'),
+          count ? button('Clear', () => { planSelection = new Set(); renderMain(); }, 'origin-link') : '', send);
+        nodes.push(bar);
+      }
       return nodes;
     }
-    function moveMilestone(item, step) {
-      const list = bp().milestones, index = list.indexOf(item), next = index + step;
-      if (next < 0 || next >= list.length) return;
-      list.splice(index, 1); list.splice(next, 0, item);
-      focusAfter = () => main.querySelector(`.origin-row[data-id="${CSS.escape(item.id)}"] .origin-editor button`);
-      changed({ structure: true });
+
+    // ---- Overview: the blueprint as a mind map ----
+    function leaves(id) {
+      const blueprint = bp(), entry = (collection, item, label) => ({ label, target: { collection, id: item.id } });
+      switch (id) {
+        case 'vision': return [['problem', 'Problem'], ['goal', 'Goal'], ['users', 'For'], ['inScope', 'Scope'], ['successCriteria', 'Success']].filter(([name]) => blueprint.vision[name].trim())
+          .map(([name, label]) => ({ label: `${label}: ${firstLine(blueprint.vision[name])}`, target: { section: 'vision' } }));
+        case 'requirements': return blueprint.requirements.map(item => entry('requirements', item, item.title || 'Untitled requirement'));
+        case 'architecture': return blueprint.components.map(item => entry('components', item, item.name || 'Unnamed component'));
+        case 'technology': return blueprint.technologies.filter(item => item.status !== 'rejected').map(item => entry('technologies', item, `${item.name || 'Unnamed'}${item.version ? ` ${item.version}` : ''}`));
+        case 'dependencies': return blueprint.dependencies.map(item => entry('dependencies', item, item.name || 'Unnamed dependency'));
+        case 'research': return [...blueprint.sources.map(item => entry('sources', item, item.title || hostOf(item.url) || 'Source')),
+          ...blueprint.assumptions.filter(item => item.status === 'open').map(item => entry('assumptions', item, `Assumes ${item.statement}`)),
+          ...blueprint.risks.filter(item => item.status === 'open').map(item => entry('risks', item, `Risk: ${item.title || 'untitled'}`))];
+        case 'decisions': return blueprint.decisions.map(item => entry('decisions', item, item.decision.trim() ? `${item.title || 'Decision'} → ${firstLine(item.decision)}` : `${item.title || 'Decision'} ?`));
+        case 'plan': return blueprint.milestones.length ? blueprint.milestones.map(item => entry('milestones', item, item.title || 'Untitled milestone')) : blueprint.items.map(item => entry('items', item, item.title || 'Untitled step'));
+        default: return blueprint.areas.filter(item => item.section === id && item.title.trim()).map(item => entry('areas', item, `${M.label(id, item.area)}: ${item.title}`));
+      }
+    }
+    function mindMap() {
+      const blueprint = bp(), ns = 'http://www.w3.org/2000/svg', states = M.sectionStates(blueprint);
+      const SECTION_W = 176, SECTION_H = 40, SX = 300, LEAF_H = 27, GAP = 16, MAX = 4, LEAF_W = 196, CENTER_W = 300;
+      const wrap = el('section', 'origin-map-card'); wrap.setAttribute('aria-label', 'Project map');
+      const svg = document.createElementNS(ns, 'svg'); svg.classList.add('origin-map'); svg.setAttribute('role', 'group'); svg.setAttribute('aria-label', 'Project map: click a branch to open it');
+      const make = (tag, attrs = {}, parent = svg) => { const node = document.createElementNS(ns, tag); for (const [name, value] of Object.entries(attrs)) node.setAttribute(name, String(value)); parent.append(node); return node; };
+      const links = make('g', { class: 'origin-map-links' }), nodes = make('g');
+      const clickable = (node, label, action) => {
+        node.setAttribute('tabindex', '0'); node.setAttribute('role', 'button'); node.setAttribute('aria-label', label);
+        node.addEventListener('click', action);
+        node.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); action(); } });
+      };
+      const curve = (x1, y1, x2, y2, bend) => `M${x1} ${y1}C${x1 + bend} ${y1} ${x2 - bend} ${y2} ${x2} ${y2}`;
+      // Center: the project itself.
+      const summary = blueprint.vision.summary.trim() || blueprint.idea.trim();
+      const words = summary.split(/\s+/).filter(Boolean), lines = [];
+      for (const word of words) { if (!lines.length || `${lines.at(-1)} ${word}`.length > 38) lines.push(word); else lines[lines.length - 1] += ` ${word}`; if (lines.length > 3) break; }
+      if (lines.length > 3) { lines.length = 3; lines[2] = `${lines[2].slice(0, 36)}…`; }
+      const centerH = 64 + Math.max(lines.length, 1) * 20;
+      let maxHalf = centerH / 2 + 20;
+      for (const [side, ids] of [[-1, MAP_LEFT], [1, MAP_RIGHT]]) {
+        const blocks = ids.map(id => { const all = leaves(id), shown = all.slice(0, MAX); return { id, shown, extra: all.length - shown.length, height: Math.max(1, shown.length + (all.length > MAX ? 1 : 0)) * LEAF_H }; });
+        const total = blocks.reduce((sum, block) => sum + block.height, 0) + GAP * (blocks.length - 1);
+        maxHalf = Math.max(maxHalf, total / 2 + 24);
+        let y = -total / 2;
+        for (const block of blocks) {
+          const cy = y + block.height / 2, phase = PHASE_OF[block.id].id, state = states[block.id];
+          const inner = side * (SX - SECTION_W / 2), outer = side * (SX + SECTION_W / 2);
+          make('path', { d: curve(side * CENTER_W / 2, Math.max(-centerH / 2 + 14, Math.min(centerH / 2 - 14, cy * 0.16)), inner, cy, side * 70), class: `origin-map-link phase-${phase}${state === 'empty' || state === 'na' ? ' faint' : ''}` }, links);
+          const node = make('g', { class: `origin-map-section phase-${phase} state-${state}`, transform: `translate(${side * SX - SECTION_W / 2} ${cy - SECTION_H / 2})` }, nodes);
+          make('rect', { width: SECTION_W, height: SECTION_H, rx: SECTION_H / 2 }, node);
+          make('circle', { cx: 20, cy: SECTION_H / 2, r: 4.5, class: 'origin-map-dot' }, node);
+          const label = make('text', { x: 36, y: SECTION_H / 2 + 5, class: 'origin-map-label' }, node); label.textContent = block.id === 'plan' ? 'Build plan' : M.sectionLabel(block.id);
+          const count = block.id === 'vision' ? 0 : sectionCount(block.id);
+          if (count) { const number = make('text', { x: SECTION_W - 18, y: SECTION_H / 2 + 4.5, 'text-anchor': 'end', class: 'origin-map-count' }, node); number.textContent = String(count); }
+          clickable(node, `${M.sectionLabel(block.id)}: ${M.SECTION_STATE[state][1]}${count ? `, ${count}` : ''}`, () => openSection(block.id));
+          block.shown.forEach((leaf, index) => {
+            const ly = y + index * LEAF_H + LEAF_H / 2, lx = outer + side * 34;
+            make('path', { d: curve(outer, cy, lx, ly, side * 16), class: `origin-map-link leaf phase-${phase}` }, links);
+            const group2 = make('g', { class: `origin-map-leaf phase-${phase}`, transform: `translate(${lx} ${ly})` }, nodes);
+            make('circle', { r: 2.6, class: 'origin-map-dot' }, group2);
+            const text = make('text', { x: side * 10, y: 5, 'text-anchor': side < 0 ? 'end' : 'start' }, group2); text.textContent = clip(leaf.label, 26);
+            const tip = make('title', {}, group2); tip.textContent = leaf.label;
+            clickable(group2, leaf.label, () => focusTarget(leaf.target));
+          });
+          if (block.extra > 0) {
+            const ly = y + block.shown.length * LEAF_H + LEAF_H / 2;
+            const more = make('text', { x: outer + side * 43, y: ly + 4, 'text-anchor': side < 0 ? 'end' : 'start', class: 'origin-map-more' }, nodes); more.textContent = `+${block.extra} more`;
+            clickable(more, `${block.extra} more in ${M.sectionLabel(block.id)}`, () => openSection(block.id));
+          }
+          y += block.height + GAP;
+        }
+      }
+      const center = make('g', { class: 'origin-map-center', transform: `translate(${-CENTER_W / 2} ${-centerH / 2})` }, nodes);
+      make('rect', { width: CENTER_W, height: centerH, rx: 20 }, center);
+      const name = make('text', { x: CENTER_W / 2, y: 38, 'text-anchor': 'middle', class: 'origin-map-title' }, center); name.textContent = clip(project()?.name || 'Project', 30);
+      lines.forEach((line, index) => { const text = make('text', { x: CENTER_W / 2, y: 64 + index * 20, 'text-anchor': 'middle', class: 'origin-map-summary' }, center); text.textContent = line; });
+      if (!lines.length) { const text = make('text', { x: CENTER_W / 2, y: 64, 'text-anchor': 'middle', class: 'origin-map-summary faint' }, center); text.textContent = 'Click to describe the idea'; }
+      clickable(center, `${project()?.name || 'Project'}. Open Vision & Scope`, () => openSection('vision'));
+      const width = 2 * (SX + SECTION_W / 2 + 44 + LEAF_W);
+      svg.setAttribute('viewBox', `${-width / 2} ${-maxHalf} ${width} ${maxHalf * 2}`);
+      svg.style.setProperty('--map-ratio', String(width / (maxHalf * 2)));
+      wrap.append(svg);
+      return wrap;
+    }
+    function overviewPanels() {
+      const blueprint = bp(), found = M.issues(blueprint), ready = M.readiness(blueprint, found);
+      const steps = [...found.filter(issue => issue.blocking), ...found.filter(issue => !issue.blocking && issue.origin === 'system')].slice(0, 6);
+      const box = el('div', 'origin-panels');
+      const next = el('section', 'origin-panel'); next.append(el('h3', '', 'Next steps'));
+      if (steps.length) {
+        const ol = el('ol', 'origin-steps');
+        for (const issue of steps) {
+          const li = el('li'); const go = button('', () => focusTarget(issue.target), `origin-step${issue.blocking ? '' : ' advisory'}`);
+          const dot = el('span', 'origin-dot'); dot.dataset.state = issue.kind === 'unresolved' ? 'decision' : issue.blocking ? 'attention' : 'empty'; dot.setAttribute('aria-hidden', 'true');
+          go.append(dot, el('span', 'origin-step-text', issue.title), el('span', 'origin-step-where', M.sectionLabel(issue.target?.collection ? sectionOf(issue.target) || issue.target.section : issue.target?.section)), icon(ICON.arrow, 14));
+          go.title = `${{ system: 'Detected', human: 'Recorded by you', ai: 'AI suggestion' }[issue.origin]}${issue.action ? ` · ${issue.action}` : ''}`;
+          li.append(go); ol.append(li);
+        }
+        next.append(ol);
+      } else next.append(el('p', 'origin-empty-note', ready.state === 'not_started' ? 'Describe the idea to begin.' : 'Nothing blocking. Plan the build, then send steps to Kanban.'));
+      const glance = el('section', 'origin-panel'); glance.append(el('h3', '', 'At a glance'));
+      const state = el('p', `origin-state state-${ready.state}`); state.append(el('span', 'origin-pill-dot'), ready.label); glance.append(state);
+      if (ready.state === 'attention') glance.append(el('p', 'origin-hint', ready.reasons.join(' ')));
+      const stats = el('dl', 'origin-stats');
+      for (const row of ready.rows) { const term = el('dt'); term.append(button(row.label, () => openSection(row.section), 'origin-link')); stats.append(term, el('dd', '', row.value)); }
+      glance.append(stats, el('p', 'origin-hint', 'Counts come from what you wrote. Origin never scores quality.'));
+      box.append(next, glance);
+      return box;
     }
 
-    // ---- Architecture diagram: an SVG view over components and connections ----
+    // ---- Architecture canvas: a view over components and connections ----
     function positions(blueprint) {
       const map = new Map(), level = new Map(blueprint.components.map(item => [item.id, 0]));
       for (let pass = 0; pass < blueprint.components.length; pass++) {
@@ -820,24 +1106,31 @@ window.PromptboardOrigin = (() => {
       }
       return map;
     }
-    function diagram() {
+    function canvas() {
       const blueprint = bp(), ns = 'http://www.w3.org/2000/svg';
       const wrap = el('section', 'origin-canvas-card'); wrap.setAttribute('aria-label', 'Architecture diagram');
-      const connect = button(connectFrom === null ? 'Connect' : 'Cancel connecting', () => { connectFrom = connectFrom === null ? '' : null; renderMain(); }, connectFrom === null ? 'secondary-button' : 'secondary-button origin-active');
-      connect.disabled = blueprint.components.length < 2;
-      const hint = el('p', 'note origin-canvas-hint', connectFrom === null ? 'Select a component for details. Double-click or press Enter to edit. Drag or use arrow keys to move.'
-        : connectFrom ? `Choose the component that ${blueprint.components.find(item => item.id === connectFrom)?.name || 'it'} depends on. Escape cancels.` : 'Choose the component that depends on another. Escape cancels.');
+      const type = el('select', 'origin-quick-select'); type.setAttribute('aria-label', 'Type');
+      for (const [value, name] of M.ENUMS.componentType) type.append(Object.assign(el('option', '', name), { value }));
+      const tools = el('div', 'origin-canvas-tools');
+      const connect = button(connectFrom === null ? 'Connect' : 'Cancel', () => { connectFrom = connectFrom === null ? '' : null; renderMain(); }, `origin-ghost${connectFrom === null ? '' : ' active'}`, 'Draw a connection between two blocks');
+      connect.id = 'origin-connect'; connect.disabled = blueprint.components.length < 2;
+      const arrange = button('Arrange', () => { for (const item of bp().components) { item.x = null; item.y = null; } changed({ structure: true }); }, 'origin-ghost', 'Lay out blocks by how they depend on each other');
+      arrange.disabled = !blueprint.components.length;
+      tools.append(quickAdd('Add a building block — e.g. “Web app”, “API”, “Database”', value => add('components', { ...BLANK.components(value), type: type.value }), { id: 'components', extra: type }), connect, arrange);
+      const named = id => blueprint.components.find(item => item.id === id)?.name || 'it';
+      const hint = el('p', 'origin-canvas-hint', connectFrom === null ? 'Click a block to describe it · drag to move' : connectFrom ? `Now click the block that ${named(connectFrom)} connects to · Esc cancels` : 'Click the block the connection starts from · Esc cancels');
       hint.setAttribute('role', 'status');
-      wrap.append(toolbar(button('＋ Component', () => add('components', { name: '', type: 'service', purpose: '', responsibilities: '', technologyIds: [], interfaces: '', dataHandled: '', status: 'draft', notes: '', sourceIds: [], x: null, y: null }), 'secondary-button'),
-        connect, button('Auto-arrange', () => { for (const item of bp().components) { item.x = null; item.y = null; } changed({ structure: true }); }, 'secondary-button', 'Lay out components by dependency level'), hint));
-      const svg = document.createElementNS(ns, 'svg'); svg.classList.add('origin-canvas'); svg.setAttribute('role', 'group'); svg.setAttribute('aria-label', `Architecture: ${plural(blueprint.components.length, 'component')}, ${plural(blueprint.connections.length, 'connection')}`);
+      wrap.append(tools, hint);
+      const svg = document.createElementNS(ns, 'svg'); svg.classList.add('origin-canvas');
+      svg.setAttribute('role', 'group'); svg.setAttribute('aria-label', `Architecture: ${plural(blueprint.components.length, 'component')}, ${plural(blueprint.connections.length, 'connection')}`);
       svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
       const make = (tag, attrs = {}, parent = svg) => { const node = document.createElementNS(ns, tag); for (const [name, value] of Object.entries(attrs)) node.setAttribute(name, String(value)); parent.append(node); return node; };
-      const defs = make('defs'), marker = make('marker', { id: 'origin-arrow', viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse' }, defs);
-      make('path', { d: 'M0 0L10 5L0 10z', class: 'origin-arrow' }, marker);
+      const marker = make('marker', { id: 'origin-arrow', viewBox: '0 0 10 10', refX: 8.5, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse' }, make('defs'));
+      make('path', { d: 'M1 1.5L8.5 5L1 8.5', class: 'origin-arrow' }, marker);
       if (!blueprint.components.length) {
-        svg.setAttribute('viewBox', '0 0 600 200');
-        const empty = make('text', { x: 300, y: 100, 'text-anchor': 'middle', class: 'origin-canvas-empty' }); empty.textContent = 'No components yet. Add the main parts of the system, then connect them.';
+        svg.setAttribute('viewBox', '0 0 640 200');
+        const empty = make('text', { x: 320, y: 96, 'text-anchor': 'middle', class: 'origin-canvas-empty' }); empty.textContent = 'Add the main building blocks above — then connect them.';
+        const sub = make('text', { x: 320, y: 120, 'text-anchor': 'middle', class: 'origin-canvas-empty faint' }); sub.textContent = 'For example: Web app → API → Database';
         wrap.append(svg); return wrap;
       }
       const at = positions(blueprint);
@@ -847,76 +1140,83 @@ window.PromptboardOrigin = (() => {
         for (const connection of blueprint.connections) {
           const a = at.get(connection.from), b = at.get(connection.to);
           if (!a || !b) continue;
-          const reverse = blueprint.connections.some(other => other.from === connection.to && other.to === connection.from);
-          const [x1, y1] = [a.x + NODE_W / 2, a.y + NODE_H / 2], [x2, y2] = [b.x + NODE_W / 2, b.y + NODE_H / 2];
-          const length = Math.hypot(x2 - x1, y2 - y1) || 1, nx = -(y2 - y1) / length * (reverse ? 7 : 0), ny = (x2 - x1) / length * (reverse ? 7 : 0);
-          const clip = (cx, cy, dx, dy) => { const scale = Math.min((NODE_W / 2 + 4) / Math.abs(dx || 1e-9), (NODE_H / 2 + 4) / Math.abs(dy || 1e-9)); return [cx + dx * scale, cy + dy * scale]; };
-          const [sx, sy] = clip(x1, y1, x2 - x1, y2 - y1), [ex, ey] = clip(x2, y2, x1 - x2, y1 - y2);
-          const group = make('g', { class: `origin-edge${editing === connection.id ? ' selected' : ''}` }, edges);
-          make('path', { d: `M${sx + nx} ${sy + ny}L${ex + nx} ${ey + ny}`, 'marker-end': 'url(#origin-arrow)' }, group);
-          const words = [connection.label, connection.protocol].filter(Boolean).join(' · ');
-          if (words) { const label = make('text', { x: (sx + ex) / 2 + nx, y: (sy + ey) / 2 + ny - 7, 'text-anchor': 'middle', class: 'origin-edge-label' }, group); label.textContent = words.length > 32 ? `${words.slice(0, 31)}…` : words; }
+          const ac = { x: a.x + NODE_W / 2, y: a.y + NODE_H / 2 }, bc = { x: b.x + NODE_W / 2, y: b.y + NODE_H / 2 };
+          const dx = bc.x - ac.x, dy = bc.y - ac.y, horizontal = Math.abs(dx) * NODE_H >= Math.abs(dy) * NODE_W;
+          const reverse = blueprint.connections.some(other => other.from === connection.to && other.to === connection.from) ? (connection.from < connection.to ? 7 : -7) : 0;
+          let p0, p3, p1, p2;
+          if (horizontal) {
+            const s = Math.sign(dx) || 1, bend = Math.max(36, Math.abs(dx) / 2.2);
+            p0 = { x: ac.x + s * NODE_W / 2, y: ac.y + reverse }; p3 = { x: bc.x - s * (NODE_W / 2 + 2), y: bc.y + reverse };
+            p1 = { x: p0.x + s * bend, y: p0.y }; p2 = { x: p3.x - s * bend, y: p3.y };
+          } else {
+            const s = Math.sign(dy) || 1, bend = Math.max(28, Math.abs(dy) / 2.2);
+            p0 = { x: ac.x + reverse, y: ac.y + s * NODE_H / 2 }; p3 = { x: bc.x + reverse, y: bc.y - s * (NODE_H / 2 + 2) };
+            p1 = { x: p0.x, y: p0.y + s * bend }; p2 = { x: p3.x, y: p3.y - s * bend };
+          }
+          const group2 = make('g', { class: `origin-edge${open?.id === connection.from ? ' related' : ''}` }, edges);
+          make('path', { d: `M${p0.x} ${p0.y}C${p1.x} ${p1.y} ${p2.x} ${p2.y} ${p3.x} ${p3.y}`, 'marker-end': 'url(#origin-arrow)' }, group2);
+          const words = clip([connection.label, connection.protocol].filter(Boolean).join(' · '), 28);
+          if (words) {
+            const mx = (p0.x + 3 * p1.x + 3 * p2.x + p3.x) / 8, my = (p0.y + 3 * p1.y + 3 * p2.y + p3.y) / 8, w = words.length * 6.1 + 14;
+            make('rect', { x: mx - w / 2, y: my - 10, width: w, height: 20, rx: 10, class: 'origin-edge-pill' }, group2);
+            const label = make('text', { x: mx, y: my + 3.8, 'text-anchor': 'middle', class: 'origin-edge-label' }, group2); label.textContent = words;
+          }
         }
       };
       const fit = () => {
         const xs = [...at.values()].map(point => point.x), ys = [...at.values()].map(point => point.y);
-        let minX = Math.min(...xs) - 40, minY = Math.min(...ys) - 40, width = Math.max(...xs) - Math.min(...xs) + NODE_W + 80, height = Math.max(...ys) - Math.min(...ys) + NODE_H + 80;
-        if (width < 560) { minX -= (560 - width) / 2; width = 560; }
-        if (height < 220) { minY -= (220 - height) / 2; height = 220; }
+        let minX = Math.min(...xs) - 48, minY = Math.min(...ys) - 48, width = Math.max(...xs) - Math.min(...xs) + NODE_W + 96, height = Math.max(...ys) - Math.min(...ys) + NODE_H + 96;
+        if (width < 680) { minX -= (680 - width) / 2; width = 680; }
+        if (height < 260) { minY -= (260 - height) / 2; height = 260; }
         svg.setAttribute('viewBox', `${minX} ${minY} ${width} ${height}`);
       };
-      const states = new Map(M.issues(blueprint).filter(issue => issue.target?.collection === 'components').map(issue => [issue.target.id, issue.kind]));
+      const flagged = new Map(M.issues(blueprint).filter(issue => issue.target?.collection === 'components').map(issue => [issue.target.id, issue.kind]));
       for (const component of blueprint.components) {
         const point = at.get(component.id);
-        const node = make('g', { class: `origin-node${selected?.id === component.id ? ' selected' : ''}${connectFrom === component.id ? ' connecting' : ''}${states.has(component.id) ? ' attention' : ''}`, transform: `translate(${point.x} ${point.y})`, tabindex: 0, role: 'button', 'data-id': component.id,
-          'aria-label': `${component.name || 'Unnamed component'}, ${M.label('componentType', component.type)}, ${M.label('itemStatus', component.status)}. Enter edits.` }, nodes);
-        make('rect', { width: NODE_W, height: NODE_H, rx: 8 }, node);
-        const name = make('text', { x: 12, y: 24, class: 'origin-node-name' }, node); name.textContent = (component.name || 'Unnamed component').slice(0, 24) + ((component.name || '').length > 24 ? '…' : '');
-        const meta = make('text', { x: 12, y: 43, class: 'origin-node-meta' }, node); meta.textContent = `${M.label('componentType', component.type)} · ${M.label('itemStatus', component.status)}`;
-        if (states.has(component.id)) { const mark = make('text', { x: NODE_W - 14, y: 22, 'text-anchor': 'middle', class: 'origin-node-mark' }, node); mark.textContent = states.get(component.id) === 'unresolved' ? '?' : '!'; }
-        const title = make('title', {}, node); title.textContent = component.purpose || component.name || 'Component';
+        const node = make('g', { class: `origin-node${connectFrom === component.id ? ' connecting' : ''}${flagged.has(component.id) ? ' attention' : ''}`, transform: `translate(${point.x} ${point.y})`, tabindex: 0, role: 'button', 'data-id': component.id,
+          'aria-label': `${component.name || 'Unnamed component'}, ${M.label('componentType', component.type)}. Enter edits, arrow keys move.` }, nodes);
+        make('rect', { width: NODE_W, height: NODE_H, rx: 14, class: 'origin-node-box' }, node);
+        make('rect', { x: 12, y: 16, width: 4, height: NODE_H - 32, rx: 2, class: 'origin-node-accent' }, node);
+        const kind = make('text', { x: 26, y: 23, class: 'origin-node-type' }, node); kind.textContent = M.label('componentType', component.type).toUpperCase();
+        const name = make('text', { x: 26, y: 42, class: 'origin-node-name' }, node); name.textContent = clip(component.name || 'Unnamed component', 20);
+        if (flagged.has(component.id)) make('circle', { cx: NODE_W - 14, cy: 14, r: 4, class: `origin-node-flag ${flagged.get(component.id)}` }, node);
+        const tip = make('title', {}, node); tip.textContent = component.purpose || component.name || 'Component';
         const activate = () => {
-          // The first click re-renders the diagram, so a double-click is detected here rather than by the DOM event.
-          const now = Date.now();
-          if (connectFrom === null && lastActivation.id === component.id && now - lastActivation.at < 450) { lastActivation = { id: null, at: 0 }; toggleEditor('components', component.id); return; }
-          lastActivation = { id: component.id, at: now };
-          if (connectFrom === null) { selected = { collection: 'components', id: component.id }; inspectorTab = 'details'; focusAfter = () => main.querySelector(`.origin-node[data-id="${CSS.escape(component.id)}"]`); renderMain(); return; }
+          if (connectFrom === null) { openDrawer('components', component.id); return; }
           if (!connectFrom) { connectFrom = component.id; focusAfter = () => main.querySelector(`.origin-node[data-id="${CSS.escape(component.id)}"]`); renderMain(); return; }
           if (connectFrom === component.id) return;
-          const connection = { id: newId(), origin: 'human', from: connectFrom, to: component.id, label: 'calls', protocol: '', notes: '' };
-          bp().connections.push(connection); connectFrom = null; editing = connection.id;
-          focusAfter = () => main.querySelector(`.origin-row[data-id="${CSS.escape(connection.id)}"] .origin-editor input`);
-          app.announce('Connection added. Name the relationship and protocol.');
+          const from = connectFrom;
+          bp().connections.push({ id: newId(), origin: 'human', from, to: component.id, label: 'calls', protocol: '', notes: '' });
+          connectFrom = null;
           changed({ structure: true });
+          openDrawer('components', from);
+          app.announce('Connected. Name how they talk in the editor.');
         };
         let drag = null;
         node.addEventListener('pointerdown', event => {
           if (event.button !== 0) return;
           const matrix = svg.getScreenCTM()?.inverse(); if (!matrix) return;
-          const start = new DOMPoint(event.clientX, event.clientY).matrixTransform(matrix);
-          drag = { id: event.pointerId, start, origin: { ...point }, moved: false, matrix };
+          drag = { id: event.pointerId, start: new DOMPoint(event.clientX, event.clientY).matrixTransform(matrix), origin: { ...point }, moved: false, matrix };
           node.setPointerCapture?.(event.pointerId);
         });
         node.addEventListener('pointermove', event => {
           if (!drag || event.pointerId !== drag.id) return;
-          const now = new DOMPoint(event.clientX, event.clientY).matrixTransform(drag.matrix);
-          const dx = now.x - drag.start.x, dy = now.y - drag.start.y;
+          const now = new DOMPoint(event.clientX, event.clientY).matrixTransform(drag.matrix), dx = now.x - drag.start.x, dy = now.y - drag.start.y;
           if (!drag.moved && Math.hypot(dx, dy) < 4) return;
           drag.moved = true; point.x = Math.round(drag.origin.x + dx); point.y = Math.round(drag.origin.y + dy);
           node.setAttribute('transform', `translate(${point.x} ${point.y})`); drawEdges();
         });
-        const finish = event => {
+        node.addEventListener('pointerup', event => {
           if (!drag || event.pointerId !== drag.id) return;
           const moved = drag.moved; drag = null;
-          if (moved) { for (const [id, value] of at) { const entry = bp().components.find(item => item.id === id); if (entry) { entry.x = value.x; entry.y = value.y; } } changed({ structure: true }); }
-          else activate();
-        };
-        node.addEventListener('pointerup', finish);
+          if (!moved) { activate(); return; }
+          for (const [id, value] of at) { const entry = bp().components.find(item => item.id === id); if (entry) { entry.x = value.x; entry.y = value.y; } }
+          changed({ structure: true });
+        });
         node.addEventListener('pointercancel', () => { drag = null; renderMain(); });
         node.addEventListener('keydown', event => {
           const step = { ArrowLeft: [-20, 0], ArrowRight: [20, 0], ArrowUp: [0, -20], ArrowDown: [0, 20] }[event.key];
-          if (event.key === 'Enter') { event.preventDefault(); if (connectFrom === null) toggleEditor('components', component.id); else activate(); }
-          else if (event.key === ' ') { event.preventDefault(); activate(); }
+          if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); activate(); }
           else if (step) {
             event.preventDefault();
             for (const [id, value] of at) { const entry = bp().components.find(item => item.id === id); if (entry) { entry.x = value.x; entry.y = value.y; } }
@@ -927,135 +1227,42 @@ window.PromptboardOrigin = (() => {
         });
       }
       drawEdges(); fit();
-      const scroller = el('div', 'origin-canvas-scroll'); scroller.append(svg);
-      wrap.append(scroller);
+      wrap.append(svg);
       return wrap;
     }
 
-    // ---- Inspector ----
-    function issueList(list, empty) {
-      const box = el('ul', 'origin-issues');
-      if (!list.length) { box.append(el('li', 'note', empty)); return box; }
-      for (const issue of list) {
-        const entry = el('li', `origin-issue origin-issue-${issue.kind}`);
-        const open = button('', () => focusTarget(issue.target), 'origin-issue-open');
-        open.append(el('span', 'origin-issue-title', issue.title));
-        const meta = el('span', 'origin-issue-meta', `${{ system: 'Detected', human: 'Recorded', ai: 'AI suggestion' }[issue.origin]} · ${M.label('riskKind', issue.kind)}${issue.blocking ? '' : ' · advisory'}`);
-        open.append(meta);
-        if (issue.action) open.title = issue.action;
-        entry.append(open); box.append(entry);
-      }
-      return box;
-    }
-    function readinessTable(ready) {
-      const box = el('div', 'origin-readiness-table');
-      const state = el('p', `origin-state origin-state-${ready.state}`, ready.label);
-      const reasons = el('ul', 'origin-reasons'); for (const reason of ready.reasons) reasons.append(el('li', '', reason));
-      const table = el('dl', 'origin-counts');
-      for (const row of ready.rows) {
-        const term = el('dt'); term.append(button(row.label, () => openSection(row.section), 'text-button'));
-        table.append(term, el('dd', '', row.value));
-      }
-      box.append(state, reasons, table, el('p', 'note', 'Counts come from saved records. Origin does not score quality.'));
-      return box;
-    }
-    function renderInspector(found = M.issues(bp()), ready = M.readiness(bp(), found)) {
-      const tabs = el('div', 'view-switch origin-inspector-tabs'); tabs.setAttribute('role', 'tablist'); tabs.setAttribute('aria-label', 'Inspector views');
-      const tab = (id, name) => { const node = button(name, () => { inspectorTab = id; renderInspector(); }, ''); node.setAttribute('role', 'tab'); node.setAttribute('aria-selected', String(inspectorTab === id)); node.id = `origin-tab-${id}`; return node; };
-      const entry = selected && bp()[selected.collection]?.find(item => item.id === selected.id);
-      if (!entry && inspectorTab === 'details') inspectorTab = 'intel';
-      tabs.append(tab('intel', 'Intelligence'), tab('details', 'Details'));
-      tabs.lastChild.disabled = !entry;
-      const panel = el('div', 'origin-inspector-panel'); panel.setAttribute('role', 'tabpanel'); panel.setAttribute('aria-labelledby', `origin-tab-${inspectorTab}`);
-      if (inspectorTab === 'details' && entry) panel.append(...details(selected.collection, entry));
-      else {
-        const group = (title, list, empty) => { const box = el('section', 'origin-inspector-group'); box.append(el('h3', '', `${title} · ${list.length}`), issueList(list, empty)); return box; };
-        const assumptions = bp().assumptions.filter(item => item.status === 'open').map(item => ({ kind: 'unresolved', origin: item.origin, title: item.statement || 'Untitled assumption', blocking: false, target: { section: 'research', collection: 'assumptions', id: item.id } }));
-        panel.append(el('p', `origin-state origin-state-${ready.state}`, ready.label), ...ready.reasons.map(reason => el('p', 'note origin-reason', reason)),
-          group('Unresolved decisions', found.filter(issue => issue.kind === 'unresolved'), 'None.'),
-          group('Assumptions', assumptions.map(item => ({ ...item, kind: 'risk' })), 'No open assumptions.'),
-          group('Unverified claims', found.filter(issue => issue.kind === 'unverified'), 'None.'),
-          group('Conflicts', found.filter(issue => issue.kind === 'conflict'), 'None.'),
-          group('Missing information', found.filter(issue => issue.kind === 'missing' && issue.blocking), 'None.'),
-          group('Recorded risks', found.filter(issue => issue.rule === 'recorded' && issue.kind === 'risk'), 'No open risks recorded.'),
-          group('Suggestions', found.filter(issue => !issue.blocking && !['conflict', 'unresolved', 'unverified', 'risk'].includes(issue.kind)), 'None.'),
-          el('p', 'note', 'Detected items come from fixed rules over saved records. Origin has no AI research yet.'));
-      }
-      const close = button('×', () => setInspector(false), 'icon-button origin-inspector-close'); close.setAttribute('aria-label', 'Close inspector');
-      inspector.replaceChildren(close, tabs, panel);
-    }
-    function details(collection, entry) {
-      const blueprint = bp(), nodes = [];
-      const componentName = id => blueprint.components.find(item => item.id === id)?.name || 'Unnamed component';
-      const title = collection === 'connections' ? `${componentName(entry.from)} → ${componentName(entry.to)}` : M.itemName(blueprint, collection, entry.id) || 'Untitled';
-      nodes.push(el('p', 'eyebrow', NOUN[collection].toUpperCase()), el('h3', 'origin-detail-title', title));
-      const badges = el('div', 'origin-badges');
-      for (const [fieldName, enumName] of [['type', collection === 'requirements' ? 'requirementType' : collection === 'components' ? 'componentType' : collection === 'dependencies' ? 'dependencyType' : ''], ['status', { requirements: 'itemStatus', components: 'itemStatus', areas: 'itemStatus', technologies: 'techStatus', decisions: 'decisionStatus', assumptions: 'assumptionStatus', risks: 'riskStatus', items: 'workStatus' }[collection]], ['verification', collection === 'sources' ? 'sourceVerification' : ''], ['category', collection === 'technologies' ? 'techCategory' : '']]) {
-        if (enumName && entry[fieldName]) badges.append(badge(M.label(enumName, entry[fieldName])));
-      }
-      if (entry.sourceIds && (entry.sourceIds.length || ['technologies', 'dependencies'].includes(collection))) badges.append(verificationBadge(M.verification(entry, blueprint.sources)));
-      if (entry.origin === 'ai') badges.append(badge('AI suggestion', 'ai'));
-      nodes.push(badges);
-      const prose = entry.purpose || entry.description || entry.decision || entry.statement || entry.claim || entry.goal || '';
-      if (prose) nodes.push(el('p', 'origin-prose', prose.length > 600 ? `${prose.slice(0, 600)}…` : prose));
-      const row = (title, list) => { if (!list.length) return; const box = el('section', 'origin-inspector-group'); box.append(el('h3', '', title)); const ul = el('ul', 'origin-detail-links'); for (const [label, target] of list) { const li = el('li'); li.append(button(label, () => focusTarget(target), 'text-button')); ul.append(li); } box.append(ul); nodes.push(box); };
-      const ref = (targetCollection, id) => [M.itemName(blueprint, targetCollection, id) || (targetCollection === 'connections' ? 'Connection' : 'Untitled'), { section: { components: 'architecture', connections: 'architecture', requirements: 'requirements', technologies: 'technology', dependencies: 'dependencies', decisions: 'decisions', assumptions: 'research', sources: 'research', risks: 'overview', milestones: 'plan', items: 'plan', areas: blueprint.areas.find(item => item.id === id)?.section }[targetCollection], collection: targetCollection, id }];
-      if (collection === 'components') {
-        const name = id => blueprint.components.find(item => item.id === id)?.name || 'Unnamed component';
-        row('Depends on', blueprint.connections.filter(item => item.from === entry.id).map(item => [`${name(item.to)}${item.label ? ` (${item.label})` : ''}`, { section: 'architecture', collection: 'connections', id: item.id }]));
-        row('Used by', blueprint.connections.filter(item => item.to === entry.id).map(item => [`${name(item.from)}${item.label ? ` (${item.label})` : ''}`, { section: 'architecture', collection: 'connections', id: item.id }]));
-      }
-      for (const [fieldName, value] of Object.entries(entry)) {
-        const target = typeof REFS[fieldName] === 'function' ? REFS[fieldName](collection) : REFS[fieldName];
-        if (!target) continue;
-        const ids = Array.isArray(value) ? value : value ? [value] : [];
-        row(REF_LABELS[fieldName], ids.filter(id => blueprint[target]?.some(item => item.id === id)).map(id => ref(target, id)));
-      }
-      const incoming = referencesTo(collection, entry.id).filter(({ owner }) => !(collection === 'components' && owner === 'connections'));
-      row('Referenced by', incoming.map(({ owner, entry: other }) => ref(owner, other.id)));
-      if (collection === 'areas' && entry.baseResourceIds.length) row('Base resources', entry.baseResourceIds.map(id => [baseResources?.find(resource => resource.id === id)?.title || id, { section: 'ai', collection: 'areas', id: entry.id }]));
-      if (collection === 'sources' && safeUrl(entry.url)) { const link = el('a', 'text-button', 'Open source ↗'); link.href = safeUrl(entry.url); link.target = '_blank'; link.rel = 'noopener noreferrer'; nodes.push(link); }
-      const actions = el('div', 'detail-actions');
-      actions.append(button(editing === entry.id ? 'Editing' : 'Edit', () => focusTarget(ref(collection, entry.id)[1]), 'secondary-button'));
-      if (COMPOSABLE.has(collection)) actions.append(composeButton(collection, entry.id));
-      actions.append(button('Show intelligence', () => { selected = null; inspectorTab = 'intel'; renderInspector(); renderMain(); }, 'text-button'));
-      nodes.push(actions);
-      return nodes;
-    }
-
     // ---- Handoffs ----
-    function composeButton(collection, id) {
+    function composeButton(collection, id, message) {
       const control = button('Send to Compose', async () => {
         const spec = M.composeSpec(bp(), collection, id, project()?.name || '');
         if (!spec) return;
         await flush();
         let result = app.toCompose(spec);
         if (result === 'draft') {
-          control.textContent = 'Replace Compose draft?';
-          control.classList.add('danger');
-          if (control.dataset.confirm !== 'true') { control.dataset.confirm = 'true'; showError('Compose already has unsaved text. Choose “Replace Compose draft?” to replace it, or copy that text first.'); return; }
+          if (control.dataset.confirm !== 'true') {
+            control.dataset.confirm = 'true'; control.textContent = 'Replace Compose draft?'; control.classList.add('danger');
+            message.textContent = 'Compose already has unsaved text. Click again to replace it, or copy that text first.'; message.hidden = false;
+            return;
+          }
           result = app.toCompose({ ...spec, replace: true });
         }
-        if (result === 'busy') { showError('Compose is generating a prompt. Wait for it or cancel it, then try again.'); return; }
-        showError('');
+        if (result === 'busy') { message.textContent = 'Compose is generating a prompt. Wait for it or cancel it, then try again.'; message.hidden = false; return; }
         app.announce(`Opened ${spec.title} in Compose. Review the prompt, then choose Generate. Nothing was generated.`);
-      }, 'secondary-button', 'Prefill Compose with this item and its direct relationships. Nothing is generated.');
-      control.classList.add('origin-compose');
+      }, 'origin-ghost origin-compose', 'Fill Compose with just this item and what it links to. Nothing is generated.');
+      control.prepend(icon(ICON.arrow, 14));
       return control;
     }
-
     let handoffDialog = null;
     function openHandoff() {
       const blueprint = bp(), selection = [...planSelection].filter(id => blueprint.items.some(item => item.id === id));
       if (!selection.length) return;
-      const target = project();
-      const tasks = M.kanbanTasks(blueprint, selection, target?.name || '');
-      handoffDialog ??= (() => { const dialog = el('dialog', 'kanban-dialog origin-dialog'); dialog.id = 'origin-handoff-dialog'; dialog.setAttribute('aria-labelledby', 'origin-handoff-heading'); document.body.append(dialog); return dialog; })();
+      const target = project(), tasks = M.kanbanTasks(blueprint, selection, target?.name || '');
+      handoffDialog ??= (() => { const dialog = el('dialog', 'origin-modal'); dialog.id = 'origin-handoff-dialog'; dialog.setAttribute('aria-labelledby', 'origin-handoff-heading'); document.body.append(dialog); return dialog; })();
       const dialog = handoffDialog;
       const heading = el('h2', '', 'Create Kanban tasks'); heading.id = 'origin-handoff-heading';
-      const list = el('ol', 'origin-handoff-list');
-      for (const task of tasks) { const item = blueprint.items.find(entry => entry.id === task.itemId); const li = el('li', '', task.title); if (item.handoff) li.append(' ', badge('already sent', 'warn')); list.append(li); }
-      const error = el('p', 'inline-error'); error.hidden = true; error.setAttribute('role', 'alert');
+      const steps = el('ol', 'origin-handoff-list');
+      for (const task of tasks) { const item = blueprint.items.find(entry => entry.id === task.itemId); const li = el('li', '', task.title); if (item.handoff) li.append(' ', chip('already sent', 'warn')); steps.append(li); }
+      const error = el('p', 'origin-inline-error'); error.hidden = true; error.setAttribute('role', 'alert');
       const confirm = button(`Create ${plural(tasks.length, 'card')} in To Do`, async () => {
         confirm.disabled = true; handoffBusy = true;
         const created = [];
@@ -1072,55 +1279,18 @@ window.PromptboardOrigin = (() => {
         if (!error.hidden) { renderMain(); return; }
         dialog.close();
         planSelection = new Set();
-        lastHandoff = `Created ${plural(created.length, 'card')} in To Do of ${target?.name || 'this project'}, in dependency order. No agent started.`;
+        lastHandoff = `Created ${plural(created.length, 'card')} in To Do of ${target?.name || 'this project'}, dependencies first. No agent started.`;
         app.announce(lastHandoff);
         renderMain();
-      }, 'dialog-done');
+      }, 'origin-primary');
       confirm.id = 'origin-handoff-confirm';
-      const close = button('×', () => dialog.close(), 'dialog-close icon-button'); close.setAttribute('aria-label', 'Close');
-      const actions = el('div', 'kanban-dialog-actions'); actions.append(button('Cancel', () => dialog.close()), confirm);
-      dialog.replaceChildren(close, el('p', 'eyebrow', `KANBAN · ${(target?.name || '').toUpperCase()}`), heading,
-        el('p', 'note', 'Each selected item becomes one To Do card, dependencies first. Cards include the item’s acceptance criteria, linked requirements and components, and an Origin reference. No agent starts; you start work from Kanban.'),
-        list, error, actions);
+      const close = button('', () => dialog.close(), 'origin-icon origin-modal-close'); close.setAttribute('aria-label', 'Close'); close.append(icon(ICON.close));
+      const actions = el('div', 'origin-modal-actions'); actions.append(button('Cancel', () => dialog.close(), 'origin-ghost'), confirm);
+      dialog.replaceChildren(close, el('p', 'origin-eyebrow', `Kanban · ${target?.name || ''}`), heading,
+        el('p', 'origin-modal-lead', 'Each step becomes one To Do card, dependencies first, with its “done when”, linked requirements and components, and an Origin reference. No agent starts — you start work from Kanban.'),
+        steps, error, actions);
       dialog.showModal();
       confirm.focus();
-    }
-
-    // ---- Import and export ----
-    function exportBlueprint() {
-      tools.open = false;
-      if (!record?.exists) { showError('Start a blueprint before exporting it.'); return; }
-      const data = { schema: M.SCHEMA, version: M.VERSION, kind: 'export', projectName: project()?.name || '', exportedAt: new Date().toISOString(), blueprint: bp() };
-      const url = URL.createObjectURL(new Blob([`${JSON.stringify(data, null, 2)}\n`], { type: 'application/json' }));
-      const link = el('a'); link.href = url; link.download = `${(project()?.name || 'project').replace(/[^\w.-]+/g, '-').slice(0, 60)}-origin-blueprint.json`;
-      document.body.append(link); link.click(); link.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-      app.announce('Blueprint exported.');
-    }
-    importFile.addEventListener('change', async () => {
-      tools.open = false;
-      const file = importFile.files?.[0]; importFile.value = '';
-      if (!file || !projectId || !record) return;
-      if (file.size > 4 * 1024 * 1024) { showError('Choose a blueprint file smaller than 4 MiB.'); return; }
-      let data;
-      try { data = JSON.parse(await file.text()); } catch { showError('This file is not valid JSON. Nothing was imported.'); return; }
-      const blueprint = data?.schema === M.SCHEMA && data.blueprint ? data.blueprint : data;
-      if (!blueprint || typeof blueprint !== 'object' || Array.isArray(blueprint)) { showError('This file does not contain an Origin blueprint. Nothing was imported.'); return; }
-      if (!record.exists) { await applyImport(blueprint); return; }
-      // Replacing an existing blueprint needs an explicit inline confirmation.
-      const replace = button('Replace blueprint', () => void applyImport(blueprint), 'secondary-button');
-      notice.replaceChildren(`Importing “${file.name}” replaces this project’s blueprint. Export it first if you want to keep it. `, replace, ' ', button('Cancel', () => showNotice(''), 'text-button'));
-      notice.hidden = false; replace.focus();
-    });
-    async function applyImport(blueprint) {
-      showNotice('');
-      if (!(await flush()) && saveState !== 'conflict') return;
-      const { response, data: result } = await app.api(`/api/origin/projects/${encodeURIComponent(projectId)}`, { method: 'PUT', body: { expectedRevision: record.revision, blueprint }, timeoutMs: 30000 })
-        .catch(() => ({ response: { ok: false }, data: {} }));
-      if (!response.ok) { showError(result.error || 'The blueprint could not be imported. The saved blueprint is unchanged.'); return; }
-      await load(projectId, { force: true });
-      showNotice(`Blueprint imported${result.repairs ? `; ${plural(result.repairs, 'invalid entry', 'invalid entries')} or broken links were removed` : ''}.`);
-      app.announce('Blueprint imported.');
     }
 
     // ---- Keyboard ----
@@ -1128,9 +1298,8 @@ window.PromptboardOrigin = (() => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') { event.preventDefault(); void save({ force: changeCount !== savedCount }); return; }
       if (event.key !== 'Escape' || event.defaultPrevented) return;
       if (connectFrom !== null) { event.preventDefault(); connectFrom = null; renderMain(); return; }
-      if (narrow() && inspectorOpen()) { event.preventDefault(); setInspector(false); }
+      if (open) { event.preventDefault(); closeDrawer(); }
     });
-    readinessButton.addEventListener('click', () => { selected = null; inspectorTab = 'intel'; if (!inspectorOpen()) setInspector(true); renderInspector(); });
 
     return { show, leave };
   }
