@@ -31,6 +31,7 @@ import { notificationRoute } from './pipeline-notifications-http.mjs';
 import { RepositoryPipelineError } from './pipeline-repository.mjs';
 import { inspectWorkspace, saveWorkspaceFile, WorkspaceFileError } from './workspace-files.mjs';
 import { proposeWorkspaceFile, validateFileProposalRequest } from './workspace-file-ai.mjs';
+import { OriginError, OriginStore, originRoute } from './origin.mjs';
 
 const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
 const assets = new Map([
@@ -42,6 +43,7 @@ const assets = new Map([
   ['/prefs.js', ['prefs.js', 'text/javascript; charset=utf-8']],
   ['/notifications.js', ['notifications.js', 'text/javascript; charset=utf-8']],
   ['/workspace-files.js', ['workspace-files.js', 'text/javascript; charset=utf-8']],
+  ['/origin-model.js', ['origin-model.js', 'text/javascript; charset=utf-8']],
   ['/nerd.png', ['nerd.png', 'image/png']],
   ['/kanban-mascot.png', ['kanban-mascot.png', 'image/png']],
   ['/dock.js', ['dock.js', 'text/javascript; charset=utf-8']],
@@ -345,6 +347,8 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
     if (res.destroyed || (id && cancelledCompose.get(id) > Date.now())) claimed.job.controller.abort();
     return claimed;
   };
+  // Origin blueprints live in their own files; the route only reads the board to check the project.
+  const origin = new OriginStore(dataDir);
   const baseRoutes = new BaseRoutes({ board, runner, claim, track, catalog: getCatalog, send, jsonBody, ...(mcpTester ? { mcpTester } : {}), imageGenerator });
   let composeContext;
   const getCompose = () => composeContext ??= import('./compose-context.mjs').then(({ ComposeContext }) => new ComposeContext(composeMcp ? { mcp: composeMcp } : {}));
@@ -390,6 +394,13 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
         return send(res, failure.status, failure.body);
       }
       return send(res, 404, { error: 'This Base route does not exist.' });
+    }
+    if (/^\/api\/origin(?:\/|$)/.test(pathname)) {
+      try { return await originRoute({ origin, board, req, res, pathname, jsonBody, send }); }
+      catch (error) {
+        const known = error instanceof OriginError || error?.code === 'ORIGIN_INVALID' || error instanceof StoreError || (error?.status >= 400 && error.status < 500);
+        return send(res, known ? error.status || 500 : 500, known ? { error: error.message, code: error.code || 'INVALID_REQUEST' } : { error: 'The blueprint request failed. Board, Compose and Base data are unchanged.', code: 'ORIGIN_FAILED' });
+      }
     }
     if (req.method === 'GET' && pathname === '/api/models') {
       try { return send(res, 200, await getCatalog(requestUrl.searchParams.get('provider'), { refresh: requestUrl.searchParams.get('refresh') === '1' })); }
