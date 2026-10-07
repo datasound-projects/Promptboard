@@ -52,7 +52,7 @@ test('Origin in real Chrome: quick entry, mind map, diagram, evidence, readiness
   assert.equal(await ev(`return document.title;`), 'Origin · Promptboard');
   assert.equal(await ev(`return document.querySelector('#origin-main h2').textContent;`), 'What do you want to build?');
   assert.equal(await ev(`return /Ask AI|Import/i.test(document.querySelector('#origin-view').textContent);`), false, 'Origin starts from the project: no AI prompt box and no import.');
-  assert.equal(await ev(`return document.documentElement.dataset.theme;`), 'dark', 'Origin opens dark by default.');
+  assert.equal(await ev(`return document.documentElement.dataset.theme;`), 'dark', 'Promptboard opens dark by default.');
   const stateBefore = await readFile(statePath, 'utf8');
 
   // Untrusted text stays text, on the start screen and in the mind map.
@@ -206,17 +206,14 @@ test('Origin in real Chrome: quick entry, mind map, diagram, evidence, readiness
   assert.equal(generated.length, 0, 'No model call was made.');
   await close();
 
-  // Origin keeps its own theme: dark by default, switchable to light, independent of the other pages.
+  // One theme for every page: dark by default, one switch in the top bar.
   const theme = () => ev(`return document.documentElement.dataset.theme;`);
   const go = async hash => { await ev(`location.hash = ${J(hash)};`); await wait(`document.documentElement.dataset.page === ${J(hash === '#/' ? 'compose' : hash.slice(2))}`, `page ${hash}`); };
   assert.equal(await theme(), 'dark');
-  await go('#/'); assert.equal(await theme(), 'light', 'Compose keeps the app theme.');
-  await go('#/origin'); assert.equal(await theme(), 'dark');
+  await go('#/'); assert.equal(await theme(), 'dark', 'Compose shares the theme.');
   await ev(`document.querySelector('#theme-toggle').click();`);
-  assert.deepEqual([await theme(), await ev(`return localStorage.getItem('promptboard.origin.theme');`)], ['light', 'light']);
-  await go('#/'); assert.equal(await theme(), 'light');
-  await ev(`document.querySelector('#theme-toggle').click();`); assert.equal(await theme(), 'dark', 'The app theme switches on its own pages.');
-  await go('#/origin'); assert.equal(await theme(), 'light', 'Origin remembers its own choice.');
+  assert.deepEqual([await theme(), await ev(`return localStorage.getItem('ste-prompt-engineer.theme');`)], ['light', 'light']);
+  await go('#/origin'); assert.equal(await theme(), 'light', 'Origin follows the same switch.');
   await ev(`document.querySelector('#theme-toggle').click();`); assert.equal(await theme(), 'dark');
 
   // Layout: no horizontal overflow on any page, in both themes; the editor fits narrow screens.

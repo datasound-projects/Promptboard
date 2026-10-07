@@ -2,7 +2,7 @@
   "name": "promptboard",
   "version": "0.4.0",
   "private": true,
-  "description": "Local-first workspace to compose prompts, run coding tasks on Kanban boards, and reuse agent profiles, skills, and knowledge.",
+  "description": "Local-first workspace for CLI coding agents: plan projects in Origin, write prompts in Compose, run tasks on Kanban boards and reuse resources in Base.",
   "keywords": [
     "ai",
     "coding-agent",

@@ -3,7 +3,6 @@
 const $ = (selector) => document.querySelector(selector);
 const HISTORY_KEY = 'ste-prompt-engineer.history.v1';
 const THEME_KEY = 'ste-prompt-engineer.theme'; // Also read by prefs.js before first paint.
-const ORIGIN_THEME_KEY = 'promptboard.origin.theme'; // Origin's own theme: dark unless switched to light. Also read by prefs.js.
 const SIDEBAR_KEY = 'ste-prompt-engineer.sidebar';
 const SETTINGS_KEY = 'ste-prompt-engineer.settings';
 const PROJECT_PANEL_KEY = 'promptboard.project-panel';
@@ -237,25 +236,15 @@ function fitBoardHeight(immediate = false) {
 }
 function scrollBehavior() { return window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches ? 'auto' : 'smooth'; }
 function renderTheme() { $('#theme-toggle').setAttribute('aria-pressed', String(document.documentElement.dataset.theme === 'dark')); }
-/** Theme: 'light', 'dark', or 'system' (follows the operating system). prefs.js applies it on first paint. */
-function paintTheme(theme) {
+/** Theme: 'light', 'dark' (the default), or 'system' (follows the operating system). prefs.js applies it on first paint. */
+function applyTheme(theme) {
   const dark = theme === 'dark' || (theme === 'system' && window.matchMedia?.('(prefers-color-scheme: dark)')?.matches === true);
   document.documentElement.dataset.theme = dark ? 'dark' : 'light';
   document.querySelector('meta[name="color-scheme"]')?.setAttribute('content', dark ? 'dark' : 'light');
+  savePref(THEME_KEY, theme);
   renderTheme();
 }
-// Origin has its own theme while it is open; every other page uses the app theme.
-function pageTheme() {
-  const origin = currentPage() === 'origin';
-  try { return origin ? (localStorage.getItem(ORIGIN_THEME_KEY) === 'light' ? 'light' : 'dark') : localStorage.getItem(THEME_KEY) || 'light'; }
-  catch { return origin ? 'dark' : 'light'; }
-}
-function applyTheme(theme) { savePref(THEME_KEY, theme); paintTheme(pageTheme()); }
-function toggleTheme() {
-  const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
-  savePref(currentPage() === 'origin' ? ORIGIN_THEME_KEY : THEME_KEY, next);
-  paintTheme(next);
-}
+function toggleTheme() { applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'); }
 
 // Narrow screens show history as a drawer (.open); wider screens collapse it in place (data-sidebar).
 function isMobile() { return window.innerWidth <= 730; }
@@ -1259,7 +1248,6 @@ function showPage() {
   $('#base-view').hidden = !base;
   if ($('#origin-view')) $('#origin-view').hidden = !origin;
   document.documentElement.dataset.page = page;
-  paintTheme(pageTheme());
   for (const link of document.querySelectorAll('.page-nav a')) {
     if (link.getAttribute('href') === ({ compose: '#/', kanban: '#/kanban', base: '#/base', origin: '#/origin' })[page]) link.setAttribute('aria-current', 'page');
     else link.removeAttribute('aria-current');
@@ -5315,8 +5303,8 @@ window.addEventListener('storage', event => {
 });
 function renderSettings() {
   renderNotificationSettings();
-  let theme = 'light'; try { theme = localStorage.getItem(THEME_KEY) || 'light'; } catch {}
-  $('#set-theme').value = ['system', 'light', 'dark'].includes(theme) ? theme : 'light';
+  let theme = 'dark'; try { theme = localStorage.getItem(THEME_KEY) || 'dark'; } catch {}
+  $('#set-theme').value = ['system', 'light', 'dark'].includes(theme) ? theme : 'dark';
   $('#set-start').value = uiPref('startPage');
   $('#set-open-terminal').checked = uiPref('openTerminal') === '1';
   $('#set-keep-tabs').checked = uiPref('keepTabs') === '1';

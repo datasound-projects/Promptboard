@@ -1,24 +1,35 @@
-/* Black-and-white tokens. Dark mode swaps the tokens only; prefs.js sets data-theme before this file loads. */
+/* One palette for every page: cool neutrals over a soft violet/blue glow. Dark mode swaps the tokens
+   only; prefs.js sets data-theme before this file loads. Origin's phases each have one accent colour. */
 :root {
   color-scheme: light;
-  --bg: #f6f6f4; --surface: #ffffff; --surface-2: #f0f0ed; --surface-3: #e6e6e2;
-  --ink: #161616; --text: #262626; --muted: #4f4f4f; --subtle: #6b6b6b;
-  --line: #e0e0dc; --line-strong: #858585; --focus: #161616;
+  --bg: #f6f6f8; --surface: #ffffff; --surface-2: #f1f1f4; --surface-3: #e6e6eb;
+  --ink: #16161a; --text: #26262b; --muted: #4f4f58; --subtle: #6b6b75;
+  --line: #e2e2e8; --line-strong: #85858f; --focus: #16161a;
   --error: #c2410c; /* Orange, the one colour: every error message uses it. */
-  --primary: #161616; --on-primary: #ffffff; --primary-hover: #3a3a3a;
-  --shadow: 0 1px 2px rgb(0 0 0 / .04), 0 6px 20px rgb(0 0 0 / .04);
+  --primary: #16161a; --on-primary: #ffffff; --primary-hover: #34343c;
+  --shadow: 0 1px 2px rgb(15 15 30 / .04), 0 8px 28px rgb(15 15 30 / .05);
+  --page-bg: radial-gradient(1100px 640px at 8% -14%, rgb(124 58 237 / .08), transparent 62%), radial-gradient(900px 560px at 100% -10%, rgb(37 99 235 / .05), transparent 58%), linear-gradient(180deg, #fbfbfc, #f1f1f5);
+  --glow: rgb(124 58 237 / .18);
+  --og-define: #7c3aed; --og-design: #2563eb; --og-operate: #059669; --og-decide: #db2777; --og-build: #4d7c0f;
+  --og-ok: #059669; --og-warn: #b45309; --og-glass: rgb(255 255 255 / .72); --og-glass-2: rgb(15 15 30 / .035); --og-raised: #fff;
+  --og-shadow: 0 1px 2px rgb(15 15 30 / .04), 0 8px 28px rgb(15 15 30 / .06);
   --topbar: 60px; --sidebar: 272px; --radius: 10px;
   --mono: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   --sans: Inter, "Helvetica Neue", Arial, sans-serif;
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #101010; --surface: #191919; --surface-2: #212121; --surface-3: #2b2b2b;
-  --ink: #f3f3f3; --text: #e6e6e6; --muted: #c2c2c2; --subtle: #a3a3a3;
-  --line: #2e2e2e; --line-strong: #7a7a7a; --focus: #f3f3f3;
+  --bg: #09090b; --surface: #131317; --surface-2: #18181d; --surface-3: #222228;
+  --ink: #f5f5f7; --text: #e6e6ea; --muted: #babac3; --subtle: #9b9ba6;
+  --line: #26262d; --line-strong: #74747f; --focus: #c4b5fd;
   --error: #fb923c;
-  --primary: #f3f3f3; --on-primary: #111111; --primary-hover: #d4d4d4;
+  --primary: #f5f5f7; --on-primary: #0b0b0e; --primary-hover: #d6d6dc;
   --shadow: none;
+  --page-bg: radial-gradient(1100px 640px at 8% -14%, rgb(139 92 246 / .16), transparent 62%), radial-gradient(900px 560px at 100% -10%, rgb(56 189 248 / .07), transparent 58%), linear-gradient(180deg, #0d0d12, #060608);
+  --glow: rgb(167 139 250 / .2);
+  --og-define: #a78bfa; --og-design: #60a5fa; --og-operate: #34d399; --og-decide: #f472b6; --og-build: #a3e635;
+  --og-ok: #34d399; --og-warn: #fbbf24; --og-glass: rgb(255 255 255 / .028); --og-glass-2: rgb(255 255 255 / .055); --og-raised: #17171c;
+  --og-shadow: 0 1px 0 rgb(255 255 255 / .04) inset, 0 12px 40px rgb(0 0 0 / .35);
 }
 
 /* Base uses the same controls and theme, in a quiet, independent library layout. */
@@ -135,7 +146,7 @@
 
 * { box-sizing: border-box; }
 html { scroll-padding-top: calc(var(--topbar) + 12px); }
-body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.55 var(--sans); -webkit-font-smoothing: antialiased; }
+body { margin: 0; background: var(--page-bg) fixed; background-color: var(--bg); color: var(--text); font: 14px/1.55 var(--sans); -webkit-font-smoothing: antialiased; }
 button, input, textarea, select { font: inherit; color: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; }
@@ -149,7 +160,7 @@ kbd { font: 11px/1.4 var(--mono); padding: 1px 5px; border: 1px solid var(--line
 .skip-link:focus { top: 12px; }
 
 /* Top bar: sidebar toggle, brand, page navigation, CLI status, theme. */
-.topbar { position: sticky; top: 0; z-index: 30; height: var(--topbar); display: flex; align-items: center; gap: 12px; padding: 0 20px 0 12px; background: var(--bg); border-bottom: 1px solid var(--line); }
+.topbar { position: sticky; top: 0; z-index: 30; height: var(--topbar); display: flex; align-items: center; gap: 12px; padding: 0 20px 0 12px; background: color-mix(in srgb, var(--bg) 66%, transparent); backdrop-filter: blur(16px) saturate(1.2); border-bottom: 1px solid var(--line); }
 .icon-button { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 36px; height: 36px; border: 1px solid transparent; border-radius: 8px; background: none; color: var(--ink); }
 .icon-button:hover { background: var(--surface-2); border-color: var(--line); }
 .icon-button svg { width: 20px; height: 20px; }
@@ -157,7 +168,7 @@ kbd { font: 11px/1.4 var(--mono); padding: 1px 5px; border: 1px solid var(--line
 .page-nav { display: flex; align-items: center; gap: 4px; margin-left: 12px; padding-left: 12px; border-left: 1px solid var(--line); }
 .page-nav a { display: inline-flex; align-items: center; gap: 6px; padding: 7px 11px; border-radius: 7px; font-size: 13px; font-weight: 500; text-decoration: none; color: var(--muted); white-space: nowrap; }
 .page-nav a:hover { color: var(--ink); background: var(--surface-2); }
-.page-nav a[aria-current="page"] { background: var(--surface); color: var(--ink); box-shadow: inset 0 0 0 1px var(--line); }
+.page-nav a[aria-current="page"] { background: var(--og-glass-2); color: var(--ink); box-shadow: inset 0 0 0 1px var(--line); }
 .topbar-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
 .help-pill { display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 12px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); color: var(--muted); font-size: 12px; white-space: nowrap; }
 .help-pill:hover { border-color: var(--line-strong); color: var(--ink); }
@@ -167,7 +178,7 @@ kbd { font: 11px/1.4 var(--mono); padding: 1px 5px; border: 1px solid var(--line
 :root[data-theme="dark"] #theme-toggle .icon-sun { display: block; }
 
 /* History sidebar. The list scrolls on its own; the page keeps the editor in place. */
-.sidebar { position: fixed; top: var(--topbar); bottom: 0; left: 0; z-index: 20; width: var(--sidebar); display: flex; flex-direction: column; padding: 18px 16px 0; background: var(--surface-2); border-right: 1px solid var(--line); }
+.sidebar { position: fixed; top: var(--topbar); bottom: 0; left: 0; z-index: 20; width: var(--sidebar); display: flex; flex-direction: column; padding: 18px 16px 0; background: color-mix(in srgb, var(--bg) 52%, transparent); backdrop-filter: blur(16px); border-right: 1px solid var(--line); }
 .new-prompt { display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px 12px; border: 1px solid var(--primary); border-radius: 8px; background: var(--primary); color: var(--on-primary); font-size: 13px; font-weight: 600; text-align: left; }
 .new-prompt:hover:enabled { background: var(--primary-hover); }
 .new-prompt:disabled { opacity: .5; }
@@ -435,6 +446,7 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
   .workspace { margin-left: 0; padding: 22px 16px 20px; }
   .sidebar { width: min(300px, 86vw); transform: translateX(-100%); visibility: hidden; transition: transform .2s ease, visibility 0s linear .2s; }
   .sidebar.open { transform: none; visibility: visible; transition: transform .2s ease; box-shadow: 0 10px 40px rgb(0 0 0 / .25); }
+  .sidebar { background: color-mix(in srgb, var(--surface) 95%, transparent); }
   .topbar { gap: 8px; padding: 0 12px 0 8px; }
   .brand { display: none; } /* Without a logo mark, hide the whole link rather than leave it empty. */
   .page-nav { margin-left: 0; padding-left: 8px; }
@@ -1256,10 +1268,10 @@ button.timeline-task:hover { text-decoration: underline; }
   background: radial-gradient(ellipse at 50% 0%, rgb(255 255 255 / .28), transparent 72%); filter: blur(10px); opacity: .35;
 }
 :root[data-theme="dark"] .compose-input-surface {
-  border-color: #393939; background: linear-gradient(145deg, #232323, #1b1b1b);
-  box-shadow: 0 12px 35px rgb(0 0 0 / .18), 0 0 26px 2px rgb(255 255 255 / .045);
+  border-color: #2c2c34; background: linear-gradient(145deg, #1b1b21, #131317);
+  box-shadow: 0 12px 35px rgb(0 0 0 / .3), 0 0 32px 2px rgb(139 92 246 / .07);
 }
-.compose-input-surface:focus-within { border-color: var(--line-strong); }
+.compose-input-surface:focus-within { border-color: color-mix(in srgb, var(--og-define) 55%, var(--line)); }
 #prompt-view #prompt-input { min-height: 168px; padding: 23px 24px 10px; border-radius: 23px 23px 0 0; line-height: 1.75; }
 #prompt-view #prompt-input:focus-visible { outline: none; }
 .compose-input-surface:has(#prompt-input:focus-visible) { outline: 2px solid var(--focus); outline-offset: 4px; }
@@ -1297,10 +1309,10 @@ button.timeline-task:hover { text-decoration: underline; }
 #prompt-view .action-row { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px 14px; margin: 0 0 26px; }
 #prompt-view .generate-button {
   position: relative; justify-content: center; flex: none; min-height: 48px; gap: 12px; padding: 0 24px; border-radius: 999px;
-  background: linear-gradient(145deg, #333, #141414); border-color: #303030; color: #fff;
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / .2), 0 4px 10px rgb(0 0 0 / .12); font-size: 14px;
+  background: linear-gradient(145deg, #34343c, #141418); border-color: #2c2c34; color: #fff;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / .2), 0 6px 20px var(--glow); font-size: 14px;
 }
-:root[data-theme="dark"] #prompt-view .generate-button { background: linear-gradient(145deg, #fff, #dcdcdc); border-color: #eee; color: #171717; box-shadow: inset 0 1px 0 #fff, 0 4px 24px rgb(255 255 255 / .08); }
+:root[data-theme="dark"] #prompt-view .generate-button { background: linear-gradient(145deg, #fff, #dcdce2); border-color: #eee; color: #16161a; box-shadow: inset 0 1px 0 #fff, 0 6px 26px var(--glow); }
 #prompt-view .generate-button:hover:enabled { filter: brightness(1.12); transform: translateY(-1px); }
 :root[data-theme="dark"] #prompt-view .generate-button:hover:enabled { filter: brightness(.95); }
 #prompt-view .generate-button:disabled { box-shadow: none; }
@@ -1392,27 +1404,8 @@ button.timeline-task:hover { text-decoration: underline; }
 .task-external-source{font-size:.75rem;overflow-wrap:anywhere;max-width:100%}
 @media(max-width:730px){.backlog-import-filters{grid-template-columns:minmax(0,1fr)}#backlog-import-dialog .detail-actions>*{max-width:100%;white-space:normal;overflow-wrap:anywhere}}
 
-/* Origin: the project blueprint workspace. It has its own look — a deep black gradient by default and a
-   light variant from the theme switch — scoped to the Origin page through :root[data-page="origin"].
-   Each phase of the work (Define, Design, Operate, Decide, Build) has one accent colour. */
-:root[data-page="origin"] {
-  --og-define: #7c3aed; --og-design: #2563eb; --og-operate: #059669; --og-decide: #db2777; --og-build: #4d7c0f;
-  --og-ok: #059669; --og-warn: #b45309; --og-glass: rgb(255 255 255 / .72); --og-glass-2: rgb(0 0 0 / .035); --og-raised: #fff;
-  --bg: #f6f6f8; --surface: #fff; --surface-2: #f1f1f4; --surface-3: #e7e7ec; --line: rgb(15 15 30 / .08); --line-strong: rgb(15 15 30 / .18);
-  --og-shadow: 0 1px 2px rgb(15 15 30 / .04), 0 8px 28px rgb(15 15 30 / .06);
-}
-:root[data-page="origin"][data-theme="dark"] {
-  --og-define: #a78bfa; --og-design: #60a5fa; --og-operate: #34d399; --og-decide: #f472b6; --og-build: #a3e635;
-  --og-ok: #34d399; --og-warn: #fbbf24; --og-glass: rgb(255 255 255 / .028); --og-glass-2: rgb(255 255 255 / .055); --og-raised: #17171c;
-  --bg: #08080a; --surface: #111115; --surface-2: #16161b; --surface-3: #202027; --ink: #f5f5f7; --text: #e6e6ea; --muted: #a1a1aa; --subtle: #71717a;
-  --line: rgb(255 255 255 / .075); --line-strong: rgb(255 255 255 / .16); --focus: #c4b5fd;
-  --og-shadow: 0 1px 0 rgb(255 255 255 / .04) inset, 0 12px 40px rgb(0 0 0 / .35);
-}
-:root[data-page="origin"] body { background: radial-gradient(1100px 640px at 8% -14%, rgb(124 58 237 / .09), transparent 62%), radial-gradient(900px 560px at 100% -10%, rgb(37 99 235 / .06), transparent 58%), linear-gradient(180deg, #fbfbfc, #f1f1f5) fixed; }
-:root[data-page="origin"][data-theme="dark"] body { background: radial-gradient(1100px 640px at 8% -14%, rgb(139 92 246 / .16), transparent 62%), radial-gradient(900px 560px at 100% -10%, rgb(56 189 248 / .07), transparent 58%), linear-gradient(180deg, #0d0d12 0%, #060608 100%) fixed; }
-:root[data-page="origin"] .topbar { background: color-mix(in srgb, var(--bg) 66%, transparent); backdrop-filter: blur(16px) saturate(1.2); }
-:root[data-page="origin"] .sidebar { background: color-mix(in srgb, var(--bg) 52%, transparent); backdrop-filter: blur(16px); }
-:root[data-page="origin"] .page-nav a[aria-current="page"] { background: var(--og-glass-2); box-shadow: inset 0 0 0 1px var(--line); }
+/* Origin: the project blueprint workspace. It uses the shared palette; each phase of the work
+   (Define, Design, Operate, Decide, Build) has one accent colour. */
 .phase-define { --phase: var(--og-define); } .phase-design { --phase: var(--og-design); } .phase-operate { --phase: var(--og-operate); } .phase-decide { --phase: var(--og-decide); } .phase-build { --phase: var(--og-build); }
 
 /* Sidebar: the work in order, grouped by phase. */
