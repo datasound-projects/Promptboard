@@ -46,12 +46,14 @@ These commands work in PowerShell and macOS/Linux terminals. Refresh your browse
 
 ## Origin — design the project before execution
 
-- Start from a short description, or start manually. Each project gets one structured **blueprint**: vision and scope, requirements with acceptance criteria, architecture components and connections, technologies, dependencies, data, AI/agents, security, testing, deployment, observability, sources, assumptions, decision records and an implementation plan.
-- The architecture diagram is a view of the saved components and connections: select, drag, connect and auto-arrange them.
-- Verification comes from linked sources that you mark verified; a URL alone verifies nothing. Assumptions stay separate from facts until resolved, marked invalid or turned into a decision.
-- Readiness shows counts from saved records (for example “3 / 4 requirements defined”, “1 unresolved decision”) and a state such as **Needs attention** or **Ready for task decomposition**. There are no quality scores. Detected issues come from fixed rules and are labelled separately from risks you record.
-- **Send to Compose** prefills Compose with one item and its direct relationships; nothing is generated until you choose Generate. **Create Kanban tasks** adds selected plan items to To Do in dependency order with an Origin reference. No agent starts.
-- Blueprints are saved per project in the data folder's `origin/` directory, separate from the board state. AI research and AI proposals are not implemented yet. See [Origin](docs/origin.md).
+- Every project starts here: describe what you want to build, or start with an empty map. **New project** in the Origin header creates another project at any time.
+- The sidebar lists the work in order — **Define** (Overview, Vision & Scope, Requirements), **Design** (Architecture, Technology, Dependencies, Data, AI / Agents), **Operate** (Security, Testing, Deployment, Observability), **Decide** (Research, Decisions) and **Build** (Implementation Plan).
+- The **Overview** draws the whole blueprint as a mind map: the project in the middle, every section as a branch, your entries as leaves. Click any branch or leaf to open it. Below it, **Next steps** lists open points and **At a glance** shows plain counts — no quality scores.
+- Each section is a short list: type a line and press Enter. Click an entry to edit it in a side panel with only the essential fields; everything else is under **More details**. Planning sections such as Security or Testing ask one question per topic, answered in place.
+- The architecture canvas is a view of the saved building blocks: add, click to describe, drag, connect and arrange them.
+- Verification comes from linked sources you mark verified; a link alone verifies nothing. Assumptions stay separate from facts until they hold, fail or become a decision.
+- **Send to Compose** prefills Compose with one item and what it links to; nothing is generated until you choose Generate. **Create Kanban tasks** adds selected plan steps to To Do in dependency order with an Origin reference. No agent starts.
+- Origin opens in a dark theme; the theme switch in the top bar changes Origin on its own. Blueprints are saved per project in the data folder's `origin/` directory, separate from the board state. AI research and AI proposals are not implemented yet. See [Origin](docs/origin.md).
 
 ## Compose — turn an idea into a clear prompt
 

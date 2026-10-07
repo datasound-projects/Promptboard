@@ -11,7 +11,7 @@ Origin is the planning layer before Compose and Kanban. It stores a structured *
 - A missing file means “no blueprint yet”. A damaged file is renamed to `project-<id>.corrupt-<time>-<random>.json`; the last good backup is used when it is valid, otherwise Origin starts empty and says so. A file from a newer Origin version is refused and never overwritten.
 - Saves are revision-checked (`expectedRevision`). A save from a stale window is refused instead of overwriting newer work.
 - Deleting or renaming a project does not touch its blueprint. A deleted project's blueprint file stays in `origin/` as an orphan; you can delete it by hand.
-- Board backups (Kanban **Export**) do not include blueprints. Use Origin's **Export blueprint** to save a copy.
+- Board backups (Kanban **Export**) do not include blueprints. To keep a copy, copy the project's file from the `origin/` folder.
 
 ## Schema (version 1)
 
@@ -42,26 +42,29 @@ Every record has a stable `id` (`[A-Za-z0-9_-]{1,100}`) and an `origin`: `human`
 
 `sequence` keeps the last issued REQ/ADR/IMP number, so deleted keys are not reused.
 
-Item statuses: **In progress**, **Defined**, **Needs decision**, **Based on an assumption**.
+Item statuses (under **More details**): **In progress**, **Defined**, **Needs decision**, **Based on an assumption**. A requirement is complete when it has a “done when”; a component when it says what it does.
 
 ## Status semantics
 
 Statuses describe stored project state. Origin has no confidence percentages or quality scores.
 
 - **Verification** of a technology, dependency, requirement or decision is derived from its linked sources: **Conflict** if a linked source is conflicting, **Verified** if a linked source is verified, **Outdated** if the only evidence is outdated, otherwise **Unverified**. A URL never verifies anything by itself; a person marks a source verified after checking it.
-- **Issues** are deterministic checks over stored records (each names its rule): missing information, unresolved decisions, unverified technologies and dependencies, conflicts (conflicting evidence, duplicate entries, dependency cycles, plan items scheduled before their dependencies) and recorded risks. System-detected issues, human-entered risks and AI suggestions are labelled separately; Origin does not read meaning from free text.
+- **Issues** are deterministic checks over stored records (each names its rule): missing information, unresolved decisions, unverified technologies and dependencies, conflicts (conflicting evidence, duplicate entries, dependency cycles, plan items scheduled before their dependencies) and recorded risks. Missing evidence is always shown but is advisory: it does not block readiness on its own. System-detected issues, human-entered risks and AI suggestions are labelled separately; Origin does not read meaning from free text.
 - **Section state** in the navigator: ✓ Defined, ● In progress, ! Needs attention, ? Decision required, ○ Not started, – Not applicable.
 - **Readiness** shows counts (for example “3 / 4 defined”, “2 unresolved”) and one state: Not started, Needs attention (with the reasons), Ready for task decomposition, or Ready for implementation.
 
 ## Using Origin
 
-- Open **Origin** in the top navigation. It plans the project selected in Kanban; the header selector switches projects for both pages.
-- Without a blueprint, describe the product or choose **Start manually**. **Open existing repository** uses Kanban's folder picker. **Import project context** reads a blueprint exported from Origin (JSON). With no projects at all, Origin can create one, exactly like Kanban → New project.
-- The navigator lists the 15 sections with their state. Arrow keys, Home and End move between sections. Data, AI / Agents, Deployment and Observability can be marked not applicable.
-- Records open inline. Escape closes an editor, the inspector drawer or connect mode. Delete asks for confirmation and removes every link to the deleted record.
-- Changes save automatically about a second after you stop typing (and at least every few seconds while you keep typing). The header shows **Saved**, **Unsaved changes**, **Saving…**, **Not saved** (with Retry) or **Changed in another window** (with **Reload saved version** or **Keep mine**). ⌘/Ctrl+S saves immediately. Leaving the page or switching projects saves first.
-- The diagram supports click to select, double-click or Enter to edit, drag or arrow keys to move, **Connect** (choose the dependent component, then its dependency) and **Auto-arrange** by dependency level. Positions are stored on the components; the records stay the source of truth.
-- The inspector shows details and relationships of the selected record, or overall intelligence: unresolved decisions, open assumptions, unverified claims, conflicts, missing information, recorded risks and suggestions. On narrow screens it is a drawer opened from the header.
+- Open **Origin** in the top navigation. It plans the project selected in Kanban; the header selector switches projects for both pages, and **New project** creates one (with its own repository folder, like Kanban → New project) and starts its blueprint.
+- Without a blueprint, describe what you want to build and choose **Start blueprint**, or **Start with an empty map**. With no projects at all, the same screen also asks for a project name. There is no import: every blueprint starts in Origin.
+- The sidebar groups the 15 sections by phase: Define, Design, Operate, Decide, Build. Each shows a state dot and a count. Arrow keys, Home and End move between sections. Data, AI / Agents, Deployment and Observability can be marked **Not needed for this project**.
+- The **Overview** is a mind map of the blueprint. Branches open their section; leaves open their record. **Next steps** lists blocking points first, then advice; **At a glance** shows the readiness counts.
+- List sections add an entry when you type a line and press Enter, and keep focus there for the next one. Clicking an entry opens the side editor: essentials first, the rest under **More details** (that choice is remembered). Escape closes it. Delete asks for a second click and removes every link to the deleted record.
+- Security, Testing, Data, AI / Agents, Deployment and Observability list their topics with one answer field each. Typing creates the entry; clearing an answer without details removes it; **⋯** opens its details.
+- Each section shows one **Next** hint taken from the checks, with a link to the record.
+- Changes save automatically shortly after you stop typing (and at least every few seconds while you keep typing). The header shows **Saved**, **Editing…**, **Saving…**, **Not saved** (with Retry) or **Changed in another window** (with **Reload saved version** or **Keep mine**). ⌘/Ctrl+S saves immediately. Leaving the page or switching projects saves first.
+- The architecture canvas supports click to edit, drag or arrow keys to move, **Connect** (choose the starting block, then the block it connects to) and **Arrange** by dependency level. Connections are named in the block's editor. Positions are stored on the components; the records stay the source of truth.
+- Origin has its own theme: dark by default. While Origin is open, the theme switch in the top bar changes only Origin; the other pages keep the app theme.
 
 ## Handoffs
 
