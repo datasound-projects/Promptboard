@@ -1845,8 +1845,37 @@ function appendTaskExternalSource(parent, card) {
   const link = externalLink(url, `GitHub #${source.number}`); link.className = 'task-external-source';
   link.setAttribute('aria-label', `Open original GitHub issue #${source.number} in ${source.repository}`); parent.append(link);
 }
+// Prerequisite cards (set by an Origin handoff) must reach Done before this card starts.
+const cardDone = (project, card) => { const column = projectColumnsOf(project).find(entry => entry.id === card?.column); return Boolean(card) && (column?.role === 'done' || (!column?.role && card.column === 'done')); };
+function pendingPrerequisites(card, project) {
+  return (Array.isArray(card.dependsOn) ? card.dependsOn : []).filter(id => !cardDone(project, project?.tasks.find(task => task.id === id)));
+}
+function appendTaskWaits(parent, card, project) {
+  const pending = project ? pendingPrerequisites(card, project) : [];
+  if (!pending.length) return;
+  const names = pending.map(id => { const other = project.tasks.find(task => task.id === id); return other ? taskNumberText(other) || other.title : 'a deleted card'; });
+  const badge = document.createElement('span'); badge.className = 'task-waits'; badge.textContent = `Waits for ${names.join(', ')}`;
+  badge.title = 'Its prerequisites must be done before it starts.'; parent.append(badge);
+}
+function taskPrerequisites(card, project) {
+  if (!Array.isArray(card.dependsOn) || !card.dependsOn.length) return null;
+  const list = document.createElement('ul'); list.className = 'task-prerequisites';
+  for (const id of card.dependsOn) {
+    const other = project.tasks.find(task => task.id === id), done = cardDone(project, other), row = document.createElement('li');
+    row.append(other ? `${taskNumberText(other) ? `${taskNumberText(other)} ` : ''}${other.title} — ${columnTitle(other.column)}${done ? ' · done' : ''}` : 'A prerequisite card that was deleted');
+    if (!done) row.append(' ', detailButton(other ? 'Remove prerequisite' : 'Clear', () => void clearPrerequisite(card, id), 'text-button'));
+    list.append(row);
+  }
+  return list;
+}
+async function clearPrerequisite(card, prerequisiteId) {
+  try { await boardCall('POST', `/api/tasks/${encodeURIComponent(card.id)}/prerequisites`, { prerequisiteId, expectedRevision: card.revision }); announce('Prerequisite removed.'); }
+  catch (error) { showBoardError(error); }
+  if ($('#task-dialog').open && findTask(card.id)) openTaskDetails(card.id);
+}
 function appendTaskLabels(parent, card, project = currentProject()) {
   appendTaskExternalSource(parent, card);
+  appendTaskWaits(parent, card, project);
   if (!taskLabelsSupported || project?.workflowMode !== 'pipeline' || !Array.isArray(card.labelIds)) return;
   const labels = projectLabels(project), badges = card.labelIds.flatMap(id => { const label = labels.find(row => row.id === id); return label ? [labelBadge(label)] : []; });
   if (!badges.length) return;
@@ -3000,8 +3029,11 @@ async function openTaskDetails(taskId) {
   $('#task-dialog-heading').textContent = card.title;
   const labelSummary = document.createElement('div'); labelSummary.dataset.labelSummary = 'true'; appendTaskLabels(labelSummary, card, project);
   if (!labelSummary.childElementCount) labelSummary.append(paragraph('None', 'note'));
+  const prerequisites = taskPrerequisites(card, project);
   const nodes = [
     section('Status', paragraph(`${status.text}. Task text revision ${card.contentRevision ?? 1}.${status.flag ? ' Review the prompt before you run an agent on it.' : ''}`)),
+    ...(prerequisites ? [section('Prerequisites', paragraph('These cards must be done before this one starts. Nothing is merged for you.', 'note'), prerequisites)] : []),
+    ...(card.originSource?.originTaskId ? [section('From Origin', paragraph(`${card.originSource.key || 'An Origin task'}. Its design context is in the prompt below; change the task in Origin.`, 'note'))] : []),
     section('Original prompt', pre(card.prompt)),
     section('Branch and worktree', taskLocation(card, project)),
     section('Base resources for future runs', basePicker({ target: { scope: 'task', projectId: project.id, taskId: card.id } }), paragraph('Task selections can narrow or opt out of inherited resources without changing the task text or approved evidence.')),

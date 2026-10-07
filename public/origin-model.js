@@ -748,16 +748,9 @@ globalThis.PromptboardOriginModel = (() => {
     return result;
   }
 
-  /** Kanban card bodies for explicitly selected implementation items, in dependency order. */
-  function kanbanTasks(blueprint, selected, projectName = '') {
-    return orderItems(blueprint, selected).map(id => {
-      const item = blueprint.items.find(entry => entry.id === id);
-      const prompt = clip(`${itemBody(blueprint, item, { heading: false })}${guardrails(blueprint)}\n---\nOrigin reference: ${item.key} (origin item ${item.id}) in the ${projectName || 'project'} blueprint. Created from Origin; review before starting an agent.`, 100000);
-      return { itemId: id, title: `${item.key} ${item.title || 'Untitled item'}`.slice(0, 120), prompt };
-    });
-  }
+
 
   return { SCHEMA, VERSION, ID, PHASES, SECTIONS, ENUMS, AREAS, VISION, LIMITS, KEYS, CONTEXT_COLLECTIONS, QUESTION_KEY, SECTION_STATE, VERIFICATION_LABELS, OriginModelError,
     label, sectionLabel, sectionTitle, phaseTitle, phaseList, questionText, lines, emptyBlueprint, nextKey, normalizeBlueprint, verification, isStarted, itemName, issues, readiness, sectionStates,
-    composeSpec, orderItems, kanbanTasks, taskHome, taskContext, taskBody, CONTEXT_LIMIT };
+    composeSpec, orderItems, taskHome, taskContext, taskBody, CONTEXT_LIMIT };
 })();

@@ -128,13 +128,13 @@ test('Compose and Kanban handoffs carry targeted context and the Origin referenc
   assert.doesNotMatch(spec.text, /Unrelated export/, 'Only the selected item and its relationships are included.');
   assert.match(Model.composeSpec(blueprint, 'components', 'api', 'Notes').text, /## Used by\n- Web Client \(calls, HTTPS\)/);
   assert.equal(Model.composeSpec(blueprint, 'components', 'missing'), null);
-  const tasks = Model.kanbanTasks(blueprint, ['i2', 'i1'], 'Notes');
-  assert.deepEqual(tasks.map(task => task.title), ['IMP-001 Repository structure', 'IMP-002 API'], 'Dependencies come first.');
-  assert.match(tasks[1].prompt, /Origin reference: IMP-002 \(origin item i2\)/);
-  assert.match(tasks[1].prompt, /## Depends on\n- IMP-001 Repository structure/);
-  assert.match(tasks[1].prompt, /- A maintainer can publish/, 'Related requirement acceptance criteria are included.');
+  assert.deepEqual(Model.orderItems(blueprint, ['i2', 'i1']), ['i1', 'i2'], 'Prerequisites come first.');
+  const built = Model.taskContext(blueprint, 'i2', { projectName: 'Notes' });
+  assert.match(Model.taskBody(built, { projectName: 'Notes' }), /Origin reference: IMP-002 \(origin task i2\) in Notes/);
+  assert.match(built.context, /## Starts after\n- IMP-001 Repository structure/);
+  assert.match(built.context, /- A maintainer can publish/, 'Related requirement acceptance criteria are included.');
   blueprint.areas.push({ id: 'test1', origin: 'human', section: 'testing', area: 'integration', title: 'Publish flow', description: 'Runs against a disposable database.', status: 'defined', componentIds: [], requirementIds: ['r1'], technologyIds: [], baseResourceIds: [] });
-  assert.match(Model.kanbanTasks(blueprint, ['i2'])[0].prompt, /## Planned tests\n- Integration tests: Publish flow — Runs against a disposable database\./, 'Testing plans carry into task generation.');
+  assert.match(Model.taskContext(blueprint, 'i2').context, /## Planned tests\n- Integration tests: Publish flow — Runs against a disposable database\./, 'Testing plans carry into task context.');
   assert.match(Model.composeSpec(blueprint, 'requirements', 'r1').text, /## Planned tests\n- Integration tests: Publish flow/);
 });
 
@@ -166,7 +166,7 @@ test('projects reword phases, sections and questions; behaviour follows IDs and 
   clean.questions[0].text = 'Which assistive tech?';
   assert.equal(Model.normalizeBlueprint(clean).blueprint.answers.q1, 'VoiceOver and NVDA');
   assert.deepEqual([Model.sectionStates(clean).cs1, Model.sectionStates(clean).cs2], ['defined', 'empty']);
-  assert.doesNotMatch(Model.kanbanTasks(clean, ['i1'], 'Notes')[0].prompt, /Accessibility|VoiceOver/, 'Custom notes are not assumed to apply to every task.');
+  assert.doesNotMatch(Model.taskContext(clean, 'i1', { projectName: 'Notes' }).context, /Accessibility|VoiceOver/, 'Custom notes are not assumed to apply to every task.');
   clean.questions.push({ id: 'q4', origin: 'human', scope: 'section', sectionId: 'cs1', text: 'Contrast?' });
   assert.equal(Model.sectionStates(clean).cs1, 'progress');
   clean.customSections[0].notApplicable = true;
@@ -402,21 +402,96 @@ test('boards from older versions keep their data while Origin starts empty', asy
   assert.equal(JSON.parse(await readFile(join(app.board.store.dir, 'state.json'), 'utf8')).version, STATE_VERSION);
 });
 
-test('Kanban handoff uses the existing task API: To Do cards, ordered, no agent run', async t => {
-  const app = await startTestServer(t, { port: 0, executor: null });
+test('Send to Kanban creates each card once, prerequisites first, with its Origin identity, and starts nothing', async t => {
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
   const { token } = (await api(app, '/api/session')).data;
-  const project = await app.board.createProject({ name: 'Notes', workflowMode: 'pipeline' });
-  const blueprint = Model.normalizeBlueprint(sample()).blueprint;
-  for (const task of Model.kanbanTasks(blueprint, ['i1', 'i2'], project.name)) {
-    const created = await api(app, '/api/tasks', { method: 'POST', token, body: { projectId: project.id, title: task.title, prompt: task.prompt } });
-    assert.equal(created.status, 200, JSON.stringify(created.data));
-  }
-  const view = await app.board.view();
-  const saved = view.projects[0];
-  const todo = saved.pipeline.columns.find(column => column.role === 'todo').id;
-  assert.deepEqual(saved.tasks.map(task => [task.title, task.column]), [['IMP-001 Repository structure', todo], ['IMP-002 API', todo]]);
-  assert.match(saved.tasks[1].prompt, /origin item i2/);
+  const kanban = await app.board.createProject({ name: 'Notes', workflowMode: 'pipeline' });
+  const store = new OriginStore(app.board.store.dir);
+  let record = await store.create({ name: 'Notes design' });
+  record = await store.link(record.id, { expectedRevision: record.revision, kanbanProjectId: kanban.id });
+  record = await store.write(record.id, { expectedRevision: record.revision, blueprint: sample() });
+  const send = (body, revision = record.revision) => api(app, `/api/origin/projects/${record.id}/handoff`, { method: 'POST', token, body: { expectedRevision: revision, ...body } });
+  const cards = async () => (await app.board.view()).projects[0].tasks;
+  // A prerequisite without a card is neither left out silently nor added without asking.
+  let response = await send({ itemIds: ['i2'] });
+  assert.deepEqual([response.status, response.data.code, response.data.prerequisites.map(entry => entry.key)], [409, 'PREREQUISITES_MISSING', ['IMP-001']]);
+  assert.equal((await send({ itemIds: ['i1'] }, record.revision - 1)).data.code, 'ORIGIN_REVISION_CONFLICT');
+  assert.equal((await cards()).length, 0);
+  response = await send({ itemIds: ['i2'], includePrerequisites: true });
+  assert.equal(response.status, 200, JSON.stringify(response.data));
+  assert.deepEqual(response.data.results.map(result => [result.key, result.status]), [['IMP-001', 'created'], ['IMP-002', 'created']]);
+  const view = await app.board.view(), todo = view.projects[0].pipeline.columns.find(column => column.role === 'todo').id;
+  let [first, second] = view.projects[0].tasks;
+  assert.deepEqual([first.title, first.column, second.title, second.column], ['IMP-001 Repository structure', todo, 'IMP-002 API', todo]);
+  assert.deepEqual(second.dependsOn, [first.id]);
+  assert.deepEqual([second.originSource.originProjectId, second.originSource.originTaskId, second.originSource.key], [record.id, 'i2', 'IMP-002']);
+  assert.match(second.prompt, /^# IMP-002 API\n\n## Done when\nPublishing works\n\n---\n\n# Context from the Origin design/);
+  assert.match(second.prompt, /## Starts after\n- IMP-001 Repository structure/);
   assert.equal(view.runs.length, 0, 'No agent starts.');
+  record = await store.read(record.id);
+  const handed = record.blueprint.items.find(item => item.id === 'i2').handoff;
+  assert.deepEqual([handed.projectId, handed.taskId, handed.hash, second.originSource.snapshotId], [kanban.id, second.id, second.originSource.hash, handed.snapshotId]);
+  const snapshot = JSON.parse(await readFile(join(app.board.store.dir, 'origin', 'snapshots', record.id, `${handed.snapshotId}.json`), 'utf8'));
+  assert.ok(second.prompt.startsWith(snapshot.instruction) && second.prompt.includes(snapshot.context), 'The card carries exactly the approved snapshot.');
+  // Repeated and concurrent sends return the existing cards.
+  const [a, b] = await Promise.all([send({ itemIds: ['i1', 'i2'] }), send({ itemIds: ['i1', 'i2'] })]);
+  assert.deepEqual([a.status, b.status], [200, 200]);
+  assert.ok([...a.data.results, ...b.data.results].every(result => result.status === 'existing'));
+  assert.equal((await cards()).length, 2);
+  // An interrupted handoff (card created, Origin link lost) is repaired from the card.
+  record.blueprint.items.forEach(item => { item.handoff = null; });
+  record = await store.write(record.id, { expectedRevision: record.revision, blueprint: record.blueprint });
+  response = await send({ itemIds: ['i2'] });
+  assert.deepEqual(response.data.results.map(result => [result.key, result.status, result.taskId]), [['IMP-002', 'existing', second.id]]);
+  assert.equal((await store.read(record.id)).blueprint.items.find(item => item.id === 'i2').handoff.taskId, second.id);
+  record = await store.read(record.id);
+  // A card deleted in Kanban is created again only when asked.
+  await app.board.deleteTask(second.id, { expectedRevision: second.revision });
+  response = await send({ itemIds: ['i2'] });
+  assert.deepEqual([response.status, response.data.code, response.data.removed.map(entry => entry.key)], [409, 'CARDS_REMOVED', ['IMP-002']]);
+  response = await send({ itemIds: ['i2'], recreate: ['i2'] });
+  assert.deepEqual(response.data.results.map(result => [result.key, result.status]), [['IMP-002', 'created']]);
+  [first, second] = await cards();
+  assert.deepEqual([second.dependsOn, (await cards()).length], [[first.id], 2]);
+});
+
+test('a card with prerequisites starts only after they are done; a deleted prerequisite can be cleared; backups and copies keep the right fields', async t => {
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
+  const { token } = (await api(app, '/api/session')).data;
+  const kanban = await app.board.createProject({ name: 'Notes', workflowMode: 'pipeline' });
+  const [first, second] = await app.board.createOriginTasks(kanban.id, { originProjectId: 'o1', tasks: [
+    { originTaskId: 'a', key: 'IMP-001', title: 'IMP-001 Schema', prompt: 'Schema' }, { originTaskId: 'b', key: 'IMP-002', title: 'IMP-002 API', prompt: 'API', dependsOnOrigin: ['a'] }] });
+  assert.deepEqual([first.status, second.status], ['created', 'created']);
+  const columns = (await app.board.view()).projects[0].pipeline.columns;
+  const active = columns.find(column => column.role === 'active').id, done = columns.find(column => column.role === 'done').id;
+  const card = async id => (await app.board.view()).projects[0].tasks.find(task => task.id === id);
+  const move = async (id, column) => api(app, `/api/tasks/${id}/move`, { method: 'POST', token, body: { column, expectedRevision: (await card(id)).revision } });
+  let response = await move(second.taskId, active);
+  assert.deepEqual([response.status, response.data.code], [409, 'PREREQUISITES_PENDING']);
+  assert.match(response.data.error, /Finish its prerequisites first: #1 IMP-001 Schema \(/);
+  assert.equal((await card(second.taskId)).column, columns.find(column => column.role === 'todo').id, 'The card stays in To Do.');
+  // Copies are new cards: no Origin identity, same prerequisites. Backups keep both fields.
+  const copy = await app.board.duplicateTask(second.taskId);
+  assert.deepEqual([copy.originSource, copy.dependsOn], [undefined, [first.taskId]]);
+  const backup = await app.board.exportBackup();
+  const exported = backup.projects[0].tasks.find(task => task.id === second.taskId);
+  assert.deepEqual([exported.originSource.originTaskId, exported.dependsOn], ['b', [first.taskId]]);
+  await app.board.deleteTask(copy.id, { expectedRevision: copy.revision });
+  // Done prerequisites let the card start (here it then stops for lack of an agent, not for prerequisites).
+  assert.equal((await move(first.taskId, done)).status, 200);
+  response = await move(second.taskId, active);
+  assert.notEqual(response.data.code, 'PREREQUISITES_PENDING');
+  // A deleted prerequisite blocks the start until it is cleared explicitly.
+  const third = (await app.board.createOriginTasks(kanban.id, { originProjectId: 'o1', tasks: [{ originTaskId: 'c', key: 'IMP-003', title: 'IMP-003 UI', prompt: 'UI', dependsOnTaskIds: [first.taskId] }] }))[0];
+  await app.board.deleteTask(first.taskId, { expectedRevision: (await card(first.taskId)).revision });
+  response = await move(third.taskId, active);
+  assert.match(response.data.error, /a prerequisite card that was deleted/);
+  response = await api(app, `/api/tasks/${third.taskId}/prerequisites`, { method: 'POST', token, body: { prerequisiteId: first.taskId, expectedRevision: (await card(third.taskId)).revision } });
+  assert.equal(response.status, 200);
+  assert.equal((await card(third.taskId)).dependsOn, undefined);
+  // Invalid identities and foreign prerequisites are refused.
+  const bad = await app.board.createOriginTasks(kanban.id, { originProjectId: 'o1', tasks: [{ originTaskId: 'd', key: 'IMP-004', title: 'IMP-004 X', prompt: 'X', dependsOnTaskIds: ['not-a-card'] }] });
+  assert.deepEqual([bad[0].status, bad[0].code], ['failed', 'INVALID_INPUT']);
 });
 
 test('the context endpoint builds from the saved revision, removes secrets from context and saves immutable snapshots', async t => {

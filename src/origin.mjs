@@ -284,6 +284,22 @@ export class OriginStore {
     });
   }
 
+  /** Record which card each task became. Only handoff fields change, so unrelated edits are never lost. */
+  recordHandoff(originId, links) {
+    return this.#serial(async () => {
+      const record = await this.#require(originId), blueprint = structuredClone(record.blueprint);
+      let changed = false;
+      for (const link of links) {
+        const item = blueprint.items.find(entry => entry.id === link.itemId);
+        if (!item) continue;
+        const same = item.handoff?.projectId === link.projectId && item.handoff.taskId === link.taskId;
+        const next = { projectId: link.projectId, taskId: link.taskId, at: same ? item.handoff.at : Date.now(), snapshotId: link.snapshotId || (same ? item.handoff.snapshotId : ''), hash: link.hash || (same ? item.handoff.hash : '') };
+        if (JSON.stringify(next) !== JSON.stringify(item.handoff)) { item.handoff = next; changed = true; }
+      }
+      return changed ? this.#save(record, { blueprint }) : record;
+    });
+  }
+
   /** Remove the Origin project. The file moves to origin/deleted/; Kanban work and snapshots are untouched. */
   remove(originId, { expectedRevision } = {}) {
     try { validId(originId); expected(expectedRevision); } catch (error) { return Promise.reject(error); }
@@ -313,6 +329,80 @@ export function buildContext(record, itemId) {
   const warnings = redactLocal(built.instruction) === built.instruction ? built.warnings : [...built.warnings, 'The task text looks like it contains a secret. Remove it before sending.'];
   const hash = createHash('sha256').update(`${built.instruction}\u0000${context}`).digest('hex');
   return { ...built, context, warnings, hash, body: built.tooLarge ? '' : Model.taskBody({ ...built, context }, { projectName: record.name }) };
+}
+
+/** The first dependency loop reachable from these tasks, as display keys; prerequisites must be acyclic. */
+function loopFrom(items, ids) {
+  const path = [], explored = new Set();
+  const visit = id => {
+    if (path.includes(id)) return [...path.slice(path.indexOf(id)), id];
+    if (explored.has(id) || !items.has(id)) return null;
+    path.push(id);
+    for (const next of items.get(id).dependsOn) { const loop = visit(next); if (loop) return loop; }
+    path.pop(); explored.add(id); return null;
+  };
+  for (const id of ids) { const loop = visit(id); if (loop) return loop.map(entry => items.get(entry).key); }
+  return null;
+}
+
+/**
+ * Send tasks to the linked Kanban project's To Do. Context is rebuilt from the saved revision and saved as
+ * a snapshot; one board write creates the cards, prerequisites first, each carrying its Origin identity.
+ * A card that already exists for a task is returned instead of creating another. Prerequisites without a
+ * card are added only when asked, and a card deleted in Kanban is recreated only when asked. Nothing starts.
+ */
+async function handoff({ origin, board, originId, input }) {
+  const record = await origin.read(originId);
+  if (!record || record.damaged) throw new OriginError('This Origin project no longer exists. Choose another project.', 'NOT_FOUND', 404);
+  if (record.revision !== input.expectedRevision) throw new OriginError('The blueprint has newer changes. Let it save, then send again.', 'ORIGIN_REVISION_CONFLICT', 409);
+  const destination = record.kanbanProjectId ? (await board.state()).projects.find(project => project.id === record.kanbanProjectId) : null;
+  if (!destination) throw new OriginError('Connect this project to a Kanban project first.', 'NOT_LINKED', 409);
+  const blueprint = record.blueprint, items = new Map(blueprint.items.map(item => [item.id, item]));
+  const wanted = Array.isArray(input.itemIds) ? [...new Set(input.itemIds)] : [];
+  if (!wanted.length || wanted.length > 100 || wanted.some(id => !items.has(id))) throw new OriginError('Choose 1 to 100 tasks that still exist. Reload the project.', 'INVALID_INPUT');
+  const cards = new Map(destination.tasks.map(task => [task.id, task]));
+  const cardOf = item => destination.tasks.find(task => task.originSource?.originProjectId === originId && task.originSource.originTaskId === item.id)
+    || (item.handoff?.projectId === destination.id ? cards.get(item.handoff.taskId) : null) || null;
+  const loop = loopFrom(items, wanted);
+  if (loop) throw new OriginError(`These tasks wait for each other: ${loop.join(' → ')}. Remove one prerequisite first.`, 'PLAN_CYCLE', 409);
+  const selection = new Set(wanted), missingNow = () => [...new Set([...selection].flatMap(id => items.get(id).dependsOn).filter(id => !selection.has(id) && !cardOf(items.get(id))))];
+  let missing = missingNow();
+  if (missing.length && input.includePrerequisites !== true) {
+    return { status: 409, body: { error: 'Some prerequisites have no card yet. Include them, or send them first.', code: 'PREREQUISITES_MISSING',
+      prerequisites: missing.map(id => ({ itemId: id, key: items.get(id).key, title: items.get(id).title })) } };
+  }
+  while (missing.length) { for (const id of missing) selection.add(id); missing = missingNow(); }
+  const recreate = new Set(Array.isArray(input.recreate) ? input.recreate : []);
+  const removed = [...selection].filter(id => items.get(id).handoff?.projectId === destination.id && !cardOf(items.get(id)) && !recreate.has(id));
+  if (removed.length) {
+    return { status: 409, body: { error: 'Some cards were deleted in Kanban. Choose to create them again, or leave those tasks out.', code: 'CARDS_REMOVED',
+      removed: removed.map(id => ({ itemId: id, key: items.get(id).key, title: items.get(id).title })) } };
+  }
+  const ordered = Model.orderItems(blueprint, [...selection]), built = new Map();
+  for (const id of ordered) {
+    if (cardOf(items.get(id))) continue;
+    const context = buildContext(record, id);
+    if (context.tooLarge) throw new OriginError(context.error, 'CONTEXT_TOO_LARGE', 409);
+    built.set(id, context);
+  }
+  const snapshots = new Map();
+  for (const [id, context] of built) snapshots.set(id, await origin.snapshot(originId, context, record.revision));
+  const entries = [...built.keys()].map(id => {
+    const item = items.get(id), snapshot = snapshots.get(id), before = item.dependsOn.map(dep => items.get(dep));
+    return { originTaskId: id, key: item.key, title: `${item.key} ${item.title.trim() || 'Untitled task'}`.slice(0, 120), prompt: built.get(id).body, snapshotId: snapshot.id, hash: snapshot.hash,
+      dependsOnTaskIds: before.filter(dep => !built.has(dep.id)).map(dep => cardOf(dep).id), dependsOnOrigin: before.filter(dep => built.has(dep.id)).map(dep => dep.id) };
+  });
+  const made = new Map((entries.length ? await board.createOriginTasks(destination.id, { originProjectId: originId, tasks: entries }) : []).map(result => [result.originTaskId, result]));
+  const results = ordered.map(id => {
+    const item = items.get(id), existing = cardOf(item);
+    if (existing && !built.has(id)) return { itemId: id, key: item.key, status: 'existing', taskId: existing.id, number: existing.number, title: existing.title };
+    const result = made.get(id);
+    return { itemId: id, key: item.key, status: result.status, taskId: result.taskId || '', number: result.number || null, title: result.title || item.title, error: result.error || '',
+      snapshotId: result.status === 'created' ? snapshots.get(id).id : '', hash: result.status === 'created' ? snapshots.get(id).hash : '' };
+  });
+  // The Origin side records each link; a link lost by an interrupted handoff is restored from the card.
+  const saved = await origin.recordHandoff(originId, results.filter(result => result.taskId).map(result => ({ itemId: result.itemId, projectId: destination.id, taskId: result.taskId, snapshotId: result.snapshotId || '', hash: result.hash || '' })));
+  return { status: 200, body: { revision: saved.revision, blueprint: saved.blueprint, destination: { id: destination.id, name: destination.name }, results } };
 }
 
 /** The project as the page sees it: its Kanban link is resolved against the current board. */
@@ -352,7 +442,7 @@ export async function originRoute({ origin, board, req, res, pathname, jsonBody,
     const linked = await origin.link(created.id, { expectedRevision: created.revision, kanbanProjectId: made.project.id });
     return send(res, 200, { project: view(linked, await kanban()), blueprint: linked.blueprint });
   }
-  const match = pathname.match(/^\/api\/origin\/projects\/([A-Za-z0-9_-]{1,100})(?:\/(link|delete|context))?$/);
+  const match = pathname.match(/^\/api\/origin\/projects\/([A-Za-z0-9_-]{1,100})(?:\/(link|delete|context|handoff))?$/);
   if (!match) return send(res, 404, { error: 'This Origin route does not exist.' });
   const [, originId, action] = match;
   if (!action && req.method === 'GET') {
@@ -392,6 +482,10 @@ export async function originRoute({ origin, board, req, res, pathname, jsonBody,
     const { record, tasks } = await origin.context(originId, { expectedRevision: input.expectedRevision, itemIds: input.itemIds });
     return send(res, 200, { revision: record.revision, tasks: tasks.map(({ itemId, key, title, body: text, instruction, context, included, omitted, warnings, tooLarge, error, hash, size }) =>
       ({ itemId, key, title, body: text, instruction, context, included, omitted, warnings, tooLarge, error: error || '', hash, size })) });
+  }
+  if (action === 'handoff' && req.method === 'POST') {
+    const { status, body: result } = await handoff({ origin, board, originId, input: await body() });
+    return send(res, status, result);
   }
   if (action === 'delete' && req.method === 'POST') {
     const input = await body();

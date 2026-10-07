@@ -178,21 +178,27 @@ test('Origin in real Chrome: quick entry, mind map, diagram, evidence, readiness
   assert.match(await ev(`return document.querySelector('#origin-connect-dialog .origin-callout').textContent;`), /Kanban › Demo project/);
   await ev(`document.querySelector('#origin-connect-dialog-submit').click();`);
   await wait(`document.querySelector('#origin-handoff-dialog')?.open && document.querySelector('#origin-kanban-link').textContent === 'Kanban · Demo project'`, 'handoff dialog after connecting');
-  assert.deepEqual(await ev(`return [...document.querySelectorAll('#origin-handoff-dialog li')].map(li => li.textContent);`), ['IMP-001 Repository structure', 'IMP-002 Publish API']);
+  assert.deepEqual(await ev(`return [...document.querySelectorAll('#origin-handoff-dialog .origin-handoff-title')].map(node => node.textContent);`), ['IMP-001 Repository structure', 'IMP-002 Publish API']);
   await ev(`document.querySelector('#origin-handoff-confirm').click();`);
+  await wait(`!document.querySelector('#origin-handoff-dialog .origin-handoff-results').hidden`, 'handoff results', 15000);
+  assert.deepEqual(await ev(`return [...document.querySelectorAll('#origin-handoff-dialog .origin-handoff-result')].map(node => node.textContent);`), ['IMP-001 → Kanban #2', 'IMP-002 → Kanban #3']);
+  await ev(`[...document.querySelectorAll('#origin-handoff-dialog button')].find(b => b.textContent === 'Done').click();`);
   await wait(`!document.querySelector('#origin-handoff-dialog').open && document.querySelector('#origin-main .origin-callout.ok')`, 'handoff done', 15000);
   await saved();
   const view = await app.board.view(), saved1 = view.projects.find(item => item.id === project.id);
   const todo = saved1.pipeline.columns.find(column => column.role === 'todo').id;
   assert.deepEqual(saved1.tasks.map(task => [task.title, task.column]), [['Existing card', todo], ['IMP-001 Repository structure', todo], ['IMP-002 Publish API', todo]]);
   assert.equal(saved1.tasks[0].prompt, existing.prompt);
-  assert.match(saved1.tasks[2].prompt, /^Implement IMP-002 Publish API\./);
-  assert.match(saved1.tasks[2].prompt, /- POST \/notes works/);
-  assert.match(saved1.tasks[2].prompt, /## Depends on\n- IMP-001 Repository structure/);
+  assert.match(saved1.tasks[2].prompt, /^# IMP-002 Publish API\n\n## Done when\nPOST \/notes works\n\n---/);
+  assert.match(saved1.tasks[2].prompt, /## Starts after\n- IMP-001 Repository structure/);
   assert.match(saved1.tasks[2].prompt, /## Planned tests\n- Integration tests: API integration tests/);
-  assert.match(saved1.tasks[2].prompt, /Origin reference: IMP-002 \(origin item [A-Za-z0-9_-]+\)/);
+  assert.match(saved1.tasks[2].prompt, /Origin reference: IMP-002 \(origin task [A-Za-z0-9_-]+\)/);
+  assert.deepEqual(saved1.tasks[2].dependsOn, [saved1.tasks[1].id], 'The prerequisite travels as a card link.');
   assert.equal(view.runs.length, 0, 'No agent starts.');
   assert.match(await ev(`return document.querySelector('#origin-main').textContent;`), /Kanban #3 · /, 'Progress is read from the Kanban card.');
+  // Sending again never adds a card.
+  await press('Select all drafts');
+  assert.equal(await ev(`return document.querySelector('#origin-kanban-handoff').disabled;`), true, 'Nothing is left to send.');
   assert.equal((await blueprintFile(app, blueprintId)).blueprint.items.filter(item => item.handoff?.taskId).length, 2);
 
   // Compose handoff: targeted prefill only; nothing is generated.
@@ -535,7 +541,9 @@ test('Origin map: drag, keys, links, zoom and resize are saved per project and n
   await ev(`document.querySelector('.origin-map-card [aria-label="Zoom in"]').click();`);
   const zoomed = await viewBox('.origin-map');
   assert.ok(Number(zoomed.split(' ')[2]) < Number(fitted.split(' ')[2]), 'Zoom in shows less.');
-  const background = await ev(`const r = document.querySelector('.origin-map').getBoundingClientRect(); return { x: r.x + 30, y: r.y + r.height - 30 };`);
+  // An empty spot of the map that is on screen, whatever the window height.
+  const background = await ev(`const svg = document.querySelector('.origin-map'); svg.scrollIntoView({ block: 'center' }); const r = svg.getBoundingClientRect(); for (let y = Math.max(r.top + 12, 80); y < Math.min(r.bottom, innerHeight) - 4; y += 12) for (let x = r.left + 12; x < r.right - 12; x += 24) if (document.elementFromPoint(x, y) === svg) return { x, y }; return null;`);
+  assert.ok(background, 'An empty part of the map is visible.');
   await drag(background, 80, 0);
   assert.notEqual(await viewBox('.origin-map'), zoomed, 'Dragging the background pans.');
   await ev(`document.querySelector('.origin-map-card [aria-label="Fit to view"]').click();`);
@@ -698,5 +706,46 @@ test('Origin shows the context a task carries, from the saved blueprint, and add
   await ev(`[...document.querySelectorAll('#origin-drawer .origin-context button')].find(b => b.textContent === 'Refresh').click();`);
   await wait(`document.querySelector('#origin-drawer .origin-context-names')?.textContent.includes('ADR-001 Logging')`, 'refreshed with the linked decision');
   assert.deepEqual((await blueprintFile(app, created.id)).blueprint.items[0].contextIds, [{ collection: 'decisions', id: 'd1' }]);
+  assert.deepEqual(browser.consoleMessages.filter(message => message.startsWith('EXCEPTION')), []);
+});
+
+test('Origin Send to Kanban asks before including prerequisites, never duplicates, and Kanban shows what a card waits for', { skip: !await findChrome(), timeout: 120000 }, async t => {
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
+  const kanban = await app.board.createProject({ name: 'Shop', workflowMode: 'pipeline' });
+  const store = new OriginStore(app.board.store.dir);
+  let created = await store.create({ name: 'Shop design' });
+  created = await store.link(created.id, { expectedRevision: 1, kanbanProjectId: kanban.id });
+  await store.write(created.id, { expectedRevision: created.revision, blueprint: { idea: 'Shop',
+    items: [{ id: 'i1', key: 'IMP-001', title: 'Schema', acceptanceCriteria: 'Tables exist' }, { id: 'i2', key: 'IMP-002', title: 'Orders API', acceptanceCriteria: 'Orders can be placed', dependsOn: ['i1'] }], sequence: { items: 2 } } });
+  const browser = await launch({ width: 1280, height: 900 }); assert.ok(browser); t.after(() => browser.close());
+  const { ev, wait, section, press } = pageTools(browser);
+  const check = key => ev(`[...document.querySelectorAll('#origin-main .origin-row')].find(r => r.textContent.includes(${J(key)})).querySelector('.origin-check').click();`);
+  await browser.goto(`${app.url}/#/origin`);
+  await wait(`document.querySelector('.origin-map')`, 'map');
+  await section('plan');
+  await check('IMP-002');
+  await ev(`document.querySelector('#origin-kanban-handoff').click();`);
+  await wait(`document.querySelector('#origin-handoff-dialog')?.open`, 'review panel');
+  assert.match(await ev(`return document.querySelector('#origin-handoff-dialog .origin-handoff-prerequisites').textContent;`), /Include prerequisites: IMP-001 Schema/);
+  assert.equal(await ev(`return document.querySelector('#origin-handoff-confirm').disabled;`), true, 'A prerequisite is never left out silently.');
+  await ev(`document.querySelector('#origin-handoff-prerequisites').click();`);
+  assert.deepEqual(await ev(`const b = document.querySelector('#origin-handoff-confirm'); return [b.disabled, b.textContent];`), [false, 'Send 2 tasks']);
+  await ev(`document.querySelector('#origin-handoff-confirm').click();`);
+  await wait(`!document.querySelector('#origin-handoff-dialog .origin-handoff-results').hidden`, 'results', 15000);
+  assert.deepEqual(await ev(`return [...document.querySelectorAll('#origin-handoff-dialog .origin-handoff-result')].map(node => node.textContent);`), ['IMP-001 → Kanban #1', 'IMP-002 → Kanban #2']);
+  await ev(`[...document.querySelectorAll('#origin-handoff-dialog button')].find(b => b.textContent === 'Done').click();`);
+  await wait(`!document.querySelector('#origin-handoff-dialog').open && /Kanban #2 · /.test(document.querySelector('#origin-main').textContent)`, 'rows show the cards');
+  // Sending the same tasks again returns the existing cards.
+  await check('IMP-001'); await check('IMP-002');
+  await ev(`document.querySelector('#origin-kanban-handoff').click();`);
+  await wait(`document.querySelector('#origin-handoff-dialog')?.open && document.querySelectorAll('#origin-handoff-dialog .origin-chip.ok').length === 2`, 'existing cards shown');
+  await ev(`document.querySelector('#origin-handoff-confirm').click();`);
+  await wait(`!document.querySelector('#origin-handoff-dialog .origin-handoff-results').hidden`, 'second results', 15000);
+  assert.deepEqual(await ev(`return [...document.querySelectorAll('#origin-handoff-dialog .origin-handoff-result')].map(node => node.textContent);`), ['IMP-001 → Kanban #1 (already there)', 'IMP-002 → Kanban #2 (already there)']);
+  assert.equal((await app.board.view()).projects[0].tasks.length, 2);
+  assert.equal((await app.board.view()).runs.length, 0, 'No agent starts.');
+  // Kanban shows what the card waits for, and why it cannot start yet.
+  await ev(`[...document.querySelectorAll('#origin-handoff-dialog button')].find(b => b.textContent === 'Open Kanban').click();`);
+  await wait(`location.hash === '#/kanban' && [...document.querySelectorAll('.task-waits')].some(n => n.textContent === 'Waits for #1')`, 'waiting badge on the card');
   assert.deepEqual(browser.consoleMessages.filter(message => message.startsWith('EXCEPTION')), []);
 });

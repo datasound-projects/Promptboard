@@ -662,6 +662,9 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
 .task-number { flex: none; color: var(--muted); font: 12px/1.5 var(--mono); white-space: nowrap; }
 .task-priority { flex: none; padding: 1px 5px; border: 1px solid currentColor; border-radius: 4px; font: 11px/1.5 var(--mono); white-space: nowrap; }
 .task-label-badges { display: flex; flex: 1 0 100%; flex-wrap: wrap; gap: 4px; min-width: 0; width: 100%; }
+.task-waits { display: inline-flex; align-items: center; max-width: 100%; padding: 2px 6px; border: 1px solid color-mix(in srgb, var(--og-warn) 45%, transparent); border-radius: 4px; color: var(--og-warn); font: 11px/1.5 var(--mono); overflow-wrap: anywhere; }
+.task-prerequisites { margin: 6px 0 0; padding-left: 18px; }
+.task-prerequisites li { margin: 4px 0; }
 .task-label { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; min-width: 0; padding: 2px 5px; border: 1px solid var(--line); border-radius: 4px; font: 11px/1.5 var(--mono); }
 .task-label::before { content: ''; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--task-label-color); border: 1px solid var(--line); }
 .task-label > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1781,7 +1784,16 @@ dialog.origin-modal::backdrop { background: rgb(4 4 8 / .55); backdrop-filter: b
 .origin-modal-form { display: grid; gap: 14px; }
 .origin-modal-form textarea { min-height: 96px; }
 .origin-modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 8px; }
-.origin-handoff-list { margin: 0 0 16px; padding-left: 22px; color: var(--text); font-size: 13.5px; line-height: 1.9; }
+.origin-handoff-list { margin: 0 0 16px; padding-left: 22px; color: var(--text); font-size: 13.5px; line-height: 1.5; }
+.origin-handoff-list li { margin-bottom: 8px; }
+.origin-handoff-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.origin-handoff-title { color: var(--ink); font-weight: 600; }
+.origin-handoff-context, .origin-handoff-warning { margin: 3px 0 0; color: var(--muted); font-size: 12.5px; }
+.origin-handoff-warning { color: var(--og-warn); }
+.origin-handoff-prerequisites p { margin: 0 0 6px; }
+.origin-handoff-results { display: grid; gap: 6px; padding-left: 20px; }
+.origin-handoff-result.created, .origin-handoff-result.existing { color: var(--text); }
+.origin-handoff-result.failed { color: var(--error); }
 
 /* Project menu, Kanban link and project dialogs */
 .origin-menu { position: relative; }

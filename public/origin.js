@@ -926,6 +926,7 @@ window.PromptboardOrigin = (() => {
       const foot = el('div', 'origin-drawer-foot');
       const left = el('div', 'origin-inline-actions');
       if (COMPOSABLE.has(collection)) left.append(composeButton(collection, entry.id, message));
+      if (collection === 'items') { const send = button('Send to Kanban', () => void openHandoff([entry.id]), 'origin-ghost', 'Create its To Do card. No agent starts.'); send.id = 'origin-drawer-handoff'; left.append(send); }
       foot.append(left, deleteControl(collection, entry));
       drawer.replaceChildren(head, body, message, foot);
       drawer.hidden = false; view.dataset.drawer = 'open';
@@ -1749,15 +1750,14 @@ window.PromptboardOrigin = (() => {
         if (!sizing || event.pointerId !== sizing.id) return;
         const done = sizing; sizing = null;
         if (!done.moved && event.clientX === done.x && event.clientY === done.y) return;
-        wrap.style.width = `${Math.max(480, done.width + event.clientX - done.x)}px`;
-        wrap.style.height = `${Math.max(320, done.height + event.clientY - done.y)}px`;
-        const rect = wrap.getBoundingClientRect(); setSize(rect.width, rect.height);
+        // The size you asked for is saved; a small screen only caps how much of it shows.
+        setSize(done.width + event.clientX - done.x, done.height + event.clientY - done.y);
       });
       grip.addEventListener('pointercancel', () => { sizing = null; renderMain(); });
       grip.addEventListener('keydown', event => {
-        const rect = wrap.getBoundingClientRect();
+        const rect = wrap.getBoundingClientRect(), width = layout.width ?? rect.width, height = layout.height ?? rect.height;
         const step = { ArrowLeft: [-STEP, 0], ArrowRight: [STEP, 0], ArrowUp: [0, -STEP], ArrowDown: [0, STEP] }[event.key];
-        if (step) { event.preventDefault(); setSize(rect.width + step[0], rect.height + step[1]); }
+        if (step) { event.preventDefault(); setSize(width + step[0], height + step[1]); }
         else if (event.key === 'Home') { event.preventDefault(); setSize(null, null); }
       });
       wrap.append(tools, ...(editor ? [editor] : []), svg, grip);
@@ -1967,45 +1967,91 @@ window.PromptboardOrigin = (() => {
       control.prepend(icon(ICON.arrow, 14));
       return control;
     }
+    // ---- Send to Kanban: one review panel; the server builds the context and creates each card once ----
     let handoffDialog = null;
-    function openHandoff() {
-      const blueprint = bp(), selection = [...planSelection].filter(id => blueprint.items.some(item => item.id === id));
+    async function openHandoff(ids = [...planSelection]) {
+      const blueprint = bp(), selection = ids.filter(id => blueprint.items.some(item => item.id === id));
       if (!selection.length) return;
-      const target = project(), destination = target?.kanban?.exists ? target.kanbanProjectId : null;
-      if (!destination) { openConnect({ then: openHandoff }); return; }
-      const tasks = M.kanbanTasks(blueprint, selection, target?.name || '');
+      const target = project();
+      if (!target?.kanban?.exists) { openConnect({ then: () => openHandoff(selection) }); return; }
+      if (!(await flush())) { showError('This blueprint has unsaved changes. Save it, then send again.'); return; }
       handoffDialog ??= (() => { const dialog = el('dialog', 'origin-modal'); dialog.id = 'origin-handoff-dialog'; dialog.setAttribute('aria-labelledby', 'origin-handoff-heading'); document.body.append(dialog); return dialog; })();
-      const dialog = handoffDialog;
+      const dialog = handoffDialog, destination = target.kanbanProjectId;
+      const tasks = app.projects().find(entry => entry.id === destination)?.tasks || [];
+      const items = new Map(blueprint.items.map(item => [item.id, item]));
+      const cardOf = item => tasks.find(task => task.originSource?.originProjectId === projectId && task.originSource.originTaskId === item.id)
+        || (item.handoff?.projectId === destination ? tasks.find(task => task.id === item.handoff.taskId) : null) || null;
+      const { response, data } = await app.api(`/api/origin/projects/${encodeURIComponent(projectId)}/context`, { method: 'POST', body: { expectedRevision: record.revision, itemIds: selection }, timeoutMs: 30000 })
+        .catch(() => ({ response: { ok: false }, data: { error: 'The app did not answer. Nothing was sent.' } }));
+      if (!response.ok) { showError(typeof data.error === 'string' ? data.error : 'The tasks could not be prepared. Nothing was sent.'); return; }
+      const contexts = new Map(data.tasks.map(task => [task.itemId, task]));
+      const missing = [...new Set(selection.flatMap(id => items.get(id).dependsOn).filter(id => !selection.includes(id) && items.has(id) && !cardOf(items.get(id))))];
       const heading = el('h2', '', 'Send to Kanban'); heading.id = 'origin-handoff-heading';
-      const steps = el('ol', 'origin-handoff-list');
-      for (const task of tasks) { const item = blueprint.items.find(entry => entry.id === task.itemId); const li = el('li', '', task.title); if (item.handoff) li.append(' ', chip('already sent', 'warn')); steps.append(li); }
+      const list = el('ol', 'origin-handoff-list'), recreate = new Map();
+      for (const id of M.orderItems(blueprint, selection)) {
+        const item = items.get(id), card = cardOf(item), context = contexts.get(id), li = el('li');
+        const line = el('div', 'origin-handoff-line'); line.append(el('span', 'origin-handoff-title', `${item.key} ${item.title.trim() || 'Untitled task'}`));
+        if (card) line.append(chip(`Already Kanban #${card.number}`, 'ok'));
+        else if (item.handoff?.projectId === destination) {
+          line.append(chip('Card deleted in Kanban', 'warn'));
+          const again = el('label', 'origin-check-row'); const box = el('input'); box.type = 'checkbox'; box.addEventListener('change', () => paint());
+          again.append(box, el('span', '', 'Create it again')); recreate.set(id, box); li.append(line, again);
+        } else line.append(chip('New card', 'muted'));
+        if (!li.childElementCount) li.append(line);
+        if (context && !card) {
+          const summary = el('p', 'origin-handoff-context', context.tooLarge ? context.error : `Context: ${plural(context.included.length, 'linked record')}${context.omitted.length ? `, ${context.omitted.length} left out for size` : ''}.`);
+          li.append(summary);
+          for (const warning of context.warnings) li.append(el('p', 'origin-handoff-warning', warning));
+        }
+        list.append(li);
+      }
+      const include = el('input'); include.type = 'checkbox'; include.id = 'origin-handoff-prerequisites'; include.addEventListener('change', () => paint());
+      const prerequisites = el('div', 'origin-callout warn origin-handoff-prerequisites');
+      if (missing.length) {
+        const row = el('label', 'origin-check-row'); row.append(include, el('span', '', `Include prerequisites: ${missing.map(id => `${items.get(id).key} ${items.get(id).title.trim() || 'Untitled task'}`).join(', ')}`));
+        prerequisites.append(el('p', '', 'Some tasks start after tasks that have no card yet.'), row);
+      } else prerequisites.hidden = true;
       const error = el('p', 'origin-inline-error'); error.hidden = true; error.setAttribute('role', 'alert');
-      const confirm = button(`Create ${plural(tasks.length, 'card')} in To Do`, async () => {
-        confirm.disabled = true; handoffBusy = true;
-        const created = [];
-        try {
-          for (const task of tasks) {
-            const result = await app.createTask({ projectId: destination, title: task.title, prompt: task.prompt });
-            const item = bp().items.find(entry => entry.id === task.itemId);
-            if (item && result?.task?.id) { item.handoff = { projectId: destination, taskId: result.task.id, at: Date.now(), snapshotId: '', hash: '' }; created.push(task.title); changed(); }
-          }
-        } catch (failure) {
-          error.textContent = `${failure.message}${created.length ? ` ${plural(created.length, 'card')} already created: ${created.join(', ')}.` : ' No card was created.'}`;
-          error.hidden = false;
-        } finally { handoffBusy = false; confirm.disabled = false; await flush(); }
-        if (!error.hidden) { renderMain(); return; }
-        dialog.close();
-        planSelection = new Set();
-        lastHandoff = `Created ${plural(created.length, 'card')} in To Do of ${target?.kanban?.name || 'the Kanban project'}, dependencies first. No agent started.`;
+      const results = el('ol', 'origin-handoff-results'); results.hidden = true;
+      const tooLarge = data.tasks.some(task => task.tooLarge && !cardOf(items.get(task.itemId)));
+      const confirm = button('', () => void send(selection), 'origin-primary'); confirm.id = 'origin-handoff-confirm';
+      const actions = el('div', 'origin-modal-actions');
+      const paint = () => {
+        const blocked = missing.length && !include.checked, waiting = [...recreate.values()].some(box => !box.checked);
+        confirm.disabled = handoffBusy || blocked || waiting || tooLarge;
+        confirm.textContent = `Send ${plural(selection.length + (include.checked ? missing.length : 0), 'task')}`;
+        confirm.title = tooLarge ? 'A task’s essential context is too large.' : blocked ? 'Include the prerequisites or send them first.' : waiting ? 'Choose whether to create the deleted cards again, or leave those tasks out.' : 'Creates To Do cards. No agent starts.';
+      };
+      async function send(ids2) {
+        handoffBusy = true; paint(); error.hidden = true;
+        const outcome = await app.api(`/api/origin/projects/${encodeURIComponent(projectId)}/handoff`, { method: 'POST', timeoutMs: 120000,
+          body: { expectedRevision: record.revision, itemIds: ids2, includePrerequisites: include.checked, recreate: [...recreate].filter(([, box]) => box.checked).map(([id]) => id) } })
+          .catch(() => ({ response: { ok: false }, data: { error: 'The app did not answer. Open the project again to see what was created; sending again never adds a second card.' } }));
+        handoffBusy = false;
+        if (!outcome.response.ok) { error.textContent = typeof outcome.data.error === 'string' ? outcome.data.error : 'The tasks could not be sent.'; error.hidden = false; paint(); return; }
+        // Only handoff links changed on the server; they are merged into this window's copy.
+        const saved = new Map(outcome.data.blueprint.items.map(item => [item.id, item]));
+        for (const item of bp().items) if (saved.has(item.id)) item.handoff = saved.get(item.id).handoff;
+        record.revision = outcome.data.revision;
+        await app.ensureBoard();
+        const sent = outcome.data.results, failed = sent.filter(result => result.status === 'failed');
+        planSelection = new Set([...planSelection].filter(id => failed.some(result => result.itemId === id)));
+        results.replaceChildren(...sent.map(result => el('li', `origin-handoff-result ${result.status}`, result.status === 'failed' ? `${result.key}: ${result.error}`
+          : `${result.key} → Kanban #${result.number}${result.status === 'existing' ? ' (already there)' : ''}`)));
+        results.hidden = false; list.hidden = prerequisites.hidden = true;
+        const made = sent.filter(result => result.status === 'created').length;
+        lastHandoff = `${made ? `Created ${plural(made, 'card')} in To Do of ${outcome.data.destination.name}, prerequisites first.` : 'No new card was needed.'}${failed.length ? ` ${plural(failed.length, 'task')} could not be sent.` : ''} No agent started.`;
         app.announce(lastHandoff);
-        renderMain();
-      }, 'origin-primary');
-      confirm.id = 'origin-handoff-confirm';
+        actions.replaceChildren(...(failed.length ? [button('Retry the failed tasks', () => void send(failed.map(result => result.itemId)), 'origin-ghost')] : []),
+          button('Open Kanban', () => { dialog.close(); app.openKanban(destination); }, 'origin-ghost'), button('Done', () => dialog.close(), 'origin-primary'));
+        renderMain(); renderDrawer();
+      }
       const close = button('', () => dialog.close(), 'origin-icon origin-modal-close'); close.setAttribute('aria-label', 'Close'); close.append(icon(ICON.close));
-      const actions = el('div', 'origin-modal-actions'); actions.append(button('Cancel', () => dialog.close(), 'origin-ghost'), confirm);
-      dialog.replaceChildren(close, el('p', 'origin-eyebrow', `Kanban · ${target?.kanban?.name || ''}`), heading,
-        el('p', 'origin-modal-lead', 'Each task becomes one To Do card, prerequisites first, with its “done when”, linked requirements and components, and an Origin reference. No agent starts — you start work from Kanban.'),
-        steps, error, actions);
+      actions.append(button('Cancel', () => dialog.close(), 'origin-ghost'), confirm);
+      dialog.replaceChildren(close, el('p', 'origin-eyebrow', `Kanban · ${target.kanban.name}`), heading,
+        el('p', 'origin-modal-lead', 'Each task becomes one To Do card with its own words, then its context, and an Origin reference. Prerequisites come first and must be done before a card starts. No agent starts — you start work from Kanban. Sending again never adds a second card.'),
+        list, prerequisites, results, error, actions);
+      paint();
       dialog.showModal();
       confirm.focus();
     }

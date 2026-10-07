@@ -224,6 +224,7 @@ async function boardRoute(board, req, res, pathname, searchParams) {
     if (method === 'POST' && action === 'start-over') { const { expectedRevision, reason, startExecuting } = await body(); return view(await board.startOver(id, { expectedRevision, reason, startExecuting: startExecuting === true })); }
     if (method === 'POST' && action === 'reopen') return view({ task: await board.reopenTask(id, await body()) });
     if (method === 'POST' && action === 'duplicate') { await body(); return view({ task: await board.duplicateTask(id) }); }
+    if (method === 'POST' && action === 'prerequisites') return view({ task: await board.clearPrerequisite(id, await body()) });
     if (method === 'POST' && action === 'runs') return view({ run: await board.requestRun(id, await body()) });
     if (method === 'POST' && action === 'resume') return view({ run: await board.resumeTask(id, await body(128 * 1024)) });
     if (method === 'DELETE' && action === 'worktree') return view({ task: await board.removeTaskWorktree(id) });

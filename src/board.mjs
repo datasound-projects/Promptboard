@@ -86,6 +86,21 @@ function promptText(value, label, allowBlank = false) {
 const clip = (value, max) => typeof value === 'string' ? value.slice(0, max) : '';
 const time = value => Number.isFinite(value) ? value : Date.now();
 
+const RECORD_ID = /^[A-Za-z0-9_-]{1,100}$/;
+/** Where a card came from in Origin. A repeated handoff finds the card by it instead of adding another. */
+export function originSourceOf(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || !RECORD_ID.test(value.originProjectId) || !RECORD_ID.test(value.originTaskId)) throw new BoardError('The Origin reference is not valid.', 'INVALID_INPUT');
+  return { originProjectId: value.originProjectId, originTaskId: value.originTaskId, snapshotId: RECORD_ID.test(value.snapshotId) ? value.snapshotId : '',
+    hash: typeof value.hash === 'string' && /^[a-f0-9]{64}$/.test(value.hash) ? value.hash : '', key: typeof value.key === 'string' ? value.key.slice(0, 20) : '' };
+}
+/** Prerequisite cards: other cards of the same project that must be done before this one starts. */
+function prerequisiteIds(value, ids, selfId) {
+  if (!Array.isArray(value) || value.length > 50) throw new BoardError('A card can have at most 50 prerequisites.', 'INVALID_INPUT');
+  const list = [...new Set(value)];
+  if (list.some(id => typeof id !== 'string' || id === selfId || !ids.has(id))) throw new BoardError('A prerequisite refers to a card that does not exist on this board.', 'INVALID_INPUT');
+  return list;
+}
+
 export function normalizeSource(source) {
   if (!source || typeof source !== 'object') return null;
   return {
@@ -157,11 +172,19 @@ function parseBackupData(data) {
           createdAt: time(card.createdAt), updatedAt: time(card.updatedAt ?? card.createdAt), checksOutdated: card.checksOutdated === true,
           ...(data.version >= 6 ? { number: card.number } : {}),
           labelIds: data.version >= 8 ? taskLabelIds(card.labelIds, labels) : [],
-          priority: data.version >= 7 ? taskPriority(card.priority) : 0, source: normalizeSource(card.source), ...(data.version >= 10 && card.externalSource !== undefined ? { externalSource: externalIssueSource(card.externalSource) } : {}), column: v2 && columnIds.has(card.column) ? card.column : 'todo', ...(v3 ? backupBaseScopes(card, true, columnIds) : {}),
+          priority: data.version >= 7 ? taskPriority(card.priority) : 0, source: normalizeSource(card.source), ...(data.version >= 10 && card.externalSource !== undefined ? { externalSource: externalIssueSource(card.externalSource) } : {}),
+          ...(data.version >= 10 && card.originSource !== undefined ? { originSource: originSourceOf(card.originSource) } : {}), ...(data.version >= 10 && card.dependsOn !== undefined ? { dependsOn: card.dependsOn } : {}), column: v2 && columnIds.has(card.column) ? card.column : 'todo', ...(v3 ? backupBaseScopes(card, true, columnIds) : {}),
           ...(pipeline && [5, 6, 7, 8, 9, 10].includes(data.version) ? normalizePipelineTaskSelection(pipeline, { profileId: card.profileId, agentOverride: card.agentOverride }) : {}) };
       }),
     };
   });
+  // Prerequisites point only at cards of the same project in the backup.
+  for (const project of projects) {
+    const ids = new Set(project.tasks.map(task => task.id));
+    for (const task of project.tasks) if (task.dependsOn !== undefined) {
+      try { task.dependsOn = prerequisiteIds(task.dependsOn, ids, task.id); } catch { throw new BoardError(`${project.name || 'A project'}: a card refers to a missing prerequisite.`, 'INVALID_BACKUP'); }
+    }
+  }
   validateBacklogs(projects.map(project => ({ ...project, workflowMode: project.pipeline ? 'pipeline' : 'legacy' })));
   validateBacklogImports(projects.map(project => ({ ...project, backlogImportRevision: 0, workflowMode: project.pipeline ? 'pipeline' : 'legacy' })));
   for (const project of projects) {
@@ -194,9 +217,10 @@ function backupBaseScopes(entity, task = false, columnIds) {
 function newProject({ id = randomUUID(), name, createdAt = Date.now(), nextTaskNumber = 1, labels = [], backlog = [], backlogSources = [], backlogImported = [] }) {
   return { id, name, createdAt, nextTaskNumber, labels: taskLabels(labels), labelRevision: 0, backlog: backlogItems(backlog, labels), backlogRevision: 0, backlogSources: backlogImportSources(backlogSources), backlogImported: backlogImportLedger(backlogImported), backlogImportRevision: 0, revision: 1, repository: null, targetBranch: null, workflowMode: 'legacy', workflow: {}, pendingImport: null, tasks: [] };
 }
-function newTask({ id = randomUUID(), title, prompt, source = null, checksOutdated = false, createdAt = Date.now(), updatedAt = createdAt, column = 'todo', number, priority = 0, labelIds = [], externalSource }) {
+function newTask({ id = randomUUID(), title, prompt, source = null, checksOutdated = false, createdAt = Date.now(), updatedAt = createdAt, column = 'todo', number, priority = 0, labelIds = [], externalSource, originSource, dependsOn }) {
   // contentRevision changes only when the title or prompt changes; plan approvals refer to it.
-  return { id, title, prompt, source, ...(externalSource === undefined ? {} : { externalSource: externalIssueSource(externalSource) }), checksOutdated, createdAt, updatedAt, column, ...(number === undefined ? {} : { number }), priority: taskPriority(priority), labelIds: taskLabelIds(labelIds), revision: 1, contentRevision: 1, planApproval: null, workspace: null, retainedBranches: [], transitions: [] };
+  return { id, title, prompt, source, ...(externalSource === undefined ? {} : { externalSource: externalIssueSource(externalSource) }),
+    ...(originSource === undefined ? {} : { originSource: originSourceOf(originSource) }), ...(dependsOn?.length ? { dependsOn: [...dependsOn] } : {}), checksOutdated, createdAt, updatedAt, column, ...(number === undefined ? {} : { number }), priority: taskPriority(priority), labelIds: taskLabelIds(labelIds), revision: 1, contentRevision: 1, planApproval: null, workspace: null, retainedBranches: [], transitions: [] };
 }
 
 // Autopilot routes: stages a card visits, in board order. Executing is required (it does the work).
@@ -1047,6 +1071,7 @@ export class Board {
         : `A card cannot move from ${name(from)} to ${name(column)}. Allowed from ${name(from)}: ${(table[from] || []).map(name).join(', ') || 'none'}.`, 'TRANSITION_NOT_ALLOWED');
     }
     if (from === 'todo' && !project.repository) throw new BoardError('Link this project to a Git repository before cards leave To Do.', 'REPOSITORY_REQUIRED');
+    if (from === 'todo') this.#checkPrerequisites(project, task);
     const plan = await this.#prepareTransition(state, project, task, column, config);
     const id2 = transitionId || randomUUID();
     // Done only saves a completion record. Merging is a separate, optional Merge-stage action.
@@ -1584,6 +1609,74 @@ export class Board {
 
   createTask(input) { return this.store.update(state => this.#createTask(state, input)); }
 
+  /**
+   * Origin handoff: one board write creates To Do cards for tasks prepared in Origin, prerequisites first.
+   * A card that already carries the same Origin identity is returned instead, so repeated clicks, retries
+   * and concurrent requests never add a second card. The identity is saved with the card itself. Nothing
+   * starts: no agent, automation, script or worktree. A failed card does not undo the others.
+   */
+  createOriginTasks(projectId, { originProjectId, tasks }) {
+    if (!RECORD_ID.test(originProjectId) || !Array.isArray(tasks) || !tasks.length || tasks.length > 100) return Promise.reject(new BoardError('Choose 1 to 100 Origin tasks.', 'INVALID_INPUT'));
+    return this.store.update(state => {
+      const project = this.#project(state, projectId), results = [], failed = new Set();
+      const byOrigin = new Map(project.tasks.filter(task => task.originSource?.originProjectId === originProjectId).map(task => [task.originSource.originTaskId, task]));
+      for (const entry of tasks) {
+        const existing = byOrigin.get(entry.originTaskId);
+        if (existing) { results.push({ originTaskId: entry.originTaskId, status: 'existing', taskId: existing.id, number: existing.number, title: existing.title }); continue; }
+        try {
+          if ((entry.dependsOnOrigin || []).some(id => failed.has(id))) throw new BoardError('A prerequisite could not be sent, so this task waits for it.', 'PREREQUISITE_FAILED');
+          const origin = originSourceOf({ originProjectId, originTaskId: entry.originTaskId, snapshotId: entry.snapshotId, hash: entry.hash, key: entry.key });
+          const linked = [...(entry.dependsOnTaskIds || []), ...(entry.dependsOnOrigin || []).map(id => byOrigin.get(id)?.id)];
+          if (linked.some(id => !id)) throw new BoardError('A prerequisite has no card yet.', 'PREREQUISITE_MISSING');
+          const dependsOn = prerequisiteIds(linked, new Set(project.tasks.map(task => task.id)));
+          const task = this.#createTask(state, { projectId, title: entry.title, prompt: entry.prompt });
+          task.originSource = origin;
+          if (dependsOn.length) task.dependsOn = dependsOn;
+          byOrigin.set(entry.originTaskId, task);
+          results.push({ originTaskId: entry.originTaskId, status: 'created', taskId: task.id, number: task.number, title: task.title });
+        } catch (error) {
+          failed.add(entry.originTaskId);
+          results.push({ originTaskId: entry.originTaskId, status: 'failed', error: error.message || 'The card could not be created.', code: error.code || 'FAILED' });
+        }
+      }
+      return results;
+    });
+  }
+
+  /** Remove one prerequisite from a card, for example one whose card was deleted. Only this explicit action changes the list. */
+  clearPrerequisite(taskId, { prerequisiteId, expectedRevision } = {}) {
+    return this.store.update(state => {
+      const { task } = this.#task(state, taskId);
+      checkRevision(task, expectedRevision, 'This card');
+      if (!(task.dependsOn || []).includes(prerequisiteId)) throw new BoardError('That prerequisite is no longer on this card.', 'NOT_FOUND', 404);
+      task.dependsOn = task.dependsOn.filter(id => id !== prerequisiteId);
+      if (!task.dependsOn.length) delete task.dependsOn;
+      task.revision++; task.updatedAt = Date.now();
+      return task;
+    });
+  }
+
+  // A card starts only when every prerequisite card is done. Card order alone never enforces this, and
+  // nothing is merged to satisfy it: a prerequisite counts once its card has reached Done.
+  #checkPrerequisites(project, task) {
+    if (!task.dependsOn?.length) return;
+    const cards = new Map(project.tasks.map(entry => [entry.id, entry]));
+    const done = id => (project.workflowMode === 'pipeline' ? project.pipeline.columns.find(column => column.id === cards.get(id)?.column)?.role === 'done' : cards.get(id)?.column === 'done');
+    const path = [], explored = new Set(), visit = id => {
+      if (path.includes(id)) return [...path.slice(path.indexOf(id)), id];
+      if (explored.has(id)) return null;
+      path.push(id);
+      for (const next of cards.get(id)?.dependsOn || []) { const loop = visit(next); if (loop) return loop; }
+      path.pop(); explored.add(id); return null;
+    };
+    const loop = visit(task.id);
+    if (loop) throw new BoardError(`Its prerequisites form a loop (${loop.map(id => `#${cards.get(id)?.number ?? '?'}`).join(' → ')}). Clear one prerequisite in the card's details.`, 'PREREQUISITES_CYCLE', 409);
+    const pending = task.dependsOn.filter(id => !done(id));
+    if (!pending.length) return;
+    const describe = id => (cards.has(id) ? `#${cards.get(id).number} ${cards.get(id).title} (${columnTitleIn(project, cards.get(id).column)})` : 'a prerequisite card that was deleted — clear it in the card\'s details');
+    throw new BoardError(`Finish its prerequisites first: ${pending.map(describe).join('; ')}.`, 'PREREQUISITES_PENDING', 409);
+  }
+
   #createTask(state, { projectId, title, prompt = '', source = null, pipelineSettings, expectedProjectRevision, priority = 0, labelIds, expectedLabelRevision }, identity = {}) {
     const task = newTask({ ...identity, title: text(title, 120, 'Title'), prompt, source: normalizeSource(source), priority, labelIds });
     const project = this.#project(state, projectId);
@@ -1879,7 +1972,8 @@ export class Board {
     return this.store.update(state => {
       const { project, task } = this.#task(state, id);
       if (project.tasks.length >= TASK_LIMIT) throw new BoardError(`A project can have at most ${TASK_LIMIT} cards.`, 'LIMIT');
-      const copy = newTask({ title: `${task.title.slice(0, 113)} (copy)`, prompt: task.prompt, source: structuredClone(task.source), checksOutdated: task.checksOutdated, priority: task.priority, labelIds: task.labelIds, ...(task.externalSource === undefined ? {} : { externalSource: structuredClone(task.externalSource) }) });
+      // A copy is a new card: it keeps its prerequisites but not the Origin identity of the original.
+      const copy = newTask({ title: `${task.title.slice(0, 113)} (copy)`, prompt: task.prompt, source: structuredClone(task.source), checksOutdated: task.checksOutdated, priority: task.priority, labelIds: task.labelIds, ...(task.dependsOn?.length ? { dependsOn: task.dependsOn } : {}), ...(task.externalSource === undefined ? {} : { externalSource: structuredClone(task.externalSource) }) });
       if (project.workflowMode === 'pipeline') copy.column = project.pipeline.columns.find(column => column.role === 'todo').id;
       if (project.workflowMode === 'pipeline' && (task.profileId || task.agentOverride)) Object.assign(copy, normalizePipelineTaskSelection(project.pipeline, { profileId: task.profileId, agentOverride: task.agentOverride }));
       if (task.baseBinding) copy.baseBinding = structuredClone(task.baseBinding);
@@ -2007,7 +2101,8 @@ export class Board {
         repository: project.repository ? { path: project.repository.path } : null, targetBranch: project.targetBranch ? { name: project.targetBranch.name } : null,
         agentDefaults: project.agentDefaults || null, workflow: project.workflow || {}, testCommands: project.testCommands || [], timelineNotes: project.timelineNotes || [], columnLayout: project.columnLayout || [],
         // Workspaces and runs are machine-specific and are not exported.
-        tasks: project.tasks.map(task => ({ id: task.id, number: task.number, title: task.title, prompt: task.prompt, priority: taskPriority(task.priority), labelIds: taskLabelIds(task.labelIds, project.labels), source: task.source, ...(task.externalSource === undefined ? {} : { externalSource: externalIssueSource(task.externalSource) }), checksOutdated: task.checksOutdated,
+        tasks: project.tasks.map(task => ({ id: task.id, number: task.number, title: task.title, prompt: task.prompt, priority: taskPriority(task.priority), labelIds: taskLabelIds(task.labelIds, project.labels), source: task.source, ...(task.externalSource === undefined ? {} : { externalSource: externalIssueSource(task.externalSource) }),
+          ...(task.originSource === undefined ? {} : { originSource: originSourceOf(task.originSource) }), ...(task.dependsOn?.length ? { dependsOn: [...task.dependsOn] } : {}), checksOutdated: task.checksOutdated,
           createdAt: task.createdAt, updatedAt: task.updatedAt, column: task.column, ...backupBaseScopes(task, true),
           ...(project.workflowMode === 'pipeline' ? normalizePipelineTaskSelection(project.pipelineImport || project.pipeline, { profileId: task.profileId, agentOverride: task.agentOverride }) : {}) })) })) };
   }
@@ -2395,6 +2490,7 @@ export class Board {
     checkRevision(task, request.expectedRevision, 'This card');
     const from = project.pipeline.columns.find(column => column.id === task.column), to = project.pipeline.columns.find(column => column.id === request.column);
     if (!to) throw new BoardError('Choose a valid column.', 'INVALID_COLUMN');
+    if (to.role === 'active' && from?.role !== 'active') this.#checkPrerequisites(project, task);
     const onExit = request.initialArrival ? [] : from.automations.onExit, onEnter = to.automations.onEnter;
     if (task.automationMove && !['completed', 'failed', 'cancelled', 'interrupted'].includes(task.automationMove.status)) throw conflict('Stop or resolve this card’s existing automation move first.', 'AUTOMATION_MOVE_ACTIVE');
     if (!onExit.length && !onEnter.length) return this.#pipelineLifecycleTransition(taskId, request);
