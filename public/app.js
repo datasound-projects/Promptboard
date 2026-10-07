@@ -251,7 +251,7 @@ function isMobile() { return window.innerWidth <= 730; }
 function syncSidebarToggle() {
   const expanded = isMobile() ? $('#sidebar').classList.contains('open') : document.documentElement.dataset.sidebar !== 'collapsed';
   $('#menu-toggle').setAttribute('aria-expanded', String(expanded));
-  const what = location.hash === '#/base' ? 'Base categories' : location.hash === '#/kanban' ? 'projects' : 'prompt history';
+  const what = location.hash === '#/base' ? 'Base categories' : location.hash === '#/kanban' ? 'projects' : location.hash === '#/origin' ? 'blueprint sections' : 'prompt history';
   $('#menu-toggle').setAttribute('aria-label', expanded ? `Hide ${what}` : `Show ${what}`);
 }
 function setSidebar(open) {
@@ -263,7 +263,7 @@ function toggleSidebar() {
   if (isMobile()) {
     const open = !$('#sidebar').classList.contains('open');
     setSidebar(open);
-    if (open) (location.hash === '#/kanban' ? $('#workspace-new') : $('#new-prompt')).focus();
+    if (open) (location.hash === '#/kanban' ? $('#workspace-new') : location.hash === '#/origin' ? $('#origin-nav button') || $('#sidebar') : $('#new-prompt')).focus();
     return;
   }
   const collapsed = document.documentElement.dataset.sidebar !== 'collapsed';
@@ -320,6 +320,7 @@ async function loadProviders() {
     loadAuth(authInfo?.provider || $('#provider').value);
     loadBoard();
     if (currentPage() === 'base') baseView?.show();
+    if (currentPage() === 'origin') originView?.show();
     await loadModels({ model: chosenModel(), effort: $('#effort').value });
   } catch (error) {
     token = '';
@@ -1235,32 +1236,36 @@ function openHelp(privacy = false) {
   if (!$('#help-dialog').open) $('#help-dialog').showModal();
 }
 
-// All three views stay in the document. Routing does not replace forms, boards or terminals.
-let baseView = null;
-function currentPage() { return location.hash === '#/kanban' ? 'kanban' : location.hash === '#/base' ? 'base' : 'compose'; }
+// All views stay in the document. Routing does not replace forms, boards or terminals.
+let baseView = null, originView = null;
+function currentPage() { return location.hash === '#/kanban' ? 'kanban' : location.hash === '#/base' ? 'base' : location.hash === '#/origin' ? 'origin' : 'compose'; }
 function showPage() {
   const page = currentPage();
-  const kanban = page === 'kanban', base = page === 'base';
+  const kanban = page === 'kanban', base = page === 'base', origin = page === 'origin';
   workspaceFiles?.setVisible(kanban);
   $('#prompt-view').hidden = page !== 'compose';
   $('#kanban-view').hidden = !kanban;
   $('#base-view').hidden = !base;
+  if ($('#origin-view')) $('#origin-view').hidden = !origin;
   document.documentElement.dataset.page = page;
   for (const link of document.querySelectorAll('.page-nav a')) {
-    if (link.getAttribute('href') === ({ compose: '#/', kanban: '#/kanban', base: '#/base' })[page]) link.setAttribute('aria-current', 'page');
+    if (link.getAttribute('href') === ({ compose: '#/', kanban: '#/kanban', base: '#/base', origin: '#/origin' })[page]) link.setAttribute('aria-current', 'page');
     else link.removeAttribute('aria-current');
   }
-  document.title = `${({ compose: 'Compose', kanban: 'Kanban', base: 'Base' })[page]} · Promptboard`;
-  $('#skip-link').setAttribute('href', base ? '#base-view' : kanban ? '#kanban-view' : '#prompt-input');
+  document.title = `${({ compose: 'Compose', kanban: 'Kanban', base: 'Base', origin: 'Origin' })[page]} · Promptboard`;
+  $('#skip-link').setAttribute('href', base ? '#base-view' : kanban ? '#kanban-view' : origin ? '#origin-view' : '#prompt-input');
   $('#history-panel').hidden = page !== 'compose';
   $('#workspace-panel').hidden = !kanban;
   $('#base-sidebar-panel').hidden = !base;
+  if ($('#origin-sidebar-panel')) $('#origin-sidebar-panel').hidden = !origin;
   $('#sidebar').hidden = false;
   $('#menu-toggle').hidden = false;
-  $('#sidebar').setAttribute('aria-label', base ? 'Base library' : kanban ? 'Projects' : 'Prompt history');
-  $('#sidebar-scrim').setAttribute('aria-label', base ? 'Close Base categories' : kanban ? 'Close projects' : 'Close history');
+  $('#sidebar').setAttribute('aria-label', base ? 'Base library' : kanban ? 'Projects' : origin ? 'Blueprint sections' : 'Prompt history');
+  $('#sidebar-scrim').setAttribute('aria-label', base ? 'Close Base categories' : kanban ? 'Close projects' : origin ? 'Close blueprint sections' : 'Close history');
   if (kanban) renderBoard();
   if (base && token) baseView?.show();
+  // Leaving Origin saves pending blueprint edits; opening it reads the selected project's blueprint.
+  if (origin && token) void originView?.show(); else if (!origin) void originView?.leave();
   setSidebar(false);
   window.scrollTo(0, 0);
 }
@@ -3720,7 +3725,7 @@ async function addToKanban(event) {
 }
 window.addEventListener('hashchange', showPage);
 // The skip link must not change the hash, which selects the page.
-$('#skip-link').addEventListener('click', event => { event.preventDefault(); ($(currentPage() === 'base' ? '#base-view' : currentPage() === 'kanban' ? '#kanban-view' : '#prompt-input')).focus(); });
+$('#skip-link').addEventListener('click', event => { event.preventDefault(); ($({ base: '#base-view', kanban: '#kanban-view', origin: '#origin-view' }[currentPage()] || '#prompt-input')).focus(); });
 $('#kanban-button').addEventListener('click', openAddToKanban);
 
 // ---- Split into tasks (optional) ----
@@ -5234,7 +5239,7 @@ const UI_PREFS = { startPage: ['promptboard.settings.start-page', 'compose'], op
   keepTabs: ['promptboard.settings.keep-tabs', '1'], termFont: ['promptboard.settings.terminal-font', '12'], dockStart: ['promptboard.settings.dock-start', 'last'], cardPreview: ['promptboard.settings.card-preview', '1'], cardAgent: ['promptboard.settings.card-agent', '0'], cardSpacing: ['promptboard.settings.card-spacing', '0'] };
 function uiPref(name) {
   const [key, fallback] = UI_PREFS[name];
-  const allowed = { startPage: ['compose', 'kanban', 'base'], termFont: ['11', '12', '13', '14', '16'], dockStart: ['last', 'collapsed', 'open'] }[name] || ['0', '1'];
+  const allowed = { startPage: ['origin', 'compose', 'kanban', 'base'], termFont: ['11', '12', '13', '14', '16'], dockStart: ['last', 'collapsed', 'open'] }[name] || ['0', '1'];
   try { const value = localStorage.getItem(key); return allowed.includes(value) ? value : fallback; } catch { return fallback; }
 }
 function setUiPref(name, value) { savePref(UI_PREFS[name][0], value); }

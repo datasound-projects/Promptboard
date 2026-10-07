@@ -25,6 +25,7 @@
       <button class="icon-button" id="menu-toggle" type="button" aria-controls="sidebar" aria-expanded="true" aria-label="Hide prompt history"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M9.5 4.5v15"/></svg></button>
       <a class="brand" href="#/" aria-label="Promptboard home"><span class="brand-name">Promptboard</span></a>
       <nav class="page-nav" aria-label="Pages">
+        <a href="#/origin">Origin</a>
         <a href="#/" aria-current="page">Compose</a>
         <a href="#/kanban">Kanban</a>
         <a href="#/base">Base</a>
@@ -72,6 +73,11 @@
         <div class="history-label"><span>BASE LIBRARY</span><span id="base-sidebar-count">0</span></div>
         <nav id="base-categories" class="base-categories" aria-label="Base resource categories"></nav>
         <p class="note base-sidebar-note">Reusable resources for future agent runs.</p>
+      </div>
+      <div class="sidebar-panel" id="origin-sidebar-panel" hidden>
+        <div class="history-label"><span>BLUEPRINT</span></div>
+        <nav id="origin-nav" class="origin-nav" aria-label="Blueprint sections"></nav>
+        <p class="note origin-sidebar-note">Think first. Design the system. Verify decisions. Then execute.</p>
       </div>
       <div class="sidebar-bottom">
         <button class="text-link" id="privacy-help" type="button">How your data is used <span aria-hidden="true">↗</span></button>
@@ -402,13 +408,14 @@
       <div id="base-mobile-categories"></div><div id="base-view-controls" class="base-view-controls"></div>
       <div class="base-layout base-browse"><section aria-label="Resources" class="base-list-panel"><ul id="base-list" class="base-list"></ul><div id="base-empty" class="note" role="status" aria-live="polite">Loading Base…</div></section><section id="base-detail" class="base-detail" aria-label="Resource editor" hidden><p class="base-placeholder">Choose a resource or create one. Nothing is attached automatically.</p></section></div>
     </main>
+    <main class="workspace origin-workspace" id="origin-view" tabindex="-1" hidden aria-labelledby="origin-heading"></main>
     <dialog id="base-dialog" class="kanban-dialog base-dialog" aria-labelledby="base-dialog-heading"><button class="dialog-close icon-button" id="base-dialog-close" type="button" aria-label="Close Base dialog">×</button><h2 id="base-dialog-heading">Base resources</h2><div id="base-dialog-content"></div></dialog>
 
     <dialog id="app-settings" class="kanban-dialog app-settings" aria-labelledby="app-settings-heading"><button class="dialog-close icon-button" id="app-settings-close" type="button" aria-label="Close settings">×</button><p class="eyebrow">PROMPTBOARD</p><h2 id="app-settings-heading">Settings</h2>
       <p class="note">Browser preferences are shared. Agent defaults apply unless a project or column overrides them.</p>
       <fieldset class="settings-group"><legend>General</legend>
         <label class="field-label">Theme<select id="set-theme"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label>
-        <label class="field-label">Start page<select id="set-start"><option value="compose">Compose</option><option value="kanban">Kanban</option><option value="base">Base</option></select></label>
+        <label class="field-label">Start page<select id="set-start"><option value="origin">Origin</option><option value="compose">Compose</option><option value="kanban">Kanban</option><option value="base">Base</option></select></label>
       </fieldset>
       <fieldset class="settings-group"><legend>Desktop notifications</legend>
         <p class="note">Receive alerts from “Notify me” column actions while this browser is open. Permission and this preference apply to this browser.</p>
