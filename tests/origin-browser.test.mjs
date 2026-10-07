@@ -239,10 +239,12 @@ test('Origin in real Chrome: quick entry, mind map, diagram, evidence, readiness
     }
   }
   await browser.resize(1280, 900);
-  // Keyboard section navigation inside the sidebar.
+  // Keyboard section navigation inside the sidebar, once the desktop sidebar is laid out again.
+  assert.equal(await browser.layout(`return innerWidth === 1280 && getComputedStyle(document.querySelector('#sidebar')).visibility === 'visible' && document.querySelector('.origin-nav-item[data-section="overview"]').getBoundingClientRect().width > 0;`), true);
   await ev(`document.querySelector('.origin-nav-item[data-section="overview"]').focus();`);
+  await wait(`document.activeElement?.dataset.section === 'overview'`, 'sidebar focus');
   await browser.key('ArrowDown', 'ArrowDown', 40);
-  assert.equal(await ev(`return document.activeElement.dataset.section;`), 'vision');
+  await wait(`document.activeElement?.dataset.section === 'vision'`, 'ArrowDown moves to the next section');
 
   assert.equal(JSON.parse(await readFile(statePath, 'utf8')).version, 12, 'Board state version is unchanged.');
   assert.notEqual(stateBefore, '');
