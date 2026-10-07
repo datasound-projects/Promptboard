@@ -102,13 +102,13 @@ test('stale label drafts stay editable and explicit reload works; own removal re
   const w = await setup(t), { browser, keys } = w;
   await w.app.board.updateTask(w.task.id, { labelIds: ['bug'], expectedLabelRevision: 1, expectedRevision: 1 });
   await browser.goto(w.app.url + '/#/kanban'); await browser.until(`document.querySelector('[data-id="${w.task.id}"] .kanban-open')`, 'stale-label board');
-  await keys.enter('#labels-open'); await keys.type('#label-definition-list [data-label-id="bug"] [data-label-field="name"]', 'Unsaved draft');
+  await keys.enter('#view-backlog'); await keys.enter('#labels-open'); await keys.type('#label-definition-list [data-label-id="bug"] [data-label-field="name"]', 'Unsaved draft');
   let project = await w.current(); await w.app.board.setLabels(project.id, { labels: project.labels.map(label => label.id === 'bug' ? { ...label, name: 'Concurrent label' } : label), expectedLabelRevision: project.labelRevision });
   await keys.enter('#labels-save'); await browser.until('!document.getElementById("labels-error").hidden', 'stale catalog refused');
   assert.equal(await browser.eval('return document.getElementById("labels-dialog").open && document.querySelector("#label-definition-list [data-label-id=bug] input").value;'), 'Unsaved draft');
   assert.equal((await w.current()).labels[0].name, 'Concurrent label');
   await keys.enter('#labels-reload'); await browser.until('document.querySelector("#label-definition-list [data-label-id=bug] input").value==="Concurrent label"', 'explicit label reload');
-  await keys.enter('#labels-cancel');
+  await keys.enter('#labels-cancel'); await keys.enter('#view-board');
   await keys.enter(`[data-id="${w.task.id}"] .kanban-open`); await keys.enter('#card-labels-manage');
   await keys.enter('#label-definition-list [data-label-id="bug"] button'); await keys.enter('#labels-save');
   await browser.until('!document.getElementById("labels-dialog").open && !document.querySelector("#card-label-choices input[data-label-id=bug]")', 'assigned label removed');

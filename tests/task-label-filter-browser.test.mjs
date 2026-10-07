@@ -15,7 +15,7 @@ async function enter(browser, selector) {
   await browser.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
 }
 
-test('shared label filters combine priority/search, preserve archive selections and full saved order, and fit keyboard desktop/phone views', { skip: !chrome, timeout: 90000 }, async t => {
+test('label filters combine priority/search in the archive and Backlog, keep archive selections, and never hide Board cards', { skip: !chrome, timeout: 90000 }, async t => {
   const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
   const project = await app.board.createProject({ name: 'Label filters', workflowMode: 'pipeline' });
   await app.board.setLabels(project.id, { labels: [{ id: 'bug', name: 'Bug', color: '#123456' }, { id: 'none', name: 'UI 雪'.repeat(12), color: '#abcdef' }], expectedLabelRevision: 0 });
@@ -34,23 +34,23 @@ test('shared label filters combine priority/search, preserve archive selections 
   const browser = await launch(); assert.ok(browser); t.after(() => browser.close());
   await browser.send('Page.addScriptToEvaluateOnNewDocument', { source: `localStorage.setItem('promptboard.kanban.project',${JSON.stringify(project.id)});const nativeFetch=window.fetch;window.__writes=[];window.fetch=function(...args){if(/^\\/api\\/(tasks|projects)(?:\\/|$)/.test(args[0])&&args[1]?.method&&!['GET','HEAD'].includes(args[1].method))window.__writes.push({url:args[0],body:JSON.parse(args[1].body||'{}')});return Reflect.apply(nativeFetch,this,args);};` });
   await browser.goto(app.url + '/#/kanban'); await browser.until(`document.querySelector('[data-id="${first.id}"]')`, 'label filter board');
+  const todo = () => browser.eval('return [...document.querySelectorAll("[data-column=todo] .kanban-card")].map(e=>e.dataset.id);');
+  const all = [first.id, hidden.id, second.id, unlabeled.id, lowBug.id];
   for (const width of [1280, 390]) for (const theme of ['light', 'dark']) {
     t.diagnostic(`Label filters ${width}/${theme}.`);
     await browser.resize(width, 900); await browser.eval(`document.documentElement.dataset.theme=${JSON.stringify(theme)};`);
-    await select(browser, 'board-priority-filter', '4'); await select(browser, 'board-label-filter', 'all');
-    await browser.eval('document.getElementById("board-label-filter").focus();'); await browser.type('b');
-    await browser.until(`document.getElementById('board-label-filter').value==='label:bug' && !document.querySelector('[data-id="${hidden.id}"]')`, 'native label typeahead');
-    assert.deepEqual(await browser.eval('return [...document.querySelectorAll("[data-column=todo] .kanban-card")].map(e=>e.dataset.id);'), [first.id, second.id]);
-    assert.equal(await browser.eval('return document.querySelector("[data-column=todo] .kanban-column-count").textContent;'), '2/5');
-    assert.ok(await browser.eval(`return !!document.querySelector('[data-id="${archived[0].id}"]');`), 'Filter is applied before the five-item Done preview limit.');
-    assert.equal(await browser.layout(`const e=document.getElementById('board-label-filter'),r=e.getBoundingClientRect();return r.width>0&&r.left>=0&&r.right<=innerWidth;`), true);
+    assert.equal(await browser.eval('return document.getElementById("board-labels-toolbar").hidden;'), true, 'The Board has no label row.');
+    assert.deepEqual(await todo(), all);
+    assert.equal(await browser.eval('return document.querySelector("[data-column=todo] .kanban-column-count").textContent;'), '5');
     if (process.env.PB_BROWSER_SHOTS) { await mkdir(process.env.PB_BROWSER_SHOTS, { recursive: true }); await writeFile(join(process.env.PB_BROWSER_SHOTS, `label-filter-board-${width}-${theme}.png`), await browser.screenshot()); }
-    await enter(browser, '[data-column=done] .kanban-done-all'); await browser.until('document.getElementById("done-dialog").open && document.querySelector("#archive-rows input")', 'filtered completed table');
-    assert.equal(await browser.eval('return document.getElementById("archive-label-filter").value;'), 'label:bug');
+    await enter(browser, '[data-column=done] .kanban-done-all'); await browser.until('document.getElementById("done-dialog").open && document.querySelector("#archive-rows input")', 'completed table');
+    await select(browser, 'archive-priority-filter', '4'); await select(browser, 'archive-label-filter', 'all');
+    await browser.eval('document.getElementById("archive-label-filter").focus();'); await browser.type('b');
+    await browser.until(`document.getElementById('archive-label-filter').value==='label:bug' && document.querySelector('#archive-rows [data-archive-task="${archived[0].id}"]')`, 'native label typeahead');
     assert.equal(await browser.eval('return document.getElementById("archive-count").textContent;'), '1 of 8 tasks');
     await browser.eval('const e=document.querySelector("#archive-rows input[type=checkbox]");e.checked=true;e.dispatchEvent(new Event("change",{bubbles:true}));');
     await select(browser, 'archive-label-filter', 'label:none');
-    assert.equal(await browser.eval('return document.getElementById("board-label-filter").value;'), 'label:none', 'A real label whose ID is none is distinct from Unlabeled.');
+    assert.equal(await browser.eval('return document.getElementById("archive-label-filter").value;'), 'label:none', 'A real label whose ID is none is distinct from Unlabeled.');
     assert.equal(await browser.eval('return document.getElementById("archive-count").textContent;'), '6 of 8 tasks');
     await select(browser, 'archive-label-filter', 'label:bug');
     assert.equal(await browser.eval('return document.querySelector("#archive-rows input[type=checkbox]").checked;'), true, 'Hidden selected rows remain selected.');
@@ -64,29 +64,24 @@ test('shared label filters combine priority/search, preserve archive selections 
     assert.equal(await browser.layout(`const r=document.getElementById('archive-label-filter').getBoundingClientRect();return r.width>0&&r.left>=0&&r.right<=innerWidth;`), true);
     if (process.env.PB_BROWSER_SHOTS) await writeFile(join(process.env.PB_BROWSER_SHOTS, `label-filter-archive-${width}-${theme}.png`), await browser.screenshot());
     await enter(browser, '#done-dialog-close');
-    assert.deepEqual(await browser.eval('return [...document.querySelectorAll("[data-column=todo] .kanban-card")].map(e=>e.dataset.id);'), [unlabeled.id]);
+    assert.deepEqual(await todo(), all, 'A saved filter never hides Board cards.');
   }
   assert.deepEqual(await app.board.state(), original, 'View changes must not write task, queue, session or project state.');
   assert.deepEqual(await browser.eval('return window.__writes;'), []);
-  await select(browser, 'board-priority-filter', '4'); await select(browser, 'board-label-filter', 'none');
-  assert.equal(await browser.eval('return document.getElementById("board-label-filter-summary").textContent;'), 'No tasks match these filters.');
-  await select(browser, 'board-label-filter', 'label:bug');
+  // Keyboard reordering moves past the real neighbour in the full column.
   await enter(browser, `[data-id="${second.id}"] .kanban-more-toggle`); await enter(browser, `[data-id="${second.id}"] .kanban-move-up`);
-  await browser.until(`document.querySelector('[data-column=todo] .kanban-card')?.dataset.id===${JSON.stringify(second.id)} && !document.querySelector('.kanban-card.pending')`, 'label filtered keyboard move');
+  await browser.until(`document.querySelectorAll('[data-column=todo] .kanban-card')[1]?.dataset.id===${JSON.stringify(second.id)} && !document.querySelector('.kanban-card.pending')`, 'keyboard move');
   const ordered = (await app.board.state()).projects.find(p => p.id === project.id).tasks.filter(card => card.column === 'todo');
-  assert.deepEqual(ordered.map(card => card.id), [second.id, first.id, hidden.id, unlabeled.id, lowBug.id]);
-  assert.ok(ordered.every(card => card.prompt === exact)); assert.equal(await browser.eval('return window.__writes.at(-1).body.index;'), 0);
-  await browser.eval(`const source=document.querySelector('[data-id="${second.id}"]'),target=document.querySelector('[data-id="${first.id}"]'),transfer=new DataTransfer();source.dispatchEvent(new DragEvent('dragstart',{bubbles:true,dataTransfer:transfer}));target.dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:transfer}));source.dispatchEvent(new DragEvent('dragend',{bubbles:true,dataTransfer:transfer}));`);
-  await browser.until('!document.querySelector(".kanban-card.pending")', 'filtered label drop');
-  assert.deepEqual((await app.board.state()).projects.find(p => p.id === project.id).tasks.filter(card => card.column === 'todo').map(card => card.id), ordered.map(card => card.id));
+  assert.deepEqual(ordered.map(card => card.id), [first.id, second.id, hidden.id, unlabeled.id, lowBug.id]);
+  assert.ok(ordered.every(card => card.prompt === exact)); assert.equal(await browser.eval('return window.__writes.at(-1).body.index;'), 1);
+  // Saved per project, shown in Backlog with priority and search; Timeline and Board stay unfiltered.
+  assert.deepEqual(await browser.eval(`return [localStorage.getItem('promptboard.label-filter.${project.id}'), localStorage.getItem('promptboard.label-filter.${other.id}')];`), ['none', null]);
   await select(browser, 'project-select', other.id); await browser.until(`document.querySelector('[data-id="${otherTask.id}"]')`, 'other label project');
-  assert.equal(await browser.eval('return document.getElementById("board-label-filter").value;'), 'all');
-  await select(browser, 'board-label-filter', 'none'); await select(browser, 'project-select', project.id);
-  assert.equal(await browser.eval('return document.getElementById("board-label-filter").value;'), 'label:bug');
-  await browser.reload(); await browser.until(`document.getElementById('board-label-filter').value==='label:bug' && document.querySelector('[data-id="${second.id}"]')`, 'saved label preference');
+  await select(browser, 'project-select', project.id); await browser.reload(); await browser.until(`document.querySelector('[data-id="${second.id}"]')`, 'saved label preference');
+  await enter(browser, '#view-backlog'); await browser.until('!document.getElementById("board-labels-toolbar").hidden && document.getElementById("board-label-filter").value==="none"', 'label filter in Backlog');
   await enter(browser, '#view-timeline'); await browser.until('!document.getElementById("timeline").hidden', 'unfiltered timeline');
   assert.equal(await browser.eval('return document.getElementById("board-labels-toolbar").hidden;'), true); assert.equal(await browser.eval('return document.getElementById("board-count").textContent;'), '13');
-  await enter(browser, '#view-board'); await browser.until('!document.getElementById("board-labels-toolbar").hidden', 'label filter restored');
+  await enter(browser, '#view-board'); await browser.until('document.getElementById("board-labels-toolbar").hidden && document.querySelectorAll("[data-column=todo] .kanban-card").length===5', 'Board unfiltered again');
   assert.deepEqual((await app.board.state()).runs, []); assert.deepEqual((await app.board.state()).sessions, []);
   assert.deepEqual(browser.consoleMessages.filter(line => line.startsWith('EXCEPTION')), []);
 });
@@ -100,16 +95,16 @@ test('label rename retains stable filter identity; removing the selected definit
   const done = await app.board.createTask({ projectId: project.id, title: 'Archived' }); await app.board.transition(done.id, { column: 'done', expectedRevision: done.revision });
   const browser = await launch(); assert.ok(browser); t.after(() => browser.close());
   await browser.goto(app.url + '/#/kanban'); await browser.until(`document.querySelector('[data-id="${card.id}"]')`, 'changing label board');
-  await select(browser, 'board-label-filter', 'label:bug'); await enter(browser, '[data-column=done] .kanban-done-all');
+  await enter(browser, '[data-column=done] .kanban-done-all');
   await browser.until('document.getElementById("done-dialog").open', 'changing label archive open');
+  await select(browser, 'archive-label-filter', 'label:bug');
   await app.board.setLabels(project.id, { labels: [{ id: 'bug', name: '<img src=x>', color: '#654321' }], expectedLabelRevision: 1 });
   await browser.until('document.querySelector("#archive-label-filter option:checked").textContent==="<img src=x>"', 'renamed stable filter');
-  assert.equal(await browser.eval('return document.getElementById("board-label-filter").value;'), 'label:bug');
-  assert.equal(await browser.eval('return !!document.querySelector("#board-label-filter img");'), false);
+  assert.equal(await browser.eval('return document.getElementById("archive-label-filter").value;'), 'label:bug');
+  assert.equal(await browser.eval('return !!document.querySelector("#archive-label-filter img");'), false);
   const before = await app.board.state(); await app.board.setLabels(project.id, { labels: [], expectedLabelRevision: 2 });
   await browser.until(`document.getElementById('archive-label-filter').value==='all' && document.querySelector('[data-id="${other.id}"]') && document.querySelector('#archive-rows [data-archive-task="${done.id}"]')`, 'deleted filter reset');
   assert.equal(await browser.eval(`return localStorage.getItem('promptboard.label-filter.${project.id}');`), 'all');
-  assert.equal(await browser.eval('return document.getElementById("board-label-filter").value;'), 'all');
   const after = await app.board.state(); assert.equal(after.revision, before.revision + 1, 'Only the explicit catalog removal writes state.');
   assert.equal(after.projects[0].tasks.length, 3); assert.deepEqual(after.runs, []); assert.deepEqual(after.sessions, []);
 });

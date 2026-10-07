@@ -1523,17 +1523,18 @@ function renderBoard() {
   const backlogAvailable = pipelineBacklogSupported && project?.workflowMode === 'pipeline';
   const backlogView = backlogAvailable && projectView() === 'backlog';
   const displayed = backlogView ? project.backlog || [] : tasks;
-  $('#board-labels-toolbar').hidden = !taskLabelsSupported || project?.workflowMode !== 'pipeline' || timelineView;
+  // The Board always shows every card. Label, priority and search filters belong to Backlog (and the archive has its own).
+  $('#board-labels-toolbar').hidden = !taskLabelsSupported || project?.workflowMode !== 'pipeline' || !backlogView;
   $('#project-select').replaceChildren(...(board?.projects || []).map(item => option(item.id, item.name)));
   if (!project) $('#project-select').append(option('', board ? 'No projects yet' : 'Loading…'));
   $('#project-select').value = project?.id || '';
   $('#project-select').disabled = !project;
   $('#project-new').disabled = !board;
   for (const id of ['#project-rename', '#project-delete', '#card-new', '#agents-open']) $(id).disabled = !project;
-  const priority = timelineView ? 'all' : projectPriorityFilter(project), label = timelineView ? 'all' : projectLabelFilter(project);
-  const filtered = priority !== 'all' || label !== 'all' || !timelineView && Boolean(projectSearch(project).trim());
-  const visibleTasks = displayed.filter(task => matchesPriority(task, priority) && matchesLabel(task, label) && (timelineView || matchesTaskSearch(task, project)));
-  $('#board-search-field').hidden = !backlogAvailable || timelineView;
+  const priority = backlogView ? projectPriorityFilter(project) : 'all', label = backlogView ? projectLabelFilter(project) : 'all';
+  const filtered = priority !== 'all' || label !== 'all' || backlogView && Boolean(projectSearch(project).trim());
+  const visibleTasks = displayed.filter(task => matchesPriority(task, priority) && matchesLabel(task, label) && (!backlogView || matchesTaskSearch(task, project)));
+  $('#board-search-field').hidden = !backlogView;
   if ($('#board-search').value !== projectSearch(project)) $('#board-search').value = projectSearch(project);
   $('#board-count').textContent = !filtered ? String(displayed.length).padStart(2, '0') : `${visibleTasks.length}/${displayed.length}`;
   $('#board-count').setAttribute('aria-label', !filtered ? 'Cards' : `${visibleTasks.length} of ${displayed.length} cards shown`);
@@ -1542,11 +1543,12 @@ function renderBoard() {
   $('#board-priority-filter-summary').textContent = summary;
   renderLabelFilter($('#board-label-filter'), project, label);
   $('#board-label-filter-summary').textContent = summary;
-  $('#board-empty').hidden = displayed.length > 0;
+  // With a project open, its empty columns already say there is nothing yet; the message is only for no project.
+  $('#board-empty').hidden = Boolean(project) || displayed.length > 0;
   $('#board-empty-text').textContent = !board ? 'Loading the board…' : project ? 'No tasks yet.' : 'Create a project to start planning.';
   $('#board-empty-note').textContent = project ? 'Choose New card, or add a generated prompt from the Compose page. New cards start in To Do.' : 'Each project gets its own board, from To Do to Done.';
   $('#empty-prompt-link').hidden = !project;
-  $('#board-priority-filter-field').hidden = !taskPrioritySupported || project?.workflowMode !== 'pipeline' || timelineView;
+  $('#board-priority-filter-field').hidden = !taskPrioritySupported || project?.workflowMode !== 'pipeline' || !backlogView;
   $('#board-filter-toolbar').hidden = $('#board-priority-filter-field').hidden && $('#board-search-field').hidden;
   $('#kanban-columns').hidden = !project || timelineView || backlogView;
   $('#backlog').hidden = !backlogView;
@@ -1640,9 +1642,9 @@ function renderColumn(column, tasks) {
   heading.append(stageIcon(column.id), column.title);
   const count = document.createElement('span');
   count.className = 'kanban-count kanban-column-count';
-  const filtered = projectPriorityFilter() !== 'all' || projectLabelFilter() !== 'all' || Boolean(projectSearch().trim()), visible = tasks.filter(task => matchesTaskFilters(task));
-  count.textContent = !filtered ? String(tasks.length) : `${visible.length}/${tasks.length}`;
-  count.setAttribute('aria-label', !filtered ? `${tasks.length} ${tasks.length === 1 ? 'card' : 'cards'}` : `${visible.length} of ${tasks.length} cards shown`);
+  const visible = tasks; // The Board shows every card; filters apply in Backlog and the archive.
+  count.textContent = String(tasks.length);
+  count.setAttribute('aria-label', `${tasks.length} ${tasks.length === 1 ? 'card' : 'cards'}`);
   const header = document.createElement('div');
   header.className = 'kanban-column-heading';
   header.append(heading, count);
@@ -1701,7 +1703,7 @@ function renderDoneList(tasks) {
   zone.append(stageIcon('drop'), paragraph(currentProject()?.workflowMode === 'pipeline' ? 'Pauses the agent · archives the task' : 'Complete from Testing or Merge · no merge'));
   if (!tasks.length) return [zone];
   const finished = task => task.archivedAt || task.completion?.at || task.updatedAt || 0;
-  const recent = tasks.filter(task => matchesTaskFilters(task)).sort((a, b) => finished(b) - finished(a));
+  const recent = [...tasks].sort((a, b) => finished(b) - finished(a));
   const viewAll = () => openDoneDialog(recent);
   const head = document.createElement('li');
   head.className = 'kanban-done-head';
@@ -2210,8 +2212,7 @@ async function moveWithin(id, step) {
   const card = findTask(id);
   if (!card) return;
   const column = currentProject().tasks.filter(task => task.column === card.column);
-  const visible = column.filter(task => matchesTaskFilters(task));
-  const neighbor = visible[visible.indexOf(card) + step];
+  const neighbor = column[column.indexOf(card) + step];
   if (!neighbor || !await placeCard(id, card.column, column.indexOf(neighbor))) return;
   // Keep keyboard focus on the moved card. At either end, use the button that still works.
   const item = cardElement(id);
@@ -5102,7 +5103,7 @@ function openBacklogDraft(projectId = currentProject()?.id, id = null) {
     });
     node.append(checkbox, labelBadge(label)); choices.append(node);
   }
-  if (!choices.children.length) choices.append(paragraph('No project labels yet. Manage labels from the board toolbar.', 'note'));
+  if (!choices.children.length) choices.append(paragraph('No project labels yet. Manage labels from the Backlog toolbar.', 'note'));
   $('#backlog-source').textContent = item?.source ? `${sourceSummary(item.source)} · ${cardStatus(item).text}` : '';
   $('#backlog-reload').textContent = item ? 'Reload draft' : 'Refresh choices'; $('#backlog-draft-error').hidden = true;
   if (!$('#backlog-dialog').open) $('#backlog-dialog').showModal(); $('#backlog-title').focus();

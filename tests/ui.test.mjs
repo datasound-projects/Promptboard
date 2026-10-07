@@ -996,7 +996,7 @@ test('projects keep separate boards; names are validated; deletion needs confirm
   await savedStageProject(ctx, 'Beta');
   assert.notEqual($('#project-select').value, alpha);
   assert.deepEqual(titles($), []);
-  assert.match($('#board-empty').textContent, /No tasks yet/);
+  assert.equal($('#board-empty').hidden, true, 'An empty project shows its columns, not a message.');
   await newCard(ctx, 'B1', 'Prompt B1');
   choose('#project-select', alpha);
   assert.deepEqual(titles($), ['A1', 'A2']);
