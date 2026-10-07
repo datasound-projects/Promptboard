@@ -146,7 +146,9 @@
 
 * { box-sizing: border-box; }
 html { scroll-padding-top: calc(var(--topbar) + 12px); }
-body { margin: 0; background: var(--page-bg) fixed; background-color: var(--bg); color: var(--text); font: 14px/1.55 var(--sans); -webkit-font-smoothing: antialiased; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.55 var(--sans); -webkit-font-smoothing: antialiased; }
+/* The glow is one layer pinned to the window, so it never repeats on short or long pages. */
+body::before { content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none; background: var(--page-bg); }
 button, input, textarea, select { font: inherit; color: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; }
