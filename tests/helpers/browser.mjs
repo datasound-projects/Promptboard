@@ -20,7 +20,17 @@ export async function findChrome() {
   return null;
 }
 
-export async function launch({ width = 1280, height = 900 } = {}) {
+// A cold CI runner (mostly Windows) occasionally never finishes one Chrome start within the budget.
+// One fresh start fixes that; every other startup or connection error still fails at once.
+export async function launch(options = {}) {
+  try { return await launchOnce(options); }
+  catch (error) {
+    if (!String(error?.message).startsWith('Chrome startup exceeded')) throw error;
+    return launchOnce(options);
+  }
+}
+
+async function launchOnce({ width = 1280, height = 900 } = {}) {
   const binary = await findChrome();
   if (!binary || typeof WebSocket !== 'function') return null;
   const profile = await mkdtemp(join(tmpdir(), 'pb-chrome-'));
