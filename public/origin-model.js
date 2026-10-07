@@ -244,12 +244,16 @@ globalThis.PromptboardOriginModel = (() => {
       const h = obj(v.handoff), hash = typeof h.hash === 'string' && /^[a-f0-9]{64}$/.test(h.hash) ? h.hash : '';
       const handoff = isObject(v.handoff) && ID.test(h.projectId) && ID.test(h.taskId) && Number.isSafeInteger(h.at)
         ? { projectId: h.projectId, taskId: h.taskId, at: h.at, snapshotId: typeof h.snapshotId === 'string' && ID.test(h.snapshotId) ? h.snapshotId : '', hash } : (v.handoff === undefined || v.handoff === null ? null : (fix(), null));
+      // A removed component leaves a note on its tasks, so the missing link stays visible until relinked.
+      const lost = v.lostLinks === undefined || v.lostLinks === null ? [] : Array.isArray(v.lostLinks) ? v.lostLinks : (fix(), []);
+      const lostLinks = lost.slice(0, 20).map(obj).filter(entry => entry.collection === 'components' && typeof entry.name === 'string').map(entry => ({ collection: 'components', name: str(entry.name, NAME) }));
+      if (lostLinks.length !== lost.length) fix();
       const r = obj(v.refinement);
       const refinement = isObject(v.refinement) ? { proposal: str(r.proposal, 100000), proposedAt: stamp(r.proposedAt), basis: str(r.basis, 100000), originalDescription: str(r.originalDescription, 100000), acceptedAt: stamp(r.acceptedAt) }
         : (v.refinement === undefined || v.refinement === null ? null : (fix(), null));
       return { key: str(v.key, 20), milestoneId: one(v.milestoneId, ids.milestones), workstream: str(v.workstream, 80), title: str(v.title, NAME), description: str(v.description),
         acceptanceCriteria: str(v.acceptanceCriteria), dependsOn: refs(v.dependsOn, ids.items, v.id), requirementIds: refs(v.requirementIds, ids.requirements),
-        componentIds: refs(v.componentIds, ids.components), layerId: one(v.layerId, ids.layers), contextIds: contextRefs(v.contextIds), status: pick(v.status, ENUMS.workStatus), handoff, refinement };
+        componentIds: refs(v.componentIds, ids.components), layerId: one(v.layerId, ids.layers), contextIds: contextRefs(v.contextIds), status: pick(v.status, ENUMS.workStatus), handoff, refinement, lostLinks };
     });
     // Layout is presentation only: node positions and decorative map links never mean dependencies.
     const layout = obj(source.layout), map = obj(layout.map), nodeKeys = new Set(['center', ...sectionIds]);
@@ -303,6 +307,12 @@ globalThis.PromptboardOriginModel = (() => {
 
   function isStarted(blueprint) {
     return Boolean(blueprint) && (hasText(blueprint.idea) || VISION.some(key => hasText(blueprint.vision?.[key])) || Object.keys(LIMITS).some(name => blueprint[name]?.length));
+  }
+
+  /** Where a task lives: its first component and that component's layer; otherwise its own layer; otherwise the project. */
+  function taskHome(blueprint, item) {
+    const component = blueprint.components.find(entry => entry.id === item.componentIds[0]);
+    return component ? { componentId: component.id, layerId: component.layerId || '' } : { componentId: '', layerId: item.layerId || '' };
   }
 
   /** Item references used for navigation from issues and inspector rows. */
@@ -400,6 +410,7 @@ globalThis.PromptboardOriginModel = (() => {
       const before = milestoneIndex.get(items.get(dependencyId)?.milestoneId), after = milestoneIndex.get(item.milestoneId);
       if (before !== undefined && after !== undefined && before > after) add('plan-order', 'conflict', `${itemName(blueprint, 'items', item.id)} depends on ${itemName(blueprint, 'items', dependencyId)}, which is scheduled in a later milestone.`, target('items', item.id), { action: 'Move one of the items.' });
     }
+    for (const item of blueprint.items) for (const lost of item.lostLinks || []) add('task-link-missing', 'missing', `${itemName(blueprint, 'items', item.id)} lost its link to the removed component “${lost.name}”.`, target('items', item.id), { blocking: false, action: 'Relink it to a component or dismiss the note.' });
     for (const risk of blueprint.risks) if (risk.status === 'open') found.push({ id: `risk:${risk.id}`, rule: 'recorded', kind: risk.kind, origin: risk.origin, title: risk.title || 'Untitled risk',
       detail: risk.description, action: risk.mitigation, blocking: risk.kind !== 'risk' && risk.origin === 'human', severity: risk.severity, target: target('risks', risk.id) });
     return found;
@@ -421,7 +432,7 @@ globalThis.PromptboardOriginModel = (() => {
       { id: 'assumptions', label: 'Assumptions', value: `${count(blueprint.assumptions, item => item.status === 'open')} open`, section: 'research' },
       { id: 'sources', label: 'Sources', value: `${count(blueprint.sources, item => item.verification !== 'verified')} not verified`, section: 'research' },
       { id: 'testing', label: 'Testing', value: `${plural(testingAreas.size, 'area')} defined`, section: 'testing' },
-      { id: 'plan', label: 'Implementation', value: blueprint.items.length ? `${plural(blueprint.items.length, 'item')} · ${handed} sent to Kanban` : 'not prepared', section: 'plan' },
+      { id: 'plan', label: 'Tasks', value: blueprint.items.length ? `${plural(blueprint.items.length, 'task')} · ${handed} in Kanban` : 'none yet', section: 'plan' },
     ];
     const blocking = found.filter(issue => issue.blocking);
     if (!isStarted(blueprint)) return { state: 'not_started', label: 'Not started', reasons: ['Describe the project to start its blueprint.'], rows, blocking };
@@ -431,7 +442,7 @@ globalThis.PromptboardOriginModel = (() => {
       return { state: 'attention', label: 'Needs attention', reasons, rows, blocking };
     }
     if (!blueprint.items.length) return { state: 'decompose', label: 'Ready for task decomposition', reasons: ['Requirements, architecture and decisions have no blocking issues.'], rows, blocking };
-    return { state: 'ready', label: 'Ready for implementation', reasons: [`${plural(blueprint.items.length, 'implementation item')} planned; ${handed} sent to Kanban.`], rows, blocking };
+    return { state: 'ready', label: 'Ready for implementation', reasons: [`${plural(blueprint.items.length, 'task')} planned; ${handed} in Kanban.`], rows, blocking };
   }
 
   /** Navigator state per section: decision required, attention, in progress, defined, not started or not applicable. */
@@ -590,5 +601,5 @@ globalThis.PromptboardOriginModel = (() => {
 
   return { SCHEMA, VERSION, ID, PHASES, SECTIONS, ENUMS, AREAS, VISION, LIMITS, KEYS, CONTEXT_COLLECTIONS, QUESTION_KEY, SECTION_STATE, VERIFICATION_LABELS, OriginModelError,
     label, sectionLabel, sectionTitle, phaseTitle, phaseList, questionText, lines, emptyBlueprint, nextKey, normalizeBlueprint, verification, isStarted, itemName, issues, readiness, sectionStates,
-    composeSpec, orderItems, kanbanTasks };
+    composeSpec, orderItems, kanbanTasks, taskHome };
 })();

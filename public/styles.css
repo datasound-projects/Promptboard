@@ -1616,8 +1616,8 @@ button.timeline-task:hover { text-decoration: underline; }
 .origin-stats dd { margin: 0; color: var(--ink); font-variant-numeric: tabular-nums; text-align: right; }
 
 /* Architecture canvas */
-.origin-canvas-tools { display: flex; align-items: center; gap: 10px; padding: 14px 14px 0; }
-.origin-canvas-tools .origin-quick { flex: 1; min-width: 0; box-shadow: none; }
+.origin-canvas-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 14px 14px 0; }
+.origin-canvas-tools .origin-quick { flex: 1 1 300px; min-width: 0; box-shadow: none; }
 .origin-canvas-hint { margin: 10px 18px 0; color: var(--subtle); font-size: 12.5px; }
 .origin-canvas { display: block; width: 100%; height: auto; max-height: 64vh; min-height: 260px; touch-action: none; }
 .origin-canvas-empty { fill: var(--muted); font: 15px var(--sans); }
@@ -1684,21 +1684,37 @@ button.timeline-task:hover { text-decoration: underline; }
 .origin-another { display: none; margin: 0 0 4px 10px; font-size: 12.5px; }
 .origin-topic:hover .origin-another, .origin-topic:focus-within .origin-another { display: inline-flex; }
 
-/* Plan */
-.origin-timeline { list-style: none; margin: 22px 0 0; padding: 0; display: grid; gap: 26px; }
-.origin-milestone { position: relative; padding-left: 40px; }
-.origin-milestone::before { content: ""; position: absolute; left: 13px; top: 30px; bottom: -26px; width: 1.5px; background: linear-gradient(var(--line-strong), transparent); }
-.origin-milestone:last-child::before { display: none; }
-.origin-milestone-head { display: flex; align-items: center; gap: 12px; min-height: 30px; }
-.origin-milestone-marker { position: absolute; left: 0; top: 0; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: color-mix(in srgb, var(--phase) 16%, var(--og-raised)); box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--phase) 60%, transparent); color: var(--phase); font-size: 12px; font-weight: 700; }
-.origin-milestone-title { display: grid; flex: 1; min-width: 0; gap: 1px; padding: 0; border: 0; background: none; color: var(--ink); text-align: left; }
-.origin-milestone-title .origin-row-title { font-size: 15.5px; font-weight: 650; }
-.origin-milestone-title:hover .origin-row-title { text-decoration: underline; text-underline-offset: 3px; }
-.origin-milestone-title.static { color: var(--muted); font-size: 15px; font-weight: 600; }
-.origin-count { color: var(--subtle); font-size: 12px; white-space: nowrap; }
-.origin-milestone .origin-quick { min-height: 42px; margin-top: 8px; box-shadow: none; background: transparent; border-style: dashed; }
-.origin-milestone .origin-quick input { height: 40px; font-size: 13.5px; }
-.origin-milestone .origin-empty-note { margin: 8px 2px 0; }
+/* Tasks: grouped by layer and component. Quiet dashed inputs add a task where you are. */
+.origin-task-tools { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 18px; }
+.origin-toggle { display: inline-flex; gap: 2px; padding: 3px; border: 1px solid var(--line); border-radius: 11px; background: var(--og-glass); }
+.origin-toggle-option { height: 30px; padding: 0 13px; border: 0; border-radius: 8px; background: transparent; color: var(--muted); font-size: 13px; font-weight: 600; }
+.origin-toggle-option[aria-pressed="true"] { background: var(--og-glass-2); color: var(--ink); box-shadow: inset 0 0 0 1px var(--line-strong); }
+.origin-task-group { margin-top: 26px; padding: 16px 16px 14px; border: 1px solid var(--line); border-radius: 16px; background: var(--og-glass); }
+.origin-task-group-head { display: flex; align-items: baseline; gap: 6px 14px; flex-wrap: wrap; margin-bottom: 10px; }
+.origin-task-group-head h3, .origin-task-layer-name { margin: 0; padding: 0; border: 0; background: none; color: var(--ink); font-size: 15.5px; font-weight: 650; text-align: left; }
+.origin-task-layer-name:hover, .origin-task-component-name:hover { text-decoration: underline; text-underline-offset: 3px; }
+.origin-task-group-head p { display: flex; gap: 6px; flex-wrap: wrap; margin: 0; color: var(--subtle); font-size: 12.5px; }
+.origin-task-component { padding: 10px 0 4px; border-top: 1px solid var(--line); }
+.origin-task-component-name, .origin-task-sub { display: block; margin: 0 0 6px; padding: 0; border: 0; background: none; color: var(--text); font-size: 13.5px; font-weight: 600; text-align: left; }
+.origin-task-sub { padding-top: 10px; border-top: 1px solid var(--line); color: var(--muted); }
+.origin-task-group .origin-quick { min-height: 38px; margin-top: 6px; box-shadow: none; background: transparent; border-style: dashed; }
+.origin-task-group .origin-quick input { height: 36px; font-size: 13.5px; }
+/* Adding to a component or a layer stays quiet until you point at it or tab into it. */
+.origin-task-component .origin-quick, .origin-task-sub ~ .origin-quick { border-color: transparent; color: var(--subtle); }
+.origin-task-component:hover .origin-quick, .origin-task-group .origin-quick:focus-within, .origin-task-group:hover .origin-task-sub ~ .origin-quick { border-color: var(--line-strong); }
+.origin-task-component .origin-quick .origin-kbd, .origin-task-sub ~ .origin-quick .origin-kbd { opacity: 0; }
+.origin-task-group .origin-quick:focus-within .origin-kbd { opacity: 1; }
+.origin-task-group .origin-list { margin-top: 4px; }
+.origin-callout.warn { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; border-color: color-mix(in srgb, var(--og-warn) 40%, transparent); background: color-mix(in srgb, var(--og-warn) 8%, transparent); color: var(--text); }
+.origin-lost .origin-link-add { margin-left: auto; }
+/* The component editor's own short task list */
+.origin-component-tasks { display: grid; gap: 4px; }
+.origin-mini-row { display: flex; align-items: center; gap: 10px; min-height: 36px; padding: 0 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--og-glass); color: var(--text); font-size: 13.5px; text-align: left; }
+.origin-mini-row:hover { border-color: var(--line-strong); color: var(--ink); }
+.origin-mini-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.origin-mini-add { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 0 10px; border: 1px dashed var(--line-strong); border-radius: 10px; color: var(--subtle); }
+.origin-mini-input { flex: 1; min-width: 0; height: 34px; padding: 0; border: 0; background: transparent; box-shadow: none; color: var(--ink); font-size: 13.5px; outline: none; }
+.origin-mini-add:focus-within { border-color: var(--focus); }
 .origin-check { flex: none; width: 16px; height: 16px; margin: 0 0 0 16px; accent-color: var(--phase); }
 .origin-selection { position: sticky; bottom: 18px; z-index: 5; display: flex; align-items: center; gap: 16px; margin-top: 28px; padding: 10px 10px 10px 18px; border: 1px solid var(--line-strong); border-radius: 15px; background: color-mix(in srgb, var(--surface) 82%, transparent); backdrop-filter: blur(16px); box-shadow: 0 16px 44px rgb(0 0 0 / .22); }
 .origin-selection-text { flex: 1; color: var(--muted); font-size: 13.5px; }
@@ -1717,7 +1733,7 @@ button.timeline-task:hover { text-decoration: underline; }
 .origin-drawer-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px 12px 22px; border-top: 1px solid var(--line); }
 .origin-field { display: grid; gap: 7px; min-width: 0; }
 .origin-field-label { color: var(--muted); font-size: 12px; font-weight: 600; }
-:is(.origin-drawer, .origin-modal) :is(input:not([type="checkbox"]), textarea, select):not(.origin-drawer-title):not(.origin-link-add) { width: 100%; min-height: 40px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--og-glass-2); color: var(--ink); font-size: 14px; line-height: 1.5; transition: border-color .12s, box-shadow .12s; }
+:is(.origin-drawer, .origin-modal) :is(input:not([type="checkbox"]), textarea, select):not(.origin-drawer-title):not(.origin-link-add):not(.origin-mini-input) { width: 100%; min-height: 40px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--og-glass-2); color: var(--ink); font-size: 14px; line-height: 1.5; transition: border-color .12s, box-shadow .12s; }
 :is(.origin-drawer, .origin-modal) textarea { resize: none; overflow: hidden; }
 :is(.origin-drawer, .origin-modal) select:not(.origin-link-add) { appearance: none; padding-right: 32px; background: var(--og-glass-2) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%238b8b95' stroke-width='1.7'%3E%3Cpath d='m6 8 4 4 4-4'/%3E%3C/svg%3E") no-repeat right 10px center / 16px; }
 :is(.origin-drawer, .origin-modal) select option { background: var(--surface); color: var(--text); }
@@ -1800,7 +1816,7 @@ dialog.origin-modal::backdrop { background: rgb(4 4 8 / .55); backdrop-filter: b
   .origin-section-head h2 { font-size: 25px; }
   .origin-q-grid, .origin-topic { grid-template-columns: minmax(0, 1fr); }
   .origin-topic-label { min-height: 30px; }
-  .origin-row-meta .origin-chip:not(.accent):not(.warn), .origin-row-note, .origin-kbd { display: none; }
+  .origin-row-meta .origin-chip:not(.accent):not(.warn):not(.state), .origin-row-note, .origin-kbd { display: none; }
   .origin-canvas-tools { flex-wrap: wrap; }
   .origin-canvas-tools .origin-quick { flex-basis: 100%; }
   .origin-drawer { top: calc(var(--topbar) + 6px); right: 6px; bottom: 6px; left: 6px; width: auto; }

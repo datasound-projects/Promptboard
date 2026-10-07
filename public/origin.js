@@ -6,7 +6,7 @@
 // text. Nothing here starts an agent, calls a model or fetches a source.
 window.PromptboardOrigin = (() => {
   const M = globalThis.PromptboardOriginModel;
-  const SECTION_KEY = 'promptboard.origin.section', MORE_KEY = 'promptboard.origin.more', PROJECT_KEY = 'promptboard.origin.project';
+  const SECTION_KEY = 'promptboard.origin.section', MORE_KEY = 'promptboard.origin.more', PROJECT_KEY = 'promptboard.origin.project', TASK_VIEW_KEY = 'promptboard.origin.task-view';
   const SAVE_DELAY = 700, SAVE_MAX_WAIT = 3000;
   const NODE_W = 184, NODE_H = 58, GAP_X = 270, GAP_Y = 100;
   // Built-in guiding questions. Each project can reword them; the wording never changes what a section does.
@@ -25,16 +25,16 @@ window.PromptboardOrigin = (() => {
     observability: 'How will you see what is happening?',
     research: 'What did you check, what are you assuming, and what could go wrong?',
     decisions: 'What have you decided, and why?',
-    plan: 'In what order will you build it?',
+    plan: 'What needs to be built, and where?',
   };
   const MAP_LEFT = ['vision', 'requirements', 'architecture', 'technology', 'dependencies', 'data', 'ai'];
   const MAP_RIGHT = ['security', 'testing', 'deployment', 'observability', 'research', 'decisions', 'plan'];
   const NOUN = { requirements: 'Requirement', components: 'Component', connections: 'Connection', technologies: 'Technology', dependencies: 'Dependency', decisions: 'Decision',
-    assumptions: 'Assumption', sources: 'Source', risks: 'Risk', areas: 'Approach', milestones: 'Milestone', items: 'Step' };
+    assumptions: 'Assumption', sources: 'Source', risks: 'Risk', areas: 'Approach', milestones: 'Milestone', items: 'Task', layers: 'Layer' };
   // Reference fields → the collection they point to. Used for deletes and “used by”.
   const REFS = { componentIds: 'components', technologyIds: 'technologies', requirementIds: 'requirements', dependencyIds: 'dependencies', sourceIds: 'sources',
     requiredBy: 'components', dependsOn: owner => (owner === 'dependencies' ? 'dependencies' : 'items'), supersededBy: 'decisions', decisionId: 'decisions',
-    milestoneId: 'milestones', from: 'components', to: 'components' };
+    milestoneId: 'milestones', layerId: 'layers', from: 'components', to: 'components' };
   const COMPOSABLE = new Set(['requirements', 'components', 'decisions', 'milestones', 'items']);
   const BLANK = {
     requirements: title => ({ title, description: '', type: 'functional', priority: 'should', status: 'draft', acceptanceCriteria: '', componentIds: [], sourceIds: [] }),
@@ -46,7 +46,8 @@ window.PromptboardOrigin = (() => {
     sources: text => { const url = safeUrl(text); return { title: url ? hostOf(url) : text, url, type: 'documentation', claim: '', accessedAt: today(), verification: 'unverified', notes: '' }; },
     risks: title => ({ title, description: '', kind: 'risk', severity: 'medium', mitigation: '', status: 'open', componentIds: [] }),
     milestones: title => ({ title, goal: '', definitionOfDone: '' }),
-    items: title => ({ milestoneId: '', workstream: '', title, description: '', acceptanceCriteria: '', dependsOn: [], requirementIds: [], componentIds: [], status: 'planned', handoff: null }),
+    items: title => ({ milestoneId: '', workstream: '', title, description: '', acceptanceCriteria: '', dependsOn: [], requirementIds: [], componentIds: [], layerId: '', contextIds: [], status: 'planned', handoff: null, refinement: null, lostLinks: [] }),
+    layers: name => ({ name, description: '', technologyIds: [], constraints: '' }),
     areas: (title, section, area) => ({ section, area, title, description: '', status: 'defined', componentIds: [], requirementIds: [], technologyIds: [], baseResourceIds: [] }),
   };
 
@@ -109,7 +110,7 @@ window.PromptboardOrigin = (() => {
     let projects = [], projectId = null, record = null, loading = null, loadError = null, visible = false;
     let section = pref(SECTION_KEY) || 'overview';
     let open = null, connectFrom = null, planSelection = new Set(), handoffBusy = false, lastHandoff = '';
-    let views = { map: null, canvas: null }, mapLinkFrom = null, selectedLink = null;
+    let views = { map: null, canvas: null }, mapLinkFrom = null, selectedLink = null, taskMilestone = '', taskView = pref(TASK_VIEW_KEY, 'layers');
     let saveTimer = null, saving = null, changeCount = 0, savedCount = 0, saveState = 'saved', saveMessage = '', dirtySince = 0, shownSaveError = '';
     let baseResources = null, baseLoading = null, focusAfter = null, renderFrame = 0, uid = 0;
     const bp = () => record.blueprint;
@@ -121,7 +122,11 @@ window.PromptboardOrigin = (() => {
     const isCustom = id => Boolean(record?.exists && bp().customSections.some(entry => entry.id === id));
     const topicName = (id, topic) => M.questionText(bp(), `topic:${id}:${topic}`, M.label(id, topic));
     const project = () => projects.find(item => item.id === projectId) || null;
-    const kanbanTasks = () => new Map(app.projects().flatMap(item => item.tasks.map(task => [task.id, task])));
+    // Progress comes from Kanban: the card's current column, never Origin's own planning status.
+    const kanbanCards = () => new Map(app.projects().flatMap(item => item.tasks.map(task => {
+      const column = (item.columns || []).find(entry => entry.id === task.column);
+      return [task.id, { task, column: column?.title || column?.name || task.column, done: task.column === 'done' || column?.role === 'done' }];
+    })));
     const showError = message => { errorBox.textContent = message; errorBox.hidden = !message; };
     const showNotice = message => { notice.textContent = message; notice.hidden = !message; };
 
@@ -199,7 +204,7 @@ window.PromptboardOrigin = (() => {
     async function load(id, { force = false } = {}) {
       if (!force && id === projectId && (record || loading)) return loading;
       projectId = id; record = null; loadError = null; open = null; connectFrom = null; planSelection = new Set(); lastHandoff = '';
-      views = { map: null, canvas: null }; mapLinkFrom = null; selectedLink = null;
+      views = { map: null, canvas: null }; mapLinkFrom = null; selectedLink = null; taskMilestone = '';
       changeCount = savedCount = 0; dirtySince = 0; saveState = 'saved'; showNotice(''); showError('');
       renderDrawer();
       if (!id) { render(); return null; }
@@ -350,7 +355,7 @@ window.PromptboardOrigin = (() => {
     function sectionOf(target) {
       if (target.collection === 'areas') return bp().areas.find(item => item.id === target.id)?.section;
       return { requirements: 'requirements', components: 'architecture', connections: 'architecture', technologies: 'technology', dependencies: 'dependencies', decisions: 'decisions',
-        assumptions: 'research', sources: 'research', risks: 'research', milestones: 'plan', items: 'plan' }[target.collection];
+        assumptions: 'research', sources: 'research', risks: 'research', milestones: 'plan', items: 'plan', layers: 'architecture' }[target.collection];
     }
     function focusTarget(target) {
       if (!target) return;
@@ -764,6 +769,11 @@ window.PromptboardOrigin = (() => {
       return found;
     }
     function removeEntity(collection, id) {
+      // Tasks outlive a removed component; each keeps a note of the missing link until it is relinked or dismissed.
+      if (collection === 'components') {
+        const gone = bp().components.find(item => item.id === id);
+        for (const item of bp().items) if (item.componentIds.includes(id)) { item.lostLinks ||= []; if (item.lostLinks.length < 20) item.lostLinks.push({ collection: 'components', name: gone?.name?.trim() || 'Unnamed component' }); }
+      }
       const references = referencesTo(collection, id);
       bp()[collection] = bp()[collection].filter(item => item.id !== id);
       for (const { owner, entry, field: name } of references) {
@@ -787,8 +797,9 @@ window.PromptboardOrigin = (() => {
       }),
       components: item => ({
         title: ['name', 'Component name'],
-        essentials: [field('Type', select(item, 'type', M.ENUMS.componentType, { structure: true })), ask(item, 'purpose', 'What it does', 'Its job in one or two sentences'), group('Connects to', connectionsEditor(item)),
-          componentQuestions(item)],
+        essentials: [field('Type', select(item, 'type', M.ENUMS.componentType, { structure: true })),
+          bp().layers.length ? field('Layer', select(item, 'layerId', [['', 'No layer'], ...bp().layers.map(layer => [layer.id, layer.name || 'Unnamed layer'])], { structure: true })) : null,
+          ask(item, 'purpose', 'What it does', 'Its job in one or two sentences'), group('Connects to', connectionsEditor(item)), group('Tasks', componentTasks(item)), componentQuestions(item)].filter(Boolean),
         more: [ask(item, 'responsibilities', 'Responsibilities', 'One per line'), ask(item, 'interfaces', 'Interfaces', 'APIs, events, files…'), ask(item, 'dataHandled', 'Data it handles'),
           group('Technologies', linkChips(item, 'technologyIds', 'technologies', { empty: 'Add technologies in Technology first.' })), field('Status', select(item, 'status', M.ENUMS.itemStatus)), field('Notes', area(item, 'notes')), evidence(item)],
       }),
@@ -840,20 +851,38 @@ window.PromptboardOrigin = (() => {
         more: [field('Status', select(item, 'status', M.ENUMS.itemStatus)), group('Components', linkChips(item, 'componentIds', 'components')),
           group(item.section === 'testing' ? 'Requirements covered' : 'Requirements', linkChips(item, 'requirementIds', 'requirements')), group('Technologies', linkChips(item, 'technologyIds', 'technologies'))],
       }),
+      layers: item => ({
+        title: ['name', 'Layer name — e.g. Backend'],
+        essentials: [field('What belongs here', area(item, 'description', 'For example: everything that runs on the server', { max: 2000 })),
+          group('Stack', linkChips(item, 'technologyIds', 'technologies', { options: bp().technologies.filter(entry => entry.status !== 'rejected'), empty: 'Add technologies in Technology first.' }),
+            'Only selected technologies are passed on as the stack; candidates are marked as candidates.'),
+          field('Shared rules', area(item, 'constraints', 'Constraints every component in this layer follows'))],
+        more: [el('p', 'origin-hint', `Components: ${bp().components.filter(component => component.layerId === item.id).map(component => component.name || 'Unnamed').join(', ') || 'none yet — choose this layer in a component’s editor'}.`),
+          el('p', 'origin-hint', 'Deleting a layer keeps its components and tasks; they just lose the grouping.')],
+      }),
       milestones: item => ({
         title: ['title', 'Milestone'],
         essentials: [field('Goal', area(item, 'goal', 'What is true when this milestone is reached')), field('Done when', area(item, 'definitionOfDone', 'One check per line'))],
         more: [(() => { const box = el('div', 'origin-inline-actions'); box.append(button('Move earlier', () => moveMilestone(item, -1), 'origin-ghost'), button('Move later', () => moveMilestone(item, 1), 'origin-ghost')); return box; })(),
-          el('p', 'origin-hint', 'Deleting a milestone keeps its steps; they move to Unscheduled.')],
+          el('p', 'origin-hint', 'Deleting a milestone keeps its tasks; they become unscheduled.')],
       }),
-      items: item => ({
-        title: ['title', 'Step'],
-        essentials: [field('Done when', area(item, 'acceptanceCriteria', 'One check per line')), group('Starts after', linkChips(item, 'dependsOn', 'items', { exclude: item.id, empty: 'No other steps yet.' }))],
-        more: [field('Milestone', select(item, 'milestoneId', [['', 'Unscheduled'], ...bp().milestones.map(milestone => [milestone.id, milestone.title || 'Untitled milestone'])])),
-          field('Workstream', input(item, 'workstream', { max: 80, placeholder: 'Backend, UI…' })), field('Description', area(item, 'description')),
-          group('Requirements', linkChips(item, 'requirementIds', 'requirements')), group('Components', linkChips(item, 'componentIds', 'components')), field('Status', select(item, 'status', M.ENUMS.workStatus)),
-          item.handoff ? el('p', 'origin-hint', `Sent to Kanban on ${new Date(item.handoff.at).toLocaleString()}. Sending it again adds another card.`) : null].filter(Boolean),
-      }),
+      items: item => {
+        const home = M.taskHome(bp(), item), component = bp().components.find(entry => entry.id === home.componentId);
+        return {
+          title: ['title', 'Task — e.g. Build the sign-in form'],
+          essentials: [...lostNotes(item), field('What to do', area(item, 'description', 'What to build or change, in a few lines')),
+            field('Done when', area(item, 'acceptanceCriteria', 'One check per line — e.g. “A user can sign in with email”'), 'These checks travel with the task into Compose and Kanban.')],
+          more: [group('Components', linkChips(item, 'componentIds', 'components', { empty: 'Add components in Architecture first.' }), 'The first component is where the task is listed.'),
+            component ? el('p', 'origin-hint', `Layer: ${bp().layers.find(layer => layer.id === home.layerId)?.name || 'none'} — from ${component.name || 'its component'}.`)
+              : bp().layers.length ? field('Layer', select(item, 'layerId', [['', 'Whole project'], ...bp().layers.map(layer => [layer.id, layer.name || 'Unnamed layer'])], { structure: true })) : null,
+            group('Starts after', linkChips(item, 'dependsOn', 'items', { exclude: item.id, empty: 'No other tasks yet.' }), 'Only these prerequisites set the build order.'),
+            field('Milestone', select(item, 'milestoneId', [['', 'Unscheduled'], ...bp().milestones.map(milestone => [milestone.id, milestone.title || 'Untitled milestone'])], { structure: true })),
+            group('Requirements', linkChips(item, 'requirementIds', 'requirements')),
+            field('Workstream', input(item, 'workstream', { max: 80, placeholder: 'Backend, UI…' })),
+            (() => { const box = el('div', 'origin-inline-actions'); box.append(button('Move up', () => moveTask(item, -1), 'origin-ghost'), button('Move down', () => moveTask(item, 1), 'origin-ghost')); return box; })(),
+            item.handoff ? el('p', 'origin-hint', `Sent to Kanban on ${new Date(item.handoff.at).toLocaleString()}.`) : null].filter(Boolean),
+        };
+      },
     };
     function openDrawer(collection, id) {
       open = { collection, id };
@@ -865,7 +894,7 @@ window.PromptboardOrigin = (() => {
       const was = open;
       open = null; renderDrawer();
       if (renderFrame) renderMain(); else markSelected();
-      if (was) main.querySelector(`[data-id="${CSS.escape(was.id)}"] .origin-row-open, .origin-node[data-id="${CSS.escape(was.id)}"], .origin-milestone[data-id="${CSS.escape(was.id)}"] .origin-milestone-title`)?.focus({ preventScroll: true });
+      if (was) main.querySelector(`[data-id="${CSS.escape(was.id)}"] .origin-row-open, .origin-node[data-id="${CSS.escape(was.id)}"]`)?.focus({ preventScroll: true });
     }
     function renderDrawer({ restore = true } = {}) {
       const entry = open && record?.exists ? bp()[open.collection]?.find(item => item.id === open.id) : null;
@@ -1002,12 +1031,20 @@ window.PromptboardOrigin = (() => {
       architecture() {
         const blueprint = bp();
         const name = id => blueprint.components.find(component => component.id === id)?.name || 'Unnamed';
+        const layerName = id => blueprint.layers.find(layer => layer.id === id)?.name || '';
         return [canvas(), subhead('Components', 'Click one to describe it and connect it to others.'),
           list('components', blueprint.components, item => {
             const out = blueprint.connections.filter(connection => connection.from === item.id).map(connection => name(connection.to));
             return { title: item.name, fallback: 'Unnamed component', tone: item.status === 'needs_decision' ? 'decision' : item.purpose.trim() ? 'defined' : 'progress',
-              sub: item.purpose.trim() ? clip(item.purpose, 110) : 'What does it do?', meta: [out.length ? el('span', 'origin-row-note', `→ ${clip(out.join(', '), 40)}`) : null, chip(M.label('componentType', item.type))] };
-          }, 'No components yet. Add the main building blocks above.')];
+              sub: item.purpose.trim() ? clip(item.purpose, 110) : 'What does it do?', meta: [out.length ? el('span', 'origin-row-note', `→ ${clip(out.join(', '), 40)}`) : null, layerName(item.layerId) ? chip(layerName(item.layerId), 'accent') : null, chip(M.label('componentType', item.type))] };
+          }, 'No components yet. Add the main building blocks above.'),
+          subhead('Layers', 'Optional. Group components — for example Frontend, Backend, Data — and give each layer its stack and shared rules.'),
+          quickAdd('Add a layer — e.g. “Backend”', value => add('layers', BLANK.layers(value)), { id: 'layers' }),
+          list('layers', blueprint.layers, item => {
+            const members = blueprint.components.filter(component => component.layerId === item.id).length;
+            const stack = item.technologyIds.map(id => blueprint.technologies.find(entry => entry.id === id)?.name).filter(Boolean);
+            return { title: item.name, fallback: 'Unnamed layer', tone: members ? 'defined' : 'progress', sub: [plural(members, 'component'), stack.length ? clip(stack.join(', '), 60) : 'no stack yet'].join(' · ') };
+          }, 'No layers. Components can stay ungrouped.')];
       },
       technology() {
         const blueprint = bp();
@@ -1205,52 +1242,142 @@ window.PromptboardOrigin = (() => {
       return box;
     }
 
-    function planSection() {
+    // ---- Tasks: grouped by layer and component, or one list. Kanban owns execution. ----
+    // The handoff state stays visible even on a phone.
+    function handoffChip(item, cards) {
+      if (!item.handoff) return chip('Draft', 'muted state');
+      const card = cards.get(item.handoff.taskId);
+      if (!card) return chip('Card removed', 'warn');
+      return chip(`Kanban${card.task.number ? ` #${card.task.number}` : ''} · ${card.column}`, card.done ? 'ok state' : 'state');
+    }
+    function taskRow(cards, { where = false } = {}) {
       const blueprint = bp();
-      const tasks = new Map(app.projects().flatMap(item => item.tasks.map(task => [task.id, task])));
-      const nodes = [quickAdd('Add a milestone — e.g. “Foundation”', value => add('milestones', BLANK.milestones(value)), { id: 'milestones' })];
+      return item => {
+        const home = M.taskHome(blueprint, item), checks = M.lines(item.acceptanceCriteria).length;
+        const after = item.dependsOn.map(id => blueprint.items.find(entry => entry.id === id)?.key).filter(Boolean);
+        const place = where ? (home.componentId ? blueprint.components.find(entry => entry.id === home.componentId)?.name : blueprint.layers.find(entry => entry.id === home.layerId)?.name) || 'Project-wide' : '';
+        return { title: item.title, fallback: 'Untitled task', tone: item.lostLinks?.length ? 'attention' : checks ? 'defined' : 'progress',
+          sub: [place, clip(firstLine(item.description), 90), after.length && `after ${after.join(', ')}`, checks ? `done when: ${plural(checks, 'check')}` : 'No “done when” yet'].filter(Boolean).join(' · '),
+          meta: [key(item), handoffChip(item, cards), item.refinement?.proposal && !item.refinement.acceptedAt ? chip('Proposal to review', 'accent') : null, item.lostLinks?.length ? chip('Link missing', 'warn') : null] };
+      };
+    }
+    function lostNotes(item) {
+      return (item.lostLinks || []).map((lost, index) => {
+        const note = el('div', 'origin-callout warn origin-lost');
+        note.append(el('span', '', `Its component “${lost.name}” was removed.`));
+        const others = bp().components.filter(component => !item.componentIds.includes(component.id));
+        const dismiss = () => { item.lostLinks.splice(index, 1); changed({ structure: true, drawer: true }); };
+        if (others.length) {
+          const pick = el('select', 'origin-link-add'); pick.setAttribute('aria-label', `Relink instead of ${lost.name}`); pick.dataset.focusKey = `lost:${index}`;
+          pick.append(Object.assign(el('option', '', 'Relink to…'), { value: '' }), ...others.map(component => Object.assign(el('option', '', component.name || 'Unnamed component'), { value: component.id })));
+          pick.addEventListener('change', () => { if (!pick.value) return; item.componentIds = [...item.componentIds, pick.value]; dismiss(); });
+          note.append(pick);
+        }
+        note.append(button('Dismiss', dismiss, 'origin-link'));
+        return note;
+      });
+    }
+    // Reordering moves a task past its neighbour in the list you are looking at.
+    function moveTask(item, step) {
+      const blueprint = bp(), home = M.taskHome(blueprint, item);
+      const peers = taskView === 'all' ? blueprint.items.filter(taskShown) : blueprint.items.filter(entry => { const other = M.taskHome(blueprint, entry); return other.componentId === home.componentId && other.layerId === home.layerId && taskShown(entry); });
+      const neighbour = peers[peers.indexOf(item) + step];
+      if (!neighbour) return;
+      const a = blueprint.items.indexOf(item), b = blueprint.items.indexOf(neighbour);
+      [blueprint.items[a], blueprint.items[b]] = [blueprint.items[b], blueprint.items[a]];
+      focusAfter = () => main.querySelector(`.origin-row[data-id="${CSS.escape(item.id)}"] .origin-row-open`);
+      changed({ structure: true, drawer: true });
+      app.announce(`${item.key} moved ${step < 0 ? 'up' : 'down'}.`);
+    }
+    const taskShown = item => !taskMilestone || (taskMilestone === 'none' ? !item.milestoneId : item.milestoneId === taskMilestone);
+    function newTask(title, extra = {}) {
+      return add('items', { ...BLANK.items(title), milestoneId: taskMilestone && taskMilestone !== 'none' ? taskMilestone : '', ...extra }, { keyed: true });
+    }
+    // The component editor lists its tasks; adding one there links the component, and the layer follows from it.
+    function componentTasks(component) {
+      const box = el('div', 'origin-component-tasks'), cards = kanbanCards();
+      for (const item of bp().items.filter(entry => entry.componentIds.includes(component.id))) {
+        const row = button('', () => openDrawer('items', item.id), 'origin-mini-row'); row.dataset.focusKey = `task:${item.id}`;
+        row.append(el('span', 'origin-key', item.key), el('span', 'origin-mini-title', item.title.trim() || 'Untitled task'), handoffChip(item, cards));
+        box.append(row);
+      }
+      const form = el('form', 'origin-mini-add'), control = el('input', 'origin-mini-input');
+      control.placeholder = 'Add a task for this component…'; control.maxLength = 200; control.setAttribute('aria-label', `Add a task for ${component.name || 'this component'}`); control.dataset.focusKey = 'task:add';
+      form.append(icon(ICON.plus, 14), control);
+      form.addEventListener('submit', event => {
+        event.preventDefault();
+        const value = control.value.trim(); if (!value) return;
+        newTask(value, { componentIds: [component.id] });
+        renderDrawer({ restore: false });
+        drawer.querySelector('[data-focus-key="task:add"]')?.focus();
+      });
+      box.append(form);
+      return box;
+    }
+    function planSection() {
+      const blueprint = bp(), cards = kanbanCards(), nodes = [];
       if (lastHandoff) { const done = el('p', 'origin-callout ok', lastHandoff); done.setAttribute('role', 'status'); done.append(' ', button('Open Kanban', () => app.openKanban(project()?.kanbanProjectId), 'origin-link')); nodes.push(done); }
+      if (taskMilestone && taskMilestone !== 'none' && !blueprint.milestones.some(entry => entry.id === taskMilestone)) taskMilestone = '';
       const leading = item => {
-        const box = el('input', 'origin-check'); box.type = 'checkbox'; box.checked = planSelection.has(item.id); box.setAttribute('aria-label', `Select ${item.key} for Kanban`);
+        const box = el('input', 'origin-check'); box.type = 'checkbox'; box.checked = planSelection.has(item.id); box.setAttribute('aria-label', `Select ${item.key}`);
         box.addEventListener('change', () => { if (box.checked) planSelection.add(item.id); else planSelection.delete(item.id); renderMain(); });
         return box;
       };
-      const describe = item => {
-        const task = item.handoff && tasks.get(item.handoff.taskId);
-        const after = item.dependsOn.map(id => blueprint.items.find(entry => entry.id === id)?.key).filter(Boolean);
-        const checks = M.lines(item.acceptanceCriteria).length;
-        return { title: item.title, fallback: 'Untitled step', tone: item.status === 'done' ? 'defined' : checks ? 'defined' : 'progress',
-          sub: [after.length && `after ${after.join(', ')}`, checks ? `done when: ${plural(checks, 'check')}` : 'No “done when” yet'].filter(Boolean).join(' · '),
-          meta: [key(item), item.status === 'planned' ? null : chip(M.label('workStatus', item.status), item.status === 'done' ? 'ok' : 'muted'),
-            item.handoff ? chip(task ? `In Kanban${task.number ? ` #${task.number}` : ''}` : 'Card removed', task ? 'ok' : 'warn') : null] };
-      };
-      const groups = blueprint.milestones.map((milestone, index) => ({ milestone, index }));
-      if (!groups.length || blueprint.items.some(item => !item.milestoneId)) groups.push({ milestone: null });
-      const timeline = el('ol', 'origin-timeline');
-      for (const { milestone, index } of groups) {
-        const stage = el('li', 'origin-milestone'); if (milestone) stage.dataset.id = milestone.id;
-        const items = blueprint.items.filter(item => (item.milestoneId || '') === (milestone?.id || ''));
-        const head = el('div', 'origin-milestone-head');
-        head.append(el('span', 'origin-milestone-marker', milestone ? String(index + 1) : '·'));
-        if (milestone) {
-          const title = el('button', 'origin-milestone-title'); title.type = 'button';
-          title.append(el('span', 'origin-row-title', milestone.title || 'Untitled milestone'));
-          if (milestone.goal.trim()) title.append(el('span', 'origin-row-sub', clip(milestone.goal, 120)));
-          title.addEventListener('click', () => openDrawer('milestones', milestone.id));
-          head.append(title);
-        } else head.append(el('span', 'origin-milestone-title static', blueprint.milestones.length ? 'Unscheduled' : 'Steps'));
-        head.append(el('span', 'origin-count', plural(items.length, 'step')));
-        stage.append(head, list('items', items, describe, milestone ? 'No steps yet.' : 'Add the first step — or create milestones above to group steps.', { leading }),
-          quickAdd(milestone ? `Add a step to ${clip(milestone.title || 'this milestone', 40)}…` : 'Add a step…', value => add('items', { ...BLANK.items(value), milestoneId: milestone?.id || '' }, { keyed: true }), { id: `items-${milestone?.id || 'none'}` }));
-        timeline.append(stage);
+      const tools = el('div', 'origin-task-tools');
+      const toggle = el('div', 'origin-toggle'); toggle.setAttribute('role', 'group'); toggle.setAttribute('aria-label', 'Show tasks');
+      for (const [id, label] of [['layers', 'By layer'], ['all', 'All tasks']]) {
+        const option = button(label, () => { taskView = id; setPref(TASK_VIEW_KEY, id); renderMain(); }, 'origin-toggle-option');
+        option.setAttribute('aria-pressed', String(taskView === id)); toggle.append(option);
       }
-      nodes.push(timeline);
+      const filter = el('select', 'origin-quick-select'); filter.id = 'origin-task-milestone'; filter.setAttribute('aria-label', 'Milestone');
+      for (const [value, name] of [['', 'All milestones'], ...blueprint.milestones.map(entry => [entry.id, entry.title || 'Untitled milestone']), ['none', 'Unscheduled']]) filter.append(Object.assign(el('option', '', name), { value }));
+      filter.value = taskMilestone;
+      filter.addEventListener('change', () => { taskMilestone = filter.value; renderMain(); });
+      tools.append(toggle, filter);
+      nodes.push(tools);
+      const row = taskRow(cards, { where: taskView === 'all' });
+      const rows = (items, empty = '') => (items.length ? [list('items', items, row, '', { leading })] : empty ? [el('p', 'origin-empty-note', empty)] : []);
+      const visible = blueprint.items.filter(taskShown);
+      if (taskView === 'all') {
+        nodes.push(quickAdd('Add a task — e.g. “Set up continuous integration”', value => newTask(value), { id: 'items-project' }),
+          ...rows(visible, blueprint.items.length ? 'No tasks in this milestone.' : 'No tasks yet. Add one here, or from a component’s editor in Architecture.'));
+      } else {
+        const homes = new Map(blueprint.items.map(item => [item.id, M.taskHome(blueprint, item)]));
+        const at = (componentId, layerId) => visible.filter(item => homes.get(item.id).componentId === componentId && homes.get(item.id).layerId === layerId);
+        const taskGroup = (title, lead, ...children) => { const box = el('section', 'origin-task-group'); const head = el('div', 'origin-task-group-head'); head.append(title); if (lead) head.append(lead); box.append(head, ...children); return box; };
+        nodes.push(taskGroup(el('h3', '', 'Project-wide'), el('p', '', 'Tasks that belong to no single component or layer.'),
+          ...rows(at('', '')), quickAdd('Add a project-wide task — e.g. “Set up continuous integration”', value => newTask(value), { id: 'items-project' })));
+        const componentBlock = component => {
+          const box = el('div', 'origin-task-component'); box.dataset.component = component.id;
+          const name = button(component.name || 'Unnamed component', () => openDrawer('components', component.id), 'origin-task-component-name', 'Open this component');
+          box.append(name, ...rows(at(component.id, component.layerId || '')),
+            quickAdd(`Add a task for ${clip(component.name || 'this component', 40)}…`, value => newTask(value, { componentIds: [component.id] }), { id: `items-c-${component.id}` }));
+          return box;
+        };
+        for (const layer of blueprint.layers) {
+          const stack = layer.technologyIds.map(id => blueprint.technologies.find(entry => entry.id === id)).filter(Boolean);
+          const title = button(layer.name || 'Unnamed layer', () => openDrawer('layers', layer.id), 'origin-task-layer-name', 'Open this layer');
+          const lead = el('p'); lead.append(...(stack.length ? stack.map(entry => chip(`${entry.name}${entry.status === 'candidate' ? ' (candidate)' : ''}`, entry.status === 'selected' ? 'accent' : 'muted')) : [el('span', '', 'No stack chosen yet.')]));
+          nodes.push(taskGroup(title, lead, ...blueprint.components.filter(component => component.layerId === layer.id).map(componentBlock),
+            el('h4', 'origin-task-sub', 'Whole layer'), ...rows(at('', layer.id)),
+            quickAdd(`Add a task for the whole ${clip(layer.name || 'layer', 30)} layer…`, value => newTask(value, { layerId: layer.id }), { id: `items-l-${layer.id}` })));
+        }
+        const loose = blueprint.components.filter(component => !component.layerId);
+        if (loose.length) nodes.push(taskGroup(el('h3', '', blueprint.layers.length ? 'Components without a layer' : 'Components'), blueprint.layers.length ? null : el('p', '', 'Add layers in Architecture to group components — optional.'), ...loose.map(componentBlock)));
+      }
+      // Milestones stay available as stages and as the filter above.
+      nodes.push(subhead('Milestones', 'Optional stages. Choose one in a task’s details, then filter by it above.'),
+        quickAdd('Add a milestone — e.g. “Foundation”', value => add('milestones', BLANK.milestones(value)), { id: 'milestones' }),
+        list('milestones', blueprint.milestones, item => {
+          const count = blueprint.items.filter(entry => entry.milestoneId === item.id).length;
+          return { title: item.title, fallback: 'Untitled milestone', tone: count ? 'defined' : 'progress', sub: [clip(item.goal, 100), plural(count, 'task')].filter(Boolean).join(' · ') };
+        }, 'No milestones. They are optional.'));
       if (blueprint.items.length) {
-        const count = planSelection.size, bar = el('div', 'origin-selection');
-        const send = button(count ? `Create ${plural(count, 'Kanban task')}` : 'Create Kanban tasks', () => openHandoff(), 'origin-primary', 'Create To Do cards for the selected steps. No agent starts.');
+        const count = [...planSelection].filter(id => blueprint.items.some(item => item.id === id)).length, bar = el('div', 'origin-selection');
+        const send = button(count ? `Send ${plural(count, 'task')} to Kanban` : 'Send to Kanban', () => openHandoff(), 'origin-primary', 'Create To Do cards for the selected tasks. No agent starts.');
         send.id = 'origin-kanban-handoff'; send.disabled = !count || handoffBusy;
-        bar.append(el('span', 'origin-selection-text', count ? `${plural(count, 'step')} selected` : 'Select steps to send to Kanban'),
-          button('Select all not sent', () => { planSelection = new Set(blueprint.items.filter(item => !item.handoff).map(item => item.id)); renderMain(); }, 'origin-link'),
+        bar.append(el('span', 'origin-selection-text', count ? `${plural(count, 'task')} selected` : 'Select tasks to send them to Kanban'),
+          button('Select all drafts', () => { planSelection = new Set(visible.filter(item => !item.handoff).map(item => item.id)); renderMain(); }, 'origin-link'),
           count ? button('Clear', () => { planSelection = new Set(); renderMain(); }, 'origin-link') : '', send);
         nodes.push(bar);
       }
@@ -1271,7 +1398,7 @@ window.PromptboardOrigin = (() => {
           ...blueprint.assumptions.filter(item => item.status === 'open').map(item => entry('assumptions', item, `Assumes ${item.statement}`)),
           ...blueprint.risks.filter(item => item.status === 'open').map(item => entry('risks', item, `Risk: ${item.title || 'untitled'}`))];
         case 'decisions': return blueprint.decisions.map(item => entry('decisions', item, item.decision.trim() ? `${item.title || 'Decision'} → ${firstLine(item.decision)}` : `${item.title || 'Decision'} ?`));
-        case 'plan': return blueprint.milestones.length ? blueprint.milestones.map(item => entry('milestones', item, item.title || 'Untitled milestone')) : blueprint.items.map(item => entry('items', item, item.title || 'Untitled step'));
+        case 'plan': return blueprint.items.map(item => entry('items', item, item.title || 'Untitled task'));
         default: {
           if (M.AREAS[id]) return blueprint.areas.filter(item => item.section === id && item.title.trim()).map(item => entry('areas', item, `${topicName(id, item.area)}: ${item.title}`));
           const answers = blueprint.questions.filter(question => question.sectionId === id && blueprint.answers[question.id]?.trim())
@@ -1575,7 +1702,7 @@ window.PromptboardOrigin = (() => {
           li.append(go); ol.append(li);
         }
         next.append(ol);
-      } else next.append(el('p', 'origin-empty-note', ready.state === 'not_started' ? 'Describe the idea to begin.' : 'Nothing blocking. Plan the build, then send steps to Kanban.'));
+      } else next.append(el('p', 'origin-empty-note', ready.state === 'not_started' ? 'Describe the idea to begin.' : 'Nothing blocking. Prepare tasks, then send them to Kanban.'));
       const glance = el('section', 'origin-panel'); glance.append(el('h3', '', 'At a glance'));
       const state = el('p', `origin-state state-${ready.state}`); state.append(el('span', 'origin-pill-dot'), ready.label); glance.append(state);
       if (ready.state === 'attention') glance.append(el('p', 'origin-hint', ready.reasons.join(' ')));
@@ -1760,7 +1887,7 @@ window.PromptboardOrigin = (() => {
       const tasks = M.kanbanTasks(blueprint, selection, target?.name || '');
       handoffDialog ??= (() => { const dialog = el('dialog', 'origin-modal'); dialog.id = 'origin-handoff-dialog'; dialog.setAttribute('aria-labelledby', 'origin-handoff-heading'); document.body.append(dialog); return dialog; })();
       const dialog = handoffDialog;
-      const heading = el('h2', '', 'Create Kanban tasks'); heading.id = 'origin-handoff-heading';
+      const heading = el('h2', '', 'Send to Kanban'); heading.id = 'origin-handoff-heading';
       const steps = el('ol', 'origin-handoff-list');
       for (const task of tasks) { const item = blueprint.items.find(entry => entry.id === task.itemId); const li = el('li', '', task.title); if (item.handoff) li.append(' ', chip('already sent', 'warn')); steps.append(li); }
       const error = el('p', 'origin-inline-error'); error.hidden = true; error.setAttribute('role', 'alert');
@@ -1788,7 +1915,7 @@ window.PromptboardOrigin = (() => {
       const close = button('', () => dialog.close(), 'origin-icon origin-modal-close'); close.setAttribute('aria-label', 'Close'); close.append(icon(ICON.close));
       const actions = el('div', 'origin-modal-actions'); actions.append(button('Cancel', () => dialog.close(), 'origin-ghost'), confirm);
       dialog.replaceChildren(close, el('p', 'origin-eyebrow', `Kanban · ${target?.kanban?.name || ''}`), heading,
-        el('p', 'origin-modal-lead', 'Each step becomes one To Do card, dependencies first, with its “done when”, linked requirements and components, and an Origin reference. No agent starts — you start work from Kanban.'),
+        el('p', 'origin-modal-lead', 'Each task becomes one To Do card, prerequisites first, with its “done when”, linked requirements and components, and an Origin reference. No agent starts — you start work from Kanban.'),
         steps, error, actions);
       dialog.showModal();
       confirm.focus();

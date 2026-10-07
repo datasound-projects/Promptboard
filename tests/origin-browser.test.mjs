@@ -132,13 +132,12 @@ test('Origin in real Chrome: quick entry, mind map, diagram, evidence, readiness
   await set('Decision', 'Single region'); await set('Why', 'Modest load'); await seg('Status', 'Accepted'); await close();
   assert.match(await ev(`return document.querySelector('#origin-main .origin-row').textContent;`), /Single region.*ADR-001.*Accepted/);
 
-  // Plan: a milestone with ordered steps; testing answered in place.
+  // Tasks: a milestone, two project-wide tasks, prerequisites and links; testing answered in place.
   await section('plan'); await quick('Foundation', 'milestones');
-  await ev(`[...document.querySelectorAll('.origin-milestone-title')].find(b => b.textContent.includes('Foundation')).click();`);
-  await wait(`document.querySelector('#origin-drawer-title')?.value === 'Foundation'`, 'milestone editor');
+  await open('Foundation');
   await set('Done when', 'CI passes'); await close();
-  for (const step of ['Repository structure', 'Publish API']) await ev(`const i = document.querySelector('.origin-milestone .origin-quick input'); i.value = ${J(step)}; i.form.requestSubmit();`);
-  await wait(`document.querySelectorAll('.origin-milestone .origin-row').length === 2`, 'two steps');
+  for (const step of ['Repository structure', 'Publish API']) await quick(step, 'items-project');
+  await wait(`document.querySelectorAll('#origin-main .origin-task-group .origin-row').length === 2`, 'two tasks');
   await open('Publish API'); await set('Done when', 'POST /notes works'); await link('Starts after', 'Repository structure');
   await link('Requirements', 'Publish release notes'); await link('Components', 'API'); await close();
   assert.match(await ev(`return [...document.querySelectorAll('#origin-main .origin-row')][1].textContent;`), /after IMP-001/);
@@ -155,7 +154,7 @@ test('Origin in real Chrome: quick entry, mind map, diagram, evidence, readiness
   assert.equal(await ev(`return document.querySelector('#origin-readiness').textContent;`), 'Ready for implementation');
   assert.deepEqual(await ev(`return Object.fromEntries([...document.querySelectorAll('.origin-stats dt')].map(dt => [dt.textContent, dt.nextElementSibling.textContent]));`), {
     Requirements: '1 / 1 with done-when', Components: '2 / 2 described', Technologies: '1 / 1 verified', Dependencies: '0 / 0 verified', Decisions: '0 unresolved',
-    Assumptions: '0 open', Sources: '0 not verified', Testing: '1 area defined', Implementation: '2 items · 0 sent to Kanban' });
+    Assumptions: '0 open', Sources: '0 not verified', Testing: '1 area defined', Tasks: '2 tasks · 0 in Kanban' });
   await ev(`[...document.querySelectorAll('.origin-map-leaf')].find(g => g.textContent.includes('Publish release notes')).dispatchEvent(new MouseEvent('click', { bubbles: true }));`);
   await wait(`document.querySelector('#origin-section-heading').textContent === 'Requirements' && document.querySelector('#origin-drawer-title')?.value === 'Publish release notes'`, 'map leaf opens the record');
   await ev(`document.querySelector('#origin-drawer').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));`);
@@ -172,7 +171,7 @@ test('Origin in real Chrome: quick entry, mind map, diagram, evidence, readiness
   assert.equal(await ev(`return document.querySelector('#origin-readiness').textContent;`), 'Ready for implementation');
 
   // Kanban handoff: explicit, ordered, To Do, no run.
-  await section('plan'); await press('Select all not sent');
+  await section('plan'); await press('Select all drafts');
   await ev(`document.querySelector('#origin-kanban-handoff').click();`);
   // Not linked yet: the destination is chosen and shown before anything is sent.
   await wait(`document.querySelector('#origin-connect-dialog')?.open`, 'connect dialog');
@@ -193,7 +192,7 @@ test('Origin in real Chrome: quick entry, mind map, diagram, evidence, readiness
   assert.match(saved1.tasks[2].prompt, /## Planned tests\n- Integration tests: API integration tests/);
   assert.match(saved1.tasks[2].prompt, /Origin reference: IMP-002 \(origin item [A-Za-z0-9_-]+\)/);
   assert.equal(view.runs.length, 0, 'No agent starts.');
-  assert.match(await ev(`return document.querySelector('#origin-main').textContent;`), /In Kanban #3/);
+  assert.match(await ev(`return document.querySelector('#origin-main').textContent;`), /Kanban #3 · /, 'Progress is read from the Kanban card.');
   assert.equal((await blueprintFile(app, blueprintId)).blueprint.items.filter(item => item.handoff?.taskId).length, 2);
 
   // Compose handoff: targeted prefill only; nothing is generated.
@@ -583,5 +582,91 @@ test('Origin map: drag, keys, links, zoom and resize are saved per project and n
   file = (await blueprintFile(app, created.id)).blueprint;
   assert.ok(Number.isInteger(file.components.find(item => item.id === 'api').x));
   assert.ok((await readFile(statePath)).equals(stateBefore), 'Layout changes never touch board data.');
+  assert.deepEqual(browser.consoleMessages.filter(message => message.startsWith('EXCEPTION')), []);
+});
+
+test('Origin Tasks: layers, component task lists, grouping, filters, order, and tasks kept when a component goes', { skip: !await findChrome(), timeout: 120000 }, async t => {
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
+  const kanban = await app.board.createProject({ name: 'Shop', workflowMode: 'legacy' });
+  const card = await app.board.createTask({ projectId: kanban.id, title: 'IMP-009 Old card', prompt: 'Already there.' });
+  const store = new OriginStore(app.board.store.dir);
+  const created = await store.create({ name: 'Shop design', description: 'A small shop' });
+  await store.link(created.id, { expectedRevision: 1, kanbanProjectId: kanban.id });
+  await store.write(created.id, { expectedRevision: 2, blueprint: { idea: 'A small shop',
+    components: [{ id: 'web', name: 'Web', type: 'client', purpose: 'UI' }, { id: 'api', name: 'API', type: 'api', purpose: 'Rules' }, { id: 'db', name: 'Database', type: 'database', purpose: 'Storage' }],
+    technologies: [{ id: 't1', name: 'PostgreSQL', status: 'selected' }, { id: 't2', name: 'Redis', status: 'candidate' }],
+    milestones: [{ id: 'm1', title: 'Foundation' }],
+    items: [{ id: 'old', key: 'IMP-009', title: 'Old card', handoff: { projectId: kanban.id, taskId: card.id, at: Date.now() } }], sequence: { items: 9 } } });
+  const browser = await launch({ width: 1280, height: 900 }); assert.ok(browser); t.after(() => browser.close());
+  const { ev, wait, saved, section, quick, press, open, close, set, link } = pageTools(browser);
+  const file = async () => (await blueprintFile(app, created.id)).blueprint;
+  const choose = (label, text) => ev(`const f = [...document.querySelectorAll('#origin-drawer .origin-field')].find(f => f.querySelector('.origin-field-label')?.textContent === ${J(label)}); const s = f.querySelector('select'); s.value = [...s.options].find(o => o.textContent === ${J(text)}).value; s.dispatchEvent(new Event('change', { bubbles: true }));`);
+  await browser.goto(`${app.url}/#/origin`);
+  await wait(`document.querySelector('.origin-map')`, 'map');
+
+  // A layer with its stack and shared rules; a component joins it.
+  await section('architecture');
+  await quick('Backend', 'layers');
+  await open('Backend'); await link('Stack', 'PostgreSQL'); await set('Shared rules', 'Every endpoint validates input'); await close();
+  await open('API'); await choose('Layer', 'Backend');
+  // Adding a task in the component editor links the component; the layer follows from it.
+  await ev(`const i = document.querySelector('#origin-drawer .origin-mini-add input'); i.value = 'Session endpoint'; i.form.requestSubmit();`);
+  await wait(`[...document.querySelectorAll('#origin-drawer .origin-mini-row')].some(r => r.textContent.includes('Session endpoint')) && document.activeElement?.dataset.focusKey === 'task:add'`, 'task added in the component editor');
+  await close();
+  await saved();
+  let blueprint = await file();
+  const layerId = blueprint.layers[0].id, session = blueprint.items.find(item => item.title === 'Session endpoint');
+  assert.deepEqual([blueprint.layers[0].technologyIds, blueprint.layers[0].constraints, blueprint.components.find(item => item.id === 'api').layerId], [['t1'], 'Every endpoint validates input', layerId]);
+  assert.deepEqual([session.key, session.componentIds, session.layerId], ['IMP-010', ['api'], ''], 'Keys continue; the layer is derived, not copied.');
+
+  // Tasks are grouped by layer and component; a layer and the project take tasks of their own.
+  await section('plan');
+  const groupText = name => ev(`return [...document.querySelectorAll('.origin-task-group')].find(g => g.querySelector('.origin-task-group-head').textContent.startsWith(${J(name)}))?.textContent || '';`);
+  assert.match(await groupText('Backend'), /PostgreSQL[\s\S]*API[\s\S]*Session endpoint/);
+  assert.match(await groupText('Components without a layer'), /Web[\s\S]*Database/);
+  assert.match(await groupText('Project-wide'), /Old card[\s\S]*Kanban #1 · To Do/, 'Progress is read from Kanban.');
+  await quick('Request logging', `items-l-${layerId}`);
+  await quick('Set up CI', 'items-project');
+  await wait(`document.querySelectorAll('#origin-main .origin-task-group .origin-row').length === 4`, 'four tasks');
+  assert.match(await groupText('Backend'), /Whole layer[\s\S]*Request logging/);
+  // Only the essentials show first; links and order sit under More details. A title is enough to save.
+  await open('Set up CI');
+  assert.deepEqual(await ev(`return [...document.querySelectorAll('#origin-drawer .origin-drawer-body > .origin-field .origin-field-label')].map(l => l.textContent);`), ['What to do', 'Done when']);
+  await choose('Milestone', 'Foundation'); await close();
+  await saved();
+  blueprint = await file();
+  assert.deepEqual(blueprint.items.map(item => [item.title, item.componentIds.join(), item.layerId, item.milestoneId]),
+    [['Old card', '', '', ''], ['Session endpoint', 'api', '', ''], ['Request logging', '', layerId, ''], ['Set up CI', '', '', 'm1']]);
+
+  // All tasks: one list with where each task lives; the milestone filter narrows both views.
+  await press('All tasks', '#origin-main');
+  await wait(`document.querySelector('.origin-toggle [aria-pressed="true"]').textContent === 'All tasks'`, 'all tasks view');
+  assert.deepEqual(await ev(`return [...document.querySelectorAll('#origin-main .origin-list:first-of-type .origin-row')].slice(0, 4).map(r => r.querySelector('.origin-row-sub').textContent.split(' · ')[0]);`), ['Project-wide', 'API', 'Backend', 'Project-wide']);
+  await ev(`const s = document.querySelector('#origin-task-milestone'); s.value = 'm1'; s.dispatchEvent(new Event('change', { bubbles: true }));`);
+  await wait(`[...document.querySelectorAll('#origin-main .origin-row-title')].map(n => n.textContent).join('|').startsWith('Set up CI|')`, 'filtered to the milestone');
+  await ev(`const s = document.querySelector('#origin-task-milestone'); s.value = ''; s.dispatchEvent(new Event('change', { bubbles: true }));`);
+  // Reordering in the editor moves past the neighbour in this list.
+  await open('Request logging'); await press('Move up', '#origin-drawer'); await close();
+  await saved();
+  assert.deepEqual((await file()).items.map(item => item.title), ['Old card', 'Request logging', 'Session endpoint', 'Set up CI']);
+
+  // Removing a component keeps its tasks and shows the missing link until it is relinked.
+  await section('architecture'); await open('API');
+  await press('Delete', '#origin-drawer'); await press('Delete and unlink 1 reference?', '#origin-drawer');
+  await wait(`document.querySelector('#origin-drawer').hidden`, 'component deleted');
+  await section('plan'); await press('By layer', '#origin-main');
+  assert.match(await groupText('Project-wide'), /Session endpoint[\s\S]*Link missing/);
+  await open('Session endpoint');
+  assert.match(await ev(`return document.querySelector('#origin-drawer .origin-lost').textContent;`), /Its component “API” was removed\./);
+  await ev(`const s = document.querySelector('#origin-drawer .origin-lost select'); s.value = 'web'; s.dispatchEvent(new Event('change', { bubbles: true }));`);
+  await wait(`!document.querySelector('#origin-drawer .origin-lost')`, 'relinked');
+  await close(); await saved();
+  const relinked = (await file()).items.find(item => item.title === 'Session endpoint');
+  assert.deepEqual([relinked.componentIds, relinked.lostLinks], [['web'], []]);
+  // A card removed in Kanban shows as removed; Origin never claims it is done.
+  await app.board.deleteTask(card.id, { expectedRevision: (await app.board.view()).projects[0].tasks[0].revision });
+  await browser.reload();
+  await wait(`document.querySelector('.origin-task-group')`, 'tasks after reload');
+  assert.match(await groupText('Project-wide'), /Old card[\s\S]*Card removed/);
   assert.deepEqual(browser.consoleMessages.filter(message => message.startsWith('EXCEPTION')), []);
 });

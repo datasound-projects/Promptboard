@@ -98,7 +98,7 @@ test('readiness is explained by stored counts and semantic states', () => {
   assert.equal(ready.state, 'ready', JSON.stringify(ready.blocking));
   assert.deepEqual(Object.fromEntries(ready.rows.map(row => [row.id, row.value])), {
     requirements: '2 / 2 with done-when', components: '3 / 3 described', technologies: '1 / 2 verified', dependencies: '0 / 0 verified', decisions: '0 unresolved',
-    assumptions: '0 open', sources: '1 not verified', testing: '0 areas defined', plan: '2 items · 0 sent to Kanban' });
+    assumptions: '0 open', sources: '1 not verified', testing: '0 areas defined', plan: '2 tasks · 0 in Kanban' });
   blueprint.requirements[1].acceptanceCriteria = '';
   ready = Model.readiness(blueprint);
   assert.equal(ready.state, 'attention');
@@ -171,6 +171,22 @@ test('projects reword phases, sections and questions; behaviour follows IDs and 
   assert.equal(Model.sectionStates(clean).cs1, 'progress');
   clean.customSections[0].notApplicable = true;
   assert.equal(Model.sectionStates(clean).cs1, 'na');
+});
+
+test('tasks live with their first component, its layer, their own layer or the project, and keep notes of removed links', () => {
+  const blueprint = sample();
+  blueprint.layers = [{ id: 'L1', name: 'Backend', technologyIds: ['t1', 'missing'] }];
+  blueprint.components[1].layerId = 'L1';
+  blueprint.items.push({ id: 'i3', key: 'IMP-003', title: 'Logging', layerId: 'L1' }, { id: 'i4', key: 'IMP-004', title: 'Orphaned', componentIds: ['gone'],
+    lostLinks: [{ collection: 'components', name: 'Queue' }, { collection: 'layers', name: 'x' }, 'bad'] });
+  const { blueprint: clean } = Model.normalizeBlueprint(blueprint);
+  assert.deepEqual(clean.layers[0].technologyIds, ['t1']);
+  const homes = Object.fromEntries(clean.items.map(item => [item.id, Model.taskHome(clean, item)]));
+  assert.deepEqual(homes, { i2: { componentId: 'api', layerId: 'L1' }, i1: { componentId: '', layerId: '' }, i3: { componentId: '', layerId: 'L1' }, i4: { componentId: '', layerId: '' } });
+  assert.deepEqual(clean.items.find(item => item.id === 'i4').lostLinks, [{ collection: 'components', name: 'Queue' }], 'Only well-formed component notes are kept.');
+  const missing = Model.issues(clean).filter(issue => issue.rule === 'task-link-missing');
+  assert.deepEqual(missing.map(issue => [issue.title, issue.blocking]), [['IMP-004 Orphaned lost its link to the removed component “Queue”.', false]]);
+  assert.deepEqual(Model.readiness(clean).rows.find(row => row.id === 'plan'), { id: 'plan', label: 'Tasks', value: '4 tasks · 0 in Kanban', section: 'plan' });
 });
 
 test('Origin projects persist on their own, reject stale revisions and refuse unsafe IDs', async t => {
