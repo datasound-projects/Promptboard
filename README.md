@@ -7,7 +7,7 @@
 
 
 <p align="center">
-  <b>Compose prompts. Run coding tasks. Reuse agent resources.</b><br>
+  <b>Plan the project. Compose prompts. Run coding tasks. Reuse agent resources.</b><br>
   A local-first development workspace for your CLI agents.
 </p>
 
@@ -22,7 +22,12 @@ npm ci
 npm start
 ```
 
-Open **http://127.0.0.1:4318**. The navigation is **Compose | Kanban | Base**. Press **Ctrl+C** to stop.
+Open **http://127.0.0.1:4318**. The navigation is **Origin | Compose | Kanban | Base**. Press **Ctrl+C** to stop.
+
+- **Origin** — design the project before execution.
+- **Compose** — turn work into precise agent instructions.
+- **Kanban** — execute, review, test and deliver.
+- **Base** — reuse agents, skills, knowledge, MCPs and tools.
 
 If you already have a `Promptboard` folder, use [Update an existing installation](#update-an-existing-installation) below.
 
@@ -38,6 +43,15 @@ npm start
 ```
 
 These commands work in PowerShell and macOS/Linux terminals. Refresh your browser after restarting. Existing installations stay at their installed revision until you update them; `git log -1 --oneline` shows that revision.
+
+## Origin — design the project before execution
+
+- Start from a short description, or start manually. Each project gets one structured **blueprint**: vision and scope, requirements with acceptance criteria, architecture components and connections, technologies, dependencies, data, AI/agents, security, testing, deployment, observability, sources, assumptions, decision records and an implementation plan.
+- The architecture diagram is a view of the saved components and connections: select, drag, connect and auto-arrange them.
+- Verification comes from linked sources that you mark verified; a URL alone verifies nothing. Assumptions stay separate from facts until resolved, marked invalid or turned into a decision.
+- Readiness shows counts from saved records (for example “3 / 4 requirements defined”, “1 unresolved decision”) and a state such as **Needs attention** or **Ready for task decomposition**. There are no quality scores. Detected issues come from fixed rules and are labelled separately from risks you record.
+- **Send to Compose** prefills Compose with one item and its direct relationships; nothing is generated until you choose Generate. **Create Kanban tasks** adds selected plan items to To Do in dependency order with an Origin reference. No agent starts.
+- Blueprints are saved per project in the data folder's `origin/` directory, separate from the board state. AI research and AI proposals are not implemented yet. See [Origin](docs/origin.md).
 
 ## Compose — turn an idea into a clear prompt
 
@@ -113,7 +127,7 @@ Open the top-bar **CLIs installed** control to manage CLI connections, sign-in a
 <details>
 <summary><b>Settings, usage, and privacy</b></summary>
 
-- **Settings** works across all three pages: theme, start page, agent defaults, terminal preferences, project workflows, and GitHub connection through the GitHub CLI.
+- **Settings** works across all pages: theme, start page, agent defaults, terminal preferences, project workflows, and GitHub connection through the GitHub CLI.
 - **Usage**, beside Settings, refreshes every minute. It shows available model/token totals, tool counts, cost estimates, allowance, and lightweight charts from local CLI records. Missing metrics stay marked unavailable; estimates are not invoices.
 - Promptboard runs on **127.0.0.1**, with no analytics or telemetry. Compose history stays in your browser; boards, Base resources, logs, and worktrees stay in the local data folder. New project repositories live under `~/Promptboard/projects`, so other local tools can open them directly. Projects opened from an existing local folder remain at their original path.
 - Prompts and selected context may be sent to your provider through its CLI. Explicit MCP tests may start a trusted server or contact its endpoint.
@@ -141,6 +155,7 @@ Read [SECURITY.md](SECURITY.md) before working with sensitive repositories. [Kan
 - [Task priority](docs/task-priority.md): default levels, keyboard pipeline editing and card/archive badges, saved independently of Composer text and agent execution.
 - [Native-message live check](docs/live-native-messages.md): opt-in disposable provider checks with separate startup, input and durable-receipt results, plus an offline harness test.
 - [Asynchronous message journal](docs/pipeline-message-journal.md): scheduled dispatch and durable delivery stages survive completed placement; configured deferred enter scheduling and separate receipt display are available.
+- [Origin blueprints](docs/origin.md): schema, storage, status semantics, handoffs and limits.
 - [Changelog](CHANGELOG.md) · [CLI adapters](docs/cli-adapters.md) · [Verification](RELEASE-VERIFICATION.md)
 - [Contributing](CONTRIBUTING.md): `npm run check` and `npm test`. No frontend framework or build step.
 - `node bin/ste.mjs --help` for command-line usage; `node bin/ste.mjs --doctor` for CLI detection.

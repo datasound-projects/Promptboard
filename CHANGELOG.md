@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add **Origin**, a project blueprint workspace before Compose and Kanban (navigation: Origin | Compose | Kanban | Base). Each project gets structured requirements, architecture components and connections with an SVG diagram, technologies, dependencies, data/AI/security/testing/deployment/observability planning, sources with explicit verification, assumptions, decision records, risks and an ordered implementation plan. Readiness and issues are derived from saved records by fixed rules; there are no scores. One item can prefill Compose (no generation) and selected plan items become ordered Kanban To Do cards through the existing task API (no agent starts). Blueprints are stored per project in `origin/` beside the board state; the board state version stays 12. AI research and proposals are not implemented yet.
+
 - Cache saved GitHub preview pages across restarts and add explicit incremental Sync changes with freshness, bounded reads and retained failure snapshots. Preserve local edits, duplicate identities, exact Composer/split To Do inputs, Base and CLI tool inheritance. Imports still verify GitHub; sync starts no agents or task updates.
 
 - Add a keyboard GitHub Issues import picker with saved repositories, page filters, retained hidden selections, explicit short titles and original issue links. Keep imports inert, preserve Composer tasks and captured project ownership, and require explicit review after stale or unknown write results. Older servers hide the controls; persistent cache, incremental sync, attachments and other tracker adapters remain pending.
