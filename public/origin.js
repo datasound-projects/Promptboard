@@ -68,7 +68,7 @@ window.PromptboardOrigin = (() => {
     const path = document.createElementNS(svg.namespaceURI, 'path'); path.setAttribute('d', d); svg.append(path);
     return svg;
   }
-  const ICON = { edit: 'M4 20h4L19 9l-4-4L4 16v4zM13.5 6.5l4 4', plus: 'M12 5v14M5 12h14', close: 'M6 6l12 12M18 6 6 18', dots: 'M5 12h.01M12 12h.01M19 12h.01', arrow: 'M5 12h14M13 6l6 6-6 6', link: 'M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1' };
+  const ICON = { edit: 'M4 20h4L19 9l-4-4L4 16v4zM13.5 6.5l4 4', plus: 'M12 5v14M5 12h14', minus: 'M5 12h14', fit: 'M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5', grip: 'M20 10L10 20M20 15l-5 5M20 4L4 20', close: 'M6 6l12 12M18 6 6 18', dots: 'M5 12h.01M12 12h.01M19 12h.01', arrow: 'M5 12h14M13 6l6 6-6 6', link: 'M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1' };
   function autoGrow(area) {
     const fit = () => { if (!area.isConnected) return; area.style.height = 'auto'; area.style.height = `${area.scrollHeight + 2}px`; };
     area.addEventListener('input', fit); requestAnimationFrame(fit);
@@ -109,6 +109,7 @@ window.PromptboardOrigin = (() => {
     let projects = [], projectId = null, record = null, loading = null, loadError = null, visible = false;
     let section = pref(SECTION_KEY) || 'overview';
     let open = null, connectFrom = null, planSelection = new Set(), handoffBusy = false, lastHandoff = '';
+    let views = { map: null, canvas: null }, mapLinkFrom = null, selectedLink = null;
     let saveTimer = null, saving = null, changeCount = 0, savedCount = 0, saveState = 'saved', saveMessage = '', dirtySince = 0, shownSaveError = '';
     let baseResources = null, baseLoading = null, focusAfter = null, renderFrame = 0, uid = 0;
     const bp = () => record.blueprint;
@@ -198,6 +199,7 @@ window.PromptboardOrigin = (() => {
     async function load(id, { force = false } = {}) {
       if (!force && id === projectId && (record || loading)) return loading;
       projectId = id; record = null; loadError = null; open = null; connectFrom = null; planSelection = new Set(); lastHandoff = '';
+      views = { map: null, canvas: null }; mapLinkFrom = null; selectedLink = null;
       changeCount = savedCount = 0; dirtySince = 0; saveState = 'saved'; showNotice(''); showError('');
       renderDrawer();
       if (!id) { render(); return null; }
@@ -243,7 +245,7 @@ window.PromptboardOrigin = (() => {
         renderProjects(); renderMain(); renderSave();
       }
     }
-    async function leave() { visible = false; connectFrom = null; await flush(); }
+    async function leave() { visible = false; connectFrom = null; mapLinkFrom = null; await flush(); }
 
     async function switchProject(id) {
       if (id === projectId) return;
@@ -339,7 +341,7 @@ window.PromptboardOrigin = (() => {
 
     function openSection(id) {
       if (!order().includes(id)) return;
-      section = id; setPref(SECTION_KEY, id); connectFrom = null;
+      section = id; setPref(SECTION_KEY, id); connectFrom = null; mapLinkFrom = null; selectedLink = null;
       if (open && sectionOf(open) !== id) { open = null; renderDrawer(); }
       renderMain();
       window.scrollTo(0, 0);
@@ -1115,7 +1117,7 @@ window.PromptboardOrigin = (() => {
     function addSection(phaseId) {
       if (bp().customSections.length >= M.LIMITS.customSections) { app.announce(`A project can have at most ${M.LIMITS.customSections} sections of its own.`); return; }
       const entry = { id: newId(), origin: 'human', phase: phaseId, title: 'New section', description: '', notApplicable: false };
-      bp().customSections.push(entry);
+      bp().customSections.push(entry); views.map = null;
       section = entry.id; setPref(SECTION_KEY, section); open = null; renderDrawer();
       changed({ structure: true });
       app.closeSidebar();
@@ -1138,7 +1140,8 @@ window.PromptboardOrigin = (() => {
       blueprint.customSections = blueprint.customSections.filter(item => item !== entry);
       blueprint.questions = blueprint.questions.filter(question => question.sectionId !== entry.id);
       for (const question of asked) delete blueprint.answers[question.id];
-      delete blueprint.layout?.map?.nodes?.[entry.id];
+      delete blueprint.layout.map.nodes[entry.id];
+      blueprint.layout.map.links = blueprint.layout.map.links.filter(link => link.from !== entry.id && link.to !== entry.id);
       section = 'overview'; setPref(SECTION_KEY, section);
       app.announce('Section deleted.');
       changed({ structure: true });
@@ -1278,75 +1281,284 @@ window.PromptboardOrigin = (() => {
         }
       }
     }
-    function mindMap() {
-      const blueprint = bp(), ns = 'http://www.w3.org/2000/svg', states = M.sectionStates(blueprint);
-      const SECTION_W = 176, SECTION_H = 40, SX = 300, LEAF_H = 27, GAP = 16, MAX = 4, LEAF_W = 196, CENTER_W = 300;
-      const wrap = el('section', 'origin-map-card'); wrap.setAttribute('aria-label', 'Project map');
-      const svg = document.createElementNS(ns, 'svg'); svg.classList.add('origin-map'); svg.setAttribute('role', 'group'); svg.setAttribute('aria-label', 'Project map: click a branch to open it');
-      const make = (tag, attrs = {}, parent = svg) => { const node = document.createElementNS(ns, tag); for (const [name, value] of Object.entries(attrs)) node.setAttribute(name, String(value)); parent.append(node); return node; };
-      const links = make('g', { class: 'origin-map-links' }), nodes = make('g');
-      const clickable = (node, label, action) => {
-        node.setAttribute('tabindex', '0'); node.setAttribute('role', 'button'); node.setAttribute('aria-label', label);
-        node.addEventListener('click', action);
-        node.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); action(); } });
+    // ---- Pan and zoom: one view box per diagram, kept while you work and reset per project ----
+    function boxOf(svg) { const [x, y, w, h] = (svg.getAttribute('viewBox') || '0 0 1 1').split(/\s+/).map(Number); return { x, y, w, h }; }
+    // After a move the view stays where it is, growing only as far as needed to keep the moved block visible.
+    function holdView(name, svg, x, y, w, h, pad = 40) {
+      const box = views[name] || boxOf(svg), x1 = Math.min(box.x, x - pad), y1 = Math.min(box.y, y - pad);
+      views[name] = { x: x1, y: y1, w: Math.max(box.x + box.w, x + w + pad) - x1, h: Math.max(box.y + box.h, y + h + pad) - y1 };
+    }
+    function viewport(svg, name, fitBox, middle = null) {
+      const apply = box => svg.setAttribute('viewBox', `${box.x} ${box.y} ${box.w} ${box.h}`);
+      const current = () => views[name] || fitBox;
+      const zoom = (factor, at) => {
+        const box = current(), c = at || { x: box.x + box.w / 2, y: box.y + box.h / 2 };
+        const w = Math.min(Math.max(box.w * factor, fitBox.w / 5), fitBox.w * 4), k = w / box.w;
+        views[name] = { x: c.x - (c.x - box.x) * k, y: c.y - (c.y - box.y) * k, w, h: box.h * k };
+        apply(views[name]);
       };
+      apply(current());
+      // On a narrow screen the whole map would be unreadably small, so it starts at a readable size around the middle.
+      requestAnimationFrame(() => {
+        if (views[name] || !svg.isConnected || !svg.clientWidth || svg.clientWidth / fitBox.w >= 0.55) return;
+        const w = svg.clientWidth / 0.6, h = (svg.clientHeight || svg.clientWidth) / 0.6, c = middle || { x: fitBox.x + fitBox.w / 2, y: fitBox.y + fitBox.h / 2 };
+        views[name] = { x: c.x - w / 2, y: c.y - h / 2, w, h }; apply(views[name]);
+      });
+      // Dragging the empty background pans. Ctrl or ⌘ with the wheel, or a trackpad pinch, zooms.
+      let pan = null;
+      svg.addEventListener('pointerdown', event => {
+        if (event.button !== 0 || event.target !== svg) return;
+        const ctm = svg.getScreenCTM(); if (!ctm) return;
+        pan = { id: event.pointerId, x: event.clientX, y: event.clientY, box: { ...current() }, k: 1 / ctm.a };
+        svg.setPointerCapture?.(event.pointerId); svg.classList.add('panning');
+      });
+      svg.addEventListener('pointermove', event => {
+        if (!pan || event.pointerId !== pan.id) return;
+        views[name] = { ...pan.box, x: pan.box.x - (event.clientX - pan.x) * pan.k, y: pan.box.y - (event.clientY - pan.y) * pan.k };
+        apply(views[name]);
+      });
+      const stop = () => { pan = null; svg.classList.remove('panning'); };
+      svg.addEventListener('pointerup', stop); svg.addEventListener('pointercancel', stop);
+      svg.addEventListener('wheel', event => {
+        if (!event.ctrlKey && !event.metaKey) return;
+        event.preventDefault();
+        const matrix = svg.getScreenCTM()?.inverse();
+        zoom(event.deltaY > 0 ? 1.12 : 1 / 1.12, matrix ? new DOMPoint(event.clientX, event.clientY).matrixTransform(matrix) : null);
+      }, { passive: false });
+      const tool = (label, path, run) => { const control = button('', run, 'origin-icon origin-small', label); control.setAttribute('aria-label', label); control.append(icon(path, 15)); return control; };
+      const tools = el('div', 'origin-view-tools'); tools.setAttribute('role', 'group'); tools.setAttribute('aria-label', 'View');
+      tools.append(tool('Zoom out', ICON.minus, () => zoom(1.25)), tool('Zoom in', ICON.plus, () => zoom(0.8)), tool('Fit to view', ICON.fit, () => { views[name] = null; apply(fitBox); }));
+      return tools;
+    }
+
+    function mindMap() {
+      const blueprint = bp(), ns = 'http://www.w3.org/2000/svg', states = M.sectionStates(blueprint), layout = blueprint.layout.map;
+      const SECTION_W = 176, SECTION_H = 40, SX = 300, LEAF_H = 27, GAP = 16, MAX = 4, LEAF_W = 196, CENTER_W = 300, STEP = 20;
+      const wrap = el('section', `origin-map-card${layout.height ? ' sized' : ''}`); wrap.setAttribute('aria-label', 'Project map');
+      if (layout.width) wrap.style.width = `${layout.width}px`;
+      if (layout.height) wrap.style.height = `${layout.height}px`;
+      const svg = document.createElementNS(ns, 'svg'); svg.classList.add('origin-map'); svg.setAttribute('role', 'group');
+      svg.setAttribute('aria-label', 'Project map: click a branch to open it, drag or use arrow keys to move it');
+      const make = (tag, attrs = {}, parent = svg) => { const node = document.createElementNS(ns, tag); for (const [name, value] of Object.entries(attrs)) node.setAttribute(name, String(value)); parent.append(node); return node; };
+      const decor = make('g', { class: 'origin-map-decor' }), links = make('g', { class: 'origin-map-links' }), nodes = make('g');
       const curve = (x1, y1, x2, y2, bend) => `M${x1} ${y1}C${x1 + bend} ${y1} ${x2 - bend} ${y2} ${x2} ${y2}`;
+      const named = id => (id === 'center' ? project()?.name || 'Project' : sectionName(id));
       // Center: the project itself.
       const summary = blueprint.vision.summary.trim() || blueprint.idea.trim();
       const words = summary.split(/\s+/).filter(Boolean), lines = [];
       for (const word of words) { if (!lines.length || `${lines.at(-1)} ${word}`.length > 38) lines.push(word); else lines[lines.length - 1] += ` ${word}`; if (lines.length > 3) break; }
       if (lines.length > 3) { lines.length = 3; lines[2] = `${lines[2].slice(0, 36)}…`; }
       const centerH = 64 + Math.max(lines.length, 1) * 20;
-      let maxHalf = centerH / 2 + 20;
-      // Custom sections join the shorter side, so built-in branches keep their places.
+      // Built-in places: branches stacked on both sides. Custom sections join the shorter side. A moved
+      // node keeps its own place; new sections take a built-in place without moving anything else.
       const left = [...MAP_LEFT], right = [...MAP_RIGHT];
       for (const entry of blueprint.customSections) (left.length <= right.length ? left : right).push(entry.id);
+      const blocks = [], defaults = { center: { x: 0, y: 0 } };
       for (const [side, ids] of [[-1, left], [1, right]]) {
-        const blocks = ids.map(id => { const all = leaves(id), shown = all.slice(0, MAX); return { id, shown, extra: all.length - shown.length, height: Math.max(1, shown.length + (all.length > MAX ? 1 : 0)) * LEAF_H }; });
-        const total = blocks.reduce((sum, block) => sum + block.height, 0) + GAP * (blocks.length - 1);
-        maxHalf = Math.max(maxHalf, total / 2 + 24);
-        let y = -total / 2;
-        for (const block of blocks) {
-          const cy = y + block.height / 2, phase = phaseOf(block.id).id, state = states[block.id];
-          const inner = side * (SX - SECTION_W / 2), outer = side * (SX + SECTION_W / 2);
-          make('path', { d: curve(side * CENTER_W / 2, Math.max(-centerH / 2 + 14, Math.min(centerH / 2 - 14, cy * 0.16)), inner, cy, side * 70), class: `origin-map-link phase-${phase}${state === 'empty' || state === 'na' ? ' faint' : ''}` }, links);
-          const node = make('g', { class: `origin-map-section phase-${phase} state-${state}`, transform: `translate(${side * SX - SECTION_W / 2} ${cy - SECTION_H / 2})` }, nodes);
-          make('rect', { width: SECTION_W, height: SECTION_H, rx: SECTION_H / 2 }, node);
-          make('circle', { cx: 20, cy: SECTION_H / 2, r: 4.5, class: 'origin-map-dot' }, node);
-          const label = make('text', { x: 36, y: SECTION_H / 2 + 5, class: 'origin-map-label' }, node); label.textContent = clip(sectionName(block.id), 18);
-          const count = block.id === 'vision' ? 0 : sectionCount(block.id);
-          if (count) { const number = make('text', { x: SECTION_W - 18, y: SECTION_H / 2 + 4.5, 'text-anchor': 'end', class: 'origin-map-count' }, node); number.textContent = String(count); }
-          clickable(node, `${sectionName(block.id)}: ${M.SECTION_STATE[state][1]}${count ? `, ${count}` : ''}`, () => openSection(block.id));
-          block.shown.forEach((leaf, index) => {
-            const ly = y + index * LEAF_H + LEAF_H / 2, lx = outer + side * 34;
-            make('path', { d: curve(outer, cy, lx, ly, side * 16), class: `origin-map-link leaf phase-${phase}` }, links);
-            const group2 = make('g', { class: `origin-map-leaf phase-${phase}`, transform: `translate(${lx} ${ly})` }, nodes);
-            make('circle', { r: 2.6, class: 'origin-map-dot' }, group2);
-            const text = make('text', { x: side * 10, y: 5, 'text-anchor': side < 0 ? 'end' : 'start' }, group2); text.textContent = clip(leaf.label, 26);
-            const tip = make('title', {}, group2); tip.textContent = leaf.label;
-            clickable(group2, leaf.label, () => focusTarget(leaf.target));
-          });
-          if (block.extra > 0) {
-            const ly = y + block.shown.length * LEAF_H + LEAF_H / 2;
-            const more = make('text', { x: outer + side * 43, y: ly + 4, 'text-anchor': side < 0 ? 'end' : 'start', class: 'origin-map-more' }, nodes); more.textContent = `+${block.extra} more`;
-            clickable(more, `${block.extra} more in ${sectionName(block.id)}`, () => openSection(block.id));
+        const list = ids.map(id => { const all = leaves(id), shown = all.slice(0, MAX); return { id, shown, extra: all.length - shown.length, rows: Math.max(1, shown.length + (all.length > MAX ? 1 : 0)) }; });
+        let y = -(list.reduce((sum, block) => sum + block.rows * LEAF_H, 0) + GAP * (list.length - 1)) / 2;
+        for (const block of list) { defaults[block.id] = { x: side * SX, y: y + block.rows * LEAF_H / 2 }; blocks.push(block); y += block.rows * LEAF_H + GAP; }
+      }
+      const live = {};
+      const pos = id => live[id] || layout.nodes[id] || defaults[id];
+      const sideOf = id => (pos(id).x < pos('center').x ? -1 : 1);
+      const centerLinks = new Map();
+      const linkPath = id => {
+        const c = pos('center'), p = pos(id), side = sideOf(id);
+        return curve(c.x + side * CENTER_W / 2, c.y + Math.max(-centerH / 2 + 14, Math.min(centerH / 2 - 14, (p.y - c.y) * 0.16)), p.x - side * SECTION_W / 2, p.y, side * 70);
+      };
+      // Decorative links are only a picture: they never mean a dependency or a build order.
+      const drawDecor = () => {
+        decor.replaceChildren();
+        for (const link of layout.links) {
+          const a = pos(link.from), b = pos(link.to);
+          if (!a || !b) continue;
+          const group = make('g', { class: `origin-map-deco${selectedLink === link.id ? ' selected' : ''}`, tabindex: 0, role: 'button', 'data-link': link.id,
+            'aria-label': `Link from ${named(link.from)} to ${named(link.to)}${link.label ? `: ${link.label}` : ''}. Enter edits.` }, decor);
+          const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2 - Math.abs(b.x - a.x) * 0.12;
+          make('path', { d: `M${a.x} ${a.y}Q${mx} ${my} ${b.x} ${b.y}`, class: 'origin-map-deco-line' }, group);
+          make('path', { d: `M${a.x} ${a.y}Q${mx} ${my} ${b.x} ${b.y}`, class: 'origin-map-deco-hit' }, group);
+          if (link.label) {
+            const text = clip(link.label, 26), w = text.length * 6.6 + 16, lx = (a.x + 2 * mx + b.x) / 4, ly = (a.y + 2 * my + b.y) / 4;
+            make('rect', { x: lx - w / 2, y: ly - 11, width: w, height: 22, rx: 11, class: 'origin-map-deco-pill' }, group);
+            const label = make('text', { x: lx, y: ly + 4.5, 'text-anchor': 'middle', class: 'origin-map-deco-label' }, group); label.textContent = text;
           }
-          y += block.height + GAP;
+          const choose = () => { selectedLink = selectedLink === link.id ? null : link.id; focusAfter = () => main.querySelector(selectedLink ? '#origin-map-link-label' : `[data-link="${CSS.escape(link.id)}"]`); renderMain(); };
+          group.addEventListener('click', choose);
+          group.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); choose(); } });
+        }
+      };
+      // Clicking opens; dragging (or arrow keys) moves. In link mode, clicks pick the two ends instead.
+      const activate = (id, openIt) => {
+        if (mapLinkFrom === null) { openIt(); return; }
+        if (!mapLinkFrom) { mapLinkFrom = id; focusAfter = () => main.querySelector(`[data-node="${CSS.escape(id)}"]`); renderMain(); return; }
+        if (mapLinkFrom === id) return;
+        if (layout.links.length >= 300) { app.announce('A map can have at most 300 links.'); return; }
+        const link = { id: newId(), from: mapLinkFrom, to: id, label: '' };
+        layout.links.push(link); mapLinkFrom = null; selectedLink = link.id;
+        views.map ||= boxOf(svg);
+        focusAfter = () => main.querySelector('#origin-map-link-label');
+        changed({ structure: true });
+        app.announce('Linked. Add a label if you like; map links are only a picture.');
+      };
+      const movable = (node, id, label, openIt) => {
+        node.dataset.node = id; node.setAttribute('tabindex', '0'); node.setAttribute('role', 'button');
+        node.setAttribute('aria-label', `${label}. Enter opens, arrow keys move.`);
+        if (mapLinkFrom === id) node.classList.add('linking');
+        const keep = (place, focus) => {
+          const half = id === 'center' ? [CENTER_W / 2, centerH / 2] : [SECTION_W / 2, SECTION_H / 2];
+          holdView('map', svg, place.x - half[0], place.y - half[1], half[0] * 2, half[1] * 2);
+          layout.nodes[id] = { x: Math.round(place.x), y: Math.round(place.y) };
+          if (focus) focusAfter = () => main.querySelector(`[data-node="${CSS.escape(id)}"]`);
+          changed({ structure: true });
+        };
+        let drag = null;
+        node.addEventListener('pointerdown', event => {
+          if (event.button !== 0) return;
+          const matrix = svg.getScreenCTM()?.inverse(); if (!matrix) return;
+          drag = { id: event.pointerId, start: new DOMPoint(event.clientX, event.clientY).matrixTransform(matrix), origin: { ...pos(id) }, moved: false, matrix };
+          node.setPointerCapture?.(event.pointerId);
+        });
+        node.addEventListener('pointermove', event => {
+          if (!drag || event.pointerId !== drag.id) return;
+          const now = new DOMPoint(event.clientX, event.clientY).matrixTransform(drag.matrix), dx = now.x - drag.start.x, dy = now.y - drag.start.y;
+          if (!drag.moved && Math.hypot(dx, dy) < 4) return;
+          drag.moved = true; live[id] = { x: drag.origin.x + dx, y: drag.origin.y + dy };
+          (node.closest('.origin-map-branch') || node).setAttribute('transform', `translate(${dx} ${dy})`);
+          for (const [other, path] of centerLinks) if (id === 'center' || other === id) path.setAttribute('d', linkPath(other));
+          drawDecor();
+        });
+        node.addEventListener('pointerup', event => {
+          if (!drag || event.pointerId !== drag.id) return;
+          const moved = drag.moved; drag = null;
+          if (!moved) { activate(id, openIt); return; }
+          keep(live[id], false);
+        });
+        node.addEventListener('pointercancel', () => { drag = null; delete live[id]; renderMain(); });
+        node.addEventListener('click', event => { if (event.detail === 0) activate(id, openIt); });
+        node.addEventListener('keydown', event => {
+          const step = { ArrowLeft: [-STEP, 0], ArrowRight: [STEP, 0], ArrowUp: [0, -STEP], ArrowDown: [0, STEP] }[event.key];
+          if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); activate(id, openIt); }
+          else if (step) { event.preventDefault(); const place = pos(id); keep({ x: place.x + step[0], y: place.y + step[1] }, true); }
+        });
+      };
+      const clickable = (node, label, action) => {
+        node.setAttribute('tabindex', '0'); node.setAttribute('role', 'button'); node.setAttribute('aria-label', label);
+        node.addEventListener('click', action);
+        node.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); action(); } });
+      };
+      const center = pos('center');
+      const bounds = { x1: center.x - CENTER_W / 2, x2: center.x + CENTER_W / 2, y1: center.y - centerH / 2, y2: center.y + centerH / 2 };
+      const grow = (x1, y1, x2, y2) => { bounds.x1 = Math.min(bounds.x1, x1); bounds.x2 = Math.max(bounds.x2, x2); bounds.y1 = Math.min(bounds.y1, y1); bounds.y2 = Math.max(bounds.y2, y2); };
+      for (const block of blocks) {
+        const p = pos(block.id), side = sideOf(block.id), phase = phaseOf(block.id).id, state = states[block.id];
+        const outer = p.x + side * SECTION_W / 2, top = p.y - block.rows * LEAF_H / 2;
+        const path = make('path', { d: linkPath(block.id), class: `origin-map-link phase-${phase}${state === 'empty' || state === 'na' ? ' faint' : ''}` }, links);
+        centerLinks.set(block.id, path);
+        const branch = make('g', { class: 'origin-map-branch' }, nodes);
+        const node = make('g', { class: `origin-map-section phase-${phase} state-${state}`, transform: `translate(${p.x - SECTION_W / 2} ${p.y - SECTION_H / 2})` }, branch);
+        make('rect', { width: SECTION_W, height: SECTION_H, rx: SECTION_H / 2 }, node);
+        make('circle', { cx: 20, cy: SECTION_H / 2, r: 4.5, class: 'origin-map-dot' }, node);
+        const label = make('text', { x: 36, y: SECTION_H / 2 + 5, class: 'origin-map-label' }, node); label.textContent = clip(sectionName(block.id), 18);
+        const count = block.id === 'vision' ? 0 : sectionCount(block.id);
+        if (count) { const number = make('text', { x: SECTION_W - 18, y: SECTION_H / 2 + 4.5, 'text-anchor': 'end', class: 'origin-map-count' }, node); number.textContent = String(count); }
+        movable(node, block.id, `${sectionName(block.id)}: ${M.SECTION_STATE[state][1]}${count ? `, ${count}` : ''}`, () => openSection(block.id));
+        grow(p.x - SECTION_W / 2, p.y - SECTION_H / 2, p.x + SECTION_W / 2, p.y + SECTION_H / 2);
+        block.shown.forEach((leaf, index) => {
+          const ly = top + index * LEAF_H + LEAF_H / 2, lx = outer + side * 34;
+          make('path', { d: curve(outer, p.y, lx, ly, side * 16), class: `origin-map-link leaf phase-${phase}` }, branch);
+          const group2 = make('g', { class: `origin-map-leaf phase-${phase}`, transform: `translate(${lx} ${ly})` }, branch);
+          make('circle', { r: 2.6, class: 'origin-map-dot' }, group2);
+          const text = make('text', { x: side * 10, y: 5, 'text-anchor': side < 0 ? 'end' : 'start' }, group2); text.textContent = clip(leaf.label, 26);
+          const tip = make('title', {}, group2); tip.textContent = leaf.label;
+          clickable(group2, leaf.label, () => focusTarget(leaf.target));
+          grow(Math.min(lx, lx + side * LEAF_W), ly - LEAF_H / 2, Math.max(lx, lx + side * LEAF_W), ly + LEAF_H / 2);
+        });
+        if (block.extra > 0) {
+          const ly = top + block.shown.length * LEAF_H + LEAF_H / 2;
+          const more = make('text', { x: outer + side * 43, y: ly + 4, 'text-anchor': side < 0 ? 'end' : 'start', class: 'origin-map-more' }, branch); more.textContent = `+${block.extra} more`;
+          clickable(more, `${block.extra} more in ${sectionName(block.id)}`, () => openSection(block.id));
         }
       }
-      const center = make('g', { class: 'origin-map-center', transform: `translate(${-CENTER_W / 2} ${-centerH / 2})` }, nodes);
-      make('rect', { width: CENTER_W, height: centerH, rx: 20 }, center);
-      const name = make('text', { x: CENTER_W / 2, y: 38, 'text-anchor': 'middle', class: 'origin-map-title' }, center); name.textContent = clip(project()?.name || 'Project', 30);
-      lines.forEach((line, index) => { const text = make('text', { x: CENTER_W / 2, y: 64 + index * 20, 'text-anchor': 'middle', class: 'origin-map-summary' }, center); text.textContent = line; });
-      if (!lines.length) { const text = make('text', { x: CENTER_W / 2, y: 64, 'text-anchor': 'middle', class: 'origin-map-summary faint' }, center); text.textContent = 'Click to describe the idea'; }
-      clickable(center, `${project()?.name || 'Project'}. Open Vision & Scope`, () => openSection('vision'));
-      const width = 2 * (SX + SECTION_W / 2 + 44 + LEAF_W);
-      svg.setAttribute('viewBox', `${-width / 2} ${-maxHalf} ${width} ${maxHalf * 2}`);
-      svg.style.setProperty('--map-ratio', String(width / (maxHalf * 2)));
-      wrap.append(svg);
-      // On narrow screens the map scrolls sideways; start with the project in view.
-      requestAnimationFrame(() => { if (wrap.scrollWidth > wrap.clientWidth) wrap.scrollLeft = (wrap.scrollWidth - wrap.clientWidth) / 2; });
+      const centerNode = make('g', { class: `origin-map-center${mapLinkFrom === 'center' ? ' linking' : ''}`, transform: `translate(${center.x - CENTER_W / 2} ${center.y - centerH / 2})` }, make('g', { class: 'origin-map-branch' }, nodes));
+      make('rect', { width: CENTER_W, height: centerH, rx: 20 }, centerNode);
+      const name = make('text', { x: CENTER_W / 2, y: 38, 'text-anchor': 'middle', class: 'origin-map-title' }, centerNode); name.textContent = clip(project()?.name || 'Project', 30);
+      lines.forEach((line, index) => { const text = make('text', { x: CENTER_W / 2, y: 64 + index * 20, 'text-anchor': 'middle', class: 'origin-map-summary' }, centerNode); text.textContent = line; });
+      if (!lines.length) { const text = make('text', { x: CENTER_W / 2, y: 64, 'text-anchor': 'middle', class: 'origin-map-summary faint' }, centerNode); text.textContent = 'Click to describe the idea'; }
+      movable(centerNode, 'center', `${project()?.name || 'Project'}. Open ${sectionName('vision')}`, () => openSection('vision'));
+      drawDecor();
+      // The whole map fits by default; zoom and pan are kept until Fit.
+      const pad = 44, fitBox = { x: bounds.x1 - pad, y: bounds.y1 - pad, w: bounds.x2 - bounds.x1 + 2 * pad, h: bounds.y2 - bounds.y1 + 2 * pad };
+      if (!layout.height) svg.style.setProperty('--map-ratio', String(fitBox.w / fitBox.h));
+
+      const tools = el('div', 'origin-map-tools');
+      const linkMode = button(mapLinkFrom === null ? 'Link' : 'Cancel', () => { mapLinkFrom = mapLinkFrom === null ? '' : null; selectedLink = null; renderMain(); },
+        `origin-ghost origin-small-button${mapLinkFrom === null ? '' : ' active'}`, 'Draw a link between two branches. Links are only a picture, never a dependency.');
+      linkMode.id = 'origin-map-link';
+      const moved = Object.keys(layout.nodes).length > 0;
+      const arrange = button('Arrange', () => {
+        if (arrange.dataset.confirm !== 'true') { arrange.dataset.confirm = 'true'; arrange.textContent = 'Reset the layout?'; arrange.classList.add('danger'); return; }
+        layout.nodes = {}; views.map = null; changed({ structure: true }); app.announce('Map arranged. Your links are kept.');
+      }, 'origin-ghost origin-small-button', 'Put every branch back in its built-in place');
+      arrange.id = 'origin-map-arrange'; arrange.disabled = !moved;
+      const status = el('p', 'origin-map-hint', mapLinkFrom === null ? 'Click a branch to open it · drag to move' : mapLinkFrom ? `Now click what ${named(mapLinkFrom)} links to · Esc cancels` : 'Click where the link starts · Esc cancels');
+      status.setAttribute('role', 'status');
+      tools.append(status, linkMode, arrange, viewport(svg, 'map', fitBox, center));
+      const link = selectedLink && layout.links.find(entry => entry.id === selectedLink);
+      if (selectedLink && !link) selectedLink = null;
+      const editor = link ? linkEditor(link, named) : null;
+      // A visible corner handle resizes the map; arrow keys resize it too, and Home goes back to automatic.
+      const grip = button('', null, 'origin-map-resize', 'Drag to resize the map · arrow keys resize · Home resets');
+      grip.id = 'origin-map-resize'; grip.setAttribute('aria-label', 'Resize map'); grip.append(icon(ICON.grip, 14));
+      // On a phone the map always uses the full width, so only its height changes there.
+      const setSize = (width, height) => {
+        if (matchMedia('(max-width: 730px)').matches && height !== null) width = layout.width;
+        layout.width = width === null ? null : Math.max(480, Math.min(4000, Math.round(width)));
+        layout.height = height === null ? null : Math.max(320, Math.min(4000, Math.round(height)));
+        focusAfter = () => main.querySelector('#origin-map-resize');
+        changed({ structure: true });
+      };
+      let sizing = null;
+      grip.addEventListener('pointerdown', event => {
+        if (event.button !== 0) return;
+        const rect = wrap.getBoundingClientRect();
+        sizing = { id: event.pointerId, x: event.clientX, y: event.clientY, width: rect.width, height: rect.height, moved: false };
+        grip.setPointerCapture?.(event.pointerId); event.preventDefault();
+      });
+      grip.addEventListener('pointermove', event => {
+        if (!sizing || event.pointerId !== sizing.id) return;
+        sizing.moved = true;
+        wrap.style.width = `${Math.max(480, sizing.width + event.clientX - sizing.x)}px`;
+        wrap.style.height = `${Math.max(320, sizing.height + event.clientY - sizing.y)}px`;
+        wrap.classList.add('sized');
+      });
+      grip.addEventListener('pointerup', event => {
+        if (!sizing || event.pointerId !== sizing.id) return;
+        const done = sizing; sizing = null;
+        if (done.moved) { const rect = wrap.getBoundingClientRect(); setSize(rect.width, rect.height); }
+      });
+      grip.addEventListener('pointercancel', () => { sizing = null; renderMain(); });
+      grip.addEventListener('keydown', event => {
+        const rect = wrap.getBoundingClientRect();
+        const step = { ArrowLeft: [-STEP, 0], ArrowRight: [STEP, 0], ArrowUp: [0, -STEP], ArrowDown: [0, STEP] }[event.key];
+        if (step) { event.preventDefault(); setSize(rect.width + step[0], rect.height + step[1]); }
+        else if (event.key === 'Home') { event.preventDefault(); setSize(null, null); }
+      });
+      wrap.append(tools, ...(editor ? [editor] : []), svg, grip);
       return wrap;
+    }
+    function linkEditor(link, named) {
+      const bar = el('div', 'origin-map-link-editor');
+      const label = el('input'); label.id = 'origin-map-link-label'; label.maxLength = 80; label.value = link.label; label.placeholder = 'Label (optional)';
+      label.setAttribute('aria-label', `Label for the link from ${named(link.from)} to ${named(link.to)}`);
+      label.addEventListener('input', () => { link.label = label.value; changed(); });
+      label.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); selectedLink = null; renderMain(); } });
+      const remove = button('Remove link', () => {
+        bp().layout.map.links = bp().layout.map.links.filter(entry => entry !== link); selectedLink = null;
+        changed({ structure: true }); app.announce('Link removed.');
+      }, 'origin-link danger');
+      bar.append(el('span', 'origin-map-link-ends', `${named(link.from)} → ${named(link.to)}`), label, remove, button('Done', () => { selectedLink = null; renderMain(); }, 'origin-link'));
+      return bar;
     }
     function overviewPanels() {
       const blueprint = bp(), found = M.issues(blueprint), ready = M.readiness(blueprint, found);
@@ -1398,9 +1610,9 @@ window.PromptboardOrigin = (() => {
       const tools = el('div', 'origin-canvas-tools');
       const connect = button(connectFrom === null ? 'Connect' : 'Cancel', () => { connectFrom = connectFrom === null ? '' : null; renderMain(); }, `origin-ghost${connectFrom === null ? '' : ' active'}`, 'Draw a connection between two blocks');
       connect.id = 'origin-connect'; connect.disabled = blueprint.components.length < 2;
-      const arrange = button('Arrange', () => { for (const item of bp().components) { item.x = null; item.y = null; } changed({ structure: true }); }, 'origin-ghost', 'Lay out blocks by how they depend on each other');
+      const arrange = button('Arrange', () => { for (const item of bp().components) { item.x = null; item.y = null; } views.canvas = null; changed({ structure: true }); }, 'origin-ghost', 'Lay out blocks by how they depend on each other');
       arrange.disabled = !blueprint.components.length;
-      tools.append(quickAdd('Add a building block — e.g. “Web app”, “API”, “Database”', value => add('components', { ...BLANK.components(value), type: type.value }), { id: 'components', extra: type }), connect, arrange);
+      tools.append(quickAdd('Add a building block — e.g. “Web app”', value => { views.canvas = null; add('components', { ...BLANK.components(value), type: type.value }); }, { id: 'components', extra: type }), connect, arrange);
       const named = id => blueprint.components.find(item => item.id === id)?.name || 'it';
       const hint = el('p', 'origin-canvas-hint', connectFrom === null ? 'Click a block to describe it · drag to move' : connectFrom ? `Now click the block that ${named(connectFrom)} connects to · Esc cancels` : 'Click the block the connection starts from · Esc cancels');
       hint.setAttribute('role', 'status');
@@ -1447,12 +1659,12 @@ window.PromptboardOrigin = (() => {
           }
         }
       };
-      const fit = () => {
+      const fitBox = () => {
         const xs = [...at.values()].map(point => point.x), ys = [...at.values()].map(point => point.y);
         let minX = Math.min(...xs) - 48, minY = Math.min(...ys) - 48, width = Math.max(...xs) - Math.min(...xs) + NODE_W + 96, height = Math.max(...ys) - Math.min(...ys) + NODE_H + 96;
         if (width < 680) { minX -= (680 - width) / 2; width = 680; }
         if (height < 260) { minY -= (260 - height) / 2; height = 260; }
-        svg.setAttribute('viewBox', `${minX} ${minY} ${width} ${height}`);
+        return { x: minX, y: minY, w: width, h: height };
       };
       const flagged = new Map(M.issues(blueprint).filter(issue => issue.target?.collection === 'components').map(issue => [issue.target.id, issue.kind]));
       for (const component of blueprint.components) {
@@ -1470,6 +1682,7 @@ window.PromptboardOrigin = (() => {
           if (!connectFrom) { connectFrom = component.id; focusAfter = () => main.querySelector(`.origin-node[data-id="${CSS.escape(component.id)}"]`); renderMain(); return; }
           if (connectFrom === component.id) return;
           const from = connectFrom;
+          views.canvas ||= boxOf(svg);
           bp().connections.push({ id: newId(), origin: 'human', from, to: component.id, label: 'calls', protocol: '', notes: '' });
           connectFrom = null;
           changed({ structure: true });
@@ -1495,6 +1708,7 @@ window.PromptboardOrigin = (() => {
           const moved = drag.moved; drag = null;
           if (!moved) { activate(); return; }
           for (const [id, value] of at) { const entry = bp().components.find(item => item.id === id); if (entry) { entry.x = value.x; entry.y = value.y; } }
+          holdView('canvas', svg, point.x, point.y, NODE_W, NODE_H);
           changed({ structure: true });
         });
         node.addEventListener('pointercancel', () => { drag = null; renderMain(); });
@@ -1504,13 +1718,14 @@ window.PromptboardOrigin = (() => {
           else if (step) {
             event.preventDefault();
             for (const [id, value] of at) { const entry = bp().components.find(item => item.id === id); if (entry) { entry.x = value.x; entry.y = value.y; } }
-            component.x += step[0]; component.y += step[1];
+            component.x += step[0]; component.y += step[1]; holdView('canvas', svg, component.x, component.y, NODE_W, NODE_H);
             focusAfter = () => main.querySelector(`.origin-node[data-id="${CSS.escape(component.id)}"]`);
             changed({ structure: true });
           }
         });
       }
-      drawEdges(); fit();
+      drawEdges();
+      tools.append(viewport(svg, 'canvas', fitBox()));
       wrap.append(svg);
       return wrap;
     }
@@ -1583,7 +1798,7 @@ window.PromptboardOrigin = (() => {
     view.addEventListener('keydown', event => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') { event.preventDefault(); void save({ force: changeCount !== savedCount }); return; }
       if (event.key !== 'Escape' || event.defaultPrevented) return;
-      if (connectFrom !== null) { event.preventDefault(); connectFrom = null; renderMain(); return; }
+      if (connectFrom !== null || mapLinkFrom !== null || selectedLink) { event.preventDefault(); connectFrom = mapLinkFrom = selectedLink = null; renderMain(); return; }
       if (open) { event.preventDefault(); closeDrawer(); }
     });
 

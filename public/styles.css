@@ -1548,8 +1548,32 @@ button.timeline-task:hover { text-decoration: underline; }
 
 /* Overview: mind map */
 .origin-map-card, .origin-canvas-card { position: relative; border: 1px solid var(--line); border-radius: 18px; background: radial-gradient(circle at 1px 1px, var(--line) 1px, transparent 0) 0 0 / 24px 24px, var(--og-glass); box-shadow: var(--og-shadow); overflow: hidden; }
-.origin-map-card { padding: 10px 6px; }
-.origin-map { display: block; width: 100%; height: auto; max-height: 78vh; aspect-ratio: var(--map-ratio, 2); }
+.origin-map-card { max-width: 100%; margin-inline: auto; padding: 8px 6px 10px; }
+.origin-map { display: block; width: 100%; height: auto; max-height: 78vh; aspect-ratio: var(--map-ratio, 2); touch-action: pan-y; cursor: grab; }
+.origin-map.panning, .origin-canvas.panning { cursor: grabbing; }
+/* A resized map keeps its height; the drawing fills it. */
+.origin-map-card.sized { display: flex; flex-direction: column; max-height: 85vh; }
+.origin-map-card.sized .origin-map { flex: 1 1 auto; min-height: 0; height: auto; max-height: none; aspect-ratio: auto; }
+.origin-map-tools { display: flex; align-items: center; gap: 6px; padding: 2px 8px 4px 12px; }
+.origin-map-hint { flex: 1; min-width: 0; margin: 0; overflow: hidden; color: var(--subtle); font-size: 12.5px; text-overflow: ellipsis; white-space: nowrap; }
+.origin-small-button { min-height: 30px; padding: 0 11px; font-size: 12.5px; }
+.origin-view-tools { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--line); border-radius: 10px; background: var(--og-glass); }
+.origin-view-tools .origin-icon { width: 28px; height: 28px; border-radius: 8px; }
+.origin-map-resize { position: absolute; right: 4px; bottom: 4px; display: grid; place-items: center; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--subtle); cursor: nwse-resize; touch-action: none; }
+.origin-map-resize:hover, .origin-map-resize:focus-visible { background: var(--og-glass-2); color: var(--ink); }
+.origin-map-section, .origin-map-center { touch-action: none; }
+.origin-map-section.linking rect, .origin-map-center.linking rect { stroke: var(--ink); stroke-width: 2.4; stroke-dasharray: none; }
+.origin-map-link-editor { display: flex; align-items: center; gap: 10px; margin: 2px 8px 6px 12px; padding: 6px 6px 6px 12px; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--og-raised); }
+.origin-map-link-ends { color: var(--muted); font-size: 12.5px; font-weight: 600; white-space: nowrap; }
+.origin-map-link-editor input { flex: 1; min-width: 80px; height: 30px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--og-glass-2); color: var(--ink); font-size: 13px; }
+.origin-map-link-editor input:focus { outline: none; border-color: var(--focus); }
+/* Decorative links: dashed and neutral, so they never read as dependencies. */
+.origin-map-deco { cursor: pointer; outline: none; }
+.origin-map-deco-line { fill: none; stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 6 5; opacity: .7; }
+.origin-map-deco-hit { fill: none; stroke: transparent; stroke-width: 14; }
+.origin-map-deco:hover .origin-map-deco-line, .origin-map-deco:focus-visible .origin-map-deco-line, .origin-map-deco.selected .origin-map-deco-line { stroke: var(--ink); opacity: 1; }
+.origin-map-deco-pill { fill: var(--og-raised); stroke: var(--line-strong); }
+.origin-map-deco-label { fill: var(--muted); font: 600 12px var(--sans); }
 .origin-map-link { fill: none; stroke: var(--phase); stroke-opacity: .55; stroke-width: 1.6; }
 .origin-map-link.leaf { stroke-opacity: .35; stroke-width: 1.2; }
 .origin-map-link.faint { stroke: var(--line-strong); stroke-opacity: 1; stroke-dasharray: 3 4; }
@@ -1784,8 +1808,10 @@ dialog.origin-modal::backdrop { background: rgb(4 4 8 / .55); backdrop-filter: b
   .origin-connection-target { grid-column: 1 / -1; }
   .origin-selection { flex-wrap: wrap; }
   .origin-new span, .origin-new { font-size: 0; gap: 0; padding: 0 9px; }
-  .origin-map-card { overflow-x: auto; }
-  .origin-map { width: 880px; max-width: none; max-height: none; }
+  .origin-map-card { width: auto !important; }
+  .origin-map-card:not(.sized) .origin-map { height: 62vh; aspect-ratio: auto; }
+  .origin-map-hint { display: none; }
+  .origin-map-tools { justify-content: flex-end; }
 }
 /* Four top-level pages must still fit a phone-width top bar. */
 @media (max-width: 560px) { .page-nav { gap: 1px; } .page-nav a { padding: 7px 5px; } }

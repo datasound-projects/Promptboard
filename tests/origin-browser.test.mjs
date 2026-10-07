@@ -461,3 +461,127 @@ test('Origin rewords phases, sections and questions in place, and keeps custom s
   assert.ok((await readFile(statePath)).equals(stateBefore), 'Rewording never touches board data.');
   assert.deepEqual(browser.consoleMessages.filter(message => message.startsWith('EXCEPTION')), []);
 });
+
+test('Origin map: drag, keys, links, zoom and resize are saved per project and never become dependencies', { skip: !await findChrome(), timeout: 120000 }, async t => {
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
+  await app.board.createProject({ name: 'Board work', workflowMode: 'pipeline' });
+  const store = new OriginStore(app.board.store.dir);
+  const created = await store.create({ name: 'Layout', description: 'Map layout check' });
+  await store.write(created.id, { expectedRevision: 1, blueprint: { idea: 'Map layout check', requirements: [{ id: 'r1', key: 'REQ-001', title: 'Sign in' }],
+    components: [{ id: 'web', name: 'Web', type: 'client', purpose: 'UI' }, { id: 'api', name: 'API', type: 'api', purpose: 'Rules' }], connections: [{ id: 'c1', from: 'web', to: 'api', label: 'calls' }],
+    items: [{ id: 'i1', key: 'IMP-001', title: 'Login page' }, { id: 'i2', key: 'IMP-002', title: 'Session API' }] } });
+  const statePath = join(app.board.store.dir, 'state.json'), stateBefore = await readFile(statePath);
+  const browser = await launch({ width: 1280, height: 900 }); assert.ok(browser); t.after(() => browser.close());
+  const { ev, wait, saved, section } = pageTools(browser);
+  const centerOf = selector => ev(`const n = document.querySelector(${J(selector)}); n.scrollIntoView({ block: 'center' }); const r = n.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 };`);
+  const drag = async (from, dx, dy) => {
+    await browser.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: from.x, y: from.y, button: 'left', buttons: 1, clickCount: 1 });
+    for (let step = 1; step <= 6; step++) await browser.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: from.x + dx * step / 6, y: from.y + dy * step / 6, button: 'left', buttons: 1 });
+    await browser.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: from.x + dx, y: from.y + dy, button: 'left', buttons: 0, clickCount: 1 });
+  };
+  const nodeAt = id => ev(`return document.querySelector('[data-node=${J(id)}]').getAttribute('transform');`);
+  const viewBox = selector => ev(`return document.querySelector(${J(selector)}).getAttribute('viewBox');`);
+  const layout = async () => (await blueprintFile(app, created.id)).blueprint.layout.map;
+  await browser.goto(`${app.url}/#/origin`);
+  await wait(`document.querySelector('.origin-map [data-node="requirements"]')`, 'map');
+
+  // Dragging moves a branch and saves its place; a click without movement still opens it.
+  const before = await nodeAt('requirements');
+  await drag(await centerOf('[data-node="requirements"]'), -40, 330);
+  await wait(`document.querySelector('[data-node="requirements"]').getAttribute('transform') !== ${J(before)}`, 'branch moved');
+  await saved();
+  const moved = (await layout()).nodes.requirements;
+  assert.ok(moved && Number.isInteger(moved.x) && Number.isInteger(moved.y), 'The new place is saved.');
+  assert.equal(await ev(`return document.querySelector('#origin-section-heading').textContent;`), 'Overview', 'Dragging does not open the section.');
+  const point = await centerOf('[data-node="requirements"]');
+  assert.equal(await ev(`return Boolean(document.elementFromPoint(${point.x}, ${point.y})?.closest('[data-node="requirements"]'));`), true, 'The moved branch stays visible and uncovered.');
+  await browser.click(point.x, point.y);
+  await wait(`document.querySelector('#origin-section-heading')?.textContent === 'Requirements'`, 'a plain click opens the branch');
+  // A text edit keeps the layout.
+  await ev(`document.querySelector('[data-edit="title"]').click();`);
+  await ev(`const i = document.activeElement; i.value = 'Needs'; i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));`);
+  await section('overview');
+  assert.deepEqual((await layout()).nodes.requirements, moved);
+
+  // Arrow keys move a focused branch by 20.
+  await ev(`document.querySelector('[data-node="vision"]').focus();`);
+  await browser.key('ArrowRight', 'ArrowRight', 39);
+  await wait(`document.activeElement?.dataset.node === 'vision'`, 'focus stays on the moved branch');
+  await saved();
+  const vision = (await layout()).nodes.vision;
+  await browser.key('ArrowDown', 'ArrowDown', 40);
+  await saved();
+  assert.deepEqual((await layout()).nodes.vision, { x: vision.x, y: vision.y + 20 });
+
+  // A decorative link: Link, then the two ends. It is stored on the map only.
+  await ev(`document.querySelector('#origin-map-link').click();`);
+  await wait(`document.querySelector('#origin-map-link').textContent === 'Cancel'`, 'link mode');
+  await ev(`document.querySelector('[data-node="vision"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));`);
+  await wait(`document.querySelector('[data-node="vision"]').classList.contains('linking')`, 'first end chosen');
+  await ev(`document.querySelector('[data-node="plan"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));`);
+  await wait(`document.activeElement?.id === 'origin-map-link-label'`, 'link label editor');
+  await ev(`const i = document.activeElement; i.value = 'informs'; i.dispatchEvent(new Event('input', { bubbles: true }));`);
+  await saved();
+  let file = (await blueprintFile(app, created.id)).blueprint;
+  assert.deepEqual(file.layout.map.links.map(link => [link.from, link.to, link.label]), [['vision', 'plan', 'informs']]);
+  assert.deepEqual([file.items.map(item => item.dependsOn), file.connections.length], [[[], []], 1], 'A map link never becomes a dependency or a connection.');
+  await ev(`document.querySelector('#origin-map-link').click(); document.querySelector('[data-node="center"]').focus();`);
+  await browser.key('Escape', 'Escape', 27);
+  await wait(`document.querySelector('#origin-map-link').textContent === 'Link'`, 'Escape leaves link mode');
+
+  // Zoom, fit and pan change the view only; nothing is saved for them.
+  const revision = (await blueprintFile(app, created.id)).revision;
+  await ev(`document.querySelector('.origin-map-card [aria-label="Fit to view"]').click();`);
+  const fitted = await viewBox('.origin-map');
+  await ev(`document.querySelector('.origin-map-card [aria-label="Zoom in"]').click();`);
+  const zoomed = await viewBox('.origin-map');
+  assert.ok(Number(zoomed.split(' ')[2]) < Number(fitted.split(' ')[2]), 'Zoom in shows less.');
+  const background = await ev(`const r = document.querySelector('.origin-map').getBoundingClientRect(); return { x: r.x + 30, y: r.y + r.height - 30 };`);
+  await drag(background, 80, 0);
+  assert.notEqual(await viewBox('.origin-map'), zoomed, 'Dragging the background pans.');
+  await ev(`document.querySelector('.origin-map-card [aria-label="Fit to view"]').click();`);
+  assert.equal(await viewBox('.origin-map'), fitted);
+  assert.equal((await blueprintFile(app, created.id)).revision, revision);
+
+  // The corner handle resizes the map: drag, arrow keys, and Home back to automatic.
+  const card = await ev(`const r = document.querySelector('.origin-map-card').getBoundingClientRect(); return { width: r.width, height: r.height };`);
+  await drag(await centerOf('#origin-map-resize'), -200, 80);
+  await saved();
+  let size = await layout();
+  assert.ok(Math.abs(size.width - (card.width - 200)) <= 3 && Math.abs(size.height - (card.height + 80)) <= 3, `size saved: ${size.width}×${size.height}`);
+  await ev(`document.querySelector('#origin-map-resize').focus();`);
+  await browser.key('ArrowDown', 'ArrowDown', 40);
+  await saved();
+  assert.equal((await layout()).height, size.height + 20);
+  assert.equal(await ev(`return document.activeElement?.id;`), 'origin-map-resize');
+
+  // Everything survives a reload; Arrange asks before putting branches back, and keeps links.
+  const placed = await nodeAt('requirements');
+  await browser.reload();
+  await wait(`document.querySelector('.origin-map [data-node="requirements"]')`, 'reloaded map');
+  assert.equal(await nodeAt('requirements'), placed);
+  assert.equal(await ev(`return document.querySelector('.origin-map-card').style.height;`), `${size.height + 20}px`);
+  await ev(`document.querySelector('#origin-map-resize').focus();`);
+  await browser.key('Home', 'Home', 36);
+  await saved();
+  size = await layout();
+  assert.deepEqual([size.width, size.height], [null, null]);
+  await ev(`document.querySelector('#origin-map-arrange').click();`);
+  assert.equal(await ev(`return document.querySelector('#origin-map-arrange').textContent;`), 'Reset the layout?');
+  await ev(`document.querySelector('#origin-map-arrange').click();`);
+  await saved();
+  file = (await blueprintFile(app, created.id)).blueprint;
+  assert.deepEqual([file.layout.map.nodes, file.layout.map.links.length], [{}, 1]);
+
+  // The architecture canvas keeps the view while a block is dragged, and saves the block's place.
+  await section('architecture');
+  await ev(`document.querySelector('.origin-canvas-card [aria-label="Zoom out"]').click();`);
+  const canvasView = await viewBox('.origin-canvas');
+  await drag(await centerOf('.origin-node[data-id="api"]'), 40, 30);
+  await saved();
+  assert.equal(await viewBox('.origin-canvas'), canvasView, 'The view does not jump after a move.');
+  file = (await blueprintFile(app, created.id)).blueprint;
+  assert.ok(Number.isInteger(file.components.find(item => item.id === 'api').x));
+  assert.ok((await readFile(statePath)).equals(stateBefore), 'Layout changes never touch board data.');
+  assert.deepEqual(browser.consoleMessages.filter(message => message.startsWith('EXCEPTION')), []);
+});
