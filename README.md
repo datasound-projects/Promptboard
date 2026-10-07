@@ -46,14 +46,16 @@ These commands work in PowerShell and macOS/Linux terminals. Refresh your browse
 
 ## Origin — design the project before execution
 
-- Every project starts here: describe what you want to build, or start with an empty map. **New project** in the Origin header creates another project at any time.
-- The sidebar lists the work in order — **Define** (Overview, Vision & Scope, Requirements), **Design** (Architecture, Technology, Dependencies, Data, AI / Agents), **Operate** (Security, Testing, Deployment, Observability), **Decide** (Research, Decisions) and **Build** (Implementation Plan).
-- The **Overview** draws the whole blueprint as a mind map: the project in the middle, every section as a branch, your entries as leaves. Click any branch or leaf to open it. Below it, **Next steps** lists open points and **At a glance** shows plain counts — no quality scores.
-- Each section is a short list: type a line and press Enter. Click an entry to edit it in a side panel with only the essential fields; everything else is under **More details**. Planning sections such as Security or Testing ask one question per topic, answered in place.
-- The architecture canvas is a view of the saved building blocks: add, click to describe, drag, connect and arrange them.
-- Verification comes from linked sources you mark verified; a link alone verifies nothing. Assumptions stay separate from facts until they hold, fail or become a decision.
-- **Send to Compose** prefills Compose with one item and what it links to; nothing is generated until you choose Generate. **Create Kanban tasks** adds selected plan steps to To Do in dependency order with an Origin reference. No agent starts.
-- Origin opens in a dark theme; the theme switch in the top bar changes Origin on its own. Blueprints are saved per project in the data folder's `origin/` directory, separate from the board state. AI research and AI proposals are not implemented yet. See [Origin](docs/origin.md).
+- Every project starts here: describe what you want to build, or start with an empty map. **New project** is always in the Origin header.
+- The sidebar orders the work: **Define → Design → Operate → Decide → Build**. The **Overview** draws the whole blueprint as a mind map, with next steps and plain counts — no quality scores.
+- Each section is a short list: type a line, press Enter, click an entry for its details. Security, Testing and other planning sections ask one question per topic.
+- Sketch building blocks and their connections, record decisions with their reason, keep assumptions separate from facts, and link sources you have verified.
+- **Send to Compose** prefills one item; **Create Kanban tasks** adds plan steps to To Do in order. No agent starts. See [Origin](docs/origin.md).
+
+<p align="center">
+  <img src="docs/origin-demo.gif" width="960" alt="Dark-mode Origin demo: describe an online shop, start the blueprint, add requirements with a done-when, connect building blocks, accept a database decision, answer security topics, order the build plan and view the project mind map.">
+  <br><sub>Idea → requirements → architecture → decisions → plan → project map</sub>
+</p>
 
 ## Compose — turn an idea into a clear prompt
 
@@ -76,6 +78,10 @@ These commands work in PowerShell and macOS/Linux terminals. Refresh your browse
 - Choose providers and models per project or column. Customize columns, edit cards, and inspect run history.
 - Pause stops a task's agent while keeping its conversation and files. Resume continues the captured native conversation in the same stage and workspace, without repeating the task prompt. Restart preserves session metadata without launching agents. Older Codex histories use [bounded exact-thread discovery](docs/codex-history-discovery.md). See [session persistence](docs/session-persistence.md) for limits.
 - Kanban agents inherit tools and MCPs configured in their CLI alongside selected Base resources. Native permissions and administrator policies still apply. Legacy Planning/Review retain their stage restrictions; pipeline permissions come from configuration. See [Base delivery](docs/base-delivery.md).
+
+<details>
+<summary><b>Advanced Kanban features</b></summary>
+
 - New app projects start with an empty seven-column pipeline. Existing stage boards retain their saved workflow; the project API accepts an explicit `workflowMode: "legacy"` for integrations. Creating a project or adding Composer/split tasks starts no agent.
 - A [deferred message scheduler](docs/native-message-scheduler.md) connects configured deferred enter rows to the same task agent, with scoped Stop, separate delivery receipts and no-replay recovery. Waiting for a queued or busy agent preserves the bounded input budget. Immediate/exit/slash delivery remains pending.
 - [Shared labels](docs/task-labels.md) provide task checkboxes, project-wide names/colors, badges and shared board/completed filters with revision-checked saves. The Backlog view shares those labels and filters.
@@ -94,6 +100,8 @@ These commands work in PowerShell and macOS/Linux terminals. Refresh your browse
 - [Native approved plans](docs/pipeline-native-plan.md) route Claude/Gemini cards to their configured target while preserving live implementation. Codex currently requires an explicit move.
 - Pipeline first input uses a [task envelope](docs/pipeline-prompts.md) preserving engineered prompt content, with selected Base resources and inherited CLI tools. Column automations and advanced session strategies are still being implemented.
 
+</details>
+
 <p align="center">
   <img src="docs/kanban-demo.gif" width="960" alt="Dark-mode Kanban demo: browse the project workspace and sidebar settings, edit and save a file, consent to Autopilot, run a task through Executing, Code Review, Testing and Merge, and finish in Done with agent terminal tabs.">
   <br><sub>Project setup → To Do → Execute → Review → Test → Merge → Done</sub>
@@ -111,7 +119,7 @@ These commands work in PowerShell and macOS/Linux terminals. Refresh your browse
   <br><sub>Store → configure → assign optionally → inspect delivery</sub>
 </p>
 
-<sub>All demos use the real interface in dark mode with simulated model responses and agents. File saves, the local Git workflow and Base resource delivery are real. Edited for speed; each GIF is under 12 seconds.</sub>
+<sub>All demos use the real interface in dark mode with simulated model responses and agents. Blueprint and file saves, the local Git workflow and Base resource delivery are real. Edited for speed; each GIF is under 12 seconds.</sub>
 
 ## Supported CLIs
 
@@ -129,7 +137,7 @@ Open the top-bar **CLIs installed** control to manage CLI connections, sign-in a
 <details>
 <summary><b>Settings, usage, and privacy</b></summary>
 
-- **Settings** works across all pages: theme, start page, agent defaults, terminal preferences, project workflows, and GitHub connection through the GitHub CLI.
+- **Settings** works across all pages: theme (dark by default; the top-bar switch changes every page), start page, agent defaults, terminal preferences, project workflows, and GitHub connection through the GitHub CLI.
 - **Usage**, beside Settings, refreshes every minute. It shows available model/token totals, tool counts, cost estimates, allowance, and lightweight charts from local CLI records. Missing metrics stay marked unavailable; estimates are not invoices.
 - Promptboard runs on **127.0.0.1**, with no analytics or telemetry. Compose history stays in your browser; boards, Base resources, logs, and worktrees stay in the local data folder. New project repositories live under `~/Promptboard/projects`, so other local tools can open them directly. Projects opened from an existing local folder remain at their original path.
 - Prompts and selected context may be sent to your provider through its CLI. Explicit MCP tests may start a trusted server or contact its endpoint.
@@ -140,6 +148,17 @@ Read [SECURITY.md](SECURITY.md) before working with sensitive repositories. [Kan
 </details>
 
 ## More
+
+- [Origin blueprints](docs/origin.md): schema, storage, status semantics, handoffs and limits.
+- [Changelog](CHANGELOG.md) · [CLI adapters](docs/cli-adapters.md) · [Verification](RELEASE-VERIFICATION.md)
+- [Contributing](CONTRIBUTING.md): `npm run check` and `npm test`. No frontend framework or build step.
+- `node bin/ste.mjs --help` for command-line usage; `node bin/ste.mjs --doctor` for CLI detection.
+- `npm start -- --port 4320` to use another port.
+- `node scripts/record-demo.mjs` regenerates all four demos with Chrome and ffmpeg, without paid model calls.
+- `node scripts/create-social-preview.mjs` renders the dark Origin, Compose, Kanban and Base GitHub preview at 1280×640.
+
+<details>
+<summary><b>Technical documentation</b></summary>
 
 - [Kanban parity plan](docs/kanban-parity-plan.md): the Kangentic reference, implementation gaps, and acceptance checks.
 - [Column automation runtime](docs/pipeline-runtime-automations.md): ordered scripts/webhooks, durable outcomes, scoped Stop and no-replay recovery.
@@ -157,13 +176,8 @@ Read [SECURITY.md](SECURITY.md) before working with sensitive repositories. [Kan
 - [Task priority](docs/task-priority.md): default levels, keyboard pipeline editing and card/archive badges, saved independently of Composer text and agent execution.
 - [Native-message live check](docs/live-native-messages.md): opt-in disposable provider checks with separate startup, input and durable-receipt results, plus an offline harness test.
 - [Asynchronous message journal](docs/pipeline-message-journal.md): scheduled dispatch and durable delivery stages survive completed placement; configured deferred enter scheduling and separate receipt display are available.
-- [Origin blueprints](docs/origin.md): schema, storage, status semantics, handoffs and limits.
-- [Changelog](CHANGELOG.md) · [CLI adapters](docs/cli-adapters.md) · [Verification](RELEASE-VERIFICATION.md)
-- [Contributing](CONTRIBUTING.md): `npm run check` and `npm test`. No frontend framework or build step.
-- `node bin/ste.mjs --help` for command-line usage; `node bin/ste.mjs --doctor` for CLI detection.
-- `npm start -- --port 4320` to use another port.
-- `node scripts/record-demo.mjs` regenerates all three demos with Chrome and ffmpeg, without paid model calls.
-- `node scripts/create-social-preview.mjs` renders the minimal Compose, Kanban and Base GitHub preview at 1280×640.
+
+</details>
 
 ## License
 

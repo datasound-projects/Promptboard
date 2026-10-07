@@ -64,7 +64,6 @@ Statuses describe stored project state. Origin has no confidence percentages or 
 - Each section shows one **Next** hint taken from the checks, with a link to the record.
 - Changes save automatically shortly after you stop typing (and at least every few seconds while you keep typing). The header shows **Saved**, **Editing…**, **Saving…**, **Not saved** (with Retry) or **Changed in another window** (with **Reload saved version** or **Keep mine**). ⌘/Ctrl+S saves immediately. Leaving the page or switching projects saves first.
 - The architecture canvas supports click to edit, drag or arrow keys to move, **Connect** (choose the starting block, then the block it connects to) and **Arrange** by dependency level. Connections are named in the block's editor. Positions are stored on the components; the records stay the source of truth.
-- Origin has its own theme: dark by default. While Origin is open, the theme switch in the top bar changes only Origin; the other pages keep the app theme.
 
 ## Handoffs
 
