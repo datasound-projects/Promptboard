@@ -1062,6 +1062,8 @@ window.PromptboardOrigin = (() => {
       svg.setAttribute('viewBox', `${-width / 2} ${-maxHalf} ${width} ${maxHalf * 2}`);
       svg.style.setProperty('--map-ratio', String(width / (maxHalf * 2)));
       wrap.append(svg);
+      // On narrow screens the map scrolls sideways; start with the project in view.
+      requestAnimationFrame(() => { if (wrap.scrollWidth > wrap.clientWidth) wrap.scrollLeft = (wrap.scrollWidth - wrap.clientWidth) / 2; });
       return wrap;
     }
     function overviewPanels() {
