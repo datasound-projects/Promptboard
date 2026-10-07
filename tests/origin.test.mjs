@@ -81,26 +81,30 @@ test('issues distinguish system-detected problems from human-entered and AI-sugg
     { id: 'k2', title: 'Consider rate limits', kind: 'missing', severity: 'low', status: 'open', origin: 'ai', componentIds: [] });
   const found = Model.issues(blueprint);
   const rules = found.map(issue => issue.rule);
-  for (const rule of ['technology-unverified', 'technology-unused', 'dependency-unverified', 'duplicate-dependencies', 'decision-proposed', 'requirement-draft', 'requirement-criteria', 'security-plan', 'testing-plan', 'plan-order', 'recorded'])
+  for (const rule of ['technology-unverified', 'technology-unused', 'dependency-unverified', 'duplicate-dependencies', 'decision-proposed', 'requirement-criteria', 'security-plan', 'testing-plan', 'plan-order', 'recorded'])
     assert.ok(rules.includes(rule), `missing rule ${rule}`);
   assert.equal(found.find(issue => issue.title.includes('Redis') && issue.rule === 'technology-unused').origin, 'system');
   assert.equal(found.find(issue => issue.title === 'Vendor lock-in').origin, 'human');
   assert.equal(found.find(issue => issue.title === 'Consider rate limits').origin, 'ai');
   assert.equal(found.find(issue => issue.title === 'Consider rate limits').blocking, false, 'AI suggestions never block readiness.');
   assert.equal(found.some(issue => issue.title.includes('Node.js') && issue.kind === 'unverified'), false, 'Verified evidence clears the check.');
+  assert.equal(found.filter(issue => issue.kind === 'unverified').every(issue => !issue.blocking), true, 'Missing evidence is shown but never blocks on its own.');
 });
 
 test('readiness is explained by stored counts and semantic states', () => {
   assert.equal(Model.readiness(Model.emptyBlueprint()).state, 'not_started');
   const blueprint = Model.normalizeBlueprint(sample()).blueprint;
   let ready = Model.readiness(blueprint);
-  assert.equal(ready.state, 'attention');
+  assert.equal(ready.state, 'ready', JSON.stringify(ready.blocking));
   assert.deepEqual(Object.fromEntries(ready.rows.map(row => [row.id, row.value])), {
-    requirements: '2 / 2 defined', components: '3 / 3 described', technologies: '1 / 2 verified', dependencies: '0 / 0 verified', decisions: '0 unresolved',
+    requirements: '2 / 2 with done-when', components: '3 / 3 described', technologies: '1 / 2 verified', dependencies: '0 / 0 verified', decisions: '0 unresolved',
     assumptions: '0 open', sources: '1 not verified', testing: '0 areas defined', plan: '2 items · 0 sent to Kanban' });
-  assert.deepEqual(ready.reasons, ['1 unverified technology or dependency remains.']);
-  blueprint.technologies[1].sourceIds = ['s1'];
-  blueprint.technologies[1].status = 'rejected';
+  blueprint.requirements[1].acceptanceCriteria = '';
+  ready = Model.readiness(blueprint);
+  assert.equal(ready.state, 'attention');
+  assert.deepEqual(ready.reasons, ['1 item with missing information remains.']);
+  assert.equal(ready.rows[0].value, '1 / 2 with done-when');
+  blueprint.requirements[1].acceptanceCriteria = 'CSV export works';
   ready = Model.readiness(blueprint);
   assert.equal(ready.state, 'ready', JSON.stringify(ready.blocking));
   blueprint.items = [];

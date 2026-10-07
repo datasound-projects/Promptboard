@@ -210,7 +210,7 @@ globalThis.PromptboardOriginModel = (() => {
 
   /** Item references used for navigation from issues and inspector rows. */
   const COLLECTION_SECTION = { requirements: 'requirements', components: 'architecture', connections: 'architecture', technologies: 'technology', dependencies: 'dependencies',
-    decisions: 'decisions', assumptions: 'research', sources: 'research', risks: 'overview', milestones: 'plan', items: 'plan' };
+    decisions: 'decisions', assumptions: 'research', sources: 'research', risks: 'research', milestones: 'plan', items: 'plan' };
   function itemName(blueprint, collection, id) {
     const entry = blueprint[collection]?.find(item => item.id === id);
     if (!entry) return '';
@@ -234,8 +234,7 @@ globalThis.PromptboardOriginModel = (() => {
     for (const requirement of blueprint.requirements) {
       const name = itemName(blueprint, 'requirements', requirement.id);
       if (requirement.status === 'needs_decision') add('requirement-decision', 'unresolved', `${name} needs a decision.`, target('requirements', requirement.id));
-      else if (requirement.status !== 'defined') add('requirement-draft', 'missing', `${name} is not defined yet.`, target('requirements', requirement.id), { action: 'Complete it and mark it Defined.' });
-      if (!lines(requirement.acceptanceCriteria).length) add('requirement-criteria', 'missing', `${name} has no acceptance criteria.`, target('requirements', requirement.id), { action: 'Add acceptance criteria.' });
+      if (!lines(requirement.acceptanceCriteria).length) add('requirement-criteria', 'missing', `${name} has no “done when” yet.`, target('requirements', requirement.id), { action: 'Say how you will know it works.' });
     }
     const connected = new Set(blueprint.connections.flatMap(connection => [connection.from, connection.to]));
     for (const component of blueprint.components) {
@@ -251,8 +250,8 @@ globalThis.PromptboardOriginModel = (() => {
       const name = `${technology.name || 'Unnamed technology'}${technology.version ? ` ${technology.version}` : ''}`;
       const state = verification(technology, sources);
       if (state === 'conflict') add('technology-conflict', 'conflict', `“${name}” has conflicting evidence.`, target('technologies', technology.id));
-      else if (state === 'outdated') add('technology-outdated', 'unverified', `“${name}” is supported only by outdated evidence.`, target('technologies', technology.id), { action: 'Recheck the source.' });
-      else if (state === 'unverified') add('technology-unverified', 'unverified', `“${name}” is selected without verified evidence.`, target('technologies', technology.id), { blocking: technology.status === 'selected', action: 'Link a verified source.' });
+      else if (state === 'outdated') add('technology-outdated', 'unverified', `“${name}” is supported only by outdated evidence.`, target('technologies', technology.id), { blocking: false, action: 'Recheck the source.' });
+      else if (state === 'unverified') add('technology-unverified', 'unverified', `“${name}” is selected without verified evidence.`, target('technologies', technology.id), { blocking: false, action: 'Link a verified source.' });
       if (blueprint.components.length && technology.status === 'selected' && !used.has(technology.id)) add('technology-unused', 'missing', `“${name}” is not used by any component.`, target('technologies', technology.id), { blocking: false, action: 'Link it to a component or reject it.' });
       const key = `technology:${technology.name.trim().toLowerCase()}`;
       if (technology.name.trim()) names.set(key, [...(names.get(key) || []), technology]);
@@ -261,7 +260,7 @@ globalThis.PromptboardOriginModel = (() => {
       const name = `${dependency.name || 'Unnamed dependency'}${dependency.version ? ` ${dependency.version}` : ''}`;
       const state = verification(dependency, sources);
       if (state === 'conflict') add('dependency-conflict', 'conflict', `Dependency “${name}” has conflicting evidence.`, target('dependencies', dependency.id));
-      else if (state !== 'verified') add('dependency-unverified', 'unverified', `Dependency “${name}” is ${state === 'outdated' ? 'supported only by outdated evidence' : 'unverified'}.`, target('dependencies', dependency.id), { action: 'Link a verified source.' });
+      else if (state !== 'verified') add('dependency-unverified', 'unverified', `Dependency “${name}” is ${state === 'outdated' ? 'supported only by outdated evidence' : 'unverified'}.`, target('dependencies', dependency.id), { blocking: false, action: 'Link a verified source.' });
       const key = `dependency:${dependency.name.trim().toLowerCase()}`;
       if (dependency.name.trim()) names.set(key, [...(names.get(key) || []), dependency]);
     }
@@ -317,7 +316,7 @@ globalThis.PromptboardOriginModel = (() => {
     const testingAreas = new Set(blueprint.areas.filter(item => item.section === 'testing' && item.status === 'defined').map(item => item.area));
     const handed = count(blueprint.items, item => item.handoff);
     const rows = [
-      { id: 'requirements', label: 'Requirements', value: `${count(blueprint.requirements, item => item.status === 'defined')} / ${blueprint.requirements.length} defined`, section: 'requirements' },
+      { id: 'requirements', label: 'Requirements', value: `${count(blueprint.requirements, item => lines(item.acceptanceCriteria).length > 0)} / ${blueprint.requirements.length} with done-when`, section: 'requirements' },
       { id: 'components', label: 'Components', value: `${count(blueprint.components, item => hasText(item.purpose))} / ${blueprint.components.length} described`, section: 'architecture' },
       { id: 'technologies', label: 'Technologies', value: `${count(activeTech, item => verification(item, sources) === 'verified')} / ${activeTech.length} verified`, section: 'technology' },
       { id: 'dependencies', label: 'Dependencies', value: `${count(blueprint.dependencies, item => verification(item, sources) === 'verified')} / ${blueprint.dependencies.length} verified`, section: 'dependencies' },
@@ -330,7 +329,7 @@ globalThis.PromptboardOriginModel = (() => {
     const blocking = found.filter(issue => issue.blocking);
     if (!isStarted(blueprint)) return { state: 'not_started', label: 'Not started', reasons: ['Describe the project to start its blueprint.'], rows, blocking };
     if (blocking.length) {
-      const groups = [['conflict', 'conflict', 'conflicts'], ['unresolved', 'unresolved decision', 'unresolved decisions'], ['unverified', 'unverified technology or dependency', 'unverified technologies or dependencies'], ['missing', 'item with missing information', 'items with missing information']];
+      const groups = [['conflict', 'conflict', 'conflicts'], ['unresolved', 'open decision', 'open decisions'], ['unverified', 'unverified technology or dependency', 'unverified technologies or dependencies'], ['missing', 'item with missing information', 'items with missing information']];
       const reasons = groups.map(([kind, one, many]) => [count(blocking, issue => issue.kind === kind), one, many]).filter(([total]) => total).map(([total, one, many]) => `${plural(total, one, many)} remain${total === 1 ? 's' : ''}.`);
       return { state: 'attention', label: 'Needs attention', reasons, rows, blocking };
     }
@@ -349,7 +348,7 @@ globalThis.PromptboardOriginModel = (() => {
     for (const section of Object.keys(AREAS)) content[section] = blueprint.areas.filter(item => item.section === section).length;
     const complete = {
       vision: ['problem', 'goal', 'users', 'inScope'].every(key => hasText(blueprint.vision[key])),
-      requirements: blueprint.requirements.every(item => item.status === 'defined'), architecture: blueprint.components.every(item => item.status === 'defined' && hasText(item.purpose)),
+      requirements: blueprint.requirements.every(item => lines(item.acceptanceCriteria).length > 0), architecture: blueprint.components.every(item => hasText(item.purpose)),
       technology: blueprint.technologies.every(item => item.status !== 'candidate'), research: blueprint.assumptions.every(item => item.status !== 'open'),
       decisions: blueprint.decisions.every(item => item.status !== 'proposed'), plan: blueprint.items.length > 0,
     };
