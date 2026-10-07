@@ -238,10 +238,13 @@ test('Origin in real Chrome: quick entry, mind map, diagram, evidence, readiness
   await browser.resize(1280, 900);
   // Keyboard section navigation inside the sidebar, once the desktop sidebar is laid out again.
   assert.equal(await browser.layout(`return innerWidth === 1280 && getComputedStyle(document.querySelector('#sidebar')).visibility === 'visible' && document.querySelector('.origin-nav-item[data-section="overview"]').getBoundingClientRect().width > 0;`), true);
-  await ev(`document.querySelector('.origin-nav-item[data-section="overview"]').focus();`);
-  await wait(`document.activeElement?.dataset.section === 'overview'`, 'sidebar focus');
+  // A late page refresh can briefly take focus on slow runners, so focus is re-applied until it holds.
+  const focusState = `JSON.stringify({ active: document.activeElement?.dataset.section || document.activeElement?.id || document.activeElement?.tagName, dialogs: [...document.querySelectorAll('dialog[open]')].map(d => d.id) })`;
+  await wait(`(() => { const item = document.querySelector('.origin-nav-item[data-section="overview"]'); if (document.activeElement !== item) item.focus(); return document.activeElement === item; })()`, 'sidebar focus')
+    .catch(async error => { throw new Error(`${error.message} ${await ev(`return ${focusState};`)}`); });
   await browser.key('ArrowDown', 'ArrowDown', 40);
-  await wait(`document.activeElement?.dataset.section === 'vision'`, 'ArrowDown moves to the next section');
+  await wait(`document.activeElement?.dataset.section === 'vision'`, 'ArrowDown moves to the next section')
+    .catch(async error => { throw new Error(`${error.message} ${await ev(`return ${focusState};`)}`); });
 
   assert.equal(JSON.parse(await readFile(statePath, 'utf8')).version, 12, 'Board state version is unchanged.');
   assert.notEqual(stateBefore, '');
