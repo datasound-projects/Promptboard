@@ -7,7 +7,7 @@
 
 
 <p align="center">
-  <b>Compose prompts. Run coding tasks. Reuse agent resources.</b><br>
+  <b>Plan the project. Compose prompts. Run coding tasks. Reuse agent resources.</b><br>
   A local-first development workspace for your CLI agents.
 </p>
 
@@ -22,7 +22,12 @@ npm ci
 npm start
 ```
 
-Open **http://127.0.0.1:4318**. The navigation is **Compose | Kanban | Base**. Press **Ctrl+C** to stop.
+Open **http://127.0.0.1:4318**. The navigation is **Origin | Compose | Kanban | Base**. Press **Ctrl+C** to stop.
+
+- **Origin** — design the project before execution.
+- **Compose** — turn work into precise agent instructions.
+- **Kanban** — execute, review, test and deliver.
+- **Base** — reuse agents, skills, knowledge, MCPs and tools.
 
 If you already have a `Promptboard` folder, use [Update an existing installation](#update-an-existing-installation) below.
 
@@ -38,6 +43,17 @@ npm start
 ```
 
 These commands work in PowerShell and macOS/Linux terminals. Refresh your browser after restarting. Existing installations stay at their installed revision until you update them; `git log -1 --oneline` shows that revision.
+
+## Origin — design the project before execution
+
+- Every project starts here: describe what you want to build, or start with an empty map. **New project** in the Origin header creates another project at any time.
+- The sidebar lists the work in order — **Define** (Overview, Vision & Scope, Requirements), **Design** (Architecture, Technology, Dependencies, Data, AI / Agents), **Operate** (Security, Testing, Deployment, Observability), **Decide** (Research, Decisions) and **Build** (Implementation Plan).
+- The **Overview** draws the whole blueprint as a mind map: the project in the middle, every section as a branch, your entries as leaves. Click any branch or leaf to open it. Below it, **Next steps** lists open points and **At a glance** shows plain counts — no quality scores.
+- Each section is a short list: type a line and press Enter. Click an entry to edit it in a side panel with only the essential fields; everything else is under **More details**. Planning sections such as Security or Testing ask one question per topic, answered in place.
+- The architecture canvas is a view of the saved building blocks: add, click to describe, drag, connect and arrange them.
+- Verification comes from linked sources you mark verified; a link alone verifies nothing. Assumptions stay separate from facts until they hold, fail or become a decision.
+- **Send to Compose** prefills Compose with one item and what it links to; nothing is generated until you choose Generate. **Create Kanban tasks** adds selected plan steps to To Do in dependency order with an Origin reference. No agent starts.
+- Origin opens in a dark theme; the theme switch in the top bar changes Origin on its own. Blueprints are saved per project in the data folder's `origin/` directory, separate from the board state. AI research and AI proposals are not implemented yet. See [Origin](docs/origin.md).
 
 ## Compose — turn an idea into a clear prompt
 
@@ -113,7 +129,7 @@ Open the top-bar **CLIs installed** control to manage CLI connections, sign-in a
 <details>
 <summary><b>Settings, usage, and privacy</b></summary>
 
-- **Settings** works across all three pages: theme, start page, agent defaults, terminal preferences, project workflows, and GitHub connection through the GitHub CLI.
+- **Settings** works across all pages: theme, start page, agent defaults, terminal preferences, project workflows, and GitHub connection through the GitHub CLI.
 - **Usage**, beside Settings, refreshes every minute. It shows available model/token totals, tool counts, cost estimates, allowance, and lightweight charts from local CLI records. Missing metrics stay marked unavailable; estimates are not invoices.
 - Promptboard runs on **127.0.0.1**, with no analytics or telemetry. Compose history stays in your browser; boards, Base resources, logs, and worktrees stay in the local data folder. New project repositories live under `~/Promptboard/projects`, so other local tools can open them directly. Projects opened from an existing local folder remain at their original path.
 - Prompts and selected context may be sent to your provider through its CLI. Explicit MCP tests may start a trusted server or contact its endpoint.
@@ -141,6 +157,7 @@ Read [SECURITY.md](SECURITY.md) before working with sensitive repositories. [Kan
 - [Task priority](docs/task-priority.md): default levels, keyboard pipeline editing and card/archive badges, saved independently of Composer text and agent execution.
 - [Native-message live check](docs/live-native-messages.md): opt-in disposable provider checks with separate startup, input and durable-receipt results, plus an offline harness test.
 - [Asynchronous message journal](docs/pipeline-message-journal.md): scheduled dispatch and durable delivery stages survive completed placement; configured deferred enter scheduling and separate receipt display are available.
+- [Origin blueprints](docs/origin.md): schema, storage, status semantics, handoffs and limits.
 - [Changelog](CHANGELOG.md) · [CLI adapters](docs/cli-adapters.md) · [Verification](RELEASE-VERIFICATION.md)
 - [Contributing](CONTRIBUTING.md): `npm run check` and `npm test`. No frontend framework or build step.
 - `node bin/ste.mjs --help` for command-line usage; `node bin/ste.mjs --doctor` for CLI detection.

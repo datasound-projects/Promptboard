@@ -250,7 +250,7 @@ test('terminal dock in a real browser: start, render, type, collapse, resize, se
   // first PTY is live must preserve that exact terminal and affect only future runs.
   await browser.eval(`window.__baseLiveSession = window.promptboardDock.sessions.get(${JSON.stringify(firstRun)}); location.hash = '#/base';`);
   await browser.until(`!document.querySelector('#base-view').hidden && document.querySelector('#base-status').textContent.includes('resources')`, 'Base loaded');
-  assert.equal(await browser.eval(`return [...document.querySelectorAll('.page-nav a')].map(link => link.textContent).join(' | ');`), 'Compose | Kanban | Base');
+  assert.equal(await browser.eval(`return [...document.querySelectorAll('.page-nav a')].map(link => link.textContent).join(' | ');`), 'Origin | Compose | Kanban | Base');
   assert.equal(await browser.eval(`document.querySelector('#skip-link').click(); return document.activeElement.id;`), 'base-view');
   await browser.eval(`document.querySelector('#base-new-kind').value = 'skill'; [...document.querySelectorAll('#base-actions button')].find(button => button.textContent === 'Create').click(); document.querySelector('#base-resource-name').value = 'Browser instruction'; document.querySelector('#base-skill-body').value = 'BASE_BROWSER_CHECK: preserve invariants.\\n'; document.querySelector('#base-resource-save').click();`);
   await browser.until(`document.querySelector('#base-status').textContent === 'Saved. No assignments changed.'`, 'skill persisted through Base form');

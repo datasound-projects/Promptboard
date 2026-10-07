@@ -3,6 +3,7 @@
 const $ = (selector) => document.querySelector(selector);
 const HISTORY_KEY = 'ste-prompt-engineer.history.v1';
 const THEME_KEY = 'ste-prompt-engineer.theme'; // Also read by prefs.js before first paint.
+const ORIGIN_THEME_KEY = 'promptboard.origin.theme'; // Origin's own theme: dark unless switched to light. Also read by prefs.js.
 const SIDEBAR_KEY = 'ste-prompt-engineer.sidebar';
 const SETTINGS_KEY = 'ste-prompt-engineer.settings';
 const PROJECT_PANEL_KEY = 'promptboard.project-panel';
@@ -237,21 +238,31 @@ function fitBoardHeight(immediate = false) {
 function scrollBehavior() { return window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches ? 'auto' : 'smooth'; }
 function renderTheme() { $('#theme-toggle').setAttribute('aria-pressed', String(document.documentElement.dataset.theme === 'dark')); }
 /** Theme: 'light', 'dark', or 'system' (follows the operating system). prefs.js applies it on first paint. */
-function applyTheme(theme) {
+function paintTheme(theme) {
   const dark = theme === 'dark' || (theme === 'system' && window.matchMedia?.('(prefers-color-scheme: dark)')?.matches === true);
   document.documentElement.dataset.theme = dark ? 'dark' : 'light';
   document.querySelector('meta[name="color-scheme"]')?.setAttribute('content', dark ? 'dark' : 'light');
-  savePref(THEME_KEY, theme);
   renderTheme();
 }
-function toggleTheme() { applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'); }
+// Origin has its own theme while it is open; every other page uses the app theme.
+function pageTheme() {
+  const origin = currentPage() === 'origin';
+  try { return origin ? (localStorage.getItem(ORIGIN_THEME_KEY) === 'light' ? 'light' : 'dark') : localStorage.getItem(THEME_KEY) || 'light'; }
+  catch { return origin ? 'dark' : 'light'; }
+}
+function applyTheme(theme) { savePref(THEME_KEY, theme); paintTheme(pageTheme()); }
+function toggleTheme() {
+  const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+  savePref(currentPage() === 'origin' ? ORIGIN_THEME_KEY : THEME_KEY, next);
+  paintTheme(next);
+}
 
 // Narrow screens show history as a drawer (.open); wider screens collapse it in place (data-sidebar).
 function isMobile() { return window.innerWidth <= 730; }
 function syncSidebarToggle() {
   const expanded = isMobile() ? $('#sidebar').classList.contains('open') : document.documentElement.dataset.sidebar !== 'collapsed';
   $('#menu-toggle').setAttribute('aria-expanded', String(expanded));
-  const what = location.hash === '#/base' ? 'Base categories' : location.hash === '#/kanban' ? 'projects' : 'prompt history';
+  const what = location.hash === '#/base' ? 'Base categories' : location.hash === '#/kanban' ? 'projects' : location.hash === '#/origin' ? 'blueprint sections' : 'prompt history';
   $('#menu-toggle').setAttribute('aria-label', expanded ? `Hide ${what}` : `Show ${what}`);
 }
 function setSidebar(open) {
@@ -263,7 +274,7 @@ function toggleSidebar() {
   if (isMobile()) {
     const open = !$('#sidebar').classList.contains('open');
     setSidebar(open);
-    if (open) (location.hash === '#/kanban' ? $('#workspace-new') : $('#new-prompt')).focus();
+    if (open) (location.hash === '#/kanban' ? $('#workspace-new') : location.hash === '#/origin' ? $('#origin-nav button') || $('#sidebar') : $('#new-prompt')).focus();
     return;
   }
   const collapsed = document.documentElement.dataset.sidebar !== 'collapsed';
@@ -320,6 +331,7 @@ async function loadProviders() {
     loadAuth(authInfo?.provider || $('#provider').value);
     loadBoard();
     if (currentPage() === 'base') baseView?.show();
+    if (currentPage() === 'origin') originView?.show();
     await loadModels({ model: chosenModel(), effort: $('#effort').value });
   } catch (error) {
     token = '';
@@ -1235,36 +1247,59 @@ function openHelp(privacy = false) {
   if (!$('#help-dialog').open) $('#help-dialog').showModal();
 }
 
-// All three views stay in the document. Routing does not replace forms, boards or terminals.
-let baseView = null;
-function currentPage() { return location.hash === '#/kanban' ? 'kanban' : location.hash === '#/base' ? 'base' : 'compose'; }
+// All views stay in the document. Routing does not replace forms, boards or terminals.
+let baseView = null, originView = null;
+function currentPage() { return location.hash === '#/kanban' ? 'kanban' : location.hash === '#/base' ? 'base' : location.hash === '#/origin' ? 'origin' : 'compose'; }
 function showPage() {
   const page = currentPage();
-  const kanban = page === 'kanban', base = page === 'base';
+  const kanban = page === 'kanban', base = page === 'base', origin = page === 'origin';
   workspaceFiles?.setVisible(kanban);
   $('#prompt-view').hidden = page !== 'compose';
   $('#kanban-view').hidden = !kanban;
   $('#base-view').hidden = !base;
+  if ($('#origin-view')) $('#origin-view').hidden = !origin;
   document.documentElement.dataset.page = page;
+  paintTheme(pageTheme());
   for (const link of document.querySelectorAll('.page-nav a')) {
-    if (link.getAttribute('href') === ({ compose: '#/', kanban: '#/kanban', base: '#/base' })[page]) link.setAttribute('aria-current', 'page');
+    if (link.getAttribute('href') === ({ compose: '#/', kanban: '#/kanban', base: '#/base', origin: '#/origin' })[page]) link.setAttribute('aria-current', 'page');
     else link.removeAttribute('aria-current');
   }
-  document.title = `${({ compose: 'Compose', kanban: 'Kanban', base: 'Base' })[page]} · Promptboard`;
-  $('#skip-link').setAttribute('href', base ? '#base-view' : kanban ? '#kanban-view' : '#prompt-input');
+  document.title = `${({ compose: 'Compose', kanban: 'Kanban', base: 'Base', origin: 'Origin' })[page]} · Promptboard`;
+  $('#skip-link').setAttribute('href', base ? '#base-view' : kanban ? '#kanban-view' : origin ? '#origin-view' : '#prompt-input');
   $('#history-panel').hidden = page !== 'compose';
   $('#workspace-panel').hidden = !kanban;
   $('#base-sidebar-panel').hidden = !base;
+  if ($('#origin-sidebar-panel')) $('#origin-sidebar-panel').hidden = !origin;
   $('#sidebar').hidden = false;
   $('#menu-toggle').hidden = false;
-  $('#sidebar').setAttribute('aria-label', base ? 'Base library' : kanban ? 'Projects' : 'Prompt history');
-  $('#sidebar-scrim').setAttribute('aria-label', base ? 'Close Base categories' : kanban ? 'Close projects' : 'Close history');
+  $('#sidebar').setAttribute('aria-label', base ? 'Base library' : kanban ? 'Projects' : origin ? 'Blueprint sections' : 'Prompt history');
+  $('#sidebar-scrim').setAttribute('aria-label', base ? 'Close Base categories' : kanban ? 'Close projects' : origin ? 'Close blueprint sections' : 'Close history');
   if (kanban) renderBoard();
   if (base && token) baseView?.show();
+  // Leaving Origin saves pending blueprint edits; opening it reads the selected project's blueprint.
+  if (origin && token) void originView?.show(); else if (!origin) void originView?.leave();
   setSidebar(false);
   window.scrollTo(0, 0);
 }
 function showPromptPage() { if (currentPage() !== 'compose') location.hash = '#/'; }
+// Origin handoff: targeted context only. Compose waits for the person to review it and choose Generate.
+function prefillCompose({ text, task, replace = false }) {
+  if (running) return 'busy';
+  const input = $('#prompt-input');
+  if (!replace && input.value.trim() && input.value !== text) return 'draft';
+  currentId = null;
+  clearOutput();
+  input.value = String(text).slice(0, 100000);
+  if (KNOWN_TASKS.includes(task)) { $('#task').value = task; $('#task').dispatchEvent(new Event('change', { bubbles: true })); }
+  updateCount();
+  renderHistory();
+  location.hash = '#/';
+  showPage();
+  input.focus();
+  input.setSelectionRange(0, 0);
+  input.scrollTop = 0;
+  return 'ok';
+}
 function basePicker(options) { return baseView?.picker(options) || document.createElement('div'); }
 
 // Kanban (PB-01): the local app stores the board in its data folder. Seven fixed stages;
@@ -3720,7 +3755,7 @@ async function addToKanban(event) {
 }
 window.addEventListener('hashchange', showPage);
 // The skip link must not change the hash, which selects the page.
-$('#skip-link').addEventListener('click', event => { event.preventDefault(); ($(currentPage() === 'base' ? '#base-view' : currentPage() === 'kanban' ? '#kanban-view' : '#prompt-input')).focus(); });
+$('#skip-link').addEventListener('click', event => { event.preventDefault(); ($({ base: '#base-view', kanban: '#kanban-view', origin: '#origin-view' }[currentPage()] || '#prompt-input')).focus(); });
 $('#kanban-button').addEventListener('click', openAddToKanban);
 
 // ---- Split into tasks (optional) ----
@@ -5234,7 +5269,7 @@ const UI_PREFS = { startPage: ['promptboard.settings.start-page', 'compose'], op
   keepTabs: ['promptboard.settings.keep-tabs', '1'], termFont: ['promptboard.settings.terminal-font', '12'], dockStart: ['promptboard.settings.dock-start', 'last'], cardPreview: ['promptboard.settings.card-preview', '1'], cardAgent: ['promptboard.settings.card-agent', '0'], cardSpacing: ['promptboard.settings.card-spacing', '0'] };
 function uiPref(name) {
   const [key, fallback] = UI_PREFS[name];
-  const allowed = { startPage: ['compose', 'kanban', 'base'], termFont: ['11', '12', '13', '14', '16'], dockStart: ['last', 'collapsed', 'open'] }[name] || ['0', '1'];
+  const allowed = { startPage: ['origin', 'compose', 'kanban', 'base'], termFont: ['11', '12', '13', '14', '16'], dockStart: ['last', 'collapsed', 'open'] }[name] || ['0', '1'];
   try { const value = localStorage.getItem(key); return allowed.includes(value) ? value : fallback; } catch { return fallback; }
 }
 function setUiPref(name, value) { savePref(UI_PREFS[name][0], value); }
@@ -5453,6 +5488,12 @@ $('#autopilot-form').addEventListener('submit', event => { event.preventDefault(
 baseView = window.PromptboardBase?.create({ api, announce, ensureBoard: loadBoard, refreshBoard: loadBoard, agentFields, readAgentFields, closeSidebar: () => setSidebar(false),
   acceptBoard: next => { acceptBoard(next); renderBoard(); } }) || null;
 window.PromptboardBaseView = baseView;
+// Origin owns its blueprint requests. It reaches Compose and Kanban only through these explicit seams,
+// which prefill or create through the existing validated APIs and never start an agent.
+originView = window.PromptboardOrigin?.create({ api, announce, closeSidebar: () => setSidebar(false), ensureBoard: options => loadBoard(options),
+  projects: () => board?.projects || [], currentProjectId: () => currentProject()?.id || null, selectProject: id => savePref(SELECTED_PROJECT_KEY, id),
+  createProject: async name => (await boardCall('POST', '/api/projects', { name })).project, createTask: body => boardCall('POST', '/api/tasks', body),
+  toCompose: prefillCompose, openKanban: () => { location.hash = '#/kanban'; } }) || null;
 // Start page applies only when the URL contains no explicit route.
 if (!location.hash && uiPref('startPage') !== 'compose') location.hash = `#/${uiPref('startPage')}`;
 showPage();
