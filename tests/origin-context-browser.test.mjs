@@ -178,6 +178,7 @@ test('the panel resizes, works on a narrow screen in both themes, handles confli
     assert.equal(await ev(`const d = document.querySelector('#origin-drawer'), r = d.getBoundingClientRect(); return r.left >= 0 && r.right <= document.documentElement.clientWidth && d.scrollWidth <= d.clientWidth;`), true, 'the panel fits the screen');
     if (process.env.PB_BROWSER_SHOTS) { await mkdir(process.env.PB_BROWSER_SHOTS, { recursive: true }); await writeFile(join(process.env.PB_BROWSER_SHOTS, `context-390-${theme}.png`), await browser.screenshot()); }
   }
+  assert.equal(await ev(`return localStorage.getItem('promptboard.origin.context-width');`), String(before.width + 120), 'a narrow screen does not overwrite the chosen width');
   await browser.resize(1280, 900);
   // Escape closes the panel; switching projects closes it and shows the other project's state.
   await ev(`document.querySelector('#origin-context-editor').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));`);

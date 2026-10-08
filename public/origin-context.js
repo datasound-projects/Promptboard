@@ -462,9 +462,10 @@ window.PromptboardOriginContext = (() => {
     // ---- Resizing (desktop): pointer or arrow keys; a full-width sheet on narrow screens ----
     const maxWidth = () => Math.max(360, Math.min(1100, window.innerWidth - 140));
     const width = () => Math.min(maxWidth(), Math.max(360, Number(pref(WIDTH_KEY)) || 560));
-    function applyWidth(value = width()) {
+    // Only an explicit resize saves the width; opening or a smaller window just clamps what is shown.
+    function applyWidth(value = width(), { save = false } = {}) {
       const next = Math.min(maxWidth(), Math.max(360, Math.round(value)));
-      setPref(WIDTH_KEY, String(next));
+      if (save) setPref(WIDTH_KEY, String(next));
       if (window.matchMedia('(max-width: 730px)').matches) { drawer.style.removeProperty('width'); view.style.removeProperty('--origin-drawer-width'); return next; }
       drawer.style.width = `${next}px`; view.style.setProperty('--origin-drawer-width', `${next}px`);
       drawer.querySelector('.origin-context-resize')?.setAttribute('aria-valuenow', String(next));
@@ -473,14 +474,14 @@ window.PromptboardOriginContext = (() => {
     function resizer(grip) {
       grip.addEventListener('pointerdown', event => {
         event.preventDefault(); grip.setPointerCapture(event.pointerId);
-        const move = moved => applyWidth(window.innerWidth - moved.clientX - 12);
+        const move = moved => applyWidth(window.innerWidth - moved.clientX - 12, { save: true });
         const stop = () => { grip.removeEventListener('pointermove', move); grip.removeEventListener('pointerup', stop); grip.removeEventListener('pointercancel', stop); };
         grip.addEventListener('pointermove', move); grip.addEventListener('pointerup', stop); grip.addEventListener('pointercancel', stop);
       });
       grip.addEventListener('keydown', event => {
         const step = { ArrowLeft: 40, ArrowRight: -40, Home: 1e6, End: -1e6 }[event.key];
         if (step === undefined) return;
-        event.preventDefault(); applyWidth(width() + step);
+        event.preventDefault(); applyWidth(width() + step, { save: true });
       });
     }
     window.addEventListener('resize', () => { if (isOpen) applyWidth(); });
