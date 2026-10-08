@@ -28,7 +28,7 @@ export class Autopilot {
       const state = await this.board.state();
       for (const project of state.projects) {
         if (project.autopilot?.status !== 'running') continue;
-        try { await this.step(project.id); }
+        try { await (project.workflowMode === 'pipeline' ? this.pipelineStep(project.id) : this.step(project.id)); }
         catch (error) { await this.pause(project.id, error.message || 'Autopilot stopped on an unexpected error.'); }
       }
     } finally { this.busy = false; }
@@ -41,6 +41,78 @@ export class Autopilot {
   async set(projectId, change) { return this.board.updateAutopilot(projectId, change); }
 
   route(ap, taskId) { return ap.routes?.[taskId] || ap.route; }
+
+  // ---- Column pipelines ----
+  // Each queued card goes through the chosen active columns in order, then Done. Entering the first column
+  // starts its agent with the task (as a drag would); each later column's "on enter" message is the next
+  // instruction, delivered when the agent is ready. A column is finished when its agent has completed a new
+  // turn since the card arrived and is idle. A plan column waits for your approval, which moves the card on.
+  // Nothing is merged or pushed; the card stays on its task branch.
+  async pipelineStep(projectId) {
+    const state = await this.board.state();
+    const project = state.projects.find(item => item.id === projectId), ap = project?.autopilot;
+    if (!ap || ap.status !== 'running') return;
+    const columns = project.pipeline.columns, name = id => columns.find(column => column.id === id)?.name || id;
+    const todo = columns.find(column => column.role === 'todo').id, done = columns.find(column => column.role === 'done').id;
+    if (!ap.current) {
+      const handled = new Set(ap.done || []);
+      const task = ap.queue.map(id => project.tasks.find(item => item.id === id)).find(item => item && !handled.has(item.id) && item.column === todo);
+      if (!task) return this.set(projectId, (a, log) => { a.status = 'finished'; a.reason = ''; log('Every queued card has been through its columns.'); });
+      // A new card branches from the target as it is now, including earlier cards' work if it was merged.
+      if (!task.workspace && project.targetBranch) await this.board.setTargetBranch(projectId, { branch: project.targetBranch.name, expectedRevision: project.revision });
+      return this.set(projectId, (a, log) => { a.current = { taskId: task.id, stage: null, step: 'enter', turns: 0 }; log(`Started “${task.title}” (columns: ${a.route.map(name).join(' → ')}).`); });
+    }
+    const cur = ap.current, task = project.tasks.find(item => item.id === cur.taskId);
+    if (!task) return this.set(projectId, (a, log) => { log('The current card was deleted; moving on.'); a.done = [...(a.done || []), a.current.taskId]; a.current = null; });
+    const route = ap.route, runs = state.runs.filter(run => run.taskId === task.id), live = runs.filter(run => ['queued', 'running', 'waiting_for_input'].includes(run.status)).at(-1);
+    if (task.column === done) return this.finish(projectId, task, cur.step === 'finishing' ? 'moved to Done.' : 'The card is in Done.');
+    if (cur.step === 'finishing') return this.pipelineMove(task, done);
+    if (cur.step === 'resume') {
+      // Continue from wherever the card is now (the person may have moved it).
+      if (task.column === todo) return this.set(projectId, a => { a.current = { ...a.current, stage: null, step: 'enter' }; });
+      if (!route.includes(task.column)) return this.pause(projectId, `“${task.title}” is in ${name(task.column)}, which is not in the Autopilot columns. Move it to one of them, or skip it.`);
+      if (!live) {
+        // No agent in this column (for example it was stopped): start it here again.
+        await this.pipelineMove(task, task.column, 'start');
+        const fresh = (await this.board.state()).runs.filter(run => run.taskId === task.id && ['queued', 'running', 'waiting_for_input'].includes(run.status)).at(-1);
+        return this.set(projectId, a => { a.current = { ...a.current, stage: task.column, step: 'working', turns: fresh?.turns ?? 0 }; });
+      }
+      // An agent that is already idle has finished its turn in this column.
+      return this.set(projectId, a => { a.current = { ...a.current, stage: task.column, step: 'working', turns: live.turnComplete ? live.turns - 1 : live.turns }; });
+    }
+    if (cur.step === 'enter') {
+      const next = cur.stage ? route[route.indexOf(cur.stage) + 1] : route[0];
+      if (!next) {
+        await this.set(projectId, (a, log) => { a.current = { ...a.current, step: 'finishing' }; log(`“${task.title}”: all columns finished.`); });
+        return this.pipelineMove(task, done);
+      }
+      await this.pipelineMove(task, next, 'start');
+      const fresh = (await this.board.state()).runs.filter(run => run.taskId === task.id && ['queued', 'running', 'waiting_for_input'].includes(run.status)).at(-1);
+      return this.set(projectId, (a, log) => { a.current = { ...a.current, stage: next, step: 'working', turns: fresh?.turns ?? 0 }; log(`“${task.title}” → ${name(next)}.`); });
+    }
+    // step 'working'
+    if (task.column !== cur.stage) {
+      // An approved plan moves the card on by itself; any later Autopilot column is accepted.
+      if (route.indexOf(task.column) > route.indexOf(cur.stage)) return this.set(projectId, (a, log) => { a.current = { ...a.current, stage: task.column, step: 'working', turns: live?.turns ?? 0 }; log(`“${task.title}” → ${name(task.column)} (approved plan).`); });
+      return this.pause(projectId, `“${task.title}” was moved to ${name(task.column)} by hand. Resume to continue from there, or skip it.`);
+    }
+    if (!live) {
+      const last = runs.at(-1);
+      return this.pause(projectId, `The ${name(cur.stage)} agent for “${task.title}” ${last ? `${last.status}${last.reason ? `: ${last.reason}` : ''}` : 'is not running'}. Start it again from the card, then resume, or skip the card.`);
+    }
+    if (task.pendingAutomationMessages?.length || (task.automationMove && !['completed', 'failed', 'cancelled', 'interrupted'].includes(task.automationMove.status))) return;
+    const finished = live.status === 'waiting_for_input' && live.turnComplete && (live.activity ? live.activity.ready : true) && live.turns > cur.turns;
+    if (!finished) return;
+    // A plan column moves on only through your approval of the plan in the terminal.
+    if (project.pipeline.columns.find(column => column.id === cur.stage)?.strategy?.planExitTargetId) return;
+    return this.set(projectId, (a, log) => { a.current = { ...a.current, step: 'enter' }; log(`“${task.title}”: ${name(cur.stage)} finished.`); });
+  }
+
+  /** The board's own pipeline move, with its checks and column automations; marked as Autopilot's. */
+  async pipelineMove(task, column, decision) {
+    const fresh = (await this.board.state()).projects.flatMap(project => project.tasks).find(item => item.id === task.id);
+    return this.board.transition(task.id, { column, expectedRevision: fresh.revision, ...(decision ? { decision } : {}), trigger: 'automation' });
+  }
 
   /** One small step for one project. Each call does at most one thing that takes time. */
   async step(projectId) {

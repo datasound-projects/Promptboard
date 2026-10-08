@@ -214,7 +214,8 @@ test('column pipeline conversion and editing work by keyboard in both themes and
   await browser.until(`!document.querySelector('#columns-dialog').open && document.querySelector('#column-executing')?.textContent.includes('Build')`, 'conversion saved');
   let saved = (await app.board.state()).projects[0];
   assert.equal(saved.workflowMode, 'pipeline'); assert.equal(saved.tasks[0].prompt, prompt); assert.equal(saved.tasks[0].column, 'todo'); assert.deepEqual((await app.board.state()).runs, []);
-  assert.equal(await browser.eval(`return document.querySelector('#autopilot-open').hidden;`), true);
+  // Autopilot is available on pipeline boards too, right next to Columns.
+  assert.equal(await browser.eval(`return !document.querySelector('#autopilot-open').hidden && document.querySelector('#columns-open').nextElementSibling === document.querySelector('#autopilot-open');`), true);
   await browser.eval(`document.querySelector('#columns-open').click();`);
   await browser.until(`document.querySelector('#column-auto-spawn')`, 'saved pipeline editor reopened');
   await browser.eval(`[...document.querySelectorAll('.columns-item')].find(button => button.textContent === 'Planning').focus();`); await enter();

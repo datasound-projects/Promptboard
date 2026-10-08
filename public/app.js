@@ -1564,7 +1564,6 @@ function renderBoard() {
   $('#view-timeline').disabled = !project;
   for (const id of ['#autopilot-open', '#columns-open', '#agents-open', '#board-left', '#board-right', '#card-new']) $(id).hidden = timelineView;
   $('#columns-open').disabled = !project;
-  if (project?.workflowMode === 'pipeline') $('#autopilot-open').hidden = true;
   // Missing terminal support never blocks the board or the prompt editor; it only disables runs.
   $('#execution-status').hidden = !board || board.execution?.available !== false || !board.execution.setupMessage;
   $('#execution-status').textContent = board?.execution?.setupMessage ? `Agent runs are unavailable. ${board.execution.setupMessage}` : '';
@@ -4215,6 +4214,36 @@ updateQuality();
 const ROUTE_ORDER = ['planning', 'executing', 'code_review', 'testing', 'merge'];
 const ROUTE_SHORT = { planning: 'Plan', executing: 'Execute', code_review: 'Review', testing: 'Test', merge: 'Merge' };
 let autopilotDraft = null;
+// Pipeline boards: Autopilot goes through the board's own active columns, then Done (no merge step).
+const pipelineBoard = project => project?.workflowMode === 'pipeline';
+const autopilotStages = project => (pipelineBoard(project) ? projectColumnsOf(project).filter(column => column.role === 'active').map(column => column.id) : ROUTE_ORDER);
+const todoColumnId = project => (pipelineBoard(project) ? projectColumnsOf(project).find(column => column.role === 'todo')?.id : 'todo');
+const AUTOPILOT_INSTRUCTIONS = {
+  planning: 'Plan how to do this task. Do not change files yet.',
+  executing: 'Implement the task. Commit your work on this task branch when you are done.',
+  code_review: 'Review the changes on this task branch for correctness, security and missed requirements. Fix any problems and commit the fixes.',
+  testing: "Run the project's tests and checks for this change. Fix failures and commit the fixes. Say what you ran.",
+  merge: 'Make sure this task branch is ready to merge: everything committed, up to date with the target branch and without conflicts. Do not merge or push.',
+};
+/** Later route columns and the instruction each receives on arrival (null: none). Mirrors the server check. */
+function autopilotInstructions(project, route) {
+  const columns = project.pipeline.columns;
+  return route.slice(1).map((id, index) => {
+    const column = columns.find(entry => entry.id === id), row = column.automations.onEnter.find(entry => entry.enabled && entry.type === 'send_message' && entry.mode === 'deferred');
+    const planned = columns.find(entry => entry.id === route[index])?.strategy?.planExitTargetId === id;
+    return { id, name: column.name, message: row?.message || (planned ? 'Proceed with implementing the approved plan.' : null) };
+  });
+}
+async function addAutopilotInstructions(project, route) {
+  const pipeline = structuredClone(project.pipeline);
+  for (const { id } of autopilotInstructions(project, route).filter(entry => !entry.message)) {
+    const column = pipeline.columns.find(entry => entry.id === id), existing = column.automations.onEnter.find(row => row.name === 'Autopilot instruction');
+    const message = AUTOPILOT_INSTRUCTIONS[id] || `Continue this task in the “${column.name}” step.${column.description ? ` ${column.description}` : ''}`;
+    if (existing?.type === 'send_message') Object.assign(existing, { enabled: true, mode: 'deferred' });
+    else column.automations.onEnter.push({ name: existing ? `Autopilot instruction ${Date.now()}` : 'Autopilot instruction', type: 'send_message', mode: 'deferred', enabled: true, message });
+  }
+  await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/pipeline`, { pipeline, expectedRevision: project.revision });
+}
 
 async function autopilotCall(action, extra = {}) {
   const project = currentProject();
@@ -4232,11 +4261,11 @@ function renderAutopilotBar(project) {
   if (board?.projects.some(item => item.autopilot?.status === 'running')) renderAutopilotBar.timer = setTimeout(() => { if (!document.hidden && location.hash === '#/kanban') loadBoard().catch(() => {}); else renderAutopilotBar(currentProject()); }, 3000);
   if (!ap || ap.status === 'off') { bar.hidden = true; return; }
   const task = ap.current && project.tasks.find(item => item.id === ap.current.taskId);
-  const left = ap.queue.filter(id => !(ap.done || []).includes(id) && id !== ap.current?.taskId && project.tasks.some(item => item.id === id && item.column === 'todo')).length;
+  const left = ap.queue.filter(id => !(ap.done || []).includes(id) && id !== ap.current?.taskId && project.tasks.some(item => item.id === id && item.column === todoColumnId(project))).length;
   // A startup question or a permission prompt holds Autopilot until you answer it in the terminal.
   const run = task && board.runs.filter(item => item.taskId === task.id && RUN_LIVE.includes(item.status)).at(-1);
   const needsYou = run && ((run.status === 'waiting_for_input' && !run.turnComplete) || run.lifecycle === 'no-events-yet');
-  const text = ap.status === 'running' ? (task ? `Autopilot is working on “${task.title}” · ${columnTitle(ap.current.stage || 'todo')} · ${left} more queued${needsYou ? ' · the agent is waiting for your answer in the terminal' : ''}` : 'Autopilot is choosing the next card…')
+  const text = ap.status === 'running' ? (task ? `Autopilot is working on “${task.title}” · ${columnTitle(ap.current.stage || todoColumnId(project))} · ${left} more queued${needsYou ? ' · the agent is waiting for your answer in the terminal' : ''}` : 'Autopilot is choosing the next card…')
     : ap.status === 'paused' ? `Autopilot paused: ${ap.reason}`
     : 'Autopilot finished: every queued card has been through its route.';
   const buttons = [];
@@ -4255,14 +4284,14 @@ function renderAutopilotBar(project) {
 function openAutopilot({ first = [] } = {}) {
   const project = currentProject();
   if (!project) return;
-  const saved = project.autopilot;
-  const todo = project.tasks.filter(task => task.column === 'todo');
+  const saved = project.autopilot, stages = autopilotStages(project);
+  const todo = project.tasks.filter(task => task.column === todoColumnId(project));
   // Saved order first, then the rest of To Do in board order. New cards are included the first time.
   const lead = first.filter(id => todo.some(task => task.id === id));
   const queued = (saved?.queue || []).filter(id => todo.some(task => task.id === id) && !lead.includes(id));
   const order = [...lead, ...queued, ...todo.map(task => task.id).filter(id => !queued.includes(id) && !lead.includes(id))];
   autopilotDraft = {
-    route: saved?.route || [...ROUTE_ORDER], finish: saved?.finish || 'merge', maxRework: saved?.maxRework ?? 2,
+    route: saved?.route?.some(stage => stages.includes(stage)) ? stages.filter(stage => saved.route.includes(stage)) : [...stages], finish: saved?.finish === 'pull_request' ? 'pull_request' : 'merge', maxRework: saved?.maxRework ?? 2,
     order, included: new Set(lead.length ? lead : saved ? queued : order), routes: { ...(saved?.routes || {}) },
   };
   $('#autopilot-project').textContent = `${project.name} · AUTOPILOT`;
@@ -4272,19 +4301,20 @@ function openAutopilot({ first = [] } = {}) {
   if (!$('#autopilot-dialog').open) $('#autopilot-dialog').showModal();
 }
 
-function routeChips(route, onChange, { compact = false, disabled = false } = {}) {
+function routeChips(route, onChange, { compact = false, disabled = false, stages = ROUTE_ORDER } = {}) {
   const box = document.createElement('div');
   box.className = `route-chips${compact ? ' compact' : ''}`;
-  for (const stage of ROUTE_ORDER) {
+  for (const stage of stages) {
     const label = document.createElement('label');
     label.className = 'route-chip';
     label.dataset.stage = stage;
     const input = document.createElement('input');
     input.type = 'checkbox'; input.checked = route.includes(stage); input.value = stage;
-    input.disabled = disabled || stage === 'executing';
+    // Legacy routes always run Executing; a pipeline route needs at least one column.
+    input.disabled = disabled || (stages === ROUTE_ORDER ? stage === 'executing' : route.length === 1 && route[0] === stage);
     input.setAttribute('aria-label', columnTitle(stage));
-    input.addEventListener('change', () => onChange(ROUTE_ORDER.filter(item => item === stage ? input.checked : route.includes(item))));
-    const span = document.createElement('span'); span.textContent = compact ? ROUTE_SHORT[stage] : columnTitle(stage);
+    input.addEventListener('change', () => onChange(stages.filter(item => item === stage ? input.checked : route.includes(item))));
+    const span = document.createElement('span'); span.textContent = compact ? ROUTE_SHORT[stage] || columnTitle(stage) : columnTitle(stage);
     label.append(input, span);
     box.append(label);
   }
@@ -4295,8 +4325,33 @@ function renderAutopilotDialog() {
   const project = currentProject();
   const draft = autopilotDraft;
   if (!project || !draft) return;
-  const running = project.autopilot?.status === 'running';
-  $('#autopilot-route').replaceWith(Object.assign(routeChips(draft.route, route => { draft.route = route; renderAutopilotDialog(); }, { disabled: running }), { id: 'autopilot-route' }));
+  const running = project.autopilot?.status === 'running', pipeline = pipelineBoard(project);
+  $('#autopilot-route').replaceWith(Object.assign(routeChips(draft.route, route => { draft.route = route; renderAutopilotDialog(); }, { disabled: running, stages: autopilotStages(project) }), { id: 'autopilot-route' }));
+  $('#autopilot-dialog .select-grid').hidden = pipeline;
+  $('#autopilot-route-legend').textContent = pipeline ? 'Columns' : 'Default route';
+  $('#autopilot-about').hidden = pipeline; $('#autopilot-about-pipeline').hidden = !pipeline;
+  $('#autopilot-consent-detail').textContent = pipeline
+    ? 'It moves each queued card through these columns, starts their agents and sends each column’s instruction, then moves the card to Done. It never merges or pushes, and never bypasses agent permissions.'
+    : 'It confirms stages, commits, accepts clean reviews, and merges into your local target branch or pushes the task branch for a pull request, without asking each time. It never force-pushes or bypasses agent permissions.';
+  const instructions = $('#autopilot-instructions');
+  instructions.hidden = !pipeline;
+  let missing = [];
+  if (pipeline) {
+    const rows = autopilotInstructions(project, draft.route);
+    missing = rows.filter(row => !row.message);
+    instructions.replaceChildren(document.createElement('legend'), ...rows.map(row => paragraph(`${row.name}: ${row.message ? `“${row.message.length > 140 ? `${row.message.slice(0, 139)}…` : row.message}”` : 'needs an instruction — its agent would get nothing new here.'}`, row.message ? 'note' : 'inline-error')));
+    instructions.firstChild.textContent = 'Instructions on arrival';
+    if (!rows.length) instructions.append(paragraph('The first column starts the agent with the card’s own task.', 'note'));
+    if (missing.length) {
+      const add = detailButton('Add default instructions', async () => {
+        add.disabled = true;
+        try { await addAutopilotInstructions(project, draft.route); renderAutopilotDialog(); announce('Default instructions added to the columns. You can change them in Columns.'); }
+        catch (error) { $('#autopilot-error').textContent = error.message; $('#autopilot-error').hidden = false; add.disabled = false; }
+      }, 'secondary-button');
+      add.id = 'autopilot-add-instructions'; add.disabled = running;
+      instructions.append(add);
+    }
+  }
   $('#autopilot-finish').value = draft.finish;
   $('#autopilot-finish').disabled = running || !draft.route.includes('merge');
   $('#autopilot-rework').value = String(draft.maxRework);
@@ -4321,12 +4376,13 @@ function renderAutopilotDialog() {
     const custom = document.createElement('small'); custom.className = 'autopilot-custom'; custom.textContent = own ? 'Own route' : 'Default route';
     const head = document.createElement('div'); head.className = 'autopilot-head';
     head.append(check, name, up, down);
+    if (pipeline) { chips.hidden = true; custom.hidden = true; } // Pipelines use one column list for every card.
     item.append(head, chips, custom);
     return item;
   }));
   if (!draft.order.length) list.replaceChildren(Object.assign(document.createElement('li'), { className: 'note', textContent: 'No cards in To Do. Add the tasks first (one card per subtask), then come back.' }));
   $('#autopilot-save').disabled = running;
-  $('#autopilot-start').disabled = running || !included.length;
+  $('#autopilot-start').disabled = running || !included.length || missing.length > 0;
   $('#autopilot-start').firstChild.textContent = project.autopilot?.status === 'paused' ? 'Save and restart ' : 'Save and start ';
   const log = (project.autopilot?.log || []).slice(-30).reverse();
   $('#autopilot-log-box').hidden = !log.length;
@@ -4342,7 +4398,8 @@ async function saveAutopilot(start) {
   const queue = draft.order.filter(id => draft.included.has(id));
   const routes = Object.fromEntries(Object.entries(draft.routes).filter(([id]) => queue.includes(id)));
   try {
-    await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/autopilot`, { route: draft.route, finish: draft.route.includes('merge') ? draft.finish : 'merge', maxRework: draft.maxRework, queue, routes, expectedRevision: project.revision });
+    await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/autopilot`, pipelineBoard(project) ? { route: draft.route, queue, expectedRevision: project.revision }
+      : { route: draft.route, finish: draft.route.includes('merge') ? draft.finish : 'merge', maxRework: draft.maxRework, queue, routes, expectedRevision: project.revision });
     if (start) await boardCall('POST', `/api/projects/${encodeURIComponent(project.id)}/autopilot`, { action: 'start', confirm: true });
   } catch (error) { showError(error.message); return false; }
   $('#autopilot-dialog').close();

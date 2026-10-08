@@ -99,6 +99,21 @@ function prerequisiteIds(value, ids, selfId) {
   return list;
 }
 
+/** A pipeline Autopilot route: active columns only, each once, in board order. */
+export function pipelineAutopilotRoute(project, route) {
+  const active = project.pipeline.columns.filter(column => column.role === 'active').map(column => column.id);
+  if (!Array.isArray(route) || !route.length || new Set(route).size !== route.length || route.some(id => !active.includes(id))) throw new BoardError('Choose the active columns Autopilot goes through.', 'INVALID_AUTOPILOT');
+  return active.filter(id => route.includes(id));
+}
+/** Later route columns without an instruction: an enabled deferred "on enter" message, or the plan route that leads there. */
+export function pipelineAutopilotGaps(project, route) {
+  const columns = new Map(project.pipeline.columns.map(column => [column.id, column]));
+  return route.slice(1).filter((id, index) => {
+    const instructed = columns.get(id).automations.onEnter.some(row => row.enabled && row.type === 'send_message' && row.mode === 'deferred');
+    return !instructed && resolvePipelineStrategy(project.pipeline, route[index], {}).planExitTargetId !== id;
+  }).map(id => `“${columns.get(id).name}”`);
+}
+
 export function normalizeSource(source) {
   if (!source || typeof source !== 'object') return null;
   return {
@@ -806,6 +821,7 @@ export class Board {
    * Settings change only while Autopilot is not running.
    */
   async setAutopilot(id, { route, finish = 'merge', maxRework = 2, queue = [], routes = {}, expectedRevision }) {
+    if (this.#project(await this.state(), id).workflowMode === 'pipeline') return this.#setPipelineAutopilot(id, { route, queue, expectedRevision });
     const cleanRoute = normalizeRoute(route, finish);
     if (!['merge', 'pull_request'].includes(finish)) throw new BoardError('Choose a local merge or a pull request.', 'INVALID_AUTOPILOT');
     if (!Number.isInteger(maxRework) || maxRework < 0 || maxRework > 3) throw new BoardError('Allow 0 to 3 automatic rework rounds.', 'INVALID_AUTOPILOT');
@@ -828,18 +844,45 @@ export class Board {
     });
   }
 
+  /**
+   * Pipeline Autopilot settings: the active columns each queued card goes through (in board order), then
+   * Done. Each later column needs an instruction (its "on enter" agent message), because a card that moves
+   * on keeps the same agent conversation and receives nothing new otherwise.
+   */
+  #setPipelineAutopilot(id, { route, queue = [], expectedRevision }) {
+    if (!Array.isArray(queue) || queue.length > TASK_LIMIT || new Set(queue).size !== queue.length) return Promise.reject(new BoardError('The Autopilot queue must list each card once.', 'INVALID_AUTOPILOT'));
+    return this.store.update(state => {
+      const project = this.#project(state, id);
+      checkRevision(project, expectedRevision, 'This project');
+      if (project.autopilot?.status === 'running') throw conflict('Pause or stop Autopilot before you change its settings.', 'AUTOPILOT_RUNNING');
+      const cleanRoute = pipelineAutopilotRoute(project, route), ids = new Set(project.tasks.map(task => task.id));
+      if (queue.some(taskId => !ids.has(taskId))) throw new BoardError('The Autopilot queue lists a card that is not in this project.', 'INVALID_AUTOPILOT');
+      const previous = project.autopilot || {};
+      project.autopilot = { status: previous.status === 'paused' ? 'paused' : 'off', ...previous, route: cleanRoute, finish: 'done', maxRework: 0, queue, routes: {}, updatedAt: Date.now() };
+      project.revision++;
+      return project;
+    });
+  }
+
   /** Start (confirmed), pause, resume, stop, or skip the current card. The engine does the work. */
   async controlAutopilot(id, { action, confirm }) {
     const project = this.#project(await this.state(), id);
-    if (project.workflowMode === 'pipeline') throw conflict('Legacy Autopilot is unavailable for column pipelines.', 'PIPELINE_AUTOPILOT_UNAVAILABLE');
-    if (action === 'start') {
+    if (project.workflowMode === 'pipeline' && (action === 'start' || action === 'resume')) {
+      if (action === 'start' && confirm !== true) throw new BoardError('Confirm what Autopilot will do before you start it.', 'CONFIRMATION_REQUIRED');
+      if (!project.repository) throw new BoardError('Link a repository first.', 'REPOSITORY_REQUIRED', 409);
+      if (!this.executor) throw new BoardError('Agent execution is not available.', 'EXECUTION_UNAVAILABLE', 503);
+      if (action === 'start' && !project.autopilot?.queue?.length) throw new BoardError('Choose at least one To Do card for the Autopilot queue.', 'AUTOPILOT_EMPTY');
+      const missing = pipelineAutopilotGaps(project, pipelineAutopilotRoute(project, project.autopilot?.route));
+      if (missing.length) throw conflict(`Give ${missing.join(', ')} an instruction (an “on enter” agent message) so its agent knows what to do there.`, 'AUTOPILOT_INSTRUCTION_MISSING');
+    }
+    if (project.workflowMode !== 'pipeline' && action === 'start') {
       if (confirm !== true) throw new BoardError('Confirm what Autopilot will do before you start it.', 'CONFIRMATION_REQUIRED');
       if (!project.repository || !project.targetBranch) throw new BoardError('Link a repository and choose the target branch first.', 'REPOSITORY_REQUIRED', 409);
       if (!this.executor) throw new BoardError('Agent execution is not available.', 'EXECUTION_UNAVAILABLE', 503);
       if (!project.autopilot?.queue?.length) throw new BoardError('Choose at least one To Do card for the Autopilot queue.', 'AUTOPILOT_EMPTY');
     }
     // Routes saved by an earlier version are checked against the current stage contract before they run.
-    if ((action === 'start' || action === 'resume') && project.autopilot) {
+    if (project.workflowMode !== 'pipeline' && (action === 'start' || action === 'resume') && project.autopilot) {
       for (const route of [project.autopilot.route, ...Object.values(project.autopilot.routes || {})]) if (route) normalizeRoute(route, project.autopilot.finish);
     }
     return this.store.update(state => {
@@ -2164,8 +2207,10 @@ export class Board {
       session.pauseIntent = intent; session.suspensionRequestedAt = Date.now();
       if (token) { session.suspensionToken = token; session.previousLifecycle = run.lifecycle; }
       run.lifecycle = 'suspending';
-      const project = state.projects.find(item => item.id === run.projectId);
-      if (project?.autopilot?.status === 'running') { project.autopilot.status = 'paused'; project.autopilot.reason = 'The task agent was paused by you.'; }
+      const project = state.projects.find(item => item.id === run.projectId), ap = project?.autopilot;
+      // Only a pause you cause stops Autopilot: not a system handoff, and not Autopilot moving its own card to Done.
+      const ownMove = ap?.current?.taskId === run.taskId && ap.current.step === 'finishing';
+      if (ap?.status === 'running' && intent === 'user' && !ownMove) { ap.status = 'paused'; ap.reason = 'The task agent was paused by you.'; }
     });
   }
 

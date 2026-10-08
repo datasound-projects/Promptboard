@@ -1953,3 +1953,7 @@ button.origin-context-badge { cursor: pointer; }
 .origin-linked-prompts { display: grid; gap: 6px; }
 .origin-linked-prompts:empty { display: none; }
 .origin-linked-prompt { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.autopilot-instructions { display: grid; gap: 6px; margin: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; }
+.autopilot-instructions legend { padding: 0 4px; color: var(--muted); font-size: 12px; font-weight: 600; }
+.autopilot-instructions p { margin: 0; overflow-wrap: anywhere; }
+.autopilot-instructions button { justify-self: start; }
