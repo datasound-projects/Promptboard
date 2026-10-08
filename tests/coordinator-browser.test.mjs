@@ -70,7 +70,8 @@ test('Coordinator panel: one-click open and close next to Autopilot, remembered 
   // Narrow screens: the panel fits.
   await browser.resize(390, 800);
   await wait(`(() => { const r = document.querySelector('#coordinator').getBoundingClientRect(); return r.left >= 0 && r.right <= document.documentElement.clientWidth; })()`, 'narrow');
-  assert.equal(await ev(`const r = document.querySelector('#coordinator-toggle').getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth;`), true, 'the button stays on screen');
+  await wait(`(() => { const r = document.querySelector('#coordinator-toggle').getBoundingClientRect(); return r.width > 0 && r.left >= 0 && r.right <= innerWidth; })()`, 'the button stays on screen')
+    .catch(async error => { throw new Error(`${error.message}: ${JSON.stringify(await ev(`return { width: innerWidth, button: document.querySelector('#coordinator-toggle').getBoundingClientRect().toJSON() };`))}`); });
   if (process.env.PB_BROWSER_SHOTS) await writeFile(join(process.env.PB_BROWSER_SHOTS, 'coordinator-narrow.png'), await browser.screenshot());
   await click('#coordinator-toggle');
   await wait(`document.querySelector('#coordinator').hidden`, 'closed on a phone');
