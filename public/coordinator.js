@@ -22,8 +22,12 @@ window.PromptboardCoordinator = (() => {
     async function refresh() {
       if (!projectId) return;
       const id = projectId;
-      fetching ??= call('').then(body => { if (id === projectId) { data = body; message = ''; } }).catch(error => { if (id === projectId) message = error.message; }).finally(() => { fetching = null; render(); });
-      return fetching;
+      // One read per project at a time; switching projects starts the new project's read at once.
+      if (fetching?.id === id) return fetching.promise;
+      const promise = call('').then(body => { if (id === projectId) { data = body; message = ''; } }).catch(error => { if (id === projectId) message = error.message; })
+        .finally(() => { if (fetching?.promise === promise) fetching = null; render(); });
+      fetching = { id, promise };
+      return promise;
     }
 
     /** Called on every board render; fetches only when the project or the board changed and the panel is shown. */

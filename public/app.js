@@ -5415,7 +5415,7 @@ window.addEventListener('resize', fitBoardHeight);
 if (typeof ResizeObserver === 'function') {
   const observer = new ResizeObserver(fitBoardHeight);
   // Some browsers expose a resized dock's new geometry only after the layout commits.
-  for (const id of ['project-context', 'project-body', 'autopilot-bar', 'dock', 'kanban-columns']) observer.observe($(`#${id}`));
+  for (const id of ['project-context', 'project-body', 'autopilot-bar', 'coordinator', 'dock', 'kanban-columns']) observer.observe($(`#${id}`));
 }
 // A required field inside a collapsed card would block submit without a visible message. Reopen it.
 $('#settings-body').addEventListener('invalid', event => {
