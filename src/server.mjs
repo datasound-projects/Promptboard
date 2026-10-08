@@ -34,6 +34,7 @@ import { proposeWorkspaceFile, validateFileProposalRequest } from './workspace-f
 import { OriginError, OriginStore, originRoute } from './origin.mjs';
 import { ContextStore, contextRoute } from './origin-context.mjs';
 import { PromptStore, createBoardProject, projectsRoute } from './projects.mjs';
+import { Coordinator, CoordinatorError, coordinatorRoute } from './coordinator.mjs';
 
 const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
 const assets = new Map([
@@ -336,6 +337,7 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
   const origin = new OriginStore(dataDir, { kanbanProjects: async () => (await board.state()).projects });
   const contexts = new ContextStore(dataDir);
   const prompts = new PromptStore(dataDir);
+  const coordinator = new Coordinator({ dataDir, board, origin });
   const baseRoutes = new BaseRoutes({ board, runner, claim, track, catalog: getCatalog, send, jsonBody, ...(mcpTester ? { mcpTester } : {}), imageGenerator });
   let composeContext;
   const getCompose = () => composeContext ??= import('./compose-context.mjs').then(({ ComposeContext }) => new ComposeContext(composeMcp ? { mcp: composeMcp } : {}));
@@ -381,6 +383,13 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
         return send(res, failure.status, failure.body);
       }
       return send(res, 404, { error: 'This Base route does not exist.' });
+    }
+    if (/^\/api\/coordinator(?:\/|$)/.test(pathname)) {
+      try { return await coordinatorRoute({ coordinator, runner, track, req, res, pathname, jsonBody, send }); }
+      catch (error) {
+        const known = error instanceof CoordinatorError || error instanceof ProviderError || (error?.status >= 400 && error.status < 500);
+        return send(res, known ? error.status || 502 : 500, known ? { error: error.message, code: error.code || 'INVALID_REQUEST' } : { error: 'The Coordinator request failed. Project data is unchanged.', code: 'COORDINATOR_FAILED' });
+      }
     }
     if (/^\/api\/shared-projects(?:\/|$)/.test(pathname)) {
       try { return await projectsRoute({ origin, board, prompts, req, res, pathname, jsonBody, send }); }
