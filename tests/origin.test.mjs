@@ -385,15 +385,16 @@ test('Origin-only projects have no Kanban or Git side effects; linking and delet
   assert.equal(both.status, 200, JSON.stringify(both.data)); assert.deepEqual([both.data.project.kanban.exists, both.data.project.kanban.name], [true, 'Beacon']);
   const kanbanBeacon = (await app.board.view()).projects.find(project => project.name === 'Beacon');
   assert.ok(kanbanBeacon.repository, 'The Kanban project has its repository.');
-  // A name clash does not lose the Origin project; it can be linked later without a duplicate.
+  // One project per name: an Origin project named like a board no Origin project uses joins that board,
+  // keeping its ID, instead of making a duplicate. A second Origin project of the same name is refused.
   const clash = await api(app, '/api/origin/projects', { method: 'POST', token, body: { name: 'Existing project', createKanban: true } });
-  assert.equal(clash.status, 200); assert.equal(clash.data.project.kanban, null); assert.ok(clash.data.kanbanError.message);
+  assert.equal(clash.status, 200); assert.equal(clash.data.joinedKanban, true); assert.equal(clash.data.project.id, existing.id);
+  assert.equal(clash.data.project.kanban.name, 'Existing project');
   assert.equal((await app.board.view()).projects.filter(project => project.name === 'Existing project').length, 1);
-  const link = await api(app, `/api/origin/projects/${clash.data.project.id}/link`, { method: 'POST', token, body: { expectedRevision: 1, kanbanProjectId: existing.id } });
-  assert.equal(link.status, 200); assert.equal(link.data.project.kanban.name, 'Existing project');
+  assert.equal((await api(app, '/api/origin/projects', { method: 'POST', token, body: { name: 'existing project' } })).data.code, 'NAME_TAKEN');
   assert.equal((await api(app, `/api/origin/projects/${id}/link`, { method: 'POST', token, body: { expectedRevision: 2, kanbanProjectId: existing.id } })).data.code, 'ALREADY_LINKED');
   // Delete from Origin keeps Kanban work by default.
-  assert.equal((await api(app, `/api/origin/projects/${clash.data.project.id}/delete`, { method: 'POST', token, body: { expectedRevision: 2 } })).status, 200);
+  assert.equal((await api(app, `/api/origin/projects/${clash.data.project.id}/delete`, { method: 'POST', token, body: { expectedRevision: 1 } })).status, 200);
   assert.ok((await app.board.view()).projects.some(project => project.id === existing.id), 'Linked Kanban work stays.');
   // Removing the linked Kanban project is a separate choice and uses Kanban's own checks.
   const staleKanban = await api(app, `/api/origin/projects/${both.data.project.id}/delete`, { method: 'POST', token, body: { expectedRevision: 2, deleteKanban: true, expectedKanbanRevision: kanbanBeacon.revision + 5 } });

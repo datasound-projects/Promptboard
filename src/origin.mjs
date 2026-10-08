@@ -202,15 +202,25 @@ export class OriginStore {
     });
   }
 
-  /** Create an Origin project. A Kanban link is added separately, so a failed link never loses the design. */
-  create({ name, description: text = '' } = {}) {
+  /**
+   * Create an Origin project. A Kanban link is added separately, so a failed link never loses the design.
+   * A shared project can pass its existing Kanban ID as `id` (with `kanbanProjectId`), so the project
+   * keeps one ID in Origin and Kanban.
+   */
+  create({ name, description: text = '', id, kanbanProjectId = null } = {}) {
     let meta;
-    try { meta = { name: projectName(name), description: description(text) }; } catch (error) { return Promise.reject(error); }
+    try {
+      meta = { name: projectName(name), description: description(text) };
+      if (id !== undefined) validId(id); if (kanbanProjectId !== null) validId(kanbanProjectId, 'Choose a valid Kanban project.');
+    } catch (error) { return Promise.reject(error); }
     return this.#serial(async () => {
-      if ((await this.#list()).length >= PROJECT_LIMIT) throw new OriginError(`Origin can hold at most ${PROJECT_LIMIT} projects.`, 'LIMIT', 409);
+      const all = await this.#list();
+      if (all.length >= PROJECT_LIMIT) throw new OriginError(`Origin can hold at most ${PROJECT_LIMIT} projects.`, 'LIMIT', 409);
+      if (id !== undefined && (all.some(other => other.id === id) || await readFile(join(this.dir, blueprintFileName(id))).then(() => true, () => false))) throw new OriginError('An Origin project with this ID already exists.', 'ID_TAKEN', 409);
+      if (kanbanProjectId && all.some(other => other.kanbanProjectId === kanbanProjectId)) throw new OriginError('That Kanban project is already linked to another Origin project.', 'ALREADY_LINKED', 409);
       const blueprint = Model.emptyBlueprint();
       if (meta.description) { blueprint.idea = meta.description; blueprint.vision.summary = meta.description; }
-      const now = Date.now(), record = { id: randomUUID(), ...meta, kanbanProjectId: null, revision: 1, createdAt: now, updatedAt: now, blueprint };
+      const now = Date.now(), record = { id: id ?? randomUUID(), ...meta, kanbanProjectId, revision: 1, createdAt: now, updatedAt: now, blueprint };
       await this.#atomic(join(this.dir, blueprintFileName(record.id)), this.#file(record), 'The Origin project could not be created. Check free disk space and folder permissions.');
       return { ...record, repairs: 0, recovery: null };
     });
@@ -477,8 +487,10 @@ function view(record, kanban) {
 }
 
 /** Kanban side effects go only through the board service, never by writing state.json. */
-async function createKanban(board, name) {
-  try { return { project: (await board.createProjectWithRepository({ name, folder: 'new', workflowMode: 'pipeline' })).project }; }
+async function createKanban(board, name, id) {
+  // The board takes the Origin project's ID when it is free, so the shared project keeps one ID.
+  const free = id && !(await board.state()).projects.some(project => project.id === id);
+  try { return { project: (await board.createProjectWithRepository({ name, folder: 'new', workflowMode: 'pipeline', ...(free ? { id } : {}) })).project }; }
   catch (error) { return { error: { message: error.message || 'The Kanban project could not be created.', code: error.code || 'KANBAN_FAILED' } }; }
 }
 
@@ -497,10 +509,19 @@ export async function originRoute({ origin, contexts, board, req, res, pathname,
   if (pathname === '/api/origin/projects') {
     if (req.method === 'GET') { const projects = await kanban(); return send(res, 200, { projects: (await origin.list()).map(record => view(record, projects)) }); }
     if (req.method !== 'POST') return send(res, 404, { error: 'This Origin route does not exist.' });
-    const input = await body();
+    const input = await body(), name = typeof input.name === 'string' ? input.name.trim().toLocaleLowerCase() : '';
+    // One project per name across Origin, Compose and Kanban. A board of this name that no Origin project
+    // uses already is this project's board: the Origin project takes the board's ID and links to it.
+    const records = await origin.list(), boards = await kanban();
+    if (name && records.some(record => record.name.toLocaleLowerCase() === name)) throw new OriginError('A project with this name already exists. Choose it from the project list.', 'NAME_TAKEN', 409);
+    const joined = name && boards.find(project => project.name.toLocaleLowerCase() === name && !records.some(record => record.kanbanProjectId === project.id || record.id === project.id));
+    if (joined) {
+      const adopted = await origin.create({ name: input.name, description: input.description, id: joined.id, kanbanProjectId: joined.id });
+      return send(res, 200, { project: view(adopted, await kanban()), blueprint: adopted.blueprint, joinedKanban: true });
+    }
     const created = await origin.create({ name: input.name, description: input.description });
     if (input.createKanban !== true) return send(res, 200, { project: view(created, await kanban()), blueprint: created.blueprint });
-    const made = await createKanban(board, created.name);
+    const made = await createKanban(board, created.name, created.id);
     if (made.error) return send(res, 200, { project: view(created, await kanban()), blueprint: created.blueprint, kanbanError: made.error });
     const linked = await origin.link(created.id, { expectedRevision: created.revision, kanbanProjectId: made.project.id });
     return send(res, 200, { project: view(linked, await kanban()), blueprint: linked.blueprint });
@@ -531,7 +552,7 @@ export async function originRoute({ origin, contexts, board, req, res, pathname,
     if (!record || record.damaged) throw new OriginError('This Origin project no longer exists. Choose another project.', 'NOT_FOUND', 404);
     let kanbanProjectId = input.kanbanProjectId;
     if (input.createKanban === true) {
-      const made = await createKanban(board, typeof input.name === 'string' && input.name.trim() ? input.name : record.name);
+      const made = await createKanban(board, typeof input.name === 'string' && input.name.trim() ? input.name : record.name, record.id);
       if (made.error) throw new OriginError(made.error.message, made.error.code, 409);
       kanbanProjectId = made.project.id;
     } else if (kanbanProjectId !== null && !(await kanban()).some(project => project.id === kanbanProjectId)) {

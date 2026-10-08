@@ -33,6 +33,7 @@ import { inspectWorkspace, saveWorkspaceFile, WorkspaceFileError } from './works
 import { proposeWorkspaceFile, validateFileProposalRequest } from './workspace-file-ai.mjs';
 import { OriginError, OriginStore, originRoute } from './origin.mjs';
 import { ContextStore, contextRoute } from './origin-context.mjs';
+import { PromptStore, createBoardProject, projectsRoute } from './projects.mjs';
 
 const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
 const assets = new Map([
@@ -112,7 +113,7 @@ const TASK_BODY_LIMIT = 8 * 1024 * 1024;
 const BOARD_BODY_LIMIT = 48 * 1024 * 1024;
 
 /** Kanban routes. IDs come from the URL; every filesystem path is resolved on the server. */
-async function boardRoute(board, req, res, pathname, searchParams) {
+async function boardRoute(board, req, res, pathname, searchParams, origin) {
   const method = req.method;
   const match = pathname.match(/^\/api\/(projects|tasks|runs)\/([A-Za-z0-9_-]{1,100})(?:\/([a-z-]+))?$/);
   const body = async (limit = TASK_BODY_LIMIT) => { const value = await jsonBody(req, limit); if (!value || typeof value !== 'object' || Array.isArray(value)) throw Object.assign(new Error('Send a JSON object.'), { status: 400 }); return value; };
@@ -123,8 +124,9 @@ async function boardRoute(board, req, res, pathname, searchParams) {
   if (method === 'POST' && pathname === '/api/board/import') { const data = await body(BOARD_BODY_LIMIT); return view({ imported: await board.importBackup(data.backup, { replace: data.replace === true }) }); }
   if (method === 'POST' && pathname === '/api/projects') {
     const { name, folder, workflowMode = 'pipeline' } = await body();
-    // New app projects use column pipelines; an explicit legacy request preserves integrations.
-    return view(await board.createProjectWithRepository({ name, folder: folder === undefined ? 'new' : folder, workflowMode }));
+    // New app projects use column pipelines; an explicit legacy request preserves integrations. A project
+    // of the same name that has no board yet gets this board (one project, one ID); no duplicate is made.
+    return view(await createBoardProject({ origin, board }, { name, folder: folder === undefined ? 'new' : folder, workflowMode }));
   }
   if (method === 'POST' && pathname === '/api/folder/choose') return send(res, 200, await board.folderPicker());
   if (method === 'POST' && pathname === '/api/repository/validate') return send(res, 200, { repository: await board.validateRepository((await body()).path) });
@@ -187,6 +189,7 @@ async function boardRoute(board, req, res, pathname, searchParams) {
     if (method === 'POST' && action === 'pause') return view({ run: await board.pauseRun(id, await body()) });
   } else {
     if (method === 'PATCH' && !action) return view(await board.updateTask(id, await body()));
+    if (method === 'POST' && action === 'refine') { const { prompt, expectedRevision } = await body(); return view({ task: await board.refineTask(id, { prompt, expectedRevision }) }); }
     if (method === 'POST' && action === 'pipeline-settings') {
       const { profileId, agentOverride, expectedRevision, expectedProjectRevision } = await body();
       return view(await board.updateTask(id, { pipelineSettings: { profileId, agentOverride }, expectedRevision, expectedProjectRevision }));
@@ -331,6 +334,7 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
   // Origin projects live in their own files; Kanban changes go only through the board service.
   const origin = new OriginStore(dataDir, { kanbanProjects: async () => (await board.state()).projects });
   const contexts = new ContextStore(dataDir);
+  const prompts = new PromptStore(dataDir);
   const baseRoutes = new BaseRoutes({ board, runner, claim, track, catalog: getCatalog, send, jsonBody, ...(mcpTester ? { mcpTester } : {}), imageGenerator });
   let composeContext;
   const getCompose = () => composeContext ??= import('./compose-context.mjs').then(({ ComposeContext }) => new ComposeContext(composeMcp ? { mcp: composeMcp } : {}));
@@ -376,6 +380,13 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
         return send(res, failure.status, failure.body);
       }
       return send(res, 404, { error: 'This Base route does not exist.' });
+    }
+    if (/^\/api\/shared-projects(?:\/|$)/.test(pathname)) {
+      try { return await projectsRoute({ origin, board, prompts, req, res, pathname, jsonBody, send }); }
+      catch (error) {
+        const known = error instanceof OriginError || error instanceof BoardError || error instanceof StoreError || (error?.status >= 400 && error.status < 500);
+        return send(res, known ? error.status || 500 : 500, known ? { error: error.message, code: error.code || 'INVALID_REQUEST' } : { error: 'The project request failed. Nothing was changed.', code: 'PROJECTS_FAILED' });
+      }
     }
     if (/^\/api\/origin(?:\/|$)/.test(pathname)) {
       const route = /^\/api\/origin\/projects\/[^/]+\/document(?:\/|$)/.test(pathname) ? contextRoute : originRoute;
@@ -590,7 +601,7 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
       return;
     }
     if (/^\/api\/(board|projects|tasks|runs|github)(\/|$)/.test(pathname) || pathname === '/api/repository/validate' || pathname === '/api/folder/choose' || pathname === '/api/settings') {
-      try { if ((await track(boardRoute(board, req, res, pathname, requestUrl.searchParams))) !== false) return; }
+      try { if ((await track(boardRoute(board, req, res, pathname, requestUrl.searchParams, origin))) !== false) return; }
       catch (error) {
         // Board, store, and Git errors carry fixed messages; raw Git output is never returned.
         const known = error instanceof BoardError || error instanceof GitHubError || error instanceof GitError || error instanceof StoreError || error instanceof AgentError || error instanceof DeliveryError || error instanceof BaseError || error instanceof BaseDeliveryError || error instanceof RepositoryPipelineError || error instanceof WorkspaceFileError;

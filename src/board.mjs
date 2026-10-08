@@ -108,6 +108,9 @@ export function normalizeSource(source) {
     language: ['en', 'de', 'pl'].includes(source.language) ? source.language : '', quality: ['reviewed', 'fast'].includes(source.quality) ? source.quality : '',
     verification: ['checks-passed', 'needs-review'].includes(source.verification) ? source.verification : 'none',
     generatedAt: Number.isFinite(source.generatedAt) ? source.generatedAt : null,
+    // A card made from a saved project prompt keeps which prompt revision it received.
+    ...(typeof source.projectId === 'string' && RECORD_ID.test(source.projectId) && typeof source.promptId === 'string' && RECORD_ID.test(source.promptId)
+      && Number.isSafeInteger(source.promptRevision) && source.promptRevision > 0 ? { projectId: source.projectId, promptId: source.promptId, promptRevision: source.promptRevision } : {}),
   };
 }
 
@@ -568,13 +571,16 @@ export class Board {
 
   // ---- Projects ----
 
-  async createProject({ name, workflowMode = 'legacy' }) {
+  /** `id` (optional) lets a shared project keep one ID across Origin and Kanban; it must be unused. */
+  async createProject({ name, workflowMode = 'legacy', id }) {
     const clean = text(name, 80, 'Project name');
     if (!['legacy', 'pipeline'].includes(workflowMode)) throw new BoardError('Choose a legacy stage board or a column pipeline.', 'INVALID_INPUT');
+    if (id !== undefined && !(typeof id === 'string' && RECORD_ID.test(id))) throw new BoardError('Choose a valid project ID.', 'INVALID_INPUT');
     return this.store.update(state => {
       if (state.projects.length >= PROJECT_LIMIT) throw new BoardError(`A board can have at most ${PROJECT_LIMIT} projects.`, 'LIMIT');
       this.#nameError(state, clean);
-      const project = newProject({ name: clean });
+      if (id !== undefined && state.projects.some(project => project.id === id)) throw conflict('A Kanban project with this ID already exists.', 'ID_TAKEN');
+      const project = newProject({ ...(id === undefined ? {} : { id }), name: clean });
       if (workflowMode === 'pipeline') Object.assign(project, { workflowMode, pipeline: defaultPipelineConfig() });
       state.projects.push(project);
       return project;
@@ -587,7 +593,7 @@ export class Board {
    * folder. A folder that is not a repository yet gets `git init` and one empty first commit
    * (its files are never added). Then the project is linked to it.
    */
-  async createProjectWithRepository({ name, folder, workflowMode = 'legacy' }) {
+  async createProjectWithRepository({ name, folder, workflowMode = 'legacy', id }) {
     const clean = text(name, 80, 'Project name');
     if (!['legacy', 'pipeline'].includes(workflowMode)) throw new BoardError('Choose a legacy stage board or a column pipeline.', 'INVALID_INPUT');
     this.#nameError(await this.state(), clean);
@@ -617,7 +623,7 @@ export class Board {
         await initRepository(path, { fallbackIdentity: true });
         return null;
       });
-      const project = await this.createProject({ name: clean, workflowMode });
+      const project = await this.createProject({ name: clean, workflowMode, id });
       const linked = await this.linkRepository(project.id, { path, expectedRevision: project.revision });
       return { project: linked.project, folder: path, initialized: !repository, createdFolder: created };
     } catch (error) {
@@ -1643,12 +1649,34 @@ export class Board {
       const { project, task } = this.#task(state, taskId);
       checkRevision(task, expectedRevision, 'This card');
       if (!task.originSource) throw new BoardError('This card did not come from Origin.', 'INVALID_INPUT');
-      const todo = project.workflowMode === 'pipeline' ? project.pipeline.columns.find(column => column.role === 'todo')?.id : 'todo';
-      const moving = task.automationMove && !['completed', 'failed', 'cancelled', 'interrupted'].includes(task.automationMove.status);
-      if (task.column !== todo || this.#activeRun(state, taskId) || moving) throw conflict('Only an idle card in To Do can take new context. Stop its work and move it back to To Do first.', 'CARD_BUSY');
+      this.#requireIdleInTodo(state, project, task, 'Only an idle card in To Do can take new context. Stop its work and move it back to To Do first.');
       const next = promptText(prompt, 'The task', project.workflowMode === 'pipeline');
       Object.assign(task, { prompt: next, updatedAt: Date.now(), revision: task.revision + 1, contentRevision: (task.contentRevision ?? 1) + 1, checksOutdated: task.checksOutdated || Boolean(task.source),
         originSource: originSourceOf({ ...task.originSource, snapshotId, hash }) });
+      return task;
+    });
+  }
+
+  #requireIdleInTodo(state, project, task, message) {
+    const todo = project.workflowMode === 'pipeline' ? project.pipeline.columns.find(column => column.role === 'todo')?.id : 'todo';
+    const moving = task.automationMove && !['completed', 'failed', 'cancelled', 'interrupted'].includes(task.automationMove.status);
+    if (task.column !== todo || this.#activeRun(state, task.id) || moving) throw conflict(message, 'CARD_BUSY');
+  }
+
+  /**
+   * Replace a card's instructions with a refined prompt from Compose. Like Origin context updates, only an
+   * idle card in To Do changes, so an agent's active instructions are never overwritten; the card's revision
+   * must match what the person refined. `source` records the saved prompt revision, when there is one.
+   */
+  refineTask(taskId, { prompt, source, expectedRevision } = {}) {
+    return this.store.update(state => {
+      const { project, task } = this.#task(state, taskId);
+      checkRevision(task, expectedRevision, 'This card');
+      this.#requireIdleInTodo(state, project, task, 'Only an idle card in To Do can take a refined prompt, so a running agent keeps its instructions. Create a new card instead, or stop its work and move it back to To Do.');
+      const next = promptText(prompt, 'The task', project.workflowMode === 'pipeline');
+      if (next === task.prompt && source === undefined) return task;
+      Object.assign(task, { prompt: next, updatedAt: Date.now(), revision: task.revision + 1, contentRevision: (task.contentRevision ?? 1) + 1,
+        ...(source !== undefined ? { source: normalizeSource(source), checksOutdated: false } : { checksOutdated: task.checksOutdated || Boolean(task.source) }) });
       return task;
     });
   }
