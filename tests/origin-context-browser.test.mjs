@@ -151,10 +151,14 @@ test('the panel resizes, works on a narrow screen in both themes, handles confli
   // CI runners may open a smaller window than requested; fix the viewport so the desktop panel can grow.
   await browser.resize(1280, 900);
   await wait(`!matchMedia('(max-width: 730px)').matches && Math.round(document.querySelector('#origin-drawer').getBoundingClientRect().width) === 560`, 'desktop panel width');
-  const before = await ev(`return document.querySelector('#origin-drawer').getBoundingClientRect().width;`);
+  const panel = () => ev(`const d = document.querySelector('#origin-drawer'), g = document.querySelector('.origin-context-resize');
+    return { width: Math.round(d.getBoundingClientRect().width), style: d.style.width, stored: localStorage.getItem('promptboard.origin.context-width'), inner: innerWidth, client: document.documentElement.clientWidth,
+      narrow: matchMedia('(max-width: 730px)').matches, ratio: devicePixelRatio, active: document.activeElement?.className || '', grip: g ? getComputedStyle(g).display : 'missing', mode: d.dataset.mode || '' };`);
+  const before = await panel();
   await ev(`const g = document.querySelector('.origin-context-resize'); g.focus(); for (let i = 0; i < 3; i++) g.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));`);
-  const after = await ev(`return document.querySelector('#origin-drawer').getBoundingClientRect().width;`);
-  assert.equal(Math.round(after - before), 120); assert.equal(await ev(`return localStorage.getItem('promptboard.origin.context-width');`), String(Math.round(after)));
+  await wait(`Math.round(document.querySelector('#origin-drawer').getBoundingClientRect().width) === ${before.width + 120}`, 'wider panel', 5000)
+    .catch(async error => { throw new Error(`${error.message}: ${JSON.stringify({ before, after: await panel() })}`); });
+  assert.equal(await ev(`return localStorage.getItem('promptboard.origin.context-width');`), String(before.width + 120));
   // A save conflict keeps the text and offers Reload or Keep mine.
   const { data } = await call(`/api/origin/projects/${project.id}/document`);
   await call(`/api/origin/projects/${project.id}/document`, 'PUT', { expectedRevision: data.document.revision, text: `${data.text}\nFrom another window.\n` });
