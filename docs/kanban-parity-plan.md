@@ -2,7 +2,7 @@
 
 Promptboard should use Kangentic's Kanban behavior as the reference for task orchestration. A task's column controls its agent session, and column automations provide the next instructions. This document compares that target with this checkout and proposes the implementation sequence. It records requirements and design decisions for review; the runtime still follows [the existing contract](agentic-kanban-contract.md).
 
-Scope is the Kanban board and the services it needs: tasks, columns, automations, archives, backlog, profiles, Git workspaces, session continuity, conversation history, and activity. Prompt composition remains part of Promptboard. Kangentic's desktop packaging, mobile app, relay, window system, and complete agent catalog are outside this scope.
+Scope is the Kanban board and the services it needs: tasks, columns, automations, archives, profiles, Git workspaces, session continuity, conversation history, and activity. Prompt composition remains part of Promptboard. Kangentic's desktop packaging, mobile app, relay, window system, and complete agent catalog are outside this scope.
 
 Reviewed on 3 October 2026 against the documentation linked below and GitHub main at `9089a95`, after reconciling the existing local changes. That baseline includes Composer editing and task splitting, Base assignments and native tool delivery, and the usage dashboard.
 
@@ -12,7 +12,7 @@ The user also confirmed that Kanban agents should inherit tools, MCP servers, an
 
 Keyboard focus survives background card refreshes. Usage dialog close events are queued by the browser: they restore focus when needed, but preserve a subsequent project action or a reopened modal. These controls never start agents. Real-browser regressions exercise both themes and desktop/phone widths.
 
-The [shared labels](task-labels.md) add project-wide names/colors, keyboard task assignments, badges and combined board/completed filters without changing prompt content, agent configuration or pending messages. State version 10 and portable backup version 8 introduced labels. The [local backlog foundation](local-backlog.md) now keeps separate drafts with shared label/priority metadata and atomic To Do promotion without agent work. State version 11 and portable version 9 retain backlog drafts. The Backlog view now supports local authoring, shared search/filters, ordering and single To Do promotion; bulk To Do promotion and confirmed deletion are available with per-item results and Stop remaining; the chosen-column promotion API and destination picker use the common arrival lifecycle for single and captured bulk operations; the [GitHub issue picker](backlog-github-import-ui.md) now connects saved sources and imports selected pages into inert drafts with exact descriptions and durable duplicate identities. State 12 and portable 10 preserve source metadata. [Cached previews and explicit incremental sync](backlog-source-sync.md) are available; automatic full-source sync, attachments and other tracker adapters remain pending.
+The [shared labels](task-labels.md) add project-wide names/colors, keyboard task assignments, badges and combined board/completed filters without changing prompt content, agent configuration or pending messages. State version 10 and portable backup version 8 introduced labels. State 12 and portable 10 preserve source metadata. The Backlog that followed was removed in state version 13; its drafts became To Do cards.
 
 ## Default board behavior
 
@@ -50,7 +50,7 @@ This table records the starting implementation before the checkpoints below. The
 | Automations | Stage instructions and Autopilot implement a specialized pipeline. | Add ordered, enabled enter/exit automation lists and a persistent run log. |
 | Queue | The supervisor already has a global FIFO queue, with a default limit of one and a maximum of four. | Preserve its ownership guarantees; support queued moves, cancellation, suspension, and visible queue position. |
 | Task authoring | Tasks have a title, exact prompt, and prompt-generation metadata. | Add description, attachments, display number, labels, priority, and task strategy choices. |
-| Backlog | Board backup import exists; there is no separate backlog or tracker import service. | Add backlog storage, promotion, bulk operations, and deduplicated imports. |
+| Backlog | Removed in state version 13: drafts became To Do cards. | Not planned; new work goes straight to To Do. |
 | Profiles | Global, project, stage, and custom-column agent overrides exist. | Add named sparse strategy overrides selected per task. |
 | Shared configuration | Board settings live in the app state and board backups. | Add repository configuration and personal overrides with reconciliation. |
 | Persistence | Atomic state writes and run artifacts exist; restart marks active runs interrupted. | Persist logical sessions and resumable conversation references independently of process runs. |
@@ -73,7 +73,9 @@ Kangentic archives Done tasks in a sortable table with session usage and change 
 
 Proposed Promptboard implementation: add `archivedAt`, keep the task and conversation records, and expose archive browsing separately from live cards. Aggregate only measured usage; show unavailable values explicitly. Bulk restore returns individual outcomes so one failed workspace recreation does not hide successful restores.
 
-### Backlog and imports
+### Backlog and imports (removed)
+
+Promptboard shipped a local Backlog with GitHub Issues import, then removed it in state version 13 to keep the board simple. Saved drafts became idle To Do cards and cards keep their GitHub issue links. The notes below are kept for history only.
 
 Kangentic provides a separate backlog with filtering, labels, priorities, manual order, bulk promotion, and imports from GitHub Issues, GitHub Projects, Azure DevOps, and Asana. Promotion preserves task metadata and uses the destination's arrival behavior. Imported tickets retain their source identity; duplicate detection includes promoted and archived tasks. [Backlog and imports](https://www.kangentic.com/guide/backlog/)
 
@@ -111,12 +113,12 @@ Separate four durable entities:
 
 | Entity | Responsibility |
 | --- | --- |
-| Task | Requirement text, metadata, board/backlog/archive placement, ordering, and workspace ownership. |
+| Task | Requirement text, metadata, board/archive placement, ordering, and workspace ownership. |
 | Session | The logical conversation, native provider ID, strategy, transcript references, pause intent, and resumability. |
 | Run | One launch of a CLI process, timestamps, exit result, terminal log, and its session ID. |
 | Automation run | One row firing for one arrival or departure, including delivery outcome or side-effect result. |
 
-`Board.transition` remains the common entry point for drag, menus, programmatic moves, backlog promotion, and plan exit. It validates revisions and serializes operations per task. Same-column reorder is a placement operation. Introduce a move journal with stable event IDs so a retried HTTP request does not deliver another message or repeat a script. Persist a row as started before its side effect; after an unknown outcome, mark it interrupted and require an explicit retry.
+`Board.transition` remains the common entry point for drag, menus, programmatic moves, and plan exit. It validates revisions and serializes operations per task. Same-column reorder is a placement operation. Introduce a move journal with stable event IDs so a retried HTTP request does not deliver another message or repeat a script. Persist a row as started before its side effect; after an unknown outcome, mark it interrupted and require an explicit retry.
 
 The lifecycle service resolves effective column strategy, checks whether the existing process is compatible, then keeps, suspends, resumes, replaces, or resets its session. The supervisor continues to own PTYs, output streaming, queue slots, cancellation, and shutdown. A dedicated automation service executes rows and records outcomes. Git delivery remains a separate service callable by explicit UI operations or intentionally configured automation.
 
@@ -133,13 +135,13 @@ Each step must be pushed as a separate pull request, reviewed, and tested locall
 3. **Automations and prompt boundary.** Add all four automation types, enter/exit order, row switches, copying, retries chosen by the user, templates, run records, and the Column Manager editor. Test first prompt versus continuation, a silent column, initial readiness, deferred delivery, plan continuation, restore message suppression, failure without wedging a move, cancellation, and duplicate requests. Test script quoting with adversarial task titles and webhook idempotency.
 4. **Task and archive UI.** Add task numbers, metadata, attachments, strategy choices, archive table, bulk restore, and visible session/queue states. Test keyboard navigation, both themes, narrow screens, attachment handling, and safe rendering of agent output. Remove stage-confirmation wording that incorrectly suggests every move ends the conversation.
 5. **Profiles and shared configuration.** Add named sparse profiles, task override exclusivity, repository/local configuration, file reconciliation, and backup round trips. Test inherited/cleared/set values, unknown references, occupied removed columns, profile deletion, local automation replacement, and importing config without running it.
-6. **Backlog, imports, memory, and activity.** Add backlog operations and the named import adapters, structured transcript viewing/search, and provider activity reducers. Test promotion through the common arrival path, duplicate imports after archive, bulk partial failure, project isolation, incremental indexing, disabled memory, permission waits, background work, and stale signals.
+6. **Memory and activity.** (Backlog and imports were removed in state version 13.) Add structured transcript viewing/search and provider activity reducers. Test project isolation, incremental indexing, disabled memory, permission waits, background work, and stale signals.
 
 The first end-to-end milestone is a task moving Planning → Executing → Code Review → Testing → Merge without manual retyping, preserving the conversation where the strategy permits. Completion must archive it; restoration must recover its context. A configured message must be observable in the delivery log, and an unconfigured move must introduce no hidden stage prompt.
 
 ## Decisions for migration
 
-[Stable task numbering](task-numbers.md) now allocates project-local identities atomically, retains them across archive/restore and preserves deletion counters in portable version 7 backups. State version 7 migrated existing saved order without changing task revisions or launching agents. Card/archive/edit/details number display and exact completed-task lookup are now available. Default [task priority levels](task-priority.md) persist through copy, archive, restoration and portable backups without changing prompt content or execution. State version 9 added None with an exact original backup. Shared per-project board/completed priority and label filters preserve saved metadata and order while explicit moves use full-column positions. Labels now have shared definitions, assignments and badges. Local backlog API storage and its keyboard view, shared board/backlog text search and To Do promotion are available. Completed search includes descriptions and label names. Single and captured bulk backlog promotion can now use the common arrival lifecycle for a chosen column. The GitHub Issues checkpoint provides verified sources, selected imports, durable duplicate identities and a page-local picker. [Persistent previews and explicit incremental sync](backlog-source-sync.md) preserve imported task text. Custom priority configuration, automatic full-source sync, other tracker adapters, attachments and direct active-column creation remain pending.
+[Stable task numbering](task-numbers.md) now allocates project-local identities atomically, retains them across archive/restore and preserves deletion counters in portable version 7 backups. State version 7 migrated existing saved order without changing task revisions or launching agents. Card/archive/edit/details number display and exact completed-task lookup are now available. Default [task priority levels](task-priority.md) persist through copy, archive, restoration and portable backups without changing prompt content or execution. State version 9 added None with an exact original backup. Shared per-project board/completed priority and label filters preserve saved metadata and order while explicit moves use full-column positions. Labels now have shared definitions, assignments and badges. Completed search includes descriptions and label names. The GitHub Issues checkpoint provides verified sources, selected imports, durable duplicate identities and a page-local picker. Custom priority configuration, automatic full-source sync, other tracker adapters, attachments and direct active-column creation remain pending.
 
 The [completed pipeline table](pipeline-completed-tasks.md) adds inert title filtering and keyboard title/archive-date sorting, retained-context visibility and exact latest reported usage, with old card actions preserved. [Bulk restore](pipeline-bulk-restore.md) now adds selection-ordered common transitions with task/settings revisions, individual outcomes, scoped stop and no automatic retry after unknown responses. Completed search now includes descriptions, labels and exact task numbers. Bulk deletion, complete per-session telemetry/cost/change summaries and expired-context warnings remain pending.
 

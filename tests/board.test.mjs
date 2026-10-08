@@ -51,7 +51,7 @@ test('the seven fixed columns and the transition matrix of the stage contract; e
 test('the store serializes writes, replaces the file atomically, and recovers from corruption', async t => {
   const dir = await temp(t, 'pb-store-');
   const store = new Store(dir);
-  await Promise.all(Array.from({ length: 20 }, (_, i) => store.update(state => { state.projects.push({ id: `p${i}`, labels: [], labelRevision: 0, backlog: [], backlogRevision: 0, backlogSources: [], backlogImported: [], backlogImportRevision: 0, tasks: [] }); })));
+  await Promise.all(Array.from({ length: 20 }, (_, i) => store.update(state => { state.projects.push({ id: `p${i}`, labels: [], labelRevision: 0, tasks: [] }); })));
   assert.equal((await store.read()).projects.length, 20);
   assert.equal((await store.read()).revision, 20);
   const saved = JSON.parse(await readFile(join(dir, 'state.json'), 'utf8'));

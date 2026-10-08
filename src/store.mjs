@@ -12,11 +12,10 @@ import { normalizePipelineConfig, normalizePipelineTaskSelection } from './pipel
 import { assignTaskNumbers, validateTaskNumbers } from './task-numbers.mjs';
 import { taskPriority } from './task-priority.mjs';
 import { taskLabels, taskLabelIds, labelRevision } from './task-labels.mjs';
-import { validateBacklogs } from './backlog.mjs';
-import { validateBacklogImports } from './backlog-imports.mjs';
+import { externalIssueSource } from './external-source.mjs';
 
 export const STATE_SCHEMA = 'promptboard.state';
-export const STATE_VERSION = 12;
+export const STATE_VERSION = 13;
 const STATE_FILE = 'state.json';
 
 export function defaultDataDir(env = process.env, platform = process.platform) {
@@ -42,7 +41,7 @@ export class StoreError extends Error {
 function checkShape(data) {
   if (!data || typeof data !== 'object' || data.schema !== STATE_SCHEMA) throw new Error('Unknown state file.');
   if (data.version > STATE_VERSION) throw new StoreError('The board was saved by a newer Promptboard version. Update the app; the file was not changed.', 'STATE_VERSION_UNSUPPORTED');
-  if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, STATE_VERSION].includes(data.version) || !Array.isArray(data.projects) || !Array.isArray(data.runs)) throw new Error('Unsupported state shape.');
+  if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, STATE_VERSION].includes(data.version) || !Array.isArray(data.projects) || !Array.isArray(data.runs)) throw new Error('Unsupported state shape.');
   if (data.version >= 3 && (!data.base || !Array.isArray(data.base.resources) || !Array.isArray(data.base.approvedRoots) || !Number.isSafeInteger(data.base.revision) || data.base.revision < 0)) throw new Error('Invalid Base registry shape.');
   if (data.version >= 4 && (!Array.isArray(data.sessions) || data.sessions.some(session => !session || typeof session !== 'object'
     || typeof session.id !== 'string' || !session.id || typeof session.taskId !== 'string' || typeof session.projectId !== 'string'
@@ -82,8 +81,8 @@ function checkShape(data) {
         || Object.keys(task.automationMove).some(name => !['projectId', 'taskId', 'transitionId', 'status', 'phase', 'updatedAt', 'reason', 'errorCode'].includes(name)))) throw new Error('Invalid task automation move.');
     }
   }
-  if (data.version >= 11) validateBacklogs(data.projects);
-  if (data.version >= 12) validateBacklogImports(data.projects);
+  // Cards imported from GitHub before version 13 keep their issue link.
+  if (data.version >= 13) for (const project of data.projects) for (const task of project.tasks) if (task.externalSource !== undefined) externalIssueSource(task.externalSource);
   return { ...emptyState(), ...data };
 }
 
@@ -122,15 +121,40 @@ export function migrateState(data) {
     }
     state.migrations.push({ kind: 'state-v9-to-v10', at: Date.now() });
   }
-  if (state.version < 11) {
-    for (const project of state.projects) { project.backlog = []; project.backlogRevision = 0; }
-    state.migrations.push({ kind: 'state-v10-to-v11', at: Date.now() });
+  if (state.version < 11) state.migrations.push({ kind: 'state-v10-to-v11', at: Date.now() });
+  if (state.version < 12) state.migrations.push({ kind: 'state-v11-to-v12', at: Date.now() });
+  // Version 13 removes the Backlog. Drafts that were still waiting there become idle To Do cards, so no
+  // saved work disappears; nothing starts. The exact earlier file is kept as a pre-migration backup.
+  let moved = 0;
+  for (const project of state.projects) {
+    moved += draftsToCards(project, project.backlog);
+    for (const key of ['backlog', 'backlogRevision', 'backlogSources', 'backlogImported', 'backlogImportRevision']) delete project[key];
   }
-  for (const project of state.projects) { project.backlogSources = []; project.backlogImported = []; project.backlogImportRevision = 0; }
-  state.migrations.push({ kind: 'state-v11-to-v12', at: Date.now() });
+  state.migrations.push({ kind: 'state-v12-to-v13', at: Date.now(), draftsMovedToTodo: moved });
   state.version = STATE_VERSION;
   // New metadata must satisfy current invariants before any migrated bytes publish.
   return checkShape(state);
+}
+
+/** Former Backlog drafts appended to the project's To Do as idle cards (numbered after existing cards). */
+export function draftsToCards(project, drafts, pipeline = project.workflowMode === 'pipeline') {
+  if (drafts === undefined || drafts === null) return 0;
+  if (!Array.isArray(drafts)) throw new Error('Invalid backlog drafts.');
+  if (!drafts.length) return 0;
+  const todo = pipeline ? normalizePipelineConfig(project.pipeline).columns.find(column => column.role === 'todo').id : 'todo';
+  const ids = new Set(project.tasks.map(task => task.id)), labels = taskLabels(project.labels || []);
+  for (const draft of drafts) {
+    if (!draft || typeof draft !== 'object' || typeof draft.id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(draft.id) || ids.has(draft.id)
+      || typeof draft.title !== 'string' || !draft.title.trim() || draft.title.trim().length > 120 || typeof draft.prompt !== 'string' || draft.prompt.length > 2 * 1024 * 1024) throw new Error('Invalid backlog draft.');
+    ids.add(draft.id);
+    const now = Date.now(), time = value => (Number.isSafeInteger(value) && value >= 0 ? value : now);
+    project.tasks.push({ id: draft.id, title: draft.title.trim(), prompt: draft.prompt, source: draft.source && typeof draft.source === 'object' && !Array.isArray(draft.source) ? draft.source : null,
+      ...(draft.externalSource === undefined ? {} : { externalSource: externalIssueSource(draft.externalSource) }), checksOutdated: draft.checksOutdated === true,
+      createdAt: time(draft.createdAt), updatedAt: time(draft.updatedAt), column: todo, priority: taskPriority(draft.priority), labelIds: taskLabelIds(Array.isArray(draft.labelIds) ? draft.labelIds : [], labels),
+      revision: 1, contentRevision: 1, planApproval: null, workspace: null, retainedBranches: [], transitions: [] });
+  }
+  assignTaskNumbers(project);
+  return drafts.length;
 }
 
 export class Store {

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { findChrome, launch } from './helpers/browser.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
 
-test('priority filters live in the archive and Backlog; the Board shows every card and reorders the full column', { skip: !await findChrome(), timeout: 90000 }, async t => {
+test('priority filters live in the archive; the Board shows every card and reorders the full column', { skip: !await findChrome(), timeout: 90000 }, async t => {
   const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
   t.diagnostic('Filter fixture server started.');
   const project = await app.board.createProject({ name: 'Filtered pipeline', workflowMode: 'pipeline' });
@@ -37,7 +37,7 @@ test('priority filters live in the archive and Backlog; the Board shows every ca
     t.diagnostic(`Filter layout ${width}/${theme}.`);
     await browser.resize(width, 900); await browser.eval(`document.documentElement.dataset.theme=${JSON.stringify(theme)};`);
     // The Board has no filter rows and shows every card, whatever filter is saved.
-    assert.deepEqual(await browser.eval(`return [document.getElementById('board-filter-toolbar').hidden, document.getElementById('board-labels-toolbar').hidden];`), [true, true]);
+    assert.equal(await browser.eval(`return document.querySelector('#board-filter-toolbar, #board-labels-toolbar, #board-search');`), null);
     assert.deepEqual(await todo(), [first.id, hidden.id, second.id]);
     assert.equal(await browser.eval(`return document.querySelector('[data-column="todo"] .kanban-column-count').textContent;`), '3');
     await enter('[data-column="done"] .kanban-done-all'); await browser.until(`document.getElementById('done-dialog').open`, 'archive');
@@ -62,16 +62,14 @@ test('priority filters live in the archive and Backlog; the Board shows every ca
   assert.deepEqual(reordered.map(task => task.id), [first.id, second.id, hidden.id]);
   assert.ok(reordered.every(task => task.prompt === exact));
   assert.equal(await browser.eval(`return window.__taskWrites.at(-1).body.index;`), 1);
-  // The filter is saved per project and shown again in Backlog; the Board stays unfiltered.
+  // The filter is saved per project; the Board and Timeline stay unfiltered.
   assert.deepEqual(await browser.eval(`return [localStorage.getItem('promptboard.priority-filter.${project.id}'), localStorage.getItem('promptboard.priority-filter.${other.id}')];`), ['1', null]);
   await select('project-select', other.id); await browser.until(`document.querySelector('[data-id="${otherTask.id}"]')`, 'other project');
   await select('project-select', project.id); await browser.until(`document.querySelector('[data-id="${hidden.id}"]')`, 'back to the project');
   await browser.reload(); await browser.until(`document.querySelector('[data-id="${hidden.id}"]')`, 'Board after reload');
-  await enter('#view-backlog'); await browser.until(`!document.getElementById('board-priority-filter-field').hidden && document.getElementById('board-priority-filter').value==='1'`, 'saved filter in Backlog');
   await enter('#view-timeline'); await browser.until(`!document.getElementById('timeline').hidden`, 'timeline view');
-  assert.equal(await browser.eval(`return document.getElementById('board-priority-filter-field').hidden;`), true);
   assert.equal(await browser.eval(`return document.getElementById('board-count').textContent;`), '11');
-  await enter('#view-board'); await browser.until(`document.getElementById('board-filter-toolbar').hidden && document.querySelector('[data-id="${hidden.id}"]')`, 'Board unfiltered again');
+  await enter('#view-board'); await browser.until(`document.querySelector('[data-id="${hidden.id}"]')`, 'Board unfiltered again');
   assert.deepEqual((await app.board.state()).runs, []); assert.deepEqual((await app.board.state()).sessions, []);
   assert.deepEqual(browser.consoleMessages.filter(message => message.startsWith('EXCEPTION')), []);
 });
@@ -87,12 +85,12 @@ test('older capabilities and malformed saved filters never hide cards or expose 
   await browser.send('Page.addScriptToEvaluateOnNewDocument', { source: `localStorage.setItem('promptboard.priority-filter.${project.id}','4');const nativeFetch=window.fetch;window.fetch=async function(...args){const r=await Reflect.apply(nativeFetch,this,args);if(args[0]!=='/api/session')return r;const d=await r.json();delete d.capabilities.taskPriority;return new Response(JSON.stringify(d),{status:r.status,headers:r.headers});};` });
   await browser.goto(app.url + '/#/kanban'); await browser.until(`document.querySelector('[data-id="${task.id}"]')`, 'older visible card');
   t.diagnostic('Older filter tasks rendered.');
-  assert.equal(await browser.eval(`return document.getElementById('board-priority-filter-field').hidden;`), true);
   await browser.eval(`document.querySelector('[data-column="done"] .kanban-done-all').click();`); await browser.until(`document.getElementById('done-dialog').open`, 'older archive');
   assert.equal(await browser.eval(`return document.getElementById('archive-priority-field').hidden;`), true);
   assert.ok(await browser.eval(`return !!document.querySelector('#archive-rows [data-archive-task="${archived.id}"]');`));
   await browser.send('Page.addScriptToEvaluateOnNewDocument', { source: `localStorage.setItem('promptboard.priority-filter.${project.id}','invalid');window.fetch=async function(...args){return Reflect.apply(nativeFetch,this,args);};` });
   await browser.reload(); await browser.until(`document.querySelector('[data-id="${task.id}"]')`, 'malformed filter fallback');
-  assert.equal(await browser.eval(`return document.getElementById('board-priority-filter').value;`), 'all');
+  await browser.eval(`document.querySelector('[data-column="done"] .kanban-done-all').click();`);
+  await browser.until(`document.getElementById('done-dialog').open && document.getElementById('archive-priority-filter').value==='all' && document.querySelector('#archive-rows [data-archive-task="${archived.id}"]')`, 'malformed filter shows every archived card');
   assert.deepEqual((await app.board.state()).runs, []);
 });

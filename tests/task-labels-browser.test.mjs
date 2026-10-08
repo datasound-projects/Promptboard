@@ -102,13 +102,13 @@ test('stale label drafts stay editable and explicit reload works; own removal re
   const w = await setup(t), { browser, keys } = w;
   await w.app.board.updateTask(w.task.id, { labelIds: ['bug'], expectedLabelRevision: 1, expectedRevision: 1 });
   await browser.goto(w.app.url + '/#/kanban'); await browser.until(`document.querySelector('[data-id="${w.task.id}"] .kanban-open')`, 'stale-label board');
-  await keys.enter('#view-backlog'); await keys.enter('#labels-open'); await keys.type('#label-definition-list [data-label-id="bug"] [data-label-field="name"]', 'Unsaved draft');
+  await keys.enter(`[data-id="${w.task.id}"] .kanban-open`); await keys.enter('#card-labels-manage'); await keys.type('#label-definition-list [data-label-id="bug"] [data-label-field="name"]', 'Unsaved draft');
   let project = await w.current(); await w.app.board.setLabels(project.id, { labels: project.labels.map(label => label.id === 'bug' ? { ...label, name: 'Concurrent label' } : label), expectedLabelRevision: project.labelRevision });
   await keys.enter('#labels-save'); await browser.until('!document.getElementById("labels-error").hidden', 'stale catalog refused');
   assert.equal(await browser.eval('return document.getElementById("labels-dialog").open && document.querySelector("#label-definition-list [data-label-id=bug] input").value;'), 'Unsaved draft');
   assert.equal((await w.current()).labels[0].name, 'Concurrent label');
   await keys.enter('#labels-reload'); await browser.until('document.querySelector("#label-definition-list [data-label-id=bug] input").value==="Concurrent label"', 'explicit label reload');
-  await keys.enter('#labels-cancel'); await keys.enter('#view-board');
+  await keys.enter('#labels-cancel'); await keys.enter('#card-cancel');
   await keys.enter(`[data-id="${w.task.id}"] .kanban-open`); await keys.enter('#card-labels-manage');
   await keys.enter('#label-definition-list [data-label-id="bug"] button'); await keys.enter('#labels-save');
   await browser.until('!document.getElementById("labels-dialog").open && !document.querySelector("#card-label-choices input[data-label-id=bug]")', 'assigned label removed');
@@ -129,7 +129,6 @@ test('older server capabilities hide labels and ordinary card saving omits unsup
   const w = await setup(t), { browser, keys } = w;
   await browser.send('Page.addScriptToEvaluateOnNewDocument', { source: `const nativeFetch=window.fetch;window.__labelPosts=[];window.fetch=async function(...args){if(args[0]==='/api/tasks'&&args[1]?.method==='POST')window.__labelPosts.push(JSON.parse(args[1].body));const r=await Reflect.apply(nativeFetch,this,args);if(args[0]!=='/api/session')return r;const d=await r.json();delete d.capabilities.taskLabels;return new Response(JSON.stringify(d),{status:r.status,headers:r.headers});};` });
   await browser.goto(w.app.url + '/#/kanban'); await browser.until(`document.querySelector('[data-id="${w.task.id}"] .kanban-open')`, 'older label capability');
-  assert.equal(await browser.eval('return document.getElementById("board-labels-toolbar").hidden;'), true);
   await keys.enter('#card-new'); assert.equal(await browser.eval('return document.getElementById("card-labels-field").hidden;'), true);
   await keys.type('#card-title', 'Older server task'); await keys.enter('#card-save'); await browser.until('!document.getElementById("card-dialog").open', 'older labels save');
   assert.deepEqual(await browser.eval('return [Object.hasOwn(window.__labelPosts[0],"labelIds"),Object.hasOwn(window.__labelPosts[0],"expectedLabelRevision")];'), [false, false]);

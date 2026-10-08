@@ -81,7 +81,7 @@ test('restart recovery is shared by concurrent readers, never launches, and pres
 test('run updates persist native IDs and logical lifecycle without rewriting prompt, Base or older runs', async t => {
   const dir = await directory(t), board = new Board({ dataDir: dir }); await board.state();
   await board.store.update(state => {
-    state.projects.push({ id: 'p', labels: [], labelRevision: 0, backlog: [], backlogRevision: 0, backlogSources: [], backlogImported: [], backlogImportRevision: 0, tasks: [{ id: 't', prompt: 'Exact task', column: 'executing', labelIds: [] }] });
+    state.projects.push({ id: 'p', labels: [], labelRevision: 0, tasks: [{ id: 't', prompt: 'Exact task', column: 'executing', labelIds: [] }] });
     for (const id of ['first', 'second']) {
       const run = { id, taskId: 't', projectId: 'p', status: 'queued', createdAt: 1, config: { provider: 'codex' }, baseManifest: { resources: [] } };
       state.runs.push(run); attachSession(state, run);

@@ -14,7 +14,7 @@ Origin is the planning layer before Compose and Kanban. It stores a structured *
 
 - One file per Origin project: `<data folder>/origin/blueprint-<origin id>.json`. The data folder is the same one that holds `state.json` (on macOS `~/Library/Application Support/Promptboard`).
 - File names come only from validated IDs (`[A-Za-z0-9_-]{1,100}`). Uppercase letters and `_` are escaped (`A` → `_a`, `_` → `__`) so IDs that differ only in case never share a file on case-insensitive file systems.
-- Origin never writes `state.json`, never changes the board state version (still 12) and never writes Base, session, backlog or journal files. Kanban projects are created or removed only through the board service.
+- Origin never writes `state.json`, never changes the board state version and never writes Base, session or journal files. Kanban projects are created or removed only through the board service.
 - Writes are serialized and atomic (temporary file, fsync, rename). The previous good file is kept as `….json.bak`.
 - A damaged file is renamed to `blueprint-<id>.corrupt-<time>-<random>.json` and the last good backup is restored and reported. Without a good backup the project is kept aside and not shown. A file from a newer Origin version is refused and never overwritten.
 - Saves are revision-checked (`expectedRevision`). A save from a stale window is refused instead of overwriting newer work.

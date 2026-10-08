@@ -25,11 +25,6 @@ let pipelineBulkRestoreSupported = false;
 let pipelineDeferredMessagesSupported = false;
 let taskPrioritySupported = false;
 let taskLabelsSupported = false;
-let pipelineBacklogSupported = false;
-let pipelineBacklogBulkSupported = false;
-let pipelineBacklogColumnsSupported = false;
-let pipelineBacklogImportsSupported = false;
-let pipelineBacklogSourceCacheSupported = false;
 let providers = [];
 let history = readHistory();
 let currentId = null;
@@ -301,11 +296,6 @@ async function loadProviders() {
     pipelineDeferredMessagesSupported = session.capabilities?.pipelineDeferredMessages === true;
     taskPrioritySupported = session.capabilities?.taskPriority === true;
     taskLabelsSupported = session.capabilities?.taskLabels === true;
-    pipelineBacklogSupported = session.capabilities?.pipelineBacklog === true;
-    pipelineBacklogBulkSupported = pipelineBacklogSupported && session.capabilities?.pipelineBacklogBulk === true;
-    pipelineBacklogColumnsSupported = pipelineBacklogSupported && session.capabilities?.pipelineBacklogColumns === true;
-    pipelineBacklogImportsSupported = pipelineBacklogSupported && session.capabilities?.pipelineBacklogImports === true;
-    pipelineBacklogSourceCacheSupported = pipelineBacklogImportsSupported && session.capabilities?.pipelineBacklogSourceCache === true;
     providers = Array.isArray(status.providers) ? status.providers.filter((item) => item && KNOWN_PROVIDERS.includes(item.id)) : [];
     if (!token) throw new Error('The local server did not return a session token.');
     browserNotifications?.resume();
@@ -330,11 +320,6 @@ async function loadProviders() {
     pipelineDeferredMessagesSupported = false;
     taskPrioritySupported = false;
     taskLabelsSupported = false;
-    pipelineBacklogSupported = false;
-    pipelineBacklogBulkSupported = false;
-    pipelineBacklogColumnsSupported = false;
-    pipelineBacklogImportsSupported = false;
-    pipelineBacklogSourceCacheSupported = false;
     browserNotifications?.stop();
     $('#cli-status-label').textContent = 'Server unavailable';
     $('#provider-note').textContent = 'Could not reach the local server. Restart the app, then reload this page.';
@@ -1484,9 +1469,6 @@ function matchesLabel(task, filter) {
   const ids = Array.isArray(task.labelIds) ? task.labelIds : [];
   return filter === 'none' ? ids.length === 0 : ids.includes(filter.slice(6));
 }
-function matchesTaskFilters(task, project = currentProject()) {
-  return matchesPriority(task, projectPriorityFilter(project)) && matchesLabel(task, projectLabelFilter(project)) && matchesTaskSearch(task, project);
-}
 function renderLabelFilter(select, project, value) {
   const entries = [['all', 'All labels'], ['none', 'Unlabeled'], ...projectLabels(project).map(label => [`label:${label.id}`, label.name])];
   // Retain native select focus and typeahead across unrelated board refreshes.
@@ -1500,12 +1482,7 @@ function changeLabelFilter(select) {
   projectLabelFilters.set(project.id, select.value); savePref(`promptboard.label-filter.${project.id}`, select.value); renderBoard();
 }
 
-const projectSearches = new Map();
-function projectSearch(project = currentProject()) {
-  if (!pipelineBacklogSupported || project?.workflowMode !== 'pipeline') return '';
-  return projectSearches.get(project.id) || '';
-}
-function matchesTaskSearch(task, project = currentProject(), query = projectSearch(project)) {
+function matchesTaskSearch(task, project, query) {
   const search = query.trim().toLocaleLowerCase();
   if (!search) return true;
   const names = projectLabels(project).filter(label => task.labelIds?.includes(label.id)).map(label => label.name);
@@ -1520,51 +1497,24 @@ function renderBoard() {
   const project = currentProject();
   const tasks = project?.tasks || [];
   const timelineView = Boolean(project) && projectView() === 'timeline';
-  const backlogAvailable = pipelineBacklogSupported && project?.workflowMode === 'pipeline';
-  const backlogView = backlogAvailable && projectView() === 'backlog';
-  const displayed = backlogView ? project.backlog || [] : tasks;
-  // The Board always shows every card. Label, priority and search filters belong to Backlog (and the archive has its own).
-  $('#board-labels-toolbar').hidden = !taskLabelsSupported || project?.workflowMode !== 'pipeline' || !backlogView;
   $('#project-select').replaceChildren(...(board?.projects || []).map(item => option(item.id, item.name)));
   if (!project) $('#project-select').append(option('', board ? 'No projects yet' : 'Loading…'));
   $('#project-select').value = project?.id || '';
   $('#project-select').disabled = !project;
   $('#project-new').disabled = !board;
   for (const id of ['#project-rename', '#project-delete', '#card-new', '#agents-open']) $(id).disabled = !project;
-  const priority = backlogView ? projectPriorityFilter(project) : 'all', label = backlogView ? projectLabelFilter(project) : 'all';
-  const filtered = priority !== 'all' || label !== 'all' || backlogView && Boolean(projectSearch(project).trim());
-  const visibleTasks = displayed.filter(task => matchesPriority(task, priority) && matchesLabel(task, label) && (!backlogView || matchesTaskSearch(task, project)));
-  $('#board-search-field').hidden = !backlogView;
-  if ($('#board-search').value !== projectSearch(project)) $('#board-search').value = projectSearch(project);
-  $('#board-count').textContent = !filtered ? String(displayed.length).padStart(2, '0') : `${visibleTasks.length}/${displayed.length}`;
-  $('#board-count').setAttribute('aria-label', !filtered ? 'Cards' : `${visibleTasks.length} of ${displayed.length} cards shown`);
-  $('#board-priority-filter').value = priority;
-  const summary = !filtered ? 'All tasks shown.' : visibleTasks.length ? `${visibleTasks.length} of ${displayed.length} tasks shown.` : label === 'all' && !projectSearch(project).trim() ? 'No tasks match this priority.' : 'No tasks match these filters.';
-  $('#board-priority-filter-summary').textContent = summary;
-  renderLabelFilter($('#board-label-filter'), project, label);
-  $('#board-label-filter-summary').textContent = summary;
+  $('#board-count').textContent = String(tasks.length).padStart(2, '0');
   // With a project open, its empty columns already say there is nothing yet; the message is only for no project.
-  $('#board-empty').hidden = Boolean(project) || displayed.length > 0;
+  $('#board-empty').hidden = Boolean(project) || tasks.length > 0;
   $('#board-empty-text').textContent = !board ? 'Loading the board…' : project ? 'No tasks yet.' : 'Create a project to start planning.';
   $('#board-empty-note').textContent = project ? 'Choose New card, or add a generated prompt from the Compose page. New cards start in To Do.' : 'Each project gets its own board, from To Do to Done.';
   $('#empty-prompt-link').hidden = !project;
-  $('#board-priority-filter-field').hidden = !taskPrioritySupported || project?.workflowMode !== 'pipeline' || !backlogView;
-  $('#board-filter-toolbar').hidden = $('#board-priority-filter-field').hidden && $('#board-search-field').hidden;
-  $('#kanban-columns').hidden = !project || timelineView || backlogView;
-  $('#backlog').hidden = !backlogView;
-  $('#view-backlog').hidden = !backlogAvailable;
-  $('#view-backlog').setAttribute('aria-selected', String(backlogView));
-  $('#backlog-new').hidden = !backlogView;
-  $('#backlog-import').hidden = !backlogView || !pipelineBacklogImportsSupported;
-  $('#backlog-import').disabled = Boolean(backlogOperation || backlogBulkJob?.running);
-  prepareBacklogSelection(project, backlogView);
-  if (backlogView) renderBacklog(project);
-  if (timelineView || backlogView) $('#board-empty').hidden = true;
+  $('#kanban-columns').hidden = !project || timelineView;
   $('#timeline').hidden = !timelineView;
-  $('#view-board').setAttribute('aria-selected', String(!timelineView && !backlogView));
+  $('#view-board').setAttribute('aria-selected', String(!timelineView));
   $('#view-timeline').setAttribute('aria-selected', String(timelineView));
   $('#view-timeline').disabled = !project;
-  for (const id of ['#autopilot-open', '#columns-open', '#agents-open', '#board-left', '#board-right', '#card-new']) $(id).hidden = timelineView || backlogView;
+  for (const id of ['#autopilot-open', '#columns-open', '#agents-open', '#board-left', '#board-right', '#card-new']) $(id).hidden = timelineView;
   $('#columns-open').disabled = !project;
   if (project?.workflowMode === 'pipeline') $('#autopilot-open').hidden = true;
   // Missing terminal support never blocks the board or the prompt editor; it only disables runs.
@@ -1602,7 +1552,6 @@ function renderBoard() {
   renderWorkspace(project);
   renderAgents(project);
   renderAutopilotBar(project);
-  if (timelineView || backlogView) $('#autopilot-bar').hidden = true;
   if (timelineView) { $('#autopilot-bar').hidden = true; refreshTimeline(project); }
   updateBoardScroll();
   window.PromptboardDock?.sync();
@@ -1642,7 +1591,6 @@ function renderColumn(column, tasks) {
   heading.append(stageIcon(column.id), column.title);
   const count = document.createElement('span');
   count.className = 'kanban-count kanban-column-count';
-  const visible = tasks; // The Board shows every card; filters apply in Backlog and the archive.
   count.textContent = String(tasks.length);
   count.setAttribute('aria-label', `${tasks.length} ${tasks.length === 1 ? 'card' : 'cards'}`);
   const header = document.createElement('div');
@@ -1668,7 +1616,7 @@ function renderColumn(column, tasks) {
   list.dataset.column = column.id;
   list.setAttribute('aria-labelledby', heading.id);
   const done = column.role === 'done' || (!column.role && column.id === 'done');
-  list.append(...(done ? renderDoneList(tasks) : visible.map((task, index) => renderCard(task, index, visible.length))));
+  list.append(...(done ? renderDoneList(tasks) : tasks.map((task, index) => renderCard(task, index, tasks.length))));
   // Dropping on empty column space puts the card at the end of that column. All of Done is one drop zone.
   const accepts = event => dragId && (done || event.target === list) && (findTask(dragId)?.column === column.id || canMove(findTask(dragId)?.column, column.id));
   list.addEventListener('dragover', event => { if (accepts(event)) { event.preventDefault(); list.classList.add('drop-target'); } });
@@ -2326,8 +2274,8 @@ function showLabelDraft(project) {
   $('#label-definition-list').replaceChildren(); for (const label of projectLabels(project)) addLabelDefinition(label);
   $('#labels-error').hidden = true;
 }
-function openLabelsDialog(fromCard = false) {
-  const project = fromCard ? board?.projects.find(row => row.id === cardEditSnapshot?.projectId) : currentProject();
+function openLabelsDialog() {
+  const project = board?.projects.find(row => row.id === cardEditSnapshot?.projectId);
   if (!taskLabelsSupported || project?.workflowMode !== 'pipeline') return;
   labelManager = { projectId: project.id, revision: project.labelRevision, opener: document.activeElement };
   $('#labels-dialog-project').textContent = project.name; showLabelDraft(project);
@@ -4072,8 +4020,7 @@ $('#prompt-edit-save').addEventListener('click', () => {
 
 bindAsyncForm('#card-form', saveCard);
 bindAsyncForm('#labels-form', saveLabels);
-$('#labels-open').addEventListener('click', () => openLabelsDialog());
-$('#card-labels-manage').addEventListener('click', () => openLabelsDialog(true));
+$('#card-labels-manage').addEventListener('click', () => openLabelsDialog());
 $('#label-add').addEventListener('click', () => addLabelDefinition()?.focus());
 $('#labels-cancel').addEventListener('click', () => $('#labels-dialog').close());
 $('#labels-dialog-close').addEventListener('click', () => $('#labels-dialog').close());
@@ -4085,9 +4032,7 @@ $('#labels-dialog').addEventListener('close', () => {
 $('#card-cancel').addEventListener('click', () => $('#card-dialog').close());
 $('#card-dialog-close').addEventListener('click', () => $('#card-dialog').close());
 $('#done-dialog-close').addEventListener('click', () => $('#done-dialog').close());
-$('#board-priority-filter').addEventListener('change', event => changePriorityFilter(event.currentTarget));
 $('#archive-priority-filter').addEventListener('change', event => changePriorityFilter(event.currentTarget));
-$('#board-label-filter').addEventListener('change', event => changeLabelFilter(event.currentTarget));
 $('#archive-label-filter').addEventListener('change', event => changeLabelFilter(event.currentTarget));
 $('#archive-filter').addEventListener('input', () => refreshPipelineArchive());
 $('#archive-sort').addEventListener('change', () => refreshPipelineArchive());
@@ -4895,278 +4840,16 @@ $('#columns-remove').addEventListener('click', () => {
 });
 for (const id of ['#columns-cancel', '#columns-close']) $(id).addEventListener('click', () => $('#columns-dialog').close());
 
-let backlogSelectionProject = null, backlogSelected = new Set(), backlogBulkJob = null, backlogBulkConfirm = null;
-const backlogDestinations = new Map();
-function backlogDestination(project) {
-  return project.columns.find(column => pipelineBacklogColumnsSupported && column.id === backlogDestinations.get(project.id)) || project.columns.find(column => column.role === 'todo');
-}
-function renderBacklogDestination(project) {
-  const field = $('#backlog-target-field'), select = $('#backlog-target'); field.hidden = !pipelineBacklogColumnsSupported;
-  const columns = project.columns, signature = JSON.stringify(columns.map(column => [column.id, column.title]));
-  const changed = select.dataset.choices !== signature, projectChanged = select.dataset.project !== project.id;
-  if (changed) { select.replaceChildren(...columns.map(column => option(column.id, column.title))); select.dataset.choices = signature; }
-  if (changed || projectChanged || document.activeElement !== select) select.value = backlogDestination(project).id;
-  select.dataset.project = project.id; select.disabled = Boolean(backlogOperation || backlogBulkJob?.running);
-  $('#backlog-arrival-note').textContent = pipelineBacklogColumnsSupported ? 'The selected column’s automations and session rules run when you add drafts.' : 'Drafts stay here until you add them to To Do.';
-}
-$('#backlog-target').addEventListener('change', () => {
-  const project = currentProject(); if (!pipelineBacklogColumnsSupported || !project || backlogOperation || backlogBulkJob?.running) return;
-  backlogDestinations.set(project.id, $('#backlog-target').value); renderBoard();
-});
-function backlogPromotionRequest(project, item, listRevision, target, projectRevision = project.revision) {
-  return { path: backlogPath(project.id, item.id) + (target.role === 'todo' ? '/promote' : '/promote-to-column'),
-    body: { expectedRevision: item.revision, expectedBacklogRevision: listRevision, ...(target.role !== 'todo' ? { column: target.id, expectedProjectRevision: projectRevision } : {}) } };
-}
-function checkBacklogArrival(response) {
-  if (response.arrival?.status === 'failed') throw new Error(`Card added to the board; column arrival failed: ${safeText(response.arrival.reason, 500)}. Review the card before another action.`);
-}
-function prepareBacklogSelection(project, showing) {
-  if (backlogBulkJob?.running && (!showing || project?.id !== backlogBulkJob.projectId)) backlogBulkJob.stop = true;
-  if (backlogSelectionProject !== project?.id) { backlogSelectionProject = project?.id || null; backlogSelected.clear(); backlogBulkConfirm = null; }
-  const ids = new Set((project?.backlog || []).map(item => item.id));
-  for (const id of backlogSelected) if (!ids.has(id)) backlogSelected.delete(id);
-}
-function renderBacklogBulk(project, visible) {
-  $('#backlog-bulk').hidden = !pipelineBacklogBulkSupported;
-  if (!pipelineBacklogBulkSupported) return;
-  const busy = Boolean(backlogOperation || backlogBulkJob?.running), count = backlogSelected.size;
-  $('#backlog-select-visible').disabled = busy || !visible.length;
-  $('#backlog-clear-selection').disabled = busy || !count;
-  $('#backlog-promote-selected').disabled = $('#backlog-delete-selected').disabled = busy || !count;
-  $('#backlog-promote-selected').textContent = `Add selected to ${backlogDestination(project).title} (${count})`;
-  $('#backlog-delete-selected').textContent = `Delete selected (${count})`;
-  $('#backlog-stop-remaining').hidden = !backlogBulkJob?.running;
-  $('#backlog-stop-remaining').disabled = backlogBulkJob?.stop === true;
-  $('#backlog-stop-remaining').textContent = backlogBulkJob?.stop ? 'Remaining stopped' : 'Stop remaining';
-  $('#backlog-bulk-confirm').hidden = !backlogBulkConfirm || backlogBulkConfirm.projectId !== project.id;
-  $('#backlog-bulk-confirm-text').textContent = backlogBulkConfirm ? `Permanently delete ${backlogBulkConfirm.items.length} selected drafts, including hidden selections? This cannot be undone.` : '';
-  const job = backlogBulkJob?.projectId === project.id ? backlogBulkJob : null, items = job?.items || [];
-  $('#backlog-bulk-progress').hidden = $('#backlog-bulk-results').hidden = !items.length;
-  $('#backlog-bulk-progress').textContent = `${items.filter(item => ['promoted', 'deleted'].includes(item.status)).length} completed · ${items.filter(item => item.status === 'review').length} need review · ${items.filter(item => item.status === 'pending').length} not started${job?.running ? ' · Working…' : ''}${job?.reason ? ' · ' + job.reason : ''}`;
-  $('#backlog-bulk-results').replaceChildren(...items.map(item => {
-    const row = document.createElement('li'); row.textContent = `${item.title}: ${{ pending: 'Not started', working: 'Working…', promoted: 'Added to ' + job.target.title, deleted: 'Deleted', review: 'Needs review' }[item.status]}${item.reason ? ' · ' + item.reason : ''}`; return row;
-  }));
-}
-function captureBacklogSelection() {
-  const project = currentProject();
-  if (!pipelineBacklogBulkSupported || project?.workflowMode !== 'pipeline' || projectView() !== 'backlog' || backlogBulkJob?.running || backlogOperation) return null;
-  const items = [...backlogSelected].map(id => project.backlog.find(item => item.id === id)).filter(Boolean).map(item => ({ id: item.id, title: item.title, revision: item.revision, status: 'pending' }));
-  return items.length ? { projectId: project.id, listRevision: project.backlogRevision, projectRevision: project.revision, target: { ...backlogDestination(project) }, items } : null;
-}
-async function runBacklogBulk(mode, captured = captureBacklogSelection()) {
-  if (!captured || backlogBulkJob?.running || backlogOperation || currentProject()?.id !== captured.projectId || projectView() !== 'backlog' || !pipelineBacklogBulkSupported) return;
-  const job = { ...captured, mode, running: true, stop: false, reason: '' }; backlogBulkJob = job; backlogBulkConfirm = null; renderBoard();
-  try {
-    for (const item of job.items) {
-      if (job.stop || currentProject()?.id !== job.projectId || projectView() !== 'backlog') break;
-      item.status = 'working'; renderBoard();
-      try {
-        const request = backlogPromotionRequest({ id: job.projectId }, item, job.listRevision, job.target, job.projectRevision);
-        const response = await boardCall(mode === 'promote' ? 'POST' : 'DELETE', mode === 'promote' ? request.path : backlogPath(job.projectId, item.id),
-          mode === 'promote' ? request.body : { expectedRevision: item.revision, expectedBacklogRevision: job.listRevision });
-        if (mode === 'promote') checkBacklogArrival(response);
-        const owner = response.board?.projects.find(project => project.id === job.projectId);
-        const absent = owner && !owner.backlog.some(draft => draft.id === item.id);
-        const task = owner?.tasks.find(task => task.id === item.id), todo = owner?.columns.find(column => column.role === 'todo');
-        const known = absent && (mode === 'delete' ? response.deleted === true : response.task?.id === item.id && task && (job.target.role === 'todo' ? task.column === todo?.id : response.arrival?.status === 'completed'));
-        if (!known) throw new Error('The outcome was not confirmed. Check Backlog and the board before trying again.');
-        item.status = mode === 'delete' ? 'deleted' : 'promoted'; if (backlogSelectionProject === job.projectId) backlogSelected.delete(item.id);
-        if (owner.backlogRevision !== job.listRevision + 1) { job.stop = true; job.reason = 'The backlog changed during this batch. Remaining drafts were not started.'; }
-        else job.listRevision++;
-      } catch (error) { item.status = 'review'; item.reason = safeText(error.message, 500) || 'Check Backlog and To Do before trying again.'; job.stop = true; job.reason = 'Remaining drafts were not started. Review the outcome before another batch.'; }
-      renderBoard();
-    }
-  } finally { job.running = false; renderBoard(); }
-}
-$('#backlog-select-visible').addEventListener('click', () => {
-  if (backlogBulkJob?.running || backlogOperation || !pipelineBacklogBulkSupported) return;
-  for (const row of $('#backlog-list').children) backlogSelected.add(row.dataset.backlogId); backlogBulkConfirm = null; renderBoard();
-});
-$('#backlog-clear-selection').addEventListener('click', () => { if (backlogBulkJob?.running || backlogOperation) return; backlogSelected.clear(); backlogBulkConfirm = null; renderBoard(); });
-$('#backlog-promote-selected').addEventListener('click', () => runBacklogBulk('promote'));
-$('#backlog-delete-selected').addEventListener('click', () => { backlogBulkConfirm = captureBacklogSelection(); renderBoard(); if (backlogBulkConfirm) $('#backlog-bulk-keep').focus(); });
-$('#backlog-bulk-confirm-delete').addEventListener('click', () => runBacklogBulk('delete', backlogBulkConfirm));
-$('#backlog-bulk-keep').addEventListener('click', () => { backlogBulkConfirm = null; renderBoard(); $('#backlog-delete-selected').focus(); });
-$('#backlog-stop-remaining').addEventListener('click', () => { if (backlogBulkJob?.running) { backlogBulkJob.stop = true; renderBoard(); } });
-
-// ---- Local backlog: separate drafts, no agent settings or session controls ----
-let backlogDraft = null, backlogOperation = null, backlogSignature = '', backlogDelete = null, backlogDrag = null;
-function backlogPath(projectId, id = null) { return `/api/projects/${encodeURIComponent(projectId)}/backlog${id ? '/' + encodeURIComponent(id) : ''}`; }
-function backlogRow(id) { return [...$('#backlog-list').children].find(row => row.dataset.backlogId === id); }
-function renderBacklog(project) {
-  renderBacklogDestination(project);
-  const items = project.backlog || [], sort = $('#backlog-sort').value;
-  const visible = items.filter(item => matchesTaskFilters(item, project));
-  if (sort === 'newest') visible.sort((a, b) => b.createdAt - a.createdAt);
-  if (sort === 'priority') visible.sort((a, b) => b.priority - a.priority);
-  if (sort === 'title') visible.sort((a, b) => a.title.localeCompare(b.title));
-  renderBacklogBulk(project, visible);
-  const busy = Boolean(backlogOperation || backlogBulkJob?.running);
-  const destination = backlogDestination(project);
-  const signature = JSON.stringify([project.id, project.backlogRevision, project.labelRevision, project.revision, projectPriorityFilter(project), projectLabelFilter(project), projectSearch(project), sort, busy, backlogDelete, [...backlogSelected], destination.id]);
-  if (signature === backlogSignature) return;
-  backlogSignature = signature;
-  const focus = document.activeElement?.closest('[data-backlog-id]'), action = document.activeElement?.dataset.backlogAction;
-  const list = $('#backlog-list'), scroll = list.scrollTop;
-  $('#backlog-empty').hidden = visible.length > 0;
-  $('#backlog-empty').textContent = items.length ? 'No drafts match these filters.' : 'No backlog drafts yet. Choose New draft to collect work for later.';
-  list.replaceChildren(...visible.map((item, index) => {
-    const row = document.createElement('li'); row.className = 'backlog-item'; row.dataset.backlogId = item.id;
-    const heading = document.createElement('div'); heading.className = 'backlog-item-heading';
-    const button = (text, action, callback, className = 'text-button') => { const node = detailButton(text, callback, className); node.dataset.backlogAction = action; node.disabled = busy; return node; };
-    if (pipelineBacklogBulkSupported) {
-      const selected = document.createElement('input'); selected.type = 'checkbox'; selected.checked = backlogSelected.has(item.id); selected.disabled = busy; selected.dataset.backlogAction = 'select'; selected.setAttribute('aria-label', `Select draft: ${item.title}`);
-      selected.addEventListener('change', () => { selected.checked ? backlogSelected.add(item.id) : backlogSelected.delete(item.id); backlogBulkConfirm = null; renderBacklog(project); }); heading.append(selected);
-    }
-    heading.append(button(item.title, 'edit', () => openBacklogDraft(project.id, item.id), 'kanban-open'));
-    appendTaskPriority(heading, item); appendTaskLabels(heading, item, project);
-    const age = paragraph(`Created ${timeAgo(item.createdAt)}`, 'note'); age.title = new Date(item.createdAt).toLocaleString();
-    const actions = document.createElement('div'); actions.className = 'detail-actions';
-    actions.append(button('Add to ' + destination.title, 'promote', () => runBacklogOperation(project, async () => {
-      const request = backlogPromotionRequest(project, item, project.backlogRevision, destination);
-      const result = await boardCall('POST', request.path, request.body); checkBacklogArrival(result);
-      announce(`Added “${result.task.title}” to ${destination.title}.`);
-    })));
-    const reorder = (direction) => runBacklogOperation(project, async () => {
-      const neighbor = visible[index + direction]; if (!neighbor || sort !== 'manual') return;
-      const ids = items.map(entry => entry.id).filter(id => id !== item.id), target = ids.indexOf(neighbor.id);
-      ids.splice(target + (direction > 0 ? 1 : 0), 0, item.id);
-      await boardCall('PATCH', backlogPath(project.id), { ids, expectedBacklogRevision: project.backlogRevision });
-      announce(`Moved “${item.title}” ${direction > 0 ? 'down' : 'up'}.`);
-    });
-    for (const [text, action, direction, unavailable] of [['Move up', 'up', -1, index === 0], ['Move down', 'down', 1, index === visible.length - 1]]) {
-      const control = button(text, action, () => reorder(direction)); control.disabled ||= sort !== 'manual' || unavailable; actions.append(control);
-    }
-    actions.append(button('Delete', 'delete', () => { backlogDelete = { projectId: project.id, id: item.id }; renderBacklog(project); backlogRow(item.id)?.querySelector('[data-backlog-action=keep]')?.focus(); }));
-    row.append(heading, age);
-    if (item.prompt) row.append(paragraph(item.prompt, 'backlog-preview'));
-    if (item.source) row.append(paragraph(cardStatus(item).text, 'note'));
-    row.append(actions);
-    if (backlogDelete?.projectId === project.id && backlogDelete.id === item.id) {
-      const confirm = document.createElement('div'); confirm.className = 'detail-actions';
-      confirm.append(paragraph('Delete this draft? This cannot be undone.', 'note'), button('Delete draft', 'confirm-delete', () => runBacklogOperation(project, async () => {
-        await boardCall('DELETE', backlogPath(project.id, item.id), { expectedRevision: item.revision, expectedBacklogRevision: project.backlogRevision });
-        backlogDelete = null; announce(`Deleted “${item.title}”.`);
-      }), 'danger'), button('Keep draft', 'keep', () => { backlogDelete = null; renderBacklog(project); }));
-      row.append(confirm);
-    }
-    row.draggable = sort === 'manual' && !busy;
-    row.addEventListener('dragstart', event => {
-      if (!row.draggable || event.target.closest('button, input, select, textarea, a')) { event.preventDefault(); return; }
-      backlogDrag = { id: item.id, projectId: project.id, revision: project.backlogRevision };
-      event.dataTransfer?.setData('text/plain', item.id);
-    });
-    row.addEventListener('dragend', () => { backlogDrag = null; });
-    row.addEventListener('dragover', event => { if (backlogDrag?.projectId === project.id && row.draggable) event.preventDefault(); });
-    row.addEventListener('drop', event => {
-      const dragged = backlogDrag; backlogDrag = null;
-      if (!row.draggable || !dragged || dragged.projectId !== project.id || dragged.revision !== project.backlogRevision || dragged.id === item.id) return;
-      event.preventDefault();
-      runBacklogOperation(project, async () => {
-        const ids = items.map(entry => entry.id).filter(id => id !== dragged.id); if (ids.length !== items.length - 1) return;
-        ids.splice(ids.indexOf(item.id), 0, dragged.id);
-        await boardCall('PATCH', backlogPath(project.id), { ids, expectedBacklogRevision: dragged.revision });
-        announce('Backlog order saved.');
-      });
-    });
-    return row;
-  }));
-  list.scrollTop = scroll;
-  if (focus && action) backlogRow(focus.dataset.backlogId)?.querySelector(`[data-backlog-action="${action}"]`)?.focus({ preventScroll: true });
-  $('#backlog-new').disabled = busy;
-}
-async function runBacklogOperation(project, operation) {
-  if (backlogOperation || backlogBulkJob?.running) return;
-  const operationId = {}; backlogOperation = operationId; $('#backlog-error').hidden = true; renderBoard();
-  try { await operation(); }
-  catch (error) { if (currentProject()?.id === project.id) { $('#backlog-error').textContent = error.message; $('#backlog-error').hidden = false; } }
-  finally { if (backlogOperation === operationId) backlogOperation = null; renderBoard(); }
-}
-function openBacklogDraft(projectId = currentProject()?.id, id = null) {
-  const project = board?.projects.find(row => row.id === projectId);
-  if (!pipelineBacklogSupported || project?.workflowMode !== 'pipeline') return;
-  const item = id ? project.backlog.find(row => row.id === id) : null;
-  if (id && !item) return;
-  backlogDraft = { projectId, item: item ? JSON.parse(JSON.stringify(item)) : null, listRevision: project.backlogRevision, labelRevision: project.labelRevision, labelOrder: [...(item?.labelIds || [])] };
-  $('#backlog-dialog-project').textContent = `${project.name} · Backlog`;
-  $('#backlog-dialog-heading').textContent = item ? 'Edit backlog draft' : 'New backlog draft';
-  $('#backlog-title').value = item?.title || ''; $('#backlog-prompt').value = item?.prompt || '';
-  $('#backlog-priority-field').hidden = !taskPrioritySupported; $('#backlog-priority').value = String(item?.priority || 0);
-  $('#backlog-labels-field').hidden = !taskLabelsSupported;
-  const choices = $('#backlog-label-choices'); choices.replaceChildren();
-  if (taskLabelsSupported) for (const label of projectLabels(project)) {
-    const node = document.createElement('label'), checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.checked = backlogDraft.labelOrder.includes(label.id); checkbox.dataset.labelId = label.id;
-    checkbox.setAttribute('aria-label', `Assign label: ${label.name}`);
-    checkbox.addEventListener('change', () => {
-      if (checkbox.checked && backlogDraft.labelOrder.length >= 20) { checkbox.checked = false; announce('A draft can have up to 20 labels.'); return; }
-      backlogDraft.labelOrder = backlogDraft.labelOrder.filter(id => id !== label.id); if (checkbox.checked) backlogDraft.labelOrder.push(label.id);
-    });
-    node.append(checkbox, labelBadge(label)); choices.append(node);
-  }
-  if (!choices.children.length) choices.append(paragraph('No project labels yet. Manage labels from the Backlog toolbar.', 'note'));
-  $('#backlog-source').textContent = item?.source ? `${sourceSummary(item.source)} · ${cardStatus(item).text}` : '';
-  $('#backlog-reload').textContent = item ? 'Reload draft' : 'Refresh choices'; $('#backlog-draft-error').hidden = true;
-  if (!$('#backlog-dialog').open) $('#backlog-dialog').showModal(); $('#backlog-title').focus();
-}
-async function saveBacklogDraft(event) {
-  event.preventDefault(); const draft = backlogDraft; if (!draft) return;
-  const title = $('#backlog-title').value.trim(), typed = $('#backlog-prompt').value;
-  const error = !title ? 'Enter a short title.' : title.length > 120 ? 'Use a title of at most 120 characters.' : typed.length > MAX_PROMPT_BYTES ? 'The prompt exceeds the 2 MiB limit.' : '';
-  if (error) { $('#backlog-draft-error').textContent = error; $('#backlog-draft-error').hidden = false; return; }
-  // Native textareas normalize newlines; an unchanged prompt keeps its original bytes.
-  const prompt = draft.item && typed === draft.item.prompt.replace(/\r\n?/g, '\n') ? draft.item.prompt : typed;
-  const data = { title, prompt, ...(!$('#backlog-priority-field').hidden ? { priority: Number($('#backlog-priority').value) } : {}),
-    ...(!$('#backlog-labels-field').hidden ? { labelIds: draft.labelOrder, expectedLabelRevision: draft.labelRevision } : {}) };
-  try {
-    await boardCall(draft.item ? 'PATCH' : 'POST', backlogPath(draft.projectId, draft.item?.id), { ...data,
-      ...(draft.item ? { expectedRevision: draft.item.revision } : { expectedBacklogRevision: draft.listRevision, expectedLabelRevision: draft.labelRevision }) });
-    $('#backlog-dialog').close(); announce(`Saved “${title}” in Backlog.`);
-  } catch (error) { $('#backlog-draft-error').textContent = error.message; $('#backlog-draft-error').hidden = false; }
-}
-$('#backlog-new').addEventListener('click', () => openBacklogDraft());
-$('#backlog-sort').addEventListener('change', () => renderBoard());
-$('#backlog-dialog').addEventListener('close', () => {
-  const dialog = $('#backlog-dialog');
-  // Native close events are queued: a subsequent action may have opened a new
-  // draft or moved keyboard focus before this event is dispatched.
-  if (dialog.open) return;
-  const draft = backlogDraft; backlogDraft = null;
-  if (currentProject()?.id === draft?.projectId && (document.activeElement === document.body || dialog.contains(document.activeElement))) {
-    (draft.item && backlogRow(draft.item.id)?.querySelector('[data-backlog-action=edit]') || $('#backlog-new')).focus({ preventScroll: true });
-  }
-});
-for (const id of ['backlog-close', 'backlog-cancel']) $(`#${id}`).addEventListener('click', () => $('#backlog-dialog').close());
-$('#backlog-reload').addEventListener('click', async () => {
-  const draft = backlogDraft; if (!draft) return;
-  const typed = !draft.item ? { title: $('#backlog-title').value, prompt: $('#backlog-prompt').value, priority: $('#backlog-priority').value, labels: [...draft.labelOrder] } : null;
-  try {
-    await boardCall('GET', '/api/board');
-    if (backlogDraft !== draft || !$('#backlog-dialog').open) return;
-    const project = board.projects.find(project => project.id === draft.projectId);
-    if (!project || project.workflowMode !== 'pipeline') throw new Error('This project is unavailable.');
-    if (draft.item && !project.backlog.some(item => item.id === draft.item.id)) throw new Error('This draft is no longer in Backlog. Check the board.');
-    openBacklogDraft(draft.projectId, draft.item?.id);
-    if (typed) {
-      $('#backlog-title').value = typed.title; $('#backlog-prompt').value = typed.prompt; $('#backlog-priority').value = typed.priority;
-      backlogDraft.labelOrder = typed.labels.filter(id => projectLabels(project).some(label => label.id === id));
-      for (const checkbox of $('#backlog-label-choices').querySelectorAll('input')) checkbox.checked = backlogDraft.labelOrder.includes(checkbox.dataset.labelId);
-    }
-  } catch (error) { if (backlogDraft === draft) { $('#backlog-draft-error').textContent = error.message; $('#backlog-draft-error').hidden = false; } }
-});
-bindAsyncForm('#backlog-form', saveBacklogDraft);
-
 // ---- Timeline ----
 // One project's history from the server: recorded moves, runs, evidence, completions, Git commits,
 // and the user's notes. The page never adds events of its own.
 const PROJECT_VIEW_KEY = 'promptboard.project-view';
 const timeline = { projectId: null, events: [], loadedAt: 0, loading: null, editing: null, scrolledFor: null };
 const EVENT_LABELS = { restart: 'Started over', created: 'Created', moved: 'Moved', run: 'Agent run', review: 'Review', tests: 'Tests', pull_request: 'Pull request', completed: 'Completed', commit: 'Commit', note: 'Note' };
-function projectView() { try { const view = localStorage.getItem(PROJECT_VIEW_KEY); return ['timeline', 'backlog'].includes(view) ? view : 'board'; } catch { return 'board'; } }
+function projectView() { try { const view = localStorage.getItem(PROJECT_VIEW_KEY); return view === 'timeline' ? view : 'board'; } catch { return 'board'; } }
 function setProjectView(view) { savePref(PROJECT_VIEW_KEY, view); timeline.loadedAt = 0; renderBoard(); if (view === 'timeline') $('#timeline-track').focus({ preventScroll: true }); }
 $('#view-board').addEventListener('click', () => setProjectView('board'));
 $('#view-timeline').addEventListener('click', () => setProjectView('timeline'));
-$('#view-backlog').addEventListener('click', () => setProjectView('backlog'));
-$('#board-search').addEventListener('input', event => { const project = currentProject(); if (project && pipelineBacklogSupported) { projectSearches.set(project.id, event.currentTarget.value); renderBoard(); } });
 $('#timeline-filter').addEventListener('change', () => renderTimeline(currentProject()));
 
 /** Reload at most every 2 seconds while the timeline is shown; board refreshes call this often. */
@@ -5691,215 +5374,3 @@ $('#usage-dialog').addEventListener('close', () => {
 $('#usage-refresh').addEventListener('click', () => loadUsage(true));
 setInterval(() => { if (!document.hidden) loadUsage(); }, 60000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) loadUsage(); });
-
-// ---- GitHub issue picker: captured project ownership and explicit writes ----
-let backlogImportDraft = null;
-function importOwner(draft) { return board?.projects.find(project => project.id === draft.projectId); }
-function importSources(project) { return (Array.isArray(project?.backlogSources) ? project.backlogSources : []).filter(source => source?.provider === 'github-issues'); }
-function captureImportChoices(draft, project) {
-  draft.sources = structuredClone(importSources(project)); draft.importRevision = project.backlogImportRevision;
-  draft.backlogRevision = project.backlogRevision; draft.labelRevision = project.labelRevision;
-  draft.imported = new Set((project.backlogImported || []).map(row => row.key));
-}
-function importSource(draft) { return draft.sources.find(source => source.id === draft.sourceId); }
-function importError(draft, message, blocked = false) { draft.error = safeText(message, 1000); draft.blocked ||= blocked; renderImportControls(draft); }
-function importVisible(draft) {
-  const query = $('#backlog-import-search').value.trim().toLowerCase(), number = query.replace(/^#/, ''), state = $('#backlog-import-state').value;
-  const type = $('#backlog-import-type').value, assignee = $('#backlog-import-assignee').value, label = $('#backlog-import-label').value;
-  return draft.items.filter(item => (state === 'all' || item.state === state)
-    && (!query || item.title.toLowerCase().includes(query) || String(item.number) === number)
-    && (type === 'all' || type === 'none' && item.type === null || `type:${item.type}` === type)
-    && (assignee === 'all' || assignee === 'none' && !item.assignees.length || item.assignees.some(login => `assignee:${login}` === assignee))
-    && (label === 'all' || item.labels.some(entry => `label:${entry.name}` === label))
-    && (!$('#backlog-import-hide-imported').checked || !draft.imported.has(item.sourceKey)));
-}
-function importSelectedValid(draft) {
-  return draft.selected.size > 0 && [...draft.selected].every(key => {
-    const item = draft.items.find(row => row.sourceKey === key);
-    return item && !draft.imported.has(key) && (item.title.trim().length <= 120 || Boolean(draft.overrides.get(key)?.trim()) && draft.overrides.get(key).trim().length <= 120);
-  });
-}
-function renderImportControls(draft) {
-  if (backlogImportDraft !== draft || !$('#backlog-import-dialog').open) return;
-  const busy = Boolean(draft.mutation || draft.reading), source = importSource(draft), visible = importVisible(draft);
-  const signature = JSON.stringify(draft.sources.map(row => [row.id, row.repository]));
-  const select = $('#backlog-import-source');
-  if (select.dataset.choices !== signature) { select.replaceChildren(...draft.sources.map(row => option(row.id, row.repository))); if (!draft.sources.length) select.append(option('', 'No saved sources')); select.dataset.choices = signature; }
-  if (document.activeElement !== select || !draft.sources.some(row => row.id === select.value)) select.value = draft.sourceId || '';
-  for (const id of ['source', 'connect', 'repository', 'remove-source', 'remove-confirmed', 'keep-source', 'refresh-choices', 'refresh', 'sync', 'previous', 'next', 'select-visible', 'clear']) $(`#backlog-import-${id}`).disabled = busy;
-  select.disabled ||= !draft.sources.length || draft.selected.size > 0; $('#backlog-import-repository').disabled ||= draft.selected.size > 0; $('#backlog-import-remove-source').disabled ||= !source || draft.blocked || draft.selected.size > 0;
-  $('#backlog-import-connect').disabled ||= draft.blocked || draft.selected.size > 0 || !$('#backlog-import-repository').value.trim();
-  $('#backlog-import-refresh').disabled ||= !source;
-  $('#backlog-import-sync').hidden = !pipelineBacklogSourceCacheSupported;
-  $('#backlog-import-sync').disabled ||= !source || draft.selected.size > 0 || draft.blocked || !pipelineBacklogSourceCacheSupported;
-  $('#backlog-import-previous').disabled ||= !source || draft.page <= 1 || draft.selected.size > 0;
-  $('#backlog-import-next').disabled ||= !source || !draft.nextPage || draft.selected.size > 0;
-  $('#backlog-import-select-visible').disabled ||= !visible.some(item => !draft.imported.has(item.sourceKey));
-  $('#backlog-import-clear').disabled ||= !draft.selected.size;
-  $('#backlog-import-submit').disabled = busy || draft.blocked || Boolean(draft.readError) || !importSelectedValid(draft);
-  $('#backlog-import-submit').textContent = `Import (${draft.selected.size})`;
-  $('#backlog-import-close').disabled = $('#backlog-import-cancel').disabled = Boolean(draft.mutation);
-  $('#backlog-import-error').hidden = !draft.error; $('#backlog-import-error').textContent = draft.error || '';
-  $('#backlog-import-progress').textContent = draft.mutation ? 'Saving…' : draft.reading ? 'Reading issues…' : `${visible.length} shown · ${draft.selected.size} selected${draft.selected.size ? ` · ${[...draft.selected].filter(key => !visible.some(item => item.sourceKey === key)).length} hidden` : ''}`;
-  $('#backlog-import-page').textContent = source ? `Page ${draft.page}` : '';
-  $('#backlog-import-freshness').hidden = !source || !draft.cache;
-  $('#backlog-import-freshness').textContent = draft.cache ? `${draft.cache.cached ? 'Cached page' : 'Page checked'} · ${new Date(draft.cache.checkedAt).toLocaleString()}${draft.cache.syncedAt !== null ? ` · Changes checked ${new Date(draft.cache.syncedAt).toLocaleString()}` : ''}${draft.cache.changed !== null ? ` · ${draft.cache.changed} changed issues checked` : ''}. Imported tasks keep their local text; importing checks GitHub again.` : '';
-  $('#backlog-import-remove-confirm').hidden = !draft.removeConfirm;
-  $('#backlog-import-unavailable').hidden = !draft.unavailable && !draft.pageLimitReached;
-  $('#backlog-import-unavailable').textContent = `${draft.unavailable || 0} source rows have unsupported metadata and were excluded.${draft.pageLimitReached ? ' The source page limit has been reached.' : ''}`;
-  $('#backlog-import-empty').hidden = visible.length > 0;
-  $('#backlog-import-empty').textContent = !source ? 'Connect or choose a source to read its issues.' : draft.reading ? 'Reading issues…' : 'No issues match these filters. Refresh page to check for new issues.';
-  for (const control of $('#backlog-import-list').querySelectorAll('input')) control.disabled = busy || draft.imported.has(control.dataset.issueKey);
-}
-function renderImportRows(draft) {
-  if (backlogImportDraft !== draft || !$('#backlog-import-dialog').open) return;
-  const focus = document.activeElement, focusKey = focus?.dataset.issueKey, focusKind = focus?.dataset.issueControl;
-  const source = importSource(draft), rows = importVisible(draft);
-  $('#backlog-import-list').replaceChildren(...rows.map(item => {
-    const row = document.createElement('li'); row.className = 'backlog-import-row'; row.dataset.issueKey = item.sourceKey;
-    const heading = document.createElement('div'); heading.className = 'backlog-import-row-heading';
-    const label = document.createElement('label'), checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.dataset.issueKey = item.sourceKey; checkbox.dataset.issueControl = 'select'; checkbox.checked = draft.selected.has(item.sourceKey); checkbox.disabled = draft.imported.has(item.sourceKey);
-    checkbox.setAttribute('aria-label', `Select issue #${item.number}: ${item.title}`);
-    checkbox.addEventListener('change', () => { if (draft.mutation || draft.reading || draft.imported.has(item.sourceKey)) return; if (checkbox.checked) draft.selected.add(item.sourceKey); else draft.selected.delete(item.sourceKey); renderImportControls(draft); });
-    const title = document.createElement('span'); title.textContent = item.title; label.append(checkbox, ' ', title);
-    const link = externalLink(`https://github.com/${source.repository}/issues/${item.number}`, `#${item.number}`); link.setAttribute('aria-label', `Open GitHub issue #${item.number}`); heading.append(label, link); row.append(heading);
-    row.append(paragraph(`${item.state === 'closed' ? 'Closed' : 'Open'}${item.type ? ' · ' + item.type : ''}${draft.imported.has(item.sourceKey) ? ' · Imported ✓' : ''}${item.assignees.length ? ' · ' + item.assignees.join(', ') : ''}`, 'note'));
-    if (item.labels.length) row.append(paragraph(item.labels.map(entry => entry.name).join(' · '), 'note'));
-    if (item.prompt) row.append(paragraph(item.prompt.slice(0, 2000), 'backlog-import-preview'));
-    if (item.title.trim().length > 120 && !draft.imported.has(item.sourceKey)) {
-      const field = document.createElement('label'); field.className = 'field-label'; field.append('Short board title (original title is retained)');
-      const input = document.createElement('input'); input.maxLength = 120; input.value = draft.overrides.get(item.sourceKey) || ''; input.dataset.issueKey = item.sourceKey; input.dataset.issueControl = 'title';
-      input.addEventListener('input', () => { draft.overrides.set(item.sourceKey, input.value); renderImportControls(draft); }); field.append(input); row.append(field);
-    }
-    row.addEventListener('click', event => { if (!event.target.closest('a,button,input,select,textarea,label') && !checkbox.disabled) checkbox.click(); });
-    return row;
-  }));
-  if (focusKey && focusKind) [...$('#backlog-import-list').querySelectorAll('input')].find(node => node.dataset.issueKey === focusKey && node.dataset.issueControl === focusKind)?.focus({ preventScroll: true });
-  renderImportControls(draft);
-}
-function importFilterOptions(draft) {
-  for (const [id, choices] of [
-    ['type', [['all','All types'],['none','No type'], ...[...new Set(draft.items.map(item => item.type).filter(Boolean))].sort().map(value => ['type:'+value,value])]],
-    ['assignee', [['all','All assignees'],['none','Unassigned'], ...[...new Set(draft.items.flatMap(item => item.assignees))].sort().map(value => ['assignee:'+value,value])]],
-    ['label', [['all','All labels'], ...[...new Set(draft.items.flatMap(item => item.labels.map(label => label.name)))].sort().map(value => ['label:'+value,value])]],
-  ]) {
-    const select = $(`#backlog-import-${id}`), selected = select.value; select.replaceChildren(...choices.map(([value,name]) => option(value,name))); select.value = choices.some(([value]) => value === selected) ? selected : 'all';
-  }
-}
-async function readImportPage(draft, page = draft.page, mode = 'cached') {
-  if (backlogImportDraft !== draft || draft.mutation || draft.reading) return;
-  const source = importSource(draft); if (!source) return;
-  if (mode === 'sync' && (!pipelineBacklogSourceCacheSupported || draft.selected.size || draft.blocked)) return;
-  draft.controller?.abort(); const controller = new AbortController(); draft.controller = controller; draft.reading = true; draft.error = ''; renderImportControls(draft);
-  try {
-    const cachedPath = `${backlogPath(draft.projectId)}/sources/${encodeURIComponent(source.id)}`;
-    const path = !pipelineBacklogSourceCacheSupported ? `${backlogPath(draft.projectId)}/import/github-issues?repository=${encodeURIComponent(source.repository)}&state=all&page=${page}`
-      : mode === 'sync' ? cachedPath + '/sync' : `${cachedPath}/preview?state=all&page=${page}${mode === 'refresh' ? '&refresh=1' : ''}`;
-    const { response, data } = await api(path, { signal: controller.signal, timeoutMs: 40000,
-      ...(mode === 'sync' ? { method: 'POST', body: { expectedImportRevision: draft.importRevision } } : {}) });
-    if (backlogImportDraft !== draft || controller.signal.aborted) return;
-    if (!response.ok) throw new Error(typeof data.error === 'string' ? data.error : 'The source page could not be read.');
-    if (data.source?.repository !== source.repository || !Array.isArray(data.items) || data.items.some(item => !item || typeof item.title !== 'string' || typeof item.prompt !== 'string' || !Array.isArray(item.labels) || !Array.isArray(item.assignees) || !Number.isSafeInteger(item.id) || item.id < 1 || !Number.isSafeInteger(item.number) || item.number < 1 || !['open','closed'].includes(item.state) || item.type !== null && typeof item.type !== 'string' || item.labels.some(label => !label || typeof label.name !== 'string') || item.assignees.some(login => typeof login !== 'string') || item.sourceKey !== `github:issue:${item.id}`)) throw new Error('The source returned an invalid issue page.');
-    const oldKeys = new Set(data.items.map(item => item.sourceKey));
-    for (const key of draft.selected) if (!oldKeys.has(key)) draft.selected.delete(key);
-    draft.items = data.items; draft.page = page; draft.nextPage = data.nextPage; draft.unavailable = Array.isArray(data.unavailable) ? data.unavailable.length : 0; draft.pageLimitReached = data.pageLimitReached === true; draft.readError = false;
-    draft.cache = data.cache && Number.isSafeInteger(data.cache.checkedAt) && data.cache.checkedAt >= 0 && typeof data.cache.cached === 'boolean'
-      ? { cached: data.cache.cached, checkedAt: data.cache.checkedAt, syncedAt: Number.isSafeInteger(data.cache.syncedAt) && data.cache.syncedAt >= 0 ? data.cache.syncedAt : null, changed: Number.isSafeInteger(data.cache.changed) && data.cache.changed >= 0 ? data.cache.changed : null } : null;
-    importFilterOptions(draft); renderImportRows(draft);
-  } catch (error) { if (backlogImportDraft === draft && !controller.signal.aborted) { draft.readError = true; importError(draft, error.message); } }
-  finally { if (backlogImportDraft === draft && draft.controller === controller) { draft.reading = false; renderImportControls(draft); } }
-}
-function openBacklogImport() {
-  const project = currentProject(); if (!pipelineBacklogImportsSupported || project?.workflowMode !== 'pipeline' || backlogOperation || backlogBulkJob?.running) return;
-  if (backlogImportDraft?.mutation) return;
-  backlogImportDraft?.controller?.abort();
-  const draft = { projectId: project.id, projectName: project.name, items: [], selected: new Set(), overrides: new Map(), sourceId: null, page: 1, nextPage: null, error: '', blocked: false, reading: false, mutation: false, removeConfirm: false };
-  captureImportChoices(draft, project); draft.sourceId = draft.sources[0]?.id || null; backlogImportDraft = draft;
-  $('#backlog-import-project').textContent = `${project.name} · Backlog`; $('#backlog-import-repository').value = ''; $('#backlog-import-search').value = ''; $('#backlog-import-state').value = 'open'; $('#backlog-import-hide-imported').checked = true;
-  for (const id of ['type','assignee','label']) $(`#backlog-import-${id}`).value = 'all';
-  importFilterOptions(draft); $('#backlog-import-dialog').showModal(); renderImportRows(draft);
-  if (draft.sourceId) { $('#backlog-import-source').focus(); readImportPage(draft, 1); } else $('#backlog-import-repository').focus();
-}
-async function runImportWrite(draft, operation) {
-  if (backlogImportDraft !== draft || draft.mutation || draft.reading || draft.blocked) return;
-  draft.mutation = true; draft.error = ''; renderImportControls(draft); let success = false;
-  try { await operation(); success = true; }
-  catch (error) {
-    if (backlogImportDraft === draft) {
-      const review = !error.status || error.status >= 500 || ['BACKLOG_IMPORT_REVISION_CONFLICT','BACKLOG_REVISION_CONFLICT','LABEL_REVISION_CONFLICT','REVISION_CONFLICT','NOT_FOUND','STATE_WRITE_FAILED'].includes(error.code);
-      importError(draft, `${error.message}${review ? ' Refresh choices to check the saved result before another write.' : ''}`, review);
-    }
-  }
-  finally { if (backlogImportDraft === draft) { draft.mutation = false; renderImportRows(draft); } }
-  return success;
-}
-$('#backlog-import').addEventListener('click', openBacklogImport);
-$('#backlog-import-repository').addEventListener('input', () => { if (backlogImportDraft) renderImportControls(backlogImportDraft); });
-$('#backlog-import-connect-form').addEventListener('submit', async event => {
-  event.preventDefault(); const draft = backlogImportDraft; if (!draft || draft.selected.size || !$('#backlog-import-repository').value.trim()) return;
-  const connected = await runImportWrite(draft, async () => {
-    const result = await boardCall('POST', backlogPath(draft.projectId) + '/sources/github-issues', { repository: $('#backlog-import-repository').value, expectedImportRevision: draft.importRevision });
-    const owner = importOwner(draft), wasKnown = draft.sources.some(source => source.id === result.source?.id);
-    if (!owner || owner.backlogImportRevision !== draft.importRevision + (wasKnown ? 0 : 1) || !importSources(owner).some(source => source.id === result.source?.id)) throw new Error('The source reply is not confirmed. Review the saved sources.');
-    if (backlogImportDraft !== draft) return;
-    captureImportChoices(draft, owner); draft.sourceId = result.source.id; draft.items = []; draft.cache = null; draft.page = 1; draft.nextPage = null; draft.selected.clear(); draft.removeConfirm = false; $('#backlog-import-repository').value = ''; renderImportRows(draft);
-  });
-  if (connected && backlogImportDraft === draft && !draft.blocked) await readImportPage(draft, 1);
-});
-$('#backlog-import-source').addEventListener('change', async event => {
-  const draft = backlogImportDraft; if (!draft || draft.mutation || draft.reading || draft.selected.size) { if (draft) event.currentTarget.value = draft.sourceId || ''; return; }
-  draft.sourceId = event.currentTarget.value; draft.items = []; draft.cache = null; draft.page = 1; draft.nextPage = null; draft.removeConfirm = false; draft.readError = false; renderImportRows(draft); await readImportPage(draft, 1);
-});
-$('#backlog-import-refresh-choices').addEventListener('click', async () => {
-  const draft = backlogImportDraft; if (!draft || draft.mutation || draft.reading) return;
-  try {
-    await boardCall('GET', '/api/board'); if (backlogImportDraft !== draft) return;
-    const owner = importOwner(draft); if (!owner || owner.workflowMode !== 'pipeline') throw new Error('This project is unavailable.');
-    captureImportChoices(draft, owner); draft.blocked = false; draft.error = ''; draft.removeConfirm = false;
-    for (const key of draft.selected) if (draft.imported.has(key)) draft.selected.delete(key);
-    if (!importSource(draft)) { draft.sourceId = draft.sources[0]?.id || null; draft.items = []; draft.cache = null; draft.page = 1; draft.nextPage = null; draft.selected.clear(); }
-    renderImportRows(draft);
-  } catch (error) { if (backlogImportDraft === draft) importError(draft, error.message, true); }
-});
-for (const id of ['search','state','type','assignee','label','hide-imported']) $(`#backlog-import-${id}`).addEventListener(id === 'search' ? 'input' : 'change', () => { if (backlogImportDraft) renderImportRows(backlogImportDraft); });
-$('#backlog-import-select-visible').addEventListener('click', () => { const draft = backlogImportDraft; if (!draft || draft.mutation || draft.reading) return; for (const item of importVisible(draft)) if (!draft.imported.has(item.sourceKey)) draft.selected.add(item.sourceKey); renderImportRows(draft); });
-$('#backlog-import-clear').addEventListener('click', () => { const draft = backlogImportDraft; if (!draft || draft.mutation || draft.reading) return; draft.selected.clear(); renderImportRows(draft); });
-$('#backlog-import-refresh').addEventListener('click', () => { if (backlogImportDraft) readImportPage(backlogImportDraft, backlogImportDraft.page, 'refresh'); });
-$('#backlog-import-sync').addEventListener('click', () => { if (backlogImportDraft) readImportPage(backlogImportDraft, 1, 'sync'); });
-$('#backlog-import-previous').addEventListener('click', () => { const draft = backlogImportDraft; if (draft && !draft.selected.size && draft.page > 1) readImportPage(draft, draft.page - 1); });
-$('#backlog-import-next').addEventListener('click', () => { const draft = backlogImportDraft; if (draft && !draft.selected.size && draft.nextPage) readImportPage(draft, draft.nextPage); });
-$('#backlog-import-remove-source').addEventListener('click', () => { const draft = backlogImportDraft; if (!draft || draft.mutation || draft.reading || draft.blocked || draft.selected.size || !importSource(draft)) return; draft.removeConfirm = true; renderImportControls(draft); $('#backlog-import-keep-source').focus(); });
-$('#backlog-import-keep-source').addEventListener('click', () => { const draft = backlogImportDraft; if (!draft || draft.mutation) return; draft.removeConfirm = false; renderImportControls(draft); $('#backlog-import-remove-source').focus(); });
-$('#backlog-import-remove-confirmed').addEventListener('click', () => {
-  const draft = backlogImportDraft, source = draft && importSource(draft); if (!source || !draft.removeConfirm || draft.selected.size) return;
-  runImportWrite(draft, async () => {
-    const result = await boardCall('DELETE', backlogPath(draft.projectId) + '/sources/' + encodeURIComponent(source.id), { expectedImportRevision: draft.importRevision });
-    const owner = importOwner(draft); if (result.deleted !== true || !owner || owner.backlogImportRevision !== draft.importRevision + 1 || importSources(owner).some(row => row.id === source.id)) throw new Error('Source removal is not confirmed. Review saved sources.');
-    if (backlogImportDraft !== draft) return;
-    captureImportChoices(draft, owner); draft.sourceId = draft.sources[0]?.id || null; draft.items = []; draft.cache = null; draft.selected.clear(); draft.page = 1; draft.nextPage = null; draft.removeConfirm = false;
-  });
-});
-$('#backlog-import-submit').addEventListener('click', () => {
-  const draft = backlogImportDraft, source = draft && importSource(draft); if (!source || draft.readError || !importSelectedValid(draft)) return;
-  const keys = [...draft.selected], titleOverrides = Object.fromEntries(keys.filter(key => draft.overrides.has(key)).map(key => [key, draft.overrides.get(key)]));
-  runImportWrite(draft, async () => {
-    const result = await boardCall('POST', backlogPath(draft.projectId) + '/sources/' + encodeURIComponent(source.id) + '/import', { keys, state: 'all', page: draft.page, titleOverrides,
-      expectedImportRevision: draft.importRevision, expectedBacklogRevision: draft.backlogRevision, expectedLabelRevision: draft.labelRevision });
-    if (!Array.isArray(result.created) || !Array.isArray(result.skipped)) throw new Error('The import reply is not confirmed. Review Backlog.');
-    const confirmed = [...result.created.map(item => `github:issue:${item.externalSource?.id}`), ...result.skipped.map(item => item.key)];
-    const owner = importOwner(draft), added = result.created.length > 0 ? 1 : 0;
-    if (confirmed.length !== keys.length || keys.some(key => !confirmed.includes(key)) || !owner || owner.backlogImportRevision !== draft.importRevision + added || owner.backlogRevision !== draft.backlogRevision + added
-      || result.importRevision !== owner.backlogImportRevision || result.backlogRevision !== owner.backlogRevision || result.labelRevision !== owner.labelRevision) throw new Error('The import result changed before confirmation. Review Backlog.');
-    const ledger = new Map((owner.backlogImported || []).map(row => [row.key, row.taskId]));
-    if (result.created.some(item => ledger.get(`github:issue:${item.externalSource?.id}`) !== item.id || !owner.backlog.some(row => row.id === item.id)) || result.skipped.some(item => ledger.get(item.key) !== item.taskId)) throw new Error('The saved import identities are not confirmed. Review Backlog.');
-    if (backlogImportDraft !== draft) return;
-    captureImportChoices(draft, owner); draft.selected.clear(); draft.error = ''; announce(`Imported ${result.created.length} issues into ${draft.projectName} Backlog; ${result.skipped.length} already imported.`);
-  });
-});
-for (const id of ['close','cancel']) $(`#backlog-import-${id}`).addEventListener('click', () => { if (!backlogImportDraft?.mutation) $('#backlog-import-dialog').close(); });
-$('#backlog-import-dialog').addEventListener('cancel', event => { if (backlogImportDraft?.mutation) event.preventDefault(); });
-$('#backlog-import-dialog').addEventListener('close', () => {
-  const dialog = $('#backlog-import-dialog'); if (dialog.open) return;
-  const draft = backlogImportDraft; backlogImportDraft = null; draft?.controller?.abort();
-  if (document.activeElement === document.body || dialog.contains(document.activeElement)) $('#backlog-import').focus({ preventScroll: true });
-});
