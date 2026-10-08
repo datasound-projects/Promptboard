@@ -27,7 +27,7 @@ export class OriginError extends Error {
 
 // Uppercase letters and "_" are escaped so IDs that differ only in case never share a file on
 // case-insensitive file systems; the prefix avoids reserved device names on Windows.
-const escapeId = id => id.replace(/[A-Z_]/g, character => `_${character === '_' ? '_' : character.toLowerCase()}`);
+export const escapeId = id => id.replace(/[A-Z_]/g, character => `_${character === '_' ? '_' : character.toLowerCase()}`);
 function validId(id, message = 'Choose a valid project.') {
   if (typeof id !== 'string' || !Model.ID.test(id)) throw new OriginError(message, 'INVALID_PROJECT');
   return id;
@@ -485,7 +485,7 @@ async function createKanban(board, name) {
  * (PATCH). /link connects a Kanban project; /delete removes the Origin project and, only when asked,
  * the linked Kanban project through Kanban's own deletion checks.
  */
-export async function originRoute({ origin, board, req, res, pathname, jsonBody, send }) {
+export async function originRoute({ origin, contexts, board, req, res, pathname, jsonBody, send }) {
   const kanban = async () => (await board.state()).projects;
   const body = async () => {
     const value = await jsonBody(req, BODY_LIMIT);
@@ -565,6 +565,7 @@ export async function originRoute({ origin, board, req, res, pathname, jsonBody,
       kanbanDeleted = true;
     }
     await origin.remove(originId, { expectedRevision: record.revision });
+    await contexts?.archive(originId).catch(() => {}); // Kept in origin/deleted/; Base copies stay usable.
     return send(res, 200, { deleted: true, kanbanDeleted });
   }
   return send(res, 404, { error: 'This Origin route does not exist.' });

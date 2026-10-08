@@ -10,23 +10,7 @@ window.PromptboardOrigin = (() => {
   const SAVE_DELAY = 700, SAVE_MAX_WAIT = 3000;
   const NODE_W = 184, NODE_H = 58, GAP_X = 270, GAP_Y = 100;
   // Built-in guiding questions. Each project can reword them; the wording never changes what a section does.
-  const QUESTION = {
-    overview: 'Your whole project on one map. Click any branch to work on it.',
-    vision: 'Why does this exist, and who is it for?',
-    requirements: 'What must it do — and how will you know it works?',
-    architecture: 'What are the building blocks, and how do they connect?',
-    technology: 'What will you build it with, and why?',
-    dependencies: 'What does it rely on that you do not build yourself?',
-    data: 'What data does it handle, and where does it live?',
-    ai: 'Where does AI help, and how is it kept in check?',
-    security: 'How is it protected?',
-    testing: 'How will you prove it works?',
-    deployment: 'Where and how does it run?',
-    observability: 'How will you see what is happening?',
-    research: 'What did you check, what are you assuming, and what could go wrong?',
-    decisions: 'What have you decided, and why?',
-    plan: 'What needs to be built, and where?',
-  };
+  const QUESTION = M.QUESTIONS;
   const MAP_LEFT = ['vision', 'requirements', 'architecture', 'technology', 'dependencies', 'data', 'ai'];
   const MAP_RIGHT = ['security', 'testing', 'deployment', 'observability', 'research', 'decisions', 'plan'];
   const NOUN = { requirements: 'Requirement', components: 'Component', connections: 'Connection', technologies: 'Technology', dependencies: 'Dependency', decisions: 'Decision',
@@ -804,8 +788,8 @@ window.PromptboardOrigin = (() => {
         title: ['name', 'Component name'],
         essentials: [field('Type', select(item, 'type', M.ENUMS.componentType, { structure: true })),
           bp().layers.length ? field('Layer', select(item, 'layerId', [['', 'No layer'], ...bp().layers.map(layer => [layer.id, layer.name || 'Unnamed layer'])], { structure: true })) : null,
-          ask(item, 'purpose', 'What it does', 'Its job in one or two sentences'), group('Connects to', connectionsEditor(item)), group('Tasks', componentTasks(item)), componentQuestions(item)].filter(Boolean),
-        more: [ask(item, 'responsibilities', 'Responsibilities', 'One per line'), ask(item, 'interfaces', 'Interfaces', 'APIs, events, files…'), ask(item, 'dataHandled', 'Data it handles'),
+          ask(item, 'purpose', M.COMPONENT_FIELDS.purpose, 'Its job in one or two sentences'), group('Connects to', connectionsEditor(item)), group('Tasks', componentTasks(item)), componentQuestions(item)].filter(Boolean),
+        more: [ask(item, 'responsibilities', M.COMPONENT_FIELDS.responsibilities, 'One per line'), ask(item, 'interfaces', M.COMPONENT_FIELDS.interfaces, 'APIs, events, files…'), ask(item, 'dataHandled', M.COMPONENT_FIELDS.dataHandled),
           group('Technologies', linkChips(item, 'technologyIds', 'technologies', { empty: 'Add technologies in Technology first.' })), field('Status', select(item, 'status', M.ENUMS.itemStatus)), field('Notes', area(item, 'notes')), evidence(item)],
       }),
       technologies: item => ({
@@ -1028,10 +1012,11 @@ window.PromptboardOrigin = (() => {
           box.addEventListener('click', event => { if (event.target === box) control.focus(); });
           return box;
         };
-        grid.append(question('summary', 'In one sentence, what is it?', 'A web app that…', true), question('problem', 'What problem does it solve?', 'What is broken or missing today'),
-          question('goal', 'What is the goal?', 'What changes once it exists'), question('users', 'Who is it for?', 'One group per line'), question('useCases', 'What will they do with it?', 'One use case per line'),
-          question('inScope', 'What is included?', 'One item per line'), question('outOfScope', 'What is not included?', 'One item per line — agents get this as a guardrail'),
-          question('successCriteria', 'How will you know it worked?', 'Observable outcomes, one per line'), question('constraints', 'Any limits?', 'Budget, deadlines, platforms, compliance…'));
+        const V = M.VISION_QUESTIONS;
+        grid.append(question('summary', V.summary, 'A web app that…', true), question('problem', V.problem, 'What is broken or missing today'),
+          question('goal', V.goal, 'What changes once it exists'), question('users', V.users, 'One group per line'), question('useCases', V.useCases, 'One use case per line'),
+          question('inScope', V.inScope, 'One item per line'), question('outOfScope', V.outOfScope, 'One item per line — agents get this as a guardrail'),
+          question('successCriteria', V.successCriteria, 'Observable outcomes, one per line'), question('constraints', V.constraints, 'Budget, deadlines, platforms, compliance…'));
         return [grid];
       },
       requirements: () => [quickAdd('Add a requirement — e.g. “People can sign in with email”', value => add('requirements', BLANK.requirements(value), { keyed: true })),

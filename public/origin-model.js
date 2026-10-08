@@ -52,6 +52,27 @@ globalThis.PromptboardOriginModel = (() => {
   // Records a task can link through More details, beyond its components, requirements and prerequisites.
   const CONTEXT_COLLECTIONS = ['decisions', 'technologies', 'dependencies', 'areas', 'sources', 'assumptions', 'risks', 'customSections'];
   const QUESTION_KEY = /^(section|vision|topic|field):[A-Za-z0-9_:-]{1,100}$/;
+  // Built-in wording shown in Origin. Each project can reword it (questionText); the wording never changes what a section does.
+  const QUESTIONS = {
+    overview: 'Your whole project on one map. Click any branch to work on it.',
+    vision: 'Why does this exist, and who is it for?',
+    requirements: 'What must it do — and how will you know it works?',
+    architecture: 'What are the building blocks, and how do they connect?',
+    technology: 'What will you build it with, and why?',
+    dependencies: 'What does it rely on that you do not build yourself?',
+    data: 'What data does it handle, and where does it live?',
+    ai: 'Where does AI help, and how is it kept in check?',
+    security: 'How is it protected?',
+    testing: 'How will you prove it works?',
+    deployment: 'Where and how does it run?',
+    observability: 'How will you see what is happening?',
+    research: 'What did you check, what are you assuming, and what could go wrong?',
+    decisions: 'What have you decided, and why?',
+    plan: 'What needs to be built, and where?',
+  };
+  const VISION_QUESTIONS = { summary: 'In one sentence, what is it?', problem: 'What problem does it solve?', goal: 'What is the goal?', users: 'Who is it for?', useCases: 'What will they do with it?',
+    inScope: 'What is included?', outOfScope: 'What is not included?', successCriteria: 'How will you know it worked?', constraints: 'Any limits?', architectureSummary: 'Architecture summary' };
+  const COMPONENT_FIELDS = { purpose: 'What it does', responsibilities: 'Responsibilities', interfaces: 'Interfaces', dataHandled: 'Data it handles' };
   const KEYS = { requirements: 'REQ', decisions: 'ADR', items: 'IMP' };
 
   class OriginModelError extends Error { constructor(message) { super(message); this.code = 'ORIGIN_INVALID'; this.status = 400; } }
@@ -770,7 +791,7 @@ globalThis.PromptboardOriginModel = (() => {
 
 
 
-  return { SCHEMA, VERSION, ID, PHASES, SECTIONS, ENUMS, AREAS, VISION, LIMITS, KEYS, CONTEXT_COLLECTIONS, QUESTION_KEY, SECTION_STATE, VERIFICATION_LABELS, OriginModelError,
+  return { SCHEMA, VERSION, ID, PHASES, SECTIONS, ENUMS, AREAS, VISION, LIMITS, KEYS, CONTEXT_COLLECTIONS, QUESTION_KEY, QUESTIONS, VISION_QUESTIONS, COMPONENT_FIELDS, SECTION_STATE, VERIFICATION_LABELS, OriginModelError,
     label, sectionLabel, sectionTitle, phaseTitle, phaseList, questionText, lines, emptyBlueprint, nextKey, normalizeBlueprint, verification, isStarted, itemName, issues, readiness, sectionStates,
     composeSpec, orderItems, taskHome, taskContext, taskBody, suggestionBrief, CONTEXT_LIMIT };
 })();

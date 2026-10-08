@@ -32,6 +32,7 @@ import { RepositoryPipelineError } from './pipeline-repository.mjs';
 import { inspectWorkspace, saveWorkspaceFile, WorkspaceFileError } from './workspace-files.mjs';
 import { proposeWorkspaceFile, validateFileProposalRequest } from './workspace-file-ai.mjs';
 import { OriginError, OriginStore, originRoute } from './origin.mjs';
+import { ContextStore, contextRoute } from './origin-context.mjs';
 
 const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
 const assets = new Map([
@@ -327,6 +328,7 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
   };
   // Origin projects live in their own files; Kanban changes go only through the board service.
   const origin = new OriginStore(dataDir, { kanbanProjects: async () => (await board.state()).projects });
+  const contexts = new ContextStore(dataDir);
   const baseRoutes = new BaseRoutes({ board, runner, claim, track, catalog: getCatalog, send, jsonBody, ...(mcpTester ? { mcpTester } : {}), imageGenerator });
   let composeContext;
   const getCompose = () => composeContext ??= import('./compose-context.mjs').then(({ ComposeContext }) => new ComposeContext(composeMcp ? { mcp: composeMcp } : {}));
@@ -374,7 +376,8 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
       return send(res, 404, { error: 'This Base route does not exist.' });
     }
     if (/^\/api\/origin(?:\/|$)/.test(pathname)) {
-      try { return await originRoute({ origin, board, req, res, pathname, jsonBody, send }); }
+      const route = /^\/api\/origin\/projects\/[^/]+\/document(?:\/|$)/.test(pathname) ? contextRoute : originRoute;
+      try { return await route({ origin, contexts, board, req, res, pathname, jsonBody, send }); }
       catch (error) {
         const known = error instanceof OriginError || error?.code === 'ORIGIN_INVALID' || error instanceof StoreError || (error?.status >= 400 && error.status < 500);
         return send(res, known ? error.status || 500 : 500, known ? { error: error.message, code: error.code || 'INVALID_REQUEST' } : { error: 'The blueprint request failed. Board, Compose and Base data are unchanged.', code: 'ORIGIN_FAILED' });
