@@ -49,15 +49,15 @@ test('Coordinator panel: one-click open and close next to Autopilot, remembered 
   await click('#coordinator-ask');
   await wait(`document.querySelector('#coordinator-question')`, 'chat');
   await ev(`const q = document.querySelector('#coordinator-question'); q.value = 'What is the status of checkout?'; q.dispatchEvent(new Event('input', { bubbles: true })); document.querySelector('#coordinator-send').click();`);
-  await wait(`document.querySelectorAll('.coordinator-message.coordinator').length === 1`, 'answer');
+  await wait(`document.querySelectorAll('.coordinator-message.is-coordinator').length === 1`, 'answer');
   assert.equal(calls.length, 1);
-  assert.deepEqual(await ev(`return [...document.querySelectorAll('.coordinator-message.coordinator .coordinator-ref')].map(b => b.textContent);`), ['#1'], 'only real references become links');
-  assert.match(await ev(`return document.querySelector('.coordinator-message.coordinator').textContent;`), /\[T42\]/);
-  await click('.coordinator-message.coordinator .coordinator-ref');
+  assert.deepEqual(await ev(`return [...document.querySelectorAll('.coordinator-message.is-coordinator .coordinator-ref')].map(b => b.textContent);`), ['#1'], 'only real references become links');
+  assert.match(await ev(`return document.querySelector('.coordinator-message.is-coordinator').textContent;`), /\[T42\]/);
+  await click('.coordinator-message.is-coordinator .coordinator-ref');
   await wait(`document.querySelector('#task-dialog').open && document.querySelector('#task-dialog-heading').textContent === 'Checkout flow'`, 'reference opens the card');
   // From a card: Ask Coordinator about it.
   await ev(`[...document.querySelectorAll('#task-dialog button')].find(b => b.textContent === 'Ask Coordinator about this card').click();`);
-  await wait(`!document.querySelector('#task-dialog').open && document.querySelector('#coordinator-scope').value === 'task' && document.querySelector('#coordinator-target').value === ${JSON.stringify(card.id)}`, 'card scope');
+  await wait(`!document.querySelector('#task-dialog').open && document.querySelector('#coordinator-scope [aria-pressed="true"]').dataset.scope === 'task' && document.querySelector('#coordinator-target').value === ${JSON.stringify(card.id)}`, 'card scope');
   // Off: knowledge kept, no asking, remembered after reload; on again.
   await click('#coordinator-enabled');
   await wait(`document.querySelector('#coordinator').dataset.mode === 'off' && !document.querySelector('#coordinator-ask')`, 'off');
