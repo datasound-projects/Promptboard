@@ -174,7 +174,9 @@ function configuration(kind, value = {}) {
     if (source.kind === 'knowledge') return { kind: source.kind, resourceId: id(source.resourceId), ...(source.pageId ? { pageId: id(source.pageId) } : {}) };
     if (source.kind === 'url') return { kind: source.kind, url: endpoint(source.url, 'Documentation URL') };
     return { kind: source.kind, path: !source.path || source.path === '.' ? '.' : filePath(source.path), ...(source.kind === 'external' ? { rootId: id(source.rootId, 'Approved root ID') } : {}) };
-  }), budgetChars: integer(value.budgetChars, 24000, 1000, 100000, 'Context budget'), maxFiles: integer(value.maxFiles, 30, 1, 100, 'File limit'), query: string(value.query, 500, 'Retrieval query') };
+  }), budgetChars: integer(value.budgetChars, 24000, 1000, 100000, 'Context budget'), maxFiles: integer(value.maxFiles, 30, 1, 100, 'File limit'), query: string(value.query, 500, 'Retrieval query'),
+    // A complete selection (such as chosen Project Context sections) is supplied whole or not at all.
+    ...(value.complete === true ? { complete: true } : {}) };
 }
 /** References used for graph validation and dependency closure; bindings remain distinct from provider settings. */
 export function resourceReferences(resource) {

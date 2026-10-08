@@ -14,6 +14,7 @@ import { copyFile, mkdir, open, readdir, readFile, rename, rm, stat } from 'node
 import { join } from 'node:path';
 import { redactLocal } from './compose-local.mjs';
 import { ORIGIN_DIR, OriginError, escapeId } from './origin.mjs';
+import { listTargets } from './base.mjs';
 
 const Model = globalThis.PromptboardOriginModel;
 export const FORMAT_VERSION = 1;
@@ -559,9 +560,10 @@ function currentSourceHash(record) {
 /**
  * GET the document (with Origin-changed status), POST to create it from the saved blueprint, PUT edited
  * Markdown, POST /regenerate for a candidate, POST /candidate to use or drop it, GET /versions/:id to read
- * an older version. Every change needs the revision the person last saw; nothing writes the blueprint.
+ * an older version, POST /base to save a Base copy and POST /kanban to supply sections to one Kanban scope.
+ * Every change needs the revision the person last saw; nothing writes the blueprint.
  */
-export async function contextRoute({ origin, contexts, req, res, pathname, jsonBody, send, destinations = {} }) {
+export async function contextRoute({ origin, contexts, board, req, res, pathname, jsonBody, send }) {
   const match = pathname.match(/^\/api\/origin\/projects\/([A-Za-z0-9_-]{1,100})\/document(?:\/(regenerate|candidate|base|kanban)|\/versions\/([A-Za-z0-9_-]{1,100}))?$/);
   if (!match) return send(res, 404, { error: 'This Origin route does not exist.' });
   const [, originId, action, versionId] = match, method = req.method;
@@ -613,6 +615,175 @@ export async function contextRoute({ origin, contexts, req, res, pathname, jsonB
     await contexts.resolve(originId, { expectedRevision: input.expectedRevision, use: input.use });
     return reply(await contexts.read(originId));
   }
-  if ((action === 'base' || action === 'kanban') && method === 'POST' && destinations[action]) return destinations[action]({ originId, input: await body(), contexts, saved, send, res });
+  if ((action === 'base' || action === 'kanban') && method === 'POST') {
+    const input = await body();
+    try { return send(res, 200, await (action === 'base' ? saveInBase : useInKanban)({ board, originId, input, contexts, saved })); }
+    catch (error) {
+      if (!error.copies && error.chars === undefined) throw error;
+      return send(res, error.status, { error: error.message, code: error.code, ...(error.copies ? { copies: error.copies } : {}), ...(error.chars !== undefined ? { chars: error.chars } : {}) });
+    }
+  }
   return send(res, 404, { error: 'This Origin route does not exist.' });
+}
+
+// ---- Destinations: a Base copy, and Kanban scopes through Base ----
+
+export const PAGE_BYTES = 250_000; // Below Base's per-page text limit and its per-file capture limit.
+export const RUN_CONTEXT_CHARS = 48_000; // What one run supplies from Base in total (prepareBase default).
+const SECTION_ANCHOR = /^<a id="ctx-(phase-[A-Za-z0-9_-]+|section-[A-Za-z0-9_-]+|report|layout)"><\/a>[ \t]*$/;
+
+/**
+ * Split Markdown into Base pages at the document's section anchors (outside code fences), so the pages
+ * joined in order are exactly the file. A phase heading travels with its first section. Pages larger than
+ * PAGE_BYTES are cut at line ends. Edited documents without anchors become one page (or several parts).
+ */
+export function contextPages(text) {
+  const lines = text.match(/[^\n]*\n|[^\n]+$/g) || [];
+  const cuts = [[0, 'header']]; let fence = null, offset = 0, phaseOpen = false;
+  for (const line of lines) {
+    const plain = line.replace(/\n$/, ''), marker = plain.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+    if (fence) { if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length && !marker[2].trim()) fence = null; }
+    else if (marker) fence = marker[1];
+    else {
+      const anchor = plain.match(SECTION_ANCHOR);
+      if (anchor && offset > 0) {
+        if (anchor[1].startsWith('section-') && phaseOpen) cuts.at(-1)[1] = anchor[1];
+        else cuts.push([offset, anchor[1]]);
+        phaseOpen = anchor[1].startsWith('phase-');
+      }
+    }
+    offset += line.length;
+  }
+  const pages = [], ids = new Set();
+  cuts.forEach(([start, key], index) => {
+    const slice = text.slice(start, cuts[index + 1]?.[0] ?? text.length);
+    if (!slice) return;
+    const heading = slice.match(/^### (.+)$/m)?.[1] || slice.match(/^##? (.+)$/m)?.[1] || 'Section';
+    const title = heading.replace(/\\(.)/g, '$1').trim().slice(0, 150) || 'Section';
+    let base = key.replace(/^section-/, 's-'); if (base.length > 90) base = `s-${sha256(base).slice(0, 16)}`;
+    const parts = [];
+    for (let rest = slice; rest;) {
+      if (Buffer.byteLength(rest) <= PAGE_BYTES) { parts.push(rest); break; }
+      let end = 0, bytes = 0;
+      for (const line of rest.match(/[^\n]*\n|[^\n]+$/g)) { const size = Buffer.byteLength(line); if (bytes + size > PAGE_BYTES) break; bytes += size; end += line.length; }
+      if (!end) { end = Math.floor(PAGE_BYTES / 4); if (/[\uD800-\uDBFF]/.test(rest[end - 1])) end--; } // one very long line
+      parts.push(rest.slice(0, end)); rest = rest.slice(end);
+    }
+    parts.forEach((markdown, part) => {
+      let id = part ? `${base}-part${part + 1}` : base;
+      for (let n = 2; ids.has(id); n++) id = `${base}-${n}`;
+      ids.add(id); pages.push({ id, title: part ? `${title} (part ${part + 1})` : title, markdown });
+    });
+  });
+  return pages;
+}
+const joined = definition => (definition.content?.pages || []).map(page => page.markdown).join('');
+const copyTag = documentId => `context:${documentId}`;
+
+async function exactRevision(contexts, originId, expectedRevision) {
+  const found = await contexts.read(originId);
+  if (!found) throw new OriginError('This project has no Project Context yet. Create it from Origin.', 'NOT_FOUND', 404);
+  if (found.meta.revision !== expectedRevision) throw conflict('The Project Context changed after you opened this panel. Review the latest version, then try again.');
+  return found;
+}
+async function baseCopies(board, documentId) {
+  const state = await board.state(), copies = [];
+  for (const resource of state.base.resources.filter(item => item.kind === 'knowledge' && item.tags?.includes(copyTag(documentId)))) {
+    const definition = await board.base.readRevision(resource.revisionRef), provenance = definition.content?.pages?.[0]?.provenance || {};
+    copies.push({ resource, savedHash: provenance.contentHash || '', documentRevision: provenance.revision || 0, currentHash: sha256(joined(definition)), edited: sha256(joined(definition)) !== provenance.contentHash });
+  }
+  return { state, copies };
+}
+
+/**
+ * Save the exact saved document revision as a Base knowledge resource the person owns. It is not assigned
+ * to anything. The same revision is never saved twice; a changed document updates a copy or makes a new
+ * one only when the person chooses, and a copy edited in Base is never replaced without confirmation.
+ */
+export async function saveInBase({ board, originId, input, contexts, saved }) {
+  const { meta, version, text } = await exactRevision(contexts, originId, input.expectedRevision), record = await saved();
+  const { copies } = await baseCopies(board, meta.id), hash = version.textHash;
+  const same = copies.find(copy => copy.currentHash === hash && copy.savedHash === hash);
+  const view = (resource, existing) => ({ resource: { id: resource.id, name: resource.name, revision: resource.revision }, existing, documentRevision: meta.revision, hash });
+  if (same) return view(same.resource, true);
+  const mode = input.mode || 'save';
+  if (mode === 'save' && copies.length) {
+    throw Object.assign(new OriginError('An earlier version of this document is already in Base. Update that copy or save a new one.', 'BASE_COPY_EXISTS', 409),
+      { copies: copies.map(copy => ({ id: copy.resource.id, name: copy.resource.name, revision: copy.resource.revision, documentRevision: copy.documentRevision, edited: copy.edited })) });
+  }
+  const pages = contextPages(text);
+  if (pages.length > 200) throw new OriginError('This document has too many sections for one Base resource. Download the .md file instead.', 'CONTEXT_TOO_LARGE_FOR_BASE', 413);
+  const content = { pages: pages.map(page => ({ ...page, provenance: { kind: 'origin-context', sourceIds: [originId, meta.id], revision: meta.revision, contentHash: hash, generatedAt: version.generatedAt, section: page.title } })) };
+  const description = `Saved from the Origin project “${record.name}” (${originId}): Project Context ${meta.id}, document revision ${meta.revision}, SHA-256 ${hash}. A Base-owned copy; editing it does not change Origin, and Origin changes do not update it.`.slice(0, 2000);
+  try {
+    if (mode === 'update') {
+      const copy = copies.find(item => item.resource.id === input.resourceId);
+      if (!copy) throw new OriginError('Choose a Base copy of this document to update.', 'NOT_FOUND', 404);
+      if (copy.edited && input.replaceEdited !== true) throw new OriginError('This Base copy was edited in Base. Review it there, or confirm that the edits may be replaced.', 'BASE_COPY_EDITED', 409);
+      return view(await board.base.update(copy.resource.id, { content, description }, { expectedRevision: copy.resource.revision }), false);
+    }
+    return view(await board.base.create({ kind: 'knowledge', name: `Project Context: ${record.name}`.slice(0, 120), description, tags: ['project-context', copyTag(meta.id), `origin:${originId}`], content }), false);
+  } catch (error) {
+    if (error instanceof OriginError) throw error;
+    // Base's own validation applies unchanged; its 4 MiB content limit is reported, not worked around.
+    throw new OriginError(/4 MiB/.test(error.message) ? 'This document is larger than one Base resource can hold (4 MiB). Download the .md file instead, or shorten it.' : error.message, error.code || 'BASE_FAILED', error.status || 409);
+  }
+}
+
+function extendBinding(binding = { mode: 'inherit', include: [], exclude: [] }, resourceId) {
+  if (binding.include?.some(ref => ref.resourceId === resourceId)) return null;
+  const include = [...(binding.include || []), { resourceId, required: true }], exclude = (binding.exclude || []).filter(id => id !== resourceId);
+  return binding.mode === 'inherit' ? { mode: 'extend', include, exclude: [] } : { ...binding, include, exclude };
+}
+
+/**
+ * Supply chosen sections to one Kanban scope (a task, a column or an agent profile) through Base: the
+ * exact revision is saved in Base if needed, a Context resource names the chosen pages and must be
+ * supplied complete, and the scope's existing assignment is extended, never replaced. Runs that already
+ * started keep what they accepted. `preview: true` describes all of this without changing anything.
+ */
+export async function useInKanban({ board, originId, input, contexts, saved }) {
+  const found = await exactRevision(contexts, originId, input.expectedRevision), record = await saved(), { meta, version, text } = found;
+  const pages = contextPages(text), ids = Array.isArray(input.pageIds) ? input.pageIds : [];
+  if (!ids.length || ids.length > 100 || new Set(ids).size !== ids.length || ids.some(id => !pages.some(page => page.id === id))) throw new OriginError('Choose the sections this scope needs.', 'INVALID_INPUT');
+  const chosen = pages.filter(page => ids.includes(page.id)), chars = chosen.reduce((sum, page) => sum + page.markdown.length, 0);
+  const full = chosen.length === pages.length;
+  if (chars + chosen.length * 120 > RUN_CONTEXT_CHARS) {
+    throw Object.assign(new OriginError(`The chosen sections have ${chars.toLocaleString('en-US')} characters. One run receives at most ${RUN_CONTEXT_CHARS.toLocaleString('en-US')} characters of Base material, so choose fewer sections. Nothing was changed.`, 'CONTEXT_SELECTION_TOO_LARGE', 409), { chars });
+  }
+  const target = input.target || {};
+  let scope;
+  const state = await board.state();
+  if (target.scope === 'profile') {
+    const profile = state.base.resources.find(resource => resource.id === target.profileId && resource.kind === 'profile');
+    if (!profile) throw new OriginError('Choose an existing agent profile.', 'NOT_FOUND', 404);
+    scope = { kind: 'profile', name: `Agent profile “${profile.name}”`, profile, binding: (await board.base.readRevision(profile.revisionRef)).configuration?.binding };
+  } else {
+    if (!record.kanbanProjectId) throw new OriginError('Connect this Origin project to a Kanban project first.', 'NOT_LINKED', 409);
+    const wanted = target.scope === 'task' ? { scope: 'task', projectId: record.kanbanProjectId, taskId: target.taskId } : target.scope === 'column' ? { scope: 'column', projectId: record.kanbanProjectId, columnId: target.columnId } : null;
+    const item = wanted && listTargets(state).find(entry => ['scope', 'projectId', 'taskId', 'columnId'].every(key => (entry.target[key] || '') === (wanted[key] || '')));
+    if (!item) throw new OriginError('Choose a card or column of the linked Kanban project.', 'NOT_FOUND', 404);
+    scope = { kind: target.scope, name: item.name, target: wanted, binding: item.binding, revision: item.baseRevision };
+  }
+  const { copies } = await baseCopies(board, meta.id), hash = version.textHash;
+  const copy = copies.find(item => item.currentHash === hash && item.savedHash === hash);
+  const selectionTag = `selection:${sha256(JSON.stringify([hash, [...ids].sort()])).slice(0, 32)}`;
+  const selection = state.base.resources.find(resource => resource.kind === 'context' && resource.tags?.includes(selectionTag) && (!copy || resource.configuration?.sources?.every(source => source.resourceId === copy.resource.id)));
+  const plan = { documentRevision: meta.revision, hash, sections: chosen.map(page => ({ id: page.id, title: page.title, chars: page.markdown.length })), chars, full,
+    copy: copy ? { status: 'existing', id: copy.resource.id, name: copy.resource.name } : { status: 'new', name: `Project Context: ${record.name}`.slice(0, 120) },
+    selection: selection ? { status: 'existing', id: selection.id, name: selection.name } : { status: 'new', name: `Project Context r${meta.revision} · ${full ? 'full document' : `${chosen.length} ${chosen.length === 1 ? 'section' : 'sections'}`}` },
+    scope: { kind: scope.kind, name: scope.name } };
+  if (input.preview === true) return { plan, alreadyAssigned: Boolean(selection && !extendBinding(scope.binding, selection.id)) };
+  const savedCopy = copy ? copy.resource : (await saveInBase({ board, originId, input: { expectedRevision: meta.revision, mode: 'copy' }, contexts, saved })).resource;
+  const resource = selection || await board.base.create({ kind: 'context', name: plan.selection.name, tags: ['project-context', copyTag(meta.id), selectionTag],
+    description: `${full ? 'The full' : 'Selected sections of the'} Project Context of “${record.name}”, document revision ${meta.revision} (SHA-256 ${hash}): ${chosen.map(page => page.title).join('; ')}`.slice(0, 2000),
+    configuration: { sources: ids.map(pageId => ({ kind: 'knowledge', resourceId: savedCopy.id, pageId })), budgetChars: Math.min(100000, Math.max(1000, chars + chosen.length * 120 + 1000)), maxFiles: Math.min(100, ids.length), query: '', complete: true } });
+  const binding = extendBinding(scope.binding, resource.id);
+  if (binding) {
+    if (scope.kind === 'profile') {
+      const definition = await board.base.readRevision(scope.profile.revisionRef);
+      await board.base.update(scope.profile.id, { configuration: { ...definition.configuration, binding } }, { expectedRevision: scope.profile.revision });
+    } else await board.base.apply({ expectedBaseRevision: (await board.state()).base.revision, changes: [{ target: scope.target, binding, expectedRevision: scope.revision }] });
+  }
+  return { plan, resource: { id: resource.id, name: resource.name }, copy: { id: savedCopy.id, name: savedCopy.name }, assigned: Boolean(binding) };
 }

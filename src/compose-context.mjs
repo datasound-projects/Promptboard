@@ -129,7 +129,7 @@ export class ComposeContext {
               for (const query of queries) {
                 const hits = search(index, query.query), preview = !hits.length && query.allowPreview;
                 for (const chunk of preview ? index.rows.slice(0, 1) : hits) found.push({ sourceType: source.type === 'expert' ? 'expert' : row.sourceType, source: row.name,
-                  locator: source.type === 'expert' ? 'manual context' : row.sourceType === 'pdf' ? `page ${chunk.page}` : `characters ${chunk.start + 1}–${chunk.end}`, query: query.query,
+                  locator: source.type === 'expert' ? 'manual context' : row.sourceType === 'pdf' ? `page ${chunk.page}` : `${chunk.section ? `${chunk.section} · ` : ''}characters ${chunk.start + 1}–${chunk.end}`, query: query.query,
                   text: preview ? chunk.text.slice(0, 1200) : chunk.text, score: preview ? 0 : chunk.score, questionIds: query.questionIds, ...(preview ? { provisional: true } : {}) });
               }
             }

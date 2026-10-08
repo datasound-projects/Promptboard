@@ -221,6 +221,7 @@ export async function prepareBase({ manifest, readRevision, currentResources = [
           if (content.body) sources.unshift({ id: definition.id, name: definition.name, text: content.body, provenance: { resourceId: entry.resourceId, revision: entry.revision } });
           if (entry.kind === 'context') { const captured = await captureSources(definition, { workspacePath, approvedRoots, signal, readRevision, resources: prepared.resources }); sources = captured.sources; omitted.push(...captured.omitted); }
           const retrieved = searchSources(sources, cfg.query || query, { budgetChars: Math.min(remaining, cfg.budgetChars || 24000) });
+          if (cfg.complete && (retrieved.omitted.length || omitted.length)) throw new BaseDeliveryError('This selection must be supplied complete, but it does not fit the Base context budget left for this run. Choose fewer sections or unassign other material; task text and evidence were preserved.', 'BASE_CONTEXT_BUDGET');
           text = retrieved.selected.map(part => `Source: ${part.name} · section ${part.section}\n${part.text}`).join('\n\n');
           captures = retrieved.selected.map(part => ({ sourceId: part.sourceId, ...part.provenance, capturedAt: Date.now() })); omitted.push(...retrieved.omitted);
           if (!text && entry.required) throw new BaseDeliveryError('A required context resource has no material within the context budget.', 'BASE_CONTEXT_EMPTY');

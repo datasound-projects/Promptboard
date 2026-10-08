@@ -8,6 +8,8 @@ export function chunkPages(pages, { target = 2800, overlap = 280 } = {}) {
   const chunks = [];
   for (const page of pages) {
     const text = page.text.trim();
+    // Pages cut from one longer text (Markdown sections) report offsets in that whole text.
+    const shift = page.offset === undefined ? 0 : page.offset + page.text.length - page.text.trimStart().length;
     for (let start = 0; start < text.length;) {
       let end = Math.min(text.length, start + target);
       if (end < text.length) {
@@ -17,7 +19,7 @@ export function chunkPages(pages, { target = 2800, overlap = 280 } = {}) {
         // Do not cut a surrogate pair.
         if (/[\uD800-\uDBFF]/.test(text[end - 1])) end--;
       }
-      chunks.push({ text: text.slice(start, end).trim(), page: page.page, start, end, section: page.section || '' });
+      chunks.push({ text: text.slice(start, end).trim(), page: page.page, start: start + shift, end: end + shift, section: page.section || '' });
       if (end === text.length) break;
       start = Math.max(start + 1, end - overlap);
       if (/[\uDC00-\uDFFF]/.test(text[start])) start++;

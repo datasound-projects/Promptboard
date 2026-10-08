@@ -37,6 +37,21 @@ export function extractPdf(bytes, range, { signal, timeoutMs = 30_000 } = {}) {
   });
 }
 
+/** Markdown cut at its headings (outside code fences), so evidence can name the section it came from. */
+export function markdownSections(text) {
+  const pages = []; let fence = null, offset = 0, start = 0, section = '';
+  const push = end => { const slice = text.slice(start, end); if (slice.trim()) pages.push({ page: 1, text: slice, offset: start, section }); };
+  for (const line of text.match(/[^\n]*\n|[^\n]+$/g) || []) {
+    const plain = line.replace(/\n$/, ''), marker = plain.match(/^ {0,3}(`{3,}|~{3,})(.*)$/), heading = !fence && !marker && plain.match(/^ {0,3}#{1,6}[ \t]+(.+?)[ \t#]*$/);
+    if (fence) { if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length && !marker[2].trim()) fence = null; }
+    else if (marker) fence = marker[1];
+    if (heading) { push(offset); start = offset; section = heading[1].replace(/\\(.)/g, '$1').slice(0, 120); }
+    offset += line.length;
+  }
+  push(text.length);
+  return pages.length ? pages : [{ page: 1, text }];
+}
+
 /** Server-session cache; raw bytes are never stored or written to disk. */
 export class ComposeDocuments {
   entries = new Map();
@@ -59,7 +74,7 @@ export class ComposeDocuments {
       if (bytes.length > 2_000_000) invalid('Text documents must be at most 2 MB.');
       let text; try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch { invalid('Use a UTF-8 text document.'); }
       if (!text.trim() || text.includes('\0')) invalid('This document has no usable text.');
-      extracted = { pages: [{ page: 1, text }], pageCount: 1 };
+      extracted = { pages: /\.md$/i.test(meta.name) ? markdownSections(text) : [{ page: 1, text }], pageCount: 1 };
     }
     signal?.throwIfAborted();
     const chars = extracted.pages.reduce((sum, page) => sum + page.text.length, 0);

@@ -4,7 +4,10 @@ import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import '../public/origin-model.js';
-import { ContextStore, DOCUMENT_BYTES, FIELDS, TOP_FIELDS, exportProjectContext } from '../src/origin-context.mjs';
+import { ContextStore, DOCUMENT_BYTES, FIELDS, PAGE_BYTES, TOP_FIELDS, contextPages, exportProjectContext } from '../src/origin-context.mjs';
+import { prepareBase } from '../src/base-context.mjs';
+import { markdownSections } from '../src/compose-documents.mjs';
+import { buildIndex, chunkPages } from '../src/compose-retrieval.mjs';
 import { blueprintFileName } from '../src/origin.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
 
@@ -215,4 +218,112 @@ test('HTTP: create from the saved revision only, edit without touching Origin, a
   // Deleting the Origin project keeps the document files aside.
   await call(`${path}/delete`, { method: 'POST', body: { expectedRevision: saved.revision } });
   assert.ok((await readdir(join(app.board.store.dir, 'origin', 'deleted'))).some(name => name.startsWith('context-')));
+});
+
+test('Base pages join back to the exact file and follow section anchors outside code fences', () => {
+  const { markdown } = exportProjectContext(record(full()));
+  const pages = contextPages(markdown);
+  assert.equal(pages.map(page => page.markdown).join(''), markdown);
+  assert.deepEqual(pages.slice(0, 3).map(page => [page.id, page.title]), [['header', 'Project Context: Notes'], ['s-overview', 'Overview'], ['s-vision', 'Vision & Scope']]);
+  assert.match(pages[1].markdown, /^<a id="ctx-phase-define"><\/a>\n## 1\. «phase-label»/, 'a phase heading travels with its first section');
+  assert.ok(pages.some(page => page.id === 'report') && pages.at(-1).id === 'layout');
+  const edited = 'Intro\n```\n<a id="ctx-section-fake"></a>\n```\n' + 'x'.repeat(10) + '\n' + ('y'.repeat(1000) + '\n').repeat(600);
+  const parts = contextPages(edited);
+  assert.equal(parts.map(page => page.markdown).join(''), edited); assert.ok(parts.length >= 3, 'large text is cut at line ends');
+  assert.ok(parts.every(page => Buffer.byteLength(page.markdown) <= PAGE_BYTES)); assert.equal(parts.some(page => page.id.includes('fake')), false);
+  assert.deepEqual(contextPages('# only text'), [{ id: 'header', title: 'only text', markdown: '# only text' }]);
+});
+
+async function linkedApp(t) {
+  const app = await startTestServer(t, { port: 0, executor: null });
+  const { token } = (await api(app, '/api/session')).data, call = (path, options = {}) => api(app, path, { token, ...options });
+  const kanban = await app.board.createProject({ name: 'Board', workflowMode: 'pipeline' });
+  const card = await app.board.createTask({ projectId: kanban.id, title: 'Build sign-in' }), other = await app.board.createTask({ projectId: kanban.id, title: 'Unrelated' });
+  let { project } = (await call('/api/origin/projects', { method: 'POST', body: { name: 'Context app' } })).data;
+  project = (await call(`/api/origin/projects/${project.id}/link`, { method: 'POST', body: { expectedRevision: project.revision, kanbanProjectId: kanban.id } })).data.project;
+  const path = `/api/origin/projects/${project.id}`;
+  const saved = (await call(path, { method: 'PUT', body: { expectedRevision: project.revision, blueprint: full() } })).data;
+  const created = (await call(`${path}/document`, { method: 'POST', body: { expectedRevision: saved.revision } })).data;
+  return { app, call, path, kanban, card, other, project, saved, created };
+}
+
+test('Save in Base keeps one complete Base-owned copy, assigns nothing and never duplicates a revision', async t => {
+  const { app, call, path, saved, created } = await linkedApp(t);
+  const first = (await call(`${path}/document/base`, { method: 'POST', body: { expectedRevision: 1 } })).data;
+  assert.equal(first.existing, false); assert.equal(first.documentRevision, 1);
+  const detail = await app.board.base.detail(first.resource.id);
+  assert.equal(detail.kind, 'knowledge'); assert.equal(detail.content.pages.map(page => page.markdown).join(''), created.text);
+  assert.deepEqual(detail.content.pages[0].provenance, { kind: 'origin-context', sourceIds: [created.document.originId, created.document.id], revision: 1, contentHash: created.document.versions[0].hash, generatedAt: created.document.versions[0].generatedAt, section: 'Project Context: Context app' });
+  assert.deepEqual(detail.usedBy, [], 'saving assigns the copy to nothing');
+  assert.deepEqual((await call(`${path}/document/base`, { method: 'POST', body: { expectedRevision: 1 } })).data, { ...first, existing: true });
+  assert.equal((await app.board.state()).base.resources.length, 1);
+  // A changed document asks before updating or adding a copy; a copy edited in Base is never replaced silently.
+  await call(`${path}/document`, { method: 'PUT', body: { expectedRevision: 1, text: `${created.text}\nMore.\n` } });
+  const asked = await call(`${path}/document/base`, { method: 'POST', body: { expectedRevision: 2 } });
+  assert.equal(asked.status, 409); assert.equal(asked.data.code, 'BASE_COPY_EXISTS'); assert.deepEqual(asked.data.copies.map(copy => [copy.id, copy.documentRevision, copy.edited]), [[first.resource.id, 1, false]]);
+  assert.equal((await call(`${path}/document/base`, { method: 'POST', body: { expectedRevision: 1 } })).data.code, 'CONTEXT_REVISION_CONFLICT');
+  const current = await app.board.base.detail(first.resource.id);
+  await app.board.base.update(first.resource.id, { content: { ...current.content, pages: current.content.pages.map((page, index) => index ? page : { ...page, markdown: `${page.markdown}Edited in Base.\n` }) } }, { expectedRevision: current.revision });
+  assert.equal((await call(`${path}/document/base`, { method: 'POST', body: { expectedRevision: 2, mode: 'update', resourceId: first.resource.id } })).data.code, 'BASE_COPY_EDITED');
+  const updated = (await call(`${path}/document/base`, { method: 'POST', body: { expectedRevision: 2, mode: 'update', resourceId: first.resource.id, replaceEdited: true } })).data;
+  assert.equal(updated.resource.id, first.resource.id); assert.equal(updated.resource.revision, 3);
+  const copy = (await call(`${path}/document/base`, { method: 'POST', body: { expectedRevision: 2, mode: 'copy' } })).data;
+  assert.equal(copy.existing, true, 'the updated copy already holds this revision');
+  // The Base copy stays usable after the Origin project is deleted and travels with Base content in backups.
+  await call(`${path}/delete`, { method: 'POST', body: { expectedRevision: saved.revision } });
+  assert.match((await app.board.base.detail(first.resource.id)).content.pages.map(page => page.markdown).join(''), /More\.\n$/);
+  const backup = await app.board.exportBackup({ includeBaseContent: true });
+  const exported = backup.base.resources.find(resource => resource.name === 'Project Context: Context app');
+  assert.ok(exported.content.pages.length > 3); assert.equal(JSON.stringify(backup).includes('"blueprint"'), false, 'Origin data is not part of the board backup');
+});
+
+test('Use in Kanban supplies chosen sections only to the chosen scope, complete or not at all', async t => {
+  const { app, call, path, kanban, card, other, created } = await linkedApp(t);
+  const pages = contextPages(created.text), ids = pages.filter(page => ['s-requirements', 's-architecture'].includes(page.id)).map(page => page.id);
+  const request = extra => ({ method: 'POST', body: { expectedRevision: 1, pageIds: ids, target: { scope: 'task', taskId: card.id }, ...extra } });
+  const preview = (await call(`${path}/document/kanban`, request({ preview: true }))).data;
+  assert.equal(preview.plan.copy.status, 'new'); assert.equal(preview.plan.selection.status, 'new'); assert.equal(preview.plan.full, false);
+  assert.deepEqual(preview.plan.sections.map(section => section.id), ids); assert.equal(preview.alreadyAssigned, false);
+  assert.equal((await app.board.state()).base.resources.length, 0, 'a preview changes nothing');
+  const used = (await call(`${path}/document/kanban`, request())).data;
+  assert.equal(used.assigned, true);
+  let state = await app.board.state();
+  const task = state.projects.find(project => project.id === kanban.id).tasks.find(entry => entry.id === card.id);
+  assert.deepEqual(task.baseBinding, { mode: 'extend', include: [{ resourceId: used.resource.id, required: true }], exclude: [] });
+  assert.equal(state.projects.find(project => project.id === kanban.id).tasks.find(entry => entry.id === other.id).baseBinding, undefined, 'other cards are unchanged');
+  assert.equal(state.projects.find(project => project.id === kanban.id).baseBinding, undefined, 'the project assignment is unchanged');
+  assert.equal(task.prompt, card.prompt);
+  // Repeating it creates no duplicates.
+  assert.equal((await call(`${path}/document/kanban`, request())).data.assigned, false);
+  state = await app.board.state(); assert.equal(state.base.resources.length, 2);
+  // The run receives exactly the chosen sections, in full, with the Base copy as a pinned dependency.
+  const { manifest } = await app.board.previewBase({ target: { scope: 'task', projectId: kanban.id, taskId: card.id } });
+  assert.deepEqual(manifest.resources.map(entry => [entry.resourceId, entry.delivery, entry.status]).sort(), [[used.copy.id, 'dependency-definition', 'ready'], [used.resource.id, 'context', 'ready']].sort());
+  const runDir = await temp(t), readRevision = ref => app.board.base.readRevision(ref);
+  const prepared = await prepareBase({ manifest, currentResources: state.base.resources, readRevision, runDir });
+  const supplied = await readFile(join(runDir, 'base-context', `${used.resource.id}.txt`), 'utf8');
+  for (const id of ids) for (const line of pages.find(page => page.id === id).markdown.split('\n').filter(line => line.length > 20)) assert.ok(supplied.includes(line), line);
+  assert.equal(supplied.includes('«idea»'), false, 'unselected sections are not supplied');
+  assert.ok(prepared.manifest.supplied.some(entry => entry.resourceId === used.resource.id && entry.captures.every(capture => capture.resourceId === used.copy.id)));
+  await assert.rejects(prepareBase({ manifest, currentResources: state.base.resources, readRevision, runDir: await temp(t), contextBudget: 2000 }), { code: 'BASE_CONTEXT_BUDGET' });
+  // Too much for one run is refused before anything changes; another column scope extends its own assignment only.
+  const columnId = kanban.pipeline.columns.find(entry => entry.role === 'active').id;
+  await call(`${path}/document`, { method: 'PUT', body: { expectedRevision: 1, text: `${created.text}${'Long appendix line.\n'.repeat(3000)}` } });
+  const before = structuredClone((await app.board.state()).base);
+  const tooLarge = await call(`${path}/document/kanban`, { method: 'POST', body: { expectedRevision: 2, pageIds: ['layout'], target: { scope: 'column', columnId } } });
+  assert.equal(tooLarge.status, 409); assert.equal(tooLarge.data.code, 'CONTEXT_SELECTION_TOO_LARGE'); assert.ok(tooLarge.data.chars > 48000);
+  assert.deepEqual((await app.board.state()).base, before, 'nothing changed');
+  const column = (await call(`${path}/document/kanban`, { method: 'POST', body: { expectedRevision: 2, pageIds: [ids[0]], target: { scope: 'column', columnId } } })).data;
+  assert.equal(column.assigned, true); assert.notEqual(column.copy.id, used.copy.id, 'an edited revision gets its own Base copy, stated in the preview');
+  assert.equal((await call(`${path}/document/kanban`, { method: 'POST', body: { expectedRevision: 2, pageIds: ids, target: { scope: 'task', taskId: 'missing' } } })).status, 404);
+});
+
+test('Compose names the Markdown section of each excerpt and keeps whole-file character offsets', () => {
+  const text = '# Project Context: A\n\nIntro.\n\n```\n# not a heading\n```\n\n## Requirements\n\nREQ text.\n\n### Sign in\n\nDetails here.\n';
+  const sections = markdownSections(text);
+  assert.deepEqual(sections.map(page => page.section), ['Project Context: A', 'Requirements', 'Sign in']);
+  assert.equal(sections.map(page => page.text).join(''), text);
+  const chunk = buildIndex(chunkPages(sections)).rows.find(row => row.text.includes('Details here.'));
+  assert.equal(chunk.section, 'Sign in'); assert.equal(text.slice(chunk.start, chunk.end).trim(), chunk.text);
+  assert.deepEqual(markdownSections('plain text'), [{ page: 1, text: 'plain text', offset: 0, section: '' }]);
 });
