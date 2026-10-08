@@ -815,6 +815,7 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
 /* ---- Autopilot ---- */
 .autopilot-open { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 12px; font-size: 13px; font-weight: 600; }
 .autopilot-open svg { width: 16px; height: 16px; }
+#coordinator-toggle[aria-pressed="true"] { background: var(--surface-2); color: var(--ink); }
 .autopilot-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; margin: 12px 14px 0; padding: 10px 14px; border: 1px solid var(--line-strong); border-left: 4px solid #3b82f6; border-radius: 10px; background: color-mix(in srgb, #3b82f6 7%, var(--surface)); }
 .autopilot-bar.paused { border-left-color: #f59e0b; background: color-mix(in srgb, #f59e0b 9%, var(--surface)); }
 .autopilot-bar.finished { border-left-color: #10b981; background: color-mix(in srgb, #10b981 8%, var(--surface)); }
@@ -2001,7 +2002,7 @@ button.origin-context-badge { cursor: pointer; }
 .coordinator-form .copy-button { justify-self: end; }
 @media (max-width: 1100px) { .coordinator-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 730px) {
-  /* Two short rows on phones (controls, then one status line) so the board keeps its room above the terminal. */
+  /* Two short rows on phones: controls, then one status line. */
   .coordinator-bar { flex-wrap: wrap; row-gap: 2px; }
   .coordinator-name { display: none; }
   .coordinator-controls { margin-left: auto; }

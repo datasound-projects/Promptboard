@@ -1,8 +1,8 @@
 'use strict';
 
-// Coordinator panel above the Kanban columns: a slim status bar by default, an overview when expanded,
-// hidden on request (restore it from the toolbar), or turned off. It reads what the board already records
-// and asks a model only when you ask a question. The chosen view is remembered per project.
+// Coordinator panel above the Kanban columns, opened and closed with one click on the Coordinator button
+// next to Autopilot (remembered per project). It reads what the board already records, only while open,
+// and asks a model only when you ask a question.
 window.PromptboardCoordinator = (() => {
   const el = (tag, className, text) => { const node = document.createElement(tag); if (className) node.className = className; if (text !== undefined) node.textContent = text; return node; };
   const button = (text, onClick, className = 'text-button', label = '') => { const node = el('button', className, text); node.type = 'button'; if (label) node.setAttribute('aria-label', label); node.addEventListener('click', onClick); return node; };
@@ -12,11 +12,10 @@ window.PromptboardCoordinator = (() => {
   const ICON = 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Zm0 4a5 5 0 1 1 0 10 5 5 0 0 1 0-10Zm0 3.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3Z';
 
   function create(host) {
-    const panel = document.getElementById('coordinator'), restore = document.getElementById('coordinator-show');
+    const panel = document.getElementById('coordinator'), toggle = document.getElementById('coordinator-toggle');
     let projectId = null, data = null, revision = null, fetching = null, chatOpen = false, scope = { kind: 'project' }, asking = false, message = '', draft = '';
     const key = () => `promptboard.coordinator.${projectId}`;
-    const mode = () => { const value = pref(key(), 'minimized'); return ['expanded', 'minimized', 'hidden'].includes(value) ? value : 'minimized'; };
-    const setMode = value => { setPref(key(), value); render(); };
+    const isOpen = () => pref(key(), '') === 'open';
     const call = (path, options = {}) => host.api(`/api/coordinator/${encodeURIComponent(projectId)}${path}`, { timeoutMs: 200000, ...options })
       .then(({ response, data: body }) => (response.ok ? body : Promise.reject(new Error(body.error || 'The Coordinator is unavailable.'))));
     async function refresh() {
@@ -32,22 +31,22 @@ window.PromptboardCoordinator = (() => {
 
     /** Called on every board render; fetches only when the project or the board changed and the panel is shown. */
     function sync(project, boardRevision, visible = true) {
-      if (!project) { projectId = null; panel.hidden = true; restore.hidden = true; return; }
+      if (!project) { projectId = null; panel.hidden = true; toggle.hidden = true; return; }
       if (project.id !== projectId) { projectId = project.id; data = null; revision = null; chatOpen = false; scope = { kind: 'project' }; message = ''; draft = ''; }
       panel.dataset.visible = String(visible);
-      if (!visible) { panel.hidden = true; restore.hidden = true; return; }
-      if (mode() !== 'hidden' && revision !== boardRevision) { revision = boardRevision; void refresh(); }
+      toggle.hidden = !visible;
+      if (!visible) { panel.hidden = true; return; }
+      if (revision !== boardRevision) { revision = boardRevision; if (isOpen()) void refresh(); }
       render();
     }
 
     function render() {
       if (!projectId) return;
-      const hidden = mode() === 'hidden' || panel.dataset.visible === 'false';
-      restore.hidden = !(mode() === 'hidden' && panel.dataset.visible !== 'false');
-      panel.hidden = hidden;
-      if (hidden) return;
-      const off = data?.enabled === false, expanded = mode() === 'expanded' && !off;
-      panel.dataset.mode = off ? 'off' : mode();
+      toggle.setAttribute('aria-pressed', String(isOpen()));
+      panel.hidden = !isOpen() || panel.dataset.visible === 'false';
+      if (panel.hidden) return;
+      const off = data?.enabled === false;
+      panel.dataset.mode = off ? 'off' : 'on';
       const focusId = panel.contains(document.activeElement) ? document.activeElement.id : '';
       const bar = el('div', 'coordinator-bar');
       const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); icon.setAttribute('viewBox', '0 0 24 24'); icon.setAttribute('aria-hidden', 'true'); icon.classList.add('coordinator-icon');
@@ -66,23 +65,20 @@ window.PromptboardCoordinator = (() => {
       const controls = el('div', 'coordinator-controls');
       if (!off) {
         const ask = button('Ask Coordinator', () => openChat(), 'secondary-button coordinator-ask'); ask.id = 'coordinator-ask';
-        const size = button(expanded ? 'Minimize' : 'Expand', () => setMode(expanded ? 'minimized' : 'expanded'), 'text-button', expanded ? 'Minimize the Coordinator' : 'Expand the Coordinator'); size.id = 'coordinator-size';
-        size.setAttribute('aria-expanded', String(expanded));
-        controls.append(ask, size);
+        controls.append(ask);
       }
-      const hide = button('Hide', () => { setMode('hidden'); restore.focus(); }, 'text-button', 'Hide the Coordinator panel'); hide.id = 'coordinator-hide';
-      const toggle = el('label', 'coordinator-switch'), box = el('input'); box.type = 'checkbox'; box.id = 'coordinator-enabled'; box.setAttribute('role', 'switch'); box.checked = !off;
+      const onOff = el('label', 'coordinator-switch'), box = el('input'); box.type = 'checkbox'; box.id = 'coordinator-enabled'; box.setAttribute('role', 'switch'); box.checked = !off;
       box.addEventListener('change', async () => {
         box.disabled = true;
         try { data = await call('', { method: 'PATCH', body: { enabled: box.checked } }); host.announce(box.checked ? 'Coordinator is on. Missed changes were added from the board.' : 'Coordinator is off. Its project knowledge is kept.'); }
         catch (error) { message = error.message; }
         render(); document.getElementById('coordinator-enabled')?.focus();
       });
-      toggle.append(box, el('span', '', off ? 'Off' : 'On'));
-      controls.append(hide, toggle);
+      onOff.append(box, el('span', '', off ? 'Off' : 'On'));
+      controls.append(onOff);
       bar.append(icon, title, status, controls);
       const nodes = [bar];
-      if (expanded && data) nodes.push(dashboard());
+      if (!off && data) nodes.push(dashboard());
       if (!off && chatOpen) nodes.push(chat());
       panel.replaceChildren(...nodes);
       if (focusId) document.getElementById(focusId)?.focus({ preventScroll: true });
@@ -110,8 +106,7 @@ window.PromptboardCoordinator = (() => {
 
     function openChat(next = null) {
       if (next) scope = next;
-      chatOpen = true; if (mode() !== 'expanded') setPref(key(), 'expanded');
-      render(); document.getElementById('coordinator-question')?.focus();
+      chatOpen = true; render(); document.getElementById('coordinator-question')?.focus();
     }
     function chat() {
       const box = el('section', 'coordinator-chat'); box.setAttribute('aria-label', 'Ask Coordinator');
@@ -176,8 +171,10 @@ window.PromptboardCoordinator = (() => {
       return box;
     }
 
-    restore.addEventListener('click', () => { setMode('minimized'); document.getElementById('coordinator-ask')?.focus(); });
-    return { sync, askAbout: next => { if (mode() === 'hidden') setPref(key(), 'expanded'); openChat(next); } };
+    // One click opens or closes the panel; opening reads the board's latest state.
+    function setOpen(open) { setPref(key(), open ? 'open' : 'closed'); if (open) void refresh(); render(); }
+    toggle.addEventListener('click', () => { if (projectId) setOpen(!isOpen()); });
+    return { sync, askAbout: next => { if (!isOpen()) setOpen(true); openChat(next); } };
   }
 
   return { create };

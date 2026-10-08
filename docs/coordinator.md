@@ -4,11 +4,9 @@ The Coordinator is a read-only observer for one project. It sits above the Kanba
 
 ## The panel
 
-- **Minimized** (the default): a slim bar with active agents, progress, cards that need you, blockers, **Ask Coordinator**, **Expand**, **Hide** and an **On/Off** switch.
-- **Expanded:** progress per column, active agents and their cards, what needs attention (an agent waiting for you, a failed run, a review that asked for changes, failed tests, a failed column automation, paused Autopilot) and recent activity. Every card name opens the card.
-- **Hidden:** the panel is out of view and the Coordinator stays on. **Coordinator** in the board toolbar brings it back.
-- **Off:** no updates and no questions. The project knowledge, history and chat are kept.
-- The view (minimized, expanded or hidden) is remembered per project in this browser. On/Off is saved with the project's knowledge.
+- **Coordinator**, right after **Autopilot** in the board toolbar, opens and closes the panel with one click. It starts closed, and the choice is remembered per project in this browser.
+- Open, it shows active agents, progress per column, what needs attention (an agent waiting for you, a failed run, a review that asked for changes, failed tests, a failed column automation, paused Autopilot) and recent activity, with **Ask Coordinator** and an **On/Off** switch. Every card name opens the card.
+- **Off:** no updates and no questions. The project knowledge, history and chat are kept. On/Off is saved with the project's knowledge.
 
 ## Project knowledge
 

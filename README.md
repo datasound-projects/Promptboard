@@ -54,7 +54,7 @@ These commands work in PowerShell and macOS/Linux terminals. Refresh your browse
 - **Send to Kanban** creates idle To Do cards once, prerequisites first; Kanban starts a card only after its prerequisites are done. **Improve with Compose** and **Suggest tasks** are optional and only propose. When the design changes, only affected cards are flagged for review. No agent starts. See [Origin](docs/origin.md).
 - **Create Context** writes the saved design into one editable Markdown document (diagrams included) in the right-side panel. Edits never change Origin; regenerate when Origin changes. Optionally attach it to Compose, save it in Base or supply chosen sections to a Kanban card, column or agent profile.
 - **Shared projects** (optional): one project ID across Origin, Compose and Kanban. Compose keeps **History** as before and adds **Projects** for saved prompts with revisions; a saved prompt becomes a Kanban card only when you ask, and a card's instructions change only while it is idle in To Do.
-- **Coordinator** above the Kanban board: a read-only project observer with progress, active agents, blockers and recent activity, plus **Ask Coordinator** for cited answers. Its project knowledge is compact and deterministic; it calls a model only when you ask.
+- **Coordinator** above the Kanban board, opened with one click next to **Autopilot**: a read-only project observer with progress, active agents, blockers and recent activity, plus **Ask Coordinator** for cited answers. Its project knowledge is compact and deterministic; it calls a model only when you ask.
 
 <p align="center">
   <img src="docs/origin-demo.gif" width="960" alt="Dark-mode Origin demo: describe an online shop, add requirements with a done-when, connect building blocks and group them into layers, accept a database decision, answer security topics, prepare tasks per component, see the context a task carries, and view the project mind map.">
@@ -154,7 +154,7 @@ Read [SECURITY.md](SECURITY.md) before working with sensitive repositories. [Kan
 
 - [Origin blueprints](docs/origin.md): schema, storage, task context, Kanban handoff, change review, backups, rollback and limits.
 - [Project Context](docs/origin-project-context.md): one-way Markdown export, editing, regeneration, versions, storage and optional reuse.
-- [Coordinator](docs/coordinator.md): panel states, persistent project knowledge, reconciliation and read-only chat.
+- [Coordinator](docs/coordinator.md): the panel, persistent project knowledge, reconciliation and read-only chat.
 - [Shared projects](docs/shared-projects.md): one project ID across Origin, Compose and Kanban, saved prompts, revisions, links and protected card instructions.
 - [Changelog](CHANGELOG.md) · [CLI adapters](docs/cli-adapters.md) · [Verification](RELEASE-VERIFICATION.md)
 - [Contributing](CONTRIBUTING.md): `npm run check` and `npm test`. No frontend framework or build step.
