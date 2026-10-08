@@ -1243,7 +1243,7 @@ function openHelp(privacy = false) {
 }
 
 // All views stay in the document. Routing does not replace forms, boards or terminals.
-let baseView = null, originView = null, projectsView = null;
+let baseView = null, originView = null, projectsView = null, coordinatorView = null;
 function currentPage() { return location.hash === '#/kanban' ? 'kanban' : location.hash === '#/base' ? 'base' : location.hash === '#/origin' ? 'origin' : 'compose'; }
 function showPage() {
   const page = currentPage();
@@ -1600,6 +1600,7 @@ function renderBoard() {
   renderAgents(project);
   renderAutopilotBar(project);
   if (timelineView) { $('#autopilot-bar').hidden = true; refreshTimeline(project); }
+  coordinatorView?.sync(project, board?.revision, !timelineView);
   updateBoardScroll();
   window.PromptboardDock?.sync();
   const verifying = tasks.find(task => task.evidence?.tests?.status === 'running');
@@ -3057,6 +3058,7 @@ async function openTaskDetails(taskId) {
       detailActions(detailButton('Open in Origin', () => { $('#task-dialog').close(); openOrigin(card.originSource.originProjectId, { collection: 'items', id: card.originSource.originTaskId }); }, 'text-button')))] : []),
     ...(card.source?.promptId ? [section('From a saved prompt', paragraph(`Made from revision ${card.source.promptRevision} of a saved project prompt. Newer revisions reach this card only when you update it.`, 'note'),
       detailActions(detailButton('Open the saved prompt in Compose', () => { $('#task-dialog').close(); void projectsView?.openPrompt(card.source.projectId, card.source.promptId); }, 'text-button')))] : []),
+    ...(coordinatorView ? [section('Coordinator', detailActions(detailButton('Ask Coordinator about this card', () => { $('#task-dialog').close(); coordinatorView.askAbout({ kind: 'task', id: card.id }); }, 'text-button')))] : []),
     section('Original prompt', pre(card.prompt)),
     section('Branch and worktree', taskLocation(card, project)),
     section('Base resources for future runs', basePicker({ target: { scope: 'task', projectId: project.id, taskId: card.id } }), paragraph('Task selections can narrow or opt out of inherited resources without changing the task text or approved evidence.')),
@@ -5350,6 +5352,10 @@ projectsView = window.PromptboardProjects?.create({ api, announce, getResult: ()
   openInCompose, openOrigin, refreshBoard: () => loadBoard(),
   card: id => (board?.projects || []).flatMap(project => project.tasks).find(task => task.id === id) || null,
   openKanban: (projectId, taskId) => { if (projectId) savePref(SELECTED_PROJECT_KEY, projectId); location.hash = '#/kanban'; if (taskId) setTimeout(() => void openTaskDetails(taskId), 0); } }) || null;
+// Coordinator: a read-only project observer above the Kanban columns.
+coordinatorView = window.PromptboardCoordinator?.create({ api, announce, project: () => currentProject(), runs: () => board?.runs || [],
+  openTask: taskId => void openTaskDetails(taskId), composeSettings: () => settings(),
+  copy: text => navigator.clipboard.writeText(text).then(() => announce('Commit ID copied.'), () => announce(`Commit ${text}`)) }) || null;
 // Start page applies only when the URL contains no explicit route.
 if (!location.hash && uiPref('startPage') !== 'compose') location.hash = `#/${uiPref('startPage')}`;
 showPage();

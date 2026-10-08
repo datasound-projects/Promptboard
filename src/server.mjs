@@ -51,6 +51,7 @@ const assets = new Map([
   ['/markdown-view.js', ['markdown-view.js', 'text/javascript; charset=utf-8']],
   ['/origin-context.js', ['origin-context.js', 'text/javascript; charset=utf-8']],
   ['/projects.js', ['projects.js', 'text/javascript; charset=utf-8']],
+  ['/coordinator.js', ['coordinator.js', 'text/javascript; charset=utf-8']],
   ['/nerd.png', ['nerd.png', 'image/png']],
   ['/kanban-mascot.png', ['kanban-mascot.png', 'image/png']],
   ['/dock.js', ['dock.js', 'text/javascript; charset=utf-8']],
