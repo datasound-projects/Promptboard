@@ -58,9 +58,10 @@ test('Origin in real Chrome: quick entry, mind map, diagram, evidence, readiness
 
   // Untrusted text stays text, on the start screen and in the mind map.
   const hostile = '<img src=x onerror="window.__pwned=1">Release hub';
-  // An Origin-only project: the existing Kanban project of the same name is untouched until linked.
+  // An Origin-only project: the existing Kanban project is untouched until linked.
   assert.equal(await ev(`return document.querySelector('#origin-first-kanban').checked;`), true, 'Creating Kanban work stays the default.');
-  await ev(`document.querySelector('#origin-first-project').value = 'Demo project'; document.querySelector('#origin-first-kanban').checked = false; document.querySelector('#origin-idea').value = ${J(hostile)}; document.querySelector('#origin-start').click();`);
+  // A different name from the board: a same-named project would join that board (see shared-projects tests).
+  await ev(`document.querySelector('#origin-first-project').value = 'Demo plan'; document.querySelector('#origin-first-kanban').checked = false; document.querySelector('#origin-idea').value = ${J(hostile)}; document.querySelector('#origin-start').click();`);
   await wait(`document.querySelectorAll('.origin-nav-item').length === 15 && document.querySelector('.origin-map')`, 'mind map');
   await saved();
   assert.equal((await app.board.view()).projects.length, 1, 'No Kanban project is created for an Origin-only project.');
