@@ -52,6 +52,7 @@ These commands work in PowerShell and macOS/Linux terminals. Refresh your browse
 - Sketch building blocks, group them into optional layers with their stack, record decisions with their reason, keep assumptions separate from facts, and link sources you have verified.
 - **Tasks** (under Build) are prepared per layer and component. Each task carries just the context it needs — its own words first, never the whole blueprint — and shows it before sending.
 - **Send to Kanban** creates idle To Do cards once, prerequisites first; Kanban starts a card only after its prerequisites are done. **Improve with Compose** and **Suggest tasks** are optional and only propose. When the design changes, only affected cards are flagged for review. No agent starts. See [Origin](docs/origin.md).
+- **Create Context** writes the saved design into one editable Markdown document (diagrams included) in the right-side panel. Edits never change Origin; regenerate when Origin changes. Optionally attach it to Compose, save it in Base or supply chosen sections to a Kanban card, column or agent profile.
 
 <p align="center">
   <img src="docs/origin-demo.gif" width="960" alt="Dark-mode Origin demo: describe an online shop, add requirements with a done-when, connect building blocks and group them into layers, accept a database decision, answer security topics, prepare tasks per component, see the context a task carries, and view the project mind map.">
@@ -150,6 +151,7 @@ Read [SECURITY.md](SECURITY.md) before working with sensitive repositories. [Kan
 ## More
 
 - [Origin blueprints](docs/origin.md): schema, storage, task context, Kanban handoff, change review, backups, rollback and limits.
+- [Project Context](docs/origin-project-context.md): one-way Markdown export, editing, regeneration, versions, storage and optional reuse.
 - [Changelog](CHANGELOG.md) · [CLI adapters](docs/cli-adapters.md) · [Verification](RELEASE-VERIFICATION.md)
 - [Contributing](CONTRIBUTING.md): `npm run check` and `npm test`. No frontend framework or build step.
 - `node bin/ste.mjs --help` for command-line usage; `node bin/ste.mjs --doctor` for CLI detection.

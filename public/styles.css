@@ -1435,7 +1435,7 @@ button.timeline-task:hover { text-decoration: underline; }
 .origin-inline-error { margin: 0; font-size: 12.5px; }
 .origin-main { max-width: 920px; margin: 0 auto; padding: 36px 40px 40px; transition: padding .2s ease; }
 .origin-main.origin-wide { max-width: 1320px; }
-@media (min-width: 1280px) { [data-drawer="open"] .origin-main { padding-right: 490px; } [data-drawer="open"] .origin-main.origin-wide { max-width: none; } }
+@media (min-width: 1280px) { [data-drawer="open"] .origin-main { padding-right: calc(var(--origin-drawer-width, 460px) + 30px); } [data-drawer="open"] .origin-main.origin-wide { max-width: none; } }
 .origin-section-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px 24px; flex-wrap: wrap; margin-bottom: 22px; }
 .origin-eyebrow { margin: 0; color: var(--phase, var(--og-define)); font-size: 11px; font-weight: 650; letter-spacing: .14em; text-transform: uppercase; }
 .origin-section-head h2 { margin: 8px 0 6px; color: var(--ink); font-size: 30px; font-weight: 680; line-height: 1.1; letter-spacing: -.025em; }
@@ -1842,3 +1842,74 @@ dialog.origin-modal::backdrop { background: rgb(4 4 8 / .55); backdrop-filter: b
 }
 /* Four top-level pages must still fit a phone-width top bar. */
 @media (max-width: 560px) { .page-nav { gap: 1px; } .page-nav a { padding: 7px 5px; } }
+
+/* Project Context: the same right-side panel, wider and resizable on desktop, a full sheet on phones. */
+.origin-drawer[data-mode="context"] { width: min(560px, calc(100vw - 24px)); }
+.origin-context-resize { position: absolute; z-index: 2; top: 0; bottom: 0; left: -5px; width: 10px; cursor: col-resize; touch-action: none; }
+.origin-context-resize::after { content: ""; position: absolute; top: 50%; left: 3px; width: 4px; height: 44px; margin-top: -22px; border-radius: 4px; background: var(--line-strong); opacity: 0; transition: opacity .15s; }
+.origin-context-resize:hover::after, .origin-context-resize:focus-visible::after { opacity: 1; }
+.origin-context-resize:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.origin-context-title { margin: 6px 0 4px; color: var(--ink); font-size: 19px; font-weight: 680; letter-spacing: -.01em; overflow-wrap: anywhere; }
+.origin-context-title:focus { outline: none; }
+.origin-context-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; color: var(--muted); font-size: 12.5px; }
+.origin-context-badge { padding: 2px 8px; border: 1px solid var(--line-strong); border-radius: 999px; background: var(--og-glass-2); color: var(--text); font-size: 11.5px; font-weight: 600; }
+button.origin-context-badge { cursor: pointer; }
+.origin-context-badge.changed { border-color: color-mix(in srgb, var(--og-decide, #d08a1e) 55%, transparent); color: var(--og-decide, #b26b00); }
+.origin-context-save { display: inline-flex; margin-top: 6px; }
+.origin-context-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
+.origin-context-tools .origin-menu-list { left: auto; right: 0; }
+.origin-context-tools .origin-context-tabs button.active { background: var(--surface); color: var(--ink); box-shadow: 0 1px 2px rgb(0 0 0 / 12%); }
+.origin-context-body { gap: 12px; }
+/* An id selector: the shared drawer field rule would otherwise make the editor a short, clipped box. */
+#origin-context-editor { min-height: 62vh; overflow: auto; resize: vertical; font: 13px/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.origin-context-body { overflow-x: hidden; }
+.origin-context-body > * { min-width: 0; }
+.origin-context-subtitle { margin: 2px 0 0; color: var(--ink); font-size: 16px; }
+.origin-context-subtitle:focus { outline: none; }
+.origin-context-plan { margin: 0; color: var(--text); font-size: 13px; font-weight: 600; }
+.origin-context-versions, .origin-context-steps { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.origin-context-steps { padding-left: 18px; list-style: disc; color: var(--text); font-size: 13px; }
+.origin-context-version { display: grid; gap: 2px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; }
+.origin-context-version .origin-link { justify-self: start; }
+.origin-context-sections { display: grid; gap: 6px; margin: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; }
+.origin-context-sections legend { padding: 0 4px; color: var(--muted); font-size: 12px; font-weight: 600; }
+.origin-context-section { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--text); font-size: 13px; }
+.origin-context-copy { display: grid; gap: 6px; padding: 8px 0; border-top: 1px solid var(--line); }
+.origin-context-result { display: grid; gap: 8px; }
+.origin-context-diff { max-height: 52vh; margin: 0; padding: 10px 12px; overflow: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--og-glass-2); font: 12px/1.5 var(--mono, ui-monospace, Menlo, monospace); white-space: pre-wrap; overflow-wrap: anywhere; }
+.origin-context-diff .added { display: block; background: color-mix(in srgb, #2e9e5b 16%, transparent); }
+.origin-context-diff .removed { display: block; background: color-mix(in srgb, #d0453a 16%, transparent); }
+.origin-context-diff span:not(.added):not(.removed) { display: block; color: var(--muted); }
+@media (max-width: 730px) { .origin-context-resize { display: none; } .origin-drawer[data-mode="context"] { width: auto; } }
+
+/* Safe Markdown preview (Project Context). */
+.md-view { color: var(--text); font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; }
+.md-view > :first-child { margin-top: 0; }
+.md-view .md-heading { margin: 1.2em 0 .4em; color: var(--ink); line-height: 1.3; scroll-margin-top: 12px; }
+.md-view h2.md-heading { font-size: 20px; } .md-view h3.md-heading { font-size: 17px; } .md-view h4.md-heading { font-size: 15px; } .md-view h5.md-heading, .md-view h6.md-heading { font-size: 14px; }
+.md-view .md-heading:focus { outline: none; }
+.md-view p, .md-view ul, .md-view ol, .md-view blockquote { margin: 0 0 .7em; }
+.md-view ul, .md-view ol { padding-left: 1.4em; }
+.md-view blockquote { padding: 2px 12px; border-left: 3px solid var(--line-strong); color: var(--muted); }
+.md-view code { padding: 1px 4px; border-radius: 5px; background: var(--og-glass-2); font: 12.5px var(--mono, ui-monospace, Menlo, monospace); }
+.md-view pre.md-code { max-height: 420px; margin: 0 0 .8em; padding: 10px 12px; overflow: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--og-glass-2); }
+.md-view pre.md-code code { padding: 0; background: none; white-space: pre-wrap; }
+.md-view a { color: var(--focus); }
+.md-view hr { border: 0; border-top: 1px solid var(--line); }
+.md-view .md-table { margin: 0 0 .8em; overflow-x: auto; }
+.md-view table { border-collapse: collapse; font-size: 13px; }
+.md-view th, .md-view td { padding: 5px 8px; border: 1px solid var(--line); text-align: left; vertical-align: top; }
+.md-view th { background: var(--og-glass-2); }
+.md-diagram { margin: 0 0 1em; }
+.md-diagram-canvas { overflow: auto; padding: 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+.md-diagram-svg { display: block; max-width: none; font: 12px var(--sans, system-ui, sans-serif); }
+.md-diagram-node rect { fill: var(--og-glass-2, #f4f4f8); stroke: var(--line-strong, #999); stroke-width: 1.2; }
+.md-diagram-node text, .md-diagram-group text { fill: var(--ink, #222); }
+.md-diagram-group rect { fill: none; stroke: var(--line-strong, #999); stroke-dasharray: 5 4; }
+.md-diagram-group text { font-weight: 600; }
+.md-diagram-edge { stroke: var(--muted, #777); stroke-width: 1.4; }
+.md-diagram-edge.dashed { stroke-dasharray: 5 4; }
+.md-diagram-arrow { fill: var(--muted, #777); }
+.md-diagram-edge-label { fill: var(--muted, #555); font-size: 11px; paint-order: stroke; stroke: var(--surface, #fff); stroke-width: 4px; }
+.md-diagram-error { margin: 0 0 6px; padding: 8px 10px; border: 1px solid color-mix(in srgb, #d0453a 40%, transparent); border-radius: 8px; color: var(--text); font-size: 13px; }
+.md-diagram-code summary { margin-top: 6px; color: var(--muted); font-size: 12px; cursor: pointer; }

@@ -191,10 +191,12 @@ export class OriginStore {
 
   list() { return this.#serial(() => this.#list()); }
 
-  read(originId) {
+  /** `report: false` (Project Context) leaves a pending recovery notice for the project's own page. */
+  read(originId, { report = true } = {}) {
     try { validId(originId); } catch (error) { return Promise.reject(error); }
     return this.#serial(async () => {
       const record = await this.#read(originId), pending = this.recoveries.get(originId);
+      if (!report) return record;
       this.recoveries.delete(originId);
       return record && pending ? { ...record, recovery: pending } : record;
     });

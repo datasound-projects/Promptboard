@@ -46,7 +46,9 @@ Discovery is bounded by time, message/output sizes and pagination, returns sanit
 
 Text/Markdown and supported source files are selected against the run's actual worktree. External roots need explicit approval; each capture checks real paths, symlink containment, excluded secrets/generated paths, file identities, size limits and cancellation. URL documents resolve and pin public DNS addresses on each redirect. Private/local document URLs, credentials and query strings are refused. Local MCP endpoints use their separate explicit connection boundary.
 
-Knowledge uses a bounded hash-cached lexical index, with a per-resource character budget, estimated token counts and omitted-section reporting. Captures keep source references, timestamps and hashes. Live sources are captured at launch; their earlier contents and remote model behavior are not claimed to be replayable. Persistent captured context files and the sanitized manifest stay with run evidence. Temporary native configuration is removed on exit or failed preparation.
+Knowledge uses a bounded hash-cached lexical index, with a per-resource character budget, estimated token counts and omitted-section reporting. Captures keep source references, timestamps and hashes.
+
+A Context resource with `complete: true` (used for chosen [Project Context](origin-project-context.md) sections) is supplied whole or not at all: if any of its material would be omitted for the budget, preparation fails with `BASE_CONTEXT_BUDGET`, which blocks the run when the resource is required. Task text and evidence are preserved. Live sources are captured at launch; their earlier contents and remote model behavior are not claimed to be replayable. Persistent captured context files and the sanitized manifest stay with run evidence. Temporary native configuration is removed on exit or failed preparation.
 
 ## Documentation and installed versions checked
 

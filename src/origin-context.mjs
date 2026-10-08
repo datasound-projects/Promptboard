@@ -573,14 +573,14 @@ export async function contextRoute({ origin, contexts, board, req, res, pathname
     return value;
   };
   const saved = async () => {
-    const record = await origin.read(originId);
+    const record = await origin.read(originId, { report: false });
     if (!record) throw new OriginError('This Origin project no longer exists. Choose another project.', 'NOT_FOUND', 404);
     if (record.damaged) throw new OriginError('This Origin project file is damaged. Its Project Context was not changed.', 'ORIGIN_DAMAGED', 404);
     return record;
   };
   const reply = async ({ meta, version, text, ...rest }) => {
     const record = await saved(), active = meta.versions.find(entry => entry.id === meta.activeVersionId);
-    return send(res, 200, { document: documentView(meta), ...(version ? { version: version.id } : {}), ...(text !== undefined ? { text } : {}),
+    return send(res, 200, { document: documentView(meta), ...(version ? { version: version.id } : {}), ...(text !== undefined ? { text, sections: sectionsOf(text) } : {}),
       sourceRevision: record.revision, originChanged: currentSourceHash(record) !== active.sourceHash, ...rest });
   };
   if (versionId && method === 'GET') {
@@ -595,8 +595,9 @@ export async function contextRoute({ origin, contexts, board, req, res, pathname
   }
   if (!action && method === 'POST') {
     const input = await body(), record = await saved();
-    // Only a saved revision is converted; the page saves pending edits first and sends the revision it saw.
-    if (record.revision !== input.expectedRevision) throw new OriginError('Origin changed after your last save. Reload the project, then create the context again.', 'ORIGIN_REVISION_CONFLICT', 409);
+    // Only saved work is converted: the page saves its pending edits first and sends the revision it saved.
+    // A newer saved revision (from another window) already includes that work.
+    if (!Number.isSafeInteger(input.expectedRevision) || record.revision < input.expectedRevision) throw new OriginError('Origin changed after your last save. Reload the project, then create the context again.', 'ORIGIN_REVISION_CONFLICT', 409);
     return reply(await contexts.create(originId, record));
   }
   if (!action && method === 'PUT') {
@@ -605,7 +606,7 @@ export async function contextRoute({ origin, contexts, board, req, res, pathname
   }
   if (action === 'regenerate' && method === 'POST') {
     const input = await body(), record = await saved();
-    if (record.revision !== input.expectedSourceRevision) throw new OriginError('Origin changed after your last save. Reload the project, then regenerate.', 'ORIGIN_REVISION_CONFLICT', 409);
+    if (!Number.isSafeInteger(input.expectedSourceRevision) || record.revision < input.expectedSourceRevision) throw new OriginError('Origin changed after your last save. Reload the project, then regenerate.', 'ORIGIN_REVISION_CONFLICT', 409);
     const { meta, candidate, text } = await contexts.regenerate(originId, record, { expectedRevision: input.expectedRevision });
     const current = await contexts.read(originId);
     return reply({ meta, version: current.version, text: current.text, candidate: { id: candidate.id, text } });
@@ -676,6 +677,11 @@ export function contextPages(text) {
     });
   });
   return pages;
+}
+/** Section choices for destinations: the same pages Base receives, with their place in the file. */
+export function sectionsOf(text) {
+  let start = 0;
+  return contextPages(text).map(page => { const section = { id: page.id, title: page.title, start, end: start + page.markdown.length, chars: page.markdown.length }; start = section.end; return section; });
 }
 const joined = definition => (definition.content?.pages || []).map(page => page.markdown).join('');
 const copyTag = documentId => `context:${documentId}`;

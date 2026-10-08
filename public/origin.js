@@ -91,6 +91,10 @@ window.PromptboardOrigin = (() => {
     const main = el('section', 'origin-main'); main.id = 'origin-main'; main.setAttribute('aria-labelledby', 'origin-section-heading');
     const drawer = el('aside', 'origin-drawer'); drawer.id = 'origin-drawer'; drawer.hidden = true; drawer.tabIndex = -1; drawer.setAttribute('aria-labelledby', 'origin-drawer-title');
     view.append(heading, header, errorBox, notice, main, drawer);
+    // Project Context: a separate, editable Markdown document in the same right-side panel.
+    const contextPanel = window.PromptboardOriginContext.create({ app, view, drawer, icon: name => icon(ICON[name]), exists: () => Boolean(record?.exists),
+      project: () => project(), revision: () => record?.revision, flushOrigin: () => flush(), closeEditor: () => { if (open) closeDrawer(); }, showError: message => showError(message) });
+    statusBox.prepend(contextPanel.button);
 
     let projects = [], projectId = null, record = null, loading = null, loadError = null, visible = false;
     let section = pref(SECTION_KEY) || 'overview';
@@ -151,6 +155,7 @@ window.PromptboardOrigin = (() => {
           if (saveState === 'saved' && (section === 'plan' || open?.collection === 'items')) void refreshContextStatus();
           dirtySince = saveState === 'saved' ? 0 : Date.now();
           if (saveState === 'dirty') saveTimer = setTimeout(() => { void save(); }, SAVE_DELAY);
+          contextPanel.originSaved();
           return true;
         }
         saveState = response.status === 409 && data.code === 'ORIGIN_REVISION_CONFLICT' ? 'conflict' : 'error';
@@ -194,7 +199,7 @@ window.PromptboardOrigin = (() => {
       views = { map: null, canvas: null }; mapLinkFrom = null; selectedLink = null; taskMilestone = ''; contextView = { itemId: null, open: false, loading: false, revision: 0, data: null, error: '' };
       contextStatus = { revision: -1, loading: false, map: new Map() };
       changeCount = savedCount = 0; dirtySince = 0; saveState = 'saved'; showNotice(''); showError('');
-      renderDrawer();
+      renderDrawer(); void contextPanel.reset(id);
       if (!id) { render(); return null; }
       main.replaceChildren(el('p', 'origin-empty-note', 'Loading blueprint…')); main.setAttribute('aria-busy', 'true');
       const attempt = (async () => {
@@ -239,11 +244,12 @@ window.PromptboardOrigin = (() => {
         renderProjects(); renderMain(); renderSave();
       }
     }
-    async function leave() { visible = false; connectFrom = null; mapLinkFrom = null; await flush(); }
+    async function leave() { visible = false; connectFrom = null; mapLinkFrom = null; await flush(); await contextPanel.flush(); }
 
     async function switchProject(id) {
       if (id === projectId) return;
       if (!(await flush())) { projectSelect.value = projectId; showError('This blueprint has unsaved changes. Save or reload it before switching projects.'); return; }
+      if (!(await contextPanel.flush())) { projectSelect.value = projectId; showError('The Project Context has unsaved edits. Retry its save or reload it before switching projects.'); return; }
       setPref(PROJECT_KEY, id);
       await load(id);
     }
@@ -878,6 +884,7 @@ window.PromptboardOrigin = (() => {
       },
     };
     function openDrawer(collection, id) {
+      contextPanel.close(); // Its unsaved text is kept and keeps saving.
       open = { collection, id };
       renderDrawer({ restore: false });
       markSelected();
@@ -890,6 +897,7 @@ window.PromptboardOrigin = (() => {
       if (was) main.querySelector(`[data-id="${CSS.escape(was.id)}"] .origin-row-open, .origin-node[data-id="${CSS.escape(was.id)}"]`)?.focus({ preventScroll: true });
     }
     function renderDrawer({ restore = true } = {}) {
+      if (contextPanel.isOpen()) return; // The Project Context owns the panel while it is open.
       const entry = open && record?.exists ? bp()[open.collection]?.find(item => item.id === open.id) : null;
       if (!entry) { open = null; drawer.hidden = true; drawer.replaceChildren(); view.dataset.drawer = 'closed'; return; }
       const focusKey = restore && drawer.contains(document.activeElement) ? document.activeElement.dataset.focusKey : null;
@@ -925,7 +933,7 @@ window.PromptboardOrigin = (() => {
       body.scrollTop = scroll;
       if (focusKey) drawer.querySelector(`[data-focus-key="${CSS.escape(focusKey)}"]`)?.focus();
     }
-    drawer.addEventListener('keydown', event => { if (event.key === 'Escape' && !event.defaultPrevented) { event.preventDefault(); event.stopPropagation(); closeDrawer(); } });
+    drawer.addEventListener('keydown', event => { if (event.key === 'Escape' && !event.defaultPrevented) { event.preventDefault(); event.stopPropagation(); if (contextPanel.isOpen()) contextPanel.close(); else closeDrawer(); } });
     function deleteControl(collection, item) {
       const remove = button('Delete', () => {
         if (remove.dataset.confirm !== 'true') {
@@ -2289,6 +2297,7 @@ window.PromptboardOrigin = (() => {
       if (event.key !== 'Escape' || event.defaultPrevented) return;
       if (connectFrom !== null || mapLinkFrom !== null || selectedLink) { event.preventDefault(); connectFrom = mapLinkFrom = selectedLink = null; renderMain(); return; }
       if (open) { event.preventDefault(); closeDrawer(); }
+      else if (contextPanel.isOpen()) { event.preventDefault(); contextPanel.close(); }
     });
 
     return { show, leave, receiveProposal };

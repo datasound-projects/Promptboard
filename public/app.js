@@ -1296,6 +1296,24 @@ function prefillCompose({ text, task, replace = false, origin = null }) {
   input.scrollTop = 0;
   return 'ok';
 }
+// Origin's Project Context as an optional Compose source, through the same document route and limits.
+// The request text and settings stay as they are, apart from turning on source use; nothing is generated.
+async function attachComposeContext({ name, text, label }) {
+  if (running) return 'busy';
+  if (contextState.sources.length >= 8) return 'Compose already has eight sources. Remove one there first.';
+  const own = new AbortController(); const cancellation = composeCancellation(own); controller = own; setRunning(true); startProgress(); contextError();
+  try {
+    const response = await fetch(`/api/compose/sources/document?${new URLSearchParams({ name })}`, { method: 'POST', headers: { 'X-STE-Token': token, 'X-STE-Compose-Id': cancellation.id, 'Content-Type': 'text/markdown' }, body: text, signal: own.signal });
+    const data = await response.json();
+    if (!response.ok) return data.error || 'The document could not be attached to Compose.';
+    addContextSource({ type: 'document', id: data.document.id }, label);
+  } catch { return own.signal.aborted ? 'Attaching was stopped. Compose is unchanged.' : 'The app did not answer. Compose is unchanged.'; }
+  finally { cancellation.dispose(); controller = null; stopProgress(); setRunning(false); }
+  for (const id of ['context-autonomous', 'context-use-sources']) if (!$(`#${id}`).checked) { $(`#${id}`).checked = true; $(`#${id}`).dispatchEvent(new Event('change')); }
+  location.hash = '#/'; showPage(); $('#compose-context').open = true; contextLabel();
+  announce(`${label} is attached to Compose as optional context. Nothing was generated.`);
+  return 'ok';
+}
 function basePicker(options) { return baseView?.picker(options) || document.createElement('div'); }
 
 // Kanban (PB-01): the local app stores the board in its data folder. Seven fixed stages;
@@ -5218,7 +5236,7 @@ window.PromptboardBaseView = baseView;
 // Origin owns its blueprint requests. It reaches Compose and Kanban only through these explicit seams,
 // which prefill or create through the existing validated APIs and never start an agent.
 originView = window.PromptboardOrigin?.create({ api, announce, closeSidebar: () => setSidebar(false), ensureBoard: options => loadBoard(options),
-  projects: () => board?.projects || [], toCompose: prefillCompose,
+  projects: () => board?.projects || [], toCompose: prefillCompose, attachComposeContext,
   // Batch refinement and suggestions reuse Compose's own settings and job slot; Origin adds no prompt generator.
   composeSettings: () => { const { input, ...rest } = settings(); return rest; }, composeRunning: () => running,
   openKanban: projectId => { if (projectId) savePref(SELECTED_PROJECT_KEY, projectId); location.hash = '#/kanban'; } }) || null;

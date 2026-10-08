@@ -19,6 +19,7 @@ Origin is the planning layer before Compose and Kanban. It stores a structured *
 - A damaged file is renamed to `blueprint-<id>.corrupt-<time>-<random>.json` and the last good backup is restored and reported. Without a good backup the project is kept aside and not shown. A file from a newer Origin version is refused and never overwritten.
 - Saves are revision-checked (`expectedRevision`). A save from a stale window is refused instead of overwriting newer work.
 - **Delete from Origin** moves the file to `origin/deleted/`. Linked Kanban cards and every snapshot stay.
+- A [Project Context](origin-project-context.md) document is stored separately in `origin/context/<origin id>/`; creating, opening or editing it never changes the blueprint or its revision.
 - Approved task context is saved once per send or update as `origin/snapshots/<origin id>/<snapshot id>.json` and never changed or pruned, so a card's history can always be read back.
 - **Two different backups.** A Kanban backup (Kanban **Export**) holds the board: every card with its saved prompt (the task's words and the context it was sent with), its Origin reference (`originSource`) and its prerequisites (`dependsOn`); cards stay usable without Origin. It does not hold Origin projects or snapshots. For a full Origin backup, copy the `origin/` folder (projects, snapshots, `deleted/` and `migration.json`) while the app is stopped.
 

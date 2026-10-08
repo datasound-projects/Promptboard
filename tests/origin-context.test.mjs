@@ -191,7 +191,7 @@ test('HTTP: create from the saved revision only, edit without touching Origin, a
   let saved = (await call(path, { method: 'PUT', body: { expectedRevision: project.revision, blueprint: full() } })).data;
   assert.equal((await call(`${path}/document`)).data.document, null);
   // A stale blueprint revision creates nothing.
-  assert.equal((await call(`${path}/document`, { method: 'POST', body: { expectedRevision: saved.revision - 1 } })).data.code, 'ORIGIN_REVISION_CONFLICT');
+  assert.equal((await call(`${path}/document`, { method: 'POST', body: { expectedRevision: saved.revision + 1 } })).data.code, 'ORIGIN_REVISION_CONFLICT');
   assert.equal((await call(`${path}/document`)).data.document, null);
   const created = (await call(`${path}/document`, { method: 'POST', body: { expectedRevision: saved.revision } })).data;
   assert.equal(created.document.revision, 1); assert.equal(created.originChanged, false); assert.match(created.text, /«web\.name»/);
@@ -326,4 +326,16 @@ test('Compose names the Markdown section of each excerpt and keeps whole-file ch
   const chunk = buildIndex(chunkPages(sections)).rows.find(row => row.text.includes('Details here.'));
   assert.equal(chunk.section, 'Sign in'); assert.equal(text.slice(chunk.start, chunk.end).trim(), chunk.text);
   assert.deepEqual(markdownSections('plain text'), [{ page: 1, text: 'plain text', offset: 0, section: '' }]);
+});
+
+test('reading for Project Context leaves a recovered-file notice for the Origin page', async t => {
+  const dir = await temp(t), { OriginStore } = await import('../src/origin.mjs'), store = new OriginStore(dir);
+  const created = await store.create({ name: 'Damaged plan' });
+  await store.write(created.id, { expectedRevision: 1, blueprint: { idea: 'Good copy' } });
+  await store.write(created.id, { expectedRevision: 2, blueprint: { idea: 'Newest' } });
+  await writeFile(join(dir, 'origin', blueprintFileName(created.id)), '{"schema":"promptboard.origin", broken');
+  const fresh = new OriginStore(dir);
+  assert.equal((await fresh.read(created.id, { report: false })).blueprint.idea, 'Good copy');
+  assert.equal((await fresh.read(created.id)).recovery?.restoredFromBackup, true, 'the page still reports the restore');
+  assert.equal((await fresh.read(created.id)).recovery, null);
 });
