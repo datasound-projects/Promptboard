@@ -64,5 +64,9 @@ test('Coordinator panel: minimized, expanded, hidden and off, remembered per pro
   // Narrow screens: the panel fits.
   await browser.resize(390, 800);
   await wait(`(() => { const r = document.querySelector('#coordinator').getBoundingClientRect(); return r.left >= 0 && r.right <= document.documentElement.clientWidth; })()`, 'narrow');
+  // Minimized, it stays two short rows so the board keeps its room above the terminal.
+  await click('#coordinator-size');
+  await wait(`document.querySelector('#coordinator').dataset.mode === 'minimized' && document.querySelector('#coordinator').getBoundingClientRect().height <= 72`, 'compact narrow bar');
+  if (process.env.PB_BROWSER_SHOTS) await writeFile(join(process.env.PB_BROWSER_SHOTS, 'coordinator-narrow.png'), await browser.screenshot());
   assert.deepEqual(browser.consoleMessages.filter(line => line.startsWith('EXCEPTION')), []);
 });

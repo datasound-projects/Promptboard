@@ -443,7 +443,8 @@ test('terminal dock in a real browser: start, render, type, collapse, resize, se
   await browser.until(`document.querySelector('#dock-panel-${codexRun.id}').getBoundingClientRect().height > 75`, 'readable narrow terminal');
   assert.equal(await browser.layout(`return document.documentElement.scrollWidth <= window.innerWidth;`), true, 'Narrow page has no horizontal overflow outside the board.');
   assert.equal(await browser.layout(`return [...document.querySelectorAll('#board-actions button')].filter(button => !button.hidden).every(button => { const r = button.getBoundingClientRect(); return r.left >= 0 && r.right <= window.innerWidth; });`), true, 'Every narrow toolbar action is visible, including New card.');
-  await browser.until(`document.querySelector('#kanban-columns').getBoundingClientRect().bottom <= document.querySelector('#dock').getBoundingClientRect().top + 1`, 'narrow board fits above terminal');
+  await browser.until(`document.querySelector('#kanban-columns').getBoundingClientRect().bottom <= document.querySelector('#dock').getBoundingClientRect().top + 1`, 'narrow board fits above terminal')
+    .catch(async error => { throw new Error(`${error.message}: ${JSON.stringify(await browser.eval(`return Object.fromEntries(['board-actions', 'coordinator', 'kanban-columns', 'dock'].map(id => { const r = document.getElementById(id).getBoundingClientRect(); return [id, [Math.round(r.top), Math.round(r.height)]]; }));`))}`); });
   await browser.until(`(() => { const tab = document.querySelector('#dock-tab-${codexRun.id}').getBoundingClientRect(); const tabs = document.querySelector('#dock-tabs').getBoundingClientRect(); return tab.right <= tabs.right + 1 && tab.left >= tabs.left - 1; })()`, 'selected agent stays visible after resizing');
   await shot('7-codex-narrow');
   await browser.eval(`document.querySelector('.page-nav a[href="#/"]').click();`);
