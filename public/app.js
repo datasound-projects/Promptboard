@@ -52,7 +52,12 @@ function readHistory() {
     const stored = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
     if (!Array.isArray(stored)) return [];
     return stored.filter((entry) => entry && typeof entry.id === 'string' && typeof entry.prompt === 'string' && typeof entry.input === 'string' && entry.input.length <= 100000 && entry.prompt.length <= MAX_PROMPT_BYTES)
-      .slice(0, HISTORY_LIMIT).map((entry) => ({
+      .slice(0, HISTORY_LIMIT).map(normalizeEntry);
+  } catch { return []; }
+}
+/** One Compose result in History's shape (also used to open a saved project prompt). */
+function normalizeEntry(entry) {
+  return {
         id: safeText(entry.id, 80), input: entry.input, prompt: entry.prompt,
         createdAt: Number.isFinite(entry.createdAt) ? entry.createdAt : Date.now(),
         provider: KNOWN_PROVIDERS.includes(entry.provider) ? entry.provider : 'codex', model: safeText(entry.model, 100),
@@ -66,8 +71,7 @@ function readHistory() {
         durationMs: Number.isFinite(entry.durationMs) ? entry.durationMs : 0,
         lint: normalizeLint(entry.lint),
         verification: normalizeVerification(entry.verification),
-      }));
-  } catch { return []; }
+  };
 }
 
 function normalizeLint(lint) {
@@ -176,7 +180,15 @@ function renderHistory() {
       renderHistory();
       announce(saved ? 'Prompt removed from browser history.' : 'Prompt removed from this session. Browser history changes were not saved.');
     });
-    row.append(button, remove);
+    const keep = document.createElement('button');
+    keep.className = 'history-save';
+    keep.type = 'button';
+    keep.textContent = '⇢';
+    keep.title = 'Save or move to a project (optional)';
+    keep.setAttribute('aria-label', `Save to a project: ${entry.input.slice(0, 80)}`);
+    keep.disabled = running;
+    keep.addEventListener('click', () => projectsView?.openSave(entry, { fromHistory: true }));
+    row.append(button, keep, remove);
     $('#history-list').append(row);
   }
 }
@@ -435,9 +447,10 @@ function setRunning(value) {
   $('#copy-button').disabled = value || !currentResult;
   $('#export-button').disabled = value || !currentResult;
   $('#kanban-button').disabled = value || !currentResult;
+  $('#project-save-button').disabled = value || !currentResult;
   $('#split-button').disabled = value || !currentResult;
   $('#report-button').disabled = value || !currentResult?.verification;
-  renderComposeOrigin();
+  renderComposeOrigin(); projectsView?.renderBar();
   $('#refresh-models').disabled = value || authBusy || modelsLoading;
   $('#model').disabled = value || modelsLoading;
   updateEffort($('#effort').value);
@@ -517,6 +530,7 @@ function clearOutput() {
   $('#copy-button').disabled = true;
   $('#export-button').disabled = true;
   $('#kanban-button').disabled = true;
+  $('#project-save-button').disabled = true;
   $('#split-button').disabled = true;
   $('#report-button').disabled = true;
   $('#generation-error').hidden = true;
@@ -524,7 +538,7 @@ function clearOutput() {
 
 function showResult(result) {
   currentResult = result;
-  renderComposeOrigin();
+  renderComposeOrigin(); projectsView?.renderBar();
   $('#output-tools').hidden = running;
   $('#output-info').open = false;
   closePromptEditor();
@@ -565,6 +579,7 @@ function showResult(result) {
   $('#copy-button').disabled = running;
   $('#export-button').disabled = running;
   $('#kanban-button').disabled = running;
+  $('#project-save-button').disabled = running;
   $('#split-button').disabled = running;
 }
 
@@ -683,6 +698,7 @@ function restoreEntry(entry) {
   $('#security-review').checked = entry.options.securityReview === true;
   $('#terminology').value = entry.terminology || '';
   $('#generation-error').hidden = true;
+  projectsView?.setLink(null);
   showResult(entry);
   updateCount();
   updateProviderState();
@@ -693,7 +709,7 @@ function restoreEntry(entry) {
 
 function newPrompt() {
   if (running) return;
-  composeOrigin = null; renderComposeOrigin();
+  composeOrigin = null; renderComposeOrigin(); projectsView?.setLink(null);
   showPromptPage();
   contextReset();
   currentId = null;
@@ -1227,7 +1243,7 @@ function openHelp(privacy = false) {
 }
 
 // All views stay in the document. Routing does not replace forms, boards or terminals.
-let baseView = null, originView = null;
+let baseView = null, originView = null, projectsView = null;
 function currentPage() { return location.hash === '#/kanban' ? 'kanban' : location.hash === '#/base' ? 'base' : location.hash === '#/origin' ? 'origin' : 'compose'; }
 function showPage() {
   const page = currentPage();
@@ -1278,11 +1294,11 @@ $('#compose-origin-use')?.addEventListener('click', async () => {
 });
 $('#compose-origin-back')?.addEventListener('click', () => { location.hash = '#/origin'; });
 $('#compose-origin-unlink')?.addEventListener('click', () => { composeOrigin = null; renderComposeOrigin(); });
-function prefillCompose({ text, task, replace = false, origin = null }) {
+function prefillCompose({ text, task, replace = false, origin = null, link = null }) {
   if (running) return 'busy';
   const input = $('#prompt-input');
   if (!replace && input.value.trim() && input.value !== text) return 'draft';
-  composeOrigin = origin; renderComposeOrigin();
+  composeOrigin = origin; renderComposeOrigin(); projectsView?.setLink(link);
   currentId = null;
   clearOutput();
   input.value = String(text).slice(0, 100000);
@@ -1313,6 +1329,20 @@ async function attachComposeContext({ name, text, label }) {
   location.hash = '#/'; showPage(); $('#compose-context').open = true; contextLabel();
   announce(`${label} is attached to Compose as optional context. Nothing was generated.`);
   return 'ok';
+}
+/** Open a saved prompt or a card in Compose with its link; History is not changed. */
+function openInCompose(fields, link) {
+  if (running) return false;
+  composeOrigin = null; renderComposeOrigin();
+  restoreEntry(normalizeEntry({ options: {}, ...fields }));
+  projectsView?.setLink(link);
+  announce(link?.kind === 'card' ? 'Card opened in Compose. Its board text changes only when you choose Update card.' : 'Saved prompt opened in Compose.');
+  return true;
+}
+/** Show one Origin record (a task or a component) from another page. */
+function openOrigin(originId, target = null) {
+  location.hash = '#/origin';
+  void originView?.focus?.({ originId, collection: target?.collection, id: target?.id });
 }
 function basePicker(options) { return baseView?.picker(options) || document.createElement('div'); }
 
@@ -2346,7 +2376,8 @@ function openCard(id = null, quick = false) {
   $('#card-pipeline-settings').replaceChildren(...(cardPipelineEditor ? [cardPipelineEditor.node] : []));
   $('#card-dialog-project').textContent = `${card && taskNumberText(card) ? taskNumberText(card) + ' · ' : ''}${project.name} · ${columnTitle(card?.column || 'todo')}`;
   $('#card-dialog-heading').textContent = card ? 'Edit card' : 'New card';
-  $('#card-refine').hidden = Boolean(card);
+  $('#card-refine').hidden = false;
+  $('#card-refine').textContent = card ? 'Open in Compose' : 'Refine in Composer';
   $('#card-refine').disabled = running;
   $('#card-title').required = !quick;
   $('#card-title').placeholder = quick ? 'Optional — derived from your prompt' : '';
@@ -3023,7 +3054,10 @@ async function openTaskDetails(taskId) {
   const nodes = [
     section('Status', paragraph(`${status.text}. Task text revision ${card.contentRevision ?? 1}.${status.flag ? ' Review the prompt before you run an agent on it.' : ''}`)),
     ...(prerequisites ? [section('Prerequisites', paragraph('These cards must be done before this one starts. Nothing is merged for you.', 'note'), prerequisites)] : []),
-    ...(card.originSource?.originTaskId ? [section('From Origin', paragraph(`${card.originSource.key || 'An Origin task'}. Its design context is in the prompt below; change the task in Origin.`, 'note'))] : []),
+    ...(card.originSource?.originTaskId ? [section('From Origin', paragraph(`${card.originSource.key || 'An Origin task'}. Its design context is in the prompt below; change the task in Origin.`, 'note'),
+      detailActions(detailButton('Open in Origin', () => { $('#task-dialog').close(); openOrigin(card.originSource.originProjectId, { collection: 'items', id: card.originSource.originTaskId }); }, 'text-button')))] : []),
+    ...(card.source?.promptId ? [section('From a saved prompt', paragraph(`Made from revision ${card.source.promptRevision} of a saved project prompt. Newer revisions reach this card only when you update it.`, 'note'),
+      detailActions(detailButton('Open the saved prompt in Compose', () => { $('#task-dialog').close(); void projectsView?.openPrompt(card.source.projectId, card.source.promptId); }, 'text-button')))] : []),
     section('Original prompt', pre(card.prompt)),
     section('Branch and worktree', taskLocation(card, project)),
     section('Base resources for future runs', basePicker({ target: { scope: 'task', projectId: project.id, taskId: card.id } }), paragraph('Task selections can narrow or opt out of inherited resources without changing the task text or approved evidence.')),
@@ -3767,6 +3801,7 @@ window.addEventListener('hashchange', showPage);
 // The skip link must not change the hash, which selects the page.
 $('#skip-link').addEventListener('click', event => { event.preventDefault(); ($({ base: '#base-view', kanban: '#kanban-view', origin: '#origin-view' }[currentPage()] || '#prompt-input')).focus(); });
 $('#kanban-button').addEventListener('click', openAddToKanban);
+$('#project-save-button').addEventListener('click', () => projectsView?.openSave(currentResult));
 
 // ---- Split into tasks (optional) ----
 // One CLI call proposes smaller tasks; nothing is saved until you add them. The cards keep the order
@@ -3999,6 +4034,15 @@ $('#card-refine').addEventListener('click', () => {
     return;
   }
   if (running) return;
+  const project = currentProject(), card = editingCardId ? project?.tasks.find(item => item.id === editingCardId) : null;
+  if (card) {
+    // An existing card opens linked: its text is both the request and the current result, so it can be
+    // regenerated or edited, then explicitly sent back with Update card (idle To Do cards only).
+    $('#card-dialog').close();
+    openInCompose({ id: `card-${card.id}-${card.revision}`, input: prompt, prompt: card.prompt || prompt, createdAt: card.updatedAt },
+      { kind: 'card', taskId: card.id, cardRevision: card.revision, number: card.number, title: card.title, kanbanProjectId: project.id, prompt: card.prompt });
+    return;
+  }
   $('#prompt-input').value = prompt;
   $('#prompt-input').dispatchEvent(new Event('input', { bubbles: true }));
   $('#card-dialog').close();
@@ -5239,7 +5283,16 @@ originView = window.PromptboardOrigin?.create({ api, announce, closeSidebar: () 
   projects: () => board?.projects || [], toCompose: prefillCompose, attachComposeContext,
   // Batch refinement and suggestions reuse Compose's own settings and job slot; Origin adds no prompt generator.
   composeSettings: () => { const { input, ...rest } = settings(); return rest; }, composeRunning: () => running,
-  openKanban: projectId => { if (projectId) savePref(SELECTED_PROJECT_KEY, projectId); location.hash = '#/kanban'; } }) || null;
+  openKanban: (projectId, taskId) => { if (projectId) savePref(SELECTED_PROJECT_KEY, projectId); location.hash = '#/kanban'; if (taskId) setTimeout(() => void openTaskDetails(taskId), 0); },
+  openPrompt: (projectId, promptId) => projectsView?.openPrompt(projectId, promptId) }) || null;
+// Shared projects: optional saved prompts beside History, with links back to Origin and Kanban.
+projectsView = window.PromptboardProjects?.create({ api, announce, getResult: () => currentResult, running: () => running,
+  settingsOf: entry => ({ provider: entry.provider, model: entry.model, effort: entry.effort, language: entry.language, quality: entry.quality, task: entry.task, detail: entry.detail }),
+  verificationOf: entry => snapshotSource(entry).verification,
+  removeHistory: id => { history = history.filter(item => item.id !== id); if (currentId === id) currentId = null; persistHistory(); renderHistory(); },
+  openInCompose, openOrigin, refreshBoard: () => loadBoard(),
+  card: id => (board?.projects || []).flatMap(project => project.tasks).find(task => task.id === id) || null,
+  openKanban: (projectId, taskId) => { if (projectId) savePref(SELECTED_PROJECT_KEY, projectId); location.hash = '#/kanban'; if (taskId) setTimeout(() => void openTaskDetails(taskId), 0); } }) || null;
 // Start page applies only when the URL contains no explicit route.
 if (!location.hash && uiPref('startPage') !== 'compose') location.hash = `#/${uiPref('startPage')}`;
 showPage();

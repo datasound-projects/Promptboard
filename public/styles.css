@@ -1913,3 +1913,43 @@ button.origin-context-badge { cursor: pointer; }
 .md-diagram-edge-label { fill: var(--muted, #555); font-size: 11px; paint-order: stroke; stroke: var(--surface, #fff); stroke-width: 4px; }
 .md-diagram-error { margin: 0 0 6px; padding: 8px 10px; border: 1px solid color-mix(in srgb, #d0453a 40%, transparent); border-radius: 8px; color: var(--text); font-size: 13px; }
 .md-diagram-code summary { margin-top: 6px; color: var(--muted); font-size: 12px; cursor: pointer; }
+
+/* Compose sidebar: History | Projects. History is unchanged; Projects is optional. */
+.sidebar-tabs { display: flex; gap: 2px; margin: 14px 0 0; padding: 3px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); }
+.sidebar-tabs button { flex: 1; height: 28px; border: 0; border-radius: 7px; background: none; color: var(--muted); font-size: 12.5px; font-weight: 600; }
+.sidebar-tabs button[aria-selected="true"] { background: var(--surface-3); color: var(--ink); }
+.sidebar-tabs button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+#history-section:not([hidden]), .projects-section:not([hidden]) { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+.projects-section { gap: 8px; padding-top: 14px; }
+.projects-new { padding: 8px 10px; border-color: var(--line-strong); background: transparent; color: var(--text); font-weight: 600; }
+.projects-new:hover:enabled { background: var(--surface); }
+.projects-new-form { display: flex; flex-wrap: wrap; gap: 6px; }
+.projects-new-form input { flex: 1 1 140px; min-width: 0; }
+.projects-note { margin: 0; color: var(--subtle); font-size: 11.5px; line-height: 1.4; }
+.projects-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; margin: 0 -6px; padding: 2px 6px 10px; }
+.project-row { margin: 2px 0; border: 1px solid transparent; border-radius: 8px; }
+.project-row.open { border-color: var(--line-strong); background: var(--surface); }
+.project-row-head, .project-prompt { display: block; width: 100%; min-width: 0; padding: 8px 10px; border: 0; border-radius: 8px; background: none; text-align: left; }
+.project-row-head:hover, .project-prompt:hover { background: var(--surface); }
+.project-row-head strong, .project-prompt strong { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13px; font-weight: 600; color: var(--text); }
+.project-prompt strong { font-weight: 500; }
+.project-row-head small, .project-prompt small { display: block; margin-top: 3px; font: 11px var(--mono); color: var(--subtle); }
+.project-prompts { padding: 0 4px 6px 8px; }
+.project-prompt[aria-current="true"] { background: var(--surface-3); }
+.project-links { display: flex; flex-wrap: wrap; gap: 4px 10px; padding: 4px 6px 0; }
+.history-empty-text { margin: 6px 4px; color: var(--subtle); font-size: 12px; }
+.history-save { position: absolute; right: 34px; top: 50%; width: 28px; height: 28px; margin-top: -14px; border: 0; border-radius: 6px; background: none; color: var(--muted); font-size: 15px; line-height: 1; opacity: 0; }
+.history-item:hover .history-save, .history-item:focus-within .history-save { opacity: 1; }
+.history-save:hover:enabled { background: var(--surface-3); color: var(--ink); }
+.history-item:hover .history-restore, .history-item:focus-within .history-restore { padding-right: 66px; }
+@media (hover: none) { .history-save, .history-delete { opacity: 1; } .history-restore { padding-right: 66px; } }
+
+/* The link bar in Compose: a saved prompt, a Kanban card or an Origin record this result belongs to. */
+.compose-link { display: flex; align-items: center; gap: 8px 10px; flex-wrap: wrap; margin: 0 0 14px; padding: 10px 14px; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--surface); }
+.compose-link-text { flex: 1 1 220px; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+.compose-link-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.compose-link-message { flex-basis: 100%; margin: 0; color: var(--muted); font-size: 13px; }
+.projects-dialog form { display: grid; gap: 12px; }
+.origin-linked-prompts { display: grid; gap: 6px; }
+.origin-linked-prompts:empty { display: none; }
+.origin-linked-prompt { display: flex; flex-wrap: wrap; gap: 4px 12px; }

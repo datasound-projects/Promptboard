@@ -20,6 +20,7 @@
     <script src="/markdown-view.js" defer></script>
     <script src="/origin-context.js" defer></script>
     <script src="/origin.js" defer></script>
+    <script src="/projects.js" defer></script>
     <script src="/app.js" defer></script>
     <script src="/dock.js" defer></script>
   </head>
@@ -46,6 +47,8 @@
     <aside class="sidebar" id="sidebar" aria-label="Prompt history">
       <div class="sidebar-panel" id="history-panel">
       <button class="new-prompt" id="new-prompt" type="button" aria-keyshortcuts="N"><span aria-hidden="true">＋</span> New prompt <kbd aria-hidden="true">N</kbd></button>
+      <div class="sidebar-tabs" role="tablist" aria-label="Prompts"><button type="button" role="tab" id="sidebar-tab-history" aria-selected="true" aria-controls="history-section">History</button><button type="button" role="tab" id="sidebar-tab-projects" aria-selected="false" aria-controls="projects-section" tabindex="-1">Projects</button></div>
+      <div id="history-section" role="tabpanel" aria-labelledby="sidebar-tab-history">
       <div class="history-label"><span>HISTORY</span><span id="history-count">00</span></div>
       <label class="search-wrap">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.3"/><path d="m16 16 4 4"/></svg>
@@ -53,6 +56,8 @@
       </label>
       <div class="history-list" id="history-list"></div>
       <div class="history-empty" id="history-empty"><p>No saved prompts.</p><small>Your finished prompts will appear here.</small></div>
+      </div>
+      <div id="projects-section" class="projects-section" role="tabpanel" aria-labelledby="sidebar-tab-projects" hidden></div>
       </div>
       <div class="sidebar-panel" id="workspace-panel" hidden>
         <button class="new-prompt" id="workspace-new" type="button"><span aria-hidden="true">＋</span> New project</button>
@@ -236,7 +241,7 @@
             <div class="prompt-edit-actions" id="prompt-edit-actions" hidden><button type="button" class="secondary-button" id="prompt-edit">Edit prompt</button></div>
             <details class="output-tools" id="output-tools" hidden>
               <summary aria-expanded="false" aria-label="More prompt actions">More <span aria-hidden="true">⌄</span></summary>
-              <div class="output-actions" aria-label="Additional prompt actions"><button class="secondary-button" id="split-button" type="button" disabled title="Optional: split this prompt into smaller To Do cards"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="4" y="4" width="16" height="5" rx="1.5"/><rect x="4" y="11" width="7" height="9" rx="1.5"/><rect x="13" y="11" width="7" height="9" rx="1.5"/></svg><span>Split into tasks</span></button><button class="secondary-button" id="export-button" type="button" disabled title="Download as Markdown"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 16v5h14v-5"/></svg><span>Export</span></button><button class="secondary-button" id="kanban-button" type="button" disabled title="Save this prompt as a task card" aria-label="Add to Kanban"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M12 8v8M8 12h8"/></svg><span id="kanban-label">Add to Kanban</span></button></div>
+              <div class="output-actions" aria-label="Additional prompt actions"><button class="secondary-button" id="split-button" type="button" disabled title="Optional: split this prompt into smaller To Do cards"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="4" y="4" width="16" height="5" rx="1.5"/><rect x="4" y="11" width="7" height="9" rx="1.5"/><rect x="13" y="11" width="7" height="9" rx="1.5"/></svg><span>Split into tasks</span></button><button class="secondary-button" id="export-button" type="button" disabled title="Download as Markdown"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 16v5h14v-5"/></svg><span>Export</span></button><button class="secondary-button" id="kanban-button" type="button" disabled title="Save this prompt as a task card" aria-label="Add to Kanban"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M12 8v8M8 12h8"/></svg><span id="kanban-label">Add to Kanban</span></button><button class="secondary-button" id="project-save-button" type="button" disabled title="Optional: keep this prompt in a project"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2Z"/><path d="M12 11v5M9.5 13.5h5"/></svg><span>Save to project</span></button></div>
             </details>
             <button class="copy-button" id="copy-button" type="button" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V4H4v12h4"/></svg><span id="copy-label">Copy prompt</span></button>
           </div>

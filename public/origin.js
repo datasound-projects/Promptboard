@@ -885,6 +885,7 @@ window.PromptboardOrigin = (() => {
     };
     function openDrawer(collection, id) {
       contextPanel.close(); // Its unsaved text is kept and keeps saving.
+      promptCache.at = 0; // Opening a record always reads its saved prompts fresh.
       open = { collection, id };
       renderDrawer({ restore: false });
       markSelected();
@@ -927,6 +928,7 @@ window.PromptboardOrigin = (() => {
       if (collection === 'items') left.append(improveButton(entry, message));
       else if (COMPOSABLE.has(collection)) left.append(composeButton(collection, entry.id, message));
       if (collection === 'items') { const send = button('Send to Kanban', () => void openHandoff([entry.id]), 'origin-ghost', 'Create its To Do card. No agent starts.'); send.id = 'origin-drawer-handoff'; left.append(send); }
+      body.append(linkedPrompts(collection, entry.id));
       foot.append(left, deleteControl(collection, entry));
       drawer.replaceChildren(head, body, message, foot);
       drawer.hidden = false; view.dataset.drawer = 'open';
@@ -934,6 +936,28 @@ window.PromptboardOrigin = (() => {
       if (focusKey) drawer.querySelector(`[data-focus-key="${CSS.escape(focusKey)}"]`)?.focus();
     }
     drawer.addEventListener('keydown', event => { if (event.key === 'Escape' && !event.defaultPrevented) { event.preventDefault(); event.stopPropagation(); if (contextPanel.isOpen()) contextPanel.close(); else closeDrawer(); } });
+    // Saved project prompts (and their cards) that link to this record. Read-only here; open them to change them.
+    let promptCache = { projectId: null, at: 0, list: [] };
+    function linkedPrompts(collection, id) {
+      const box = el('div', 'origin-linked-prompts');
+      const fill = list => {
+        const mine = list.filter(prompt => prompt.origin.some(link => link.originId === projectId && link.collection === collection && link.id === id));
+        if (!mine.length) { box.replaceChildren(); return; }
+        box.replaceChildren(el('span', 'origin-field-label', 'Saved prompts'), ...mine.map(prompt => {
+          const row = el('div', 'origin-linked-prompt');
+          row.append(button(`${prompt.title} · rev ${prompt.current}`, () => app.openPrompt(projectId, prompt.id), 'origin-link'),
+            ...prompt.cards.filter(card => card.exists).map(card => button(`Kanban #${card.number ?? ''}${card.behind ? ' (older revision)' : ''}`, () => app.openKanban(card.projectId, card.taskId), 'origin-link')));
+          return row;
+        }));
+      };
+      const owner = projectId;
+      if (promptCache.projectId === owner && Date.now() - promptCache.at < 5000) fill(promptCache.list);
+      else app.api(`/api/shared-projects/${encodeURIComponent(owner)}/prompts`).then(({ response, data }) => {
+        if (!response.ok || owner !== projectId) return;
+        promptCache = { projectId: owner, at: Date.now(), list: data.prompts }; fill(data.prompts);
+      }).catch(() => {});
+      return box;
+    }
     function deleteControl(collection, item) {
       const remove = button('Delete', () => {
         if (remove.dataset.confirm !== 'true') {
@@ -1957,8 +1981,10 @@ window.PromptboardOrigin = (() => {
     // ---- Handoffs ----
     function composeButton(collection, id, message) {
       const control = button('Send to Compose', async () => {
-        const spec = M.composeSpec(bp(), collection, id, project()?.name || '');
-        if (!spec) return;
+        const found = M.composeSpec(bp(), collection, id, project()?.name || '');
+        if (!found) return;
+        // The link lets a prompt saved from Compose remember this record (Origin → Compose → project).
+        const spec = { ...found, link: { kind: 'origin', originId: projectId, collection, id, name: M.itemName(bp(), collection, id) } };
         await flush();
         let result = app.toCompose(spec);
         if (result === 'draft') {
@@ -2300,7 +2326,15 @@ window.PromptboardOrigin = (() => {
       else if (contextPanel.isOpen()) { event.preventDefault(); contextPanel.close(); }
     });
 
-    return { show, leave, receiveProposal };
+    /** Open one record of an Origin project from another page (reverse navigation). Unsaved work is saved first. */
+    async function focus({ originId, collection, id } = {}) {
+      if (originId && originId !== projectId) { if (!(await flush())) return false; setPref(PROJECT_KEY, originId); await load(originId); }
+      else if (loading) await loading;
+      if (collection && id && record?.exists) focusTarget({ collection, id });
+      return true;
+    }
+
+    return { show, leave, receiveProposal, focus };
   }
 
   return { create };
