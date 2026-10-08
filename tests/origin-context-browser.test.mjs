@@ -148,6 +148,9 @@ test('the panel resizes, works on a narrow screen in both themes, handles confli
   const { project, browser, ev, wait, call, editText, docSaved } = await setup(t);
   await ev(`document.querySelector('#origin-context-open').click();`);
   await wait(`document.querySelector('#origin-context-preview h2')`, 'panel');
+  // CI runners may open a smaller window than requested; fix the viewport so the desktop panel can grow.
+  await browser.resize(1280, 900);
+  await wait(`!matchMedia('(max-width: 730px)').matches && Math.round(document.querySelector('#origin-drawer').getBoundingClientRect().width) === 560`, 'desktop panel width');
   const before = await ev(`return document.querySelector('#origin-drawer').getBoundingClientRect().width;`);
   await ev(`const g = document.querySelector('.origin-context-resize'); g.focus(); for (let i = 0; i < 3; i++) g.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));`);
   const after = await ev(`return document.querySelector('#origin-drawer').getBoundingClientRect().width;`);
