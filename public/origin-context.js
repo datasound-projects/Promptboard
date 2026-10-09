@@ -60,6 +60,7 @@ window.PromptboardOriginContext = (() => {
     // ---- Loading and project changes ----
     async function reset(id) {
       if (isOpen) close();
+      if (id === projectId && draft !== null) return; // Origin reloading its own blueprint keeps this unsaved text; it keeps saving.
       if (projectId && projectId !== id) await flush();
       clearTimeout(saveTimer); clearTimeout(statusTimer);
       projectId = id; doc = null; text = ''; sections = []; draft = null; loaded = false; originChanged = false; sub = null; error = ''; saveState = 'saved'; saveMessage = '';
@@ -225,18 +226,22 @@ window.PromptboardOriginContext = (() => {
         body.append(el('p', 'origin-hint', 'Edits stay in this document. Origin is never changed from here, including headings, IDs and diagrams.'), area);
         return;
       }
-      const preview = el('article', 'origin-context-preview md-view'); preview.id = 'origin-context-preview';
       const all = current(), cut = all.length > PREVIEW_CHARS ? all.lastIndexOf('\n', PREVIEW_CHARS) + 1 || PREVIEW_CHARS : all.length;
       // A very long document is previewed in part so the page stays responsive; the saved file is complete.
       if (cut < all.length) body.append(el('p', 'origin-callout', `The preview shows the first ${count(cut, 'character')} of ${count(all.length, 'character')}. The saved document is complete: use Edit or Download .md for the rest.`));
-      preview.append(window.PromptboardMarkdown.render(all.slice(0, cut)));
-      preview.addEventListener('click', event => {
+      const shown = preview(all.slice(0, cut)); shown.id = 'origin-context-preview';
+      body.append(shown);
+    }
+    /** Rendered Markdown whose in-document links scroll within it, never changing the page's route. */
+    function preview(markdown) {
+      const node = el('article', 'origin-context-preview md-view'); node.append(window.PromptboardMarkdown.render(markdown));
+      node.addEventListener('click', event => {
         const link = event.target.closest('a[href^="#"]');
         if (!link) return;
-        event.preventDefault(); const target = preview.querySelector(`#${CSS.escape(link.getAttribute('href').slice(1))}`);
+        event.preventDefault(); const target = node.querySelector(`#${CSS.escape(link.getAttribute('href').slice(1))}`);
         target?.scrollIntoView({ block: 'start' }); target?.setAttribute('tabindex', '-1'); target?.focus({ preventScroll: true });
       });
-      body.append(preview);
+      return node;
     }
     function showSub(name) { sub = name; error = ''; renderBody(); renderSave(); for (const tabButton of drawer.querySelectorAll('.origin-context-tabs [role=tab]')) tabButton.setAttribute('aria-selected', 'false'); body.querySelector('h3')?.focus(); }
     function subHead(title, lead) {
@@ -310,8 +315,7 @@ window.PromptboardOriginContext = (() => {
       const actions = el('div', 'origin-inline-actions');
       actions.append(button('Copy Markdown', async () => { try { await navigator.clipboard.writeText(data.text); app.announce(`Version ${version.number} copied.`); } catch { fail('The clipboard is unavailable.'); } }, 'origin-ghost'),
         button('Download .md', () => saveFile(data.text, fileName(doc.revision, `-version-${version.number}`)), 'origin-ghost'));
-      const preview = el('article', 'origin-context-preview md-view'); preview.append(window.PromptboardMarkdown.render(data.text));
-      body.append(actions, preview);
+      body.append(actions, preview(data.text));
     }
     async function regenerate(control) {
       control.disabled = true; error = ''; renderSave();
@@ -486,7 +490,7 @@ window.PromptboardOriginContext = (() => {
     }
     window.addEventListener('resize', () => { if (isOpen) applyWidth(); });
 
-    return { button: headerButton, reset, originSaved, flush, close, open: openPanel, isOpen: () => isOpen };
+    return { button: headerButton, reset, originSaved, flush, close, isOpen: () => isOpen };
   }
 
   return { create, compare };

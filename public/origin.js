@@ -54,6 +54,34 @@ window.PromptboardOrigin = (() => {
     return svg;
   }
   const ICON = { edit: 'M4 20h4L19 9l-4-4L4 16v4zM13.5 6.5l4 4', plus: 'M12 5v14M5 12h14', minus: 'M5 12h14', fit: 'M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5', grip: 'M20 10L10 20M20 15l-5 5M20 4L4 20', close: 'M6 6l12 12M18 6 6 18', dots: 'M5 12h.01M12 12h.01M19 12h.01', arrow: 'M5 12h14M13 6l6 6-6 6', link: 'M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1' };
+  /** An SVG element factory for one drawing: make(tag, attributes, parent = the drawing). */
+  const svgMaker = root => (tag, attrs = {}, parent = root) => {
+    const node = document.createElementNS('http://www.w3.org/2000/svg', tag);
+    for (const [name, value] of Object.entries(attrs)) node.setAttribute(name, String(value));
+    parent.append(node); return node;
+  };
+  /** Pointer dragging on a node of an SVG drawing: a press without movement is a click; movement reports the offset in drawing units. */
+  function draggable(svg, node, { start, move, drop, click, cancel }) {
+    let drag = null;
+    node.addEventListener('pointerdown', event => {
+      if (event.button !== 0) return;
+      const matrix = svg.getScreenCTM()?.inverse(); if (!matrix) return;
+      drag = { id: event.pointerId, start: new DOMPoint(event.clientX, event.clientY).matrixTransform(matrix), moved: false, matrix };
+      start(); node.setPointerCapture?.(event.pointerId);
+    });
+    node.addEventListener('pointermove', event => {
+      if (!drag || event.pointerId !== drag.id) return;
+      const now = new DOMPoint(event.clientX, event.clientY).matrixTransform(drag.matrix), dx = now.x - drag.start.x, dy = now.y - drag.start.y;
+      if (!drag.moved && Math.hypot(dx, dy) < 4) return;
+      drag.moved = true; move(dx, dy);
+    });
+    node.addEventListener('pointerup', event => {
+      if (!drag || event.pointerId !== drag.id) return;
+      const moved = drag.moved; drag = null;
+      if (moved) drop(); else click();
+    });
+    node.addEventListener('pointercancel', () => { drag = null; cancel(); });
+  }
   function autoGrow(area) {
     const fit = () => { if (!area.isConnected) return; area.style.height = 'auto'; area.style.height = `${area.scrollHeight + 2}px`; };
     // Measured again when Origin is shown: a field drawn while the page was hidden has no height yet.
@@ -118,6 +146,9 @@ window.PromptboardOrigin = (() => {
       return [task.id, { task, column: column?.title || column?.name || task.column, done: task.column === 'done' || column?.role === 'done' }];
     })));
     const showError = message => { errorBox.textContent = message; errorBox.hidden = !message; };
+    // A project whose blueprint could not be read can still be renamed, connected or deleted: the list carries its revision.
+    const revisionOf = current => record?.revision ?? current.revision;
+    const saveRevision = (revision, next) => { if (record) record.revision = revision; projects = projects.map(item => (item.id === next.id ? next : item)); };
     const showNotice = message => { notice.textContent = message; notice.hidden = !message; };
 
     // ---- Saving: debounced, revision-checked autosave with a visible state ----
@@ -230,7 +261,7 @@ window.PromptboardOrigin = (() => {
       return true;
     }
     async function show() {
-      visible = true;
+      visible = true; baseResources = null; // Base may have changed while Origin was hidden.
       requestAnimationFrame(() => { for (const area of view.querySelectorAll('textarea')) area.dispatchEvent(new Event('origin-fit')); });
       await app.ensureBoard();
       if (!(await refreshProjects())) { render(); return; }
@@ -246,10 +277,16 @@ window.PromptboardOrigin = (() => {
     }
     async function leave() { visible = false; connectFrom = null; mapLinkFrom = null; await flush(); await contextPanel.flush(); }
 
+    /** Before another project opens: '' when the blueprint and the Project Context are saved, otherwise why not. */
+    async function unsaved() {
+      if (!(await flush())) return 'This blueprint has unsaved changes. Save or reload it before switching projects.';
+      if (!(await contextPanel.flush())) return 'The Project Context has unsaved edits. Retry its save or reload it before switching projects.';
+      return '';
+    }
     async function switchProject(id) {
       if (id === projectId) return;
-      if (!(await flush())) { projectSelect.value = projectId; showError('This blueprint has unsaved changes. Save or reload it before switching projects.'); return; }
-      if (!(await contextPanel.flush())) { projectSelect.value = projectId; showError('The Project Context has unsaved edits. Retry its save or reload it before switching projects.'); return; }
+      const problem = await unsaved();
+      if (problem) { projectSelect.value = projectId; showError(problem); return; }
       setPref(PROJECT_KEY, id);
       await load(id);
     }
@@ -505,11 +542,13 @@ window.PromptboardOrigin = (() => {
       app.announce(`${data.project.name} created${data.project.kanban?.exists ? ' in Origin and on Kanban' : ' in Origin'}.`);
     }
     const dialogs = {};
-    function modal(id, { eyebrow = 'Origin', title, lead = '', body = [] }) {
+    /** One lazily made dialog per id. While `busy()` is true, neither Escape nor the close button closes it. */
+    function modal(id, { eyebrow = 'Origin', title, lead = '', body = [], busy = () => false }) {
       dialogs[id] ??= (() => { const dialog = el('dialog', 'origin-modal'); dialog.id = id; dialog.setAttribute('aria-labelledby', `${id}-heading`); document.body.append(dialog); return dialog; })();
       const dialog = dialogs[id];
+      dialog.oncancel = event => { if (busy()) event.preventDefault(); };
       const heading = el('h2', '', title); heading.id = `${id}-heading`;
-      const close = button('', () => dialog.close(), 'origin-icon origin-modal-close'); close.setAttribute('aria-label', 'Close'); close.append(icon(ICON.close));
+      const close = button('', () => { if (!busy()) dialog.close(); }, 'origin-icon origin-modal-close'); close.setAttribute('aria-label', 'Close'); close.append(icon(ICON.close));
       dialog.replaceChildren(close, el('p', 'origin-eyebrow', eyebrow), heading, ...(lead ? [el('p', 'origin-modal-lead', lead)] : []), ...body);
       dialog.showModal();
       return dialog;
@@ -542,7 +581,7 @@ window.PromptboardOrigin = (() => {
       modal('origin-new-dialog', { title: 'New project', lead: 'Name it and describe the idea. You shape the design step by step; no agent starts.',
         body: [dialogForm('origin-new-dialog', [field('Name', name), field('Description', idea), kanban.box], 'Create project', async () => {
           if (!name.value.trim()) { name.focus(); throw new Error('Give the project a name.'); }
-          if (!(await flush())) throw new Error('This blueprint has unsaved changes. Save or reload it first.');
+          const problem = await unsaved(); if (problem) throw new Error(problem);
           await createProject(name.value, idea.value, kanban.input.checked);
         })] });
       name.focus();
@@ -552,10 +591,10 @@ window.PromptboardOrigin = (() => {
       const name = el('input'); name.id = 'origin-rename-name'; name.maxLength = 80; name.value = current.name;
       modal('origin-rename-dialog', { title: 'Rename project', body: [dialogForm('origin-rename-dialog', [field('Name', name)], 'Rename', async () => {
         if (!(await flush())) throw new Error('This blueprint has unsaved changes. Save or reload it first.');
-        const { response, data } = await app.api(`/api/origin/projects/${encodeURIComponent(current.id)}`, { method: 'PATCH', body: { expectedRevision: record.revision, name: name.value }, timeoutMs: 30000 })
+        const { response, data } = await app.api(`/api/origin/projects/${encodeURIComponent(current.id)}`, { method: 'PATCH', body: { expectedRevision: revisionOf(current), name: name.value }, timeoutMs: 30000 })
           .catch(() => ({ response: { ok: false }, data: {} }));
         if (!response.ok) throw new Error(typeof data.error === 'string' ? data.error : 'The project could not be renamed.');
-        record.revision = data.revision; projects = projects.map(item => (item.id === current.id ? data.project : item));
+        saveRevision(data.revision, data.project);
         render(); app.announce(`Renamed to ${data.project.name}.`);
       })] });
       name.select();
@@ -581,18 +620,18 @@ window.PromptboardOrigin = (() => {
       sync();
       const unlink = current.kanbanProjectId ? button('Remove link', async () => {
         if (!(await flush())) return;
-        const data = await call(`/api/origin/projects/${encodeURIComponent(current.id)}/link`, { expectedRevision: record.revision, kanbanProjectId: null }, 'The link could not be removed.').catch(failure => { showError(failure.message); return null; });
+        const data = await call(`/api/origin/projects/${encodeURIComponent(current.id)}/link`, { expectedRevision: revisionOf(current), kanbanProjectId: null }, 'The link could not be removed.').catch(failure => { showError(failure.message); return null; });
         if (!data) return;
-        record.revision = data.revision; projects = projects.map(item => (item.id === current.id ? data.project : item));
+        saveRevision(data.revision, data.project);
         dialogs['origin-connect-dialog']?.close(); render(); app.announce('Kanban link removed. Kanban work is unchanged.');
       }, 'origin-link') : null;
       modal('origin-connect-dialog', { title: 'Connect to Kanban', lead: 'Choose where this project’s tasks go. Nothing is created or sent until you choose Connect.',
         body: [dialogForm('origin-connect-dialog', [existing.label, pick, fresh.label, name, destination, ...(unlink ? [unlink] : [])], 'Connect', async () => {
           if (!(await flush())) throw new Error('This blueprint has unsaved changes. Save or reload it first.');
-          const body = existing.radio.checked ? { expectedRevision: record.revision, kanbanProjectId: pick.value } : { expectedRevision: record.revision, createKanban: true, name: name.value };
+          const body = existing.radio.checked ? { expectedRevision: revisionOf(current), kanbanProjectId: pick.value } : { expectedRevision: revisionOf(current), createKanban: true, name: name.value };
           if (existing.radio.checked && !pick.value) throw new Error('Choose a Kanban project.');
           const data = await call(`/api/origin/projects/${encodeURIComponent(current.id)}/link`, body, 'The project could not be connected. The design is unchanged.');
-          record.revision = data.revision; projects = projects.map(item => (item.id === current.id ? data.project : item));
+          saveRevision(data.revision, data.project);
           await app.ensureBoard({ ifChanged: true });
           render(); app.announce(`Connected to Kanban › ${data.project.kanban?.name || ''}.`);
           then?.();
@@ -609,7 +648,7 @@ window.PromptboardOrigin = (() => {
         lead: linked ? 'This removes the design from Origin. Its Kanban project and tasks stay unless you also choose to remove them.' : 'This removes the design from Origin. Repository folders and worktrees are never deleted.',
         body: [dialogForm('origin-delete-dialog', [also], 'Delete from Origin', async () => {
           await flush();
-          const data = await call(`/api/origin/projects/${encodeURIComponent(current.id)}/delete`, { expectedRevision: record.revision, deleteKanban: alsoInput.checked, expectedKanbanRevision: current.kanban?.revision },
+          const data = await call(`/api/origin/projects/${encodeURIComponent(current.id)}/delete`, { expectedRevision: revisionOf(current), deleteKanban: alsoInput.checked, expectedKanbanRevision: current.kanban?.revision },
             'The project could not be deleted. Nothing was removed.');
           projects = projects.filter(item => item.id !== current.id);
           if (data.kanbanDeleted) await app.ensureBoard({ ifChanged: true });
@@ -756,6 +795,8 @@ window.PromptboardOrigin = (() => {
       for (const [owner, records] of Object.entries(bp())) {
         if (!Array.isArray(records)) continue;
         for (const entry of records) for (const [name, value] of Object.entries(entry)) {
+          // “Also include” links name their collection on each entry.
+          if (name === 'contextIds') { if (Array.isArray(value) && value.some(ref => ref.collection === collection && ref.id === id)) found.push({ owner, entry, field: name }); continue; }
           const targetCollection = typeof REFS[name] === 'function' ? REFS[name](owner) : REFS[name];
           if (targetCollection !== collection) continue;
           if (Array.isArray(value) ? value.includes(id) : value === id) found.push({ owner, entry, field: name });
@@ -773,6 +814,7 @@ window.PromptboardOrigin = (() => {
       bp()[collection] = bp()[collection].filter(item => item.id !== id);
       for (const { owner, entry, field: name } of references) {
         if (owner === 'connections') bp().connections = bp().connections.filter(item => item !== entry);
+        else if (name === 'contextIds') entry.contextIds = entry.contextIds.filter(ref => ref.collection !== collection || ref.id !== id);
         else if (Array.isArray(entry[name])) entry[name] = entry[name].filter(value => value !== id);
         else entry[name] = '';
       }
@@ -886,6 +928,7 @@ window.PromptboardOrigin = (() => {
     function openDrawer(collection, id) {
       contextPanel.close(); // Its unsaved text is kept and keeps saving.
       promptCache.at = 0; // Opening a record always reads its saved prompts fresh.
+      if (baseResources?.failed) baseResources = null; // A failed Base read is tried again, not kept.
       open = { collection, id };
       renderDrawer({ restore: false });
       markSelected();
@@ -1203,7 +1246,7 @@ window.PromptboardOrigin = (() => {
       const blueprint = bp(), asked = blueprint.questions.filter(question => question.sectionId === entry.id);
       const written = entry.description.trim() || asked.some(question => blueprint.answers[question.id]?.trim());
       if (written && control.dataset.confirm !== 'true') { control.dataset.confirm = 'true'; control.textContent = 'Delete the section and what you wrote in it?'; control.classList.add('danger'); return; }
-      blueprint.customSections = blueprint.customSections.filter(item => item !== entry);
+      removeEntity('customSections', entry.id); // Also unlinks it from tasks that include it.
       blueprint.questions = blueprint.questions.filter(question => question.sectionId !== entry.id);
       for (const question of asked) delete blueprint.answers[question.id];
       delete blueprint.layout.map.nodes[entry.id];
@@ -1433,19 +1476,22 @@ window.PromptboardOrigin = (() => {
       if (taskMilestone && taskMilestone !== 'none' && !blueprint.milestones.some(entry => entry.id === taskMilestone)) taskMilestone = '';
       const leading = item => {
         const box = el('input', 'origin-check'); box.type = 'checkbox'; box.checked = planSelection.has(item.id); box.setAttribute('aria-label', `Select ${item.key}`);
-        box.addEventListener('change', () => { if (box.checked) planSelection.add(item.id); else planSelection.delete(item.id); renderMain(); });
+        box.addEventListener('change', () => {
+          if (box.checked) planSelection.add(item.id); else planSelection.delete(item.id);
+          focusAfter = () => main.querySelector(`.origin-row[data-id="${CSS.escape(item.id)}"] .origin-check`); renderMain();
+        });
         return box;
       };
       const tools = el('div', 'origin-task-tools');
       const toggle = el('div', 'origin-toggle'); toggle.setAttribute('role', 'group'); toggle.setAttribute('aria-label', 'Show tasks');
       for (const [id, label] of [['layers', 'By layer'], ['all', 'All tasks']]) {
-        const option = button(label, () => { taskView = id; setPref(TASK_VIEW_KEY, id); renderMain(); }, 'origin-toggle-option');
-        option.setAttribute('aria-pressed', String(taskView === id)); toggle.append(option);
+        const option = button(label, () => { taskView = id; setPref(TASK_VIEW_KEY, id); focusAfter = () => main.querySelector(`.origin-toggle-option[data-view="${id}"]`); renderMain(); }, 'origin-toggle-option');
+        option.dataset.view = id; option.setAttribute('aria-pressed', String(taskView === id)); toggle.append(option);
       }
       const filter = el('select', 'origin-quick-select'); filter.id = 'origin-task-milestone'; filter.setAttribute('aria-label', 'Milestone');
       for (const [value, name] of [['', 'All milestones'], ...blueprint.milestones.map(entry => [entry.id, entry.title || 'Untitled milestone']), ['none', 'Unscheduled']]) filter.append(Object.assign(el('option', '', name), { value }));
       filter.value = taskMilestone;
-      filter.addEventListener('change', () => { taskMilestone = filter.value; renderMain(); });
+      filter.addEventListener('change', () => { taskMilestone = filter.value; focusAfter = () => main.querySelector('#origin-task-milestone'); renderMain(); });
       tools.append(toggle, filter);
       nodes.push(tools);
       const row = taskRow(cards, { where: taskView === 'all' });
@@ -1494,8 +1540,8 @@ window.PromptboardOrigin = (() => {
         const send = button(count ? `Send ${plural(count, 'task')} to Kanban` : 'Send to Kanban', () => openHandoff(), 'origin-primary', 'Create To Do cards for the selected tasks. No agent starts.');
         send.id = 'origin-kanban-handoff'; send.disabled = !count || handoffBusy;
         bar.append(el('span', 'origin-selection-text', count ? `${plural(count, 'task')} selected` : 'Select tasks to send them to Kanban'),
-          button('Select all drafts', () => { planSelection = new Set(visible.filter(item => !item.handoff).map(item => item.id)); renderMain(); }, 'origin-link'),
-          count ? button('Clear', () => { planSelection = new Set(); renderMain(); }, 'origin-link') : '',
+          Object.assign(button('Select all drafts', () => { planSelection = new Set(visible.filter(item => !item.handoff).map(item => item.id)); focusAfter = () => main.querySelector('#origin-select-drafts'); renderMain(); }, 'origin-link'), { id: 'origin-select-drafts' }),
+          count ? button('Clear', () => { planSelection = new Set(); focusAfter = () => main.querySelector('#origin-select-drafts'); renderMain(); }, 'origin-link') : '',
           count ? Object.assign(button('Improve with Compose', () => openImprove([...planSelection]), 'origin-ghost', 'Get a Compose proposal for each selected task. Optional.'), { id: 'origin-improve' }) : '', send);
         nodes.push(bar);
       }
@@ -1584,7 +1630,7 @@ window.PromptboardOrigin = (() => {
       if (layout.height) wrap.style.height = `${layout.height}px`;
       const svg = document.createElementNS(ns, 'svg'); svg.classList.add('origin-map'); svg.setAttribute('role', 'group');
       svg.setAttribute('aria-label', 'Project map: click a branch to open it, drag or use arrow keys to move it');
-      const make = (tag, attrs = {}, parent = svg) => { const node = document.createElementNS(ns, tag); for (const [name, value] of Object.entries(attrs)) node.setAttribute(name, String(value)); parent.append(node); return node; };
+      const make = svgMaker(svg);
       const decor = make('g', { class: 'origin-map-decor' }), links = make('g', { class: 'origin-map-links' }), nodes = make('g');
       const curve = (x1, y1, x2, y2, bend) => `M${x1} ${y1}C${x1 + bend} ${y1} ${x2 - bend} ${y2} ${x2} ${y2}`;
       const named = id => (id === 'center' ? project()?.name || 'Project' : sectionName(id));
@@ -1657,29 +1703,19 @@ window.PromptboardOrigin = (() => {
           if (focus) focusAfter = () => main.querySelector(`[data-node="${CSS.escape(id)}"]`);
           changed({ structure: true });
         };
-        let drag = null;
-        node.addEventListener('pointerdown', event => {
-          if (event.button !== 0) return;
-          const matrix = svg.getScreenCTM()?.inverse(); if (!matrix) return;
-          drag = { id: event.pointerId, start: new DOMPoint(event.clientX, event.clientY).matrixTransform(matrix), origin: { ...pos(id) }, moved: false, matrix };
-          node.setPointerCapture?.(event.pointerId);
+        let origin = null;
+        draggable(svg, node, {
+          start: () => { origin = { ...pos(id) }; },
+          move: (dx, dy) => {
+            live[id] = { x: origin.x + dx, y: origin.y + dy };
+            (node.closest('.origin-map-branch') || node).setAttribute('transform', `translate(${dx} ${dy})`);
+            for (const [other, path] of centerLinks) if (id === 'center' || other === id) path.setAttribute('d', linkPath(other));
+            drawDecor();
+          },
+          drop: () => keep(live[id], false),
+          click: () => activate(id, openIt),
+          cancel: () => { delete live[id]; renderMain(); },
         });
-        node.addEventListener('pointermove', event => {
-          if (!drag || event.pointerId !== drag.id) return;
-          const now = new DOMPoint(event.clientX, event.clientY).matrixTransform(drag.matrix), dx = now.x - drag.start.x, dy = now.y - drag.start.y;
-          if (!drag.moved && Math.hypot(dx, dy) < 4) return;
-          drag.moved = true; live[id] = { x: drag.origin.x + dx, y: drag.origin.y + dy };
-          (node.closest('.origin-map-branch') || node).setAttribute('transform', `translate(${dx} ${dy})`);
-          for (const [other, path] of centerLinks) if (id === 'center' || other === id) path.setAttribute('d', linkPath(other));
-          drawDecor();
-        });
-        node.addEventListener('pointerup', event => {
-          if (!drag || event.pointerId !== drag.id) return;
-          const moved = drag.moved; drag = null;
-          if (!moved) { activate(id, openIt); return; }
-          keep(live[id], false);
-        });
-        node.addEventListener('pointercancel', () => { drag = null; delete live[id]; renderMain(); });
         node.addEventListener('click', event => { if (event.detail === 0) activate(id, openIt); });
         node.addEventListener('keydown', event => {
           const step = { ArrowLeft: [-STEP, 0], ArrowRight: [STEP, 0], ArrowUp: [0, -STEP], ArrowDown: [0, STEP] }[event.key];
@@ -1868,7 +1904,7 @@ window.PromptboardOrigin = (() => {
       const svg = document.createElementNS(ns, 'svg'); svg.classList.add('origin-canvas');
       svg.setAttribute('role', 'group'); svg.setAttribute('aria-label', `Architecture: ${plural(blueprint.components.length, 'component')}, ${plural(blueprint.connections.length, 'connection')}`);
       svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
-      const make = (tag, attrs = {}, parent = svg) => { const node = document.createElementNS(ns, tag); for (const [name, value] of Object.entries(attrs)) node.setAttribute(name, String(value)); parent.append(node); return node; };
+      const make = svgMaker(svg);
       const marker = make('marker', { id: 'origin-arrow', viewBox: '0 0 10 10', refX: 8.5, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse' }, make('defs'));
       make('path', { d: 'M1 1.5L8.5 5L1 8.5', class: 'origin-arrow' }, marker);
       if (!blueprint.components.length) {
@@ -1937,29 +1973,18 @@ window.PromptboardOrigin = (() => {
           openDrawer('components', from);
           app.announce('Connected. Name how they talk in the editor.');
         };
-        let drag = null;
-        node.addEventListener('pointerdown', event => {
-          if (event.button !== 0) return;
-          const matrix = svg.getScreenCTM()?.inverse(); if (!matrix) return;
-          drag = { id: event.pointerId, start: new DOMPoint(event.clientX, event.clientY).matrixTransform(matrix), origin: { ...point }, moved: false, matrix };
-          node.setPointerCapture?.(event.pointerId);
+        let origin = null;
+        draggable(svg, node, {
+          start: () => { origin = { ...point }; },
+          move: (dx, dy) => { point.x = Math.round(origin.x + dx); point.y = Math.round(origin.y + dy); node.setAttribute('transform', `translate(${point.x} ${point.y})`); drawEdges(); },
+          drop: () => {
+            for (const [id, value] of at) { const entry = bp().components.find(item => item.id === id); if (entry) { entry.x = value.x; entry.y = value.y; } }
+            holdView('canvas', svg, point.x, point.y, NODE_W, NODE_H);
+            changed({ structure: true });
+          },
+          click: activate,
+          cancel: renderMain,
         });
-        node.addEventListener('pointermove', event => {
-          if (!drag || event.pointerId !== drag.id) return;
-          const now = new DOMPoint(event.clientX, event.clientY).matrixTransform(drag.matrix), dx = now.x - drag.start.x, dy = now.y - drag.start.y;
-          if (!drag.moved && Math.hypot(dx, dy) < 4) return;
-          drag.moved = true; point.x = Math.round(drag.origin.x + dx); point.y = Math.round(drag.origin.y + dy);
-          node.setAttribute('transform', `translate(${point.x} ${point.y})`); drawEdges();
-        });
-        node.addEventListener('pointerup', event => {
-          if (!drag || event.pointerId !== drag.id) return;
-          const moved = drag.moved; drag = null;
-          if (!moved) { activate(); return; }
-          for (const [id, value] of at) { const entry = bp().components.find(item => item.id === id); if (entry) { entry.x = value.x; entry.y = value.y; } }
-          holdView('canvas', svg, point.x, point.y, NODE_W, NODE_H);
-          changed({ structure: true });
-        });
-        node.addEventListener('pointercancel', () => { drag = null; renderMain(); });
         node.addEventListener('keydown', event => {
           const step = { ArrowLeft: [-20, 0], ArrowRight: [20, 0], ArrowUp: [0, -20], ArrowDown: [0, 20] }[event.key];
           if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); activate(); }
@@ -1979,13 +2004,10 @@ window.PromptboardOrigin = (() => {
     }
 
     // ---- Handoffs ----
-    function composeButton(collection, id, message) {
-      const control = button('Send to Compose', async () => {
-        const found = M.composeSpec(bp(), collection, id, project()?.name || '');
-        if (!found) return;
-        // The link lets a prompt saved from Compose remember this record (Origin → Compose → project).
-        const spec = { ...found, link: { kind: 'origin', originId: projectId, collection, id, name: M.itemName(bp(), collection, id) } };
-        await flush();
+    /** Fills Compose with what `prepare()` returns. Unsaved Compose text is replaced only after a second click. */
+    function composeControl(label, title, message, prepare, announcement) {
+      const control = button(label, async () => {
+        const spec = await prepare(); if (!spec) return;
         let result = app.toCompose(spec);
         if (result === 'draft') {
           if (control.dataset.confirm !== 'true') {
@@ -1996,10 +2018,20 @@ window.PromptboardOrigin = (() => {
           result = app.toCompose({ ...spec, replace: true });
         }
         if (result === 'busy') { message.textContent = 'Compose is generating a prompt. Wait for it or cancel it, then try again.'; message.hidden = false; return; }
-        app.announce(`Opened ${spec.title} in Compose. Review the prompt, then choose Generate. Nothing was generated.`);
-      }, 'origin-ghost origin-compose', 'Fill Compose with just this item and what it links to. Nothing is generated.');
+        app.announce(announcement(spec));
+      }, 'origin-ghost origin-compose', title);
       control.prepend(icon(ICON.arrow, 14));
       return control;
+    }
+    function composeButton(collection, id, message) {
+      return composeControl('Send to Compose', 'Fill Compose with just this item and what it links to. Nothing is generated.', message, async () => {
+        const found = M.composeSpec(bp(), collection, id, project()?.name || '');
+        if (!found) return null;
+        // The link lets a prompt saved from Compose remember this record (Origin → Compose → project).
+        const spec = { ...found, link: { kind: 'origin', originId: projectId, collection, id, name: M.itemName(bp(), collection, id) } };
+        await flush();
+        return spec;
+      }, spec => `Opened ${spec.title} in Compose. Review the prompt, then choose Generate. Nothing was generated.`);
     }
     // ---- Later design changes: sent tasks whose context changed, checked against the saved design ----
     let contextStatus = { revision: -1, loading: false, map: new Map() };
@@ -2060,31 +2092,19 @@ window.PromptboardOrigin = (() => {
       return built.tooLarge ? { error: built.error } : { body: built.body };
     }
     function improveButton(item, message, label = 'Improve with Compose') {
-      const control = button(label, async () => {
+      return composeControl(label, 'Refine the instruction in Compose with this task’s context. You review the result before it changes anything.', message, async () => {
         const prepared = await taskBodyFor(item.id);
-        if (prepared.error) { message.textContent = prepared.error; message.hidden = false; return; }
-        const spec = { text: prepared.body, task: 'feature', origin: { originId: projectId, itemId: item.id, key: item.key, title: item.title, basis: basisOf(item) } };
-        let result = app.toCompose(spec);
-        if (result === 'draft') {
-          if (control.dataset.confirm !== 'true') {
-            control.dataset.confirm = 'true'; control.textContent = 'Replace Compose draft?'; control.classList.add('danger');
-            message.textContent = 'Compose already has unsaved text. Click again to replace it, or copy that text first.'; message.hidden = false;
-            return;
-          }
-          result = app.toCompose({ ...spec, replace: true });
-        }
-        if (result === 'busy') { message.textContent = 'Compose is generating a prompt. Wait for it or cancel it, then try again.'; message.hidden = false; return; }
-        app.announce(`Opened ${item.key} in Compose with its context. Choose Generate there, then Use in Origin task. Nothing was generated yet.`);
-      }, 'origin-ghost origin-compose', 'Refine the instruction in Compose with this task’s context. You review the result before it changes anything.');
-      control.prepend(icon(ICON.arrow, 14));
-      return control;
+        if (prepared.error) { message.textContent = prepared.error; message.hidden = false; return null; }
+        return { text: prepared.body, task: 'feature', origin: { originId: projectId, itemId: item.id, key: item.key, title: item.title, basis: basisOf(item) } };
+      }, () => `Opened ${item.key} in Compose with its context. Choose Generate there, then Use in Origin task. Nothing was generated yet.`);
     }
     /** Compose hands a result back: it becomes a proposal on the same task, to accept, edit or reject. */
     async function receiveProposal({ originId, itemId, text, basis }) {
       if (originId !== projectId) {
         if (!projects.length) await refreshProjects();
         if (!projects.some(entry => entry.id === originId)) return 'That Origin project no longer exists.';
-        if (projectId && !(await flush())) return 'Origin has unsaved changes in another project. Save them first.';
+        const problem = projectId ? await unsaved() : '';
+        if (problem) { showError(problem); return problem; }
         setPref(PROJECT_KEY, originId); await load(originId);
       }
       const item = record?.exists ? bp().items.find(entry => entry.id === itemId) : null;
@@ -2121,19 +2141,16 @@ window.PromptboardOrigin = (() => {
       return box;
     }
     // Several tasks: Compose's own settings and job slot, one task at a time, with progress and Cancel.
-    let improveDialog = null;
     function openImprove(ids) {
       const blueprint = bp(), list = ids.map(id => blueprint.items.find(item => item.id === id)).filter(Boolean);
       if (!list.length) return;
-      improveDialog ??= (() => { const dialog = el('dialog', 'origin-modal'); dialog.id = 'origin-improve-dialog'; dialog.setAttribute('aria-labelledby', 'origin-improve-heading'); document.body.append(dialog); return dialog; })();
-      const dialog = improveDialog, settings = app.composeSettings();
-      const heading = el('h2', '', `Improve ${plural(list.length, 'task')} with Compose`); heading.id = 'origin-improve-heading';
+      const settings = app.composeSettings();
       const rows = new Map(), table = el('ol', 'origin-handoff-list');
       for (const item of list) { const status = el('span', 'origin-chip muted', 'Waiting'); const li = el('li'); const line = el('div', 'origin-handoff-line'); line.append(el('span', 'origin-handoff-title', `${item.key} ${item.title.trim() || 'Untitled task'}`), status); li.append(line); rows.set(item.id, status); table.append(li); }
       const progress = el('p', 'origin-hint'); progress.setAttribute('role', 'status');
       const start = button('Start', () => void run(), 'origin-primary'); start.id = 'origin-improve-start';
       const cancel = button('Cancel', () => { job?.abort(); }, 'origin-ghost'); cancel.hidden = true; cancel.id = 'origin-improve-cancel';
-      const close = button('Close', () => dialog.close(), 'origin-ghost');
+      const close = button('Close', () => dialogs['origin-improve-dialog'].close(), 'origin-ghost');
       let job = null;
       const mark = (id, text, tone) => { const node = rows.get(id); node.textContent = text; node.className = `origin-chip ${tone}`; };
       async function run() {
@@ -2163,26 +2180,20 @@ window.PromptboardOrigin = (() => {
         renderMain(); renderDrawer();
       }
       const actions = el('div', 'origin-modal-actions'); actions.append(close, cancel, start);
-      const x = button('', () => { if (!job) dialog.close(); }, 'origin-icon origin-modal-close'); x.setAttribute('aria-label', 'Close'); x.append(icon(ICON.close));
-      dialog.replaceChildren(x, el('p', 'origin-eyebrow', 'Compose'), heading,
-        el('p', 'origin-modal-lead', `Uses your Compose settings (${settings.provider || 'CLI default'}${settings.model ? ` · ${settings.model}` : ''}). Each task gets a proposal built from its own words and context; nothing is changed or sent until you accept it.`),
-        table, progress, actions);
-      dialog.addEventListener('cancel', event => { if (job) event.preventDefault(); });
-      dialog.showModal(); start.focus();
+      modal('origin-improve-dialog', { eyebrow: 'Compose', title: `Improve ${plural(list.length, 'task')} with Compose`, busy: () => Boolean(job), body: [table, progress, actions],
+        lead: `Uses your Compose settings (${settings.provider || 'CLI default'}${settings.model ? ` · ${settings.model}` : ''}). Each task gets a proposal built from its own words and context; nothing is changed or sent until you accept it.` });
+      start.focus();
     }
     // Suggest tasks: the split service proposes tasks from one component, one layer or the project's requirements.
-    let suggestDialog = null;
     function openSuggest(scope) {
       const blueprint = bp(), component = blueprint.components.find(entry => entry.id === scope.componentId), layer = blueprint.layers.find(entry => entry.id === scope.layerId);
       const where = component ? component.name || 'this component' : layer ? `the ${layer.name || 'unnamed'} layer` : 'the project’s requirements';
-      suggestDialog ??= (() => { const dialog = el('dialog', 'origin-modal'); dialog.id = 'origin-suggest-dialog'; dialog.setAttribute('aria-labelledby', 'origin-suggest-heading'); document.body.append(dialog); return dialog; })();
-      const dialog = suggestDialog, settings = app.composeSettings();
-      const heading = el('h2', '', 'Suggest tasks'); heading.id = 'origin-suggest-heading';
+      const settings = app.composeSettings(), dialog = () => dialogs['origin-suggest-dialog'];
       const body = el('div', 'origin-suggestions'), progress = el('p', 'origin-hint'); progress.setAttribute('role', 'status');
       const chain = el('label', 'origin-check-row'); const chainBox = el('input'); chainBox.type = 'checkbox'; chainBox.id = 'origin-suggest-chain'; chain.append(chainBox, el('span', '', 'Each starts after the one before')); chain.hidden = true;
       const start = button('Suggest', () => void run(), 'origin-primary'); start.id = 'origin-suggest-start';
       const accept = button('Add selected', () => addSelected(), 'origin-primary'); accept.id = 'origin-suggest-add'; accept.hidden = true;
-      const cancel = button('Cancel', () => { if (job) job.abort(); else dialog.close(); }, 'origin-ghost');
+      const cancel = button('Cancel', () => { if (job) job.abort(); else dialog().close(); }, 'origin-ghost');
       let job = null, picks = [];
       async function run() {
         if (app.composeRunning()) { progress.textContent = 'Compose is generating a prompt. Wait for it or cancel it, then try again.'; return; }
@@ -2216,28 +2227,23 @@ window.PromptboardOrigin = (() => {
           const item = newTask(pick.title.trim(), { ...links, description: pick.prompt, dependsOn: chainBox.checked && previous ? [previous.id] : [] });
           previous = item;
         }
-        dialog.close();
+        dialog().close();
         app.announce(`${plural(chosen.length, 'task')} added from suggestions. Review each before sending it.`);
       }
-      const x = button('', () => { if (!job) dialog.close(); }, 'origin-icon origin-modal-close'); x.setAttribute('aria-label', 'Close'); x.append(icon(ICON.close));
       const actions = el('div', 'origin-modal-actions'); actions.append(cancel, start, accept);
-      dialog.replaceChildren(x, el('p', 'origin-eyebrow', 'Compose'), heading,
-        el('p', 'origin-modal-lead', `Asks your CLI (${settings.provider || 'CLI default'}) to propose tasks from ${where}, using only its design. Missing choices stay open as tasks to decide. Nothing is added until you choose.`),
-        body, chain, progress, actions);
-      dialog.addEventListener('cancel', event => { if (job) event.preventDefault(); });
-      dialog.showModal(); start.focus();
+      modal('origin-suggest-dialog', { eyebrow: 'Compose', title: 'Suggest tasks', busy: () => Boolean(job), body: [body, chain, progress, actions],
+        lead: `Asks your CLI (${settings.provider || 'CLI default'}) to propose tasks from ${where}, using only its design. Missing choices stay open as tasks to decide. Nothing is added until you choose.` });
+      start.focus();
     }
 
     // ---- Send to Kanban: one review panel; the server builds the context and creates each card once ----
-    let handoffDialog = null;
     async function openHandoff(ids = [...planSelection]) {
       const blueprint = bp(), selection = ids.filter(id => blueprint.items.some(item => item.id === id));
       if (!selection.length) return;
       const target = project();
       if (!target?.kanban?.exists) { openConnect({ then: () => openHandoff(selection) }); return; }
       if (!(await flush())) { showError('This blueprint has unsaved changes. Save it, then send again.'); return; }
-      handoffDialog ??= (() => { const dialog = el('dialog', 'origin-modal'); dialog.id = 'origin-handoff-dialog'; dialog.setAttribute('aria-labelledby', 'origin-handoff-heading'); document.body.append(dialog); return dialog; })();
-      const dialog = handoffDialog, destination = target.kanbanProjectId;
+      const destination = target.kanbanProjectId, dialog = () => dialogs['origin-handoff-dialog'];
       const tasks = app.projects().find(entry => entry.id === destination)?.tasks || [];
       const items = new Map(blueprint.items.map(item => [item.id, item]));
       const cardOf = item => tasks.find(task => task.originSource?.originProjectId === projectId && task.originSource.originTaskId === item.id)
@@ -2247,7 +2253,6 @@ window.PromptboardOrigin = (() => {
       if (!response.ok) { showError(typeof data.error === 'string' ? data.error : 'The tasks could not be prepared. Nothing was sent.'); return; }
       const contexts = new Map(data.tasks.map(task => [task.itemId, task]));
       const missing = [...new Set(selection.flatMap(id => items.get(id).dependsOn).filter(id => !selection.includes(id) && items.has(id) && !cardOf(items.get(id))))];
-      const heading = el('h2', '', 'Send to Kanban'); heading.id = 'origin-handoff-heading';
       const list = el('ol', 'origin-handoff-list'), recreate = new Map();
       for (const id of M.orderItems(blueprint, selection)) {
         const item = items.get(id), card = cardOf(item), context = contexts.get(id), li = el('li');
@@ -2304,16 +2309,13 @@ window.PromptboardOrigin = (() => {
         lastHandoff = `${made ? `Created ${plural(made, 'card')} in To Do of ${outcome.data.destination.name}, prerequisites first.` : 'No new card was needed.'}${failed.length ? ` ${plural(failed.length, 'task')} could not be sent.` : ''} No agent started.`;
         app.announce(lastHandoff);
         actions.replaceChildren(...(failed.length ? [button('Retry the failed tasks', () => void send(failed.map(result => result.itemId)), 'origin-ghost')] : []),
-          button('Open Kanban', () => { dialog.close(); app.openKanban(destination); }, 'origin-ghost'), button('Done', () => dialog.close(), 'origin-primary'));
+          button('Open Kanban', () => { dialog().close(); app.openKanban(destination); }, 'origin-ghost'), button('Done', () => dialog().close(), 'origin-primary'));
         renderMain(); renderDrawer();
       }
-      const close = button('', () => dialog.close(), 'origin-icon origin-modal-close'); close.setAttribute('aria-label', 'Close'); close.append(icon(ICON.close));
-      actions.append(button('Cancel', () => dialog.close(), 'origin-ghost'), confirm);
-      dialog.replaceChildren(close, el('p', 'origin-eyebrow', `Kanban · ${target.kanban.name}`), heading,
-        el('p', 'origin-modal-lead', 'Each task becomes one To Do card with its own words, then its context, and an Origin reference. Prerequisites come first and must be done before a card starts. No agent starts — you start work from Kanban. Sending again never adds a second card.'),
-        list, prerequisites, results, error, actions);
+      actions.append(button('Cancel', () => dialog().close(), 'origin-ghost'), confirm);
       paint();
-      dialog.showModal();
+      modal('origin-handoff-dialog', { eyebrow: `Kanban · ${target.kanban.name}`, title: 'Send to Kanban', body: [list, prerequisites, results, error, actions],
+        lead: 'Each task becomes one To Do card with its own words, then its context, and an Origin reference. Prerequisites come first and must be done before a card starts. No agent starts — you start work from Kanban. Sending again never adds a second card.' });
       confirm.focus();
     }
 
@@ -2328,7 +2330,11 @@ window.PromptboardOrigin = (() => {
 
     /** Open one record of an Origin project from another page (reverse navigation). Unsaved work is saved first. */
     async function focus({ originId, collection, id } = {}) {
-      if (originId && originId !== projectId) { if (!(await flush())) return false; setPref(PROJECT_KEY, originId); await load(originId); }
+      if (originId && originId !== projectId) {
+        const problem = await unsaved();
+        if (problem) { showError(problem); return false; }
+        setPref(PROJECT_KEY, originId); await load(originId);
+      }
       else if (loading) await loading;
       if (collection && id && record?.exists) focusTarget({ collection, id });
       return true;

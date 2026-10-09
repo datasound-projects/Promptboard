@@ -21,7 +21,8 @@ window.PromptboardMarkdown = (() => {
       else if (match[4]) {
         const href = match[5].replace(/^<|>$/g, '');
         if (safeHref(href)) {
-          const link = el('a'); link.href = href;
+          // In-document anchors live under ctx-, so a hand-typed id can never shadow an id of the app.
+          const link = el('a'); link.href = /^#(?!ctx-)/.test(href) ? `#ctx-${href.slice(1)}` : href;
           if (!href.startsWith('#')) { link.target = '_blank'; link.rel = 'noopener noreferrer'; }
           inline(match[4], link); parent.append(link);
         } else parent.append(`${match[4]} (${href})`);
@@ -45,7 +46,7 @@ window.PromptboardMarkdown = (() => {
       const line = source[index];
       if (!line.trim()) { index++; continue; }
       const anchor = line.match(ANCHOR);
-      if (anchor) { pendingId = anchor[1]; index++; continue; }
+      if (anchor) { pendingId = anchor[1].startsWith('ctx-') ? anchor[1] : `ctx-${anchor[1]}`; index++; continue; }
       const fence = line.match(/^ {0,3}(`{3,}|~{3,})\s*([^`\s]*)[^`]*$/);
       if (fence) {
         const body = []; index++;
