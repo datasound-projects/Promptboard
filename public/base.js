@@ -186,10 +186,7 @@ window.PromptboardBase = (() => {
     function busyButton(label, action, className = 'secondary-button') {
       const node = button(label, async () => { node.disabled = true; try { await action(); } finally { node.disabled = false; } }, className); return node;
     }
-    function download(name, data) {
-      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob); const link = el('a'); link.href = url; link.download = name; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
-    }
+    const download = (name, data) => window.PromptboardDom.download(name, JSON.stringify(data, null, 2), 'application/json');
     function metadata(item) {
       const trust = item.trust || 'untrusted';
       return `${KINDS[item.kind] || item.kind} · ${item.enabled ? 'Available' : 'Disabled'} · ${trust} · r${item.revision}`;

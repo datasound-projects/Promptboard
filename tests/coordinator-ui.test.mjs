@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { JSDOM } from 'jsdom';
 
+const domSource = await readFile(new URL('../public/dom.js', import.meta.url), 'utf8');
 const source = await readFile(new URL('../public/coordinator.js', import.meta.url), 'utf8');
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 async function until(fn, label) { for (let n = 0; n < 200; n++) { if (fn()) return; await tick(); } assert.fail(`Timed out: ${label}`); }
@@ -22,7 +23,7 @@ function setup(t) {
   };
   const projects = { a: { id: 'a', tasks: [{ id: 'ta', number: 1, title: 'One', workspace: { branch: 'feature/a' } }] }, b: { id: 'b', tasks: [] } };
   let current = projects.a;
-  win.eval(source);
+  win.eval(domSource); win.eval(source);
   const view = win.PromptboardCoordinator.create({ api, announce: () => {}, project: () => current, runs: () => [], openTask: () => {}, copy: () => {}, composeSettings: () => ({ provider: 'codex' }) });
   const show = (id, revision = 1) => { current = projects[id]; view.sync(current, revision); };
   const type = text => { const area = $('#coordinator-question'); area.value = text; area.dispatchEvent(new win.Event('input', { bubbles: true })); return area; };

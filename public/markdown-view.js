@@ -7,7 +7,7 @@
 window.PromptboardMarkdown = (() => {
   const SVG = 'http://www.w3.org/2000/svg';
   const ANCHOR = /^<a id="([A-Za-z0-9_-]{1,140})"><\/a>\s*$/;
-  const el = (tag, className, text) => { const node = document.createElement(tag); if (className) node.className = className; if (text !== undefined) node.textContent = text; return node; };
+  const { el, clip } = window.PromptboardDom;
   const safeHref = href => /^https?:\/\/[^\s]+$/i.test(href) || /^#[A-Za-z0-9_-]{1,140}$/.test(href);
 
   /** Inline spans: code, links, bold, italic and backslash escapes. Everything else is text. */
@@ -167,7 +167,6 @@ window.PromptboardMarkdown = (() => {
     if (text !== undefined) node.textContent = text;
     return node;
   }
-  const clip = (text, max) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 
   function drawFlowchart(code) {
     const graph = parseFlowchart(code), size = layout(graph), byId = new Map(graph.nodes.map(node => [node.id, node]));

@@ -42,6 +42,7 @@ const assets = new Map([
   ['/index.html', ['index.html', 'text/html; charset=utf-8']],
   ['/styles.css', ['styles.css', 'text/css; charset=utf-8']],
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
+  ['/dom.js', ['dom.js', 'text/javascript; charset=utf-8']],
   ['/base.js', ['base.js', 'text/javascript; charset=utf-8']],
   ['/prefs.js', ['prefs.js', 'text/javascript; charset=utf-8']],
   ['/notifications.js', ['notifications.js', 'text/javascript; charset=utf-8']],

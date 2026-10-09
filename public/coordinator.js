@@ -4,10 +4,8 @@
 // next to Autopilot (remembered per project). It reads what the board already records, only while open,
 // and asks a model only when you ask a question.
 window.PromptboardCoordinator = (() => {
-  const el = (tag, className, text) => { const node = document.createElement(tag); if (className) node.className = className; if (text !== undefined) node.textContent = text; return node; };
-  const button = (text, onClick, className = 'text-button', label = '') => { const node = el('button', className, text); node.type = 'button'; if (label) node.setAttribute('aria-label', label); node.addEventListener('click', onClick); return node; };
-  const pref = (key, fallback) => { try { return localStorage.getItem(key) || fallback; } catch { return fallback; } };
-  const setPref = (key, value) => { try { localStorage.setItem(key, value); } catch {} };
+  const { el, pref, setPref } = window.PromptboardDom;
+  const button = (text, onClick, className = 'text-button', label = '') => { const node = window.PromptboardDom.button(text, onClick, className); if (label) node.setAttribute('aria-label', label); return node; };
   const ago = at => { const s = Math.max(0, Math.round((Date.now() - at) / 1000)); return s < 60 ? 'just now' : s < 3600 ? `${Math.round(s / 60)} min ago` : s < 86400 ? `${Math.round(s / 3600)} h ago` : new Date(at).toLocaleDateString(); };
   const ICON = 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Zm0 4a5 5 0 1 1 0 10 5 5 0 0 1 0-10Zm0 3.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3Z';
 

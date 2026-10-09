@@ -135,6 +135,7 @@ async function setup(t, { catalogReader = async id => ({ provider: id, ...catalo
   Object.defineProperty(win.navigator, 'clipboard', { value: { writeText: async text => { copied = text; } } });
   // Same order as the page: prefs.js runs in <head>, app.js is deferred.
   win.eval(await readFile(new URL('../public/prefs.js', import.meta.url), 'utf8'));
+  win.eval(await readFile(new URL('../public/dom.js', import.meta.url), 'utf8'));
   win.eval(await readFile(new URL('../public/base.js', import.meta.url), 'utf8'));
   // Browsers share one global scope across classic scripts; jsdom's eval does not, so evaluate them together.
   // Test-only export appended by the harness (not part of the app): reload the board and read the token.

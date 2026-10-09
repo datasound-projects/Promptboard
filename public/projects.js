@@ -5,10 +5,8 @@
 // or moving a prompt never creates a card; a card is made, or an idle card updated, only on request.
 window.PromptboardProjects = (() => {
   const TAB_KEY = 'promptboard.compose.sidebar';
-  const el = (tag, className, text) => { const node = document.createElement(tag); if (className) node.className = className; if (text !== undefined) node.textContent = text; return node; };
-  const button = (text, onClick, className = 'text-button', title = '') => { const node = el('button', className, text); node.type = 'button'; if (title) node.title = title; node.addEventListener('click', onClick); return node; };
-  const pref = (key, fallback) => { try { return localStorage.getItem(key) || fallback; } catch { return fallback; } };
-  const setPref = (key, value) => { try { localStorage.setItem(key, value); } catch {} };
+  const { el, pref, setPref } = window.PromptboardDom;
+  const button = (text, onClick, className = 'text-button', title) => window.PromptboardDom.button(text, onClick, className, title);
   const date = value => new Date(value).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 
   function create(host) {

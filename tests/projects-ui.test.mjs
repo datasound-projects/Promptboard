@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { JSDOM } from 'jsdom';
 
 const html = await readFile(new URL('../public/index.html', import.meta.url), 'utf8');
+const domSource = await readFile(new URL('../public/dom.js', import.meta.url), 'utf8');
 const source = await readFile(new URL('../public/projects.js', import.meta.url), 'utf8');
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 async function until(fn, label) { for (let n = 0; n < 200; n++) { if (fn()) return; await tick(); } assert.fail(`Timed out: ${label}`); }
@@ -23,7 +24,7 @@ test('saved prompts cannot be opened while Compose is running, and say why inste
     return { response: { ok: true }, data: { project: { id: 'p1', name: 'Shop' }, prompt: { ...prompt, input: 'in', prompt: 'out', settings: {} } } };
   };
   let running = false;
-  win.eval(source);
+  win.eval(domSource); win.eval(source);
   const view = win.PromptboardProjects.create({ api, announce: text => said.push(text), running: () => running, getResult: () => null, openInCompose: (...args) => opened.push(args) });
   await until(() => $('.project-prompt'), 'saved prompt listed');
   assert.equal($('.project-prompt').disabled, false);

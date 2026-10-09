@@ -155,6 +155,10 @@ test('Origin keeps a Project Context draft that could not be saved, reads Base a
   // A Project Context edit that could not be saved blocks New project and survives Origin's own reload.
   await ev(`document.querySelector('#origin-context-open').click();`);
   await wait(`document.querySelector('#origin-drawer')?.dataset.mode === 'context' && document.querySelector('#origin-context-preview')`, 'context created');
+  // Download .md goes through the shared download helper with the exact saved revision.
+  await ev(`window.__downloads = []; HTMLAnchorElement.prototype.click = function () { if (this.download) window.__downloads.push({ name: this.download, blob: this.href.startsWith('blob:') }); }; const m = document.querySelector('#origin-context-more'); m.open = true; [...m.querySelectorAll('.origin-menu-item')].find(b => b.textContent === 'Download .md').click();`);
+  await wait(`window.__downloads.length === 1`, 'download');
+  assert.deepEqual(await ev(`return window.__downloads[0];`), { name: 'project-context-first-r1.md', blob: true });
   await ev(`window.__fail.push(['PUT', '/document$']); document.querySelector('#origin-context-tab-edit').click();`);
   await wait(`document.querySelector('#origin-context-editor')`, 'editor');
   await ev(`const a = document.querySelector('#origin-context-editor'); a.value = a.value + '\\nUNSAVED CONTEXT NOTE\\n'; a.dispatchEvent(new Event('input', { bubbles: true }));`);

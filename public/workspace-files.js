@@ -2,7 +2,7 @@
 
 // Project-scoped files, explicit saves and opt-in AI proposals. No automatic agent actions.
 window.PromptboardFiles = (() => {
-  const node = (tag, className, text) => { const el = document.createElement(tag); if (className) el.className = className; if (text !== undefined) el.textContent = text; return el; };
+  const node = window.PromptboardDom.el;
   const button = (text, title, action, className = 'file-button') => {
     const el = node('button', className, text); el.type = 'button'; el.title = title; el.setAttribute('aria-label', title); el.addEventListener('click', action); return el;
   };

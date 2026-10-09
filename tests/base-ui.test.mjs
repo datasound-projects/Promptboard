@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { JSDOM } from 'jsdom';
 
 const html = await readFile(new URL('../public/index.html', import.meta.url), 'utf8');
+const domSource = await readFile(new URL('../public/dom.js', import.meta.url), 'utf8');
 const script = await readFile(new URL('../public/base.js', import.meta.url), 'utf8');
 const skill = { id: 'res_skill', kind: 'skill', name: 'Review checklist', description: 'Check invariants.', tags: [], enabled: true, trust: 'trusted', revision: 1, dependencies: [], configuration: { format: 'instruction' }, content: { body: 'Preserve this instruction exactly.\n', files: [] } };
 const pack = { id: 'res_pack', kind: 'pack', name: 'Project essentials', description: '', tags: [], enabled: true, trust: 'trusted', revision: 1, dependencies: [], configuration: { resources: [{ resourceId: skill.id, required: true }] }, content: {} };
@@ -21,7 +22,7 @@ function setup(t, { resources = [skill, pack], respond, savedView } = {}) {
   const confirms = []; let confirmAnswer = true;
   win.confirm = message => { confirms.push(message); return confirmAnswer; };
   if (savedView) win.localStorage.setItem('promptboard.base.library-view', JSON.stringify(savedView));
-  win.eval(script);
+  win.eval(domSource); win.eval(script);
   t.after(async () => { await wait(50); win.close(); });
   const $ = selector => win.document.querySelector(selector);
   const calls = [], announcements = [];

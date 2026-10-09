@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { JSDOM } from 'jsdom';
 
+const domSource = await readFile(new URL('../public/dom.js', import.meta.url), 'utf8');
 const script = await readFile(new URL('../public/workspace-files.js', import.meta.url), 'utf8');
 const project = (id, name = id) => ({ id, name, repository: { root: '/projects/' + id }, tasks: [] });
 async function settle() { for (let i = 0; i < 8; i++) await new Promise(resolve => setTimeout(resolve, 0)); }
@@ -12,7 +13,7 @@ function setup(t, adapter) {
   win.setInterval = callback => ticks.push(callback); win.AbortController = AbortController;
   win.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
   win.HTMLDialogElement.prototype.close = function () { this.open = false; };
-  win.eval(script);
+  win.eval(domSource); win.eval(script);
   const ui = win.PromptboardFiles.create({ request: async (url, signal, options = {}) => {
     calls.push({ url, signal, options });
     const parsed = new URL(url, 'http://local'), id = parsed.pathname.split('/')[3], path = parsed.searchParams.get('path'), workspace = parsed.searchParams.get('workspace');

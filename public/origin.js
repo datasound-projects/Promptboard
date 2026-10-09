@@ -35,18 +35,14 @@ window.PromptboardOrigin = (() => {
     areas: (title, section, area) => ({ section, area, title, description: '', status: 'defined', componentIds: [], requirementIds: [], technologyIds: [], baseResourceIds: [] }),
   };
 
-  const el = (tag, className = '', text) => { const node = document.createElement(tag); if (className) node.className = className; if (text !== undefined) node.textContent = text; return node; };
-  const button = (text, onClick, className = 'origin-ghost', title = '') => { const node = el('button', className, text); node.type = 'button'; if (title) node.title = title; node.addEventListener('click', onClick); return node; };
+  const { el, pref, setPref, plural, clip } = window.PromptboardDom;
+  const button = (text, onClick, className = 'origin-ghost', title) => window.PromptboardDom.button(text, onClick, className, title);
   const chip = (text, tone = '') => el('span', `origin-chip${tone ? ` ${tone}` : ''}`, text);
-  const pref = (key, fallback = '') => { try { return localStorage.getItem(key) ?? fallback; } catch { return fallback; } };
-  const setPref = (key, value) => { try { localStorage.setItem(key, value); } catch {} };
   const newId = () => globalThis.crypto?.randomUUID?.() || `o${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`;
   function today() { return new Date().toLocaleDateString('en-CA'); }
   function safeUrl(value) { try { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password ? url.href : ''; } catch { return ''; } }
   function hostOf(value) { try { return new URL(value).hostname.replace(/^www\./, ''); } catch { return ''; } }
-  const plural = (count, word, many = `${word}s`) => `${count} ${count === 1 ? word : many}`;
   const firstLine = text => M.lines(text)[0] || '';
-  const clip = (text, max) => { const value = String(text || '').trim(); return value.length > max ? `${value.slice(0, max - 1)}…` : value; };
   function icon(d, size = 16) {
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     for (const [name, value] of Object.entries({ viewBox: '0 0 24 24', width: size, height: size, fill: 'none', stroke: 'currentColor', 'stroke-width': '1.8', 'stroke-linecap': 'round', 'aria-hidden': 'true' })) svg.setAttribute(name, value);

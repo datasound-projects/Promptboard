@@ -6,11 +6,8 @@
 // agent or a generation on its own.
 window.PromptboardOriginContext = (() => {
   const WIDTH_KEY = 'promptboard.origin.context-width', SAVE_DELAY = 800, COMPOSE_BYTES = 2_000_000, PREVIEW_CHARS = 2_000_000;
-  const el = (tag, className, text) => { const node = document.createElement(tag); if (className) node.className = className; if (text !== undefined) node.textContent = text; return node; };
-  const button = (text, onClick, className = 'origin-ghost', title = '') => { const node = el('button', className, text); node.type = 'button'; if (title) node.title = title; node.addEventListener('click', onClick); return node; };
-  const pref = (key, fallback = null) => { try { return localStorage.getItem(key) ?? fallback; } catch { return fallback; } };
-  const setPref = (key, value) => { try { localStorage.setItem(key, value); } catch {} };
-  const count = (n, word, many = `${word}s`) => `${n.toLocaleString('en-US')} ${n === 1 ? word : many}`;
+  const { el, pref, setPref, plural: count } = window.PromptboardDom;
+  const button = (text, onClick, className = 'origin-ghost', title) => window.PromptboardDom.button(text, onClick, className, title);
   const when = value => (value ? new Date(value).toLocaleString() : '');
   const bytes = text => new TextEncoder().encode(text).length;
   const slug = name => String(name || 'project').normalize('NFKD').replace(/[^\w\s-]/g, '').trim().replace(/[\s_]+/g, '-').toLowerCase().slice(0, 60) || 'project';
@@ -258,11 +255,7 @@ window.PromptboardOriginContext = (() => {
       if (!response.ok) { fail(data.error || 'The saved document could not be read.'); return null; }
       accept(data); return data;
     }
-    function saveFile(content, name) {
-      const url = URL.createObjectURL(new Blob([content], { type: 'text/markdown;charset=utf-8' }));
-      const link = el('a'); link.href = url; link.download = name; document.body.append(link); link.click(); link.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-    }
+    const saveFile = (content, name) => window.PromptboardDom.download(name, content, 'text/markdown;charset=utf-8');
     const fileName = (revision, extra = '') => `project-context-${slug(host.project()?.name)}-r${revision}${extra}.md`;
     async function download() { const data = await exactSaved(); if (!data) return; saveFile(data.text, fileName(data.document.revision)); app.announce(`Downloaded document revision ${data.document.revision}.`); }
     async function copy() {
