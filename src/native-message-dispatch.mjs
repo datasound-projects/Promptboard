@@ -1,6 +1,7 @@
 /** Private journal/transport bridge. Board still owns session selection and scheduling. */
 import { createHash } from 'node:crypto';
 import { nativeMessageText, savedWithin, sameScope as same, SCOPE_FIELDS, untilAborted } from './native-message-common.mjs';
+import { ownsMove } from './pipeline-journal.mjs';
 
 const id = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(value);
 const result = (status, reason, blocked = false) => ({ status, confirmed: status === 'confirmed', reason, ...(blocked ? { blocked: true } : {}) });
@@ -33,7 +34,7 @@ export class NativeMessageDispatch {
       let ownsGrant = false, knownQueue = false, nativeStarted = false, confirmedSaved = false, publicationAttempted = false;
       try {
         const move = await bounded(() => this.journal.read(key)), action = move?.actions.find(row => row.id === actionId);
-        if (move?.ownerPid !== process.pid || action?.status !== 'scheduled' || action.delivery?.status !== 'queued' || !same(action.delivery, scope))
+        if (!ownsMove(move) || action?.status !== 'scheduled' || action.delivery?.status !== 'queued' || !same(action.delivery, scope))
           return result('unavailable', 'The exact queued delivery is unavailable. No input was supplied.');
         knownQueue = true;
         if ((await bounded(() => previous))?.blocked || this.blockedQueues.has(queueId)) throw new Error('prior outcome');
@@ -49,7 +50,7 @@ export class NativeMessageDispatch {
           grant: async actual => {
             if (combined.aborted || actual?.dispatchId !== actionId || !same(actual, scope) || nativeStarted || await bounded(preflight) !== true) return false;
             const current = await bounded(() => this.journal.read(key)), saved = current?.actions.find(row => row.id === actionId)?.delivery;
-            if (current?.ownerPid !== process.pid || saved?.status !== 'dispatching' || !same(saved, scope) || combined.aborted) return false;
+            if (!ownsMove(current) || saved?.status !== 'dispatching' || !same(saved, scope) || combined.aborted) return false;
             nativeStarted = true; return true;
           },
           submitted: () => nativeStarted && !combined.aborted ? this.journal.markMessageSubmitted(key, actionId) : false,

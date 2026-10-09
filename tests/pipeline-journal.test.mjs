@@ -140,6 +140,24 @@ test('recovery never interrupts a live owner, including another OS process', asy
   assert.equal(result.code, 'JOURNAL_OWNER_MISMATCH');
 });
 
+test('a move left by an earlier process with this same PID is recovered, while PID-only legacy moves keep their owner', async t => {
+  const dir = await temp(t), journal = new PipelineJournal(dir);
+  const rewrite = async change => { const location = await folder(dir);
+    for (const file of (await readdir(location)).filter(name => name.endsWith('.json'))) { const path = join(location, file), data = JSON.parse(await readFile(path, 'utf8')); change(data); await writeFile(path, JSON.stringify(data)); } };
+  const reused = move('reused-pid', { onExit: [row('unknown'), row('next')] }), { move: saved } = await journal.beginMove(reused);
+  assert.equal(saved.ownerPid, process.pid); assert.match(saved.ownerInstance, /^[0-9a-f-]{36}$/);
+  await journal.startAction(reused, saved.actions[0].id);
+  await rewrite(data => { data.ownerInstance = '00000000-0000-4000-8000-000000000000'; });
+  await assert.rejects(journal.startAction(reused, saved.actions[1].id), { code: 'JOURNAL_OWNER_MISMATCH' });
+  const recovered = await journal.recoverInterrupted(reused);
+  assert.equal(recovered.length, 1); assert.deepEqual(recovered[0].actions.map(action => action.status), ['interrupted', 'interrupted']);
+  await rm(join(dir, 'automations'), { recursive: true });
+  const legacy = move('legacy-pid', { onExit: [row('live')] }), { move: old } = await journal.beginMove(legacy);
+  await journal.startAction(legacy, old.actions[0].id);
+  await rewrite(data => { delete data.ownerInstance; });
+  assert.deepEqual(await journal.recoverInterrupted(legacy), []); assert.equal((await journal.read(legacy)).actions[0].status, 'running');
+});
+
 test('restart recovery covers pending, lifecycle and enter phases without changing confirmed effects', async t => {
   const dir = await temp(t), journal = new PipelineJournal(dir);
   for (const phase of ['pending', 'lifecycle', 'enter']) {

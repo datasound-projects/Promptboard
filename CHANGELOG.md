@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix: an automation move interrupted by a restart is recovered even when the new Promptboard process gets the same PID (common in containers). New journal entries also store a random per-process instance ID; entries without one keep the PID-only check.
 - Fix: two quick **Connect GitHub** clicks start one `gh auth login`, and a cancelled sign-in that exits late no longer ends or overwrites the state of the next one.
 - Fix: browser task alerts keep working after 10,000 alerts in one server session; the receiver now remembers the newest 10,000 alert IDs instead of refusing every later alert.
 - Fix: an agent run whose preparation times out or is stopped now says so (`PREPARATION_TIMEOUT`, `PREPARATION_ABORTED`) instead of reporting an unrecognized CLI failure and suggesting to run the CLI in a terminal.
