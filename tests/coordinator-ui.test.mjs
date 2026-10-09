@@ -19,7 +19,9 @@ function setup(t) {
   const api = (path, options = {}) => {
     const id = decodeURIComponent(path.split('/')[3]);
     if (path.endsWith('/ask')) return new Promise(resolve => asks.push({ id, question: options.body.question, answer: chat => resolve({ response: { ok: true }, data: { chat } }) }));
-    return Promise.resolve({ response: { ok: true }, data: reads.get(id) || overview() });
+    // A function answers the read itself, for held or failing reads.
+    const read = reads.get(id);
+    return Promise.resolve(typeof read === 'function' ? read() : { response: { ok: true }, data: read || overview() });
   };
   const projects = { a: { id: 'a', tasks: [{ id: 'ta', number: 1, title: 'One', workspace: { branch: 'feature/a' } }] }, b: { id: 'b', tasks: [] } };
   let current = projects.a;
@@ -52,6 +54,38 @@ test('a Coordinator answer stays with the project it was asked in, and the other
   assert.equal($('.coordinator-message'), null, 'A’s answer is not in B’s chat');
   type('And here?');
   assert.equal($('#coordinator-send').disabled, false, 'B can ask its own question');
+});
+
+test('board renders keep keyboard focus on the same task link, and every link has its own id', async t => {
+  const { win, $, show, reads } = setup(t);
+  reads.set('a', { ...overview(), agents: [{ taskId: 'ta', number: 1, title: 'One', column: 'Executing', status: 'running' }],
+    recent: [{ task: 'ta', number: 1, taskTitle: 'One', title: 'Moved', at: Date.now() }, { task: 'ta', number: 1, taskTitle: 'One', title: 'Started', at: Date.now() }] });
+  win.localStorage.setItem('promptboard.coordinator.a', 'open');
+  show('a');
+  await until(() => $('#coordinator-task-agent-ta'), 'agent link');
+  const ids = [...$('#coordinator').querySelectorAll('.coordinator-link')].map(link => link.id);
+  assert.deepEqual(ids, ['coordinator-task-agent-ta', 'coordinator-task-recent-ta', 'coordinator-task-recent-ta-2']);
+  $('#coordinator-task-recent-ta-2').focus();
+  for (let revision = 2; revision < 4; revision++) { show('a', revision); await tick(); }
+  await tick();
+  assert.equal(win.document.activeElement.id, 'coordinator-task-recent-ta-2', 'focus stays on the same link after redraws');
+});
+
+test('a board change during a read is read again, and a failed refresh says so over the last overview', async t => {
+  const { win, $, show, reads } = setup(t);
+  win.localStorage.setItem('promptboard.coordinator.a', 'open');
+  let count = 0, release;
+  const answer = done => ({ response: { ok: true }, data: { ...overview(), progress: { done, total: 1 } } });
+  reads.set('a', () => (++count === 1 ? new Promise(resolve => { release = () => resolve(answer(0)); }) : count === 2 ? answer(1) : { response: { ok: false }, data: { error: 'The app is offline.' } }));
+  show('a');
+  await until(() => release, 'first read in flight');
+  show('a', 2); // The board changed while the first read was running.
+  release();
+  await until(() => /1\/1 done/.test($('.coordinator-status').textContent), 'the change is read');
+  assert.equal(count, 2);
+  show('a', 3);
+  await until(() => count === 3 && /Not refreshed: The app is offline\./.test($('.coordinator-status').textContent), 'failed refresh shown');
+  assert.match($('.coordinator-status').textContent, /1\/1 done/, 'the last overview stays');
 });
 
 test('board renders leave the open chat in place: caret, open target menu and scroll are kept', async t => {

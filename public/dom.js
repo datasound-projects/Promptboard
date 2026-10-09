@@ -8,11 +8,13 @@ window.PromptboardDom = (() => {
   const setPref = (key, value) => { try { localStorage.setItem(key, value); } catch {} };
   const plural = (n, word, many = `${word}s`) => `${n.toLocaleString('en-US')} ${n === 1 ? word : many}`;
   const clip = (text, max) => { const value = String(text || '').trim(); return value.length > max ? `${value.slice(0, max - 1)}…` : value; };
+  /** The address when it is a plain http(s) URL without credentials, otherwise ''. */
+  const safeUrl = value => { try { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password ? url.href : ''; } catch { return ''; } };
   /** Saves `content` as a file named `name` through the browser's own download. */
   function download(name, content, type) {
     const url = URL.createObjectURL(new Blob([content], { type }));
     const link = el('a'); link.href = url; link.download = name; document.body.append(link); link.click(); link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
-  return { el, button, pref, setPref, plural, clip, download };
+  return { el, button, pref, setPref, plural, clip, safeUrl, download };
 })();

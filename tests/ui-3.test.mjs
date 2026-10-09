@@ -890,3 +890,55 @@ test('board profile task drafts retain choices on stale revisions and legacy car
   ctx.$('#card-cancel').click(); const legacy = await ctx.app.board.createProject({ name: 'Legacy' }); await ctx.win.__pbTest.loadBoard(); await ctx.idle({ requireComplete: true });
   [...ctx.win.document.querySelectorAll('#workspace-list .workspace-item')].find(button => button.textContent.includes(legacy.name)).click(); ctx.$('#card-new').click(); assert.equal(ctx.$('#card-pipeline-settings').children.length, 0);
 });
+
+test('board refreshes keep keyboard focus on the Autopilot bar and on a column agent button', async t => {
+  const ctx = await linkedKanban(t);
+  const { $, win } = ctx;
+  await ctx.app.board.store.update(draft => { draft.projects[0].autopilot = { status: 'paused', reason: 'Paused by you', queue: [], done: [], current: null, routes: {} }; });
+  await win.__pbTest.loadBoard(); await ctx.idle();
+  const resume = byText($('#autopilot-bar'), 'Resume'); resume.focus();
+  await win.__pbTest.loadBoard(); await ctx.idle();
+  assert.equal(win.document.activeElement, resume, 'an unchanged Autopilot bar keeps its buttons');
+  $('#kanban-columns [data-column="executing"] .column-agent').focus();
+  await win.__pbTest.loadBoard(); await ctx.idle();
+  assert.equal(win.document.activeElement.id, 'column-agent-executing', 'the rebuilt column header gets focus back');
+});
+
+test('GitHub sign-in keeps polling after a failed read and stops quietly when no login is reported', async t => {
+  const ctx = await setup(t);
+  const { $, win } = ctx;
+  const original = win.fetch, json = (body, status = 200) => Promise.resolve(Response.json(body, { status }));
+  let reads = 0;
+  win.fetch = (url, options = {}) => {
+    if (url === '/api/github/status') return json({ github: { installed: true, state: 'not_connected' }, login: null });
+    if (url === '/api/github/login' && options.method === 'POST') return json({ login: { status: 'waiting', code: 'ABCD-1234', url: 'https://github.com/login/device' } });
+    if (url === '/api/github/login') return ++reads === 1 ? json({ error: 'The app is not responding.' }, 503) : json({});
+    return original(url, options);
+  };
+  $('#app-settings-open').click();
+  await until(() => byText($('#set-github-group'), 'Connect GitHub'), 'connect button');
+  byText($('#set-github-group'), 'Connect GitHub').click();
+  await until(() => /ABCD-1234/.test($('#set-github-group').textContent), 'one-time code');
+  await until(() => reads === 1 && /The app is not responding\./.test($('#set-github-group').textContent), 'failed read shown');
+  await until(() => reads === 2, 'polling continues after the failure');
+  await new Promise(resolve => setTimeout(resolve, 2500));
+  assert.equal(reads, 2, 'a reply without a login ends polling');
+  assert.ok(byText($('#set-github-group'), 'Connect GitHub'), 'sign-in can start again');
+});
+
+test('external links from the server open only plain http(s) addresses', async t => {
+  const ctx = await setup(t);
+  const { $, win } = ctx;
+  const original = win.fetch, json = body => Promise.resolve(Response.json(body));
+  win.fetch = (url, options = {}) => {
+    if (url === '/api/github/status') return json({ github: { installed: true, state: 'not_connected' }, login: null });
+    if (url === '/api/github/login') return json({ login: { status: 'waiting', code: 'ABCD-1234', url: 'javascript:alert(document.domain)' } });
+    return original(url, options);
+  };
+  $('#app-settings-open').click();
+  await until(() => byText($('#set-github-group'), 'Connect GitHub'), 'connect button');
+  byText($('#set-github-group'), 'Connect GitHub').click();
+  await until(() => /ABCD-1234/.test($('#set-github-group').textContent), 'one-time code');
+  const link = [...$('#set-github-group').querySelectorAll('a')].find(node => node.textContent === 'Open github.com/login/device');
+  assert.equal(link.hasAttribute('href'), false, 'a javascript: address is not a link');
+});

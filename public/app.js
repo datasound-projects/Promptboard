@@ -1055,7 +1055,8 @@ function replaceKeepingFocus(list, nodes, key) {
   if (target?.tagName === active.tagName && target.className === active.className) target.focus({ preventScroll: true });
 }
 function externalLink(href, label) {
-  const link = document.createElement('a'); link.href = href; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.textContent = label; return link;
+  // Addresses come from the server and the CLIs; only plain http(s) links are made clickable.
+  const link = document.createElement('a'), url = window.PromptboardDom.safeUrl(href); if (url) link.href = url; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.textContent = label; return link;
 }
 
 function setAuthBusy(value) { authBusy = value; renderAuth(); updateProviderState(); }
@@ -1562,6 +1563,8 @@ function renderBoard() {
   const focusedCardAction = focusedCard && document.activeElement.matches('button, select, a') ? document.activeElement : null;
   const focusedDisplay = document.activeElement?.dataset.cardDisplay;
   const focusedAutomation = document.activeElement?.dataset.automationStop;
+  // Column controls outside the cards (the header's agent button, Add task) are found again by id.
+  const focusedColumnControl = !focusedCard && columns.contains(document.activeElement) ? document.activeElement.id : '';
   const confirming = [...columns.querySelectorAll('.kanban-card:has(.kanban-confirm)')].map(item => item.dataset.id);
   const confirmationFocus = document.activeElement?.closest('.kanban-confirm') ? document.activeElement.textContent : null;
   const scroll = new Map(columns.dataset.projectId === project?.id ? [...columns.querySelectorAll('.kanban-cards')].map(list => [list.dataset.column, list.scrollTop]) : []);
@@ -1579,6 +1582,7 @@ function renderBoard() {
   }
   if (focusedCard && focusedDisplay) [...(cardElement(focusedCard.dataset.id)?.querySelectorAll('[data-card-display]') || [])].find(input => input.dataset.cardDisplay === focusedDisplay)?.focus({ preventScroll: true });
   if (focusedAutomation) cardElement(focusedAutomation)?.querySelector('.kanban-stop-automations')?.focus({ preventScroll: true });
+  if (focusedColumnControl) document.getElementById(focusedColumnControl)?.focus({ preventScroll: true });
   for (const list of columns.querySelectorAll('.kanban-cards')) list.scrollTop = scroll.get(list.dataset.column) || 0;
   renderRepository(project);
   renderRepositoryPipelineStatus();
@@ -1637,6 +1641,7 @@ function renderColumn(column, tasks) {
   if (column.agent) {
     const settings = currentProject()?.effectiveWorkflow?.[column.id];
     const agent = detailButton(`Agent: ${agentText(settings)}`, () => openWorkflowDialog(column.id), 'column-agent');
+    agent.id = `column-agent-${column.id}`;
     agent.setAttribute('aria-label', `Choose provider and model for ${column.title}`);
     agent.title = `${agentText(settings)} · ${settings?.agentSource || 'default'} setting`;
     header.append(agent);
@@ -1668,6 +1673,7 @@ function renderColumn(column, tasks) {
   section.append(header, note, list);
   if ((column.role || column.id) === 'todo') {
     const add = detailButton('Add task', () => openCard(null, true), 'secondary-button kanban-add-task');
+    add.id = 'kanban-add-task';
     section.append(add);
   }
   return section;
@@ -4240,7 +4246,9 @@ function renderAutopilotBar(project) {
   buttons.push(detailButton(ap.status === 'finished' ? 'Close' : 'Stop', () => autopilotCall('stop')));
   buttons.push(detailButton('Settings', openAutopilot));
   bar.className = `autopilot-bar ${ap.status}${needsYou ? ' needs-you' : ''}`;
-  bar.replaceChildren(paragraph(text), detailActions(...buttons));
+  // Board renders come every few seconds while Autopilot runs; an unchanged bar keeps its buttons and focus.
+  const signature = JSON.stringify([text, buttons.map(button => button.textContent), needsYou && run.id]);
+  if (bar.dataset.signature !== signature) { bar.dataset.signature = signature; bar.replaceChildren(paragraph(text), detailActions(...buttons)); }
   bar.hidden = false;
 }
 
@@ -5112,7 +5120,8 @@ const browserNotifications = window.PromptboardNotifications ? new window.Prompt
     await loadBoard();
     const project = board?.projects.find(item => item.id === projectId);
     if (!project?.tasks.some(task => task.id === taskId)) { announce('The notification task is no longer available.'); return; }
-    for (const dialog of document.querySelectorAll('dialog[open]')) dialog.close();
+    // Close each open dialog as Escape would, so its own guards (an unsaved file, a save in flight) still apply.
+    for (const dialog of document.querySelectorAll('dialog[open]')) if (dialog.dispatchEvent(new Event('cancel', { cancelable: true }))) dialog.close();
     location.hash = '#/kanban'; showPage(); selectProject(projectId); await openTaskDetails(taskId);
   } }) : null;
 function renderNotificationSettings() {
@@ -5207,9 +5216,10 @@ function pollLogin() {
   clearTimeout(pollLogin.timer);
   if (!['starting', 'waiting'].includes(github.login?.status)) return;
   pollLogin.timer = setTimeout(async () => {
-    try { github.login = (await githubCall('GET', '/api/github/login')).login; } catch { return; }
+    // One failed read must not end sign-in; polling stops only when the login reports an end.
+    try { github.login = (await githubCall('GET', '/api/github/login')).login; github.message = ''; } catch (error) { github.message = error.message; }
     renderGitHub();
-    if (github.login.status === 'done') checkGitHub(); else pollLogin();
+    if (github.login?.status === 'done') checkGitHub(); else pollLogin();
   }, 2000);
 }
 function renderGitHub() {

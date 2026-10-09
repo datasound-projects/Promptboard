@@ -11,7 +11,7 @@ window.PromptboardCoordinator = (() => {
 
   function create(host) {
     const panel = document.getElementById('coordinator'), toggle = document.getElementById('coordinator-toggle');
-    let projectId = null, data = null, revision = null, fetching = null, chatOpen = false, scope = { kind: 'project' }, message = '', draft = '';
+    let projectId = null, data = null, revision = null, fetching = null, chatOpen = false, scope = { kind: 'project' }, message = '', readError = '', draft = '';
     // Questions in flight, per project. The chat node is kept across board renders so typing is never interrupted.
     const asking = new Set();
     let chatNode = null;
@@ -23,17 +23,19 @@ window.PromptboardCoordinator = (() => {
       if (!projectId) return;
       const id = projectId;
       // One read per project at a time; switching projects starts the new project's read at once.
-      if (fetching?.id === id) return fetching.promise;
-      const promise = call('').then(body => { if (id === projectId) { if (JSON.stringify(body.chat) !== JSON.stringify(data?.chat)) chatNode = null; data = body; message = ''; } }).catch(error => { if (id === projectId) message = error.message; })
-        .finally(() => { if (fetching?.promise === promise) fetching = null; render(); });
-      fetching = { id, promise };
-      return promise;
+      // A change during a read may be missing from it, so one more read follows.
+      if (fetching?.id === id) { fetching.again = true; return fetching.promise; }
+      const read = { id, again: false };
+      read.promise = call('').then(body => { if (id === projectId) { if (JSON.stringify(body.chat) !== JSON.stringify(data?.chat)) chatNode = null; data = body; message = ''; readError = ''; } }).catch(error => { if (id === projectId) readError = error.message; })
+        .finally(() => { if (fetching === read) { fetching = null; if (read.again) void refresh(); } render(); });
+      fetching = read;
+      return read.promise;
     }
 
     /** Called on every board render; fetches only when the project or the board changed and the panel is shown. */
     function sync(project, boardRevision, visible = true) {
       if (!project) { projectId = null; panel.hidden = true; toggle.hidden = true; return; }
-      if (project.id !== projectId) { projectId = project.id; data = null; revision = null; chatOpen = false; chatNode = null; scope = { kind: 'project' }; message = ''; draft = ''; }
+      if (project.id !== projectId) { projectId = project.id; data = null; revision = null; chatOpen = false; chatNode = null; scope = { kind: 'project' }; message = ''; readError = ''; draft = ''; }
       panel.dataset.visible = String(visible);
       toggle.hidden = !visible;
       if (!visible) { panel.hidden = true; return; }
@@ -56,11 +58,12 @@ window.PromptboardCoordinator = (() => {
       const status = el('span', 'coordinator-status');
       status.setAttribute('role', 'status');
       if (off) status.textContent = 'Off · project knowledge is kept';
-      else if (!data) status.textContent = message || 'Reading the board…';
+      else if (!data) status.textContent = readError || message || 'Reading the board…';
       else {
         const needs = data.agents.filter(agent => agent.needsYou).length;
         status.append(...[`${data.agents.length} ${data.agents.length === 1 ? 'agent' : 'agents'} active`, `${data.progress.done}/${data.progress.total} done`,
-          ...(needs ? [`${needs} ${needs === 1 ? 'needs' : 'need'} you`] : []), ...(data.blockers.length ? [`${data.blockers.length} ${data.blockers.length === 1 ? 'blocker' : 'blockers'}`] : [])]
+          ...(needs ? [`${needs} ${needs === 1 ? 'needs' : 'need'} you`] : []), ...(data.blockers.length ? [`${data.blockers.length} ${data.blockers.length === 1 ? 'blocker' : 'blockers'}`] : []),
+          ...(readError ? [`Not refreshed: ${readError}`] : [])]
           .map((text, index) => el('span', index >= 2 ? 'coordinator-alert' : '', text)));
       }
       const controls = el('div', 'coordinator-controls');
@@ -97,8 +100,13 @@ window.PromptboardCoordinator = (() => {
       if (!items.length) box.append(el('p', 'coordinator-empty', empty)); else { const list = el('ul'); list.append(...items); box.append(list); }
       return box;
     }
-    const taskLink = (number, title, taskId) => button(`${number ? `#${number} ` : ''}${title}`, () => host.openTask(taskId), 'coordinator-link');
     function dashboard() {
+      // Stable, unique ids let render() put keyboard focus back on the same link after a redraw.
+      const ids = new Map();
+      const taskLink = (list, number, title, taskId) => {
+        const node = button(`${number ? `#${number} ` : ''}${title}`, () => host.openTask(taskId), 'coordinator-link'), id = `coordinator-task-${list}-${taskId}`, n = (ids.get(id) || 0) + 1;
+        ids.set(id, n); node.id = n > 1 ? `${id}-${n}` : id; return node;
+      };
       const grid = el('div', 'coordinator-grid');
       const progress = el('section', 'coordinator-card coordinator-progress');
       progress.append(el('h3', '', 'Progress'));
@@ -106,9 +114,9 @@ window.PromptboardCoordinator = (() => {
       meter.setAttribute('role', 'img'); meter.setAttribute('aria-label', `${data.progress.done} of ${data.progress.total} cards done`); meter.append(fill);
       progress.append(meter, el('p', 'coordinator-columns', data.columns.map(column => `${column.name} ${column.count}`).join(' · ')));
       grid.append(progress,
-        card('Active agents', data.agents.map(agent => { const li = el('li'); li.append(taskLink(agent.number, agent.title, agent.taskId), el('small', '', `${agent.column} · ${agent.needsYou ? 'waiting for you' : agent.status.replaceAll('_', ' ')}`)); return li; }), 'No agent is working.'),
-        card('Needs attention', data.blockers.map(blocker => { const li = el('li'); if (blocker.taskId) li.append(taskLink(blocker.number, blocker.title, blocker.taskId)); li.append(el('small', '', blocker.text)); return li; }), 'Nothing is blocked.'),
-        card('Recent activity', data.recent.slice(0, 6).map(event => { const li = el('li'); li.append(event.task ? taskLink(event.number, event.taskTitle, event.task) : el('span', '', event.title)); li.append(el('small', '', `${event.title}${event.status ? ` · ${event.status}` : ''} · ${ago(event.at)}`)); return li; }), 'No activity yet.'));
+        card('Active agents', data.agents.map(agent => { const li = el('li'); li.append(taskLink('agent', agent.number, agent.title, agent.taskId), el('small', '', `${agent.column} · ${agent.needsYou ? 'waiting for you' : agent.status.replaceAll('_', ' ')}`)); return li; }), 'No agent is working.'),
+        card('Needs attention', data.blockers.map(blocker => { const li = el('li'); if (blocker.taskId) li.append(taskLink('blocker', blocker.number, blocker.title, blocker.taskId)); li.append(el('small', '', blocker.text)); return li; }), 'Nothing is blocked.'),
+        card('Recent activity', data.recent.slice(0, 6).map(event => { const li = el('li'); li.append(event.task ? taskLink('recent', event.number, event.taskTitle, event.task) : el('span', '', event.title)); li.append(el('small', '', `${event.title}${event.status ? ` · ${event.status}` : ''} · ${ago(event.at)}`)); return li; }), 'No activity yet.'));
       return grid;
     }
 

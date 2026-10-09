@@ -236,3 +236,35 @@ test('the sidebar list is the one place to pick, create, rename and delete proje
   assert.equal(await ev(`return document.activeElement.matches('#workspace-list .current .workspace-item') && ${shownProject};`), alpha.id);
   noExceptions(browser);
 });
+
+test('the terminal dock divider resizes by touch, and a cancelled pointer ends the drag', { skip: !chrome, timeout: 120000 }, async t => {
+  const { app, browser, ev, wait } = await setup(t);
+  await app.board.createProject({ name: 'Dock', workflowMode: 'pipeline' });
+  await browser.goto(`${app.url}/#/kanban`);
+  await wait(`token && !document.querySelector('#kanban-view').hidden`, 'Kanban');
+  await ev(`document.querySelector('#dock-toggle').click();`);
+  await browser.layout(`return document.querySelector('#dock-divider').getBoundingClientRect().height > 0;`);
+  assert.equal(await ev(`return getComputedStyle(document.querySelector('#dock-divider')).touchAction;`), 'none', 'a touch drag is not taken for a page scroll');
+  const point = async () => ev(`const r = document.querySelector('#dock-divider').getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };`);
+  const height = () => ev(`return window.promptboardDock.height;`);
+  // Touch: press, move up 80 px in steps, release.
+  await browser.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
+  let { x, y } = await point();
+  await browser.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] });
+  for (let step = 1; step <= 4; step++) await browser.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y: y - step * 20 }] });
+  await browser.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  // The divider follows the finger: the dock reaches from the last touch point to the bottom.
+  const expected = await ev(`return innerHeight - ${y - 80};`);
+  await wait(`window.promptboardDock.height === ${expected}`, `touch drag resized the dock to ${expected}`).catch(async error => { throw new Error(`${error.message}; height ${await height()}`); });
+  await browser.send('Emulation.setTouchEmulationEnabled', { enabled: false });
+  // Mouse: a pointercancel mid-drag ends it, so later moves change nothing.
+  ({ x, y } = await point());
+  await browser.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 });
+  await browser.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y: y - 30, button: 'left', buttons: 1 });
+  const dragged = await height();
+  await ev(`document.querySelector('#dock-divider').dispatchEvent(new PointerEvent('pointercancel', { pointerId: 1, bubbles: true }));`);
+  await browser.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y: y - 90, button: 'left', buttons: 1 });
+  await browser.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y: y - 90, button: 'left', clickCount: 1 });
+  assert.equal(await height(), dragged, 'no resize after the pointer was cancelled');
+  noExceptions(browser);
+});
