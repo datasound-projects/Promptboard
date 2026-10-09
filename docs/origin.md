@@ -16,7 +16,7 @@ Origin is the planning layer before Compose and Kanban. It stores a structured *
 - File names come only from validated IDs (`[A-Za-z0-9_-]{1,100}`). Uppercase letters and `_` are escaped (`A` → `_a`, `_` → `__`) so IDs that differ only in case never share a file on case-insensitive file systems.
 - Origin never writes `state.json`, never changes the board state version and never writes Base, session or journal files. Kanban projects are created or removed only through the board service.
 - Writes are serialized and atomic (temporary file, fsync, rename). The previous good file is kept as `….json.bak`.
-- A damaged file is renamed to `blueprint-<id>.corrupt-<time>-<random>.json` and the last good backup is restored and reported. Without a good backup the project is kept aside and not shown. A file from a newer Origin version is refused and never overwritten.
+- A damaged file is renamed to `blueprint-<id>.corrupt-<time>-<random>.json` and the last good backup is restored and reported. Without a good backup the file is kept aside and the project is not listed; opening it reports it as damaged (`ORIGIN_DAMAGED`, with the name of the kept file) until the app restarts or a new project takes that ID. A file from a newer Origin version is refused and never overwritten.
 - Saves are revision-checked (`expectedRevision`). A save from a stale window is refused instead of overwriting newer work.
 - **Delete from Origin** moves the file to `origin/deleted/`. Linked Kanban cards and every snapshot stay.
 - A [Project Context](origin-project-context.md) document is stored separately in `origin/context/<origin id>/`; creating, opening or editing it never changes the blueprint or its revision.

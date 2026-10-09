@@ -4,7 +4,7 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import '../public/origin-model.js';
-import { OriginStore, blueprintFileName, originFileName } from '../src/origin.mjs';
+import { OriginStore, blueprintFileName, originFileName, originRoute } from '../src/origin.mjs';
 import { STATE_VERSION } from '../src/store.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
 
@@ -310,6 +310,22 @@ test('damaged Origin files are contained and newer files are never overwritten',
   await assert.rejects(store.read(other.id), { code: 'ORIGIN_VERSION_UNSUPPORTED' });
   await assert.rejects(store.write(other.id, { expectedRevision: 9, blueprint: {} }), { code: 'ORIGIN_VERSION_UNSUPPORTED' });
   assert.equal(await readFile(otherPath, 'utf8'), newer);
+});
+
+test('a damaged project without a good copy stays reported as damaged after a listing set it aside', async t => {
+  const dir = await temp(t), store = new OriginStore(dir);
+  const created = await store.create({ name: 'Fragile' });
+  await writeFile(join(dir, 'origin', blueprintFileName(created.id)), '{ broken');
+  assert.deepEqual(await store.list(), [], 'not listed');
+  for (const report of [false, true, true]) {
+    const read = await store.read(created.id, { report });
+    assert.equal(read.damaged, true); assert.equal(read.recovery.restoredFromBackup, false); assert.match(read.recovery.quarantined, /^blueprint-.*\.corrupt-/);
+  }
+  const page = originRoute({ origin: store, board: { state: async () => ({ projects: [] }) }, req: { method: 'GET' }, res: {}, pathname: `/api/origin/projects/${created.id}`, jsonBody: async () => ({}), send: () => {} });
+  await assert.rejects(page, { code: 'ORIGIN_DAMAGED' });
+  // Reusing the ID starts a new project; the damaged file stays where it was set aside.
+  await store.create({ name: 'Fragile again', id: created.id });
+  assert.equal((await store.read(created.id)).damaged, undefined);
 });
 
 test('a failed Origin write reports an error and keeps the previous file', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, async t => {

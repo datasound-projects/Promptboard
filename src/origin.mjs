@@ -55,6 +55,7 @@ function expected(value) {
   return value;
 }
 
+const damagedRecord = (id, recovery) => ({ id, name: 'Damaged project', description: '', kanbanProjectId: null, revision: 0, createdAt: null, updatedAt: null, blueprint: Model.emptyBlueprint(), repairs: 0, recovery, damaged: true });
 // A board with an Origin project's own ID is that project's board, even without a stored link.
 const linksTo = (record, kanbanProjectId) => record.kanbanProjectId === kanbanProjectId || record.id === kanbanProjectId;
 
@@ -146,8 +147,10 @@ export class OriginStore {
         this.recoveries.set(originId, recovery);
         return { ...result, recovery };
       }
-      return { id: originId, name: 'Damaged project', description: '', kanbanProjectId: null, revision: 0, createdAt: null, updatedAt: null, blueprint: Model.emptyBlueprint(), repairs: 0,
-        recovery: { restoredFromBackup: false, quarantined }, damaged: true };
+      // Kept: once the file is aside, a later read would otherwise say "no project" instead of "damaged".
+      const recovery = { restoredFromBackup: false, quarantined };
+      this.recoveries.set(originId, recovery);
+      return damagedRecord(originId, recovery);
     }
   }
 
@@ -186,8 +189,10 @@ export class OriginStore {
   read(originId, { report = true } = {}) {
     try { validId(originId); } catch (error) { return Promise.reject(error); }
     return this.#serial(async () => {
-      const record = await this.#read(originId), pending = this.recoveries.get(originId);
-      if (!report) return record;
+      const found = await this.#read(originId), pending = this.recoveries.get(originId);
+      // A damaged file set aside without a good copy (perhaps while listing) stays reported until the ID is reused.
+      const record = found ?? (pending?.restoredFromBackup === false ? damagedRecord(originId, pending) : null);
+      if (!report || record?.damaged) return record;
       this.recoveries.delete(originId);
       return record && pending ? { ...record, recovery: pending } : record;
     });
@@ -215,6 +220,7 @@ export class OriginStore {
       if (meta.description) { blueprint.idea = meta.description; blueprint.vision.summary = meta.description; }
       const now = Date.now(), record = { id: id ?? randomUUID(), ...meta, kanbanProjectId, revision: 1, createdAt: now, updatedAt: now, blueprint };
       await this.#atomic(join(this.dir, blueprintFileName(record.id)), this.#file(record), 'The Origin project could not be created. Check free disk space and folder permissions.');
+      this.recoveries.delete(record.id); // A damaged project with this ID stays in its set-aside file.
       return { ...record, repairs: 0, recovery: null };
     });
   }
