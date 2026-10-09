@@ -26,6 +26,10 @@ const LOG_BYTES = 20 * 1024 * 1024; // Output log file cap per run.
 const INPUT_BYTES = 64 * 1024;
 const LINGER_MS = 30 * 60 * 1000; // Keep a finished session's output for reconnects.
 const ACTIVE = new Set(['queued', 'running', 'waiting_for_input']);
+const PREPARATION_STOPPED = Object.freeze({
+  TimeoutError: { code: 'PREPARATION_TIMEOUT', reason: 'Preparing the agent session took too long, so the agent was not started. Try again.' },
+  AbortError: { code: 'PREPARATION_ABORTED', reason: 'Preparing the agent session was stopped before the agent started.' },
+});
 // xterm answers queries and focus changes with no keystroke: CPR, DA1/DA2, DSR, DECRPM, window
 // and OSC colour reports, DECRQSS. Only modified F3 (ESC[1;<m>R) shares a shape with a CPR.
 const TERMINAL_REPORTS = /^(?:\x1b\[(?:[?>]?[\d;]*c|\d*n|\??\d+;\d+R|[\d;]+t|\??\d+;\d+\$y|[IO])|\x1b\][\d;]+;[^\x07\x1b]*(?:\x07|\x1b\\)|\x1bP[^\x1b]*\x1b\\)+$/;
@@ -145,8 +149,10 @@ export class Supervisor {
 
   async #fail(runId, error) {
     this.#endPending(runId);
-    const code = typeof error?.code === 'string' ? error.code : 'CLI_FAILED';
-    const reason = error instanceof AgentError || error instanceof BaseDeliveryError ? error.message : FAILURE_MESSAGES[code] || 'The agent session could not start.';
+    // AbortSignal.timeout/abort reject with a DOMException whose numeric code says nothing about the CLI.
+    const stopped = PREPARATION_STOPPED[error?.name];
+    const code = stopped ? stopped.code : typeof error?.code === 'string' ? error.code : 'CLI_FAILED';
+    const reason = stopped ? stopped.reason : error instanceof AgentError || error instanceof BaseDeliveryError ? error.message : FAILURE_MESSAGES[code] || 'The agent session could not start.';
     const session = this.sessions.get(runId);
     // A spawn can succeed before manifest/status persistence fails. An unrecorded
     // process must never keep running after failed-start handling moves its card back.

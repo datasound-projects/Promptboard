@@ -583,6 +583,18 @@ test('Base launch preparation is cancellable and does not spawn or interfere wit
   assert.deepEqual((await w.run(next.id)).baseManifest.resources, []);
 });
 
+test('a preparation timeout or abort is reported as such, not as a CLI failure', { skip }, async t => {
+  const w = await world(t);
+  for (const [name, code] of [['TimeoutError', 'PREPARATION_TIMEOUT'], ['AbortError', 'PREPARATION_ABORTED']]) {
+    const card = await w.task(`Preparation ${name}`, 'Never spawn.');
+    w.supervisor.basePreparer = async () => { throw new DOMException('Stopped', name); };
+    const run = await w.board.requestRun(card.id, { stage: 'executing', consent: true });
+    const failed = await until(async () => { const value = await w.run(run.id); return value.status === 'failed' && value; }, `${name} failure`);
+    assert.equal(failed.errorCode, code); assert.doesNotMatch(failed.reason, /Run the CLI in your terminal/);
+  }
+  assert.deepEqual(await w.reports(), []);
+});
+
 test('Shutdown during or immediately after preparation stays interrupted without rollback; cancellation stays cancelled', { skip }, async t => {
   for (const timing of ['preparing', 'preparing-entry-removed', 'cancelled']) await t.test(timing, async t => {
     const w = await world(t);

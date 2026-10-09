@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix: an agent run whose preparation times out or is stopped now says so (`PREPARATION_TIMEOUT`, `PREPARATION_ABORTED`) instead of reporting an unrecognized CLI failure and suggesting to run the CLI in a terminal.
 - Fix: secret redaction in local Compose sources and Origin context now removes the credential after `Bearer` or `Basic` (for example `Authorization: Bearer …`), not just the scheme word.
 - Fix: a pipeline agent session that finishes more than 4,096 tool calls no longer becomes permanently uncertain (and never ready); only the newest finished tool IDs are remembered.
 - Fix: a long prompt pasted into a legacy Claude Code or Codex terminal shows terminal control characters as visible `\xNN` escapes, so text such as `ESC[201~` in a diff can no longer end the paste early and be typed as keystrokes.
