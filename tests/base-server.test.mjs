@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { startServer } from '../src/server.mjs';
 import { COLUMNS, effectiveWorkflow } from '../src/board.mjs';
 import { WikiJobs, parseWikiDraft } from '../src/base-wiki.mjs';
+import { BaseRoutes } from '../src/base-http.mjs';
 
 async function world(t, options = {}) {
   const dataDir = await mkdtemp(join(tmpdir(), 'pb-base-http-'));
@@ -42,6 +43,14 @@ test('Base endpoints are token/origin protected; metadata and Board polling excl
   const revision = metadata.data.revision;
   await w.board.setSettings({ maxConcurrentRuns: 2 });
   assert.equal((await w.request('/api/base')).data.revision, revision, 'Ordinary settings/polling do not conflict with Base editing.');
+});
+
+test('a run whose supplied context file is gone reports BASE_NOT_FOUND, not a server error', async t => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'pb-base-run-'));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const run = { artifactsDir: 'runs/r1', baseManifest: { supplied: [{ resourceId: 'res1', contextRef: 'base-context/res1.txt', contentHash: 'h' }] } };
+  const routes = new BaseRoutes({ board: { dataDir, run: async () => run }, send: () => assert.fail('nothing to send') });
+  await assert.rejects(routes.route({ method: 'GET' }, {}, '/api/runs/r1/base-context', new URLSearchParams('resourceId=res1')), { code: 'BASE_NOT_FOUND', status: 404 });
 });
 
 test('one resource can be applied atomically across real targets, including inherited providers/custom columns/task opt-out', async t => {

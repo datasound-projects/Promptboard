@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- A run whose supplied Base context file was removed now answers `BASE_NOT_FOUND` (404) instead of a 502.
 - Saving a file in a project whose folder was removed or moved now reports `FILE_NOT_FOUND` (404) like reading does, instead of a server error.
 - A sign-in that fails at once now returns the same HTTP status as other provider errors (409 when the CLI is not installed, 504 on a timeout) instead of 502 for every code.
 - Accepting imported settings no longer changes a project's repository while its tasks own worktrees in the current one (`WORKSPACES_EXIST`), the same rule as linking a repository.

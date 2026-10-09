@@ -162,7 +162,10 @@ export class BaseRoutes {
       }
       const supplied = run.baseManifest?.supplied?.find(item => item.resourceId === id);
       if (!supplied?.contextRef || !/^base-context\/[A-Za-z0-9_-]+\.txt$/.test(supplied.contextRef)) fail('This run has no supplied context for that resource.', 'BASE_NOT_FOUND', 404);
-      const text = await readFile(join(board.dataDir, run.artifactsDir, supplied.contextRef), 'utf8');
+      const text = await readFile(join(board.dataDir, run.artifactsDir, supplied.contextRef), 'utf8').catch(error => {
+        if (error.code === 'ENOENT') fail('The supplied context of this run is no longer stored.', 'BASE_NOT_FOUND', 404);
+        throw error;
+      });
       return this.send(res, 200, { resourceId: id, text, contentHash: supplied.contentHash });
     }
     return false;
