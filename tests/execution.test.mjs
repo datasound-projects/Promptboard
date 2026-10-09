@@ -6,6 +6,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { ADAPTERS, ARGV_PROMPT_LIMIT, buildSession, composeMessage, HOOK_SCRIPT, interpretEvent, resolveConfig, validateResumeId } from '../src/agents.mjs';
 import { Board } from '../src/board.mjs';
@@ -73,6 +74,19 @@ test('session arguments: planning is read-only per provider; execution never byp
   const pasted = await buildSession({ provider: 'claude', stage: 'executing', config: resolveConfig('executing', {}), message: long, runDir, eventsFile: 'e', sessionId: 's' });
   assert.equal(pasted.paste, long);
   assert.ok(!pasted.args.includes(long));
+});
+
+test('on Windows the whole command line decides whether a prompt fits in argv', async t => {
+  const os = createRequire(import.meta.url)('node:os'), original = os.platform;
+  os.platform = () => 'win32'; syncBuiltinESMExports();
+  t.after(() => { os.platform = original; syncBuiltinESMExports(); });
+  const runDir = await temp(t, 'pb-win-argv-');
+  const build = (message, extra = {}) => buildSession({ provider: 'claude', stage: 'executing', config: resolveConfig('executing', {}), message, runDir, eventsFile: 'e', sessionId: 's', ...extra });
+  const short = 'x'.repeat(20000), long = 'x'.repeat(40000);
+  assert.equal((await build(short)).paste, null);
+  assert.equal((await build(long)).paste, long, 'Windows command lines hold at most 32,767 characters.');
+  const subagents = { reviewer: { description: 'Reviews', prompt: 'r'.repeat(15000) } };
+  assert.equal((await build(short, { baseDelivery: { subagents } })).paste, short, 'Other arguments count toward the limit.');
 });
 
 test('lifecycle events map to supervisor signals; the hook bridge records only lifecycle fields', async t => {

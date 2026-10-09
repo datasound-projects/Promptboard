@@ -14,8 +14,13 @@ import { validateEffort } from './providers.mjs';
 
 export const HOOK_SCRIPT = fileURLToPath(new URL('./agent-hook.mjs', import.meta.url));
 const SAFE_MODEL = /^[A-Za-z0-9][A-Za-z0-9._:/@+\[\]-]{0,99}$/;
-// POSIX argv strings are limited (Linux: 128 KiB per argument). Longer prompts are pasted.
+// POSIX argv strings are limited (Linux: 128 KiB per argument); a whole Windows command line to
+// 32,767 UTF-16 units, leaving room here for the executable and its prefix. Longer prompts are pasted.
 export const ARGV_PROMPT_LIMIT = 100_000;
+const fitsArgv = (args, text) => platform() === 'win32'
+  // Each argument may gain quotes, a space and escapes for quotes and backslashes.
+  ? [...args, text].reduce((length, arg) => length + arg.length + 3 + (arg.match(/["\\]/g)?.length ?? 0), 0) <= 30_000
+  : Buffer.byteLength(text) <= ARGV_PROMPT_LIMIT;
 
 // Only the Planning column plans. Writing stages start their own work at once, even when the task
 // text asks for a plan first (Compose's "Plan first" option adds that request).
@@ -171,7 +176,7 @@ export async function buildSession({ provider, stage, config, message, runDir, e
   const readOnly = !pipeline && (stage === 'planning' || stage === 'code_review');
   if (pipeline && (typeof message !== 'string' || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(message))) throw new AgentError('Pipeline input contains terminal control characters. Edit the task, continuation, or selected Base text before starting.', 'INVALID_PIPELINE_INPUT');
   const plan = readOnly || config.permissionMode === 'plan';
-  const inArgv = Buffer.byteLength(message) <= ARGV_PROMPT_LIMIT;
+  let inArgv;
   const env = { TERM: 'xterm-256color', PROMPTBOARD_RUN: '1' };
   const selected = readOnly ? [] : baseDelivery?.mcpServers || [];
   const jsonServers = Object.fromEntries(selected.map(server => {
@@ -207,6 +212,7 @@ export async function buildSession({ provider, stage, config, message, runDir, e
     }
     if (config.model) args.push('--model', config.model);
     if (config.effort) { args.push('--effort', config.effort); env.CLAUDE_CODE_EFFORT_LEVEL = config.effort; }
+    inArgv = fitsArgv(args, message);
     if (inArgv && message) args.push(...(resumeId ? ['--', message] : [message]));
   } else if (provider === 'codex') {
     args = [...(resumeId ? ['resume', resumeId, ...(workspacePath ? ['--cd', workspacePath] : [])] : []), '-c', `notify=[${[nodePath, HOOK_SCRIPT, eventsFile, 'codex'].map(tomlString).join(',')}]`, '--no-alt-screen'];
@@ -222,6 +228,7 @@ export async function buildSession({ provider, stage, config, message, runDir, e
       for (const [key, value] of Object.entries(fields)) args.push('-c', `${prefix}.${key}=${tomlValue(value)}`);
       args.push('-c', `${prefix}.required=${server.required === true}`, '-c', `${prefix}.startup_timeout_sec=15`);
     }
+    inArgv = fitsArgv(args, message);
     if (inArgv && message) args.push(...(resumeId ? ['--', message] : [message]));
   } else if (provider === 'gemini') {
     env.GEMINI_CLI_SYSTEM_SETTINGS_PATH = await geminiSystemSettings(runDir, [nodePath, HOOK_SCRIPT, eventsFile, 'gemini'].map(shQuote).join(' '), { plan, pipeline, mcpServers: selected.length ? jsonServers : null });
@@ -236,8 +243,9 @@ export async function buildSession({ provider, stage, config, message, runDir, e
     // Gemini expands @file references and slash commands in typed prompts. Encode them
     // as in the prompt adapter; the JSON string carries the exact text.
     const encoded = `Decode the JSON string below and follow it exactly.\n${JSON.stringify(message).replaceAll('@', '\\u0040')}`;
-    if (message && Buffer.byteLength(encoded) <= ARGV_PROMPT_LIMIT) args.push('--prompt-interactive', encoded);
-    return { args, env, paste: !message || Buffer.byteLength(encoded) <= ARGV_PROMPT_LIMIT ? null : encoded };
+    inArgv = !message || fitsArgv(args, encoded);
+    if (message && inArgv) args.push('--prompt-interactive', encoded);
+    return { args, env, paste: inArgv ? null : encoded };
   } else throw new AgentError('This provider cannot run board tasks.', 'STAGE_UNSUPPORTED_BY_PROVIDER');
   return { args, env, paste: inArgv ? null : message };
 }
