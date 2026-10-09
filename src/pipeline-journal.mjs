@@ -65,8 +65,14 @@ function validateDelivery(value) {
   if (value.outcome) deliveryOutcome(value.outcome, true);
 }
 const hasPendingDelivery = move => move.actions.some(action => action.delivery && DELIVERY_ACTIVE.includes(action.delivery.status));
-function ownerAlive(pid) {
-  try { process.kill(pid, 0); return true; } catch (error) { return error.code !== 'ESRCH'; }
+// A PID can be reused, even by a later Promptboard process. A per-process instance ID tells this
+// process's own moves from those of an earlier process that had the same PID.
+export const OWNER_INSTANCE = randomUUID();
+/** This process owns the move. Moves saved without an instance ID keep the PID-only check. */
+export const ownsMove = move => move?.ownerPid === process.pid && (move.ownerInstance === undefined || move.ownerInstance === OWNER_INSTANCE);
+function ownerAlive(move) {
+  if (move.ownerPid === process.pid) return ownsMove(move);
+  try { process.kill(move.ownerPid, 0); return true; } catch (error) { return error.code !== 'ESRCH'; }
 }
 async function readJson(path) {
   const handle = await open(path, 'r');
@@ -89,10 +95,10 @@ async function syncDirectory(path) {
 
 function validate(data, key, revision) {
   if (data?.schema === SCHEMA && data.version > VERSION) fail('This automation journal needs a newer Promptboard version.', 'JOURNAL_VERSION_UNSUPPORTED');
-  if (!keys(data, ['schema', 'version', 'revision', 'projectId', 'taskId', 'transitionId', 'taskRevision', 'projectRevision', 'from', 'to', 'ownerPid', 'status', 'phase', 'createdAt', 'updatedAt', 'finishedAt', 'actions', 'lifecycle'])
+  if (!keys(data, ['schema', 'version', 'revision', 'projectId', 'taskId', 'transitionId', 'taskRevision', 'projectRevision', 'from', 'to', 'ownerPid', 'ownerInstance', 'status', 'phase', 'createdAt', 'updatedAt', 'finishedAt', 'actions', 'lifecycle'])
     || data.schema !== SCHEMA || ![1, VERSION].includes(data.version) || data.revision !== revision
     || Object.entries(key).some(([name, value]) => data[name] !== value)
-    || !integer(data.taskRevision) || !integer(data.projectRevision) || !Number.isSafeInteger(data.ownerPid) || data.ownerPid < 1
+    || !integer(data.taskRevision) || !integer(data.projectRevision) || !Number.isSafeInteger(data.ownerPid) || data.ownerPid < 1 || (data.ownerInstance !== undefined && !id(data.ownerInstance))
     || !integer(data.createdAt) || !integer(data.updatedAt) || (data.finishedAt !== undefined && !integer(data.finishedAt))
     || !['pending', 'running', 'completed', 'failed', 'cancelled', 'interrupted'].includes(data.status)
     || !['exit', 'lifecycle', 'enter', 'complete'].includes(data.phase) || !Array.isArray(data.actions) || data.actions.length > 80) fail('The automation journal is invalid; it was not changed.', 'JOURNAL_CORRUPT');
@@ -197,7 +203,7 @@ export class PipelineJournal {
         status: row.enabled ? 'pending' : 'skipped', attempts: [], ...(!row.enabled ? { finishedAt: Date.now(), outcome: { status: 'skipped', reason: 'This automation is disabled.' } } : {}) });
     }
     const now = Date.now(), move = { schema: SCHEMA, version: VERSION, revision: 0, ...key, from, to,
-      taskRevision: input.taskRevision, projectRevision: input.projectRevision, ownerPid: process.pid,
+      taskRevision: input.taskRevision, projectRevision: input.projectRevision, ownerPid: process.pid, ownerInstance: OWNER_INSTANCE,
       status: 'pending', phase: 'exit', createdAt: now, updatedAt: now, actions, lifecycle: { status: 'pending' } };
     if (await this.#append(move)) return { created: true, move: structuredClone(move) };
     return { created: false, move: await this.read(key) };
@@ -208,7 +214,7 @@ export class PipelineJournal {
     for (let tries = 0; tries < LIMIT; tries++) {
       const current = await this.read(key);
       if (!current) fail('The move has not been recorded.', 'JOURNAL_NOT_FOUND');
-      if (!recovery && current.ownerPid !== process.pid) fail('This move belongs to another application process; it cannot be replayed.', 'JOURNAL_OWNER_MISMATCH');
+      if (!recovery && !ownsMove(current)) fail('This move belongs to another application process; it cannot be replayed.', 'JOURNAL_OWNER_MISMATCH');
       const next = structuredClone(current), result = apply(next);
       if (!result.changed) return result.value;
       next.revision++; next.updatedAt = Date.now(); validate(next, key, next.revision);
@@ -383,9 +389,9 @@ export class PipelineJournal {
     // depending on every other project's historical journal folder.
     const snapshots = [await this.read(key)].filter(Boolean);
     for (const snapshot of snapshots) {
-      if (snapshot.phase === 'complete' && !hasPendingDelivery(snapshot) || ownerAlive(snapshot.ownerPid)) continue;
+      if (snapshot.phase === 'complete' && !hasPendingDelivery(snapshot) || ownerAlive(snapshot)) continue;
       const changed = await this.#change(snapshot, move => {
-        if (move.phase === 'complete' && !hasPendingDelivery(move) || ownerAlive(move.ownerPid)) return { changed: false, value: false };
+        if (move.phase === 'complete' && !hasPendingDelivery(move) || ownerAlive(move)) return { changed: false, value: false };
         const result = { status: 'interrupted', reason: 'The application stopped before this move finished. It will not be replayed.' };
         for (const action of move.actions) if (action.delivery && DELIVERY_ACTIVE.includes(action.delivery.status)) Object.assign(action.delivery, {
           status: 'interrupted', finishedAt: Date.now(), outcome: { status: 'interrupted', reason: 'The message scheduler stopped before delivery finished. Input will not be replayed.' } });

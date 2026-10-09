@@ -136,6 +136,10 @@ export function composeMessage(stage, prompt, plan = null, instructions = '', ex
 const tomlString = value => JSON.stringify(value); // A TOML basic string accepts JSON string escapes.
 const tomlValue = value => Array.isArray(value) ? `[${value.map(tomlString).join(',')}]` : value && typeof value === 'object' ? `{${Object.entries(value).map(([key, item]) => `${tomlString(key)}=${tomlString(item)}`).join(',')}}` : tomlString(value);
 const shQuote = value => `'${String(value).replaceAll("'", "'\\''")}'`;
+// Terminal control characters other than tab and line breaks. Pasted raw, ESC[201~ would end the
+// bracketed paste early and the rest would be typed as keystrokes.
+const CONTROL = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/;
+const escapeControls = text => text.replace(new RegExp(CONTROL, 'g'), character => `\\x${character.charCodeAt(0).toString(16).padStart(2, '0')}`);
 
 async function geminiSystemSettings(runDir, hookCommand, { plan = false, pipeline = false, mcpServers = null } = {}) {
   // Keep any administrator settings: copy the default system file and add our hooks.
@@ -167,13 +171,14 @@ priority = 999
 
 /**
  * Build the interactive command for one run. Returns { args, env, paste } where
- * `paste` is the message to type into the terminal when it is too long for argv.
+ * `paste` is the message to type into the terminal when it is too long for argv,
+ * with terminal control characters written as visible \xNN escapes.
  */
 export async function buildSession({ provider, stage, config, message, runDir, eventsFile, sessionId, resumeId = null, workspacePath, nodePath = process.execPath, baseDelivery = null }) {
   if (resumeId !== null) validateResumeId(resumeId);
   const pipeline = config.pipeline === true;
   const readOnly = !pipeline && (stage === 'planning' || stage === 'code_review');
-  if (pipeline && (typeof message !== 'string' || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(message))) throw new AgentError('Pipeline input contains terminal control characters. Edit the task, continuation, or selected Base text before starting.', 'INVALID_PIPELINE_INPUT');
+  if (pipeline && (typeof message !== 'string' || CONTROL.test(message))) throw new AgentError('Pipeline input contains terminal control characters. Edit the task, continuation, or selected Base text before starting.', 'INVALID_PIPELINE_INPUT');
   const plan = readOnly || config.permissionMode === 'plan';
   let inArgv;
   const env = { TERM: 'xterm-256color', PROMPTBOARD_RUN: '1' };
@@ -246,7 +251,7 @@ export async function buildSession({ provider, stage, config, message, runDir, e
     if (message && inArgv) args.push('--prompt-interactive', encoded);
     return { args, env, paste: inArgv ? null : encoded };
   } else throw new AgentError('This provider cannot run board tasks.', 'STAGE_UNSUPPORTED_BY_PROVIDER');
-  return { args, env, paste: inArgv ? null : message };
+  return { args, env, paste: inArgv ? null : escapeControls(message) };
 }
 
 /**

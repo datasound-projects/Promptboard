@@ -45,9 +45,11 @@ export class PipelineNotifications {
     if (signal?.aborted) return Promise.reject(signal.reason);
     const fingerprint = JSON.stringify(message), active = this.pending.get(message.id);
     if (active) return active.fingerprint === fingerprint ? active.promise : Promise.resolve({ confirmed: false, reason: 'identity_conflict' });
-    if (this.stopping || this.seen.has(message.id) || this.seen.size >= 10000 || this.pending.size >= 128)
+    if (this.stopping || this.seen.has(message.id) || this.pending.size >= 128)
       return Promise.resolve({ confirmed: false, reason: 'dispatch_unavailable' });
+    // ponytail: remembers the newest 10,000 IDs only; durable action IDs prevent older replays.
     this.seen.add(message.id);
+    if (this.seen.size > 10000) this.seen.delete(this.seen.values().next().value);
     const client = [...this.clients.values()].at(-1);
     if (!client) return Promise.resolve({ confirmed: false, reason: 'receiver_unavailable' });
     const receipt = randomUUID(), job = { client, receipt, fingerprint, finished: false, promise: null, finish: null };

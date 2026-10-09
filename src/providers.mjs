@@ -81,6 +81,29 @@ async function isExecutable(path) {
   catch { return false; }
 }
 
+// Resolved once per PATH value. A bare name would let Windows run git.exe from the cwd (a worktree) first.
+const onPath = new Map();
+/** The absolute path of a plain executable on PATH, or null. Relative and empty PATH entries are ignored. */
+export function commandOnPath(name) {
+  const key = `${name}\0${process.env.PATH}`;
+  let found = onPath.get(key);
+  if (!found) {
+    found = (async () => {
+      for (const dir of (process.env.PATH || '').split(delimiter).filter(isAbsolute)) {
+        const path = join(dir, name + (process.platform === 'win32' ? '.exe' : ''));
+        if (await isExecutable(path)) return path;
+      }
+      return null;
+    })();
+    onPath.set(key, found);
+    // A missing command is not cached, so a later install is found without a restart.
+    found.then(path => { if (!path && onPath.get(key) === found) onPath.delete(key); });
+  }
+  return found;
+}
+/** Forget a resolved path that no longer starts. */
+export const forgetCommand = name => onPath.delete(`${name}\0${process.env.PATH}`);
+
 export async function resolveExecutable(provider) {
   // Ignore relative and empty PATH entries. Do not discover binaries in the request cwd.
   for (const dir of (process.env.PATH || '').split(delimiter).filter(isAbsolute)) {

@@ -52,7 +52,8 @@ const ESCAPES = {
   url: value => { try { return encodeURIComponent(value); } catch { fail('A URL template contains invalid Unicode.'); } },
   // Shell-independent stripping avoids guessing whether a substitution sits inside quotes.
   // Exact values are available separately through PROMPTBOARD_* environment variables.
-  script: value => value.replace(/[\x00-\x1f\x7f`$%\\!"'&|;<>(){}\[\]#^]/g, ''),
+  // Glob/tilde characters and dashes that start a word are removed too, so a value cannot add options or file names.
+  script: value => value.replace(/[\x00-\x1f\x7f`$%\\!"'&|;<>(){}\[\]#^*?~]/g, '').replace(/(^|\s)-+/g, '$1'),
 };
 
 /** A single pass never expands placeholders contained in a task's own text. */

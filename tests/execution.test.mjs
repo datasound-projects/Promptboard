@@ -89,6 +89,19 @@ test('on Windows the whole command line decides whether a prompt fits in argv', 
   assert.equal((await build(short, { baseDelivery: { subagents } })).paste, short, 'Other arguments count toward the limit.');
 });
 
+test('a pasted prompt cannot end the bracketed paste early with terminal control characters', async t => {
+  const runDir = await temp(t, 'pb-paste-controls-');
+  const long = composeMessage('code_review', 'x'.repeat(ARGV_PROMPT_LIMIT + 10), null, '', 'diff:\n\x1b[201~\x03rm -rf .\r\tend');
+  for (const provider of ['claude', 'codex', 'gemini']) {
+    for (const stage of ['code_review', 'executing']) {
+      const { paste } = await buildSession({ provider, stage, config: resolveConfig(stage, { provider }), message: long, runDir, eventsFile: 'e', sessionId: 's' });
+      assert.ok(paste, `${provider} ${stage} pastes`);
+      assert.doesNotMatch(paste, /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/, `${provider} ${stage}`);
+      if (provider !== 'gemini') assert.ok(paste.includes('diff:\n\\x1b[201~\\x03rm -rf .\r\tend'), 'Controls are shown as visible escapes; tabs and line breaks stay.');
+    }
+  }
+});
+
 test('lifecycle events map to supervisor signals; the hook bridge records only lifecycle fields', async t => {
   assert.deepEqual(interpretEvent('claude', { name: 'Stop', message: 'done' }), { kind: 'turn_complete', message: 'done' });
   assert.equal(interpretEvent('claude', { name: 'PermissionRequest', tool: 'Bash' }).kind, 'waiting');
@@ -570,6 +583,18 @@ test('Base launch preparation is cancellable and does not spawn or interfere wit
   assert.deepEqual((await w.run(next.id)).baseManifest.resources, []);
 });
 
+test('a preparation timeout or abort is reported as such, not as a CLI failure', { skip }, async t => {
+  const w = await world(t);
+  for (const [name, code] of [['TimeoutError', 'PREPARATION_TIMEOUT'], ['AbortError', 'PREPARATION_ABORTED']]) {
+    const card = await w.task(`Preparation ${name}`, 'Never spawn.');
+    w.supervisor.basePreparer = async () => { throw new DOMException('Stopped', name); };
+    const run = await w.board.requestRun(card.id, { stage: 'executing', consent: true });
+    const failed = await until(async () => { const value = await w.run(run.id); return value.status === 'failed' && value; }, `${name} failure`);
+    assert.equal(failed.errorCode, code); assert.doesNotMatch(failed.reason, /Run the CLI in your terminal/);
+  }
+  assert.deepEqual(await w.reports(), []);
+});
+
 test('Shutdown during or immediately after preparation stays interrupted without rollback; cancellation stays cancelled', { skip }, async t => {
   for (const timing of ['preparing', 'preparing-entry-removed', 'cancelled']) await t.test(timing, async t => {
     const w = await world(t);
@@ -699,7 +724,13 @@ test('planning captures a plan outside the worktree, cannot implement, and appro
   // The agent wrote only in the task worktree; the main checkout is unchanged.
   assert.equal(await readFile(join(workspace.path, 'agent-output.txt'), 'utf8'), 'written by the agent\n');
   assert.equal(git(w.root, 'status', '--porcelain'), '');
-  await w.supervisor.confirm(exec.id);
+  const record = w.board.recordStageResult; let recorded = 0;
+  w.board.recordStageResult = async (...args) => { recorded++; return record.apply(w.board, args); };
+  const confirms = [w.supervisor.confirm(exec.id), w.supervisor.confirm(exec.id)];
+  assert.equal(confirms[0], confirms[1], 'A second concurrent confirm shares the first.');
+  await Promise.all(confirms); w.board.recordStageResult = record;
+  assert.equal(recorded, 1, 'The stage result is recorded once.');
+  await assert.rejects(w.supervisor.confirm(exec.id), { code: 'NOT_CONFIRMABLE' });
   // Editing the task text makes the plan approval stale for later runs.
   const current = (await w.board.view()).projects[0].tasks[0];
   await w.board.updateTask(task.id, { prompt: 'Changed text.', expectedRevision: current.revision });

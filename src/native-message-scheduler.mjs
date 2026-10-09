@@ -4,6 +4,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { NativeMessageDispatch } from './native-message-dispatch.mjs';
 import { captureNativeMessageTarget } from './native-message-target.mjs';
 import { nativeMessageText, savedWithin, sameScope as same, untilAborted } from './native-message-common.mjs';
+import { ownsMove } from './pipeline-journal.mjs';
 
 const id = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(value);
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -64,7 +65,7 @@ export class NativeMessageScheduler {
           return target.matches(current) && currentProject.revision === expectedProjectRevision && currentTask.revision === expectedTaskRevision;
         };
         const column = project.pipeline.columns.find(row => row.id === task.column), row = column.automations?.onEnter?.find(row => row.id === action?.rowId);
-        if (move?.ownerPid !== process.pid || move.phase !== 'enter' || move.lifecycle.status !== 'succeeded' || move.to.id !== task.column
+        if (!ownsMove(move) || move.phase !== 'enter' || move.lifecycle.status !== 'succeeded' || move.to.id !== task.column
           || action?.status !== 'running' || action.type !== 'send_message' || action.trigger !== 'enter'
           || !row?.enabled || row.type !== 'send_message' || row.mode !== mode || action.configHash !== hash(JSON.stringify(row))) return { scheduled: false };
         job.target = target; job.scope = { provider: target.provider, sessionId: target.sessionId, runId, mode, messageHash: hash(message) };
@@ -75,7 +76,7 @@ export class NativeMessageScheduler {
         if (saved?.accepted !== true || saved.delivery?.status !== 'queued' || !same(saved.delivery, job.scope)) return { scheduled: false };
         job.knownQueue = true;
         const recorded = await bounded(() => this.journal.read(key)), receipt = recorded?.actions.find(row => row.id === actionId);
-        if (recorded?.ownerPid !== process.pid || receipt?.status !== 'scheduled' || receipt.delivery?.status !== 'queued'
+        if (!ownsMove(recorded) || receipt?.status !== 'scheduled' || receipt.delivery?.status !== 'queued'
           || !same(receipt.delivery, job.scope) || !preparingMatches(await bounded(() => this.board.state()))) return { scheduled: false };
         combined.throwIfAborted();
         if (waitForReadiness) { clearTimeout(timer); timer = null; }

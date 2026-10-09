@@ -29,6 +29,15 @@ test('pending duplicates share dispatch while changed metadata and finished iden
   assert.equal((await broker.deliver(message())).confirmed, false); assert.equal(r.sent.length, 2);
 });
 
+test('a long-running server keeps dispatching after 10,000 alerts while recent identities still never replay', async t => {
+  const broker = new PipelineNotifications(); t.after(() => broker.close()); const r = receiver(broker);
+  for (let n = 0; n < 10001; n++) { const pending = broker.deliver(message(`alert-${n}`)); r.ack(r.sent.at(-1)); await pending; }
+  const next = broker.deliver(message('alert-next')), inFlight = broker.deliver(message('alert-next'));
+  assert.equal(next, inFlight); r.ack(r.sent.at(-1)); assert.deepEqual(await next, { confirmed: true });
+  assert.deepEqual(await broker.deliver(message('alert-10000')), { confirmed: false, reason: 'dispatch_unavailable' });
+  assert.ok(broker.seen.size <= 10000);
+});
+
 test('receiver replacement cannot accept old receipts or replay an unknown display', async t => {
   const broker = new PipelineNotifications(); t.after(() => broker.close()); const old = receiver(broker);
   const pending = broker.deliver(message()), sent = old.sent.at(-1), fresh = receiver(broker);

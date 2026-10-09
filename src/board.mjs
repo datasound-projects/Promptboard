@@ -24,7 +24,7 @@ import { Base, normalizeBinding, listTargets, remapBaseScopes } from './base.mjs
 import { checkBaseRevocations, deliveryFor, profileDefaults, resolveBase } from './base-resolver.mjs';
 import { defaultPipelineConfig, normalizePipelineConfig, normalizePipelineTaskSelection, resolvePipelineStrategy } from './pipeline-config.mjs';
 import { renderPipelineSpawnPrompt } from './pipeline-templates.mjs';
-import { PipelineJournal } from './pipeline-journal.mjs';
+import { ownsMove, PipelineJournal } from './pipeline-journal.mjs';
 import { PipelineAutomations } from './pipeline-automations.mjs';
 import { PipelineActions } from './pipeline-actions.mjs';
 import { NativeMessageScheduler } from './native-message-scheduler.mjs';
@@ -2562,7 +2562,7 @@ export class Board {
       if (group && [...group.started].some(id => this.automations.actions.jobs.has(id))) throw conflict('An owned script has not confirmed termination. Stop again after cleanup; no move will be replayed.', 'AUTOMATION_CLEANUP_UNCONFIRMED');
       const move = await this.automationJournal.read(key);
       if (!move) throw conflict('This automation journal is missing. No owned work or move can be inferred from it.', 'AUTOMATION_JOURNAL_MISSING');
-      if (move?.ownerPid !== process.pid) {
+      if (!ownsMove(move)) {
         await this.automationJournal.recoverInterrupted(key);
         const recovered = await this.automationJournal.read(key);
         if (recovered?.phase !== 'complete') throw conflict('This move belongs to another live application process.', 'AUTOMATION_OWNER_ACTIVE');
