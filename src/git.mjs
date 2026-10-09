@@ -22,6 +22,7 @@ export const GIT_MESSAGES = Object.freeze({
   NOT_A_WORKTREE: 'This folder is inside Git\'s internal directory. Choose the project\'s working folder instead.',
   NO_COMMITS: 'This repository has no commits yet, so task branches have nothing to start from. Promptboard does not create commits on its own: choose “Set up Git here” to add an empty first commit, or commit something yourself.',
   ALREADY_A_REPOSITORY: 'This folder is already a Git repository with commits. Link it instead.',
+  STAGED_FILES: 'This repository has no commits yet but has staged files. Promptboard never commits your files: commit them yourself, or unstage them with git rm -r --cached ., then try again.',
   IDENTITY_REQUIRED: 'Git needs your name and email for the first commit. Run git config --global user.name "Your Name" and git config --global user.email you@example.com, then try again. Git was initialized; nothing else changed.',
   INIT_FAILED: 'Git could not initialize this folder. Check that you can write to it, then try again.',
   GIT_FAILED: 'Git could not read this repository. Run git status in that folder to see the problem.',
@@ -105,6 +106,12 @@ export async function initRepository(input, { fallbackIdentity = false } = {}) {
   try { await validateRepository(path); state = 'ready'; }
   catch (error) { if (!['PATH_NOT_FOUND', 'NOT_A_REPOSITORY', 'NO_COMMITS'].includes(error.code)) throw error; state = error.code; }
   if (state === 'ready') throw fail('ALREADY_A_REPOSITORY');
+  // `git commit --allow-empty` would commit the whole index, so staged files of the user's are refused.
+  if (state === 'NO_COMMITS') {
+    let staged;
+    try { staged = await git(['ls-files', '--cached', ':/'], { cwd: path }); } catch { throw fail('GIT_FAILED'); }
+    if (staged.trim()) throw fail('STAGED_FILES');
+  }
   const created = state === 'PATH_NOT_FOUND';
   if (created) { try { await mkdir(path, { recursive: true }); } catch { throw fail('INIT_FAILED'); } }
   if (state !== 'NO_COMMITS') { try { await git(['init'], { cwd: path }); } catch { throw fail('INIT_FAILED'); } }

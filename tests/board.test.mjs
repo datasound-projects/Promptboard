@@ -478,6 +478,30 @@ test('every project made in the app has a Git repository: new folders, existing 
 });
 
 
+test('Git setup refuses a repository without commits whose index has staged files, instead of committing them', { skip: process.platform === 'win32' }, async t => {
+  const dataDir = await temp(t, 'pb-data-'), staged = await temp(t, 'pb-staged-');
+  run(staged, 'init', '-q'); await mkdir(join(staged, 'sub')); await writeFile(join(staged, 'secret.txt'), 'mine\n');
+  run(staged, 'add', 'secret.txt');
+  const untouched = async () => {
+    assert.equal(run(staged, 'ls-files', '--cached'), 'secret.txt');
+    assert.throws(() => run(staged, 'rev-parse', '--verify', '--quiet', 'HEAD'));
+  };
+  // From the root and from a subfolder alike: the commit would take the whole index.
+  await assert.rejects(initRepository(staged), { code: 'STAGED_FILES', status: 400 });
+  await assert.rejects(initRepository(join(staged, 'sub')), { code: 'STAGED_FILES' });
+  const app = await startServer({ port: 0, dataDir, detector: async () => [], executor: null });
+  t.after(() => app.close());
+  await assert.rejects(app.board.createProjectWithRepository({ name: 'Staged', folder: staged }), { code: 'STAGED_FILES' });
+  assert.deepEqual((await app.board.state()).projects, []);
+  const { token } = await fetch(app.url + '/api/session').then(r => r.json());
+  const project = await app.board.createProject({ name: 'Linked later' });
+  const response = await fetch(`${app.url}/api/projects/${project.id}/init-repository`, { method: 'POST', headers: { 'x-ste-token': token, 'content-type': 'application/json' },
+    body: JSON.stringify({ path: staged, confirm: true, expectedRevision: project.revision }) });
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).code, 'STAGED_FILES');
+  await untouched();
+});
+
 test('custom agent overrides validate, persist, and use the same hierarchy as built-in stages', async t => {
   const { normalizeColumns, effectiveWorkflow } = await import('../src/board.mjs');
   const custom = { id: 'c_docs0001', custom: true, title: 'Docs', agent: { enabled: true, provider: 'codex', model: 'custom-model', effort: 'high', policy: 'manual' } };
