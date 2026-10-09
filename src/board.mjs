@@ -2279,14 +2279,15 @@ export class Board {
   }
 
   /** With `move`, the card enters the stage in the same write that records the run (see transition). */
-  async #startRun(taskId, { stage, consent = false, config = {}, trigger = 'user', move = null, note = '' } = {}) {
+  async #startRun(taskId, { stage, consent = false, config = {}, trigger = 'user', move = null, note = '', continuation = '' } = {}) {
     {
       let state = await this.state();
       let { project, task } = this.#task(state, taskId);
       if (project.workflowMode === 'pipeline') {
         if (consent !== true) throw new BoardError('Starting an agent needs your explicit confirmation.', 'CONSENT_REQUIRED');
         if (Object.keys(config || {}).length) throw new BoardError('Configure the pipeline agent in Column Manager before starting it.', 'PIPELINE_SETTINGS_REQUIRED');
-        return this.#pipelineStart(taskId, { column: stage, move, trigger });
+        // A continuation is what a resumed conversation receives; a fresh one receives its task.
+        return this.#pipelineStart(taskId, { column: stage, move, trigger, continuation: typeof continuation === 'string' ? continuation : '' });
       }
       const column = projectColumns(project).find(item => item.id === stage);
       if (!column) throw new BoardError('Choose a valid stage.', 'INVALID_COLUMN');
