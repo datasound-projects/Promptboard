@@ -14,6 +14,7 @@ import { defaultPipelineConfig } from '../src/pipeline-config.mjs';
 import { repositoryPipelineDefinition } from '../src/pipeline-repository.mjs';
 import { Board } from '../src/board.mjs';
 import { parseAgyModels } from '../src/models.mjs';
+import { pickProject, shownProject } from './helpers/projects.mjs';
 
 test('a successful saved-board migration preserves projects and tasks without a corruption warning', async t => {
   const dataDir = await mkdtemp(join(tmpdir(), 'pb-ui-migration-'));
@@ -158,7 +159,9 @@ async function setup(t, { catalogReader = async id => ({ provider: id, ...catalo
       await new Promise(resolve => setTimeout(resolve, 10)); quiet = pending ? 0 : quiet + 1;
     }
   };
-  return { win, intervals, $, choose, radio, quality, submit, calls, requests, downloads, blobs, copied: () => copied, authAdapter, app, dataDir, idle };
+  // Projects are switched through the sidebar project list, as a person does.
+  const pick = id => win.eval(pickProject(id)), shown = () => win.eval(shownProject), shownName = () => $('#workspace-list .current .workspace-name')?.textContent;
+  return { win, intervals, $, choose, radio, quality, submit, calls, requests, downloads, blobs, copied: () => copied, authAdapter, app, dataDir, idle, pick, shown, shownName };
 }
 
 test('owned UI teardown closes its page and server before deleting the disposable data folder', async t => {
@@ -1956,8 +1959,7 @@ async function agentFixture(t) {
       run('run-c', tasks.c, other.id, 'planning', 'queued', { provider: 'claude', model: '', effort: '' }));
   });
   // Show the Flow project.
-  ctx.win.localStorage.setItem('promptboard.kanban.project', flow.id);
-  await ctx.win.__pbTest.loadBoard(); await ctx.idle();
+  await ctx.win.__pbTest.loadBoard(); ctx.pick(flow.id); await ctx.idle();
   return { ...ctx, tasks, flow, other };
 }
 const agentRows = ({ $ }) => Array.from($('#agents-list').querySelectorAll('.agent-item'));

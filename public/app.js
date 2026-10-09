@@ -698,7 +698,7 @@ function restoreEntry(entry) {
   $('#security-review').checked = entry.options.securityReview === true;
   $('#terminology').value = entry.terminology || '';
   $('#generation-error').hidden = true;
-  projectsView?.setLink(null);
+  composeOrigin = null; renderComposeOrigin(); projectsView?.setLink(null);
   showResult(entry);
   updateCount();
   updateProviderState();
@@ -1058,6 +1058,17 @@ function detailButton(label, onClick, className = '') {
   button.addEventListener('click', onClick); return button;
 }
 function detailActions(...buttons) { const row = document.createElement('div'); row.className = 'detail-actions'; row.append(...buttons); return row; }
+/** Rebuild a list and keep keyboard focus on the same control: the same row (its `key` attribute) and position in it. */
+function replaceKeepingFocus(list, nodes, key) {
+  const active = list.contains(document.activeElement) ? document.activeElement : null, row = active?.closest(`[${key}]`);
+  const controls = item => [item, ...item.querySelectorAll('button, input, select, textarea, a[href]')];
+  const index = row ? controls(row).indexOf(active) : -1, id = row?.getAttribute(key);
+  list.replaceChildren(...nodes);
+  if (!active || document.activeElement === active) return;
+  if (active.isConnected) { active.focus({ preventScroll: true }); return; } // A kept node, such as a project's file tree.
+  const next = [...list.querySelectorAll(`[${key}]`)].find(item => item.getAttribute(key) === id), target = next && controls(next)[index];
+  if (target?.tagName === active.tagName && target.className === active.className) target.focus({ preventScroll: true });
+}
 function externalLink(href, label) {
   const link = document.createElement('a'); link.href = href; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.textContent = label; return link;
 }
@@ -1333,7 +1344,6 @@ async function attachComposeContext({ name, text, label }) {
 /** Open a saved prompt or a card in Compose with its link; History is not changed. */
 function openInCompose(fields, link) {
   if (running) return false;
-  composeOrigin = null; renderComposeOrigin();
   restoreEntry(normalizeEntry({ options: {}, ...fields }));
   projectsView?.setLink(link);
   announce(link?.kind === 'card' ? 'Card opened in Compose. Its board text changes only when you choose Update card.' : 'Saved prompt opened in Compose.');
@@ -1351,6 +1361,9 @@ function basePicker(options) { return baseView?.picker(options) || document.crea
 const KANBAN_KEY = 'ste-prompt-engineer.kanban.v1'; // Earlier browser-only board. Moved to the app once and kept here.
 const MIGRATED_KEY = `${KANBAN_KEY}.migrated`;
 const SELECTED_PROJECT_KEY = 'promptboard.kanban.project';
+// This window's project, read once: another window's choice must never retarget this window's clicks.
+let selectedProject = null; try { selectedProject = localStorage.getItem(SELECTED_PROJECT_KEY); } catch {}
+function setSelectedProject(id) { selectedProject = id; savePref(SELECTED_PROJECT_KEY, id); }
 const IMPORT_LIMIT_BYTES = 20 * 1024 * 1024;
 let board = null; // The server's board view.
 let boardLoading = null;
@@ -1400,8 +1413,7 @@ function boardCounts(projects, key) { return `${plural(projects.length, 'project
 // Each project has its own columns (built-in stages plus custom ones) and its own move table.
 function projectColumnsOf(project = currentProject()) { return project?.columns || board?.columns || []; }
 function columnTitle(id, project = currentProject()) { return projectColumnsOf(project).find(column => column.id === id)?.title || board?.columns?.find(column => column.id === id)?.title || id; }
-function selectedProjectId() { try { return localStorage.getItem(SELECTED_PROJECT_KEY); } catch { return null; } }
-function currentProject() { return board?.projects.find(project => project.id === selectedProjectId()) || board?.projects[0] || null; }
+function currentProject() { return board?.projects.find(project => project.id === selectedProject) || board?.projects[0] || null; }
 function findTask(id) { return currentProject()?.tasks.find(task => task.id === id) || null; }
 
 // Mirrors the server rule: any column to any other. Only the destination column's stage may run.
@@ -1470,7 +1482,7 @@ async function migrateBrowserBoard() {
   try {
     const { migrated } = await boardCall('POST', '/api/board/migrate', { board: data }, 120000);
     savePref(MIGRATED_KEY, new Date().toISOString());
-    if (typeof data.selectedProjectId === 'string' && !selectedProjectId()) savePref(SELECTED_PROJECT_KEY, data.selectedProjectId);
+    if (typeof data.selectedProjectId === 'string' && !selectedProject) setSelectedProject(data.selectedProjectId);
     if (migrated.cards || migrated.projects) announce(`Moved ${plural(migrated.projects, 'project')} and ${plural(migrated.cards, 'card')} from this browser into the app. The browser copy is kept.`);
   } catch (error) {
     showLoadWarning(`Cards saved in this browser were not moved into the app yet. They stay in this browser. ${error.message}`);
@@ -1562,7 +1574,8 @@ function renderBoard() {
   $('#view-board').setAttribute('aria-selected', String(!timelineView));
   $('#view-timeline').setAttribute('aria-selected', String(timelineView));
   $('#view-timeline').disabled = !project;
-  for (const id of ['#autopilot-open', '#columns-open', '#agents-open', '#board-left', '#board-right', '#card-new']) $(id).hidden = timelineView;
+  for (const id of ['#autopilot-open', '#columns-open', '#board-left', '#board-right', '#card-new']) $(id).hidden = timelineView;
+  $('#agents-open').hidden = timelineView || project?.workflowMode === 'pipeline';
   $('#columns-open').disabled = !project;
   // Missing terminal support never blocks the board or the prompt editor; it only disables runs.
   $('#execution-status').hidden = !board || board.execution?.available !== false || !board.execution.setupMessage;
@@ -1676,7 +1689,7 @@ function renderColumn(column, tasks) {
     placeCard(id, column.id, tasks.filter(task => task.id !== id).length);
   });
   section.append(header, note, list);
-  if (column.id === 'todo') {
+  if ((column.role || column.id) === 'todo') {
     const add = detailButton('Add task', () => openCard(null, true), 'secondary-button kanban-add-task');
     section.append(add);
   }
@@ -1992,7 +2005,7 @@ function cardAppearance(item, card, more) {
   settings.open = Boolean(cardElement(card.id)?.querySelector('.card-appearance')?.open);
   settings.append(summary);
   for (const [field, text] of [['preview', 'Show prompt preview'], ['agent', 'Show agent information'], ['comfortable', 'Comfortable spacing']]) {
-    if (field === 'agent' && card.column === 'done') continue;
+    if (field === 'agent' && cardDone(currentProject(), card)) continue;
     const label = document.createElement('label'); label.className = 'check-row';
     const input = document.createElement('input'); input.type = 'checkbox'; input.dataset.cardDisplay = field; input.checked = values()[field];
     input.addEventListener('change', () => {
@@ -2066,7 +2079,7 @@ function renderCard(card, index, count) {
   const run = latestRun(card.id);
   const ap = currentProject()?.autopilot;
   const tags = [];
-  if (ap && ap.status !== 'off' && (ap.current?.taskId === card.id || (ap.queue.includes(card.id) && !(ap.done || []).includes(card.id) && card.column === 'todo'))) {
+  if (ap && ap.status !== 'off' && (ap.current?.taskId === card.id || (ap.queue.includes(card.id) && !(ap.done || []).includes(card.id) && card.column === todoColumnId(currentProject())))) {
     const tag = document.createElement('span');
     const waiting = ap.queue.filter(id => !(ap.done || []).includes(id) && id !== ap.current?.taskId);
     tag.className = `autopilot-tag${ap.current?.taskId === card.id ? ' now' : ''}`;
@@ -2374,7 +2387,7 @@ function openCard(id = null, quick = false) {
   const settingsBusy = card && ((board?.runs || []).some(run => run.taskId === card.id && RUN_LIVE.includes(run.status)) || ['pending', 'running', 'blocked'].includes(card.automationMove?.status) || card.pendingAutomationMessages?.length);
   cardPipelineEditor = project.workflowMode === 'pipeline' ? pipelineTaskEditor(project, card || {}, 'card', Boolean(settingsBusy)) : null;
   $('#card-pipeline-settings').replaceChildren(...(cardPipelineEditor ? [cardPipelineEditor.node] : []));
-  $('#card-dialog-project').textContent = `${card && taskNumberText(card) ? taskNumberText(card) + ' · ' : ''}${project.name} · ${columnTitle(card?.column || 'todo')}`;
+  $('#card-dialog-project').textContent = `${card && taskNumberText(card) ? taskNumberText(card) + ' · ' : ''}${project.name} · ${columnTitle(card?.column || todoColumnId(project))}`;
   $('#card-dialog-heading').textContent = card ? 'Edit card' : 'New card';
   $('#card-refine').hidden = false;
   $('#card-refine').textContent = card ? 'Open in Compose' : 'Refine in Composer';
@@ -2414,7 +2427,7 @@ function openCard(id = null, quick = false) {
   $(quick ? '#card-prompt' : '#card-title').focus();
 }
 
-async function saveCard(event) {
+async function saveCard(event, retried = false) {
   event.preventDefault();
   const project = currentProject();
   if (!project) return;
@@ -2430,8 +2443,9 @@ async function saveCard(event) {
   if (cardEditSnapshot.projectId !== project.id) { $('#card-error').textContent = 'This card belongs to another project. Reopen it before saving.'; $('#card-error').hidden = false; return; }
   try {
     if (card) {
+      // The card as the dialog opened it: a newer version is never overwritten without asking.
       // A textarea turns \r\n into \n. Keep the stored text when nothing else changed.
-      const original = cardPipelineEditor && cardEditSnapshot?.card || card;
+      const original = cardEditSnapshot.card || card;
       const prompt = typed === original.prompt.replace(/\r\n?/g, '\n') ? original.prompt : typed;
       const settings = cardPipelineEditor?.value();
       const changedSettings = settings && JSON.stringify(settings) !== JSON.stringify(pipelineTaskChoice(original));
@@ -2446,7 +2460,19 @@ async function saveCard(event) {
         ...(cardPipelineEditor ? { pipelineSettings: cardPipelineEditor.value(), expectedProjectRevision: cardEditSnapshot.projectRevision } : {}) })).task;
       message = `Added “${title}” to To Do.`;
     }
-  } catch (failure) { $('#card-error').textContent = failure.message; $('#card-error').hidden = false; return; }
+  } catch (failure) {
+    // The card changed meanwhile and boardCall reloaded the board. Only its revision moved (a run, a move):
+    // save once more. Its text or settings changed: keep what was typed, and a second Save replaces that version.
+    const fresh = card && failure.code === 'REVISION_CONFLICT' && board?.projects.find(item => item.id === project.id)?.tasks.find(item => item.id === card.id);
+    if (fresh) {
+      const editable = task => JSON.stringify([task.title, task.prompt, task.priority, task.labelIds, task.profileId, task.agentOverride]);
+      const unchanged = editable(fresh) === editable(cardEditSnapshot.card);
+      Object.assign(cardEditSnapshot, { card: JSON.parse(JSON.stringify(fresh)), projectRevision: board.projects.find(item => item.id === project.id).revision });
+      if (unchanged && !retried) return saveCard(event, true);
+      if (!unchanged) failure.message = 'This card was changed elsewhere while you edited it. Save again to replace that version with what is shown here, or Cancel to keep it.';
+    }
+    $('#card-error').textContent = failure.message; $('#card-error').hidden = false; return;
+  }
   $('#card-dialog').close();
   announce(message);
   cardElement(saved.id)?.querySelector('.kanban-open').focus();
@@ -2493,7 +2519,7 @@ async function saveProject(event) {
     } else {
       // The server creates the project's own folder with a Git repository and links it.
       const result = await boardCall('POST', '/api/projects', { name, folder: 'new' });
-      savePref(SELECTED_PROJECT_KEY, result.project.id);
+      setSelectedProject(result.project.id);
       renderBoard();
       announce(`Created project “${name}” with a Git repository in ${result.folder}.`);
     }
@@ -2518,7 +2544,7 @@ async function deleteProject(project) {
   try { await boardCall('DELETE', `/api/projects/${encodeURIComponent(project.id)}?expectedRevision=${project.revision}`); }
   catch (error) { showBoardError(error); return; }
   showProjectDetail();
-  savePref(SELECTED_PROJECT_KEY, board.projects[0]?.id || '');
+  setSelectedProject(board.projects[0]?.id || '');
   renderBoard();
   announce(`Deleted project “${project.name}”.`);
   $(board.projects.length ? '#project-select' : '#project-new').focus();
@@ -2633,7 +2659,7 @@ function renderAgents(current) {
   $('#agents-filter').value = filter;
   const rows = agentRuns(filter, current);
   $('#agents-count').textContent = String(rows.filter(row => RUN_LIVE.includes(row.run.status)).length).padStart(2, '0');
-  $('#agents-list').replaceChildren(...rows.map(({ run, task, project }) => {
+  replaceKeepingFocus($('#agents-list'), rows.map(({ run, task, project }) => {
     const state = agentState(run);
     const item = document.createElement('li');
     const button = document.createElement('button');
@@ -2655,7 +2681,7 @@ function renderAgents(current) {
     button.addEventListener('click', () => selectAgent(run.id));
     item.append(button);
     return item;
-  }));
+  }), 'data-run-id');
 }
 
 /** Show an agent's project, card, and existing terminal. Never starts a run. */
@@ -3058,7 +3084,7 @@ async function openTaskDetails(taskId) {
       detailActions(detailButton('Open in Origin', () => { $('#task-dialog').close(); openOrigin(card.originSource.originProjectId, { collection: 'items', id: card.originSource.originTaskId }); }, 'text-button')))] : []),
     ...(card.source?.promptId ? [section('From a saved prompt', paragraph(`Made from revision ${card.source.promptRevision} of a saved project prompt. Newer revisions reach this card only when you update it.`, 'note'),
       detailActions(detailButton('Open the saved prompt in Compose', () => { $('#task-dialog').close(); void projectsView?.openPrompt(card.source.projectId, card.source.promptId); }, 'text-button')))] : []),
-    ...(coordinatorView ? [section('Coordinator', detailActions(detailButton('Ask Coordinator about this card', () => { $('#task-dialog').close(); coordinatorView.askAbout({ kind: 'task', id: card.id }); }, 'text-button')))] : []),
+    ...(coordinatorView ? [section('Coordinator', detailActions(detailButton('Ask Coordinator about this card', () => { $('#task-dialog').close(); if (projectView() !== 'board') setProjectView('board'); coordinatorView.askAbout({ kind: 'task', id: card.id }); }, 'text-button')))] : []),
     section('Original prompt', pre(card.prompt)),
     section('Branch and worktree', taskLocation(card, project)),
     section('Base resources for future runs', basePicker({ target: { scope: 'task', projectId: project.id, taskId: card.id } }), paragraph('Task selections can narrow or opt out of inherited resources without changing the task text or approved evidence.')),
@@ -3126,6 +3152,7 @@ async function openTaskDetails(taskId) {
 }
 
 function workflowSummary(project) {
+  if (project.workflowMode === 'pipeline') return projectColumnsOf(project).map(column => column.title).join(' → ');
   const flow = project.effectiveWorkflow || {};
   return [...['planning', 'executing'].map(stage => `${columnTitle(stage)}: ${POLICY_LABELS[flow[stage]?.policy === 'manual' ? 'manual' : 'start']}`),
     ...(flow.merge?.policy === 'start' ? ['Merge: automatic'] : [])].join(' · ');
@@ -3473,11 +3500,13 @@ async function renderDelivery(card, container, section, pre) {
 
 function pollTests(taskId) {
   if (pollTests.timer) return;
+  const status = findTask(taskId)?.evidence?.tests?.status;
   pollTests.timer = setTimeout(async () => {
     pollTests.timer = null;
     await loadBoard();
     const card = findTask(taskId);
-    if ($('#task-dialog').open && $('#task-dialog').dataset.taskId === taskId && card) openTaskDetails(taskId);
+    // Re-render the open details only when the test status changes: typed fields there must survive the polling.
+    if ($('#task-dialog').open && $('#task-dialog').dataset.taskId === taskId && card && card.evidence?.tests?.status !== status) openTaskDetails(taskId);
   }, 1500);
 }
 
@@ -3545,18 +3574,17 @@ function renderWorkspace(current) {
   } }) || null;
   workspaceFiles?.sync(projects);
   workspaceFiles?.setVisible(currentPage() === 'kanban');
-  const fileFocus = document.activeElement?.closest('.workspace-files') ? document.activeElement : null;
   if (workspaceMenu && !projects.some(project => project.id === workspaceMenu.id)) workspaceMenu = null;
   $('#workspace-count').textContent = String(projects.length).padStart(2, '0');
   $('#workspace-empty').hidden = projects.length > 0;
   $('#workspace-new').disabled = !board;
   $('#workspace-open').disabled = !board;
-  $('#workspace-list').replaceChildren(...projects.map(project => {
+  replaceKeepingFocus($('#workspace-list'), projects.map(project => {
     const ids = new Set(project.tasks.map(task => task.id));
     const live = (board.runs || []).filter(run => ids.has(run.taskId) && RUN_LIVE.includes(run.status));
     const waiting = live.filter(run => run.status === 'waiting_for_input').length;
     const item = document.createElement('li');
-    item.className = 'workspace-entry';
+    item.className = 'workspace-entry'; item.dataset.projectId = project.id;
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'workspace-item';
@@ -3584,8 +3612,7 @@ function renderWorkspace(current) {
     if (project.repository && workspaceFiles) item.append(workspaceFiles.mount(project));
     if (open) { item.classList.add('menu-open'); item.append(workspaceMenuFor(project, button)); }
     return item;
-  }));
-  if (fileFocus?.isConnected) fileFocus.focus({ preventScroll: true });
+  }), 'data-project-id');
 }
 
 function renderRepository(project) {
@@ -3740,7 +3767,7 @@ async function importBoard() {
   const replace = async confirmed => {
     try { await boardCall('POST', '/api/board/import', { backup: data, replace: confirmed }, 120000); }
     catch (error) { failed(error.message); return; }
-    savePref(SELECTED_PROJECT_KEY, board.projects.find(project => project.id === data.selectedProjectId)?.id || board.projects[0]?.id || '');
+    setSelectedProject(board.projects.find(project => project.id === data.selectedProjectId)?.id || board.projects[0]?.id || '');
     renderBoard();
     const message = `Backup imported: ${boardCounts(board.projects)}. No agent runs were started.${board.projects.some(project => project.pendingImport) ? ' Imported repository paths and workflow settings wait for your confirmation.' : ''}`;
     showProjectDetail(paragraph(message));
@@ -3787,7 +3814,7 @@ async function addToKanban(event) {
   if (error) { showError(error); return; }
   try {
     project ||= (await boardCall('POST', '/api/projects', { name })).project;
-    savePref(SELECTED_PROJECT_KEY, project.id);
+    setSelectedProject(project.id);
     if (![...$('#add-project').options].some(option => option.value === project.id)) $('#add-project').prepend(option(project.id, project.name));
     $('#add-project').value = project.id; $('#add-project-name-field').hidden = true;
     await boardCall('POST', '/api/tasks', { projectId: project.id, title, prompt: result.prompt, source: snapshotSource(result) });
@@ -3890,7 +3917,7 @@ async function addSplitCards(event) {
   const ids = [];
   try {
     project ||= (await boardCall('POST', '/api/projects', { name })).project;
-    savePref(SELECTED_PROJECT_KEY, project.id);
+    setSelectedProject(project.id);
     if (![...$('#split-project').options].some(option => option.value === project.id)) $('#split-project').prepend(option(project.id, project.name));
     $('#split-project').value = project.id; $('#split-project-name-field').hidden = true;
     for (const task of chosen) {
@@ -3954,7 +3981,7 @@ $('#add-project').addEventListener('change', () => { $('#add-project-name-field'
 $('#add-cancel').addEventListener('click', () => $('#add-dialog').close());
 $('#add-dialog-close').addEventListener('click', () => $('#add-dialog').close());
 function selectProject(id) {
-  savePref(SELECTED_PROJECT_KEY, id);
+  setSelectedProject(id);
   closeProjectForm();
   showProjectDetail();
   renderBoard();
@@ -4016,7 +4043,7 @@ $('#repo-unlink').addEventListener('click', () => linkRepository(null));
 $('#branch-save').addEventListener('click', saveTargetBranch);
 $('#branch-refresh').addEventListener('click', () => { const project = currentProject(); if (project?.repository) { repositories.delete(project.id); renderRepository(project); } });
 $('#repo-edit').addEventListener('click', () => { repoPanelOpen = $('#repo-panel').hidden; renderRepository(currentProject()); if (repoPanelOpen) $('#repo-path').focus(); });
-$('#workflow-open').addEventListener('click', openWorkflowDialog);
+$('#workflow-open').addEventListener('click', () => openWorkflowDialog());
 $('#agents-open').addEventListener('click', () => openWorkflowDialog());
 $('#workflow-form').addEventListener('submit', saveWorkflow);
 $('#workflow-cancel').addEventListener('click', () => $('#workflow-dialog').close());
@@ -4036,23 +4063,14 @@ $('#card-refine').addEventListener('click', () => {
   }
   if (running) return;
   const project = currentProject(), card = editingCardId ? project?.tasks.find(item => item.id === editingCardId) : null;
-  if (card) {
-    // An existing card opens linked: its text is both the request and the current result, so it can be
-    // regenerated or edited, then explicitly sent back with Update card (idle To Do cards only).
-    $('#card-dialog').close();
-    openInCompose({ id: `card-${card.id}-${card.revision}`, input: prompt, prompt: card.prompt || prompt, createdAt: card.updatedAt },
-      { kind: 'card', taskId: card.id, cardRevision: card.revision, number: card.number, title: card.title, kanbanProjectId: project.id, prompt: card.prompt });
-    return;
-  }
-  $('#prompt-input').value = prompt;
-  $('#prompt-input').dispatchEvent(new Event('input', { bubbles: true }));
   $('#card-dialog').close();
-  currentId = null;
-  clearOutput();
-  renderHistory();
-  location.hash = '#/';
-  showPage();
-  $('#prompt-input').focus();
+  // An existing card opens linked: its text is both the request and the current result, so it can be
+  // regenerated or edited, then explicitly sent back with Update card (idle To Do cards only).
+  // It keeps the current Compose settings: a card records no CLI choice of its own.
+  if (card) openInCompose({ ...settings(), id: `card-${card.id}-${card.revision}`, input: prompt, prompt: card.prompt || prompt, createdAt: card.updatedAt },
+    { kind: 'card', taskId: card.id, cardRevision: card.revision, number: card.number, title: card.title, kanbanProjectId: project.id, prompt: card.prompt });
+  // A new card has nothing to send back to: the request starts unlinked.
+  else prefillCompose({ text: prompt, replace: true });
 });
 $('#prompt-edit').addEventListener('click', () => {
   if (!currentResult || running) return;
@@ -4060,7 +4078,7 @@ $('#prompt-edit').addEventListener('click', () => {
   $('#prompt-edit-text').value = currentResult.prompt;
   $('#prompt-editor').hidden = false;
   $('#prompt-output').hidden = true;
-  for (const id of ['kanban-button', 'split-button', 'copy-button', 'export-button']) $(`#${id}`).disabled = true;
+  for (const button of document.querySelectorAll('#kanban-button, #split-button, #copy-button, #export-button, #project-save-button, #compose-origin-use, #compose-link-update, #compose-link-revise, #compose-link-card')) button.disabled = true;
   $('#prompt-edit-text').focus();
 });
 $('#prompt-edit-cancel').addEventListener('click', () => { showResult(currentResult); $('#prompt-edit').focus(); });
@@ -4195,7 +4213,7 @@ function downloadFile(content, type, filename) {
 }
 document.addEventListener('keydown', (event) => {
   const isEditing = /^(INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName) || event.target.isContentEditable;
-  if (event.key.toLowerCase() === 'n' && !isEditing && !event.metaKey && !event.ctrlKey && !event.altKey && !document.querySelector('dialog[open]')) {
+  if (event.key.toLowerCase() === 'n' && currentPage() === 'compose' && !isEditing && !event.metaKey && !event.ctrlKey && !event.altKey && !document.querySelector('dialog[open]')) {
     event.preventDefault();
     newPrompt();
   }
@@ -4975,16 +4993,22 @@ $('#timeline-filter').addEventListener('change', () => renderTimeline(currentPro
 
 /** Reload at most every 2 seconds while the timeline is shown; board refreshes call this often. */
 function refreshTimeline(project) {
-  if (timeline.projectId !== project.id) Object.assign(timeline, { projectId: project.id, events: [], loadedAt: 0, editing: null });
+  if (timeline.projectId !== project.id) Object.assign(timeline, { projectId: project.id, events: [], loadedAt: 0, editing: null, error: '' });
   renderTimeline(project);
-  if (timeline.loading || Date.now() - timeline.loadedAt < 2000) return;
-  timeline.loading = (async () => {
+  // `loading` names the project being read: another project's slower read never blocks or completes this one.
+  if (timeline.loading === project.id || Date.now() - timeline.loadedAt < 2000) return;
+  timeline.loading = project.id;
+  (async () => {
+    let events = null, error = '';
     try {
       const { response, data } = await api(`/api/projects/${encodeURIComponent(project.id)}/timeline`, { timeoutMs: 30000 });
       if (!response.ok) throw new Error(typeof data.error === 'string' ? data.error : 'The timeline could not be loaded.');
-      if (timeline.projectId === project.id) { timeline.events = Array.isArray(data.events) ? data.events : []; timeline.error = ''; }
-    } catch (error) { timeline.error = error.message; }
-    finally { timeline.loadedAt = Date.now(); timeline.loading = null; if (currentProject()?.id === project.id) renderTimeline(project); }
+      events = Array.isArray(data.events) ? data.events : [];
+    } catch (failure) { error = failure.message; }
+    if (timeline.loading === project.id) timeline.loading = null;
+    if (timeline.projectId !== project.id) return;
+    Object.assign(timeline, { events: events || timeline.events, error, loadedAt: Date.now() });
+    if (currentProject()?.id === project.id) renderTimeline(project);
   })();
 }
 
@@ -5054,7 +5078,7 @@ function renderTimeline(project) {
   for (const event of shown) { if (days.at(-1)?.key !== dayKey(event.at)) days.push({ key: dayKey(event.at), at: event.at, events: [] }); days.at(-1).events.push(event); }
   const track = $('#timeline-track');
   const keepScroll = timeline.scrolledFor === project.id ? track.scrollLeft : null;
-  track.replaceChildren(...days.map(day => {
+  replaceKeepingFocus(track, days.map(day => {
     const column = document.createElement('section'); column.className = 'timeline-day';
     const date = document.createElement('h3'); date.className = 'timeline-date';
     date.append(new Date(day.at).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' }));
@@ -5063,7 +5087,7 @@ function renderTimeline(project) {
     list.append(...day.events.map(event => timelineEvent(event, order.get(event.id), project)));
     column.append(date, list);
     return column;
-  }));
+  }), 'data-id');
   // Open at the latest work; later refreshes keep the user's scroll position.
   if (keepScroll === null) { if (days.length) { track.scrollLeft = track.scrollWidth; timeline.scrolledFor = project.id; } }
   else track.scrollLeft = keepScroll;
@@ -5108,7 +5132,7 @@ async function deleteNote(noteId) {
 }
 $('#timeline-note-new').addEventListener('click', () => openNoteForm());
 $('#note-cancel').addEventListener('click', () => { $('#timeline-note-form').hidden = true; timeline.editing = null; });
-$('#timeline-note-form').addEventListener('submit', saveNote);
+bindAsyncForm('#timeline-note-form', saveNote);
 
 // ---- Settings ----
 // Browser preferences (this browser only) and global server settings (every project). Project
@@ -5342,7 +5366,7 @@ originView = window.PromptboardOrigin?.create({ api, announce, closeSidebar: () 
   projects: () => board?.projects || [], toCompose: prefillCompose, attachComposeContext,
   // Batch refinement and suggestions reuse Compose's own settings and job slot; Origin adds no prompt generator.
   composeSettings: () => { const { input, ...rest } = settings(); return rest; }, composeRunning: () => running,
-  openKanban: (projectId, taskId) => { if (projectId) savePref(SELECTED_PROJECT_KEY, projectId); location.hash = '#/kanban'; if (taskId) setTimeout(() => void openTaskDetails(taskId), 0); },
+  openKanban: (projectId, taskId) => { if (projectId) setSelectedProject(projectId); location.hash = '#/kanban'; if (taskId) setTimeout(() => void openTaskDetails(taskId), 0); },
   openPrompt: (projectId, promptId) => projectsView?.openPrompt(projectId, promptId) }) || null;
 // Shared projects: optional saved prompts beside History, with links back to Origin and Kanban.
 projectsView = window.PromptboardProjects?.create({ api, announce, getResult: () => currentResult, running: () => running,
@@ -5351,7 +5375,7 @@ projectsView = window.PromptboardProjects?.create({ api, announce, getResult: ()
   removeHistory: id => { history = history.filter(item => item.id !== id); if (currentId === id) currentId = null; persistHistory(); renderHistory(); },
   openInCompose, openOrigin, refreshBoard: () => loadBoard(),
   card: id => (board?.projects || []).flatMap(project => project.tasks).find(task => task.id === id) || null,
-  openKanban: (projectId, taskId) => { if (projectId) savePref(SELECTED_PROJECT_KEY, projectId); location.hash = '#/kanban'; if (taskId) setTimeout(() => void openTaskDetails(taskId), 0); } }) || null;
+  openKanban: (projectId, taskId) => { if (projectId) setSelectedProject(projectId); location.hash = '#/kanban'; if (taskId) setTimeout(() => void openTaskDetails(taskId), 0); } }) || null;
 // Coordinator: a read-only project observer above the Kanban columns.
 coordinatorView = window.PromptboardCoordinator?.create({ api, announce, project: () => currentProject(), runs: () => board?.runs || [],
   openTask: taskId => void openTaskDetails(taskId), composeSettings: () => settings(),
