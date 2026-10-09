@@ -74,7 +74,7 @@ window.PromptboardProjects = (() => {
           if (!items.length) box.append(el('p', 'history-empty-text', 'No saved prompts yet. Use “Save to project” on a result or a History entry.'));
           for (const prompt of items) {
             const item = button('', () => void openSaved(project, prompt.id), 'project-prompt');
-            item.dataset.promptId = prompt.id;
+            item.dataset.promptId = prompt.id; item.disabled = host.running();
             if (link?.kind === 'prompt' && link.promptId === prompt.id) item.setAttribute('aria-current', 'true');
             item.append(el('strong', '', prompt.title), el('small', '', `rev ${prompt.current} · ${date(prompt.updatedAt)}${prompt.cards.length ? ` · ${prompt.cards.length} ${prompt.cards.length === 1 ? 'card' : 'cards'}` : ''}`));
             box.append(item);
@@ -99,7 +99,7 @@ window.PromptboardProjects = (() => {
 
     // ---- Opening a saved prompt in Compose ----
     async function openSaved(project, promptId) {
-      if (host.running()) return;
+      if (host.running()) { announce('Compose is writing a prompt. Wait for it or cancel it, then open the saved prompt.'); return; }
       const { ok, data } = await call(`/api/shared-projects/${encodeURIComponent(project.id)}/prompts/${encodeURIComponent(promptId)}`);
       if (!ok) { announce(data.error || 'The saved prompt could not be opened.'); return; }
       const saved = data.prompt;
@@ -112,6 +112,8 @@ window.PromptboardProjects = (() => {
     document.getElementById('compose-origin').after(bar);
     function setLink(next) { link = next; barMessage = ''; barAction = null; renderBar(); if (!projectsSection.hidden) renderProjects(); }
     function renderBar() {
+      // Called whenever Compose starts or stops: saved prompts cannot be opened over a running generation.
+      for (const item of projectsSection.querySelectorAll('.project-prompt')) item.disabled = host.running();
       bar.hidden = !link; bar.replaceChildren();
       if (!link) return;
       const result = host.getResult(), busy = barBusy || host.running();
@@ -256,7 +258,7 @@ window.PromptboardProjects = (() => {
     }
 
     showTab(pref(TAB_KEY, 'history') === 'projects' ? 'projects' : 'history');
-    return { openSave, setLink, link: () => link, renderBar, refresh, openPrompt: (projectId, promptId) => openSaved({ id: projectId }, promptId) };
+    return { openSave, setLink, renderBar, openPrompt: (projectId, promptId) => openSaved({ id: projectId }, promptId) };
   }
 
   return { create };
