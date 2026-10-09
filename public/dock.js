@@ -255,8 +255,10 @@ function updateSessionTab(session) {
   const task = board?.projects.flatMap(project => project.tasks).find(task => task.id === session.taskId);
   const title = task?.title || 'Task';
   const owner = board?.projects.find(project => project.id === run.projectId);
-  session.title = `${title} · ${columnTitle(run.config?.pipeline && live ? task?.column || run.stage : run.stage, owner)}`;
-  session.label.textContent = `${title.length > 20 ? `${title.slice(0, 19)}…` : title} · ${agentModel(session.run)}`;
+  const column = columnTitle(run.config?.pipeline && live ? task?.column || run.stage : run.stage, owner);
+  session.title = `${title} · ${column}`;
+  // The column tells apart one card's runs; the agent and model are in the tooltip and run details.
+  session.label.textContent = `${title.length > 20 ? `${title.slice(0, 19)}…` : title} · ${column}`;
   session.tab.classList.toggle('live', state === 'active');
   session.tab.classList.toggle('waiting', state === 'awaits_you');
   session.tab.dataset.state = state;

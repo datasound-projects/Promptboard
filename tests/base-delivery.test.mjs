@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:http';
 import { EventEmitter } from 'node:events';
-import { resolveBase, profileDefaults, checkBaseRevocations } from '../src/base-resolver.mjs';
+import { resolveBase, profileDefaults, checkBaseRevocations, deliveryFor } from '../src/base-resolver.mjs';
 import { prepareBase, captureSources, searchSources, fetchDocument, isPublicAddress } from '../src/base-context.mjs';
 import { testMcp, CONTEXT7_PRESET } from '../src/base-mcp.mjs';
 import { buildSession, composeMessage, resolveConfig, ARGV_PROMPT_LIMIT } from '../src/agents.mjs';
@@ -301,4 +301,12 @@ test('Document redirects revalidate public DNS, pin connections, and bound DNS c
   await assert.rejects(fetchDocument('https://public.example/doc', { lookupFn: async () => [{ address: '1.1.1.1', family: 4 }], requestFn: (_url, _options, callback) => { const request = new EventEmitter(); request.end = () => queueMicrotask(() => callback({ statusCode: 302, headers: {}, resume() {} })); return request; } }), { code: 'BASE_HTTP_ERROR' });
   const controller = new AbortController(); const pending = fetchDocument('https://public.example/doc', { signal: controller.signal, lookupFn: async () => new Promise(() => {}) }); controller.abort(); await assert.rejects(pending, { code: 'ABORTED' });
   assert.equal(isPublicAddress('::ffff:7f00:1'), false);
+});
+
+test('Base MCP is withheld from Planning and Code Review only on legacy boards; pipeline columns receive it', () => {
+  const mcp = { kind: 'mcp', configuration: { transport: 'stdio', env: {} } };
+  for (const column of ['planning', 'code_review']) {
+    assert.match(deliveryFor(mcp, 'claude', column, null, false).issue, /unavailable in read-only Planning and Code Review/);
+    assert.deepEqual(deliveryFor(mcp, 'claude', column, null, true), { delivery: 'native-mcp' });
+  }
 });

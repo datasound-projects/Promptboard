@@ -927,7 +927,8 @@ window.PromptboardOrigin = (() => {
       open = { collection, id };
       renderDrawer({ restore: false });
       markSelected();
-      drawer.querySelector('.origin-drawer-title')?.focus();
+      const title = drawer.querySelector('.origin-drawer-title');
+      title?.focus(); title?.setSelectionRange(0, 0); // Show a long title from its start, not scrolled to its end.
     }
     function closeDrawer() {
       const was = open;
