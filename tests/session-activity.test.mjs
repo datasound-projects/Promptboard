@@ -102,11 +102,12 @@ test('parallel tools, failures, subagents and native background snapshots hold a
   emit({ name: 'Stop', agentId: 'child' });
   assert.equal(a.snapshot(100000).parentTurnComplete, false);
   emit({ name: 'Stop', backgroundCount: 1, scheduledCount: 1 });
-  assert.deepEqual([a.snapshot().tools, a.snapshot().subagents, a.snapshot().background, a.snapshot().scheduled], [3, 1, 1, 1]);
+  // The parent's own calls ended with its turn; the subagent's call, background and scheduled work did not.
+  assert.deepEqual([a.snapshot().tools, a.snapshot().subagents, a.snapshot().background, a.snapshot().scheduled], [1, 1, 1, 1]);
   assert.equal(a.snapshot(100000).ready, false);
   emit({ name: 'PostToolUse', toolId: 'one' }); emit({ name: 'PostToolUse', toolId: 'one' });
-  assert.equal(a.snapshot().tools, 2);
-  emit({ name: 'PostToolUseFailure', toolId: 'two' });
+  emit({ name: 'PostToolUseFailure', toolId: 'two' }); // Late end events change nothing.
+  assert.equal(a.snapshot().tools, 1);
   emit({ name: 'PostToolUse', agentId: 'child', toolId: 'one' });
   emit({ name: 'SubagentStop', agentId: 'child', backgroundCount: 0, scheduledCount: 0 });
   assert.equal(a.snapshot(100000).ready, true);
@@ -284,4 +285,16 @@ test('extra observation hooks are pipeline-only; provider permissions and ambien
       assert.equal(built.args.includes('--dangerously-skip-permissions'), false);
     }
   }
+});
+
+test('a parallel tool call cancelled without an end event does not keep a finished turn working', () => {
+  const a = new SessionActivity('claude');
+  a.observe({ name: 'PreToolUse', toolId: 'failed', tool: 'resize' }, 1);
+  a.observe({ name: 'PreToolUse', toolId: 'cancelled', tool: 'script' }, 2);
+  a.observe({ name: 'PostToolUseFailure', toolId: 'failed' }, 3);
+  assert.equal(a.snapshot(100000).tools, 1);
+  a.observe({ name: 'Stop', backgroundCount: 0, scheduledCount: 0 }, 4);
+  assert.deepEqual([a.snapshot(100000).tools, a.snapshot(100000).ready], [0, true]);
+  a.observe({ name: 'PermissionRequest', toolId: 'cancelled' }, 5);
+  assert.equal(a.snapshot(100000).ready, true, 'A late dialog for that call cannot rearm it.');
 });

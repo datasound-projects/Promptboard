@@ -1097,6 +1097,8 @@ export class Board {
    * `transitionId` makes a repeated request idempotent.
    */
   transition(id, request = {}) {
+    // Any move of this card replaces an approved plan's move that still waits for the agent's turn to end.
+    this.executor?.abortPlanRoute?.(id);
     return this.#locked(`transition:${id}`, () => this.#transition(id, request));
   }
 
@@ -2615,7 +2617,7 @@ export class Board {
       if (active) {
         if (!this.executor) throw new BoardError('The owned agent cannot be stopped.', 'EXECUTION_UNAVAILABLE', 503);
         const withinAutomationMove = this.automationMoves.get(taskId)?.key.transitionId;
-        if (target.role === 'done') await this.executor.suspend(active.id, { withinAutomationMove });
+        if (target.role === 'done') await this.executor.suspend(active.id, { withinAutomationMove, reason: 'The card moved to Done. The conversation, worktree and output are kept.' });
         else await this.executor.cancel(active.id, { withinAutomationMove });
       }
       const saved = await this.store.update(draft => {

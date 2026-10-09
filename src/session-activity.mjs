@@ -7,6 +7,7 @@ export class SessionActivity {
   constructor(provider) {
     this.provider = provider;
     this.tools = new Set(); this.finishedTools = new Set(); this.agents = new Set();
+    this.lifecycleTools = new Set(); // The parent's own tool calls since the current main lifecycle started.
     this.anonymousTools = new Map();
     this.permissionTools = new Map(); this.permissionScopes = new Set();
     this.parentComplete = false; this.permission = false; this.ended = false;
@@ -53,7 +54,7 @@ export class SessionActivity {
     // A new main lifecycle cannot carry approval or termination from the prior
     // lifecycle. Keep outstanding work and finished tool IDs: startup alone
     // neither proves readiness nor makes late old approvals fresh again.
-    if (started) { this.planApproval = null; this.ended = false; }
+    if (started) { this.planApproval = null; this.ended = false; this.lifecycleTools.clear(); }
     if (started || running) { this.parentComplete = false; this.clearPermissionScope(scope); }
     if (waiting) {
       if (permissionKey) this.permissionTools.set(permissionKey, scope);
@@ -68,7 +69,7 @@ export class SessionActivity {
       if (!subordinate && !repeatedToolEnd && (claude && event.tool === 'ExitPlanMode' || gemini && event.tool === 'exit_plan_mode')
         && (!toolId || this.planApproval?.toolId !== toolId)) this.planApproval = null;
       if (key) {
-        if (!this.finishedTools.has(key)) this.tools.add(key);
+        if (!this.finishedTools.has(key)) { this.tools.add(key); if (!child) this.lifecycleTools.add(key); }
       } else {
         this.anonymousTools.set(toolName, (this.anonymousTools.get(toolName) || 0) + 1);
       }
@@ -101,12 +102,18 @@ export class SessionActivity {
       }
       if (Number.isSafeInteger(event.scheduledCount) && event.scheduledCount >= 0) this.scheduled = Math.min(event.scheduledCount, LIMIT);
     }
-    if (complete) { this.parentComplete = true; this.clearPermissionScope(scope); }
+    if (complete) {
+      this.parentComplete = true; this.clearPermissionScope(scope);
+      // A turn cannot end while one of its own tool calls runs, so a call of this lifecycle that never reported its
+      // end (a parallel call the CLI cancelled) has finished. Subagent tools and background work keep their own accounting.
+      for (const key of this.lifecycleTools) if (this.tools.delete(key)) this.finishedTools.add(key);
+      this.lifecycleTools.clear();
+    }
     // Never let malformed/lost hooks or unbounded counters establish a safe boundary.
     if (this.tools.size + this.agents.size > LIMIT || this.anonymousTools.size > LIMIT
       || [...this.anonymousTools.values()].reduce((sum, n) => sum + n, 0) > LIMIT
       || this.permissionTools.size + this.permissionScopes.size > LIMIT) {
-      this.uncertain = true; this.tools.clear(); this.finishedTools.clear(); this.agents.clear(); this.anonymousTools.clear();
+      this.uncertain = true; this.tools.clear(); this.finishedTools.clear(); this.agents.clear(); this.anonymousTools.clear(); this.lifecycleTools.clear();
       this.permissionTools.clear(); this.permissionScopes.clear();
     }
     this.permission = Boolean(this.permissionTools.size || this.permissionScopes.size);

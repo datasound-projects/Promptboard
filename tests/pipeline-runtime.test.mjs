@@ -245,6 +245,7 @@ test('real PTY simulated providers use a silent first envelope, keep the live pr
       await w.move(card.id, destination); assert.equal(w.board.executor.sessions.get(first.run.id).proc.pid, pid);
     }
     await w.move(card.id, 'done'); assert.equal(w.board.executor.sessions.get(first.run.id).proc, null);
+    assert.match((await w.board.run(first.run.id)).reason, /^The card moved to Done\./, 'A Done move is not reported as a pause by the user.');
     const restored = await w.move(card.id, 'testing'); await until(async () => (await w.board.run(restored.run.id)).status === 'running');
     assert.equal(restored.run.sessionId, first.run.sessionId); assert.equal(await readFile(join(w.dataDir, restored.run.artifactsDir, 'prompt.md'), 'utf8'), '');
     await w.move(card.id, 'todo');
@@ -842,6 +843,30 @@ test('approved-plan model changes defer until work settles and use a resume-only
   assert.equal(resumed.sessionId, original.sessionId); assert.equal(resumed.resumeFrom.nativeSessionId, nativeId); assert.equal(resumed.config.model, 'approved-model');
   assert.equal(await readFile(join(w.dataDir, resumed.artifactsDir, 'prompt.md'), 'utf8'), 'Proceed with implementing the approved plan.');
   assert.equal((await w.taskNow(card.id)).column, 'executing'); assert.equal(owned.proc, null); await w.move(card.id, 'todo');
+});
+
+test('an approved plan whose turn goes on implementing it waits past the move budget, and another move of the card cancels that wait', { skip: process.platform === 'win32' }, async t => {
+  const w = await world(t, true), config = defaultPipelineConfig(); config.columns.find(column => column.id === 'executing').strategy.modelOverride = 'approved-model'; await w.configure(config);
+  const suspend = w.board.executor.suspendAtBoundary.bind(w.board.executor);
+  w.board.executor.suspendAtBoundary = (id, options) => suspend(id, { ...options, timeoutMs: 300 });
+  for (const ending of ['finish', 'move']) {
+    const card = await w.board.createTask({ projectId: w.projectId, title: `Long turn then ${ending}`, prompt: 'ACTIVITY_FIXTURE' });
+    const original = (await w.move(card.id, 'planning')).run; await until(async () => (await w.board.run(original.id)).activity?.ready);
+    w.board.executor.input(original.id, 'activity-plan-approve-working\r');
+    await until(() => w.board.executor.boundaryWaits.has(original.id));
+    await new Promise(resolve => setTimeout(resolve, 900));
+    assert.equal((await w.board.run(original.id)).planRoutes.at(-1).status, 'pending', 'The implementation turn may outlast the move budget.');
+    if (ending === 'finish') {
+      w.board.executor.input(original.id, 'activity-finish\r');
+      await until(async () => (await w.board.run(original.id)).planRoutes.at(-1).status === 'completed');
+      assert.equal((await w.taskNow(card.id)).column, 'executing');
+    } else {
+      await w.move(card.id, 'todo'); // Does not queue behind the unfinished turn.
+      assert.equal((await w.board.run(original.id)).planRoutes.at(-1).status, 'failed'); assert.equal((await w.taskNow(card.id)).column, 'todo');
+      continue;
+    }
+    await w.move(card.id, 'todo');
+  }
 });
 
 test('approval observation persistence retries before routing; incompatible providers fail once without replacing the conversation', { skip: process.platform === 'win32' }, async t => {

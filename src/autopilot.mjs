@@ -117,7 +117,7 @@ export class Autopilot {
     if (task.automationMove?.status === 'blocked') return this.pause(projectId, `The column automations of “${task.title}” are blocked: their cleanup is unconfirmed. Stop them from the card, then resume, or skip the card.`);
     if (!live) {
       const last = runs.at(-1);
-      return this.pause(projectId, `The ${name(cur.stage)} agent for “${task.title}” ${last ? `${last.status}${last.reason ? `: ${last.reason}` : ''}` : 'is not running'}. Start it again from the card, then resume, or skip the card.`);
+      return this.pause(projectId, `The ${name(cur.stage)} agent for “${task.title}” ${last ? `${last.status}${last.reason ? `: ${last.reason.replace(/[.\s]+$/, '')}` : ''}` : 'is not running'}. Start it again from the card, then resume, or skip the card.`);
     }
     if (task.pendingAutomationMessages?.length || (task.automationMove && !['completed', 'failed', 'cancelled', 'interrupted'].includes(task.automationMove.status))) return;
     const finished = live.status === 'waiting_for_input' && live.turnComplete && (live.activity ? live.activity.ready : true) && live.turns > cur.turns;

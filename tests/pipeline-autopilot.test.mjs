@@ -116,10 +116,10 @@ test('pipeline Autopilot follows an approved plan, and pauses for a hand move or
   // Resume from a route column; an agent that stopped pauses again with the reason.
   await board.transition(card.id, { column: 'executing', expectedRevision: (await projectNow()).tasks[0].revision });
   await board.controlAutopilot(project.id, { action: 'resume' }); await tick();
-  const run = await live(card.id); await board.updateRun(run.id, { status: 'running' }); await board.updateRun(run.id, { status: 'failed', reason: 'quota' });
+  const run = await live(card.id); await board.updateRun(run.id, { status: 'running' }); await board.updateRun(run.id, { status: 'failed', reason: 'The quota ran out.' });
   await tick();
   ap = (await projectNow()).autopilot;
-  assert.equal(ap.status, 'paused'); assert.match(ap.reason, /Executing agent for “Planned” failed/);
+  assert.equal(ap.status, 'paused'); assert.match(ap.reason, /Executing agent for “Planned” failed: The quota ran out\. Start it again/);
   assert.ok(finishTurn);
 });
 
