@@ -101,3 +101,18 @@ test('constructor failures cannot confirm delivery and focus restrictions do not
   f.win.Notification = f.FakeNotification; f.win.focus = () => { throw new Error('Focus restricted.'); };
   f.send('focus'); f.displays[0].show(); f.displays[0].click(); assert.deepEqual(JSON.parse(JSON.stringify(f.opened)), [{ taskId: 'task-one', projectId: 'project-one' }]);
 });
+
+test('stopping after a server failure tells Settings, so Reconnect is offered again', async t => {
+  const f = fixture(t, { permission: 'granted', stored: true }), seen = [];
+  f.client.onChange = client => seen.push({ connected: client.connected, status: client.status });
+  f.client.resume(); await until(() => f.client.connected);
+  seen.length = 0;
+  f.client.stop();
+  assert.equal(seen.length, 1, 'Settings re-render once');
+  assert.equal(seen[0].connected, false);
+  assert.doesNotMatch(seen[0].status, /^Connected/);
+  // A connect that cannot start also re-renders Settings with its reason.
+  f.FakeNotification.permission = 'denied'; seen.length = 0;
+  f.client.connect();
+  assert.equal(seen.length, 1); assert.match(seen[0].status, /permission/);
+});

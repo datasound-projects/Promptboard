@@ -29,10 +29,12 @@
       if (this.enabled && this.supported() && window.Notification.permission === 'granted') this.connect();
       else if (this.enabled) { this.status = 'Notifications need browser permission. Enable them in Settings.'; this.changed(); }
     }
-    disable() { this.remember(false); this.stop(); this.status = 'Notifications are off for this browser.'; this.changed(); }
-    stop() {
+    disable() { this.remember(false); this.stop('Notifications are off for this browser.'); }
+    // Settings always learn about a stop, so Reconnect is offered again.
+    stop(status = this.controller ? 'Notification reception stopped. Reconnect for future alerts.' : this.status) {
       this.controller?.abort(); this.controller = null; this.lease = null; this.connected = false;
       for (const entry of [...this.owned.values()]) this.dismiss(entry);
+      this.status = status; this.changed();
     }
     dismiss(entry) {
       if (this.owned.get(entry.id) !== entry) return;
@@ -81,12 +83,11 @@
       } catch { this.ack(entry, 'failed'); this.dismiss(entry); }
     }
     connect() {
-      if (!this.enabled || !this.supported() || window.Notification.permission !== 'granted' || !this.token()) { this.status = 'Reload the app and enable browser notification permission.'; return; }
+      if (!this.enabled || !this.supported() || window.Notification.permission !== 'granted' || !this.token()) { this.status = 'Reload the app and enable browser notification permission.'; this.changed(); return; }
       this.stop(); const controller = new AbortController(); this.controller = controller;
       this.status = 'Connecting browser notifications…'; this.changed();
       this.read(controller).catch(() => {}).finally(() => {
-        if (this.controller !== controller) return;
-        this.stop(); this.status = 'Notification reception disconnected. Reconnect for future alerts.'; this.changed();
+        if (this.controller === controller) this.stop('Notification reception disconnected. Reconnect for future alerts.');
       });
     }
     async read(controller) {
