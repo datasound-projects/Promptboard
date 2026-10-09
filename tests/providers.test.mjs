@@ -269,3 +269,23 @@ test('on Windows a process group stop ends the whole tree with taskkill, not onl
   assert.deepEqual(calls[0].args, ['/PID', '2147483000', '/T', '/F']);
   assert.equal(calls[0].options.detached, true, 'The tree is still ended when the app exits right after.');
 });
+
+test('a slow version check keeps a CLI that already answered; a first check that times out says so', { skip: process.platform === 'win32' }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'ste-provider-slow-')), oldPath = process.env.PATH, slow = join(dir, 'slow');
+  try {
+    for (const id of ['codex', 'claude', 'gemini', 'agy']) {
+      await writeFile(join(dir, id), `#!${process.execPath}\nif (require('node:fs').existsSync(${JSON.stringify(slow)})) setTimeout(() => {}, 5000); else process.stdout.write('fixture-cli 1.0');\n`);
+      await chmod(join(dir, id), 0o700);
+    }
+    process.env.PATH = dir;
+    await writeFile(slow, '');
+    assert.ok((await detectProviders({ timeoutMs: 300 })).every(x => !x.available && /timed out/.test(x.reason)), 'Never answered: not claimed.');
+    await rm(slow);
+    assert.ok((await detectProviders({ timeoutMs: 3000 })).every(x => x.available));
+    await writeFile(slow, '');
+    assert.ok((await detectProviders({ timeoutMs: 300 })).every(x => x.available && x.version === 'fixture-cli 1.0'), 'Answered before, slow now: still installed.');
+  } finally {
+    if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
