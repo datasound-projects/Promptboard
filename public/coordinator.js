@@ -13,7 +13,10 @@ window.PromptboardCoordinator = (() => {
 
   function create(host) {
     const panel = document.getElementById('coordinator'), toggle = document.getElementById('coordinator-toggle');
-    let projectId = null, data = null, revision = null, fetching = null, chatOpen = false, scope = { kind: 'project' }, asking = false, message = '', draft = '';
+    let projectId = null, data = null, revision = null, fetching = null, chatOpen = false, scope = { kind: 'project' }, message = '', draft = '';
+    // Questions in flight, per project. The chat node is kept across board renders so typing is never interrupted.
+    const asking = new Set();
+    let chatNode = null;
     const key = () => `promptboard.coordinator.${projectId}`;
     const isOpen = () => pref(key(), '') === 'open';
     const call = (path, options = {}) => host.api(`/api/coordinator/${encodeURIComponent(projectId)}${path}`, { timeoutMs: 200000, ...options })
@@ -23,7 +26,7 @@ window.PromptboardCoordinator = (() => {
       const id = projectId;
       // One read per project at a time; switching projects starts the new project's read at once.
       if (fetching?.id === id) return fetching.promise;
-      const promise = call('').then(body => { if (id === projectId) { data = body; message = ''; } }).catch(error => { if (id === projectId) message = error.message; })
+      const promise = call('').then(body => { if (id === projectId) { if (JSON.stringify(body.chat) !== JSON.stringify(data?.chat)) chatNode = null; data = body; message = ''; } }).catch(error => { if (id === projectId) message = error.message; })
         .finally(() => { if (fetching?.promise === promise) fetching = null; render(); });
       fetching = { id, promise };
       return promise;
@@ -32,7 +35,7 @@ window.PromptboardCoordinator = (() => {
     /** Called on every board render; fetches only when the project or the board changed and the panel is shown. */
     function sync(project, boardRevision, visible = true) {
       if (!project) { projectId = null; panel.hidden = true; toggle.hidden = true; return; }
-      if (project.id !== projectId) { projectId = project.id; data = null; revision = null; chatOpen = false; scope = { kind: 'project' }; message = ''; draft = ''; }
+      if (project.id !== projectId) { projectId = project.id; data = null; revision = null; chatOpen = false; chatNode = null; scope = { kind: 'project' }; message = ''; draft = ''; }
       panel.dataset.visible = String(visible);
       toggle.hidden = !visible;
       if (!visible) { panel.hidden = true; return; }
@@ -69,9 +72,13 @@ window.PromptboardCoordinator = (() => {
       }
       const onOff = el('label', 'coordinator-switch'), box = el('input'); box.type = 'checkbox'; box.id = 'coordinator-enabled'; box.setAttribute('role', 'switch'); box.checked = !off;
       box.addEventListener('change', async () => {
+        const id = projectId;
         box.disabled = true;
-        try { data = await call('', { method: 'PATCH', body: { enabled: box.checked } }); host.announce(box.checked ? 'Coordinator is on. Missed changes were added from the board.' : 'Coordinator is off. Its project knowledge is kept.'); }
-        catch (error) { message = error.message; }
+        try {
+          const next = await call('', { method: 'PATCH', body: { enabled: box.checked } });
+          if (id !== projectId) return;
+          data = next; chatNode = null; host.announce(box.checked ? 'Coordinator is on. Missed changes were added from the board.' : 'Coordinator is off. Its project knowledge is kept.');
+        } catch (error) { if (id !== projectId) return; message = error.message; }
         render(); document.getElementById('coordinator-enabled')?.focus();
       });
       onOff.append(box, el('span', '', off ? 'Off' : 'On'));
@@ -79,8 +86,11 @@ window.PromptboardCoordinator = (() => {
       bar.append(icon, title, status, controls);
       const nodes = [bar];
       if (!off && data) nodes.push(dashboard());
-      if (!off && chatOpen) nodes.push(chat());
-      panel.replaceChildren(...nodes);
+      // The chat stays in place (caret, selection, open menus, scroll); only the bar and dashboard are redrawn.
+      const kept = !off && chatOpen ? (chatNode ||= chat()) : null;
+      for (const child of [...panel.children]) if (child !== kept) child.remove();
+      panel.prepend(...nodes);
+      if (kept && !kept.isConnected) panel.append(kept);
       if (focusId) document.getElementById(focusId)?.focus({ preventScroll: true });
     }
 
@@ -106,7 +116,7 @@ window.PromptboardCoordinator = (() => {
 
     function openChat(next = null) {
       if (next) scope = next;
-      chatOpen = true; render(); document.getElementById('coordinator-question')?.focus();
+      chatOpen = true; chatNode = null; render(); document.getElementById('coordinator-question')?.focus();
     }
     const SCOPES = [['project', 'Project'], ['task', 'Task'], ['agent', 'Agent'], ['branch', 'Branch']];
     const svg = d => { const node = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); node.setAttribute('viewBox', '0 0 24 24'); node.setAttribute('aria-hidden', 'true'); const p = document.createElementNS(node.namespaceURI, 'path'); p.setAttribute('d', d); node.append(p); return node; };
@@ -116,7 +126,7 @@ window.PromptboardCoordinator = (() => {
       const head = el('div', 'coordinator-chat-head');
       const kinds = el('div', 'coordinator-scope'); kinds.id = 'coordinator-scope'; kinds.setAttribute('role', 'group'); kinds.setAttribute('aria-label', 'Ask about');
       for (const [value, label] of SCOPES) {
-        const option = button(label, () => { if (scope.kind !== value) { scope = { kind: value }; render(); } }, 'coordinator-scope-option');
+        const option = button(label, () => { if (scope.kind !== value) { scope = { kind: value }; chatNode = null; render(); } }, 'coordinator-scope-option');
         option.id = `coordinator-scope-${value}`; option.dataset.scope = value; option.setAttribute('aria-pressed', String(scope.kind === value));
         kinds.append(option);
       }
@@ -129,7 +139,7 @@ window.PromptboardCoordinator = (() => {
       target.hidden = scope.kind === 'project' || !choices.length;
       if (scope.id && choices.some(([value]) => value === scope.id)) target.value = scope.id; else if (choices[0]) scope = { kind: scope.kind, id: choices[0][0] };
       target.addEventListener('change', () => { scope = { kind: scope.kind, id: target.value }; });
-      const close = button('', () => { chatOpen = false; render(); document.getElementById('coordinator-ask')?.focus(); }, 'coordinator-close', 'Close chat');
+      const close = button('', () => { chatOpen = false; chatNode = null; render(); document.getElementById('coordinator-ask')?.focus(); }, 'coordinator-close', 'Close chat');
       close.append(svg('M6 6l12 12M18 6 6 18'));
       head.append(kinds, target, close);
       if (scope.kind !== 'project' && !choices.length) head.append(el('span', 'coordinator-none', { task: 'No cards yet', agent: 'No agent runs yet', branch: 'No branches yet' }[scope.kind]));
@@ -155,29 +165,34 @@ window.PromptboardCoordinator = (() => {
         }
         log.append(item);
       }
-      if (asking) { const wait = el('div', 'coordinator-message coordinator-thinking'); wait.append(el('span'), el('span'), el('span')); wait.setAttribute('aria-label', 'Reading the board'); log.append(wait); }
-      if (!(data?.chat || []).length && !asking) log.append(el('p', 'coordinator-empty coordinator-hint', 'Ask about the project, a card, an agent or a branch. Answers cite what the board recorded; nothing is changed.'));
+      if (asking.has(projectId)) { const wait = el('div', 'coordinator-message coordinator-thinking'); wait.append(el('span'), el('span'), el('span')); wait.setAttribute('aria-label', 'Reading the board'); log.append(wait); }
+      if (!(data?.chat || []).length && !asking.has(projectId)) log.append(el('p', 'coordinator-empty coordinator-hint', 'Ask about the project, a card, an agent or a branch. Answers cite what the board recorded; nothing is changed.'));
 
       // Composer: one rounded field with a send button inside.
       const form = el('form', 'coordinator-form');
       const question = el('textarea'); question.id = 'coordinator-question'; question.rows = 1; question.maxLength = 2000; question.value = draft;
       question.placeholder = scope.kind === 'project' ? 'Ask about this project…' : `Ask about this ${scope.kind === 'task' ? 'card' : scope.kind}…`;
       question.setAttribute('aria-label', 'Question for the Coordinator');
-      question.addEventListener('input', () => { draft = question.value; send.disabled = asking || !draft.trim(); });
+      question.addEventListener('input', () => { draft = question.value; send.disabled = asking.has(projectId) || !draft.trim(); });
       question.addEventListener('keydown', event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); form.requestSubmit(); } });
-      const send = el('button', 'coordinator-send'); send.type = 'submit'; send.setAttribute('aria-label', asking ? 'Asking' : 'Ask'); send.id = 'coordinator-send'; send.disabled = asking || !draft.trim();
+      const send = el('button', 'coordinator-send'); send.type = 'submit'; send.setAttribute('aria-label', asking.has(projectId) ? 'Asking' : 'Ask'); send.id = 'coordinator-send'; send.disabled = asking.has(projectId) || !draft.trim();
       send.append(svg('M12 19V5M6 11l6-6 6 6'));
       form.append(question, send);
       form.addEventListener('submit', async event => {
         event.preventDefault();
-        if (!draft.trim() || asking) return;
-        asking = true; message = ''; render();
+        const id = projectId;
+        if (!draft.trim() || asking.has(id)) return;
+        asking.add(id); message = ''; chatNode = null; render();
         try {
           const settings = host.composeSettings();
           const result = await call('/ask', { method: 'POST', body: { question: draft, scope, provider: settings.provider, model: settings.model, effort: settings.effort } });
-          data = { ...data, chat: result.chat }; draft = '';
-        } catch (error) { message = error.message; }
-        finally { asking = false; render(); document.getElementById('coordinator-question')?.focus(); }
+          // An answer belongs to the project it was asked in; another project's panel is left alone.
+          if (id === projectId) { if (data) data = { ...data, chat: result.chat }; draft = ''; }
+        } catch (error) { if (id === projectId) message = error.message; }
+        finally {
+          asking.delete(id);
+          if (id === projectId) { chatNode = null; render(); document.getElementById('coordinator-question')?.focus(); }
+        }
       });
       box.append(head, log, form);
       if (message) box.append(el('p', 'inline-error', message));
