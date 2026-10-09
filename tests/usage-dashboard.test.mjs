@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm, utimes } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
@@ -43,6 +43,16 @@ test('dashboard refresh reads changed local files without double counting and ex
   const fresh = new UsageDashboard({dataDir:dir,roots:{claude:[root]},now:()=>now,limitReader:async()=>({status:'unavailable',windows:[]})}); t.after(()=>fresh.close());
   assert.equal((await fresh.get()).providers[1].inputTokens,25);
 });
+test('the file cap counts only sessions inside the 30-day window', async t => {
+  const dir = await temp(t), root = join(dir,'claude'), old = join(root,'a-old'), recent = join(root,'z-new'); await mkdir(old,{recursive:true}); await mkdir(recent);
+  const long = new Date(Date.parse(stamp) - 90 * 86400000);
+  for (let i = 0; i < 5001; i++) { const file = join(old,`${i}.jsonl`); await writeFile(file,''); await utimes(file,long,long); }
+  await writeFile(join(recent,'session.jsonl'),JSON.stringify(claude('one','opus',10))+'\n');
+  const service = new UsageDashboard({dataDir:dir,roots:{claude:[root]},now:()=>Date.parse(stamp)+1000,limitReader:async()=>({status:'unavailable',windows:[]})}); t.after(()=>service.close());
+  const claudeUsage = (await service.get()).providers[1];
+  assert.equal(claudeUsage.inputTokens,10); assert.equal(claudeUsage.partial,false);
+});
+
 test('status-line bridge keeps only usage and cost fields, with no credentials or prompts', async t => {
   const dir = await temp(t), path = join(dir,'usage-status.json');
   execFileSync(process.execPath, [fileURLToPath(new URL('../src/usage-status.mjs',import.meta.url)),path], { input: JSON.stringify({session_id:'session',cost:{total_cost_usd:.5},rate_limits:{five_hour:{used_percentage:25,resets_at:1791000000}},secret:'never-store',prompt:'private prompt'}) });

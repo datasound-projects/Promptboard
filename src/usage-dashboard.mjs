@@ -118,9 +118,9 @@ export class UsageDashboard {
       const models = new Map(), days = new Map(), tools = new Map(), sessions = new Set(), messages = new Set(), calls = new Set();
       let bytesRead = 0, fileCount = 0;
       for (const path of files) {
-        if (++fileCount > 5000) { p.partial = true; break; }
         const stat = await lstat(path).catch(() => null);
         if (!stat?.isFile() || stat.mtimeMs < since) continue;
+        if (++fileCount > 5000) { p.partial = true; break; } // Old files never use up the cap.
         seenFiles.add(path);
         let entry = this.cache.get(path);
         if (path.endsWith('.jsonl')) {
