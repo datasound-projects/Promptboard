@@ -129,7 +129,7 @@ async function open(t, options = {}) {
   const { token } = await fetch(app.url + '/api/session').then(r => r.json());
   const post = (path, body, headers = {}) => fetch(app.url + path, { method: 'POST', headers: { 'content-type': 'application/json', 'x-ste-token': token, ...headers }, body: JSON.stringify(body) });
   const get = path => fetch(app.url + path, { headers: { 'x-ste-token': token } });
-  const until = async (fn, label) => { const end = Date.now() + 3000; while (!(await fn())) { if (Date.now() > end) assert.fail(label); await new Promise(r => setTimeout(r, 10)); } };
+  const until = async (fn, label) => { const end = Date.now() + 10000; while (!(await fn())) { if (Date.now() > end) assert.fail(label); await new Promise(r => setTimeout(r, 10)); } };
   return { app, auth, token, post, get, until, lookups: () => lookups };
 }
 

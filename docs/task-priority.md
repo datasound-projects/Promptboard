@@ -12,4 +12,4 @@ The completed table has a keyboard-accessible priority filter; the Board always 
 
 Filtering changes only the view and browser preference. It does not change task text, revisions, stored order, Base assignments, session state, execution or the global queue. The Board's Done preview shows the five most recent cards; the completed table applies the filter. Keyboard moves on the Board pass the next card in the full column; drops resolve the target position after excluding the dragged task.
 
-Current state version 11 and portable version 9 retain [shared labels](task-labels.md) with task checkboxes, a name/color editor, badges and filters combined with priority. Custom priority names, ordering and colors and attachments remain pending. The Backlog was removed in state version 13 (see the changelog). It is not full Kanban parity.
+Saved state and portable backups retain [shared labels](task-labels.md) with task checkboxes, a name/color editor, badges and filters combined with priority. Custom priority names, ordering and colors and attachments remain pending. The Backlog was removed in state version 13 (see the changelog). It is not full Kanban parity.

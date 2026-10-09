@@ -80,8 +80,8 @@ test('pipeline completed table sorts archive dates, filters literal titles and s
   await browser.until(`window.__archiveHeld===true`, 'captured earlier board read');
   const middle = (await app.board.state()).projects.find(p=>p.id===project.id).tasks.find(task=>task.id===tasks[2].id);
   await app.board.updateTask(middle.id, { title: 'Middle edited', prompt: middle.prompt, expectedRevision: middle.revision });
-  await browser.eval(`window.__archiveRelease();await window.__archiveRead;window.fetch=window.__archiveFetch;`);
-  assert.equal(await browser.eval(`return document.querySelector('.archive-title').textContent;`), 'Middle', 'The earlier read cannot include the later server edit.');
+  // Read the title in the same task as the held read; the app's 2 s poll may render the newer board right after.
+  assert.equal(await browser.eval(`window.__archiveRelease();await window.__archiveRead;const title=document.querySelector('.archive-title').textContent;window.fetch=window.__archiveFetch;return title;`), 'Middle', 'The earlier read cannot include the later server edit.');
   await browser.until(`(async()=>{await loadBoard();return document.querySelector('.archive-title')?.textContent==='Middle edited';})()`, 'edited archive revision rendered');
   assert.equal(await browser.eval(`return document.getElementById('archive-filter').value==='Middle' && document.getElementById('archive-sort').value==='title' && document.activeElement.dataset.archiveAction==='details' && document.activeElement.closest('tr').dataset.archiveTask===${JSON.stringify(middle.id)} && document.querySelector('.archive-title').textContent==='Middle edited';`), true);
   await browser.eval(`const input=document.getElementById('archive-filter');input.value='';input.dispatchEvent(new Event('input',{bubbles:true}));`);

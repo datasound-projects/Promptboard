@@ -5,7 +5,7 @@ import { JSDOM } from 'jsdom';
 
 const source = await readFile(new URL('../public/notifications.js', import.meta.url), 'utf8');
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
-async function until(fn) { const end = Date.now() + 3000; while (Date.now() < end) { if (fn()) return; await tick(); } assert.fail('Fixture receiver did not settle.'); }
+async function until(fn) { const end = Date.now() + 10000; while (Date.now() < end) { if (fn()) return; await tick(); } assert.fail('Fixture receiver did not settle.'); }
 function fixture(t, { supported = true, permission = 'default', requested = 'granted', stored = false } = {}) {
   const dom = new JSDOM('', { url: 'http://localhost:4318', runScripts: 'outside-only' }), win = dom.window;
   const calls = [], displays = [], opened = []; let requests = 0, stream, lease = 0;

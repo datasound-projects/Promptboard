@@ -70,7 +70,7 @@ try {
   });
   // The Autopilot scene runs a stage board, which the project API still creates on explicit request.
   await app.board.createProjectWithRepository({ name: 'Shop app', folder: 'new', workflowMode: 'legacy' });
-  browser = await launch({ width: 1280, height: 820 }); if (!browser) throw new Error('Chrome was not found.');
+  browser = await launch({ width: 1280, height: 820, motion: true }); if (!browser) throw new Error('Chrome was not found.');
   await browser.resize(1280, 820); await browser.goto(app.url);
   await browser.eval(`localStorage.setItem('ste-prompt-engineer.theme', 'dark'); localStorage.setItem('promptboard.settings.dock-start', 'collapsed'); localStorage.setItem('promptboard.dock.height', '200'); localStorage.setItem('promptboard.settings.open-terminal', '0'); localStorage.setItem('promptboard.project-panel', 'collapsed');`);
   await browser.reload();

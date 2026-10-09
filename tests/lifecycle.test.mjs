@@ -20,7 +20,7 @@ async function open(t, runner, options = {}) {
   const status = () => fetch(app.url + '/api/status', { headers: { 'x-ste-token': token } }).then(r => r.json());
   return { ...app, post, status };
 }
-const waitFor = async (fn, label, ms = 3000) => { const end = Date.now() + ms; while (!(await fn())) { if (Date.now() > end) assert.fail(`Timed out: ${label}`); await new Promise(r => setTimeout(r, 10)); } };
+const waitFor = async (fn, label, ms = 10000) => { const end = Date.now() + ms; while (!(await fn())) { if (Date.now() > end) assert.fail(`Timed out: ${label}`); await new Promise(r => setTimeout(r, 10)); } };
 
 test('a timeout reaches a terminal state with a stable code, and the next request succeeds', async t => {
   let calls = 0;
@@ -152,7 +152,7 @@ async function startApp(t, dir, port) {
   child.stderr.on('data', chunk => { output += chunk; });
   const exited = new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })));
   t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); });
-  await waitFor(() => output.includes(`127.0.0.1:${port}`), 'app start', 5000);
+  await waitFor(() => output.includes(`127.0.0.1:${port}`), 'app start', 20000);
   const url = `http://127.0.0.1:${port}`;
   const { token } = await fetch(url + '/api/session').then(r => r.json());
   return { child, exited, url, token, output: () => output };

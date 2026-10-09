@@ -21,7 +21,7 @@ Constraints: no lettering, no text, no watermark, no background, no objects, no 
 
 ## GitHub logo
 
-`docs/readme-logo.png` is the original PNG supplied by the project owner, displayed at 140 px in the GitHub README. The app does not use it. `docs/logo.png` is the 480 px version used by the social preview renderer.
+`docs/readme-logo.png` is the original PNG supplied by the project owner, displayed at 960 px wide in the GitHub README. The app does not use it. `docs/logo.png` is the 480 px version used by the social preview renderer.
 
 ## GitHub social preview
 

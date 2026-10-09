@@ -30,7 +30,7 @@ export async function launch(options = {}) {
   }
 }
 
-async function launchOnce({ width = 1280, height = 900 } = {}) {
+async function launchOnce({ width = 1280, height = 900, motion = false } = {}) {
   const binary = await findChrome();
   if (!binary || typeof WebSocket !== 'function') return null;
   const profile = await mkdtemp(join(tmpdir(), 'pb-chrome-'));
@@ -52,6 +52,8 @@ async function launchOnce({ width = 1280, height = 900 } = {}) {
     };
     const send = (method, params = {}) => new Promise((resolve, reject) => { id++; waiting.set(id, { resolve, reject }); socket.send(JSON.stringify({ id, method, params })); });
     await startup.wait(send('Page.enable')); await startup.wait(send('Runtime.enable')); await startup.wait(send('Log.enable'));
+    // Tests click and measure settled layout; the app turns every transition off under reduced motion.
+    if (!motion) await startup.wait(send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] }));
     startup.close();
     const consoleMessages = [];
     listeners.add(message => {

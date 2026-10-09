@@ -10,3 +10,4 @@ playwright-report/
 .claude/
 .serena/
 kangentic.local.json
+.pb-shots/

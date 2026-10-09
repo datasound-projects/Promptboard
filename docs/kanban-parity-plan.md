@@ -79,8 +79,6 @@ Promptboard shipped a local Backlog with GitHub Issues import, then removed it i
 
 Kangentic provides a separate backlog with filtering, labels, priorities, manual order, bulk promotion, and imports from GitHub Issues, GitHub Projects, Azure DevOps, and Asana. Promotion preserves task metadata and uses the destination's arrival behavior. Imported tickets retain their source identity; duplicate detection includes promoted and archived tasks. [Backlog and imports](https://www.kangentic.com/guide/backlog/)
 
-Proposed Promptboard implementation: represent backlog placement separately from a column. Implement local backlog and GitHub Issues first using the existing GitHub CLI integration, then GitHub Projects and the other named sources as independent import adapters. Store source/provider IDs on the task and maintain a project import index. Import into backlog without running agents. Attachment download failure must be visible without dropping the ticket.
-
 ### Profiles and board configuration
 
 Kangentic profiles override per-column strategy while sharing column structure and automations. Missing, explicitly cleared, and set fields have different meanings. A task chooses a profile or a task-wide agent override. Repository configuration is team-shared; a separate local file supplies personal overrides. Automation arrays replace as complete lists during merging. [Board profiles](https://www.kangentic.com/features/board-profiles/), [Board configuration](https://www.kangentic.com/guide/board-config/)
