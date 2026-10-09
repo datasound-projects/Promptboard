@@ -32,6 +32,8 @@ const PREPARATION_STOPPED = Object.freeze({
 });
 // xterm answers queries and focus changes with no keystroke: CPR, DA1/DA2, DSR, DECRPM, window
 // and OSC colour reports, DECRQSS. Only modified F3 (ESC[1;<m>R) shares a shape with a CPR.
+// One navigation or choice key, as a person answers a CLI's selection dialog.
+const DIALOG_KEY = /^(?:\r|\n|\t|\x1b|\x1b\[Z|\x1b[[O][A-D]|[0-9]|[yn])$/i;
 const TERMINAL_REPORTS = /^(?:\x1b\[(?:[?>]?[\d;]*c|\d*n|\??\d+;\d+R|[\d;]+t|\??\d+;\d+\$y|[IO])|\x1b\][\d;]+;[^\x07\x1b]*(?:\x07|\x1b\\)|\x1bP[^\x1b]*\x1b\\)+$/;
 
 /** Load node-pty once. On macOS its prebuilt helper can lose the execute bit on install. */
@@ -564,7 +566,9 @@ export class Supervisor {
     // A terminal report is not human input. Drop it during a native paste so it cannot land inside the message.
     if (TERMINAL_REPORTS.test(data)) { if (!session.messageInputPending) session.proc.write(data); return; }
     if (data) {
-      session.terminalInput?.manualInput(data);
+      // A key that answers the CLI's own permission or question dialog starts no draft, so queued
+      // column messages stay deliverable. Free text, or input outside such a dialog, is a human draft.
+      if (!(DIALOG_KEY.test(data) && session.activity?.snapshot().permissionPending)) session.terminalInput?.manualInput(data);
       session.inputEpoch++; session.activity?.input();
       const initialPastePending = Boolean(session.paste);
       if (initialPastePending) {

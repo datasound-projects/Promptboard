@@ -71,12 +71,20 @@ test('pipeline Autopilot takes each queued card through its columns to Done, one
   await tick(2);
   assert.equal((await projectNow()).tasks.find(task => task.id === first.id).column, 'code_review', 'an earlier finished turn does not count');
   await finishTurn(first.id); await tick(3);
+  // This stub has no native transport, so the Code Review instruction never reached the agent:
+  // Autopilot says so instead of calling the column finished, and Resume continues without it.
+  state = await projectNow();
+  assert.equal(state.tasks.find(task => task.id === first.id).column, 'code_review');
+  assert.equal(state.autopilot.status, 'paused'); assert.match(state.autopilot.reason, /Code Review instruction for “First” did not reach its agent/);
+  await board.controlAutopilot(project.id, { action: 'resume' }); await tick(4);
   state = await projectNow();
   assert.equal(state.tasks.find(task => task.id === first.id).column, 'done');
   assert.equal(state.autopilot.status, 'running', 'moving its own card to Done does not pause Autopilot');
   await tick(2);
   assert.equal((await projectNow()).tasks.find(task => task.id === second.id).column, 'executing', 'then the next card');
   await finishTurn(second.id); await tick(2); await finishTurn(second.id); await tick(4);
+  assert.equal((await projectNow()).autopilot.status, 'paused', 'each undelivered instruction is reported once');
+  await board.controlAutopilot(project.id, { action: 'resume' }); await tick(6);
   state = await projectNow();
   assert.deepEqual(state.tasks.map(task => task.column), ['done', 'done']);
   assert.equal(state.autopilot.status, 'finished');
