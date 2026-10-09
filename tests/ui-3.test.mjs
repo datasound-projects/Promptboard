@@ -890,3 +890,16 @@ test('board profile task drafts retain choices on stale revisions and legacy car
   ctx.$('#card-cancel').click(); const legacy = await ctx.app.board.createProject({ name: 'Legacy' }); await ctx.win.__pbTest.loadBoard(); await ctx.idle({ requireComplete: true });
   [...ctx.win.document.querySelectorAll('#workspace-list .workspace-item')].find(button => button.textContent.includes(legacy.name)).click(); ctx.$('#card-new').click(); assert.equal(ctx.$('#card-pipeline-settings').children.length, 0);
 });
+
+test('board refreshes keep keyboard focus on the Autopilot bar and on a column agent button', async t => {
+  const ctx = await linkedKanban(t);
+  const { $, win } = ctx;
+  await ctx.app.board.store.update(draft => { draft.projects[0].autopilot = { status: 'paused', reason: 'Paused by you', queue: [], done: [], current: null, routes: {} }; });
+  await win.__pbTest.loadBoard(); await ctx.idle();
+  const resume = byText($('#autopilot-bar'), 'Resume'); resume.focus();
+  await win.__pbTest.loadBoard(); await ctx.idle();
+  assert.equal(win.document.activeElement, resume, 'an unchanged Autopilot bar keeps its buttons');
+  $('#kanban-columns [data-column="executing"] .column-agent').focus();
+  await win.__pbTest.loadBoard(); await ctx.idle();
+  assert.equal(win.document.activeElement.id, 'column-agent-executing', 'the rebuilt column header gets focus back');
+});

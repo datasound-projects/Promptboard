@@ -1562,6 +1562,8 @@ function renderBoard() {
   const focusedCardAction = focusedCard && document.activeElement.matches('button, select, a') ? document.activeElement : null;
   const focusedDisplay = document.activeElement?.dataset.cardDisplay;
   const focusedAutomation = document.activeElement?.dataset.automationStop;
+  // Column controls outside the cards (the header's agent button, Add task) are found again by id.
+  const focusedColumnControl = !focusedCard && columns.contains(document.activeElement) ? document.activeElement.id : '';
   const confirming = [...columns.querySelectorAll('.kanban-card:has(.kanban-confirm)')].map(item => item.dataset.id);
   const confirmationFocus = document.activeElement?.closest('.kanban-confirm') ? document.activeElement.textContent : null;
   const scroll = new Map(columns.dataset.projectId === project?.id ? [...columns.querySelectorAll('.kanban-cards')].map(list => [list.dataset.column, list.scrollTop]) : []);
@@ -1579,6 +1581,7 @@ function renderBoard() {
   }
   if (focusedCard && focusedDisplay) [...(cardElement(focusedCard.dataset.id)?.querySelectorAll('[data-card-display]') || [])].find(input => input.dataset.cardDisplay === focusedDisplay)?.focus({ preventScroll: true });
   if (focusedAutomation) cardElement(focusedAutomation)?.querySelector('.kanban-stop-automations')?.focus({ preventScroll: true });
+  if (focusedColumnControl) document.getElementById(focusedColumnControl)?.focus({ preventScroll: true });
   for (const list of columns.querySelectorAll('.kanban-cards')) list.scrollTop = scroll.get(list.dataset.column) || 0;
   renderRepository(project);
   renderRepositoryPipelineStatus();
@@ -1637,6 +1640,7 @@ function renderColumn(column, tasks) {
   if (column.agent) {
     const settings = currentProject()?.effectiveWorkflow?.[column.id];
     const agent = detailButton(`Agent: ${agentText(settings)}`, () => openWorkflowDialog(column.id), 'column-agent');
+    agent.id = `column-agent-${column.id}`;
     agent.setAttribute('aria-label', `Choose provider and model for ${column.title}`);
     agent.title = `${agentText(settings)} · ${settings?.agentSource || 'default'} setting`;
     header.append(agent);
@@ -1668,6 +1672,7 @@ function renderColumn(column, tasks) {
   section.append(header, note, list);
   if ((column.role || column.id) === 'todo') {
     const add = detailButton('Add task', () => openCard(null, true), 'secondary-button kanban-add-task');
+    add.id = 'kanban-add-task';
     section.append(add);
   }
   return section;
@@ -4240,7 +4245,9 @@ function renderAutopilotBar(project) {
   buttons.push(detailButton(ap.status === 'finished' ? 'Close' : 'Stop', () => autopilotCall('stop')));
   buttons.push(detailButton('Settings', openAutopilot));
   bar.className = `autopilot-bar ${ap.status}${needsYou ? ' needs-you' : ''}`;
-  bar.replaceChildren(paragraph(text), detailActions(...buttons));
+  // Board renders come every few seconds while Autopilot runs; an unchanged bar keeps its buttons and focus.
+  const signature = JSON.stringify([text, buttons.map(button => button.textContent), needsYou && run.id]);
+  if (bar.dataset.signature !== signature) { bar.dataset.signature = signature; bar.replaceChildren(paragraph(text), detailActions(...buttons)); }
   bar.hidden = false;
 }
 

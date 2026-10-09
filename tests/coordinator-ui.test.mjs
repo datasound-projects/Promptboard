@@ -54,6 +54,21 @@ test('a Coordinator answer stays with the project it was asked in, and the other
   assert.equal($('#coordinator-send').disabled, false, 'B can ask its own question');
 });
 
+test('board renders keep keyboard focus on the same task link, and every link has its own id', async t => {
+  const { win, $, show, reads } = setup(t);
+  reads.set('a', { ...overview(), agents: [{ taskId: 'ta', number: 1, title: 'One', column: 'Executing', status: 'running' }],
+    recent: [{ task: 'ta', number: 1, taskTitle: 'One', title: 'Moved', at: Date.now() }, { task: 'ta', number: 1, taskTitle: 'One', title: 'Started', at: Date.now() }] });
+  win.localStorage.setItem('promptboard.coordinator.a', 'open');
+  show('a');
+  await until(() => $('#coordinator-task-agent-ta'), 'agent link');
+  const ids = [...$('#coordinator').querySelectorAll('.coordinator-link')].map(link => link.id);
+  assert.deepEqual(ids, ['coordinator-task-agent-ta', 'coordinator-task-recent-ta', 'coordinator-task-recent-ta-2']);
+  $('#coordinator-task-recent-ta-2').focus();
+  for (let revision = 2; revision < 4; revision++) { show('a', revision); await tick(); }
+  await tick();
+  assert.equal(win.document.activeElement.id, 'coordinator-task-recent-ta-2', 'focus stays on the same link after redraws');
+});
+
 test('board renders leave the open chat in place: caret, open target menu and scroll are kept', async t => {
   const { $, show, view } = setup(t);
   show('a');

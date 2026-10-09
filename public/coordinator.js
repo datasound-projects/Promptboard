@@ -97,8 +97,13 @@ window.PromptboardCoordinator = (() => {
       if (!items.length) box.append(el('p', 'coordinator-empty', empty)); else { const list = el('ul'); list.append(...items); box.append(list); }
       return box;
     }
-    const taskLink = (number, title, taskId) => button(`${number ? `#${number} ` : ''}${title}`, () => host.openTask(taskId), 'coordinator-link');
     function dashboard() {
+      // Stable, unique ids let render() put keyboard focus back on the same link after a redraw.
+      const ids = new Map();
+      const taskLink = (list, number, title, taskId) => {
+        const node = button(`${number ? `#${number} ` : ''}${title}`, () => host.openTask(taskId), 'coordinator-link'), id = `coordinator-task-${list}-${taskId}`, n = (ids.get(id) || 0) + 1;
+        ids.set(id, n); node.id = n > 1 ? `${id}-${n}` : id; return node;
+      };
       const grid = el('div', 'coordinator-grid');
       const progress = el('section', 'coordinator-card coordinator-progress');
       progress.append(el('h3', '', 'Progress'));
@@ -106,9 +111,9 @@ window.PromptboardCoordinator = (() => {
       meter.setAttribute('role', 'img'); meter.setAttribute('aria-label', `${data.progress.done} of ${data.progress.total} cards done`); meter.append(fill);
       progress.append(meter, el('p', 'coordinator-columns', data.columns.map(column => `${column.name} ${column.count}`).join(' · ')));
       grid.append(progress,
-        card('Active agents', data.agents.map(agent => { const li = el('li'); li.append(taskLink(agent.number, agent.title, agent.taskId), el('small', '', `${agent.column} · ${agent.needsYou ? 'waiting for you' : agent.status.replaceAll('_', ' ')}`)); return li; }), 'No agent is working.'),
-        card('Needs attention', data.blockers.map(blocker => { const li = el('li'); if (blocker.taskId) li.append(taskLink(blocker.number, blocker.title, blocker.taskId)); li.append(el('small', '', blocker.text)); return li; }), 'Nothing is blocked.'),
-        card('Recent activity', data.recent.slice(0, 6).map(event => { const li = el('li'); li.append(event.task ? taskLink(event.number, event.taskTitle, event.task) : el('span', '', event.title)); li.append(el('small', '', `${event.title}${event.status ? ` · ${event.status}` : ''} · ${ago(event.at)}`)); return li; }), 'No activity yet.'));
+        card('Active agents', data.agents.map(agent => { const li = el('li'); li.append(taskLink('agent', agent.number, agent.title, agent.taskId), el('small', '', `${agent.column} · ${agent.needsYou ? 'waiting for you' : agent.status.replaceAll('_', ' ')}`)); return li; }), 'No agent is working.'),
+        card('Needs attention', data.blockers.map(blocker => { const li = el('li'); if (blocker.taskId) li.append(taskLink('blocker', blocker.number, blocker.title, blocker.taskId)); li.append(el('small', '', blocker.text)); return li; }), 'Nothing is blocked.'),
+        card('Recent activity', data.recent.slice(0, 6).map(event => { const li = el('li'); li.append(event.task ? taskLink('recent', event.number, event.taskTitle, event.task) : el('span', '', event.title)); li.append(el('small', '', `${event.title}${event.status ? ` · ${event.status}` : ''} · ${ago(event.at)}`)); return li; }), 'No activity yet.'));
       return grid;
     }
 
