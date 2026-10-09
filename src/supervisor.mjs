@@ -65,6 +65,7 @@ export class Supervisor {
     this.queuedHolds = new Map();
     this.boundaryWaits = new Map();
     this.pending = new Map(); // runId -> subscribers waiting for a queued run to start
+    this.confirming = new Map(); // runId -> the confirmation in progress
     this.stopping = false;
   }
 
@@ -775,7 +776,16 @@ export class Supervisor {
    * The user confirms the stage. Planning needs a captured plan and records its approval.
    * The agent session then ends; the worktree stays.
    */
-  async confirm(runId) {
+  confirm(runId) {
+    // A double click must not approve, record a review or record a stage result twice.
+    const active = this.confirming.get(runId);
+    if (active) return active;
+    const confirming = this.#confirm(runId).finally(() => this.confirming.delete(runId));
+    this.confirming.set(runId, confirming);
+    return confirming;
+  }
+
+  async #confirm(runId) {
     const run = await this.board.run(runId);
     if (run.config.pipeline) throw new AgentError('Move this pipeline card or pause its agent; a finished turn does not complete a stage.', 'PIPELINE_STAGE_CONFIRM_UNAVAILABLE', 409);
     if (run.status !== 'waiting_for_input' || !run.turns) throw new AgentError('Confirm after the agent has finished a turn and is waiting.', 'NOT_CONFIRMABLE', 409);

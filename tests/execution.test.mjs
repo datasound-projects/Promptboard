@@ -724,7 +724,13 @@ test('planning captures a plan outside the worktree, cannot implement, and appro
   // The agent wrote only in the task worktree; the main checkout is unchanged.
   assert.equal(await readFile(join(workspace.path, 'agent-output.txt'), 'utf8'), 'written by the agent\n');
   assert.equal(git(w.root, 'status', '--porcelain'), '');
-  await w.supervisor.confirm(exec.id);
+  const record = w.board.recordStageResult; let recorded = 0;
+  w.board.recordStageResult = async (...args) => { recorded++; return record.apply(w.board, args); };
+  const confirms = [w.supervisor.confirm(exec.id), w.supervisor.confirm(exec.id)];
+  assert.equal(confirms[0], confirms[1], 'A second concurrent confirm shares the first.');
+  await Promise.all(confirms); w.board.recordStageResult = record;
+  assert.equal(recorded, 1, 'The stage result is recorded once.');
+  await assert.rejects(w.supervisor.confirm(exec.id), { code: 'NOT_CONFIRMABLE' });
   // Editing the task text makes the plan approval stale for later runs.
   const current = (await w.board.view()).projects[0].tasks[0];
   await w.board.updateTask(task.id, { prompt: 'Changed text.', expectedRevision: current.revision });
