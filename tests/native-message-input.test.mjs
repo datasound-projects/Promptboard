@@ -399,7 +399,9 @@ test('xterm automatic reports reach the PTY without counting as human input, and
   const w = await fixture(t), supervisor = new Supervisor({ dataDir: w.dir, board: {} });
   Object.assign(w.session, { seq: 0, ring: [], ringBytes: 0, subscribers: new Set() });
   supervisor.sessions.set(w.run.id, w.session);
-  const reports = ['\x1b[O', '\x1b[I', '\x1b[12;40R', '\x1b[?1;2c\x1b[>0;276;0c', '\x1b]11;rgb:1111/1111/1111\x1b\\', '\x1b[0n', '\x1b[?2004;1$y', '\x1b[8;32;120t', '\x1bP1$r0m\x1b\\'];
+  const reports = ['\x1b[O', '\x1b[I', '\x1b[12;40R', '\x1b[?1;2c\x1b[>0;276;0c', '\x1b]11;rgb:1111/1111/1111\x1b\\', '\x1b[0n', '\x1b[?2004;1$y', '\x1b[8;32;120t', '\x1bP1$r0m\x1b\\',
+    // A click, wheel or motion over a CLI that tracks the mouse (Claude Code does) is not a draft either.
+    '\x1b[<0;40;12M\x1b[<0;40;12m', '\x1b[<35;41;12M', '\x1b[<64;10;5M', '\x1b[32;40;12M', '\x1b[M !!'];
   for (const data of reports) supervisor.input(w.run.id, data);
   assert.deepEqual(w.writes, reports); assert.equal(w.session.inputEpoch, 0);
   assert.equal(supervisor.nativeMessageReadiness(w.run.id), 'ready');
