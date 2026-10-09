@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Create Kanban card** from a saved prompt deletes the new card again when the prompt's link to it cannot be saved, so a retry no longer makes a duplicate; if that also fails, `CARD_UNLINKED` names the card.
 - A board import refused for confirmation or because tasks own worktrees no longer leaves unused Base revision files in the data folder.
 - A Coordinator question, Base avatar or wiki generation, source import, MCP test or refresh whose browser request closed before the server started listening is cancelled at once, instead of holding the one job slot until the CLI call finishes.
 - A run whose supplied Base context file was removed now answers `BASE_NOT_FOUND` (404) instead of a 502.

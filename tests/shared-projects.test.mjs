@@ -4,8 +4,8 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Board } from '../src/board.mjs';
-import { OriginStore, originRoute } from '../src/origin.mjs';
-import { PromptStore, ensureProject, findProject } from '../src/projects.mjs';
+import { OriginError, OriginStore, originRoute } from '../src/origin.mjs';
+import { PromptStore, ensureProject, findProject, projectsRoute } from '../src/projects.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
 
 async function client(t) {
@@ -72,6 +72,31 @@ test('a link made before shared IDs still lists one project, reachable by either
   const saved = (await call(`/api/shared-projects/${board.id}/prompts`, 'POST', { title: 'Login', prompt: 'Build the login form.' })).data;
   assert.equal(saved.project.id, origin.id);
   assert.equal((await call(`/api/shared-projects/${origin.id}/prompts`)).data.prompts.length, 1);
+});
+
+test('a card whose prompt link cannot be saved is removed again, so a retry makes exactly one card', async t => {
+  const { board, origin, prompts } = await local(t);
+  const project = await board.createProject({ name: 'Shop' });
+  const { prompt } = await prompts.create(project.id, [project.id], { title: 'Checkout', prompt: 'Build checkout.' });
+  let saveFails = true;
+  // The update runs, then the save fails, as on a full disk.
+  const flaky = { change: (ids, id, revision, update) => prompts.change(ids, id, revision, async (...args) => {
+    await update(...args); if (saveFails) throw new OriginError('The prompt could not be saved.', 'PROMPTS_WRITE_FAILED', 500);
+  }) };
+  const card = () => projectsRoute({ origin, board, prompts: flaky, req: { method: 'POST' }, res: {}, pathname: `/api/shared-projects/${project.id}/prompts/${prompt.id}/cards`,
+    jsonBody: async () => ({ expectedRevision: 1 }), send: (_res, status, data) => ({ status, data }) });
+  const cards = async () => (await board.state()).projects[0].tasks.length;
+  await assert.rejects(card(), { code: 'PROMPTS_WRITE_FAILED' });
+  assert.equal(await cards(), 0);
+  // When the card cannot be removed either, the error says so instead of hiding it.
+  const deleteTask = board.deleteTask; board.deleteTask = async () => { throw new Error('disk'); };
+  await assert.rejects(card(), { code: 'CARD_UNLINKED', message: /Card \d+ was created/ });
+  board.deleteTask = deleteTask;
+  await board.deleteTask((await board.state()).projects[0].tasks[0].id, { expectedRevision: 1 });
+  saveFails = false;
+  assert.equal((await card()).status, 200);
+  assert.equal(await cards(), 1);
+  assert.equal((await prompts.list([project.id]))[0].links.cards.length, 1);
 });
 
 test('saved prompts keep revisions and links; cards are made only on request and change only when idle', async t => {
