@@ -905,7 +905,6 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
 #project-settings .context-agent { flex: 1 1 auto; min-width: 0; max-width: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
 #project-settings .kanban-toolbar, #project-settings .select-grid { grid-template-columns: minmax(0, 1fr); padding: 0; gap: 0; }
 #project-settings .toolbar-cell { padding: 11px 0; border-top: 1px solid var(--line); }
-#project-settings .toolbar-cell:first-child { display: none; }
 #project-settings .toolbar-value { margin: 3px 0; overflow: hidden; color: var(--ink); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 #project-settings .field-label { font-size: 11.5px; }
 #project-settings .kanban-project-form, #project-settings .kanban-repo { padding: 12px 0 0; border-top: 1px solid var(--line); }
