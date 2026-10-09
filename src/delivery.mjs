@@ -476,13 +476,5 @@ export class Delivery {
     return this.board.completeTask(taskId, { kind: 'no_changes', details: {} });
   }
 
-  async testLog(taskId, index) {
-    const state = await this.board.state();
-    const task = state.projects.flatMap(project => project.tasks).find(item => item.id === taskId);
-    const id = task?.evidence?.tests?.id;
-    if (!id || !Number.isInteger(index) || index < 0 || index > 20) throw fail('There is no test log.', 'NOT_FOUND', 404);
-    return (await readFile(join(this.board.dataDir, 'tests', taskId, id, `command-${index + 1}.log`), 'utf8').catch(() => '')).slice(-2 * 1024 * 1024);
-  }
-
   stopAllTests() { for (const running of this.testsRunning.values()) for (const pid of running.pids) killPidGroup(pid, 'SIGKILL'); }
 }

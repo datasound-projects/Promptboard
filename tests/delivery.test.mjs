@@ -217,7 +217,7 @@ test('failed tests, missing commands, and timeouts never pass; source changes ma
   assert.equal(result.status, 'failed');
   assert.deepEqual(result.results.map(item => [item.label, item.status, item.exitCode]), [['ok', 'passed', 0], ['fails', 'failed', 3], ['missing', 'missing', null], ['hangs', 'timeout', null]]);
   assert.match(result.results[1].tail, /boom/);
-  assert.match(await w.delivery.testLog(task.id, 0), /fine/);
+  assert.match(await readFile(join(w.board.dataDir, 'tests', task.id, result.id, 'command-1.log'), 'utf8'), /fine/);
   // Passing tests for an older commit do not count after a new commit.
   await setCommands([{ command: `${process.execPath} -e "0"` }]);
   const ok = await w.tests(task.id);
