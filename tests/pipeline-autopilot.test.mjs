@@ -135,9 +135,15 @@ test('only a pause you cause stops Autopilot; system handoffs and its own Done m
   await board.store.update(draft => { draft.projects[0].autopilot.current.step = 'finishing'; });
   await board.beginSuspension(run.id);
   assert.equal((await projectNow()).autopilot.status, 'running');
-  await board.store.update(draft => { draft.projects[0].autopilot.current.step = 'working'; });
+  // Pausing another card's agent (for example by moving it to Done) leaves Autopilot running.
+  await board.store.update(draft => { draft.projects[0].autopilot.current.step = 'working'; draft.projects[0].autopilot.current.taskId = 'another-card'; });
   await board.beginSuspension(run.id);
-  assert.equal((await projectNow()).autopilot.status, 'paused');
+  assert.equal((await projectNow()).autopilot.status, 'running', 'another card does not pause Autopilot');
+  await board.store.update(draft => { draft.projects[0].autopilot.current.taskId = card.id; });
+  await board.beginSuspension(run.id);
+  const paused = (await projectNow()).autopilot;
+  assert.equal(paused.status, 'paused');
+  assert.equal(paused.log.at(-1).text, 'Paused: The task agent was paused by you.', 'the pause is logged');
 });
 
 test('resume starts a stopped column agent again', async t => {

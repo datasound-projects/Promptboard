@@ -2211,9 +2211,13 @@ export class Board {
       if (token) { session.suspensionToken = token; session.previousLifecycle = run.lifecycle; }
       run.lifecycle = 'suspending';
       const project = state.projects.find(item => item.id === run.projectId), ap = project?.autopilot;
-      // Only a pause you cause stops Autopilot: not a system handoff, and not Autopilot moving its own card to Done.
+      // Only a pause you cause on Autopilot's own card stops it: not a system handoff, not Autopilot moving
+      // its card to Done, and not another card you move or pause meanwhile.
       const ownMove = ap?.current?.taskId === run.taskId && ap.current.step === 'finishing';
-      if (ap?.status === 'running' && intent === 'user' && !ownMove) { ap.status = 'paused'; ap.reason = 'The task agent was paused by you.'; }
+      if (ap?.status === 'running' && intent === 'user' && ap.current?.taskId === run.taskId && !ownMove) {
+        ap.status = 'paused'; ap.reason = 'The task agent was paused by you.';
+        ap.log = [...(ap.log || []), { at: Date.now(), text: `Paused: ${ap.reason}` }].slice(-200);
+      }
     });
   }
 
