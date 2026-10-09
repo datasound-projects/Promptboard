@@ -11,7 +11,7 @@ window.PromptboardCoordinator = (() => {
 
   function create(host) {
     const panel = document.getElementById('coordinator'), toggle = document.getElementById('coordinator-toggle');
-    let projectId = null, data = null, revision = null, fetching = null, chatOpen = false, scope = { kind: 'project' }, message = '', draft = '';
+    let projectId = null, data = null, revision = null, fetching = null, chatOpen = false, scope = { kind: 'project' }, message = '', readError = '', draft = '';
     // Questions in flight, per project. The chat node is kept across board renders so typing is never interrupted.
     const asking = new Set();
     let chatNode = null;
@@ -23,17 +23,19 @@ window.PromptboardCoordinator = (() => {
       if (!projectId) return;
       const id = projectId;
       // One read per project at a time; switching projects starts the new project's read at once.
-      if (fetching?.id === id) return fetching.promise;
-      const promise = call('').then(body => { if (id === projectId) { if (JSON.stringify(body.chat) !== JSON.stringify(data?.chat)) chatNode = null; data = body; message = ''; } }).catch(error => { if (id === projectId) message = error.message; })
-        .finally(() => { if (fetching?.promise === promise) fetching = null; render(); });
-      fetching = { id, promise };
-      return promise;
+      // A change during a read may be missing from it, so one more read follows.
+      if (fetching?.id === id) { fetching.again = true; return fetching.promise; }
+      const read = { id, again: false };
+      read.promise = call('').then(body => { if (id === projectId) { if (JSON.stringify(body.chat) !== JSON.stringify(data?.chat)) chatNode = null; data = body; message = ''; readError = ''; } }).catch(error => { if (id === projectId) readError = error.message; })
+        .finally(() => { if (fetching === read) { fetching = null; if (read.again) void refresh(); } render(); });
+      fetching = read;
+      return read.promise;
     }
 
     /** Called on every board render; fetches only when the project or the board changed and the panel is shown. */
     function sync(project, boardRevision, visible = true) {
       if (!project) { projectId = null; panel.hidden = true; toggle.hidden = true; return; }
-      if (project.id !== projectId) { projectId = project.id; data = null; revision = null; chatOpen = false; chatNode = null; scope = { kind: 'project' }; message = ''; draft = ''; }
+      if (project.id !== projectId) { projectId = project.id; data = null; revision = null; chatOpen = false; chatNode = null; scope = { kind: 'project' }; message = ''; readError = ''; draft = ''; }
       panel.dataset.visible = String(visible);
       toggle.hidden = !visible;
       if (!visible) { panel.hidden = true; return; }
@@ -56,11 +58,12 @@ window.PromptboardCoordinator = (() => {
       const status = el('span', 'coordinator-status');
       status.setAttribute('role', 'status');
       if (off) status.textContent = 'Off · project knowledge is kept';
-      else if (!data) status.textContent = message || 'Reading the board…';
+      else if (!data) status.textContent = readError || message || 'Reading the board…';
       else {
         const needs = data.agents.filter(agent => agent.needsYou).length;
         status.append(...[`${data.agents.length} ${data.agents.length === 1 ? 'agent' : 'agents'} active`, `${data.progress.done}/${data.progress.total} done`,
-          ...(needs ? [`${needs} ${needs === 1 ? 'needs' : 'need'} you`] : []), ...(data.blockers.length ? [`${data.blockers.length} ${data.blockers.length === 1 ? 'blocker' : 'blockers'}`] : [])]
+          ...(needs ? [`${needs} ${needs === 1 ? 'needs' : 'need'} you`] : []), ...(data.blockers.length ? [`${data.blockers.length} ${data.blockers.length === 1 ? 'blocker' : 'blockers'}`] : []),
+          ...(readError ? [`Not refreshed: ${readError}`] : [])]
           .map((text, index) => el('span', index >= 2 ? 'coordinator-alert' : '', text)));
       }
       const controls = el('div', 'coordinator-controls');
