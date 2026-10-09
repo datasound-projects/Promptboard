@@ -341,6 +341,11 @@ export class Supervisor {
     session.activity?.output();
     if (session.provider === 'codex') {
       const title = [...data.matchAll(TERMINAL_TITLE)].at(-1)?.[1];
+      // Codex titles its terminal only once its session is up, after startup questions such as folder trust.
+      if (title !== undefined && !session.sawEvent) {
+        session.sawEvent = true; clearTimeout(session.watchdog);
+        this.board.updateRun(session.runId, { lifecycle: 'events-received', waitingReason: '' }).catch(() => {});
+      }
       if (title !== undefined) this.#terminalQuestion(session, CODEX_ASKS.test(title)).catch(() => {});
     }
     this.#push(session, { data });
