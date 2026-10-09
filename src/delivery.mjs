@@ -213,38 +213,43 @@ export class Delivery {
   async runTests(taskId, { confirm } = {}) {
     if (confirm !== true) throw fail('Confirm the test run first.', 'CONFIRMATION_REQUIRED', 400);
     if (this.testsRunning.has(taskId)) throw fail('Tests are already running for this task.', 'TESTS_RUNNING');
-    const { project, ws } = await this.#context(taskId, { working: true });
-    const commands = project.testCommands || [];
-    if (!commands.length) throw fail('Add a test command in Workflow settings first. Promptboard only runs commands you configure.', 'NO_TEST_COMMANDS');
-    const rev = await this.revision(taskId);
-    if (!rev.branchOk) throw fail('The task worktree is not on its task branch.', 'BRANCH_MISMATCH');
-    if (!rev.clean) throw fail('Commit or remove the uncommitted changes before testing.', 'UNCOMMITTED_CHANGES');
-    const id = `tests-${Date.now()}`;
-    const dir = join(this.board.dataDir, 'tests', taskId, id);
-    await mkdir(dir, { recursive: true, mode: 0o700 });
+    // Claim before the first await so a second call cannot start a parallel run.
     const running = { pids: new Set() };
     this.testsRunning.set(taskId, running);
-    await this.board.updateTaskEvidence(taskId, task => {
-      task.evidence = { ...(task.evidence || {}), tests: { status: 'running', id, taskCommit: rev.taskCommit, targetCommit: rev.targetCommit, promptRevision: rev.promptRevision, results: [], startedAt: Date.now() } };
-    });
-    (async () => {
-      const results = [];
-      for (const [index, command] of commands.entries()) results.push(await this.#runCommand(command, ws.path, join(dir, `command-${index + 1}.log`), running));
-      const after = await this.revision(taskId).catch(() => null);
-      const changed = !after || after.taskCommit !== rev.taskCommit;
-      const status = changed ? 'invalid' : results.every(result => result.status === 'passed') ? 'passed' : 'failed';
+    const release = () => { if (this.testsRunning.get(taskId) === running) this.testsRunning.delete(taskId); };
+    try {
+      const { project, ws } = await this.#context(taskId, { working: true });
+      const commands = project.testCommands || [];
+      if (!commands.length) throw fail('Add a test command in Workflow settings first. Promptboard only runs commands you configure.', 'NO_TEST_COMMANDS');
+      const rev = await this.revision(taskId);
+      if (!rev.branchOk) throw fail('The task worktree is not on its task branch.', 'BRANCH_MISMATCH');
+      if (!rev.clean) throw fail('Commit or remove the uncommitted changes before testing.', 'UNCOMMITTED_CHANGES');
+      const id = `tests-${Date.now()}`;
+      const dir = join(this.board.dataDir, 'tests', taskId, id);
+      await mkdir(dir, { recursive: true, mode: 0o700 });
       await this.board.updateTaskEvidence(taskId, task => {
-        if (task.evidence?.tests?.id !== id) return;
-        task.evidence.tests = { ...task.evidence.tests, status, results, endedAt: Date.now(), ...(changed ? { note: 'The task commit changed while tests ran; run them again.' } : {}) };
-      }).catch(() => {});
-    })().finally(() => this.testsRunning.delete(taskId));
-    return { id, status: 'running' };
+        task.evidence = { ...(task.evidence || {}), tests: { status: 'running', id, taskCommit: rev.taskCommit, targetCommit: rev.targetCommit, promptRevision: rev.promptRevision, results: [], startedAt: Date.now() } };
+      });
+      (async () => {
+        const results = [];
+        for (const [index, command] of commands.entries()) results.push(await this.#runCommand(command, ws.path, join(dir, `command-${index + 1}.log`), running));
+        const after = await this.revision(taskId).catch(() => null);
+        const changed = !after || after.taskCommit !== rev.taskCommit;
+        const status = changed ? 'invalid' : results.every(result => result.status === 'passed') ? 'passed' : 'failed';
+        await this.board.updateTaskEvidence(taskId, task => {
+          if (task.evidence?.tests?.id !== id) return;
+          task.evidence.tests = { ...task.evidence.tests, status, results, endedAt: Date.now(), ...(changed ? { note: 'The task commit changed while tests ran; run them again.' } : {}) };
+        }).catch(() => {});
+      })().finally(release);
+      return { id, status: 'running' };
+    } catch (error) { release(); throw error; }
   }
 
   #runCommand(command, cwd, logPath, running) {
     return new Promise(resolve => {
       const started = Date.now();
       const log = createWriteStream(logPath, { mode: 0o600 });
+      log.on('error', () => {}); // A lost log (EACCES, ENOSPC) never decides the result or stops the app.
       let tail = '', written = 0, timedOut = false, settled = false;
       const done = result => { if (settled) return; settled = true; log.end(); resolve({ label: command.label, argv: command.argv, cwd, durationMs: Date.now() - started, tail: tail.slice(-OUTPUT_TAIL), ...result }); };
       let child;
@@ -262,6 +267,9 @@ export class Delivery {
         clearTimeout(timer);
         done({ status: error.code === 'ENOENT' ? 'missing' : 'error', exitCode: null, reason: error.code === 'ENOENT' ? `Command not found: ${command.argv[0]}` : 'The command could not run.' });
       });
+      // The exit code decides. A background child can hold stdout open after the command exits:
+      // stop waiting for it, and never count it as a timeout.
+      child.once('exit', () => { clearTimeout(timer); setTimeout(() => { child.stdout.destroy(); child.stderr.destroy(); }, 2000).unref(); });
       child.on('close', (code, signal) => {
         clearTimeout(timer);
         if (child.pid) { untrackPid(child.pid); running.pids.delete(child.pid); }

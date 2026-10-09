@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Board } from '../src/board.mjs';
 import { Supervisor } from '../src/supervisor.mjs';
-import { parseCommand, parseFindings } from '../src/delivery.mjs';
+import { Delivery, parseCommand, parseFindings } from '../src/delivery.mjs';
 import { resolveConfig } from '../src/agents.mjs';
 
 const skip = process.platform === 'win32';
@@ -66,6 +66,34 @@ test('command parsing never uses a shell; review findings are parsed from the st
   const parsed = parseFindings('Notes.\n```json\n{"verdict":"changes_required","findings":[{"severity":"high","file":"a.js","line":3,"explanation":"Bug."}]}\n```');
   assert.deepEqual(parsed, { parsed: true, verdict: 'changes_required', findings: [{ severity: 'high', file: 'a.js', line: 3, explanation: 'Bug.' }] });
   assert.equal(parseFindings('no json here').parsed, false);
+});
+
+test('test runs: one claim per task, released on failed setup; a lost log or a background child never stalls the result', { skip, timeout: 60000 }, async t => {
+  const repo = await temp(t, 'pb-del-run-'), dataDir = await temp(t, 'pb-del-run-data-');
+  git(repo, 'init', '-q', '-b', 'main'); git(repo, '-c', 'user.name=a', '-c', 'user.email=a@b', 'commit', '-q', '--allow-empty', '-m', 'base'); git(repo, 'checkout', '-q', '-b', 'task');
+  const task = { id: 't1', column: 'testing', workspace: { status: 'ready', path: repo, branch: 'task' }, evidence: {} };
+  // The command exits 0 at once; its background child keeps stdout open for 15 s.
+  const project = { tasks: [task], targetBranch: { name: 'main' }, testCommands: [{ label: 'bg', timeoutSec: 30,
+    argv: [process.execPath, '-e', "require('child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 15000)'], { stdio: 'inherit' }).unref(); console.log('fine')"] }] };
+  let failEvidence = false, logIsDirectory = false;
+  const delivery = new Delivery({ dataDir, state: async () => ({ projects: [project] }), updateTaskEvidence: async (_id, change) => {
+    if (failEvidence) throw new Error('STATE_WRITE_FAILED');
+    change(task);
+    if (logIsDirectory && task.evidence.tests.status === 'running') await mkdir(join(dataDir, 'tests', 't1', task.evidence.tests.id, 'command-1.log'));
+    return task;
+  } });
+  const finished = async () => { await until(() => !delivery.testsRunning.has('t1'), 'tests recorded at exit', 8000); return task.evidence.tests; };
+  const both = await Promise.allSettled([delivery.runTests('t1', { confirm: true }), delivery.runTests('t1', { confirm: true })]);
+  assert.deepEqual(both.map(item => item.status === 'fulfilled' ? 'started' : item.reason.code).sort(), ['TESTS_RUNNING', 'started']);
+  const first = await finished();
+  assert.deepEqual([first.status, first.results[0].status, first.results[0].exitCode], ['passed', 'passed', 0]);
+  failEvidence = true;
+  await assert.rejects(delivery.runTests('t1', { confirm: true }), /STATE_WRITE_FAILED/);
+  failEvidence = false;
+  assert.equal(delivery.testsRunning.has('t1'), false, 'A failed setup releases its claim.');
+  logIsDirectory = true; // The log cannot be opened: the run still finishes and the app keeps running.
+  await delivery.runTests('t1', { confirm: true });
+  assert.equal((await finished()).status, 'passed');
 });
 
 test('full flow: commit, review, send back, fix, accept, test, and a confirmed fast-forward merge into a clean checkout', { skip, timeout: 120000 }, async t => {
