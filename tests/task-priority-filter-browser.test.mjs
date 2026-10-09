@@ -74,22 +74,18 @@ test('priority filters live in the archive; the Board shows every card and reord
   assert.deepEqual(browser.consoleMessages.filter(message => message.startsWith('EXCEPTION')), []);
 });
 
-test('older capabilities and malformed saved filters never hide cards or expose unsupported priority controls', { skip: !await findChrome(), timeout: 60000 }, async t => {
+test('malformed saved filters never hide cards', { skip: !await findChrome(), timeout: 60000 }, async t => {
   const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
-  t.diagnostic('Older filter fixture server started.');
-  const project = await app.board.createProject({ name: 'Older filter server', workflowMode: 'pipeline' });
+  t.diagnostic('Filter fixture server started.');
+  const project = await app.board.createProject({ name: 'Saved filter', workflowMode: 'pipeline' });
   const task = await app.board.createTask({ projectId: project.id, title: 'Visible None' });
   const archived = await app.board.createTask({ projectId: project.id, title: 'Visible completed' }); await app.board.transition(archived.id, { column: 'done', expectedRevision: archived.revision });
   const browser = await launch(); assert.ok(browser); t.after(() => browser.close());
-  t.diagnostic('Older filter browser launched.');
-  await browser.send('Page.addScriptToEvaluateOnNewDocument', { source: `localStorage.setItem('promptboard.priority-filter.${project.id}','4');const nativeFetch=window.fetch;window.fetch=async function(...args){const r=await Reflect.apply(nativeFetch,this,args);if(args[0]!=='/api/session')return r;const d=await r.json();delete d.capabilities.taskPriority;return new Response(JSON.stringify(d),{status:r.status,headers:r.headers});};` });
-  await browser.goto(app.url + '/#/kanban'); await browser.until(`document.querySelector('[data-id="${task.id}"]')`, 'older visible card');
-  t.diagnostic('Older filter tasks rendered.');
-  await browser.eval(`document.querySelector('[data-column="done"] .kanban-done-all').click();`); await browser.until(`document.getElementById('done-dialog').open`, 'older archive');
-  assert.equal(await browser.eval(`return document.getElementById('archive-priority-field').hidden;`), true);
-  assert.ok(await browser.eval(`return !!document.querySelector('#archive-rows [data-archive-task="${archived.id}"]');`));
-  await browser.send('Page.addScriptToEvaluateOnNewDocument', { source: `localStorage.setItem('promptboard.priority-filter.${project.id}','invalid');window.fetch=async function(...args){return Reflect.apply(nativeFetch,this,args);};` });
-  await browser.reload(); await browser.until(`document.querySelector('[data-id="${task.id}"]')`, 'malformed filter fallback');
+  t.diagnostic('Filter browser launched.');
+  await browser.send('Page.addScriptToEvaluateOnNewDocument', { source: `localStorage.setItem('promptboard.priority-filter.${project.id}','invalid');` });
+  await browser.goto(app.url + '/#/kanban');
+  t.diagnostic('Saved filter page loaded.');
+  await browser.until(`document.querySelector('[data-id="${task.id}"]')`, 'malformed filter fallback');
   await browser.eval(`document.querySelector('[data-column="done"] .kanban-done-all').click();`);
   await browser.until(`document.getElementById('done-dialog').open && document.getElementById('archive-priority-filter').value==='all' && document.querySelector('#archive-rows [data-archive-task="${archived.id}"]')`, 'malformed filter shows every archived card');
   assert.deepEqual((await app.board.state()).runs, []);

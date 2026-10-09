@@ -108,9 +108,9 @@ test('label rename retains stable filter identity; removing the selected definit
   assert.equal(after.projects[0].tasks.length, 3); assert.deepEqual(after.runs, []); assert.deepEqual(after.sessions, []);
 });
 
-test('older capabilities, malformed or foreign saved label filters and legacy projects never hide tasks', { skip: !chrome, timeout: 60000 }, async t => {
+test('malformed or foreign saved label filters and legacy projects never hide tasks', { skip: !chrome, timeout: 60000 }, async t => {
   const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
-  const project = await app.board.createProject({ name: 'Old label capability', workflowMode: 'pipeline' });
+  const project = await app.board.createProject({ name: 'Saved label filters', workflowMode: 'pipeline' });
   await app.board.setLabels(project.id, { labels: [{ id: 'bug', name: 'Bug', color: '#123456' }], expectedLabelRevision: 0 });
   const card = await app.board.createTask({ projectId: project.id, title: 'Visible unlabeled' });
   const done = await app.board.createTask({ projectId: project.id, title: 'Visible archive' }); await app.board.transition(done.id, { column: 'done', expectedRevision: done.revision });
@@ -118,14 +118,10 @@ test('older capabilities, malformed or foreign saved label filters and legacy pr
   const old = await app.board.createTask({ projectId: legacy.id, title: 'Legacy visible', prompt: 'Required legacy prompt' });
   const original = await app.board.state();
   const browser = await launch(); assert.ok(browser); t.after(() => browser.close());
-  await browser.send('Page.addScriptToEvaluateOnNewDocument', { source: `localStorage.setItem('promptboard.kanban.project',${JSON.stringify(project.id)});localStorage.setItem('promptboard.label-filter.${project.id}','label:bug');const nativeFetch=window.fetch;window.fetch=async function(...args){const r=await Reflect.apply(nativeFetch,this,args);if(args[0]!=='/api/session')return r;const d=await r.json();delete d.capabilities.taskLabels;return new Response(JSON.stringify(d),{status:r.status,headers:r.headers});};` });
-  await browser.goto(app.url + '/#/kanban'); await browser.until(`document.querySelector('[data-id="${card.id}"]')`, 'older visible labels');
-  await enter(browser, '[data-column=done] .kanban-done-all');
-  await browser.until('document.getElementById("done-dialog").open', 'older archive open');
-  assert.equal(await browser.eval('return document.getElementById("archive-label-field").hidden;'), true);
-  assert.ok(await browser.eval(`return !!document.querySelector('#archive-rows [data-archive-task="${done.id}"]');`));
+  await browser.send('Page.addScriptToEvaluateOnNewDocument', { source: `localStorage.setItem('promptboard.kanban.project',${JSON.stringify(project.id)});` });
+  await browser.goto(app.url + '/#/kanban'); await browser.until(`document.querySelector('[data-id="${card.id}"]')`, 'label board');
   for (const value of ['invalid', 'label:foreign']) {
-    await browser.send('Page.addScriptToEvaluateOnNewDocument', { source: `localStorage.setItem('promptboard.label-filter.${project.id}',${JSON.stringify(value)});window.fetch=async function(...args){return Reflect.apply(nativeFetch,this,args);};` });
+    await browser.send('Page.addScriptToEvaluateOnNewDocument', { source: `localStorage.setItem('promptboard.label-filter.${project.id}',${JSON.stringify(value)});` });
     await browser.reload(); await browser.until(`document.querySelector('[data-id="${card.id}"]')`, 'board after label preference');
     await enter(browser, '[data-column=done] .kanban-done-all');
     await browser.until(`document.getElementById('done-dialog').open && document.getElementById('archive-label-filter').value==='all' && document.querySelector('#archive-rows [data-archive-task="${done.id}"]')`, 'invalid label preference fallback');

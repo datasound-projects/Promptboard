@@ -125,16 +125,6 @@ test('stale label drafts stay editable and explicit reload works; own removal re
   assert.deepEqual((await w.app.board.state()).runs, []); assert.deepEqual(browser.consoleMessages.filter(line => line.startsWith('EXCEPTION')), []);
 });
 
-test('older server capabilities hide labels and ordinary card saving omits unsupported fields', { skip: !chrome, timeout: 90000 }, async t => {
-  const w = await setup(t), { browser, keys } = w;
-  await browser.send('Page.addScriptToEvaluateOnNewDocument', { source: `const nativeFetch=window.fetch;window.__labelPosts=[];window.fetch=async function(...args){if(args[0]==='/api/tasks'&&args[1]?.method==='POST')window.__labelPosts.push(JSON.parse(args[1].body));const r=await Reflect.apply(nativeFetch,this,args);if(args[0]!=='/api/session')return r;const d=await r.json();delete d.capabilities.taskLabels;return new Response(JSON.stringify(d),{status:r.status,headers:r.headers});};` });
-  await browser.goto(w.app.url + '/#/kanban'); await browser.until(`document.querySelector('[data-id="${w.task.id}"] .kanban-open')`, 'older label capability');
-  await keys.enter('#card-new'); assert.equal(await browser.eval('return document.getElementById("card-labels-field").hidden;'), true);
-  await keys.type('#card-title', 'Older server task'); await keys.enter('#card-save'); await browser.until('!document.getElementById("card-dialog").open', 'older labels save');
-  assert.deepEqual(await browser.eval('return [Object.hasOwn(window.__labelPosts[0],"labelIds"),Object.hasOwn(window.__labelPosts[0],"expectedLabelRevision")];'), [false, false]);
-  assert.deepEqual((await w.app.board.state()).runs, []);
-});
-
 test('a deleted card cannot be recreated by saving its open draft after nested label editing', { skip: !chrome, timeout: 90000 }, async t => {
   const w = await setup(t), { browser, keys } = w;
   await browser.goto(w.app.url + '/#/kanban'); await browser.until(`document.querySelector('[data-id="${w.task.id}"] .kanban-open')`, 'card before deletion');

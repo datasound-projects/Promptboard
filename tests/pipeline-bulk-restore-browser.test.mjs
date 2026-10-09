@@ -6,7 +6,7 @@ import { findChrome, launch } from './helpers/browser.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
 import { defaultPipelineConfig } from '../src/pipeline-config.mjs';
 
-async function fixture(t, { older = false } = {}) {
+async function fixture(t) {
   const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] }), project = await app.board.createProject({ name: 'Bulk archive' }), pipeline = defaultPipelineConfig();
   for (const column of pipeline.columns) column.strategy.autoSpawn = false;
   await app.board.setPipeline(project.id, { pipeline, expectedRevision: project.revision, confirm: true });
@@ -27,7 +27,6 @@ async function fixture(t, { older = false } = {}) {
       }
       const response=await Reflect.apply(nativeFetch,this,args);
       if(window.__loseReply && typeof args[0]==='string' && args[0].endsWith('/move') && window.__moves.length===1) throw new Error('Fixture lost the first reply after the server completed it.');
-      if(${older} && args[0]==='/api/session') { const data=await response.json();delete data.capabilities.pipelineBulkRestore;return new Response(JSON.stringify(data),{status:response.status,headers:response.headers}); }
       return response;
     };
   ` });
@@ -86,13 +85,6 @@ test('changed column settings reject every captured bulk request before provider
   assert.equal(await f.browser.eval(`return window.__moves.length;`),3);
   const state=await f.app.board.state();assert.ok(state.projects[0].tasks.every(task=>task.column==='done'));assert.deepEqual(state.runs,[]);
   assert.equal(await f.browser.eval(`return [...document.querySelectorAll('#archive-bulk-results li')].every(n=>n.textContent.includes('board settings changed'));`),true);
-});
-
-test('an older server hides bulk controls and cannot submit bulk moves while title-only capability remains independent', { skip: !await findChrome(), timeout: 90000 }, async t => {
-  const f=await fixture(t,{older:true});if(!f)return;
-  assert.equal(await f.browser.eval(`return document.getElementById('archive-bulk').hidden&&document.querySelectorAll('#archive-rows input[type="checkbox"]').length===0;`),true);
-  await f.browser.eval(`await restoreArchiveSelection();`);assert.equal(await f.browser.eval(`return window.__moves.length;`),0);
-  assert.ok((await f.app.board.state()).projects[0].tasks.every(task=>task.column==='done'));
 });
 
 test('a lost completed reply stays reviewable and is never retried while the other selected tasks restore once', { skip: !await findChrome(), timeout: 90000 }, async t => {

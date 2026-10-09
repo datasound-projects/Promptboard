@@ -8,7 +8,7 @@ import { defaultPipelineConfig } from '../src/pipeline-config.mjs';
 import { resolveConfig } from '../src/agents.mjs';
 
 const chrome = await findChrome();
-for (const olderServer of [false, true]) test(`column message editor ${olderServer ? 'preserves unavailable controls on older servers' : 'saves deferred rows and stops pending delivery'} across themes and widths`, { skip: !chrome, timeout: 90000 }, async t => {
+test('column message editor saves deferred rows and stops pending delivery across themes and widths', { skip: !chrome, timeout: 90000 }, async t => {
   const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
   const { project } = await app.board.createProjectWithRepository({ name: 'Messages UI', folder: 'new' });
   const pipeline = defaultPipelineConfig();
@@ -16,13 +16,6 @@ for (const olderServer of [false, true]) test(`column message editor ${olderServ
   await app.board.setPipeline(project.id, { pipeline, expectedRevision: project.revision, confirm: true });
   const task = await app.board.createTask({ projectId: project.id, title: 'Exact Composer split', prompt: '  Original\r\n雪' });
   const browser = await launch(); if (!browser) { t.skip('Chrome did not start.'); return; } t.after(() => browser.close());
-  if (olderServer) await browser.send('Page.addScriptToEvaluateOnNewDocument', { source: `
-    const originalFetch = window.fetch;
-    window.fetch = async (...args) => { const response = await originalFetch(...args);
-      if (args[0] !== '/api/session') return response;
-      const data = await response.json(); delete data.capabilities.pipelineDeferredMessages;
-      return new Response(JSON.stringify(data), { status: response.status, headers: response.headers }); };
-  ` });
   const enter = async selector => {
     await browser.eval(`const node=document.querySelector(${JSON.stringify(selector)}); node.scrollIntoView({block:'center'}); node.focus();`);
     await browser.send('Input.dispatchKeyEvent', {type:'keyDown',key:'Enter',code:'Enter',windowsVirtualKeyCode:13,text:'\r'});
@@ -32,15 +25,8 @@ for (const olderServer of [false, true]) test(`column message editor ${olderServ
   await enter('#columns-open'); await browser.until(`document.getElementById('columns-dialog').open`, 'column editor ready').catch(async error=>{ throw new Error(error.message+' '+JSON.stringify(await browser.eval(`return {focus:document.activeElement.id,columns:[...document.querySelectorAll('.columns-item')].map(node=>node.textContent),errors:document.querySelector('[role=alert]')?.textContent};`))+' '+JSON.stringify(browser.consoleMessages)); });
   await browser.eval(`const button=[...document.querySelectorAll('.columns-item')].find(node=>node.textContent==='Code Review'); button.focus();`); await browser.send('Input.dispatchKeyEvent', {type:'keyDown',key:'Enter',code:'Enter',windowsVirtualKeyCode:13,text:'\r'}); await browser.send('Input.dispatchKeyEvent', {type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13});
   await enter('[data-trigger="onEnter"] .automation-add');
-  assert.equal(await browser.eval(`return document.querySelector('[data-trigger="onEnter"] [data-field="type"] option[value="send_message"]').disabled;`), olderServer);
+  assert.equal(await browser.eval(`return document.querySelector('[data-trigger="onEnter"] [data-field="type"] option[value="send_message"]').disabled;`), false);
   assert.equal(await browser.eval(`return document.querySelector('[data-trigger="onExit"] .automation-add')!==null;`), true);
-  if (olderServer) {
-    for (const width of [1280, 390]) { await browser.resize(width, 900); for (const theme of ['light', 'dark']) {
-      await browser.eval(`document.documentElement.dataset.theme='${theme}';`);
-      assert.equal(await browser.eval(`return document.querySelector('[data-trigger="onEnter"] [data-field="type"] option[value="send_message"]').disabled;`), true);
-    } }
-    assert.equal((await app.board.state()).runs.length, 0); await enter('#columns-close'); return;
-  }
   await browser.eval(`const type=document.querySelector('[data-trigger="onEnter"] [data-field="type"]'); type.value='send_message'; type.dispatchEvent(new Event('change',{bubbles:true}));`);
   const literal = 'Review {{taskNumber}} <img src=x onerror="window.__messagePwned=1"> 雪';
   await browser.eval(`const input=document.querySelector('[data-field="message"]'); input.value=${JSON.stringify(literal)}; input.dispatchEvent(new Event('input',{bubbles:true}));`);

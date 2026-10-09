@@ -51,17 +51,3 @@ test('task priority is editable by keyboard in both themes and narrow Chrome wit
   assert.deepEqual((await app.board.state()).runs, []); assert.deepEqual((await app.board.state()).sessions, []);
   assert.deepEqual(browser.consoleMessages.filter(message=>message.startsWith('EXCEPTION')), []);
 });
-
-test('older server sessions hide task priority and never submit unsupported priority metadata', { skip: !await findChrome(), timeout: 90000 }, async t => {
-  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
-  const project = await app.board.createProject({ name: 'Older priority server', workflowMode: 'pipeline' });
-  const browser = await launch(); assert.ok(browser); t.after(() => browser.close());
-  await browser.send('Page.addScriptToEvaluateOnNewDocument', { source: `const nativeFetch=window.fetch;window.__priorityPosts=[];window.fetch=async function(...args){if(args[0]==='/api/tasks'&&args[1]?.method==='POST')window.__priorityPosts.push(JSON.parse(args[1].body));const r=await Reflect.apply(nativeFetch,this,args);if(args[0]!=='/api/session')return r;const d=await r.json();delete d.capabilities.taskPriority;return new Response(JSON.stringify(d),{status:r.status,headers:r.headers});};` });
-  await browser.goto(app.url + '/#/kanban'); await browser.until(`document.querySelector('#project-select option[value="${project.id}"]')`, 'older project');
-  await browser.eval(`document.getElementById('card-new').click();`); await browser.until('document.getElementById("card-dialog").open', 'older editor');
-  assert.equal(await browser.eval(`return document.getElementById('card-priority-field').hidden;`), true);
-  await browser.eval(`document.getElementById('card-title').value='Older authoring';document.getElementById('card-save').click();`);
-  await browser.until('!document.getElementById("card-dialog").open', 'older save');
-  assert.equal(await browser.eval(`return Object.hasOwn(window.__priorityPosts[0],'priority');`), false);
-  assert.deepEqual((await app.board.state()).runs, []);
-});

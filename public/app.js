@@ -20,11 +20,6 @@ const providerInfo = {
 };
 
 let token = '';
-let pipelineTitleOnlySupported = false;
-let pipelineBulkRestoreSupported = false;
-let pipelineDeferredMessagesSupported = false;
-let taskPrioritySupported = false;
-let taskLabelsSupported = false;
 let providers = [];
 let history = readHistory();
 let currentId = null;
@@ -303,11 +298,6 @@ async function loadProviders() {
     const session = await sessionResponse.json();
     const status = await providerResponse.json();
     token = safeText(session.token, 1000);
-    pipelineTitleOnlySupported = session.capabilities?.pipelineTitleOnly === true;
-    pipelineBulkRestoreSupported = session.capabilities?.pipelineBulkRestore === true;
-    pipelineDeferredMessagesSupported = session.capabilities?.pipelineDeferredMessages === true;
-    taskPrioritySupported = session.capabilities?.taskPriority === true;
-    taskLabelsSupported = session.capabilities?.taskLabels === true;
     providers = Array.isArray(status.providers) ? status.providers.filter((item) => item && KNOWN_PROVIDERS.includes(item.id)) : [];
     if (!token) throw new Error('The local server did not return a session token.');
     browserNotifications?.resume();
@@ -327,11 +317,6 @@ async function loadProviders() {
     await loadModels({ model: chosenModel(), effort: $('#effort').value });
   } catch (error) {
     token = '';
-    pipelineTitleOnlySupported = false;
-    pipelineBulkRestoreSupported = false;
-    pipelineDeferredMessagesSupported = false;
-    taskPrioritySupported = false;
-    taskLabelsSupported = false;
     browserNotifications?.stop();
     $('#cli-status-label').textContent = 'Server unavailable';
     $('#provider-note').textContent = 'Could not reach the local server. Restart the app, then reload this page.';
@@ -1491,7 +1476,7 @@ async function migrateBrowserBoard() {
 
 const projectPriorityFilters = new Map();
 function projectPriorityFilter(project = currentProject()) {
-  if (!project || project.workflowMode !== 'pipeline' || !taskPrioritySupported) return 'all';
+  if (!project || project.workflowMode !== 'pipeline') return 'all';
   if (!projectPriorityFilters.has(project.id)) {
     let value = 'all'; try { value = localStorage.getItem(`promptboard.priority-filter.${project.id}`) || 'all'; } catch {}
     projectPriorityFilters.set(project.id, ['all', '0', '1', '2', '3', '4'].includes(value) ? value : 'all');
@@ -1505,7 +1490,7 @@ function matchesPriority(task, filter) {
 }
 function changePriorityFilter(select) {
   const project = currentProject();
-  if (!project || project.workflowMode !== 'pipeline' || !taskPrioritySupported || !['all', '0', '1', '2', '3', '4'].includes(select.value)) return;
+  if (!project || project.workflowMode !== 'pipeline' || !['all', '0', '1', '2', '3', '4'].includes(select.value)) return;
   projectPriorityFilters.set(project.id, select.value); savePref(`promptboard.priority-filter.${project.id}`, select.value); renderBoard();
 }
 
@@ -1514,7 +1499,7 @@ function validLabelFilter(value, project) {
   return value === 'all' || value === 'none' || typeof value === 'string' && value.startsWith('label:') && projectLabels(project).some(label => value === `label:${label.id}`);
 }
 function projectLabelFilter(project = currentProject()) {
-  if (!project || project.workflowMode !== 'pipeline' || !taskLabelsSupported) return 'all';
+  if (!project || project.workflowMode !== 'pipeline') return 'all';
   if (!projectLabelFilters.has(project.id)) {
     let value = 'all'; try { value = localStorage.getItem(`promptboard.label-filter.${project.id}`) || 'all'; } catch {}
     projectLabelFilters.set(project.id, value);
@@ -1538,7 +1523,7 @@ function renderLabelFilter(select, project, value) {
 }
 function changeLabelFilter(select) {
   const project = currentProject();
-  if (!project || project.workflowMode !== 'pipeline' || !taskLabelsSupported || !validLabelFilter(select.value, project)) return;
+  if (!project || project.workflowMode !== 'pipeline' || !validLabelFilter(select.value, project)) return;
   projectLabelFilters.set(project.id, select.value); savePref(`promptboard.label-filter.${project.id}`, select.value); renderBoard();
 }
 
@@ -1565,10 +1550,8 @@ function renderBoard() {
   for (const id of ['#project-rename', '#project-delete', '#card-new', '#agents-open']) $(id).disabled = !project;
   $('#board-count').textContent = String(tasks.length).padStart(2, '0');
   // With a project open, its empty columns already say there is nothing yet; the message is only for no project.
-  $('#board-empty').hidden = Boolean(project) || tasks.length > 0;
-  $('#board-empty-text').textContent = !board ? 'Loading the board…' : project ? 'No tasks yet.' : 'Create a project to start planning.';
-  $('#board-empty-note').textContent = project ? 'Choose New card, or add a generated prompt from the Compose page. New cards start in To Do.' : 'Each project gets its own board, from To Do to Done.';
-  $('#empty-prompt-link').hidden = !project;
+  $('#board-empty').hidden = Boolean(project);
+  $('#board-empty-text').textContent = board ? 'Create a project to start planning.' : 'Loading the board…';
   $('#kanban-columns').hidden = !project || timelineView;
   $('#timeline').hidden = !timelineView;
   $('#view-board').setAttribute('aria-selected', String(!timelineView));
@@ -1760,9 +1743,9 @@ function refreshPipelineArchive(opening = false) {
   const tasks = project.tasks.filter(task => projectColumnsOf(project).find(column => column.id === task.column)?.role === 'done');
   const filter = $('#archive-filter').value.trim().toLocaleLowerCase(), sort = $('#archive-sort').value;
   const priority = projectPriorityFilter(project);
-  $('#archive-priority-field').hidden = !taskPrioritySupported; $('#archive-priority-filter').value = priority;
+  $('#archive-priority-filter').value = priority;
   const label = projectLabelFilter(project);
-  $('#archive-label-field').hidden = !taskLabelsSupported; renderLabelFilter($('#archive-label-filter'), project, label);
+  renderLabelFilter($('#archive-label-filter'), project, label);
   const observed = tasks.map(task => [task.id, task.number, task.revision, task.title, task.archivedAt, task.updatedAt, latestRun(task.id)?.usage, task.sessionId, (board.sessions || []).find(session => session.id === task.sessionId)]);
   const busy = archiveBulkJob?.running === true;
   const signature = JSON.stringify([project.revision, project.labelRevision, observed, filter, sort, priority, label, [...archiveSelected], busy, archiveBulkJob?.stop, archiveBulkJob?.items]);
@@ -1783,10 +1766,8 @@ function refreshPipelineArchive(opening = false) {
     restore.addEventListener('change', () => { if (restore.value) { $('#done-dialog').close(); placeCard(task.id, restore.value, null); } });
     restore.disabled = busy;
     const heading = document.createElement('div'); heading.className = 'archive-task-heading';
-    if (pipelineBulkRestoreSupported) {
-      const selected = document.createElement('input'); selected.type = 'checkbox'; selected.checked = archiveSelected.has(task.id); selected.disabled = busy; selected.dataset.archiveAction = 'select'; selected.setAttribute('aria-label', `Select: ${task.title}`);
-      selected.addEventListener('change', () => { selected.checked ? archiveSelected.add(task.id) : archiveSelected.delete(task.id); refreshPipelineArchive(); }); heading.append(selected);
-    }
+    const selected = document.createElement('input'); selected.type = 'checkbox'; selected.checked = archiveSelected.has(task.id); selected.disabled = busy; selected.dataset.archiveAction = 'select'; selected.setAttribute('aria-label', `Select: ${task.title}`);
+    selected.addEventListener('change', () => { selected.checked ? archiveSelected.add(task.id) : archiveSelected.delete(task.id); refreshPipelineArchive(); }); heading.append(selected);
     appendTaskNumber(heading, task); heading.append(open); appendTaskPriority(heading, task); appendTaskLabels(heading, task, project);
     const actions = document.createElement('div'); actions.className = 'archive-actions'; actions.append(details, restore); name.append(heading, actions);
     const date = when(task); archived.textContent = date ? new Date(date).toLocaleString() : 'Unavailable';
@@ -1803,7 +1784,6 @@ function refreshPipelineArchive(opening = false) {
   $('#archive-count').textContent = `${rows.length} of ${tasks.length} tasks`;
   $('#archive-title-header').setAttribute('aria-sort', sort === 'title' ? 'ascending' : sort === 'title-desc' ? 'descending' : 'none');
   $('#archive-date-header').setAttribute('aria-sort', sort === 'newest' ? 'descending' : sort === 'oldest' ? 'ascending' : 'none');
-  $('#archive-bulk').hidden = !pipelineBulkRestoreSupported;
   const selectedCount = tasks.filter(task => archiveSelected.has(task.id)).length;
   $('#archive-select-visible').disabled = busy || !rows.length; $('#archive-clear-selection').disabled = busy || !selectedCount;
   $('#archive-restore-selected').disabled = busy || !selectedCount; $('#archive-restore-selected').textContent = `Restore selected (${selectedCount})`;
@@ -1825,7 +1805,7 @@ function refreshPipelineArchive(opening = false) {
 
 async function restoreArchiveSelection() {
   const project = currentProject();
-  if (!pipelineBulkRestoreSupported || project?.id !== archiveProjectId || project.workflowMode !== 'pipeline' || !$('#done-dialog').open || archiveBulkJob?.running) return;
+  if (project?.id !== archiveProjectId || project.workflowMode !== 'pipeline' || !$('#done-dialog').open || archiveBulkJob?.running) return;
   const column = projectColumnsOf(project).find(column => column.id === $('#archive-bulk-target').value && ['todo', 'active'].includes(column.role));
   if (!column) return;
   const items = [...archiveSelected].map(id => project.tasks.find(task => task.id === id)).filter(task => task && projectColumnsOf(project).find(column => column.id === task.column)?.role === 'done')
@@ -1910,7 +1890,7 @@ async function clearPrerequisite(card, prerequisiteId) {
 function appendTaskLabels(parent, card, project = currentProject()) {
   appendTaskExternalSource(parent, card);
   appendTaskWaits(parent, card, project);
-  if (!taskLabelsSupported || project?.workflowMode !== 'pipeline' || !Array.isArray(card.labelIds)) return;
+  if (project?.workflowMode !== 'pipeline' || !Array.isArray(card.labelIds)) return;
   const labels = projectLabels(project), badges = card.labelIds.flatMap(id => { const label = labels.find(row => row.id === id); return label ? [labelBadge(label)] : []; });
   if (!badges.length) return;
   const group = document.createElement('div'); group.className = 'task-label-badges'; group.append(...badges); parent.append(group);
@@ -1922,7 +1902,7 @@ function refreshTaskDetailLabels() {
   const card = project?.tasks.find(task => task.id === dialog.dataset.taskId), summary = box.querySelector('[data-label-summary]');
   summary.replaceChildren(); if (card) appendTaskLabels(summary, card, project);
   if (!summary.childElementCount) summary.append(paragraph('None', 'note'));
-  box.hidden = !card || !taskLabelsSupported || project?.workflowMode !== 'pipeline';
+  box.hidden = !card || project?.workflowMode !== 'pipeline';
 }
 function renderDoneCard(card, draggable = true) {
   const item = document.createElement('li');
@@ -2293,7 +2273,7 @@ function selectedCardLabels() {
   return (cardEditSnapshot?.labelOrder || []).filter(id => checked.has(id));
 }
 function renderCardLabels(project, selection) {
-  const field = $('#card-labels-field'); field.hidden = !taskLabelsSupported || project?.workflowMode !== 'pipeline';
+  const field = $('#card-labels-field'); field.hidden = project?.workflowMode !== 'pipeline';
   const choices = $('#card-label-choices'); choices.replaceChildren();
   if (field.hidden) return;
   const labels = projectLabels(project), selected = new Set(selection);
@@ -2337,7 +2317,7 @@ function showLabelDraft(project) {
 }
 function openLabelsDialog() {
   const project = board?.projects.find(row => row.id === cardEditSnapshot?.projectId);
-  if (!taskLabelsSupported || project?.workflowMode !== 'pipeline') return;
+  if (project?.workflowMode !== 'pipeline') return;
   labelManager = { projectId: project.id, revision: project.labelRevision, opener: document.activeElement };
   $('#labels-dialog-project').textContent = project.name; showLabelDraft(project);
   if (!$('#labels-dialog').open) $('#labels-dialog').showModal();
@@ -2345,7 +2325,7 @@ function openLabelsDialog() {
 }
 async function saveLabels(event) {
   event.preventDefault(); const manager = labelManager;
-  if (!manager || !taskLabelsSupported) return;
+  if (!manager) return;
   const labels = [...$('#label-definition-list').children].map(row => ({ id: row.dataset.labelId,
     name: row.querySelector('[data-label-field="name"]').value, color: row.querySelector('[data-label-field="color"]').value }));
   const selection = $('#card-dialog').open && cardEditSnapshot?.projectId === manager.projectId ? selectedCardLabels() : null;
@@ -2376,7 +2356,7 @@ async function reloadLabels() {
     if (!project) throw new Error('This project is unavailable.'); showLabelDraft(project);
   } catch (error) { if (labelManager === manager) { $('#labels-error').textContent = error.message; $('#labels-error').hidden = false; } }
 }
-function canOmitTaskPrompt(project) { return project?.workflowMode === 'pipeline' && pipelineTitleOnlySupported; }
+function canOmitTaskPrompt(project) { return project?.workflowMode === 'pipeline'; }
 function openCard(id = null, quick = false) {
   quickTask = quick;
   const project = currentProject();
@@ -2398,7 +2378,7 @@ function openCard(id = null, quick = false) {
   $('#card-prompt').required = !canOmitTaskPrompt(project);
   $('#card-prompt-label').textContent = canOmitTaskPrompt(project) ? 'Prompt (optional)' : 'Prompt';
   $('#card-prompt').value = card?.prompt || '';
-  $('#card-priority-field').hidden = !taskPrioritySupported || project.workflowMode !== 'pipeline';
+  $('#card-priority-field').hidden = project.workflowMode !== 'pipeline';
   $('#card-priority').value = Number.isSafeInteger(card?.priority) && card.priority >= 0 && card.priority <= 4 ? String(card.priority) : '0';
   renderCardLabels(project, card?.labelIds || []);
   const status = card && cardStatus(card);
@@ -3089,7 +3069,7 @@ async function openTaskDetails(taskId) {
     section('Branch and worktree', taskLocation(card, project)),
     section('Base resources for future runs', basePicker({ target: { scope: 'task', projectId: project.id, taskId: card.id } }), paragraph('Task selections can narrow or opt out of inherited resources without changing the task text or approved evidence.')),
   ];
-  if (taskLabelsSupported && project.workflowMode === 'pipeline') {
+  if (project.workflowMode === 'pipeline') {
     const edit = detailButton('Edit labels', () => { $('#task-dialog').close(); openCard(card.id); }, 'text-button');
     const labels = section('Labels', labelSummary, edit); labels.id = 'task-details-labels'; nodes.unshift(labels);
   }
@@ -4730,7 +4710,7 @@ function pipelineAutomationEditor(entry) {
   section.append(heading, paragraph('Actions run in order when a card leaves or arrives. Saving this list runs nothing.', 'note'));
   const types = { run_script: 'Run script', webhook: 'Call webhook', send_message: 'Send message to agent', notify: 'Notify me' };
   const supported = (type, trigger, row = null) => ['run_script', 'webhook', 'notify'].includes(type)
-    || type === 'send_message' && pipelineDeferredMessagesSupported && entry.strategy.autoSpawn !== false && trigger === 'onEnter' && (!row || row.mode === 'deferred');
+    || type === 'send_message' && entry.strategy.autoSpawn !== false && trigger === 'onEnter' && (!row || row.mode === 'deferred');
   const defaults = type => ({ run_script: { script: '', timeoutMinutes: 10 }, webhook: { url: '', method: 'POST', body: '', headers: {} },
     notify: { title: '{{title}}', body: '{{toColumn}}' }, send_message: { message: '', mode: 'deferred' } }[type]);
   const uniqueName = (column, stem) => {
@@ -4781,7 +4761,7 @@ function pipelineAutomationEditor(entry) {
       if (row.type === 'run_script') item.append(field(row, 'script', 'Script', { multiline: true, required: true }), field(row, 'timeoutMinutes', 'Timeout (minutes)', { numeric: true }), paragraph('Scripts run in the task worktree, or project checkout when it has none. Windows uses PowerShell; propagate a native command’s exit code with exit $LASTEXITCODE.', 'note'));
       else if (row.type === 'webhook') item.append(field(row, 'url', 'Webhook URL', { max: 8192, required: true }), field(row, 'method', 'HTTP method', { choices: ['GET', 'POST', 'PUT'] }), field(row, 'body', 'JSON body', { multiline: true }), field(row, 'headers', 'Headers (JSON object)', { multiline: true }));
       else if (row.type === 'notify') item.append(field(row, 'title', 'Notification title', { max: 500 }), field(row, 'body', 'Notification body', { multiline: true, max: 4000 }), paragraph('Enable browser notifications in Settings to receive this alert. A browser display event confirms delivery; missing permission, closed browsers or unsupported display events leave it unconfirmed.', 'note'));
-      else if (pipelineDeferredMessagesSupported && trigger === 'onEnter') {
+      else if (trigger === 'onEnter') {
         const delivery = field(row, 'mode', 'Delivery', { choices: ['deferred', 'immediate'] });
         const select = delivery.querySelector('select');
         select.options[0].textContent = 'After the current work finishes'; select.options[1].textContent = 'While the agent works (unavailable)'; select.options[1].disabled = true;

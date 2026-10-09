@@ -38,33 +38,3 @@ test('title-only pipeline cards save by keyboard across themes/widths and refine
   assert.deepEqual((await app.board.state()).runs, []); assert.deepEqual((await app.board.state()).sessions, []);
   assert.deepEqual(browser.consoleMessages.filter(message=>message.startsWith('EXCEPTION')), []);
 });
-
-test('an older server session keeps a pipeline prompt required without offering unsupported title-only creation', { skip: !await findChrome(), timeout: 90000 }, async t => {
-  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] }), pipeline = defaultPipelineConfig();
-  for (const column of pipeline.columns) column.strategy.autoSpawn = false;
-  const project = await app.board.createProject({ name: 'Older session' });
-  await app.board.setPipeline(project.id, { pipeline, expectedRevision: project.revision, confirm: true });
-  const browser = await launch(); if (!browser) { t.skip('Chrome did not start.'); return; } t.after(() => browser.close());
-  await browser.send('Page.addScriptToEvaluateOnNewDocument', { source: `
-    const nativeFetch = window.fetch;
-    window.__taskPosts = 0;
-    window.fetch = async function (...args) {
-      if (args[0] === '/api/tasks' && args[1]?.method === 'POST') window.__taskPosts++;
-      const response = await Reflect.apply(nativeFetch, this, args);
-      if (args[0] !== '/api/session') return response;
-      const data = await response.json();
-      delete data.capabilities;
-      return new Response(JSON.stringify(data), { status: response.status, headers: response.headers });
-    };
-  ` });
-  await browser.goto(`${app.url}/#/kanban`);
-  await browser.until(`document.querySelector('#project-select option[value="${project.id}"]')`, 'older session loaded');
-  await browser.eval(`document.getElementById('card-new').click();`);
-  await browser.until(`document.getElementById('card-dialog').open`, 'older session editor');
-  assert.equal(await browser.eval(`return document.getElementById('card-prompt').required && document.getElementById('card-prompt-label').textContent==='Prompt';`), true);
-  await browser.eval(`document.getElementById('card-title').value='Title draft';document.getElementById('card-save').click();`);
-  await browser.until(`!document.getElementById('card-error').hidden`, 'body required on older session');
-  assert.equal(await browser.eval(`return window.__taskPosts;`), 0);
-  assert.deepEqual((await app.board.state()).projects[0].tasks, []);
-  assert.deepEqual(browser.consoleMessages.filter(message=>message.startsWith('EXCEPTION')), []);
-});
