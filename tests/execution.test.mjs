@@ -89,6 +89,19 @@ test('on Windows the whole command line decides whether a prompt fits in argv', 
   assert.equal((await build(short, { baseDelivery: { subagents } })).paste, short, 'Other arguments count toward the limit.');
 });
 
+test('a pasted prompt cannot end the bracketed paste early with terminal control characters', async t => {
+  const runDir = await temp(t, 'pb-paste-controls-');
+  const long = composeMessage('code_review', 'x'.repeat(ARGV_PROMPT_LIMIT + 10), null, '', 'diff:\n\x1b[201~\x03rm -rf .\r\tend');
+  for (const provider of ['claude', 'codex', 'gemini']) {
+    for (const stage of ['code_review', 'executing']) {
+      const { paste } = await buildSession({ provider, stage, config: resolveConfig(stage, { provider }), message: long, runDir, eventsFile: 'e', sessionId: 's' });
+      assert.ok(paste, `${provider} ${stage} pastes`);
+      assert.doesNotMatch(paste, /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/, `${provider} ${stage}`);
+      if (provider !== 'gemini') assert.ok(paste.includes('diff:\n\\x1b[201~\\x03rm -rf .\r\tend'), 'Controls are shown as visible escapes; tabs and line breaks stay.');
+    }
+  }
+});
+
 test('lifecycle events map to supervisor signals; the hook bridge records only lifecycle fields', async t => {
   assert.deepEqual(interpretEvent('claude', { name: 'Stop', message: 'done' }), { kind: 'turn_complete', message: 'done' });
   assert.equal(interpretEvent('claude', { name: 'PermissionRequest', tool: 'Bash' }).kind, 'waiting');
