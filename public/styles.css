@@ -480,7 +480,8 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
   .page-nav { padding-left: 0; border-left: 0; }
 }
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+  /* No transitions at all: a tiny duration still honours delays (the phone drawer's visibility) and leaves its contents hidden. */
+  *, *::before, *::after { animation-duration: .01ms !important; animation-delay: 0s !important; animation-iteration-count: 1 !important; transition: none !important; scroll-behavior: auto !important; }
 }
 .collapse-toggle { width: 30px; height: 30px; font-size: 18px; line-height: 1; color: var(--muted); }
 .collapse-toggle:hover { color: var(--ink); }
