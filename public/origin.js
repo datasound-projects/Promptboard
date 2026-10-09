@@ -35,12 +35,11 @@ window.PromptboardOrigin = (() => {
     areas: (title, section, area) => ({ section, area, title, description: '', status: 'defined', componentIds: [], requirementIds: [], technologyIds: [], baseResourceIds: [] }),
   };
 
-  const { el, pref, setPref, plural, clip } = window.PromptboardDom;
+  const { el, pref, setPref, plural, clip, safeUrl } = window.PromptboardDom;
   const button = (text, onClick, className = 'origin-ghost', title) => window.PromptboardDom.button(text, onClick, className, title);
   const chip = (text, tone = '') => el('span', `origin-chip${tone ? ` ${tone}` : ''}`, text);
   const newId = () => globalThis.crypto?.randomUUID?.() || `o${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`;
   function today() { return new Date().toLocaleDateString('en-CA'); }
-  function safeUrl(value) { try { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password ? url.href : ''; } catch { return ''; } }
   function hostOf(value) { try { return new URL(value).hostname.replace(/^www\./, ''); } catch { return ''; } }
   const firstLine = text => M.lines(text)[0] || '';
   function icon(d, size = 16) {

@@ -1055,7 +1055,8 @@ function replaceKeepingFocus(list, nodes, key) {
   if (target?.tagName === active.tagName && target.className === active.className) target.focus({ preventScroll: true });
 }
 function externalLink(href, label) {
-  const link = document.createElement('a'); link.href = href; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.textContent = label; return link;
+  // Addresses come from the server and the CLIs; only plain http(s) links are made clickable.
+  const link = document.createElement('a'), url = window.PromptboardDom.safeUrl(href); if (url) link.href = url; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.textContent = label; return link;
 }
 
 function setAuthBusy(value) { authBusy = value; renderAuth(); updateProviderState(); }

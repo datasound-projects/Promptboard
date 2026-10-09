@@ -925,3 +925,20 @@ test('GitHub sign-in keeps polling after a failed read and stops quietly when no
   assert.equal(reads, 2, 'a reply without a login ends polling');
   assert.ok(byText($('#set-github-group'), 'Connect GitHub'), 'sign-in can start again');
 });
+
+test('external links from the server open only plain http(s) addresses', async t => {
+  const ctx = await setup(t);
+  const { $, win } = ctx;
+  const original = win.fetch, json = body => Promise.resolve(Response.json(body));
+  win.fetch = (url, options = {}) => {
+    if (url === '/api/github/status') return json({ github: { installed: true, state: 'not_connected' }, login: null });
+    if (url === '/api/github/login') return json({ login: { status: 'waiting', code: 'ABCD-1234', url: 'javascript:alert(document.domain)' } });
+    return original(url, options);
+  };
+  $('#app-settings-open').click();
+  await until(() => byText($('#set-github-group'), 'Connect GitHub'), 'connect button');
+  byText($('#set-github-group'), 'Connect GitHub').click();
+  await until(() => /ABCD-1234/.test($('#set-github-group').textContent), 'one-time code');
+  const link = [...$('#set-github-group').querySelectorAll('a')].find(node => node.textContent === 'Open github.com/login/device');
+  assert.equal(link.hasAttribute('href'), false, 'a javascript: address is not a link');
+});
