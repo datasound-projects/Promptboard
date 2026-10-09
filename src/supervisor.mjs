@@ -34,6 +34,8 @@ const PREPARATION_STOPPED = Object.freeze({
 // and OSC colour reports, DECRQSS. Only modified F3 (ESC[1;<m>R) shares a shape with a CPR.
 // One navigation or choice key, as a person answers a CLI's selection dialog.
 const DIALOG_KEY = /^(?:\r|\n|\t|\x1b|\x1b\[Z|\x1b[[O][A-D]|[0-9]|[yn])$/i;
+// Mouse reports from a CLI that tracks the mouse (SGR, urxvt and X10 encodings): a click, wheel or motion types nothing.
+const MOUSE_REPORTS = /^(?:\x1b\[<\d+;\d+;\d+[Mm]|\x1b\[\d+;\d+;\d+M|\x1b\[M[\x20-\xff]{3})+$/;
 const TERMINAL_REPORTS = /^(?:\x1b\[(?:[?>]?[\d;]*c|\d*n|\??\d+;\d+R|[\d;]+t|\??\d+;\d+\$y|[IO])|\x1b\][\d;]+;[^\x07\x1b]*(?:\x07|\x1b\\)|\x1bP[^\x1b]*\x1b\\)+$/;
 
 /** Load node-pty once. On macOS its prebuilt helper can lose the execute bit on install. */
@@ -563,8 +565,8 @@ export class Supervisor {
     if (typeof data !== 'string' || Buffer.byteLength(data) > INPUT_BYTES) throw new AgentError(`Send at most ${INPUT_BYTES / 1024} KiB of input at a time.`, 'INPUT_TOO_LARGE', 413);
     const session = this.#session(runId);
     if (session.suspending) throw new AgentError('The agent is being paused. Wait for it to exit before resuming.', 'SESSION_SUSPENDING', 409);
-    // A terminal report is not human input. Drop it during a native paste so it cannot land inside the message.
-    if (TERMINAL_REPORTS.test(data)) { if (!session.messageInputPending) session.proc.write(data); return; }
+    // A terminal or mouse report is not typing. Drop it during a native paste so it cannot land inside the message.
+    if (TERMINAL_REPORTS.test(data) || MOUSE_REPORTS.test(data)) { if (!session.messageInputPending) session.proc.write(data); return; }
     if (data) {
       // A key that answers the CLI's own permission or question dialog starts no draft, so queued
       // column messages stay deliverable. Free text, or input outside such a dialog, is a human draft.
