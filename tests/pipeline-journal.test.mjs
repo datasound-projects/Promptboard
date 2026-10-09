@@ -43,7 +43,7 @@ test('reading and recovery are inert; first intent captures bounded metadata, ne
     onExit: [row('script', { type: 'run_script', script: 'PRIVATE SCRIPT', enabled: false })],
     onEnter: [row('hook', { type: 'webhook', url: 'https://example.test/private', headers: { Authorization: 'PRIVATE TOKEN' }, body: 'PRIVATE BODY' }),
       row('message', { type: 'send_message', message: 'PRIVATE PROMPT' })] });
-  assert.equal(await journal.read(input), null); assert.deepEqual(await journal.list(), []); assert.deepEqual(await journal.recoverInterrupted(), []);
+  assert.equal(await journal.read(input), null); assert.deepEqual(await journal.recoverInterrupted(input), []);
   assert.deepEqual(await readdir(dir), []);
   const { created, move: saved } = await journal.beginMove(input); assert.equal(created, true); assert.equal(saved.phase, 'exit'); assert.equal(saved.actions[0].status, 'skipped');
   assert.equal(saved.actions.length, 3); assert.equal(new Set(saved.actions.map(action => action.id)).size, 3);
@@ -122,10 +122,10 @@ test('independent OS processes create one intent; dead-owner recovery preserves 
     if (begun.created) { const [a,b] = begun.move.actions; await journal.startAction(input,a.id); await journal.finishAction(input,a.id,{status:'succeeded'}); await journal.startAction(input,b.id); }
     console.log(JSON.stringify(begun));`;
   const begun = await Promise.all([child(dir, input, code), child(dir, input, code)]); assert.equal(begun.filter(value => value.created).length, 1);
-  const journal = new PipelineJournal(dir), prior = await journal.read(input), recovered = await journal.recoverInterrupted();
+  const journal = new PipelineJournal(dir), prior = await journal.read(input), recovered = await journal.recoverInterrupted(input);
   assert.equal(recovered.length, 1); assert.equal(recovered[0].status, 'interrupted'); assert.deepEqual(recovered[0].actions.map(action => action.status), ['succeeded', 'interrupted', 'interrupted']);
   assert.equal(recovered[0].actions[1].startedAt, prior.actions[1].startedAt); assert.equal(recovered[0].actions[2].startedAt, undefined); assert.equal(recovered[0].lifecycle.status, 'interrupted');
-  assert.deepEqual(await journal.recoverInterrupted(), []); assert.equal((await journal.beginMove(input)).created, false);
+  assert.deepEqual(await journal.recoverInterrupted(input), []); assert.equal((await journal.beginMove(input)).created, false);
   await assert.rejects(journal.startAction(input, prior.actions[1].id), { code: 'JOURNAL_OWNER_MISMATCH' });
   const retry = await journal.beginMove(move('explicit-new-move', { onEnter: [row('retry')] })); assert.equal(retry.created, true); assert.notEqual(retry.move.actions[0].id, prior.actions[1].id);
 });
@@ -133,8 +133,8 @@ test('independent OS processes create one intent; dead-owner recovery preserves 
 test('recovery never interrupts a live owner, including another OS process', async t => {
   const dir = await temp(t), journal = new PipelineJournal(dir), input = move('live', { onExit: [row('live')] });
   const { move: saved } = await journal.beginMove(input); await journal.startAction(input, saved.actions[0].id);
-  assert.deepEqual(await new PipelineJournal(dir).recoverInterrupted(), []);
-  const snapshot = await child(dir, input, `console.log(JSON.stringify({ recovered: await journal.recoverInterrupted(), move: await journal.read(input) }));`);
+  assert.deepEqual(await new PipelineJournal(dir).recoverInterrupted(input), []);
+  const snapshot = await child(dir, input, `console.log(JSON.stringify({ recovered: await journal.recoverInterrupted(input), move: await journal.read(input) }));`);
   assert.deepEqual(snapshot.recovered, []); assert.equal(snapshot.move.actions[0].status, 'running');
   const result = await child(dir, input, `let code; try { await journal.startAction(input, (await journal.read(input)).actions[0].id); } catch (error) { code=error.code; } console.log(JSON.stringify({code}));`);
   assert.equal(result.code, 'JOURNAL_OWNER_MISMATCH');
@@ -149,7 +149,9 @@ test('restart recovery covers pending, lifecycle and enter phases without changi
       if(input.transitionId==='enter'){await journal.finishLifecycle(input,{status:'succeeded'}); await journal.startAction(input,saved.actions[0].id); await journal.finishAction(input,saved.actions[0].id,{status:'succeeded'}); await journal.startAction(input,saved.actions[1].id);}
       console.log(JSON.stringify(saved));`);
   }
-  const recovered = await journal.recoverInterrupted(); assert.equal(recovered.length, 3);
+  const recovered = [];
+  for (const phase of ['pending', 'lifecycle', 'enter']) recovered.push(...await journal.recoverInterrupted(move(phase)));
+  assert.equal(recovered.length, 3);
   for (const saved of recovered) {
     assert.equal(saved.status, 'interrupted'); assert.equal(saved.phase, 'complete');
     assert.equal(saved.lifecycle.status, saved.transitionId === 'enter' ? 'succeeded' : 'interrupted');
@@ -161,7 +163,7 @@ test('old move IDs remain deduplicated after later moves, and identities cannot 
   const journal = new PipelineJournal(await temp(t)), old = move('old', { onExit: [row('first')] });
   const original = await journal.beginMove(old);
   for (let index = 0; index < 12; index++) await journal.beginMove(move(`new-${index}`));
-  assert.deepEqual(await journal.beginMove(old), { created: false, move: original.move }); assert.equal((await journal.list()).length, 13);
+  assert.deepEqual(await journal.beginMove(old), { created: false, move: original.move });
   for (const taskId of ['../task', 'task/other', '', 'x'.repeat(101), 'bad\0id']) await assert.rejects(journal.read({ ...old, taskId }), { code: 'JOURNAL_INVALID' });
   await assert.rejects(journal.beginMove(move('same', { to: { id: 'planning', name: 'Same column' } })), { code: 'JOURNAL_INVALID' });
 });
@@ -178,7 +180,7 @@ test('corrupt, missing and newer latest revisions fail closed instead of falling
   }
   await writeFile(path, bytes); await writeFile(join(await folder(dir), '.tmp-interrupted'), '{partial'); assert.equal((await journal.read(input)).actions[0].status, 'running');
   await writeFile(join(await folder(dir), '00000003.json'), bytes); await assert.rejects(journal.read(input), { code: 'JOURNAL_CORRUPT' });
-  await rm(join(await folder(dir), '00000000.json')); await assert.rejects(journal.list(), { code: 'JOURNAL_CORRUPT' });
+  await rm(join(await folder(dir), '00000003.json')); await rm(join(await folder(dir), '00000000.json')); await assert.rejects(journal.read(input), { code: 'JOURNAL_CORRUPT' });
 });
 
 test('failed writes grant no action and lost outcome writes leave the original started marker intact', async t => {

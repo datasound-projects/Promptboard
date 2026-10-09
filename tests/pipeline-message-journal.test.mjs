@@ -122,8 +122,8 @@ test('normal cancellation records pending delivery outcomes first and retains al
 });
 
 test('dead-owner recovery covers every asynchronous delivery phase even after placement completed, while preserving confirmation', async t => {
-  const dir = await temp(t), journal = new PipelineJournal(dir);
-  for (const phase of ['queued', 'dispatching', 'submitted', 'accepted', 'confirmed']) {
+  const dir = await temp(t), journal = new PipelineJournal(dir), phases = ['queued', 'dispatching', 'submitted', 'accepted', 'confirmed'];
+  for (const phase of phases) {
     const key = input(phase); await child(dir, key, `const {move}=await journal.beginMove(key), id=move.actions[0].id;
       await journal.advance(key); await journal.startLifecycle(key); await journal.finishLifecycle(key,{status:'succeeded'}); await journal.startAction(key,id); await journal.scheduleMessage(key,id,scope); await journal.advance(key);
       if(key.transitionId!=='queued') await journal.startMessageDelivery(key,id);
@@ -132,16 +132,19 @@ test('dead-owner recovery covers every asynchronous delivery phase even after pl
       if(key.transitionId==='confirmed') await journal.finishMessageDelivery(key,id,{status:'confirmed'});
       console.log(JSON.stringify(await journal.read(key)));`);
   }
-  const recovered = await journal.recoverInterrupted(); assert.equal(recovered.length, 4);
+  const recovered = [];
+  for (const phase of phases) recovered.push(...await journal.recoverInterrupted(input(phase)));
+  assert.equal(recovered.length, 4);
   for (const move of recovered) { assert.equal(move.status, 'completed'); assert.equal(move.phase, 'complete'); assert.equal(move.lifecycle.status, 'succeeded'); assert.equal(move.actions[0].status, 'scheduled'); assert.equal(move.actions[0].delivery.status, 'interrupted'); }
-  assert.equal((await journal.read(input('confirmed'))).actions[0].delivery.status, 'confirmed'); assert.deepEqual(await journal.recoverInterrupted(), []);
+  assert.equal((await journal.read(input('confirmed'))).actions[0].delivery.status, 'confirmed');
+  for (const phase of phases) assert.deepEqual(await journal.recoverInterrupted(input(phase)), []);
   await assert.rejects(journal.startMessageDelivery(input('queued'), (await journal.read(input('queued'))).actions[0].id), { code: 'JOURNAL_OWNER_MISMATCH' });
 });
 
 test('live-owner queued messages remain protected during recovery and cannot be dispatched by another OS process', async t => {
   const ctx = await fixture(t); await queued(ctx); await ctx.journal.advance(ctx.key);
   const reported = await child(ctx.dir, ctx.key, `let code; try{await journal.startMessageDelivery(key,(await journal.read(key)).actions[0].id);}catch(error){code=error.code;}
-    console.log(JSON.stringify({recovered:await journal.recoverInterrupted(),code}));`);
+    console.log(JSON.stringify({recovered:await journal.recoverInterrupted(key),code}));`);
   assert.deepEqual(reported, { recovered: [], code: 'JOURNAL_OWNER_MISMATCH' }); assert.equal((await delivery(ctx)).status, 'queued');
 });
 
@@ -200,7 +203,7 @@ test('interrupted unfinished enter groups preserve scheduled handoff and known n
     await journal.startAction(key,message.id); await journal.scheduleMessage(key,message.id,scope); await journal.startMessageDelivery(key,message.id);
     await journal.markMessageSubmitted(key,message.id); await journal.finishMessageDelivery(key,message.id,{status:'confirmed'});
     await journal.startAction(key,unknown.id); console.log(JSON.stringify(await journal.read(key)));`);
-  const journal = new PipelineJournal(dir), [saved] = await journal.recoverInterrupted();
+  const journal = new PipelineJournal(dir), [saved] = await journal.recoverInterrupted(key);
   assert.equal(saved.status, 'interrupted'); assert.equal(saved.phase, 'complete'); assert.equal(saved.lifecycle.status, 'succeeded');
   assert.equal(saved.actions[0].status, 'scheduled'); assert.equal(saved.actions[0].delivery.status, 'confirmed'); assert.equal(saved.actions[1].status, 'interrupted');
 });

@@ -64,12 +64,6 @@ export function renderPipelineTemplate(template, variables, format = 'text') {
   return bounded(template.replace(PLACEHOLDER, (placeholder, key) => Object.hasOwn(variables, key) ? escape(bounded(variables[key])) : placeholder));
 }
 
-export function unknownPipelineVariables(template, variables) {
-  bounded(template);
-  if (!variables || typeof variables !== 'object' || Array.isArray(variables)) fail('Template variables must be a text map.');
-  return [...new Set([...template.matchAll(PLACEHOLDER)].map(match => match[1]).filter(key => !Object.hasOwn(variables, key)))];
-}
-
 /** Spawn templates omit unknown/empty keywords; whitespace cleanup touches literal template text only. */
 export function renderPipelineSpawnPrompt(context, template = '{{task_xml}}{{attachments}}') {
   bounded(template);

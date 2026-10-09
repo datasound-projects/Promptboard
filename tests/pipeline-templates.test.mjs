@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtemp, access, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { pipelineTaskEnvelope, pipelineTemplateVariables, renderPipelineTemplate, renderPipelineSpawnPrompt, pipelineScriptEnvironment, unknownPipelineVariables, PIPELINE_VARIABLES } from '../src/pipeline-templates.mjs';
+import { pipelineTaskEnvelope, pipelineTemplateVariables, renderPipelineTemplate, renderPipelineSpawnPrompt, pipelineScriptEnvironment, PIPELINE_VARIABLES } from '../src/pipeline-templates.mjs';
 
 test('first spawn contains only the task envelope and resolved attachments, preserving engineered prompt whitespace', () => {
   const prompt = '  Exact {{title}} & <script>\r\n```js\r\nconst x = 1;  \r\n```\r\n  ';
@@ -36,7 +36,6 @@ test('template variables use current task facts and do not invent branches, usag
 test('automation substitution is literal and single-pass, with visible unknown variables and prototype keys', () => {
   const values = { title: 'Unexpanded {{description}}', description: ': Original' };
   assert.equal(renderPipelineTemplate('{{title}} {{missing}} {{constructor}}', values), 'Unexpanded {{description}} {{missing}} {{constructor}}');
-  assert.deepEqual(unknownPipelineVariables('{{missing}} {{title}} {{missing}} {{constructor}}', values), ['missing', 'constructor']);
   const task = { title: 'Raw  title  ', prompt: 'line  \r\nnext\r\n' };
   assert.equal(renderPipelineSpawnPrompt({ task }, '  {{title}}   {{missing}}  \r\n  {{description}}  '), 'Raw  title  \r\n : line  \r\nnext\r\n');
   assert.equal(renderPipelineSpawnPrompt({ task }, '/review  {{baseBranch}}  {{column}}'), '/review');

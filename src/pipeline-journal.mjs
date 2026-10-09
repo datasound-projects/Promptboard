@@ -377,34 +377,11 @@ export class PipelineJournal {
     });
   }
 
-  async list() {
-    let folders;
-    try { folders = (await readdir(this.dir)).filter(name => /^[a-f0-9]{64}$/.test(name)).sort(); }
-    catch (error) { if (error.code === 'ENOENT') return []; throw error; }
-    const moves = [];
-    for (const name of folders) {
-      // The first immutable revision contains the identity needed to validate the latest.
-      let first;
-      try { first = await readJson(join(this.dir, name, '00000000.json')); }
-      catch (error) {
-        if (error instanceof PipelineJournalError) throw error;
-        if (error.code === 'ENOENT' && !(await readdir(join(this.dir, name))).some(file => /^\d{8}\.json$/.test(file))) continue;
-        fail('The automation move index is invalid.', 'JOURNAL_CORRUPT');
-      }
-      let key;
-      try { key = identity(first); } catch { fail('The automation move index is invalid.', 'JOURNAL_CORRUPT'); }
-      if (folderName(key) !== name) fail('The automation move index is invalid.', 'JOURNAL_CORRUPT');
-      validate(first, key, 0);
-      moves.push(await this.read(key));
-    }
-    return moves;
-  }
-
-  async recoverInterrupted(key = null) {
+  async recoverInterrupted(key) {
     const recovered = [];
-    // Runtime recovery can inspect a task's persisted move reference without
+    // Runtime recovery inspects a task's persisted move reference without
     // depending on every other project's historical journal folder.
-    const snapshots = key ? [await this.read(key)].filter(Boolean) : await this.list();
+    const snapshots = [await this.read(key)].filter(Boolean);
     for (const snapshot of snapshots) {
       if (snapshot.phase === 'complete' && !hasPendingDelivery(snapshot) || ownerAlive(snapshot.ownerPid)) continue;
       const changed = await this.#change(snapshot, move => {
