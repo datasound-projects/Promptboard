@@ -72,6 +72,30 @@ test('the store serializes writes, replaces the file atomically, and recovers fr
   assert.equal(await readFile(join(dir, 'state.json'), 'utf8'), future);
 });
 
+test('an unreadable state file or backup is refused, not quarantined or replaced by an older copy', async t => {
+  const dir = await temp(t, 'pb-store-');
+  const store = new Store(dir);
+  await store.update(state => { state.projects.push({ id: 'p1', labels: [], labelRevision: 0, tasks: [] }); });
+  await store.update(state => { state.projects.push({ id: 'p2', labels: [], labelRevision: 0, tasks: [] }); });
+  const saved = await readFile(join(dir, 'state.json'), 'utf8'), backup = await readFile(join(dir, 'state.json.bak'), 'utf8');
+  // A directory in place of the file gives a real read error (EISDIR) on every platform, like EACCES or EIO.
+  await rm(join(dir, 'state.json')); await mkdir(join(dir, 'state.json'));
+  await assert.rejects(new Store(dir).read(), { code: 'STATE_READ_FAILED', message: /EISDIR/ });
+  assert.deepEqual((await readdir(dir)).filter(name => name.startsWith('state.corrupt-')), []);
+  assert.equal(await readFile(join(dir, 'state.json.bak'), 'utf8'), backup);
+  // A missing main file and an unreadable backup must not become an empty board.
+  await rm(join(dir, 'state.json'), { recursive: true }); await rm(join(dir, 'state.json.bak')); await mkdir(join(dir, 'state.json.bak'));
+  await assert.rejects(new Store(dir).read(), { code: 'STATE_READ_FAILED' });
+  // A damaged main file with an unreadable backup is refused too, and the damaged file stays in place.
+  await writeFile(join(dir, 'state.json'), '{"schema":');
+  await assert.rejects(new Store(dir).read(), { code: 'STATE_READ_FAILED' });
+  assert.equal(await readFile(join(dir, 'state.json'), 'utf8'), '{"schema":');
+  assert.deepEqual((await readdir(dir)).filter(name => name.startsWith('state.corrupt-')), []);
+  // Once readable again, the board loads unchanged.
+  await rm(join(dir, 'state.json.bak'), { recursive: true }); await writeFile(join(dir, 'state.json'), saved);
+  assert.deepEqual((await new Store(dir).read()).projects.map(project => project.id), ['p1', 'p2']);
+});
+
 test('repository validation explains each invalid case and accepts linked worktrees', { skip: process.platform === 'win32' }, async t => {
   const root = await repo(t);
   const outside = await temp(t, 'pb-plain-');

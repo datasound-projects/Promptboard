@@ -167,7 +167,17 @@ export class Store {
     this.queue = serial();
   }
 
-  async #readFile(path) { return checkShape(JSON.parse(await readFile(path, 'utf8'))); }
+  async #readFile(path) {
+    let text;
+    // An unreadable file (permissions, I/O, open-file limit) is not corruption: like durable.readWithBackup,
+    // refuse instead of quarantining it or falling back to an older copy. Only parse and shape errors mean damage.
+    try { text = await readFile(path, 'utf8'); }
+    catch (error) {
+      if (error.code === 'ENOENT') throw error;
+      throw new StoreError(`The saved board could not be read (${error.code}). Check folder permissions and free disk space; no file was changed.`, 'STATE_READ_FAILED');
+    }
+    return checkShape(JSON.parse(text));
+  }
 
   /** Load once. A corrupt file falls back to the backup; neither file is overwritten silently. */
   async load() {
@@ -179,12 +189,12 @@ export class Store {
       let state, source = this.path, corrupt = false;
       try { state = await this.#readFile(this.path); }
       catch (error) {
-        if (error.code === 'STATE_VERSION_UNSUPPORTED') throw error;
+        if (['STATE_VERSION_UNSUPPORTED', 'STATE_READ_FAILED'].includes(error.code)) throw error;
         corrupt = error.code !== 'ENOENT';
         try { state = await this.#readFile(`${this.path}.bak`); source = `${this.path}.bak`; }
         catch (backupError) {
-          // A newer backup is evidence of a newer installation, not corruption to overwrite.
-          if (backupError.code === 'STATE_VERSION_UNSUPPORTED') throw backupError;
+          // A newer backup is evidence of a newer installation, and an unreadable one is not damage either.
+          if (['STATE_VERSION_UNSUPPORTED', 'STATE_READ_FAILED'].includes(backupError.code)) throw backupError;
           state = emptyState();
         }
         if (corrupt) {
