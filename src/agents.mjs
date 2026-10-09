@@ -10,10 +10,9 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { platform } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { validateEffort } from './providers.mjs';
+import { SAFE_MODEL, validateEffort } from './providers.mjs';
 
 export const HOOK_SCRIPT = fileURLToPath(new URL('./agent-hook.mjs', import.meta.url));
-const SAFE_MODEL = /^[A-Za-z0-9][A-Za-z0-9._:/@+\[\]-]{0,99}$/;
 // POSIX argv strings are limited (Linux: 128 KiB per argument); a whole Windows command line to
 // 32,767 UTF-16 units, leaving room here for the executable and its prefix. Longer prompts are pasted.
 export const ARGV_PROMPT_LIMIT = 100_000;
@@ -280,10 +279,3 @@ export function interpretEvent(provider, event) {
   }
   return { kind: 'ignore' };
 }
-
-// Claude StopFailure error types -> Promptboard failure codes (same meanings as providers.mjs).
-export const HOOK_ERRORS = Object.freeze({
-  rate_limit: 'RATE_LIMITED', overloaded: 'PROVIDER_UNAVAILABLE', server_error: 'PROVIDER_UNAVAILABLE',
-  authentication_failed: 'AUTH_REQUIRED', cloud_credential_error: 'AUTH_REQUIRED', oauth_org_not_allowed: 'POLICY_DENIED',
-  account_on_hold: 'ACCOUNT_UNAVAILABLE', billing_error: 'ACCOUNT_UNAVAILABLE', model_not_found: 'MODEL_UNAVAILABLE',
-});

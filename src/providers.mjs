@@ -23,9 +23,12 @@ function validateProvider(provider) {
   if (!Object.hasOwn(PROVIDERS, provider)) throw new ProviderError('Select Codex, Claude Code, Gemini CLI, or Antigravity CLI.', 'INVALID_PROVIDER');
 }
 
+// A model ID or alias: no spaces, and it cannot start like a command flag.
+export const SAFE_MODEL = /^[A-Za-z0-9][A-Za-z0-9._:/@+\[\]-]{0,99}$/;
+
 function validateModel(model) {
   if (model === undefined || model === null || model === '') return '';
-  if (typeof model !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:/@+\[\]-]{0,99}$/.test(model)) {
+  if (typeof model !== 'string' || !SAFE_MODEL.test(model)) {
     throw new ProviderError('Use a model ID or alias with no spaces or command flags.', 'INVALID_MODEL');
   }
   return model;
@@ -305,9 +308,10 @@ const resetTime = value => {
 const safeLines = text => { try { return jsonLines(text); } catch { return text.split(/\r?\n/).flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } }); } };
 const firstJson = text => { const trimmed = text.trim(); try { return JSON.parse(trimmed); } catch {} const at = trimmed.indexOf('{'); try { return at >= 0 ? JSON.parse(trimmed.slice(at)) : undefined; } catch { return undefined; } };
 
-const CLAUDE_ERRORS = { authentication_failed: 'AUTH_REQUIRED', cloud_credential_error: 'AUTH_REQUIRED', oauth_org_not_allowed: 'POLICY_DENIED',
+// Claude error types (result and StopFailure hook) -> failure codes.
+export const CLAUDE_ERRORS = Object.freeze({ authentication_failed: 'AUTH_REQUIRED', cloud_credential_error: 'AUTH_REQUIRED', oauth_org_not_allowed: 'POLICY_DENIED',
   account_on_hold: 'ACCOUNT_UNAVAILABLE', billing_error: 'ACCOUNT_UNAVAILABLE', rate_limit: 'RATE_LIMITED', overloaded: 'PROVIDER_UNAVAILABLE',
-  server_error: 'PROVIDER_UNAVAILABLE', model_not_found: 'MODEL_UNAVAILABLE' };
+  server_error: 'PROVIDER_UNAVAILABLE', model_not_found: 'MODEL_UNAVAILABLE' });
 const GEMINI_ERRORS = { TerminalQuotaError: 'QUOTA_EXHAUSTED', RetryableQuotaError: 'RATE_LIMITED', FatalAuthenticationError: 'AUTH_REQUIRED',
   UnauthorizedError: 'AUTH_REQUIRED', ForbiddenError: 'POLICY_DENIED', ModelNotFoundError: 'MODEL_UNAVAILABLE', FatalSandboxError: 'POLICY_DENIED', FetchError: 'NETWORK_ERROR' };
 const httpCode = status => status === 401 ? 'AUTH_REQUIRED' : status === 403 ? 'POLICY_DENIED' : status === 429 ? 'RATE_LIMITED'

@@ -11,8 +11,8 @@ import { access, chmod, mkdir, open, readFile, writeFile } from 'node:fs/promise
 import { constants, createWriteStream } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
-import { ADAPTERS, AgentError, buildSession, composeMessage, HOOK_ERRORS, interpretEvent, resolveConfig } from './agents.mjs';
-import { FAILURE_MESSAGES, killPidGroup, resolveExecutable, trackPid, untrackPid } from './providers.mjs';
+import { ADAPTERS, AgentError, buildSession, composeMessage, interpretEvent, resolveConfig } from './agents.mjs';
+import { CLAUDE_ERRORS, FAILURE_MESSAGES, killPidGroup, resolveExecutable, trackPid, untrackPid } from './providers.mjs';
 import { addClaudeRecord, addCodexRecord, claudeTranscript, findCodexRollout, newUsage, readNewLines, usageSummary } from './usage.mjs';
 import { prepareBase } from './base-context.mjs';
 import { BaseDeliveryError, checkBaseRevocations } from './base-resolver.mjs';
@@ -487,7 +487,7 @@ export class Supervisor {
       });
     } else if (signal.kind === 'failed') {
       // Account and quota failures are final for this run; there is no automatic retry.
-      const code = HOOK_ERRORS[signal.error] || 'CLI_FAILED';
+      const code = CLAUDE_ERRORS[signal.error] || 'CLI_FAILED';
       session.failure = { code, reason: FAILURE_MESSAGES[code] };
       await this.#setStatus(session, 'failed', { errorCode: code, reason: FAILURE_MESSAGES[code] });
       this.#kill(session);
@@ -844,7 +844,7 @@ export class Supervisor {
     }
     for (const { runId } of this.queue.splice(0)) { await this.board.updateRun(runId, { status: 'interrupted', reason: 'The app stopped before this run started.' }).catch(() => {}); this.#endPending(runId); }
     const live = [...this.sessions.values()].filter(session => session.proc);
-    for (const session of live) { session.shuttingDown = true; killPidGroup(session.proc.pid, 'SIGTERM'); }
+    for (const session of live) killPidGroup(session.proc.pid, 'SIGTERM');
     const deadline = Date.now() + graceMs;
     while (live.some(session => session.proc) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
     for (const session of live) if (session.proc) killPidGroup(session.proc.pid, 'SIGKILL');
