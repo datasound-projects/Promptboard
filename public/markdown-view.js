@@ -36,8 +36,10 @@ window.PromptboardMarkdown = (() => {
   function lines(texts, parent) { texts.forEach((text, index) => { if (index) parent.append(el('br')); inline(text, parent); }); return parent; }
   const cells = row => row.trim().replace(/^\|/, '').replace(/(?<!\\)\|$/, '').split(/(?<!\\)\|/).map(cell => cell.trim().replace(/\\\|/g, '|'));
 
+  // Quotes and lists nest at most this deep; deeper text is shown as plain text, so no document can exhaust the stack.
+  const MAX_DEPTH = 20;
   /** Render Markdown into a fragment. `options.diagram(code)` returns a node for a mermaid fence. */
-  function render(markdown, options = {}) {
+  function render(markdown, options = {}, nesting = 0) {
     const out = document.createDocumentFragment(), source = String(markdown).replace(/\r\n?/g, '\n').split('\n');
     let index = 0, pendingId = null;
     const heading = (level, text) => { const node = el(`h${Math.min(6, level + 1)}`, 'md-heading'); inline(text.replace(/\s+#+\s*$/, ''), node); if (pendingId) { node.id = pendingId; pendingId = null; } return node; };
@@ -78,7 +80,7 @@ window.PromptboardMarkdown = (() => {
       if (/^ {0,3}>/.test(line)) {
         const quoted = [];
         while (index < source.length && /^ {0,3}>/.test(source[index])) quoted.push(source[index++].replace(/^ {0,3}> ?/, ''));
-        const quote = el('blockquote'); quote.append(render(quoted.join('\n'), options)); out.append(quote); continue;
+        const quote = el('blockquote'); quote.append(nesting < MAX_DEPTH ? render(quoted.join('\n'), options, nesting + 1) : el('p', '', quoted.join('\n'))); out.append(quote); continue;
       }
       if (listItem.test(line)) {
         const root = { depth: -1, node: null, children: [] }, stack = [root];
@@ -87,6 +89,7 @@ window.PromptboardMarkdown = (() => {
           if (!match) { if (source[index].trim() && /^\s{2,}/.test(source[index]) && stack.length > 1) { stack.at(-1).text.push(source[index].trim()); index++; continue; } break; }
           const depth = match[1].replace(/\t/g, '  ').length, ordered = /\d/.test(match[2]);
           while (stack.length > 1 && stack.at(-1).depth >= depth) stack.pop();
+          if (stack.length > MAX_DEPTH) { stack.at(-1).text.push(source[index].trim()); index++; continue; }
           const item = { depth, ordered, text: [match[3]], children: [] };
           stack.at(-1).children.push(item); stack.push(item); index++;
         }

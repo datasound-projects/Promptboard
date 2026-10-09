@@ -16,3 +16,16 @@ test('hand-typed anchors and links stay under ctx-, so a document can never take
   assert.deepEqual([...preview.querySelectorAll('h3')].map(node => node.id), ['ctx-origin-view', 'ctx-section-plan']);
   assert.deepEqual([...preview.querySelectorAll('a')].map(node => node.getAttribute('href')), ['#ctx-origin-view', '#ctx-section-plan'], 'links still reach their anchors');
 });
+
+test('quotes and lists nest at most 20 levels; deeper text stays as plain text instead of exhausting the stack', t => {
+  const dom = new JSDOM('<article id="preview"></article>', { runScripts: 'outside-only' }), win = dom.window;
+  t.after(() => win.close());
+  win.eval(domSource); win.eval(source);
+  const preview = win.document.querySelector('#preview');
+  preview.append(win.PromptboardMarkdown.render(`${'>'.repeat(5000)} deep quote`));
+  assert.equal(preview.querySelectorAll('blockquote').length, 21);
+  assert.equal(preview.querySelector('blockquote:not(:has(blockquote))').textContent, `${'>'.repeat(4979)} deep quote`);
+  preview.replaceChildren(win.PromptboardMarkdown.render(Array.from({ length: 100 }, (_, index) => `${' '.repeat(index)}- item ${index}`).join('\n')));
+  assert.equal(preview.querySelectorAll('ul').length, 20);
+  assert.match(preview.querySelector('li:not(:has(ul))').textContent, /^item 19- item 20- item 21.*- item 99$/);
+});
