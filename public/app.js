@@ -4235,10 +4235,7 @@ function renderAutopilotBar(project) {
   // A startup question or a permission prompt holds Autopilot until you answer it in the terminal.
   const run = task && board.runs.filter(item => item.taskId === task.id && RUN_LIVE.includes(item.status)).at(-1);
   const needsYou = run && ((run.status === 'waiting_for_input' && !run.turnComplete) || run.lifecycle === 'no-events-yet');
-  // Codex reports turns only, not its questions: a running turn whose terminal went quiet gets a hint, not a claim.
-  const quietMs = run?.status === 'running' && run.activity?.coverage === 'turns-only' ? Date.now() - (window.promptboardDock?.sessions.get(run.id)?.lastOutputAt ?? Date.now()) : 0;
-  const hint = needsYou ? ' · the agent is waiting for your answer in the terminal' : quietMs >= 60000 ? ` · its terminal has been quiet for ${Math.floor(quietMs / 60000)} min; check whether the CLI is asking something` : '';
-  const text = ap.status === 'running' ? (task ? `Autopilot is working on “${task.title}” · ${columnTitle(ap.current.stage || todoColumnId(project))} · ${left} more queued${hint}` : 'Autopilot is choosing the next card…')
+  const text = ap.status === 'running' ? (task ? `Autopilot is working on “${task.title}” · ${columnTitle(ap.current.stage || todoColumnId(project))} · ${left} more queued${needsYou ? ' · the agent is waiting for your answer in the terminal' : ''}` : 'Autopilot is choosing the next card…')
     : ap.status === 'paused' ? `Autopilot paused: ${ap.reason}`
     : 'Autopilot finished: every queued card has been through its route.';
   const buttons = [];

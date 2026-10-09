@@ -1015,15 +1015,6 @@ test('Autopilot dialog: queue order, which cards, per-card routes, consent to st
   assert.equal(cardItem(ctx, 'Gamma').querySelector('.autopilot-tag').textContent, 'Autopilot · now');
   assert.equal(cardItem(ctx, 'Alpha').querySelector('.autopilot-tag').textContent, 'Autopilot · #1');
   assert.equal(cardItem(ctx, 'Beta').querySelector('.autopilot-tag'), null);
-  // Codex reports no questions: a running turn whose terminal went quiet gets a hint.
-  const gammaRun = async () => (await ctx.app.board.state()).runs.find(run => run.taskId === id('Gamma'));
-  await until(gammaRun, 'Gamma run'); const gamma = await gammaRun();
-  await ctx.app.board.updateRun(gamma.id, { status: 'running', activity: { coverage: 'turns-only', phase: 'working' } });
-  await win.__pbTest.loadBoard(); await ctx.idle();
-  assert.doesNotMatch($('#autopilot-bar').textContent, /quiet/);
-  win.promptboardDock.sessions.get(gamma.id).lastOutputAt = Date.now() - 3 * 60000;
-  await win.__pbTest.loadBoard(); await ctx.idle();
-  assert.match($('#autopilot-bar').textContent, /its terminal has been quiet for 3 min; check whether the CLI is asking something/);
   // Pause from the bar; settings stay editable only while not running.
   [...$('#autopilot-bar').querySelectorAll('button')].find(button => button.textContent === 'Pause').click(); await ctx.idle();
   await until(() => /Autopilot paused: Paused by you/.test($('#autopilot-bar').textContent), 'paused bar');
