@@ -4,11 +4,11 @@ import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import '../public/origin-model.js';
-import { ContextStore, DOCUMENT_BYTES, FIELDS, PAGE_BYTES, TOP_FIELDS, contextPages, exportProjectContext } from '../src/origin-context.mjs';
-import { prepareBase } from '../src/base-context.mjs';
+import { ContextStore, DOCUMENT_BYTES, FIELDS, PAGE_BYTES, TOP_FIELDS, contextPages, contextRoute, exportProjectContext } from '../src/origin-context.mjs';
+import { excerptOverhead, prepareBase } from '../src/base-context.mjs';
 import { markdownSections } from '../src/compose-documents.mjs';
 import { buildIndex, chunkPages } from '../src/compose-retrieval.mjs';
-import { blueprintFileName } from '../src/origin.mjs';
+import { OriginStore, blueprintFileName } from '../src/origin.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
 
 const Model = globalThis.PromptboardOriginModel;
@@ -329,7 +329,7 @@ test('Compose names the Markdown section of each excerpt and keeps whole-file ch
 });
 
 test('reading for Project Context leaves a recovered-file notice for the Origin page', async t => {
-  const dir = await temp(t), { OriginStore } = await import('../src/origin.mjs'), store = new OriginStore(dir);
+  const dir = await temp(t), store = new OriginStore(dir);
   const created = await store.create({ name: 'Damaged plan' });
   await store.write(created.id, { expectedRevision: 1, blueprint: { idea: 'Good copy' } });
   await store.write(created.id, { expectedRevision: 2, blueprint: { idea: 'Newest' } });
@@ -338,4 +338,46 @@ test('reading for Project Context leaves a recovered-file notice for the Origin 
   assert.equal((await fresh.read(created.id, { report: false })).blueprint.idea, 'Good copy');
   assert.equal((await fresh.read(created.id)).recovery?.restoredFromBackup, true, 'the page still reports the restore');
   assert.equal((await fresh.read(created.id)).recovery, null);
+});
+
+test('Use in Kanban counts the source line each excerpt gets in the run, so an accepted selection fits', async t => {
+  const { app, call, path, kanban, card } = await linkedApp(t);
+  const title = 'Payments, ledger and reconciliation services'.padEnd(150, ' x');
+  const text = lines => `# Project Context: P\n\n<a id="ctx-section-s1"></a>\n### ${title}\n\n${Array.from({ length: lines }, (_, i) => `Line ${i}: ${'lorem ipsum dolor sit amet '.repeat(2)}`).join('\n')}\n`;
+  const section = markdown => contextPages(markdown).find(page => page.id === 's-s1');
+  assert.ok(section(text(700)).markdown.length + 120 < 48000, 'fits without its source lines');
+  await call(`${path}/document`, { method: 'PUT', body: { expectedRevision: 1, text: text(700) } });
+  const refused = await call(`${path}/document/kanban`, { method: 'POST', body: { expectedRevision: 2, pageIds: ['s-s1'], target: { scope: 'task', taskId: card.id } } });
+  assert.equal(refused.data.code, 'CONTEXT_SELECTION_TOO_LARGE'); assert.ok(refused.data.chars > 48000);
+  // An accepted selection is supplied whole, and the estimate is exactly what the run adds to it.
+  await call(`${path}/document`, { method: 'PUT', body: { expectedRevision: 2, text: text(600) } });
+  const used = (await call(`${path}/document/kanban`, { method: 'POST', body: { expectedRevision: 3, pageIds: ['s-s1'], target: { scope: 'task', taskId: card.id } } })).data;
+  const { manifest } = await app.board.previewBase({ target: { scope: 'task', projectId: kanban.id, taskId: card.id } });
+  const prepared = await prepareBase({ manifest, currentResources: (await app.board.state()).base.resources, readRevision: ref => app.board.base.readRevision(ref), runDir: await temp(t) });
+  const page = section(text(600));
+  assert.equal(prepared.manifest.supplied.find(entry => entry.resourceId === used.resource.id).chars, page.markdown.length + excerptOverhead(page.title, page.markdown) - 2);
+});
+
+test('a damaged document without a good copy is reported, and creating again keeps the damaged files', async t => {
+  const dir = await temp(t), store = new ContextStore(dir), source = record(full());
+  const first = await store.create('proj1', source), folder = join(dir, 'origin', 'context', 'proj1');
+  await writeFile(join(folder, 'document.json'), '{"schema":"promptboard.origin-context", broken');
+  await assert.rejects(store.read('proj1'), { code: 'CONTEXT_DAMAGED' });
+  const again = await store.create('proj1', source);
+  assert.equal(again.existing, false); assert.notEqual(again.meta.id, first.meta.id);
+  const [aside] = (await readdir(join(dir, 'origin', 'deleted'))).filter(name => name.startsWith('context-proj1.damaged-'));
+  assert.deepEqual((await readdir(join(dir, 'origin', 'deleted', aside))).sort(), ['document.json', `${first.version.textHash}.md`].sort());
+});
+
+test('a recreated Origin project with the same ID is compared with its own content, not the old project’s', async t => {
+  const dir = await temp(t), origin = new OriginStore(dir), contexts = new ContextStore(dir);
+  const call = (method, body = {}) => contextRoute({ origin, contexts, board: { state: async () => ({ projects: [] }) }, req: { method }, res: {}, pathname: '/api/origin/projects/shared1/document', jsonBody: async () => body, send: (_res, status, data) => ({ status, data }) });
+  await origin.create({ name: 'First design', description: 'Old idea', id: 'shared1' });
+  await call('POST', { expectedRevision: 1 });
+  assert.equal((await call('GET')).data.originChanged, false);
+  await origin.remove('shared1', { expectedRevision: 1 }); await contexts.archive('shared1');
+  await new Promise(resolve => setTimeout(resolve, 5));
+  await origin.create({ name: 'Second design', description: 'New idea', id: 'shared1' });
+  await call('POST', { expectedRevision: 1 });
+  assert.equal((await call('GET')).data.originChanged, false);
 });

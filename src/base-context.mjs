@@ -144,6 +144,10 @@ export async function captureSources(definition, { workspacePath, approvedRoots 
 
 // Hash-keyed local lexical cache: bounded, no model/embedding calls and no repeated indexing on render.
 const indexes = new Map();
+const CHUNK = /[\s\S]{1,1800}(?:\n|$)|[\s\S]{1,1800}/g;
+const excerptHeader = part => `Source: ${part.name} · section ${part.section}\n`;
+/** Characters a run adds around one source's excerpts: each excerpt's header line and the blank line between excerpts. */
+export const excerptOverhead = (name, text) => (text.match(CHUNK) || []).reduce((sum, _part, index) => sum + excerptHeader({ name, section: index + 1 }).length + 2, 0);
 export function searchSources(sources, query = '', { budgetChars = 24000 } = {}) {
   const terms = [...new Set(String(query).toLowerCase().match(/[\p{L}\p{N}_-]{2,}/gu) || [])];
   const chunks = [], skipped = sources.slice(100).map(source => ({ sourceId: source.id, reason: 'index source limit' }));
@@ -153,7 +157,7 @@ export function searchSources(sources, query = '', { budgetChars = 24000 } = {})
     if (indexedBytes + size > MAX_TOTAL) { skipped.push({ sourceId: source.id, reason: 'index byte limit' }); continue; }
     indexedBytes += size;
     const hash = digest(source.text || ''); let index = indexes.get(hash);
-    if (!index) { index = (source.text || '').match(/[\s\S]{1,1800}(?:\n|$)|[\s\S]{1,1800}/g)?.map((text, i) => ({ text, section: i + 1, lower: text.toLowerCase() })) || []; indexes.set(hash, index); if (indexes.size > 64) indexes.delete(indexes.keys().next().value); }
+    if (!index) { index = (source.text || '').match(CHUNK)?.map((text, i) => ({ text, section: i + 1, lower: text.toLowerCase() })) || []; indexes.set(hash, index); if (indexes.size > 64) indexes.delete(indexes.keys().next().value); }
     for (const part of index) chunks.push({ ...part, sourceId: source.id, name: source.name, provenance: { ...(source.provenance || {}), contentHash: hash, section: part.section }, score: terms.reduce((n, term) => n + (part.lower.split(term).length - 1), 0) });
   }
   chunks.sort((a, b) => b.score - a.score);
@@ -222,7 +226,7 @@ export async function prepareBase({ manifest, readRevision, currentResources = [
           if (entry.kind === 'context') { const captured = await captureSources(definition, { workspacePath, approvedRoots, signal, readRevision, resources: prepared.resources }); sources = captured.sources; omitted.push(...captured.omitted); }
           const retrieved = searchSources(sources, cfg.query || query, { budgetChars: Math.min(remaining, cfg.budgetChars || 24000) });
           if (cfg.complete && (retrieved.omitted.length || omitted.length)) throw new BaseDeliveryError('This selection must be supplied complete, but it does not fit the Base context budget left for this run. Choose fewer sections or unassign other material; task text and evidence were preserved.', 'BASE_CONTEXT_BUDGET');
-          text = retrieved.selected.map(part => `Source: ${part.name} · section ${part.section}\n${part.text}`).join('\n\n');
+          text = retrieved.selected.map(part => `${excerptHeader(part)}${part.text}`).join('\n\n');
           captures = retrieved.selected.map(part => ({ sourceId: part.sourceId, ...part.provenance, capturedAt: Date.now() })); omitted.push(...retrieved.omitted);
           if (!text && entry.required) throw new BaseDeliveryError('A required context resource has no material within the context budget.', 'BASE_CONTEXT_EMPTY');
         }

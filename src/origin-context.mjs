@@ -13,9 +13,10 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readdir, readFile, rename, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { redactLocal } from './compose-local.mjs';
-import { serial, writeAtomic } from './durable.mjs';
+import { readWithBackup, serial, writeAtomic } from './durable.mjs';
 import { ORIGIN_DIR, OriginError, escapeId } from './origin.mjs';
 import { listTargets } from './base.mjs';
+import { excerptOverhead } from './base-context.mjs';
 
 const Model = globalThis.PromptboardOriginModel;
 export const FORMAT_VERSION = 1;
@@ -397,14 +398,17 @@ export class ContextStore {
     if (typeof originId !== 'string' || !Model.ID.test(originId)) throw new OriginError('Choose a valid project.', 'INVALID_PROJECT');
     return join(this.dir, escapeId(originId));
   }
-  async #meta(folder, name = META) {
-    let text;
-    try { text = await readFile(join(folder, name), 'utf8'); } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
-    let meta; try { meta = JSON.parse(text); } catch { meta = null; }
-    if (meta?.schema === SCHEMA && meta.version > 1) throw new OriginError('This Project Context was saved by a newer Promptboard version. Update the app; the file was not changed.', 'CONTEXT_VERSION_UNSUPPORTED', 409);
-    if (meta?.schema === SCHEMA && meta.version === 1 && Array.isArray(meta.versions) && meta.versions.some(version => version.id === meta.activeVersionId)) return meta;
-    if (name === META) return this.#meta(folder, `${META}.bak`); // A damaged file falls back to the previous good copy.
-    throw new OriginError('The Project Context file is damaged and no good copy was found. Create it again from Origin.', 'CONTEXT_DAMAGED', 500);
+  /** The metadata, or its previous good copy when it is damaged. No file at all means no document; a damaged one without a good copy is reported. */
+  async #meta(folder) {
+    let found = false;
+    const meta = await readWithBackup([join(folder, META), join(folder, `${META}.bak`)], bytes => {
+      found = true;
+      let meta; try { meta = JSON.parse(bytes); } catch { return; }
+      if (meta?.schema === SCHEMA && meta.version > 1) throw new OriginError('This Project Context was saved by a newer Promptboard version. Update the app; the file was not changed.', 'CONTEXT_VERSION_UNSUPPORTED', 409);
+      if (meta?.schema === SCHEMA && meta.version === 1 && Array.isArray(meta.versions) && meta.versions.some(version => version.id === meta.activeVersionId)) return meta;
+    });
+    if (meta || !found) return meta ?? null;
+    throw new OriginError('The Project Context file is damaged and no good copy was found. Create Context starts a new document and keeps the damaged files in the app data folder.', 'CONTEXT_DAMAGED', 500);
   }
   async #text(folder, hash) {
     let text;
@@ -471,10 +475,11 @@ export class ContextStore {
       return { meta, version, text: await this.#text(folder, version.textHash) };
     });
   }
-  /** Generate the first version from one saved blueprint record. An existing document is returned unchanged. */
+  /** Generate the first version from one saved blueprint record. An existing document is returned unchanged; a damaged one is set aside first. */
   create(originId, record) {
     return this.#serial(async () => {
-      const folder = this.#folder(originId), existing = await this.#meta(folder);
+      const folder = this.#folder(originId);
+      const existing = await this.#meta(folder).catch(async error => { if (error.code !== 'CONTEXT_DAMAGED') throw error; await this.#setAside(originId, 'damaged'); return null; });
       if (existing) { const version = existing.versions.find(entry => entry.id === existing.activeVersionId); return { meta: existing, version, text: await this.#text(folder, version.textHash), existing: true }; }
       await mkdir(folder, { recursive: true, mode: 0o700 });
       const version = await this.#generated(folder, null, record), now = Date.now();
@@ -520,26 +525,27 @@ export class ContextStore {
     }));
   }
   /** On Origin project deletion: keep the files, out of the way. Base copies are independent and stay usable. */
-  archive(originId) {
-    return this.#serial(async () => {
-      const folder = this.#folder(originId);
-      try { await stat(folder); } catch { return false; }
-      const deleted = join(this.dir, '..', 'deleted');
-      await mkdir(deleted, { recursive: true, mode: 0o700 });
-      await rename(folder, join(deleted, `context-${escapeId(originId)}.deleted-${Date.now()}`));
-      return true;
-    });
+  archive(originId) { return this.#serial(() => this.#setAside(originId, 'deleted')); }
+  async #setAside(originId, why) {
+    const folder = this.#folder(originId);
+    try { await stat(folder); } catch { return false; }
+    const deleted = join(this.dir, '..', 'deleted');
+    await mkdir(deleted, { recursive: true, mode: 0o700 });
+    await rename(folder, join(deleted, `context-${escapeId(originId)}.${why}-${Date.now()}`));
+    return true;
   }
 }
 
 // ---- HTTP: /api/origin/projects/:id/document ----
 
-const sourceHashes = new Map(); // originId → { revision, hash }: avoids re-exporting an unchanged revision on every status check.
+// originId → { revision, createdAt, hash }: avoids re-exporting an unchanged revision on every status check.
+// createdAt tells a recreated project with the same ID (which starts again at revision 1) from the old one.
+const sourceHashes = new Map();
 function currentSourceHash(record) {
   const known = sourceHashes.get(record.id);
-  if (known?.revision === record.revision) return known.hash;
+  if (known?.revision === record.revision && known.createdAt === record.createdAt) return known.hash;
   const { sourceHash } = exportProjectContext(record);
-  sourceHashes.set(record.id, { revision: record.revision, hash: sourceHash });
+  sourceHashes.set(record.id, { revision: record.revision, createdAt: record.createdAt, hash: sourceHash });
   return sourceHash;
 }
 
@@ -740,8 +746,10 @@ export async function useInKanban({ board, originId, input, contexts, saved }) {
   if (!ids.length || ids.length > 100 || new Set(ids).size !== ids.length || ids.some(id => !pages.some(page => page.id === id))) throw new OriginError('Choose the sections this scope needs.', 'INVALID_INPUT');
   const chosen = pages.filter(page => ids.includes(page.id)), chars = chosen.reduce((sum, page) => sum + page.markdown.length, 0);
   const full = chosen.length === pages.length;
-  if (chars + chosen.length * 120 > RUN_CONTEXT_CHARS) {
-    throw Object.assign(new OriginError(`The chosen sections have ${chars.toLocaleString('en-US')} characters. One run receives at most ${RUN_CONTEXT_CHARS.toLocaleString('en-US')} characters of Base material, so choose fewer sections. Nothing was changed.`, 'CONTEXT_SELECTION_TOO_LARGE', 409), { chars });
+  // In the run, every excerpt of at most 1,800 characters also carries a "Source: <section> · section N" line.
+  const needed = chars + chosen.reduce((sum, page) => sum + excerptOverhead(page.title, page.markdown), 0);
+  if (needed > RUN_CONTEXT_CHARS) {
+    throw Object.assign(new OriginError(`The chosen sections need ${needed.toLocaleString('en-US')} characters, with a source line for each excerpt. One run receives at most ${RUN_CONTEXT_CHARS.toLocaleString('en-US')} characters of Base material, so choose fewer sections. Nothing was changed.`, 'CONTEXT_SELECTION_TOO_LARGE', 409), { chars: needed });
   }
   const target = input.target || {};
   let scope;
@@ -769,7 +777,7 @@ export async function useInKanban({ board, originId, input, contexts, saved }) {
   const savedCopy = copy ? copy.resource : (await saveInBase({ board, originId, input: { expectedRevision: meta.revision, mode: 'copy' }, contexts, saved })).resource;
   const resource = selection || await board.base.create({ kind: 'context', name: plan.selection.name, tags: ['project-context', copyTag(meta.id), selectionTag],
     description: `${full ? 'The full' : 'Selected sections of the'} Project Context of “${record.name}”, document revision ${meta.revision} (SHA-256 ${hash}): ${chosen.map(page => page.title).join('; ')}`.slice(0, 2000),
-    configuration: { sources: ids.map(pageId => ({ kind: 'knowledge', resourceId: savedCopy.id, pageId })), budgetChars: Math.min(100000, Math.max(1000, chars + chosen.length * 120 + 1000)), maxFiles: Math.min(100, ids.length), query: '', complete: true } });
+    configuration: { sources: ids.map(pageId => ({ kind: 'knowledge', resourceId: savedCopy.id, pageId })), budgetChars: Math.min(100000, Math.max(1000, needed + 1000)), maxFiles: Math.min(100, ids.length), query: '', complete: true } });
   const binding = extendBinding(scope.binding, resource.id);
   if (binding) {
     if (scope.kind === 'profile') {
