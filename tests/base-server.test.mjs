@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { access, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -51,6 +52,18 @@ test('a run whose supplied context file is gone reports BASE_NOT_FOUND, not a se
   const run = { artifactsDir: 'runs/r1', baseManifest: { supplied: [{ resourceId: 'res1', contextRef: 'base-context/res1.txt', contentHash: 'h' }] } };
   const routes = new BaseRoutes({ board: { dataDir, run: async () => run }, send: () => assert.fail('nothing to send') });
   await assert.rejects(routes.route({ method: 'GET' }, {}, '/api/runs/r1/base-context', new URLSearchParams('resourceId=res1')), { code: 'BASE_NOT_FOUND', status: 404 });
+});
+
+test('Base generation and bounded requests whose client already left start aborted', async () => {
+  const left = () => Object.assign(new EventEmitter(), { destroyed: true, writableEnded: false });
+  const signals = [];
+  const routes = new BaseRoutes({ board: {}, track: work => work, send: () => {}, jsonBody: async () => ({}) });
+  routes.avatars.generate = async (_, { signal }) => { signals.push(signal.aborted); return {}; };
+  routes.wiki.generate = async (_, { signal }) => { signals.push(signal.aborted); return {}; };
+  await routes.route({ method: 'POST' }, left(), '/api/base/avatar/generate');
+  await routes.route({ method: 'POST' }, left(), '/api/base/wiki/generate');
+  await routes.bounded(left(), async signal => { signals.push(signal.aborted); });
+  assert.deepEqual(signals, [true, true, true]);
 });
 
 test('one resource can be applied atomically across real targets, including inherited providers/custom columns/task opt-out', async t => {

@@ -32,7 +32,7 @@ export class BaseRoutes {
     const controller = new AbortController();
     const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(45000)]);
     const abort = () => { if (!res.writableEnded) controller.abort(); };
-    res.once('close', abort); this.operations.add(controller);
+    res.once('close', abort); if (res.destroyed) controller.abort(); this.operations.add(controller);
     try { return await this.track(work(signal)); }
     finally { res.off('close', abort); this.operations.delete(controller); }
   }
@@ -45,7 +45,7 @@ export class BaseRoutes {
     if (method === 'POST' && pathname === '/api/base/avatar/cancel') return this.send(res, 200, this.avatars.cancel((await this.body(req)).operationId));
     if (method === 'POST' && pathname === '/api/base/avatar/generate') {
       const body = await this.body(req), controller = new AbortController();
-      const abort = () => { if (!res.writableEnded) controller.abort(); }; res.on('close', abort);
+      const abort = () => { if (!res.writableEnded) controller.abort(); }; res.on('close', abort); if (res.destroyed) controller.abort();
       try { return this.send(res, 200, await this.track(this.avatars.generate(body, { signal: controller.signal }))); }
       finally { res.off('close', abort); }
     }
@@ -83,7 +83,7 @@ export class BaseRoutes {
     if (method === 'POST' && pathname === '/api/base/wiki/generate') {
       const body = await this.body(req), controller = new AbortController();
       const abort = () => { if (!res.writableEnded) controller.abort(); };
-      res.once('close', abort);
+      res.once('close', abort); if (res.destroyed) controller.abort();
       try { return this.send(res, 200, await this.track(this.wiki.generate(body, { signal: controller.signal }))); }
       finally { res.off('close', abort); }
     }

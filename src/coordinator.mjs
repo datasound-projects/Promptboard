@@ -289,7 +289,8 @@ export async function coordinatorRoute({ coordinator, runner, track, claim, req,
     // A question runs one CLI call, so it shares the one-job slot with Compose, sign-in and file proposals.
     const body = await jsonBody(req), claimed = await claim('coordinator', body?.provider), { job } = claimed, abort = () => { if (!res.writableEnded) job.controller.abort(); };
     job.stage = 'coordinator';
-    res.once('close', abort);
+    // The client may have left while the body was read or the slot was claimed; that close already fired.
+    res.once('close', abort); if (res.destroyed) job.controller.abort();
     try { return send(res, 200, await track(coordinator.ask(projectId, body || {}, { runner: call => track(runner(call)), signal: job.controller.signal }))); }
     finally { res.off('close', abort); claimed.release(); }
   }
