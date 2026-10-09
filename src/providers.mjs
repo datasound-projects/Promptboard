@@ -114,8 +114,16 @@ const ownedPids = new Set();
 export function trackPid(pid) { if (Number.isInteger(pid) && pid > 0) ownedPids.add(pid); }
 export function untrackPid(pid) { ownedPids.delete(pid); }
 export function killPidGroup(pid, signal = 'SIGTERM') {
-  try { process.kill(process.platform === 'win32' ? pid : -pid, signal); }
-  catch { try { process.kill(pid, signal); } catch {} }
+  const killRoot = () => { try { process.kill(pid, signal); } catch {} };
+  if (process.platform === 'win32') {
+    // No process groups: end the tree while its root exists (killing the root first hides its
+    // descendants). Detached, so it also completes when the app exits right after.
+    try { spawn(join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'taskkill.exe'), ['/PID', String(pid), '/T', '/F'], { detached: true, windowsHide: true, stdio: 'ignore' }).on('error', killRoot).unref(); }
+    catch { killRoot(); }
+    return;
+  }
+  try { process.kill(-pid, signal); }
+  catch { killRoot(); }
 }
 export function killOwnedProcesses(signal = 'SIGKILL') {
   for (const child of ownedChildren) stopProcess(child, signal);

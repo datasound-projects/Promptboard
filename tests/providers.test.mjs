@@ -4,7 +4,9 @@ import assert from 'node:assert/strict';
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { buildCommand, detectProviders, parseProviderOutput, runProvider } from '../src/providers.mjs';
+import { EventEmitter } from 'node:events';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
+import { buildCommand, detectProviders, killPidGroup, parseProviderOutput, runProvider } from '../src/providers.mjs';
 
 test('CLI commands narrow permissions and keep model values separate', () => {
   const codex = buildCommand({ provider: 'codex', model: 'custom/model-v1' });
@@ -250,4 +252,20 @@ test('Antigravity requires a successful final result, not a partial stream', () 
   for (const status of ['ERROR', 'RUNNING', 'WAITING', 'CANCELED']) {
     assert.throws(() => parseProviderOutput('agy', JSON.stringify({ event: 'result', result: { status, response: 'Incomplete.' } })), { code: 'INVALID_OUTPUT' });
   }
+});
+
+test('on Windows a process group stop ends the whole tree with taskkill, not only its root', t => {
+  const childProcess = createRequire(import.meta.url)('node:child_process'), original = childProcess.spawn, calls = [];
+  childProcess.spawn = (command, args, options) => { calls.push({ command, args, options }); return Object.assign(new EventEmitter(), { unref() {} }); };
+  syncBuiltinESMExports();
+  const platform = Object.getOwnPropertyDescriptor(process, 'platform');
+  Object.defineProperty(process, 'platform', { ...platform, value: 'win32' });
+  const kill = t.mock.method(process, 'kill', () => true);
+  t.after(() => { childProcess.spawn = original; syncBuiltinESMExports(); Object.defineProperty(process, 'platform', platform); });
+  killPidGroup(2147483000, 'SIGTERM');
+  assert.equal(kill.mock.callCount(), 0, 'Killing the root first would hide its descendants from taskkill.');
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].command, /System32[\\/]taskkill\.exe$/);
+  assert.deepEqual(calls[0].args, ['/PID', '2147483000', '/T', '/F']);
+  assert.equal(calls[0].options.detached, true, 'The tree is still ended when the app exits right after.');
 });
