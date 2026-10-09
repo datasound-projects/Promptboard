@@ -1235,3 +1235,23 @@ test('Run details preserve immediate disclosure changes across refreshes and tab
   win.PromptboardDock.sync();
   assert.equal($('#dock-details .dock-context').open, false);
 });
+
+test('Run details keep keyboard focus and inspected Base resources while run facts refresh', { skip: process.platform === 'win32' }, async t => {
+  const ctx = await agentFixture(t);
+  const { $, win } = ctx;
+  $('#dock-tab-run-a').click();
+  const context = $('#dock-details .dock-context'); context.open = true;
+  const inspect = byText(context, 'Inspect supplied resources'), result = context.querySelector('.base-run-resources').lastElementChild;
+  inspect.click();
+  await until(() => result.textContent && !inspect.disabled, 'inspection result');
+  const inspected = result.textContent;
+  inspect.focus();
+  win.PromptboardDock.sync();
+  await ctx.app.board.updateRun('run-a', { usage: { source: 'claude-transcript', model: 'opus', inputTokens: 2000, outputTokens: 100, updatedAt: Date.now() } });
+  await win.__pbTest.loadBoard(); await ctx.idle();
+  assert.equal($('#dock-details .dock-context'), context, 'the same disclosure');
+  assert.match(context.querySelector('.dock-usage').textContent, /Input 2k/, 'facts are updated in place');
+  assert.equal(result.textContent, inspected, 'the inspected resources stay shown');
+  assert.equal(win.document.activeElement, inspect, 'focus stays on the inspect button');
+  assert.equal(context.open, true);
+});

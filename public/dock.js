@@ -269,10 +269,6 @@ function updateSessionTab(session) {
 /** Facts about the selected run, from the board's run record only. */
 function renderDockDetails(session) {
   const details = $('#dock-details');
-  // Native toggle events are asynchronous; capture the DOM before a refresh replaces it.
-  const previous = dock.sessions.get(details.dataset.runId);
-  const previousContext = details.querySelector('.dock-context');
-  if (previous && previousContext) previous.detailsOpen = previousContext.open;
   details.dataset.runId = session?.runId || '';
   details.hidden = !session;
   if (!session) { $('#dock-connection').hidden = true; return; }
@@ -282,20 +278,28 @@ function renderDockDetails(session) {
   const task = project?.tasks.find(task => task.id === run.taskId);
   const summary = paragraph('', 'dock-run-summary');
   summary.append(`${agentModel(run)} · ${columnTitle(run.config?.pipeline && DOCK_LIVE.has(shown.status) ? task?.column || run.stage : run.stage, project)} · ${agentStateText(shown)} · `, elapsedSpan(run));
-  const location = document.createElement('div'); location.className = 'dock-location';
-  location.append(locationFact('Repository', project?.repository?.root), locationFact('Task branch', run.branch), locationFact('Worktree', run.workspacePath));
-  const context = document.createElement('details'); context.className = 'dock-context';
-  context.open = Boolean(session.detailsOpen);
-  const toggle = document.createElement('summary'); toggle.textContent = 'Run details';
-  context.append(toggle, paragraph(agentActivity(shown), 'dock-run-activity'), location,
-    paragraph(usageText(run) || (run.config?.provider === 'gemini' ? 'Usage: not reported by Gemini CLI' : 'Usage: not reported yet'), 'dock-usage'));
-  if (window.PromptboardBaseView) context.append(window.PromptboardBaseView.runManifest(run));
-  context.addEventListener('toggle', () => {
-    if (!context.isConnected) return;
-    session.detailsOpen = context.open;
-    nextFrame(() => fitSession(session));
-  });
-  details.replaceChildren(summary, context);
+  // Each run keeps its disclosure: rebuilding it on every stream item or board refresh would drop
+  // keyboard focus, the open state and an inspected Base manifest. Only its facts change it.
+  const key = JSON.stringify([run.id, project?.repository?.root, run.branch, run.workspacePath, run.baseManifest || run.base || null, run.planBaseChanged]);
+  if (session.contextKey !== key) {
+    const context = document.createElement('details'); context.className = 'dock-context';
+    context.open = Boolean(session.context?.open);
+    const toggle = document.createElement('summary'); toggle.textContent = 'Run details';
+    const location = document.createElement('div'); location.className = 'dock-location';
+    location.append(locationFact('Repository', project?.repository?.root), locationFact('Task branch', run.branch), locationFact('Worktree', run.workspacePath));
+    context.append(toggle, paragraph('', 'dock-run-activity'), location, paragraph('', 'dock-usage'));
+    if (window.PromptboardBaseView) context.append(window.PromptboardBaseView.runManifest(run));
+    context.addEventListener('toggle', () => {
+      if (!context.isConnected) return;
+      session.detailsOpen = context.open;
+      nextFrame(() => fitSession(session));
+    });
+    Object.assign(session, { context, contextKey: key });
+  }
+  const { context } = session;
+  context.querySelector('.dock-run-activity').textContent = agentActivity(shown);
+  context.querySelector('.dock-usage').textContent = usageText(run) || (run.config?.provider === 'gemini' ? 'Usage: not reported by Gemini CLI' : 'Usage: not reported yet');
+  if (details.lastElementChild === context) details.firstElementChild.replaceWith(summary); else details.replaceChildren(summary, context);
   details.title = details.textContent;
   renderDockConnection(session);
 }
