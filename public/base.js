@@ -823,10 +823,13 @@ window.PromptboardBase = (() => {
         try { if (!previewed || !imported) throw new Error('Choose and preview a valid export first.'); await request('/api/base/import', { method: 'POST', body: { data: imported, expectedBaseRevision, collision: 'remap', ...(remap ? { remap } : {}) } }); await load(); closeDialog(); status('Imported. Review trust and availability before assigning resources.'); }
         catch (error) { fail(error); }
       }); apply.disabled = true;
+      // Only the latest chosen file may fill the preview: a slower reply for an earlier file is ignored.
+      let ticket = 0;
       file.addEventListener('change', async () => {
-        apply.disabled = true; previewed = false; fail('');
-        try { const selected = file.files?.[0]; if (!selected) return; if (selected.size > 12 * 1024 * 1024) throw new Error('Import exceeds 12 MiB.'); imported = JSON.parse(await selected.text()); const data = await request('/api/base/import/preview', { method: 'POST', body: { data: imported } }); remap = data.remap || data.preview?.remap; expectedBaseRevision = data.expectedBaseRevision ?? state.revision; content.replaceChildren(el('pre', JSON.stringify(data.preview || data, null, 2), 'base-code')); previewed = true; apply.disabled = false; }
-        catch (error) { fail(error); }
+        const mine = ++ticket;
+        apply.disabled = true; previewed = false; imported = null; remap = null; content.replaceChildren(); fail('');
+        try { const selected = file.files?.[0]; if (!selected) return; if (selected.size > 12 * 1024 * 1024) throw new Error('Import exceeds 12 MiB.'); const parsed = JSON.parse(await selected.text()); if (mine !== ticket) return; const data = await request('/api/base/import/preview', { method: 'POST', body: { data: parsed } }); if (mine !== ticket) return; imported = parsed; remap = data.remap || data.preview?.remap; expectedBaseRevision = data.expectedBaseRevision ?? state.revision; content.replaceChildren(el('pre', JSON.stringify(data.preview || data, null, 2), 'base-code')); previewed = true; apply.disabled = false; }
+        catch (error) { if (mine === ticket) fail(error); }
       });
       box.append(actions(button('Cancel', closeDialog), apply)); openDialog('Import Base', [box]);
     }

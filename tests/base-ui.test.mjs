@@ -383,3 +383,22 @@ test('an editor with unsaved changes is replaced only after confirmation, and le
   assert.equal($('#base-detail').hidden, true, 'confirmed: back to the library');
   assert.equal(confirms.length, 5);
 });
+
+test('import previews and imports only the latest chosen file; a late reply for an earlier file is ignored', async t => {
+  const replies = [];
+  const { $, win, view, calls, clickText } = setup(t, { respond: request => (request.path === '/api/base/import/preview' ? new Promise(resolve => replies.push({ name: request.body.data.name, answer: () => resolve({ response: { ok: true }, data: { preview: { name: request.body.data.name }, remap: { from: request.body.data.name } } }) })) : null) });
+  await view.show();
+  clickText('Import…');
+  const input = $('#base-import-file'), choose = name => { Object.defineProperty(input, 'files', { value: [new File([JSON.stringify({ name })], `${name}.json`)], configurable: true }); input.dispatchEvent(new win.Event('change')); };
+  choose('A'); await until(() => replies.length === 1, 'preview A requested');
+  choose('B'); await until(() => replies.length === 2, 'preview B requested');
+  const importButton = [...$('#base-dialog-content').querySelectorAll('button')].find(node => node.textContent === 'Import reviewed resources');
+  replies[1].answer(); await until(() => /"B"/.test($('#base-dialog-content pre')?.textContent || ''), 'preview B');
+  replies[0].answer(); await wait(30);
+  assert.match($('#base-dialog-content pre').textContent, /"B"/, 'A’s late reply does not replace B’s preview');
+  assert.equal(importButton.disabled, false);
+  importButton.click();
+  await until(() => calls.some(call => call.path === '/api/base/import'), 'import sent');
+  const sent = calls.find(call => call.path === '/api/base/import').body;
+  assert.deepEqual([sent.data.name, sent.remap.from], ['B', 'B']);
+});
