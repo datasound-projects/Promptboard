@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { access, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Board, canTransition, COLUMNS, normalizeColumns, originSourceOf } from '../src/board.mjs';
+import { Board, COLUMNS, normalizeColumns, originSourceOf, TRANSITIONS } from '../src/board.mjs';
 import { defaultProjectsDir, Store, STATE_VERSION } from '../src/store.mjs';
 import { initRepository, validateRepository } from '../src/git.mjs';
 import { startServer } from '../src/server.mjs';
@@ -43,9 +43,7 @@ test('the seven fixed columns and the transition matrix of the stage contract; e
   const allowed = new Set(['todo>planning', 'todo>executing', 'planning>executing', 'planning>todo', 'executing>code_review', 'executing>todo',
     'code_review>testing', 'code_review>executing', 'testing>merge', 'testing>executing', 'testing>done', 'merge>done', 'merge>executing', 'merge>code_review']);
   const ids = COLUMNS.map(column => column.id);
-  for (const from of ids) for (const to of ids) if (from !== to) assert.equal(canTransition(from, to), allowed.has(`${from}>${to}`), `${from} -> ${to}`);
-  assert.equal(canTransition('todo', 'nowhere'), false);
-  assert.equal(canTransition('nowhere', 'todo'), false);
+  for (const from of ids) for (const to of ids) if (from !== to) assert.equal(TRANSITIONS[from].includes(to), allowed.has(`${from}>${to}`), `${from} -> ${to}`);
 });
 
 test('the store serializes writes, replaces the file atomically, and recovers from corruption', async t => {
@@ -522,4 +520,13 @@ test('an Origin reference needs string IDs, and every column name is unique, bui
   assert.throws(() => normalizeColumns(layout.map(entry => entry.id === 'planning' ? { id: 'planning', title: 'Testing' } : entry)), { code: 'INVALID_COLUMNS', message: /Two columns are called “Testing”/ });
   assert.throws(() => normalizeColumns([layout[0], { id: 'c_custom01', title: 'Executing' }, ...layout.slice(1)]), { code: 'INVALID_COLUMNS', message: /Two columns are called “Executing”/ });
   assert.equal(normalizeColumns(layout.map(entry => entry.id === 'planning' ? { id: 'planning', title: 'Testing', hidden: true } : entry)).length, COLUMNS.length, 'a hidden Planning keeps no name');
+});
+
+test('a leftover testing-agent follow-up from an older version is ignored', async t => {
+  const board = new Board({ dataDir: await temp(t, 'pb-flow-') });
+  const project = await board.createProject({ name: 'Old flow' }), task = await board.createTask({ projectId: project.id, title: 'Card', prompt: 'Do it' });
+  await board.store.update(state => { state.projects[0].tasks[0].flow = { kind: 'testing-agent', testsId: 'gone', at: 1 }; });
+  await board.advanceFlows();
+  const view = await board.view();
+  assert.equal(view.projects[0].tasks[0].flow.kind, 'testing-agent'); assert.equal(view.runs.length, 0); assert.equal(view.projects[0].tasks[0].id, task.id);
 });

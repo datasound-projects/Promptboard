@@ -40,7 +40,6 @@ export const COLUMNS = Object.freeze([
   { id: 'done', title: 'Done', agent: false },
 ]);
 const COLUMN_IDS = COLUMNS.map(column => column.id);
-export const RUN_STATUSES = Object.freeze(['queued', 'running', 'waiting_for_input', 'suspended', 'succeeded', 'failed', 'cancelled', 'interrupted']);
 export const ACTIVE_RUN_STATUSES = Object.freeze(['queued', 'running', 'waiting_for_input']);
 // Succeeded is reached only through an explicit user confirmation (supervisor.confirm).
 const RUN_NEXT = { queued: ['running', 'cancelled', 'failed', 'interrupted', 'suspended'], running: ['waiting_for_input', 'succeeded', 'failed', 'cancelled', 'interrupted', 'suspended'],
@@ -82,6 +81,7 @@ function promptText(value, label, allowBlank = false) {
   return value;
 }
 const clip = (value, max) => typeof value === 'string' ? value.slice(0, max) : '';
+const findingLines = findings => findings.map(item => `- [${item.severity}] ${item.file}${item.line ? `:${item.line}` : ''} ${item.explanation}`).join('\n');
 const time = value => Number.isFinite(value) ? value : Date.now();
 
 const RECORD_ID = /^[A-Za-z0-9_-]{1,100}$/;
@@ -344,9 +344,6 @@ export const TRANSITIONS = Object.freeze({
   merge: ['done', 'executing', 'code_review'],
   done: [],
 });
-export function canTransition(from, to) {
-  return Boolean(TRANSITIONS[from]?.includes(to));
-}
 
 // ---- Column layout per project ----
 // Built-in stages keep their order (the transition contract and its evidence gates depend on it);
@@ -1096,7 +1093,7 @@ export class Board {
     return this.#locked(`transition:${id}`, () => this.#transition(id, request));
   }
 
-  async #transition(id, { column, index, expectedRevision, expectedProjectRevision = null, transitionId, decision, commitMessage, config = {}, handoffRunId = null, trigger = 'user' } = {}) {
+  async #transition(id, { column, index, expectedRevision, expectedProjectRevision = null, transitionId, decision, commitMessage, config = {}, trigger = 'user' } = {}) {
     if (transitionId !== undefined && (typeof transitionId !== 'string' || !TRANSITION_ID.test(transitionId))) throw new BoardError('Send a valid transition ID.', 'INVALID_INPUT');
     if (decision !== undefined && decision !== 'start' && decision !== 'move') throw new BoardError('Choose start or move.', 'INVALID_INPUT');
     if (expectedProjectRevision !== null && (!Number.isSafeInteger(expectedProjectRevision) || expectedProjectRevision < 0)) throw new BoardError('Send a valid board settings revision.', 'INVALID_INPUT');
@@ -1127,7 +1124,7 @@ export class Board {
     const plan = await this.#prepareTransition(state, project, task, column, config);
     const id2 = transitionId || randomUUID();
     // Done only saves a completion record. Merging is a separate, optional Merge-stage action.
-    const startAction = Boolean(plan.action) && decision !== 'move' && (decision === 'start' || plan.policy !== 'manual' || plan.action === 'merge-prepare' || column === 'done');
+    const startAction = Boolean(plan.action) && decision !== 'move' && (decision === 'start' || plan.policy !== 'manual' || plan.action === 'merge-prepare');
     if (startAction && plan.agentError) throw new BoardError(plan.agentError.message, plan.agentError.code, 409);
     // Required Base failures must precede plan approval or commits. A move-only action stays permitted.
     if (startAction && plan.action === 'agent') {
@@ -1247,8 +1244,8 @@ export class Board {
 
   /**
    * Follow-up work the board does by itself (called every second): tests that finished during a merge
-   * preparation, a merge agent that finished resolving, the optional testing agent, and open pull
-   * requests (checked once a minute). Each card is handled under its transition lock.
+   * preparation, a merge agent that finished resolving, and open pull requests (checked once a minute).
+   * Each card is handled under its transition lock.
    */
   async advanceFlows() {
     const state = await this.state();
@@ -1259,7 +1256,7 @@ export class Board {
         const flow = task.flow;
         const pr = task.evidence?.pullRequest;
         const polling = task.column === 'merge' && pr?.url && pr.state === 'OPEN' && Date.now() - (this.prChecks?.get(task.id) || 0) > 60000;
-        if (!['merge-tests', 'merge-resolve', 'testing-agent'].includes(flow?.kind) && !polling) continue;
+        if (!['merge-tests', 'merge-resolve'].includes(flow?.kind) && !polling) continue;
         await this.#locked(`transition:${task.id}`, () => this.#advanceFlow(task.id, polling)).catch(error => this.#setFlow(task.id, { kind: 'blocked', reason: error.message }).catch(() => {}));
       }
     }
@@ -1270,15 +1267,9 @@ export class Board {
     const { task } = this.#task(state, id);
     if (polling) { (this.prChecks ??= new Map()).set(id, Date.now()); await this.delivery.pullRequestStatus(id).catch(() => {}); }
     const flow = task.flow, tests = task.evidence?.tests;
-    if (flow?.kind === 'merge-tests' || flow?.kind === 'testing-agent') {
+    if (flow?.kind === 'merge-tests') {
       if (tests?.id !== flow.testsId) return this.#setFlow(id, null);
       if (tests.status === 'running') { if (!this.delivery.testsRunning.has(id)) await this.#setFlow(id, { kind: 'blocked', reason: 'The test run stopped (the app restarted). Move the card again to run them.' }); return; }
-      if (flow.kind === 'testing-agent') {
-        await this.#setFlow(id, null);
-        if (tests.status === 'passed' || task.column !== 'testing' || !this.executor) return;
-        const output = (tests.results || []).filter(result => result.status !== 'passed').map(result => `$ ${result.argv.join(' ')}\n${result.reason || `exit ${result.exitCode}`}\n${(result.tail || '').slice(-4000)}`).join('\n\n');
-        return this.#locked(`run:${id}`, () => this.#startRun(id, { stage: 'testing', consent: true, trigger: 'automation', note: `=== FAILED TESTS TO FIX ===\n${output}\n=== END FAILED TESTS ===` }));
-      }
       if (tests.status !== 'passed') return this.#setFlow(id, { kind: 'blocked', reason: `The tests failed on the task branch with the current target. Send the card back to Executing; the failing output goes with it.` });
       return this.#prepareMerge(id, { auto: flow.auto });
     }
@@ -1316,7 +1307,7 @@ export class Board {
       handoff = active;
     }
     const settings = effectiveWorkflow(project, state.settings.defaultAgent, state)[to] || null;
-    const plan = { from, to, handoff, commit: null, notes: null, action: null, policy: settings?.policy || 'manual', settings };
+    const plan = { from, to, handoff, commit: null, action: null, policy: settings?.policy || 'manual', settings };
     const hasWorkspace = task.workspace?.status === 'ready';
     if (hasWorkspace && to !== 'done') await this.ensureTaskWorktree(task.id); // Done never repairs or starts task work.
     const rev = hasWorkspace ? await this.delivery.revision(task.id) : null;
@@ -1333,13 +1324,6 @@ export class Board {
       // A finished turn is confirmed first; the evidence is checked again after that (#evidenceGate).
       if (!handoff) { const gate = await this.#evidenceGate(task.id, to); if (gate.problems.length) throw new BoardError(`${title(to)} is not ready: ${gate.problems.join(' ')}`, 'STAGE_NOT_READY', 409); }
     }
-    // Findings, failing test output, or merge conflicts travel with a card sent back to Executing.
-    // They are read after the hand-off (#reworkNotes): a confirmed review turn records its findings first.
-    if (to === 'executing') {
-      const review = task.evidence?.review, tests = task.evidence?.tests;
-      plan.notesKind = from === 'code_review' && (handoff?.stage === 'code_review' || (review?.status === 'completed' && review.verdict !== 'no_issues')) ? 'review'
-        : from === 'testing' && tests && ['failed', 'invalid'].includes(tests.status) ? 'tests' : from === 'merge' && rev?.merging ? 'merge' : null;
-    }
     if (to === 'done') {
       needWorkspace();
       plan.completionCommit = rev.taskCommit;
@@ -1353,10 +1337,9 @@ export class Board {
       if (!this.executor) { plan.action = null; plan.notice = 'Agent terminals are not set up, so no agent started. Run npm install, then restart Promptboard.'; }
       else {
         // An agent that cannot start (not installed, not signed in) is a real blocker for starting; a plain move still works.
-        try { plan.config = await this.executor.validate({ stage: to, config: this.#requestedAgent(settings, requestedConfig) }); }
+        try { await this.executor.validate({ stage: to, config: this.#requestedAgent(settings, requestedConfig) }); }
         catch (error) { plan.agentError = { message: `${title(to)} cannot start: ${error.message}`, code: error.code || 'AGENT_UNAVAILABLE' }; }
       }
-      if (plan.action && to === 'executing') plan.approvedPlan = Boolean(this.#approvedPlan(state, task));
     }
     return plan;
   }
@@ -1366,7 +1349,7 @@ export class Board {
     const { task } = this.#task(await this.state(), taskId);
     const review = task.evidence?.review, tests = task.evidence?.tests;
     if (from === 'code_review' && review?.status === 'completed' && review.verdict !== 'no_issues') {
-      return { review: true, text: review.findings?.length ? review.findings.map(item => `- [${item.severity}] ${item.file}${item.line ? `:${item.line}` : ''} ${item.explanation}`).join('\n') : review.text || '' };
+      return { review: true, text: review.findings?.length ? findingLines(review.findings) : review.text || '' };
     }
     if (from === 'testing' && tests && ['failed', 'invalid'].includes(tests.status)) {
       const output = (tests.results || []).filter(result => result.status !== 'passed').map(result => `$ ${result.argv.join(' ')}\n${result.reason || `exit ${result.exitCode}`}\n${(result.tail || '').slice(-4000)}`).join('\n\n');
@@ -1442,7 +1425,7 @@ export class Board {
       // The next attempt branches from the target branch as it is now.
       const fresh = this.#project(await this.state(), project.id);
       if (fresh.targetBranch) await this.setTargetBranch(project.id, { branch: fresh.targetBranch.name, expectedRevision: fresh.revision }).catch(() => {});
-      const findings = attempt.review?.findings?.length ? attempt.review.findings.map(item => `- [${item.severity}] ${item.file}${item.line ? `:${item.line}` : ''} ${item.explanation}`).join('\n') : '';
+      const findings = attempt.review?.findings?.length ? findingLines(attempt.review.findings) : '';
       const task2 = await this.store.update(draft => {
         const { project: owner, task: current } = this.#task(draft, id);
         current.previousAttempts = [...(current.previousAttempts || []), attempt].slice(-10);

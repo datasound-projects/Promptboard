@@ -2712,7 +2712,7 @@ function renderRunControls(card, run) {
   const labelled = (button, label) => { button.setAttribute('aria-label', `${label}: ${card.title}`); return button; };
   // The Merge stage's own work (preparing, merge agent, readiness, or the blocker) is shown on the card.
   const flow = card.flow;
-  const flowText = { 'merge-tests': 'Bringing in the target branch: tests are running again…', 'merge-resolve': 'The merge agent is resolving conflicts…', ready: `Ready to merge into ${flow?.targetBranch || 'the target branch'}.`, 'testing-agent': 'The testing agent starts if the tests fail.', blocked: flow?.reason }[flow?.kind];
+  const flowText = { 'merge-tests': 'Bringing in the target branch: tests are running again…', 'merge-resolve': 'The merge agent is resolving conflicts…', ready: `Ready to merge into ${flow?.targetBranch || 'the target branch'}.`, blocked: flow?.reason }[flow?.kind];
   if (flowText) box.append(paragraph(flowText, `run-activity flow-${flow.kind}${flow.kind === 'blocked' ? ' kanban-error' : ''}`));
   if (active) {
     box.append(labelled(detailButton('Terminal', () => window.PromptboardDock?.open(active.id), 'kanban-terminal'), 'Show terminal'));
