@@ -502,6 +502,19 @@ test('Git setup refuses a repository without commits whose index has staged file
   await untouched();
 });
 
+test('a project that cannot be created leaves an existing folder without a new Git repository', { skip: process.platform === 'win32' }, async t => {
+  const dataDir = await temp(t, 'pb-data-'), folder = await temp(t, 'pb-plain-');
+  const board = new Board({ dataDir, projectsDir: join(dataDir, 'projects') });
+  await board.createProject({ name: 'First', id: 'shared-1' });
+  await assert.rejects(board.createProjectWithRepository({ name: 'Second', folder, id: 'shared-1' }), { code: 'ID_TAKEN' });
+  await assert.rejects(board.createProjectWithRepository({ name: 'Second', folder, id: '../bad' }), { code: 'INVALID_INPUT' });
+  await board.store.update(state => { for (let i = state.projects.length; i < 200; i++) state.projects.push({ id: `p${i}`, name: `P${i}`, labels: [], labelRevision: 0, tasks: [] }); });
+  await assert.rejects(board.createProjectWithRepository({ name: 'Second', folder }), { code: 'LIMIT' });
+  await assert.rejects(board.createProjectWithRepository({ name: 'Third', folder: 'new' }), { code: 'LIMIT' });
+  assert.equal(await exists(join(folder, '.git')), false);
+  assert.equal(await exists(join(dataDir, 'projects')), false);
+});
+
 test('custom agent overrides validate, persist, and use the same hierarchy as built-in stages', async t => {
   const { normalizeColumns, effectiveWorkflow } = await import('../src/board.mjs');
   const custom = { id: 'c_docs0001', custom: true, title: 'Docs', agent: { enabled: true, provider: 'codex', model: 'custom-model', effort: 'high', policy: 'manual' } };

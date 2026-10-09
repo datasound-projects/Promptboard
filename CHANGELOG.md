@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Creating a project with a repository checks the project limit and a requested project ID before any folder or Git change, so a refused create no longer leaves a new `.git` in the chosen folder.
 - **Set up Git here** and new projects in an existing folder refuse a repository without commits whose index has staged files (`STAGED_FILES`, HTTP 400), instead of committing those files in the “empty” first commit.
 - Refuse to load a board whose `state.json` or backup cannot be read (permissions, I/O, open-file limit) with `STATE_READ_FAILED`, instead of treating it as damaged, renaming it and loading an older or empty board.
 - Add the **Coordinator** above the Kanban board, opened and closed with one click on **Coordinator** next to **Autopilot** (remembered per project), and switchable off. It keeps a compact, compressed project index of references, facts and timeline events, never the card specifications, Compose history or logs. The index is updated deterministically only when shown or asked, and is reconciled after being off. **Ask Coordinator** gives read-only, cited answers about the project, a card, an agent or a branch, from deterministically chosen evidence and one tool-less CLI call, with a cache for repeated questions. Nothing runs in the background and no tokens are used while idle. See [Coordinator](docs/coordinator.md).
