@@ -271,7 +271,8 @@ test('real PTY activity hooks track outstanding work and native approval without
     await input('activity-start');
     const busy = await until(async () => { const r = await w.board.run(run.id); return r.activity?.background === 1 && r; });
     assert.equal(busy.activity.ready, false); assert.equal(busy.activity.phase, 'working');
-    assert.equal(busy.activity.parentTurnComplete, true); assert.equal(busy.activity.tools, 2);
+    // Claude's parent call (identified) ended with its turn; Gemini's tool hooks name no call, so both stay counted.
+    assert.equal(busy.activity.parentTurnComplete, true); assert.equal(busy.activity.tools, provider === 'claude' ? 1 : 2);
     if (provider === 'claude') assert.equal(busy.activity.subagents, 1);
     assert.doesNotMatch(await readFile(join(w.dataDir, run.artifactsDir, 'last-message.md'), 'utf8'), /Child response/);
     await input('activity-child-failure'); await new Promise(resolve => setTimeout(resolve, 400));
@@ -294,10 +295,10 @@ test('real PTY activity hooks track outstanding work and native approval without
     await observedInput('activity-unrelated-results');
     assert.equal((await w.board.run(run.id)).activity.permissionPending, true);
     assert.equal((await w.board.run(run.id)).activity.phase, 'waiting');
-    // Documented permission events have no tool ID. Even the rejected plan's
-    // result cannot resolve that uncorrelated notification before a turn boundary.
+    // Documented permission events have no tool ID, so unrelated results never resolve them. The end of the
+    // dialog's own (only) call of that tool does, as the rejected plan's result shows.
     await observedInput('activity-plan-reject');
-    assert.equal((await w.board.run(run.id)).activity.permissionPending, true);
+    assert.equal((await w.board.run(run.id)).activity.permissionPending, false);
     await input('activity-finish');
     await until(async () => !(await w.board.run(run.id)).activity?.permissionPending);
     assert.equal((await w.board.run(run.id)).activity.planApproval, undefined);
@@ -499,7 +500,7 @@ test('live model/permission/Base changes wait for observed work to settle and re
     await writeFile(join(original.workspacePath, 'preserve-dirty.txt'), 'USER WORK MUST SURVIVE\n');
     if (provider !== 'codex') {
       w.board.executor.input(original.id, 'activity-start\r');
-      await until(async () => (await w.board.run(original.id)).activity?.tools === 2);
+      await until(async () => (await w.board.run(original.id)).activity?.background === 1);
     } else w.board.executor.input(original.id, 'unsent'); // No turn hook yet: submitted text must invalidate readiness immediately.
     const moving = w.move(card.id, 'code_review');
     await until(() => w.board.executor.boundaryWaits.has(original.id));
@@ -560,7 +561,7 @@ test('new native work during pause-intent persistence revokes the lease and wait
       injected = true;
       assert.throws(() => w.board.executor.input(id, 'another prompt\r'), { code: 'SESSION_SUSPENDING' });
       // The CLI starts work independently while the disk write is in flight.
-      owned.proc.write('activity-start\r'); await until(() => owned.activity.snapshot().tools === 2);
+      owned.proc.write('activity-start\r'); await until(() => owned.activity.snapshot().background === 1);
     }
     return result;
   };
@@ -611,7 +612,7 @@ test('Stop cancels a busy boundary wait promptly without creating a replacement 
   const w = await world(t, true), config = defaultPipelineConfig(); config.columns[3].strategy.modelOverride = 'boundary-fixture'; await w.configure(config);
   const card = await w.board.createTask({ projectId: w.projectId, title: 'Stop wins', prompt: 'ACTIVITY_FIXTURE' });
   const original = (await w.move(card.id, 'executing')).run; await until(async () => (await w.board.run(original.id)).activity?.ready);
-  w.board.executor.input(original.id, 'activity-start\r'); await until(async () => (await w.board.run(original.id)).activity?.tools === 2);
+  w.board.executor.input(original.id, 'activity-start\r'); await until(async () => (await w.board.run(original.id)).activity?.background === 1);
   const moving = w.move(card.id, 'code_review'); const rejected = assert.rejects(moving, { code: 'PIPELINE_RECONFIGURE_CANCELLED' });
   await until(() => w.board.executor.boundaryWaits.has(original.id));
   await w.board.executor.cancel(original.id); await rejected;
