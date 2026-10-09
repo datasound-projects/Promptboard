@@ -1284,7 +1284,7 @@ export class Board {
     }
     if (flow?.kind === 'merge-resolve') {
       const run = state.runs.find(item => item.id === flow.runId);
-      if (!run || ['failed', 'cancelled', 'interrupted', 'suspended'].includes(run.status)) return this.#setFlow(id, { kind: 'blocked', reason: `The merge agent ${run?.status || 'stopped'}${run?.reason ? `: ${run.reason}` : ''}. Resolve the conflicts in the task worktree, or send the card back to Executing.` });
+      if (!run || ['failed', 'cancelled', 'interrupted', 'suspended'].includes(run.status)) return this.#setFlow(id, { kind: 'blocked', reason: `The merge agent ${run?.status || 'stopped'}${run?.reason ? `: ${run.reason.replace(/[.\s]+$/, '')}` : ''}. Resolve the conflicts in the task worktree, or send the card back to Executing.` });
       if (run.status === 'waiting_for_input' && run.turnComplete && run.turns > 0) await this.executor.confirm(run.id);
       else if (run.status !== 'succeeded') return;
       const rev = await this.delivery.revision(id);

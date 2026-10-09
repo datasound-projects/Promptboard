@@ -28,11 +28,11 @@ const index = async (dataDir, id) => JSON.parse(gunzipSync(await readFile(file(d
 
 test('the index keeps references and facts, not card specifications, and never calls a model on its own', async t => {
   const { dataDir, board, project, card, calls, coordinator } = await world(t);
-  await board.store.update(draft => { draft.runs.push({ id: 'run-aaaa1111', taskId: card.id, projectId: project.id, stage: 'executing', status: 'failed', reason: 'quota', createdAt: Date.now() - 5000, startedAt: Date.now() - 5000, config: { provider: 'codex' } }); });
+  await board.store.update(draft => { draft.runs.push({ id: 'run-aaaa1111', taskId: card.id, projectId: project.id, stage: 'executing', status: 'failed', reason: 'The quota ran out.', createdAt: Date.now() - 5000, startedAt: Date.now() - 5000, config: { provider: 'codex' } }); });
   const view = await coordinator.view(project.id);
   assert.equal(view.enabled, true);
   assert.deepEqual(view.columns.find(column => column.role === 'todo').count, 2);
-  assert.ok(view.blockers.some(blocker => blocker.kind === 'failed' && blocker.taskId === card.id && /quota/.test(blocker.text)));
+  assert.ok(view.blockers.some(blocker => blocker.kind === 'failed' && blocker.taskId === card.id && blocker.text === 'The agent run failed: The quota ran out.'));
   assert.ok(view.recent.some(event => event.kind === 'run' && event.run === 'run-aaaa1111'));
   const stored = await index(dataDir, project.id);
   assert.equal(stored.tasks[card.id].title, 'Checkout flow'); assert.equal(stored.tasks[card.id].lastRun, 'run-aaaa1111');
