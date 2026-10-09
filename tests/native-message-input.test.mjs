@@ -442,3 +442,14 @@ test('a key typed when no CLI dialog is open still counts as a human draft', asy
   assert.equal(w.session.terminalInput.snapshot().manualInputObserved, true);
   assert.equal(supervisor.nativeMessageReadiness(w.run.id), 'unavailable');
 });
+
+test('a delivered column message leaves "finished, waiting for you" for a CLI with no new-turn hook', async t => {
+  const w = await fixture(t, 'codex'), updates = [], eventsFile = join(w.dir, 'events.jsonl'); await writeFile(eventsFile, '');
+  Object.assign(w.session, { eventsFile, eventsOffset: 0, seq: 0, ring: [], ringBytes: 0, subscribers: new Set(), status: 'waiting_for_input' });
+  w.run.status = 'waiting_for_input';
+  const supervisor = new Supervisor({ dataDir: w.dir, board: { run: async () => w.run, updateRun: async (_id, change) => { updates.push(change); return { ...w.run, ...change }; } } });
+  supervisor.sessions.set(w.run.id, w.session);
+  assert.equal((await supervisor.sendNativeMessage(w.run.id, w.request)).status, 'confirmed');
+  assert.ok(updates.some(change => change.status === 'running' && change.turnComplete === false), 'The new turn is shown as working.');
+  assert.equal(w.session.status, 'running');
+});
