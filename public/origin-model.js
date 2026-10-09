@@ -791,7 +791,7 @@ globalThis.PromptboardOriginModel = (() => {
 
 
 
-  return { SCHEMA, VERSION, ID, PHASES, SECTIONS, ENUMS, AREAS, VISION, LIMITS, KEYS, CONTEXT_COLLECTIONS, QUESTION_KEY, QUESTIONS, VISION_QUESTIONS, COMPONENT_FIELDS, SECTION_STATE, VERIFICATION_LABELS, OriginModelError,
+  return { SCHEMA, VERSION, ID, PHASES, SECTIONS, ENUMS, AREAS, VISION, LIMITS, CONTEXT_COLLECTIONS, QUESTIONS, VISION_QUESTIONS, COMPONENT_FIELDS, SECTION_STATE, VERIFICATION_LABELS,
     label, sectionLabel, sectionTitle, phaseTitle, phaseList, questionText, lines, emptyBlueprint, nextKey, normalizeBlueprint, verification, isStarted, itemName, issues, readiness, sectionStates,
-    composeSpec, orderItems, taskHome, taskContext, taskBody, suggestionBrief, CONTEXT_LIMIT };
+    composeSpec, orderItems, taskHome, taskContext, taskBody, suggestionBrief };
 })();
