@@ -667,7 +667,7 @@ export class Supervisor {
   }
 
   /** Pause a queued/preparing or owned live process, preserving the exact native conversation. */
-  async suspend(runId, { withinAutomationMove = null } = {}) {
+  async suspend(runId, { withinAutomationMove = null, reason = '' } = {}) {
     this.abortBoundary(runId);
     const run = await this.board.run(runId);
     this.board.abortAutomationTask?.(run.taskId, { exceptTransitionId: withinAutomationMove });
@@ -677,6 +677,7 @@ export class Supervisor {
     if (session) session.suspending = true;
     try { await this.board.beginSuspension(runId); }
     catch (error) { if (session) session.suspending = false; throw error; }
+    if (session && reason) session.suspensionReason = reason;
     const queued = this.queue.findIndex(item => item.runId === runId);
     if (queued >= 0 || ((run.status === 'queued' || this.launching?.has(runId)) && !this.sessions.get(runId)?.proc)) {
       this.preparing.get(runId)?.abort();
@@ -690,6 +691,11 @@ export class Supervisor {
     await this.#cancelSession(this.#session(runId), true);
   }
 
+  /** Cancel a task's automatic plan move that is still waiting for its agent's turn to end. */
+  abortPlanRoute(taskId) {
+    for (const session of this.sessions.values()) if (session.taskId === taskId) session.planRoutingController?.abort('move');
+  }
+
   abortBoundary(runId, reason = 'pause') {
     const controller = this.boundaryWaits.get(runId), plan = this.sessions.get(runId)?.planRoutingController;
     controller?.abort(reason); plan?.abort(reason); return Boolean(controller || plan);
@@ -700,7 +706,10 @@ export class Supervisor {
     const session = this.#session(runId);
     if (!session.activity || !session.pipeline) throw new AgentError('This session cannot report a pipeline turn boundary.', 'PIPELINE_RECONFIGURE_REQUIRED', 409);
     if (this.boundaryWaits.has(runId) || session.suspending || session.cancelPromise) throw new AgentError('This agent is already changing settings or stopping.', 'RUN_BUSY', 409);
-    const controller = new AbortController(), token = randomUUID(), deadline = Date.now() + timeoutMs;
+    const controller = new AbortController(), token = randomUUID(), started = Date.now();
+    // The turn after a plan approval usually goes on to implement the plan, so an approved plan's move waits for that
+    // turn however long it takes. Pause, Stop and any other move of the card cancel it. Validation keeps its budget.
+    const deadline = requiredApproval ? Infinity : started + timeoutMs;
     const externalAbort = () => controller.abort(signal.reason);
     signal?.addEventListener('abort', externalAbort, { once: true });
     if (signal?.aborted) externalAbort();
@@ -721,7 +730,7 @@ export class Supervisor {
         check();
         await Promise.race([Promise.resolve().then(() => prepare?.()), new Promise((_, reject) => {
           onAbort = () => reject(cancelled()); controller.signal.addEventListener('abort', onAbort, { once: true });
-          timer = setTimeout(() => reject(timedOut()), Math.max(0, deadline - Date.now()));
+          timer = setTimeout(() => reject(timedOut()), Math.max(0, started + timeoutMs - Date.now()));
           if (controller.signal.aborted) onAbort();
         })]);
       } finally { clearTimeout(timer); if (onAbort) controller.signal.removeEventListener('abort', onAbort); }
@@ -744,7 +753,7 @@ export class Supervisor {
           session.suspensionReason = 'Suspended at a native turn boundary to apply column settings. The conversation, worktree and output are kept.';
           await this.#cancelSession(session, true);
           if (controller.signal.aborted || this.stopping) throw new AgentError('The settings change was cancelled. The saved conversation stays paused in its current column.', 'PIPELINE_RECONFIGURE_CANCELLED', 409);
-          return resume ? await resume(AbortSignal.any([controller.signal, AbortSignal.timeout(Math.max(1, deadline - Date.now()))])) : undefined;
+          return resume ? await resume(AbortSignal.any([controller.signal, AbortSignal.timeout(Number.isFinite(deadline) ? Math.max(1, deadline - Date.now()) : timeoutMs)])) : undefined;
         } finally {
           // New output/hooks during persistence revoke the lease. Do not signal
           // the process, and never erase another caller's pause intent.
@@ -822,8 +831,9 @@ export class Supervisor {
   subscribe(runId, after, handlers) {
     const session = this.sessions.get(runId);
     if (!session) {
-      // A queued or starting run has no session yet: wait for it instead of reporting it missing.
-      if (!this.queue.some(item => item.runId === runId) && !this.launching?.has(runId)) return null;
+      // A queued or starting run has no session yet, nor has one whose start waits on enter automations:
+      // wait for it instead of reporting it missing.
+      if (!this.queue.some(item => item.runId === runId) && !this.launching?.has(runId) && !this.board.deferredPipelineStarts?.has(runId)) return null;
       let detach = null;
       const waiter = { handlers, attach: () => { detach = this.subscribe(runId, after, handlers); } };
       if (!this.pending.has(runId)) this.pending.set(runId, new Set());

@@ -123,6 +123,17 @@ test('lifecycle events map to supervisor signals; the hook bridge records only l
 
 // ---- Supervisor integration with a real PTY and fake CLIs ----
 
+test('a terminal opened while enter automations hold the agent waits for it; a cancelled start ends that stream', async () => {
+  const board = { deferredPipelineStarts: new Map([['deferred', {}]]), run: async id => ({ id, taskId: 't', status: 'queued' }), updateRun: async () => {} };
+  const supervisor = new Supervisor({ board, dataDir: tmpdir() }), ended = [];
+  const handlers = id => ({ write: () => true, onDrain() {}, end: () => ended.push(id) });
+  assert.equal(supervisor.subscribe('unknown', 0, handlers('unknown')), null, 'A run nobody will start is reported missing.');
+  assert.equal(typeof supervisor.subscribe('deferred', 0, handlers('deferred')), 'function', 'A held run is not reported missing (its tab would end for good).');
+  board.deferredPipelineStarts.delete('deferred');
+  await supervisor.cancel('deferred');
+  assert.deepEqual(ended, ['deferred']);
+});
+
 test('native resume selects an exact conversation, preserves controls and treats continuation text as data', async t => {
   const runDir = await temp(t, 'pb-resume-argv-'), id = '550e8400-e29b-41d4-a716-446655440000';
   for (const bad of ['', '--dangerously-bypass-approvals-and-sandbox', 'latest', '1', '/tmp/transcript', 'name with spaces']) assert.throws(() => validateResumeId(bad), { code: 'SESSION_ID_UNAVAILABLE' });
