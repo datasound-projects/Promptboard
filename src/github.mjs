@@ -10,7 +10,7 @@ import { execFile } from 'node:child_process';
 import { mkdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { git } from './git.mjs';
-import { trackPid, untrackPid } from './providers.mjs';
+import { commandOnPath, forgetCommand, trackPid, untrackPid } from './providers.mjs';
 
 export class GitHubError extends Error {
   constructor(message, code, status = 409) { super(message); this.code = code; this.status = status; }
@@ -22,10 +22,15 @@ const BRANCH = /^(?!-)(?!.*\.\.)[A-Za-z0-9._/-]{1,255}$/;
 const DEVICE_URL = 'https://github.com/login/device';
 
 /** GitHub CLI without a shell or prompts. Rejects with { missing, stderr } on failure. */
-export function gh(args, { cwd, timeoutMs = 120000, maxBuffer = 8 * 1024 * 1024, signal } = {}) {
+export async function gh(args, { cwd, timeoutMs = 120000, maxBuffer = 8 * 1024 * 1024, signal } = {}) {
+  const command = await commandOnPath('gh');
+  if (!command) throw Object.assign(new Error('gh failed'), { missing: true, stderr: '' });
   return new Promise((resolve, reject) => {
-    execFile('gh', args, { cwd, signal, shell: false, windowsHide: true, timeout: timeoutMs, maxBuffer, env: { ...process.env, GH_PROMPT_DISABLED: '1', GH_NO_UPDATE_NOTIFIER: '1', NO_COLOR: '1', GIT_TERMINAL_PROMPT: '0' } },
-      (error, stdout, stderr) => error ? reject(Object.assign(new Error('gh failed'), { missing: error.code === 'ENOENT', stderr: String(stderr) })) : resolve(String(stdout)));
+    execFile(command, args, { cwd, signal, shell: false, windowsHide: true, timeout: timeoutMs, maxBuffer, env: { ...process.env, GH_PROMPT_DISABLED: '1', GH_NO_UPDATE_NOTIFIER: '1', NO_COLOR: '1', GIT_TERMINAL_PROMPT: '0' } },
+      (error, stdout, stderr) => {
+        if (error?.code === 'ENOENT') forgetCommand('gh');
+        error ? reject(Object.assign(new Error('gh failed'), { missing: error.code === 'ENOENT', stderr: String(stderr) })) : resolve(String(stdout));
+      });
   });
 }
 

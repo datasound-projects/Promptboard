@@ -7,6 +7,7 @@
 import { execFile } from 'node:child_process';
 import { mkdir, realpath, stat } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
+import { commandOnPath, forgetCommand } from './providers.mjs';
 
 export class GitError extends Error {
   constructor(message, code, status = 400) { super(message); this.code = code; this.status = status; }
@@ -36,11 +37,14 @@ function gitEnv() {
 }
 
 /** Run git. `config` adds -c overrides (for example, disabled hooks). Resolves stdout; rejects with {code, stderr}. */
-export function git(args, { cwd, config = [], timeoutMs = 20000 } = {}) {
+export async function git(args, { cwd, config = [], timeoutMs = 20000 } = {}) {
+  const command = await commandOnPath('git');
+  if (!command) throw Object.assign(new Error('git failed'), { code: 'GIT_MISSING', exitCode: 'ENOENT', stderr: '' });
   return new Promise((resolve, reject) => {
-    execFile('git', [...config.flatMap(item => ['-c', item]), ...args], { cwd, env: gitEnv(), shell: false, windowsHide: true, timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 },
+    execFile(command, [...config.flatMap(item => ['-c', item]), ...args], { cwd, env: gitEnv(), shell: false, windowsHide: true, timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 },
       (error, stdout, stderr) => {
         if (!error) { resolve(stdout); return; }
+        if (error.code === 'ENOENT') forgetCommand('git');
         reject(Object.assign(new Error('git failed'), { code: error.code === 'ENOENT' ? 'GIT_MISSING' : 'GIT_FAILED', exitCode: error.code, stderr: String(stderr) }));
       });
   });

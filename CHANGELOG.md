@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix: Git and the GitHub CLI now start from an absolute PATH entry (relative and empty entries are ignored, as for agent CLIs), so a `git` or `git.exe` inside a repository or worktree can never run in their place.
 - Fix: confirming a stage twice at once (a double click, or Autopilot and a click) runs the confirmation once, so a plan approval, review or stage result is no longer recorded twice.
 - Fix: an automation move interrupted by a restart is recovered even when the new Promptboard process gets the same PID (common in containers). New journal entries also store a random per-process instance ID; entries without one keep the PID-only check.
 - Fix: two quick **Connect GitHub** clicks start one `gh auth login`, and a cancelled sign-in that exits late no longer ends or overwrites the state of the next one.
