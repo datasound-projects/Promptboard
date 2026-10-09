@@ -222,13 +222,7 @@ kbd { font: 11px/1.4 var(--mono); padding: 1px 5px; border: 1px solid var(--line
 
 /* Workspace: one centred column with the four steps. */
 .workspace { display: grid; grid-template-columns: minmax(0, 860px); justify-content: center; align-content: start; margin-left: var(--sidebar); padding: 30px 40px 24px; }
-.intro { display: flex; align-items: center; justify-content: space-between; gap: 24px; margin-bottom: 22px; }
-.intro h1 { margin: 0; color: var(--ink); font-size: clamp(28px, 3.2vw, 40px); line-height: 1.1; letter-spacing: -1.4px; font-weight: 700; }
-.intro h1 span { display: block; color: var(--muted); font-weight: 400; }
 .intro-description { max-width: 520px; margin: 12px 0 0; color: var(--muted); font-size: 14px; }
-.mascot { flex: none; max-width: 190px; margin: 0; text-align: center; }
-.mascot img { display: block; width: 112px; height: 112px; margin: 0 auto; object-fit: contain; }
-.mascot figcaption { display: inline-block; margin-top: 4px; padding: 3px 8px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--surface); color: var(--muted); font: 600 11px/1.3 var(--mono); transform: rotate(-3deg); }
 
 .card { margin-bottom: 16px; overflow: hidden; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
 .card :where(textarea, pre, summary):focus-visible { outline-offset: -3px; }
@@ -236,7 +230,6 @@ kbd { font: 11px/1.4 var(--mono); padding: 1px 5px; border: 1px solid var(--line
 .card-heading > div:first-child { display: flex; align-items: center; gap: 10px; }
 .card-heading h2 { margin: 0; color: var(--ink); font-size: 15px; font-weight: 650; letter-spacing: -.2px; }
 .step { display: inline-grid; place-items: center; flex: none; width: 24px; height: 24px; border-radius: 50%; background: var(--primary); color: var(--on-primary); font: 700 12px/1 var(--mono); }
-.small-label { color: var(--subtle); font: 600 11px var(--mono); letter-spacing: .8px; text-transform: uppercase; }
 .card-body { padding: 18px 20px 0; }
 
 #prompt-input { display: block; width: 100%; min-height: 170px; resize: vertical; padding: 18px 20px 10px; border: 0; background: transparent; color: var(--text); font-size: 15px; line-height: 1.7; }
@@ -382,8 +375,7 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
 .reload-button { margin-top: 12px; }
 
 /* Kanban page: the same tokens and components as the Compose page. */
-.kanban-project-bar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 22px; padding: 18px 20px; }
-.kanban-project-bar .field-label, .kanban-project-form .field-label { flex: 1 1 240px; max-width: 420px; }
+.kanban-project-form .field-label { flex: 1 1 240px; max-width: 420px; }
 .kanban-project-actions { display: flex; flex-wrap: wrap; gap: 6px 16px; padding-bottom: 8px; }
 .kanban-project-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 14px; padding: 0 20px 18px; }
 .kanban-project-form .inline-error { flex-basis: 100%; margin: 0; }
@@ -453,8 +445,6 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
   .brand { display: none; } /* Without a logo mark, hide the whole link rather than leave it empty. */
   .page-nav { margin-left: 0; padding-left: 8px; }
   .select-grid, .choice-row, .check-grid { grid-template-columns: 1fr; }
-  .intro { align-items: flex-start; }
-  .mascot img { width: 84px; height: 84px; }
   .shortcut-hint { display: none; }
   .card-heading { padding: 12px 16px; }
   .card-body { padding: 16px 16px 0; }
@@ -465,7 +455,6 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
   .input-footer { padding: 8px 16px 14px; }
   .verification-status, .verification-report, .lint-review, .output-meta { padding-left: 16px; padding-right: 16px; }
   #prompt-output { padding: 18px 16px; }
-  .kanban-project-bar { padding: 16px; }
   .kanban-project-form { padding: 0 16px 16px; }
   .kanban-detail { margin: 0 16px 16px; }
   .kanban-cards { padding: 10px; }
@@ -477,12 +466,7 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
 }
 @media (max-width: 480px) {
   .page-nav a { padding: 7px 8px; }
-  .intro { gap: 12px; }
-  .intro h1 { font-size: 26px; letter-spacing: -1px; }
   .intro-description { font-size: 13px; }
-  .mascot { max-width: 112px; }
-  .mascot img { width: 64px; height: 64px; }
-  .card-heading .small-label { display: none; }
   .action-row { display: flex; }
   .generate-button { flex: 1; justify-content: space-between; }
   :is(#kanban-button, #export-button, #import-board, #export-board) span { display: none; }
@@ -509,7 +493,6 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
 .toolbar-cell .field-label select { margin-top: 4px; }
 .toolbar-cell .kanban-project-actions { padding: 6px 0 0; gap: 4px 12px; }
 .toolbar-value { margin: 6px 0 2px; overflow: hidden; color: var(--ink); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
-.toolbar-end { display: flex; gap: 8px; justify-content: flex-end; }
 /* The board fills the window down to the terminal dock; each column scrolls on its own. */
 .kanban-columns { grid-auto-columns: minmax(264px, 1fr); height: calc(100dvh - var(--dock-height) - 240px); min-height: 120px; max-height: none; }
 .kanban-column { min-height: 0; }
@@ -550,11 +533,7 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
 .kanban-more button:hover { color: var(--ink); }
 .kanban-more .kanban-delete:hover { text-decoration: underline; text-underline-offset: 3px; }
 /* Project settings collapse to one summary line. */
-.project-heading { padding-top: 10px; padding-bottom: 10px; }
-.project-heading > div:first-child { min-width: 0; flex: 1; }
-.project-heading h2 { flex: none; font-size: 14px; }
 .project-summary { min-width: 0; overflow: hidden; color: var(--muted); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
-.kanban-projects.collapsed .project-heading { flex-wrap: nowrap; border-bottom: 0; }
 .kanban-projects.collapsed .kanban-detail { margin-top: 2px; }
 .kanban-card.pending { opacity: .6; outline: 1px dashed var(--line-strong); }
 .kanban-card.rejected { outline: 2px solid var(--ink); animation: pb-shake .3s ease-in-out 2; }
@@ -615,7 +594,7 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
 .workflow-stage h3 { margin: 0 0 8px; font-size: 14px; }
 .workflow-stage textarea { width: 100%; min-height: 60px; margin-top: 6px; padding: 8px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--surface); color: var(--ink); font: 12px var(--mono); }
 .workflow-preview { margin: 8px 0 0; color: var(--muted); font-size: 12px; }
-@media (max-width: 1100px) { .kanban-toolbar { grid-template-columns: 1fr 1fr; } .toolbar-end { justify-content: flex-start; } }
+@media (max-width: 1100px) { .kanban-toolbar { grid-template-columns: 1fr 1fr; } }
 @media (max-width: 730px) { .dock { left: 0; } .kanban-toolbar { grid-template-columns: 1fr; } .dock-actions .text-button { font-size: 12px; } }
 @media (prefers-reduced-motion: reduce) { .run-badge.running::before, .kanban-card.rejected { animation: none; } }
 @media (max-width: 730px) {
@@ -1037,16 +1016,6 @@ button.timeline-task:hover { text-decoration: underline; }
 .timeline-actions { display: flex; gap: 8px; margin-top: 4px; }
 .timeline-actions button { padding: 0; border: 0; background: none; color: var(--muted); font-size: 11.5px; text-decoration: underline; }
 
-/* One approval for a move: the steps, an optional commit, and the resolved agent. */
-.run-steps { margin: 0 0 12px; padding-left: 18px; color: var(--text); font-size: 13.5px; }
-.run-steps li { margin: 3px 0; }
-.run-commit { display: grid; gap: 6px; margin-bottom: 12px; }
-.run-commit-files { max-height: 140px; margin: 4px 0 0; padding-left: 16px; overflow-y: auto; font: 12px var(--mono); }
-.run-agent-line { margin: 0 0 6px; color: var(--ink); font-weight: 600; font-size: 13.5px; }
-.run-agent-line small { color: var(--subtle); font-weight: 400; }
-.run-override { margin-bottom: 10px; }
-.run-override summary { color: var(--muted); font-size: 12.5px; cursor: pointer; }
-.run-override .select-grid { margin-top: 10px; }
 .kanban-card.moving { opacity: .6; }
 .kanban-card .moving-to { margin: 0 0 4px; color: var(--muted); font: 600 11px var(--mono); }
 
