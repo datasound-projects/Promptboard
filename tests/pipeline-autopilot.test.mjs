@@ -20,7 +20,8 @@ async function world(t, { instruct = [], profiles = [] } = {}) {
   const project = await board.createProject({ name: 'Pipeline', workflowMode: 'pipeline' });
   await board.linkRepository(project.id, { path: root, expectedRevision: project.revision });
   const starts = [];
-  board.executor = { validate: async ({ stage, config }) => resolveConfig(stage, config), start: async payload => { starts.push(payload.run.id); },
+  const payloads = [];
+  board.executor = { validate: async ({ stage, config }) => resolveConfig(stage, config), start: async payload => { starts.push(payload.run.id); payloads.push(payload); },
     suspend: async id => board.updateRun(id, { status: 'suspended' }), cancel: async id => board.updateRun(id, { status: 'cancelled' }) };
   const config = defaultPipelineConfig(); config.profiles = profiles;
   for (const id of instruct) config.columns.find(column => column.id === id).automations.onEnter.push({ name: 'Autopilot instruction', type: 'send_message', mode: 'deferred', message: `Do the ${id} step.` });
@@ -31,7 +32,7 @@ async function world(t, { instruct = [], profiles = [] } = {}) {
   const finishTurn = async taskId => { const run = await live(taskId); if (run.status === 'queued') await board.updateRun(run.id, { status: 'running' }); await board.updateRun(run.id, { status: 'waiting_for_input', turnComplete: true, turns: (run.turns || 0) + 1, activity: { phase: 'idle', ready: true } }); };
   const autopilot = new Autopilot(board);
   const tick = async (times = 1) => { for (let index = 0; index < times; index++) await autopilot.tick(); };
-  return { board, project, projectNow, live, finishTurn, tick, starts };
+  return { board, project, projectNow, live, finishTurn, tick, starts, payloads };
 }
 
 test('pipeline Autopilot settings: active columns only, and every later column needs an instruction', async t => {
@@ -147,7 +148,7 @@ test('only a pause you cause stops Autopilot; system handoffs and its own Done m
 });
 
 test('resume starts a stopped column agent again', async t => {
-  const { board, project, projectNow, live, tick, starts } = await world(t);
+  const { board, project, projectNow, live, tick, starts, payloads } = await world(t);
   const card = await board.createTask({ projectId: project.id, title: 'Card' });
   await board.setAutopilot(project.id, { route: ['executing'], queue: [card.id], expectedRevision: (await projectNow()).revision });
   await board.controlAutopilot(project.id, { action: 'start', confirm: true });
@@ -160,6 +161,8 @@ test('resume starts a stopped column agent again', async t => {
   const again = await live(card.id);
   assert.ok(again && again.id !== first.id, 'a new run in the same column'); assert.equal(again.stage, 'executing'); assert.equal(again.trigger, 'automation');
   assert.deepEqual(starts, [first.id, again.id]);
+  // A resumed conversation is told to carry on; with no input it would sit idle and the column would never finish.
+  assert.equal(payloads[0].continuation, ''); assert.match(payloads[1].continuation, /Continue the current step of this card/);
   assert.equal((await projectNow()).autopilot.status, 'running');
 });
 

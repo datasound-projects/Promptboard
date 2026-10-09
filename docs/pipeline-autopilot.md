@@ -27,6 +27,6 @@ On a column-pipeline board, **Autopilot** (next to **Columns**) takes queued To 
 - You pause an agent yourself.
 - A column's instruction did not reach its agent, for example because you typed a message in its terminal first. The bar shows the reason. Send the instruction yourself, then **Resume**; Resume continues without re-sending it. Answering the CLI's own permission or question prompts (arrow keys, Enter, a number) does not cancel an instruction.
 
-Resume continues from the card's current column. If that column's agent is no longer running, Autopilot starts it again there. **Skip card** leaves the card where it is and takes the next one; **Stop** leaves every card where it is.
+Resume continues from the card's current column. If that column's agent is no longer running (for example after the app restarted), Autopilot starts it again there and tells the resumed conversation to continue its current step. **Skip card** leaves the card where it is and takes the next one; **Stop** leaves every card where it is.
 
 System handoffs between agent turns, and Autopilot's own move to Done, do not pause it.

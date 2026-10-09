@@ -13,6 +13,7 @@
 import { resolvePipelineStrategy } from './pipeline-config.mjs';
 
 const TICK_MS = 1000;
+const RESUME_MESSAGE = 'Promptboard Autopilot restarted this session. Continue the current step of this card from where you stopped; if it is already complete, say what you did and stop.';
 const done = new Set(['failed', 'cancelled', 'interrupted', 'suspended']);
 const title = stage => ({ planning: 'Planning', executing: 'Executing', code_review: 'Code Review', testing: 'Testing', merge: 'Merge' })[stage] || stage;
 
@@ -88,8 +89,9 @@ export class Autopilot {
       if (task.column === todo) return this.set(projectId, a => { a.current = { ...a.current, stage: null, step: 'enter' }; });
       if (!route.includes(task.column)) return this.pause(projectId, `“${task.title}” is in ${name(task.column)}, which is not in the Autopilot columns. Move it to one of them, or skip it.`);
       if (!live) {
-        // No agent in this column (for example it was stopped): start it here again, resuming its conversation when it can.
-        await this.board.requestRun(task.id, { stage: task.column, consent: true, trigger: 'automation' });
+        // No agent in this column (for example it was stopped, or the app restarted): start it here again. A resumed
+        // conversation is told to carry on; without input it would sit idle and this column would never finish.
+        await this.board.requestRun(task.id, { stage: task.column, consent: true, trigger: 'automation', continuation: RESUME_MESSAGE });
         const fresh = (await this.board.state()).runs.filter(run => run.taskId === task.id && ['queued', 'running', 'waiting_for_input'].includes(run.status)).at(-1);
         return this.set(projectId, a => { a.current = { ...a.current, stage: task.column, step: 'working', turns: fresh?.turns ?? 0 }; });
       }
