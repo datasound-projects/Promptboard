@@ -3,11 +3,11 @@ import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { NativeMessageDispatch } from './native-message-dispatch.mjs';
 import { captureNativeMessageTarget } from './native-message-target.mjs';
+import { nativeMessageText, savedWithin, sameScope as same, untilAborted } from './native-message-common.mjs';
 
 const id = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(value);
 const hash = value => createHash('sha256').update(value).digest('hex');
 const ownerId = (key, actionId) => JSON.stringify([key.projectId, key.taskId, key.transitionId, actionId]);
-const same = (left, right) => ['provider', 'sessionId', 'runId', 'mode', 'messageHash'].every(field => left?.[field] === right?.[field]);
 const outcome = (status, blocked = false) => ({ status, confirmed: false, reason: 'Scheduled native delivery was not confirmed. No input will be retried.', ...(blocked ? { blocked: true } : {}) });
 
 export class NativeMessageScheduler {
@@ -20,8 +20,7 @@ export class NativeMessageScheduler {
   schedule({ key, actionId, runId, message, mode, expectedTaskRevision, expectedProjectRevision },
     { signal = null, timeoutMs = 150000, waitForReadiness = typeof this.supervisor?.nativeMessageReadiness === 'function' } = {}) {
     if (this.stopping || !key || !['projectId', 'taskId', 'transitionId'].every(field => id(key[field])) || !id(actionId) || !id(runId)
-      || mode !== 'deferred' || typeof message !== 'string' || !message.isWellFormed() || !message.trim() || Buffer.byteLength(message) > 65536
-      || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/.test(message) || message.trimStart().startsWith('/')
+      || mode !== 'deferred' || !nativeMessageText(message)
       || ![expectedTaskRevision, expectedProjectRevision].every(value => Number.isSafeInteger(value) && value > 0)
       || !Number.isFinite(timeoutMs) || timeoutMs < 1 || timeoutMs > 150000 || typeof waitForReadiness !== 'boolean'
       || waitForReadiness && typeof this.supervisor?.nativeMessageReadiness !== 'function') return Promise.resolve({ scheduled: false });
@@ -38,27 +37,17 @@ export class NativeMessageScheduler {
       controller, waitForReadiness, knownQueue: false, saveAttempted: false, blocked: false, finished: false };
     this.jobs.set(identity, job);
     const remaining = () => timeoutMs - (performance.now() - phaseStarted);
-    const bounded = (callback, readBudget = null) => new Promise((resolve, reject) => {
-      let settled = false;
-      const finish = (fn, value) => { if (settled) return; settled = true; clearTimeout(readTimer); combined.removeEventListener('abort', abort); fn(value); };
-      const abort = () => finish(reject, new Error('Scheduled input stopped.'));
+    const bounded = (callback, readBudget = null) => {
       const readTimer = readBudget === null ? null : setTimeout(() => deadline.abort(new DOMException('Readiness observation budget expired.', 'TimeoutError')), Math.ceil(readBudget));
-      combined.addEventListener('abort', abort, { once: true });
-      Promise.resolve().then(() => { combined.throwIfAborted(); return callback(); }).then(value => finish(resolve, value), error => finish(reject, error));
-      if (combined.aborted) abort();
-    });
+      return untilAborted(combined, callback).finally(() => clearTimeout(readTimer));
+    };
     const stopped = () => combined.aborted ? combined.reason?.name === 'TimeoutError' ? 'timed_out' : 'cancelled' : 'unconfirmed';
     const finishQueue = async () => {
       if (!job.saveAttempted) return outcome(stopped());
       if (!job.knownQueue) { job.blocked = true; return outcome(stopped(), true); }
       // A cancelled delivery still has a small, bounded durable cleanup budget.
-      const saved = await new Promise(resolve => {
-        let settled = false;
-        const finish = value => { if (settled) return; settled = true; clearTimeout(cleanup); resolve(value === true); };
-        const cleanup = setTimeout(() => finish(false), 1500);
-        Promise.resolve().then(() => this.journal.finishQueuedMessageDelivery(key, actionId,
-          { status: stopped(), reason: 'Scheduled delivery stopped before input. No input was supplied.' })).then(finish, () => finish(false));
-      });
+      const saved = await savedWithin(() => this.journal.finishQueuedMessageDelivery(key, actionId,
+        { status: stopped(), reason: 'Scheduled delivery stopped before input. No input was supplied.' }));
       job.blocked = saved !== true;
       return outcome(stopped(), job.blocked);
     };
@@ -66,7 +55,7 @@ export class NativeMessageScheduler {
       try {
         const state = await bounded(() => this.board.state());
         const target = captureNativeMessageTarget(state, { projectId: key.projectId, taskId: key.taskId, runId });
-        if (!target || target.provider === 'codex' && /^<(?:environment_context|user_instructions)>/.test(message)) return { scheduled: false };
+        if (!target || !nativeMessageText(message, target.provider)) return { scheduled: false };
         const move = await bounded(() => this.journal.read(key)), action = move?.actions.find(row => row.id === actionId);
         const project = state.projects.find(row => row.id === key.projectId), task = project.tasks.find(row => row.id === key.taskId);
         if (task.revision !== expectedTaskRevision || project.revision !== expectedProjectRevision) return { scheduled: false };

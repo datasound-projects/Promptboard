@@ -1,6 +1,7 @@
 /** Internal transport. Callers still own scheduling, task preflight and durable outcomes. */
 import { createHash } from 'node:crypto';
 import { NativeMessageReceipts } from './native-message-receipts.mjs';
+import { nativeMessageText, untilStopped } from './native-message-common.mjs';
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const outcome = (status, reason) => ({ status, confirmed: status === 'confirmed', ...(reason ? { reason } : {}) });
@@ -36,10 +37,7 @@ export async function sendOwnedNativeMessage({ session, run, owns, readEvents, g
     || typeof session.proc?.write !== 'function' || typeof session.nativeSessionId !== 'string'
     || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(session.nativeSessionId)
     || mode !== 'deferred' || typeof dispatchId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(dispatchId)
-    || typeof message !== 'string' || !message.isWellFormed() || !message.trim()
-    || Buffer.byteLength(message) > 65536 || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/.test(message)
-    || message.trimStart().startsWith('/')
-    || session.provider === 'codex' && /^<(?:environment_context|user_instructions)>/.test(message)
+    || !nativeMessageText(message, session.provider)
     || ![owns, readEvents, grant, submitted, accepted].every(callback => typeof callback === 'function')
     || confirmDelivery !== null && typeof confirmDelivery !== 'function'
     || !Number.isFinite(timeoutMs) || timeoutMs < 1 || timeoutMs > 150000)
@@ -67,20 +65,8 @@ export async function sendOwnedNativeMessage({ session, run, owns, readEvents, g
     touched = true; session.inputEpoch++; expectedEpoch = session.inputEpoch; session.activity?.input();
     proc.write(data);
   };
-  // Bound callbacks as well as polling. A late persistence acknowledgement can
-  // never resume this attempt or cause a write after cancellation/deadline.
-  const bounded = callback => new Promise((resolve, reject) => {
-    let settled = false;
-    const finish = (fn, value) => { if (settled) return; settled = true; clearInterval(timer); fn(value); };
-    const timer = setInterval(() => {
-      try { if (signal?.aborted || expired() || !owner()) finish(reject, new Error('budget')); }
-      catch (error) { finish(reject, error); }
-    }, 25);
-    Promise.resolve().then(() => {
-      if (signal?.aborted || expired() || !owner()) throw new Error('budget');
-      return callback();
-    }).then(value => finish(resolve, value), error => finish(reject, error));
-  });
+  // A late persistence acknowledgement can never resume this attempt or cause a write after cancellation/deadline.
+  const bounded = callback => untilStopped(() => signal?.aborted || expired() || !owner(), callback);
   const events = () => bounded(readEvents);
   let proved = false;
   try {

@@ -19,6 +19,7 @@ import { BaseDeliveryError, checkBaseRevocations } from './base-resolver.mjs';
 import { SessionActivity } from './session-activity.mjs';
 import { TerminalInputObservation } from './terminal-input-observation.mjs';
 import { nativeMessageInputReadiness, sendOwnedNativeMessage } from './native-message-input.mjs';
+import { untilStopped } from './native-message-common.mjs';
 
 const RING_BYTES = 1024 * 1024; // Live scrollback kept per run for reconnects.
 const LOG_BYTES = 20 * 1024 * 1024; // Output log file cap per run.
@@ -589,17 +590,7 @@ export class Supervisor {
       return { status: 'unavailable', confirmed: false, reason: 'This process cannot grant another native input attempt.' };
     this.#nativeMessageOwners.add(session);
     const remaining = () => timeoutMs - (performance.now() - started);
-    const bounded = callback => new Promise((resolve, reject) => {
-      let settled = false;
-      const finish = (fn, value) => { if (settled) return; settled = true; clearInterval(timer); fn(value); };
-      const timer = setInterval(() => {
-        if (request?.signal?.aborted || remaining() <= 0 || !this.#ownsInitialProcess(session, proc)) finish(reject, new Error('native input budget'));
-      }, 25);
-      Promise.resolve().then(() => {
-        if (request?.signal?.aborted || remaining() <= 0 || !this.#ownsInitialProcess(session, proc)) throw new Error('native input budget');
-        return callback();
-      }).then(value => finish(resolve, value), error => finish(reject, error));
-    });
+    const bounded = callback => untilStopped(() => request?.signal?.aborted || remaining() <= 0 || !this.#ownsInitialProcess(session, proc), callback);
     let result;
     try {
       let run;

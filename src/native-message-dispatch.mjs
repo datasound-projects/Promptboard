@@ -1,9 +1,8 @@
 /** Private journal/transport bridge. Board still owns session selection and scheduling. */
 import { createHash } from 'node:crypto';
+import { nativeMessageText, savedWithin, sameScope as same, SCOPE_FIELDS, untilAborted } from './native-message-common.mjs';
 
-const fields = ['provider', 'sessionId', 'runId', 'mode', 'messageHash'];
 const id = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(value);
-const same = (left, right) => fields.every(field => left?.[field] === right?.[field]);
 const result = (status, reason, blocked = false) => ({ status, confirmed: status === 'confirmed', reason, ...(blocked ? { blocked: true } : {}) });
 
 export class NativeMessageDispatch {
@@ -14,15 +13,13 @@ export class NativeMessageDispatch {
 
   deliver({ key, actionId, message, scope }, { preflight, signal = null, timeoutMs = 150000 } = {}) {
     if (this.stopping || !key || !['projectId', 'taskId', 'transitionId'].every(field => id(key[field])) || !id(actionId)
-      || typeof message !== 'string' || !message.isWellFormed() || !message.trim() || Buffer.byteLength(message) > 65536
-      || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/.test(message) || message.trimStart().startsWith('/')
-      || scope?.provider === 'codex' && /^<(?:environment_context|user_instructions)>/.test(message)
+      || !nativeMessageText(message, scope?.provider)
       || scope?.mode !== 'deferred' || !['claude', 'codex', 'gemini'].includes(scope?.provider)
       || !id(scope.sessionId) || !id(scope.runId) || scope.messageHash !== createHash('sha256').update(message).digest('hex')
       || typeof preflight !== 'function' || !Number.isFinite(timeoutMs) || timeoutMs < 1 || timeoutMs > 150000)
       return Promise.resolve(result('unavailable', 'This journaled native request is unsupported.'));
     key = Object.fromEntries(['projectId', 'taskId', 'transitionId'].map(field => [field, key[field]]));
-    scope = Object.fromEntries(fields.map(field => [field, scope[field]]));
+    scope = Object.fromEntries(SCOPE_FIELDS.map(field => [field, scope[field]]));
     const jobId = JSON.stringify([key.projectId, key.taskId, key.transitionId, actionId]), queueId = JSON.stringify([scope.provider, scope.sessionId, scope.runId]);
     if (this.jobs.has(jobId) || this.jobs.size >= 1000 || this.blockedQueues.has(queueId)) return Promise.resolve(result('unavailable', 'This message already has an owner, its queue is blocked or the bounded queue is full.'));
     const controller = new AbortController(), deadline = new AbortController();
@@ -30,21 +27,8 @@ export class NativeMessageDispatch {
     const timer = setTimeout(() => deadline.abort(new DOMException('Native message budget expired.', 'TimeoutError')), Math.ceil(timeoutMs));
     const job = { controller, promise: null, key, actionId, blocked: false }; this.jobs.set(jobId, job);
     const remaining = () => timeoutMs - (performance.now() - started);
-    const bounded = callback => new Promise((resolve, reject) => {
-      let settled = false;
-      const finish = (fn, value) => { if (settled) return; settled = true; combined.removeEventListener('abort', abort); fn(value); };
-      const abort = () => finish(reject, new Error('Native message cancelled.'));
-      combined.addEventListener('abort', abort, { once: true });
-      Promise.resolve().then(() => { combined.throwIfAborted(); return callback(); }).then(value => finish(resolve, value), error => finish(reject, error));
-      if (combined.aborted) abort();
-    });
+    const bounded = callback => untilAborted(combined, callback);
     const previous = this.tails.get(queueId) || Promise.resolve();
-    const save = callback => new Promise(resolve => {
-      let settled = false;
-      const finish = value => { if (settled) return; settled = true; clearTimeout(grace); resolve(value === true); };
-      const grace = setTimeout(() => finish(false), 1500);
-      Promise.resolve().then(callback).then(finish, () => finish(false));
-    });
     job.promise = (async () => {
       let ownsGrant = false, knownQueue = false, nativeStarted = false, confirmedSaved = false, publicationAttempted = false;
       try {
@@ -82,11 +66,11 @@ export class NativeMessageDispatch {
         if (publicationAttempted) { job.blocked = true; return result('unconfirmed', 'The native outcome acknowledgement was lost. No input will be retried.', true); }
         const status = ['cancelled', 'timed_out', 'unconfirmed'].includes(delivered?.status) ? delivered.status : 'failed';
         publicationAttempted = true;
-        if (await save(() => this.journal.finishMessageDelivery(key, actionId, { status, reason: 'Native delivery was not confirmed. No input will be retried.' })) !== true) throw new Error('save');
+        if (await savedWithin(() => this.journal.finishMessageDelivery(key, actionId, { status, reason: 'Native delivery was not confirmed. No input will be retried.' })) !== true) throw new Error('save');
         return result(status, 'Native delivery was not confirmed. No input will be retried.');
       } catch {
         const status = combined.aborted ? combined.reason?.name === 'TimeoutError' ? 'timed_out' : 'cancelled' : 'unconfirmed';
-        if (!publicationAttempted && knownQueue && await save(() => ownsGrant
+        if (!publicationAttempted && knownQueue && await savedWithin(() => ownsGrant
           ? this.journal.finishMessageDelivery(key, actionId, { status, reason: 'Native input stopped without confirmation. No input will be retried.' })
           : this.journal.finishQueuedMessageDelivery(key, actionId, { status, reason: 'Queued input stopped before dispatch. No input was supplied.' })))
           return result(status, 'Native delivery stopped without confirmation. No input will be retried.');
