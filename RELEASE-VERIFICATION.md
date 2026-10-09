@@ -2,6 +2,39 @@
 
 Final verification of Promptboard 0.4.0 before its first open-source release (PB-05), done on 29 September 2026. Code verified at commit `37f5020`.
 
+## Stability audit, 9 October 2026
+
+A whole-app review after the Origin, Project Context, shared projects, pipeline Autopilot and Coordinator work. Seven read-only reviewers covered the board and workflow engine, agent execution, the HTTP server, the Origin/Base/Compose backends, the Kanban/Compose page, the other pages, and dead code and test stability. They reported about 100 findings, most reproduced with scripts or in real Chrome. Every confirmed defect was fixed with a regression test that fails on the old code.
+
+### Readiness criteria
+
+| Criterion | Result | Evidence |
+| --- | --- | --- |
+| No request can stop the server | PASS | `//`, `//a:b` and absolute-form request targets used to crash the process (and every running agent). They now return 400; any handler failure returns 500 (`tests/server.test.mjs`). |
+| One error mapping, correct status codes | PASS | Every route uses `failureBody`; provider client errors keep 400/409 instead of a generic 502. |
+| No silent data loss | PASS | One durable-write helper (`src/durable.mjs`) for the board, Origin, Project Context, saved prompts, Coordinator and Base. Unreadable files are reported and never replaced by empty data (`tests/durable.test.mjs`). Damaged Origin and Project Context files without a backup stay reported. Unsaved Base, Origin and Project Context edits ask before they are replaced. |
+| Agents, Autopilot and tests do not stall | PASS | Terminal auto-replies no longer count as typing (they paused Autopilot and native messages once a terminal opened). Autopilot resume, profile plan routes and blocked automations are fixed. Test runs finish at exit, run once per card and survive log-write errors. |
+| One project identity and one name | PASS | Names are unique across Origin, Compose and Kanban (create, rename, concurrent requests); one ID never belongs to two projects (`tests/shared-projects.test.mjs`). |
+| Syntax check | PASS | `npm run check`. |
+| Full regression (local) | PASS | `npm test` on the final code: 978 non-browser and 68 browser tests, 0 failures (macOS, Node 24). |
+| Critical workflows end-to-end in real Chrome | PASS | Compose (generate, history, save to a project), Origin (create, map, Create Context, handoff), Kanban (projects from the sidebar, cards, pipeline moves, terminal dock, Autopilot, Coordinator), Base, shared projects Origin → Compose → Kanban, recovery from damaged files, phone widths and both themes. |
+| Live complete flow: Codex CLI | PASS | `scripts/live-flow.mjs --provider codex --effort low`: To Do refused to run → Executing → commit → read-only Code Review (no issues) → tests (exit 0) → merge preview → merged → Done; no agent process left. |
+| Live complete flow: Claude Code | PASS with a note | `--provider claude --model haiku` ran every stage correctly. The review asked for changes because the user's global Serena MCP server wrote `.serena/` into the task worktree, so merge was correctly refused. |
+| CI | See the run for the pushed commit | Ubuntu, macOS and Windows × Node 22 and 24. |
+
+### Simplified
+
+Removed dead or duplicate code and controls: the duplicate project picker and its New/Rename/Delete copies (the sidebar list is the one place), five always-true capability flags, the unused test-log and Base target routes, the duplicate Compose folder route, test-only planners and APIs, unused CSS, and the unshipped `nerd.png`. Shared helpers replace copies: durable files, DOM helpers (`public/dom.js`), native-message helpers, one abortable helper, one Claude error map. The UI tests are split into three files to stay well under the per-file CI limit.
+
+### Known limitations
+
+- Windows agent runs are still not verified on a real machine. Process-tree stop (`taskkill /T`) and the command-line length limit are fixed in code and covered by mocked tests only. A very large `--agents` definition alone can still exceed the Windows limit.
+- Gemini CLI board runs are not verified live.
+- MCP servers configured for the user's CLI can write files into task worktrees (for example `.serena/`). They are committed with the task and Code Review flags them. Add such folders to the repository's `.gitignore`.
+- In the terminal, Shift/Ctrl+F3 produce the same bytes as a cursor-position report and are treated as one. While a new tab replays history, escape-sequence keys (such as arrows) typed in that moment are ignored.
+- A card-save conflict with label changes made elsewhere is reported, not merged automatically.
+- Smaller duplication remains where merging would cost more than it saves: SHA-256 one-liners, error classes with the same shape, the Base page's own DOM helpers (different argument order) and its column list (import cycle).
+
 ## Environment
 
 | Item | Version |
