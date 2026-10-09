@@ -53,7 +53,6 @@ const assets = new Map([
   ['/projects.js', ['projects.js', 'text/javascript; charset=utf-8']],
   ['/coordinator.js', ['coordinator.js', 'text/javascript; charset=utf-8']],
   ['/nerd.png', ['nerd.png', 'image/png']],
-  ['/kanban-mascot.png', ['kanban-mascot.png', 'image/png']],
   ['/dock.js', ['dock.js', 'text/javascript; charset=utf-8']],
 ]);
 // Pinned terminal assets, served from the installed packages by exact path only (no CDN,

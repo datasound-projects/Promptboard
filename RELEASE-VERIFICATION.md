@@ -54,7 +54,6 @@ Final verification of Promptboard 0.4.0 before its first open-source release (PB
 ## Owner actions
 
 - Turn on **private vulnerability reporting** (Settings → Code security). `SECURITY.md` and the issue form point to it; it is off today.
-- Confirm that you may publish `public/kanban-mascot.png` under this repository's licence. Its source is not recorded, unlike `public/nerd.png` (see `docs/logo-prompt.md`).
 
 ## Security concerns
 

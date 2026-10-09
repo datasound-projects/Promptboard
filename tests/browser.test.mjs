@@ -159,9 +159,6 @@ test('Kanban entry, shared dialogs and project settings fit both themes and narr
     await browser.until(`document.querySelector('.kanban-add-task').getBoundingClientRect().bottom <= innerHeight`, 'task entry fits after resize');
     for (const theme of ['light', 'dark']) {
       await browser.eval(`document.documentElement.dataset.theme = '${theme}';`);
-      await browser.until(`document.querySelector('.kanban-mascot').naturalWidth > 0`, 'mascot loaded');
-      assert.equal(await browser.eval(`return document.querySelector('#kanban-title').textContent;`), 'Promptboard-Project');
-      assert.equal(await browser.layout(`const image = document.querySelector('.kanban-mascot').getBoundingClientRect(); const title = document.querySelector('#kanban-title').getBoundingClientRect(); return image.width === 64 && image.height === 64 && image.right <= title.left && image.left >= 0 && title.right <= innerWidth;`), true, 'Mascot is enlarged, visible, and directly beside the heading.');
       assert.equal(await browser.layout(`const button = document.querySelector('.kanban-add-task'); button.focus(); const r = button.getBoundingClientRect(); return document.activeElement === button && r.width > 0 && r.bottom <= innerHeight;`), true, 'To Do Add task is visible and keyboard focusable.');
       assert.equal(await browser.layout(`const columns = [...document.querySelectorAll('.kanban-column')]; return columns.every(column => getComputedStyle(column).borderTopWidth === '2px') && new Set(columns.map(column => getComputedStyle(column).borderTopColor)).size > 3;`), true, 'Columns have distinct, thin top accents.');
       assert.equal(await browser.layout(`const columns = document.querySelectorAll('.kanban-column'); return Math.round(columns[1].getBoundingClientRect().left - columns[0].getBoundingClientRect().right);`, 4), 4, 'Columns retain a minimal visible gap in both themes and viewport sizes.');
