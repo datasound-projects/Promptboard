@@ -75,7 +75,11 @@ export class SessionActivity {
       if (event.backgroundRequested === true) this.backgroundUnknown = true;
     }
     if (toolEnd) {
-      if (key) { this.tools.delete(key); this.finishedTools.add(key); }
+      if (key) {
+        this.tools.delete(key); this.finishedTools.add(key);
+        // Keep only the newest finished IDs, so a long session never overflows into uncertainty.
+        if (this.finishedTools.size > LIMIT) this.finishedTools.delete(this.finishedTools.values().next().value);
+      }
       else if (this.anonymousTools.get(toolName) > 0) this.anonymousTools.set(toolName, this.anonymousTools.get(toolName) - 1);
       // PermissionRequest/Notification often lack a tool ID. A result from
       // another parallel tool cannot prove that an unidentified dialog closed.
@@ -99,7 +103,7 @@ export class SessionActivity {
     }
     if (complete) { this.parentComplete = true; this.clearPermissionScope(scope); }
     // Never let malformed/lost hooks or unbounded counters establish a safe boundary.
-    if (this.tools.size + this.finishedTools.size + this.agents.size > LIMIT || this.anonymousTools.size > LIMIT
+    if (this.tools.size + this.agents.size > LIMIT || this.anonymousTools.size > LIMIT
       || [...this.anonymousTools.values()].reduce((sum, n) => sum + n, 0) > LIMIT
       || this.permissionTools.size + this.permissionScopes.size > LIMIT) {
       this.uncertain = true; this.tools.clear(); this.finishedTools.clear(); this.agents.clear(); this.anonymousTools.clear();

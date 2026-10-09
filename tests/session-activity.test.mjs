@@ -225,6 +225,16 @@ test('provider coverage is explicit and unmatched or bounded activity cannot man
   assert.equal(overflow.snapshot(100000).ready, false); assert.equal(overflow.snapshot(100000).uncertain, true);
 });
 
+test('a long session of finished tools stays certain and can become ready again', () => {
+  const a = new SessionActivity('claude');
+  for (let n = 0; n < 5000; n++) { a.observe({ name: 'PreToolUse', toolId: `tool-${n}` }, n); a.observe({ name: 'PostToolUse', toolId: `tool-${n}` }, n); }
+  a.observe({ name: 'Stop' }, 5000);
+  assert.equal(a.snapshot(100000).uncertain, false); assert.equal(a.snapshot(100000).ready, true);
+  a.observe({ name: 'PreToolUse', toolId: 'tool-4999' }, 5001); // A late duplicate of a remembered finished tool.
+  a.observe({ name: 'Stop' }, 5002);
+  assert.equal(a.snapshot(100000).tools, 0); assert.equal(a.snapshot(100000).ready, true);
+});
+
 test('hook bridge keeps bounded activity metadata but excludes tool inputs, results, background commands and cron prompts', async t => {
   const dir = await temp(t), events = join(dir, 'events.jsonl');
   const emit = (provider, payload) => { const result = spawnSync(process.execPath, [HOOK_SCRIPT, events, provider], { input: JSON.stringify(payload) }); assert.equal(result.status, 0); assert.equal(result.stdout.length, 0); };
