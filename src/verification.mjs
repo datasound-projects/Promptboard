@@ -36,7 +36,7 @@ function trimToken(token) {
   let end = token.length;
   while (end > 0) {
     const character = token[end - 1];
-    if (/[.,;:!?]/u.test(character)) end--;
+    if (/[.,;:!?([{]/u.test(character)) end--; // Also a link's opening bracket: [path](url
     else if (balance[character] > 0) { balance[character]--; end--; }
     else break;
   }

@@ -88,6 +88,12 @@ test('URL punctuation is separated while balanced parentheses and IPv6 remain', 
   assert.equal(verifyPrompt(input, 'Read https://example.test/Function_(math), https://[::1]:4318/a?x=1&y=2, and https://example.test/start.').status, 'pass');
 });
 
+test('a Markdown link to a path keeps the path without its link brackets', () => {
+  const input = 'See [docs/setup.md](https://github.com/o/r/blob/main/docs/setup.md) first.';
+  assert.deepEqual(extractProtectedLiterals(input).map(literal => literal.text), ['docs/setup.md', 'https://github.com/o/r/blob/main/docs/setup.md']);
+  assert.equal(verifyPrompt(input, input).status, 'pass');
+});
+
 test('recognizes Unix, Windows, UNC, relative paths and common standalone filenames', () => {
   const input = 'Edit /tmp/result.json, ./src/main.ts, ../lib/a.js, ~/project, C:\\work\\app.js, \\\\server\\share\\a.txt, src/components, config/settings.toml, README.md, .gitignore and Dockerfile.';
   assert.deepEqual(extractProtectedLiterals(input).map(literal => literal.text), [
