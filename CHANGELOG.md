@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix: secret redaction in local Compose sources and Origin context now removes the credential after `Bearer` or `Basic` (for example `Authorization: Bearer …`), not just the scheme word.
 - Fix: a pipeline agent session that finishes more than 4,096 tool calls no longer becomes permanently uncertain (and never ready); only the newest finished tool IDs are remembered.
 - Fix: a long prompt pasted into a legacy Claude Code or Codex terminal shows terminal control characters as visible `\xNN` escapes, so text such as `ESC[201~` in a diff can no longer end the paste early and be typed as keystrokes.
 - Add the **Coordinator** above the Kanban board, opened and closed with one click on **Coordinator** next to **Autopilot** (remembered per project), and switchable off. It keeps a compact, compressed project index of references, facts and timeline events, never the card specifications, Compose history or logs. The index is updated deterministically only when shown or asked, and is reconciled after being off. **Ask Coordinator** gives read-only, cited answers about the project, a card, an agent or a branch, from deterministically chosen evidence and one tool-less CLI call, with a cache for repeated questions. Nothing runs in the background and no tokens are used while idle. See [Coordinator](docs/coordinator.md).

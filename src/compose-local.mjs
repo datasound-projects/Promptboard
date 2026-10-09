@@ -20,7 +20,7 @@ export function validateLocal(source) {
 }
 export function redactLocal(text) {
   return text.replace(/-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/g, '[private key omitted]')
-    .replace(/((?:api[_-]?key|secret|password|token|authorization|access[_-]?key)\s*["']?\s*[:=]\s*)["']?[^\s,;"'\n]+["']?/gi, '$1[redacted]')
+    .replace(/((?:api[_-]?key|secret|password|token|authorization|access[_-]?key)\s*["']?\s*[:=]\s*)["']?(?:(?:Bearer|Basic)\s+)?[^\s,;"'\n]+["']?/gi, '$1[redacted]')
     .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/g, '$1[redacted]@');
 }
 const inside = (root, path) => { const rel = relative(root, path); return rel !== '..' && !/^\.\.[\\/]/.test(rel) && !isAbsolute(rel); };

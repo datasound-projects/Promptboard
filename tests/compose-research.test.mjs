@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, writeFile, symlink, rm } from 'node:fs/promises';
 import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 import { ComposeContext } from '../src/compose-context.mjs';
-import { ComposeLocal, validateLocal } from '../src/compose-local.mjs';
+import { ComposeLocal, redactLocal, validateLocal } from '../src/compose-local.mjs';
 import { obviouslyNonActionable } from '../src/compose-intent.mjs';
 import { validateResearchPlan, validateResearchReview, buildResearchReviewPrompt, researchGrounding } from '../src/compose-research.mjs';
 import { buildPrompt, validateRequest } from '../src/engine.mjs';
@@ -80,6 +80,13 @@ test('repeated questions have diminishing value and never repeat a tool lookup',
   const context = new ComposeContext({ mcp: { retrieve: async (s, qs) => { queries.push(...qs); return docs().retrieve(s, qs); } } });
   const result = await context.prepare({ request: { input: questTask }, sources: [{ type: 'mcp', preset: 'context7' }] }, { runner: async c => ({ text: JSON.stringify(c.prompt.startsWith('# Compose context preparation') ? plan : researchReview(c.prompt, { continueResearch: true, questions: [internal('r2')] })) }) });
   assert.equal(queries.length, 1); assert.equal(result.calls, 2); assert.equal(result.research.rounds, 1);
+});
+
+test('secret redaction removes the credential after an authorization scheme, not just the scheme', () => {
+  for (const line of ['Authorization: Bearer sk-live-SECRET', '"authorization": "Bearer SECRET"', 'Authorization: Basic dXNlcjpTRUNSRVQ=', 'token = bearer  SECRET']) {
+    const safe = redactLocal(line);
+    assert.doesNotMatch(safe, /SECRET|dXNlcjpTRUNSRVQ/, line); assert.match(safe, /\[redacted\]/, line);
+  }
 });
 
 test('local folders expose bounded relevant code, manifest and Skills data; exclude secrets and symlinks', async t => {
