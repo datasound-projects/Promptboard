@@ -846,6 +846,22 @@ test('approved-plan model changes defer until work settles and use a resume-only
   assert.equal((await w.taskNow(card.id)).column, 'executing'); assert.equal(owned.proc, null); await w.move(card.id, 'todo');
 });
 
+test('Codex\'s "Action Required" title is a question: the run waits for you, and answering it is not a draft', { skip: process.platform === 'win32' }, async t => {
+  const w = await world(t, true), config = defaultPipelineConfig();
+  for (const column of config.columns.filter(item => item.role === 'active')) column.strategy.agentOverride = 'codex';
+  await w.configure(config);
+  const card = await w.board.createTask({ projectId: w.projectId, title: 'Codex asks', prompt: 'CODEX_QUESTION task' });
+  const { run } = await w.move(card.id, 'executing');
+  const asking = await until(async () => { const r = await w.board.run(run.id); return r.status === 'waiting_for_input' && r.activity?.permissionPending && r; });
+  assert.equal(asking.turnComplete, false); assert.match(asking.waitingReason, /Codex is asking for your answer/); assert.equal(asking.activity.phase, 'waiting');
+  const session = w.board.executor.sessions.get(run.id);
+  w.board.executor.input(run.id, 'y'); w.board.executor.input(run.id, '\r');
+  assert.equal(session.terminalInput.snapshot().manualInputObserved, false, 'Answering the question starts no draft.');
+  const answered = await until(async () => { const r = await w.board.run(run.id); return r.turnComplete && r; });
+  assert.equal(answered.activity.permissionPending, false);
+  await w.move(card.id, 'todo');
+});
+
 test('an approved plan whose turn goes on implementing it waits past the move budget, and another move of the card cancels that wait', { skip: process.platform === 'win32' }, async t => {
   const w = await world(t, true), config = defaultPipelineConfig(); config.columns.find(column => column.id === 'executing').strategy.modelOverride = 'approved-model'; await w.configure(config);
   const suspend = w.board.executor.suspendAtBoundary.bind(w.board.executor);
