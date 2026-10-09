@@ -854,6 +854,7 @@ test('Codex\'s "Action Required" title is a question: the run waits for you, and
   const { run } = await w.move(card.id, 'executing');
   const asking = await until(async () => { const r = await w.board.run(run.id); return r.status === 'waiting_for_input' && r.activity?.permissionPending && r; });
   assert.equal(asking.turnComplete, false); assert.match(asking.waitingReason, /Codex is asking for your answer/); assert.equal(asking.activity.phase, 'waiting');
+  assert.equal(asking.lifecycle, 'events-received', 'Its title shows the session is up: no "startup question" warning.');
   const session = w.board.executor.sessions.get(run.id);
   w.board.executor.input(run.id, 'y'); w.board.executor.input(run.id, '\r');
   assert.equal(session.terminalInput.snapshot().manualInputObserved, false, 'Answering the question starts no draft.');
