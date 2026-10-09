@@ -105,12 +105,12 @@ export function pipelineAutopilotRoute(project, route) {
   if (!Array.isArray(route) || !route.length || new Set(route).size !== route.length || route.some(id => !active.includes(id))) throw new BoardError('Choose the active columns Autopilot goes through.', 'INVALID_AUTOPILOT');
   return active.filter(id => route.includes(id));
 }
-/** Later route columns without an instruction: an enabled deferred "on enter" message, or the plan route that leads there. */
-export function pipelineAutopilotGaps(project, route) {
+/** Later route columns without an instruction: an enabled deferred "on enter" message, or the plan route that leads there (with each card's profile). */
+export function pipelineAutopilotGaps(project, route, tasks = []) {
   const columns = new Map(project.pipeline.columns.map(column => [column.id, column]));
   return route.slice(1).filter((id, index) => {
     const instructed = columns.get(id).automations.onEnter.some(row => row.enabled && row.type === 'send_message' && row.mode === 'deferred');
-    return !instructed && resolvePipelineStrategy(project.pipeline, route[index], {}).planExitTargetId !== id;
+    return !instructed && (tasks.length ? tasks : [{}]).some(task => resolvePipelineStrategy(project.pipeline, route[index], task).planExitTargetId !== id);
   }).map(id => `“${columns.get(id).name}”`);
 }
 
@@ -872,7 +872,8 @@ export class Board {
       if (!project.repository) throw new BoardError('Link a repository first.', 'REPOSITORY_REQUIRED', 409);
       if (!this.executor) throw new BoardError('Agent execution is not available.', 'EXECUTION_UNAVAILABLE', 503);
       if (action === 'start' && !project.autopilot?.queue?.length) throw new BoardError('Choose at least one To Do card for the Autopilot queue.', 'AUTOPILOT_EMPTY');
-      const missing = pipelineAutopilotGaps(project, pipelineAutopilotRoute(project, project.autopilot?.route));
+      const queued = (project.autopilot?.queue || []).map(taskId => project.tasks.find(task => task.id === taskId)).filter(Boolean);
+      const missing = pipelineAutopilotGaps(project, pipelineAutopilotRoute(project, project.autopilot?.route), queued);
       if (missing.length) throw conflict(`Give ${missing.join(', ')} an instruction (an “on enter” agent message) so its agent knows what to do there.`, 'AUTOPILOT_INSTRUCTION_MISSING');
     }
     if (project.workflowMode !== 'pipeline' && action === 'start') {
@@ -2775,6 +2776,8 @@ export class Board {
     if (!move && task.column !== column) throw conflict('Move this card to the requested column first.', 'STAGE_MISMATCH');
     if (expectedRevision !== undefined) checkRevision(task, expectedRevision, 'This card');
     if (this.#activeRun(state, taskId)) throw conflict('This card already has an active run.', 'RUN_ACTIVE');
+    // A blocked move never releases its deferred starts: a run parked there would stay queued until Stop automations.
+    if (this.automationMoves.get(taskId)?.blocked) throw conflict('This card’s column automations are blocked. Stop them from the card before starting its agent.', 'AUTOMATIONS_ACTIVE');
     if (!project.repository) throw new BoardError('Link this project to a Git repository first.', 'REPOSITORY_REQUIRED', 409);
     if (!this.executor) throw new BoardError('Agent execution is not available.', 'EXECUTION_UNAVAILABLE', 503);
     await this.#defaultTargetBranch(taskId);
@@ -2833,7 +2836,8 @@ export class Board {
       return this.run(run.id);
     }
     const payload = { run, task: { id: task.id, title: task.title, prompt: task.prompt }, workspace, firstPrompt, continuation };
-    if (this.automationMoves.get(taskId)?.deferNativeStart) this.deferredPipelineStarts.set(run.id, payload);
+    const job = this.automationMoves.get(taskId);
+    if (job?.deferNativeStart && !job.blocked) this.deferredPipelineStarts.set(run.id, payload);
     else await this.executor.start(payload);
     return run;
   }

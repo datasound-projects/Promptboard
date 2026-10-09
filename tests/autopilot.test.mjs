@@ -9,10 +9,11 @@ import { fileURLToPath } from 'node:url';
 import { Board, normalizeRoute } from '../src/board.mjs';
 import { Supervisor } from '../src/supervisor.mjs';
 import { Autopilot } from '../src/autopilot.mjs';
+import { resolveConfig } from '../src/agents.mjs';
 
 const skip = process.platform === 'win32';
 const fake = fileURLToPath(new URL('./fixtures/fake-agent.cjs', import.meta.url));
-const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } }).trim();
+const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } }).trim();
 async function temp(t, prefix) { const dir = await realpath(await mkdtemp(join(tmpdir(), prefix))); t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })); return dir; }
 async function until(fn, label, ms = 60000) { const end = Date.now() + ms; for (;;) { const value = await fn(); if (value) return value; if (Date.now() > end) assert.fail(`Timed out: ${label}`); await new Promise(r => setTimeout(r, 50)); } }
 
@@ -133,4 +134,26 @@ test('a permission prompt holds Autopilot until the agent finishes its turn', { 
   // The user answers in the terminal; the turn finishes; only now does Autopilot continue.
   w.supervisor.input(run.id, 'yes\r');
   await until(async () => (await w.board.run(run.id)).status === 'succeeded', 'confirmed after the turn');
+});
+
+test('resume follows a stage agent that is still running instead of starting a second one', async t => {
+  const root = await temp(t, 'pb-ap-repo-'), board = new Board({ dataDir: await temp(t, 'pb-ap-data-') }), starts = [];
+  git(root, 'init', '-q', '-b', 'trunk'); git(root, 'config', 'user.email', 't@example.com'); git(root, 'config', 'user.name', 'Tester');
+  await writeFile(join(root, 'readme.txt'), 'hello\n'); git(root, 'add', '.'); git(root, 'commit', '-q', '-m', 'init');
+  board.executor = { validate: async ({ stage, config }) => resolveConfig(stage, config), start: async payload => { starts.push(payload.run.id); } };
+  const project = await board.createProject({ name: 'Legacy' });
+  await board.linkRepository(project.id, { path: root, expectedRevision: project.revision });
+  const now = async () => (await board.state()).projects[0];
+  const card = await board.createTask({ projectId: project.id, title: 'Card', prompt: 'Do it' });
+  await board.setAutopilot(project.id, { route: ['executing'], finish: 'pull_request', queue: [card.id], expectedRevision: (await now()).revision });
+  await board.controlAutopilot(project.id, { action: 'start', confirm: true });
+  const autopilot = new Autopilot(board);
+  for (let index = 0; index < 4; index++) await autopilot.tick();
+  const [run] = (await board.state()).runs;
+  assert.equal((await now()).autopilot.current.runId, run.id);
+  await board.controlAutopilot(project.id, { action: 'pause' }); await board.controlAutopilot(project.id, { action: 'resume' });
+  for (let index = 0; index < 3; index++) await autopilot.tick();
+  const ap = (await now()).autopilot;
+  assert.equal(ap.status, 'running', ap.reason); assert.equal(ap.current.step, 'running'); assert.equal(ap.current.runId, run.id);
+  assert.deepEqual(starts, [run.id], 'no second run');
 });

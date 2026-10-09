@@ -10,12 +10,14 @@
  * card starts from the target branch.
  */
 
+import { resolvePipelineStrategy } from './pipeline-config.mjs';
+
 const TICK_MS = 1000;
 const done = new Set(['failed', 'cancelled', 'interrupted', 'suspended']);
 const title = stage => ({ planning: 'Planning', executing: 'Executing', code_review: 'Code Review', testing: 'Testing', merge: 'Merge' })[stage] || stage;
 
 export class Autopilot {
-  constructor(board, { tickMs = TICK_MS } = {}) { this.board = board; this.tickMs = tickMs; this.busy = false; }
+  constructor(board, { tickMs = TICK_MS } = {}) { this.board = board; this.tickMs = tickMs; this.busy = false; this.taskIds = new Map(); }
 
   start() { this.timer = setInterval(() => this.tick().catch(() => {}), this.tickMs); this.timer.unref?.(); }
   stop() { clearInterval(this.timer); }
@@ -28,6 +30,7 @@ export class Autopilot {
       const state = await this.board.state();
       for (const project of state.projects) {
         if (project.autopilot?.status !== 'running') continue;
+        this.taskIds.set(project.id, project.autopilot.current?.taskId ?? null);
         try { await (project.workflowMode === 'pipeline' ? this.pipelineStep(project.id) : this.step(project.id)); }
         catch (error) { await this.pause(project.id, error.message || 'Autopilot stopped on an unexpected error.'); }
       }
@@ -38,7 +41,11 @@ export class Autopilot {
     await this.board.updateAutopilot(projectId, (ap, log) => { if (ap.status !== 'running') return; ap.status = 'paused'; ap.reason = reason; log(`Paused: ${reason}`); });
   }
 
-  async set(projectId, change) { return this.board.updateAutopilot(projectId, change); }
+  /** A step's write applies only while Autopilot still runs the card the step began with (not after Stop or Skip). */
+  async set(projectId, change) {
+    const taskId = this.taskIds.get(projectId);
+    return this.board.updateAutopilot(projectId, (a, log, project) => { if (a.status === 'running' && (a.current?.taskId ?? null) === taskId) change(a, log, project); });
+  }
 
   route(ap, taskId) { return ap.routes?.[taskId] || ap.route; }
 
@@ -72,8 +79,8 @@ export class Autopilot {
       if (task.column === todo) return this.set(projectId, a => { a.current = { ...a.current, stage: null, step: 'enter' }; });
       if (!route.includes(task.column)) return this.pause(projectId, `“${task.title}” is in ${name(task.column)}, which is not in the Autopilot columns. Move it to one of them, or skip it.`);
       if (!live) {
-        // No agent in this column (for example it was stopped): start it here again.
-        await this.pipelineMove(task, task.column, 'start');
+        // No agent in this column (for example it was stopped): start it here again, resuming its conversation when it can.
+        await this.board.requestRun(task.id, { stage: task.column, consent: true, trigger: 'automation' });
         const fresh = (await this.board.state()).runs.filter(run => run.taskId === task.id && ['queued', 'running', 'waiting_for_input'].includes(run.status)).at(-1);
         return this.set(projectId, a => { a.current = { ...a.current, stage: task.column, step: 'working', turns: fresh?.turns ?? 0 }; });
       }
@@ -96,6 +103,7 @@ export class Autopilot {
       if (route.indexOf(task.column) > route.indexOf(cur.stage)) return this.set(projectId, (a, log) => { a.current = { ...a.current, stage: task.column, step: 'working', turns: live?.turns ?? 0 }; log(`“${task.title}” → ${name(task.column)} (approved plan).`); });
       return this.pause(projectId, `“${task.title}” was moved to ${name(task.column)} by hand. Resume to continue from there, or skip it.`);
     }
+    if (task.automationMove?.status === 'blocked') return this.pause(projectId, `The column automations of “${task.title}” are blocked: their cleanup is unconfirmed. Stop them from the card, then resume, or skip the card.`);
     if (!live) {
       const last = runs.at(-1);
       return this.pause(projectId, `The ${name(cur.stage)} agent for “${task.title}” ${last ? `${last.status}${last.reason ? `: ${last.reason}` : ''}` : 'is not running'}. Start it again from the card, then resume, or skip the card.`);
@@ -104,7 +112,7 @@ export class Autopilot {
     const finished = live.status === 'waiting_for_input' && live.turnComplete && (live.activity ? live.activity.ready : true) && live.turns > cur.turns;
     if (!finished) return;
     // A plan column moves on only through your approval of the plan in the terminal.
-    if (project.pipeline.columns.find(column => column.id === cur.stage)?.strategy?.planExitTargetId) return;
+    if (resolvePipelineStrategy(project.pipeline, cur.stage, task).planExitTargetId) return;
     return this.set(projectId, (a, log) => { a.current = { ...a.current, step: 'enter' }; log(`“${task.title}”: ${name(cur.stage)} finished.`); });
   }
 
@@ -130,7 +138,9 @@ export class Autopilot {
     if (cur.step === 'resume') {
       const stage = task.column === 'todo' ? null : task.column;
       if (stage && !route.includes(stage)) return this.pause(projectId, `“${task.title}” is in ${title(stage)}, which is not in its route. Move it to a stage on its route, or skip it.`);
-      return this.set(projectId, a => { a.current = { ...a.current, stage, step: 'start', runId: null, testsId: null }; });
+      // An agent still working in this stage is followed, not started a second time.
+      const live = stage && state.runs.findLast(run => run.taskId === task.id && run.stage === stage && ['queued', 'running', 'waiting_for_input'].includes(run.status));
+      return this.set(projectId, a => { a.current = { ...a.current, stage, step: live ? { testing: 'agent', merge: 'resolving' }[stage] || 'running' : 'start', runId: live?.id || null, testsId: null }; });
     }
     if (task.column === 'todo' || !cur.stage) return this.enter(projectId, task, route[0], task.column === 'todo' ? 'todo' : task.column);
     if (task.column !== cur.stage) return this.pause(projectId, `“${task.title}” was moved to ${title(task.column)} by hand. Resume to continue from there, or skip it.`);

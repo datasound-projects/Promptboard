@@ -13,15 +13,16 @@ const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8',
 async function temp(t) { const path = await realpath(await mkdtemp(join(tmpdir(), 'pb-autopilot-'))); t.after(() => rm(path, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })); return path; }
 
 /** A pipeline board with a stub executor: runs are recorded, and agent turns are simulated through updateRun. */
-async function world(t, { instruct = [] } = {}) {
+async function world(t, { instruct = [], profiles = [] } = {}) {
   const dataDir = await temp(t), root = await temp(t), board = new Board({ dataDir });
   git(root, 'init', '-q', '-b', 'trunk'); git(root, 'config', 'user.email', 'fixture@example.test'); git(root, 'config', 'user.name', 'Fixture');
   await writeFile(join(root, 'README.md'), 'main\n'); git(root, 'add', '.'); git(root, 'commit', '-q', '-m', 'Fixture');
   const project = await board.createProject({ name: 'Pipeline', workflowMode: 'pipeline' });
   await board.linkRepository(project.id, { path: root, expectedRevision: project.revision });
-  board.executor = { validate: async ({ stage, config }) => resolveConfig(stage, config), start: async () => {},
+  const starts = [];
+  board.executor = { validate: async ({ stage, config }) => resolveConfig(stage, config), start: async payload => { starts.push(payload.run.id); },
     suspend: async id => board.updateRun(id, { status: 'suspended' }), cancel: async id => board.updateRun(id, { status: 'cancelled' }) };
-  const config = defaultPipelineConfig();
+  const config = defaultPipelineConfig(); config.profiles = profiles;
   for (const id of instruct) config.columns.find(column => column.id === id).automations.onEnter.push({ name: 'Autopilot instruction', type: 'send_message', mode: 'deferred', message: `Do the ${id} step.` });
   await board.setPipeline(project.id, { pipeline: config, expectedRevision: (await board.state()).projects[0].revision });
   const projectNow = async () => (await board.state()).projects[0];
@@ -30,7 +31,7 @@ async function world(t, { instruct = [] } = {}) {
   const finishTurn = async taskId => { const run = await live(taskId); if (run.status === 'queued') await board.updateRun(run.id, { status: 'running' }); await board.updateRun(run.id, { status: 'waiting_for_input', turnComplete: true, turns: (run.turns || 0) + 1, activity: { phase: 'idle', ready: true } }); };
   const autopilot = new Autopilot(board);
   const tick = async (times = 1) => { for (let index = 0; index < times; index++) await autopilot.tick(); };
-  return { board, project, projectNow, live, finishTurn, tick };
+  return { board, project, projectNow, live, finishTurn, tick, starts };
 }
 
 test('pipeline Autopilot settings: active columns only, and every later column needs an instruction', async t => {
@@ -129,4 +130,76 @@ test('only a pause you cause stops Autopilot; system handoffs and its own Done m
   await board.store.update(draft => { draft.projects[0].autopilot.current.step = 'working'; });
   await board.beginSuspension(run.id);
   assert.equal((await projectNow()).autopilot.status, 'paused');
+});
+
+test('resume starts a stopped column agent again', async t => {
+  const { board, project, projectNow, live, tick, starts } = await world(t);
+  const card = await board.createTask({ projectId: project.id, title: 'Card' });
+  await board.setAutopilot(project.id, { route: ['executing'], queue: [card.id], expectedRevision: (await projectNow()).revision });
+  await board.controlAutopilot(project.id, { action: 'start', confirm: true });
+  await tick(2);
+  const first = await live(card.id);
+  await board.controlAutopilot(project.id, { action: 'pause' });
+  await board.updateRun(first.id, { status: 'cancelled' });
+  await board.controlAutopilot(project.id, { action: 'resume' });
+  await tick(2);
+  const again = await live(card.id);
+  assert.ok(again && again.id !== first.id, 'a new run in the same column'); assert.equal(again.stage, 'executing'); assert.equal(again.trigger, 'automation');
+  assert.deepEqual(starts, [first.id, again.id]);
+  assert.equal((await projectNow()).autopilot.status, 'running');
+});
+
+test('a card profile without a plan route: Autopilot needs an instruction, then moves on from Planning after its turn', async t => {
+  const profiles = [{ id: 'fast', name: 'Fast', columns: { planning: { planExitTargetId: null, permissionMode: null } } }];
+  const setup = async (instruct) => {
+    const w = await world(t, { profiles, instruct });
+    const card = await w.board.createTask({ projectId: w.project.id, title: 'Card', pipelineSettings: { profileId: 'fast' }, expectedProjectRevision: (await w.projectNow()).revision });
+    await w.board.setAutopilot(w.project.id, { route: ['planning', 'executing'], queue: [card.id], expectedRevision: (await w.projectNow()).revision });
+    return { ...w, card };
+  };
+  const bare = await setup([]);
+  await assert.rejects(bare.board.controlAutopilot(bare.project.id, { action: 'start', confirm: true }), error => error.code === 'AUTOPILOT_INSTRUCTION_MISSING' && /“Executing”/.test(error.message));
+  const { board, project, projectNow, card, finishTurn, tick } = await setup(['executing']);
+  await board.controlAutopilot(project.id, { action: 'start', confirm: true });
+  await tick(2);
+  assert.equal((await projectNow()).tasks[0].column, 'planning');
+  await finishTurn(card.id); await tick(3);
+  assert.equal((await projectNow()).tasks[0].column, 'executing', 'no plan approval is waited for');
+});
+
+test('a blocked column automation pauses Autopilot and refuses new agent starts instead of parking them', async t => {
+  const { board, project, projectNow, live, tick, starts } = await world(t);
+  const card = await board.createTask({ projectId: project.id, title: 'Card' });
+  await board.setAutopilot(project.id, { route: ['executing'], queue: [card.id], expectedRevision: (await projectNow()).revision });
+  await board.controlAutopilot(project.id, { action: 'start', confirm: true });
+  await tick(2);
+  const run = await live(card.id);
+  // A move whose cleanup is unconfirmed stays blocked until “Stop automations”.
+  const key = { projectId: project.id, taskId: card.id, transitionId: 'blocked-move' };
+  board.automationMoves.set(card.id, { key, controller: new AbortController(), blocked: true, deferNativeStart: true, done: Promise.resolve() });
+  await board.store.update(draft => { draft.projects[0].tasks[0].automationMove = { ...key, status: 'blocked', phase: 'enter' }; });
+  await tick();
+  const ap = (await projectNow()).autopilot;
+  assert.equal(ap.status, 'paused'); assert.match(ap.reason, /automations of “Card” are blocked/);
+  await board.updateRun(run.id, { status: 'cancelled' });
+  await assert.rejects(board.requestRun(card.id, { stage: 'executing', consent: true }), { code: 'AUTOMATIONS_ACTIVE' });
+  assert.equal(await live(card.id), undefined, 'no queued run is left behind'); assert.deepEqual(starts, [run.id]);
+});
+
+test('a Skip while a step is under way is not overwritten by that step', async t => {
+  const { board, project, projectNow, tick } = await world(t);
+  const first = await board.createTask({ projectId: project.id, title: 'First' }), second = await board.createTask({ projectId: project.id, title: 'Second' });
+  await board.setAutopilot(project.id, { route: ['executing'], queue: [first.id, second.id], expectedRevision: (await projectNow()).revision });
+  await board.controlAutopilot(project.id, { action: 'start', confirm: true });
+  await tick();
+  const transition = board.transition;
+  board.transition = async (...args) => { const result = await transition.apply(board, args); await board.controlAutopilot(project.id, { action: 'skip' }); return result; };
+  await tick();
+  board.transition = transition;
+  let ap = (await projectNow()).autopilot;
+  assert.equal(ap.current, null); assert.deepEqual(ap.done, [first.id]);
+  await tick(2);
+  ap = (await projectNow()).autopilot;
+  assert.equal(ap.current.taskId, second.id); assert.deepEqual(ap.done, [first.id]);
+  assert.equal(ap.log.some(entry => /deleted/.test(entry.text)), false);
 });
