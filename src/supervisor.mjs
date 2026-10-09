@@ -248,7 +248,7 @@ export class Supervisor {
     await this.board.recordBaseManifest(runId, supplied);
     await writeFile(join(runDir, 'base-manifest.json'), `${JSON.stringify(supplied, null, 2)}\n`, { mode: 0o600 });
     await this.board.updateRun(runId, { status: 'running', startedAt: session.startedAt, providerSessionId: run.resumeFrom?.nativeSessionId || (run.config.provider === 'claude' ? sessionId : undefined), lifecycle: 'waiting-for-first-event' });
-    if (!session.proc) return; // Exited during the update: #exited owns the outcome.
+    if (!session.proc || session.exiting) return; // Exited during the update: #exited owns the outcome.
     this.#push(session, { status: 'running' });
     session.poll = setInterval(() => this.#readEvents(session).catch(() => {}), 250);
     session.usagePoll = setInterval(() => this.#readUsage(session).catch(() => {}), 3000);

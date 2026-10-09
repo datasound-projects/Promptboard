@@ -777,6 +777,24 @@ test('missing terminal support is reported with setup steps and starts nothing',
   await assert.rejects(supervisor.validate({ stage: 'executing', config: {} }), { code: 'EXECUTION_SETUP_REQUIRED' });
 });
 
+test('a CLI that exits while its start is being saved leaves no event poll running', async t => {
+  const dataDir = await temp(t, 'pb-data-');
+  let proc;
+  const pty = { spawn() { proc = { pid: 2147483000, onData() {}, onExit(cb) { this.exit = cb; }, write() {}, resize() {} }; return proc; } };
+  const run = { id: 'r1', status: 'queued', taskId: 't1', artifactsDir: 'runs/r1', stage: 'executing', workspacePath: dataDir,
+    config: { provider: 'claude', permissionMode: 'acceptEdits' }, baseManifest: { resources: [] } };
+  const board = { state: async () => ({ settings: { maxConcurrentRuns: 1 }, base: { resources: [], approvedRoots: [] }, sessions: [] }),
+    run: async () => structuredClone(run), recordBaseManifest: async () => {}, base: { readRevision: async () => null },
+    updateRun: async (_id, fields) => { Object.assign(run, fields); if (fields.status === 'running') proc.exit({ exitCode: 1 }); return run; } };
+  const supervisor = new Supervisor({ board, dataDir, ptyLoader: async () => ({ pty, message: '' }), resolver: async () => ({ command: 'claude', prefix: [] }),
+    basePreparer: async () => ({ sections: '', manifest: { resources: [] }, cleanup: async () => {} }) });
+  await supervisor.start({ run, task: { prompt: 'Do it.' } });
+  await until(() => run.status === 'interrupted', 'exit recorded');
+  const session = supervisor.sessions.get('r1');
+  t.after(() => { clearInterval(session.poll); clearInterval(session.usagePoll); clearTimeout(session.lingerTimer); });
+  assert.equal(session.poll, undefined, 'The exit owns the outcome; no event poll is armed after it.');
+});
+
 test('run endpoints need the token, bound input, need confirmation to stop, and stream NDJSON', { skip }, async t => {
   const w = await world(t, { server: true });
   const app = w.app;
