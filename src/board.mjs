@@ -92,6 +92,8 @@ export function originSourceOf(value) {
   return { originProjectId: value.originProjectId, originTaskId: value.originTaskId, snapshotId: recordId(value.snapshotId) ? value.snapshotId : '',
     hash: typeof value.hash === 'string' && /^[a-f0-9]{64}$/.test(value.hash) ? value.hash : '', key: typeof value.key === 'string' ? value.key.slice(0, 20) : '' };
 }
+// Export keeps going past a malformed reference saved by an older version; it just leaves it out.
+const validOrigin = value => { try { return value !== undefined && Boolean(originSourceOf(value)); } catch { return false; } };
 /** Prerequisite cards: other cards of the same project that must be done before this one starts. */
 function prerequisiteIds(value, ids, selfId) {
   if (!Array.isArray(value) || value.length > 50) throw new BoardError('A card can have at most 50 prerequisites.', 'INVALID_INPUT');
@@ -1951,7 +1953,7 @@ export class Board {
         agentDefaults: project.agentDefaults || null, workflow: project.workflow || {}, testCommands: project.testCommands || [], timelineNotes: project.timelineNotes || [], columnLayout: project.columnLayout || [],
         // Workspaces and runs are machine-specific and are not exported.
         tasks: project.tasks.map(task => ({ id: task.id, number: task.number, title: task.title, prompt: task.prompt, priority: taskPriority(task.priority), labelIds: taskLabelIds(task.labelIds, project.labels), source: task.source, ...(task.externalSource === undefined ? {} : { externalSource: externalIssueSource(task.externalSource) }),
-          ...(task.originSource === undefined ? {} : { originSource: originSourceOf(task.originSource) }), ...(task.dependsOn?.length ? { dependsOn: [...task.dependsOn] } : {}), checksOutdated: task.checksOutdated,
+          ...(validOrigin(task.originSource) ? { originSource: originSourceOf(task.originSource) } : {}), ...(task.dependsOn?.length ? { dependsOn: [...task.dependsOn] } : {}), checksOutdated: task.checksOutdated,
           createdAt: task.createdAt, updatedAt: task.updatedAt, column: task.column, ...backupBaseScopes(task, true),
           ...(project.workflowMode === 'pipeline' ? normalizePipelineTaskSelection(project.pipelineImport || project.pipeline, { profileId: task.profileId, agentOverride: task.agentOverride }) : {}) })) })) };
   }

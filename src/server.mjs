@@ -203,8 +203,8 @@ async function boardRoute(board, req, res, pathname, searchParams, origin) {
     if (method === 'DELETE' && !action) return view({ deleted: await board.deleteTask(id, { expectedRevision: expected(), keepFiles: searchParams.get('keepFiles') === 'true' }) ?? true });
     if (method === 'POST' && action === 'move') {
       // Only the fields a person can choose; the trigger is always the user here.
-      const { column, index, expectedRevision, expectedProjectRevision, transitionId, decision, commitMessage, config, handoffRunId } = await body();
-      return view(await board.transition(id, { column, index, expectedRevision, expectedProjectRevision, transitionId, decision, commitMessage, config, handoffRunId }));
+      const { column, index, expectedRevision, expectedProjectRevision, transitionId, decision, commitMessage, config } = await body();
+      return view(await board.transition(id, { column, index, expectedRevision, expectedProjectRevision, transitionId, decision, commitMessage, config }));
     }
     if (method === 'GET' && action === 'automations') return send(res, 200, { moves: await board.automationRuns(id) });
     if (method === 'POST' && action === 'cancel-automations') return view({ task: await board.cancelAutomationMove(id, await body()) });
