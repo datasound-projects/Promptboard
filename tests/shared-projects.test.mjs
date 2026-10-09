@@ -1,7 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Board } from '../src/board.mjs';
+import { OriginStore, originRoute } from '../src/origin.mjs';
+import { PromptStore, ensureProject, findProject } from '../src/projects.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
 
 async function client(t) {
@@ -14,6 +18,12 @@ async function client(t) {
   return { app, call };
 }
 const entry = (projects, name) => projects.filter(project => project.name === name);
+async function local(t) {
+  const dataDir = await mkdtemp(join(tmpdir(), 'pb-shared-')); t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const board = new Board({ dataDir }), origin = new OriginStore(dataDir), prompts = new PromptStore(dataDir);
+  const route = (pathname, body) => originRoute({ origin, board, prompts, req: { method: 'POST' }, res: {}, pathname, jsonBody: async () => body, send: (_res, status, data) => ({ status, data }) });
+  return { board, origin, prompts, services: { origin, board }, route };
+}
 
 test('one project keeps one ID across Origin and Kanban, and names are never duplicated', async t => {
   const { app, call } = await client(t);
@@ -123,4 +133,51 @@ test('refining a card from Compose changes only an idle card in To Do', async t 
   const refused = await call(`/api/tasks/${card.id}/refine`, 'POST', { prompt: 'Again', expectedRevision: done.revision });
   assert.equal(refused.status, 409); assert.equal(refused.data.code, 'CARD_BUSY');
   assert.equal((await app.board.state()).projects[0].tasks[0].prompt, 'Refined');
+});
+
+test('one name and one ID belong to one project, also when two windows ask at once', async t => {
+  const { board, origin, services } = await local(t);
+  const both = await Promise.all([ensureProject(services, { name: 'Shop' }), ensureProject(services, { name: 'shop' })]);
+  assert.deepEqual(both.map(result => result.existing).sort(), [false, true]); assert.equal(both[0].project.id, both[1].project.id);
+  assert.equal((await origin.list()).length, 1);
+  await assert.rejects(Promise.all([origin.create({ name: 'Blog' }), origin.create({ name: 'BLOG' })]), { code: 'NAME_TAKEN' });
+  // A board with an Origin project's own ID is that project's board, even without a stored link.
+  const beta = await origin.create({ name: 'Beta' }), alpha = await origin.create({ name: 'Alpha' });
+  await board.createProject({ name: 'Beta board', id: beta.id });
+  await assert.rejects(origin.link(alpha.id, { expectedRevision: 1, kanbanProjectId: beta.id }), { code: 'ALREADY_LINKED' });
+  await assert.rejects(origin.create({ name: 'Gamma', kanbanProjectId: beta.id }), { code: 'ALREADY_LINKED' });
+  // Older data where two projects reach one board: its ID opens the project that owns that ID.
+  await origin.create({ name: 'Delta', kanbanProjectId: 'shared-x' });
+  await board.createProject({ name: 'Shared board', id: 'shared-x' });
+  await origin.create({ name: 'Owner', id: 'shared-x' });
+  assert.equal((await findProject(services, 'shared-x')).name, 'Owner');
+});
+
+test('saved prompts stay with a kept board when the Origin side of an older link is deleted', async t => {
+  const { board, origin, prompts, services, route } = await local(t);
+  const kept = await board.createProject({ name: 'Legacy board' }), plan = await origin.create({ name: 'Legacy plan' });
+  const linked = await origin.link(plan.id, { expectedRevision: 1, kanbanProjectId: kept.id });
+  const shared = await findProject(services, kept.id);
+  await prompts.create(shared.id, shared.ids, { title: 'Saved', prompt: 'Build the login form.' });
+  assert.equal((await route(`/api/origin/projects/${plan.id}/delete`, { expectedRevision: linked.revision })).status, 200);
+  const after = await findProject(services, kept.id);
+  assert.deepEqual(after.ids, [kept.id]);
+  assert.deepEqual((await prompts.list(after.ids)).map(prompt => prompt.title), ['Saved']);
+});
+
+test('names are checked against projects and boards, on create and rename, and a stale link creates no board', async t => {
+  const { app, call } = await client(t);
+  const shop = (await call('/api/origin/projects', 'POST', { name: 'Shop', createKanban: true })).data.project;
+  await app.board.renameProject(shop.id, { name: 'Storefront', expectedRevision: (await app.board.state()).projects[0].revision });
+  assert.equal((await call('/api/origin/projects', 'POST', { name: 'storefront' })).data.code, 'NAME_TAKEN', 'a board name is taken too');
+  const blog = (await call('/api/origin/projects', 'POST', { name: 'Blog' })).data.project;
+  assert.equal((await call(`/api/origin/projects/${blog.id}`, 'PATCH', { expectedRevision: 1, name: 'SHOP' })).data.code, 'NAME_TAKEN');
+  assert.equal((await call(`/api/origin/projects/${blog.id}`, 'PATCH', { expectedRevision: 1, name: 'Storefront' })).data.code, 'NAME_TAKEN');
+  assert.equal((await call(`/api/origin/projects/${shop.id}`, 'PATCH', { expectedRevision: shop.revision, name: 'Storefront' })).status, 200, 'a project may take its own board’s name');
+  const stale = await call(`/api/origin/projects/${blog.id}/link`, 'POST', { expectedRevision: 0, createKanban: true });
+  assert.equal(stale.data.code, 'ORIGIN_REVISION_CONFLICT');
+  assert.equal((await app.board.state()).projects.length, 1, 'a refused link creates no board');
+  assert.equal((await call(`/api/origin/projects/${blog.id}/link`, 'POST', { expectedRevision: 1, createKanban: true, name: 'storefront' })).data.code, 'NAME_TAKEN');
+  const linked = (await call(`/api/origin/projects/${blog.id}/link`, 'POST', { expectedRevision: 1, createKanban: true })).data.project;
+  assert.equal(linked.kanbanProjectId, blog.id);
 });

@@ -11,7 +11,7 @@
  */
 import '../public/origin-model.js';
 import { randomUUID } from 'node:crypto';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { readWithBackup, serial, writeAtomic } from './durable.mjs';
 import { OriginError, escapeId } from './origin.mjs';
@@ -39,32 +39,47 @@ export async function listProjects({ origin, board }) {
   for (const project of state.projects) if (!used.has(project.id)) projects.push({ id: project.id, name: project.name, origin: null, kanban: { id: project.id, name: project.name, revision: project.revision }, ids: [project.id] });
   return projects;
 }
-/** The shared project that owns `id` (an Origin ID or a Kanban ID). */
+/** The shared project that owns `id`: the one whose own ID it is, else the one linked through it. */
 export async function findProject(services, id) {
-  const project = (await listProjects(services)).find(entry => entry.ids.includes(id));
+  const projects = await listProjects(services);
+  const project = projects.find(entry => entry.id === id) || projects.find(entry => entry.ids.includes(id));
   if (!project) fail('This project no longer exists. Choose another project.', 'NOT_FOUND', 404);
   return project;
 }
 
+/** The shared project, other than the one with `exceptId`, that uses this name for itself or its board. One name, one project. */
+export async function nameTaken(services, name, exceptId = null) {
+  return (await listProjects(services)).find(project => !project.ids.includes(exceptId) && [project.name, project.kanban?.name].some(used => used && sameName(used, name))) || null;
+}
+
 /** Compose (or any page) asks for a project by name: an existing one of that name is selected, never duplicated. */
-export async function ensureProject({ origin, board }, { name }) {
+export async function ensureProject(services, { name }) {
   const clean = typeof name === 'string' ? name.trim() : '';
   if (!clean || clean.length > 80 || clean.includes('\0')) fail('A project name needs 1 to 80 characters.');
-  const existing = (await listProjects({ origin, board })).find(project => sameName(project.name, clean) || (project.kanban && sameName(project.kanban.name, clean)));
+  const existing = await nameTaken(services, clean);
   if (existing) return { project: existing, existing: true };
-  const created = await origin.create({ name: clean });
-  return { project: await findProject({ origin, board }, created.id), existing: false };
+  try { return { project: await findProject(services, (await services.origin.create({ name: clean })).id), existing: false }; }
+  catch (error) {
+    // Another window created this name a moment ago: Origin checks names in its write queue.
+    const raced = error.code === 'NAME_TAKEN' && await nameTaken(services, clean);
+    if (!raced) throw error;
+    return { project: raced, existing: true };
+  }
+}
+
+/** A new board for an Origin project, with the project's ID when free, then linked. Kanban changes go only through the board service. */
+export async function createBoardFor({ origin, board }, record, { name = record.name, folder = 'new', workflowMode = 'pipeline' } = {}) {
+  const free = !(await board.state()).projects.some(entry => entry.id === record.id);
+  const made = await board.createProjectWithRepository({ name, folder, workflowMode, ...(free ? { id: record.id } : {}) });
+  return { ...made, record: await origin.link(record.id, { expectedRevision: record.revision, kanbanProjectId: made.project.id }) };
 }
 
 /** The project's Kanban board, created now (with the project's ID when free) if it has none. */
-export async function ensureBoard({ origin, board }, id) {
-  const project = await findProject({ origin, board }, id);
+export async function ensureBoard(services, id) {
+  const project = await findProject(services, id);
   if (project.kanban) return { project, created: false };
-  const record = await origin.read(project.origin.id, { report: false });
-  const free = !(await board.state()).projects.some(entry => entry.id === record.id);
-  const made = await board.createProjectWithRepository({ name: record.name, folder: 'new', workflowMode: 'pipeline', ...(free ? { id: record.id } : {}) });
-  await origin.link(record.id, { expectedRevision: record.revision, kanbanProjectId: made.project.id });
-  return { project: await findProject({ origin, board }, record.id), created: true };
+  await createBoardFor(services, await services.origin.read(project.origin.id, { report: false }));
+  return { project: await findProject(services, project.origin.id), created: true };
 }
 
 /** The project's Origin blueprint, created with the board's ID if it has none. */
@@ -80,15 +95,12 @@ export async function ensureOrigin({ origin, board }, id) {
  * this board with its own ID; a project of that name that already has a board is refused. Otherwise a new
  * board is made as before.
  */
-export async function createBoardProject({ origin, board }, { name, folder = 'new', workflowMode = 'pipeline' }) {
+export async function createBoardProject(services, { name, folder = 'new', workflowMode = 'pipeline' }) {
   const clean = typeof name === 'string' ? name.trim() : '';
-  const match = clean ? (await listProjects({ origin, board })).find(project => sameName(project.name, clean)) : null;
+  const match = clean ? await nameTaken(services, clean) : null;
   if (match?.kanban) fail('A project with this name already exists.', 'NAME_TAKEN', 409);
-  if (!match) return board.createProjectWithRepository({ name, folder, workflowMode });
-  const record = await origin.read(match.origin.id, { report: false });
-  const free = !(await board.state()).projects.some(entry => entry.id === record.id);
-  const made = await board.createProjectWithRepository({ name: record.name, folder, workflowMode, ...(free ? { id: record.id } : {}) });
-  await origin.link(record.id, { expectedRevision: record.revision, kanbanProjectId: made.project.id });
+  if (!match) return services.board.createProjectWithRepository({ name, folder, workflowMode });
+  const { record, ...made } = await createBoardFor(services, await services.origin.read(match.origin.id, { report: false }), { folder, workflowMode });
   return { ...made, sharedWith: record.id };
 }
 
@@ -179,6 +191,18 @@ export class PromptStore {
       prompt.revision++; prompt.updatedAt = Date.now();
       await this.#save(data);
       return prompt;
+    });
+  }
+  /** Move every prompt saved under `fromId` to `toId`, merged and none dropped: for when `fromId` goes away but the project stays. */
+  merge(fromId, toId) {
+    return this.#serial(async () => {
+      const from = await this.#load(fromId);
+      if (!from.prompts.length) return 0;
+      const to = await this.#load(toId), known = new Set(to.prompts.map(prompt => prompt.id));
+      to.prompts.push(...from.prompts.filter(prompt => !known.has(prompt.id)));
+      await this.#save(to);
+      for (const path of [this.#path(fromId), `${this.#path(fromId)}.bak`]) await rm(path, { force: true });
+      return from.prompts.length;
     });
   }
   remove(ids, promptId, expectedRevision) {

@@ -15,6 +15,7 @@ import { mkdir, open, readdir, readFile, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { redactLocal } from './compose-local.mjs';
 import { serial, writeAtomic } from './durable.mjs';
+import { createBoardFor, nameTaken } from './projects.mjs';
 
 const Model = globalThis.PromptboardOriginModel;
 export const ORIGIN_DIR = 'origin';
@@ -53,6 +54,9 @@ function expected(value) {
   if (!Number.isSafeInteger(value) || value < 0) throw new OriginError('Reload the project before saving.', 'INVALID_REVISION');
   return value;
 }
+
+// A board with an Origin project's own ID is that project's board, even without a stored link.
+const linksTo = (record, kanbanProjectId) => record.kanbanProjectId === kanbanProjectId || record.id === kanbanProjectId;
 
 export class OriginStore {
   /** `kanbanProjects()` reads the board's projects; only names and IDs are used, for migration. */
@@ -203,8 +207,10 @@ export class OriginStore {
     return this.#serial(async () => {
       const all = await this.#list();
       if (all.length >= PROJECT_LIMIT) throw new OriginError(`Origin can hold at most ${PROJECT_LIMIT} projects.`, 'LIMIT', 409);
+      // Checked here, in the write queue, so two windows creating the same name at once get one project.
+      if (all.some(other => other.name.toLocaleLowerCase() === meta.name.toLocaleLowerCase())) throw new OriginError('A project with this name already exists. Choose it from the project list.', 'NAME_TAKEN', 409);
       if (id !== undefined && (all.some(other => other.id === id) || await readFile(join(this.dir, blueprintFileName(id))).then(() => true, () => false))) throw new OriginError('An Origin project with this ID already exists.', 'ID_TAKEN', 409);
-      if (kanbanProjectId && all.some(other => other.kanbanProjectId === kanbanProjectId)) throw new OriginError('That Kanban project is already linked to another Origin project.', 'ALREADY_LINKED', 409);
+      if (kanbanProjectId && all.some(other => linksTo(other, kanbanProjectId))) throw new OriginError('That Kanban project is already linked to another Origin project.', 'ALREADY_LINKED', 409);
       const blueprint = Model.emptyBlueprint();
       if (meta.description) { blueprint.idea = meta.description; blueprint.vision.summary = meta.description; }
       const now = Date.now(), record = { id: id ?? randomUUID(), ...meta, kanbanProjectId, revision: 1, createdAt: now, updatedAt: now, blueprint };
@@ -246,7 +252,7 @@ export class OriginStore {
     return this.#serial(async () => {
       const record = await this.#require(originId);
       if (record.revision !== expectedRevision) throw new OriginError('This project changed in another window. Reload it first.', 'ORIGIN_REVISION_CONFLICT', 409);
-      if (kanbanProjectId && (await this.#list()).some(other => other.id !== originId && other.kanbanProjectId === kanbanProjectId)) {
+      if (kanbanProjectId && (await this.#list()).some(other => other.id !== originId && linksTo(other, kanbanProjectId))) {
         throw new OriginError('That Kanban project is already linked to another Origin project.', 'ALREADY_LINKED', 409);
       }
       return this.#save(record, { kanbanProjectId });
@@ -473,21 +479,18 @@ function view(record, kanban) {
     kanban: record.kanbanProjectId ? (linked ? { exists: true, name: linked.name, revision: linked.revision } : { exists: false }) : null };
 }
 
-/** Kanban side effects go only through the board service, never by writing state.json. */
-async function createKanban(board, name, id) {
-  // The board takes the Origin project's ID when it is free, so the shared project keeps one ID.
-  const free = id && !(await board.state()).projects.some(project => project.id === id);
-  try { return { project: (await board.createProjectWithRepository({ name, folder: 'new', workflowMode: 'pipeline', ...(free ? { id } : {}) })).project }; }
-  catch (error) { return { error: { message: error.message || 'The Kanban project could not be created.', code: error.code || 'KANBAN_FAILED' } }; }
-}
+const kanbanFailure = error => ({ message: error.message || 'The Kanban project could not be created.', code: error.code || 'KANBAN_FAILED' });
+const nameInUse = () => new OriginError('A project with this name already exists. Choose it from the project list.', 'NAME_TAKEN', 409);
 
 /**
  * /api/origin/projects: list and create. /api/origin/projects/:id: read, save the blueprint (PUT), rename
  * (PATCH). /link connects a Kanban project; /delete removes the Origin project and, only when asked,
- * the linked Kanban project through Kanban's own deletion checks.
+ * the linked Kanban project through Kanban's own deletion checks. `prompts` (the saved project prompts)
+ * lets a delete that keeps a board with another ID hand that board the prompts saved under this ID.
  */
-export async function originRoute({ origin, contexts, board, req, res, pathname, jsonBody, send }) {
-  const kanban = async () => (await board.state()).projects;
+export async function originRoute({ origin, contexts, board, prompts, req, res, pathname, jsonBody, send }) {
+  const kanban = async () => (await board.state()).projects, services = { origin, board };
+  const named = value => (typeof value === 'string' ? value.trim() : '');
   const body = async () => {
     const value = await jsonBody(req, BODY_LIMIT);
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new OriginError('Send a JSON object.', 'INVALID_REQUEST');
@@ -496,21 +499,20 @@ export async function originRoute({ origin, contexts, board, req, res, pathname,
   if (pathname === '/api/origin/projects') {
     if (req.method === 'GET') { const projects = await kanban(); return send(res, 200, { projects: (await origin.list()).map(record => view(record, projects)) }); }
     if (req.method !== 'POST') return send(res, 404, { error: 'This Origin route does not exist.' });
-    const input = await body(), name = typeof input.name === 'string' ? input.name.trim().toLocaleLowerCase() : '';
-    // One project per name across Origin, Compose and Kanban. A board of this name that no Origin project
-    // uses already is this project's board: the Origin project takes the board's ID and links to it.
-    const records = await origin.list(), boards = await kanban();
-    if (name && records.some(record => record.name.toLocaleLowerCase() === name)) throw new OriginError('A project with this name already exists. Choose it from the project list.', 'NAME_TAKEN', 409);
-    const joined = name && boards.find(project => project.name.toLocaleLowerCase() === name && !records.some(record => record.kanbanProjectId === project.id || record.id === project.id));
-    if (joined) {
-      const adopted = await origin.create({ name: input.name, description: input.description, id: joined.id, kanbanProjectId: joined.id });
+    const input = await body();
+    // One project per name across Origin, Compose and Kanban, its own name or its board's. A board of this
+    // name that no Origin project uses is this project's board: the Origin project takes its ID and links to it.
+    const match = named(input.name) ? await nameTaken(services, named(input.name)) : null;
+    if (match?.origin) throw nameInUse();
+    if (match) {
+      const adopted = await origin.create({ name: input.name, description: input.description, id: match.kanban.id, kanbanProjectId: match.kanban.id });
       return send(res, 200, { project: view(adopted, await kanban()), blueprint: adopted.blueprint, joinedKanban: true });
     }
     const created = await origin.create({ name: input.name, description: input.description });
     if (input.createKanban !== true) return send(res, 200, { project: view(created, await kanban()), blueprint: created.blueprint });
-    const made = await createKanban(board, created.name, created.id);
-    if (made.error) return send(res, 200, { project: view(created, await kanban()), blueprint: created.blueprint, kanbanError: made.error });
-    const linked = await origin.link(created.id, { expectedRevision: created.revision, kanbanProjectId: made.project.id });
+    let linked;
+    try { linked = (await createBoardFor(services, created)).record; }
+    catch (error) { return send(res, 200, { project: view(created, await kanban()), blueprint: created.blueprint, kanbanError: kanbanFailure(error) }); }
     return send(res, 200, { project: view(linked, await kanban()), blueprint: linked.blueprint });
   }
   const match = pathname.match(/^\/api\/origin\/projects\/([A-Za-z0-9_-]{1,100})(?:\/(link|delete|context|handoff|context-status|update-context))?$/);
@@ -530,6 +532,7 @@ export async function originRoute({ origin, contexts, board, req, res, pathname,
   }
   if (!action && req.method === 'PATCH') {
     const input = await body();
+    if (named(input.name) && await nameTaken(services, named(input.name), originId)) throw nameInUse();
     const saved = await origin.update(originId, { expectedRevision: input.expectedRevision, name: input.name, description: input.description });
     return send(res, 200, { project: view(saved, await kanban()), revision: saved.revision });
   }
@@ -537,15 +540,18 @@ export async function originRoute({ origin, contexts, board, req, res, pathname,
     const input = await body();
     const record = await origin.read(originId);
     if (!record || record.damaged) throw new OriginError('This Origin project no longer exists. Choose another project.', 'NOT_FOUND', 404);
-    let kanbanProjectId = input.kanbanProjectId;
     if (input.createKanban === true) {
-      const made = await createKanban(board, typeof input.name === 'string' && input.name.trim() ? input.name : record.name, record.id);
-      if (made.error) throw new OriginError(made.error.message, made.error.code, 409);
-      kanbanProjectId = made.project.id;
-    } else if (kanbanProjectId !== null && !(await kanban()).some(project => project.id === kanbanProjectId)) {
-      throw new OriginError('That Kanban project no longer exists. Choose another one.', 'NOT_FOUND', 404);
+      // Checked before anything is created; the new board takes this project's ID when it is free.
+      if (record.revision !== input.expectedRevision) throw new OriginError('This project changed in another window. Reload it first.', 'ORIGIN_REVISION_CONFLICT', 409);
+      const name = named(input.name) || record.name;
+      if (await nameTaken(services, name, originId)) throw nameInUse();
+      let saved;
+      try { saved = (await createBoardFor(services, record, { name })).record; }
+      catch (error) { if (error instanceof OriginError) throw error; const failure = kanbanFailure(error); throw new OriginError(failure.message, failure.code, 409); }
+      return send(res, 200, { project: view(saved, await kanban()), revision: saved.revision });
     }
-    const saved = await origin.link(originId, { expectedRevision: input.expectedRevision, kanbanProjectId });
+    if (input.kanbanProjectId !== null && !(await kanban()).some(project => project.id === input.kanbanProjectId)) throw new OriginError('That Kanban project no longer exists. Choose another one.', 'NOT_FOUND', 404);
+    const saved = await origin.link(originId, { expectedRevision: input.expectedRevision, kanbanProjectId: input.kanbanProjectId });
     return send(res, 200, { project: view(saved, await kanban()), revision: saved.revision });
   }
   if (action === 'context' && req.method === 'POST') {
@@ -574,6 +580,9 @@ export async function originRoute({ origin, contexts, board, req, res, pathname,
       await board.deleteProject(record.kanbanProjectId, { expectedRevision: input.expectedKanbanRevision });
       kanbanDeleted = true;
     }
+    // Prompts are saved under the Origin ID. A kept board with another ID (a link from before shared IDs)
+    // stays a project, so it takes them over before the Origin side goes.
+    if (!kanbanDeleted && record.kanbanProjectId && record.kanbanProjectId !== originId && (await kanban()).some(project => project.id === record.kanbanProjectId)) await prompts?.merge(originId, record.kanbanProjectId);
     await origin.remove(originId, { expectedRevision: record.revision });
     await contexts?.archive(originId).catch(() => {}); // Kept in origin/deleted/; Base copies stay usable.
     return send(res, 200, { deleted: true, kanbanDeleted });

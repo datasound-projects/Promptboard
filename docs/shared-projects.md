@@ -5,12 +5,13 @@ Origin, Compose and Kanban can share one project. Every connection is optional: 
 ## One project, one ID
 
 - A project has one ID across Origin and Kanban. A board created from Origin (with **Also create a Kanban project**, or later with **Connect to Kanban → create**) takes the Origin project's ID. An Origin blueprint started for an existing board takes the board's ID.
-- Names are not duplicated across the three pages:
+- Names are not duplicated across the three pages. A project's name and its board's name both count, without regard to case:
   - Creating an Origin project whose name matches a board that no Origin project uses joins that board.
   - Creating a board whose name matches an Origin project without a board makes that project's board.
-  - Creating a project of an existing name is refused.
-  - Choosing a name in Compose selects the existing project.
-- Links made before this change, with different IDs on each side, keep working: the project is listed once and is reachable by either ID.
+  - Creating a project, renaming an Origin project or naming a new board with a name another project uses is refused (`NAME_TAKEN`). A project may take its own board's name.
+  - Choosing a name in Compose selects the existing project, also when two windows ask for the same new name at once.
+- A board with an Origin project's ID belongs to that project, even without a stored link; another Origin project cannot link to it (`ALREADY_LINKED`).
+- Links made before this change, with different IDs on each side, keep working: the project is listed once and is reachable by either ID. Deleting the Origin side of such a link keeps the board as a project, and the board takes over the saved prompts.
 - There is no separate project registry. The list (`GET /api/shared-projects`) is derived from Origin projects and Kanban boards, so names are never copied.
 
 ## Compose: History and Projects
