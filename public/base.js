@@ -116,7 +116,11 @@ window.PromptboardBase = (() => {
       Object.assign(viewState, { category, search: $('#base-search').value });
       try { localStorage.setItem(preferenceKey, JSON.stringify(viewState)); } catch {}
     }
-    function closeResource() {
+    // Replacing the editor asks first when it holds unsaved changes. Saves, deletes and Cancel pass `true`.
+    const leave = force => force === true || !$('#base-detail .base-resource-form')?.isDirty?.() || window.confirm('Discard your unsaved changes to this resource?');
+    window.addEventListener('beforeunload', event => { if ($('#base-detail .base-resource-form')?.isDirty?.()) { event.preventDefault(); event.returnValue = ''; } });
+    function closeResource(force) {
+      if (!leave(force)) return;
       ++requestVersion; chosen = null; editingKind = null; renderList();
       $('.base-list-panel').scrollTop = libraryScroll;
     }
@@ -263,6 +267,7 @@ window.PromptboardBase = (() => {
       else if (active.right > bounds.right) nav.scrollLeft += active.right - bounds.right;
     }
     function createResource() {
+      if (!leave()) return;
       if (categoryKind()) kindSelect.value = categoryKind();
       editResource({ kind: kindSelect.value, name: '', enabled: true, trust: ['mcp', 'tool'].includes(kindSelect.value) ? 'untrusted' : 'trusted', dependencies: [], configuration: {}, content: {} });
     }
@@ -421,7 +426,8 @@ window.PromptboardBase = (() => {
       } catch (failure) { openDialog('Base resources', [el('p', failure.message, 'inline-error'), button('Close', closeDialog)]); }
     }
 
-    async function openResource(id) {
+    async function openResource(id, force) {
+      if (!leave(force)) return;
       if (!editingKind) libraryScroll = $('.base-list-panel').scrollTop;
       const current = ++requestVersion; chosen = id; editingKind = resource(id)?.kind || null; renderList(); $('#base-detail').replaceChildren(p('Loading resource…'));
       try { const data = await request(`/api/base/resources/${encodeURIComponent(id)}`); if (current === requestVersion) editResource(data.resource || data); }
@@ -433,7 +439,7 @@ window.PromptboardBase = (() => {
       chosen = item.id || null; editingKind = item.kind; renderList();
       const form = el('form', undefined, 'base-resource-form'); form.dataset.kind = item.kind;
       const heading = el('h2', item.id ? item.name : `New ${KINDS[item.kind].toLowerCase()}`);
-      form.append(button('Back to library', closeResource, 'text-button'), heading);
+      form.append(button('Back to library', () => closeResource(), 'text-button'), heading);
       if (item.id) form.append(p(metadata(item)));
       const name = input(item.name, 120); name.required = true; name.id = 'base-resource-name';
       const description = area(item.description || '', 2000); description.rows = 2;
@@ -456,7 +462,7 @@ window.PromptboardBase = (() => {
       }
       const fail = inlineError(form);
       const save = el('button', 'Save resource', 'dialog-done'); save.type = 'submit'; save.id = 'base-resource-save';
-      const footer = actions(save, button('Cancel', () => { if (item.id) openResource(item.id); else closeResource(); }));
+      const footer = actions(save, button('Cancel', () => { if (item.id) openResource(item.id, true); else closeResource(true); }));
       if (item.id) footer.append(button('Apply to…', () => openApply(item)), button('Export…', () => openExport(item.id)), button('Delete…', () => openDelete(item), 'text-button'));
       form.append(footer);
       form.addEventListener('submit', async event => {
@@ -469,14 +475,19 @@ window.PromptboardBase = (() => {
             : { kind: item.kind, name: name.value.trim(), description: description.value, tags: tags.value.split(',').map(value => value.trim()).filter(Boolean), enabled: enabled.control.checked, trust: trust.value, dependencies: dependencies.read(), ...resourceValues, expectedBaseRevision, ...(item.id ? { expectedRevision: item.revision } : {}) };
           const data = await request(skillImport ? '/api/base/skills/import' : item.id ? `/api/base/resources/${encodeURIComponent(item.id)}` : '/api/base/resources', { method: item.id && !skillImport ? 'PATCH' : 'POST', body });
           const savedId = data.resource?.id || data.id || item.id;
-          await load(); if (savedId && editorVersion === requestVersion) await openResource(savedId);
+          await load(); if (savedId && editorVersion === requestVersion) await openResource(savedId, true);
           status('Saved. No assignments changed.'); context.announce?.('Base resource saved.');
         } catch (error) { fail(error); } finally { save.disabled = false; }
       });
       $('#base-detail').replaceChildren(form);
       if (!item.id) name.focus();
       const editable = () => ({ name: name.value, description: description.value, tags: tags.value, enabled: enabled.control.checked, trust: trust.value, dependencies: dependencies.read(), ...config.read() });
-      const savedDraft = JSON.stringify(editable());
+      let savedDraft = JSON.stringify(editable()), touched = false;
+      // Unsaved means changed by the person. Fields filled in later (a model list) are not edits, so until the
+      // first edit the baseline is read again just before each interaction. A field that no longer reads counts as changed.
+      for (const type of ['pointerdown', 'keydown']) form.addEventListener(type, () => { if (!touched) try { savedDraft = JSON.stringify(editable()); } catch {} }, true);
+      for (const type of ['input', 'change', 'click']) form.addEventListener(type, () => { touched = true; });
+      form.isDirty = () => { if (!touched) return false; try { return JSON.stringify(editable()) !== savedDraft; } catch { return true; } };
       // Discovery and refresh publish new immutable revisions too. Keep their editor
       // synchronized, without discarding a draft or allowing saves during the operation.
       form.savedAction = async (action, success) => {
@@ -492,7 +503,7 @@ window.PromptboardBase = (() => {
           // Failed tests also persist a connection result and advance the revision.
           await load();
           if (form.isConnected && chosen === item.id) {
-            await openResource(item.id);
+            await openResource(item.id, true);
             const current = $('#base-detail .base-resource-form');
             if (current && chosen === item.id) { result = el('div'); current.append(result); }
           }
@@ -711,6 +722,7 @@ window.PromptboardBase = (() => {
       }, 'text-button')), output);
     }
     async function createContext7() {
+      if (!leave()) return;
       try {
         const data = await request('/api/base/presets');
         const preset = data.presets?.find(item => item.name === 'Context7');
@@ -789,7 +801,7 @@ window.PromptboardBase = (() => {
       const box = el('div'); box.append(p(`Delete “${item.name}” from the current library? Immutable revisions needed by historical runs remain available.`), el('h3', 'Used by'), used.length ? list : p('No current references.'), detach.label);
       const fail = inlineError(box);
       box.append(actions(button('Cancel', closeDialog), busyButton('Delete resource', async () => {
-        try { await request(`/api/base/resources/${encodeURIComponent(item.id)}`, { method: 'DELETE', body: { expectedRevision: item.revision, expectedBaseRevision: state.revision, detach: detach.control.checked } }); await load(); await context.refreshBoard?.(); closeDialog(); if (chosen === item.id) closeResource(); status('Resource deleted. Historical revisions are retained.'); }
+        try { await request(`/api/base/resources/${encodeURIComponent(item.id)}`, { method: 'DELETE', body: { expectedRevision: item.revision, expectedBaseRevision: state.revision, detach: detach.control.checked } }); await load(); await context.refreshBoard?.(); closeDialog(); if (chosen === item.id) closeResource(true); status('Resource deleted. Historical revisions are retained.'); }
         catch (error) { fail(error); }
       }, 'danger')));
       openDialog('Delete resource', [box]);
@@ -835,7 +847,7 @@ window.PromptboardBase = (() => {
         catch (error) { fail(error); }
       }); cancel.hidden = true;
       const apply = busyButton('Apply reviewed draft', async () => {
-        try { await request('/api/base/wiki/apply', { method: 'POST', body: { resourceId: item.id, expectedRevision: item.revision, draft } }); closeDialog(); await load(); await openResource(item.id); status('Wiki draft applied.'); }
+        try { await request('/api/base/wiki/apply', { method: 'POST', body: { resourceId: item.id, expectedRevision: item.revision, draft } }); closeDialog(); await load(); await openResource(item.id, true); status('Wiki draft applied.'); }
         catch (error) { fail(error); }
       }); apply.hidden = true;
       const generate = busyButton('Generate draft', async () => {

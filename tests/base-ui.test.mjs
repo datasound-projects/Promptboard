@@ -17,6 +17,9 @@ function setup(t, { resources = [skill, pack], respond, savedView } = {}) {
   const win = dom.window;
   win.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
   win.HTMLDialogElement.prototype.close = function () { this.open = false; };
+  // Discarding unsaved editor changes asks first; tests answer yes unless they say otherwise.
+  const confirms = []; let confirmAnswer = true;
+  win.confirm = message => { confirms.push(message); return confirmAnswer; };
   if (savedView) win.localStorage.setItem('promptboard.base.library-view', JSON.stringify(savedView));
   win.eval(script);
   t.after(async () => { await wait(50); win.close(); });
@@ -56,7 +59,7 @@ function setup(t, { resources = [skill, pack], respond, savedView } = {}) {
   const clickText = (text, root = win.document) => { const node = [...root.querySelectorAll('button')].find(node => node.textContent === text || node.getAttribute('aria-label') === text); assert.ok(node, `button ${text}`); node.click(); return node; };
   const change = (node, value) => { node.value = value; node.dispatchEvent(new win.Event('change', { bubbles: true })); };
   const submit = form => form.dispatchEvent(new win.Event('submit', { bubbles: true, cancelable: true }));
-  return { win, $, view, calls, state, announcements, clickText, change, submit };
+  return { win, $, view, calls, state, announcements, clickText, change, submit, confirms, answerConfirm: value => { confirmAnswer = value; } };
 }
 
 test('Base library creates a real instruction draft without assigning or testing anything', async t => {
@@ -353,4 +356,29 @@ test('category counts track canonical mutations and keyboard focus alone never c
   assert.equal(nav.querySelector('[data-kind="mcp"] .base-category-count').textContent, '0');
   assert.equal(nav.querySelector('[data-kind=""] .base-category-count').textContent, '13');
   assert.equal($('#base-search').value, '');
+});
+
+test('an editor with unsaved changes is replaced only after confirmation, and leaving the page warns', async t => {
+  const { $, view, win, clickText, confirms, answerConfirm, calls } = setup(t);
+  await view.show(); await view.openResource(skill.id);
+  // Unchanged, or only filled in by the page itself (a model list loading): no question.
+  $('#base-skill-body').value = 'Filled in by the page';
+  await view.openResource(pack.id); await view.openResource(skill.id);
+  assert.equal(confirms.length, 0);
+  $('#base-skill-body').value = 'An edit that is not saved yet.'; $('#base-skill-body').dispatchEvent(new win.Event('input', { bubbles: true }));
+  const unload = new win.Event('beforeunload', { cancelable: true }); win.dispatchEvent(unload);
+  assert.equal(unload.defaultPrevented, true, 'closing the tab warns');
+  answerConfirm(false); const before = calls.length;
+  clickText('Back to library');
+  $('[data-resource-id="res_pack"]').click();
+  clickText('Create');
+  clickText('Context7 preset');
+  assert.equal(confirms.length, 4);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal($('#base-skill-body').value, 'An edit that is not saved yet.', 'the edit is still there');
+  assert.equal(calls.length, before, 'nothing was loaded over the edit');
+  answerConfirm(true);
+  clickText('Back to library');
+  assert.equal($('#base-detail').hidden, true, 'confirmed: back to the library');
+  assert.equal(confirms.length, 5);
 });
