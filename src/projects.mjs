@@ -10,9 +10,10 @@
  * prompt never creates a card; a card's instructions change only by an explicit update of an idle card.
  */
 import '../public/origin-model.js';
-import { randomBytes, randomUUID } from 'node:crypto';
-import { copyFile, mkdir, open, readFile, rename, rm } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
+import { readWithBackup, serial, writeAtomic } from './durable.mjs';
 import { OriginError, escapeId } from './origin.mjs';
 
 const Model = globalThis.PromptboardOriginModel;
@@ -121,34 +122,23 @@ const current = prompt => prompt.revisions.at(-1);
 const conflict = message => new OriginError(message, 'PROMPT_REVISION_CONFLICT', 409);
 
 export class PromptStore {
-  constructor(dataDir) { this.dir = join(dataDir, 'prompts'); this.queue = Promise.resolve(); }
   // ponytail: one queue for every project's prompts; per-project queues if saves ever contend.
-  #serial(work) { const next = this.queue.then(work, work); this.queue = next.catch(() => {}); return next; }
+  #serial = serial();
+  constructor(dataDir) { this.dir = join(dataDir, 'prompts'); }
   #path(id) { if (!ID.test(id)) fail('Choose a valid project.', 'INVALID_PROJECT'); return join(this.dir, `prompts-${escapeId(id)}.json`); }
   async #load(id) {
-    for (const path of [this.#path(id), `${this.#path(id)}.bak`]) {
-      let raw; try { raw = await readFile(path, 'utf8'); } catch (error) { if (error.code === 'ENOENT') continue; throw error; }
-      let data; try { data = JSON.parse(raw); } catch { continue; }
+    const path = this.#path(id);
+    return await readWithBackup([path, `${path}.bak`], bytes => {
+      let data; try { data = JSON.parse(bytes); } catch { return; }
       if (data?.schema === SCHEMA && data.version > 1) fail('These saved prompts were written by a newer Promptboard version. Update the app; nothing was changed.', 'PROMPTS_VERSION_UNSUPPORTED', 409);
       if (data?.schema === SCHEMA && data.version === 1 && Array.isArray(data.prompts)) return data;
-    }
-    return { schema: SCHEMA, version: 1, projectId: id, prompts: [] };
+    }) ?? { schema: SCHEMA, version: 1, projectId: id, prompts: [] };
   }
   async #save(data) {
     const path = this.#path(data.projectId), body = `${JSON.stringify(data, null, 1)}\n`;
     if (Buffer.byteLength(body) > PROMPT_LIMITS.fileBytes) fail('This project has too much saved prompt text. Delete old prompts first; nothing was saved.', 'LIMIT', 409);
     await mkdir(this.dir, { recursive: true, mode: 0o700 });
-    const tmp = `${path}.tmp-${process.pid}-${randomBytes(4).toString('hex')}`;
-    try {
-      const handle = await open(tmp, 'wx', 0o600);
-      try { await handle.writeFile(body); await handle.sync(); } finally { await handle.close(); }
-      try { await copyFile(path, `${path}.bak`); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-      await rename(tmp, path);
-    } catch (error) {
-      await rm(tmp, { force: true }).catch(() => {});
-      if (error instanceof OriginError) throw error;
-      fail('The prompt could not be saved. Check free disk space and folder permissions. Nothing was changed.', 'PROMPTS_WRITE_FAILED', 500);
-    }
+    try { await writeAtomic(path, body); } catch { fail('The prompt could not be saved. Check free disk space and folder permissions. Nothing was changed.', 'PROMPTS_WRITE_FAILED', 500); }
   }
   /** Every prompt of a project, from each of its IDs (a project linked across different IDs keeps all of them). */
   list(ids) { return this.#serial(async () => (await Promise.all(ids.map(id => this.#load(id)))).flatMap(data => data.prompts.map(prompt => ({ ...prompt, storedUnder: data.projectId })))); }

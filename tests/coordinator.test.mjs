@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
@@ -21,7 +21,8 @@ async function world(t) {
   const runner = async call => { calls.push(call); return { text: `Checkout is in progress [T${card.number}] and the agent failed once [run:${(await board.state()).runs[0]?.id.slice(0, 8) || 'none0000'}]. Unknown [T999].` }; };
   return { dataDir, board, project, other, card, second, foreign, calls, runner, coordinator: new Coordinator({ dataDir, board }) };
 }
-const index = async (dataDir, id) => JSON.parse(gunzipSync(await readFile(join(dataDir, 'coordinator', `${id.replace(/[A-Z_]/g, c => `_${c === '_' ? '_' : c.toLowerCase()}`)}.json.gz`))).toString('utf8'));
+const file = (dataDir, id) => join(dataDir, 'coordinator', `${id.replace(/[A-Z_]/g, c => `_${c === '_' ? '_' : c.toLowerCase()}`)}.json.gz`);
+const index = async (dataDir, id) => JSON.parse(gunzipSync(await readFile(file(dataDir, id))).toString('utf8'));
 
 test('the index keeps references and facts, not card specifications, and never calls a model on its own', async t => {
   const { dataDir, board, project, card, calls, coordinator } = await world(t);
@@ -85,4 +86,11 @@ test('chat is read-only, scoped, cached and isolated per project', async t => {
   assert.equal((await coordinator.view(other.id)).chat.length, 0);
   // Design questions add Origin names only when asked.
   assert.equal(calls[1].prompt.includes('Origin'), false);
+});
+
+test('an index that exists but cannot be read is reported as such, never replaced by empty knowledge', async t => {
+  const { dataDir, project, coordinator } = await world(t);
+  await mkdir(file(dataDir, project.id), { recursive: true });
+  await assert.rejects(coordinator.view(project.id), error => error.code !== 'COORDINATOR_WRITE_FAILED');
+  assert.ok((await stat(file(dataDir, project.id))).isDirectory());
 });

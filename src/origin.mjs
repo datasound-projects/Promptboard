@@ -11,9 +11,10 @@
  */
 import '../public/origin-model.js';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { copyFile, mkdir, open, readdir, readFile, rename, rm } from 'node:fs/promises';
+import { mkdir, open, readdir, readFile, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { redactLocal } from './compose-local.mjs';
+import { serial, writeAtomic } from './durable.mjs';
 
 const Model = globalThis.PromptboardOriginModel;
 export const ORIGIN_DIR = 'origin';
@@ -58,14 +59,14 @@ export class OriginStore {
   constructor(dataDir, { kanbanProjects = async () => [] } = {}) {
     this.dir = join(dataDir, ORIGIN_DIR);
     this.kanbanProjects = kanbanProjects;
-    this.queue = Promise.resolve();
+    this.queue = serial();
     this.ready = null;
     this.recoveries = new Map(); // A restore found while listing is reported when the project is opened.
   }
 
   // ponytail: one queue for all Origin files; per-project queues if saves ever contend.
   #serial(work) {
-    const run = async () => {
+    return this.queue(async () => {
       this.ready ??= (async () => {
         await mkdir(this.dir, { recursive: true, mode: 0o700 });
         // Temporary files from an interrupted write are never valid files.
@@ -74,25 +75,11 @@ export class OriginStore {
       })().catch(error => { this.ready = null; throw error; });
       await this.ready;
       return work();
-    };
-    const next = this.queue.then(run, run);
-    this.queue = next.catch(() => {});
-    return next;
+    });
   }
 
   async #atomic(path, data, failure) {
-    const tmp = `${path}.tmp-${process.pid}-${randomBytes(4).toString('hex')}`;
-    try {
-      const handle = await open(tmp, 'wx', 0o600);
-      try { await handle.writeFile(`${JSON.stringify(data, null, 1)}\n`); await handle.sync(); }
-      finally { await handle.close(); }
-      try { await copyFile(path, `${path}.bak`); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-      await rename(tmp, path);
-    } catch {
-      await rm(tmp, { force: true }).catch(() => {});
-      throw new OriginError(failure, 'ORIGIN_WRITE_FAILED', 500);
-    }
-    try { const dir = await open(this.dir, 'r'); try { await dir.sync(); } finally { await dir.close(); } } catch {}
+    try { await writeAtomic(path, `${JSON.stringify(data, null, 1)}\n`); } catch { throw new OriginError(failure, 'ORIGIN_WRITE_FAILED', 500); }
   }
 
   // ---- Version 1 → 2, once ----

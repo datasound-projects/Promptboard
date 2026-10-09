@@ -9,10 +9,11 @@
  * leaves either the previous document or the new one, never text that disagrees with its metadata.
  */
 import '../public/origin-model.js';
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { copyFile, mkdir, open, readdir, readFile, rename, rm, stat } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdir, readdir, readFile, rename, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { redactLocal } from './compose-local.mjs';
+import { serial, writeAtomic } from './durable.mjs';
 import { ORIGIN_DIR, OriginError, escapeId } from './origin.mjs';
 import { listTargets } from './base.mjs';
 
@@ -389,9 +390,9 @@ export const documentView = meta => meta && ({ id: meta.id, originId: meta.origi
 
 /** One active Project Context per Origin project, with its generated versions. Separate from the blueprint file. */
 export class ContextStore {
-  constructor(dataDir) { this.dir = join(dataDir, ORIGIN_DIR, 'context'); this.queue = Promise.resolve(); }
+  constructor(dataDir) { this.dir = join(dataDir, ORIGIN_DIR, 'context'); }
   // ponytail: one queue for all documents; per-project queues if saves ever contend.
-  #serial(work) { const next = this.queue.then(work, work); this.queue = next.catch(() => {}); return next; }
+  #serial = serial();
   #folder(originId) {
     if (typeof originId !== 'string' || !Model.ID.test(originId)) throw new OriginError('Choose a valid project.', 'INVALID_PROJECT');
     return join(this.dir, escapeId(originId));
@@ -411,40 +412,25 @@ export class ContextStore {
     if (text === null || sha256(text) !== hash) throw new OriginError('A Project Context file is missing or was changed outside Promptboard. Older versions are unaffected.', 'CONTEXT_DAMAGED', 500);
     return text;
   }
-  async #sync(folder) { try { const dir = await open(folder, 'r'); try { await dir.sync(); } finally { await dir.close(); } } catch {} }
   /** Content-addressed and immutable: a file is written once and never changed in place. */
   async #writeText(folder, text) {
     const hash = sha256(text), path = join(folder, `${hash}.md`);
     try { if ((await stat(path)).size === Buffer.byteLength(text)) return hash; } catch {}
-    const tmp = `${path}.tmp-${process.pid}-${randomBytes(4).toString('hex')}`;
-    try {
-      const handle = await open(tmp, 'wx', 0o600);
-      try { await handle.writeFile(text); await handle.sync(); } finally { await handle.close(); }
-      await rename(tmp, path);
-    } catch {
-      await rm(tmp, { force: true }).catch(() => {});
-      throw new OriginError('The Project Context could not be saved. Check free disk space and folder permissions. The previous version is unchanged.', 'CONTEXT_WRITE_FAILED', 500);
-    }
+    await this.#write(path, text, { backup: false });
     return hash;
   }
-  async #writeMeta(folder, meta) {
-    const path = join(folder, META), tmp = `${path}.tmp-${process.pid}-${randomBytes(4).toString('hex')}`;
-    try {
-      const handle = await open(tmp, 'wx', 0o600);
-      try { await handle.writeFile(`${JSON.stringify(meta, null, 1)}\n`); await handle.sync(); } finally { await handle.close(); }
-      try { await copyFile(path, `${path}.bak`); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-      await rename(tmp, path);
-    } catch {
-      await rm(tmp, { force: true }).catch(() => {});
-      throw new OriginError('The Project Context could not be saved. Check free disk space and folder permissions. The previous version is unchanged.', 'CONTEXT_WRITE_FAILED', 500);
-    }
-    await this.#sync(folder);
+  async #write(path, text, options) {
+    try { await writeAtomic(path, text, options); }
+    catch { throw new OriginError('The Project Context could not be saved. Check free disk space and folder permissions. The previous version is unchanged.', 'CONTEXT_WRITE_FAILED', 500); }
   }
+  #writeMeta(folder, meta) { return this.#write(join(folder, META), `${JSON.stringify(meta, null, 1)}\n`); }
   /** Remove text files that neither the current nor the backup metadata uses, and leftover temporary files. */
   async #collect(folder) {
     const keep = new Set();
     for (const name of [META, `${META}.bak`]) {
-      try { for (const version of JSON.parse(await readFile(join(folder, name), 'utf8')).versions || []) keep.add(version.baselineHash).add(version.textHash); } catch {}
+      // A file that exists but cannot be read may still name text in use: then nothing is removed.
+      let text; try { text = await readFile(join(folder, name), 'utf8'); } catch (error) { if (error.code === 'ENOENT') continue; return; }
+      try { for (const version of JSON.parse(text).versions || []) keep.add(version.baselineHash).add(version.textHash); } catch {}
     }
     for (const name of await readdir(folder)) {
       if ((HASH_FILE.test(name) && !keep.has(name.slice(0, 64))) || name.includes('.tmp-')) await rm(join(folder, name), { force: true }).catch(() => {});

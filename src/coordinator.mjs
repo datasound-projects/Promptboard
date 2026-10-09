@@ -14,12 +14,13 @@
  * [T12], [run:…] or [commit:…]. The same question on the same evidence is answered from the cache.
  */
 import '../public/origin-model.js';
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { copyFile, mkdir, mkdtemp, open, readFile, rename, rm } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { buildTimeline } from './timeline.mjs';
+import { readWithBackup, serial, writeAtomic } from './durable.mjs';
 import { escapeId } from './origin.mjs';
 
 const Model = globalThis.PromptboardOriginModel;
@@ -36,33 +37,25 @@ export class CoordinatorError extends Error { constructor(message, code, status 
 export class Coordinator {
   constructor({ dataDir, board, origin = null }) {
     this.dir = join(dataDir, 'coordinator'); this.board = board; this.origin = origin;
-    this.queue = Promise.resolve(); this.checked = new Map(); this.asking = new Set();
+    this.checked = new Map(); this.asking = new Set();
   }
   // ponytail: one queue for every project's Coordinator files; per-project queues if they ever contend.
-  #serial(work) { const next = this.queue.then(work, work); this.queue = next.catch(() => {}); return next; }
+  #serial = serial();
   #path(projectId, kind = 'index') { if (!ID.test(projectId)) throw new CoordinatorError('Choose a valid project.', 'INVALID_PROJECT'); return join(this.dir, `${escapeId(projectId)}${kind === 'chat' ? '.chat' : ''}.json.gz`); }
   async #load(projectId, kind = 'index') {
     const fresh = kind === 'chat' ? { schema: CHAT_SCHEMA, version: VERSION, projectId, messages: [], cache: [] }
       : { schema: SCHEMA, version: VERSION, projectId, enabled: true, createdAt: Date.now(), updatedAt: null, boardRevision: null, tasks: {}, events: [], snapshots: [] };
-    for (const path of [this.#path(projectId, kind), `${this.#path(projectId, kind)}.bak`]) {
-      let data; try { data = JSON.parse(gunzipSync(await readFile(path)).toString('utf8')); } catch { continue; }
+    const path = this.#path(projectId, kind);
+    return await readWithBackup([path, `${path}.bak`], bytes => {
+      let data; try { data = JSON.parse(gunzipSync(bytes).toString('utf8')); } catch { return; }
       if (data?.schema === fresh.schema && data.version > VERSION) throw new CoordinatorError('This Coordinator data was saved by a newer Promptboard version. Update the app; nothing was changed.', 'COORDINATOR_VERSION_UNSUPPORTED', 409);
       if (data?.schema === fresh.schema && data.version === VERSION && data.projectId === projectId) return data;
-    }
-    return fresh;
+    }) ?? fresh;
   }
   async #save(data, kind = 'index') {
-    const path = this.#path(data.projectId, kind), tmp = `${path}.tmp-${process.pid}-${randomBytes(4).toString('hex')}`;
     await mkdir(this.dir, { recursive: true, mode: 0o700 });
-    try {
-      const handle = await open(tmp, 'wx', 0o600);
-      try { await handle.writeFile(gzipSync(JSON.stringify(data))); await handle.sync(); } finally { await handle.close(); }
-      try { await copyFile(path, `${path}.bak`); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-      await rename(tmp, path);
-    } catch (error) {
-      await rm(tmp, { force: true }).catch(() => {});
-      throw new CoordinatorError('Coordinator data could not be saved. Check free disk space. Project data is unchanged.', 'COORDINATOR_WRITE_FAILED', 500);
-    }
+    try { await writeAtomic(this.#path(data.projectId, kind), gzipSync(JSON.stringify(data))); }
+    catch { throw new CoordinatorError('Coordinator data could not be saved. Check free disk space. Project data is unchanged.', 'COORDINATOR_WRITE_FAILED', 500); }
   }
   async #project(projectId) {
     const state = await this.board.state(), project = state.projects.find(item => item.id === projectId);

@@ -13,6 +13,7 @@ import { assignTaskNumbers, validateTaskNumbers } from './task-numbers.mjs';
 import { taskPriority } from './task-priority.mjs';
 import { taskLabels, taskLabelIds, labelRevision } from './task-labels.mjs';
 import { externalIssueSource } from './external-source.mjs';
+import { serial, writeAtomic } from './durable.mjs';
 
 export const STATE_SCHEMA = 'promptboard.state';
 export const STATE_VERSION = 13;
@@ -163,7 +164,7 @@ export class Store {
     this.path = join(dir, STATE_FILE);
     this.state = null;
     this.recovery = null; // Public note when the file had to be recovered.
-    this.queue = Promise.resolve();
+    this.queue = serial();
   }
 
   async #readFile(path) { return checkShape(JSON.parse(await readFile(path, 'utf8'))); }
@@ -217,17 +218,7 @@ export class Store {
     try { return await this.loading; } finally { this.loading = null; }
   }
 
-  async #write(state) {
-    const tmp = `${this.path}.tmp-${process.pid}-${randomBytes(4).toString('hex')}`;
-    try {
-      const handle = await open(tmp, 'wx', 0o600);
-      try { await handle.writeFile(`${JSON.stringify(state, null, 1)}\n`); await handle.sync(); }
-      finally { await handle.close(); }
-      try { await copyFile(this.path, `${this.path}.bak`); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-      await rename(tmp, this.path);
-    } catch (error) { await rm(tmp, { force: true }).catch(() => {}); throw error; }
-    try { const dir = await open(this.dir, 'r'); try { await dir.sync(); } finally { await dir.close(); } } catch {}
-  }
+  async #write(state) { await writeAtomic(this.path, `${JSON.stringify(state, null, 1)}\n`); }
 
   /** Current state. Treat it as read-only; change it only through update(). */
   async read() { return this.load(); }
@@ -247,8 +238,6 @@ export class Store {
       this.state = draft;
       return result;
     };
-    const next = this.queue.then(run, run);
-    this.queue = next.catch(() => {});
-    return next;
+    return this.queue(run);
   }
 }
