@@ -5214,9 +5214,10 @@ function pollLogin() {
   clearTimeout(pollLogin.timer);
   if (!['starting', 'waiting'].includes(github.login?.status)) return;
   pollLogin.timer = setTimeout(async () => {
-    try { github.login = (await githubCall('GET', '/api/github/login')).login; } catch { return; }
+    // One failed read must not end sign-in; polling stops only when the login reports an end.
+    try { github.login = (await githubCall('GET', '/api/github/login')).login; github.message = ''; } catch (error) { github.message = error.message; }
     renderGitHub();
-    if (github.login.status === 'done') checkGitHub(); else pollLogin();
+    if (github.login?.status === 'done') checkGitHub(); else pollLogin();
   }, 2000);
 }
 function renderGitHub() {

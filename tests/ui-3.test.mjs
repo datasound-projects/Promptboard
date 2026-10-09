@@ -903,3 +903,25 @@ test('board refreshes keep keyboard focus on the Autopilot bar and on a column a
   await win.__pbTest.loadBoard(); await ctx.idle();
   assert.equal(win.document.activeElement.id, 'column-agent-executing', 'the rebuilt column header gets focus back');
 });
+
+test('GitHub sign-in keeps polling after a failed read and stops quietly when no login is reported', async t => {
+  const ctx = await setup(t);
+  const { $, win } = ctx;
+  const original = win.fetch, json = (body, status = 200) => Promise.resolve(Response.json(body, { status }));
+  let reads = 0;
+  win.fetch = (url, options = {}) => {
+    if (url === '/api/github/status') return json({ github: { installed: true, state: 'not_connected' }, login: null });
+    if (url === '/api/github/login' && options.method === 'POST') return json({ login: { status: 'waiting', code: 'ABCD-1234', url: 'https://github.com/login/device' } });
+    if (url === '/api/github/login') return ++reads === 1 ? json({ error: 'The app is not responding.' }, 503) : json({});
+    return original(url, options);
+  };
+  $('#app-settings-open').click();
+  await until(() => byText($('#set-github-group'), 'Connect GitHub'), 'connect button');
+  byText($('#set-github-group'), 'Connect GitHub').click();
+  await until(() => /ABCD-1234/.test($('#set-github-group').textContent), 'one-time code');
+  await until(() => reads === 1 && /The app is not responding\./.test($('#set-github-group').textContent), 'failed read shown');
+  await until(() => reads === 2, 'polling continues after the failure');
+  await new Promise(resolve => setTimeout(resolve, 2500));
+  assert.equal(reads, 2, 'a reply without a login ends polling');
+  assert.ok(byText($('#set-github-group'), 'Connect GitHub'), 'sign-in can start again');
+});
