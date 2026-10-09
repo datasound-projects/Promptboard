@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { Board } from '../src/board.mjs';
 import { Coordinator } from '../src/coordinator.mjs';
+import { OriginStore } from '../src/origin.mjs';
 
 async function temp(t) { const dir = await mkdtemp(join(tmpdir(), 'pb-coordinator-test-')); t.after(() => rm(dir, { recursive: true, force: true })); return dir; }
 const SECRET_SPEC = 'Exact engineered card specification that must never be copied into the index.';
@@ -93,4 +94,30 @@ test('an index that exists but cannot be read is reported as such, never replace
   await mkdir(file(dataDir, project.id), { recursive: true });
   await assert.rejects(coordinator.view(project.id), error => error.code !== 'COORDINATOR_WRITE_FAILED');
   assert.ok((await stat(file(dataDir, project.id))).isDirectory());
+});
+
+test('a deleted card, an unknown project, another board’s design and a reused board ID never leak in', async t => {
+  const { dataDir, board, project, other, card, calls, runner } = await world(t);
+  const origin = new OriginStore(dataDir), coordinator = new Coordinator({ dataDir, board, origin });
+  // An agent run whose card was deleted (runs are kept) is a clear "not found", not a crash.
+  await board.store.update(draft => { draft.runs.push({ id: 'run-cccc3333', taskId: 'deleted-card', projectId: project.id, stage: 'executing', status: 'failed', createdAt: Date.now(), config: { provider: 'codex' } }); });
+  await assert.rejects(coordinator.ask(project.id, { question: 'What happened?', scope: { kind: 'agent', id: 'run-cccc3333' }, provider: 'codex' }, { runner }), { code: 'NOT_FOUND', status: 404 });
+  // Turning a project that does not exist on or off writes nothing.
+  await assert.rejects(coordinator.setEnabled('no-such-project', false), { code: 'NOT_FOUND' });
+  assert.equal((await readdir(join(dataDir, 'coordinator')).catch(() => [])).some(name => name.startsWith('no-such')), false);
+  // An Origin project with this board's ID that is linked to another board is that board's design.
+  await origin.create({ name: 'Blog design', id: project.id, kanbanProjectId: other.id });
+  await coordinator.ask(project.id, { question: 'Which design decision applies?', provider: 'codex' }, { runner });
+  assert.match(calls.at(-1).prompt, /this project has no Origin blueprint/); assert.equal(calls.at(-1).prompt.includes('Blog design'), false);
+  await coordinator.ask(other.id, { question: 'Which design decision applies?', provider: 'codex' }, { runner });
+  assert.match(calls.at(-1).prompt, /Origin blueprint “Blog design”/);
+  // A new board that reuses a deleted board's ID starts with its own knowledge and chat.
+  assert.ok((await coordinator.view(project.id)).chat.length > 0);
+  await board.store.update(draft => { draft.runs = draft.runs.filter(run => run.projectId !== project.id); });
+  await board.deleteProject(project.id, { expectedRevision: (await board.state()).projects.find(entry => entry.id === project.id).revision });
+  await new Promise(resolve => setTimeout(resolve, 5));
+  const reborn = await board.createProject({ name: 'New shop', workflowMode: 'pipeline', id: project.id });
+  const fresh = await coordinator.view(project.id);
+  assert.equal(fresh.chat.length, 0); assert.equal(fresh.recent.some(event => event.task === card.id), false);
+  assert.ok(fresh.knowledge.since >= reborn.createdAt);
 });

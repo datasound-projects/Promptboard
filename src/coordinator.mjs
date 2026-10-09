@@ -2,7 +2,7 @@
  * Coordinator: a persistent, read-only observer for one project. Kanban cards stay the single source of
  * truth for task execution; the Coordinator never copies their prompts, Compose history or agent logs.
  *
- * Knowledge: a compact index per project in <dataDir>/coordinator/<project>.json.gz holding references and
+ * Knowledge: a compact index per project in <dataDir>/coordinator/<escaped id>.json.gz (chat: .chat.json.gz) holding references and
  * small facts (card number, column, branch, saved-prompt and Origin links, run status, review and test
  * results, commit IDs) plus the project's timeline events, de-duplicated by their stable IDs and kept with
  * their original timestamps. It is updated deterministically from existing board, timeline and Git data,
@@ -20,8 +20,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { buildTimeline } from './timeline.mjs';
+import { COLUMNS } from './board.mjs';
 import { readWithBackup, serial, writeAtomic } from './durable.mjs';
 import { escapeId } from './origin.mjs';
+import { listProjects } from './projects.mjs';
 
 const Model = globalThis.PromptboardOriginModel;
 const SCHEMA = 'promptboard.coordinator', CHAT_SCHEMA = 'promptboard.coordinator-chat', VERSION = 1;
@@ -42,14 +44,19 @@ export class Coordinator {
   // ponytail: one queue for every project's Coordinator files; per-project queues if they ever contend.
   #serial = serial();
   #path(projectId, kind = 'index') { if (!ID.test(projectId)) throw new CoordinatorError('Choose a valid project.', 'INVALID_PROJECT'); return join(this.dir, `${escapeId(projectId)}${kind === 'chat' ? '.chat' : ''}.json.gz`); }
+  /**
+   * The project's index or chat. The project must exist, so nothing is ever saved for an unknown ID. Files
+   * started before the board was created belong to an earlier board with this ID (deleted, then the ID was
+   * reused) and are not used; older chats without `createdAt` are dated by their first message.
+   */
   async #load(projectId, kind = 'index') {
-    const fresh = kind === 'chat' ? { schema: CHAT_SCHEMA, version: VERSION, projectId, messages: [], cache: [] }
+    const path = this.#path(projectId, kind), { project } = await this.#project(projectId);
+    const fresh = kind === 'chat' ? { schema: CHAT_SCHEMA, version: VERSION, projectId, createdAt: Date.now(), messages: [], cache: [] }
       : { schema: SCHEMA, version: VERSION, projectId, enabled: true, createdAt: Date.now(), updatedAt: null, boardRevision: null, tasks: {}, events: [], snapshots: [] };
-    const path = this.#path(projectId, kind);
     return await readWithBackup([path, `${path}.bak`], bytes => {
       let data; try { data = JSON.parse(gunzipSync(bytes).toString('utf8')); } catch { return; }
       if (data?.schema === fresh.schema && data.version > VERSION) throw new CoordinatorError('This Coordinator data was saved by a newer Promptboard version. Update the app; nothing was changed.', 'COORDINATOR_VERSION_UNSUPPORTED', 409);
-      if (data?.schema === fresh.schema && data.version === VERSION && data.projectId === projectId) return data;
+      if (data?.schema === fresh.schema && data.version === VERSION && data.projectId === projectId && !((data.createdAt ?? data.messages?.[0]?.at) < project.createdAt)) return data;
     }) ?? fresh;
   }
   async #save(data, kind = 'index') {
@@ -179,7 +186,7 @@ export class Coordinator {
       }
     };
     if (scope.kind === 'task') { const task = byId.get(scope.id) || fail('Choose a card of this project.', 'NOT_FOUND', 404); lines.push('Question scope: one card.'); await detail(task); }
-    else if (scope.kind === 'agent') { const run = runs.find(item => item.id === scope.id) || fail('Choose an agent run of this project.', 'NOT_FOUND', 404); lines.push('Question scope: one agent run.'); await detail(byId.get(run.taskId)); }
+    else if (scope.kind === 'agent') { const run = runs.find(item => item.id === scope.id) || fail('Choose an agent run of this project.', 'NOT_FOUND', 404); lines.push('Question scope: one agent run.'); await detail(byId.get(run.taskId) || fail('This agent run’s card was deleted. Ask about the project instead.', 'NOT_FOUND', 404)); }
     else if (scope.kind === 'branch') {
       const tasks = project.tasks.filter(task => task.workspace?.branch === scope.id);
       if (!tasks.length) fail('Choose a task branch of this project.', 'NOT_FOUND', 404);
@@ -201,8 +208,8 @@ export class Coordinator {
   }
   async #origin(project) {
     if (!this.origin) return [];
-    const records = await this.origin.list().catch(() => []);
-    const found = records.find(entry => entry.kanbanProjectId === project.id || entry.id === project.id);
+    // This board's Origin project as the shared project list resolves it, never another board's design.
+    const found = (await listProjects({ origin: this.origin, board: this.board }).catch(() => [])).find(entry => entry.kanban?.id === project.id)?.origin;
     const record = found && await this.origin.read(found.id, { report: false }).catch(() => null);
     if (!record?.blueprint) return ['Origin: this project has no Origin blueprint.'];
     const bp = record.blueprint, name = (collection, id) => Model.itemName(bp, collection, id);
@@ -224,8 +231,8 @@ function scopeOf(value) {
 }
 function columnsOf(project) {
   return project.workflowMode === 'pipeline' ? project.pipeline.columns.map(column => ({ id: column.id, name: column.name, role: column.role }))
-    : [...new Set(['todo', 'planning', 'executing', 'code_review', 'testing', 'merge', 'done', ...(project.columnLayout || []).map(column => column.id)])]
-      .map(id => ({ id, name: (project.columnLayout || []).find(column => column.id === id)?.title || { todo: 'To Do', planning: 'Planning', executing: 'Executing', code_review: 'Code Review', testing: 'Testing', merge: 'Merge', done: 'Done' }[id] || id, role: id === 'todo' ? 'todo' : id === 'done' ? 'done' : 'active' }));
+    : [...new Set([...COLUMNS, ...(project.columnLayout || [])].map(column => column.id))]
+      .map(id => ({ id, name: (project.columnLayout || []).find(column => column.id === id)?.title || COLUMNS.find(column => column.id === id)?.title || id, role: id === 'todo' ? 'todo' : id === 'done' ? 'done' : 'active' }));
 }
 /** Small facts and references for one card; never its prompt or logs. */
 function taskFacts(task, columns, runs) {

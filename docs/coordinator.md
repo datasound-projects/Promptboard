@@ -10,7 +10,7 @@ The Coordinator is a read-only observer for one project. It sits above the Kanba
 
 ## Project knowledge
 
-- One compact file per project, `<data folder>/coordinator/<project>.json.gz` (gzip-compressed JSON, replaced atomically, previous copy kept). It holds references and small facts:
+- Two compact files per project in `<data folder>/coordinator/`: the knowledge index `<project id>.json.gz` and the chat `<project id>.chat.json.gz` (gzip-compressed JSON, replaced atomically, each with its previous copy as `.bak`). In file names, capital letters and `_` in the ID are written as `_` plus the lowercase letter (`_` becomes `__`), so IDs that differ only in case never share a file. A board that reuses a deleted board's ID starts with empty knowledge and chat. The index holds references and small facts:
   - card number, title and column
   - state of its agent
   - branch
