@@ -6,6 +6,7 @@ import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Board } from '../src/board.mjs';
+import { buildTimeline } from '../src/timeline.mjs';
 
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } }).trim();
 async function temp(t, prefix) { const dir = await realpath(await mkdtemp(join(tmpdir(), prefix))); t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })); return dir; }
@@ -63,4 +64,10 @@ test('the timeline shows only recorded events of one project, in time order, wit
   await assert.rejects(board.deleteTimelineNote(project.id, note.id), { code: 'NOT_FOUND' });
   // A project without history has no invented events.
   assert.deepEqual(await board.timeline(other.id).then(list => list.map(event => event.kind)), ['created']);
+});
+
+test('a move into Done by automation is a move; a completion move is described by its completion event only', async () => {
+  const transitions = [{ at: 5, from: 'executing', to: 'done', by: 'automation' }, { at: 6, from: 'done', to: 'todo', by: 'reopen' }, { at: 7, from: 'testing', to: 'done', by: 'unmerged' }];
+  const events = await buildTimeline({ tasks: [{ id: 't1', title: 'T', createdAt: 1, transitions, completion: { kind: 'unmerged', at: 7 } }] }, []);
+  assert.deepEqual(events.map(event => `${event.kind}:${event.stage}`), ['created:todo', 'moved:done', 'moved:todo', 'completed:done']);
 });

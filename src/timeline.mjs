@@ -8,6 +8,7 @@ import { git } from './git.mjs';
 const COMMITS_PER_TASK = 30;
 const TASKS_WITH_GIT = 60; // ponytail: Git is read for the 60 most recently changed tasks; page older ones if boards grow.
 const SHA = /^[0-9a-f]{7,64}$/;
+const COMPLETION_KINDS = new Set(['merged', 'pull_request', 'no_changes', 'unmerged']);
 
 async function commits(root, range) {
   const out = await git(['log', '--no-merges', `-n${COMMITS_PER_TASK}`, '--format=%H%x1f%at%x1f%s', range, '--'], { cwd: root, timeoutMs: 10000 }).catch(() => '');
@@ -34,7 +35,7 @@ export async function buildTimeline(project, runs) {
     const base = { taskId: task.id, taskTitle: task.title };
     add({ ...base, id: `created:${task.id}`, at: task.createdAt, kind: 'created', stage: 'todo', title: 'Task created', detail: task.source ? 'From Compose' : 'Written by you' });
     for (const [index, move] of (task.transitions || []).entries()) {
-      if (move.to === 'done' && move.by !== 'user') continue; // The completion event below describes it.
+      if (COMPLETION_KINDS.has(move.by)) continue; // completeTask records its move; the completion event below describes it.
       add({ ...base, id: `move:${task.id}:${index}`, at: move.at, kind: 'moved', stage: move.to, title: `Moved to ${move.to}`, detail: `From ${move.from}`, from: move.from });
     }
     const evidence = task.evidence || {};
