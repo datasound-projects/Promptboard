@@ -639,7 +639,11 @@ export class Supervisor {
         // A receipt proves input only. Completion still requires the independently
         // observed main Stop, never queue acceptance or transport success.
         try {
-          await bounded(() => this.board.updateRun(runId, { turnComplete: Boolean(session.activity?.parentComplete) }));
+          // The delivered message started a new turn. Codex has no hook to say so, so leave "finished, waiting for
+          // you" here, as Enter typed in the terminal does, unless the CLI is already asking a question.
+          const complete = Boolean(session.activity?.parentComplete), working = !complete && session.status === 'waiting_for_input' && !session.activity?.permission;
+          await bounded(() => this.board.updateRun(runId, { turnComplete: complete, ...(working ? { status: 'running', waitingReason: '' } : {}) }));
+          if (working) { session.status = 'running'; this.#push(session, { status: 'running' }); }
           await bounded(() => this.#publishActivity(session));
         } catch {
           session.messageInputUncertain = true; session.activity.uncertain = true;
