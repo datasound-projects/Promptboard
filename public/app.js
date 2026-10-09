@@ -317,7 +317,7 @@ async function loadProviders() {
     await loadModels({ model: chosenModel(), effort: $('#effort').value });
   } catch (error) {
     token = '';
-    browserNotifications?.stop();
+    browserNotifications?.stop('The local server is unavailable. Restart the app, then reconnect.');
     $('#cli-status-label').textContent = 'Server unavailable';
     $('#provider-note').textContent = 'Could not reach the local server. Restart the app, then reload this page.';
     $('#generate-button').disabled = true;

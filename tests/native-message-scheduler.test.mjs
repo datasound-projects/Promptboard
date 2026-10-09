@@ -259,7 +259,7 @@ test('long queued startup and busy readiness waits preserve the later native del
   assert.equal((await w.scheduler.schedule(w.request(), { timeoutMs: 300, waitForReadiness: true })).scheduled, true);
   await new Promise(resolve => setTimeout(resolve, 500));
   assert.equal((await w.receipt()).status, 'queued'); assert.deepEqual(w.writes, []); assert.equal(readinessReads, 0);
-  w.activate(); await new Promise(resolve => setTimeout(resolve, 500));
+  w.activate(); for (const end = Date.now() + 5000; !readinessReads && Date.now() < end;) await new Promise(resolve => setTimeout(resolve, 10));
   assert.ok(readinessReads > 0); assert.equal((await w.receipt()).status, 'queued'); assert.deepEqual(w.writes, []);
   ready = true;
   assert.equal((await w.scheduler.wait(w.key, w.request().actionId)).confirmed, true);
@@ -275,7 +275,7 @@ test('Stop cancels a readiness wait without a native grant, input or replacement
   const w = await fixture(t); let reads = 0;
   w.supervisor.nativeMessageReadiness = async () => { reads++; return 'waiting'; };
   assert.equal((await w.scheduler.schedule(w.request(), { waitForReadiness: true })).scheduled, true);
-  while (!reads) await new Promise(resolve => setTimeout(resolve, 5));
+  for (const end = Date.now() + 5000; !reads && Date.now() < end;) await new Promise(resolve => setTimeout(resolve, 5));
   assert.equal(w.scheduler.cancel(w.key, w.request().actionId), true);
   assert.equal((await w.scheduler.wait(w.key, w.request().actionId)).status, 'cancelled');
   assert.equal((await w.receipt()).status, 'cancelled'); assert.deepEqual(w.writes, []); assert.equal(w.run.status, 'running');
@@ -330,7 +330,7 @@ test('a Base registry change during readiness waiting ends the captured queue wi
   const w = await fixture(t); let reads = 0;
   w.supervisor.nativeMessageReadiness = async () => { reads++; return 'waiting'; };
   assert.equal((await w.scheduler.schedule(w.request(), { waitForReadiness: true })).scheduled, true);
-  while (!reads) await new Promise(resolve => setTimeout(resolve, 5));
+  for (const end = Date.now() + 5000; !reads && Date.now() < end;) await new Promise(resolve => setTimeout(resolve, 5));
   w.state.base.revision++;
   assert.equal((await w.scheduler.wait(w.key, w.request().actionId)).confirmed, false);
   assert.equal((await w.receipt()).status, 'unconfirmed'); assert.deepEqual(w.writes, []);

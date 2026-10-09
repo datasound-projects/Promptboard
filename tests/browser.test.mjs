@@ -338,7 +338,7 @@ test('terminal dock in a real browser: start, render, type, collapse, resize, se
 
   // Sustained output: a third agent prints about 4 MB while the board stays responsive.
   await browser.eval(`[...document.querySelectorAll('.kanban-card')].find(card => card.textContent.includes('Flood task')).querySelector('.kanban-start').click();`);
-  const floodRun = await (async () => { for (;;) { const run = (await board.view()).runs.find(item => item.taskId === flood.id); if (run) return run.id; await new Promise(r => setTimeout(r, 50)); } })();
+  const floodRun = await (async () => { for (const end = Date.now() + 30000; Date.now() < end;) { const run = (await board.view()).runs.find(item => item.taskId === flood.id); if (run) return run.id; await new Promise(r => setTimeout(r, 50)); } throw new Error('The flood run never started.'); })();
   // Measure while output streams, after the terminal exists: creating a WebGL context is a one-off
   // cost that takes seconds under the software renderer headless Chrome uses without a GPU.
   await browser.until(`${text(floodRun)}.includes('flood line')`, 'flood output started', 60000);
