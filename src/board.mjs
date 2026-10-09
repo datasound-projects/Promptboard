@@ -1596,6 +1596,7 @@ export class Board {
         const hasBase = pending.baseBinding || pending.baseColumns || pending.agentProfileId;
         if (hasBase && ((project.baseRevision || 0) !== (pending.baseTargetRevision || 0) || Object.values(project.baseColumns || {}).some(entry => entry.baseRevision))) throw conflict('Base settings were configured after import. Discard the imported selection to keep them.', 'BASE_TARGET_REVISION_CONFLICT');
         if (repository) {
+          if (project.tasks.some(task => task.workspace)) throw conflict('Tasks in this project have worktrees in the current repository. Remove them before you change the link.', 'WORKSPACES_EXIST');
           project.repository = { path: pending.repositoryPath, root: repository.root, commonDir: repository.commonDir, linkedWorktree: repository.linkedWorktree, validatedAt: Date.now() };
           const branch = repository.branches.find(item => item.name === pending.targetBranch);
           project.targetBranch = branch ? { name: branch.name, commit: branch.commit, root: repository.root, recordedAt: Date.now() } : null;

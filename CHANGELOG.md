@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Accepting imported settings no longer changes a project's repository while its tasks own worktrees in the current one (`WORKSPACES_EXIST`), the same rule as linking a repository.
 - Creating a project with a repository checks the project limit and a requested project ID before any folder or Git change, so a refused create no longer leaves a new `.git` in the chosen folder.
 - **Set up Git here** and new projects in an existing folder refuse a repository without commits whose index has staged files (`STAGED_FILES`, HTTP 400), instead of committing those files in the “empty” first commit.
 - Refuse to load a board whose `state.json` or backup cannot be read (permissions, I/O, open-file limit) with `STATE_READ_FAILED`, instead of treating it as damaged, renaming it and loading an older or empty board.

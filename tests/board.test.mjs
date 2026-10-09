@@ -387,6 +387,25 @@ test('import keeps execution inactive and waits for confirmation of paths and au
   await assert.rejects(board.importBackup(backup, { replace: true }), { code: 'WORKSPACES_EXIST' });
 });
 
+test('confirming an imported repository is refused while tasks own worktrees in the current one', { skip: process.platform === 'win32' }, async t => {
+  const { board } = await linkedBoard(t);
+  const other = new Board({ dataDir: await temp(t, 'pb-data-') });
+  await other.importBackup(await board.exportBackup());
+  let project = (await other.view()).projects[0];
+  const current = await repo(t);
+  project = (await other.linkRepository(project.id, { path: current, expectedRevision: project.revision })).project;
+  const task = await other.createTask({ projectId: project.id, title: 'Work', prompt: 'P' });
+  await other.ensureTaskWorktree(task.id);
+  project = (await other.view()).projects[0];
+  await assert.rejects(other.confirmImport(project.id, { accept: true, expectedRevision: project.revision }), { code: 'WORKSPACES_EXIST' });
+  project = (await other.view()).projects[0];
+  assert.equal(project.repository.root, current);
+  assert.ok(project.pendingImport, 'The imported settings still wait.');
+  // Discarding them changes no link and stays possible.
+  await other.confirmImport(project.id, { accept: false, expectedRevision: project.revision });
+  assert.equal((await other.view()).projects[0].repository.root, current);
+});
+
 test('board HTTP routes need the page token, resolve paths on the server, and never start agents', { skip: process.platform === 'win32' }, async t => {
   const dataDir = await temp(t, 'pb-data-');
   const root = await repo(t);
