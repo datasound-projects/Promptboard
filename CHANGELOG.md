@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix: browser task alerts keep working after 10,000 alerts in one server session; the receiver now remembers the newest 10,000 alert IDs instead of refusing every later alert.
 - Fix: an agent run whose preparation times out or is stopped now says so (`PREPARATION_TIMEOUT`, `PREPARATION_ABORTED`) instead of reporting an unrecognized CLI failure and suggesting to run the CLI in a terminal.
 - Fix: secret redaction in local Compose sources and Origin context now removes the credential after `Bearer` or `Basic` (for example `Authorization: Bearer …`), not just the scheme word.
 - Fix: a pipeline agent session that finishes more than 4,096 tool calls no longer becomes permanently uncertain (and never ready); only the newest finished tool IDs are remembered.
