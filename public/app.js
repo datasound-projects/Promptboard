@@ -2563,7 +2563,7 @@ function agentActivity(run) {
     if (activity.uncertain) return 'Activity tracking is incomplete. Check the terminal before continuing.';
     if (activity.phase === 'settling') return 'The agent finished its response; waiting for terminal output to settle…';
     if (activity.phase === 'ended') return 'The CLI reported that its session ended.';
-    if (activity.coverage === 'turns-only' && state === 'active') return 'Working… this CLI reports completed turns; tool activity and permission waits are visible in the terminal.';
+    if (activity.coverage === 'turns-only' && state === 'active') return 'Working… this CLI reports completed turns and its questions; tool activity is visible in the terminal.';
   }
   if (state === 'awaits_you') return run.waitingReason || (run.turnComplete ? 'Turn finished. Review the changes or continue in the terminal.' : 'Permission or input needed. Open the terminal.');
   if (state === 'on_hold') return 'Queued until an agent slot is free.';

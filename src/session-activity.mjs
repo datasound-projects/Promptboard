@@ -11,7 +11,7 @@ export class SessionActivity {
     this.toolNames = new Map(); // Outstanding identified tool -> its name.
     this.anonymousTools = new Map();
     this.permissionTools = new Map(); this.permissionScopes = new Map(); // Unidentified dialogs: scope -> tool names ('' unnamed).
-    this.parentComplete = false; this.permission = false; this.ended = false;
+    this.parentComplete = false; this.permission = false; this.ended = false; this.terminalAsks = false;
     this.uncertain = false; this.backgroundUnknown = false;
     this.background = 0; this.scheduled = 0; this.planApproval = null;
     this.lastEventAt = 0; this.lastOutputAt = 0;
@@ -22,6 +22,15 @@ export class SessionActivity {
   // The user can type before the CLI emits a new-turn hook. Invalidate the old
   // completed turn immediately, including partially entered prompt text.
   input(now = Date.now()) { this.parentComplete = false; this.lastEventAt = now; }
+
+  // Codex reports no permission hooks; its terminal title says "Action Required" while it waits for an answer.
+  terminalQuestion(open, now = Date.now()) {
+    if (this.terminalAsks === open) return false;
+    this.terminalAsks = open; this.lastEventAt = now;
+    if (open) this.parentComplete = false;
+    this.permission = Boolean(this.permissionTools.size || this.permissionScopes.size || this.terminalAsks);
+    return true;
+  }
 
   clearPermissionScope(scope) {
     this.permissionScopes.delete(scope);
@@ -129,7 +138,7 @@ export class SessionActivity {
       this.uncertain = true; this.tools.clear(); this.finishedTools.clear(); this.agents.clear(); this.anonymousTools.clear(); this.lifecycleTools.clear(); this.toolNames.clear();
       this.permissionTools.clear(); this.permissionScopes.clear();
     }
-    this.permission = Boolean(this.permissionTools.size || this.permissionScopes.size);
+    this.permission = Boolean(this.permissionTools.size || this.permissionScopes.size || this.terminalAsks);
   }
 
   snapshot(now = Date.now()) {

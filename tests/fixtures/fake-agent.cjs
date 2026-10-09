@@ -133,7 +133,10 @@ function turn(text) {
   emit('Stop', { last_assistant_message: review || (plan ? `PLAN\n1. Change the code.\nsaw ${text.length} chars` : 'Implemented the change.') });
   process.stdout.write('turn complete\r\n');
 }
-if (prompt.includes('ASK_PERMISSION')) {
+// Codex asks through its terminal title, not a hook; answering it continues the turn.
+let codexQuestion = prompt.includes('CODEX_QUESTION');
+if (codexQuestion) process.stdout.write('\x1b]0;[ ! ] Action Required | thread-1\x07Allow this command? (y)\r\n\x1b]0;[ . ] Action Required | thread-1\x07');
+else if (prompt.includes('ASK_PERMISSION')) {
   emit('PermissionRequest', { tool_name: 'Bash' });
   process.stdout.write('Allow Bash? (y/n)\r\n');
 }
@@ -146,6 +149,7 @@ process.stdin.on('data', chunk => {
   if (!/[\r\n]/.test(line)) return;
   const text = line.trim(); line = '';
   process.stdout.write(`you said: ${text}\r\n`);
+  if (codexQuestion) { codexQuestion = false; process.stdout.write('\x1b]0;\u280b thread-1\x07'); }
   if (text === 'quit') process.exit(0);
   turn(text === 'y' ? prompt : text);
 });

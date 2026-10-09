@@ -33,7 +33,9 @@ const PREPARATION_STOPPED = Object.freeze({
 // xterm answers queries and focus changes with no keystroke: CPR, DA1/DA2, DSR, DECRPM, window
 // and OSC colour reports, DECRQSS. Only modified F3 (ESC[1;<m>R) shares a shape with a CPR.
 // One navigation or choice key, as a person answers a CLI's selection dialog.
-const DIALOG_KEY = /^(?:\r|\n|\t|\x1b|\x1b\[Z|\x1b[[O][A-D]|[0-9]|[yn])$/i;
+const DIALOG_KEY = /^(?:\r|\n|\t|\x1b|\x1b\[Z|\x1b[[O][A-D]|[0-9]|[ynp])$/i;
+// Codex titles its terminal "[ ! ] Action Required | …" (blinking with "[ . ]") while it waits for an answer.
+const TERMINAL_TITLE = /\x1b\][02];([^\x07\x1b]*)(?:\x07|\x1b\\)/g, CODEX_ASKS = /^\[ [.!] \] Action Required\b/;
 // Mouse reports from a CLI that tracks the mouse (SGR, urxvt and X10 encodings): a click, wheel or motion types nothing.
 const MOUSE_REPORTS = /^(?:\x1b\[<\d+;\d+;\d+[Mm]|\x1b\[\d+;\d+;\d+M|\x1b\[M[\x20-\xff]{3})+$/;
 const TERMINAL_REPORTS = /^(?:\x1b\[(?:[?>]?[\d;]*c|\d*n|\??\d+;\d+R|[\d;]+t|\??\d+;\d+\$y|[IO])|\x1b\][\d;]+;[^\x07\x1b]*(?:\x07|\x1b\\)|\x1bP[^\x1b]*\x1b\\)+$/;
@@ -337,12 +339,24 @@ export class Supervisor {
   #output(session, data) {
     session.terminalInput?.observeOutput(data);
     session.activity?.output();
+    if (session.provider === 'codex') {
+      const title = [...data.matchAll(TERMINAL_TITLE)].at(-1)?.[1];
+      if (title !== undefined) this.#terminalQuestion(session, CODEX_ASKS.test(title)).catch(() => {});
+    }
     this.#push(session, { data });
     if (session.logBytes < LOG_BYTES) {
       const chunk = session.logBytes + Buffer.byteLength(data) > LOG_BYTES ? '\n[Promptboard: output log limit reached]\n' : data;
       session.logBytes += Buffer.byteLength(chunk);
       session.log.write(chunk);
     }
+  }
+
+  async #terminalQuestion(session, open) {
+    if (!session.proc || session.cancelled || session.suspending || session.launchFailed || !session.activity?.terminalQuestion(open)) return;
+    // Like a permission hook: the turn is not finished, and keys that answer the question start no draft.
+    if (open) await this.#setStatus(session, 'waiting_for_input', { waitingReason: 'Codex is asking for your answer in the terminal.', turnComplete: false });
+    else if (session.status === 'waiting_for_input') await this.#setStatus(session, 'running', { waitingReason: '' });
+    await this.#publishActivity(session);
   }
 
   async #readEvents(session) {
