@@ -26,6 +26,9 @@ const LOG_BYTES = 20 * 1024 * 1024; // Output log file cap per run.
 const INPUT_BYTES = 64 * 1024;
 const LINGER_MS = 30 * 60 * 1000; // Keep a finished session's output for reconnects.
 const ACTIVE = new Set(['queued', 'running', 'waiting_for_input']);
+// xterm answers queries and focus changes with no keystroke: CPR, DA1/DA2, DSR, DECRPM, window
+// and OSC colour reports, DECRQSS. Only modified F3 (ESC[1;<m>R) shares a shape with a CPR.
+const TERMINAL_REPORTS = /^(?:\x1b\[(?:[?>]?[\d;]*c|\d*n|\??\d+;\d+R|[\d;]+t|\??\d+;\d+\$y|[IO])|\x1b\][\d;]+;[^\x07\x1b]*(?:\x07|\x1b\\)|\x1bP[^\x1b]*\x1b\\)+$/;
 
 /** Load node-pty once. On macOS its prebuilt helper can lose the execute bit on install. */
 export async function loadPty(requireFrom = import.meta.url) {
@@ -554,6 +557,8 @@ export class Supervisor {
     if (typeof data !== 'string' || Buffer.byteLength(data) > INPUT_BYTES) throw new AgentError(`Send at most ${INPUT_BYTES / 1024} KiB of input at a time.`, 'INPUT_TOO_LARGE', 413);
     const session = this.#session(runId);
     if (session.suspending) throw new AgentError('The agent is being paused. Wait for it to exit before resuming.', 'SESSION_SUSPENDING', 409);
+    // A terminal report is not human input. Drop it during a native paste so it cannot land inside the message.
+    if (TERMINAL_REPORTS.test(data)) { if (!session.messageInputPending) session.proc.write(data); return; }
     if (data) {
       session.terminalInput?.manualInput(data);
       session.inputEpoch++; session.activity?.input();
@@ -863,6 +868,7 @@ export class Supervisor {
     const { write, onDrain, end } = handlers;
     let last = Number.isInteger(after) && after >= 0 ? after : 0;
     let paused = false;
+    const replayTo = session.seq; // Already-produced items: the page must not answer their old terminal queries.
     const subscriber = {
       flush() {
         if (paused) return;
@@ -871,7 +877,7 @@ export class Supervisor {
         for (const { item } of session.ring) {
           if (item.seq <= last) continue;
           last = item.seq;
-          if (!write(item)) { paused = true; onDrain(() => { paused = false; subscriber.flush(); }); return; }
+          if (!write(item.seq <= replayTo && item.data ? { ...item, replay: true } : item)) { paused = true; onDrain(() => { paused = false; subscriber.flush(); }); return; }
         }
       },
       end,

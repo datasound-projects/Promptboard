@@ -393,3 +393,23 @@ test('readiness cannot waive human draft, uncertain input, termination or proces
     assert.equal(w.session.inputEpoch, 0); assert.deepEqual(w.writes, []); assert.deepEqual(w.stages, []);
   }
 });
+
+test('xterm automatic reports reach the PTY without counting as human input, and replayed output is marked', async t => {
+  const w = await fixture(t), supervisor = new Supervisor({ dataDir: w.dir, board: {} });
+  Object.assign(w.session, { seq: 0, ring: [], ringBytes: 0, subscribers: new Set() });
+  supervisor.sessions.set(w.run.id, w.session);
+  const reports = ['\x1b[O', '\x1b[I', '\x1b[12;40R', '\x1b[?1;2c\x1b[>0;276;0c', '\x1b]11;rgb:1111/1111/1111\x1b\\', '\x1b[0n', '\x1b[?2004;1$y', '\x1b[8;32;120t', '\x1bP1$r0m\x1b\\'];
+  for (const data of reports) supervisor.input(w.run.id, data);
+  assert.deepEqual(w.writes, reports); assert.equal(w.session.inputEpoch, 0);
+  assert.equal(supervisor.nativeMessageReadiness(w.run.id), 'ready');
+  w.session.messageInputPending = true; supervisor.input(w.run.id, '\x1b[O'); w.session.messageInputPending = false;
+  assert.deepEqual(w.writes, reports, 'A report never lands inside a native paste.');
+  supervisor.input(w.run.id, 'x\x1b[O');
+  assert.equal(w.session.inputEpoch, 1); assert.equal(supervisor.nativeMessageReadiness(w.run.id), 'unavailable');
+  w.session.ring.push({ item: { seq: 1, data: '\x1b[6n' }, size: 4 }); w.session.seq = 1;
+  const items = [], unsubscribe = supervisor.subscribe(w.run.id, 0, { write: item => { items.push(item); return true; }, onDrain() {}, end() {} });
+  w.session.ring.push({ item: { seq: 2, data: 'live' }, size: 4 }); w.session.seq = 2;
+  for (const subscriber of w.session.subscribers) subscriber.flush();
+  unsubscribe();
+  assert.deepEqual(items, [{ seq: 1, data: '\x1b[6n', replay: true }, { seq: 2, data: 'live' }]);
+});

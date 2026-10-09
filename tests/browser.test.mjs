@@ -278,6 +278,12 @@ test('terminal dock in a real browser: start, render, type, collapse, resize, se
   await browser.type('hello');
   await browser.key('Enter');
   await browser.until(`${text(firstRun)}.includes('you said: hello')`, 'typed input echoed by the agent');
+  // xterm answers terminal queries itself: replies to replayed history never reach the agent; live ones do.
+  assert.deepEqual(await browser.eval(`const s = window.promptboardDock.sessions.get(${JSON.stringify(firstRun)}), sent = [], original = window.sendInput;
+    window.sendInput = (_session, data) => sent.push(data);
+    try { for (const replay of [true, false]) { handleItem(s, { data: '\\x1b[6n', replay }); await new Promise(resolve => s.term.write('', resolve)); } }
+    finally { window.sendInput = original; }
+    return sent.map(data => /^\\x1b\\[\\d+;\\d+R$/.test(data));`), [true]);
 
   // Collapse keeps the agent alive; restore refits and the output continues.
   await browser.eval(`document.querySelector('#dock-toggle').click();`);

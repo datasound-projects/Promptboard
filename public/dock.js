@@ -126,7 +126,8 @@ function attachRenderer(session) {
         dockNote('Terminal graphics were lost. Live output is shown as text; the agent keeps running.');
       });
       term.loadAddon(webgl);
-      term.onData(data => sendInput(session, data));
+      // xterm answers queries it parses; replies to replayed history are stale and never reach the agent.
+      term.onData(data => { if (!(session.replaying && data.startsWith('\x1b'))) sendInput(session, data); });
       Object.assign(session, { term, fit, write: (data, done) => term.write(data, done) });
       return;
     } catch {
@@ -159,10 +160,11 @@ function attachPlainRenderer(session, text = '') {
 
 function dockNote(message) { $('#dock-note').textContent = message; $('#dock-note').hidden = !message; }
 
-function write(session, data) {
+function write(session, data, replay = false) {
   // Client-side backpressure: stop reading while xterm has a large backlog to render.
   session.pending += data.length;
-  session.write(data, () => { session.pending = Math.max(0, session.pending - data.length); if (session.pending < 256 * 1024) session.drained?.(); });
+  if (replay) session.replaying = (session.replaying || 0) + 1;
+  session.write(data, () => { if (replay) session.replaying--; session.pending = Math.max(0, session.pending - data.length); if (session.pending < 256 * 1024) session.drained?.(); });
 }
 
 async function streamSession(session) {
@@ -222,7 +224,7 @@ function handleItem(session, item) {
   if (item.ping) return;
   if (item.gap) write(session, '\r\n[Promptboard: earlier output was dropped because the view fell behind]\r\n');
   if (Number.isInteger(item.seq)) session.lastSeq = item.seq;
-  if (typeof item.data === 'string') { session.lastOutputAt = Date.now(); write(session, item.data); renderDockConnection(session); }
+  if (typeof item.data === 'string') { session.lastOutputAt = Date.now(); write(session, item.data, item.replay === true); renderDockConnection(session); }
   if (item.usage && typeof item.usage === 'object') { session.run = { ...session.run, usage: item.usage }; if (dock.selected === session.runId) renderDockDetails(session); }
   if (item.activity && typeof item.activity === 'object') { session.run = { ...session.run, activity: item.activity }; updateSessionTab(session); updateDockIndicator(); scheduleBoardRefresh(); }
   if (item.status) { session.run = { ...session.run, status: item.status, waitingReason: item.reason || '' }; updateSessionTab(session); updateDockIndicator(); scheduleBoardRefresh(); }
