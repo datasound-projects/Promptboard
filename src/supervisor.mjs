@@ -17,7 +17,6 @@ import { addClaudeRecord, addCodexRecord, claudeTranscript, findCodexRollout, ne
 import { prepareBase } from './base-context.mjs';
 import { BaseDeliveryError, checkBaseRevocations } from './base-resolver.mjs';
 import { SessionActivity } from './session-activity.mjs';
-import { NativeMessageReceipts } from './native-message-receipts.mjs';
 import { TerminalInputObservation } from './terminal-input-observation.mjs';
 import { nativeMessageInputReadiness, sendOwnedNativeMessage } from './native-message-input.mjs';
 
@@ -46,7 +45,6 @@ export async function loadPty(requireFrom = import.meta.url) {
 }
 
 export class Supervisor {
-  #messageTickets = new WeakMap();
   #nativeMessageOwners = new WeakSet();
   constructor({ board, dataDir, ptyLoader = loadPty, resolver = resolveExecutable, nodePath = process.execPath, basePreparer = prepareBase }) {
     this.board = board;
@@ -498,7 +496,6 @@ export class Supervisor {
   #kill(session) {
     clearTimeout(session.pasteTimer); clearTimeout(session.pasteReadyTimer); clearTimeout(session.initialSubmitTimer);
     session.initialSubmitPending = false;
-    session.nativeReceiptReader?.close();
     session.terminalInput?.close();
     if (!session.proc) return;
     killPidGroup(session.proc.pid, 'SIGTERM');
@@ -510,7 +507,6 @@ export class Supervisor {
   async #exited(session, exitCode, signal) {
     session.exiting = true;
     clearTimeout(session.pasteReadyTimer); clearTimeout(session.initialSubmitTimer); session.initialSubmitPending = false;
-    session.nativeReceiptReader?.close();
     session.terminalInput?.close();
     clearInterval(session.poll); clearInterval(session.usagePoll); clearTimeout(session.pasteTimer); clearTimeout(session.watchdog);
     // Read the last lifecycle events (for example a final Stop) and usage before the session closes.
@@ -634,48 +630,6 @@ export class Supervisor {
       }
       return result;
     } finally { this.#nativeMessageOwners.delete(session); }
-  }
-
-  /** Internal read-only receipt custody; these opaque tickets are never HTTP data. */
-  async checkpointMessage(runId) {
-    const session = this.sessions.get(runId);
-    if (!session?.pipeline || !session.proc) return { status: 'unavailable', reason: 'session_unavailable' };
-    if (session.initialSubmitPending) return { status: 'unavailable', reason: 'initial_input_pending' };
-    try { await this.#readEvents(session); }
-    catch { return { status: 'unavailable', reason: 'events_unavailable' }; }
-    if (session.messageInputPending || session.messageInputUncertain || this.#nativeMessageOwners.has(session)) return { status: 'unavailable', reason: 'message_input_pending' };
-    const nativeId = session.nativeSessionId, proc = session.proc;
-    const epoch = () => !this.stopping && this.sessions.get(runId) === session && session.proc === proc && proc
-      && !session.cancelled && !session.suspending && !session.exiting && !session.failure && !session.launchFailed && !session.activity?.ended
-      && !session.activity?.uncertain && !session.eventsPending
-      && !session.initialSubmitPending && !session.initialInputUncertain
-      && session.nativeSessionId === nativeId ? session.inputEpoch : null;
-    if (epoch() === null || !nativeId || session.eventsPending || session.activity?.uncertain) return { status: 'unavailable', reason: 'session_unavailable' };
-    const path = session.nativeHistoryPath || (session.provider === 'codex' ? session.usage?.tail.path : null);
-    if (!path) return { status: 'unavailable', reason: 'history_unavailable' };
-    if (session.nativeReceiptReader?.nativeId !== nativeId) {
-      session.nativeReceiptReader?.close();
-      try { session.nativeReceiptReader = new NativeMessageReceipts({ provider: session.provider, nativeSessionId: nativeId, runId, getInputEpoch: epoch }); }
-      catch { return { status: 'unavailable', reason: 'session_unavailable' }; }
-    }
-    const reader = session.nativeReceiptReader, baseline = await reader.checkpoint(path);
-    if (baseline.status !== 'ready') return baseline;
-    const ticket = Object.freeze({});
-    this.#messageTickets.set(ticket, { reader, nativeTicket: baseline.ticket, session });
-    return { status: 'ready', ticket };
-  }
-
-  async verifyMessage(ticket, transportText) {
-    const saved = ticket && typeof ticket === 'object' ? this.#messageTickets.get(ticket) : null;
-    if (!saved) return { status: 'uncertain', reason: 'checkpoint_invalid' };
-    try { await this.#readEvents(saved.session); }
-    catch { saved.reader.cancel(saved.nativeTicket); return { status: 'uncertain', reason: 'events_unavailable' }; }
-    return saved.reader.verify(saved.nativeTicket, transportText);
-  }
-
-  cancelMessageCheckpoint(ticket) {
-    const saved = ticket && typeof ticket === 'object' ? this.#messageTickets.get(ticket) : null;
-    return Boolean(saved && saved.reader.cancel(saved.nativeTicket));
   }
 
   resize(runId, cols, rows) {

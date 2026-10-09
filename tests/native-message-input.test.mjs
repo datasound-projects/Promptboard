@@ -169,28 +169,30 @@ test('Supervisor binds the private writer to its live pipeline run and refuses c
   assert.equal((await supervisor.sendNativeMessage(w.run.id, { ...callerOverride, dispatchId: 'next' })).status, 'unconfirmed');
   assert.ok(updates.some(row => row.lifecycle === 'message-input-unconfirmed' && row.turnComplete === false));
   await appendFile(eventsFile, JSON.stringify({ provider: 'claude', name: 'Stop', sessionId: nativeId }) + '\n');
-  await supervisor.checkpointMessage(w.run.id);
+  // A settings change waiting for a turn boundary reads that later Stop and still finds no finished turn.
+  await assert.rejects(supervisor.suspendAtBoundary(w.run.id, { timeoutMs: 100 }), { code: 'PIPELINE_BOUNDARY_TIMEOUT' });
+  assert.ok(updates.some(row => row.status === 'waiting_for_input'));
   assert.ok(updates.filter(row => 'turnComplete' in row).every(row => row.turnComplete === false));
   assert.doesNotMatch(JSON.stringify(updates), /PRIVATE WRITE|Literal|nativeHistoryPath/);
 });
 
-test('a native Stop during pending submission supplies neither completion nor a checkpoint, and lost saves stay blocked', async t => {
+test('a native Stop during pending submission supplies neither completion nor another attempt, and unknown outcomes stay blocked', async t => {
   const w = await fixture(t), updates = [], eventsFile = join(w.dir, 'events.jsonl'); await writeFile(eventsFile, '');
   Object.assign(w.session, { eventsFile, eventsOffset: 0, seq: 0, ring: [], ringBytes: 0, subscribers: new Set(), status: 'running', turns: 0 });
   const supervisor = new Supervisor({ dataDir: w.dir, board: { run: async () => w.run,
     updateRun: async (_id, change) => { updates.push(change); return { ...w.run, ...change }; } } });
   supervisor.sessions.set(w.run.id, w.session);
-  const result = await supervisor.sendNativeMessage(w.run.id, { ...w.request, submitted: async () => {
+  w.mode = 'none'; // The CLI never records the message, so its receipt stays pending until the budget.
+  const result = await supervisor.sendNativeMessage(w.run.id, { ...w.request, timeoutMs: 1500, submitted: async () => {
     assert.equal(w.session.messageInputPending, true);
     await appendFile(eventsFile, JSON.stringify({ provider: 'claude', name: 'Stop', sessionId: nativeId }) + '\n');
-    assert.equal((await supervisor.checkpointMessage(w.run.id)).status, 'unavailable');
-    assert.equal(updates.filter(row => 'turnComplete' in row).at(-1).turnComplete, false);
-    assert.equal(updates.filter(row => row.activity).at(-1).activity.ready, false);
-    return false;
+    return true;
   } });
   assert.equal(result.status, 'unconfirmed'); assert.equal(w.session.messageInputPending, false);
+  assert.ok(updates.some(row => row.status === 'waiting_for_input'), 'The transport read the Stop while submission was pending.');
   assert.ok(updates.filter(row => 'turnComplete' in row).every(row => row.turnComplete === false));
-  assert.equal((await supervisor.checkpointMessage(w.run.id)).status, 'unavailable');
+  assert.ok(updates.filter(row => row.activity).every(row => row.activity.ready === false));
+  assert.equal((await supervisor.sendNativeMessage(w.run.id, { ...w.request, dispatchId: 'after-unknown' })).status, 'unavailable');
 });
 
 test('Supervisor budget covers preparation and final publication, retaining its lease through unknown saves', async t => {
@@ -280,16 +282,15 @@ test('pending publication of a valid owned Stop cannot revoke native receipt cus
     } } });
   supervisor.sessions.set(w.run.id, w.session);
   t.after(() => release());
+  let pendingWhileHeld;
+  // The transport's own hook drain reads this Stop; hold its status publication for a while.
+  entered.then(() => { pendingWhileHeld = w.session.eventsPending; setTimeout(release, 100); });
   const result = await supervisor.sendNativeMessage(w.run.id, { ...w.request, submitted: async () => {
     await w.request.submitted();
     await appendFile(eventsFile, JSON.stringify({ provider: 'claude', name: 'Stop', sessionId: nativeId }) + '\n');
-    const checkpoint = supervisor.checkpointMessage(w.run.id);
-    await entered; assert.equal(w.session.eventsPending, true);
-    await new Promise(resolve => setTimeout(resolve, 100)); release();
-    assert.equal((await checkpoint).status, 'unavailable');
     return true;
   } });
-  assert.equal(result.status, 'confirmed'); assert.equal(w.session.messageInputUncertain, undefined);
+  assert.equal(pendingWhileHeld, true); assert.equal(result.status, 'confirmed'); assert.equal(w.session.messageInputUncertain, undefined);
   assert.equal(w.writes.filter(data => data === '\r').length, 1);
 });
 

@@ -782,7 +782,7 @@ test('batched main session startup prevents stale approval routing while a fresh
   }
 });
 
-test('live Supervisor receipt custody revokes partial terminal input and actual teardown without typing automation input', { skip: process.platform === 'win32' }, async t => {
+test('live pipeline sessions: a partial human draft and actual teardown revoke native messages without typing automation input', { skip: process.platform === 'win32' }, async t => {
   const w = await world(t, true);
   for (const provider of ['claude', 'gemini']) {
     const config = defaultPipelineConfig();
@@ -791,20 +791,16 @@ test('live Supervisor receipt custody revokes partial terminal input and actual 
     const card = await w.board.createTask({ projectId: w.projectId, title: 'Receipt custody', prompt: 'ACTIVITY_FIXTURE' });
     const original = (await w.move(card.id, 'executing')).run;
     await until(async () => (await w.board.run(original.id)).activity?.ready);
-    const owned = w.board.executor.sessions.get(original.id), nativeId = (await w.board.run(original.id)).providerSessionId;
-    const path = join(w.dataDir, provider === 'claude' ? `${nativeId}.jsonl` : 'session-custody.jsonl');
-    const user = text => provider === 'claude' ? { type: 'user', sessionId: nativeId, message: { role: 'user', content: text } }
-      : { id: 'new-native-user', type: 'user', content: [{ text }] };
-    await writeFile(path, JSON.stringify(provider === 'claude' ? user('Original task') : { sessionId: nativeId, kind: 'main' }) + '\n');
-    await appendFile(owned.eventsFile, JSON.stringify({ provider, name: 'SessionStart', sessionId: nativeId, transcriptPath: path }) + '\n');
-    const beforeInput = await w.board.executor.checkpointMessage(original.id); assert.equal(beforeInput.status, 'ready');
+    const owned = w.board.executor.sessions.get(original.id);
+    const request = message => ({ dispatchId: message.split(' ')[0], message, mode: 'deferred', timeoutMs: 300,
+      grant: async () => assert.fail('No native input is granted.'), submitted: async () => true, accepted: async () => true });
+    assert.notEqual(w.board.executor.nativeMessageReadiness(original.id), 'unavailable');
     w.board.executor.input(original.id, 'human partial draft');
-    await appendFile(path, JSON.stringify(user('Late automation message')) + '\n');
-    assert.equal((await w.board.executor.verifyMessage(beforeInput.ticket, 'Late automation message')).status, 'uncertain');
-    const beforeStop = await w.board.executor.checkpointMessage(original.id); assert.equal(beforeStop.status, 'ready');
+    assert.equal(w.board.executor.nativeMessageReadiness(original.id), 'unavailable');
+    assert.equal((await w.board.executor.sendNativeMessage(original.id, request('Late automation message'))).status, 'timed_out');
     await w.move(card.id, 'todo'); assert.equal(owned.proc, null);
-    await appendFile(path, JSON.stringify(user('Stopped automation message')) + '\n');
-    assert.equal((await w.board.executor.verifyMessage(beforeStop.ticket, 'Stopped automation message')).status, 'uncertain');
+    assert.equal(w.board.executor.nativeMessageReadiness(original.id), 'unavailable');
+    assert.equal((await w.board.executor.sendNativeMessage(original.id, request('Stopped automation message'))).status, 'unavailable');
     const saved = await w.board.run(original.id); assert.equal(saved.nativeHistoryPath, undefined); assert.equal(saved.transcriptPath, undefined);
     assert.doesNotMatch(await readFile(join(w.dataDir, original.artifactsDir, 'output.log'), 'utf8'), /you said:.*(?:Late|Stopped) automation message/);
   }
