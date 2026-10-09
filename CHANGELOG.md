@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Saving a file in a project whose folder was removed or moved now reports `FILE_NOT_FOUND` (404) like reading does, instead of a server error.
 - A sign-in that fails at once now returns the same HTTP status as other provider errors (409 when the CLI is not installed, 504 on a timeout) instead of 502 for every code.
 - Accepting imported settings no longer changes a project's repository while its tasks own worktrees in the current one (`WORKSPACES_EXIST`), the same rule as linking a repository.
 - Creating a project with a repository checks the project limit and a requested project ID before any folder or Git change, so a refused create no longer leaves a new `.git` in the chosen folder.
