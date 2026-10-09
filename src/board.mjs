@@ -85,10 +85,11 @@ const clip = (value, max) => typeof value === 'string' ? value.slice(0, max) : '
 const time = value => Number.isFinite(value) ? value : Date.now();
 
 const RECORD_ID = /^[A-Za-z0-9_-]{1,100}$/;
+const recordId = value => typeof value === 'string' && RECORD_ID.test(value); // RegExp.test(undefined) tests "undefined".
 /** Where a card came from in Origin. A repeated handoff finds the card by it instead of adding another. */
 export function originSourceOf(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value) || !RECORD_ID.test(value.originProjectId) || !RECORD_ID.test(value.originTaskId)) throw new BoardError('The Origin reference is not valid.', 'INVALID_INPUT');
-  return { originProjectId: value.originProjectId, originTaskId: value.originTaskId, snapshotId: RECORD_ID.test(value.snapshotId) ? value.snapshotId : '',
+  if (!value || typeof value !== 'object' || Array.isArray(value) || !recordId(value.originProjectId) || !recordId(value.originTaskId)) throw new BoardError('The Origin reference is not valid.', 'INVALID_INPUT');
+  return { originProjectId: value.originProjectId, originTaskId: value.originTaskId, snapshotId: recordId(value.snapshotId) ? value.snapshotId : '',
     hash: typeof value.hash === 'string' && /^[a-f0-9]{64}$/.test(value.hash) ? value.hash : '', key: typeof value.key === 'string' ? value.key.slice(0, 20) : '' };
 }
 /** Prerequisite cards: other cards of the same project that must be done before this one starts. */
@@ -368,7 +369,11 @@ export function normalizeColumns(input) {
     const name = entry.title ? text(entry.title, 40, 'A column name') : '';
     const base = COLUMNS.find(column => column.id === entry.id);
     if (base) {
-      if (!(entry.hidden === true && entry.id === 'planning')) names.add((name || base.title).toLowerCase());
+      const shown = name || base.title;
+      if (!(entry.hidden === true && entry.id === 'planning')) {
+        if (names.has(shown.toLowerCase())) throw new BoardError(`Two columns are called “${shown}”. Use different names.`, 'INVALID_COLUMNS');
+        names.add(shown.toLowerCase());
+      }
       out.push({ id: entry.id, ...(name && name !== base.title ? { title: name } : {}), ...(color ? { color } : {}), ...(entry.id === 'planning' && entry.hidden === true ? { hidden: true } : {}) });
       continue;
     }
@@ -1657,7 +1662,7 @@ export class Board {
    * starts: no agent, automation, script or worktree. A failed card does not undo the others.
    */
   createOriginTasks(projectId, { originProjectId, tasks }) {
-    if (!RECORD_ID.test(originProjectId) || !Array.isArray(tasks) || !tasks.length || tasks.length > 100) return Promise.reject(new BoardError('Choose 1 to 100 Origin tasks.', 'INVALID_INPUT'));
+    if (!recordId(originProjectId) || !Array.isArray(tasks) || !tasks.length || tasks.length > 100) return Promise.reject(new BoardError('Choose 1 to 100 Origin tasks.', 'INVALID_INPUT'));
     return this.store.update(state => {
       const project = this.#project(state, projectId), results = [], failed = new Set();
       const byOrigin = new Map(project.tasks.filter(task => task.originSource?.originProjectId === originProjectId).map(task => [task.originSource.originTaskId, task]));

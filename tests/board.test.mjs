@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { access, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Board, canTransition, COLUMNS } from '../src/board.mjs';
+import { Board, canTransition, COLUMNS, normalizeColumns, originSourceOf } from '../src/board.mjs';
 import { defaultProjectsDir, Store, STATE_VERSION } from '../src/store.mjs';
 import { initRepository, validateRepository } from '../src/git.mjs';
 import { startServer } from '../src/server.mjs';
@@ -513,4 +513,13 @@ test('retaining files does not allow deleting active runs or stale card revision
   await assert.rejects(board.deleteTask(task.id, { expectedRevision: task.revision, keepFiles: true }), { code: 'RUN_ACTIVE' });
   await assert.rejects(board.deleteTask(task.id, { expectedRevision: task.revision + 1, keepFiles: true }));
   assert.ok(await taskIn(board, task.id));
+});
+
+test('an Origin reference needs string IDs, and every column name is unique, built-in stages included', () => {
+  for (const value of [{}, { originProjectId: null, originTaskId: 123 }, { originProjectId: 'p1' }, { originTaskId: 't1' }]) assert.throws(() => originSourceOf(value), { code: 'INVALID_INPUT' });
+  assert.equal(originSourceOf({ originProjectId: 'p1', originTaskId: 't1' }).snapshotId, '');
+  const layout = COLUMNS.map(column => ({ id: column.id }));
+  assert.throws(() => normalizeColumns(layout.map(entry => entry.id === 'planning' ? { id: 'planning', title: 'Testing' } : entry)), { code: 'INVALID_COLUMNS', message: /Two columns are called “Testing”/ });
+  assert.throws(() => normalizeColumns([layout[0], { id: 'c_custom01', title: 'Executing' }, ...layout.slice(1)]), { code: 'INVALID_COLUMNS', message: /Two columns are called “Executing”/ });
+  assert.equal(normalizeColumns(layout.map(entry => entry.id === 'planning' ? { id: 'planning', title: 'Testing', hidden: true } : entry)).length, COLUMNS.length, 'a hidden Planning keeps no name');
 });
