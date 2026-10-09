@@ -60,6 +60,11 @@ export class GitHubLogin {
 
   async start() {
     if (this.proc) return this.snapshot();
+    // Two Connect clicks share one sign-in: there is an await before the spawn.
+    return this.starting ??= this.#start().finally(() => { this.starting = null; });
+  }
+
+  async #start() {
     const { pty } = await this.ptyLoader();
     if (!pty) throw fail('Promptboard cannot run the sign-in here. Run gh auth login --web in your terminal, then choose Check connection.', 'LOGIN_UNAVAILABLE');
     let proc;
@@ -81,6 +86,7 @@ export class GitHubLogin {
     });
     proc.onExit(({ exitCode }) => {
       untrackPid(proc.pid);
+      if (this.proc !== proc) return; // A cancelled sign-in exiting late must not end a newer one.
       this.proc = null;
       clearTimeout(this.timer);
       if (this.state.status === 'cancelled') return;

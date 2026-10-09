@@ -125,6 +125,21 @@ test('browser sign-in runs gh auth login --web, shows only the one-time code, an
   await assert.rejects(none.start(), { code: 'LOGIN_UNAVAILABLE' });
 });
 
+test('concurrent Connect starts one sign-in, and a cancelled one exiting late cannot end the next', async () => {
+  const procs = [];
+  const pty = { spawn: () => { const proc = { pid: 999990 + procs.length, write: () => {}, kill: () => {}, onData: () => {}, onExit: fn => { proc.exit = fn; } }; procs.push(proc); return proc; } };
+  const login = new GitHubLogin({ ptyLoader: async () => ({ pty }) });
+  await Promise.all([login.start(), login.start()]);
+  assert.equal(procs.length, 1, 'Only one gh auth login runs.');
+  login.cancel(); await login.start();
+  assert.equal(procs.length, 2); assert.equal(login.proc, procs[1]);
+  procs[0].exit({ exitCode: 1 });
+  assert.equal(login.proc, procs[1]); assert.equal(login.snapshot().status, 'starting');
+  procs[1].exit({ exitCode: 0 });
+  assert.equal(login.snapshot().status, 'done'); assert.equal(login.proc, null);
+  login.cancel();
+});
+
 test('GitHub routes need the session token and never return a token', { skip }, async t => {
   await fakeGh(t);
   const dataDir = await temp(t, 'pb-gh-data-');
