@@ -8,6 +8,7 @@ import { Board, COLUMNS, normalizeColumns, originSourceOf, TRANSITIONS } from '.
 import { defaultProjectsDir, Store, STATE_VERSION } from '../src/store.mjs';
 import { initRepository, validateRepository } from '../src/git.mjs';
 import { startServer } from '../src/server.mjs';
+import { chooseFolder } from '../src/folder.mjs';
 
 const run = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } }).trim();
 const exists = path => access(path).then(() => true, () => false);
@@ -532,6 +533,19 @@ test('a project that cannot be created leaves an existing folder without a new G
   await assert.rejects(board.createProjectWithRepository({ name: 'Third', folder: 'new' }), { code: 'LIMIT' });
   assert.equal(await exists(join(folder, '.git')), false);
   assert.equal(await exists(join(dataDir, 'projects')), false);
+});
+
+test('the folder picker reports only its own Cancel as cancelled; any other failure is unavailable', { skip: !['darwin', 'linux'].includes(process.platform) }, async t => {
+  const bin = await temp(t, 'pb-picker-'), mac = process.platform === 'darwin';
+  // A stand-in for osascript or zenity (kdialog is then missing), driven by environment variables.
+  await writeFile(join(bin, mac ? 'osascript' : 'zenity'), '#!/bin/sh\nprintf "%s" "$PB_PICKER_OUT"\nprintf "%s" "$PB_PICKER_ERR" >&2\nexit "$PB_PICKER_CODE"\n', { mode: 0o755 });
+  const keys = ['PATH', 'PB_PICKER_OUT', 'PB_PICKER_ERR', 'PB_PICKER_CODE'], saved = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+  t.after(() => { for (const key of keys) if (saved[key] === undefined) delete process.env[key]; else process.env[key] = saved[key]; });
+  const pick = (out, err, code) => { Object.assign(process.env, { PATH: bin, PB_PICKER_OUT: out, PB_PICKER_ERR: err, PB_PICKER_CODE: String(code) }); return chooseFolder(); };
+  assert.deepEqual(await pick('/home/me/app/\n', '', 0), { path: '/home/me/app' });
+  assert.deepEqual(await pick('', mac ? 'execution error: User canceled. (-128)' : 'Gtk-Message: GtkDialog mapped without a transient parent.', 1), { cancelled: true });
+  await assert.rejects(pick('', mac ? 'execution error: No user interaction allowed. (-1713)' : 'Gtk-WARNING: cannot open display: ', 1), { code: 'PICKER_UNAVAILABLE' });
+  await assert.rejects(pick('', '', 255), { code: 'PICKER_UNAVAILABLE' });
 });
 
 test('custom agent overrides validate, persist, and use the same hierarchy as built-in stages', async t => {
