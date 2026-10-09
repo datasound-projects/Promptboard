@@ -51,6 +51,24 @@ test('the endpoint rejects cross-site access, invalid tokens, and rebinding host
   assert.equal(calls, 0);
 });
 
+test('a malformed request address returns 400 and the app keeps serving', async t => {
+  const app = await open(t);
+  const raw = path => new Promise((resolve, reject) => {
+    const request = http.request({ host: '127.0.0.1', port: new URL(app.url).port, path, headers: { host: new URL(app.url).host } }, response => { response.resume(); resolve(response.statusCode); });
+    request.on('error', reject); request.end();
+  });
+  for (const path of ['//', '//a:b', 'http://a:b/']) assert.equal(await raw(path), 400, path);
+  assert.equal((await fetch(app.url + '/api/session')).status, 200, 'still serving');
+});
+
+test('provider client errors keep their status and fixed message instead of a generic 502', async t => {
+  const { ProviderError } = await import('../src/providers.mjs');
+  const app = await open(t, async () => { throw new ProviderError('Codex is not installed.', 'NOT_INSTALLED'); });
+  const response = await app.post({ input: 'Add a status route', provider: 'codex' });
+  assert.equal(response.status, 409);
+  assert.deepEqual(await response.json(), { error: 'Codex is not installed.', code: 'NOT_INSTALLED' });
+});
+
 test('validation rejects invalid fields before calling a CLI', async t => {
   let calls = 0;
   const app = await open(t, async () => { calls++; return { text: 'No call expected.' }; });

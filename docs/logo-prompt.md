@@ -2,7 +2,7 @@
 
 This original mascot was created for Promptboard (formerly AI Prompt Engineer) based on ASD-STE100 Simplified Technical English (STE) on 2026-09-28 with the built-in OpenAI image generation tool. It was generated without reference images.
 
-Asset: `public/nerd.png`
+Asset: `public/nerd.png` (no longer shipped; this record is kept for provenance)
 
 The generated PNG is used unchanged. Its alpha channel is preserved. The request specifies an original character, with no known character or public-figure likeness. This record describes the generation process; it is not a trademark or originality guarantee.
 

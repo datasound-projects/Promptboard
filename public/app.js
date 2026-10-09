@@ -966,7 +966,7 @@ $('#context-add-local').addEventListener('click', () => {
   $('#context-add-local').setAttribute('aria-expanded', String(!fields.hidden));
 });
 $('#context-pick-local').addEventListener('click', async () => {
-  try { const { response, data } = await api('/api/compose/folder/choose', { method: 'POST', body: {}, timeoutMs: 600000 });
+  try { const { response, data } = await api('/api/folder/choose', { method: 'POST', body: {}, timeoutMs: 11 * 60 * 1000 });
     if (!response.ok) throw new Error(data.error || 'Folder selection failed.');
     if (data.path) $('#context-local-path').value = data.path;
   } catch (error) { contextError(error.message); }

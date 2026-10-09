@@ -81,7 +81,7 @@ Compose-only routes use the existing session token and host/origin protection:
 
 - `POST /api/compose/cancel`: bounded, session-protected cancellation for a matching client-generated request ID; stale cancellations cannot stop another job.
 - `POST /api/compose/prepare`: `{ request, autonomous, sources }`; the legacy `clarify` flag remains accepted as an alias but never produces user questions.
-- `POST /api/compose/folder/choose`: opens the local folder picker; typed paths are also supported.
+- `POST /api/folder/choose`: opens the local folder picker (the same one Kanban uses); typed paths are also supported.
 - `POST /api/compose/sources/document?name=guide.pdf&from=40&to=55`: bounded raw upload.
 - `DELETE /api/compose/sources/document/:id`: releases a cached document.
 - `POST /api/compose/mcp/test`: discovers eligible tools without invoking them.

@@ -279,17 +279,19 @@ function promptFor(question, scope, evidence) {
 }
 
 /** HTTP: GET view, PATCH { enabled }, POST /ask { question, scope, provider, model, effort }. */
-export async function coordinatorRoute({ coordinator, runner, track, req, res, pathname, jsonBody, send }) {
+export async function coordinatorRoute({ coordinator, runner, track, claim, req, res, pathname, jsonBody, send }) {
   const match = pathname.match(/^\/api\/coordinator\/([A-Za-z0-9_-]{1,100})(?:\/(ask))?$/);
   if (!match) return send(res, 404, { error: 'This Coordinator route does not exist.' });
   const [, projectId, action] = match;
   if (!action && req.method === 'GET') return send(res, 200, await coordinator.view(projectId));
   if (!action && req.method === 'PATCH') { const body = await jsonBody(req); return send(res, 200, await coordinator.setEnabled(projectId, body?.enabled)); }
   if (action === 'ask' && req.method === 'POST') {
-    const body = await jsonBody(req), controller = new AbortController(), abort = () => { if (!res.writableEnded) controller.abort(); };
+    // A question runs one CLI call, so it shares the one-job slot with Compose, sign-in and file proposals.
+    const body = await jsonBody(req), claimed = await claim('coordinator', body?.provider), { job } = claimed, abort = () => { if (!res.writableEnded) job.controller.abort(); };
+    job.stage = 'coordinator';
     res.once('close', abort);
-    try { return send(res, 200, await track(coordinator.ask(projectId, body || {}, { runner: call => track(runner(call)), signal: controller.signal }))); }
-    finally { res.off('close', abort); }
+    try { return send(res, 200, await track(coordinator.ask(projectId, body || {}, { runner: call => track(runner(call)), signal: job.controller.signal }))); }
+    finally { res.off('close', abort); claimed.release(); }
   }
   return send(res, 404, { error: 'This Coordinator route does not exist.' });
 }

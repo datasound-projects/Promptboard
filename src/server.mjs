@@ -52,7 +52,6 @@ const assets = new Map([
   ['/origin-context.js', ['origin-context.js', 'text/javascript; charset=utf-8']],
   ['/projects.js', ['projects.js', 'text/javascript; charset=utf-8']],
   ['/coordinator.js', ['coordinator.js', 'text/javascript; charset=utf-8']],
-  ['/nerd.png', ['nerd.png', 'image/png']],
   ['/dock.js', ['dock.js', 'text/javascript; charset=utf-8']],
 ]);
 // Pinned terminal assets, served from the installed packages by exact path only (no CDN,
@@ -98,15 +97,20 @@ export async function generate(request, { runner = runProvider, signal, catalogR
 }
 
 // Map internal codes to HTTP statuses. Message text always comes from fixed strings.
-const STATUS = { ABORTED: 499, TIMEOUT: 504, BUSY: 409, AUTH_IN_PROGRESS: 409, NOT_INSTALLED: 409, UNSUPPORTED: 400, INVALID_PROVIDER: 400 };
-function failureBody(error, fallback) {
-  const known = typeof error?.code === 'string' && Object.hasOwn(FAILURE_MESSAGES, error.code);
+const STATUS = { ABORTED: 499, TIMEOUT: 504, BUSY: 409, AUTH_IN_PROGRESS: 409, NOT_INSTALLED: 409, UNSUPPORTED: 400, INVALID_PROVIDER: 400, INVALID_MODEL: 400, INVALID_EFFORT: 400, INVALID_INPUT: 400 };
+// Domain errors whose messages are fixed, user-facing strings.
+const EXPOSED = [AgentError, BaseDeliveryError, BaseError, BoardError, CoordinatorError, DeliveryError, GitError, GitHubError, NotificationError, OriginError, RepositoryPipelineError, StoreError, WorkspaceFileError];
+/** The one error-to-HTTP mapping. Unexpected errors get the route's fallback text, never internal details. */
+function failureBody(error, fallback, unknown = { status: 502, code: 'UNKNOWN' }) {
+  if (EXPOSED.some(Type => error instanceof Type)) return { status: error.status || 500, body: { error: error.message, code: error.code || 'INVALID_REQUEST' } };
   if (error?.status && error.status < 500 && error.status !== 499) return { status: error.status, body: { error: error.message, code: error.code || 'INVALID_REQUEST' } };
-  if (known) return { status: STATUS[error.code] || 502, body: { error: FAILURE_MESSAGES[error.code], code: error.code, ...(error.resetsAt ? { resetsAt: error.resetsAt } : {}) } };
+  if (typeof error?.code === 'string' && Object.hasOwn(FAILURE_MESSAGES, error.code)) return { status: STATUS[error.code] || 502, body: { error: FAILURE_MESSAGES[error.code], code: error.code, ...(error.resetsAt ? { resetsAt: error.resetsAt } : {}) } };
+  if (error instanceof ProviderError && STATUS[error.code]) return { status: STATUS[error.code], body: { error: error.message, code: error.code } };
   if (error?.name === 'TimeoutError') return { status: 504, body: { error: FAILURE_MESSAGES.TIMEOUT, code: 'TIMEOUT' } };
   if (error?.name === 'AbortError') return { status: 499, body: { error: FAILURE_MESSAGES.ABORTED, code: 'ABORTED' } };
-  return { status: 502, body: { error: fallback, code: 'UNKNOWN' } };
+  return { status: unknown.status, body: { error: fallback, code: unknown.code } };
 }
+const sendFailure = (res, error, fallback, unknown) => { const { status, body } = failureBody(error, fallback, unknown); send(res, status, body); };
 
 const auth = { installed: async provider => Boolean(await resolveExecutable(provider)), status: readAuthStatus, login: startLogin, logout };
 
@@ -217,7 +221,6 @@ async function boardRoute(board, req, res, pathname, searchParams, origin) {
     if (method === 'GET' && action === 'revision') return send(res, 200, { revision: await delivery.revision(id) });
     if (method === 'GET' && action === 'uncommitted') return send(res, 200, await delivery.uncommitted(id));
     if (method === 'GET' && action === 'merge-preview') return send(res, 200, { preview: await delivery.mergePreview(id) });
-    if (method === 'GET' && action === 'test-log') return send(res, 200, { text: await delivery.testLog(id, Number(searchParams.get('index'))) });
     if (method === 'POST' && action === 'commit') return view({ revision: await delivery.commit(id, await body()) });
     if (method === 'POST' && action === 'accept-review') { await body(); return view({ task: await delivery.acceptReview(id) }); }
     if (method === 'POST' && action === 'tests') return view({ tests: await delivery.runTests(id, await body()) });
@@ -342,7 +345,7 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
   let composeContext;
   const getCompose = () => composeContext ??= import('./compose-context.mjs').then(({ ComposeContext }) => new ComposeContext(composeMcp ? { mcp: composeMcp } : {}));
   let closing = false;
-  const server = http.createServer(async (req, res) => {
+  const handle = async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
@@ -355,7 +358,8 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
     if (!allowedHosts.includes(req.headers.host)) return send(res, 403, { error: 'This server accepts local requests only.' });
     if (req.headers.origin && !allowedOrigins.includes(req.headers.origin)) return send(res, 403, { error: 'This origin is not allowed.' });
     if (req.headers['sec-fetch-site'] === 'cross-site') return send(res, 403, { error: 'Cross-site requests are not allowed.' });
-    const requestUrl = new URL(req.url, `http://${req.headers.host}`);
+    let requestUrl;
+    try { requestUrl = new URL(req.url, 'http://127.0.0.1'); } catch { return send(res, 400, { error: 'This request address is not valid.', code: 'INVALID_URL' }); }
     const pathname = requestUrl.pathname;
     const isApi = pathname.startsWith('/api/') && pathname !== '/api/session' && pathname !== '/api/providers';
     if (isApi && req.headers['x-ste-token'] !== token) return send(res, 403, { error: 'Reload this page before you try again.' });
@@ -364,8 +368,7 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
       try { return await notificationRoute(notifications, req, res, pathname, { jsonBody, send }); }
       catch (error) {
         if (res.headersSent) { res.end(); return; }
-        return send(res, error instanceof NotificationError || error.status < 500 ? error.status || 400 : 500,
-          { error: error instanceof NotificationError || error.status < 500 ? error.message : 'Browser notification reception failed.', code: error.code || 'NOTIFICATION_FAILED' });
+        return sendFailure(res, error, 'Browser notification reception failed.', { status: 500, code: 'NOTIFICATION_FAILED' });
       }
     }
     if (req.method === 'GET' && pathname === '/api/providers') {
@@ -377,34 +380,21 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
     }
     if (/^\/api\/base(?:\/|$)/.test(pathname) || /^\/api\/runs\/[A-Za-z0-9_-]+\/base(?:-context|-definition)?$/.test(pathname)) {
       try { if ((await baseRoutes.route(req, res, pathname, requestUrl.searchParams)) !== false) return; }
-      catch (error) {
-        if (error instanceof BaseError || error instanceof BaseDeliveryError) return send(res, error.status || 400, { error: error.message, code: error.code });
-        const failure = failureBody(error, 'The Base request could not be completed. Saved content is unchanged.');
-        return send(res, failure.status, failure.body);
-      }
+      catch (error) { return sendFailure(res, error, 'The Base request could not be completed. Saved content is unchanged.'); }
       return send(res, 404, { error: 'This Base route does not exist.' });
     }
     if (/^\/api\/coordinator(?:\/|$)/.test(pathname)) {
-      try { return await coordinatorRoute({ coordinator, runner, track, req, res, pathname, jsonBody, send }); }
-      catch (error) {
-        const known = error instanceof CoordinatorError || error instanceof ProviderError || (error?.status >= 400 && error.status < 500);
-        return send(res, known ? error.status || 502 : 500, known ? { error: error.message, code: error.code || 'INVALID_REQUEST' } : { error: 'The Coordinator request failed. Project data is unchanged.', code: 'COORDINATOR_FAILED' });
-      }
+      try { return await coordinatorRoute({ coordinator, runner, track, claim, req, res, pathname, jsonBody, send }); }
+      catch (error) { return sendFailure(res, error, 'The Coordinator request failed. Project data is unchanged.', { status: 500, code: 'COORDINATOR_FAILED' }); }
     }
     if (/^\/api\/shared-projects(?:\/|$)/.test(pathname)) {
       try { return await projectsRoute({ origin, board, prompts, req, res, pathname, jsonBody, send }); }
-      catch (error) {
-        const known = error instanceof OriginError || error instanceof BoardError || error instanceof StoreError || (error?.status >= 400 && error.status < 500);
-        return send(res, known ? error.status || 500 : 500, known ? { error: error.message, code: error.code || 'INVALID_REQUEST' } : { error: 'The project request failed. Nothing was changed.', code: 'PROJECTS_FAILED' });
-      }
+      catch (error) { return sendFailure(res, error, 'The project request failed. Nothing was changed.', { status: 500, code: 'PROJECTS_FAILED' }); }
     }
     if (/^\/api\/origin(?:\/|$)/.test(pathname)) {
       const route = /^\/api\/origin\/projects\/[^/]+\/document(?:\/|$)/.test(pathname) ? contextRoute : originRoute;
       try { return await route({ origin, contexts, board, req, res, pathname, jsonBody, send }); }
-      catch (error) {
-        const known = error instanceof OriginError || error?.code === 'ORIGIN_INVALID' || error instanceof StoreError || (error?.status >= 400 && error.status < 500);
-        return send(res, known ? error.status || 500 : 500, known ? { error: error.message, code: error.code || 'INVALID_REQUEST' } : { error: 'The blueprint request failed. Board, Compose and Base data are unchanged.', code: 'ORIGIN_FAILED' });
-      }
+      catch (error) { return sendFailure(res, error, 'The blueprint request failed. Board, Compose and Base data are unchanged.', { status: 500, code: 'ORIGIN_FAILED' }); }
     }
     if (req.method === 'GET' && pathname === '/api/models') {
       try { return send(res, 200, await getCatalog(requestUrl.searchParams.get('provider'), { refresh: requestUrl.searchParams.get('refresh') === '1' })); }
@@ -495,11 +485,10 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
       try {
         const documentId = pathname.match(/^\/api\/compose\/sources\/document\/([a-zA-Z0-9-]{1,80})$/)?.[1];
         if (req.method === 'DELETE' && documentId) { (await getCompose()).documents.delete(documentId); return send(res, 200, { removed: true }); }
-        if (req.method !== 'POST' || !['/api/compose/prepare', '/api/compose/sources/document', '/api/compose/mcp/test', '/api/compose/folder/choose'].includes(pathname)) return send(res, 404, { error: 'This Compose route does not exist.' });
+        if (req.method !== 'POST' || !['/api/compose/prepare', '/api/compose/sources/document', '/api/compose/mcp/test'].includes(pathname)) return send(res, 404, { error: 'This Compose route does not exist.' });
         claimed = await claimCompose(req, res);
         const { job } = claimed;
         job.controller.signal.throwIfAborted();
-        if (pathname === '/api/compose/folder/choose') return send(res, 200, await folderPicker());
         const context = await getCompose();
         const signal = job.controller.signal;
         if (pathname === '/api/compose/sources/document') {
@@ -612,12 +601,8 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
     }
     if (/^\/api\/(board|projects|tasks|runs|github)(\/|$)/.test(pathname) || pathname === '/api/repository/validate' || pathname === '/api/folder/choose' || pathname === '/api/settings') {
       try { if ((await track(boardRoute(board, req, res, pathname, requestUrl.searchParams, origin))) !== false) return; }
-      catch (error) {
-        // Board, store, and Git errors carry fixed messages; raw Git output is never returned.
-        const known = error instanceof BoardError || error instanceof GitHubError || error instanceof GitError || error instanceof StoreError || error instanceof AgentError || error instanceof DeliveryError || error instanceof BaseError || error instanceof BaseDeliveryError || error instanceof RepositoryPipelineError || error instanceof WorkspaceFileError;
-        const status = known || error.status < 500 ? error.status || 500 : 500;
-        return send(res, status, known || status < 500 ? { error: error.message, code: error.code || 'INVALID_REQUEST' } : { error: 'The board request failed.', code: 'BOARD_FAILED' });
-      }
+      // Board, store, and Git errors carry fixed messages; raw Git output is never returned.
+      catch (error) { return sendFailure(res, error, 'The board request failed.', { status: 500, code: 'BOARD_FAILED' }); }
       return send(res, 404, { error: 'This route does not exist.' });
     }
     if (req.method === 'GET' && (assets.has(pathname) || vendor.has(pathname))) {
@@ -627,7 +612,11 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
       return;
     }
     send(res, 404, { error: 'This route does not exist.' });
-  });
+  };
+  // A failing request must never stop the app (and with it every running agent).
+  const server = http.createServer((req, res) => handle(req, res).catch(() => {
+    if (res.headersSent) res.destroy(); else send(res, 500, { error: 'The request failed. Nothing was changed.', code: 'INTERNAL' });
+  }));
   server.requestTimeout = 30_000;
   server.headersTimeout = 15_000;
   server.keepAliveTimeout = 2_000;
