@@ -68,6 +68,11 @@ test('script substitutions cannot chain commands inside quotes or unquoted field
   await assert.rejects(access(sentinel));
 });
 
+test('script substitutions cannot add options, globs or a home directory, and keep inner dashes and spaces', () => {
+  assert.equal(renderPipelineTemplate('git log {{title}}', { title: '--output=x -p * ?.md ~/notes a-b' }, 'script'), 'git log output=x p  .md /notes a-b');
+  assert.equal(renderPipelineTemplate('cd "{{worktreePath}}"', { worktreePath: '/tmp/My task-42' }, 'script'), 'cd "/tmp/My task-42"');
+});
+
 test('invalid or oversized input fails without silent truncation, allocation, or path resolution', () => {
   for (const input of ['x'.repeat(2 * 1024 * 1024 + 1), 'null\0character']) assert.throws(() => renderPipelineTemplate(input, {}), { code: 'INVALID_PIPELINE_TEMPLATE' });
   assert.throws(() => pipelineTemplateVariables({ task: {}, attachmentPaths: ['relative.png'] }), { code: 'INVALID_PIPELINE_TEMPLATE' });
