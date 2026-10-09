@@ -4,6 +4,7 @@ import { performance } from 'node:perf_hooks';
 import { PipelineActions } from './pipeline-actions.mjs';
 import { normalizePipelineAutomations } from './pipeline-config.mjs';
 import { pipelineTemplateVariables, renderPipelineTemplate } from './pipeline-templates.mjs';
+import { abortable } from './cancellation.mjs';
 
 const TERMINAL = new Set(['succeeded', 'failed', 'cancelled', 'timed_out', 'unconfirmed', 'skipped', 'interrupted', 'scheduled']);
 export class PipelineAutomationError extends Error {
@@ -12,15 +13,6 @@ export class PipelineAutomationError extends Error {
 const fail = (message, code) => { throw new PipelineAutomationError(message, code); };
 const hash = row => createHash('sha256').update(JSON.stringify(row)).digest('hex');
 const taskKey = key => JSON.stringify([key.projectId, key.taskId]);
-function abortable(promise, signal) {
-  return new Promise((resolve, reject) => {
-    const settle = (apply, value) => { signal.removeEventListener('abort', abort); apply(value); };
-    const abort = () => settle(reject, signal.reason);
-    signal.addEventListener('abort', abort, { once: true });
-    Promise.resolve(promise).then(value => settle(resolve, value), error => settle(reject, error));
-    if (signal.aborted) abort();
-  });
-}
 
 export class PipelineAutomations {
   constructor({ journal, actions = new PipelineActions(), deliverMessage = null, scheduleEnterMessage = null }) {

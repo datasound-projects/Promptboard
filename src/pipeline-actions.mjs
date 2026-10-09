@@ -5,21 +5,13 @@ import { isAbsolute, join } from 'node:path';
 import { normalizePipelineAutomations } from './pipeline-config.mjs';
 import { pipelineScriptEnvironment, pipelineTemplateVariables, renderPipelineTemplate } from './pipeline-templates.mjs';
 import { makeTempDir, removeTempDir, trackChild } from './providers.mjs';
+import { abortable } from './cancellation.mjs';
 
 export class PipelineActionError extends Error {
   constructor(message, code) { super(message); this.code = code; }
 }
 const fail = (message, code) => { throw new PipelineActionError(message, code); };
 const check = signal => { if (signal.aborted) throw signal.reason; };
-function abortable(promise, signal) {
-  return new Promise((resolve, reject) => {
-    const settle = (apply, value) => { signal.removeEventListener('abort', abort); apply(value); };
-    const abort = () => settle(reject, signal.reason);
-    signal.addEventListener('abort', abort, { once: true });
-    Promise.resolve(promise).then(value => settle(resolve, value), error => settle(reject, error));
-    if (signal.aborted) abort();
-  });
-}
 function wait(ms, signal) {
   return new Promise((resolve, reject) => {
     check(signal);
