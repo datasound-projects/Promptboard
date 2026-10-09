@@ -37,8 +37,17 @@ export class Autopilot {
     } finally { this.busy = false; }
   }
 
-  async pause(projectId, reason) {
-    await this.board.updateAutopilot(projectId, (ap, log) => { if (ap.status !== 'running') return; ap.status = 'paused'; ap.reason = reason; log(`Paused: ${reason}`); });
+  async pause(projectId, reason, current = null) {
+    await this.board.updateAutopilot(projectId, (ap, log) => { if (ap.status !== 'running') return; ap.status = 'paused'; ap.reason = reason; if (current) ap.current = { ...ap.current, ...current }; log(`Paused: ${reason}`); });
+  }
+
+  /** The newest move into this column whose on-enter agent message ended without reaching the agent. */
+  async undeliveredInstruction(task, column) {
+    const move = (await this.board.automationRuns(task.id).catch(() => [])).filter(row => row.to?.id === column).at(-1);
+    const action = move?.actions.find(row => row.type === 'send_message' && row.trigger === 'enter' && row.status !== 'skipped');
+    const delivery = action?.delivery;
+    if (!action || ['confirmed', 'accepted'].includes(delivery?.status)) return null;
+    return { transitionId: move.transitionId, reason: delivery?.outcome?.reason || action.outcome?.reason || 'it was not delivered.' };
   }
 
   /** A step's write applies only while Autopilot still runs the card the step began with (not after Stop or Skip). */
@@ -111,6 +120,10 @@ export class Autopilot {
     if (task.pendingAutomationMessages?.length || (task.automationMove && !['completed', 'failed', 'cancelled', 'interrupted'].includes(task.automationMove.status))) return;
     const finished = live.status === 'waiting_for_input' && live.turnComplete && (live.activity ? live.activity.ready : true) && live.turns > cur.turns;
     if (!finished) return;
+    // A column whose instruction never reached the agent is not finished. Say so once; Resume continues without it.
+    const undelivered = await this.undeliveredInstruction(task, cur.stage);
+    if (undelivered && cur.undelivered !== undelivered.transitionId)
+      return this.pause(projectId, `The ${name(cur.stage)} instruction for “${task.title}” did not reach its agent: ${undelivered.reason} Send it yourself in the terminal, then resume.`, { undelivered: undelivered.transitionId });
     // A plan column moves on only through your approval of the plan in the terminal.
     if (resolvePipelineStrategy(project.pipeline, cur.stage, task).planExitTargetId) return;
     return this.set(projectId, (a, log) => { a.current = { ...a.current, step: 'enter' }; log(`“${task.title}”: ${name(cur.stage)} finished.`); });

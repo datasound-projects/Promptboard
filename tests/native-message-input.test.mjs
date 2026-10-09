@@ -414,3 +414,29 @@ test('xterm automatic reports reach the PTY without counting as human input, and
   unsubscribe();
   assert.deepEqual(items, [{ seq: 1, data: '\x1b[6n', replay: true }, { seq: 2, data: 'live' }]);
 });
+
+test('answering a CLI permission dialog keeps queued column messages deliverable; a typed draft does not', async t => {
+  const w = await fixture(t), supervisor = new Supervisor({ dataDir: w.dir, board: {} });
+  supervisor.sessions.set(w.run.id, w.session);
+  w.session.activity.observe({ name: 'PermissionRequest', tool: 'Bash' }, Date.now());
+  assert.equal(w.session.activity.snapshot().permissionPending, true);
+  for (const key of ['\x1b[B', '\x1b[B', '\r']) supervisor.input(w.run.id, key);
+  assert.deepEqual(w.writes, ['\x1b[B', '\x1b[B', '\r'], 'the keys still reach the CLI');
+  assert.equal(w.session.terminalInput.snapshot().manualInputObserved, false, 'a dialog answer is not a draft');
+  w.session.activity.observe({ name: 'PostToolUse', tool: 'Bash' }, Date.now() - 5000);
+  w.session.activity.observe({ name: 'Stop' }, Date.now() - 5000);
+  assert.equal(supervisor.nativeMessageReadiness(w.run.id), 'ready', 'the deferred column message can still be delivered');
+  // Free text during a dialog, or a key outside one, is a human draft: messages stay unavailable.
+  w.session.activity.observe({ name: 'PermissionRequest', tool: 'Bash' }, Date.now());
+  supervisor.input(w.run.id, 'please use npm ci');
+  assert.equal(w.session.terminalInput.snapshot().manualInputObserved, true);
+  assert.equal(supervisor.nativeMessageReadiness(w.run.id), 'unavailable');
+});
+
+test('a key typed when no CLI dialog is open still counts as a human draft', async t => {
+  const w = await fixture(t), supervisor = new Supervisor({ dataDir: w.dir, board: {} });
+  supervisor.sessions.set(w.run.id, w.session);
+  supervisor.input(w.run.id, '\r');
+  assert.equal(w.session.terminalInput.snapshot().manualInputObserved, true);
+  assert.equal(supervisor.nativeMessageReadiness(w.run.id), 'unavailable');
+});
