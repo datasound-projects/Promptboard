@@ -265,15 +265,22 @@ export function execute({ command, args, cwd, input = '', signal, timeoutMs, max
 }
 
 /** Detection checks executable presence and version; it does not log in or call a model. */
-export async function detectProviders() {
+// Some CLIs take seconds to print their version when the machine is busy. A slow check of an executable that
+// already answered keeps its last result instead of making an installed CLI disappear.
+const versionsFound = new Map();
+export async function detectProviders({ timeoutMs = 15000 } = {}) {
   return Promise.all(Object.entries(PROVIDERS).map(async ([id, definition]) => {
     const resolved = await resolveExecutable(id);
     if (!resolved) return { id, name: definition.name, available: false, reason: 'Install this CLI and add it to PATH.' };
+    const executable = JSON.stringify([resolved.command, ...resolved.prefix]);
     try {
-      const result = await execute({ command: resolved.command, args: [...resolved.prefix, '--version'], timeoutMs: 5000, maxStdout: 8192, maxStderr: 8192 });
-      return { id, name: definition.name, available: true, version: result.stdout.trim().slice(0, 160) || 'Installed' };
-    } catch {
-      return { id, name: definition.name, available: false, reason: 'The CLI version check failed. Check its installation.' };
+      const result = await execute({ command: resolved.command, args: [...resolved.prefix, '--version'], timeoutMs, maxStdout: 8192, maxStderr: 8192 });
+      const found = { id, name: definition.name, available: true, version: result.stdout.trim().slice(0, 160) || 'Installed' };
+      versionsFound.set(executable, found);
+      return found;
+    } catch (error) {
+      if (error?.code === 'TIMEOUT' && versionsFound.has(executable)) return versionsFound.get(executable);
+      return { id, name: definition.name, available: false, reason: error?.code === 'TIMEOUT' ? 'The CLI version check timed out. Check its installation.' : 'The CLI version check failed. Check its installation.' };
     }
   }));
 }
