@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { findChrome, launch } from './helpers/browser.mjs';
+import { pickProject } from './helpers/projects.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
 
 test('priority filters live in the archive; the Board shows every card and reorders the full column', { skip: !await findChrome(), timeout: 90000 }, async t => {
@@ -64,8 +65,8 @@ test('priority filters live in the archive; the Board shows every card and reord
   assert.equal(await browser.eval(`return window.__taskWrites.at(-1).body.index;`), 1);
   // The filter is saved per project; the Board and Timeline stay unfiltered.
   assert.deepEqual(await browser.eval(`return [localStorage.getItem('promptboard.priority-filter.${project.id}'), localStorage.getItem('promptboard.priority-filter.${other.id}')];`), ['1', null]);
-  await select('project-select', other.id); await browser.until(`document.querySelector('[data-id="${otherTask.id}"]')`, 'other project');
-  await select('project-select', project.id); await browser.until(`document.querySelector('[data-id="${hidden.id}"]')`, 'back to the project');
+  await browser.eval(pickProject(other.id)); await browser.until(`document.querySelector('[data-id="${otherTask.id}"]')`, 'other project');
+  await browser.eval(pickProject(project.id)); await browser.until(`document.querySelector('[data-id="${hidden.id}"]')`, 'back to the project');
   await browser.reload(); await browser.until(`document.querySelector('[data-id="${hidden.id}"]')`, 'Board after reload');
   await enter('#view-timeline'); await browser.until(`!document.getElementById('timeline').hidden`, 'timeline view');
   assert.equal(await browser.eval(`return document.getElementById('board-count').textContent;`), '11');

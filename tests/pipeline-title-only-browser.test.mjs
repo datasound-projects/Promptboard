@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { findChrome, launch } from './helpers/browser.mjs';
+import { pickProject } from './helpers/projects.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
 import { defaultPipelineConfig } from '../src/pipeline-config.mjs';
 
@@ -16,8 +17,8 @@ test('title-only pipeline cards save by keyboard across themes/widths and refine
   const enter = async id => { await browser.eval(`const n=document.getElementById(${JSON.stringify(id)});n.scrollIntoView({block:'center'});n.focus();`);
     await browser.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' });
     await browser.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 }); };
-  const select = async id => browser.eval(`const s=document.getElementById('project-select');s.value=${JSON.stringify(id)};s.dispatchEvent(new Event('change',{bubbles:true}));`);
-  await browser.send('Page.bringToFront'); await browser.goto(`${app.url}/#/kanban`); await browser.until(`document.querySelector('#project-select option[value="${project.id}"]')`, 'projects loaded'); await select(project.id);
+  const select = async id => browser.eval(pickProject(id));
+  await browser.send('Page.bringToFront'); await browser.goto(`${app.url}/#/kanban`); await browser.until(`document.querySelector('#workspace-list [data-project-id="${project.id}"]')`, 'projects loaded'); await select(project.id);
   for (const width of [1280, 390]) for (const theme of ['light', 'dark']) {
     await browser.resize(width, 900); await browser.eval(`document.documentElement.dataset.theme=${JSON.stringify(theme)};`);
     await enter('card-new'); await browser.until(`document.getElementById('card-dialog').open`, 'new card opened');

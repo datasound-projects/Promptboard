@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { findChrome, launch } from './helpers/browser.mjs';
+import { pickProject } from './helpers/projects.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
 import { defaultPipelineConfig } from '../src/pipeline-config.mjs';
 import { attachSession } from '../src/sessions.mjs';
@@ -92,7 +93,7 @@ test('pipeline completed table sorts archive dates, filters literal titles and s
   await enter('[data-column="finished"] .kanban-done-all');
   await enter('#archive-cards');
   assert.equal(await browser.eval(`return !document.getElementById('done-dialog-list').hidden && document.getElementById('pipeline-archive').hidden && document.activeElement.classList.contains('kanban-open') && document.querySelector('#done-dialog-list .kanban-copy') && document.querySelector('#done-dialog-list .kanban-duplicate') && document.querySelector('#done-dialog-list .kanban-delete') ? true : false;`), true);
-  await browser.eval(`const select=document.getElementById('project-select');select.value=${JSON.stringify(legacy.id)};select.dispatchEvent(new Event('change',{bubbles:true}));`);
+  await browser.eval(pickProject(legacy.id));
   await browser.until(`!document.getElementById('done-dialog').open`, 'old project archive closed');
   await browser.until(`document.querySelector('[data-id="${old.id}"]')`, 'legacy project selected'); await enter('.kanban-done-all');
   assert.equal(await browser.eval(`return !document.getElementById('done-dialog-list').hidden && document.getElementById('pipeline-archive').hidden;`), true);

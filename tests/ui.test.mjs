@@ -212,9 +212,9 @@ test('a late repository status response cannot show another project’s warning;
   ctx.win.fetch = (url, options) => { if (url.endsWith('/repository-pipeline-status')) { polls++; return held.promise; } return original(url, options); };
   const pending = ctx.win.__pbTest.refreshRepositoryPipelineStatus({ force: true }); await until(() => polls === 1, 'owned status request');
   const status = await ctx.app.board.repositoryPipelineStatus(project.id);
-  ctx.choose('#project-select', second.id); held.resolve(Response.json({ ...status, changed: true })); await pending;
-  assert.equal(ctx.$('#repository-pipeline-warning').hidden, true); assert.equal(ctx.$('#project-select').value, second.id);
-  ctx.choose('#project-select', project.id); await ctx.win.__pbTest.refreshRepositoryPipelineStatus({ force: true }); const before = polls;
+  ctx.pick(second.id); held.resolve(Response.json({ ...status, changed: true })); await pending;
+  assert.equal(ctx.$('#repository-pipeline-warning').hidden, true); assert.equal(ctx.shown(), second.id);
+  ctx.pick(project.id); await ctx.win.__pbTest.refreshRepositoryPipelineStatus({ force: true }); const before = polls;
   ctx.win.location.hash = '#/'; await ctx.win.__pbTest.refreshRepositoryPipelineStatus({ force: true }); assert.equal(polls, before);
   ctx.win.location.hash = '#/kanban'; Object.defineProperty(ctx.win.document, 'hidden', { configurable: true, value: true }); await ctx.win.__pbTest.refreshRepositoryPipelineStatus({ force: true }); assert.equal(polls, before);
   Object.defineProperty(ctx.win.document, 'hidden', { configurable: true, value: false }); ctx.win.fetch = original;
@@ -861,7 +861,7 @@ async function goTo({ $, win, idle }, hash) {
 async function savedStageProject(ctx, name) {
   const { project } = await ctx.app.board.createProjectWithRepository({ name, folder: 'new', workflowMode: 'legacy' });
   await ctx.win.__pbTest.loadBoard();
-  const select = ctx.$('#project-select'); select.value = project.id; select.dispatchEvent(new ctx.win.Event('change', { bubbles: true }));
+  ctx.pick(project.id);
   if (ctx.$('#project-body').hidden) ctx.$('#project-toggle').click();
   await ctx.idle();
 }
@@ -914,7 +914,7 @@ test('page navigation keeps unsaved prompt input, settings, and the current resu
   const reloaded = await setup(t, { hash: '#/kanban', dataDir: ctx.dataDir });
   await reloaded.idle();
   assert.equal(reloaded.$('#kanban-view').hidden, false);
-  assert.equal(reloaded.$('#project-select').selectedOptions[0].textContent, 'Alpha');
+  assert.equal(reloaded.shownName(), 'Alpha');
 });
 
 test('Add to Kanban stores an exact prompt snapshot in To Do; card edits never change history', async t => {
@@ -992,17 +992,17 @@ test('projects keep separate boards; names are validated; deletion needs confirm
   assert.match($('#board-empty').textContent, /Create a project to start planning/);
   assert.match($('#project-form-note').textContent, /Promptboard\/projects.*existing code.*Open folder.*stays at its current location/);
   assert.equal($('#card-new').disabled, true);
-  assert.equal($('#project-delete').disabled, true);
+  assert.equal($('#workspace-list').children.length, 0);
   assert.equal($('#kanban-columns').hidden, true);
   await savedStageProject(ctx, 'Alpha');
-  const alpha = $('#project-select').value;
+  const alpha = ctx.shown();
   await newCard(ctx, 'A1', 'Prompt A1'); await newCard(ctx, 'A2', 'Prompt A2');
   await savedStageProject(ctx, 'Beta');
-  assert.notEqual($('#project-select').value, alpha);
+  assert.notEqual(ctx.shown(), alpha);
   assert.deepEqual(titles($), []);
   assert.equal($('#board-empty').hidden, true, 'An empty project shows its columns, not a message.');
   await newCard(ctx, 'B1', 'Prompt B1');
-  choose('#project-select', alpha);
+  ctx.pick(alpha);
   assert.deepEqual(titles($), ['A1', 'A2']);
   assert.equal($('#board-count').textContent, '02');
   // On Kanban the sidebar is the project workspace, not prompt history; it switches boards too.
@@ -1015,11 +1015,11 @@ test('projects keep separate boards; names are validated; deletion needs confirm
   assert.equal(items()[0].getAttribute('aria-current'), 'true');
   items()[1].click(); await ctx.idle();
   assert.deepEqual(titles($), ['B1']);
-  assert.equal($('#project-select').selectedOptions[0].textContent, 'Beta');
+  assert.equal(ctx.shownName(), 'Beta');
   assert.equal(items()[1].getAttribute('aria-current'), 'true');
   items()[0].click(); await ctx.idle();
   assert.deepEqual(titles($), ['A1', 'A2']);
-  // Each project can be managed from the sidebar: ⋯ → Rename (inline), Link repository, Delete (inline confirm).
+  // Each project is managed from the sidebar: ⋯ → Rename (inline) or Delete (inline confirm). Repository and workflow are in Project settings.
   const entry = name => items().find(item => item.querySelector('.workspace-name').textContent === name).closest('li');
   const menu = async (name, label) => { entry(name).querySelector('.workspace-menu-toggle').click(); await ctx.idle(); [...entry(name).querySelectorAll('.workspace-menu button')].find(button => button.textContent === label).click(); await ctx.idle(); };
   await menu('Beta', 'Rename');
@@ -1034,31 +1034,30 @@ test('projects keep separate boards; names are validated; deletion needs confirm
   assert.match(entry('Beta two').querySelector('.workspace-menu').textContent, /Delete “Beta two” and its 1 card\? This cannot be undone/);
   [...entry('Beta two').querySelectorAll('.workspace-menu button')].find(button => button.textContent === 'Keep').click(); await ctx.idle();
   assert.equal(entry('Beta two').querySelector('.workspace-menu'), null);
-  await menu('Beta two', 'Change repository…'); // A new project already has its own repository.
-  assert.equal($('#project-select').selectedOptions[0].textContent, 'Beta two', 'The action selects that project.');
-  assert.equal($('#repo-panel').hidden, false);
-  assert.equal($('#project-body').hidden, false);
+  entry('Beta two').querySelector('.workspace-menu-toggle').click(); await ctx.idle();
+  assert.deepEqual([...entry('Beta two').querySelectorAll('.workspace-menu button')].map(button => button.textContent), ['Rename', 'Delete…']);
+  entry('Beta two').querySelector('.workspace-menu-toggle').click(); await ctx.idle();
   await menu('Beta two', 'Rename');
   entry('Beta two').querySelector('.workspace-rename input').value = 'Beta';
   entry('Beta two').querySelector('.workspace-rename').dispatchEvent(new win.Event('submit', { cancelable: true })); await ctx.idle();
   items()[0].click(); await ctx.idle();
-  $('#project-new').click(); $('#project-name').value = ' beta '; submitForm(ctx, '#project-form'); await ctx.idle();
+  $('#workspace-new').click(); $('#project-name').value = ' beta '; submitForm(ctx, '#project-form'); await ctx.idle();
   assert.match($('#project-error').textContent, /already exists/);
   $('#project-name').value = '   '; submitForm(ctx, '#project-form');
   assert.match($('#project-error').textContent, /Enter a project name/);
   $('#project-cancel').click();
   assert.equal((await serverBoard(ctx)).projects.length, 2);
-  $('#project-rename').click();
-  assert.equal($('#project-name').value, 'Alpha');
-  $('#project-name').value = 'Alpha renamed'; submitForm(ctx, '#project-form'); await ctx.idle();
-  assert.equal($('#project-select').selectedOptions[0].textContent, 'Alpha renamed');
-  $('#project-delete').click();
-  assert.match($('#project-detail').textContent, /Delete “Alpha renamed” and its 2 cards\? This cannot be undone/);
-  byText($('#project-detail'), 'Keep project').click();
-  assert.equal($('#project-detail').hidden, true);
+  await menu('Alpha', 'Rename');
+  assert.equal(entry('Alpha').querySelector('.workspace-rename input').value, 'Alpha');
+  entry('Alpha').querySelector('.workspace-rename input').value = 'Alpha renamed';
+  entry('Alpha').querySelector('.workspace-rename').dispatchEvent(new win.Event('submit', { cancelable: true })); await ctx.idle();
+  assert.equal(ctx.shownName(), 'Alpha renamed');
+  await menu('Alpha renamed', 'Delete…');
+  assert.match(entry('Alpha renamed').querySelector('.workspace-menu').textContent, /Delete “Alpha renamed” and its 2 cards\? This cannot be undone/);
+  byText(entry('Alpha renamed').querySelector('.workspace-menu'), 'Keep').click(); await ctx.idle();
   assert.equal((await serverBoard(ctx)).projects.length, 2);
-  $('#project-delete').click();
-  await click(ctx, byText($('#project-detail'), 'Delete project'));
+  await menu('Alpha renamed', 'Delete…');
+  await click(ctx, byText(entry('Alpha renamed').querySelector('.workspace-menu'), 'Delete project'));
   const board = await serverBoard(ctx);
   assert.deepEqual(board.projects.map(project => project.name), ['Beta']);
   assert.deepEqual(board.projects[0].tasks.map(card => card.title), ['B1']);
@@ -1140,7 +1139,7 @@ test('seven stages render; cards are created, edited, duplicated, deleted, and r
   const reloaded = await setup(t, { dataDir: ctx.dataDir });
   await goTo(reloaded, '#/kanban');
   assert.deepEqual(titles(reloaded.$), ['Three', 'Two edited', 'One']);
-  assert.equal(reloaded.$('#project-select').selectedOptions[0].textContent, 'Work');
+  assert.equal(reloaded.shownName(), 'Work');
 });
 
 test('a linked repository enables stage moves; invalid folders explain the problem; nothing runs', { skip: process.platform === 'win32' }, async t => {
@@ -1235,9 +1234,9 @@ test('backups: export round-trips, import validates, asks before replacing, and 
   assert.match($('#project-detail').textContent, /No agent runs were started/);
   const board = await serverBoard(ctx);
   assert.deepEqual(board.projects.map(project => project.name), ['One', 'Two']);
-  assert.equal($('#project-select').value, 'p2');
+  assert.equal(ctx.shown(), 'p2');
   assert.equal(board.projects[0].tasks[0].prompt, exact);
-  choose('#project-select', 'p1');
+  ctx.pick('p1');
   assert.equal(column($, 'todo').querySelector('.kanban-status').textContent, 'Automatic checks only—review before use');
   assert.equal(column($, 'todo').querySelector('.kanban-meta').textContent, 'Prompt source: Claude Code · opus · Polski');
   await click(ctx, $('#export-board'));
@@ -1252,7 +1251,7 @@ test('backups: export round-trips, import validates, asks before replacing, and 
   await goTo(fresh, '#/kanban');
   await importFile(fresh, JSON.stringify(exported));
   assert.match(fresh.$('#project-detail').textContent, /Backup imported: 2 projects, 1 card\. No agent runs were started\. Imported repository paths and workflow settings wait for your confirmation/);
-  fresh.choose('#project-select', 'p1');
+  fresh.pick('p1');
   assert.equal(fresh.$('#import-pending').hidden, false);
   assert.match(fresh.$('#import-pending-text').textContent, /repository \/nowhere\/repo, workflow settings \(automatic runs in Executing\)/);
   const project = (await serverBoard(fresh)).projects.find(item => item.id === 'p1');
@@ -1277,7 +1276,7 @@ test('the browser board migrates once with exact text; unreadable data and faile
   let board = await serverBoard(ctx);
   assert.deepEqual(board.projects.map(project => project.id), ['a', 'b']);
   assert.deepEqual(board.projects[0].tasks.map(task => [task.id, task.prompt, task.checksOutdated, task.column]), [['c1', exact, true, 'todo'], ['c2', 'Two', false, 'todo']]);
-  assert.equal(ctx.$('#project-select').value, 'b');
+  assert.equal(ctx.shown(), 'b');
   assert.equal(ctx.win.localStorage.getItem(KANBAN_KEY), JSON.stringify(browser), 'The browser copy is kept.');
   assert.ok(ctx.win.localStorage.getItem(`${KANBAN_KEY}.migrated`));
   assert.match(ctx.$('#announcement').textContent, /Moved 2 projects and 2 cards/);
@@ -1300,7 +1299,7 @@ test('the browser board migrates once with exact text; unreadable data and faile
   await chmod(ctx.dataDir, 0o500);
   t.after(() => chmod(ctx.dataDir, 0o700).catch(() => {}));
   await goTo(ctx, '#/kanban');
-  ctx.choose('#project-select', 'a');
+  ctx.pick('a');
   await newCard(ctx, 'Unsaved', 'Not written.');
   assert.match(ctx.$('#card-error').textContent, /could not be saved/);
   assert.equal(ctx.$('#kanban-view .board-warning').hidden, false);
@@ -1372,7 +1371,7 @@ test('the Kanban sidebar owns one quiet collapsible project settings panel', asy
   assert.equal($('.kanban-board').contains($('#project-settings')), false);
   if ($('#project-settings').hidden) $('#project-toggle').click();
   assert.equal($('#project-settings').hidden, false);
-  assert.equal($('#project-settings .toolbar-cell:first-child').querySelector('#project-select') !== null, true, 'Existing project controls remain available to application logic.');
+  assert.equal($('#project-select'), null, 'The sidebar list is the one project picker.');
   assert.equal($('#project-settings .project-backup').open, false);
   $('#project-settings-close').click();
   assert.equal($('#project-settings').hidden, true);
@@ -1426,7 +1425,7 @@ async function linkedKanban(t, options = {}) {
 }
 /** Remove the repository link of the selected project, to test what an unlinked project does. */
 async function unlink(ctx) {
-  const id = ctx.$('#project-select').value;
+  const id = ctx.shown();
   await ctx.app.board.linkRepository(id, { path: null, expectedRevision: (await ctx.app.board.state()).projects.find(project => project.id === id).revision });
   await ctx.win.__pbTest.loadBoard(); await ctx.idle();
 }
@@ -1808,7 +1807,7 @@ test('Open folder… turns a chosen folder into a linked project, sets up Git wh
   // A folder without Git becomes a linked project too: git init and one empty first commit. Its files are not added.
   await click(ctx, $('#workspace-open'));
   await until(() => names().length === 2 && $('#repo-state').textContent.includes(`Linked to ${plain}`), 'second project, Git set up');
-  assert.equal($('#project-select').selectedOptions[0].textContent, plain.split('/').pop());
+  assert.equal(ctx.shownName(), plain.split('/').pop());
   assert.equal(gitIn(plain, 'log', '--format=%s'), 'Initial commit');
   assert.equal(gitIn(plain, 'status', '--porcelain'), '?? mine.txt', 'The user\'s file is not committed.');
   assert.match($('#announcement').textContent, /Git was set up there with an empty first commit; your files were not added/);
@@ -1816,7 +1815,7 @@ test('Open folder… turns a chosen folder into a linked project, sets up Git wh
   await click(ctx, $('#workspace-open'));
   assert.equal(names().length, 2);
   await click(ctx, $('#workspace-open'));
-  await until(() => $('#project-select').selectedOptions[0].textContent === repoName, 'existing project selected');
+  await until(() => ctx.shownName() === repoName, 'existing project selected');
   assert.equal(names().length, 2);
   assert.match($('#announcement').textContent, /already uses this folder/);
 });
@@ -1993,7 +1992,7 @@ test('the Agents sidebar shows real runs with provider, model, stage, and state;
   assert.equal(win.localStorage.getItem('promptboard.agents.filter'), 'all');
   // Selecting it switches project and opens its existing run in the dock. No run starts.
   queued.click(); await ctx.idle();
-  assert.equal($('#project-select').value, ctx.other.id);
+  assert.equal(ctx.shown(), ctx.other.id);
   assert.ok(cardItem(ctx, 'Review docs').classList.contains('agent-focus'));
   assert.equal(win.promptboardDock.selected, 'run-c');
   assert.equal(ctx.executor.started.length, 0, 'Selecting an agent never starts a run.');

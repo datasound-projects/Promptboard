@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { findChrome, launch } from './helpers/browser.mjs';
+import { pickProject, shownProject } from './helpers/projects.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
 import { defaultPipelineConfig } from '../src/pipeline-config.mjs';
 
@@ -28,9 +29,9 @@ test('Notify me editing, explicit permission, display receipts and task clicks w
     Object.defineProperty(window,'Notification',{value:FakeNotification,configurable:true});
   ` });
   const enter = async () => { await browser.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' }); await browser.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 }); };
-  await browser.goto(`${app.url}/#/kanban`); await browser.until(`document.querySelector('#project-select option[value="${project.id}"]')`, 'projects loaded'); await browser.send('Page.bringToFront');
+  await browser.goto(`${app.url}/#/kanban`); await browser.until(`document.querySelector('#workspace-list [data-project-id="${project.id}"]')`, 'projects loaded'); await browser.send('Page.bringToFront');
   t.diagnostic('Notification page loaded.');
-  await browser.eval(`const select=document.querySelector('#project-select');select.value='${project.id}';select.dispatchEvent(new Event('change',{bubbles:true}));document.querySelector('#columns-open').focus();`); await enter();
+  await browser.eval(`${pickProject(project.id)}document.querySelector('#columns-open').focus();`); await enter();
   await browser.until(`document.querySelector('#columns-dialog').open`, 'columns opened');
   await browser.eval(`[...document.querySelectorAll('.columns-item')].find(button=>button.textContent==='Executing').click(); document.querySelector('[data-trigger="onEnter"] .automation-add').focus();`); await enter();
   await browser.eval(`const type=document.querySelector('.automation-row [data-field="type"]'); type.value='notify';type.dispatchEvent(new Event('change',{bubbles:true}));`);
@@ -56,7 +57,7 @@ test('Notify me editing, explicit permission, display receipts and task clicks w
     }
   }
   await enter(); await browser.until(`document.querySelector('#set-notifications-status').textContent.startsWith('Connected.')`, 'explicit opt-in receiver connected'); assert.equal(await browser.eval(`return window.__permissionRequests;`), 1);
-  await browser.eval(`document.querySelector('#app-settings-close').click();const select=document.querySelector('#project-select');select.value='${other.id}';select.dispatchEvent(new Event('change',{bubbles:true}));`);
+  await browser.eval(`document.querySelector('#app-settings-close').click();${pickProject(other.id)}`);
   t.diagnostic('Notification permission and receiver connected.');
   const moving = app.board.transition(task.id, { column: 'executing', expectedRevision: 1 });
   await browser.until(`window.__alerts.length===1`, 'mock native notification constructed');
@@ -68,7 +69,7 @@ test('Notify me editing, explicit permission, display receipts and task clicks w
   assert.equal((await app.board.automationRuns(task.id))[0].actions[0].status, 'succeeded');
   await browser.eval(`window.__alerts[0].onclick();`);
   await browser.until(`document.querySelector('#task-dialog').open && document.querySelector('#task-dialog').dataset.taskId==='${task.id}'`, 'alert opened exact task in its project');
-  assert.equal(await browser.eval(`return document.querySelector('#project-select').value;`), project.id);
+  assert.equal(await browser.eval(`return ${shownProject};`), project.id);
   assert.equal(await browser.eval(`return document.querySelector('#task-dialog-heading').textContent;`), task.title);
   assert.equal(await browser.eval(`return document.querySelector('#task-dialog img')===null && window.__alerts[0].closed;`), true);
   t.diagnostic('Notification click opened the exact task.');

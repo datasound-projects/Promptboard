@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { findChrome, launch } from './helpers/browser.mjs';
+import { pickProject } from './helpers/projects.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
 
 const chrome = await findChrome();
@@ -32,12 +33,12 @@ test('Coordinator panel: one-click open and close next to Autopilot, remembered 
   if (process.env.PB_BROWSER_SHOTS) { await mkdir(process.env.PB_BROWSER_SHOTS, { recursive: true }); await writeFile(join(process.env.PB_BROWSER_SHOTS, 'coordinator-open.png'), await browser.screenshot()); }
   await browser.reload();
   await wait(`document.querySelector('#coordinator') && !document.querySelector('#coordinator').hidden && document.querySelectorAll('#coordinator .coordinator-card').length === 4`, 'open after reload');
-  await ev(`const s = document.querySelector('#project-select'); s.value = ${JSON.stringify(blog.id)}; s.dispatchEvent(new Event('change'));`);
+  await ev(pickProject(blog.id));
   await wait(`document.querySelector('#coordinator').hidden && document.querySelector('#coordinator-toggle').getAttribute('aria-pressed') === 'false'`, 'other project keeps its own state');
   await click('#coordinator-toggle');
   await wait(`!document.querySelector('#coordinator').hidden && /0\\/0 done/.test(document.querySelector('.coordinator-status').textContent)`, 'other project data');
   await click('#coordinator-toggle');
-  await ev(`const s = document.querySelector('#project-select'); s.value = ${JSON.stringify(shop.id)}; s.dispatchEvent(new Event('change'));`);
+  await ev(pickProject(shop.id));
   await wait(`!document.querySelector('#coordinator').hidden && /0\\/2 done/.test(document.querySelector('.coordinator-status').textContent)`, 'back to Shop');
   // One click closes it, one click opens it again.
   await click('#coordinator-toggle');

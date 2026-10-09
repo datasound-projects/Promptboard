@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { findChrome, launch } from './helpers/browser.mjs';
+import { pickProject } from './helpers/projects.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
 
 const chrome = await findChrome();
@@ -76,8 +77,8 @@ test('label filters combine priority/search in the archive, keep archive selecti
   assert.ok(ordered.every(card => card.prompt === exact)); assert.equal(await browser.eval('return window.__writes.at(-1).body.index;'), 1);
   // Saved per project; Timeline and Board stay unfiltered.
   assert.deepEqual(await browser.eval(`return [localStorage.getItem('promptboard.label-filter.${project.id}'), localStorage.getItem('promptboard.label-filter.${other.id}')];`), ['none', null]);
-  await select(browser, 'project-select', other.id); await browser.until(`document.querySelector('[data-id="${otherTask.id}"]')`, 'other label project');
-  await select(browser, 'project-select', project.id); await browser.reload(); await browser.until(`document.querySelector('[data-id="${second.id}"]')`, 'saved label preference');
+  await browser.eval(pickProject(other.id)); await browser.until(`document.querySelector('[data-id="${otherTask.id}"]')`, 'other label project');
+  await browser.eval(pickProject(project.id)); await browser.reload(); await browser.until(`document.querySelector('[data-id="${second.id}"]')`, 'saved label preference');
   await enter(browser, '#view-timeline'); await browser.until('!document.getElementById("timeline").hidden', 'unfiltered timeline');
   assert.equal(await browser.eval('return document.getElementById("board-count").textContent;'), '13');
   await enter(browser, '#view-board'); await browser.until('document.querySelectorAll("[data-column=todo] .kanban-card").length===5', 'Board unfiltered again');
@@ -127,6 +128,6 @@ test('malformed or foreign saved label filters and legacy projects never hide ta
     await browser.until(`document.getElementById('done-dialog').open && document.getElementById('archive-label-filter').value==='all' && document.querySelector('#archive-rows [data-archive-task="${done.id}"]')`, 'invalid label preference fallback');
   }
   await browser.eval('document.getElementById("done-dialog").close();');
-  await select(browser, 'project-select', legacy.id); await browser.until(`document.querySelector('[data-id="${old.id}"]')`, 'legacy visible');
+  await browser.eval(pickProject(legacy.id)); await browser.until(`document.querySelector('[data-id="${old.id}"]')`, 'legacy visible');
   assert.deepEqual(await app.board.state(), original);
 });

@@ -17,10 +17,10 @@ test('new app pipeline exposes seven columns and keyboard title-only To Do creat
     await browser.send('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13});};
   await browser.send('Page.bringToFront'); await browser.goto(`${app.url}/#/kanban`);
   await browser.until(`document.querySelectorAll('.kanban-column').length===7`,'new pipeline ready');
-  await browser.eval(`document.getElementById('project-new').click();`);
+  await browser.eval(`document.getElementById('workspace-new').click();`);
   await browser.until(`!document.getElementById('project-form').hidden`,'new project form');
   await browser.type('New default'); await enter('#project-form button[type="submit"]');
-  await browser.until(`document.getElementById('project-select').selectedOptions[0]?.textContent==='New default' && document.getElementById('project-form').hidden`,'new UI pipeline selected');
+  await browser.until(`document.querySelector('#workspace-list .current .workspace-name')?.textContent==='New default' && document.getElementById('project-form').hidden`,'new UI pipeline selected');
   assert.deepEqual(await browser.eval(`return [...document.querySelectorAll('.kanban-column')].map(node=>node.dataset.column);`),['todo','planning','executing','code_review','testing','merge','done']);
   await enter('#columns-open'); await browser.until(`document.getElementById('columns-dialog').open`,'column editor');
   assert.equal(await browser.eval(`return document.getElementById('columns-use-pipeline').hidden;`),true); await enter('#columns-close');

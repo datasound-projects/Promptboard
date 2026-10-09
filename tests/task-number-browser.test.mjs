@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { findChrome, launch } from './helpers/browser.mjs';
+import { pickProject } from './helpers/projects.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
 import { defaultPipelineConfig } from '../src/pipeline-config.mjs';
 
@@ -19,8 +20,8 @@ test('stable task numbers survive deletion, keyboard edits and archive restorati
   for (const task of [b, c]) await app.board.transition(task.id, { column: 'done', expectedRevision: task.revision, transitionId: `number-${task.id}` });
   const browser = await launch(); t.after(() => browser.close());
   const enter = async selector => { await browser.eval(`document.querySelector(${JSON.stringify(selector)}).focus();`); await browser.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r', unmodifiedText: '\r' }); await browser.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 }); };
-  await browser.goto(`${app.url}/#/kanban`); await browser.until(`document.querySelector('#project-select option[value="${project.id}"]')`, 'project loaded');
-  await browser.eval(`const p=document.getElementById('project-select');p.value=${JSON.stringify(project.id)};p.dispatchEvent(new Event('change',{bubbles:true}));`);
+  await browser.goto(`${app.url}/#/kanban`); await browser.until(`document.querySelector('#workspace-list [data-project-id="${project.id}"]')`, 'project loaded');
+  await browser.eval(pickProject(project.id));
   await browser.until(`document.querySelector('[data-id="${a.id}"] .task-number')`, 'task number rendered');
   const before = structuredClone(await app.board.state());
   for (const width of [1280, 390]) for (const theme of ['light', 'dark']) {

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { findChrome, launch } from './helpers/browser.mjs';
+import { pickProject, shownProject } from './helpers/projects.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
 import { defaultPipelineConfig } from '../src/pipeline-config.mjs';
 
@@ -97,11 +98,11 @@ test('a lost completed reply stays reviewable and is never retried while the oth
 test('closing a project archive during a request stops unstarted restores and cannot change the newly selected project', { skip: !await findChrome(), timeout: 90000 }, async t => {
   const f=await fixture(t);if(!f)return;await f.begin();
   const other=await f.app.board.createProject({name:'Other project'});
-  await f.browser.eval(`await loadBoard();const select=document.getElementById('project-select');select.value=${JSON.stringify(other.id)};select.dispatchEvent(new Event('change',{bubbles:true}));`);
+  await f.browser.eval(`await loadBoard();${pickProject(other.id)}`);
   await f.browser.until(`!document.getElementById('done-dialog').open`,'old archive closed');
   await f.browser.eval(`window.__releaseMove();`);await f.browser.until(`!archiveBulkJob.running`,'old request finished');
   const state=await f.app.board.state();assert.deepEqual(state.projects.find(project=>project.id===other.id).tasks,[]);
   assert.equal(state.projects.find(project=>project.id===f.project.id).tasks.filter(task=>task.column==='executing').length,1);
-  assert.equal(await f.browser.eval(`return window.__moves.length;`),1);assert.equal(await f.browser.eval(`return document.getElementById('project-select').value;`),other.id);
+  assert.equal(await f.browser.eval(`return window.__moves.length;`),1);assert.equal(await f.browser.eval(`return ${shownProject};`),other.id);
   assert.deepEqual(state.runs,[]);
 });

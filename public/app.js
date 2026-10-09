@@ -1354,7 +1354,6 @@ let board = null; // The server's board view.
 let boardLoading = null;
 let repositoryPipelineWatch = { key: null, result: null, loading: null, checkedAt: 0 };
 let editingCardId = null;
-let projectFormMode = 'new';
 let dragId = null;
 let repoFormFor = null;
 const repositories = new Map(); // projectId -> last branch list from the server.
@@ -1542,12 +1541,7 @@ function renderBoard() {
   const project = currentProject();
   const tasks = project?.tasks || [];
   const timelineView = Boolean(project) && projectView() === 'timeline';
-  $('#project-select').replaceChildren(...(board?.projects || []).map(item => option(item.id, item.name)));
-  if (!project) $('#project-select').append(option('', board ? 'No projects yet' : 'Loading…'));
-  $('#project-select').value = project?.id || '';
-  $('#project-select').disabled = !project;
-  $('#project-new').disabled = !board;
-  for (const id of ['#project-rename', '#project-delete', '#card-new', '#agents-open']) $(id).disabled = !project;
+  for (const id of ['#card-new', '#agents-open']) $(id).disabled = !project;
   $('#board-count').textContent = String(tasks.length).padStart(2, '0');
   // With a project open, its empty columns already say there is nothing yet; the message is only for no project.
   $('#board-empty').hidden = Boolean(project);
@@ -2471,12 +2465,10 @@ function showProjectDetail(...nodes) {
   if (nodes.length) setProjectCollapsed(false, false);
 }
 
-function openProjectForm(mode) {
-  projectFormMode = mode;
+// The sidebar project list is the one place to pick, create, rename and delete projects.
+function openProjectForm() {
   showProjectDetail();
-  $('#project-form-label').textContent = mode === 'rename' ? 'Rename project' : 'New project name';
-  $('#project-form-note').hidden = mode === 'rename';
-  $('#project-name').value = mode === 'rename' ? currentProject()?.name || '' : '';
+  $('#project-name').value = '';
   $('#project-error').hidden = true;
   $('#project-form').hidden = false;
   setProjectCollapsed(false, false);
@@ -2485,39 +2477,23 @@ function openProjectForm(mode) {
 
 function closeProjectForm() { $('#project-form').hidden = true; $('#project-error').hidden = true; }
 
-async function saveProject(event) {
+function focusCurrentProject() { ($('#workspace-list .current .workspace-item') || $('#workspace-new')).focus(); }
+
+async function createProject(event) {
   event.preventDefault();
   const name = $('#project-name').value.trim();
-  const project = projectFormMode === 'rename' ? currentProject() : null;
   const showError = message => { $('#project-error').textContent = message; $('#project-error').hidden = false; $('#project-name').focus(); };
-  const error = projectNameError(name, project?.id);
+  const error = projectNameError(name);
   if (error) { showError(error); return; }
   try {
-    if (project) {
-      await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}`, { name, expectedRevision: project.revision });
-      announce(`Renamed “${project.name}” to “${name}”.`);
-    } else {
-      // The server creates the project's own folder with a Git repository and links it.
-      const result = await boardCall('POST', '/api/projects', { name, folder: 'new' });
-      setSelectedProject(result.project.id);
-      renderBoard();
-      announce(`Created project “${name}” with a Git repository in ${result.folder}.`);
-    }
+    // The server creates the project's own folder with a Git repository and links it.
+    const result = await boardCall('POST', '/api/projects', { name, folder: 'new' });
+    setSelectedProject(result.project.id);
+    renderBoard();
+    announce(`Created project “${name}” with a Git repository in ${result.folder}.`);
   } catch (failure) { showError(failure.message); return; }
   closeProjectForm();
-  $('#project-select').focus();
-}
-
-function confirmProjectDelete() {
-  const project = currentProject();
-  if (!project) return;
-  closeProjectForm();
-  const keep = detailButton('Keep project', () => { showProjectDetail(); $('#project-delete').focus(); });
-  showProjectDetail(
-    paragraph(`Delete “${project.name}” and its ${plural(project.tasks.length, 'card')}? This cannot be undone. Export a backup first if you want to keep them.`),
-    detailActions(detailButton('Delete project', () => deleteProject(project), 'danger'), keep),
-  );
-  keep.focus();
+  focusCurrentProject();
 }
 
 async function deleteProject(project) {
@@ -2527,7 +2503,7 @@ async function deleteProject(project) {
   setSelectedProject(board.projects[0]?.id || '');
   renderBoard();
   announce(`Deleted project “${project.name}”.`);
-  $(board.projects.length ? '#project-select' : '#project-new').focus();
+  focusCurrentProject();
 }
 
 // ---- Agent runs (PB-03): controls, consent, confirmation, details, workflow ----
@@ -3494,16 +3470,9 @@ function pollTests(taskId) {
 
 // Kanban sidebar: one entry per project, each with its own board. Selecting one only changes
 // which board is shown; runs belong to the server and continue in every project.
-// Each entry has a ⋯ menu: rename (inline), repository, workflow settings, delete (inline confirm).
+// Each entry has a ⋯ menu: rename (inline) and delete (inline confirm). Repository and workflow live in Project settings.
 let workspaceMenu = null; // { id, mode: 'menu' | 'rename' | 'delete', draft, error }
 function setWorkspaceMenu(value) { workspaceMenu = value; renderWorkspace(currentProject()); }
-function openProjectSection(id, then) {
-  if (id !== currentProject()?.id) selectProject(id);
-  setWorkspaceMenu(null);
-  setSidebar(false);
-  setProjectCollapsed(false, false);
-  then();
-}
 async function renameFromSidebar(project, name) {
   const error = projectNameError(name.trim(), project.id);
   if (error) { setWorkspaceMenu({ ...workspaceMenu, error }); return; }
@@ -3539,8 +3508,6 @@ function workspaceMenuFor(project, card) {
     box.setAttribute('aria-label', `Manage ${project.name}`);
     box.append(
       item('Rename', () => setWorkspaceMenu({ id: project.id, mode: 'rename' })),
-      item(project.repository ? 'Change repository…' : 'Link repository…', () => openProjectSection(project.id, () => { repoPanelOpen = true; renderRepository(currentProject()); $('#repo-path').focus(); })),
-      item('Workflow settings…', () => openProjectSection(project.id, openWorkflowDialog)),
       item('Delete…', () => setWorkspaceMenu({ id: project.id, mode: 'delete' }), 'workspace-delete'));
   }
   return box;
@@ -3585,7 +3552,7 @@ function renderWorkspace(current) {
     const open = workspaceMenu?.id === project.id;
     const toggle = detailButton('⋯', () => setWorkspaceMenu(open ? null : { id: project.id, mode: 'menu' }), 'workspace-menu-toggle');
     toggle.setAttribute('aria-label', `Manage project: ${project.name}`);
-    toggle.title = 'Rename, repository, workflow, delete';
+    toggle.title = 'Rename or delete';
     toggle.setAttribute('aria-expanded', String(open));
     toggle.setAttribute('aria-controls', `workspace-menu-${project.id}`);
     item.append(button, toggle);
@@ -3967,8 +3934,8 @@ function selectProject(id) {
   renderBoard();
   announce(`Showing project “${currentProject()?.name}”. Agents in other projects keep running.`);
 }
-$('#project-select').addEventListener('change', () => selectProject($('#project-select').value));
-$('#workspace-new').addEventListener('click', () => { setSidebar(false); openProjectForm('new'); });
+// The form sits in the sidebar's Project settings, so the sidebar stays open on a phone.
+$('#workspace-new').addEventListener('click', openProjectForm);
 
 // Open a folder as a project. The system folder picker supplies the absolute path (a browser page
 // cannot); without a picker, the path is typed. A folder that a project already uses is selected.
@@ -4013,10 +3980,7 @@ $('#repo-browse').addEventListener('click', async () => {
   if (path === undefined) { repoMessage('This computer has no folder picker Promptboard can use. Type or paste the folder path instead.'); $('#repo-path').focus(); return; }
   if (path) { $('#repo-path').value = path; linkRepository(path); }
 });
-$('#project-new').addEventListener('click', () => openProjectForm('new'));
-$('#project-rename').addEventListener('click', () => openProjectForm('rename'));
-$('#project-delete').addEventListener('click', confirmProjectDelete);
-$('#project-form').addEventListener('submit', saveProject);
+$('#project-form').addEventListener('submit', createProject);
 $('#project-cancel').addEventListener('click', closeProjectForm);
 $('#repo-form').addEventListener('submit', event => { event.preventDefault(); linkRepository($('#repo-path').value); });
 $('#repo-unlink').addEventListener('click', () => linkRepository(null));

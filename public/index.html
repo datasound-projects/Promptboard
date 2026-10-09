@@ -301,10 +301,6 @@
         <div id="project-body">
         <div class="kanban-toolbar">
           <div class="toolbar-cell">
-            <label class="field-label" for="project-select">Project<select id="project-select"></select></label>
-            <div class="kanban-project-actions"><button type="button" class="text-button" id="project-new"><span aria-hidden="true">＋</span> New project</button><button type="button" class="text-button" id="project-rename" aria-label="Rename project">Rename</button><button type="button" class="text-button" id="project-delete" aria-label="Delete project">Delete</button></div>
-          </div>
-          <div class="toolbar-cell">
             <span class="field-label" id="repo-label">Repository</span>
             <p class="toolbar-value" id="repo-summary">Not linked</p>
             <button type="button" class="text-button" id="repo-edit" aria-controls="repo-panel" aria-expanded="false">Link or change</button>
@@ -321,7 +317,7 @@
         </div>
         <details class="base-disclosure project-backup"><summary>Backup and restore</summary><div class="project-backup-actions"><button class="secondary-button" id="import-board" type="button" title="Restore a board backup (JSON)" aria-label="Import board backup"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M12 15V3m-5 5 5-5 5 5M5 16v5h14v-5"/></svg><span>Import</span></button><button class="secondary-button" id="export-board" type="button" title="Download a board backup (JSON). Document content follows the option below." aria-label="Export board backup"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 16v5h14v-5"/></svg><span>Export</span></button><input type="file" id="import-file" accept=".json,application/json" hidden></div><label class="check-row"><input type="checkbox" id="export-base-content"> Include Base document content</label><p class="note">Resource definitions and assignments are included. Document bodies and supporting files are omitted unless selected.</p></details>
         <form class="kanban-project-form" id="project-form" novalidate hidden>
-          <label class="field-label" for="project-name"><span id="project-form-label">New project name</span><input id="project-name" type="text" maxlength="80" autocomplete="off" required></label>
+          <label class="field-label" for="project-name">New project name<input id="project-name" type="text" maxlength="80" autocomplete="off" required></label>
           <p class="note" id="project-form-note">Promptboard creates the project in “Promptboard/projects” in your home folder, with a Git repository ready for agents and other local tools. To use existing code, choose Open folder; it stays at its current location.</p>
           <div class="kanban-form-actions"><button type="submit" class="copy-button">Save project</button><button type="button" class="secondary-button" id="project-cancel">Cancel</button></div>
           <p class="inline-error" id="project-error" role="alert" hidden></p>

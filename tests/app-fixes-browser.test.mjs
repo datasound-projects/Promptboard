@@ -211,3 +211,28 @@ test('running tests refresh open task details only when their status changes', {
   await wait(`document.querySelector('#task-dialog').open && !document.querySelector('#task-details section').dataset.kept`, 'refreshed when the status changed');
   noExceptions(browser);
 });
+
+test('the sidebar list is the one place to pick, create, rename and delete projects, also on a phone', { skip: !chrome, timeout: 120000 }, async t => {
+  const { app, browser, ev, wait } = await setup(t, { width: 390, height: 800 });
+  const alpha = await app.board.createProject({ name: 'Alpha', workflowMode: 'pipeline' });
+  await browser.goto(`${app.url}/#/kanban`);
+  await wait(`document.querySelector(${JSON.stringify(`#workspace-list [data-project-id="${alpha.id}"]`)})`, 'sidebar list');
+  assert.deepEqual(await ev(`return ['#project-select', '#project-new', '#project-rename', '#project-delete'].filter(id => document.querySelector(id));`), []);
+  await ev(`document.querySelector('#workspace-list .workspace-menu-toggle').click();`);
+  assert.deepEqual(await ev(`return [...document.querySelectorAll('#workspace-list .workspace-menu button')].map(button => button.textContent);`), ['Rename', 'Delete…']);
+  await ev(`document.querySelector('#workspace-list .workspace-menu-toggle').click(); document.querySelector('#menu-toggle').click();`);
+  await wait(`document.querySelector('#sidebar').classList.contains('open')`, 'sidebar drawer');
+  // New project keeps the drawer open: its form is there.
+  await ev(`document.querySelector('#workspace-new').click();`);
+  assert.equal(await browser.layout(`const r = document.querySelector('#project-name').getBoundingClientRect(); return document.querySelector('#sidebar').classList.contains('open') && document.activeElement.id === 'project-name' && r.width > 0 && r.left >= 0 && r.right <= innerWidth;`), true);
+  await ev(`document.querySelector('#project-name').value = 'Beta'; document.querySelector('#project-form button[type="submit"]').click();`);
+  await wait(`document.querySelector('#project-form').hidden && document.querySelector('#workspace-list .current .workspace-name')?.textContent === 'Beta'`, 'created and shown');
+  assert.equal(await ev(`return document.activeElement.matches('#workspace-list .current .workspace-item');`), true);
+  const beta = (await app.board.state()).projects.find(project => project.name === 'Beta');
+  assert.equal(await ev(`return ${shownProject};`), beta.id);
+  await ev(`document.querySelector('#workspace-list .current .workspace-menu-toggle').click(); [...document.querySelectorAll('#workspace-list .workspace-menu button')].find(button => button.textContent === 'Delete…').click();`);
+  await ev(`[...document.querySelectorAll('#workspace-list .workspace-menu button')].find(button => button.textContent === 'Delete project').click();`);
+  await wait(`!document.querySelector(${JSON.stringify(`#workspace-list [data-project-id="${beta.id}"]`)})`, 'deleted');
+  assert.equal(await ev(`return document.activeElement.matches('#workspace-list .current .workspace-item') && ${shownProject};`), alpha.id);
+  noExceptions(browser);
+});
