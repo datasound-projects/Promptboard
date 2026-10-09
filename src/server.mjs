@@ -441,7 +441,7 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
           .finally(() => { invalidate(body.provider); release(); ready(); });
         claimed = null;
         await Promise.race([readySignal, run]);
-        const status = authOperation?.code === 'UNSUPPORTED' ? 400 : authOperation?.state === 'failed' ? 502 : 202;
+        const status = authOperation?.code === 'UNSUPPORTED' || authOperation?.state === 'failed' ? STATUS[authOperation.code] || 502 : 202;
         return send(res, status, { operation: authOperation });
       } catch (error) {
         claimed?.release();

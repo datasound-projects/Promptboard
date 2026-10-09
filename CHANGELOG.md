@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- A sign-in that fails at once now returns the same HTTP status as other provider errors (409 when the CLI is not installed, 504 on a timeout) instead of 502 for every code.
 - Accepting imported settings no longer changes a project's repository while its tasks own worktrees in the current one (`WORKSPACES_EXIST`), the same rule as linking a repository.
 - Creating a project with a repository checks the project limit and a requested project ID before any folder or Git change, so a refused create no longer leaves a new `.git` in the chosen folder.
 - **Set up Git here** and new projects in an existing folder refuse a repository without commits whose index has staged files (`STAGED_FILES`, HTTP 400), instead of committing those files in the “empty” first commit.

@@ -164,6 +164,18 @@ test('unsupported native sign-in is reported, not simulated', async t => {
   assert.equal((await logoutResponse.json()).code, 'UNSUPPORTED');
 });
 
+test('a sign-in that fails at once uses the shared status table, not 502 for every code', async t => {
+  const { auth, post } = await open(t);
+  for (const [code, status] of [['NOT_INSTALLED', 409], ['TIMEOUT', 504], ['AUTH_REQUIRED', 502]]) {
+    auth.login = async () => { throw new ProviderError('raw', code); };
+    const response = await post('/api/auth/login', { provider: 'codex' });
+    const { operation } = await response.json();
+    assert.equal(response.status, status, code);
+    assert.equal(operation.state, 'failed');
+    assert.equal(operation.code, code === 'AUTH_REQUIRED' ? 'AUTH_FAILED' : code);
+  }
+});
+
 test('auth and generation cannot overlap, and cancelling sign-in frees the next request', async t => {
   let releaseRun, entered, runs = 0;
   const started = new Promise(resolve => { entered = resolve; });
