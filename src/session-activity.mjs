@@ -8,8 +8,9 @@ export class SessionActivity {
     this.provider = provider;
     this.tools = new Set(); this.finishedTools = new Set(); this.agents = new Set();
     this.lifecycleTools = new Set(); // The parent's own tool calls since the current main lifecycle started.
+    this.toolNames = new Map(); // Outstanding identified tool -> its name.
     this.anonymousTools = new Map();
-    this.permissionTools = new Map(); this.permissionScopes = new Set();
+    this.permissionTools = new Map(); this.permissionScopes = new Map(); // Unidentified dialogs: scope -> tool names ('' unnamed).
     this.parentComplete = false; this.permission = false; this.ended = false;
     this.uncertain = false; this.backgroundUnknown = false;
     this.background = 0; this.scheduled = 0; this.planApproval = null;
@@ -58,7 +59,13 @@ export class SessionActivity {
     if (started || running) { this.parentComplete = false; this.clearPermissionScope(scope); }
     if (waiting) {
       if (permissionKey) this.permissionTools.set(permissionKey, scope);
-      else this.permissionScopes.add(scope);
+      else {
+        // A dialog without a tool ID is remembered by its tool's name. The unnamed notification that follows a named
+        // request is the same dialog, not another one.
+        const names = this.permissionScopes.get(scope) || new Set(), named = id(event.tool) || '';
+        if (named || ![...names].some(Boolean)) names.add(named);
+        this.permissionScopes.set(scope, names);
+      }
       if (subordinate && !child) this.uncertain = true;
       this.parentComplete = false;
     }
@@ -69,7 +76,7 @@ export class SessionActivity {
       if (!subordinate && !repeatedToolEnd && (claude && event.tool === 'ExitPlanMode' || gemini && event.tool === 'exit_plan_mode')
         && (!toolId || this.planApproval?.toolId !== toolId)) this.planApproval = null;
       if (key) {
-        if (!this.finishedTools.has(key)) { this.tools.add(key); if (!child) this.lifecycleTools.add(key); }
+        if (!this.finishedTools.has(key)) { this.tools.add(key); this.toolNames.set(key, toolName); if (!child) this.lifecycleTools.add(key); }
       } else {
         this.anonymousTools.set(toolName, (this.anonymousTools.get(toolName) || 0) + 1);
       }
@@ -77,14 +84,20 @@ export class SessionActivity {
     }
     if (toolEnd) {
       if (key) {
-        this.tools.delete(key); this.finishedTools.add(key);
+        this.tools.delete(key); this.toolNames.delete(key); this.finishedTools.add(key);
         // Keep only the newest finished IDs, so a long session never overflows into uncertainty.
         if (this.finishedTools.size > LIMIT) this.finishedTools.delete(this.finishedTools.values().next().value);
       }
       else if (this.anonymousTools.get(toolName) > 0) this.anonymousTools.set(toolName, this.anonymousTools.get(toolName) - 1);
-      // PermissionRequest/Notification often lack a tool ID. A result from
-      // another parallel tool cannot prove that an unidentified dialog closed.
+      // PermissionRequest/Notification often lack a tool ID. A result from another parallel tool cannot prove that an
+      // unidentified dialog closed; the end of the last outstanding call of the dialog's own tool name in its scope does.
       if (permissionKey) this.permissionTools.delete(permissionKey);
+      const names = this.permissionScopes.get(scope);
+      if (names?.has(toolName) && !this.anonymousTools.get(toolName)
+        && ![...this.tools].some(other => JSON.parse(other)[0] === child && this.toolNames.get(other) === toolName)) {
+        names.delete(toolName);
+        if (!names.size) this.permissionScopes.delete(scope);
+      }
       if (event.backgroundRequested === true && name === 'PostToolUse') this.backgroundUnknown = true;
       if (!subordinate && !repeatedToolEnd && name === 'PostToolUse' && event.tool === 'EnterPlanMode') this.planApproval = null;
       if (!subordinate && gemini && name === 'AfterTool' && event.tool === 'enter_plan_mode' && event.planEntered === true) this.planApproval = null;
@@ -113,7 +126,7 @@ export class SessionActivity {
     if (this.tools.size + this.agents.size > LIMIT || this.anonymousTools.size > LIMIT
       || [...this.anonymousTools.values()].reduce((sum, n) => sum + n, 0) > LIMIT
       || this.permissionTools.size + this.permissionScopes.size > LIMIT) {
-      this.uncertain = true; this.tools.clear(); this.finishedTools.clear(); this.agents.clear(); this.anonymousTools.clear(); this.lifecycleTools.clear();
+      this.uncertain = true; this.tools.clear(); this.finishedTools.clear(); this.agents.clear(); this.anonymousTools.clear(); this.lifecycleTools.clear(); this.toolNames.clear();
       this.permissionTools.clear(); this.permissionScopes.clear();
     }
     this.permission = Boolean(this.permissionTools.size || this.permissionScopes.size);

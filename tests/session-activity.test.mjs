@@ -298,3 +298,25 @@ test('a parallel tool call cancelled without an end event does not keep a finish
   a.observe({ name: 'PermissionRequest', toolId: 'cancelled' }, 5);
   assert.equal(a.snapshot(100000).ready, true, 'A late dialog for that call cannot rearm it.');
 });
+
+test('an unidentified dialog closes when the last call of its own tool ends, never on another tool\'s result', () => {
+  const a = new SessionActivity('claude');
+  a.observe({ name: 'PreToolUse', toolId: 'plan', tool: 'ExitPlanMode' }, 1);
+  a.observe({ name: 'PreToolUse', toolId: 'read', tool: 'Read' }, 2);
+  a.observe({ name: 'PermissionRequest', tool: 'ExitPlanMode' }, 3);
+  a.observe({ name: 'Notification', notification: 'permission_prompt' }, 4); // The same dialog, reminded.
+  a.observe({ name: 'PostToolUse', toolId: 'read', tool: 'Read' }, 5);
+  assert.equal(a.snapshot().permissionPending, true, 'Another tool\'s result proves nothing.');
+  a.observe({ name: 'PostToolUse', toolId: 'plan', tool: 'ExitPlanMode' }, 6);
+  assert.deepEqual([a.snapshot().permissionPending, a.snapshot().phase], [false, 'working'], 'Approved: the agent works on.');
+  // Two calls of one tool: the dialog stays until neither can still be waiting.
+  a.observe({ name: 'PreToolUse', toolId: 'b1', tool: 'Bash' }, 7); a.observe({ name: 'PreToolUse', toolId: 'b2', tool: 'Bash' }, 8);
+  a.observe({ name: 'PermissionRequest', tool: 'Bash' }, 9);
+  a.observe({ name: 'PostToolUse', toolId: 'b1', tool: 'Bash' }, 10); assert.equal(a.snapshot().permissionPending, true);
+  a.observe({ name: 'PostToolUse', toolId: 'b2', tool: 'Bash' }, 11); assert.equal(a.snapshot().permissionPending, false);
+  // An unnamed dialog of its own (an MCP elicitation) waits for the turn boundary.
+  a.observe({ name: 'Notification', notification: 'elicitation_dialog' }, 12);
+  a.observe({ name: 'PreToolUse', toolId: 'w', tool: 'Write' }, 13); a.observe({ name: 'PermissionRequest', tool: 'Write' }, 14);
+  a.observe({ name: 'PostToolUse', toolId: 'w', tool: 'Write' }, 15); assert.equal(a.snapshot().permissionPending, true);
+  a.observe({ name: 'Stop' }, 16); assert.equal(a.snapshot(100000).ready, true);
+});
