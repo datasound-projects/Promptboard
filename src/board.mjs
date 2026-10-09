@@ -588,17 +588,22 @@ export class Board {
     if (state.projects.some(project => project.id !== exceptId && project.name.toLowerCase() === name.toLowerCase())) throw conflict('A project with this name already exists.', 'NAME_TAKEN');
   }
 
+  /** Everything createProject refuses. createProjectWithRepository checks it before any Git command runs. */
+  #newProjectError(state, { name, workflowMode, id }) {
+    if (!['legacy', 'pipeline'].includes(workflowMode)) throw new BoardError('Choose a legacy stage board or a column pipeline.', 'INVALID_INPUT');
+    if (id !== undefined && !(typeof id === 'string' && RECORD_ID.test(id))) throw new BoardError('Choose a valid project ID.', 'INVALID_INPUT');
+    if (state.projects.length >= PROJECT_LIMIT) throw new BoardError(`A board can have at most ${PROJECT_LIMIT} projects.`, 'LIMIT');
+    this.#nameError(state, name);
+    if (id !== undefined && state.projects.some(project => project.id === id)) throw conflict('A Kanban project with this ID already exists.', 'ID_TAKEN');
+  }
+
   // ---- Projects ----
 
   /** `id` (optional) lets a shared project keep one ID across Origin and Kanban; it must be unused. */
   async createProject({ name, workflowMode = 'legacy', id }) {
     const clean = text(name, 80, 'Project name');
-    if (!['legacy', 'pipeline'].includes(workflowMode)) throw new BoardError('Choose a legacy stage board or a column pipeline.', 'INVALID_INPUT');
-    if (id !== undefined && !(typeof id === 'string' && RECORD_ID.test(id))) throw new BoardError('Choose a valid project ID.', 'INVALID_INPUT');
     return this.store.update(state => {
-      if (state.projects.length >= PROJECT_LIMIT) throw new BoardError(`A board can have at most ${PROJECT_LIMIT} projects.`, 'LIMIT');
-      this.#nameError(state, clean);
-      if (id !== undefined && state.projects.some(project => project.id === id)) throw conflict('A Kanban project with this ID already exists.', 'ID_TAKEN');
+      this.#newProjectError(state, { name: clean, workflowMode, id });
       const project = newProject({ ...(id === undefined ? {} : { id }), name: clean });
       if (workflowMode === 'pipeline') Object.assign(project, { workflowMode, pipeline: defaultPipelineConfig() });
       state.projects.push(project);
@@ -614,8 +619,8 @@ export class Board {
    */
   async createProjectWithRepository({ name, folder, workflowMode = 'legacy', id }) {
     const clean = text(name, 80, 'Project name');
-    if (!['legacy', 'pipeline'].includes(workflowMode)) throw new BoardError('Choose a legacy stage board or a column pipeline.', 'INVALID_INPUT');
-    this.#nameError(await this.state(), clean);
+    // Refuse before any folder or Git change; createProject checks again inside its update.
+    this.#newProjectError(await this.state(), { name: clean, workflowMode, id });
     let path, created = false;
     if (folder === 'new') {
       await mkdir(this.projectsDir, { recursive: true });
@@ -1591,6 +1596,7 @@ export class Board {
         const hasBase = pending.baseBinding || pending.baseColumns || pending.agentProfileId;
         if (hasBase && ((project.baseRevision || 0) !== (pending.baseTargetRevision || 0) || Object.values(project.baseColumns || {}).some(entry => entry.baseRevision))) throw conflict('Base settings were configured after import. Discard the imported selection to keep them.', 'BASE_TARGET_REVISION_CONFLICT');
         if (repository) {
+          if (project.tasks.some(task => task.workspace)) throw conflict('Tasks in this project have worktrees in the current repository. Remove them before you change the link.', 'WORKSPACES_EXIST');
           project.repository = { path: pending.repositoryPath, root: repository.root, commonDir: repository.commonDir, linkedWorktree: repository.linkedWorktree, validatedAt: Date.now() };
           const branch = repository.branches.find(item => item.name === pending.targetBranch);
           project.targetBranch = branch ? { name: branch.name, commit: branch.commit, root: repository.root, recordedAt: Date.now() } : null;
@@ -1958,12 +1964,19 @@ export class Board {
           ...(project.workflowMode === 'pipeline' ? normalizePipelineTaskSelection(project.pipelineImport || project.pipeline, { profileId: task.profileId, agentOverride: task.agentOverride }) : {}) })) })) };
   }
 
+  #importRefusal(state, replace) {
+    if (state.projects.length && !replace) throw conflict('Confirm that the import replaces the current board.', 'CONFIRMATION_REQUIRED');
+    if (this.#hasWorkspaceOrRun(state)) throw conflict('Tasks on the current board own worktrees or runs. Remove those worktrees before you replace the board.', 'WORKSPACES_EXIST');
+  }
+
   /**
    * Replace the board with a backup. Execution state is not imported; repository paths
    * and automation settings wait for confirmation per project. Nothing runs.
    */
   async importBackup(data, { replace = false } = {}) {
     const parsed = parseBackup(data);
+    // Refuse before Base writes revision files for the import; the update checks again.
+    this.#importRefusal(await this.state(), replace);
     const preparedBase = parsed.base ? await this.base.prepareImport(parsed.base) : null;
     if (data.version >= 3 && !preparedBase) throw new BoardError('This backup is missing its Base resource library.', 'INVALID_BACKUP');
     if (preparedBase) {
@@ -1979,8 +1992,7 @@ export class Board {
       }
     }
     return this.store.update(state => {
-      if (state.projects.length && !replace) throw conflict('Confirm that the import replaces the current board.', 'CONFIRMATION_REQUIRED');
-      if (this.#hasWorkspaceOrRun(state)) throw conflict('Tasks on the current board own worktrees or runs. Remove those worktrees before you replace the board.', 'WORKSPACES_EXIST');
+      this.#importRefusal(state, replace);
       if (preparedBase) this.base.publishPreparedImport(state, preparedBase);
       if (parsed.baseGlobal && Object.keys(parsed.baseGlobal).length) state.settings.pendingBaseImport = parsed.baseGlobal;
       else delete state.settings.pendingBaseImport;

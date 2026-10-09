@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { mkdir, mkdtemp, readdir, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { Board } from '../src/board.mjs';
-import { Coordinator } from '../src/coordinator.mjs';
+import { Coordinator, coordinatorRoute } from '../src/coordinator.mjs';
 import { OriginStore } from '../src/origin.mjs';
 
 async function temp(t) { const dir = await mkdtemp(join(tmpdir(), 'pb-coordinator-test-')); t.after(() => rm(dir, { recursive: true, force: true })); return dir; }
@@ -87,6 +88,17 @@ test('chat is read-only, scoped, cached and isolated per project', async t => {
   assert.equal((await coordinator.view(other.id)).chat.length, 0);
   // Design questions add Origin names only when asked.
   assert.equal(calls[1].prompt.includes('Origin'), false);
+});
+
+test('a question whose client left while the job slot was claimed is cancelled, not left running', async () => {
+  // The close event fired before the route could listen for it; only res.destroyed records it.
+  const res = Object.assign(new EventEmitter(), { destroyed: true, writableEnded: false }), job = { controller: new AbortController() };
+  let aborted = null, released = false;
+  await coordinatorRoute({ coordinator: { ask: async (_, __, { signal }) => { aborted = signal.aborted; return {}; } }, runner: async () => ({}), track: work => work,
+    claim: async () => ({ job, release: () => { released = true; } }), req: { method: 'POST' }, res, pathname: '/api/coordinator/p1/ask',
+    jsonBody: async () => ({ question: 'Where is checkout?', provider: 'codex' }), send: () => {} });
+  assert.equal(aborted, true);
+  assert.equal(released, true);
 });
 
 test('an index that exists but cannot be read is reported as such, never replaced by empty knowledge', async t => {

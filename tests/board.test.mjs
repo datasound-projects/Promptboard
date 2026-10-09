@@ -8,6 +8,7 @@ import { Board, COLUMNS, normalizeColumns, originSourceOf, TRANSITIONS } from '.
 import { defaultProjectsDir, Store, STATE_VERSION } from '../src/store.mjs';
 import { initRepository, validateRepository } from '../src/git.mjs';
 import { startServer } from '../src/server.mjs';
+import { chooseFolder } from '../src/folder.mjs';
 
 const run = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } }).trim();
 const exists = path => access(path).then(() => true, () => false);
@@ -70,6 +71,30 @@ test('the store serializes writes, replaces the file atomically, and recovers fr
   await writeFile(join(dir, 'state.json'), future);
   await assert.rejects(new Store(dir).read(), { code: 'STATE_VERSION_UNSUPPORTED' });
   assert.equal(await readFile(join(dir, 'state.json'), 'utf8'), future);
+});
+
+test('an unreadable state file or backup is refused, not quarantined or replaced by an older copy', async t => {
+  const dir = await temp(t, 'pb-store-');
+  const store = new Store(dir);
+  await store.update(state => { state.projects.push({ id: 'p1', labels: [], labelRevision: 0, tasks: [] }); });
+  await store.update(state => { state.projects.push({ id: 'p2', labels: [], labelRevision: 0, tasks: [] }); });
+  const saved = await readFile(join(dir, 'state.json'), 'utf8'), backup = await readFile(join(dir, 'state.json.bak'), 'utf8');
+  // A directory in place of the file gives a real read error (EISDIR) on every platform, like EACCES or EIO.
+  await rm(join(dir, 'state.json')); await mkdir(join(dir, 'state.json'));
+  await assert.rejects(new Store(dir).read(), { code: 'STATE_READ_FAILED', message: /EISDIR/ });
+  assert.deepEqual((await readdir(dir)).filter(name => name.startsWith('state.corrupt-')), []);
+  assert.equal(await readFile(join(dir, 'state.json.bak'), 'utf8'), backup);
+  // A missing main file and an unreadable backup must not become an empty board.
+  await rm(join(dir, 'state.json'), { recursive: true }); await rm(join(dir, 'state.json.bak')); await mkdir(join(dir, 'state.json.bak'));
+  await assert.rejects(new Store(dir).read(), { code: 'STATE_READ_FAILED' });
+  // A damaged main file with an unreadable backup is refused too, and the damaged file stays in place.
+  await writeFile(join(dir, 'state.json'), '{"schema":');
+  await assert.rejects(new Store(dir).read(), { code: 'STATE_READ_FAILED' });
+  assert.equal(await readFile(join(dir, 'state.json'), 'utf8'), '{"schema":');
+  assert.deepEqual((await readdir(dir)).filter(name => name.startsWith('state.corrupt-')), []);
+  // Once readable again, the board loads unchanged.
+  await rm(join(dir, 'state.json.bak'), { recursive: true }); await writeFile(join(dir, 'state.json'), saved);
+  assert.deepEqual((await new Store(dir).read()).projects.map(project => project.id), ['p1', 'p2']);
 });
 
 test('repository validation explains each invalid case and accepts linked worktrees', { skip: process.platform === 'win32' }, async t => {
@@ -363,6 +388,25 @@ test('import keeps execution inactive and waits for confirmation of paths and au
   await assert.rejects(board.importBackup(backup, { replace: true }), { code: 'WORKSPACES_EXIST' });
 });
 
+test('confirming an imported repository is refused while tasks own worktrees in the current one', { skip: process.platform === 'win32' }, async t => {
+  const { board } = await linkedBoard(t);
+  const other = new Board({ dataDir: await temp(t, 'pb-data-') });
+  await other.importBackup(await board.exportBackup());
+  let project = (await other.view()).projects[0];
+  const current = await repo(t);
+  project = (await other.linkRepository(project.id, { path: current, expectedRevision: project.revision })).project;
+  const task = await other.createTask({ projectId: project.id, title: 'Work', prompt: 'P' });
+  await other.ensureTaskWorktree(task.id);
+  project = (await other.view()).projects[0];
+  await assert.rejects(other.confirmImport(project.id, { accept: true, expectedRevision: project.revision }), { code: 'WORKSPACES_EXIST' });
+  project = (await other.view()).projects[0];
+  assert.equal(project.repository.root, current);
+  assert.ok(project.pendingImport, 'The imported settings still wait.');
+  // Discarding them changes no link and stays possible.
+  await other.confirmImport(project.id, { accept: false, expectedRevision: project.revision });
+  assert.equal((await other.view()).projects[0].repository.root, current);
+});
+
 test('board HTTP routes need the page token, resolve paths on the server, and never start agents', { skip: process.platform === 'win32' }, async t => {
   const dataDir = await temp(t, 'pb-data-');
   const root = await repo(t);
@@ -453,6 +497,56 @@ test('every project made in the app has a Git repository: new folders, existing 
   await assert.rejects(board.createProjectWithRepository({ name: 'Relative', folder: 'relative/path' }), { code: 'INVALID_PATH' });
 });
 
+
+test('Git setup refuses a repository without commits whose index has staged files, instead of committing them', { skip: process.platform === 'win32' }, async t => {
+  const dataDir = await temp(t, 'pb-data-'), staged = await temp(t, 'pb-staged-');
+  run(staged, 'init', '-q'); await mkdir(join(staged, 'sub')); await writeFile(join(staged, 'secret.txt'), 'mine\n');
+  run(staged, 'add', 'secret.txt');
+  const untouched = async () => {
+    assert.equal(run(staged, 'ls-files', '--cached'), 'secret.txt');
+    assert.throws(() => run(staged, 'rev-parse', '--verify', '--quiet', 'HEAD'));
+  };
+  // From the root and from a subfolder alike: the commit would take the whole index.
+  await assert.rejects(initRepository(staged), { code: 'STAGED_FILES', status: 400 });
+  await assert.rejects(initRepository(join(staged, 'sub')), { code: 'STAGED_FILES' });
+  const app = await startServer({ port: 0, dataDir, detector: async () => [], executor: null });
+  t.after(() => app.close());
+  await assert.rejects(app.board.createProjectWithRepository({ name: 'Staged', folder: staged }), { code: 'STAGED_FILES' });
+  assert.deepEqual((await app.board.state()).projects, []);
+  const { token } = await fetch(app.url + '/api/session').then(r => r.json());
+  const project = await app.board.createProject({ name: 'Linked later' });
+  const response = await fetch(`${app.url}/api/projects/${project.id}/init-repository`, { method: 'POST', headers: { 'x-ste-token': token, 'content-type': 'application/json' },
+    body: JSON.stringify({ path: staged, confirm: true, expectedRevision: project.revision }) });
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).code, 'STAGED_FILES');
+  await untouched();
+});
+
+test('a project that cannot be created leaves an existing folder without a new Git repository', { skip: process.platform === 'win32' }, async t => {
+  const dataDir = await temp(t, 'pb-data-'), folder = await temp(t, 'pb-plain-');
+  const board = new Board({ dataDir, projectsDir: join(dataDir, 'projects') });
+  await board.createProject({ name: 'First', id: 'shared-1' });
+  await assert.rejects(board.createProjectWithRepository({ name: 'Second', folder, id: 'shared-1' }), { code: 'ID_TAKEN' });
+  await assert.rejects(board.createProjectWithRepository({ name: 'Second', folder, id: '../bad' }), { code: 'INVALID_INPUT' });
+  await board.store.update(state => { for (let i = state.projects.length; i < 200; i++) state.projects.push({ id: `p${i}`, name: `P${i}`, labels: [], labelRevision: 0, tasks: [] }); });
+  await assert.rejects(board.createProjectWithRepository({ name: 'Second', folder }), { code: 'LIMIT' });
+  await assert.rejects(board.createProjectWithRepository({ name: 'Third', folder: 'new' }), { code: 'LIMIT' });
+  assert.equal(await exists(join(folder, '.git')), false);
+  assert.equal(await exists(join(dataDir, 'projects')), false);
+});
+
+test('the folder picker reports only its own Cancel as cancelled; any other failure is unavailable', { skip: !['darwin', 'linux'].includes(process.platform) }, async t => {
+  const bin = await temp(t, 'pb-picker-'), mac = process.platform === 'darwin';
+  // A stand-in for osascript or zenity (kdialog is then missing), driven by environment variables.
+  await writeFile(join(bin, mac ? 'osascript' : 'zenity'), '#!/bin/sh\nprintf "%s" "$PB_PICKER_OUT"\nprintf "%s" "$PB_PICKER_ERR" >&2\nexit "$PB_PICKER_CODE"\n', { mode: 0o755 });
+  const keys = ['PATH', 'PB_PICKER_OUT', 'PB_PICKER_ERR', 'PB_PICKER_CODE'], saved = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+  t.after(() => { for (const key of keys) if (saved[key] === undefined) delete process.env[key]; else process.env[key] = saved[key]; });
+  const pick = (out, err, code) => { Object.assign(process.env, { PATH: bin, PB_PICKER_OUT: out, PB_PICKER_ERR: err, PB_PICKER_CODE: String(code) }); return chooseFolder(); };
+  assert.deepEqual(await pick('/home/me/app/\n', '', 0), { path: '/home/me/app' });
+  assert.deepEqual(await pick('', mac ? 'execution error: User canceled. (-128)' : 'Gtk-Message: GtkDialog mapped without a transient parent.', 1), { cancelled: true });
+  await assert.rejects(pick('', mac ? 'execution error: No user interaction allowed. (-1713)' : 'Gtk-WARNING: cannot open display: ', 1), { code: 'PICKER_UNAVAILABLE' });
+  await assert.rejects(pick('', '', 255), { code: 'PICKER_UNAVAILABLE' });
+});
 
 test('custom agent overrides validate, persist, and use the same hierarchy as built-in stages', async t => {
   const { normalizeColumns, effectiveWorkflow } = await import('../src/board.mjs');

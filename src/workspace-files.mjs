@@ -62,6 +62,13 @@ async function context(board, projectId, workspace) {
   return { root, scopes, project: { id: project.id, name: project.name }, workspace: scope };
 }
 
+/** Filesystem and Git failures while resolving or reading a path, as viewer errors instead of server errors. */
+function unavailable(error) {
+  if (error instanceof WorkspaceFileError) throw error;
+  if (['ENOENT', 'ENOTDIR'].includes(error.code)) fail('This file or folder was removed or is unavailable.', 'FILE_NOT_FOUND', 404);
+  fail('This file or folder could not be inspected. Check its permissions and project link.', 'FILE_UNAVAILABLE', 403);
+}
+
 export async function inspectWorkspace(board, projectId, { path = '', workspace = '', file = false, offset = '0', version = '' } = {}) {
   const parts = parsePath(path);
   if (typeof workspace !== 'string' || workspace.length > 100 || !/^[A-Za-z0-9_-]*$/.test(workspace)) fail('Choose a project checkout or task worktree.', 'FILE_WORKSPACE_INVALID');
@@ -105,11 +112,7 @@ export async function inspectWorkspace(board, projectId, { path = '', workspace 
       const revision = createHash('sha256').update(bytes.subarray(0, size)).digest('hex');
       return { ...identity, version: revision, bytes: size, modifiedAt: after.mtimeMs, unchanged: revision === version, ...(revision === version ? {} : { text }) };
     } finally { await handle.close(); }
-  } catch (error) {
-    if (error instanceof WorkspaceFileError) throw error;
-    if (['ENOENT', 'ENOTDIR'].includes(error.code)) fail('This file or folder was removed or is unavailable.', 'FILE_NOT_FOUND', 404);
-    fail('This file or folder could not be inspected. Check its permissions and project link.', 'FILE_UNAVAILABLE', 403);
-  }
+  } catch (error) { unavailable(error); }
 }
 
 export function validateFileText(text) {
@@ -128,7 +131,7 @@ export async function saveWorkspaceFile(board, projectId, value, { signal } = {}
   if (!/^[a-f0-9]{64}$/.test(version || '') || !/^[a-f0-9]{64}$/.test(scopeVersion || '')) fail('Read the current file before saving.', 'FILE_VERSION_INVALID');
   const parts = parsePath(path);
   if (!parts.length) fail('Choose an existing file.', 'FILE_PATH_INVALID');
-  const ctx = await context(board, projectId, workspace), lock = join(ctx.root, ...parts);
+  const ctx = await context(board, projectId, workspace).catch(unavailable), lock = join(ctx.root, ...parts);
   if (createHash('sha256').update(ctx.root).digest('hex') !== scopeVersion) fail('The project folder changed. Reload this file before saving.', 'FILE_CONFLICT', 409);
   const previous = saves.get(lock) || Promise.resolve();
   const pending = previous.catch(() => {}).then(async () => {

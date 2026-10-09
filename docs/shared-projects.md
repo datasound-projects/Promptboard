@@ -41,6 +41,7 @@ A prompt opened from somewhere else shows where it came from:
 ## Cards keep their instructions
 
 - A card made from a saved prompt records the project, prompt and revision it received (`source.projectId`, `source.promptId`, `source.promptRevision`).
+- If the prompt's link to a new card cannot be saved, the card is deleted again, so trying again makes one card. If it cannot be deleted either, the error (`CARD_UNLINKED`) names the card to delete.
 - New revisions never change a card on their own. The card shows the newer revision only after **Update card**.
 - **Update card** changes only an idle card in To Do: no queued or running agent and no column automation in progress. Otherwise it is refused with `CARD_BUSY`, and the card and its run keep their instructions; create a new card instead.
 - A card whose prompt was edited on the board is replaced only after you confirm.

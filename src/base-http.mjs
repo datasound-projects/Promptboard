@@ -32,7 +32,7 @@ export class BaseRoutes {
     const controller = new AbortController();
     const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(45000)]);
     const abort = () => { if (!res.writableEnded) controller.abort(); };
-    res.once('close', abort); this.operations.add(controller);
+    res.once('close', abort); if (res.destroyed) controller.abort(); this.operations.add(controller);
     try { return await this.track(work(signal)); }
     finally { res.off('close', abort); this.operations.delete(controller); }
   }
@@ -45,7 +45,7 @@ export class BaseRoutes {
     if (method === 'POST' && pathname === '/api/base/avatar/cancel') return this.send(res, 200, this.avatars.cancel((await this.body(req)).operationId));
     if (method === 'POST' && pathname === '/api/base/avatar/generate') {
       const body = await this.body(req), controller = new AbortController();
-      const abort = () => { if (!res.writableEnded) controller.abort(); }; res.on('close', abort);
+      const abort = () => { if (!res.writableEnded) controller.abort(); }; res.on('close', abort); if (res.destroyed) controller.abort();
       try { return this.send(res, 200, await this.track(this.avatars.generate(body, { signal: controller.signal }))); }
       finally { res.off('close', abort); }
     }
@@ -83,7 +83,7 @@ export class BaseRoutes {
     if (method === 'POST' && pathname === '/api/base/wiki/generate') {
       const body = await this.body(req), controller = new AbortController();
       const abort = () => { if (!res.writableEnded) controller.abort(); };
-      res.once('close', abort);
+      res.once('close', abort); if (res.destroyed) controller.abort();
       try { return this.send(res, 200, await this.track(this.wiki.generate(body, { signal: controller.signal }))); }
       finally { res.off('close', abort); }
     }
@@ -162,7 +162,10 @@ export class BaseRoutes {
       }
       const supplied = run.baseManifest?.supplied?.find(item => item.resourceId === id);
       if (!supplied?.contextRef || !/^base-context\/[A-Za-z0-9_-]+\.txt$/.test(supplied.contextRef)) fail('This run has no supplied context for that resource.', 'BASE_NOT_FOUND', 404);
-      const text = await readFile(join(board.dataDir, run.artifactsDir, supplied.contextRef), 'utf8');
+      const text = await readFile(join(board.dataDir, run.artifactsDir, supplied.contextRef), 'utf8').catch(error => {
+        if (error.code === 'ENOENT') fail('The supplied context of this run is no longer stored.', 'BASE_NOT_FOUND', 404);
+        throw error;
+      });
       return this.send(res, 200, { resourceId: id, text, contentHash: supplied.contentHash });
     }
     return false;

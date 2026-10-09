@@ -289,6 +289,12 @@ export async function projectsRoute({ origin, board, prompts, req, res, pathname
         source: { historyId: last.historyId, provider: last.settings.provider, model: last.settings.model, effort: last.settings.effort, language: last.settings.language, verification: last.verification,
           generatedAt: last.savedAt, projectId: target.id, promptId: prompt.id, promptRevision: last.number } });
       prompt.links.cards.push({ projectId: target.kanban.id, taskId: card.id, promptRevision: last.number, createdAt: Date.now() });
+    }).catch(async error => {
+      // The link was not saved: remove the new, untouched card again, so a retry does not make a second one.
+      if (card && !await board.deleteTask(card.id, { expectedRevision: card.revision }).then(() => true, () => false)) {
+        fail(`Card ${card.number} was created, but its link to this prompt could not be saved. Delete that card on the board before you try again.`, 'CARD_UNLINKED', 500);
+      }
+      throw error;
     });
     return view(saved, { project: target, task: { id: card.id, number: card.number, projectId: target.kanban.id } });
   }

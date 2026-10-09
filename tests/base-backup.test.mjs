@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readdir, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Board, COLUMNS } from '../src/board.mjs';
@@ -41,6 +41,16 @@ test('board backup v3 preserves scope references and exact task text, with an ex
   assert.equal(portable.projects[0].tasks[0].prompt, '  Exact prompt\r\nbytes\n');
   assert.equal(portable.projects[0].tasks[0].baseColumns.c_custom1.binding.include[0].resourceId, instruction.id);
   assert.equal('runs' in portable, false); assert.equal('workspace' in portable.projects[0].tasks[0], false);
+});
+
+test('an import refused for confirmation writes no Base revision files', async t => {
+  const { source } = await fixture(t), target = await board(t);
+  await target.createProject({ name: 'Current work' });
+  const revisions = () => readdir(join(target.dataDir, 'base', 'revisions')).catch(() => []);
+  const before = await revisions();
+  await assert.rejects(target.importBackup(await source.exportBackup({ includeBaseContent: true })), { code: 'CONFIRMATION_REQUIRED' });
+  assert.deepEqual(await revisions(), before);
+  assert.equal((await target.state()).base.resources.length, 0);
 });
 
 test('import remaps every Base reference, preserves existing local resources and waits for profile/global confirmation', async t => {

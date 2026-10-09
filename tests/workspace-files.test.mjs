@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, rename, rm, symlink, writeFile } from 'node:f
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { FILE_LIMITS, inspectWorkspace } from '../src/workspace-files.mjs';
+import { FILE_LIMITS, inspectWorkspace, saveWorkspaceFile } from '../src/workspace-files.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
 
 async function fixture(t) {
@@ -104,6 +104,13 @@ test('handles disappeared paths, wrong types, unknown projects and unlinked proj
   await assert.rejects(inspectWorkspace(board, 'unknown'), error => error.status === 404);
   project.repository = null;
   await assert.rejects(inspectWorkspace(board, 'p_fixture'), error => error.code === 'REPOSITORY_REQUIRED');
+});
+
+test('saving into a removed project folder reports it as missing, not as a server error', async t => {
+  const { root, project, board } = await fixture(t);
+  project.repository.path = root;
+  await rm(root, { recursive: true, force: true });
+  await assert.rejects(saveWorkspaceFile(board, 'p_fixture', { path: 'readme.md', version: 'a'.repeat(64), scopeVersion: 'b'.repeat(64), text: 'x' }), { code: 'FILE_NOT_FOUND', status: 404 });
 });
 
 test('root replacement by a symlink cannot expose another folder', { skip: process.platform === 'win32' }, async t => {
