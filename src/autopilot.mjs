@@ -213,7 +213,7 @@ export class Autopilot {
     }
     if (cur.step === 'running') {
       const run = await this.board.run(cur.runId);
-      if (done.has(run.status)) return this.pause(projectId, `The ${title(stage)} agent for “${task.title}” ${run.status}${run.reason ? `: ${run.reason}` : ''}.`);
+      if (done.has(run.status)) return this.pause(projectId, `The ${title(stage)} agent for “${task.title}” ${run.status}${run.reason ? `: ${run.reason.replace(/[.\s]+$/, '')}` : ''}.`);
       if (run.status === 'succeeded') return this.set(projectId, a => { a.current = { ...a.current, step: 'after' }; });
       // Advance only on a finished turn, never while the agent asks for permission or an answer.
       if (run.status !== 'waiting_for_input' || !run.turnComplete || !run.turns) return;

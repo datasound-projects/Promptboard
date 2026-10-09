@@ -33,6 +33,8 @@ const LIVE = ['queued', 'running', 'waiting_for_input'];
 const ID = /^[A-Za-z0-9_-]{1,100}$/;
 const sha = text => createHash('sha256').update(text).digest('hex');
 const clip = (text, max) => { const value = String(text ?? '').replace(/\s+/g, ' ').trim(); return value.length > max ? `${value.slice(0, max - 1)}…` : value; };
+// A reason quoted inside a sentence that ends with its own period.
+const clause = (text, max) => clip(text, max).replace(/[.\s]+$/, '');
 
 export class CoordinatorError extends Error { constructor(message, code, status = 400) { super(message); this.code = code; this.status = status; } }
 
@@ -256,8 +258,8 @@ function overview(project, runs, index) {
   for (const task of project.tasks) {
     if (task.column === done) continue;
     const own = runs.filter(run => run.taskId === task.id), last = own.at(-1), base = { taskId: task.id, number: task.number ?? null, title: task.title };
-    if (last && LIVE.includes(last.status) && last.status === 'waiting_for_input' && !last.turnComplete) blockers.push({ ...base, kind: 'needs-you', runId: last.id, text: `The agent is waiting for your answer${last.waitingReason ? `: ${clip(last.waitingReason, 160)}` : ''}.` });
-    else if (last && ['failed', 'interrupted'].includes(last.status)) blockers.push({ ...base, kind: 'failed', runId: last.id, text: `The agent run ${last.status}${last.reason ? `: ${clip(last.reason, 160)}` : ''}.` });
+    if (last && LIVE.includes(last.status) && last.status === 'waiting_for_input' && !last.turnComplete) blockers.push({ ...base, kind: 'needs-you', runId: last.id, text: `The agent is waiting for your answer${last.waitingReason ? `: ${clause(last.waitingReason, 160)}` : ''}.` });
+    else if (last && ['failed', 'interrupted'].includes(last.status)) blockers.push({ ...base, kind: 'failed', runId: last.id, text: `The agent run ${last.status}${last.reason ? `: ${clause(last.reason, 160)}` : ''}.` });
     if (task.evidence?.review?.verdict === 'changes_required') blockers.push({ ...base, kind: 'review', text: 'The review asked for changes.' });
     if (task.evidence?.tests?.status === 'failed') blockers.push({ ...base, kind: 'tests', text: 'The tests failed.' });
     if (task.automationMove?.status === 'failed') blockers.push({ ...base, kind: 'automation', text: 'A column automation failed.' });
