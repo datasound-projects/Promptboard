@@ -33,7 +33,7 @@ import { inspectWorkspace, saveWorkspaceFile, WorkspaceFileError } from './works
 import { proposeWorkspaceFile, validateFileProposalRequest } from './workspace-file-ai.mjs';
 import { OriginError, OriginStore, originRoute } from './origin.mjs';
 import { ContextStore, contextRoute } from './origin-context.mjs';
-import { PromptStore, createBoardProject, projectsRoute } from './projects.mjs';
+import { PromptStore, createBoardProject, nameTaken, projectsRoute } from './projects.mjs';
 import { Coordinator, CoordinatorError, coordinatorRoute } from './coordinator.mjs';
 
 const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
@@ -151,7 +151,12 @@ async function boardRoute(board, req, res, pathname, searchParams, origin) {
       path: searchParams.get('path') || '', workspace: searchParams.get('workspace') || '',
       offset: searchParams.get('offset') || '0', version: searchParams.get('version') || '', file: action === 'file',
     }));
-    if (method === 'PATCH' && !action) return view({ project: await board.renameProject(id, await body()) });
+    if (method === 'PATCH' && !action) {
+      // One name per shared project: a board is not renamed to an Origin project's name either.
+      const value = await body();
+      if (typeof value.name === 'string' && await nameTaken({ origin, board }, value.name.trim(), id)) throw new BoardError('A project with this name already exists.', 'NAME_TAKEN', 409);
+      return view({ project: await board.renameProject(id, value) });
+    }
     if (method === 'PATCH' && action === 'labels') return view({ project: await board.setLabels(id, await body()) });
     if (method === 'DELETE' && !action) return view({ deleted: await board.deleteProject(id, { expectedRevision: expected() }) ?? true });
     if (method === 'POST' && action === 'repository') return view(await board.linkRepository(id, await body()));
@@ -393,7 +398,7 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
     }
     if (/^\/api\/origin(?:\/|$)/.test(pathname)) {
       const route = /^\/api\/origin\/projects\/[^/]+\/document(?:\/|$)/.test(pathname) ? contextRoute : originRoute;
-      try { return await route({ origin, contexts, board, req, res, pathname, jsonBody, send }); }
+      try { return await route({ origin, contexts, board, prompts, req, res, pathname, jsonBody, send }); }
       catch (error) { return sendFailure(res, error, 'The blueprint request failed. Board, Compose and Base data are unchanged.', { status: 500, code: 'ORIGIN_FAILED' }); }
     }
     if (req.method === 'GET' && pathname === '/api/models') {

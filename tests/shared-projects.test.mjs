@@ -181,3 +181,13 @@ test('names are checked against projects and boards, on create and rename, and a
   const linked = (await call(`/api/origin/projects/${blog.id}/link`, 'POST', { expectedRevision: 1, createKanban: true })).data.project;
   assert.equal(linked.kanbanProjectId, blog.id);
 });
+
+test('renaming a board in Kanban keeps the one-name rule across Origin', async t => {
+  const { app, call } = await client(t);
+  await call('/api/origin/projects', 'POST', { name: 'Plan only' });
+  const board = await app.board.createProject({ name: 'Board' });
+  const rename = name => call(`/api/projects/${board.id}`, 'PATCH', { name, expectedRevision: board.revision });
+  const taken = await rename('plan ONLY');
+  assert.equal(taken.status, 409); assert.equal(taken.data.code, 'NAME_TAKEN');
+  assert.equal((await rename('Board two')).status, 200);
+});
