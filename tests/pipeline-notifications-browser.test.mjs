@@ -67,8 +67,13 @@ test('Notify me editing, explicit permission, display receipts and task clicks w
   await browser.eval(`window.__alerts[0].onshow();`); await moving;
   t.diagnostic('First notification move and display receipt completed.');
   assert.equal((await app.board.automationRuns(task.id))[0].actions[0].status, 'succeeded');
+  // Open dialogs close as Escape would: one whose cancel guard refuses (unsaved work) stays open, the others close.
+  await browser.eval(`for(const id of ['guarded','plain']){const dialog=document.createElement('dialog');dialog.id=id;document.body.append(dialog);dialog.showModal();}
+    document.querySelector('#guarded').addEventListener('cancel',event=>event.preventDefault());`);
   await browser.eval(`window.__alerts[0].onclick();`);
   await browser.until(`document.querySelector('#task-dialog').open && document.querySelector('#task-dialog').dataset.taskId==='${task.id}'`, 'alert opened exact task in its project');
+  assert.deepEqual(await browser.eval(`return [document.querySelector('#guarded').open, document.querySelector('#plain').open];`), [true, false], 'the guarded dialog stays open');
+  await browser.eval(`for(const id of ['guarded','plain']){document.getElementById(id).close();document.getElementById(id).remove();}`);
   assert.equal(await browser.eval(`return ${shownProject};`), project.id);
   assert.equal(await browser.eval(`return document.querySelector('#task-dialog-heading').textContent;`), task.title);
   assert.equal(await browser.eval(`return document.querySelector('#task-dialog img')===null && window.__alerts[0].closed;`), true);

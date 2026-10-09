@@ -5119,7 +5119,8 @@ const browserNotifications = window.PromptboardNotifications ? new window.Prompt
     await loadBoard();
     const project = board?.projects.find(item => item.id === projectId);
     if (!project?.tasks.some(task => task.id === taskId)) { announce('The notification task is no longer available.'); return; }
-    for (const dialog of document.querySelectorAll('dialog[open]')) dialog.close();
+    // Close each open dialog as Escape would, so its own guards (an unsaved file, a save in flight) still apply.
+    for (const dialog of document.querySelectorAll('dialog[open]')) if (dialog.dispatchEvent(new Event('cancel', { cancelable: true }))) dialog.close();
     location.hash = '#/kanban'; showPage(); selectProject(projectId); await openTaskDetails(taskId);
   } }) : null;
 function renderNotificationSettings() {
