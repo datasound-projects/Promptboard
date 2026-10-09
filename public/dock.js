@@ -463,12 +463,16 @@ async function copySelection() {
   catch { dockNote('Clipboard access was not granted. Use your browser\'s copy shortcut.'); }
 }
 
+// Pointer capture keeps a touch or pen drag on the divider; a cancelled pointer ends the drag too.
 function startDividerDrag(event) {
   event.preventDefault();
+  const grip = event.currentTarget; grip.setPointerCapture(event.pointerId);
   const move = e => { dock.height = Math.max(160, Math.min(window.innerHeight - 140, window.innerHeight - e.clientY)); applyDockHeight(); };
-  const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); savePref(DOCK_HEIGHT_KEY, String(dock.height)); fitSession(dock.sessions.get(dock.selected)); };
-  window.addEventListener('pointermove', move);
-  window.addEventListener('pointerup', up);
+  const up = () => {
+    for (const [type, handler] of [['pointermove', move], ['pointerup', up], ['pointercancel', up]]) grip.removeEventListener(type, handler);
+    savePref(DOCK_HEIGHT_KEY, String(dock.height)); fitSession(dock.sessions.get(dock.selected));
+  };
+  for (const [type, handler] of [['pointermove', move], ['pointerup', up], ['pointercancel', up]]) grip.addEventListener(type, handler);
 }
 
 (function initDock() {
