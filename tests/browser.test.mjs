@@ -410,7 +410,7 @@ test('terminal dock in a real browser: start, render, type, collapse, resize, se
   const codexRun = await (async () => { for (const end = Date.now() + 15000; Date.now() < end;) { const run = (await board.view()).runs.find(run => run.taskId === codexTask.id); if (run) return run; await new Promise(resolve => setTimeout(resolve, 50)); } assert.fail('Codex run did not start'); })();
   assert.deepEqual([codexRun.config.provider, codexRun.config.model], ['codex', 'codex-test-model']);
   await browser.until(`${text(codexRun.id)}.includes('fake codex started') && ${text(codexRun.id)}.includes('working on')`, 'Codex activity rendered', 30000);
-  assert.match(await browser.eval(`return document.querySelector('#dock-tab-${codexRun.id}').textContent;`), /Codex CLI · codex-test-model/);
+  assert.match(await browser.eval(`return document.querySelector('#dock-tab-${codexRun.id}').title;`), /Codex CLI · codex-test-model/);
   assert.equal(await browser.eval(`return window.promptboardDock.selected;`), codexRun.id);
   const details = await browser.eval(`return document.querySelector('#dock-details').textContent;`);
   assert.ok(details.includes(root)); assert.ok(details.includes(codexRun.branch)); assert.ok(details.includes(codexRun.workspacePath));

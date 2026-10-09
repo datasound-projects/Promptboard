@@ -130,6 +130,7 @@ test('Origin in real Chrome: quick entry, mind map, diagram, evidence, readiness
   await section('research'); await quick('Fewer than 5,000 concurrent users', 'assumptions'); await open('Fewer than 5,000');
   await set('If it is wrong…', 'Scaling changes'); await press('Make it a decision', '#origin-drawer');
   await wait(`document.querySelector('#origin-section-heading').textContent === 'Decisions' && document.querySelector('#origin-drawer-title')?.value === 'Fewer than 5,000 concurrent users'`, 'decision opened');
+  assert.deepEqual(await ev(`const t = document.querySelector('#origin-drawer-title'); return [document.activeElement === t, t.selectionStart, t.scrollLeft];`), [true, 0, 0], 'An opened title shows its start.');
   await set('Decision', 'Single region'); await set('Why', 'Modest load'); await seg('Status', 'Accepted'); await close();
   assert.match(await ev(`return document.querySelector('#origin-main .origin-row').textContent;`), /Single region.*ADR-001.*Accepted/);
 
@@ -173,6 +174,10 @@ test('Origin in real Chrome: quick entry, mind map, diagram, evidence, readiness
 
   // Kanban handoff: explicit, ordered, To Do, no run.
   await section('plan'); await press('Select all drafts');
+  await ev(`document.querySelector('#origin-main .origin-row-open').click();`); await wait(`!document.querySelector('#origin-drawer').hidden`, 'task editor');
+  assert.deepEqual(await ev(`const bar = document.querySelector('.origin-selection'); return { squeezed: [...bar.querySelectorAll('button')].filter(b => b.scrollWidth > b.clientWidth + 1 || b.getBoundingClientRect().height > 44).map(b => b.textContent), narrowTitles: [...document.querySelectorAll('#origin-main .origin-row-title')].filter(t => t.getBoundingClientRect().width < 100).length };`),
+    { squeezed: [], narrowTitles: 0 }, 'With the editor open, the bulk bar and task rows wrap instead of squeezing.');
+  await close();
   await ev(`document.querySelector('#origin-kanban-handoff').click();`);
   // Not linked yet: the destination is chosen and shown before anything is sent.
   await wait(`document.querySelector('#origin-connect-dialog')?.open`, 'connect dialog');

@@ -555,7 +555,7 @@ window.PromptboardBase = (() => {
         const stdio = group('Local server', field('Executable', command), field('Arguments (one per line; no shell)', args), env);
         const http = group('HTTP server', field('Endpoint', endpoint), headers);
         const update = () => { stdio.hidden = transport.value !== 'stdio'; http.hidden = transport.value === 'stdio'; }; transport.addEventListener('change', update); update();
-        form.append(field('Transport', transport), stdio, http, auth.label, field('Authentication requirements', authDescription), p('MCP is available only where the agent adapter can safely deliver it. Planning and Code Review do not receive Base MCP servers. A connection test starts the configured server or contacts its endpoint; trust and an explicit action are required.'));
+        form.append(field('Transport', transport), stdio, http, auth.label, field('Authentication requirements', authDescription), p('MCP is available only where the agent adapter can safely deliver it. On legacy staged boards, Planning and Code Review do not receive Base MCP servers; every column of a pipeline board can. A connection test starts the configured server or contacts its endpoint; trust and an explicit action are required.'));
         if (item.id) form.append(button('Test connection and discover tools', () => form.savedAction(
           () => request(`/api/base/resources/${encodeURIComponent(item.id)}/test`, { method: 'POST', body: { expectedRevision: item.revision }, timeoutMs: 30000 }),
           data => { const result = el('div'); result.append(p('Connection test completed. This does not prove authenticated agent compatibility.'), el('pre', JSON.stringify(data.connection || data.result || data, null, 2), 'base-code')); return result; }

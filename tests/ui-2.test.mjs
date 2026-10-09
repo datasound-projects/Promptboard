@@ -1148,7 +1148,8 @@ test('Kanban project and stage agent selection is visible, persists, and launche
   const run = ctx.executor.started.at(-1);
   assert.deepEqual([run.config.provider, run.config.model, run.config.effort], ['codex', 'codex-two', 'low']);
   assert.match(cardItem(ctx, 'Selected agent').querySelector('.run-agent').textContent, /Run agent: Codex CLI · codex-two/);
-  assert.match($(`#dock-tab-${run.id}`).textContent, /Codex CLI · codex-two/);
+  assert.match($(`#dock-tab-${run.id}`).title, /Codex CLI · codex-two/);
+  assert.match($(`#dock-tab-${run.id}`).textContent, /Selected agent · Execut/, 'The visible label names the column, which tells one card\'s runs apart.');
   assert.match($('#dock-details').textContent, /Codex CLI · codex-two/);
   assert.ok($('#dock-details').textContent.includes(ctx.repo));
   assert.ok($('#dock-details').textContent.includes(run.branch));
@@ -1171,7 +1172,7 @@ test('Kanban project and stage agent selection is visible, persists, and launche
   choose('#project-agent-fields [data-field="provider"]', 'claude'); await ctx.idle();
   submitForm(ctx, '#project-agent-form'); await ctx.idle();
   assert.equal((await ctx.app.board.run(run.id)).config.provider, 'codex');
-  assert.match($(`#dock-tab-${run.id}`).textContent, /Codex CLI/);
+  assert.match($(`#dock-tab-${run.id}`).title, /Codex CLI/);
   const reload = await setup(t, { executor: ctx.executor, hash: '#/kanban', dataDir: ctx.dataDir }); await reload.idle();
   assert.equal(reload.$('#project-agent-fields [data-field="provider"]').value, 'claude');
   assert.match(reload.$('#kanban-columns [data-column="code_review"] .column-agent').textContent, /haiku/);
