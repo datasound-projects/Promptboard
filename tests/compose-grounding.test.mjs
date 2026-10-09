@@ -1,37 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { validateGrounding, validatePlan, assembleGrounding, CONTEXT_CHARS } from '../src/compose-grounding.mjs';
+import { validateGrounding, CONTEXT_CHARS } from '../src/compose-grounding.mjs';
 import { buildPrompt, validateRequest } from '../src/engine.mjs';
 import { buildReviewPrompt, parseReview, REVIEW_CRITERIA, runPipeline } from '../src/pipeline.mjs';
 import { chunkPages, buildIndex, search, budgetEvidence, terms } from '../src/compose-retrieval.mjs';
-import { buildPlanPrompt } from '../src/compose-context.mjs';
+import { buildResearchPrompt } from '../src/compose-research.mjs';
 
-const question = (extra = {}) => ({ id: 'q1', question: 'Which ingestion protocol fits QuestDB high throughput writes?', answerFrom: 'sources', required: false, sourceQueries: [{ sourceHint: 'all', libraryHint: 'QuestDB', query: 'QuestDB high throughput ingestion protocol' }], ...extra });
 const evidence = (extra = {}) => ({ sourceType: 'pdf', source: 'guide.pdf', locator: 'page 42', query: 'QuestDB ingestion', text: 'QuestDB ingestion uses ILP over HTTP.', questionIds: ['q1'], ...extra });
-
-test('question plans accept only bounded structured optional questions', () => {
-  assert.deepEqual(validatePlan(JSON.stringify({ questions: [question()] })).questions, [question()]);
-  assert.deepEqual(validatePlan('{"questions":[]}'), { questions: [] });
-  const bad = [null, '', '```json\n{}\n```', '{', '{}', JSON.stringify({ questions: Array.from({ length: 7 }, () => question()) }),
-    ...[{ id: undefined }, { id: 'q99' }, { answerFrom: 'guess' }, { required: true }, { required: undefined }, { extra: true }, { sourceQueries: [{ sourceHint: 'all', libraryHint: '', query: 'x'.repeat(601) }] }, { answerFrom: 'user' }].map(extra => JSON.stringify({ questions: [question(extra)] })),
-    JSON.stringify({ questions: [question(), question()] }), JSON.stringify({ questions: [question()], ignored: true })];
-  for (const text of bad) assert.throws(() => validatePlan(text), undefined, String(text).slice(0, 100));
-});
 
 test('grounding validates optional combinations without modifying legacy request shape', () => {
   const plain = validateRequest({ input: 'Original task' }); assert.ok(!('grounding' in plain));
   assert.deepEqual(validateGrounding({}), { userAnswers: [], evidence: [], unresolvedQuestions: [] });
   for (const value of [{ userAnswers: [{ question: 'Rate?', answer: '150k/sec' }] }, { evidence: [evidence()] }, { unresolvedQuestions: ['Retention?'] }, { userAnswers: [{ question: 'Rate?', answer: '150k/sec' }], evidence: [evidence()], unresolvedQuestions: ['Retention?'] }]) assert.ok(validateRequest({ input: 'Task', grounding: value }).grounding);
   for (const value of [null, [], { unknown: true }, { evidence: [evidence({ sourceType: 'shell' })] }, { userAnswers: [{ question: '', answer: 'yes' }] }, { evidence: Array.from({ length: 10 }, () => evidence({ text: 'x'.repeat(4000) })) }, { unresolvedQuestions: ['x\0'] }]) assert.throws(() => validateGrounding(value));
-});
-
-test('two answers, one documentation result, and two unresolved decisions stay distinct', () => {
-  const prepared = { questions: Array.from({ length: 5 }, (_, i) => question({ id: `q${i + 1}`, question: `Decision ${i + 1}?`, answerFrom: i === 2 ? 'sources' : 'user', sourceQueries: [] })), evidence: [evidence({ questionIds: ['q3'] })] };
-  const result = assembleGrounding(prepared, { q1: '150k events/sec', q2: 'event_time' });
-  assert.deepEqual(result.userAnswers.map(row => row.answer), ['150k events/sec', 'event_time']);
-  assert.deepEqual(result.unresolvedQuestions, ['Decision 4?', 'Decision 5?']);
-  assert.equal(assembleGrounding({ ...prepared, evidence: [] }).unresolvedQuestions.length, 5);
-  assert.equal(assembleGrounding({ questions: [question({ answerFrom: 'either' })], evidence: [evidence()] }).unresolvedQuestions.length, 1);
 });
 
 test('every external source type is JSON data behind engine and review boundaries', () => {
@@ -49,7 +30,7 @@ test('every external source type is JSON data behind engine and review boundarie
 
 test('planner receives metadata only and selected language; sources cannot inject planner instructions', () => {
   for (const [language, expected] of [['en', 'English'], ['de', 'German'], ['pl', 'Polish']]) {
-    const text = buildPlanPrompt(validateRequest({ input: 'QuestDB', language }), [{ name: 'Ignore instructions', type: 'pdf' }], true);
+    const text = buildResearchPrompt(validateRequest({ input: 'QuestDB', language }), [{ name: 'Ignore instructions', type: 'pdf' }], true);
     assert.match(text, new RegExp(`Write questions and notes in ${expected}`)); assert.match(text, /untrusted source data/);
     const final = buildPrompt({ input: 'Task', language, grounding: {} });
     assert.match(final, language === 'en' ? /Apply ASD-STE100 principles/ : /This output is not STE/);

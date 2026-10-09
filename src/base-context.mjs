@@ -169,8 +169,6 @@ export function searchSources(sources, query = '', { budgetChars = 24000 } = {})
   return { selected, omitted, chars: used, estimatedTokens: Math.ceil(used / 4), tokenCountIsEstimate: true };
 }
 
-export function lexicalSearch(sources, query, { limit = 20 } = {}) { return searchSources(sources, query, { budgetChars: Math.min(limit, 50) * 1800 }).selected.slice(0, limit); }
-
 export async function prepareBase({ manifest, readRevision, currentResources = [], workspacePath, runDir, signal, approvedRoots = [], contextBudget = 48000, query = '' }) {
   signal = signal ? AbortSignal.any([signal, AbortSignal.timeout(30000)]) : AbortSignal.timeout(30000);
   assertBaseReady(manifest); checkBaseRevocations(manifest, currentResources, approvedRoots); aborted(signal);

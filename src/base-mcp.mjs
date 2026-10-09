@@ -17,7 +17,7 @@ function resolveReferences(mapping = {}, environment) {
 }
 
 /** Endpoint authorization is deliberately separate from public-document fetching. */
-export function validateMcpEndpoint(value) {
+function validateMcpEndpoint(value) {
   let url; try { url = new URL(value); } catch { throw new BaseDeliveryError('Use a valid MCP HTTP(S) endpoint.', 'BASE_INVALID_MCP'); }
   if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.hash) throw new BaseDeliveryError('MCP endpoints must use HTTP(S), without embedded credentials or fragments.', 'BASE_INVALID_MCP');
   return url;
@@ -37,7 +37,7 @@ export async function testMcp(definition, { signal, timeoutMs = 15000, environme
   try {
     if (combined.aborted) throw new BaseDeliveryError('MCP test was cancelled.', 'ABORTED');
     if (cfg.transport === 'stdio') {
-      transport = new StdioClientTransport({ command: process.execPath, args: [fileURLToPath(new URL('./base-mcp-process.mjs', import.meta.url)), JSON.stringify([cfg.command, ...(cfg.args || [])])], env: resolveReferences(cfg.env, environment), stderr: 'pipe', maxBufferSize: 1_000_000 });
+      transport = new StdioClientTransport({ command: process.execPath, args: [fileURLToPath(new URL('./mcp-process.mjs', import.meta.url)), JSON.stringify([cfg.command, ...(cfg.args || [])])], env: resolveReferences(cfg.env, environment), stderr: 'pipe', maxBufferSize: 1_000_000 });
       transport.stderr?.on('data', chunk => { outputBytes += chunk.length; if (outputBytes > 65536) controller.abort(); });
     } else if (cfg.transport === 'streamable-http') {
       const url = validateMcpEndpoint(cfg.endpoint);

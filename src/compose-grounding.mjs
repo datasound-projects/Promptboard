@@ -49,35 +49,3 @@ export function validateGrounding(value) {
   const assumptions = list(value.assumptions ?? [], 20, 'assumptions').map(a => string(a, 600, 'assumption'));
   return { userAnswers, evidence, unresolvedQuestions, ...(value.assumptions !== undefined ? { assumptions } : {}) };
 }
-
-export function validatePlan(text) {
-  string(text, 18_000, 'question plan');
-  let plan; try { plan = JSON.parse(text); } catch { invalid('The CLI returned an invalid question plan. Retry or continue without preparation.'); }
-  object(plan, ['questions'], 'question plan');
-  const ids = new Set();
-  return { questions: list(plan.questions, 6, 'questions').map(q => {
-    object(q, ['id', 'question', 'answerFrom', 'required', 'sourceQueries'], 'question');
-    if (typeof q.id !== 'string' || !/^q[1-6]$/.test(q.id) || ids.has(q.id)) invalid('Question IDs must be unique q1–q6.');
-    ids.add(q.id);
-    string(q.question, 600, 'question');
-    if (!['user', 'sources', 'either'].includes(q.answerFrom) || q.required !== false) invalid('Questions must be optional and have a valid answerFrom.');
-    const sourceQueries = list(q.sourceQueries, 2, 'source queries').map(query => {
-      object(query, ['sourceHint', 'libraryHint', 'query'], 'source query');
-      return { sourceHint: string(query.sourceHint, 200, 'source hint'), libraryHint: string(query.libraryHint, 120, 'library hint', true), query: string(query.query, 600, 'source query') };
-    });
-    if (q.answerFrom === 'user' && sourceQueries.length) invalid('User-only questions cannot retrieve sources.');
-    return { id: q.id, question: q.question, answerFrom: q.answerFrom, required: false, sourceQueries };
-  }) };
-}
-
-export function assembleGrounding(prepared, answers = {}) {
-  const userAnswers = [], unresolvedQuestions = [];
-  for (const q of prepared.questions) {
-    const answer = answers[q.id]?.trim();
-    if (answer) userAnswers.push({ question: q.question, answer });
-    // Only source questions with relevant evidence can defer to synthesis. An 'either'
-    // question can still contain a user decision, so remains open until answered.
-    else if (q.answerFrom !== 'sources' || !prepared.evidence.some(item => item.questionIds?.includes(q.id))) unresolvedQuestions.push(q.question);
-  }
-  return validateGrounding({ userAnswers, evidence: prepared.evidence, unresolvedQuestions });
-}

@@ -9,7 +9,6 @@ import { WikiJobs } from './base-wiki.mjs';
 import { AvatarJobs, imageAvailability } from './base-avatar.mjs';
 
 const fail = (message, code = 'BASE_INVALID_INPUT', status = 400) => { throw new BaseError(message, code, status); };
-const sameTarget = (a, b) => ['scope', 'projectId', 'taskId', 'columnId'].every(key => a?.[key] === b?.[key]);
 
 export class BaseRoutes {
   constructor({ board, runner, claim, track, catalog, send, jsonBody, mcpTester = testMcp, imageGenerator }) {
@@ -49,12 +48,6 @@ export class BaseRoutes {
       const abort = () => { if (!res.writableEnded) controller.abort(); }; res.on('close', abort);
       try { return this.send(res, 200, await this.track(this.avatars.generate(body, { signal: controller.signal }))); }
       finally { res.off('close', abort); }
-    }
-    if (method === 'GET' && pathname === '/api/base/target') {
-      let target; try { target = JSON.parse(search.get('target')); } catch { fail('Choose a valid target.'); }
-      const item = (await board.baseView()).targets.find(item => sameTarget(item.target, target));
-      if (!item) fail('This assignment target no longer exists.', 'BASE_TARGET_NOT_FOUND', 404);
-      return this.send(res, 200, item);
     }
     if (method === 'POST' && pathname === '/api/base/preview') return this.send(res, 200, await board.previewBase(await this.body(req)));
     if (method === 'POST' && pathname === '/api/base/apply') {

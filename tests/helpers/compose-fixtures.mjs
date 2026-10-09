@@ -18,11 +18,6 @@ export function pdfFixture(pages) {
 }
 export const questTask = 'Implement a Python service that writes high-frequency crypto market ticks into QuestDB.';
 export const questText = 'QuestDB crypto ingestion uses ILP over HTTP for high throughput market ticks. Select a designated timestamp. Deduplication requires configured upsert keys.';
-export const questPlan = { questions: [
-  { id: 'q1', question: 'What ingestion rate must the service handle?', answerFrom: 'user', required: false, sourceQueries: [] },
-  { id: 'q2', question: 'Which QuestDB ingestion protocol supports high throughput market ticks?', answerFrom: 'sources', required: false, sourceQueries: [{ sourceHint: 'all', libraryHint: 'QuestDB', query: 'QuestDB crypto ingestion high throughput ILP protocol' }] },
-  { id: 'q3', question: 'Which field is the designated timestamp?', answerFrom: 'either', required: false, sourceQueries: [{ sourceHint: 'document', libraryHint: 'QuestDB', query: 'QuestDB designated timestamp field' }] },
-] };
 
 export function researchPlan(input = questTask, overrides = {}) {
   return { assessment: { actionable: true, goal: input, entities: ['QuestDB', 'Python'], operations: ['ingestion'], constraints: [], expectedOutput: 'An implementation-ready prompt', complexity: 'moderate', research: 'standard', needsProject: false, reason: 'Verify the ingestion protocol and timestamp semantics.', ...overrides },

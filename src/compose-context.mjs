@@ -30,8 +30,6 @@ export function validatePreparation(body) {
   if (sources.filter(source => source.type === 'mcp').length > 3) invalid('Use at most three MCP sources.');
   return { request, autonomous, sources };
 }
-// Compatibility export for callers that built the previous planning prompt.
-export const buildPlanPrompt = buildResearchPrompt;
 const priority = source => source.type === 'local' && source.purpose === 'target' ? 0 : source.type === 'local' ? 1 : source.type === 'expert' ? 2 : source.type === 'document' ? 3 : source.preset === 'context7' ? 4 : 5;
 const relevant = (query, source, row, id) => ['all', id, source.type, source.kind, source.preset, row.name.toLowerCase()].includes(query.sourceHint.toLowerCase());
 const allocate = (questions, additions) => {
