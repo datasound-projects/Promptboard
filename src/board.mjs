@@ -1964,12 +1964,19 @@ export class Board {
           ...(project.workflowMode === 'pipeline' ? normalizePipelineTaskSelection(project.pipelineImport || project.pipeline, { profileId: task.profileId, agentOverride: task.agentOverride }) : {}) })) })) };
   }
 
+  #importRefusal(state, replace) {
+    if (state.projects.length && !replace) throw conflict('Confirm that the import replaces the current board.', 'CONFIRMATION_REQUIRED');
+    if (this.#hasWorkspaceOrRun(state)) throw conflict('Tasks on the current board own worktrees or runs. Remove those worktrees before you replace the board.', 'WORKSPACES_EXIST');
+  }
+
   /**
    * Replace the board with a backup. Execution state is not imported; repository paths
    * and automation settings wait for confirmation per project. Nothing runs.
    */
   async importBackup(data, { replace = false } = {}) {
     const parsed = parseBackup(data);
+    // Refuse before Base writes revision files for the import; the update checks again.
+    this.#importRefusal(await this.state(), replace);
     const preparedBase = parsed.base ? await this.base.prepareImport(parsed.base) : null;
     if (data.version >= 3 && !preparedBase) throw new BoardError('This backup is missing its Base resource library.', 'INVALID_BACKUP');
     if (preparedBase) {
@@ -1985,8 +1992,7 @@ export class Board {
       }
     }
     return this.store.update(state => {
-      if (state.projects.length && !replace) throw conflict('Confirm that the import replaces the current board.', 'CONFIRMATION_REQUIRED');
-      if (this.#hasWorkspaceOrRun(state)) throw conflict('Tasks on the current board own worktrees or runs. Remove those worktrees before you replace the board.', 'WORKSPACES_EXIST');
+      this.#importRefusal(state, replace);
       if (preparedBase) this.base.publishPreparedImport(state, preparedBase);
       if (parsed.baseGlobal && Object.keys(parsed.baseGlobal).length) state.settings.pendingBaseImport = parsed.baseGlobal;
       else delete state.settings.pendingBaseImport;

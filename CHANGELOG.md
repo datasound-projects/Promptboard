@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- A board import refused for confirmation or because tasks own worktrees no longer leaves unused Base revision files in the data folder.
 - A Coordinator question, Base avatar or wiki generation, source import, MCP test or refresh whose browser request closed before the server started listening is cancelled at once, instead of holding the one job slot until the CLI call finishes.
 - A run whose supplied Base context file was removed now answers `BASE_NOT_FOUND` (404) instead of a 502.
 - Saving a file in a project whose folder was removed or moved now reports `FILE_NOT_FOUND` (404) like reading does, instead of a server error.
