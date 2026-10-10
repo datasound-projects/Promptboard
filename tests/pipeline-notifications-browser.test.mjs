@@ -33,7 +33,7 @@ test('Notify me editing, explicit permission, display receipts and task clicks w
   t.diagnostic('Notification page loaded.');
   await browser.eval(`${pickProject(project.id)}document.querySelector('#columns-open').focus();`); await enter();
   await browser.until(`document.querySelector('#columns-dialog').open`, 'columns opened');
-  await browser.eval(`[...document.querySelectorAll('.columns-item')].find(button=>button.textContent==='Executing').click(); document.querySelector('[data-trigger="onEnter"] .automation-add').focus();`); await enter();
+  await browser.eval(`[...document.querySelectorAll('.columns-item')].find(button=>button.textContent==='Executing').click(); document.querySelector('[data-section="automations"]').open = true; document.querySelector('[data-trigger="onEnter"] .automation-add').focus();`); await enter();
   await browser.eval(`const type=document.querySelector('.automation-row [data-field="type"]'); type.value='notify';type.dispatchEvent(new Event('change',{bubbles:true}));`);
   for (const width of [1280, 390]) {
     await browser.resize(width, 900);
