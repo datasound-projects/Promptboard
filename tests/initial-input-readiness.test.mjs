@@ -25,7 +25,8 @@ async function launch(t, provider) {
   const supervisor = new Supervisor({ board, dataDir, ptyLoader: async () => ({ pty, message: '' }), resolver: async () => ({ command: provider, prefix: [] }),
     basePreparer: async () => ({ sections: '', manifest: { resources: [] }, cleanup: async () => {} }) });
   await supervisor.start({ run, task: { prompt }, firstPrompt: prompt });
-  for (let i = 0; i < 5000 && !supervisor.sessions.get(run.id)?.poll; i++) await idle();
+  // Bounded by real time (setTimeout is mocked): Windows file I/O can outlast thousands of event-loop turns.
+  for (const end = Date.now() + 10000; Date.now() < end && !supervisor.sessions.get(run.id)?.poll;) await idle();
   const session = supervisor.sessions.get(run.id);
   assert.ok(session?.paste && session.poll, 'The long prompt waits for terminal paste.');
   t.after(async () => { exit({ exitCode: 0 }); await session.exited; });
