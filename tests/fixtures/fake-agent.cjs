@@ -153,7 +153,13 @@ function turn(text) {
   const review = text.includes('=== DIFF:') ? (text.includes('REVIEW_GARBAGE') ? 'Looks fine to me, no structured verdict.' : '```json\n' + JSON.stringify((text.includes('REVIEW_FAIL') && !text.includes('REVIEW_FAIL_ONCE')) || failOnce
     ? { verdict: 'changes_required', findings: [{ severity: 'high', file: 'feature.txt', line: 1, explanation: 'The value is wrong.' }] }
     : { verdict: 'no_issues', findings: [] }) + '\n```') : null;
-  emit('Stop', { last_assistant_message: review || (plan ? `PLAN\n1. Change the code.\nsaw ${text.length} chars` : 'Implemented the change.') });
+  // NO_PLAN_ONCE: the first planning turn of the task ends without any final message (no plan to accept).
+  let silent = false;
+  if (plan && text.includes('NO_PLAN_ONCE') && process.env.FAKE_AGENT_STATE) {
+    const marker = join(process.env.FAKE_AGENT_STATE, `noplan-${(text.match(/TASK_KEY:(\w+)/) || [])[1] || 'task'}`);
+    try { readFileSync(marker); } catch { writeFileSync(marker, 'silent once\n'); silent = true; }
+  }
+  emit('Stop', { last_assistant_message: silent ? '' : review || (plan ? `PLAN\n1. Change the code.\nsaw ${text.length} chars` : 'Implemented the change.') });
   process.stdout.write('turn complete\r\n');
 }
 // Codex asks through its terminal title, not a hook; answering it continues the turn.

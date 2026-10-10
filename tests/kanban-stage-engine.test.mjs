@@ -251,3 +251,21 @@ test('a testing agent that changes files sends the card back with the file names
   assert.equal(outcome.code, 'TESTER_CHANGED_FILES'); assert.equal(outcome.next, 'executing');
   assert.match(outcome.reason, /tested\.txt/); assert.match(outcome.reason, /\.gitignore/);
 });
+
+test('a planner that ends its turn without a plan pauses Autopilot (PLAN_MISSING); after help in the terminal, Resume checks the stage again', { skip, timeout: 120000 }, async t => {
+  const w = await world(t, { agents: { planning: 'claude', executing: 'claude' } });
+  await w.board.setExecutionPolicy(w.project.id, { policy: { completion: 'automatic' }, expectedRevision: (await w.projectNow()).revision });
+  const card = await w.board.createTask({ projectId: w.project.id, title: 'Silent planner', prompt: 'Plan it. NO_PLAN_ONCE TASK_KEY:silent' });
+  await w.board.setAutopilot(w.project.id, { route: ['planning', 'executing'], queue: [card.id], expectedRevision: (await w.projectNow()).revision });
+  await w.board.controlAutopilot(w.project.id, { action: 'start', confirm: true });
+  const autopilot = new Autopilot(w.board, { tickMs: 1e9 });
+  const paused = await until(async () => { await autopilot.tick(); const project = await w.projectNow(); return project.autopilot.status === 'paused' && project.autopilot; }, 'PLAN_MISSING pause', 60000);
+  assert.match(paused.reason, /PLAN_MISSING/);
+  const run = (await w.board.state()).runs.find(item => item.taskId === card.id && item.stageKind === 'planning');
+  assert.equal((await w.board.run(run.id)).status, 'waiting_for_input', 'The planner keeps running for the person.');
+  // The person asks again in the terminal; the next turn carries a plan.
+  w.supervisor.input(run.id, 'Please write the plan now.\r');
+  await until(async () => { const value = await w.board.run(run.id); return value.turns >= 2 && value.hasPlan && value.activity?.ready; }, 'second planning turn with a plan', 30000);
+  await w.board.controlAutopilot(w.project.id, { action: 'resume' });
+  await until(async () => { await autopilot.tick(); const item = await w.task(card.id); return item.column === 'executing' && item.stageHistory.some(entry => entry.columnId === 'planning' && entry.status === 'succeeded'); }, 'the stage was checked again and accepted', 60000);
+});

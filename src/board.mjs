@@ -3076,6 +3076,19 @@ export class Board {
     return this.#recordOutcome(taskId, run, 'succeeded', { reason: reasonBy });
   }
 
+  /**
+   * Look at a failed stage again after the person helped its still-running agent in the terminal (for example a plan
+   * that was missing): the outcome returns to working, so the next finished turn is checked like any other.
+   */
+  reopenStage(taskId) {
+    return this.#locked(`transition:${taskId}`, async () => {
+      const state = await this.state(), { task } = this.#task(state, taskId), outcome = task.stageOutcome;
+      const run = state.runs.find(item => item.id === outcome?.runId);
+      if (outcome?.status !== 'failed' || outcome.columnId !== task.column || !run || !ACTIVE_RUN_STATUSES.includes(run.status)) return outcome || null;
+      return this.#recordOutcome(taskId, run, 'working', { reason: 'Checking the stage again after your help in the terminal.' });
+    });
+  }
+
   /** The Complete button of a typed column (manual completion). Same steps as automatic completion and Autopilot. */
   completeStage(taskId, { runId } = {}) {
     return this.#locked(`transition:${taskId}`, async () => {
