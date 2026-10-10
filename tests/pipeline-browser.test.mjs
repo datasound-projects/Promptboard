@@ -204,8 +204,8 @@ test('column pipeline conversion and editing work by keyboard in both themes and
     for (const theme of ['light', 'dark']) {
       await browser.eval(`document.documentElement.dataset.theme = '${theme}'; document.querySelector('#column-name').focus();`);
       assert.equal(await browser.layout(`const dialog = document.querySelector('#columns-dialog').getBoundingClientRect(); const field = document.activeElement.getBoundingClientRect(); return dialog.left >= -1 && dialog.right <= innerWidth + 1 && field.left >= 0 && field.right <= innerWidth && document.activeElement.id === 'column-name';`), true);
-      await browser.eval(`document.querySelector('#column-plan-target').focus();`);
-      assert.equal(await browser.layout(`const r = document.activeElement.getBoundingClientRect(); return document.activeElement.id === 'column-plan-target' && r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight;`), true);
+      await browser.eval(`document.querySelector('#column-kind').focus();`);
+      assert.equal(await browser.layout(`const r = document.activeElement.getBoundingClientRect(); return document.activeElement.id === 'column-kind' && r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight;`), true);
       if (process.env.PB_BROWSER_SHOTS) { await mkdir(process.env.PB_BROWSER_SHOTS, { recursive: true }); await writeFile(join(process.env.PB_BROWSER_SHOTS, `pipeline-columns-${width}-${theme}.png`), await browser.screenshot()); }
     }
   }
@@ -219,7 +219,13 @@ test('column pipeline conversion and editing work by keyboard in both themes and
   await browser.eval(`document.querySelector('#columns-open').click();`);
   await browser.until(`document.querySelector('#column-auto-spawn')`, 'saved pipeline editor reopened');
   await browser.eval(`[...document.querySelectorAll('.columns-item')].find(button => button.textContent === 'Planning').focus();`); await enter();
-  assert.equal(await browser.eval(`return document.querySelector('#column-plan-target').value;`), 'executing');
+  // The converted built-in stage is a typed Planning column; switching it to Custom by keyboard brings back the native plan route.
+  assert.equal(await browser.eval(`return document.querySelector('#column-kind').value;`), 'planning');
+  assert.equal(await browser.eval(`return Boolean(document.querySelector('#column-plan-target'));`), false);
+  await browser.eval(`document.querySelector('#column-kind').focus();`);
+  await browser.type('Custom'); await browser.key('Tab', 'Tab', 9);
+  await browser.until(`document.querySelector('#column-plan-target')`, 'custom column plan route');
+  assert.equal(await browser.eval(`return document.querySelector('#column-kind').value;`), 'custom');
   await browser.eval(`document.querySelector('#column-plan-target').focus();`);
   await browser.type('Testing'); await browser.key('Tab', 'Tab', 9);
   assert.equal(await browser.eval(`return document.querySelector('#column-plan-target').value;`), 'testing');
@@ -232,6 +238,7 @@ test('column pipeline conversion and editing work by keyboard in both themes and
   saved = (await app.board.state()).projects[0];
   assert.equal(saved.pipeline.columns.findIndex(column => column.id === 'executing'), 3);
   assert.equal(saved.pipeline.columns.find(column => column.id === 'planning').strategy.planExitTargetId, 'testing');
+  assert.deepEqual(saved.pipeline.columns.map(column => column.kind ?? null), [null, 'custom', 'review', 'execution', 'custom', 'testing', 'merge', null], 'Converted stages are typed; added and switched columns are custom.');
   assert.equal(saved.pipeline.columns.find(column => column.name === 'Triage').strategy.autoSpawn, false);
   assert.equal(saved.tasks[0].prompt, prompt); assert.deepEqual((await app.board.state()).runs, []);
   await app.board.transition(card.id, { column: 'done', expectedRevision: saved.tasks[0].revision });
