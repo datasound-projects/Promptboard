@@ -2665,9 +2665,32 @@ function selectAgent(runId) {
 }
 $('#agents-filter').addEventListener('change', () => { savePref(AGENTS_FILTER_KEY, $('#agents-filter').value); renderAgents(currentProject()); });
 
+/** The kind of a pipeline column (custom when untyped), or null for legacy boards and To Do/Done. */
+function columnKind(columnId, project = currentProject()) {
+  if (project?.workflowMode !== 'pipeline') return null;
+  const column = project.pipeline.columns.find(item => item.id === columnId);
+  return column?.role === 'active' ? column.kind || 'custom' : null;
+}
+const STAGE_OF_KIND = { planning: 'planning', execution: 'executing', review: 'code_review', testing: 'testing', merge: 'merge' };
+/** The stage engine's recorded outcome for the card's current typed column, as one line. */
+function stageOutcomeText(card) {
+  const outcome = card.stageOutcome;
+  if (!outcome || outcome.columnId !== card.column) return null;
+  const reason = (outcome.reason || '').replace(/[.\s]+$/, '');
+  const text = { working: reason || 'Working', verifying: reason || 'Promptboard is running the test commands', succeeded: `Stage complete${reason ? ` · ${reason}` : ''}`,
+    changes_required: `Changes required${reason ? `: ${reason}` : ''}`, failed: `${outcome.code ? `${outcome.code}: ` : ''}${reason || 'Stage failed'}` }[outcome.status];
+  return { text, error: ['failed', 'changes_required'].includes(outcome.status) };
+}
+function completeStage(card, run) {
+  return deliveryAction(card, 'POST', 'complete-stage', { runId: run.id }, 'Stage completed.');
+}
+
 function renderRunControls(card, run) {
   const box = document.createElement('div');
   box.className = 'kanban-run';
+  const kind = columnKind(card.column), typed = kind && kind !== 'custom';
+  const outcome = typed ? stageOutcomeText(card) : null;
+  if (outcome) box.append(paragraph(outcome.text, `run-activity stage-outcome${outcome.error ? ' kanban-error' : ''}`));
   if (currentProject()?.workflowMode === 'pipeline' && (card.profileId || card.agentOverride)) {
     const profile = currentProject().pipeline.profiles.find(item => item.id === card.profileId);
     box.append(paragraph(profile ? `Profile: ${profile.name}` : 'Task-wide agent override', 'run-agent pipeline-task-choice'));
@@ -2709,6 +2732,14 @@ function renderRunControls(card, run) {
     pause.disabled = active.lifecycle === 'suspending'; box.append(pause);
     // Plan approval stays available; moving the card to Executing also approves the plan.
     if (!active.config?.pipeline && active.stage === 'planning' && active.status === 'waiting_for_input' && active.turns > 0) box.append(labelled(detailButton('Approve plan', () => openTaskDetails(card.id), 'kanban-confirm-run'), 'Review and approve the plan'));
+    // A typed column with manual completion: one click completes the stage (dragging the card on does too).
+    if (active.stageKind && active.status === 'waiting_for_input' && active.turnComplete && active.turns > 0) {
+      const label = { planning: 'Accept plan', code_review: 'Record review', testing: 'Complete testing' }[active.stageKind] || 'Complete stage';
+      box.append(labelled(detailButton(label, () => completeStage(card, active), 'kanban-confirm-run kanban-complete-stage'), label));
+    }
+  } else if (typed && kind === 'merge') {
+    const target = currentProject()?.targetBranch?.name || 'target';
+    box.append(labelled(detailButton(`Merge into ${target}`, () => mergeCard(card), 'primary kanban-merge'), `Merge into ${target}`));
   } else if (currentProject()?.workflowMode === 'pipeline') {
     if (projectColumnsOf().find(column => column.id === card.column)?.role === 'active') {
       const start = labelled(detailButton('Start agent', () => startStage(card, card.column), 'primary kanban-start'), 'Start agent');
@@ -3073,6 +3104,7 @@ async function openTaskDetails(taskId) {
       } catch (failure) { error.textContent = failure.message; error.hidden = false; save.disabled = false; }
     }); save.id = 'task-pipeline-save'; save.disabled = busy;
     nodes.push(section('Task agent settings', settings.node, ...(busy ? [paragraph('Pause the agent and finish or stop column automations before changing these settings.', 'note')] : []), save, error));
+    nodes.push(stageSection(card, project, section, busy));
   }
   const planRun = [...runs].reverse().find(run => run.stage === 'planning' && run.hasPlan);
   if (planRun) {
@@ -3112,6 +3144,40 @@ async function openTaskDetails(taskId) {
   if (project.workflowMode === 'pipeline') delivery.append(section('Conversation', renderRunControls(card, latestRun(card.id))));
   else renderDelivery(card, delivery, section, pre);
   if (!$('#task-dialog').open) $('#task-dialog').showModal();
+}
+
+/** Pipeline task details: the stage engine's outcome and history, and the explicit recovery and reset actions. */
+function stageSection(card, project, section, busy) {
+  const kind = columnKind(card.column, project), nodes = [];
+  const outcome = kind && kind !== 'custom' ? stageOutcomeText(card) : null;
+  if (outcome) nodes.push(paragraph(outcome.text, outcome.error ? 'inline-error' : 'note'));
+  const findings = card.stageOutcome?.columnId === card.column ? card.stageOutcome.findings || [] : [];
+  if (findings.length) {
+    const list = document.createElement('ul'); list.className = 'stage-findings';
+    list.append(...findings.map(item => { const li = document.createElement('li'); li.textContent = `[${item.severity}] ${item.file}${item.line ? `:${item.line}` : ''} ${item.explanation}`; return li; }));
+    nodes.push(list);
+  }
+  const history = (card.stageHistory || []).slice(-10).reverse();
+  if (history.length) {
+    const list = document.createElement('ol'); list.className = 'stage-history'; list.setAttribute('aria-label', 'Stage results, newest first');
+    list.append(...history.map(item => { const li = document.createElement('li'); li.textContent = `${columnTitle(item.columnId)} · ${providerName(item.provider) || 'Promptboard'} · ${item.status.replaceAll('_', ' ')}${item.checkpointCommit ? ` · ${short(item.checkpointCommit)}` : ''}${item.reason ? ` · ${item.reason}` : ''}`; return li; }));
+    nodes.push(list);
+  }
+  const actions = [];
+  if (card.workspace?.status === 'ready') {
+    const restore = detailButton('Restore worktree', () => deliveryAction(card, 'POST', 'restore-worktree', {}, 'The task worktree is in place.'), 'text-button');
+    restore.title = 'Recreates a deleted task worktree folder from its branch. Never done automatically.'; actions.push(restore);
+  }
+  const restart = detailButton('Restart agent sessions', () => deliveryAction(card, 'POST', 'restart-sessions', { expectedRevision: card.revision }, 'The agent stopped. The next run starts a fresh session; branch, worktree and files are kept.'), 'text-button');
+  restart.disabled = Boolean(card.archivedAt); actions.push(restart);
+  const reset = document.createElement('div'); reset.className = 'stage-reset'; reset.hidden = true;
+  const reason = document.createElement('textarea'); reason.maxLength = 4000; reason.rows = 2; reason.placeholder = 'Why reset? (sent to the next attempt)';
+  const go = detailButton('Reset workspace from the target branch', () => deliveryAction(card, 'POST', 'start-over', { expectedRevision: card.revision, reason: reason.value, confirm: true }, 'Task reset. Its old branch is kept; the next run starts from the current target branch.'), 'danger');
+  reset.append(paragraph(`The current branch ${card.workspace?.branch || ''} is kept exactly as it is (uncommitted work is committed to it first); the card returns to To Do and the next run starts on a new branch from the current target.`, 'note'), reason, go);
+  const open = detailButton('Reset workspace…', () => { reset.hidden = false; reason.focus(); }, 'text-button');
+  open.disabled = !card.workspace || busy; actions.push(open);
+  nodes.push(detailActions(...actions), reset);
+  return section('Stage and reset', ...nodes);
 }
 
 function workflowSummary(project) {
@@ -4199,7 +4265,8 @@ const AUTOPILOT_INSTRUCTIONS = {
 /** Later route columns and the instruction each receives on arrival (null: none). Mirrors the server check. */
 function autopilotInstructions(project, route) {
   const columns = project.pipeline.columns;
-  return route.slice(1).map((id, index) => {
+  // Typed columns start their own stage session with instructions; only later custom columns need an "on enter" message.
+  return route.slice(1).map((id, index) => ({ id, index })).filter(({ id }) => (columns.find(entry => entry.id === id)?.kind || 'custom') === 'custom').map(({ id, index }) => {
     const column = columns.find(entry => entry.id === id), row = column.automations.onEnter.find(entry => entry.enabled && entry.type === 'send_message' && entry.mode === 'deferred');
     const planned = columns.find(entry => entry.id === route[index])?.strategy?.planExitTargetId === id;
     return { id, name: column.name, message: row?.message || (planned ? 'Proceed with implementing the approved plan.' : null) };
@@ -4303,8 +4370,9 @@ function renderAutopilotDialog() {
   $('#autopilot-dialog .select-grid').hidden = pipeline;
   $('#autopilot-route-legend').textContent = pipeline ? 'Columns' : 'Default route';
   $('#autopilot-about').hidden = pipeline; $('#autopilot-about-pipeline').hidden = !pipeline;
+  const merges = pipeline && draft.route.some(id => columnKind(id, project) === 'merge'), typedRoute = pipeline && draft.route.some(id => !['custom', null].includes(columnKind(id, project)));
   $('#autopilot-consent-detail').textContent = pipeline
-    ? 'It moves each queued card through these columns, starts their agents and sends each column’s instruction, then moves the card to Done. It never merges or pushes, and never bypasses agent permissions.'
+    ? `It takes the queued cards one at a time, in this order, through these columns${typedRoute ? ', completes each typed column when its checks pass (or waits for you where completion is manual), sends review findings and failing tests back to Executing within the rework limit' : ' and sends each column’s instruction'}${merges ? `, and merges each finished card into ${project.targetBranch?.name || 'the target branch'} before the next one starts` : ', then moves the card to Done'}. It never pushes or force-pushes; agents keep the permissions set in Columns.`
     : 'It confirms stages, commits, accepts clean reviews, and merges into your local target branch or pushes the task branch for a pull request, without asking each time. It never force-pushes or bypasses agent permissions.';
   const instructions = $('#autopilot-instructions');
   instructions.hidden = !pipeline;
@@ -4494,7 +4562,76 @@ function profileStrategyEditor(entry, profile) {
 // go anywhere between To Do and Done and are attached to the built-in stage on their left.
 const COLUMN_COLOR_NAMES = { gray: 'Gray', red: 'Red', orange: 'Orange', amber: 'Amber', green: 'Green', teal: 'Teal', blue: 'Blue', violet: 'Violet', pink: 'Pink' };
 const BUILTIN_DEFAULT_COLORS = { todo: 'gray', planning: 'violet', executing: 'blue', code_review: 'amber', testing: 'teal', merge: 'orange', done: 'green' };
-const columnsDraft = { list: [], selected: null, project: null, revision: null, pipeline: false, profiles: [], profileId: null, headerDrafts: new Map() };
+const columnsDraft = { list: [], selected: null, project: null, revision: null, pipeline: false, profiles: [], profileId: null, headerDrafts: new Map(),
+  execution: {}, applyAll: false, original: '', tests: '', presetConfirm: false };
+// Column types decide what a pipeline column does; the display name never does.
+const COLUMN_KIND_OPTIONS = [['custom', 'Custom: one conversation continues'], ['planning', 'Planning'], ['execution', 'Executing'], ['review', 'Code Review'], ['testing', 'Testing'], ['merge', 'Merge']];
+const COLUMN_KIND_NOTES = {
+  custom: 'One agent conversation continues across compatible custom columns. Moves send no stage instructions; an “on enter” agent message is the next instruction.',
+  planning: 'Each arrival starts a fresh, read-only session that writes a plan. Completing the stage accepts the plan only if the agent changed no files.',
+  execution: 'Each arrival starts a fresh session in the task worktree, with the accepted plan or the findings to fix. Completing the stage commits a checkpoint.',
+  review: 'Each arrival starts a fresh, read-only session that reviews the committed diff and must end with a JSON verdict. Findings send the card back to Executing.',
+  testing: 'An agent checks the work, then Promptboard runs the project’s test commands itself. Only their exit codes decide; failures go back to Executing.',
+  merge: 'Promptboard merges the reviewed and tested commit into the target branch (squashed by default). An agent starts only to resolve conflicts, and its result is reviewed and tested again.',
+};
+const EXECUTION_CHOICES = {
+  interaction: [['ask', 'Ask for approval'], ['autonomous', 'Autonomous: never pause for approval']],
+  filesystem: [['read_only', 'Read only'], ['workspace_write', 'Write in the task workspace'], ['full', 'Full access']],
+  completion: [['manual', 'Manual: you complete each stage'], ['automatic', 'Automatic when the turn is done and its checks pass']],
+};
+const EXECUTION_DEFAULT_TEXT = { interaction: 'Ask for approval', filesystem: 'Write in the task workspace', completion: 'Manual' };
+const testCommandsText = project => (project?.testCommands || []).map(item => item.argv.map(arg => /[\s"']/.test(arg) ? JSON.stringify(arg) : arg).join(' ')).join('\n');
+
+/** Board-wide execution permissions, test commands and the Full Autopilot preset (column pipelines only). */
+function renderExecutionPolicy() {
+  const box = $('#columns-execution');
+  const project = board?.projects.find(item => item.id === columnsDraft.project);
+  box.hidden = !columnsDraft.pipeline || Boolean(columnsDraft.profileId) || !project;
+  if (box.hidden) return;
+  const draft = columnsDraft.execution;
+  const heading = document.createElement('h3'); heading.id = 'columns-execution-heading'; heading.textContent = 'Execution permissions (whole board)';
+  const field = (title, input) => { const label = document.createElement('label'); label.className = 'field-label'; label.append(title, input); return label; };
+  const select = (key, title) => {
+    const input = document.createElement('select'); input.id = `execution-${key}`;
+    input.append(option('', `Default: ${EXECUTION_DEFAULT_TEXT[key]}`), ...EXECUTION_CHOICES[key].map(([value, label]) => option(value, label)));
+    input.value = draft[key] || '';
+    input.addEventListener('change', () => { if (input.value) draft[key] = input.value; else delete draft[key]; renderColumns(); $(`#execution-${key}`)?.focus(); });
+    return field(title, input);
+  };
+  const rework = document.createElement('input'); rework.type = 'number'; rework.min = 0; rework.max = 5; rework.step = 1; rework.id = 'execution-max-rework';
+  rework.placeholder = '2'; rework.value = draft.maxRework ?? '';
+  rework.addEventListener('change', () => { const value = Number(rework.value); if (rework.value === '') delete draft.maxRework; else if (Number.isInteger(value) && value >= 0 && value <= 5) draft.maxRework = value; });
+  const merge = document.createElement('select'); merge.id = 'execution-merge-method';
+  merge.append(option('', 'Default: squash into one commit'), option('squash', 'Squash into one commit'), option('fast_forward', 'Fast-forward (keep the task’s commits)'));
+  merge.value = draft.mergeMethod || '';
+  merge.addEventListener('change', () => { if (merge.value) draft.mergeMethod = merge.value; else delete draft.mergeMethod; });
+  const tests = document.createElement('textarea'); tests.id = 'pipeline-test-commands'; tests.rows = 2; tests.placeholder = 'npm test'; tests.value = columnsDraft.tests;
+  tests.addEventListener('input', () => { columnsDraft.tests = tests.value; });
+  const all = document.createElement('input'); all.type = 'checkbox'; all.id = 'execution-apply-all'; all.checked = columnsDraft.applyAll;
+  all.addEventListener('change', () => { columnsDraft.applyAll = all.checked; });
+  const allLabel = document.createElement('label'); allLabel.className = 'check-row'; allLabel.append(all, ' Apply to all columns (remove the columns’ own permission and completion overrides)');
+  const warning = draft.interaction === 'autonomous' ? paragraph(draft.filesystem === 'full'
+    ? 'Autonomous full access: agents act anywhere your account can, without asking. Use it only on a machine or container you can afford to lose.'
+    : 'Autonomous: agents do not stop for approvals. Claude Code uses its own auto mode, Codex its workspace sandbox without prompts, Gemini yolo inside its sandbox. Planning and Code Review stay read-only.', 'note execution-warning') : null;
+  const preset = detailButton('Full Autopilot preset…', () => { columnsDraft.presetConfirm = true; renderColumns(); $('#execution-preset-apply')?.focus(); }, 'secondary-button');
+  preset.id = 'execution-preset';
+  const nodes = [heading, paragraph('Every column inherits these unless it sets its own. Planning and Code Review columns are always read-only. Saving starts nothing.', 'note'),
+    select('interaction', 'Agent questions'), select('filesystem', 'Workspace access'), select('completion', 'Stage completion'),
+    field('Automatic rework rounds (0–5)', rework), field('Merge method', merge), field('Test commands (one per line; run without a shell in the task worktree; their exit codes decide Testing)', tests), allLabel,
+    ...(warning ? [warning] : []), detailActions(preset)];
+  if (columnsDraft.presetConfirm) {
+    const apply = detailButton('Apply Full Autopilot', async () => {
+      apply.disabled = true;
+      try {
+        await boardCall('POST', `/api/projects/${encodeURIComponent(project.id)}/full-autopilot`, { expectedRevision: currentProject().revision, confirm: true });
+        openColumns(); announce('Full Autopilot preset applied: typed stage columns, autonomous workspace access, automatic completion, two rework rounds, squash merges. Nothing started.');
+      } catch (error) { $('#columns-error').textContent = error.message; $('#columns-error').hidden = false; apply.disabled = false; }
+    }, 'danger'); apply.id = 'execution-preset-apply';
+    const cancel = detailButton('Cancel', () => { columnsDraft.presetConfirm = false; renderColumns(); $('#execution-preset')?.focus(); });
+    nodes.push(paragraph('Full Autopilot types the standard columns (Planning, Executing, Code Review, Testing, Merge), lets agents work in each task worktree without asking, completes stages automatically when their checks pass, sends review findings and failing tests back to Executing up to twice, and squash-merges each finished card before the next one starts. Unsaved column edits are discarded.', 'note'), detailActions(cancel, apply));
+  }
+  box.replaceChildren(...nodes);
+}
 const builtinTitle = id => board?.columns?.find(column => column.id === id)?.title || id;
 function openColumns() {
   columnsDraft.headerDrafts.clear();
@@ -4508,6 +4645,9 @@ function openColumns() {
   columnsDraft.profileId = null;
   columnsDraft.list = JSON.parse(JSON.stringify(columnsDraft.pipeline ? project.pipeline.columns : layout));
   columnsDraft.selected = columnsDraft.list.find(entry => entry.custom)?.id || 'executing';
+  columnsDraft.execution = JSON.parse(JSON.stringify(project.execution || {}));
+  columnsDraft.applyAll = false; columnsDraft.presetConfirm = false; columnsDraft.tests = testCommandsText(project);
+  columnsDraft.original = JSON.stringify({ columns: columnsDraft.list, profiles: columnsDraft.profiles });
   $('#columns-project').textContent = `${project.name} · COLUMNS`;
   $('#columns-error').hidden = true;
   renderColumns();
@@ -4522,8 +4662,9 @@ function renderColumns() {
   $('#columns-remove').disabled = Boolean(columnsDraft.profileId);
   $('#columns-use-pipeline').hidden = columnsDraft.pipeline;
   $('#columns-mode-note').textContent = columnsDraft.pipeline
-    ? 'Columns control the agent’s session. Moves send no stage instructions. Pause agents before changing settings. Claude and Gemini can move approved native plans to the configured target; Codex requires an explicit move.'
-    : 'This board uses the original stage rules. Switching removes automatic stage instructions and keeps the saved tasks, files, and run history. Save to confirm the switch.';
+    ? 'Each column’s type decides what it does: typed columns (Planning, Executing, Code Review, Testing, Merge) start a fresh agent session in the task worktree and check their result; custom columns continue one conversation. Pause agents before changing column structure.'
+    : 'This board uses the original stage rules. Switching keeps the saved tasks, files, and run history; the built-in stages become typed columns. Save to confirm the switch.';
+  renderExecutionPolicy();
   if (columnsDraft.pipeline) return renderPipelineColumns();
   const list = columnsDraft.list;
   $('#columns-list').replaceChildren(...list.map((entry, index) => {
@@ -4648,9 +4789,19 @@ function renderPipelineColumns() {
     if (entry.role === 'active') nodes.push(profileStrategyEditor(entry, profile));
     else nodes.push(paragraph('This system role never starts an agent; profiles do not change that rule.', 'note'));
   } else if (entry.role === 'active') {
+    const kind = entry.kind || 'custom', typed = kind !== 'custom';
+    const type = document.createElement('select'); type.id = 'column-kind';
+    type.append(...COLUMN_KIND_OPTIONS.map(([value, label]) => option(value, label))); type.value = kind;
+    type.addEventListener('change', () => {
+      entry.kind = type.value;
+      // A typed Planning column completes by its plan; a native plan route belongs to custom plan-mode columns.
+      if (type.value !== 'custom') entry.strategy.planExitTargetId = null;
+      renderColumns(); $('#column-kind')?.focus();
+    });
+    nodes.push(field('Column type', type), paragraph(COLUMN_KIND_NOTES[kind], 'note column-kind-note'));
     const automatic = document.createElement('input'); automatic.type = 'checkbox'; automatic.checked = entry.strategy.autoSpawn !== false; automatic.id = 'column-auto-spawn';
     automatic.addEventListener('change', () => { entry.strategy.autoSpawn = automatic.checked; renderColumns(); $('#column-auto-spawn')?.focus(); });
-    const label = document.createElement('label'); label.className = 'check-row'; label.append(automatic, ' Start or resume an agent when a card arrives'); nodes.push(label);
+    const label = document.createElement('label'); label.className = 'check-row'; label.append(automatic, kind === 'merge' ? ' Merge when a card arrives (with automatic completion)' : typed ? ' Start this stage when a card arrives' : ' Start or resume an agent when a card arrives'); nodes.push(label);
     const provider = document.createElement('select'); provider.setAttribute('aria-label', 'Column agent');
     provider.append(option('', 'Use project agent'), ...['claude', 'codex', 'gemini'].map(id => option(id, board?.execution?.providers?.[id]?.name || id)));
     provider.value = entry.strategy.agentOverride || '';
@@ -4660,14 +4811,28 @@ function renderPipelineColumns() {
       if (key === 'effortOverride') input.append(option('', 'Use agent default'), ...['low', 'medium', 'high', 'xhigh', 'max'].map(value => option(value, value)));
       input.value = entry.strategy[key] || ''; input.addEventListener('change', () => { entry.strategy[key] = input.value || null; }); nodes.push(field(title, input));
     }
-    const permissions = document.createElement('select'); permissions.setAttribute('aria-label', 'Column permissions');
-    permissions.append(...[['', 'Use agent default'], ['plan', 'Plan mode'], ['default', 'Ask for permission'], ['acceptEdits', 'Claude: accept file edits'], ['workspace-write', 'Codex: write in workspace'], ['auto_edit', 'Gemini: accept file edits']].map(([value, label]) => option(value, label)));
-    permissions.value = entry.strategy.permissionMode || ''; permissions.addEventListener('change', () => { entry.strategy.permissionMode = permissions.value || null; }); nodes.push(field('Permissions', permissions));
-    const target = document.createElement('select'); target.id = 'column-plan-target';
-    target.append(option('', 'Stay in this column'), ...list.filter(column => column.role === 'active' && column.id !== entry.id).map(column => option(column.id, column.name)));
-    target.value = entry.strategy.planExitTargetId || ''; target.addEventListener('change', () => { entry.strategy.planExitTargetId = target.value || null; }); nodes.push(field('After native plan approval', target));
-    nodes.push(paragraph('Claude and Gemini can move to this target after a native plan is approved in the terminal. A request or finished response does not count as approval. Codex currently requires an explicit move.', 'note'));
-    nodes.push(paragraph('Live moves retain the CLI’s current permissions. New model, effort or Base settings wait for the current turn before resuming. Permissions apply on startup/resume. Pause before editing this board or switching providers.', 'note'));
+    // Execution policy overrides; empty inherits the board (Execution permissions above).
+    const readOnlyKind = kind === 'planning' || kind === 'review';
+    for (const [key, title] of [['interaction', 'Agent questions'], ['filesystem', 'Workspace access'], ['completion', 'Stage completion']]) {
+      if (key === 'completion' && !typed) continue;
+      const input = document.createElement('select'); input.id = `column-${key}`;
+      input.append(option('', 'Inherit the board setting'), ...EXECUTION_CHOICES[key].map(([value, text]) => option(value, text)));
+      input.value = entry.strategy[key] || '';
+      if (key === 'filesystem' && readOnlyKind) { input.value = 'read_only'; input.disabled = true; }
+      input.addEventListener('change', () => { entry.strategy[key] = input.value || null; });
+      nodes.push(field(title, input));
+    }
+    if (readOnlyKind) nodes.push(paragraph(`${kind === 'planning' ? 'Planning' : 'Code Review'} columns are always read-only; no setting can change that.`, 'note'));
+    if (!typed) {
+      const permissions = document.createElement('select'); permissions.setAttribute('aria-label', 'Column permissions');
+      permissions.append(...[['', 'Use agent default'], ['plan', 'Plan mode'], ['default', 'Ask for permission'], ['acceptEdits', 'Claude: accept file edits'], ['workspace-write', 'Codex: write in workspace'], ['auto_edit', 'Gemini: accept file edits']].map(([value, label]) => option(value, label)));
+      permissions.value = entry.strategy.permissionMode || ''; permissions.addEventListener('change', () => { entry.strategy.permissionMode = permissions.value || null; }); nodes.push(field('CLI permission mode (used when no workspace access is chosen above)', permissions));
+      const target = document.createElement('select'); target.id = 'column-plan-target';
+      target.append(option('', 'Stay in this column'), ...list.filter(column => column.role === 'active' && column.id !== entry.id).map(column => option(column.id, column.name)));
+      target.value = entry.strategy.planExitTargetId || ''; target.addEventListener('change', () => { entry.strategy.planExitTargetId = target.value || null; }); nodes.push(field('After native plan approval', target));
+      nodes.push(paragraph('Claude and Gemini can move to this target after a native plan is approved in the terminal. A request or finished response does not count as approval. Codex currently requires an explicit move.', 'note'));
+      nodes.push(paragraph('Live moves retain the CLI’s current permissions. New model, effort or Base settings wait for the current turn before resuming. Permissions apply on startup/resume. Pause before editing this board or switching providers.', 'note'));
+    } else nodes.push(paragraph('Typed columns use the agent chosen above with a fresh session on every arrival, so each column can use a different provider. Enabled “on enter” agent messages are sent with the task as column instructions.', 'note'));
   } else nodes.push(paragraph(entry.role === 'todo' ? 'The holding role never starts agents. Returning a card stops its agent and resets the current session; files and historical output are kept.'
     : 'The completion role pauses the agent and archives its task, preserving the conversation and worktree for restoration.', 'note'));
   const automations = pipelineAutomationEditor(entry);
@@ -4787,7 +4952,9 @@ $('#columns-use-pipeline').addEventListener('click', () => {
   columnsDraft.pipeline = true;
   columnsDraft.list = columnsDraft.list.filter(entry => !entry.hidden).map(entry => ({ id: entry.id, name: entry.title || builtinTitle(entry.id),
     role: entry.id === 'todo' ? 'todo' : entry.id === 'done' ? 'done' : 'active', color: entry.color || BUILTIN_DEFAULT_COLORS[entry.id] || 'gray', description: entry.description || '',
-    strategy: entry.id === 'planning' ? { permissionMode: 'plan', planExitTargetId: 'executing' } : entry.custom ? { autoSpawn: entry.agent?.enabled === true && entry.agent?.policy !== 'manual' } : {},
+    // The built-in stages become typed columns, so they keep their stage behaviour; added columns stay custom.
+    ...(['planning', 'executing', 'code_review', 'testing', 'merge'].includes(entry.id) ? { kind: { planning: 'planning', executing: 'execution', code_review: 'review', testing: 'testing', merge: 'merge' }[entry.id] } : entry.id === 'todo' || entry.id === 'done' ? {} : { kind: 'custom' }),
+    strategy: entry.custom ? { autoSpawn: entry.agent?.enabled === true && entry.agent?.policy !== 'manual' } : {},
     automations: { onEnter: [], onExit: [] } }));
   renderColumns();
 });
@@ -4812,10 +4979,19 @@ async function saveColumns(event) {
   const project = board?.projects.find(item => item.id === columnsDraft.project);
   if (!project) return;
   const columns = columnsDraft.list.map(entry => entry.custom ? entry : { id: entry.id, ...(entry.title && entry.title !== builtinTitle(entry.id) ? { title: entry.title } : {}), ...(entry.color && entry.color !== BUILTIN_DEFAULT_COLORS[entry.id] ? { color: entry.color } : {}), ...(entry.hidden ? { hidden: true } : {}) });
-  try { await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/${columnsDraft.pipeline ? 'pipeline' : 'columns'}`, columnsDraft.pipeline
-    ? { pipeline: { version: 1, columns: columnsDraft.list, profiles: columnsDraft.profiles }, expectedRevision: columnsDraft.revision, confirm: true }
-    : { columns, expectedRevision: project.revision }); }
-  catch (error) { $('#columns-error').textContent = error.message; $('#columns-error').hidden = false; return; }
+  try {
+    if (!columnsDraft.pipeline) await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/columns`, { columns, expectedRevision: project.revision });
+    else {
+      // Only what changed is saved: structure (needs paused agents), then permissions, then test commands.
+      const fresh = () => board?.projects.find(item => item.id === project.id);
+      if (project.workflowMode !== 'pipeline' || JSON.stringify({ columns: columnsDraft.list, profiles: columnsDraft.profiles }) !== columnsDraft.original)
+        await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/pipeline`, { pipeline: { version: 1, columns: columnsDraft.list, profiles: columnsDraft.profiles }, expectedRevision: columnsDraft.revision, confirm: true });
+      if (columnsDraft.applyAll || JSON.stringify(columnsDraft.execution) !== JSON.stringify(fresh().execution || {}))
+        await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/execution`, { policy: columnsDraft.execution, applyToAllColumns: columnsDraft.applyAll, expectedRevision: fresh().revision });
+      const lines = columnsDraft.tests.split('\n').map(line => line.trim()).filter(Boolean);
+      if (lines.join('\n') !== testCommandsText(fresh())) await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/tests`, { commands: lines.map(command => ({ command })), expectedRevision: fresh().revision });
+    }
+  } catch (error) { $('#columns-error').textContent = error.message; $('#columns-error').hidden = false; return; }
   $('#columns-dialog').close();
   announce('Columns saved.');
 }

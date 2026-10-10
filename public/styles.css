@@ -1068,6 +1068,15 @@ button.timeline-task:hover { text-decoration: underline; }
 .columns-editor { display: grid; align-content: start; gap: 14px; }
 .columns-editor .settings-group textarea, .columns-editor input[type="text"] { display: block; width: 100%; margin-top: 6px; padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface); font: 13.5px var(--sans); }
 .columns-editor textarea { min-height: 70px; }
+/* Board-wide execution permissions above the column list. */
+.columns-execution { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px 16px; margin: 4px 0 14px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+.columns-execution > h3, .columns-execution > .note, .columns-execution > .check-row, .columns-execution > .detail-actions, .columns-execution > label:has(textarea) { grid-column: 1 / -1; }
+.columns-execution h3 { margin: 0; font-size: 14px; }
+.columns-execution select, .columns-execution input[type="number"], .columns-execution textarea { display: block; width: 100%; margin-top: 6px; padding: 7px 9px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface); font: 13px var(--sans); color: inherit; }
+.execution-warning { color: var(--danger, #b42318); }
+.stage-findings, .stage-history { margin: 6px 0; padding-left: 18px; font-size: 13px; }
+.stage-history li, .stage-findings li { margin: 3px 0; overflow-wrap: anywhere; }
+.stage-outcome { overflow-wrap: anywhere; }
 .column-automations { min-width: 0; display: grid; gap: 10px; }
 .column-automations h3 { margin: 0; font-size: 14px; }
 .automation-group, .automation-row { min-width: 0; margin: 0; padding: 12px; border: 1px solid var(--line); border-radius: 8px; display: grid; gap: 10px; }
