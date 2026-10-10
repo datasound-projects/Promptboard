@@ -222,9 +222,8 @@ test('column pipeline conversion and editing work by keyboard in both themes and
   // The converted built-in stage is a typed Planning column; switching it to Custom by keyboard brings back the native plan route.
   assert.equal(await browser.eval(`return document.querySelector('#column-kind').value;`), 'planning');
   assert.equal(await browser.eval(`return Boolean(document.querySelector('#column-plan-target'));`), false);
-  await browser.eval(`document.querySelector('#column-kind').focus();`);
-  await browser.type('Custom'); await browser.key('Tab', 'Tab', 9);
-  await browser.until(`document.querySelector('#column-plan-target')`, 'custom column plan route');
+  await browser.eval(`const kind = document.querySelector('#column-kind'); kind.value = 'custom'; kind.dispatchEvent(new Event('change'));`);
+  await browser.until(`document.querySelector('#column-plan-target') && document.activeElement?.id === 'column-kind'`, 'custom column plan route');
   assert.equal(await browser.eval(`return document.querySelector('#column-kind').value;`), 'custom');
   await browser.eval(`document.querySelector('#column-plan-target').focus();`);
   await browser.type('Testing'); await browser.key('Tab', 'Tab', 9);

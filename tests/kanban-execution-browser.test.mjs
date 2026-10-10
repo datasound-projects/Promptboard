@@ -13,6 +13,11 @@ test('typed board settings: permissions, column types, the Full Autopilot confir
   const first = await app.board.createTask({ projectId: project.id, title: 'First card' });
   const browser = await launch({ width: 1280, height: 900 }); assert.ok(browser); t.after(() => browser.close());
   const ev = code => browser.eval(code), wait = (expression, label) => browser.until(expression, label, 15000);
+  // Native button activation needs a character event (the shared raw-key helper is for terminals).
+  const enter = async () => {
+    await browser.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' });
+    await browser.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+  };
   await browser.goto(`${app.url}/#/kanban`);
   await wait(`document.querySelector('[data-id="${first.id}"]')`, 'board');
   // Column Manager: the board-wide section, and a typed Code Review column whose access is locked read-only.
@@ -25,8 +30,8 @@ test('typed board settings: permissions, column types, the Full Autopilot confir
   assert.equal(await ev(`return Boolean(document.querySelector('#column-plan-target'));`), false, 'A typed column has no native plan route.');
   // Keyboard: choose autonomous interaction and automatic completion for the whole board, then save.
   await ev(`document.querySelector('#execution-interaction').focus();`);
-  for (let index = 0; index < 2; index++) await browser.key('ArrowDown', 'ArrowDown', 40);
-  await wait(`document.querySelector('#execution-interaction').value === 'autonomous'`, 'autonomous chosen by keyboard');
+  await browser.type('Autonomous'); await browser.key('Tab', 'Tab', 9);
+  await wait(`document.querySelector('#execution-interaction').value === 'autonomous' && document.querySelector('.execution-warning')`, 'autonomous chosen by keyboard');
   assert.match(await ev(`return document.querySelector('.execution-warning').textContent;`), /Planning and Code Review stay read-only/);
   await ev(`const select = document.querySelector('#execution-completion'); select.value = 'automatic'; select.dispatchEvent(new Event('change'));`);
   await ev(`document.querySelector('#columns-form').requestSubmit();`);
@@ -39,7 +44,7 @@ test('typed board settings: permissions, column types, the Full Autopilot confir
   await wait(`document.querySelector('#execution-preset')`, 'preset button');
   await ev(`document.querySelector('#execution-preset').click();`);
   await wait(`document.activeElement?.id === 'execution-preset-apply'`, 'confirmation focused');
-  await browser.key('Enter', 'Enter', 13);
+  await enter();
   await wait(`!document.querySelector('#execution-preset-apply')`, 'preset applied');
   state = (await app.board.state()).projects[0];
   assert.equal(state.execution.workspaceTrust, 'task_workspaces'); assert.equal(state.execution.maxRework, 2);
