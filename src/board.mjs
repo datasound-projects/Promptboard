@@ -447,7 +447,7 @@ export class Board {
     this.locks = new Map();
     this.recoveryPromise = null;
     this.delivery = new Delivery(this);
-    this.automationJournal = new PipelineJournal(dataDir);
+    this.automationJournal = new PipelineJournal(dataDir, { onLeaseLost: key => this.#automationLeaseLost(key) });
     this.messageScheduler = null;
     this.automations = new PipelineAutomations({ journal: this.automationJournal, actions: automationActions,
       scheduleEnterMessage: (request, options) => this.#scheduleColumnMessage(request, options) });
@@ -1258,6 +1258,9 @@ export class Board {
    */
   async advanceFlows() {
     const state = await this.state();
+    // A crashed owner's lease outlives it by at most one TTL; its move is recovered here once that lease expires.
+    for (const key of this.automationJournal.pendingRecoveries())
+      if ((await this.automationJournal.recoverInterrupted(key).catch(() => [])).length) await this.#publishAutomationMove(key).catch(() => {});
     for (const project of state.projects) {
       const autopilotCard = project.autopilot?.status === 'running' ? project.autopilot.current?.taskId : null;
       for (const task of project.tasks) {
@@ -2572,7 +2575,8 @@ export class Board {
       if (!ownsMove(move)) {
         await this.automationJournal.recoverInterrupted(key);
         const recovered = await this.automationJournal.read(key);
-        if (recovered?.phase !== 'complete') throw conflict('This move belongs to another live application process.', 'AUTOMATION_OWNER_ACTIVE');
+        if (recovered?.phase !== 'complete') throw conflict(recovered?.leaseExpiresAt === undefined ? 'This move belongs to another live application process.'
+          : `This move belongs to another live application process. Its lease expires at ${new Date(recovered.leaseExpiresAt).toISOString()} unless that process renews it; the move is then recovered without replay.`, 'AUTOMATION_OWNER_ACTIVE');
       } else if (move && move.phase !== 'complete') {
         for (const action of move.actions.filter(row => row.status === 'running')) await this.automationJournal.finishAction(key, action.id, { status: 'unconfirmed', reason: 'Owned work stopped without a confirmed result. It will not be replayed.' });
         if (move.lifecycle.status === 'running') await this.automationJournal.finishLifecycle(key, { status: 'cancelled', reason: 'The lifecycle stopped without a confirmed result. It will not be replayed.' });
@@ -2588,6 +2592,13 @@ export class Board {
     });
   }
 
+  /** Another process recovered a move after this process's lease lapsed: stop its owned work. Nothing is replayed. */
+  #automationLeaseLost(key) {
+    const job = this.automationMoves.get(key.taskId);
+    if (job?.key.transitionId === key.transitionId) { job.controller.abort('lease lost'); this.automations.cancel(key); }
+    for (const message of this.messageScheduler?.jobs.values() || []) if (message.key.taskId === key.taskId && message.key.transitionId === key.transitionId) message.controller.abort('lease lost');
+  }
+
   async shutdownAutomations() {
     this.automationsStopping = true;
     const jobs = [...this.automationMoves.values()];
@@ -2595,6 +2606,7 @@ export class Board {
     await this.messageScheduler?.shutdown();
     await this.automations.shutdown();
     await Promise.allSettled(jobs.map(job => job.done));
+    this.automationJournal.stopRenewals();
   }
 
   async #pipelineLifecycleTransition(taskId, { column, index, expectedRevision, transitionId, decision, trigger, continuation = '', requiredRunId = null, requiredApproval = null, expectedProjectRevision = null, signal = null }) {
