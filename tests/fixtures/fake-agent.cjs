@@ -16,7 +16,10 @@ let prompt = '';
 let emit = () => {};
 if (provider === 'claude') {
   const hooks = JSON.parse(flag('--settings')).hooks;
-  prompt = flag('--resume') ? (args.includes('--') ? args[args.indexOf('--') + 1] : '') : args.at(-1).startsWith('-') ? '' : args.at(-1);
+  // As the real CLI parses it: without `--`, an option taking several values (--tools, --disallowedTools…) reads the prompt as one more value.
+  const lastOption = args.findLastIndex(arg => arg.startsWith('-'));
+  prompt = args.includes('--') ? args[args.indexOf('--') + 1] : flag('--resume') || lastOption === args.length - 1
+    || ['--tools', '--disallowedTools', '--allowedTools', '--mcp-config', '--add-dir'].includes(args[lastOption]) ? '' : args.at(-1);
   emit = (name, extra = {}) => {
     for (const group of hooks[name] || []) for (const hook of group.hooks) {
       spawnSync(hook.command, hook.args, { input: JSON.stringify({ hook_event_name: name, session_id: flag('--resume') || flag('--session-id'), cwd: process.cwd(), ...extra }) });

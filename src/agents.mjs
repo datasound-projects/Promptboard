@@ -241,7 +241,9 @@ export async function buildSession({ provider, stage, config, message, runDir, e
     if (config.model) args.push('--model', config.model);
     if (config.effort) { args.push('--effort', config.effort); env.CLAUDE_CODE_EFFORT_LEVEL = config.effort; }
     inArgv = fitsArgv(args, message);
-    if (inArgv && message) args.push(...(resumeId ? ['--', message] : [message]));
+    // Always after the option terminator: --tools and --disallowedTools take several values and would otherwise
+    // read the prompt as more tool names when no other option follows them.
+    if (inArgv && message) args.push('--', message);
   } else if (provider === 'codex') {
     args = [...(resumeId ? ['resume', resumeId, ...(workspacePath ? ['--cd', workspacePath] : [])] : []), '-c', `notify=[${[nodePath, HOOK_SCRIPT, eventsFile, 'codex'].map(tomlString).join(',')}]`, '--no-alt-screen'];
     // Read-only columns never ask (nothing to approve). Writing columns ask unless the policy is autonomous.

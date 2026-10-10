@@ -44,7 +44,7 @@ test('session arguments: planning is read-only per provider; execution never byp
   assert.deepEqual(claudePlan.args.slice(claudePlan.args.indexOf('--permission-mode'), claudePlan.args.indexOf('--permission-mode') + 2), ['--permission-mode', 'plan']);
   assert.equal(claudePlan.args[claudePlan.args.indexOf('--tools') + 1], 'Read,Grep,Glob');
   assert.match(claudePlan.args[claudePlan.args.indexOf('--disallowedTools') + 1], /Edit.*Write.*Bash.*ExitPlanMode/);
-  assert.equal(claudePlan.args.at(-1), message, 'The whole message is one argument.');
+  assert.deepEqual(claudePlan.args.slice(-2), ['--', message], 'The whole message is one argument, never read as more --disallowedTools values.');
   const hook = JSON.parse(claudePlan.args[claudePlan.args.indexOf('--settings') + 1]).hooks.Stop[0].hooks[0];
   assert.deepEqual([hook.command, hook.args[0], hook.args[2]], [process.execPath, HOOK_SCRIPT, 'claude']);
   const codexPlan = await build('codex', 'planning');

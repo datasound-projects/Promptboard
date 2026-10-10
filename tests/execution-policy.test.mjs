@@ -62,4 +62,7 @@ test('custom pipeline columns without a policy keep their saved permission flags
   assert.deepEqual([after(session.args, '--sandbox'), after(session.args, '--ask-for-approval')], ['read-only', 'on-request'], 'Unchanged for boards nobody reconfigured.');
   const claude = await buildSession({ provider: 'claude', stage: 'executing', config: resolveConfig('executing', { provider: 'claude', pipeline: true }), message: 'x', runDir, eventsFile: join(runDir, 'e'), sessionId: 's' });
   assert.ok(!claude.args.includes('--disallowedTools'), 'Custom columns may still use native plan mode.');
+  // A typed column with no model: --disallowedTools is the last option, and the prompt must still be the prompt.
+  const typed = await buildSession({ provider: 'claude', stage: 'executing', config: resolveConfig('executing', { provider: 'claude', pipeline: true, stageEngine: true, interaction: 'ask', filesystem: 'workspace_write' }), message: '=== TASK STATE ===\nbranch: x', runDir, eventsFile: join(runDir, 'e'), sessionId: 's' });
+  assert.deepEqual(typed.args.slice(-4), ['--disallowedTools', 'EnterPlanMode,ExitPlanMode', '--', '=== TASK STATE ===\nbranch: x']);
 });
