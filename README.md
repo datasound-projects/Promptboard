@@ -170,7 +170,7 @@ Read [SECURITY.md](SECURITY.md) before working with sensitive repositories. [Kan
 - [Column automation runtime](docs/pipeline-runtime-automations.md): ordered scripts/webhooks, durable outcomes, scoped Stop and no-replay recovery.
 - [Action editor and results](docs/pipeline-automation-editor.md): row switches, ordering/copying, task-scoped Stop and durable history; deferred enter messages are available; immediate/exit messages and explicit retries remain pending.
 - [Browser column notifications](docs/pipeline-notifications.md): explicit browser permission, scoped display acknowledgements, task clicks and no replay after loss.
-- [Initial prompt ownership](docs/initial-prompt-ownership.md): cancel pending paste or delayed Enter after human input, enforce process ownership, contain unknown writes and retain exact Composer/Base input.
+- [Initial prompt ownership](docs/initial-prompt-ownership.md): paste only after the CLI's readiness sign, never on a timer alone; cancel pending paste or delayed Enter after human input, enforce process ownership, contain unknown writes and retain exact Composer/Base input.
 - [Private terminal input observations](docs/terminal-input-observation.md): bounded paste-mode/control and manual-input evidence for owned pipeline processes, without granting delivery.
 - [Automation execution primitives](docs/pipeline-automation-actions.md): bounded script/webhook/notification adapters.
 - [Durable automation journal](docs/pipeline-automation-journal.md): atomic intent, ordered phases and interruption recovery; configured deferred enter scheduling uses its durable grants.
