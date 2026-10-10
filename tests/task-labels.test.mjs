@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { customPipelineConfig } from './helpers/pipeline.mjs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -71,7 +72,7 @@ test('malformed, duplicate, cross-project and stale label edits reject before st
 test('portable label metadata round-trips without execution and malformed imports remain atomic; old backups have no labels', async t => {
   const { board, project } = await world(t); await board.setLabels(project.id, { labels: catalog, expectedLabelRevision: 0 });
   const task = await board.createTask({ projectId: project.id, title: 'Imported', prompt: '  Exact\r\n雪', labelIds: ['ui', 'bug'], expectedLabelRevision: 1 });
-  const backup = await board.exportBackup(); assert.equal(backup.version, 11);
+  const backup = await board.exportBackup(); assert.equal(backup.version, 12);
   const imported = new Board({ dataDir: await directory(t) }); await imported.importBackup(backup);
   const state = await imported.state(); assert.deepEqual(state.projects[0].labels, backup.projects[0].labels);
   assert.deepEqual(state.projects[0].tasks[0].labelIds, task.labelIds); assert.equal(state.projects[0].tasks[0].prompt, task.prompt);
@@ -93,7 +94,7 @@ test('portable label metadata round-trips without execution and malformed import
 });
 
 test('manual active moves, archive and restore retain labels without creating agent instructions', async t => {
-  const { board, project } = await world(t), pipeline = structuredClone(project.pipeline); board.messageScheduler = null;
+  const { board, project } = await world(t), pipeline = customPipelineConfig(); board.messageScheduler = null;
   for (const column of pipeline.columns) column.strategy.autoSpawn = false;
   await board.setPipeline(project.id, { pipeline, expectedRevision: project.revision, confirm: true });
   await board.setLabels(project.id, { labels: catalog, expectedLabelRevision: 0 });
@@ -112,9 +113,9 @@ test('version 9 migration adds only empty label metadata and keeps exact origina
   const bytes = JSON.stringify(original, null, 2); await writeFile(join(dir, 'state.json'), bytes);
   const store = new Store(dir), state = await store.read(); assert.equal(state.version, STATE_VERSION); assert.equal(state.revision, original.revision);
   assert.deepEqual(state.projects, original.projects.map(project => ({ ...project, labels: [], labelRevision: 0, tasks: project.tasks.map(task => ({ ...task, labelIds: [] })) })));
-  assert.deepEqual(state.extension, original.extension); assert.deepEqual(state.migrations.map(row => row.kind), ['state-v9-to-v10', 'state-v10-to-v11', 'state-v11-to-v12', 'state-v12-to-v13']);
+  assert.deepEqual(state.extension, original.extension); assert.deepEqual(state.migrations.map(row => row.kind), ['state-v9-to-v10', 'state-v10-to-v11', 'state-v11-to-v12', 'state-v12-to-v13', 'state-v13-to-v14']);
   assert.equal(await readFile(join(dir, store.recovery.migrationBackup), 'utf8'), bytes); assert.deepEqual(await new Store(dir).read(), state);
-  const futureDir = await directory(t), future = JSON.stringify({ ...original, version: 14 }); await writeFile(join(futureDir, 'state.json'), future);
+  const futureDir = await directory(t), future = JSON.stringify({ ...original, version: 15 }); await writeFile(join(futureDir, 'state.json'), future);
   await assert.rejects(new Store(futureDir).read(), { code: 'STATE_VERSION_UNSUPPORTED' }); assert.equal(await readFile(join(futureDir, 'state.json'), 'utf8'), future);
 });
 

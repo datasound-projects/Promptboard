@@ -25,7 +25,7 @@ export class PipelineAutomations {
 
   #ownsWork(job) { return [...job.started].some(id => this.actions.jobs.has(id)); }
 
-  runGroup({ key, trigger, rows = [], context, signal = null, onProgress = null, canMessage = true, suppressMessages = false, exitBudgetMs = 60000, messageTimeoutMs = 150000 }) {
+  runGroup({ key, trigger, rows = [], context, signal = null, onProgress = null, canMessage = true, suppressMessages = false, suppressReason = 'This restoration suppresses agent messages.', exitBudgetMs = 60000, messageTimeoutMs = 150000 }) {
     if (this.stopping) return Promise.reject(new PipelineAutomationError('Automation groups are shutting down.', 'AUTOMATION_SHUTTING_DOWN'));
     if (!key || !['exit', 'enter'].includes(trigger) || typeof canMessage !== 'boolean' || typeof suppressMessages !== 'boolean'
       || !Number.isFinite(exitBudgetMs) || exitBudgetMs < 1 || exitBudgetMs > 60000
@@ -78,7 +78,7 @@ export class PipelineAutomations {
         const skip = external.aborted ? 'The move was cancelled before this automation started.'
           : cleanupUnconfirmed ? 'Earlier script termination was not confirmed.'
             : deadline?.aborted || remaining !== null && remaining <= 0 ? 'Exit automations reached their sixty-second group budget.'
-              : row.type === 'send_message' && (!canMessage || suppressMessages) ? (suppressMessages ? 'This restoration suppresses agent messages.' : 'The column has no eligible agent message target.') : null;
+              : row.type === 'send_message' && (!canMessage || suppressMessages) ? (suppressMessages ? suppressReason : 'The column has no eligible agent message target.') : null;
         if (skip) { await this.journal.skipAction(key, action.id, skip); continue; }
         const grant = await this.journal.startAction(key, action.id);
         if (!grant.accepted) fail('Another caller already claimed this action. It cannot be replayed.', 'AUTOMATION_ACTION_CLAIMED');

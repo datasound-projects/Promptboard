@@ -311,31 +311,48 @@ export class Delivery {
       targetCheckout: checkout ? { path: checkout.path, clean: checkout.clean } : null, merging: rev.merging, conflicts: rev.conflicts, unresolved: rev.unresolved, eligible: problems.length === 0, problems };
   }
 
-  /** Confirmed fast-forward-only merge, serialized per repository, rechecked immediately before. */
-  async merge(taskId, { confirm, taskCommit, targetCommit, trigger = 'user' }) {
+  /**
+   * Confirmed merge, serialized per repository, rechecked immediately before. The target only ever moves forward
+   * from the previewed commit (compare-and-swap); a moved target fails with MERGE_STALE and nothing changes.
+   * - Fast-forward: the target moves to the task commit.
+   * - Squash: one new commit on top of the previewed target, with exactly the reviewed and tested tree of the task
+   *   commit (the task's checkpoint commits stay on its branch). Made with plumbing in the repository, so no
+   *   checkout is switched; the target then fast-forwards to it.
+   */
+  async merge(taskId, { confirm, taskCommit, targetCommit, trigger = 'user', squash } = {}) {
     if (confirm !== true) throw fail('Confirm the merge first.', 'CONFIRMATION_REQUIRED', 400);
-    const { ws, target } = await this.#context(taskId, { working: true });
+    const { project, task, ws, target } = await this.#context(taskId, { working: true });
+    // Column pipelines squash by default (Kanban settings → merge method); legacy boards fast-forward.
+    squash ??= project.workflowMode === 'pipeline' && (project.execution?.mergeMethod ?? 'squash') === 'squash';
     return this.#locked(`repo:${ws.commonDir}`, async () => {
       const preview = await this.mergePreview(taskId);
       if (preview.taskCommit !== taskCommit || preview.targetCommit !== targetCommit) throw fail('The task or target branch changed since the preview. Review the new preview.', 'MERGE_STALE');
       if (!preview.eligible) throw fail(preview.problems.join(' '), 'MERGE_NOT_ELIGIBLE');
       const branchTip = await this.#rev(ws.path, `refs/heads/${ws.branch}`);
       if (branchTip !== taskCommit) throw fail('The task branch does not point at the previewed commit.', 'MERGE_STALE');
+      let merged = taskCommit;
+      if (squash) {
+        const tree = lines(await git(['rev-parse', '--verify', `${taskCommit}^{tree}`], { cwd: ws.repositoryRoot }))[0];
+        const ref = Number.isInteger(task.number) ? `#${task.number}` : taskId.slice(0, 8);
+        const message = `${task.title}\n\nPromptboard task ${ref}: ${preview.commits.length} ${preview.commits.length === 1 ? 'commit' : 'commits'} from ${ws.branch} (${taskCommit.slice(0, 12)}), squashed. The tree is the reviewed and tested task commit.`;
+        merged = lines(await git(['commit-tree', tree, '-p', targetCommit, '-m', message], { cwd: ws.repositoryRoot, timeoutMs: 60000 })
+          .catch(error => { throw /tell me who you are|user\.email|user\.name/i.test(error.stderr || '') ? fail('Git has no author identity for this repository. Set user.name and user.email with git config yourself; Promptboard does not change Git configuration.', 'IDENTITY_REQUIRED') : fail('Git could not create the squash commit. Nothing was changed.', 'MERGE_FAILED'); }))[0];
+      }
       let method;
       if (preview.targetCheckout) {
         // Fast-forward the checkout that has the target branch; never switch branches anywhere.
-        await git(['merge', '--ff-only', '--no-edit', taskCommit], { cwd: preview.targetCheckout.path, timeoutMs: 120000 })
+        await git(['merge', '--ff-only', '--no-edit', merged], { cwd: preview.targetCheckout.path, timeoutMs: 120000 })
           .catch(() => { throw fail('Git refused the fast-forward in the target checkout. Nothing was changed.', 'MERGE_FAILED'); });
-        method = `fast-forward in ${preview.targetCheckout.path}`;
+        method = `${squash ? 'squash commit, ' : ''}fast-forward in ${preview.targetCheckout.path}`;
       } else {
         // Not checked out anywhere: move the ref only if it still has the previewed value.
-        await git(['update-ref', '-m', `promptboard: fast-forward ${target} to task ${taskId}`, `refs/heads/${target}`, taskCommit, targetCommit], { cwd: ws.repositoryRoot })
+        await git(['update-ref', '-m', `promptboard: ${squash ? 'squash-merge' : 'fast-forward'} ${target} to task ${taskId}`, `refs/heads/${target}`, merged, targetCommit], { cwd: ws.repositoryRoot })
           .catch(() => { throw fail('Git refused to update the target branch. Nothing was changed.', 'MERGE_FAILED'); });
-        method = 'fast-forward of the branch reference';
+        method = `${squash ? 'squash commit, ' : ''}fast-forward of the branch reference`;
       }
       const result = await this.#rev(ws.repositoryRoot, `refs/heads/${target}`);
-      if (result !== taskCommit) throw fail(`The merge could not be verified: ${target} is at ${result.slice(0, 12)}.`, 'MERGE_UNVERIFIED', 500);
-      const done = await this.board.completeTask(taskId, { kind: 'merged', details: { targetBranch: target, previousTarget: targetCommit, mergedCommit: result, method, commits: preview.commits.length, trigger } });
+      if (result !== merged) throw fail(`The merge could not be verified: ${target} is at ${result.slice(0, 12)}.`, 'MERGE_UNVERIFIED', 500);
+      const done = await this.board.completeTask(taskId, { kind: 'merged', details: { targetBranch: target, previousTarget: targetCommit, mergedCommit: result, taskCommit, method, squash, commits: preview.commits.length, trigger } });
       // The work is on the target branch now. Remove the clean task worktree; the task branch stays.
       return (await this.board.removeTaskWorktree(taskId).catch(() => null)) || done;
     });

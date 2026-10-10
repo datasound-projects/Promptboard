@@ -5,12 +5,12 @@ import { join } from 'node:path';
 import { findChrome, launch } from './helpers/browser.mjs';
 import { pickProject, shownProject } from './helpers/projects.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
-import { defaultPipelineConfig } from '../src/pipeline-config.mjs';
+import { customPipelineConfig } from './helpers/pipeline.mjs';
 
 const chrome = await findChrome();
 test('Notify me editing, explicit permission, display receipts and task clicks work by keyboard across themes and widths', { skip: !chrome, timeout: 90000 }, async t => {
   t.diagnostic('Notification fixture starting.');
-  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] }), config = defaultPipelineConfig();
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] }), config = customPipelineConfig();
   for (const column of config.columns) column.strategy.autoSpawn = false;
   const other = await app.board.createProject({ name: 'Other project' }), project = await app.board.createProject({ name: 'Notification project' });
   await app.board.setPipeline(project.id, { pipeline: config, expectedRevision: 1, confirm: true });

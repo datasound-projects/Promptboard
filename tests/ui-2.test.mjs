@@ -8,7 +8,7 @@ import { JSDOM } from 'jsdom';
 import { startServer } from '../src/server.mjs';
 import { fakeGh } from './fixtures/fake-gh.mjs';
 import { VERSION } from '../src/version.mjs';
-import { defaultPipelineConfig } from '../src/pipeline-config.mjs';
+import { customPipelineConfig } from './helpers/pipeline.mjs';
 import { repositoryPipelineDefinition } from '../src/pipeline-repository.mjs';
 import { Board } from '../src/board.mjs';
 import { parseAgyModels } from '../src/models.mjs';

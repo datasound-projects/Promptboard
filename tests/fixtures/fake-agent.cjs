@@ -120,16 +120,27 @@ function turn(text) {
   const readOnly = args.includes('plan') || args.includes('read-only');
   // FAKE_AGENT_WRITE=1 (demo recordings): every writing session adds its own file, named after the worktree.
   if (process.env.FAKE_AGENT_WRITE === '1' && !readOnly && !text.includes('=== DIFF:')) writeFileSync(join(process.cwd(), `work-${basename(process.cwd()).slice(0, 8)}.txt`), `${text.split('\n').find(line => line.trim() && !line.startsWith('==='))?.slice(0, 80) || 'work'}\n`, { flag: 'a' });
-  if (text.includes('WRITE_FILE')) {
+  // WRITE_FILE is implementation work: a well-behaved testing agent (stage instructions "Test the task below") does
+  // not write it; TESTER_WRITES makes the tester change files anyway.
+  const tester = text.startsWith('Test the task below');
+  if (text.includes('WRITE_FILE') && (!tester || text.includes('TESTER_WRITES'))) {
     if (readOnly) process.stdout.write('write denied: read-only planning session\r\n');
-    else writeFileSync(join(process.cwd(), (text.match(/WRITE_FILE:([\w.-]+)/) || [])[1] || 'agent-output.txt'), 'written by the agent\n');
+    else writeFileSync(join(process.cwd(), (text.match(/WRITE_FILE:([\w.-]+)/) || [])[1] || 'agent-output.txt'), `written by the agent${process.env.FAKE_AGENT_STATE ? ` ${Date.now()}` : ''}\n`);
   }
+  // A misbehaving CLI that ignores its read-only mode (the stage engine must catch it).
+  if (text.includes('WRITE_ANYWAY') && readOnly && !text.includes('=== DIFF:')) writeFileSync(join(process.cwd(), 'planner-wrote-this.txt'), 'should not exist\n');
   if (text.includes('EXIT_NOW')) process.exit(0);
   const plan = args.includes('plan') || args.includes('read-only');
   // Review requests carry the diff; answer with the findings format the review stage asks for.
-  const review = text.includes('=== DIFF:') ? '```json\n' + JSON.stringify(text.includes('REVIEW_FAIL')
+  // REVIEW_FAIL_ONCE fails the first review of the task, using a marker in FAKE_AGENT_STATE (outside the worktree).
+  let failOnce = false;
+  if (text.includes('=== DIFF:') && text.includes('REVIEW_FAIL_ONCE') && process.env.FAKE_AGENT_STATE) {
+    const marker = join(process.env.FAKE_AGENT_STATE, `review-${(text.match(/TASK_KEY:(\w+)/) || [])[1] || 'task'}`);
+    try { readFileSync(marker); } catch { writeFileSync(marker, 'failed once\n'); failOnce = true; }
+  }
+  const review = text.includes('=== DIFF:') ? (text.includes('REVIEW_GARBAGE') ? 'Looks fine to me, no structured verdict.' : '```json\n' + JSON.stringify((text.includes('REVIEW_FAIL') && !text.includes('REVIEW_FAIL_ONCE')) || failOnce
     ? { verdict: 'changes_required', findings: [{ severity: 'high', file: 'feature.txt', line: 1, explanation: 'The value is wrong.' }] }
-    : { verdict: 'no_issues', findings: [] }) + '\n```' : null;
+    : { verdict: 'no_issues', findings: [] }) + '\n```') : null;
   emit('Stop', { last_assistant_message: review || (plan ? `PLAN\n1. Change the code.\nsaw ${text.length} chars` : 'Implemented the change.') });
   process.stdout.write('turn complete\r\n');
 }

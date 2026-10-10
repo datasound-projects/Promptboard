@@ -16,7 +16,7 @@ import { externalIssueSource } from './external-source.mjs';
 import { serial, writeAtomic } from './durable.mjs';
 
 export const STATE_SCHEMA = 'promptboard.state';
-export const STATE_VERSION = 13;
+export const STATE_VERSION = 14;
 const STATE_FILE = 'state.json';
 
 export function defaultDataDir(env = process.env, platform = process.platform) {
@@ -42,7 +42,7 @@ export class StoreError extends Error {
 function checkShape(data) {
   if (!data || typeof data !== 'object' || data.schema !== STATE_SCHEMA) throw new Error('Unknown state file.');
   if (data.version > STATE_VERSION) throw new StoreError('The board was saved by a newer Promptboard version. Update the app; the file was not changed.', 'STATE_VERSION_UNSUPPORTED');
-  if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, STATE_VERSION].includes(data.version) || !Array.isArray(data.projects) || !Array.isArray(data.runs)) throw new Error('Unsupported state shape.');
+  if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, STATE_VERSION].includes(data.version) || !Array.isArray(data.projects) || !Array.isArray(data.runs)) throw new Error('Unsupported state shape.');
   if (data.version >= 3 && (!data.base || !Array.isArray(data.base.resources) || !Array.isArray(data.base.approvedRoots) || !Number.isSafeInteger(data.base.revision) || data.base.revision < 0)) throw new Error('Invalid Base registry shape.');
   if (data.version >= 4 && (!Array.isArray(data.sessions) || data.sessions.some(session => !session || typeof session !== 'object'
     || typeof session.id !== 'string' || !session.id || typeof session.taskId !== 'string' || typeof session.projectId !== 'string'
@@ -126,12 +126,17 @@ export function migrateState(data) {
   if (state.version < 12) state.migrations.push({ kind: 'state-v11-to-v12', at: Date.now() });
   // Version 13 removes the Backlog. Drafts that were still waiting there become idle To Do cards, so no
   // saved work disappears; nothing starts. The exact earlier file is kept as a pre-migration backup.
-  let moved = 0;
-  for (const project of state.projects) {
-    moved += draftsToCards(project, project.backlog);
-    for (const key of ['backlog', 'backlogRevision', 'backlogSources', 'backlogImported', 'backlogImportRevision']) delete project[key];
+  if (state.version < 13) {
+    let moved = 0;
+    for (const project of state.projects) {
+      moved += draftsToCards(project, project.backlog);
+      for (const key of ['backlog', 'backlogRevision', 'backlogSources', 'backlogImported', 'backlogImportRevision']) delete project[key];
+    }
+    state.migrations.push({ kind: 'state-v12-to-v13', at: Date.now(), draftsMovedToTodo: moved });
   }
-  state.migrations.push({ kind: 'state-v12-to-v13', at: Date.now(), draftsMovedToTodo: moved });
+  // Version 14 adds column types, execution policies and stage outcomes. Existing columns keep their exact
+  // behaviour (custom); the version only stops older builds from misreading the new fields as damage.
+  if (state.version < 14) state.migrations.push({ kind: 'state-v13-to-v14', at: Date.now() });
   state.version = STATE_VERSION;
   // New metadata must satisfy current invariants before any migrated bytes publish.
   return checkShape(state);

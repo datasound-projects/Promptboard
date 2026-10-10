@@ -5,11 +5,11 @@ import { join } from 'node:path';
 import { findChrome, launch } from './helpers/browser.mjs';
 import { pickProject } from './helpers/projects.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
-import { defaultPipelineConfig } from '../src/pipeline-config.mjs';
+import { customPipelineConfig } from './helpers/pipeline.mjs';
 
 test('stable task numbers survive deletion, keyboard edits and archive restoration across both themes and widths without changing prompt bytes', { skip: !await findChrome(), timeout: 90000 }, async t => {
   const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
-  const project = await app.board.createProject({ name: 'Numbered tasks' }), pipeline = defaultPipelineConfig();
+  const project = await app.board.createProject({ name: 'Numbered tasks' }), pipeline = customPipelineConfig();
   for (const column of pipeline.columns) column.strategy.autoSpawn = false;
   await app.board.setPipeline(project.id, { pipeline, expectedRevision: project.revision, confirm: true });
   const create = title => app.board.createTask({ projectId: project.id, title, prompt: '  Original\r\n雪\n' });

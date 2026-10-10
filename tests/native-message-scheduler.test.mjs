@@ -7,11 +7,12 @@ import { join } from 'node:path';
 import { NativeMessageScheduler } from '../src/native-message-scheduler.mjs';
 import { PipelineJournal } from '../src/pipeline-journal.mjs';
 import { PipelineAutomations } from '../src/pipeline-automations.mjs';
-import { defaultPipelineConfig, normalizePipelineAutomations } from '../src/pipeline-config.mjs';
+import { normalizePipelineAutomations } from '../src/pipeline-config.mjs';
+import { customPipelineConfig } from './helpers/pipeline.mjs';
 
 async function fixture(t, { queued = false, count = 1, start = true } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'pb-native-scheduler-')); t.after(() => rm(dir, { recursive: true, force: true }));
-  const journal = new PipelineJournal(dir), pipeline = defaultPipelineConfig(), path = join(dir, 'owned-workspace');
+  const journal = new PipelineJournal(dir), pipeline = customPipelineConfig(), path = join(dir, 'owned-workspace');
   const rows = normalizePipelineAutomations({ onEnter: Array.from({ length: count }, (_, i) => ({ id: `row-${i}`, name: `Message ${i}`,
     type: 'send_message', enabled: true, mode: 'deferred', message: `Review ${i} {{title}}` })) }).onEnter;
   pipeline.columns.find(row => row.id === 'code_review').automations.onEnter = rows;

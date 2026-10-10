@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Board } from '../src/board.mjs';
 import { Autopilot } from '../src/autopilot.mjs';
-import { defaultPipelineConfig } from '../src/pipeline-config.mjs';
+import { customPipelineConfig } from './helpers/pipeline.mjs';
 import { resolveConfig } from '../src/agents.mjs';
 
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null' } }).trim();
@@ -23,7 +23,7 @@ async function world(t, { instruct = [], profiles = [] } = {}) {
   const payloads = [];
   board.executor = { validate: async ({ stage, config }) => resolveConfig(stage, config), start: async payload => { starts.push(payload.run.id); payloads.push(payload); },
     suspend: async id => board.updateRun(id, { status: 'suspended' }), cancel: async id => board.updateRun(id, { status: 'cancelled' }) };
-  const config = defaultPipelineConfig(); config.profiles = profiles;
+  const config = customPipelineConfig(); config.profiles = profiles;
   for (const id of instruct) config.columns.find(column => column.id === id).automations.onEnter.push({ name: 'Autopilot instruction', type: 'send_message', mode: 'deferred', message: `Do the ${id} step.` });
   await board.setPipeline(project.id, { pipeline: config, expectedRevision: (await board.state()).projects[0].revision });
   const projectNow = async () => (await board.state()).projects[0];

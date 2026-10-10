@@ -10,7 +10,8 @@
  * card starts from the target branch.
  */
 
-import { resolvePipelineStrategy } from './pipeline-config.mjs';
+import { EXECUTION_DEFAULTS, resolvePipelineStrategy } from './pipeline-config.mjs';
+import { columnStage } from './board.mjs';
 
 const TICK_MS = 1000;
 const RESUME_MESSAGE = 'Promptboard Autopilot restarted this session. Continue the current step of this card from where you stopped; if it is already complete, say what you did and stop.';
@@ -60,11 +61,15 @@ export class Autopilot {
   route(ap, taskId) { return ap.routes?.[taskId] || ap.route; }
 
   // ---- Column pipelines ----
-  // Each queued card goes through the chosen active columns in order, then Done. Entering the first column
-  // starts its agent with the task (as a drag would); each later column's "on enter" message is the next
-  // instruction, delivered when the agent is ready. A column is finished when its agent has completed a new
-  // turn since the card arrived and is idle. A plan column waits for your approval, which moves the card on.
-  // Nothing is merged or pushed; the card stays on its task branch.
+  // Each queued card goes through the chosen active columns in order, then Done, strictly one card at a time in
+  // the queue's order. Autopilot only decides movement; every move is the board's own transition (as a drag).
+  // - Typed columns (Planning, Executing, Code Review, Testing, Merge kinds): the board's stage engine runs the
+  //   column and records its outcome. Succeeded → next column; changes required → back to the Executing (or
+  //   Code Review) column, within the rework limit; failed → pause with the reason. A Merge column merges the
+  //   task into the target branch and the card reaches Done; the next card then starts from the new target.
+  // - Custom columns keep one conversation: entering the first column starts its agent with the task; each later
+  //   column's "on enter" message is the next instruction. A custom column is finished when its agent has
+  //   completed a new turn since the card arrived and is idle. A plan column waits for your approval.
   async pipelineStep(projectId) {
     const state = await this.board.state();
     const project = state.projects.find(item => item.id === projectId), ap = project?.autopilot;
@@ -88,6 +93,15 @@ export class Autopilot {
       // Continue from wherever the card is now (the person may have moved it).
       if (task.column === todo) return this.set(projectId, a => { a.current = { ...a.current, stage: null, step: 'enter' }; });
       if (!route.includes(task.column)) return this.pause(projectId, `“${task.title}” is in ${name(task.column)}, which is not in the Autopilot columns. Move it to one of them, or skip it.`);
+      if (columnStage(project, task.column)) {
+        // A typed column: a final outcome is acted on; otherwise the stage runs again with a fresh session.
+        const outcome = task.stageOutcome?.columnId === task.column ? task.stageOutcome : null;
+        if (live || (outcome && outcome.status !== 'failed')) return this.set(projectId, a => { a.current = { ...a.current, stage: task.column, step: 'working', enteredAt: outcome?.at ?? Date.now() }; });
+        // Merge is Promptboard's own operation: run it again (it brings in a moved target and merges when eligible).
+        if (columnStage(project, task.column) === 'merge') await this.board.mergeNow(task.id);
+        else await this.board.requestRun(task.id, { stage: task.column, consent: true, trigger: 'automation' });
+        return this.set(projectId, a => { a.current = { ...a.current, stage: task.column, step: 'working', enteredAt: Date.now() - 1 }; });
+      }
       if (!live) {
         // No agent in this column (for example it was stopped, or the app restarted): start it here again. A resumed
         // conversation is told to carry on; without input it would sit idle and this column would never finish.
@@ -104,11 +118,13 @@ export class Autopilot {
         await this.set(projectId, (a, log) => { a.current = { ...a.current, step: 'finishing' }; log(`“${task.title}”: all columns finished.`); });
         return this.pipelineMove(task, done);
       }
+      const enteredAt = Date.now() - 1;
       await this.pipelineMove(task, next, 'start');
       const fresh = (await this.board.state()).runs.filter(run => run.taskId === task.id && ['queued', 'running', 'waiting_for_input'].includes(run.status)).at(-1);
-      return this.set(projectId, (a, log) => { a.current = { ...a.current, stage: next, step: 'working', turns: fresh?.turns ?? 0 }; log(`“${task.title}” → ${name(next)}.`); });
+      return this.set(projectId, (a, log) => { a.current = { ...a.current, stage: next, step: 'working', turns: fresh?.turns ?? 0, enteredAt }; log(`“${task.title}” → ${name(next)}.`); });
     }
     // step 'working'
+    if (columnStage(project, cur.stage) && task.column === cur.stage) return this.stageStep(projectId, project, task, cur, route, runs, live, name);
     if (task.column !== cur.stage) {
       // An approved plan moves the card on by itself; any later Autopilot column is accepted.
       if (route.indexOf(task.column) > route.indexOf(cur.stage)) return this.set(projectId, (a, log) => { a.current = { ...a.current, stage: task.column, step: 'working', turns: live?.turns ?? 0 }; log(`“${task.title}” → ${name(task.column)} (approved plan).`); });
@@ -129,6 +145,39 @@ export class Autopilot {
     // A plan column moves on only through your approval of the plan in the terminal.
     if (resolvePipelineStrategy(project.pipeline, cur.stage, task).planExitTargetId) return;
     return this.set(projectId, (a, log) => { a.current = { ...a.current, step: 'enter' }; log(`“${task.title}”: ${name(cur.stage)} finished.`); });
+  }
+
+  /** A typed column: act on the board's recorded outcome for this column (never on agent prose or a quiet terminal). */
+  async stageStep(projectId, project, task, cur, route, runs, live, name) {
+    if (task.automationMove?.status === 'blocked') return this.pause(projectId, `The column automations of “${task.title}” are blocked: their cleanup is unconfirmed. Stop them from the card, then resume, or skip the card.`);
+    if (task.automationMove && !['completed', 'failed', 'cancelled', 'interrupted'].includes(task.automationMove.status)) return;
+    const outcome = task.stageOutcome;
+    if (!outcome || outcome.columnId !== cur.stage || outcome.at < (cur.enteredAt || 0)) {
+      if (live) return;
+      const last = runs.at(-1);
+      return this.pause(projectId, `The ${name(cur.stage)} column of “${task.title}” has no running agent${last ? ` (last run ${last.status}${last.reason ? `: ${last.reason.replace(/[.\s]+$/, '')}` : ''})` : ''}. Start it from the card, then resume, or skip the card.`);
+    }
+    if (outcome.status === 'working' || outcome.status === 'verifying') return;
+    if (outcome.status === 'succeeded') return this.set(projectId, (a, log) => { a.current = { ...a.current, step: 'enter' }; log(`“${task.title}”: ${name(cur.stage)} finished.`); });
+    if (outcome.status === 'changes_required') return this.stageRework(projectId, project, task, cur, route, outcome, name);
+    return this.pause(projectId, `“${task.title}”: ${name(cur.stage)} failed${outcome.code ? ` (${outcome.code})` : ''}: ${(outcome.reason || 'no reason was recorded').replace(/[.\s]+$/, '')}. Fix it, then resume, or skip the card.`);
+  }
+
+  /** Review findings, failing tests or a resolved merge send the card back along its route, within the rework limit. */
+  async stageRework(projectId, project, task, cur, route, outcome, name) {
+    const maxRework = project.execution?.maxRework ?? EXECUTION_DEFAULTS.maxRework;
+    const wanted = outcome.next === 'code_review' ? 'code_review' : 'executing';
+    const before = route.slice(0, route.indexOf(cur.stage) + 1).reverse();
+    const target = before.find(id => columnStage(project, id) === wanted) || route.find(id => columnStage(project, id) === wanted);
+    if (!target) return this.pause(projectId, `“${task.title}”: ${name(cur.stage)} needs ${wanted === 'executing' ? 'an Executing' : 'a Code Review'} column for rework, and the Autopilot route has none. Fix it by hand, then resume, or skip the card.`);
+    const attempts = cur.attempts || 0;
+    if (wanted === 'executing' && attempts >= maxRework) return this.pause(projectId, `“${task.title}”: REWORK_LIMIT_REACHED after ${attempts} rework ${attempts === 1 ? 'round' : 'rounds'} (${(outcome.reason || '').replace(/[.\s]+$/, '')}). Fix it by hand, then resume, or skip the card.`);
+    const enteredAt = Date.now() - 1;
+    await this.pipelineMove(task, target, 'start');
+    return this.set(projectId, (a, log) => {
+      a.current = { ...a.current, stage: target, step: 'working', enteredAt, attempts: wanted === 'executing' ? attempts + 1 : attempts };
+      log(`“${task.title}”: ${(outcome.reason || name(cur.stage)).replace(/[.\s]+$/, '')}; back to ${name(target)}${wanted === 'executing' ? ` (rework ${attempts + 1}/${maxRework})` : ''}.`);
+    });
   }
 
   /** The board's own pipeline move, with its checks and column automations; marked as Autopilot's. */

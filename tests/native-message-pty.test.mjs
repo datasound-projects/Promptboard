@@ -7,7 +7,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Board } from '../src/board.mjs';
-import { defaultPipelineConfig, normalizePipelineAutomations } from '../src/pipeline-config.mjs';
+import { normalizePipelineAutomations } from '../src/pipeline-config.mjs';
+import { customPipelineConfig } from './helpers/pipeline.mjs';
 import { Supervisor } from '../src/supervisor.mjs';
 import { NativeMessageDispatch } from '../src/native-message-dispatch.mjs';
 import { NativeMessageScheduler } from '../src/native-message-scheduler.mjs';
@@ -28,7 +29,7 @@ test('private deferred transport uses a real owned PTY and exact native receipts
   t.after(() => board.executor.shutdown(500));
   const project = await board.createProject({ name: 'Native transport' });
   await board.linkRepository(project.id, { path: root, expectedRevision: 1 }); await board.setTargetBranch(project.id, { branch: 'trunk', expectedRevision: 2 });
-  const config = defaultPipelineConfig(); config.columns[2].strategy.agentOverride = 'claude';
+  const config = customPipelineConfig(); config.columns[2].strategy.agentOverride = 'claude';
   config.columns.find(column => column.id === 'code_review').automations.onEnter = [{ id: 'configured-review',
     name: 'Configured review', type: 'send_message', enabled: true, mode: 'deferred', message: 'Review {{taskNumber}} {{title}} 雪' }];
   await board.setPipeline(project.id, { pipeline: config, expectedRevision: 3, confirm: true });

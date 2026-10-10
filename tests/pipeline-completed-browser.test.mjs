@@ -5,11 +5,11 @@ import { join } from 'node:path';
 import { findChrome, launch } from './helpers/browser.mjs';
 import { pickProject } from './helpers/projects.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
-import { defaultPipelineConfig } from '../src/pipeline-config.mjs';
+import { customPipelineConfig } from './helpers/pipeline.mjs';
 import { attachSession } from '../src/sessions.mjs';
 
 test('pipeline completed table sorts archive dates, filters literal titles and shows exact latest usage without running agents; keyboard restore retains context', { skip: !await findChrome(), timeout: 90000 }, async t => {
-  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] }), pipeline = defaultPipelineConfig();
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] }), pipeline = customPipelineConfig();
   for (const column of pipeline.columns) column.strategy.autoSpawn = false;
   pipeline.columns.find(column => column.role === 'done').id = 'finished';
   const project = await app.board.createProject({ name: 'Archived pipeline' }), legacy = await app.board.createProject({ name: 'Legacy archive' });

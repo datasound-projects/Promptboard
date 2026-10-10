@@ -378,7 +378,7 @@ test('Origin-only projects have no Kanban or Git side effects; linking and delet
   await app.board.createTask({ projectId: existing.id, title: 'Existing task', prompt: 'Keep me.' });
   const statePath = join(app.board.store.dir, 'state.json'), projectsDir = join(app.board.store.dir, 'projects');
   const before = await readFile(statePath);
-  assert.equal(JSON.parse(before).version, STATE_VERSION); assert.equal(STATE_VERSION, 13);
+  assert.equal(JSON.parse(before).version, STATE_VERSION); assert.equal(STATE_VERSION, 14);
   assert.equal((await api(app, '/api/origin/projects')).status, 403, 'The session token is required.');
   assert.equal((await api(app, '/api/origin/projects/unknown', { token })).status, 404);
   assert.equal((await api(app, '/api/origin/projects/..%2Fstate', { token })).status, 404);

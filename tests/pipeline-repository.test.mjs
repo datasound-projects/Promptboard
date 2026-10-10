@@ -6,7 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Board } from '../src/board.mjs';
 import { attachSession } from '../src/sessions.mjs';
-import { defaultPipelineConfig, resolvePipelineStrategy } from '../src/pipeline-config.mjs';
+import { resolvePipelineStrategy } from '../src/pipeline-config.mjs';
+import { customPipelineConfig } from './helpers/pipeline.mjs';
 import { readRepositoryPipeline, resolveRepositoryPipeline, repositoryPipelineDefinition } from '../src/pipeline-repository.mjs';
 
 const snapshot = (team, local = null) => ({ files: [{ name: 'promptboard.json', data: team }, { name: 'promptboard.local.json', data: local }] });
@@ -18,7 +19,7 @@ async function world(t) {
   git(root, 'init', '-q', '-b', 'trunk'); git(root, 'config', 'user.name', 'Fixture'); git(root, 'config', 'user.email', 'fixture@example.test');
   git(root, '-c', 'core.hooksPath=' + dataDir, 'commit', '-q', '--allow-empty', '-m', 'Fixture');
   const project = await board.createProject({ name: 'Repository pipeline' }); await board.linkRepository(project.id, { path: root, expectedRevision: 1 });
-  const pipeline = defaultPipelineConfig(); for (const column of pipeline.columns) column.strategy.autoSpawn = false;
+  const pipeline = customPipelineConfig(); for (const column of pipeline.columns) column.strategy.autoSpawn = false;
   await board.setPipeline(project.id, { pipeline, expectedRevision: 2, confirm: true });
   const current = async () => (await board.state()).projects.find(item => item.id === project.id);
   return { root, dataDir, board, projectId: project.id, pipeline, current };
@@ -87,7 +88,7 @@ test('fresh repository review retains the linked Git identity guard when the con
 });
 
 test('repository config preserves sparse local values, replaces both automation groups, and resolves profile/plan names without mutating sources', () => {
-  const current = defaultPipelineConfig(), team = repositoryPipelineDefinition(current);
+  const current = customPipelineConfig(), team = repositoryPipelineDefinition(current);
   team.columns[2].strategy = { agentOverride: 'codex', modelOverride: 'team-model', effortOverride: 'high' };
   team.columns[2].automations = { onEnter: [{ name: 'Team notice', type: 'notify', title: 'Team' }], onExit: [{ name: 'Team exit', type: 'notify' }] };
   team.profiles = [{ name: 'Economy', columns: { Executing: { modelOverride: null, effortOverride: 'low' }, Planning: { planExitTarget: 'Testing' } } }];
@@ -103,7 +104,7 @@ test('repository config preserves sparse local values, replaces both automation 
 });
 
 test('hand-written configs add named columns without dropping tasks; canonical IDs reconcile order and removals while supplying system roles', () => {
-  const current = defaultPipelineConfig();
+  const current = customPipelineConfig();
   const additive = resolveRepositoryPipeline(snapshot({ version: 1, columns: [{ name: 'Planning', strategy: { planExitTarget: 'Testing' } }, { name: 'Triage', strategy: { autoSpawn: false } }] }), current);
   assert.equal(additive.canonical, false); assert.equal(additive.pipeline.columns.length, 8); assert.equal(additive.pipeline.columns[1].strategy.planExitTargetId, 'testing');
   assert.equal(additive.pipeline.columns.at(-1).role, 'done'); assert.ok(additive.pipeline.columns.some(column => column.id === 'merge'));
@@ -112,7 +113,7 @@ test('hand-written configs add named columns without dropping tasks; canonical I
 });
 
 test('repository definitions round-trip stable profiles and targets; a local-only file cannot define or leak shared profiles', () => {
-  const current = defaultPipelineConfig(); current.profiles = [{ id: 'p', name: 'Personal choice', columns: { planning: { planExitTargetId: 'testing' }, executing: { modelOverride: null } } }];
+  const current = customPipelineConfig(); current.profiles = [{ id: 'p', name: 'Personal choice', columns: { planning: { planExitTargetId: 'testing' }, executing: { modelOverride: null } } }];
   const definition = repositoryPipelineDefinition(current); assert.equal(definition.profiles[0].columns.Planning.planExitTarget, 'Testing');
   assert.deepEqual(resolveRepositoryPipeline(snapshot(definition), current).pipeline, current);
   const local = { version: 1, columns: [{ name: 'Executing', strategy: { modelOverride: 'personal-model' } }] };
@@ -121,7 +122,7 @@ test('repository definitions round-trip stable profiles and targets; a local-onl
 });
 
 test('invalid repository references, unsupported fields and malformed rows cannot silently alter a definition', () => {
-  const current = defaultPipelineConfig();
+  const current = customPipelineConfig();
   for (const team of [
     { version: 2, columns: [] }, { version: 1, columns: [{ name: 'Executing', strategy: { planExitTarget: 'Missing' } }] },
     { version: 1, columns: [{ name: 'Executing', strategy: { planExitTarget: 'Testing', planExitTargetId: 'testing' } }] },
@@ -135,7 +136,7 @@ test('invalid repository references, unsupported fields and malformed rows canno
 
 test('repository file reads are bounded and fatal UTF-8, detect either source changing, and read only fixed filenames', async t => {
   const root = await temp(t), missing = await readRepositoryPipeline(root); assert.ok(missing.files.every(file => file.hash === null));
-  await write(root, 'promptboard.json', repositoryPipelineDefinition(defaultPipelineConfig()));
+  await write(root, 'promptboard.json', repositoryPipelineDefinition(customPipelineConfig()));
   const original = await readRepositoryPipeline(root); assert.match(original.sourceRevision, /^[a-f0-9]{64}$/);
   await write(root, 'promptboard.local.json', { version: 1, columns: [{ name: 'Executing', color: 'green' }] });
   assert.notEqual((await readRepositoryPipeline(root)).sourceRevision, original.sourceRevision);

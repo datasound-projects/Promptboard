@@ -224,16 +224,17 @@ export class Supervisor {
     onPrepared(baseDelivery);
     signal.throwIfAborted();
     const plan = planRunId ? await readFile(join(this.dataDir, 'runs', planRunId, 'plan.md'), 'utf8').catch(() => null) : null;
-    const message = run.config.pipeline
+    // Custom pipeline columns send the task envelope; legacy stages and typed columns send stage instructions with a handoff.
+    const message = run.config.pipeline && !run.stageKind
       ? [run.resumeFrom ? continuation || '' : firstPrompt, (!run.resumeFrom || run.baseChanged) ? baseDelivery.sections : ''].filter(Boolean).join('\n\n')
-      : run.resumeFrom ? continuation || '' : composeMessage(run.stage, task.prompt, plan, run.config.instructions || '', extra || '', baseDelivery.sections);
+      : run.resumeFrom ? continuation || '' : composeMessage(run.stageKind || run.stage, task.prompt, plan, run.config.instructions || '', extra || '', baseDelivery.sections);
     // Stage instructions, the exact task text, and the plan are stored with the run.
     await writeFile(join(runDir, 'prompt.md'), message, { mode: 0o600 });
     await writeFile(join(runDir, 'task-prompt.txt'), task.prompt, { mode: 0o600 });
     const eventsFile = join(runDir, 'events.jsonl');
     await writeFile(eventsFile, '', { mode: 0o600 });
     const sessionId = run.resumeFrom?.nativeSessionId || randomUUID();
-    const built = await buildSession({ provider: run.config.provider, stage: run.stage, config: run.config, message, runDir, eventsFile, sessionId,
+    const built = await buildSession({ provider: run.config.provider, stage: run.stageKind || run.stage, config: run.config, message, runDir, eventsFile, sessionId,
       resumeId: run.resumeFrom?.nativeSessionId || null, workspacePath: run.workspacePath, nodePath: this.nodePath, baseDelivery });
     // Cancellation can arrive during CLI discovery or session preparation.
     if ((await this.board.run(runId)).status !== 'queued') { this.#endPending(runId); return; }
@@ -251,7 +252,7 @@ export class Supervisor {
       });
     } catch (error) { log.destroy(); throw error; }
     trackPid(proc.pid);
-    const session = { runId, taskId: run.taskId, stage: run.stage, provider: run.config.provider, proc, seq: 0, ring: [], ringBytes: 0,
+    const session = { runId, taskId: run.taskId, stage: run.stage, stageKind: run.stageKind || null, provider: run.config.provider, proc, seq: 0, ring: [], ringBytes: 0,
       subscribers: new Set(), log, logBytes: 0, eventsFile, eventsOffset: 0, runDir, paste: built.paste, turns: 0, status: 'running', startedAt: Date.now(), sessionId,
       pipeline: run.config.pipeline === true, inputEpoch: 0, resumeNativeId: run.resumeFrom?.nativeSessionId, baseCleanup: baseDelivery.cleanup, baseManifest: supplied };
     if (session.pipeline) {
@@ -533,7 +534,9 @@ export class Supervisor {
     } else if (signal.kind === 'turn_complete') {
       session.turns++;
       await this.#readUsage(session).catch(() => {});
-      const planning = !session.pipeline && session.stage === 'planning', reviewing = !session.pipeline && session.stage === 'code_review';
+      // Legacy stages and typed pipeline columns capture the plan or review from the final message.
+      const stage = session.stageKind || (!session.pipeline ? session.stage : null);
+      const planning = stage === 'planning', reviewing = stage === 'code_review';
       if (signal.message) await writeFile(join(session.runDir, planning ? 'plan.md' : reviewing ? 'review.md' : 'last-message.md'), signal.message, { mode: 0o600 });
       await this.#setStatus(session, 'waiting_for_input', {
         turns: session.turns, turnComplete: !session.initialInputUncertain && !session.messageInputPending && !session.messageInputUncertain, ...(planning && signal.message ? { hasPlan: true, planExcerpt: signal.message } : {}), ...(reviewing && signal.message ? { hasReview: true } : {}),
@@ -541,7 +544,7 @@ export class Supervisor {
           : session.initialInputUncertain ? 'The agent finished a turn, but initial prompt input remains unconfirmed. Check the terminal; automatic advancement is blocked.'
           : planning ? (signal.message ? 'The plan is ready. Review it, continue in the terminal, or approve it.' : 'The agent finished its turn without a plan message. Continue in the terminal.')
           : reviewing ? 'The review is ready. Check the findings, then confirm to record them.'
-          : session.pipeline ? 'The agent finished its turn. Continue in the terminal or move the card.' : 'The agent finished its turn. Review the work, continue in the terminal, or confirm the stage.',
+          : session.pipeline && !session.stageKind ? 'The agent finished its turn. Continue in the terminal or move the card.' : 'The agent finished its turn. Review the work, continue in the terminal, or confirm the stage.',
       });
     } else if (signal.kind === 'failed') {
       // Account and quota failures are final for this run; there is no automatic retry.
@@ -853,15 +856,19 @@ export class Supervisor {
 
   async #confirm(runId) {
     const run = await this.board.run(runId);
-    if (run.config.pipeline) throw new AgentError('Move this pipeline card or pause its agent; a finished turn does not complete a stage.', 'PIPELINE_STAGE_CONFIRM_UNAVAILABLE', 409);
+    // Custom pipeline columns continue one conversation; only typed columns (the stage engine) complete a stage.
+    if (run.config.pipeline && !run.stageKind) throw new AgentError('Move this pipeline card or pause its agent; a finished turn does not complete a stage.', 'PIPELINE_STAGE_CONFIRM_UNAVAILABLE', 409);
     if (run.status !== 'waiting_for_input' || !run.turns) throw new AgentError('Confirm after the agent has finished a turn and is waiting.', 'NOT_CONFIRMABLE', 409);
-    if (run.stage === 'planning') await this.board.approvePlan(run.taskId, { runId });
+    const stage = run.stageKind || run.stage;
+    if (stage === 'planning') await this.board.approvePlan(run.taskId, { runId });
     // A confirmed review records its findings for the reviewed commits; accepting it is a separate step.
-    if (run.stage === 'code_review') await this.board.delivery.recordReview(run, await readFile(join(this.dataDir, run.artifactsDir, 'review.md'), 'utf8').catch(() => ''));
-    await this.board.updateRun(runId, { status: 'succeeded', reason: run.stage === 'planning' ? 'Plan approved by you.' : run.stage === 'code_review' ? 'Review completed; accept it or send it back.' : 'Stage confirmed by you.', endedAt: Date.now() });
+    if (stage === 'code_review') await this.board.delivery.recordReview(run, await readFile(join(this.dataDir, run.artifactsDir, 'review.md'), 'utf8').catch(() => ''));
+    const reason = run.stageKind ? (stage === 'planning' ? 'Plan accepted; the stage is complete.' : stage === 'code_review' ? 'Review completed.' : 'Stage completed.')
+      : stage === 'planning' ? 'Plan approved by you.' : stage === 'code_review' ? 'Review completed; accept it or send it back.' : 'Stage confirmed by you.';
+    await this.board.updateRun(runId, { status: 'succeeded', reason, endedAt: Date.now() });
     const session = this.sessions.get(runId);
     if (session?.proc) { session.confirmed = true; this.#push(session, { status: 'succeeded' }); this.#kill(session); }
-    if (['executing', 'testing'].includes(run.stage)) await this.board.recordStageResult(run, await readFile(join(this.dataDir, run.artifactsDir, 'last-message.md'), 'utf8').catch(() => ''));
+    if (['executing', 'testing'].includes(stage)) await this.board.recordStageResult(run, await readFile(join(this.dataDir, run.artifactsDir, 'last-message.md'), 'utf8').catch(() => ''));
   }
 
   /** Read a run artifact (plan, last message, or the tail of the output log). */

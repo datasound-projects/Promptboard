@@ -22,7 +22,7 @@ import { externalIssueSource } from './external-source.mjs';
 import { buildTimeline } from './timeline.mjs';
 import { Base, normalizeBinding, listTargets, remapBaseScopes } from './base.mjs';
 import { checkBaseRevocations, deliveryFor, profileDefaults, resolveBase } from './base-resolver.mjs';
-import { defaultPipelineConfig, normalizePipelineConfig, normalizePipelineTaskSelection, resolvePipelineStrategy } from './pipeline-config.mjs';
+import { defaultPipelineConfig, KIND_STAGES, normalizeExecutionPolicy, normalizePipelineConfig, normalizePipelineTaskSelection, resolveExecutionPolicy, resolvePipelineStrategy, withSeededKinds } from './pipeline-config.mjs';
 import { renderPipelineSpawnPrompt } from './pipeline-templates.mjs';
 import { ownsMove, PipelineJournal } from './pipeline-journal.mjs';
 import { PipelineAutomations } from './pipeline-automations.mjs';
@@ -57,7 +57,7 @@ const WORKSPACE_STAGES = new Set(['planning', 'executing']);
 
 const PROJECT_LIMIT = 200;
 const TASK_LIMIT = 1000;
-const BACKUP_VERSION = 11; // 11 dropped Backlog; older backups still import, with drafts added to To Do.
+const BACKUP_VERSION = 12; // 12 adds column types; 11 dropped Backlog (older backups still import, with drafts added to To Do).
 const MAX_PROMPT = 2 * 1024 * 1024;
 const TRANSITION_ID = /^[A-Za-z0-9_-]{8,100}$/;
 const TRANSITION_LOG_LIMIT = 100; // ponytail: per-task cap; move history to its own file if audits need more.
@@ -82,6 +82,21 @@ function promptText(value, label, allowBlank = false) {
 }
 const clip = (value, max) => typeof value === 'string' ? value.slice(0, max) : '';
 const findingLines = findings => findings.map(item => `- [${item.severity}] ${item.file}${item.line ? `:${item.line}` : ''} ${item.explanation}`).join('\n');
+
+/**
+ * The stage contract of a column: a legacy board's own stage ID, the stage of a pipeline column's kind
+ * (Planning, Executing, Code Review, Testing, Merge), or null for custom pipeline columns and To Do/Done.
+ * Manual moves and Autopilot both decide stage behaviour through this, never through a column's name.
+ */
+export function columnStage(project, columnId) {
+  if (project?.workflowMode !== 'pipeline') return EXECUTABLE_STAGES.has(columnId) ? columnId : null;
+  const column = project.pipeline.columns.find(item => item.id === columnId);
+  return column?.role === 'active' ? KIND_STAGES[column.kind] || null : null;
+}
+/** The stage a run works on: the stage engine records it next to the pipeline column ID. */
+export const runStage = run => run?.stageKind || run?.stage;
+// Stage-engine outcomes. `next` tells Autopilot (and the board view) what follows; nothing moves by itself.
+const OUTCOME_STATUSES = new Set(['working', 'verifying', 'succeeded', 'changes_required', 'failed']);
 const time = value => Number.isFinite(value) ? value : Date.now();
 
 const RECORD_ID = /^[A-Za-z0-9_-]{1,100}$/;
@@ -106,12 +121,21 @@ function prerequisiteIds(value, ids, selfId) {
 export function pipelineAutopilotRoute(project, route) {
   const active = project.pipeline.columns.filter(column => column.role === 'active').map(column => column.id);
   if (!Array.isArray(route) || !route.length || new Set(route).size !== route.length || route.some(id => !active.includes(id))) throw new BoardError('Choose the active columns Autopilot goes through.', 'INVALID_AUTOPILOT');
-  return active.filter(id => route.includes(id));
+  const clean = active.filter(id => route.includes(id));
+  // Typed columns follow the stage contract: tests run on the reviewed commit, and a merge needs both.
+  const stages = clean.map(id => columnStage(project, id));
+  const first = stage => stages.indexOf(stage), present = stage => stages.includes(stage);
+  if (present('code_review') && !present('executing')) throw new BoardError('A route with a Code Review column needs an Executing column before it: review needs work to review.', 'INVALID_AUTOPILOT');
+  if (present('testing') && !(present('code_review') && first('code_review') < first('testing'))) throw new BoardError('A route with a Testing column needs a Code Review column before it: tests run on the reviewed commit.', 'INVALID_AUTOPILOT');
+  if (present('merge') && !(present('testing') && first('testing') < first('merge'))) throw new BoardError('A route that merges needs Code Review and Testing columns before Merge: the merge needs an accepted review and passing tests for the same commit.', 'INVALID_AUTOPILOT');
+  return clean;
 }
 /** Later route columns without an instruction: an enabled deferred "on enter" message, or the plan route that leads there (with each card's profile). */
 export function pipelineAutopilotGaps(project, route, tasks = []) {
   const columns = new Map(project.pipeline.columns.map(column => [column.id, column]));
   return route.slice(1).filter((id, index) => {
+    // Typed columns start their own session with stage instructions; they need no "on enter" message.
+    if (columnStage(project, id)) return false;
     const instructed = columns.get(id).automations.onEnter.some(row => row.enabled && row.type === 'send_message' && row.mode === 'deferred');
     return !instructed && (tasks.length ? tasks : [{}]).some(task => resolvePipelineStrategy(project.pipeline, route[index], task).planExitTargetId !== id);
   }).map(id => `“${columns.get(id).name}”`);
@@ -305,8 +329,15 @@ export function effectiveWorkflow(project, globalAgent = null, state = null, tas
     const local = state ? profileDefaults(state, project.baseColumns?.[column.id]?.profileId) : null;
     const inherited = local?.provider ? local : defaults?.provider ? defaults : global || {};
     const agent = strategy.agentOverride ? { provider: strategy.agentOverride } : inherited;
-    return [column.id, { provider: agent.provider || 'claude', model: strategy.modelOverride ?? agent.model ?? '', effort: strategy.effortOverride ?? agent.effort ?? '',
-      permissionMode: strategy.permissionMode ?? agent.permissionMode ?? '', pipeline: true, instructions: '', policy: strategy.autoSpawn ? 'start' : 'manual', agentSource: 'pipeline' }];
+    const settings = { provider: agent.provider || 'claude', model: strategy.modelOverride ?? agent.model ?? '', effort: strategy.effortOverride ?? agent.effort ?? '',
+      permissionMode: strategy.permissionMode ?? agent.permissionMode ?? '', pipeline: true, instructions: '', policy: strategy.autoSpawn ? 'start' : 'manual', agentSource: 'pipeline' };
+    if (column.role !== 'active') return [column.id, settings];
+    // Typed columns, and any column whose execution policy someone chose, launch through the policy. A custom column
+    // nobody configured keeps its saved permission mode exactly as before.
+    const execution = resolveExecutionPolicy(project.pipeline, column.id, task || {}, project.execution);
+    const explicit = execution.kind !== 'custom' || Object.values(execution.sources).some(source => source !== 'default');
+    return [column.id, { ...settings, kind: execution.kind, completion: execution.completion,
+      ...(explicit ? { interaction: execution.interaction, filesystem: execution.filesystem } : {}), ...(execution.stage ? { stageEngine: true } : {}) }];
   }));
   const global = state ? profileDefaults(state, state.settings?.agentProfileId, globalAgent || {}) : globalAgent;
   const projectAgent = state ? profileDefaults(state, project?.agentProfileId, project?.agentDefaults || {}) : project?.agentDefaults;
@@ -1012,6 +1043,62 @@ export class Board {
     });
   }
 
+  /**
+   * The project's execution policy (Kanban settings): how agents ask, where they may write, how stages complete, and
+   * how many automatic rework rounds a card gets. `applyToAllColumns` removes the columns' and profiles' own
+   * interaction/access/completion overrides so every column inherits this policy. Saving starts nothing.
+   */
+  async setExecutionPolicy(id, { policy = {}, applyToAllColumns = false, expectedRevision } = {}) {
+    let clean;
+    try { clean = normalizeExecutionPolicy(policy); } catch (error) { throw new BoardError(error.message, 'INVALID_EXECUTION_POLICY'); }
+    return this.store.update(state => {
+      const project = this.#project(state, id);
+      checkRevision(project, expectedRevision, 'This project');
+      if (project.workflowMode !== 'pipeline') throw conflict('Execution permissions apply to column pipelines. Switch this board in Columns first.', 'PIPELINE_REQUIRED');
+      if (project.autopilot?.status === 'running') throw conflict('Pause Autopilot before you change execution permissions.', 'AUTOPILOT_RUNNING');
+      const previous = { execution: project.execution, pipeline: project.pipeline };
+      project.execution = clean;
+      if (applyToAllColumns) project.pipeline = this.#withoutPolicyOverrides(project.pipeline);
+      // Every column must still be able to launch with the new policy (for example, a provider without an autonomous mode).
+      try {
+        for (const column of project.pipeline.columns.filter(item => item.role === 'active')) for (const task of [null, ...project.pipeline.profiles.map(profile => ({ profileId: profile.id })), ...project.tasks.filter(task => task.agentOverride)])
+          resolveConfig(column.id, effectiveWorkflow(project, state.settings.defaultAgent, state, task)[column.id]);
+      } catch (error) { Object.assign(project, previous); throw new BoardError(error.message, error.code || 'EXECUTION_POLICY_UNSUPPORTED', 409); }
+      project.revision++;
+      return project;
+    });
+  }
+
+  #withoutPolicyOverrides(pipeline) {
+    const strip = strategy => Object.fromEntries(Object.entries(strategy || {}).filter(([key]) => !['interaction', 'filesystem', 'completion'].includes(key)));
+    return normalizePipelineConfig({ ...pipeline, columns: pipeline.columns.map(column => ({ ...column, strategy: strip(column.strategy) })),
+      profiles: pipeline.profiles.map(profile => ({ ...profile, columns: Object.fromEntries(Object.entries(profile.columns).map(([columnId, strategy]) => [columnId, strip(strategy)])) })) });
+  }
+
+  /**
+   * The "Full Autopilot" preset, applied explicitly: the seeded columns become typed stage columns, every column
+   * inherits autonomous workspace access with automatic completion and two rework rounds, merges are squashed,
+   * and Autopilot's route is every active column in board order. Individual columns can override it afterwards.
+   * Nothing starts; Planning and Code Review stay read-only by their type.
+   */
+  async applyFullAutopilot(id, { expectedRevision, confirm = false } = {}) {
+    if (confirm !== true) throw new BoardError('Confirm the Full Autopilot preset: agents will act without asking inside each task worktree.', 'CONFIRMATION_REQUIRED');
+    const project = this.#project(await this.state(), id);
+    if (project.workflowMode !== 'pipeline') throw conflict('Switch this board to a column pipeline in Columns first.', 'PIPELINE_REQUIRED');
+    const typed = this.#withoutPolicyOverrides(withSeededKinds(project.pipeline));
+    const saved = await this.#setPipeline(id, { pipeline: typed, expectedRevision });
+    await this.setExecutionPolicy(id, { policy: { interaction: 'autonomous', filesystem: 'workspace_write', completion: 'automatic', maxRework: 2, mergeMethod: 'squash' }, expectedRevision: saved.revision });
+    return this.store.update(state => {
+      const current = this.#project(state, id);
+      const previous = current.autopilot || {};
+      current.autopilot = { status: previous.status === 'paused' ? 'paused' : 'off', ...previous, route: current.pipeline.columns.filter(column => column.role === 'active').map(column => column.id),
+        finish: 'done', maxRework: 2, queue: previous.queue || [], routes: {}, updatedAt: Date.now() };
+      pipelineAutopilotRoute(current, current.autopilot.route);
+      current.revision++;
+      return current;
+    });
+  }
+
   /** A read-only, bounded repository snapshot for explicit review. */
   async previewRepositoryPipeline(id) {
     const project = this.#project(await this.state(), id);
@@ -1200,11 +1287,18 @@ export class Board {
    *   the card back to Code Review, because resolving conflicts changes code).
    * Returns { state: merged | ready | testing | resolving | blocked, message }.
    */
-  async #prepareMerge(id, { auto = false } = {}) {
-    const { task } = this.#task(await this.state(), id);
+  async #prepareMerge(id, { auto = false, runLocked = false } = {}) {
+    const { project, task } = this.#task(await this.state(), id);
+    const pipeline = project.workflowMode === 'pipeline';
+    // The stage engine records merge progress as the Merge column's outcome (there is no agent run unless conflicts need one).
+    const mergeRun = { id: null, stage: task.column, stageKind: 'merge', config: {} };
     const rev = await this.delivery.revision(id);
     const review = task.evidence?.review, tests = task.evidence?.tests;
-    const blocked = async message => { await this.#setFlow(id, { kind: 'blocked', reason: message }); return { state: 'blocked', message }; };
+    const blocked = async message => {
+      await this.#setFlow(id, { kind: 'blocked', reason: message });
+      if (pipeline) await this.#recordOutcome(id, mergeRun, 'failed', { code: 'MERGE_BLOCKED', reason: message });
+      return { state: 'blocked', message };
+    };
     if (!rev.clean || rev.merging) return blocked(rev.merging ? 'A merge is in progress in the task worktree. Let the merge agent finish, or abort it in the task details.' : 'The task worktree has uncommitted changes. Send the card back to Executing so they are reviewed and tested.');
     if (review?.status !== 'accepted' || review.taskCommit !== rev.taskCommit || review.verdict !== 'no_issues' || review.findings?.length) return blocked('An accepted code review without issues for the current commit is required. Send the card back to Code Review.');
     if (tests?.status === 'running') return { state: 'testing', message: 'Tests are running.' };
@@ -1215,8 +1309,12 @@ export class Board {
       catch (error) {
         if (error.code !== 'MERGE_CONFLICT') return blocked(error.message);
         if (!this.executor) return blocked(`${preview.targetBranch} conflicts with the task, and no merge agent can run here. Resolve the conflicts in the task worktree.`);
-        const run = await this.#locked(`run:${id}`, () => this.#startRun(id, { stage: 'merge', consent: true, trigger: 'automation' }));
-        await this.#setFlow(id, { kind: 'merge-resolve', runId: run.id, auto });
+        // The conflict resolver runs in the card's own Merge column (pipeline) or the Merge stage (legacy).
+        // A pipeline move already holds this card's run lock; taking it again would wait for itself.
+        const startResolver = () => this.#startRun(id, { stage: pipeline ? task.column : 'merge', consent: true, trigger: 'automation' });
+        const run = runLocked ? await startResolver() : await this.#locked(`run:${id}`, startResolver);
+        // Pipelines complete the resolver through the stage engine (#finishStageRun); legacy boards through this flow.
+        await this.#setFlow(id, pipeline ? null : { kind: 'merge-resolve', runId: run.id, auto });
         return { state: 'resolving', message: `${preview.targetBranch} conflicts with the task. The merge agent is resolving the conflicts.`, run };
       }
       // A clean merge of the target adds no task changes: the review carries over to the merge commit.
@@ -1229,22 +1327,29 @@ export class Board {
       const started = await this.delivery.runTests(id, { confirm: true }).catch(error => ({ error }));
       if (started.error) return blocked(started.error.message);
       await this.#setFlow(id, { kind: 'merge-tests', testsId: started.id, auto });
+      if (pipeline) await this.#recordOutcome(id, mergeRun, 'working', { reason: `The task branch now contains the current ${preview.targetBranch}; the tests run again on it.` });
       return { state: 'testing', message: `The task branch now contains the current ${preview.targetBranch}. The tests are running again on it.` };
     }
     if (!preview.eligible) return blocked(preview.problems.join(' '));
-    if (!auto) { await this.#setFlow(id, { kind: 'ready', targetBranch: preview.targetBranch }); return { state: 'ready', message: `Ready to merge into ${preview.targetBranch}.` }; }
-    const done = await this.delivery.merge(id, { confirm: true, taskCommit: preview.taskCommit, targetCommit: preview.targetCommit, trigger: 'automation' });
+    if (!auto) {
+      await this.#setFlow(id, { kind: 'ready', targetBranch: preview.targetBranch });
+      if (pipeline) await this.#recordOutcome(id, mergeRun, 'working', { reason: `Ready to merge into ${preview.targetBranch}. Choose Merge.` });
+      return { state: 'ready', message: `Ready to merge into ${preview.targetBranch}.` };
+    }
+    // Stage-engine boards squash the task's checkpoint commits into one commit with the reviewed and tested tree.
+    const done = await this.delivery.merge(id, { confirm: true, taskCommit: preview.taskCommit, targetCommit: preview.targetCommit, trigger: 'automation', squash: pipeline && (project.execution?.mergeMethod ?? 'squash') === 'squash' });
     return { state: 'merged', message: `Merged into ${preview.targetBranch}.`, task: done };
   }
 
   /** The Merge button: one click merges a verified card (preparing it first when the target moved). */
   mergeNow(id) {
     return this.#locked(`transition:${id}`, async () => {
-      const { task } = this.#task(await this.state(), id);
-      if (task.column !== 'merge') throw conflict('Move the card to Merge first.', 'STAGE_MISMATCH');
+      const { project, task } = this.#task(await this.state(), id);
+      if (columnStage(project, task.column) !== 'merge') throw conflict('Move the card to Merge first.', 'STAGE_MISMATCH');
       if (this.#activeRun(await this.state(), id)) throw conflict('An agent is still working on this card.', 'RUN_ACTIVE');
       const preview = await this.delivery.mergePreview(id);
-      if (preview.eligible) return { task: await this.delivery.merge(id, { confirm: true, taskCommit: preview.taskCommit, targetCommit: preview.targetCommit, trigger: 'user' }), merged: true };
+      const squash = project.workflowMode === 'pipeline' && (project.execution?.mergeMethod ?? 'squash') === 'squash';
+      if (preview.eligible) return { task: await this.delivery.merge(id, { confirm: true, taskCommit: preview.taskCommit, targetCommit: preview.targetCommit, trigger: 'user', squash }), merged: true };
       const merge = await this.#prepareMerge(id, { auto: true });
       if (merge.state === 'blocked') throw conflict(merge.message, 'MERGE_NOT_READY');
       return { task: merge.task || await this.#taskNow(id), merged: merge.state === 'merged', merge };
@@ -1261,8 +1366,10 @@ export class Board {
     // A crashed owner's lease outlives it by at most one TTL; its move is recovered here once that lease expires.
     for (const key of this.automationJournal.pendingRecoveries())
       if ((await this.automationJournal.recoverInterrupted(key).catch(() => [])).length) await this.#publishAutomationMove(key).catch(() => {});
+    await this.#advanceStageEngine(state);
     for (const project of state.projects) {
-      const autopilotCard = project.autopilot?.status === 'running' ? project.autopilot.current?.taskId : null;
+      // Legacy Autopilot drives its own card's flows. Pipeline Autopilot reads the board's outcomes instead.
+      const autopilotCard = project.workflowMode !== 'pipeline' && project.autopilot?.status === 'running' ? project.autopilot.current?.taskId : null;
       for (const task of project.tasks) {
         if (task.id === autopilotCard) continue; // Autopilot drives its own card.
         const flow = task.flow;
@@ -1276,13 +1383,26 @@ export class Board {
 
   async #advanceFlow(id, polling) {
     const state = await this.state();
-    const { task } = this.#task(state, id);
+    const { project, task } = this.#task(state, id);
     if (polling) { (this.prChecks ??= new Map()).set(id, Date.now()); await this.delivery.pullRequestStatus(id).catch(() => {}); }
     const flow = task.flow, tests = task.evidence?.tests;
+    const pipeline = project.workflowMode === 'pipeline';
+    const mergeRun = { id: null, stage: task.column, stageKind: 'merge', config: {} };
     if (flow?.kind === 'merge-tests') {
       if (tests?.id !== flow.testsId) return this.#setFlow(id, null);
-      if (tests.status === 'running') { if (!this.delivery.testsRunning.has(id)) await this.#setFlow(id, { kind: 'blocked', reason: 'The test run stopped (the app restarted). Move the card again to run them.' }); return; }
-      if (tests.status !== 'passed') return this.#setFlow(id, { kind: 'blocked', reason: `The tests failed on the task branch with the current target. Send the card back to Executing; the failing output goes with it.` });
+      if (tests.status === 'running') {
+        if (!this.delivery.testsRunning.has(id)) {
+          await this.#setFlow(id, { kind: 'blocked', reason: 'The test run stopped (the app restarted). Move the card again to run them.' });
+          if (pipeline) await this.#recordOutcome(id, mergeRun, 'failed', { code: 'VERIFICATION_INTERRUPTED', reason: 'The test run stopped (the app restarted). Move the card to Merge again.' });
+        }
+        return;
+      }
+      if (tests.status !== 'passed') {
+        await this.#setFlow(id, { kind: 'blocked', reason: `The tests failed on the task branch with the current target. Send the card back to Executing; the failing output goes with it.` });
+        // The combined code (task + moved target) fails: it goes back to Executing with the failing output.
+        if (pipeline) await this.#recordOutcome(id, mergeRun, 'changes_required', { code: 'VERIFICATION_FAILED', next: 'executing', reason: 'The tests failed on the task branch combined with the current target.' });
+        return;
+      }
       return this.#prepareMerge(id, { auto: flow.auto });
     }
     if (flow?.kind === 'merge-resolve') {
@@ -1404,19 +1524,22 @@ export class Board {
    * The next Planning or Executing run creates a new branch from the target branch's current tip and
    * gets the reason. With `startExecuting`, the normal To Do → Executing transition follows.
    */
-  startOver(id, { expectedRevision, reason = '', startExecuting = false } = {}) {
+  startOver(id, { expectedRevision, reason = '', startExecuting = false, confirm = false } = {}) {
     if (typeof reason !== 'string' || reason.length > 4000) throw new BoardError('The reason can have at most 4,000 characters.', 'INVALID_INPUT');
     return this.#locked(`transition:${id}`, async () => {
       const state = await this.state();
       const { project, task } = this.#task(state, id);
-      if (project.workflowMode === 'pipeline') throw conflict('Pipeline worktree reset is not available yet. Move the task to To Do to stop its agent and retain files.', 'PIPELINE_FEATURE_PENDING');
+      const pipeline = project.workflowMode === 'pipeline';
+      const todo = pipeline ? project.pipeline.columns.find(column => column.role === 'todo').id : 'todo';
+      // A pipeline reset is the destructive Reset task choice; it needs an explicit confirmation.
+      if (pipeline && confirm !== true) throw new BoardError('Confirm resetting this task’s workspace: a new branch starts from the current target branch.', 'CONFIRMATION_REQUIRED');
       checkRevision(task, expectedRevision, 'This card');
-      if (task.column === 'done') throw conflict('This card is done. Reopen it first; then you can start over.', 'NOT_ALLOWED_IN_DONE');
+      if (task.column === 'done' || (pipeline && project.pipeline.columns.find(column => column.id === task.column)?.role === 'done')) throw conflict('This card is done. Reopen it first; then you can start over.', 'NOT_ALLOWED_IN_DONE');
       if (task.workspace?.status !== 'ready') throw conflict('This card has no task branch yet, so there is nothing to start over.', 'NOTHING_TO_START_OVER');
       if (this.#activeRun(state, id)) throw conflict('An agent is still working on this card. Stop it first.', 'RUN_ACTIVE');
       if (this.delivery.testsRunning.has(id)) throw conflict('Tests are running for this card. Wait for them to finish.', 'TESTS_RUNNING');
       if (project.autopilot?.status === 'running' && project.autopilot.current?.taskId === id) throw conflict('Autopilot is working on this card. Pause Autopilot or skip the card first.', 'AUTOPILOT_ACTIVE');
-      const workspace = await this.ensureTaskWorktree(id); // Verifies the worktree (and rebuilds a deleted folder).
+      const workspace = await this.ensureTaskWorktree(id, { recover: true }); // Start over is explicit: a deleted folder is rebuilt from the branch first.
       let rev = await this.delivery.revision(id);
       if (rev.merging) throw conflict('A merge is in progress in the task worktree. Abort it in the task details first.', 'MERGE_IN_PROGRESS');
       if (!rev.branchOk) throw conflict(`The task worktree is not on its branch ${workspace.branch}. Switch it back first.`, 'BRANCH_MISMATCH');
@@ -1444,22 +1567,48 @@ export class Board {
         current.restartNote = [attempt.reason && `Reason: ${attempt.reason}`, findings && `Review findings on the discarded attempt:\n${findings}`,
           `The discarded attempt is kept on branch ${attempt.branch} (${attempt.head.slice(0, 12)}). Start again from the current target branch; do not copy that attempt unless the reason says so.`].filter(Boolean).join('\n\n');
         Object.assign(current, { evidence: {}, stageResults: {}, flow: null, reworkNotes: '', lastTransition: null });
-        if (current.column !== 'todo') {
-          current.transitions = [...current.transitions, { at: Date.now(), from: current.column, to: 'todo', by: 'start-over', ...(attempt.reason ? { reason: clip(attempt.reason, 300) } : {}) }].slice(-TRANSITION_LOG_LIMIT);
-          current.column = 'todo';
+        if (pipeline) Object.assign(current, { sessionId: null, stageOutcome: null, planApproval: null });
+        if (current.column !== todo) {
+          current.transitions = [...current.transitions, { at: Date.now(), from: current.column, to: todo, by: 'start-over', ...(attempt.reason ? { reason: clip(attempt.reason, 300) } : {}) }].slice(-TRANSITION_LOG_LIMIT);
+          current.column = todo;
           owner.tasks = [...owner.tasks.filter(item => item !== current)];
-          const firstLater = owner.tasks.findIndex(item => item.column !== 'todo');
+          const firstLater = owner.tasks.findIndex(item => item.column !== todo);
           owner.tasks.splice(firstLater < 0 ? owner.tasks.length : firstLater, 0, current); // Last card of To Do.
         }
         current.revision++;
         return current;
       });
       const result = { task: task2, attempt };
-      if (startExecuting) {
-        const started = await this.#transition(id, { column: 'executing', expectedRevision: task2.revision, decision: 'start' });
+      const executingColumn = pipeline ? project.pipeline.columns.find(column => columnStage(project, column.id) === 'executing')?.id : 'executing';
+      if (startExecuting && executingColumn) {
+        const started = await this.#transition(id, { column: executingColumn, expectedRevision: task2.revision, decision: 'start' });
         Object.assign(result, { task: started.task, run: started.run });
       }
       return result;
+    });
+  }
+
+  /**
+   * Reset task, the non-destructive choice: stop the card's agent and forget its current conversations, so the next
+   * run starts a fresh session. The branch, worktree, files, commits, evidence and history all stay; the card does
+   * not move. (The destructive choice is startOver: a new branch from the current target.)
+   */
+  restartTaskSessions(id, { expectedRevision } = {}) {
+    return this.#locked(`transition:${id}`, async () => {
+      const state = await this.state(), { project, task } = this.#task(state, id);
+      checkRevision(task, expectedRevision, 'This card');
+      if (project.autopilot?.status === 'running' && project.autopilot.current?.taskId === id) throw conflict('Autopilot is working on this card. Pause Autopilot or skip the card first.', 'AUTOPILOT_ACTIVE');
+      this.#requireAutomationsStopped(task);
+      const active = this.#activeRun(state, id);
+      if (active) await this.#locked(`run:${id}`, () => this.executor.cancel(active.id));
+      return this.store.update(draft => {
+        const current = this.#task(draft, id).task;
+        if (this.#activeRun(draft, id)) throw conflict('The agent has not stopped yet. Try again.', 'RUN_ACTIVE');
+        Object.assign(current, { sessionId: null, stageOutcome: null });
+        current.transitions = [...current.transitions, { at: Date.now(), from: current.column, to: current.column, by: 'restart-sessions' }].slice(-TRANSITION_LOG_LIMIT);
+        current.revision++;
+        return current;
+      });
     });
   }
 
@@ -1540,12 +1689,12 @@ export class Board {
   /** Save same-task stage output. Testing agents do not self-certify: configured commands decide. */
   async recordStageResult(run, summary) {
     const recorded = await this.run(run.id);
-    if (recorded.taskId !== run.taskId || recorded.status !== 'succeeded' || !['executing', 'testing'].includes(recorded.stage)) throw conflict('Confirm the task’s finished stage before saving its results.', 'STAGE_NOT_CONFIRMED');
+    if (recorded.taskId !== run.taskId || recorded.status !== 'succeeded' || !['executing', 'testing'].includes(runStage(recorded))) throw conflict('Confirm the task’s finished stage before saving its results.', 'STAGE_NOT_CONFIRMED');
     run = recorded;
     await this.updateTaskEvidence(run.taskId, task => {
-      task.stageResults = { ...(task.stageResults || {}), [run.stage]: { runId: run.id, promptRevision: run.promptRevision, summary: String(summary || '').slice(0, 20000), at: Date.now() } };
+      task.stageResults = { ...(task.stageResults || {}), [runStage(run)]: { runId: run.id, columnId: run.stage, promptRevision: run.promptRevision, summary: String(summary || '').slice(0, 20000), at: Date.now() } };
     });
-    if (run.stage !== 'testing') return;
+    if (runStage(run) !== 'testing') return;
     const { project } = this.#task(await this.state(), run.taskId);
     if (!(project.testCommands || []).length) {
       await this.#setFlow(run.taskId, { kind: 'blocked', reason: 'Testing agent finished. Configure test commands to verify exit codes before merging or completing.' });
@@ -2062,19 +2211,22 @@ export class Board {
   async #registered(root, path) { return (await listWorktrees(root)).find(entry => entry.path === path) || null; }
 
   /**
-   * Check that the task worktree exists, is registered with Git, and is on the task branch.
-   * A deleted folder is recreated from the task branch: the commits are on the branch, so nothing
-   * is lost that the folder still had. Anything else stops with the exact problem.
+   * Check that the task worktree exists, belongs to this repository, is registered with Git, and is on the task
+   * branch. Every run and stage check goes through this and fails closed with the exact problem. A deleted folder
+   * is recreated from the task branch only on an explicit restore (`recover`): the commits are on the branch, but
+   * uncommitted files that were in the folder are gone, and the person should know that before work continues.
    */
-  async #verifyWorktree(taskId, repository, ws) {
+  async #verifyWorktree(taskId, repository, ws, { recover = false } = {}) {
+    if (ws.commonDir && ws.commonDir !== repository.commonDir) throw conflict(`The task worktree belongs to another repository (${ws.repositoryRoot}). Link the project to that repository again, or start the task over.`, 'WORKTREE_REPOSITORY_MISMATCH');
     const found = await this.#registered(repository.root, ws.path);
     const exists = await access(ws.path).then(() => true, () => false);
     if (found && exists) {
-      if (found.branch !== ws.branch) throw conflict(`The task worktree at ${ws.path} is on ${found.branch || 'a detached HEAD'}, not on the task branch ${ws.branch}. Switch it back (git switch ${ws.branch}) in that folder; Promptboard does not switch branches for you.`, 'BRANCH_MISMATCH');
+      if (found.branch !== ws.branch) throw conflict(`The task worktree at ${ws.path} is on ${found.branch || 'a detached HEAD'}, not on the task branch ${ws.branch}. Switch it back (git switch ${ws.branch}) in that folder; Promptboard does not switch branches for you.`, 'WORKTREE_BRANCH_MISMATCH');
       return ws;
     }
     if (exists) throw conflict(`The folder ${ws.path} exists, but Git does not list it as a worktree. Check it with git worktree list; Promptboard does not change it.`, 'WORKTREE_MISSING');
     if (!(await branchExists(repository.root, ws.branch))) throw conflict(`The task worktree and its branch ${ws.branch} were deleted, so the task's commits cannot be found. Restore the branch (git branch ${ws.branch} <commit>) or remove the task.`, 'WORKTREE_BRANCH_MISSING');
+    if (!recover) throw conflict(`The task worktree folder ${ws.path} was deleted. Its branch ${ws.branch} still has every commit; uncommitted files are gone. Choose Restore worktree on the card to recreate it from the branch.`, 'WORKTREE_MISSING');
     // `git worktree prune` removes only Git's records of worktree folders that no longer exist.
     await git(['worktree', 'prune'], { cwd: repository.root });
     await git(['worktree', 'add', ws.path, ws.branch], { cwd: repository.root, config: [`core.hooksPath=${this.hooksDir}`, 'core.fsmonitor=false'], timeoutMs: 120000 })
@@ -2091,12 +2243,13 @@ export class Board {
    * Return the task's worktree, creating it once from the recorded target commit.
    * Concurrent and repeated calls get the same branch and folder.
    */
-  ensureTaskWorktree(taskId) {
+  ensureTaskWorktree(taskId, { recover = false } = {}) {
     return this.#locked(`task:${taskId}`, async () => {
       const state = await this.state();
       const { project, task } = this.#task(state, taskId);
       const repository = await this.#checkedRepository(project);
-      if (task.workspace?.status === 'ready') return this.#verifyWorktree(taskId, repository, task.workspace);
+      if (task.workspace?.status === 'ready') return this.#verifyWorktree(taskId, repository, task.workspace, { recover });
+      if (recover) throw conflict('This task has no worktree to restore.', 'NOTHING_TO_RESTORE');
       if (task.workspace) throw new BoardError('An earlier worktree creation for this task did not finish. Check the folder and branch manually.', 'WORKTREE_INCOMPLETE', 409);
       return this.#locked(`repo:${repository.commonDir}`, async () => {
         let branch = `promptboard/${slug(task.title)}-${task.id.slice(0, 8)}`;
@@ -2136,6 +2289,13 @@ export class Board {
         });
       });
     });
+  }
+
+  /** The explicit Restore worktree action: recreate a deleted task worktree folder from its branch (never automatic). */
+  async restoreTaskWorktree(taskId) {
+    const { task } = this.#task(await this.state(), taskId);
+    if (task.workspace?.status !== 'ready') throw conflict('This task has no worktree to restore.', 'NOTHING_TO_RESTORE');
+    return this.ensureTaskWorktree(taskId, { recover: true });
   }
 
   /**
@@ -2244,7 +2404,8 @@ export class Board {
       if (consent !== true) throw new BoardError('Resuming an agent needs your explicit confirmation.', 'CONSENT_REQUIRED');
       if (typeof message !== 'string' || Buffer.byteLength(message) > 64 * 1024 || message.includes('\0')) throw new BoardError('Send a continuation of at most 64 KiB without null characters.', 'INVALID_INPUT');
       const state = await this.state(), { project, task } = this.#task(state, taskId);
-      if (project.workflowMode === 'pipeline') return this.#pipelineStart(taskId, { column: task.column, requireResume: true, continuation: message });
+      // A typed column resumes its own stage conversation (same provider, same stage); custom columns resume the pipeline conversation.
+      if (project.workflowMode === 'pipeline' && !columnStage(project, task.column)) return this.#pipelineStart(taskId, { column: task.column, requireResume: true, continuation: message });
       if (['todo', 'done'].includes(task.column) || task.archivedAt) throw conflict('Move or restore this task to an active column before resuming.', 'SESSION_NOT_RESUMABLE');
       if (this.#activeRun(state, taskId)) throw conflict('This card already has an active run.', 'RUN_ACTIVE');
       if (project.autopilot?.status === 'running') throw conflict('Pause Autopilot before resuming this conversation manually.', 'AUTOPILOT_ACTIVE');
@@ -2272,8 +2433,10 @@ export class Board {
           artifactsDir: join('runs', id), turns: 0, providerSessionId: nativeSessionId,
           resumeFrom: { runId: previous.id, nativeSessionId },
           baseManifest: { ...structuredClone(baseManifest), acceptedAt: now, deliveryState: 'configured' },
+          ...(previous.stageKind ? { stageKind: previous.stageKind, startCommit: previous.startCommit } : {}),
           ...(previous.review ? { review: structuredClone(previous.review) } : {}), ...(previous.planRunId ? { planRunId: previous.planRunId } : {}) };
         draft.runs.push(record); attachResumedRun(draft, record, saved);
+        if (previous.stageKind) current.stageOutcome = { columnId: previous.stage, stage: previous.stageKind, runId: id, status: 'working', at: now };
         const ap = this.#project(draft, project.id).autopilot;
         if (ap?.status === 'paused' && ap.current?.runId === previous.id) { ap.current.runId = id; ap.current.step = 'running'; }
         return record;
@@ -2288,69 +2451,107 @@ export class Board {
     {
       let state = await this.state();
       let { project, task } = this.#task(state, taskId);
-      if (project.workflowMode === 'pipeline') {
+      const pipeline = project.workflowMode === 'pipeline';
+      // `stage` is the column ID. `semantic` is the stage contract it follows (null: a custom pipeline column).
+      const semantic = columnStage(project, stage);
+      if (pipeline && !semantic) {
         if (consent !== true) throw new BoardError('Starting an agent needs your explicit confirmation.', 'CONSENT_REQUIRED');
         if (Object.keys(config || {}).length) throw new BoardError('Configure the pipeline agent in Column Manager before starting it.', 'PIPELINE_SETTINGS_REQUIRED');
         // A continuation is what a resumed conversation receives; a fresh one receives its task.
         return this.#pipelineStart(taskId, { column: stage, move, trigger, continuation: typeof continuation === 'string' ? continuation : '' });
       }
+      if (pipeline && Object.keys(config || {}).length) throw new BoardError('Configure the pipeline agent in Column Manager before starting it.', 'PIPELINE_SETTINGS_REQUIRED');
       const column = projectColumns(project).find(item => item.id === stage);
       if (!column) throw new BoardError('Choose a valid stage.', 'INVALID_COLUMN');
       if (!column.agent) throw new BoardError(`${column.title} never runs an agent.`, 'STAGE_NOT_RUNNABLE');
-      if (!move && task.column !== stage) throw conflict(`The card is in ${title(task.column)}, not ${column.title}.`, 'STAGE_MISMATCH');
+      if (!move && task.column !== stage) throw conflict(`The card is in ${columnTitleIn(project, task.column)}, not ${column.title}.`, 'STAGE_MISMATCH');
       if (this.#activeRun(state, taskId)) throw conflict('This card already has an active run.', 'RUN_ACTIVE');
       if (consent !== true) throw new BoardError('Starting an agent needs your explicit confirmation.', 'CONSENT_REQUIRED');
       if (!project.repository) throw new BoardError('Link this project to a Git repository first.', 'REPOSITORY_REQUIRED', 409);
       if (!this.executor) throw new BoardError('Agent execution is not available. Cards can be planned and moved, but no agent runs.', 'EXECUTION_UNAVAILABLE', 503);
+      if (pipeline && this.automationMoves.get(taskId)?.blocked) throw conflict('This card’s column automations are blocked. Stop them from the card before starting its agent.', 'AUTOMATIONS_ACTIVE');
       await this.#defaultTargetBranch(taskId);
       state = await this.state();
       ({ project, task } = this.#task(state, taskId));
       if (!project.targetBranch) throw new BoardError('Choose the local target branch first.', 'TARGET_BRANCH_REQUIRED', 409);
-      if (!EXECUTABLE_STAGES.has(stage) && !column.custom) throw conflict(`${column.title} runs are not available yet.`, 'STAGE_NOT_IMPLEMENTED');
+      const legacyCustom = !pipeline && column.custom;
+      if (!semantic && !legacyCustom) throw conflict(`${column.title} runs are not available yet.`, 'STAGE_NOT_IMPLEMENTED');
       // Explicit request values override the project's workflow settings for this run only.
-      const settings = effectiveWorkflow(project, state.settings.defaultAgent, state)[stage];
+      const settingsOf = (current, draft) => effectiveWorkflow(current, draft.settings.defaultAgent, draft, pipeline ? this.#task(draft, taskId).task : null)[stage];
+      const settings = settingsOf(project, state);
       const merged = this.#requestedAgent(settings, config);
-      if (typeof merged.instructions !== 'string' || merged.instructions.length > 4000) throw new BoardError('Stage instructions can have at most 4,000 characters.', 'INVALID_WORKFLOW');
-      const resolved = { ...(await this.executor.validate({ stage, config: merged })), instructions: merged.instructions };
+      // A pipeline column's instructions are its enabled "on enter" agent messages; the stage engine sends them with the task.
+      if (pipeline) merged.instructions = this.#columnInstructions(project, stage);
+      if (typeof merged.instructions !== 'string' || merged.instructions.length > (pipeline ? 64 * 1024 : 4000)) throw new BoardError('Stage instructions can have at most 4,000 characters.', 'INVALID_WORKFLOW');
+      const resolved = { ...(await this.executor.validate({ stage: semantic || stage, config: merged })), instructions: merged.instructions };
       const baseManifest = this.#basePreflight(state, project, task, stage, resolved.provider);
-      if (!WORKSPACE_STAGES.has(stage) && !column.custom && task.workspace?.status !== 'ready') throw new BoardError('Run Planning or Executing first to create the task worktree.', 'WORKSPACE_REQUIRED', 409);
+      if (!WORKSPACE_STAGES.has(semantic) && !legacyCustom && task.workspace?.status !== 'ready') throw new BoardError('Run Planning or Executing first to create the task worktree.', 'WORKSPACE_REQUIRED', 409);
       const workspace = await this.ensureTaskWorktree(taskId);
-      const plan = stage === 'executing' ? this.#approvedPlan(state, task) : null;
+      const plan = semantic === 'executing' ? this.#approvedPlan(state, task) : null;
       // Review reads the actual diff of a clean, committed revision. Executing gets requested fixes.
-      const review = stage === 'code_review' ? await this.delivery.reviewContext(taskId) : null;
+      const review = semantic === 'code_review' ? await this.delivery.reviewContext(taskId) : null;
       // Testing gets the configured test commands; Merge first brings the target branch in
       // (git merge --no-commit), leaving any conflicts for the agent to resolve.
-      const merge = stage === 'merge' ? await this.delivery.prepareMergeRun(taskId) : null;
-      const testing = stage === 'testing' ? await this.delivery.testingContext(taskId) : '';
-      const restart = ['planning', 'executing'].includes(stage) && task.restartNote ? `=== WHY THE PREVIOUS ATTEMPT WAS DISCARDED ===\n${task.restartNote}\n=== END ===` : '';
+      const merge = semantic === 'merge' ? await this.delivery.prepareMergeRun(taskId) : null;
+      const testing = semantic === 'testing' ? await this.delivery.testingContext(taskId) : '';
+      const restart = ['planning', 'executing'].includes(semantic) && task.restartNote ? `=== WHY THE PREVIOUS ATTEMPT WAS DISCARDED ===\n${task.restartNote}\n=== END ===` : '';
       const result = task.stageResults?.executing;
-      const execution = ['code_review', 'testing'].includes(stage) && result?.promptRevision === (task.contentRevision ?? 1) && result;
+      const execution = ['code_review', 'testing'].includes(semantic) && result?.promptRevision === (task.contentRevision ?? 1) && result;
       const executionContext = execution ? `=== EXECUTION RESULTS FOR THIS TASK (${task.id}, run ${execution.runId}) ===\n${execution.summary}\n=== END EXECUTION RESULTS ===` : '';
-      const extra = [review ? review.text : merge ? merge.text : testing || (stage === 'executing' && task.reworkNotes ? `=== REVIEW FINDINGS TO FIX ===\n${task.reworkNotes}\n=== END FINDINGS ===` : ''), executionContext, restart, note].filter(Boolean).join('\n\n');
+      // The stage engine hands over task state, never another agent's conversation.
+      const handoff = pipeline ? await this.#handoffSummary(project, task, workspace) : '';
+      const extra = [handoff, review ? review.text : merge ? merge.text : testing || (semantic === 'executing' && task.reworkNotes ? `=== REVIEW FINDINGS TO FIX ===\n${task.reworkNotes}\n=== END FINDINGS ===` : ''), executionContext, restart, note].filter(Boolean).join('\n\n');
+      const startCommit = pipeline ? (await this.delivery.revision(taskId)).taskCommit : null;
       const run = await this.store.update(draft => {
         if (this.#activeRun(draft, taskId)) throw conflict('This card already has an active run.', 'RUN_ACTIVE');
         const current = this.#task(draft, taskId);
         if ((draft.base?.revision || 0) !== (state.base?.revision || 0)) throw conflict('Base changed while the run was being prepared. Start again to use the current selection.', 'BASE_REVISION_CONFLICT');
         if ((current.task.contentRevision ?? 1) !== (task.contentRevision ?? 1)) throw conflict('The task text changed while the run was being prepared. Start again.', 'REVISION_CONFLICT');
-        if (JSON.stringify(this.#requestedAgent(effectiveWorkflow(current.project, draft.settings.defaultAgent, draft)[stage], config)) !== JSON.stringify(merged)) throw conflict('Agent settings changed while the run was being prepared. Start again.', 'REVISION_CONFLICT');
+        const latest = this.#requestedAgent(settingsOf(current.project, draft), config);
+        if (pipeline) latest.instructions = this.#columnInstructions(current.project, stage);
+        if (JSON.stringify(latest) !== JSON.stringify(merged)) throw conflict('Agent settings changed while the run was being prepared. Start again.', 'REVISION_CONFLICT');
+        if (pipeline && (current.task.column !== task.column || current.project.revision !== project.revision)) throw conflict('The card or board changed while the run was being prepared. Start again.', 'REVISION_CONFLICT');
         const now = Date.now();
         const id = randomUUID();
-        const record = { id, taskId, projectId: project.id, stage, status: 'queued', createdAt: now, updatedAt: now,
+        const record = { id, taskId, projectId: project.id, stage, ...(pipeline ? { stageKind: semantic, startCommit } : {}), status: 'queued', createdAt: now, updatedAt: now,
           promptRevision: task.contentRevision ?? 1, config: resolved, trigger: trigger === 'automation' ? 'automation' : 'user', workspacePath: workspace.path, branch: workspace.branch,
           planRunId: plan?.runId || null, artifactsDir: join('runs', id), turns: 0, baseManifest: { ...baseManifest, acceptedAt: now, deliveryState: 'configured' },
           ...(plan ? { planBaseChanged: baseSignature(draft.runs.find(item => item.id === plan.runId)?.baseManifest) !== baseSignature(baseManifest) } : {}),
           ...(review ? { review: { taskCommit: review.taskCommit, targetCommit: review.targetCommit } } : {}),
           ...(move ? { transition: { id: move.transitionId, from: move.from } } : {}) };
-        if (move) this.#place(draft, taskId, { ...move, runId: id });
+        if (move) { const placed = this.#place(draft, taskId, { ...move, runId: id }); if (pipeline) delete placed.archivedAt; }
         draft.runs.push(record);
         attachSession(draft, record);
+        if (pipeline) current.task.stageOutcome = { columnId: stage, stage: semantic, runId: id, status: 'working', at: now };
         // The reason for a start over goes to the new attempt's first Executing run only.
-        if (stage === 'executing' && restart) this.#task(draft, taskId).task.restartNote = '';
+        if (semantic === 'executing' && restart) this.#task(draft, taskId).task.restartNote = '';
         return record;
       });
-      await this.executor.start({ run, task: { id: task.id, title: task.title, prompt: task.prompt }, workspace, planRunId: plan?.runId || null, extra });
+      const payload = { run, task: { id: task.id, title: task.title, prompt: task.prompt }, workspace, planRunId: plan?.runId || null, extra };
+      // A start inside a column move with enter automations waits until those automations are done (as for custom columns).
+      const job = this.automationMoves.get(taskId);
+      if (pipeline && job?.deferNativeStart && !job.blocked) this.deferredPipelineStarts.set(run.id, payload);
+      else await this.executor.start(payload);
       return run;
     }
+  }
+
+  /** A typed pipeline column's instructions: its enabled "on enter" agent messages, in order. */
+  #columnInstructions(project, columnId) {
+    const column = project.pipeline?.columns.find(item => item.id === columnId);
+    return (column?.automations.onEnter || []).filter(row => row.enabled && row.type === 'send_message').map(row => row.message.trim()).filter(Boolean).join('\n\n');
+  }
+
+  /**
+   * The compact task state the next stage agent receives instead of an earlier agent's conversation: the branch and its
+   * commits, and each recorded stage result (who ran it, how it ended, its checkpoint). Bounded; never a transcript.
+   */
+  async #handoffSummary(project, task, workspace) {
+    const rev = await this.delivery.revision(task.id).catch(() => null);
+    const lines = [`Task branch: ${workspace.branch} (worktree ${workspace.path})`, `Target branch: ${workspace.targetBranch} at ${(rev?.targetCommit || workspace.baseCommit || '').slice(0, 12)}`,
+      ...(rev ? [`Task commit: ${rev.taskCommit.slice(0, 12)}, ${rev.ahead} ${rev.ahead === 1 ? 'commit' : 'commits'} ahead of the target${rev.clean ? '' : `, ${rev.changes.length} uncommitted ${rev.changes.length === 1 ? 'change' : 'changes'}`}`] : [])];
+    const history = (task.stageHistory || []).slice(-12).map(item => `- ${columnTitleIn(project, item.columnId)} (${item.stage}, ${item.provider || 'agent'}): ${item.status}${item.checkpointCommit ? `, checkpoint ${item.checkpointCommit.slice(0, 12)}` : ''}${item.reason ? ` — ${item.reason}` : ''}`);
+    return [`=== TASK STATE (from Promptboard, not from another agent) ===`, ...lines, ...(history.length ? ['Stage results so far:', ...history] : []), `=== END TASK STATE ===`].join('\n');
   }
 
   /** Main-session pipeline moves. Names carry no review, commit, test, or merge action. */
@@ -2420,9 +2621,12 @@ export class Board {
       await this.#publishAutomationMove(key);
       const entered = this.#task(await this.state(), taskId);
       const enterContext = await this.#automationContext(taskId, onEnter, entered);
+      // A typed column sends its "on enter" agent messages with the task as column instructions, never a second time.
       const enters = await this.automations.runGroup({ key, trigger: 'enter', rows: onEnter, context: enterContext, signal,
-        canMessage: to.role === 'active' && Boolean(this.#activeRun(await this.state(), taskId)),
-        suppressMessages: from.role === 'done', onProgress: () => this.#publishAutomationMove(key) });
+        canMessage: to.role === 'active' && !columnStage(project, to.id) && Boolean(this.#activeRun(await this.state(), taskId)),
+        suppressMessages: from.role === 'done' || Boolean(columnStage(project, to.id)),
+        ...(columnStage(project, to.id) && from.role !== 'done' ? { suppressReason: 'Typed columns send this message with the task as a column instruction.' } : {}),
+        onProgress: () => this.#publishAutomationMove(key) });
       if (!enters.safeToAdvance) {
         job.blocked = !enters.cancelled || this.#automationWorkOwned(key);
         if (!job.blocked) await this.automationJournal.cancelMove(key);
@@ -2643,6 +2847,10 @@ export class Board {
       });
       return { task: saved };
     }
+    // Typed columns (and leaving a stage-engine run) follow the stage engine: fresh sessions, checks and handoffs.
+    if (columnStage(project, column) || active?.stageKind) {
+      return this.#stageColumnTransition(taskId, { project, task, target, move, active, expectedRevision, decision, trigger, signal });
+    }
     const settings = effectiveWorkflow(project, state.settings.defaultAgent, state, task)[column];
     const strategy = resolvePipelineStrategy(project.pipeline, column, task);
     if (active) {
@@ -2697,6 +2905,214 @@ export class Board {
       const result = this.#place(draft, taskId, move); delete result.archivedAt; return result;
     });
     return { task: saved };
+  }
+
+  /**
+   * A pipeline move into a typed column, or out of a stage-engine run. The same path serves a drag and Autopilot.
+   * - A finished turn of the stage the card leaves is completed first (the move is the confirmation). An agent that is
+   *   still working, or asking something, blocks the move.
+   * - Each typed column then starts a fresh agent session in the task's own worktree; nothing resumes across columns,
+   *   so the next column may use any provider.
+   * - The destination's checks apply before anything starts: Code Review needs committed changes, Testing an accepted
+   *   review of the current commit, Merge also passing tests of that commit.
+   */
+  async #stageColumnTransition(taskId, { project, task, target, move, active, expectedRevision, decision, trigger, signal }) {
+    const semantic = columnStage(project, target.id), from = columnStage(project, task.column);
+    const name = id => columnTitleIn(project, id);
+    if (active) {
+      const finished = active.status === 'waiting_for_input' && active.turnComplete && active.turns > 0 && (active.activity ? active.activity.ready !== false : true);
+      if (!finished) throw conflict(`The ${name(task.column)} agent is still working or waiting for your answer. Let it finish its turn, or pause it, before moving the card.`, 'RUN_ACTIVE');
+      if (active.stageKind) {
+        const outcome = await this.#finishStageRun(taskId, active.id, { by: trigger === 'automation' ? 'automation' : 'move' });
+        if (outcome?.status === 'failed') throw conflict(`${name(task.column)} did not complete: ${outcome.reason}`, outcome.code || 'STAGE_FAILED');
+      } else {
+        // A custom column's conversation is kept (paused) when the card enters the stage engine.
+        await this.executor.suspend(active.id, { withinAutomationMove: this.automationMoves.get(taskId)?.key.transitionId, reason: 'The card moved to a typed column. This conversation, the worktree and the output are kept.' });
+      }
+    }
+    if (signal?.aborted) throw conflict('The automatic move was cancelled.', 'PLAN_ROUTE_CANCELLED');
+    // The card's revision was checked when the move began; completing the stage above only added its own records.
+    const state = await this.state(), current = this.#task(state, taskId);
+    if (current.task.column !== task.column || current.project.revision !== project.revision) throw conflict('The card or board changed during this move.', 'REVISION_CONFLICT');
+    if (this.#activeRun(state, taskId)) throw conflict('This card already has an active run.', 'RUN_ACTIVE');
+    const strategy = resolvePipelineStrategy(current.project.pipeline, target.id, current.task);
+    const policy = resolveExecutionPolicy(current.project.pipeline, target.id, current.task, current.project.execution);
+    if (!semantic) {
+      // Leaving the stage engine for a custom column: a new conversation starts there, as on a first arrival.
+      if (decision !== 'move' && (strategy.autoSpawn || decision === 'start')) return { task: await this.#taskNow(taskId), run: await this.#pipelineStart(taskId, { column: target.id, move, trigger }) };
+      return { task: await this.store.update(draft => { const result = this.#place(draft, taskId, move); delete result.archivedAt; result.stageOutcome = null; return result; }) };
+    }
+    const hasWorkspace = current.task.workspace?.status === 'ready';
+    if (hasWorkspace) await this.ensureTaskWorktree(taskId);
+    const rev = hasWorkspace ? await this.delivery.revision(taskId) : null;
+    const needWorkspace = () => { if (!rev) throw new BoardError(`${name(target.id)} needs the task worktree. Run a Planning or Executing column first.`, 'WORKSPACE_REQUIRED', 409); };
+    if (semantic === 'code_review') {
+      needWorkspace();
+      if (rev.unresolved.length) throw conflict(`These files still contain conflict markers: ${rev.unresolved.slice(0, 10).join(', ')}. Resolve them first.`, 'CONFLICT_MARKERS');
+      if (!rev.clean || rev.merging) await this.delivery.commit(taskId, { message: this.#checkpointMessage(current.project, current.task, task.column, rev.merging), confirm: true });
+      else if (!rev.ahead) throw conflict('The task branch has no changes to review.', 'NO_CHANGES');
+    }
+    if (semantic === 'testing' || semantic === 'merge') {
+      needWorkspace();
+      if (rev.merging) throw conflict('A merge is in progress in the task worktree. Commit or abort it first.', 'MERGE_IN_PROGRESS');
+      const gate = await this.#evidenceGate(taskId, semantic);
+      if (gate.problems.length) throw new BoardError(`${name(target.id)} is not ready: ${gate.problems.join(' ')}`, 'STAGE_NOT_READY', 409);
+      if (gate.acceptReview) await this.delivery.acceptReview(taskId);
+    }
+    if (semantic === 'executing') {
+      const notes = await this.#reworkNotes(taskId, from);
+      if (notes) await this.updateTaskEvidence(taskId, item => {
+        item.reworkNotes = notes.text.slice(0, 20000);
+        if (notes.review && item.evidence?.review) item.evidence.review = { ...item.evidence.review, status: 'changes_requested' };
+      });
+    }
+    const start = decision !== 'move' && (strategy.autoSpawn || decision === 'start');
+    if (semantic === 'merge') {
+      const placed = await this.store.update(draft => { const result = this.#place(draft, taskId, move); delete result.archivedAt; result.stageOutcome = null; return result; });
+      if (!start) return { task: placed };
+      // Merge is Promptboard's own Git operation; an agent runs only to resolve conflicts.
+      const merge = await this.#prepareMerge(taskId, { auto: policy.completion === 'automatic', runLocked: true });
+      return { task: merge.task || await this.#taskNow(taskId), merge, merged: merge.state === 'merged' };
+    }
+    if (!start) {
+      const placed = await this.store.update(draft => { const result = this.#place(draft, taskId, move); delete result.archivedAt; result.stageOutcome = null; return result; });
+      return { task: placed };
+    }
+    const run = await this.#startRun(taskId, { stage: target.id, consent: true, trigger: trigger === 'automation' ? 'automation' : 'user', move });
+    return { task: await this.#taskNow(taskId), run };
+  }
+
+  #checkpointMessage(project, task, columnId, merging = false) {
+    const ref = Number.isInteger(task.number) ? `#${task.number}` : task.id.slice(0, 8);
+    return merging ? `promptboard(${ref}): merge ${project.targetBranch?.name || 'target'} into the task branch` : `promptboard(${ref}): ${columnTitleIn(project, columnId)} checkpoint\n\n${task.title}`;
+  }
+
+  /** Save the stage engine's outcome on the card and in its bounded stage history. */
+  async #recordOutcome(taskId, run, status, { code = '', reason = '', findings, checkpointCommit, testsId, next } = {}) {
+    if (!OUTCOME_STATUSES.has(status)) throw new BoardError('Unknown stage outcome.', 'INVALID_OUTCOME', 500);
+    return this.store.update(state => {
+      const { task } = this.#task(state, taskId);
+      const outcome = { columnId: run.stage, stage: run.stageKind, runId: run.id, status, at: Date.now(), ...(code ? { code } : {}), ...(reason ? { reason: clip(reason, 2000) } : {}),
+        ...(findings?.length ? { findings: findings.slice(0, 50) } : {}), ...(checkpointCommit ? { checkpointCommit } : {}), ...(testsId ? { testsId } : {}), ...(next ? { next } : {}) };
+      task.stageOutcome = outcome;
+      if (!['working', 'verifying'].includes(status)) task.stageHistory = [...(task.stageHistory || []), { columnId: run.stage, stage: run.stageKind, runId: run.id, provider: run.config?.provider || '',
+        status, at: outcome.at, ...(code ? { code } : {}), ...(reason ? { reason: clip(reason, 300) } : {}), ...(checkpointCommit ? { checkpointCommit } : {}) }].slice(-50);
+      task.revision++;
+      return outcome;
+    });
+  }
+
+  /** A run can be completed when its turn is finished and nothing is outstanding (tools, questions, unconfirmed input). */
+  #turnFinished(run) {
+    return run?.status === 'waiting_for_input' && run.turnComplete === true && run.turns > 0 && (run.activity ? run.activity.ready !== false : true);
+  }
+
+  /**
+   * Complete a stage-engine run: the same steps for the Complete button, a move, automatic completion and Autopilot.
+   * Planning must leave a plan and an unchanged worktree; Executing gets a checkpoint commit; Code Review's verdict is
+   * read from its structured result; Testing hands over to Promptboard's own test run; a merge agent's resolution is
+   * committed and sent back to review. Returns the recorded outcome.
+   */
+  async #finishStageRun(taskId, runId, { by = 'user' } = {}) {
+    let state = await this.state();
+    let run = state.runs.find(item => item.id === runId && item.taskId === taskId);
+    if (!run?.stageKind) throw conflict('This run does not belong to a typed column.', 'NOT_A_STAGE_RUN');
+    const { task } = this.#task(state, taskId);
+    if (run.status === 'succeeded') return task.stageOutcome?.runId === runId ? task.stageOutcome : null;
+    if (!this.#turnFinished(run)) throw conflict('Complete the stage after the agent has finished its turn and nothing is waiting for an answer.', 'NOT_CONFIRMABLE');
+    const stage = run.stageKind;
+    if (stage === 'planning') {
+      const rev = await this.delivery.revision(taskId);
+      if (!rev.clean || rev.taskCommit !== run.startCommit) {
+        await this.executor.cancel(runId).catch(() => {});
+        return this.#recordOutcome(taskId, run, 'failed', { code: 'PLAN_MODIFIED_WORKSPACE', reason: 'The planning agent changed the task worktree, which Planning must never do. Review the changes in the worktree before continuing.' });
+      }
+      if (!run.hasPlan) return this.#recordOutcome(taskId, run, 'failed', { code: 'PLAN_MISSING', reason: 'The planning agent finished its turn without a plan. Continue in its terminal, then complete the stage again.' });
+    }
+    await this.executor.confirm(runId);
+    state = await this.state(); run = state.runs.find(item => item.id === runId);
+    const reasonBy = by === 'automatic' ? 'Completed automatically.' : by === 'automation' ? 'Completed by Autopilot.' : 'Completed by you.';
+    if (stage === 'planning') return this.#recordOutcome(taskId, run, 'succeeded', { reason: `Plan accepted. ${reasonBy}` });
+    if (stage === 'executing') {
+      let rev = await this.delivery.revision(taskId);
+      if (rev.merging) return this.#recordOutcome(taskId, run, 'failed', { code: 'MERGE_IN_PROGRESS', reason: 'A merge is in progress in the task worktree. Commit or abort it, then complete the stage again.' });
+      if (!rev.clean) rev = await this.delivery.commit(taskId, { message: this.#checkpointMessage(this.#project(state, run.projectId), task, run.stage), confirm: true });
+      if (!rev.ahead) return this.#recordOutcome(taskId, run, 'failed', { code: 'NO_CHANGES', reason: 'The agent made no changes to the task branch.' });
+      return this.#recordOutcome(taskId, run, 'succeeded', { checkpointCommit: rev.taskCommit, reason: reasonBy });
+    }
+    if (stage === 'code_review') {
+      const review = this.#task(state, taskId).task.evidence?.review;
+      if (review?.runId !== runId || review.verdict === 'unknown' || !review.parsed) return this.#recordOutcome(taskId, run, 'failed', { code: 'INVALID_REVIEW_RESULT', reason: 'The review did not end with a valid JSON verdict ({"verdict", "findings"}). Ask the reviewer to finish with the structured result, or review again.' });
+      if (review.verdict === 'no_issues') { await this.delivery.acceptReview(taskId); return this.#recordOutcome(taskId, run, 'succeeded', { reason: `No issues found. ${reasonBy}` }); }
+      return this.#recordOutcome(taskId, run, 'changes_required', { findings: review.findings, next: 'executing', reason: `${review.findings.length} ${review.findings.length === 1 ? 'finding' : 'findings'} to fix.` });
+    }
+    if (stage === 'testing') {
+      const rev = await this.delivery.revision(taskId);
+      if (!rev.clean) return this.#recordOutcome(taskId, run, 'changes_required', { next: 'executing', reason: 'The testing agent changed files. They go back to Executing so they are committed, reviewed and tested.' });
+      const tests = this.#task(await this.state(), taskId).task.evidence?.tests;
+      // recordStageResult (during confirm) started Promptboard's own test run of the configured commands.
+      if (tests?.status === 'running' && tests.taskCommit === rev.taskCommit) return this.#recordOutcome(taskId, run, 'verifying', { testsId: tests.id, reason: 'Promptboard is running the configured test commands.' });
+      const project = this.#project(state, run.projectId);
+      if (!(project.testCommands || []).length) return this.#recordOutcome(taskId, run, 'failed', { code: 'NO_TEST_COMMANDS', reason: 'Testing needs the project’s test commands. Add them in the Kanban settings; only their exit codes decide.' });
+      const started = await this.delivery.runTests(taskId, { confirm: true }).catch(error => ({ error }));
+      if (started.error) return this.#recordOutcome(taskId, run, 'failed', { code: started.error.code || 'VERIFICATION_FAILED', reason: started.error.message });
+      return this.#recordOutcome(taskId, run, 'verifying', { testsId: started.id, reason: 'Promptboard is running the configured test commands.' });
+    }
+    if (stage === 'merge') {
+      const rev = await this.delivery.revision(taskId);
+      if (rev.unresolved.length) return this.#recordOutcome(taskId, run, 'failed', { code: 'MERGE_CONFLICT_UNRESOLVED', reason: `Conflict markers remain in ${rev.unresolved.slice(0, 10).join(', ')}.` });
+      let checkpoint = rev.taskCommit;
+      if (rev.merging || !rev.clean) checkpoint = (await this.delivery.commit(taskId, { message: this.#checkpointMessage(this.#project(state, run.projectId), task, run.stage, rev.merging), confirm: true })).taskCommit;
+      return this.#recordOutcome(taskId, run, 'changes_required', { next: 'code_review', checkpointCommit: checkpoint, reason: 'The conflicts were resolved. The new commit is reviewed and tested again before it merges.' });
+    }
+    return this.#recordOutcome(taskId, run, 'succeeded', { reason: reasonBy });
+  }
+
+  /** The Complete button of a typed column (manual completion). Same steps as automatic completion and Autopilot. */
+  completeStage(taskId, { runId } = {}) {
+    return this.#locked(`transition:${taskId}`, async () => {
+      const state = await this.state(), { task } = this.#task(state, taskId);
+      const run = state.runs.find(item => item.id === (runId || task.stageOutcome?.runId) && item.taskId === taskId);
+      if (!run) throw conflict('This card has no stage run to complete.', 'NOT_CONFIRMABLE');
+      return { task: await this.#taskNow(taskId), outcome: await this.#finishStageRun(taskId, run.id, { by: 'user' }) };
+    });
+  }
+
+  /**
+   * Board-side follow-up of the stage engine (each tick, for every typed column; Autopilot uses the same outcomes):
+   * automatic completion of finished turns, the end of Promptboard's test runs, and runs that stopped.
+   */
+  async #advanceStageEngine(state) {
+    for (const project of state.projects) {
+      if (project.workflowMode !== 'pipeline') continue;
+      for (const task of project.tasks) {
+        const outcome = task.stageOutcome;
+        if (!outcome || !['working', 'verifying'].includes(outcome.status) || !columnStage(project, task.column) || outcome.columnId !== task.column) continue;
+        await this.#locked(`transition:${task.id}`, async () => {
+          const fresh = await this.state(), { project: owner, task: card } = this.#task(fresh, task.id), current = card.stageOutcome;
+          if (!current || current.runId !== outcome.runId || current.status !== outcome.status) return;
+          const run = fresh.runs.find(item => item.id === current.runId);
+          if (!run) return;
+          if (current.status === 'verifying') {
+            const tests = card.evidence?.tests;
+            if (!tests || tests.id !== current.testsId) return this.#recordOutcome(task.id, run, 'failed', { code: 'VERIFICATION_FAILED', reason: 'The test run record is missing. Move the card to Testing again.' });
+            if (tests.status === 'running') {
+              if (!this.delivery.testsRunning.has(task.id)) return this.#recordOutcome(task.id, run, 'failed', { code: 'VERIFICATION_INTERRUPTED', reason: 'The test run stopped (the app restarted). Move the card to Testing again.' });
+              return;
+            }
+            if (tests.status === 'passed') return this.#recordOutcome(task.id, run, 'succeeded', { reason: 'Every configured test command passed.' });
+            const failed = (tests.results || []).filter(result => result.status !== 'passed').map(result => `${result.argv.join(' ')}: ${result.reason || `exit ${result.exitCode}`}`).join('; ');
+            return this.#recordOutcome(task.id, run, 'changes_required', { code: 'VERIFICATION_FAILED', next: 'executing', reason: tests.status === 'invalid' ? 'The task commit changed while the tests ran.' : `Tests failed: ${failed || tests.status}` });
+          }
+          if (['failed', 'cancelled', 'interrupted'].includes(run.status)) return this.#recordOutcome(task.id, run, 'failed', { code: run.errorCode || (run.status === 'interrupted' ? 'AGENT_INTERRUPTED' : 'AGENT_STOPPED'), reason: run.reason || `The agent ${run.status}.` });
+          const policy = resolveExecutionPolicy(owner.pipeline, card.column, card, owner.execution);
+          if (policy.completion === 'automatic' && this.#turnFinished(run)) await this.#finishStageRun(task.id, run.id, { by: 'automatic' });
+        }).catch(async error => {
+          const latest = (await this.state()).runs.find(item => item.id === outcome.runId);
+          if (latest) await this.#recordOutcome(task.id, latest, 'failed', { code: error.code || 'STAGE_FAILED', reason: error.message }).catch(() => {});
+        });
+      }
+    }
   }
 
   async #pipelineReconfigureLive(taskId, { state, project, task, active, column, settings, move, expectedRevision, trigger, continuation = '', requiredApproval = null, signal = null }) {
@@ -2874,7 +3290,7 @@ export class Board {
   async approvePlan(taskId, { runId }) {
     return this.store.update(state => {
       const { task } = this.#task(state, taskId);
-      const run = state.runs.find(item => item.id === runId && item.taskId === taskId && item.stage === 'planning');
+      const run = state.runs.find(item => item.id === runId && item.taskId === taskId && runStage(item) === 'planning');
       if (!run?.hasPlan) throw new BoardError('This planning run has no plan to approve.', 'PLAN_MISSING', 409);
       if (run.promptRevision !== (task.contentRevision ?? 1)) throw conflict('The task changed after this plan was written. Run Planning again.', 'PLAN_STALE');
       task.planApproval = { runId, contentRevision: task.contentRevision ?? 1, approvedAt: Date.now() };

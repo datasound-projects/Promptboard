@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Board } from '../src/board.mjs';
 import { Store, emptyState, migrateState, STATE_VERSION } from '../src/store.mjs';
-import { defaultPipelineConfig } from '../src/pipeline-config.mjs';
+import { customPipelineConfig } from './helpers/pipeline.mjs';
 import { resolveConfig } from '../src/agents.mjs';
 import { PipelineActions } from '../src/pipeline-actions.mjs';
 import { pipelineTaskEnvelope } from '../src/pipeline-templates.mjs';
@@ -36,7 +36,7 @@ if(tag==='busy'||tag==='gate'){setInterval(()=>{writeFileSync(join(folder,'heart
   board.executor = { validate: async ({ stage, config }) => resolveConfig(stage, config),
     start: async payload => { starts.push({ ...payload, observations: await observations() }); await board.updateRun(payload.run.id, { status: 'running' }); },
     cancel: async id => board.updateRun(id, { status: 'cancelled' }), suspend: async id => board.updateRun(id, { status: 'suspended' }) };
-  const config = defaultPipelineConfig(); for (const column of config.columns) column.strategy.autoSpawn = autoSpawn;
+  const config = customPipelineConfig(); for (const column of config.columns) column.strategy.autoSpawn = autoSpawn;
   const projectNow = async () => (await board.state()).projects.find(item => item.id === project.id);
   const taskNow = async id => (await projectNow()).tasks.find(item => item.id === id);
   const configure = () => board.setPipeline(project.id, { pipeline: config, expectedRevision: 3, confirm: true });
@@ -47,12 +47,12 @@ if(tag==='busy'||tag==='gate'){setInterval(()=>{writeFileSync(join(folder,'heart
 
 test('v5 migration preserves pipeline configuration, exact Composer text, Base and native sessions without execution', async t => {
   const dir = await temp(t), original = { ...emptyState(), version: 5, projects: [{ id: 'p', name: 'Saved', workflowMode: 'pipeline',
-    pipeline: defaultPipelineConfig(), tasks: [{ id: 't', title: 'Exact task', prompt: '  Composer\r\ntext  ', column: 'todo', baseBinding: { ids: ['saved-resource'] } }] }],
+    pipeline: customPipelineConfig(), tasks: [{ id: 't', title: 'Exact task', prompt: '  Composer\r\ntext  ', column: 'todo', baseBinding: { ids: ['saved-resource'] } }] }],
     runs: [{ id: 'r', taskId: 't', projectId: 'p', status: 'suspended', providerSessionId: 'native-exact' }],
     sessions: [{ id: 's', taskId: 't', projectId: 'p', status: 'suspended', runIds: ['r'], artifacts: [], nativeSessionId: 'native-exact' }] };
   const bytes = JSON.stringify(original); await writeFile(join(dir, 'state.json'), bytes);
   const store = new Store(dir), migrated = await store.read();
-  assert.equal(migrated.version, STATE_VERSION); assert.equal(STATE_VERSION, 13);
+  assert.equal(migrated.version, STATE_VERSION); assert.equal(STATE_VERSION, 14);
   assert.deepEqual(migrated.projects, original.projects.map(project => ({ ...project, nextTaskNumber: 2, labels: [], labelRevision: 0, tasks: project.tasks.map(task => ({ ...task, number: 1, priority: 0, labelIds: [] })) }))); assert.deepEqual(migrated.base, original.base);
   assert.deepEqual(migrated.runs, original.runs); assert.deepEqual(migrated.sessions, original.sessions);
   assert.equal(await readFile(join(dir, store.recovery.migrationBackup), 'utf8'), bytes);
