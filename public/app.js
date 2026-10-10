@@ -2551,6 +2551,7 @@ function agentStateText(run) {
 function agentModel(run) { return `${providerName(run.config?.provider)} · ${run.config?.model || 'CLI default model'}${run.config?.effort ? ` · ${run.config.effort}` : ''}`; }
 function agentActivity(run) {
   if (run?.lifecycle === 'suspending' && RUN_LIVE.includes(run.status)) return 'Pausing the agent; waiting for its process to exit…';
+  if (run?.lifecycle === 'initial-input-not-ready' && RUN_LIVE.includes(run.status)) return run.waitingReason;
   const state = agentState(run);
   if (run?.config?.pipeline && RUN_LIVE.includes(run.status) && run.status !== 'queued' && run.activity) {
     const activity = run.activity;
@@ -4234,7 +4235,7 @@ function renderAutopilotBar(project) {
   const left = ap.queue.filter(id => !(ap.done || []).includes(id) && id !== ap.current?.taskId && project.tasks.some(item => item.id === id && item.column === todoColumnId(project))).length;
   // A startup question or a permission prompt holds Autopilot until you answer it in the terminal.
   const run = task && board.runs.filter(item => item.taskId === task.id && RUN_LIVE.includes(item.status)).at(-1);
-  const needsYou = run && ((run.status === 'waiting_for_input' && !run.turnComplete) || run.lifecycle === 'no-events-yet');
+  const needsYou = run && ((run.status === 'waiting_for_input' && !run.turnComplete) || ['no-events-yet', 'initial-input-not-ready'].includes(run.lifecycle));
   const text = ap.status === 'running' ? (task ? `Autopilot is working on “${task.title}” · ${columnTitle(ap.current.stage || todoColumnId(project))} · ${left} more queued${needsYou ? ' · the agent is waiting for your answer in the terminal' : ''}` : 'Autopilot is choosing the next card…')
     : ap.status === 'paused' ? `Autopilot paused: ${ap.reason}`
     : 'Autopilot finished: every queued card has been through its route.';
