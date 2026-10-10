@@ -204,8 +204,10 @@ export function resolvePipelineStrategy(config, columnId, { profileId = null, ag
 
 /** The project-wide execution policy (Kanban settings). Missing fields use EXECUTION_DEFAULTS. */
 export function normalizeExecutionPolicy(input = {}) {
-  keys(input, ['interaction', 'filesystem', 'completion', 'maxRework', 'mergeMethod'], 'Execution policy');
+  keys(input, ['interaction', 'filesystem', 'completion', 'maxRework', 'mergeMethod', 'workspaceTrust'], 'Execution policy');
   const result = {};
+  // task_workspaces: answer a CLI's positively identified folder-trust menu for Promptboard's own task worktrees.
+  if (input.workspaceTrust != null) result.workspaceTrust = choice(input.workspaceTrust, ['ask', 'task_workspaces'], 'workspace trust');
   if (input.mergeMethod != null) result.mergeMethod = choice(input.mergeMethod, ['squash', 'fast_forward'], 'merge method');
   if (input.interaction != null) result.interaction = choice(input.interaction, INTERACTIONS, 'interaction mode');
   if (input.filesystem != null) result.filesystem = choice(input.filesystem, FILESYSTEMS, 'workspace access');
