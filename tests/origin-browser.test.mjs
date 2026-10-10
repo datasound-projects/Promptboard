@@ -267,7 +267,7 @@ test('Origin in real Chrome: quick entry, mind map, diagram, evidence, readiness
   await wait(`document.activeElement?.dataset.section === 'vision'`, 'ArrowDown moves to the next section')
     .catch(async error => { throw new Error(`${error.message} ${await ev(`return ${focusState};`)}`); });
 
-  assert.equal(JSON.parse(await readFile(statePath, 'utf8')).version, 13, 'Board state version is unchanged.');
+  assert.equal(JSON.parse(await readFile(statePath, 'utf8')).version, 14, 'Board state version is unchanged.');
   assert.notEqual(stateBefore, '');
   assert.deepEqual(browser.consoleMessages.filter(message => message.startsWith('EXCEPTION') || /Failed to load|Refused/.test(message)), []);
 });

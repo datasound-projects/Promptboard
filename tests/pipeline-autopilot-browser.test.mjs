@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { customPipelineConfig } from './helpers/pipeline.mjs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { findChrome, launch } from './helpers/browser.mjs';
@@ -10,6 +11,8 @@ const chrome = await findChrome();
 test('the Autopilot button sits next to Columns on a pipeline board and sets up columns, instructions and the queue', { skip: !chrome, timeout: 120000 }, async t => {
   const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
   const project = await app.board.createProject({ name: 'Pipeline board', workflowMode: 'pipeline' });
+  // Custom columns: one conversation continues, so each later column needs an instruction.
+  await app.board.setPipeline(project.id, { pipeline: customPipelineConfig(), expectedRevision: project.revision });
   const first = await app.board.createTask({ projectId: project.id, title: 'First card' }), second = await app.board.createTask({ projectId: project.id, title: 'Second card' });
   const browser = await launch({ width: 1280, height: 900 }); assert.ok(browser); t.after(() => browser.close());
   const ev = code => browser.eval(code), wait = (expression, label) => browser.until(expression, label, 15000);
