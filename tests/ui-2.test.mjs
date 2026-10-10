@@ -1072,7 +1072,9 @@ test('dock tabs: one per run with state and model; switching never restarts; clo
   const tabs = () => Array.from($('#dock-tabs').querySelectorAll('.dock-tab:not(#dock-tab-activity)'));
   assert.deepEqual(tabs().map(tab => tab.id).sort(), ['dock-tab-run-a', 'dock-tab-run-b', 'dock-tab-run-c']);
   const b = $('#dock-tab-run-b');
-  assert.match(b.textContent, /API tests · Codex CLI · gpt-5\.5/);
+  // The visible label names the column; the agent and model are in the tooltip and the accessible name.
+  assert.match(b.textContent, /API tests · Code Review/);
+  assert.match(b.title, /Codex CLI · gpt-5\.5/);
   assert.equal(b.dataset.state, 'awaits_you');
   assert.match(b.getAttribute('aria-label'), /Codex CLI · gpt-5\.5: Awaits you/);
   assert.equal($('#dock-tab-run-a').dataset.state, 'active');
