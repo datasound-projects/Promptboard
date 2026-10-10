@@ -326,7 +326,8 @@ export class Delivery {
     squash ??= project.workflowMode === 'pipeline' && (project.execution?.mergeMethod ?? 'squash') === 'squash';
     return this.#locked(`repo:${ws.commonDir}`, async () => {
       const preview = await this.mergePreview(taskId);
-      if (preview.taskCommit !== taskCommit || preview.targetCommit !== targetCommit) throw fail('The task or target branch changed since the preview. Review the new preview.', 'MERGE_STALE');
+      if (preview.targetCommit !== targetCommit) throw fail(`${target} moved since the merge was prepared. Nothing was changed; the merge is prepared again on the new target.`, 'TARGET_CHANGED');
+      if (preview.taskCommit !== taskCommit) throw fail('The task branch changed since the preview. Review the new preview.', 'MERGE_STALE');
       if (!preview.eligible) throw fail(preview.problems.join(' '), 'MERGE_NOT_ELIGIBLE');
       const branchTip = await this.#rev(ws.path, `refs/heads/${ws.branch}`);
       if (branchTip !== taskCommit) throw fail('The task branch does not point at the previewed commit.', 'MERGE_STALE');
@@ -346,8 +347,12 @@ export class Delivery {
         method = `${squash ? 'squash commit, ' : ''}fast-forward in ${preview.targetCheckout.path}`;
       } else {
         // Not checked out anywhere: move the ref only if it still has the previewed value.
+        // Compare-and-swap: the ref moves only if it still has the previewed value.
         await git(['update-ref', '-m', `promptboard: ${squash ? 'squash-merge' : 'fast-forward'} ${target} to task ${taskId}`, `refs/heads/${target}`, merged, targetCommit], { cwd: ws.repositoryRoot })
-          .catch(() => { throw fail('Git refused to update the target branch. Nothing was changed.', 'MERGE_FAILED'); });
+          .catch(async () => {
+            const now = await this.#rev(ws.repositoryRoot, `refs/heads/${target}`).catch(() => null);
+            throw now && now !== targetCommit ? fail(`${target} moved during the merge. Nothing was changed; the merge is prepared again on the new target.`, 'TARGET_CHANGED') : fail('Git refused to update the target branch. Nothing was changed.', 'MERGE_FAILED');
+          });
         method = `${squash ? 'squash commit, ' : ''}fast-forward of the branch reference`;
       }
       const result = await this.#rev(ws.repositoryRoot, `refs/heads/${target}`);

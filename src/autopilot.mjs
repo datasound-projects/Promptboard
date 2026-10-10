@@ -170,13 +170,14 @@ export class Autopilot {
     const before = route.slice(0, route.indexOf(cur.stage) + 1).reverse();
     const target = before.find(id => columnStage(project, id) === wanted) || route.find(id => columnStage(project, id) === wanted);
     if (!target) return this.pause(projectId, `“${task.title}”: ${name(cur.stage)} needs ${wanted === 'executing' ? 'an Executing' : 'a Code Review'} column for rework, and the Autopilot route has none. Fix it by hand, then resume, or skip the card.`);
+    // Every rework round counts, including a resolved merge going back to review, so nothing can loop forever.
     const attempts = cur.attempts || 0;
-    if (wanted === 'executing' && attempts >= maxRework) return this.pause(projectId, `“${task.title}”: REWORK_LIMIT_REACHED after ${attempts} rework ${attempts === 1 ? 'round' : 'rounds'} (${(outcome.reason || '').replace(/[.\s]+$/, '')}). Fix it by hand, then resume, or skip the card.`);
+    if (attempts >= maxRework) return this.pause(projectId, `“${task.title}”: REWORK_LIMIT_REACHED after ${attempts} rework ${attempts === 1 ? 'round' : 'rounds'} (${(outcome.reason || '').replace(/[.\s]+$/, '')}). Fix it by hand, then resume, or skip the card.`);
     const enteredAt = Date.now() - 1;
     await this.pipelineMove(task, target, 'start');
     return this.set(projectId, (a, log) => {
-      a.current = { ...a.current, stage: target, step: 'working', enteredAt, attempts: wanted === 'executing' ? attempts + 1 : attempts };
-      log(`“${task.title}”: ${(outcome.reason || name(cur.stage)).replace(/[.\s]+$/, '')}; back to ${name(target)}${wanted === 'executing' ? ` (rework ${attempts + 1}/${maxRework})` : ''}.`);
+      a.current = { ...a.current, stage: target, step: 'working', enteredAt, attempts: attempts + 1 };
+      log(`“${task.title}”: ${(outcome.reason || name(cur.stage)).replace(/[.\s]+$/, '')}; back to ${name(target)} (rework ${attempts + 1}/${maxRework}).`);
     });
   }
 
