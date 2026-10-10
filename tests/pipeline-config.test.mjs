@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { defaultPipelineConfig, normalizePipelineConfig, normalizePipelineStrategy, normalizePipelineAutomations, normalizePipelineTaskSelection, resolvePipelineStrategy } from '../src/pipeline-config.mjs';
+import { defaultPipelineConfig, normalizeExecutionPolicy, normalizePipelineConfig, normalizePipelineStrategy, normalizePipelineAutomations, normalizePipelineTaskSelection, resolveExecutionPolicy, resolvePipelineStrategy, withSeededKinds } from '../src/pipeline-config.mjs';
 
 const invalid = fn => assert.throws(fn, { code: 'INVALID_PIPELINE_CONFIG' });
 
@@ -16,16 +16,18 @@ test('task selections keep profiles and validated whole-task agent tuples exclus
     { agentOverride: { agentOverride: 'claude', autoSpawn: true } }, { agentOverride: { agentOverride: 'codex', modelOverride: '--flag' } }, { command: 'execute' }]) invalid(() => normalizePipelineTaskSelection(config, wrong));
 });
 
-test('pipeline defaults seed seven silent columns with roles and a plan exit target', () => {
+test('pipeline defaults seed seven typed, silent columns with roles; Planning and Code Review are read-only by type', () => {
   const config = defaultPipelineConfig();
   assert.deepEqual(config.columns.map(column => column.name), ['To Do', 'Planning', 'Executing', 'Code Review', 'Testing', 'Merge', 'Done']);
+  assert.deepEqual(config.columns.map(column => column.kind ?? null), [null, 'planning', 'execution', 'review', 'testing', 'merge', null]);
   for (const column of config.columns) {
     assert.equal(column.description, ''); assert.deepEqual(column.automations, { onEnter: [], onExit: [] });
     assert.equal(resolvePipelineStrategy(config, column.id).autoSpawn, column.role === 'active');
   }
-  assert.equal(resolvePipelineStrategy(config, 'planning').permissionMode, 'plan');
-  assert.equal(resolvePipelineStrategy(config, 'planning').planExitTargetId, 'executing');
-  for (const id of ['executing', 'code_review', 'testing', 'merge']) assert.equal(resolvePipelineStrategy(config, id).permissionMode, null, 'Names must not force a permission mode or stage prompt.');
+  // The type decides behaviour, not a permission mode or a native plan route.
+  assert.equal(resolvePipelineStrategy(config, 'planning').planExitTargetId, null);
+  for (const id of ['planning', 'executing', 'code_review', 'testing', 'merge']) assert.equal(resolvePipelineStrategy(config, id).permissionMode, null, 'Names must not force a permission mode or stage prompt.');
+  assert.deepEqual(['planning', 'executing', 'code_review', 'testing', 'merge'].map(id => resolveExecutionPolicy(config, id).filesystem), ['read_only', 'workspace_write', 'read_only', 'workspace_write', 'workspace_write']);
   config.columns[1].name = 'Changed'; assert.equal(defaultPipelineConfig().columns[1].name, 'Planning', 'Defaults are independent objects.');
 });
 
@@ -119,4 +121,43 @@ test('automation validation bounds scripts and rejects header injection, retired
   invalid(() => normalizePipelineAutomations({ onEnter: Array(41).fill(row) }));
   for (const candidate of [{ ...row, type: 'kill_session' }, { ...row, message: '' }, { ...row, message: 'x'.repeat(64 * 1024 + 1) }, { ...row, mode: 'interrupt' }, { ...row, type: 'run_script', script: 'true', timeoutMinutes: 0 }, { name: 'Hook', type: 'webhook', url: 'https://user:password@example.test' }, { name: 'Hook', type: 'webhook', url: 'file:///etc/passwd' }, { name: 'Hook', type: 'webhook', url: 'https://example.test', headers: { Authorization: 'x\r\nInjected: y' } }, { name: 'Hook', type: 'webhook', url: 'https://example.test', headers: { Host: 'another.test' } }]) invalid(() => normalizePipelineAutomations({ onEnter: [candidate] }));
   const config = defaultPipelineConfig(); config.columns[0].automations.onEnter = [row]; invalid(() => normalizePipelineConfig(config));
+});
+
+test('column types: saved columns without a type stay custom, To Do and Done have none, and the preset types only seeded columns', () => {
+  const legacy = { version: 1, columns: [{ id: 'todo', name: 'To Do', role: 'todo' }, { id: 'planning', name: 'Think', strategy: { permissionMode: 'plan', planExitTargetId: 'executing' } },
+    { id: 'executing', name: 'Build' }, { id: 'c_custom1', name: 'Docs' }, { id: 'done', name: 'Done', role: 'done' }] };
+  const config = normalizePipelineConfig(legacy);
+  assert.deepEqual(config.columns.map(column => column.kind ?? null), [null, 'custom', 'custom', 'custom', null], 'Existing boards keep their exact behaviour.');
+  assert.equal(resolveExecutionPolicy(config, 'planning').filesystem, 'read_only', 'A custom column in plan mode stays read-only.');
+  assert.throws(() => normalizePipelineConfig({ ...legacy, columns: legacy.columns.map(column => column.role === 'todo' ? { ...column, kind: 'execution' } : column) }), /no column type/);
+  assert.throws(() => normalizePipelineConfig({ ...legacy, columns: legacy.columns.map(column => column.id === 'executing' ? { ...column, kind: 'deploy' } : column) }), /column type/);
+  const typed = withSeededKinds(config);
+  assert.deepEqual(typed.columns.map(column => column.kind ?? null), [null, 'planning', 'execution', 'custom', null], 'Only seeded IDs are typed; names never decide.');
+  assert.equal(typed.columns[1].name, 'Think');
+  assert.equal(resolvePipelineStrategy(typed, 'planning').planExitTargetId, null, 'A typed Planning column completes by its plan, not a native plan route.');
+  assert.deepEqual(normalizePipelineConfig(JSON.parse(JSON.stringify(typed))), typed, 'Types survive a round trip.');
+});
+
+test('execution policy resolves task → profile → column → project → defaults, and typed read-only columns cannot be overridden', () => {
+  const config = normalizePipelineConfig({ ...defaultPipelineConfig(), profiles: [{ id: 'fast', name: 'Fast', columns: { executing: { interaction: 'ask', completion: 'manual' } } }] });
+  config.columns.find(column => column.id === 'testing').strategy = normalizePipelineStrategy({ completion: 'manual' });
+  config.columns.find(column => column.id === 'code_review').strategy = normalizePipelineStrategy({ filesystem: 'full', interaction: 'autonomous' });
+  const project = { interaction: 'autonomous', filesystem: 'workspace_write', completion: 'automatic', maxRework: 3 };
+  assert.deepEqual(resolveExecutionPolicy(config, 'executing', {}), { kind: 'execution', stage: 'executing', interaction: 'ask', filesystem: 'workspace_write', completion: 'manual', maxRework: 2,
+    sources: { interaction: 'default', filesystem: 'default', completion: 'default' } }, 'Defaults: ask, workspace writes, manual completion.');
+  let policy = resolveExecutionPolicy(config, 'executing', {}, project);
+  assert.deepEqual([policy.interaction, policy.filesystem, policy.completion, policy.maxRework], ['autonomous', 'workspace_write', 'automatic', 3], 'The project policy applies.');
+  assert.equal(resolveExecutionPolicy(config, 'testing', {}, project).completion, 'manual', 'A column overrides the project.');
+  policy = resolveExecutionPolicy(config, 'executing', { profileId: 'fast' }, project);
+  assert.deepEqual([policy.interaction, policy.completion], ['ask', 'manual'], 'A profile overrides the column and project.');
+  policy = resolveExecutionPolicy(config, 'executing', { agentOverride: { agentOverride: 'codex', interaction: 'autonomous' } }, project);
+  assert.deepEqual([policy.interaction, policy.completion], ['autonomous', 'automatic'], 'A task override pins only the fields it sets.');
+  policy = resolveExecutionPolicy(config, 'code_review', { agentOverride: { agentOverride: 'claude', filesystem: 'full' } }, project);
+  assert.deepEqual([policy.filesystem, policy.sources.filesystem], ['read_only', 'column type'], 'Review stays read-only whatever any layer says.');
+  assert.equal(resolveExecutionPolicy(config, 'planning', {}, { filesystem: 'full' }).filesystem, 'read_only');
+  assert.deepEqual(normalizeExecutionPolicy({ interaction: 'autonomous', completion: 'automatic', maxRework: 0, mergeMethod: 'fast_forward' }), { interaction: 'autonomous', completion: 'automatic', maxRework: 0, mergeMethod: 'fast_forward' });
+  for (const wrong of [{ interaction: 'yolo' }, { filesystem: 'root' }, { completion: 'sometimes' }, { maxRework: 9 }, { maxRework: 1.5 }, { mergeMethod: 'rebase' }, { auto: true }])
+    assert.throws(() => normalizeExecutionPolicy(wrong), { code: 'INVALID_PIPELINE_CONFIG' });
+  assert.deepEqual(normalizePipelineTaskSelection(config, { agentOverride: { agentOverride: 'gemini', filesystem: 'read_only', completion: 'automatic' } }),
+    { profileId: null, agentOverride: { agentOverride: 'gemini', filesystem: 'read_only', completion: 'automatic' } });
 });
