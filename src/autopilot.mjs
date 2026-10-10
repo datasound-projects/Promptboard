@@ -95,7 +95,9 @@ export class Autopilot {
       if (!route.includes(task.column)) return this.pause(projectId, `“${task.title}” is in ${name(task.column)}, which is not in the Autopilot columns. Move it to one of them, or skip it.`);
       if (columnStage(project, task.column)) {
         // A typed column: a final outcome is acted on; otherwise the stage runs again with a fresh session.
-        const outcome = task.stageOutcome?.columnId === task.column ? task.stageOutcome : null;
+        let outcome = task.stageOutcome?.columnId === task.column ? task.stageOutcome : null;
+        // A failure whose agent is still running is checked again: the person may have fixed it in the terminal.
+        if (live && outcome?.status === 'failed') outcome = await this.board.reopenStage(task.id);
         if (live || (outcome && outcome.status !== 'failed')) return this.set(projectId, a => { a.current = { ...a.current, stage: task.column, step: 'working', enteredAt: outcome?.at ?? Date.now() }; });
         // Merge is Promptboard's own operation: run it again (it brings in a moved target and merges when eligible).
         if (columnStage(project, task.column) === 'merge') await this.board.mergeNow(task.id);
