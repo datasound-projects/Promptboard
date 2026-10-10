@@ -16,10 +16,31 @@ const nameOf = (value, label = 'Name') => text(value, 80, label, true).trim();
 const bool = (value, label) => typeof value === 'boolean' ? value : fail(`${label} must be true or false.`);
 const choice = (value, options, label) => options.includes(value) ? value : fail(`Choose a supported ${label}.`);
 const keys = (value, allowed, label) => { if (!record(value) || Object.keys(value).some(key => !allowed.includes(key))) fail(`${label} has an unsupported field.`); };
-const STRATEGY_FIELDS = ['autoSpawn', 'agentOverride', 'modelOverride', 'effortOverride', 'permissionMode', 'handoffContext', 'sessionTarget', 'sessionSpawnStrategy', 'planExitTargetId'];
+const STRATEGY_FIELDS = ['autoSpawn', 'agentOverride', 'modelOverride', 'effortOverride', 'permissionMode', 'handoffContext', 'sessionTarget', 'sessionSpawnStrategy', 'planExitTargetId',
+  'interaction', 'filesystem', 'completion'];
+// interaction/filesystem/completion are null (inherit the project's execution policy) unless a layer sets them.
 export const PIPELINE_STRATEGY_DEFAULTS = Object.freeze({ autoSpawn: true, agentOverride: null, modelOverride: null, effortOverride: null,
-  permissionMode: null, handoffContext: false, sessionTarget: 'main', sessionSpawnStrategy: 'create_or_resume', planExitTargetId: null });
+  permissionMode: null, handoffContext: false, sessionTarget: 'main', sessionSpawnStrategy: 'create_or_resume', planExitTargetId: null,
+  interaction: null, filesystem: null, completion: null });
 const PROVIDERS = ['claude', 'codex', 'gemini'];
+// Task-wide pins: the agent tuple plus the execution policy fields.
+const TASK_OVERRIDE_FIELDS = ['agentOverride', 'modelOverride', 'effortOverride', 'permissionMode', 'interaction', 'filesystem', 'completion'];
+
+/**
+ * What an active column does, independent of its display name. `custom` keeps the column-pipeline behaviour (one
+ * conversation that continues across compatible columns). The other kinds run Promptboard's stage engine: each
+ * arrival starts a fresh agent session in the task's own worktree, with a handoff built from the task's recorded
+ * stage results, and the stage's checks (plan, checkpoint commit, review verdict, test exit codes, merge).
+ */
+export const COLUMN_KINDS = Object.freeze(['planning', 'execution', 'review', 'testing', 'merge', 'custom']);
+/** The stage contract each kind follows (the legacy stage names used by the shared engine and agent instructions). */
+export const KIND_STAGES = Object.freeze({ planning: 'planning', execution: 'executing', review: 'code_review', testing: 'testing', merge: 'merge' });
+export const INTERACTIONS = Object.freeze(['ask', 'autonomous']);
+export const FILESYSTEMS = Object.freeze(['read_only', 'workspace_write', 'full']);
+export const COMPLETIONS = Object.freeze(['manual', 'automatic']);
+/** Provider-independent defaults: ask before risky actions, write only in the task workspace, confirm stages yourself. */
+export const EXECUTION_DEFAULTS = Object.freeze({ interaction: 'ask', filesystem: 'workspace_write', completion: 'manual', maxRework: 2 });
+const SEEDED_KINDS = Object.freeze({ planning: 'planning', executing: 'execution', code_review: 'review', testing: 'testing', merge: 'merge' });
 
 /** Sparse values retain absent, cleared (null), and set as distinct states. */
 export function normalizePipelineStrategy(input = {}) {
@@ -34,6 +55,9 @@ export function normalizePipelineStrategy(input = {}) {
     else if (key === 'permissionMode') result[key] = choice(value, ['default', 'plan', 'acceptEdits', 'workspace-write', 'auto_edit'], 'permission mode');
     else if (key === 'sessionTarget') result[key] = choice(value, ['main', 'isolated'], 'session target');
     else if (key === 'sessionSpawnStrategy') result[key] = choice(value, ['create_or_resume', 'always_spawn_new'], 'session spawn strategy');
+    else if (key === 'interaction') result[key] = choice(value, INTERACTIONS, 'interaction mode');
+    else if (key === 'filesystem') result[key] = choice(value, FILESYSTEMS, 'workspace access');
+    else if (key === 'completion') result[key] = choice(value, COMPLETIONS, 'completion mode');
     else result[key] = idOf(value);
   }
   return result;
@@ -79,11 +103,22 @@ export function normalizePipelineAutomations(input = {}) {
   return result;
 }
 
+/** New boards use the stage engine in every active column: Planning → Executing → Code Review → Testing → Merge. */
 export function defaultPipelineConfig() {
   const seeds = [['todo', 'To Do', 'gray', 'todo'], ['planning', 'Planning', 'violet'], ['executing', 'Executing', 'blue'],
     ['code_review', 'Code Review', 'amber'], ['testing', 'Testing', 'teal'], ['merge', 'Merge', 'pink'], ['done', 'Done', 'green', 'done']];
-  return normalizePipelineConfig({ version: 1, columns: seeds.map(([id, name, color, role]) => ({ id, name, color, ...(role ? { role } : {}),
-    strategy: id === 'planning' ? { permissionMode: 'plan', planExitTargetId: 'executing' } : {}, automations: {} })) });
+  return normalizePipelineConfig({ version: 1, columns: seeds.map(([id, name, color, role]) => ({ id, name, color, ...(role ? { role } : { kind: SEEDED_KINDS[id] }),
+    strategy: {}, automations: {} })) });
+}
+
+/**
+ * Give the seeded columns of an older column pipeline their stage kinds (a preset the user applies explicitly).
+ * Columns with other IDs keep their kind. The returned configuration is normalized; nothing runs.
+ */
+export function withSeededKinds(config) {
+  const clean = normalizePipelineConfig(config);
+  return normalizePipelineConfig({ ...clean, columns: clean.columns.map(column => column.role === 'active' && SEEDED_KINDS[column.id] && column.kind === 'custom'
+    ? { ...column, kind: SEEDED_KINDS[column.id], strategy: column.id === 'planning' ? { ...column.strategy, planExitTargetId: null } : column.strategy } : column) });
 }
 
 /** Stable IDs connect profiles and plan targets; display names carry no stage behavior. */
@@ -93,7 +128,7 @@ export function normalizePipelineConfig(input) {
   if (!Array.isArray(input.columns) || input.columns.length < 2 || input.columns.length > 30) fail('A pipeline needs 2 to 30 columns, including To Do and Done roles.');
   const ids = new Set(), names = new Set();
   const columns = input.columns.map(column => {
-    keys(column, ['id', 'name', 'role', 'color', 'description', 'strategy', 'automations'], 'Column');
+    keys(column, ['id', 'name', 'role', 'kind', 'color', 'description', 'strategy', 'automations'], 'Column');
     const id = idOf(column.id), name = nameOf(column.name, 'Column name');
     if (ids.has(id) || names.has(name.toLowerCase())) fail('Column IDs and names must be unique.');
     ids.add(id); names.add(name.toLowerCase());
@@ -101,7 +136,10 @@ export function normalizePipelineConfig(input) {
     const color = choice(column.color ?? 'gray', ['gray', 'red', 'orange', 'amber', 'green', 'teal', 'blue', 'violet', 'pink'], 'column color');
     const strategy = normalizePipelineStrategy(column.strategy), automations = normalizePipelineAutomations(column.automations);
     if (role !== 'active' && automations.onEnter.length) fail('To Do and Done roles support exit automations only.');
-    return { id, name, role, color, description: text(column.description ?? '', 4000, 'Column description'), strategy, automations };
+    // Columns saved before kinds existed keep their exact behaviour: they are `custom`.
+    if (role !== 'active' && column.kind != null) fail('To Do and Done roles have no column type.');
+    const kind = role === 'active' ? choice(column.kind ?? 'custom', COLUMN_KINDS, 'column type') : undefined;
+    return { id, name, role, ...(kind ? { kind } : {}), color, description: text(column.description ?? '', 4000, 'Column description'), strategy, automations };
   });
   if (columns.filter(column => column.role === 'todo').length !== 1 || columns.filter(column => column.role === 'done').length !== 1) fail('A pipeline must have exactly one To Do role and one Done role.');
   if (columns[0].role !== 'todo' || columns.at(-1).role !== 'done') fail('The To Do role must be first and the Done role last.');
@@ -135,10 +173,10 @@ export function normalizePipelineTaskSelection(config, input = {}) {
   if (profileId && agentOverride) fail('Choose a board profile or a task-wide agent override, not both.');
   if (profileId && !config.profiles.some(profile => profile.id === profileId)) fail('Choose an existing board profile.');
   if (agentOverride !== null) {
-    keys(agentOverride, ['agentOverride', 'modelOverride', 'effortOverride', 'permissionMode'], 'Task-wide agent override');
+    keys(agentOverride, TASK_OVERRIDE_FIELDS, 'Task-wide agent override');
     const own = normalizePipelineStrategy(agentOverride);
     if (!own.agentOverride) fail('Choose the agent for a task-wide override.');
-    return { profileId: null, agentOverride: Object.fromEntries(['agentOverride', 'modelOverride', 'effortOverride', 'permissionMode'].filter(key => own[key] != null).map(key => [key, own[key]])) };
+    return { profileId: null, agentOverride: Object.fromEntries(TASK_OVERRIDE_FIELDS.filter(key => own[key] != null).map(key => [key, own[key]])) };
   }
   return { profileId, agentOverride: null };
 }
@@ -153,11 +191,49 @@ export function resolvePipelineStrategy(config, columnId, { profileId = null, ag
   const resolved = { ...PIPELINE_STRATEGY_DEFAULTS };
   for (const layer of [column.strategy, profile?.columns[columnId]]) for (const [key, value] of Object.entries(layer || {})) resolved[key] = value === null ? PIPELINE_STRATEGY_DEFAULTS[key] : value;
   if (agentOverride) {
-    keys(agentOverride, ['agentOverride', 'modelOverride', 'effortOverride', 'permissionMode'], 'Task-wide agent override');
+    keys(agentOverride, TASK_OVERRIDE_FIELDS, 'Task-wide agent override');
     const own = normalizePipelineStrategy(agentOverride);
     // Task-wide pins replace the column's agent tuple, including absent optional pins.
     for (const key of ['agentOverride', 'modelOverride', 'effortOverride', 'permissionMode']) resolved[key] = own[key] ?? PIPELINE_STRATEGY_DEFAULTS[key];
+    // Execution policy pins are sparse: an absent field keeps the column/profile value.
+    for (const key of ['interaction', 'filesystem', 'completion']) if (own[key] != null) resolved[key] = own[key];
   }
   if (column.role !== 'active') resolved.autoSpawn = false;
   return resolved;
+}
+
+/** The project-wide execution policy (Kanban settings). Missing fields use EXECUTION_DEFAULTS. */
+export function normalizeExecutionPolicy(input = {}) {
+  keys(input, ['interaction', 'filesystem', 'completion', 'maxRework', 'mergeMethod'], 'Execution policy');
+  const result = {};
+  if (input.mergeMethod != null) result.mergeMethod = choice(input.mergeMethod, ['squash', 'fast_forward'], 'merge method');
+  if (input.interaction != null) result.interaction = choice(input.interaction, INTERACTIONS, 'interaction mode');
+  if (input.filesystem != null) result.filesystem = choice(input.filesystem, FILESYSTEMS, 'workspace access');
+  if (input.completion != null) result.completion = choice(input.completion, COMPLETIONS, 'completion mode');
+  if (input.maxRework != null) {
+    if (!Number.isInteger(input.maxRework) || input.maxRework < 0 || input.maxRework > 5) fail('Allow 0 to 5 automatic rework rounds.');
+    result.maxRework = input.maxRework;
+  }
+  return result;
+}
+
+/**
+ * The one place that decides how an agent may act in a column. Precedence, most specific first:
+ * task-wide override → board profile → column → project execution policy → defaults. Planning and Review
+ * columns are always read-only, whatever any layer says. The legacy `permissionMode: 'plan'` of a custom
+ * column still means read-only when no layer chose a workspace access.
+ */
+export function resolveExecutionPolicy(config, columnId, task = {}, projectPolicy = {}) {
+  const column = config.columns.find(item => item.id === columnId);
+  if (!column) fail('The task refers to a missing column.');
+  const strategy = resolvePipelineStrategy(config, columnId, task);
+  const global = projectPolicy || {};
+  const pick = key => strategy[key] ?? global[key] ?? EXECUTION_DEFAULTS[key];
+  const source = key => strategy[key] != null ? 'column' : global[key] != null ? 'project' : 'default';
+  const kind = column.role === 'active' ? column.kind || 'custom' : null;
+  let filesystem = pick('filesystem'), filesystemSource = source('filesystem');
+  if (kind === 'planning' || kind === 'review') { filesystem = 'read_only'; filesystemSource = 'column type'; }
+  else if (kind === 'custom' && strategy.permissionMode === 'plan' && strategy.filesystem == null) { filesystem = 'read_only'; filesystemSource = 'column'; }
+  return { kind, stage: KIND_STAGES[kind] || null, interaction: pick('interaction'), filesystem, completion: pick('completion'),
+    maxRework: global.maxRework ?? EXECUTION_DEFAULTS.maxRework, sources: { interaction: source('interaction'), filesystem: filesystemSource, completion: source('completion') } };
 }

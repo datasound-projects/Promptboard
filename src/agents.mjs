@@ -29,7 +29,7 @@ const readOnlyPlanning = 'Plan only. Inspect the repository as needed, but do no
 export const STAGE_INSTRUCTIONS = Object.freeze({
   planning: `${readOnlyPlanning} Promptboard shows your final message to the user as the plan; the user must approve it before any implementation starts.`,
   code_review: `Review only. ${readOnlyPlanning.replace('Plan only. ', '').replace(' End with a numbered implementation plan, the files you expect to change, and how the result should be verified.', '')} Compare the diff below with the task requirements and acceptance criteria. Do not fix anything. End with one fenced json block: {"verdict": "no_issues" | "changes_required", "findings": [{"severity": "critical" | "high" | "medium" | "low", "file": "path", "line": 1, "explanation": "what is wrong and why"}]}.`,
-  executing: 'Start implementing the task below now.' + noPlanning + ' If an approved plan is included below, follow it; if the task text asks for a plan before implementation, skip that step and implement. Work in this working directory only. It is a dedicated Git worktree on the task branch. Do not change files outside it, do not push, and do not rewrite Git history. When you finish, summarize what changed and how you verified it. The user confirms completion in Promptboard.',
+  executing: 'Start implementing the task below now.' + noPlanning + ' If an approved plan is included below, follow it; if the task text asks for a plan before implementation, skip that step and implement. Work in this working directory only. It is a dedicated Git worktree on the task branch. Do not change files outside it, do not commit, push, or rewrite Git history: Promptboard commits your work as a checkpoint when the stage completes. When you finish, summarize what changed and how you verified it.',
   testing: 'Test the task below in this working directory only. It is a dedicated Git worktree on the task branch. Assess the execution results for this same task and run the test commands listed below (if none are listed, the project\'s usual test commands). Report failures, their causes, and missing coverage. Do not implement fixes, change production code, commit, push, merge, or rewrite Git history: fixes belong in Execute. Only Promptboard\'s independent test run (exit codes) decides whether the configured tests pass. When you finish, list the commands you ran with their results, issues found, and any files the test commands changed.' + noPlanning,
   // A column the user added. Its own instructions follow as the project stage instructions.
   custom: 'Work on the task below as the column instructions below say. Work in this working directory only. It is a dedicated Git worktree on the task branch. Do not change files outside it, do not commit, push, or rewrite Git history: Promptboard commits after the user confirms. When you finish, summarize what you did.' + noPlanning,
@@ -50,6 +50,9 @@ export const ADAPTERS = Object.freeze({
       resume: 'Captured conversation ID resumes the current stage with --resume; task text is not replayed.',
     },
     permissionModes: ['acceptEdits', 'default'],
+    // Execution policy → --permission-mode. Claude has no workspace sandbox: "auto" lets its own safety
+    // classifier approve or refuse each action without a prompt; full access skips every check.
+    policyModes: { ask: { workspace_write: 'acceptEdits', full: 'acceptEdits' }, autonomous: { workspace_write: 'auto', full: 'bypassPermissions' } },
   },
   codex: {
     name: 'Codex CLI',
@@ -64,6 +67,8 @@ export const ADAPTERS = Object.freeze({
       resume: 'Captured thread ID resumes the current stage with codex resume; task text is not replayed.',
     },
     permissionModes: ['workspace-write'],
+    // Execution policy → --sandbox; the interaction decides --ask-for-approval (on-request or never).
+    policyModes: { ask: { workspace_write: 'workspace-write', full: 'danger-full-access' }, autonomous: { workspace_write: 'workspace-write', full: 'danger-full-access' } },
   },
   gemini: {
     name: 'Gemini CLI',
@@ -80,6 +85,8 @@ export const ADAPTERS = Object.freeze({
       resume: 'Captured conversation ID resumes the current stage with --resume; task text is not replayed.',
     },
     permissionModes: ['auto_edit', 'default'],
+    // Execution policy → --approval-mode. Autonomous workspace writes run yolo inside Gemini's own sandbox (--sandbox).
+    policyModes: { ask: { workspace_write: 'auto_edit', full: 'auto_edit' }, autonomous: { workspace_write: 'yolo', full: 'yolo' } },
   },
   agy: {
     name: 'Antigravity CLI',
@@ -104,24 +111,38 @@ export function validateResumeId(value) {
   return value;
 }
 
-/** Validate a run configuration against the adapter's capabilities. */
+const INTERACTION = ['ask', 'autonomous'], FILESYSTEM = ['read_only', 'workspace_write', 'full'];
+
+/**
+ * Validate a run configuration against the adapter's capabilities. A configuration with an execution policy
+ * (`interaction` and `filesystem`, from resolveExecutionPolicy) is translated here into the CLI's own permission
+ * mode; this is the only place that maps Promptboard's generic access levels onto provider flags.
+ */
 export function resolveConfig(stage, config = {}) {
   const provider = config.provider || 'claude';
   const adapter = ADAPTERS[provider];
   if (!adapter) throw new AgentError('Choose Claude Code, Codex, or Gemini CLI.', 'INVALID_PROVIDER');
-  const pipeline = config.pipeline === true;
-  const readOnly = pipeline ? config.permissionMode === 'plan' : stage === 'planning' || stage === 'code_review';
+  const pipeline = config.pipeline === true, policy = config.filesystem != null;
+  if (policy && (!FILESYSTEM.includes(config.filesystem) || !INTERACTION.includes(config.interaction || 'ask'))) throw new AgentError('Choose a supported interaction mode and workspace access.', 'INVALID_EXECUTION_POLICY');
+  const readOnly = policy ? config.filesystem === 'read_only' : pipeline ? config.permissionMode === 'plan' : stage === 'planning' || stage === 'code_review';
   const capability = adapter.capabilities[readOnly ? 'planning' : 'execution'];
   if (!capability?.supported) throw new AgentError(`${adapter.name}: ${capability?.how || 'This stage is not supported.'}`, 'STAGE_UNSUPPORTED_BY_PROVIDER');
   const model = config.model ? String(config.model) : '';
   if (model && !SAFE_MODEL.test(model)) throw new AgentError('Use a model ID with no spaces or command flags.', 'INVALID_MODEL');
   const effort = config.effort ? String(config.effort) : '';
   try { validateEffort(provider, effort); } catch { throw new AgentError('This CLI does not support that effort setting.', 'INVALID_EFFORT'); }
+  const stageEngine = config.stageEngine === true ? { stageEngine: true } : {};
+  if (policy) {
+    const interaction = config.interaction || 'ask', filesystem = config.filesystem;
+    const permissionMode = readOnly ? 'plan' : adapter.policyModes?.[interaction]?.[filesystem];
+    if (!permissionMode) throw new AgentError(`${adapter.name} cannot run with ${interaction === 'autonomous' ? 'autonomous' : 'ask-first'} ${filesystem.replace('_', ' ')} access.`, 'EXECUTION_POLICY_UNSUPPORTED', 409);
+    return { provider, model, effort, permissionMode, interaction, filesystem, ...(pipeline ? { pipeline: true } : {}), ...stageEngine };
+  }
   const requested = config.permissionMode === 'auto' ? adapter.permissionModes[0]
     : config.permissionMode === 'approve_edit' ? (provider === 'codex' ? 'approve_edit' : 'default') : config.permissionMode;
   const permissionMode = readOnly ? 'plan' : (requested || adapter.permissionModes[0]);
   if (!readOnly && !adapter.permissionModes.includes(permissionMode)) throw new AgentError(`${adapter.name} execution supports these permission modes only: ${adapter.permissionModes.join(', ')}.`, 'INVALID_PERMISSION_MODE');
-  return { provider, model, effort, permissionMode, ...(pipeline ? { pipeline: true } : {}) };
+  return { provider, model, effort, permissionMode, ...(pipeline ? { pipeline: true } : {}), ...stageEngine };
 }
 
 /** Compose the first message: stage instructions, the exact task text, and an approved plan. */
@@ -177,7 +198,10 @@ priority = 999
 export async function buildSession({ provider, stage, config, message, runDir, eventsFile, sessionId, resumeId = null, workspacePath, nodePath = process.execPath, baseDelivery = null }) {
   if (resumeId !== null) validateResumeId(resumeId);
   const pipeline = config.pipeline === true;
-  const readOnly = !pipeline && (stage === 'planning' || stage === 'code_review');
+  // Legacy stages and the stage engine's Planning and Review columns use each CLI's strict read-only mode.
+  const stageRules = !pipeline || config.stageEngine === true;
+  const readOnly = stageRules && (stage === 'planning' || stage === 'code_review');
+  const autonomous = config.interaction === 'autonomous';
   if (pipeline && (typeof message !== 'string' || CONTROL.test(message))) throw new AgentError('Pipeline input contains terminal control characters. Edit the task, continuation, or selected Base text before starting.', 'INVALID_PIPELINE_INPUT');
   const plan = readOnly || config.permissionMode === 'plan';
   let inArgv;
@@ -207,7 +231,7 @@ export async function buildSession({ provider, stage, config, message, runDir, e
     if (readOnly) args.push('--permission-mode', 'plan', '--tools', 'Read,Grep,Glob', '--disallowedTools', 'Edit,Write,NotebookEdit,Bash,ExitPlanMode');
     else {
       args.push('--permission-mode', config.permissionMode);
-      if (!pipeline) args.push('--disallowedTools', 'EnterPlanMode,ExitPlanMode');
+      if (stageRules) args.push('--disallowedTools', 'EnterPlanMode,ExitPlanMode');
     }
     if (!readOnly && baseDelivery?.subagents && Object.keys(baseDelivery.subagents).length) {
       const agents = JSON.stringify(baseDelivery.subagents);
@@ -220,8 +244,9 @@ export async function buildSession({ provider, stage, config, message, runDir, e
     if (inArgv && message) args.push(...(resumeId ? ['--', message] : [message]));
   } else if (provider === 'codex') {
     args = [...(resumeId ? ['resume', resumeId, ...(workspacePath ? ['--cd', workspacePath] : [])] : []), '-c', `notify=[${[nodePath, HOOK_SCRIPT, eventsFile, 'codex'].map(tomlString).join(',')}]`, '--no-alt-screen'];
-    if (plan) args.push('--sandbox', 'read-only', '--ask-for-approval', pipeline ? 'on-request' : 'never');
-    else args.push('--sandbox', 'workspace-write', '--ask-for-approval', 'on-request');
+    // Read-only columns never ask (nothing to approve). Writing columns ask unless the policy is autonomous.
+    if (plan) args.push('--sandbox', 'read-only', '--ask-for-approval', pipeline && !stageRules && config.filesystem == null ? 'on-request' : 'never');
+    else args.push('--sandbox', config.permissionMode === 'danger-full-access' ? 'danger-full-access' : 'workspace-write', '--ask-for-approval', autonomous ? 'never' : 'on-request');
     if (config.model) args.push('--model', config.model);
     if (config.effort) args.push('-c', `model_reasoning_effort=${tomlString(config.effort)}`);
     for (const server of selected) {
@@ -242,7 +267,11 @@ export async function buildSession({ provider, stage, config, message, runDir, e
       const policy = `${runDir}/plan-policy.toml`;
       await writeFile(policy, GEMINI_PLAN_POLICY, { mode: 0o600 });
       args.push('--approval-mode', 'plan', '--policy', policy);
-    } else args.push('--approval-mode', config.permissionMode);
+    } else {
+      args.push('--approval-mode', config.permissionMode);
+      // Autonomous workspace access approves every tool, so Gemini's own sandbox keeps writes in the workspace.
+      if (config.permissionMode === 'yolo' && config.filesystem === 'workspace_write') args.push('--sandbox');
+    }
     if (config.model) args.push('--model', config.model);
     // Gemini expands @file references and slash commands in typed prompts. Encode them
     // as in the prompt adapter; the JSON string carries the exact text.

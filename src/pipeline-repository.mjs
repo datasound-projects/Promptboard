@@ -65,7 +65,7 @@ function document(value, local) {
   if (value.version !== 1 || !Array.isArray(value.columns) || value.columns.length > 30) invalid('Repository board configuration needs version 1 and at most 30 columns.');
   const names = new Set(), ids = new Set();
   for (const column of value.columns) {
-    keys(column, ['id', 'name', 'role', 'color', 'description', 'strategy', 'automations'], 'Repository column');
+    keys(column, ['id', 'name', 'role', 'kind', 'color', 'description', 'strategy', 'automations'], 'Repository column');
     const name = nameOf(column.name);
     if (names.has(folded(name)) || column.id !== undefined && ids.has(column.id)) invalid('Repository column names and IDs must be unique.');
     names.add(folded(name)); if (column.id !== undefined) ids.add(column.id);
