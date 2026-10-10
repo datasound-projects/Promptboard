@@ -3,6 +3,7 @@
 ## Unreleased
 
 - A queued agent held by its column's actions or a destination change no longer blocks later queued runs of other cards or projects. A free slot goes to the first run that is not held; once released, the held run starts before runs queued after it.
+- Fix: a task prompt too long for the command line is pasted only after the CLI shows it is ready (Claude and Gemini: their SessionStart hook; Codex: its first terminal title), never on a 15-second timer, so the paste and its Enter can no longer answer a startup question such as folder trust. With no sign after 60 seconds nothing is typed and the run reports `CLI_INPUT_NOT_READY`; a later sign still pastes.
 - The folder picker reports only its own Cancel as cancelled. A picker that cannot open (no display or GUI session) is skipped, and with no working picker the request fails with `PICKER_UNAVAILABLE`, so you can type the path, instead of looking as if you had cancelled.
 - **Create Kanban card** from a saved prompt deletes the new card again when the prompt's link to it cannot be saved, so a retry no longer makes a duplicate; if that also fails, `CARD_UNLINKED` names the card.
 - A board import refused for confirmation or because tasks own worktrees no longer leaves unused Base revision files in the data folder.

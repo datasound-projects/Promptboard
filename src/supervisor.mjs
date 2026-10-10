@@ -25,6 +25,13 @@ const RING_BYTES = 1024 * 1024; // Live scrollback kept per run for reconnects.
 const LOG_BYTES = 20 * 1024 * 1024; // Output log file cap per run.
 const INPUT_BYTES = 64 * 1024;
 const LINGER_MS = 30 * 60 * 1000; // Keep a finished session's output for reconnects.
+// A long initial prompt is pasted, then submitted with Enter, only after the CLI's own sign that it is past its
+// startup questions (folder trust, sign-in, setup). Elapsed time never authorizes it: a blind Enter could answer
+// such a question. Claude and Gemini run their main SessionStart hook; Codex has no such hook, but titles its
+// terminal once its session is up (a title asking for an answer is a question, not readiness).
+const INPUT_READY_SIGN = { claude: 'session-start', gemini: 'session-start', codex: 'terminal-title' };
+const INPUT_SETTLE_MS = 1500; // Let the CLI finish drawing after its sign.
+const INPUT_READY_MS = 60000; // No sign by then is reported (CLI_INPUT_NOT_READY); the paste keeps waiting for one.
 const ACTIVE = new Set(['queued', 'running', 'waiting_for_input']);
 const PREPARATION_STOPPED = Object.freeze({
   TimeoutError: { code: 'PREPARATION_TIMEOUT', reason: 'Preparing the agent session took too long, so the agent was not started. Try again.' },
@@ -274,15 +281,38 @@ export class Supervisor {
     }, 10000);
     session.watchdog.unref();
     if (session.paste) {
-      // Long prompts are pasted once the session is ready (bracketed paste keeps the text intact).
+      // Long prompts wait for the CLI's readiness sign (#inputReady); bracketed paste keeps the text intact.
       const proc = session.proc;
-      session.pasteTimer = setTimeout(() => { if (this.#ownsInitialInput(session, proc)) this.#paste(session); }, 15000);
+      session.readyDeadline = setTimeout(() => { if (session.paste && this.#ownsInitialInput(session, proc)) this.#inputNotReady(session); }, INPUT_READY_MS);
     }
+  }
+
+  /** The only path to the initial paste: the provider's own readiness sign (INPUT_READY_SIGN). */
+  #inputReady(session, sign) {
+    if (!session.paste || INPUT_READY_SIGN[session.provider] !== sign || session.pasteReadyTimer) return;
+    clearTimeout(session.readyDeadline);
+    if (session.inputNotReady) {
+      session.inputNotReady = false;
+      this.#push(session, { initialInput: { status: 'ready' } });
+      this.board.updateRun(session.runId, { lifecycle: 'events-received', errorCode: '', waitingReason: '' }).catch(() => {});
+    }
+    const proc = session.proc;
+    session.pasteReadyTimer = setTimeout(() => {
+      session.pasteReadyTimer = null; // A later sign may schedule again if this one could not paste.
+      if (this.#ownsInitialInput(session, proc)) this.#paste(session);
+    }, INPUT_SETTLE_MS);
+  }
+
+  #inputNotReady(session) {
+    session.inputNotReady = true;
+    const reason = 'The CLI has not shown that it is ready for the task prompt, so nothing was typed. It may be asking a startup question, such as whether to trust this folder. Check the terminal.';
+    this.#push(session, { initialInput: { status: 'not-ready', code: 'CLI_INPUT_NOT_READY', reason } });
+    this.board.updateRun(session.runId, { lifecycle: 'initial-input-not-ready', errorCode: 'CLI_INPUT_NOT_READY', waitingReason: reason, turnComplete: false }).catch(() => {});
   }
 
   #paste(session) {
     if (!session.paste || !this.#ownsInitialInput(session, session.proc)) return;
-    clearTimeout(session.pasteTimer);
+    clearTimeout(session.readyDeadline);
     clearTimeout(session.pasteReadyTimer);
     const proc = session.proc, nativeId = session.nativeSessionId, text = session.paste;
     session.paste = null; // An unknown write outcome must never grant another paste.
@@ -349,6 +379,7 @@ export class Supervisor {
         this.board.updateRun(session.runId, { lifecycle: 'events-received', waitingReason: '' }).catch(() => {});
       }
       if (title !== undefined) this.#terminalQuestion(session, CODEX_ASKS.test(title)).catch(() => {});
+      if (title !== undefined && !CODEX_ASKS.test(title)) this.#inputReady(session, 'terminal-title');
     }
     this.#push(session, { data });
     if (session.logBytes < LOG_BYTES) {
@@ -493,13 +524,8 @@ export class Supervisor {
       session.nativeSessionId = signal.sessionId;
     }
     if (!session.sawEvent) { session.sawEvent = true; clearTimeout(session.watchdog); await this.board.updateRun(session.runId, { lifecycle: 'events-received', waitingReason: '' }).catch(() => {}); }
-    if (signal.kind === 'started') {
-      if (session.paste) {
-        clearTimeout(session.pasteReadyTimer);
-        const proc = session.proc;
-        session.pasteReadyTimer = setTimeout(() => { if (this.#ownsInitialInput(session, proc)) this.#paste(session); }, 1500);
-      }
-    } else if (signal.kind === 'running') {
+    if (signal.kind === 'started') this.#inputReady(session, 'session-start');
+    else if (signal.kind === 'running') {
       if (session.status !== 'running') await this.#setStatus(session, 'running', { waitingReason: '', turnComplete: false });
     } else if (signal.kind === 'waiting') {
       // A permission prompt or question: the turn is not finished (Autopilot must not advance).
@@ -527,7 +553,7 @@ export class Supervisor {
   }
 
   #kill(session) {
-    clearTimeout(session.pasteTimer); clearTimeout(session.pasteReadyTimer); clearTimeout(session.initialSubmitTimer);
+    clearTimeout(session.readyDeadline); clearTimeout(session.pasteReadyTimer); clearTimeout(session.initialSubmitTimer);
     session.initialSubmitPending = false;
     session.terminalInput?.close();
     if (!session.proc) return;
@@ -541,7 +567,7 @@ export class Supervisor {
     session.exiting = true;
     clearTimeout(session.pasteReadyTimer); clearTimeout(session.initialSubmitTimer); session.initialSubmitPending = false;
     session.terminalInput?.close();
-    clearInterval(session.poll); clearInterval(session.usagePoll); clearTimeout(session.pasteTimer); clearTimeout(session.watchdog);
+    clearInterval(session.poll); clearInterval(session.usagePoll); clearTimeout(session.readyDeadline); clearTimeout(session.watchdog);
     // Read the last lifecycle events (for example a final Stop) and usage before the session closes.
     await this.#readEvents(session).catch(() => {});
     await this.#readUsage(session).catch(() => {});
@@ -598,7 +624,7 @@ export class Supervisor {
         // A human owns the input before transport, even if their write fails.
         // Startup events must never append the task to their partial draft.
         session.paste = null;
-        clearTimeout(session.pasteTimer); clearTimeout(session.pasteReadyTimer);
+        clearTimeout(session.readyDeadline); clearTimeout(session.pasteReadyTimer);
       }
       if (initialPastePending || session.initialSubmitPending) this.#initialInputUnconfirmed(session);
     }
@@ -797,7 +823,7 @@ export class Supervisor {
     if (session.cancelPromise) return session.cancelPromise;
     if (suspended) { session.suspended = true; session.suspending = true; }
     else session.cancelled = true;
-    clearTimeout(session.pasteTimer);
+    clearTimeout(session.readyDeadline);
     session.cancelPromise = (async () => {
       this.#kill(session);
       let timer;
