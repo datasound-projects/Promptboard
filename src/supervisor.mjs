@@ -105,16 +105,18 @@ export class Supervisor {
     this.pumping = (async () => {
       while (this.queue.length && !this.stopping) {
         if (this.activeCount() >= await this.limit()) break;
-        if (this.heldQueue.has(this.queue[0]?.runId)) break; // Preserve FIFO while its destination is accepted.
-        const next = this.queue.shift(); // Re-read after the await: a cancel may have emptied the queue.
-        if (!next) break;
+        // Re-read after the await: a cancel may have emptied the queue. A held entry keeps its place
+        // (it starts before later entries once released) but never blocks later runnable entries.
+        const index = this.queue.findIndex(item => !this.heldQueue.has(item.runId));
+        if (index < 0) break;
+        const [next] = this.queue.splice(index, 1);
         (this.launching ??= new Set()).add(next.runId);
         await this.#launch(next).catch(error => this.#fail(next.runId, error)).finally(() => this.launching.delete(next.runId));
       }
     })().finally(() => { this.pumping = null; });
   }
 
-  /** Keep a waiting run's FIFO slot while Board atomically retargets its configuration. */
+  /** Keep a waiting run's FIFO place while Board atomically retargets its configuration. */
   async retargetQueued(runId, accept, { hold = null } = {}) {
     const entry = this.queue.find(item => item.runId === runId);
     if (!entry || this.preparing.has(runId) || this.sessions.get(runId)?.proc) throw new AgentError('This agent is already starting. Wait for startup or pause it before changing settings.', 'RUN_STARTING', 409);
@@ -133,7 +135,7 @@ export class Supervisor {
     }
   }
 
-  /** Hold a known queued run while its column's actions finish, preserving FIFO. */
+  /** Hold a known queued run while its column's actions finish, keeping its FIFO place. */
   holdQueued(runId) {
     if (!this.queue.some(item => item.runId === runId) || this.preparing.has(runId) || this.launching?.has(runId)) throw new AgentError('This queued agent is already starting. Wait for startup before changing its automation destination.', 'RUN_STARTING', 409);
     if (this.heldQueue.has(runId)) throw new AgentError('This queued run is already changing destinations.', 'RUN_BUSY', 409);

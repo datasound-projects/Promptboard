@@ -319,7 +319,7 @@ test('real PTY activity hooks track outstanding work and native approval without
   }
 });
 
-test('queued pipeline retargeting uses the latest provider/model/Base and keeps FIFO while acceptance holds its slot', { skip: process.platform === 'win32' }, async t => {
+test('queued pipeline retargeting uses the latest provider/model/Base and keeps its FIFO place without blocking later runs', { skip: process.platform === 'win32' }, async t => {
   const w = await world(t, true), config = defaultPipelineConfig();
   config.columns.find(column => column.id === 'testing').strategy.agentOverride = 'gemini';
   Object.assign(config.columns.find(column => column.id === 'code_review').strategy, { agentOverride: 'codex', modelOverride: 'fixture-final' });
@@ -342,24 +342,23 @@ test('queued pipeline retargeting uses the latest provider/model/Base and keeps 
   const barrier = new Promise(resolve => { release = resolve; }), accepting = new Promise(resolve => { entered = resolve; });
   w.board.executor.validate = async request => { if (request.stage === 'code_review') { entered(); await barrier; } return validate(request); };
   const move = w.move(cards[1].id, 'code_review'); await accepting;
-  await w.move(cards[0].id, 'todo'); await new Promise(resolve => setTimeout(resolve, 200));
-  assert.deepEqual(w.board.executor.queue.map(entry => entry.runId), order);
-  assert.equal(w.board.executor.activeCount(), 0); assert.equal((await w.taskNow(cards[1].id)).column, 'merge');
+  // The freed slot goes to the next runnable entry; the held run keeps its place.
+  await w.move(cards[0].id, 'todo'); await until(async () => (await w.board.run(runs[2].id)).turnComplete);
+  assert.deepEqual(w.board.executor.queue.map(entry => entry.runId), [runs[1].id, runs[3].id]);
+  assert.equal(w.board.executor.sessions.has(runs[1].id), false); assert.equal((await w.taskNow(cards[1].id)).column, 'merge');
   release(); const result = await move;
   assert.equal(result.run.sessionId, sessionId); assert.equal(result.run.config.provider, 'codex'); assert.equal(result.run.config.model, 'fixture-final');
-  await until(async () => (await w.board.run(runs[1].id)).turnComplete);
+  await w.move(cards[2].id, 'todo'); await until(async () => (await w.board.run(runs[1].id)).turnComplete);
   assert.equal(w.board.executor.sessions.get(runs[1].id).provider, 'codex');
   const prompt = await readFile(join(w.dataDir, runs[1].artifactsDir, 'prompt.md'), 'utf8');
   assert.ok(prompt.startsWith(pipelineTaskEnvelope(cards[1]))); assert.match(prompt, /CURRENT DESTINATION BASE/);
   assert.equal((await w.board.state()).sessions.find(session => session.id === sessionId).provider, 'codex');
-  assert.deepEqual(w.board.executor.queue.map(entry => entry.runId), order.slice(1));
-  await w.move(cards[1].id, 'todo'); await until(async () => (await w.board.run(runs[2].id)).turnComplete);
   assert.deepEqual(w.board.executor.queue.map(entry => entry.runId), [runs[3].id]);
-  await w.move(cards[2].id, 'todo'); await until(async () => (await w.board.run(runs[3].id)).turnComplete);
+  await w.move(cards[1].id, 'todo'); await until(async () => (await w.board.run(runs[3].id)).turnComplete);
   await w.move(cards[3].id, 'todo'); assert.equal(await readFile(join(w.root, 'README.md'), 'utf8'), 'main checkout\n');
 });
 
-test('column scripts hold an actual queued agent through retargeting and run before native startup without losing FIFO', { skip: process.platform === 'win32' }, async t => {
+test('column scripts hold an actual queued agent through retargeting and run before native startup without losing its FIFO place', { skip: process.platform === 'win32' }, async t => {
   const w = await world(t, true), pipeline = defaultPipelineConfig(), worker = join(w.dataDir, 'enter-gate.mjs');
   const ready = join(w.dataDir, 'enter-ready'), release = join(w.dataDir, 'enter-release');
   await writeFile(worker, `import {writeFileSync,existsSync} from 'node:fs'; writeFileSync(${JSON.stringify(ready)},process.cwd()); setInterval(()=>{if(existsSync(${JSON.stringify(release)}))process.exit(0)},20);`);
@@ -374,17 +373,18 @@ test('column scripts hold an actual queued agent through retargeting and run bef
   }
   const moving = w.move(cards[1].id, 'code_review'); await until(() => readFile(ready, 'utf8').catch(() => null));
   assert.equal(await readFile(ready, 'utf8'), runs[1].workspacePath); assert.equal((await w.board.run(runs[1].id)).config.provider, 'gemini');
-  await w.move(cards[0].id, 'todo'); await new Promise(resolve => setTimeout(resolve, 200));
-  assert.equal(w.board.executor.activeCount(), 0); assert.deepEqual(w.board.executor.queue.map(item => item.runId), runs.slice(1).map(run => run.id));
+  // A long column script must not block the later card's run: it takes the free slot while the held run keeps its place.
+  await w.move(cards[0].id, 'todo'); await until(async () => (await w.board.run(runs[2].id)).turnComplete);
+  assert.equal(w.board.executor.activeCount(), 1); assert.deepEqual(w.board.executor.queue.map(item => item.runId), [runs[1].id]);
   assert.equal(w.board.executor.sessions.has(runs[1].id), false); await writeFile(release, 'release'); const result = await moving;
   assert.equal(result.retargetedRunId, runs[1].id); assert.equal(result.automationMove.status, 'completed');
-  await until(async () => (await w.board.run(runs[1].id)).turnComplete);
-  assert.equal(w.board.executor.sessions.get(runs[1].id).provider, 'gemini'); assert.deepEqual(w.board.executor.queue.map(item => item.runId), [runs[2].id]);
-  await w.move(cards[1].id, 'todo'); await until(async () => (await w.board.run(runs[2].id)).turnComplete); await w.move(cards[2].id, 'todo');
+  await w.move(cards[2].id, 'todo'); await until(async () => (await w.board.run(runs[1].id)).turnComplete);
+  assert.equal(w.board.executor.sessions.get(runs[1].id).provider, 'gemini'); assert.equal(w.board.executor.queue.length, 0);
+  await w.move(cards[1].id, 'todo');
   assert.equal(w.board.executor.queuedHolds.size, 0); assert.equal(w.board.automationMoves.size, 0);
 });
 
-test('opaque automation holds retain a queued FIFO slot through retargeting and cancellation', { skip: process.platform === 'win32' }, async t => {
+test('opaque automation holds retain a queued FIFO place through retargeting and cancellation', { skip: process.platform === 'win32' }, async t => {
   const w = await world(t, true); await w.configure(defaultPipelineConfig());
   const cards = [], runs = [];
   for (const title of ['Blocker', 'Held', 'Later']) {
@@ -396,16 +396,38 @@ test('opaque automation holds retain a queued FIFO slot through retargeting and 
   assert.equal(supervisor.releaseQueued(runs[1].id, {}), false);
   await assert.rejects(supervisor.retargetQueued(runs[1].id, async () => assert.fail('Forged hold accepted.'), { hold: {} }), { code: 'RUN_BUSY' });
   await supervisor.retargetQueued(runs[1].id, async () => ({ run: runs[1], payload: { ...supervisor.queue[0] } }), { hold: held });
+  // Cancel the later run while it is still queued; otherwise it would take the slot the held run cannot use.
+  const cancelledHold = supervisor.holdQueued(runs[2].id); await supervisor.cancel(runs[2].id);
+  assert.equal(supervisor.releaseQueued(runs[2].id, cancelledHold), true);
   await w.move(cards[0].id, 'todo');
   await new Promise(resolve => setTimeout(resolve, 200));
-  assert.equal(supervisor.activeCount(), 0); assert.deepEqual(supervisor.queue.map(item => item.runId), runs.slice(1).map(run => run.id));
+  assert.equal(supervisor.activeCount(), 0); assert.deepEqual(supervisor.queue.map(item => item.runId), [runs[1].id]);
   assert.equal(supervisor.releaseQueued(runs[1].id, held), true);
   assert.equal(supervisor.releaseQueued(runs[1].id, held), false);
   await until(async () => (await w.board.run(runs[1].id)).turnComplete);
-  const cancelledHold = supervisor.holdQueued(runs[2].id); await supervisor.cancel(runs[2].id);
-  assert.equal(supervisor.releaseQueued(runs[2].id, cancelledHold), true);
   await w.move(cards[1].id, 'todo'); await new Promise(resolve => setTimeout(resolve, 200));
   assert.equal(supervisor.queue.length, 0); assert.equal(supervisor.sessions.has(runs[2].id), false); assert.equal(supervisor.queuedHolds.size, 0);
+});
+
+test('a held queued run never blocks a later runnable run and still starts before runs queued after it', { skip: process.platform === 'win32' }, async t => {
+  const w = await world(t, true); await w.configure(defaultPipelineConfig());
+  const cards = [], runs = [];
+  for (const title of ['Blocker', 'Held', 'Unrelated', 'Later']) {
+    const card = await w.board.createTask({ projectId: w.projectId, title, prompt: title }); cards.push(card);
+    runs.push((await w.move(card.id, 'executing')).run);
+    if (runs.length === 1) await until(async () => (await w.board.run(runs[0].id)).turnComplete);
+  }
+  const supervisor = w.board.executor, ids = () => supervisor.queue.map(item => item.runId), hold = supervisor.holdQueued(runs[1].id);
+  await w.move(cards[0].id, 'todo');
+  await until(async () => (await w.board.run(runs[2].id)).turnComplete);
+  assert.deepEqual(ids(), [runs[1].id, runs[3].id]); assert.equal(supervisor.sessions.has(runs[1].id), false);
+  // Released while the only slot is busy, it waits without losing its place to the later run.
+  assert.equal(supervisor.releaseQueued(runs[1].id, hold), true); await new Promise(resolve => setTimeout(resolve, 200));
+  assert.equal(supervisor.activeCount(), 1); assert.deepEqual(ids(), [runs[1].id, runs[3].id]);
+  await w.move(cards[2].id, 'todo'); await until(async () => (await w.board.run(runs[1].id)).turnComplete);
+  assert.deepEqual(ids(), [runs[3].id]); assert.equal(supervisor.sessions.has(runs[3].id), false);
+  await w.move(cards[1].id, 'todo'); await until(async () => (await w.board.run(runs[3].id)).turnComplete);
+  await w.move(cards[3].id, 'todo'); assert.equal(supervisor.queuedHolds.size, 0);
 });
 
 test('a cancelled held queue entry is never resurrected by retargeting', { skip: process.platform === 'win32' }, async t => {
