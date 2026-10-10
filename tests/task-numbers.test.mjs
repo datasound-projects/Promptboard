@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Board, parseBackup } from '../src/board.mjs';
 import { Store, emptyState } from '../src/store.mjs';
-import { defaultPipelineConfig } from '../src/pipeline-config.mjs';
+import { customPipelineConfig } from './helpers/pipeline.mjs';
 
 async function world(t) {
   const dataDir = await mkdtemp(join(tmpdir(), 'pb-numbers-'));
@@ -28,7 +28,7 @@ test('concurrent Composer births, duplicates and deletion use durable project-lo
 });
 
 test('rename, reorder, archive and restore retain number; rejected creation consumes none', async t => {
-  const { board } = await world(t), project = await board.createProject({ name: 'Pipeline' }), pipeline = defaultPipelineConfig();
+  const { board } = await world(t), project = await board.createProject({ name: 'Pipeline' }), pipeline = customPipelineConfig();
   for (const column of pipeline.columns) column.strategy.autoSpawn = false;
   await board.setPipeline(project.id, { pipeline, expectedRevision: project.revision, confirm: true });
   const task = await create(board, project.id);
@@ -52,7 +52,7 @@ test('v6 state migration assigns saved order once, preserves exact original back
     ] }], extension: { retain: true } };
   const bytes = JSON.stringify(state, null, 3); await writeFile(join(dataDir, 'state.json'), bytes);
   const store = new Store(dataDir), saved = await store.read();
-  assert.equal(saved.version, 13); assert.equal(saved.revision, 19); assert.equal(saved.projects[0].nextTaskNumber, 3);
+  assert.equal(saved.version, 14); assert.equal(saved.revision, 19); assert.equal(saved.projects[0].nextTaskNumber, 3);
   for (let index = 0; index < 2; index++) assert.deepEqual(saved.projects[0].tasks[index], { ...state.projects[0].tasks[index], number: index + 1, priority: 0, labelIds: [] });
   assert.deepEqual(saved.extension, state.extension); assert.equal(await readFile(join(dataDir, store.recovery.migrationBackup), 'utf8'), bytes);
   assert.deepEqual(await new Store(dataDir).read(), saved);
@@ -61,7 +61,7 @@ test('v6 state migration assigns saved order once, preserves exact original back
 test('portable v7 backup preserves gaps and deletion counter; older backups assign order and imports remain inert', async t => {
   const { board } = await world(t), project = await board.createProject({ name: 'Source' });
   const a = await create(board, project.id), b = await create(board, project.id); await board.deleteTask(b.id, { expectedRevision: b.revision });
-  const backup = await board.exportBackup(); assert.equal(backup.version, 11); assert.equal(backup.projects[0].nextTaskNumber, 3);
+  const backup = await board.exportBackup(); assert.equal(backup.version, 12); assert.equal(backup.projects[0].nextTaskNumber, 3);
   const { board: target } = await world(t); await target.importBackup(backup);
   assert.equal((await target.state()).projects[0].tasks[0].number, a.number); assert.equal((await create(target, project.id)).number, 3);
   const old = structuredClone(backup); old.version = 3; delete old.projects[0].nextTaskNumber; delete old.projects[0].tasks[0].number;

@@ -8,7 +8,7 @@ import { JSDOM } from 'jsdom';
 import { startServer } from '../src/server.mjs';
 import { fakeGh } from './fixtures/fake-gh.mjs';
 import { VERSION } from '../src/version.mjs';
-import { defaultPipelineConfig } from '../src/pipeline-config.mjs';
+import { customPipelineConfig } from './helpers/pipeline.mjs';
 import { repositoryPipelineDefinition } from '../src/pipeline-repository.mjs';
 import { Board } from '../src/board.mjs';
 import { parseAgyModels } from '../src/models.mjs';
@@ -70,7 +70,7 @@ test('owned UI teardown closes its page and server before deleting the disposabl
 test('repository change polling preserves editor drafts and applies only after a fresh explicit review', async t => {
   const ctx = await setup(t, { executor: null, hash: '#/kanban' });
   Object.defineProperty(ctx.win.document, 'hidden', { configurable: true, value: false });
-  const { project } = await ctx.app.board.createProjectWithRepository({ name: 'Watched draft', folder: 'new' }), pipeline = defaultPipelineConfig();
+  const { project } = await ctx.app.board.createProjectWithRepository({ name: 'Watched draft', folder: 'new' }), pipeline = customPipelineConfig();
   for (const column of pipeline.columns) column.strategy.autoSpawn = false;
   await ctx.app.board.setPipeline(project.id, { pipeline, expectedRevision: project.revision, confirm: true });
   const task = await ctx.app.board.createTask({ projectId: project.id, title: 'Split', prompt: '  Exact 😀\r\n' }), team = repositoryPipelineDefinition(pipeline);
@@ -94,7 +94,7 @@ test('repository change polling preserves editor drafts and applies only after a
 test('a late repository status response cannot show another project’s warning; hidden and Compose views make no status request', async t => {
   const ctx = await setup(t, { executor: null, hash: '#/kanban' });
   Object.defineProperty(ctx.win.document, 'hidden', { configurable: true, value: false });
-  const { project } = await ctx.app.board.createProjectWithRepository({ name: 'Watch A', folder: 'new' }), pipeline = defaultPipelineConfig();
+  const { project } = await ctx.app.board.createProjectWithRepository({ name: 'Watch A', folder: 'new' }), pipeline = customPipelineConfig();
   for (const column of pipeline.columns) column.strategy.autoSpawn = false;
   await ctx.app.board.setPipeline(project.id, { pipeline, expectedRevision: project.revision, confirm: true });
   await writeFile(join(project.repository.root, 'promptboard.json'), JSON.stringify(repositoryPipelineDefinition(pipeline)));
@@ -116,7 +116,7 @@ test('a late repository status response cannot show another project’s warning;
 test('an ordinary project edit cannot start duplicate repository polls or accept a stale status result', async t => {
   const ctx = await setup(t, { executor: null, hash: '#/kanban' });
   Object.defineProperty(ctx.win.document, 'hidden', { configurable: true, value: false });
-  const { project } = await ctx.app.board.createProjectWithRepository({ name: 'Watch revision', folder: 'new' }), pipeline = defaultPipelineConfig();
+  const { project } = await ctx.app.board.createProjectWithRepository({ name: 'Watch revision', folder: 'new' }), pipeline = customPipelineConfig();
   for (const column of pipeline.columns) column.strategy.autoSpawn = false;
   await ctx.app.board.setPipeline(project.id, { pipeline, expectedRevision: project.revision, confirm: true });
   await writeFile(join(project.repository.root, 'promptboard.json'), JSON.stringify(repositoryPipelineDefinition(pipeline)));
@@ -135,7 +135,7 @@ test('an ordinary project edit cannot start duplicate repository polls or accept
 test('repository status failures are literal, preserve the saved board and clear after the source recovers', async t => {
   const ctx = await setup(t, { executor: null, hash: '#/kanban' });
   Object.defineProperty(ctx.win.document, 'hidden', { configurable: true, value: false });
-  const { project } = await ctx.app.board.createProjectWithRepository({ name: 'Watch errors', folder: 'new' }), pipeline = defaultPipelineConfig();
+  const { project } = await ctx.app.board.createProjectWithRepository({ name: 'Watch errors', folder: 'new' }), pipeline = customPipelineConfig();
   for (const column of pipeline.columns) column.strategy.autoSpawn = false;
   await ctx.app.board.setPipeline(project.id, { pipeline, expectedRevision: project.revision, confirm: true });
   const bytes = JSON.stringify(repositoryPipelineDefinition(pipeline)); await writeFile(join(project.repository.root, 'promptboard.json'), bytes);
@@ -151,7 +151,7 @@ test('repository status failures are literal, preserve the saved board and clear
 
 test('repository configuration review preserves Column Manager drafts and applies literal shared/local definitions without starting agents', async t => {
   const ctx = await setup(t, { executor: null, hash: '#/kanban' });
-  const { project } = await ctx.app.board.createProjectWithRepository({ name: 'Repository review', folder: 'new' }), pipeline = defaultPipelineConfig();
+  const { project } = await ctx.app.board.createProjectWithRepository({ name: 'Repository review', folder: 'new' }), pipeline = customPipelineConfig();
   for (const column of pipeline.columns) column.strategy.autoSpawn = false;
   await ctx.app.board.setPipeline(project.id, { pipeline, expectedRevision: project.revision, confirm: true });
   const task = await ctx.app.board.createTask({ projectId: project.id, title: 'Exact', prompt: '  Composer 😀\r\n' });
@@ -170,7 +170,7 @@ test('repository configuration review preserves Column Manager drafts and applie
 
 test('stale repository review stays visible and cannot retry with newer revisions; closing it keeps the unsaved column draft', async t => {
   const ctx = await setup(t, { executor: null, hash: '#/kanban' });
-  const { project } = await ctx.app.board.createProjectWithRepository({ name: 'Stale config', folder: 'new' }), pipeline = defaultPipelineConfig();
+  const { project } = await ctx.app.board.createProjectWithRepository({ name: 'Stale config', folder: 'new' }), pipeline = customPipelineConfig();
   for (const column of pipeline.columns) column.strategy.autoSpawn = false;
   await ctx.app.board.setPipeline(project.id, { pipeline, expectedRevision: project.revision, confirm: true });
   const team = repositoryPipelineDefinition(pipeline); await writeFile(join(project.repository.root, 'promptboard.json'), JSON.stringify(team));
@@ -190,7 +190,7 @@ test('stale repository review stays visible and cannot retry with newer revision
 });
 
 test('a pipeline revision conflict after an exit webhook never creates an automatic new move or repeats its effect', async t => {
-  const ctx = await setup(t, { executor: null, hash: '#/kanban' }), pipeline = defaultPipelineConfig();
+  const ctx = await setup(t, { executor: null, hash: '#/kanban' }), pipeline = customPipelineConfig();
   const project = await ctx.app.board.createProject({ name: 'No replay' });
   for (const column of pipeline.columns) column.strategy.autoSpawn = false;
   pipeline.columns[0].automations.onExit = [{ id: 'exit-fixture', name: 'Recorded effect', type: 'webhook', enabled: true, url: 'https://example.test/never-contacted' }];
@@ -215,7 +215,7 @@ test('a pipeline revision conflict after an exit webhook never creates an automa
 });
 
 test('pipeline action editing preserves literal definitions, validates headers, and saves without executing or losing dormant messages', async t => {
-  const ctx = await setup(t, { executor: null, hash: '#/kanban' }), pipeline = defaultPipelineConfig();
+  const ctx = await setup(t, { executor: null, hash: '#/kanban' }), pipeline = customPipelineConfig();
   const project = await ctx.app.board.createProject({ name: 'Action editor' });
   for (const column of pipeline.columns) column.strategy.autoSpawn = false;
   const savedMessage = { id: 'dormant-message', name: 'Future message', type: 'send_message', enabled: false, message: '  Preserve {{title}}\r\n', mode: 'deferred' };
@@ -275,7 +275,7 @@ test('pipeline action editing preserves literal definitions, validates headers, 
 });
 
 test('notification drafts retain literal templates, switches and independent copies without permission or dispatch', async t => {
-  const ctx = await setup(t, { executor: null, hash: '#/kanban' }), pipeline = defaultPipelineConfig();
+  const ctx = await setup(t, { executor: null, hash: '#/kanban' }), pipeline = customPipelineConfig();
   const project = await ctx.app.board.createProject({ name: 'Notification drafts' });
   for (const column of pipeline.columns) column.strategy.autoSpawn = false;
   await ctx.app.board.setPipeline(project.id, { pipeline, expectedRevision: 1, confirm: true });
@@ -301,7 +301,7 @@ test('notification drafts retain literal templates, switches and independent cop
 });
 
 test('pipeline card Stop cancels owned automation work and Details shows escaped durable results without retrying', async t => {
-  const ctx = await setup(t, { executor: null, hash: '#/kanban' }), pipeline = defaultPipelineConfig();
+  const ctx = await setup(t, { executor: null, hash: '#/kanban' }), pipeline = customPipelineConfig();
   const project = await ctx.app.board.createProject({ name: 'Scoped Stop' });
   for (const column of pipeline.columns) column.strategy.autoSpawn = false;
   const malicious = 'Pending <img src=x onerror="window.__receiptPwned=1">';

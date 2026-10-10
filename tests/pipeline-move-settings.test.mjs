@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { startTestServer } from './helpers/test-server.mjs';
-import { defaultPipelineConfig } from '../src/pipeline-config.mjs';
+import { customPipelineConfig } from './helpers/pipeline.mjs';
 
 async function setup(t, actions) {
-  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] }), project = await app.board.createProject({ name: 'Guarded restore' }), pipeline = defaultPipelineConfig();
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] }), project = await app.board.createProject({ name: 'Guarded restore' }), pipeline = customPipelineConfig();
   for (const column of pipeline.columns) column.strategy.autoSpawn = false;
   if (actions) pipeline.columns.find(column=>column.role==='done').automations.onExit = [{ id: 'disabled-row', name: 'Disabled script', type: 'run_script', enabled: false, script: 'must not run' }];
   await app.board.setPipeline(project.id, { pipeline, expectedRevision: project.revision, confirm: true });

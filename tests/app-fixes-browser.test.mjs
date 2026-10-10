@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { findChrome, launch } from './helpers/browser.mjs';
 import { pickProject, shownProject } from './helpers/projects.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
-import { defaultPipelineConfig } from '../src/pipeline-config.mjs';
+import { customPipelineConfig } from './helpers/pipeline.mjs';
 
 const chrome = await findChrome();
 
@@ -167,7 +167,7 @@ test('board refreshes keep keyboard focus and the timeline: per-project loads, o
 
 test('pipeline boards use column roles, name their columns, hide the legacy Agents button, and open Columns at a column', { skip: !chrome, timeout: 120000 }, async t => {
   const { app, browser, ev, wait } = await setup(t);
-  const pipeline = defaultPipelineConfig();
+  const pipeline = customPipelineConfig();
   for (const column of pipeline.columns) column.strategy.autoSpawn = false;
   Object.assign(pipeline.columns[0], { id: 'inbox', name: 'Inbox' }); pipeline.columns.at(-1).id = 'shipped';
   const project = await app.board.createProject({ name: 'Roles' }), old = await app.board.createProject({ name: 'Old board' });

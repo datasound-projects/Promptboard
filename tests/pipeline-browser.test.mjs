@@ -5,13 +5,13 @@ import { join } from 'node:path';
 import { findChrome, launch } from './helpers/browser.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
 import { attachSession } from '../src/sessions.mjs';
-import { defaultPipelineConfig } from '../src/pipeline-config.mjs';
+import { customPipelineConfig } from './helpers/pipeline.mjs';
 import { repositoryPipelineDefinition } from '../src/pipeline-repository.mjs';
 
 const chrome = await findChrome();
 test('external repository changes show a keyboard review banner across themes and widths without changing the board or an open draft', { skip: !chrome, timeout: 90000 }, async t => {
   const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
-  const { project } = await app.board.createProjectWithRepository({ name: 'Watched browser', folder: 'new' }), pipeline = defaultPipelineConfig();
+  const { project } = await app.board.createProjectWithRepository({ name: 'Watched browser', folder: 'new' }), pipeline = customPipelineConfig();
   for (const column of pipeline.columns) column.strategy.autoSpawn = false;
   await app.board.setPipeline(project.id, { pipeline, expectedRevision: project.revision, confirm: true });
   const task = await app.board.createTask({ projectId: project.id, title: 'Exact Composer split', prompt: '  Original 😀\r\n' }), team = repositoryPipelineDefinition(pipeline), bytes = JSON.stringify(team);
@@ -71,7 +71,7 @@ test('external repository changes show a keyboard review banner across themes an
 
 test('repository board review works by keyboard in both themes and narrow Chrome without running agents', { skip: !chrome, timeout: 90000 }, async t => {
   const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
-  const { project } = await app.board.createProjectWithRepository({ name: 'Config browser', folder: 'new' }), pipeline = defaultPipelineConfig();
+  const { project } = await app.board.createProjectWithRepository({ name: 'Config browser', folder: 'new' }), pipeline = customPipelineConfig();
   for (const column of pipeline.columns) column.strategy.autoSpawn = false;
   await app.board.setPipeline(project.id, { pipeline, expectedRevision: project.revision, confirm: true });
   const task = await app.board.createTask({ projectId: project.id, title: 'Exact Composer', prompt: '  Literal 😀\r\n' }), team = repositoryPipelineDefinition(pipeline);
@@ -122,7 +122,7 @@ test('repository board review works by keyboard in both themes and narrow Chrome
 });
 
 test('automation editing, Stop and receipt history work by keyboard in light/dark and desktop/narrow Chrome', { skip: !chrome, timeout: 90000 }, async t => {
-  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] }), pipeline = defaultPipelineConfig();
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] }), pipeline = customPipelineConfig();
   const project = await app.board.createProject({ name: 'Actions UI' });
   for (const column of pipeline.columns) column.strategy.autoSpawn = false;
   await app.board.setPipeline(project.id, { pipeline, expectedRevision: 1, confirm: true });
@@ -297,7 +297,7 @@ test('column pipeline conversion and editing work by keyboard in both themes and
 });
 
 test('board profiles and task agent choices work by keyboard in both themes and narrow Chrome without starting agents', { skip: !chrome, timeout: 90000 }, async t => {
-  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] }), pipeline = defaultPipelineConfig();
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] }), pipeline = customPipelineConfig();
   const project = await app.board.createProject({ name: 'Profile browser' }); for (const column of pipeline.columns) column.strategy.autoSpawn = false;
   pipeline.columns[2].strategy.modelOverride = 'column-pin';
   pipeline.columns[2].automations.onEnter = [{ id: 'shared', name: 'Shared alert', type: 'notify', enabled: false, title: '{{title}}', body: 'Literal body' }];

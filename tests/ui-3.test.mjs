@@ -8,7 +8,7 @@ import { JSDOM } from 'jsdom';
 import { startServer } from '../src/server.mjs';
 import { fakeGh } from './fixtures/fake-gh.mjs';
 import { VERSION } from '../src/version.mjs';
-import { defaultPipelineConfig } from '../src/pipeline-config.mjs';
+import { customPipelineConfig } from './helpers/pipeline.mjs';
 import { repositoryPipelineDefinition } from '../src/pipeline-repository.mjs';
 import { Board } from '../src/board.mjs';
 import { parseAgyModels } from '../src/models.mjs';
@@ -838,7 +838,7 @@ test('Base saves a linked wiki and official MCP preset, then groups them in a pa
 });
 
 test('board profile editor shares structure and automations, retains sparse values, and saves task choices without changing exact prompts', async t => {
-  const ctx = await setup(t, { executor: null, hash: '#/kanban' }), pipeline = defaultPipelineConfig();
+  const ctx = await setup(t, { executor: null, hash: '#/kanban' }), pipeline = customPipelineConfig();
   const project = await ctx.app.board.createProject({ name: 'Profiles UI' });
   for (const column of pipeline.columns) column.strategy.autoSpawn = false;
   pipeline.columns[2].strategy.modelOverride = 'column-pin';
@@ -878,7 +878,7 @@ test('board profile editor shares structure and automations, retains sparse valu
 });
 
 test('board profile task drafts retain choices on stale revisions and legacy cards keep the original editor', async t => {
-  const ctx = await setup(t, { executor: null, hash: '#/kanban' }), pipeline = defaultPipelineConfig();
+  const ctx = await setup(t, { executor: null, hash: '#/kanban' }), pipeline = customPipelineConfig();
   const project = await ctx.app.board.createProject({ name: 'Stale profiles' });
   for (const column of pipeline.columns) column.strategy.autoSpawn = false;
   pipeline.profiles = [{ id: 'profile', name: 'Profile', columns: {} }]; await ctx.app.board.setPipeline(project.id, { pipeline, expectedRevision: 1, confirm: true });

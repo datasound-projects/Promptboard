@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { Board, projectColumns, projectTransitions } from '../src/board.mjs';
 import { Store, emptyState, STATE_VERSION } from '../src/store.mjs';
 import { attachSession } from '../src/sessions.mjs';
-import { defaultPipelineConfig } from '../src/pipeline-config.mjs';
+import { customPipelineConfig } from './helpers/pipeline.mjs';
 import { pipelineTaskEnvelope } from '../src/pipeline-templates.mjs';
 import { buildSession, resolveConfig } from '../src/agents.mjs';
 import { Supervisor } from '../src/supervisor.mjs';
@@ -45,7 +45,7 @@ test('a long Composer prompt is pasted and submitted once in a real owned PTY wi
   const fake = fileURLToPath(new URL('./fixtures/fake-initial-prompt.cjs', import.meta.url));
   w.board.executor = new Supervisor({ board: w.board, dataDir: w.dataDir, resolver: async () => ({ command: process.execPath, prefix: [fake] }) });
   t.after(() => w.board.executor.shutdown(500));
-  const config = defaultPipelineConfig(); for (const column of config.columns) column.strategy.autoSpawn = false; config.columns[2].strategy.autoSpawn = true; config.columns[2].strategy.agentOverride = 'claude';
+  const config = customPipelineConfig(); for (const column of config.columns) column.strategy.autoSpawn = false; config.columns[2].strategy.autoSpawn = true; config.columns[2].strategy.agentOverride = 'claude';
   await w.configure(config);
   const skill = await w.board.base.create({ kind: 'skill', name: 'Initial Base instruction', enabled: true, trust: 'trusted', content: { body: 'BASE_INITIAL_LITERAL' }, configuration: {} });
   const mcp = await w.board.base.create({ kind: 'mcp', name: 'Initial Base tool', enabled: true, trust: 'trusted', configuration: { transport: 'stdio', command: process.execPath, args: ['--version'] } });
@@ -65,7 +65,7 @@ test('a long Composer prompt is pasted and submitted once in a real owned PTY wi
 test('pipeline process privately observes actual PTY modes and manual input, closes on Done and starts fresh on native resume', { skip: process.platform === 'win32' }, async t => {
   const w = await world(t, true);
   for (const provider of ['claude', 'gemini', 'codex']) {
-    const config = defaultPipelineConfig(); config.columns[2].strategy.agentOverride = provider; await w.configure(config);
+    const config = customPipelineConfig(); config.columns[2].strategy.agentOverride = provider; await w.configure(config);
     const task = await w.board.createTask({ projectId: w.projectId, title: `${provider} private terminal observation`, prompt: '  Exact Composer\r\n' });
     const first = await w.move(task.id, 'executing'); await until(async () => (await w.board.run(first.run.id)).turnComplete);
     const session = w.board.executor.sessions.get(first.run.id), observed = session.terminalInput;
@@ -98,7 +98,7 @@ test('v4 migration preserves logical conversations byte-for-byte and assigns leg
 });
 
 test('conversion is explicit and inert; role IDs control Composer entry and unrestricted moves; unsupported actions fail visibly', async t => {
-  const w = await world(t), config = defaultPipelineConfig();
+  const w = await world(t), config = customPipelineConfig();
   await assert.rejects(w.board.setPipeline(w.projectId, { expectedRevision: 3 }), { code: 'CONFIRMATION_REQUIRED' });
   config.columns[0].id = 'inbox'; config.columns.at(-1).id = 'archive';
   for (const column of config.columns) column.strategy.autoSpawn = false;
@@ -128,7 +128,7 @@ test('conversion is explicit and inert; role IDs control Composer entry and unre
 });
 
 test('a title-only pipeline task starts with its escaped title envelope and inherited CLI tools, without filling its stored description', async t => {
-  const w = await world(t); await w.configure(defaultPipelineConfig());
+  const w = await world(t); await w.configure(customPipelineConfig());
   const task = await w.board.createTask({ projectId: w.projectId, title: 'Fix <widget> & 😀' }); assert.equal(w.starts.length, 0);
   await w.move(task.id, 'executing'); assert.equal(w.starts.length, 1);
   const payload = w.starts[0]; assert.equal(payload.task.prompt, ''); assert.equal(payload.firstPrompt, '<task>\n  <title>Fix &lt;widget&gt; &amp; 😀</title>\n</task>');
@@ -138,7 +138,7 @@ test('a title-only pipeline task starts with its escaped title envelope and inhe
 });
 
 test('compatible live moves retain one run without completing, committing, testing, merging, or replaying a prompt', async t => {
-  const w = await world(t); await w.configure(defaultPipelineConfig());
+  const w = await world(t); await w.configure(customPipelineConfig());
   w.board.delivery.commit = w.board.delivery.prepareMergeRun = w.board.delivery.testingContext = () => assert.fail('A column name must not perform a delivery action.');
   const card = await w.board.createTask({ projectId: w.projectId, title: 'Feature', prompt: 'Exact Composer task' });
   const first = await w.move(card.id, 'executing'); const sessionId = first.run.sessionId;
@@ -162,10 +162,10 @@ test('compatible live moves retain one run without completing, committing, testi
 });
 
 test('pipeline backups preserve structure and Base scopes but restore with dispatch disabled and no machine sessions', async t => {
-  const w = await world(t), config = defaultPipelineConfig(); config.columns[2].name = 'Build'; await w.configure(config);
+  const w = await world(t), config = customPipelineConfig(); config.columns[2].name = 'Build'; await w.configure(config);
   const card = await w.board.createTask({ projectId: w.projectId, title: 'Saved split task', prompt: '  CRLF\r\nexact  ' });
   await w.move(card.id, 'testing', { decision: 'move' });
-  const backup = await w.board.exportBackup(); assert.equal(backup.version, 11);
+  const backup = await w.board.exportBackup(); assert.equal(backup.version, 12);
   const other = new Board({ dataDir: await temp(t), executor: { start() { assert.fail('Import must not execute.'); } } });
   await other.importBackup(backup);
   const saved = (await other.state()).projects[0]; assert.equal(saved.workflowMode, 'pipeline'); assert.equal(saved.pipeline.columns[2].name, 'Build');
@@ -189,7 +189,7 @@ test('pipeline CLI modes depend on configured permissions rather than column nam
 });
 
 test('pipeline Planning and Review deliver selected Base MCPs, retain stable assignments, and block incompatible live changes', async t => {
-  const w = await world(t); await w.configure(defaultPipelineConfig());
+  const w = await world(t); await w.configure(customPipelineConfig());
   const mcp = await w.board.base.create({ kind: 'mcp', name: 'Selected native tool', enabled: true, trust: 'trusted', configuration: { transport: 'stdio', command: process.execPath, args: ['--version'] } });
   await w.board.base.apply({ changes: [{ target: { scope: 'project', projectId: w.projectId }, binding: { mode: 'extend', include: [{ resourceId: mcp.id, required: true }], exclude: [] } }], expectedBaseRevision: (await w.board.state()).base.revision });
   for (const columnId of ['planning', 'code_review']) {
@@ -220,7 +220,7 @@ test('pipeline input rejects terminal escape sequences before argv or bracketed-
 });
 
 test('an edit during asynchronous run validation cannot launch an obsolete Composer prompt', async t => {
-  const w = await world(t); await w.configure(defaultPipelineConfig());
+  const w = await world(t); await w.configure(customPipelineConfig());
   const card = await w.board.createTask({ projectId: w.projectId, title: 'Race', prompt: 'Original task' });
   const validate = w.board.executor.validate; let release, entered;
   const waiting = new Promise(resolve => { release = resolve; }), started = new Promise(resolve => { entered = resolve; });
@@ -235,7 +235,7 @@ test('an edit during asynchronous run validation cannot launch an obsolete Compo
 test('real PTY simulated providers use a silent first envelope, keep the live process across columns and resume Done without replay', { skip: process.platform === 'win32' }, async t => {
   const w = await world(t, true);
   for (const provider of ['claude', 'codex', 'gemini']) {
-    const config = defaultPipelineConfig(); for (const column of config.columns.filter(item => item.role === 'active')) column.strategy.agentOverride = provider;
+    const config = customPipelineConfig(); for (const column of config.columns.filter(item => item.role === 'active')) column.strategy.agentOverride = provider;
     await w.configure(config);
     const card = await w.board.createTask({ projectId: w.projectId, title: `${provider} task`, prompt: '  Exact task {{title}}\r\ncode  \r\n' });
     const first = await w.move(card.id, 'executing'); await until(async () => (await w.board.run(first.run.id)).turnComplete);
@@ -261,7 +261,7 @@ test('real PTY activity hooks track outstanding work and native approval without
     return updateRun(id, fields);
   };
   for (const provider of ['claude', 'gemini']) {
-    const config = defaultPipelineConfig(); for (const column of config.columns.filter(item => item.role === 'active')) column.strategy.agentOverride = provider;
+    const config = customPipelineConfig(); for (const column of config.columns.filter(item => item.role === 'active')) column.strategy.agentOverride = provider;
     await w.configure(config);
     const card = await w.board.createTask({ projectId: w.projectId, title: 'Activity', prompt: 'ACTIVITY_FIXTURE' });
     const { run } = await w.move(card.id, 'executing');
@@ -320,7 +320,7 @@ test('real PTY activity hooks track outstanding work and native approval without
 });
 
 test('queued pipeline retargeting uses the latest provider/model/Base and keeps its FIFO place without blocking later runs', { skip: process.platform === 'win32' }, async t => {
-  const w = await world(t, true), config = defaultPipelineConfig();
+  const w = await world(t, true), config = customPipelineConfig();
   config.columns.find(column => column.id === 'testing').strategy.agentOverride = 'gemini';
   Object.assign(config.columns.find(column => column.id === 'code_review').strategy, { agentOverride: 'codex', modelOverride: 'fixture-final' });
   await w.configure(config);
@@ -359,7 +359,7 @@ test('queued pipeline retargeting uses the latest provider/model/Base and keeps 
 });
 
 test('column scripts hold an actual queued agent through retargeting and run before native startup without losing its FIFO place', { skip: process.platform === 'win32' }, async t => {
-  const w = await world(t, true), pipeline = defaultPipelineConfig(), worker = join(w.dataDir, 'enter-gate.mjs');
+  const w = await world(t, true), pipeline = customPipelineConfig(), worker = join(w.dataDir, 'enter-gate.mjs');
   const ready = join(w.dataDir, 'enter-ready'), release = join(w.dataDir, 'enter-release');
   await writeFile(worker, `import {writeFileSync,existsSync} from 'node:fs'; writeFileSync(${JSON.stringify(ready)},process.cwd()); setInterval(()=>{if(existsSync(${JSON.stringify(release)}))process.exit(0)},20);`);
   const shellQuote = text => `'${text.replaceAll("'", "'\\''")}'`;
@@ -385,7 +385,7 @@ test('column scripts hold an actual queued agent through retargeting and run bef
 });
 
 test('opaque automation holds retain a queued FIFO place through retargeting and cancellation', { skip: process.platform === 'win32' }, async t => {
-  const w = await world(t, true); await w.configure(defaultPipelineConfig());
+  const w = await world(t, true); await w.configure(customPipelineConfig());
   const cards = [], runs = [];
   for (const title of ['Blocker', 'Held', 'Later']) {
     const card = await w.board.createTask({ projectId: w.projectId, title, prompt: title }); cards.push(card);
@@ -410,7 +410,7 @@ test('opaque automation holds retain a queued FIFO place through retargeting and
 });
 
 test('a held queued run never blocks a later runnable run and still starts before runs queued after it', { skip: process.platform === 'win32' }, async t => {
-  const w = await world(t, true); await w.configure(defaultPipelineConfig());
+  const w = await world(t, true); await w.configure(customPipelineConfig());
   const cards = [], runs = [];
   for (const title of ['Blocker', 'Held', 'Unrelated', 'Later']) {
     const card = await w.board.createTask({ projectId: w.projectId, title, prompt: title }); cards.push(card);
@@ -431,7 +431,7 @@ test('a held queued run never blocks a later runnable run and still starts befor
 });
 
 test('a cancelled held queue entry is never resurrected by retargeting', { skip: process.platform === 'win32' }, async t => {
-  const w = await world(t, true), config = defaultPipelineConfig();
+  const w = await world(t, true), config = customPipelineConfig();
   config.columns.find(column => column.id === 'testing').strategy.agentOverride = 'gemini'; await w.configure(config);
   const first = await w.board.createTask({ projectId: w.projectId, title: 'Blocker', prompt: 'Stay live' });
   const blocker = (await w.move(first.id, 'executing')).run; await until(async () => (await w.board.run(blocker.id)).turnComplete);
@@ -449,7 +449,7 @@ test('a cancelled held queue entry is never resurrected by retargeting', { skip:
 });
 
 test('a run already preparing rejects retargeting without changing its card or accepted configuration', { skip: process.platform === 'win32' }, async t => {
-  const w = await world(t, true), config = defaultPipelineConfig();
+  const w = await world(t, true), config = customPipelineConfig();
   config.columns.find(column => column.id === 'testing').strategy.agentOverride = 'gemini'; await w.configure(config);
   const prepare = w.board.executor.basePreparer; let release, entered;
   const barrier = new Promise(resolve => { release = resolve; }), preparing = new Promise(resolve => { entered = resolve; });
@@ -462,7 +462,7 @@ test('a run already preparing rejects retargeting without changing its card or a
 });
 
 test('queued native resumes retain the exact conversation and apply new flags/Base without task replay; provider handoff stays guarded', { skip: process.platform === 'win32' }, async t => {
-  const w = await world(t, true), config = defaultPipelineConfig();
+  const w = await world(t, true), config = customPipelineConfig();
   Object.assign(config.columns.find(column => column.id === 'code_review').strategy, { modelOverride: 'resume-fixture', permissionMode: 'default' });
   config.columns.find(column => column.id === 'merge').strategy.agentOverride = 'gemini'; await w.configure(config);
   const skill = await w.board.base.create({ kind: 'skill', name: 'Resume destination', content: { body: 'RESUME DESTINATION INSTRUCTIONS' } });
@@ -487,7 +487,7 @@ test('queued native resumes retain the exact conversation and apply new flags/Ba
 });
 
 test('manual pipeline columns park queued and live sessions; explicit Start resumes captured context', { skip: process.platform === 'win32' }, async t => {
-  const w = await world(t, true), config = defaultPipelineConfig(); config.columns.find(column => column.id === 'testing').strategy.autoSpawn = false; await w.configure(config);
+  const w = await world(t, true), config = customPipelineConfig(); config.columns.find(column => column.id === 'testing').strategy.autoSpawn = false; await w.configure(config);
   const first = await w.board.createTask({ projectId: w.projectId, title: 'Live', prompt: 'Keep my conversation' });
   const live = (await w.move(first.id, 'executing')).run; await until(async () => (await w.board.run(live.id)).turnComplete);
   const second = await w.board.createTask({ projectId: w.projectId, title: 'Queued', prompt: 'Keep my prompt' });
@@ -508,7 +508,7 @@ test('manual pipeline columns park queued and live sessions; explicit Start resu
 test('live model/permission/Base changes wait for observed work to settle and resume the exact conversation without task replay', { skip: process.platform === 'win32' }, async t => {
   const w = await world(t, true);
   for (const provider of ['claude', 'codex', 'gemini']) {
-    const config = defaultPipelineConfig();
+    const config = customPipelineConfig();
     for (const column of config.columns.filter(item => item.role === 'active')) column.strategy.agentOverride = provider;
     Object.assign(config.columns.find(column => column.id === 'code_review').strategy, { modelOverride: 'boundary-fixture', permissionMode: 'plan' });
     await w.configure(config);
@@ -547,7 +547,7 @@ test('live model/permission/Base changes wait for observed work to settle and re
 });
 
 test('a boundary timeout never kills a permission wait or a partially entered prompt, even if persisted activity says ready', { skip: process.platform === 'win32' }, async t => {
-  const w = await world(t, true), config = defaultPipelineConfig(); config.columns[3].strategy.modelOverride = 'boundary-fixture'; await w.configure(config);
+  const w = await world(t, true), config = customPipelineConfig(); config.columns[3].strategy.modelOverride = 'boundary-fixture'; await w.configure(config);
   const suspend = w.board.executor.suspendAtBoundary.bind(w.board.executor);
   w.board.executor.suspendAtBoundary = (id, options) => suspend(id, { ...options, timeoutMs: 350 });
   for (const input of ['activity-plan-request\r', 'partially typed prompt']) {
@@ -572,7 +572,7 @@ test('a boundary timeout never kills a permission wait or a partially entered pr
 });
 
 test('new native work during pause-intent persistence revokes the lease and waits again before signalling', { skip: process.platform === 'win32' }, async t => {
-  const w = await world(t, true), config = defaultPipelineConfig(); config.columns[3].strategy.modelOverride = 'boundary-fixture'; await w.configure(config);
+  const w = await world(t, true), config = customPipelineConfig(); config.columns[3].strategy.modelOverride = 'boundary-fixture'; await w.configure(config);
   const card = await w.board.createTask({ projectId: w.projectId, title: 'Lease', prompt: 'ACTIVITY_FIXTURE' });
   const original = (await w.move(card.id, 'executing')).run; await until(async () => (await w.board.run(original.id)).activity?.ready);
   const owned = w.board.executor.sessions.get(original.id), pid = owned.proc.pid;
@@ -598,7 +598,7 @@ test('new native work during pause-intent persistence revokes the lease and wait
 });
 
 test('edits after pause-intent persistence fail the final guard without killing the original agent or moving the card', { skip: process.platform === 'win32' }, async t => {
-  const w = await world(t, true), config = defaultPipelineConfig(); config.columns[3].strategy.modelOverride = 'boundary-fixture'; await w.configure(config);
+  const w = await world(t, true), config = customPipelineConfig(); config.columns[3].strategy.modelOverride = 'boundary-fixture'; await w.configure(config);
   const card = await w.board.createTask({ projectId: w.projectId, title: 'Edit race', prompt: 'ACTIVITY_FIXTURE' });
   const original = (await w.move(card.id, 'executing')).run; await until(async () => (await w.board.run(original.id)).activity?.ready);
   const owned = w.board.executor.sessions.get(original.id), pid = owned.proc.pid, begin = w.board.beginSuspension.bind(w.board);
@@ -615,7 +615,7 @@ test('edits after pause-intent persistence fail the final guard without killing 
 });
 
 test('an explicit Pause during asynchronous destination validation cancels the handoff and preserves user pause intent', { skip: process.platform === 'win32' }, async t => {
-  const w = await world(t, true), config = defaultPipelineConfig(); config.columns[3].strategy.modelOverride = 'boundary-fixture'; await w.configure(config);
+  const w = await world(t, true), config = customPipelineConfig(); config.columns[3].strategy.modelOverride = 'boundary-fixture'; await w.configure(config);
   const card = await w.board.createTask({ projectId: w.projectId, title: 'Pause wins', prompt: 'ACTIVITY_FIXTURE' });
   const original = (await w.move(card.id, 'executing')).run; await until(async () => (await w.board.run(original.id)).activity?.ready);
   const validate = w.board.executor.validate.bind(w.board.executor); let release;
@@ -631,7 +631,7 @@ test('an explicit Pause during asynchronous destination validation cancels the h
 });
 
 test('Stop cancels a busy boundary wait promptly without creating a replacement conversation', { skip: process.platform === 'win32' }, async t => {
-  const w = await world(t, true), config = defaultPipelineConfig(); config.columns[3].strategy.modelOverride = 'boundary-fixture'; await w.configure(config);
+  const w = await world(t, true), config = customPipelineConfig(); config.columns[3].strategy.modelOverride = 'boundary-fixture'; await w.configure(config);
   const card = await w.board.createTask({ projectId: w.projectId, title: 'Stop wins', prompt: 'ACTIVITY_FIXTURE' });
   const original = (await w.move(card.id, 'executing')).run; await until(async () => (await w.board.run(original.id)).activity?.ready);
   w.board.executor.input(original.id, 'activity-start\r'); await until(async () => (await w.board.run(original.id)).activity?.background === 1);
@@ -644,7 +644,7 @@ test('Stop cancels a busy boundary wait promptly without creating a replacement 
 });
 
 test('Pause after the system process has exited cancels resume and records a user pause', { skip: process.platform === 'win32' }, async t => {
-  const w = await world(t, true), config = defaultPipelineConfig(); config.columns[3].strategy.modelOverride = 'boundary-fixture'; await w.configure(config);
+  const w = await world(t, true), config = customPipelineConfig(); config.columns[3].strategy.modelOverride = 'boundary-fixture'; await w.configure(config);
   const card = await w.board.createTask({ projectId: w.projectId, title: 'Exit race', prompt: 'ACTIVITY_FIXTURE' });
   const original = (await w.move(card.id, 'executing')).run; await until(async () => (await w.board.run(original.id)).activity?.ready);
   const update = w.board.updateRun.bind(w.board); let exited, release;
@@ -663,7 +663,7 @@ test('Pause after the system process has exited cancels resume and records a use
 });
 
 test('partial or malformed native events cannot reuse an old completed turn to authorize a live restart', { skip: process.platform === 'win32' }, async t => {
-  const w = await world(t, true), config = defaultPipelineConfig(); config.columns[3].strategy.modelOverride = 'boundary-fixture'; await w.configure(config);
+  const w = await world(t, true), config = customPipelineConfig(); config.columns[3].strategy.modelOverride = 'boundary-fixture'; await w.configure(config);
   const suspend = w.board.executor.suspendAtBoundary.bind(w.board.executor);
   w.board.executor.suspendAtBoundary = (id, options) => suspend(id, { ...options, timeoutMs: 350 });
   for (const suffix of ['', '\n']) {
@@ -687,7 +687,7 @@ test('partial or malformed native events cannot reuse an old completed turn to a
 });
 
 test('Pause can cancel replacement validation after the system suspension without waiting for CLI discovery', { skip: process.platform === 'win32' }, async t => {
-  const w = await world(t, true), config = defaultPipelineConfig(); config.columns[3].strategy.modelOverride = 'boundary-fixture'; await w.configure(config);
+  const w = await world(t, true), config = customPipelineConfig(); config.columns[3].strategy.modelOverride = 'boundary-fixture'; await w.configure(config);
   const card = await w.board.createTask({ projectId: w.projectId, title: 'Resume discovery', prompt: 'ACTIVITY_FIXTURE' });
   const original = (await w.move(card.id, 'executing')).run; await until(async () => (await w.board.run(original.id)).activity?.ready);
   const validate = w.board.executor.validate.bind(w.board.executor); let calls = 0, release;
@@ -701,7 +701,7 @@ test('Pause can cancel replacement validation after the system suspension withou
 });
 
 test('Pause or Stop during atomic replacement publication prevents queueing and follows only the same logical conversation', { skip: process.platform === 'win32' }, async t => {
-  const w = await world(t, true), config = defaultPipelineConfig(); config.columns[3].strategy.modelOverride = 'boundary-fixture'; await w.configure(config);
+  const w = await world(t, true), config = customPipelineConfig(); config.columns[3].strategy.modelOverride = 'boundary-fixture'; await w.configure(config);
   for (const action of ['pause', 'stop', 'shutdown']) {
     const card = await w.board.createTask({ projectId: w.projectId, title: 'Publication race', prompt: 'ACTIVITY_FIXTURE' });
     const original = (await w.move(card.id, 'executing')).run; await until(async () => (await w.board.run(original.id)).activity?.ready);
@@ -728,7 +728,7 @@ test('Pause or Stop during atomic replacement publication prevents queueing and 
 });
 
 test('a title edit during post-suspension validation cannot accept a stale requested move or launch a replacement', { skip: process.platform === 'win32' }, async t => {
-  const w = await world(t, true), config = defaultPipelineConfig(); config.columns[3].strategy.modelOverride = 'boundary-fixture'; await w.configure(config);
+  const w = await world(t, true), config = customPipelineConfig(); config.columns[3].strategy.modelOverride = 'boundary-fixture'; await w.configure(config);
   const card = await w.board.createTask({ projectId: w.projectId, title: 'Old title', prompt: 'ACTIVITY_FIXTURE' });
   const original = (await w.move(card.id, 'executing')).run; await until(async () => (await w.board.run(original.id)).activity?.ready);
   const validate = w.board.executor.validate.bind(w.board.executor); let calls = 0, release;
@@ -745,7 +745,7 @@ test('a title edit during post-suspension validation cannot accept a stale reque
 test('native approved plans move immediately while implementation continues; requests/rejections never route and no prompt is injected', { skip: process.platform === 'win32' }, async t => {
   const w = await world(t, true);
   for (const provider of ['claude', 'gemini']) {
-    const config = defaultPipelineConfig(); for (const column of config.columns.filter(item => item.role === 'active')) column.strategy.agentOverride = provider;
+    const config = customPipelineConfig(); for (const column of config.columns.filter(item => item.role === 'active')) column.strategy.agentOverride = provider;
     config.columns.find(column => column.id === 'planning').strategy.modelOverride = 'native-current-model';
     await w.configure(config);
     const card = await w.board.createTask({ projectId: w.projectId, title: 'Native plan', prompt: 'ACTIVITY_FIXTURE ORIGINAL PLANNING INPUT' });
@@ -783,7 +783,7 @@ test('native approved plans move immediately while implementation continues; req
 test('batched main session startup prevents stale approval routing while a fresh native approval still routes', { skip: process.platform === 'win32' }, async t => {
   const w = await world(t, true);
   for (const provider of ['claude', 'gemini']) {
-    const config = defaultPipelineConfig();
+    const config = customPipelineConfig();
     for (const column of config.columns.filter(item => item.role === 'active')) column.strategy.agentOverride = provider;
     await w.configure(config);
     const card = await w.board.createTask({ projectId: w.projectId, title: 'New native lifecycle', prompt: 'ACTIVITY_FIXTURE' });
@@ -809,7 +809,7 @@ test('batched main session startup prevents stale approval routing while a fresh
 test('live pipeline sessions: a partial human draft and actual teardown revoke native messages without typing automation input', { skip: process.platform === 'win32' }, async t => {
   const w = await world(t, true);
   for (const provider of ['claude', 'gemini']) {
-    const config = defaultPipelineConfig();
+    const config = customPipelineConfig();
     for (const column of config.columns.filter(item => item.role === 'active')) column.strategy.agentOverride = provider;
     await w.configure(config);
     const card = await w.board.createTask({ projectId: w.projectId, title: 'Receipt custody', prompt: 'ACTIVITY_FIXTURE' });
@@ -831,7 +831,7 @@ test('live pipeline sessions: a partial human draft and actual teardown revoke n
 });
 
 test('native plan targets follow the task profile, null targets stay put, and successful re-entry enables another approved stage', { skip: process.platform === 'win32' }, async t => {
-  const w = await world(t, true), config = defaultPipelineConfig();
+  const w = await world(t, true), config = customPipelineConfig();
   config.profiles = [{ id: 'profile-plan', name: 'Custom planning', columns: { planning: { planExitTargetId: 'testing' } } }];
   config.columns.find(column => column.id === 'testing').strategy.planExitTargetId = 'merge'; await w.configure(config);
   const card = await w.board.createTask({ projectId: w.projectId, title: 'Profile target', prompt: 'ACTIVITY_FIXTURE' });
@@ -852,7 +852,7 @@ test('native plan targets follow the task profile, null targets stay put, and su
 });
 
 test('approved-plan model changes defer until work settles and use a resume-only continuation without replaying task text', { skip: process.platform === 'win32' }, async t => {
-  const w = await world(t, true), config = defaultPipelineConfig(); config.columns.find(column => column.id === 'executing').strategy.modelOverride = 'approved-model'; await w.configure(config);
+  const w = await world(t, true), config = customPipelineConfig(); config.columns.find(column => column.id === 'executing').strategy.modelOverride = 'approved-model'; await w.configure(config);
   const card = await w.board.createTask({ projectId: w.projectId, title: 'Model handoff', prompt: 'ACTIVITY_FIXTURE ORIGINAL PLAN BODY' });
   const original = (await w.move(card.id, 'planning')).run; await until(async () => (await w.board.run(original.id)).activity?.ready);
   const owned = w.board.executor.sessions.get(original.id), pid = owned.proc.pid, nativeId = (await w.board.run(original.id)).providerSessionId;
@@ -869,7 +869,7 @@ test('approved-plan model changes defer until work settles and use a resume-only
 });
 
 test('Codex\'s "Action Required" title is a question: the run waits for you, and answering it is not a draft', { skip: process.platform === 'win32' }, async t => {
-  const w = await world(t, true), config = defaultPipelineConfig();
+  const w = await world(t, true), config = customPipelineConfig();
   for (const column of config.columns.filter(item => item.role === 'active')) column.strategy.agentOverride = 'codex';
   await w.configure(config);
   const card = await w.board.createTask({ projectId: w.projectId, title: 'Codex asks', prompt: 'CODEX_QUESTION task' });
@@ -886,7 +886,7 @@ test('Codex\'s "Action Required" title is a question: the run waits for you, and
 });
 
 test('an approved plan whose turn goes on implementing it waits past the move budget, and another move of the card cancels that wait', { skip: process.platform === 'win32' }, async t => {
-  const w = await world(t, true), config = defaultPipelineConfig(); config.columns.find(column => column.id === 'executing').strategy.modelOverride = 'approved-model'; await w.configure(config);
+  const w = await world(t, true), config = customPipelineConfig(); config.columns.find(column => column.id === 'executing').strategy.modelOverride = 'approved-model'; await w.configure(config);
   const suspend = w.board.executor.suspendAtBoundary.bind(w.board.executor);
   w.board.executor.suspendAtBoundary = (id, options) => suspend(id, { ...options, timeoutMs: 300 });
   for (const ending of ['finish', 'move']) {
@@ -910,7 +910,7 @@ test('an approved plan whose turn goes on implementing it waits past the move bu
 });
 
 test('approval observation persistence retries before routing; incompatible providers fail once without replacing the conversation', { skip: process.platform === 'win32' }, async t => {
-  const w = await world(t, true), config = defaultPipelineConfig(); config.columns.find(column => column.id === 'executing').strategy.agentOverride = 'gemini'; await w.configure(config);
+  const w = await world(t, true), config = customPipelineConfig(); config.columns.find(column => column.id === 'executing').strategy.agentOverride = 'gemini'; await w.configure(config);
   const card = await w.board.createTask({ projectId: w.projectId, title: 'Persist approval', prompt: 'ACTIVITY_FIXTURE' });
   const original = (await w.move(card.id, 'planning')).run; await until(async () => (await w.board.run(original.id)).activity?.ready);
   const owned = w.board.executor.sessions.get(original.id), pid = owned.proc.pid, update = w.board.updateRun.bind(w.board); let rejected = false, calls = 0;
@@ -930,7 +930,7 @@ test('approval observation persistence retries before routing; incompatible prov
 
 test('Pause cancels automatic routing before boundary registration, while Stop cannot resurrect a stopped run', { skip: process.platform === 'win32' }, async t => {
   for (const action of ['pause', 'stop', 'shutdown']) {
-    const w = await world(t, true), config = defaultPipelineConfig(); config.columns.find(column => column.id === 'executing').strategy.modelOverride = 'next-model'; await w.configure(config);
+    const w = await world(t, true), config = customPipelineConfig(); config.columns.find(column => column.id === 'executing').strategy.modelOverride = 'next-model'; await w.configure(config);
     const card = await w.board.createTask({ projectId: w.projectId, title: action, prompt: 'ACTIVITY_FIXTURE' });
     const original = (await w.move(card.id, 'planning')).run; await until(async () => (await w.board.run(original.id)).activity?.ready);
     const update = w.board.updateRun.bind(w.board); let release;
@@ -954,7 +954,7 @@ test('Pause cancels automatic routing before boundary registration, while Stop c
 
 test('a new native plan entry or exit request invalidates a pending approved-plan handoff without stopping work', { skip: process.platform === 'win32' }, async t => {
   for (const provider of ['claude', 'gemini']) for (const command of ['activity-enter-plan', 'activity-plan-request']) {
-    const w = await world(t, true), config = defaultPipelineConfig();
+    const w = await world(t, true), config = customPipelineConfig();
     for (const column of config.columns.filter(item => item.role === 'active')) column.strategy.agentOverride = provider;
     config.columns.find(column => column.id === 'executing').strategy.modelOverride = 'next-model'; await w.configure(config);
     const card = await w.board.createTask({ projectId: w.projectId, title: 'Superseded plan', prompt: 'ACTIVITY_FIXTURE' });
@@ -970,7 +970,7 @@ test('a new native plan entry or exit request invalidates a pending approved-pla
 });
 
 test('an uncertain final plan-route save is never replayed and restart interrupts the durable pending marker even for an ended run', { skip: process.platform === 'win32' }, async t => {
-  const w = await world(t, true); await w.configure(defaultPipelineConfig());
+  const w = await world(t, true); await w.configure(customPipelineConfig());
   const card = await w.board.createTask({ projectId: w.projectId, title: 'Unknown outcome', prompt: 'ACTIVITY_FIXTURE' });
   const original = (await w.move(card.id, 'planning')).run; await until(async () => (await w.board.run(original.id)).activity?.ready);
   const update = w.board.updateRun.bind(w.board);
@@ -988,14 +988,14 @@ test('an uncertain final plan-route save is never replayed and restart interrupt
 });
 
 test('stale task approval is recorded as ignored and Codex turn completion cannot route a plan', { skip: process.platform === 'win32' }, async t => {
-  const w = await world(t, true); await w.configure(defaultPipelineConfig());
+  const w = await world(t, true); await w.configure(customPipelineConfig());
   const card = await w.board.createTask({ projectId: w.projectId, title: 'Edited task', prompt: 'ACTIVITY_FIXTURE' });
   const original = (await w.move(card.id, 'planning')).run; await until(async () => (await w.board.run(original.id)).activity?.ready);
   await w.board.updateTask(card.id, { prompt: 'ACTIVITY_FIXTURE EDITED', expectedRevision: (await w.taskNow(card.id)).revision });
   w.board.executor.input(original.id, 'activity-plan-approve\r');
   await until(async () => (await w.board.run(original.id)).planRoutes?.at(-1)?.status === 'ignored');
   assert.equal((await w.taskNow(card.id)).column, 'planning'); assert.match((await w.board.run(original.id)).planRoutes[0].reason, /task changed/i); await w.move(card.id, 'todo');
-  const config = defaultPipelineConfig(); config.columns.find(column => column.id === 'planning').strategy.agentOverride = 'codex'; await w.configure(config);
+  const config = customPipelineConfig(); config.columns.find(column => column.id === 'planning').strategy.agentOverride = 'codex'; await w.configure(config);
   const codexCard = await w.board.createTask({ projectId: w.projectId, title: 'Codex native limit', prompt: 'ACTIVITY_FIXTURE' });
   const codex = (await w.move(codexCard.id, 'planning')).run; await until(async () => (await w.board.run(codex.id)).activity?.ready);
   w.board.executor.input(codex.id, 'activity-plan-approve\r'); await until(async () => (await w.board.run(codex.id)).activity?.ready);
@@ -1005,7 +1005,7 @@ test('stale task approval is recorded as ignored and Codex turn completion canno
 });
 
 test('an approved-plan target with auto-start off parks the native conversation without launching or injecting a continuation', { skip: process.platform === 'win32' }, async t => {
-  const w = await world(t, true), config = defaultPipelineConfig(); config.columns.find(column => column.id === 'executing').strategy.autoSpawn = false; await w.configure(config);
+  const w = await world(t, true), config = customPipelineConfig(); config.columns.find(column => column.id === 'executing').strategy.autoSpawn = false; await w.configure(config);
   const card = await w.board.createTask({ projectId: w.projectId, title: 'Manual destination', prompt: 'ACTIVITY_FIXTURE' });
   const original = (await w.move(card.id, 'planning')).run; await until(async () => (await w.board.run(original.id)).activity?.ready);
   w.board.executor.input(original.id, 'activity-plan-approve-working\r');
@@ -1017,7 +1017,7 @@ test('an approved-plan target with auto-start off parks the native conversation 
 });
 
 test('board profiles save exclusive task settings without changing Composer bytes or starting agents, and drive an explicit arrival', async t => {
-  const w = await world(t), config = defaultPipelineConfig();
+  const w = await world(t), config = customPipelineConfig();
   config.profiles = [{ id: 'economy', name: 'Economy', columns: { executing: { agentOverride: 'codex', modelOverride: 'profile-model', effortOverride: 'high', autoSpawn: false } } }];
   await w.configure(config);
   const mcp = await w.board.base.create({ kind: 'mcp', name: 'Profile tools', enabled: true, trust: 'trusted', configuration: { transport: 'stdio', command: process.execPath, args: ['--version'] } });
@@ -1041,7 +1041,7 @@ test('board profiles save exclusive task settings without changing Composer byte
 });
 
 test('board profiles reject stale, foreign, conflicting or unsafe task choices atomically', async t => {
-  const w = await world(t), config = defaultPipelineConfig(); config.profiles = [{ id: 'p', name: 'Profile', columns: {} }]; await w.configure(config);
+  const w = await world(t), config = customPipelineConfig(); config.profiles = [{ id: 'p', name: 'Profile', columns: {} }]; await w.configure(config);
   const card = await w.board.createTask({ projectId: w.projectId, title: 'Exact', prompt: '  Exact\r\n' });
   const projectRevision = (await w.projectNow()).revision, before = structuredClone(await w.board.state());
   for (const pipelineSettings of [{ profileId: 'missing' }, { profileId: 'p', agentOverride: { agentOverride: 'codex' } }, { agentOverride: { agentOverride: 'claude', permissionMode: 'yolo' } }, { agentOverride: { agentOverride: 'codex', modelOverride: '--flag' } }, { autoSpawn: true }]) {
@@ -1055,7 +1055,7 @@ test('board profiles reject stale, foreign, conflicting or unsafe task choices a
 });
 
 test('board profiles keep active runs and automation ownership unchanged and allow future pins only after pause', async t => {
-  const w = await world(t); await w.configure(defaultPipelineConfig());
+  const w = await world(t); await w.configure(customPipelineConfig());
   const card = await w.board.createTask({ projectId: w.projectId, title: 'Pinned', prompt: 'Original' }), started = await w.move(card.id, 'executing');
   const save = () => w.board.updateTask(card.id, { pipelineSettings: { agentOverride: { agentOverride: 'codex' } }, expectedRevision: (w.board.store.state.projects[0].tasks.find(task => task.id === card.id)).revision, expectedProjectRevision: w.board.store.state.projects[0].revision });
   await assert.rejects(save(), { code: 'RUN_ACTIVE' }); await w.board.updateRun(started.run.id, { status: 'suspended' });
@@ -1066,7 +1066,7 @@ test('board profiles keep active runs and automation ownership unchanged and all
 });
 
 test('board profiles rename stable choices and deletion returns tasks to Default without invalidating their text or Base', async t => {
-  const w = await world(t), config = defaultPipelineConfig();
+  const w = await world(t), config = customPipelineConfig();
   for (const column of config.columns) column.strategy.autoSpawn = false;
   config.profiles = [{ id: 'profile', name: 'Before', columns: { executing: { modelOverride: 'pinned' } } }]; await w.configure(config);
   const card = await w.board.createTask({ projectId: w.projectId, title: 'Profile task', prompt: '  Keep exact\r\n', pipelineSettings: { profileId: 'profile' }, expectedProjectRevision: (await w.projectNow()).revision });
@@ -1079,11 +1079,11 @@ test('board profiles rename stable choices and deletion returns tasks to Default
 });
 
 test('board profiles and whole-task pins round-trip through v5 backups without sessions or imported dispatch', async t => {
-  const w = await world(t), config = defaultPipelineConfig(); config.profiles = [{ id: 'p', name: 'Portable', columns: { planning: { permissionMode: null }, executing: { agentOverride: 'codex' } } }]; await w.configure(config);
+  const w = await world(t), config = customPipelineConfig(); config.profiles = [{ id: 'p', name: 'Portable', columns: { planning: { permissionMode: null }, executing: { agentOverride: 'codex' } } }]; await w.configure(config);
   const rev = (await w.projectNow()).revision, prompt = '  Portable 😀\r\n{{title}} ';
   await w.board.createTask({ projectId: w.projectId, title: 'Profile', prompt, pipelineSettings: { profileId: 'p' }, expectedProjectRevision: rev });
   await w.board.createTask({ projectId: w.projectId, title: 'Pin', prompt, pipelineSettings: { agentOverride: { agentOverride: 'claude', modelOverride: 'custom', effortOverride: 'max', permissionMode: 'default' } }, expectedProjectRevision: rev });
-  const backup = await w.board.exportBackup(); assert.equal(backup.version, 11); assert.equal(backup.projects[0].tasks[0].profileId, 'p');
+  const backup = await w.board.exportBackup(); assert.equal(backup.version, 12); assert.equal(backup.projects[0].tasks[0].profileId, 'p');
   const imported = new Board({ dataDir: await temp(t) }); await imported.importBackup(backup, { replace: true });
   const project = (await imported.state()).projects[0]; assert.equal(project.tasks[0].profileId, 'p'); assert.deepEqual(project.tasks[1].agentOverride, backup.projects[0].tasks[1].agentOverride);
   assert.equal(project.tasks[1].prompt, prompt); assert.equal(project.tasks[1].workspace, null); assert.deepEqual((await imported.state()).sessions, []);
@@ -1097,7 +1097,7 @@ test('board profiles and whole-task pins round-trip through v5 backups without s
 test('board profiles apply actual native launch flags and paused same-provider changes resume context without replaying Composer or Base', { skip: process.platform === 'win32' }, async t => {
   const report = join(await temp(t), 'profile-launches.jsonl'), previous = process.env.FAKE_AGENT_REPORT;
   process.env.FAKE_AGENT_REPORT = report; t.after(() => { if (previous === undefined) delete process.env.FAKE_AGENT_REPORT; else process.env.FAKE_AGENT_REPORT = previous; });
-  const w = await world(t, true), config = defaultPipelineConfig(); for (const column of config.columns) column.strategy.autoSpawn = false;
+  const w = await world(t, true), config = customPipelineConfig(); for (const column of config.columns) column.strategy.autoSpawn = false;
   config.profiles = [{ id: 'p', name: 'Native profile', columns: { executing: { agentOverride: 'claude', modelOverride: 'profile-one', effortOverride: 'low', permissionMode: 'default', autoSpawn: true } } }]; await w.configure(config);
   const mcp = await w.board.base.create({ kind: 'mcp', name: 'Native profile tool', enabled: true, trust: 'trusted', configuration: { transport: 'stdio', command: process.execPath, args: ['--version'] } });
   await w.board.base.apply({ changes: [{ target: { scope: 'project', projectId: w.projectId }, binding: { mode: 'extend', include: [{ resourceId: mcp.id, required: true }], exclude: [] } }], expectedBaseRevision: (await w.board.state()).base.revision });

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { customPipelineConfig } from './helpers/pipeline.mjs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -42,7 +43,7 @@ test('invalid priorities reject create, edit and portable import without state c
     await assert.rejects(board.updateTask(task.id, { priority, expectedRevision: task.revision }), { code: 'INVALID_TASK_PRIORITY' });
   }
   assert.deepEqual(await board.state(), state);
-  const backup = await board.exportBackup(); assert.equal(backup.version, 11);
+  const backup = await board.exportBackup(); assert.equal(backup.version, 12);
   const imported = new Board({ dataDir: await directory(t) }); await imported.importBackup(backup);
   const restored = await imported.state(); assert.deepEqual(restored.projects[0].tasks.map(row => row.priority), [0, 1, 2, 3, 4]); assert.deepEqual(restored.runs, []);
   const bad = structuredClone(backup); bad.projects[0].tasks[0].priority = 'urgent';
@@ -57,12 +58,12 @@ test('version 8 migration adds None without altering task identities, revisions,
     tasks: [{ id: 't', number: 11, prompt: '  Exact\r\n雪', revision: 7, contentRevision: 4, column: 'todo', extension: { retained: true },
       pendingAutomationMessages: [{ projectId: 'p', taskId: 't', transitionId: 'owned' }] }] }] };
   const bytes = JSON.stringify(original, null, 2); await writeFile(join(dir, 'state.json'), bytes);
-  const store = new Store(dir), saved = await store.read(); assert.equal(saved.version, 13); assert.equal(saved.revision, 33);
+  const store = new Store(dir), saved = await store.read(); assert.equal(saved.version, 14); assert.equal(saved.revision, 33);
   assert.deepEqual(saved.projects, original.projects.map(project => ({ ...project, labels: [], labelRevision: 0, tasks: project.tasks.map(task => ({ ...task, priority: 0, labelIds: [] })) })));
-  assert.deepEqual(saved.extension, original.extension); assert.deepEqual(saved.migrations.map(row => row.kind), ['state-v8-to-v9', 'state-v9-to-v10', 'state-v10-to-v11', 'state-v11-to-v12', 'state-v12-to-v13']);
+  assert.deepEqual(saved.extension, original.extension); assert.deepEqual(saved.migrations.map(row => row.kind), ['state-v8-to-v9', 'state-v9-to-v10', 'state-v10-to-v11', 'state-v11-to-v12', 'state-v12-to-v13', 'state-v13-to-v14']);
   assert.equal(await readFile(join(dir, store.recovery.migrationBackup), 'utf8'), bytes);
   assert.deepEqual(await new Store(dir).read(), saved);
-  const newer = JSON.stringify({ ...original, version: 14 }); const futureDir = await directory(t); await writeFile(join(futureDir, 'state.json'), newer);
+  const newer = JSON.stringify({ ...original, version: 15 }); const futureDir = await directory(t); await writeFile(join(futureDir, 'state.json'), newer);
   await assert.rejects(new Store(futureDir).read(), { code: 'STATE_VERSION_UNSUPPORTED' }); assert.equal(await readFile(join(futureDir, 'state.json'), 'utf8'), newer);
 });
 
@@ -80,7 +81,7 @@ test('authenticated HTTP priority authoring advertises support and rejects unaut
 });
 
 test('common manual column moves, archive and restore retain priority without turning metadata into task text', async t => {
-  const { board, project } = await world(t), pipeline = structuredClone(project.pipeline);
+  const { board, project } = await world(t), pipeline = customPipelineConfig();
   for (const column of pipeline.columns) column.strategy.autoSpawn = false;
   await board.setPipeline(project.id, { pipeline, expectedRevision: project.revision, confirm: true });
   const task = await board.createTask({ projectId: project.id, title: 'Retained urgent task', prompt: '  Exact\r\n', priority: 4 });

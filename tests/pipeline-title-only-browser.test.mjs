@@ -5,10 +5,10 @@ import { join } from 'node:path';
 import { findChrome, launch } from './helpers/browser.mjs';
 import { pickProject } from './helpers/projects.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
-import { defaultPipelineConfig } from '../src/pipeline-config.mjs';
+import { customPipelineConfig } from './helpers/pipeline.mjs';
 
 test('title-only pipeline cards save by keyboard across themes/widths and refine their title in Composer; legacy bodies stay required', { skip: !await findChrome(), timeout: 90000 }, async t => {
-  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] }), pipeline = defaultPipelineConfig();
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] }), pipeline = customPipelineConfig();
   for (const column of pipeline.columns) column.strategy.autoSpawn = false;
   pipeline.columns[0].id = 'inbox';
   const project = await app.board.createProject({ name: 'Title-only' }), legacy = await app.board.createProject({ name: 'Legacy' });

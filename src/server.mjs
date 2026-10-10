@@ -167,6 +167,8 @@ async function boardRoute(board, req, res, pathname, searchParams, origin) {
     if (method === 'POST' && action === 'autopilot') { const { action: command, confirm } = await body(); return view({ project: await board.controlAutopilot(id, { action: command, confirm }) }); }
     if (method === 'PATCH' && action === 'columns') return view({ project: await board.setColumns(id, await body()) });
     if (method === 'PATCH' && action === 'pipeline') return view({ project: await board.setPipeline(id, await body()) });
+    if (method === 'PATCH' && action === 'execution') return view({ project: await board.setExecutionPolicy(id, await body()) });
+    if (method === 'POST' && action === 'full-autopilot') return view({ project: await board.applyFullAutopilot(id, await body()) });
     if (method === 'GET' && action === 'repository-pipeline') return send(res, 200, await board.previewRepositoryPipeline(id));
     if (method === 'GET' && action === 'repository-pipeline-status') return send(res, 200, await board.repositoryPipelineStatus(id));
     if (method === 'POST' && action === 'repository-pipeline') {
@@ -197,7 +199,13 @@ async function boardRoute(board, req, res, pathname, searchParams, origin) {
       await supervisor.cancel(id);
       return view({ run: await board.run(id) });
     }
-    if (method === 'POST' && action === 'confirm') { await body(); await supervisor.confirm(id); return view({ run: await board.run(id) }); }
+    if (method === 'POST' && action === 'confirm') {
+      await body();
+      // A typed pipeline column completes through the stage engine (plan check, checkpoint, verdict, tests).
+      const run = await board.run(id);
+      if (run.stageKind) await board.completeStage(run.taskId, { runId: id }); else await supervisor.confirm(id);
+      return view({ run: await board.run(id) });
+    }
     if (method === 'POST' && action === 'pause') return view({ run: await board.pauseRun(id, await body()) });
   } else {
     if (method === 'PATCH' && !action) return view(await board.updateTask(id, await body()));
@@ -215,7 +223,10 @@ async function boardRoute(board, req, res, pathname, searchParams, origin) {
     if (method === 'GET' && action === 'automations') return send(res, 200, { moves: await board.automationRuns(id) });
     if (method === 'POST' && action === 'cancel-automations') return view({ task: await board.cancelAutomationMove(id, await body()) });
     if (method === 'POST' && action === 'merge-now') { await body(); return view(await board.mergeNow(id)); }
-    if (method === 'POST' && action === 'start-over') { const { expectedRevision, reason, startExecuting } = await body(); return view(await board.startOver(id, { expectedRevision, reason, startExecuting: startExecuting === true })); }
+    if (method === 'POST' && action === 'start-over') { const { expectedRevision, reason, startExecuting, confirm } = await body(); return view(await board.startOver(id, { expectedRevision, reason, startExecuting: startExecuting === true, confirm: confirm === true })); }
+    if (method === 'POST' && action === 'restart-sessions') { const { expectedRevision } = await body(); return view({ task: await board.restartTaskSessions(id, { expectedRevision }) }); }
+    if (method === 'POST' && action === 'restore-worktree') { await body(); await board.restoreTaskWorktree(id); return view({ task: (await board.state()).projects.flatMap(project => project.tasks).find(task => task.id === id) }); }
+    if (method === 'POST' && action === 'complete-stage') { const { runId } = await body(); return view(await board.completeStage(id, { runId })); }
     if (method === 'POST' && action === 'reopen') return view({ task: await board.reopenTask(id, await body()) });
     if (method === 'POST' && action === 'duplicate') { await body(); return view({ task: await board.duplicateTask(id) }); }
     if (method === 'POST' && action === 'prerequisites') return view({ task: await board.clearPrerequisite(id, await body()) });

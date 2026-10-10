@@ -196,7 +196,7 @@ test('evidence gates: reviewed = tested = HEAD; failed tests go back with their 
   assert.deepEqual(card.transitions.map(move => move.to), ['executing', 'code_review', 'executing', 'code_review', 'testing', 'executing', 'code_review', 'testing', 'merge', 'done']);
 });
 
-test('the task worktree is verified before each stage: a deleted folder is rebuilt from the branch; a switched or deleted branch stops with the reason', { skip, timeout: 60000 }, async t => {
+test('the task worktree is verified before each stage: a deleted folder stops the move until an explicit restore; a switched or deleted branch stops with the reason', { skip, timeout: 60000 }, async t => {
   const w = await world(t);
   await w.board.setWorkflow(w.project.id, { workflow: { executing: { policy: 'manual' }, code_review: { policy: 'manual' } }, expectedRevision: await w.revision() });
   const task = await w.board.createTask({ projectId: w.project.id, title: 'Repair', prompt: 'x' });
@@ -204,14 +204,18 @@ test('the task worktree is verified before each stage: a deleted folder is rebui
   const ws = await w.board.ensureTaskWorktree(task.id);
   await writeFile(join(ws.path, 'kept.txt'), 'kept\n');
   await w.board.delivery.commit(task.id, { message: 'kept', confirm: true });
-  // Deleted folder: rebuilt from the task branch; the commit is there.
+  // Deleted folder: never recreated silently. The move fails closed; an explicit restore rebuilds it from the branch.
   await rm(ws.path, { recursive: true, force: true });
-  await w.go(task.id, 'code_review');
+  await assert.rejects(w.go(task.id, 'code_review'), { code: 'WORKTREE_MISSING', message: /Restore worktree/ });
+  assert.equal((await w.current(task.id)).column, 'executing');
+  await assert.rejects(readFile(join(ws.path, 'kept.txt'), 'utf8'), { code: 'ENOENT' }, 'Nothing recreated the folder on its own.');
+  await w.board.restoreTaskWorktree(task.id);
   assert.equal(await readFile(join(ws.path, 'kept.txt'), 'utf8'), 'kept\n');
   assert.ok((await w.current(task.id)).workspace.recoveredAt);
+  await w.go(task.id, 'code_review');
   // Switched branch: refused, nothing changed.
   git(ws.path, 'switch', '-q', '-c', 'elsewhere');
-  await assert.rejects(w.go(task.id, 'executing'), { code: 'BRANCH_MISMATCH', message: /git switch/ });
+  await assert.rejects(w.go(task.id, 'executing'), { code: 'WORKTREE_BRANCH_MISMATCH', message: /git switch/ });
   assert.equal(git(ws.path, 'branch', '--show-current'), 'elsewhere');
   git(ws.path, 'switch', '-q', ws.branch);
   // Folder and branch both deleted: the commits cannot be found, so Promptboard stops and explains.

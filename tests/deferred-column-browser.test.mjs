@@ -4,14 +4,14 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { findChrome, launch } from './helpers/browser.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
-import { defaultPipelineConfig } from '../src/pipeline-config.mjs';
+import { customPipelineConfig } from './helpers/pipeline.mjs';
 import { resolveConfig } from '../src/agents.mjs';
 
 const chrome = await findChrome();
 test('column message editor saves deferred rows and stops pending delivery across themes and widths', { skip: !chrome, timeout: 90000 }, async t => {
   const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
   const { project } = await app.board.createProjectWithRepository({ name: 'Messages UI', folder: 'new' });
-  const pipeline = defaultPipelineConfig();
+  const pipeline = customPipelineConfig();
   for (const column of pipeline.columns) if (column.role === 'active') column.strategy.agentOverride = 'claude';
   await app.board.setPipeline(project.id, { pipeline, expectedRevision: project.revision, confirm: true });
   const task = await app.board.createTask({ projectId: project.id, title: 'Exact Composer split', prompt: '  Original\r\n雪' });

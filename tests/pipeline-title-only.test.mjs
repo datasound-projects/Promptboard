@@ -4,12 +4,12 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Board } from '../src/board.mjs';
-import { defaultPipelineConfig } from '../src/pipeline-config.mjs';
+import { customPipelineConfig } from './helpers/pipeline.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
 
 async function directory(t) { const path = await mkdtemp(join(tmpdir(), 'pb-title-only-')); t.after(() => rm(path, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })); return path; }
 async function fixture(t) {
-  const dataDir = await directory(t), board = new Board({ dataDir }), project = await board.createProject({ name: 'Title-only pipeline' }), pipeline = defaultPipelineConfig();
+  const dataDir = await directory(t), board = new Board({ dataDir }), project = await board.createProject({ name: 'Title-only pipeline' }), pipeline = customPipelineConfig();
   for (const column of pipeline.columns) column.strategy.autoSpawn = false;
   pipeline.columns[0].id = 'inbox';
   await board.setPipeline(project.id, { pipeline, expectedRevision: project.revision, confirm: true });
@@ -54,7 +54,7 @@ test('empty pipeline descriptions survive editing, copy, restart and inert porta
 });
 
 test('authenticated task authoring accepts a pipeline title without a body and still rejects unauthorized and invalid input', async t => {
-  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] }), project = await app.board.createProject({ name: 'API pipeline' }), pipeline = defaultPipelineConfig();
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] }), project = await app.board.createProject({ name: 'API pipeline' }), pipeline = customPipelineConfig();
   for (const column of pipeline.columns) column.strategy.autoSpawn = false;
   await app.board.setPipeline(project.id, { pipeline, expectedRevision: project.revision, confirm: true });
   const { token, capabilities } = await (await fetch(`${app.url}/api/session`)).json();

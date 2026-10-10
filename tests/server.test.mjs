@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import http from 'node:http';
 import { startTestServer } from './helpers/test-server.mjs';
 import { emptyState, STATE_VERSION } from '../src/store.mjs';
-import { defaultPipelineConfig } from '../src/pipeline-config.mjs';
+import { customPipelineConfig } from './helpers/pipeline.mjs';
 import { repositoryPipelineDefinition } from '../src/pipeline-repository.mjs';
 
 const detector = async () => [{ id: 'codex', name: 'Codex', available: true, version: 'test fixture' }];
@@ -176,7 +176,7 @@ test('automation history and scoped Stop require authentication, expose receipts
   const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
   const { token } = await fetch(app.url + '/api/session').then(response => response.json());
   const headers = { 'content-type': 'application/json', 'x-ste-token': token };
-  const project = await app.board.createProject({ name: 'Offline actions' }), pipeline = defaultPipelineConfig();
+  const project = await app.board.createProject({ name: 'Offline actions' }), pipeline = customPipelineConfig();
   for (const column of pipeline.columns) column.strategy.autoSpawn = false;
   pipeline.columns[3].automations.onEnter = [{ id: 'fixture-webhook', name: 'Local fixture', type: 'webhook', enabled: true,
     url: 'https://example.test/PRIVATE_ENDPOINT', body: 'PRIVATE_BODY', headers: { Authorization: 'PRIVATE_TOKEN' } }];
@@ -216,7 +216,7 @@ test('background server polling migrates only its disposable test data without a
 test('task pipeline settings require local authentication and exact revisions, and never execute on save', async t => {
   const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
   const { token } = await fetch(app.url + '/api/session').then(response => response.json());
-  const project = await app.board.createProject({ name: 'Task settings' }), pipeline = defaultPipelineConfig();
+  const project = await app.board.createProject({ name: 'Task settings' }), pipeline = customPipelineConfig();
   pipeline.profiles = [{ id: 'profile', name: 'Profile', columns: {} }];
   await app.board.setPipeline(project.id, { pipeline, expectedRevision: 1, confirm: true });
   const task = await app.board.createTask({ projectId: project.id, title: 'Exact', prompt: '  Exact Composer\r\n' });
@@ -234,7 +234,7 @@ test('task pipeline settings require local authentication and exact revisions, a
 test('repository change status is authenticated, contains no definition text and never applies or starts work', async t => {
   const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
   const { token } = await fetch(`${app.url}/api/session`).then(response => response.json());
-  const { project } = await app.board.createProjectWithRepository({ name: 'Watched files', folder: 'new' }), pipeline = defaultPipelineConfig();
+  const { project } = await app.board.createProjectWithRepository({ name: 'Watched files', folder: 'new' }), pipeline = customPipelineConfig();
   for (const column of pipeline.columns) column.strategy.autoSpawn = false;
   await app.board.setPipeline(project.id, { pipeline, expectedRevision: project.revision, confirm: true });
   await writeFile(join(project.repository.root, 'promptboard.json'), JSON.stringify(repositoryPipelineDefinition(pipeline)));
@@ -253,7 +253,7 @@ test('repository change status is authenticated, contains no definition text and
 test('repository board review and apply enforce authentication, local origin, reviewed revisions and confirmation', async t => {
   const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
   const { token } = await fetch(app.url + '/api/session').then(response => response.json());
-  const { project } = await app.board.createProjectWithRepository({ name: 'Config fixture', folder: 'new' }), pipeline = defaultPipelineConfig();
+  const { project } = await app.board.createProjectWithRepository({ name: 'Config fixture', folder: 'new' }), pipeline = customPipelineConfig();
   for (const column of pipeline.columns) column.strategy.autoSpawn = false;
   await app.board.setPipeline(project.id, { pipeline, expectedRevision: project.revision, confirm: true });
   await writeFile(join(project.repository.root, 'promptboard.json'), JSON.stringify(repositoryPipelineDefinition(pipeline)));

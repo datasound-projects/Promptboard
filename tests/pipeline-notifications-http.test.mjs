@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { startTestServer } from './helpers/test-server.mjs';
-import { defaultPipelineConfig } from '../src/pipeline-config.mjs';
+import { customPipelineConfig } from './helpers/pipeline.mjs';
 
 async function fixture(t) {
   const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
@@ -38,7 +38,7 @@ test('notification reception retains token, local origin, fetch-site and bounded
 });
 
 test('real column notification moves record only exact display acknowledgements and never replay after reconnect', async t => {
-  const app = await fixture(t), config = defaultPipelineConfig();
+  const app = await fixture(t), config = customPipelineConfig();
   for (const column of config.columns) column.strategy.autoSpawn = false;
   config.columns[2].automations.onEnter = [{ id: 'notify', name: 'Task arrival', type: 'notify', enabled: true, title: '{{title}}', body: '{{toColumn}} · {{projectName}}' }];
   const project = await app.board.createProject({ name: 'Scoped notices' });
@@ -60,7 +60,7 @@ test('real column notification moves record only exact display acknowledgements 
 });
 
 test('lost and cancelled browser receivers leave scoped durable outcomes without marking alerts delivered', async t => {
-  const app = await fixture(t), config = defaultPipelineConfig(); for (const column of config.columns) column.strategy.autoSpawn = false;
+  const app = await fixture(t), config = customPipelineConfig(); for (const column of config.columns) column.strategy.autoSpawn = false;
   config.columns[2].automations.onEnter = [{ id: 'notify', name: 'Alert', type: 'notify', title: '{{title}}', body: 'Owned notice' }];
   const project = await app.board.createProject({ name: 'Receiver loss' }); await app.board.setPipeline(project.id, { pipeline: config, expectedRevision: 1, confirm: true });
   const receiver = await app.connect('browser'); const first = await app.board.createTask({ projectId: project.id, title: 'Lost', prompt: 'Exact task' });
