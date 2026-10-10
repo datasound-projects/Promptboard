@@ -3536,6 +3536,8 @@ function pollTests(taskId) {
     const card = findTask(taskId);
     // Re-render the open details only when the test status changes: typed fields there must survive the polling.
     if ($('#task-dialog').open && $('#task-dialog').dataset.taskId === taskId && card && card.evidence?.tests?.status !== status) openTaskDetails(taskId);
+    // A load shared with an unchanged background refresh renders nothing, so keep polling here, not only from a render.
+    if (card?.evidence?.tests?.status === 'running') pollTests(taskId);
   }, 1500);
 }
 
