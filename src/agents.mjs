@@ -131,7 +131,7 @@ export function resolveConfig(stage, config = {}) {
   if (model && !SAFE_MODEL.test(model)) throw new AgentError('Use a model ID with no spaces or command flags.', 'INVALID_MODEL');
   const effort = config.effort ? String(config.effort) : '';
   try { validateEffort(provider, effort); } catch { throw new AgentError('This CLI does not support that effort setting.', 'INVALID_EFFORT'); }
-  const stageEngine = config.stageEngine === true ? { stageEngine: true } : {};
+  const stageEngine = { ...(config.stageEngine === true ? { stageEngine: true } : {}), ...(config.trustWorkspace === true ? { trustWorkspace: true } : {}) };
   if (policy) {
     const interaction = config.interaction || 'ask', filesystem = config.filesystem;
     const permissionMode = readOnly ? 'plan' : adapter.policyModes?.[interaction]?.[filesystem];
@@ -247,6 +247,9 @@ export async function buildSession({ provider, stage, config, message, runDir, e
     // Read-only columns never ask (nothing to approve). Writing columns ask unless the policy is autonomous.
     if (plan) args.push('--sandbox', 'read-only', '--ask-for-approval', pipeline && !stageRules && config.filesystem == null ? 'on-request' : 'never');
     else args.push('--sandbox', config.permissionMode === 'danger-full-access' ? 'danger-full-access' : 'workspace-write', '--ask-for-approval', autonomous ? 'never' : 'on-request');
+    // An unattended session must not stop at Codex's own startup menus: no update offer (its default runs npm install),
+    // and no shared background-server negotiation (it can ask to restart a daemon other clients use).
+    if (autonomous) args.push('-c', 'check_for_update_on_startup=false', '--disable', 'daemon_auto_start');
     if (config.model) args.push('--model', config.model);
     if (config.effort) args.push('-c', `model_reasoning_effort=${tomlString(config.effort)}`);
     for (const server of selected) {

@@ -337,7 +337,8 @@ export function effectiveWorkflow(project, globalAgent = null, state = null, tas
     const execution = resolveExecutionPolicy(project.pipeline, column.id, task || {}, project.execution);
     const explicit = execution.kind !== 'custom' || Object.values(execution.sources).some(source => source !== 'default');
     return [column.id, { ...settings, kind: execution.kind, completion: execution.completion,
-      ...(explicit ? { interaction: execution.interaction, filesystem: execution.filesystem } : {}), ...(execution.stage ? { stageEngine: true } : {}) }];
+      ...(explicit ? { interaction: execution.interaction, filesystem: execution.filesystem } : {}), ...(execution.stage ? { stageEngine: true } : {}),
+      ...(project.execution?.workspaceTrust === 'task_workspaces' ? { trustWorkspace: true } : {}) }];
   }));
   const global = state ? profileDefaults(state, state.settings?.agentProfileId, globalAgent || {}) : globalAgent;
   const projectAgent = state ? profileDefaults(state, project?.agentProfileId, project?.agentDefaults || {}) : project?.agentDefaults;
@@ -1087,7 +1088,7 @@ export class Board {
     if (project.workflowMode !== 'pipeline') throw conflict('Switch this board to a column pipeline in Columns first.', 'PIPELINE_REQUIRED');
     const typed = this.#withoutPolicyOverrides(withSeededKinds(project.pipeline));
     const saved = await this.#setPipeline(id, { pipeline: typed, expectedRevision });
-    await this.setExecutionPolicy(id, { policy: { interaction: 'autonomous', filesystem: 'workspace_write', completion: 'automatic', maxRework: 2, mergeMethod: 'squash' }, expectedRevision: saved.revision });
+    await this.setExecutionPolicy(id, { policy: { interaction: 'autonomous', filesystem: 'workspace_write', completion: 'automatic', maxRework: 2, mergeMethod: 'squash', workspaceTrust: 'task_workspaces' }, expectedRevision: saved.revision });
     return this.store.update(state => {
       const current = this.#project(state, id);
       const previous = current.autopilot || {};

@@ -18,6 +18,7 @@ import { prepareBase } from './base-context.mjs';
 import { BaseDeliveryError, checkBaseRevocations } from './base-resolver.mjs';
 import { SessionActivity } from './session-activity.mjs';
 import { TerminalInputObservation } from './terminal-input-observation.mjs';
+import { supportsWorkspaceTrust, TRUST_KEYS, WorkspaceTrust } from './workspace-trust.mjs';
 import { nativeMessageInputReadiness, sendOwnedNativeMessage } from './native-message-input.mjs';
 import { untilStopped } from './native-message-common.mjs';
 
@@ -259,6 +260,8 @@ export class Supervisor {
       session.activity = new SessionActivity(session.provider);
       session.terminalInput = new TerminalInputObservation();
     }
+    // Opt-in Workspace trust: only this run's own task worktree, only a recognized folder-trust menu (src/workspace-trust.mjs).
+    if (run.config.trustWorkspace === true && supportsWorkspaceTrust(session.provider) && run.workspacePath) session.trust = { reader: new WorkspaceTrust(session.provider, run.workspacePath), output: '' };
     this.sessions.set(runId, session);
     session.exited = new Promise(resolve => { session.resolveExit = resolve; });
     // Listen before any await so early output and fast exits are never lost.
@@ -288,8 +291,43 @@ export class Supervisor {
     }
   }
 
+  /**
+   * Workspace trust: feed the screen to the recognizer, and re-check once it has settled. It returns a key only for the
+   * provider's folder-trust menu naming this worktree; the readiness sign or an exit ends the watch.
+   */
+  #observeTrust(session, data) {
+    const trust = session.trust;
+    if (!trust) return;
+    if (data) {
+      trust.output += data;
+      if (trust.output.length > 262144) return this.#endTrust(session);
+    }
+    clearTimeout(trust.timer);
+    trust.timer = setTimeout(() => this.#observeTrust(session, ''), 1100); trust.timer.unref?.();
+    if (trust.busy) { trust.again = true; return; }
+    trust.busy = true;
+    trust.reader.observe(trust.output, Date.now()).then(key => {
+      if (!key || session.trust !== trust || !this.#ownsInitialProcess(session, session.proc)) return;
+      try { session.proc.write(TRUST_KEYS[key]); } catch { return this.#endTrust(session); }
+      if (key !== 'confirm') return;
+      this.#endTrust(session);
+      this.#push(session, { workspaceTrust: 'confirmed' });
+      this.board.updateRun(session.runId, { lifecycle: 'workspace-trusted', waitingReason: '' }).catch(() => {});
+    }).catch(() => this.#endTrust(session)).finally(() => {
+      trust.busy = false;
+      if (trust.again && session.trust === trust) { trust.again = false; this.#observeTrust(session, ''); }
+    });
+  }
+
+  #endTrust(session) {
+    if (!session.trust) return;
+    clearTimeout(session.trust.timer); session.trust.reader.close(); session.trust = null;
+  }
+
   /** The only path to the initial paste: the provider's own readiness sign (INPUT_READY_SIGN). */
   #inputReady(session, sign) {
+    // A ready CLI is past its startup questions: there is no folder-trust menu left to recognize.
+    if (INPUT_READY_SIGN[session.provider] === sign) this.#endTrust(session);
     if (!session.paste || INPUT_READY_SIGN[session.provider] !== sign || session.pasteReadyTimer) return;
     clearTimeout(session.readyDeadline);
     if (session.inputNotReady) {
@@ -372,6 +410,7 @@ export class Supervisor {
   #output(session, data) {
     session.terminalInput?.observeOutput(data);
     session.activity?.output();
+    if (session.trust) this.#observeTrust(session, data);
     if (session.provider === 'codex') {
       const title = [...data.matchAll(TERMINAL_TITLE)].at(-1)?.[1];
       // Codex titles its terminal only once its session is up, after startup questions such as folder trust.
@@ -556,6 +595,7 @@ export class Supervisor {
   }
 
   #kill(session) {
+    this.#endTrust(session);
     clearTimeout(session.readyDeadline); clearTimeout(session.pasteReadyTimer); clearTimeout(session.initialSubmitTimer);
     session.initialSubmitPending = false;
     session.terminalInput?.close();
@@ -568,6 +608,7 @@ export class Supervisor {
 
   async #exited(session, exitCode, signal) {
     session.exiting = true;
+    this.#endTrust(session);
     clearTimeout(session.pasteReadyTimer); clearTimeout(session.initialSubmitTimer); session.initialSubmitPending = false;
     session.terminalInput?.close();
     clearInterval(session.poll); clearInterval(session.usagePoll); clearTimeout(session.readyDeadline); clearTimeout(session.watchdog);

@@ -113,7 +113,7 @@ test('Full Autopilot: strict queue order, automatic completion, review and test 
   await assert.rejects(w.board.applyFullAutopilot(w.project.id, { expectedRevision: (await w.projectNow()).revision }), { code: 'CONFIRMATION_REQUIRED' });
   await w.board.applyFullAutopilot(w.project.id, { expectedRevision: (await w.projectNow()).revision, confirm: true });
   let project = await w.projectNow();
-  assert.deepEqual(project.execution, { interaction: 'autonomous', filesystem: 'workspace_write', completion: 'automatic', maxRework: 2, mergeMethod: 'squash' });
+  assert.deepEqual(project.execution, { interaction: 'autonomous', filesystem: 'workspace_write', completion: 'automatic', maxRework: 2, mergeMethod: 'squash', workspaceTrust: 'task_workspaces' });
   // The user's order, not the creation order: Third, First, Second.
   await w.board.setAutopilot(w.project.id, { route: project.autopilot.route, queue: [third.id, first.id, second.id], expectedRevision: project.revision });
   await w.board.controlAutopilot(w.project.id, { action: 'start', confirm: true });

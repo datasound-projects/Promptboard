@@ -65,7 +65,14 @@ if (prompt.includes('USAGE') && provider === 'codex') {
 }
 const baseEmit = emit;
 emit = (name, extra = {}) => baseEmit(name, { ...(transcript ? { transcript_path: transcript } : {}), ...(flag('--resume') && process.env.FAKE_AGENT_RESUME_ID ? { session_id: process.env.FAKE_AGENT_RESUME_ID } : {}), ...extra });
-emit('SessionStart');
+// TRUST_SCREEN: the CLI first shows its real folder-trust menu (Claude: No preselected; Codex: Trust preselected)
+// naming its working folder, and starts only after a confirmed Yes.
+const trustScreen = prompt.includes('TRUST_SCREEN') && ['claude', 'codex'].includes(provider);
+let trustPending = trustScreen, trustChoice = provider === 'claude' ? 'no' : 'yes';
+const drawTrust = () => process.stdout.write(provider === 'claude'
+  ? `\x1b[2J\x1b[H Accessing workspace:\r\n ${process.cwd()}\r\n Quick safety check: Is this a project you created or one you trust?\r\n ${trustChoice === 'no' ? '❯' : ' '} No, exit\r\n ${trustChoice === 'yes' ? '❯' : ' '} Yes, I trust this folder\r\n Enter to confirm · Esc to cancel\r\n`
+  : `\x1b[2J\x1b[H  Folder access\r\n  ${process.cwd()}\r\n  Trust this folder? Codex can read, edit, and run files here.\r\n${trustChoice === 'yes' ? '›' : ' '} 1. Trust and continue\r\n${trustChoice === 'no' ? '›' : ' '} 2. Quit\r\n  enter continue · esc quit\r\n`);
+if (!trustScreen) emit('SessionStart');
 let planApprovalSequence = 0;
 function turn(text) {
   if (prompt.includes('ACTIVITY_FIXTURE') && text.startsWith('activity-')) {
@@ -146,7 +153,8 @@ function turn(text) {
 }
 // Codex asks through its terminal title, not a hook; answering it continues the turn.
 let codexQuestion = prompt.includes('CODEX_QUESTION');
-if (codexQuestion) process.stdout.write('\x1b]0;[ ! ] Action Required | thread-1\x07Allow this command? (y)\r\n\x1b]0;[ . ] Action Required | thread-1\x07');
+if (trustScreen) drawTrust();
+else if (codexQuestion) process.stdout.write('\x1b]0;[ ! ] Action Required | thread-1\x07Allow this command? (y)\r\n\x1b]0;[ . ] Action Required | thread-1\x07');
 else if (prompt.includes('ASK_PERMISSION')) {
   emit('PermissionRequest', { tool_name: 'Bash' });
   process.stdout.write('Allow Bash? (y/n)\r\n');
@@ -156,6 +164,16 @@ if (process.env.FAKE_AGENT_PROMPT_FILE) writeFileSync(process.env.FAKE_AGENT_PRO
 process.stdin.setRawMode?.(true);
 let line = '';
 process.stdin.on('data', chunk => {
+  if (trustPending) {
+    const keys = chunk.toString();
+    if (keys === '\x1b[B' || keys === '\x1b[A') { trustChoice = trustChoice === 'yes' ? 'no' : 'yes'; drawTrust(); return; }
+    if (keys !== '\r') return;
+    if (trustChoice !== 'yes') process.exit(0);
+    trustPending = false; process.stdout.write('\x1b[2J\x1b[Htrusted\r\n');
+    if (provider === 'codex') process.stdout.write('\x1b]0;\u280b thread-1\x07'); else emit('SessionStart');
+    if (prompt) turn(prompt);
+    return;
+  }
   line += chunk.toString();
   if (!/[\r\n]/.test(line)) return;
   const text = line.trim(); line = '';

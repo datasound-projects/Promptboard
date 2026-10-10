@@ -58,6 +58,15 @@ Planning and Code Review columns are always read-only. Promptboard translates th
 | Autonomous, workspace | `auto` (Claude's own classifier decides; no prompt) | `workspace-write`, `never` | `yolo` inside `--sandbox` |
 | Autonomous, full | `bypassPermissions` | `danger-full-access`, `never` | `yolo` without sandbox |
 
+**Folder trust.** Claude Code and Codex ask whether to trust each new folder, and every task worktree is a new folder.
+By default the run waits for you. With **Trust Promptboard task worktrees automatically**, Promptboard answers only
+that question, only when the rendered screen is positively identified as the CLI's folder-trust menu (Claude Code:
+"Accessing workspace … Yes, I trust this folder"; Codex: "Folder access … Trust this folder? … Trust and continue"),
+only when the folder it names is exactly this card's worktree, and only once the screen has settled. Any other startup
+question (sign-in, an update offer, a background-server question) stays with you and the run waits. Gemini's menu is not
+recognized. Autonomous Codex sessions also start without its update offer and its shared background server
+(`-c check_for_update_on_startup=false --disable daemon_auto_start`), whose menus would otherwise wait for an answer.
+
 A combination a provider cannot run is refused when you save the policy (`EXECUTION_POLICY_UNSUPPORTED`), never in the
 middle of a task. Writing agents are told not to commit: Promptboard makes the checkpoint commits, which also keeps
 Codex from asking to write Git metadata outside its sandbox.
@@ -80,7 +89,7 @@ it. For typed columns it follows the recorded outcome: succeeded → next column
 the reason. It never pushes, never answers an agent's question for you, and pauses for its own card only.
 
 **Full Autopilot** (in Columns) applies, explicitly and with a confirmation: typed standard columns, autonomous
-workspace access, automatic completion, two rework rounds, squash merges and a route through every active column.
+workspace access, folder trust for task worktrees, automatic completion, two rework rounds, squash merges and a route through every active column.
 Any column can still override it.
 
 ## Merge

@@ -4605,6 +4605,10 @@ function renderExecutionPolicy() {
   merge.append(option('', 'Default: squash into one commit'), option('squash', 'Squash into one commit'), option('fast_forward', 'Fast-forward (keep the task’s commits)'));
   merge.value = draft.mergeMethod || '';
   merge.addEventListener('change', () => { if (merge.value) draft.mergeMethod = merge.value; else delete draft.mergeMethod; });
+  const trust = document.createElement('select'); trust.id = 'execution-workspace-trust';
+  trust.append(option('', 'Ask me (default)'), option('ask', 'Ask me'), option('task_workspaces', 'Trust Promptboard task worktrees automatically'));
+  trust.value = draft.workspaceTrust || '';
+  trust.addEventListener('change', () => { if (trust.value) draft.workspaceTrust = trust.value; else delete draft.workspaceTrust; });
   const tests = document.createElement('textarea'); tests.id = 'pipeline-test-commands'; tests.rows = 2; tests.placeholder = 'npm test'; tests.value = columnsDraft.tests;
   tests.addEventListener('input', () => { columnsDraft.tests = tests.value; });
   const all = document.createElement('input'); all.type = 'checkbox'; all.id = 'execution-apply-all'; all.checked = columnsDraft.applyAll;
@@ -4617,7 +4621,8 @@ function renderExecutionPolicy() {
   preset.id = 'execution-preset';
   const nodes = [heading, paragraph('Every column inherits these unless it sets its own. Planning and Code Review columns are always read-only. Saving starts nothing.', 'note'),
     select('interaction', 'Agent questions'), select('filesystem', 'Workspace access'), select('completion', 'Stage completion'),
-    field('Automatic rework rounds (0–5)', rework), field('Merge method', merge), field('Test commands (one per line; run without a shell in the task worktree; their exit codes decide Testing)', tests), allLabel,
+    field('Automatic rework rounds (0–5)', rework), field('Merge method', merge),
+    field('Folder trust questions (answered only for a recognized Claude Code or Codex trust menu naming the card’s own worktree)', trust), field('Test commands (one per line; run without a shell in the task worktree; their exit codes decide Testing)', tests), allLabel,
     ...(warning ? [warning] : []), detailActions(preset)];
   if (columnsDraft.presetConfirm) {
     const apply = detailButton('Apply Full Autopilot', async () => {
@@ -4628,7 +4633,7 @@ function renderExecutionPolicy() {
       } catch (error) { $('#columns-error').textContent = error.message; $('#columns-error').hidden = false; apply.disabled = false; }
     }, 'danger'); apply.id = 'execution-preset-apply';
     const cancel = detailButton('Cancel', () => { columnsDraft.presetConfirm = false; renderColumns(); $('#execution-preset')?.focus(); });
-    nodes.push(paragraph('Full Autopilot types the standard columns (Planning, Executing, Code Review, Testing, Merge), lets agents work in each task worktree without asking, completes stages automatically when their checks pass, sends review findings and failing tests back to Executing up to twice, and squash-merges each finished card before the next one starts. Unsaved column edits are discarded.', 'note'), detailActions(cancel, apply));
+    nodes.push(paragraph('Full Autopilot types the standard columns (Planning, Executing, Code Review, Testing, Merge), lets agents work in each task worktree without asking (including the CLI’s folder-trust question for that worktree), completes stages automatically when their checks pass, sends review findings and failing tests back to Executing up to twice, and squash-merges each finished card before the next one starts. Unsaved column edits are discarded.', 'note'), detailActions(cancel, apply));
   }
   box.replaceChildren(...nodes);
 }
