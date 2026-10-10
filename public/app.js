@@ -2622,6 +2622,8 @@ function renderAgents(current) {
   $('#agents-filter').value = filter;
   const rows = agentRuns(filter, current);
   $('#agents-count').textContent = String(rows.filter(row => RUN_LIVE.includes(row.run.status)).length).padStart(2, '0');
+  // No agent anywhere yet: the section would only show an empty heading.
+  $('.agents-section').hidden = !rows.length && !agentRuns('all', current).length;
   replaceKeepingFocus($('#agents-list'), rows.map(({ run, task, project }) => {
     const state = agentState(run);
     const item = document.createElement('li');
@@ -3664,6 +3666,9 @@ function renderRepository(project) {
   $('#target-branch').replaceChildren(option('', branches.length ? 'Choose a local branch…' : 'Reading branches…'), ...branches.map(branch => option(branch.name, branch.name)));
   $('#target-branch').value = project.targetBranch?.name || '';
   $('#branch-save').disabled = !repository;
+  // Save appears only once another branch is chosen; the note only while no code folder is connected.
+  $('#branch-save').hidden = $('#target-branch').value === (project.targetBranch?.name || '');
+  $('.settings-panel-note').hidden = Boolean(repository);
   $('#branch-state').textContent = project.targetBranch
     ? `Target branch: ${project.targetBranch.name} at ${project.targetBranch.commit.slice(0, 12)}. Task worktrees start from this recorded commit.`
     : 'No target branch yet. Choose the local branch that task branches start from.';
@@ -4060,6 +4065,7 @@ $('#project-cancel').addEventListener('click', closeProjectForm);
 $('#repo-form').addEventListener('submit', event => { event.preventDefault(); linkRepository($('#repo-path').value); });
 $('#repo-unlink').addEventListener('click', () => linkRepository(null));
 $('#branch-save').addEventListener('click', saveTargetBranch);
+$('#target-branch').addEventListener('change', () => { $('#branch-save').hidden = $('#target-branch').value === (currentProject()?.targetBranch?.name || ''); });
 $('#branch-refresh').addEventListener('click', () => { const project = currentProject(); if (project?.repository) { repositories.delete(project.id); renderRepository(project); } });
 $('#repo-edit').addEventListener('click', () => { repoPanelOpen = $('#repo-panel').hidden; renderRepository(currentProject()); if (repoPanelOpen) $('#repo-path').focus(); });
 $('#workflow-open').addEventListener('click', () => openWorkflowDialog());
@@ -4371,12 +4377,13 @@ function renderAutopilotDialog() {
   const running = project.autopilot?.status === 'running', pipeline = pipelineBoard(project);
   $('#autopilot-route').replaceWith(Object.assign(routeChips(draft.route, route => { draft.route = route; renderAutopilotDialog(); }, { disabled: running, stages: autopilotStages(project) }), { id: 'autopilot-route' }));
   $('#autopilot-dialog .select-grid').hidden = pipeline;
-  $('#autopilot-route-legend').textContent = pipeline ? 'Columns' : 'Default route';
+  $('#autopilot-route-legend').textContent = pipeline ? 'Steps' : 'Default route';
   $('#autopilot-about').hidden = pipeline; $('#autopilot-about-pipeline').hidden = !pipeline;
   const merges = pipeline && draft.route.some(id => columnKind(id, project) === 'merge'), typedRoute = pipeline && draft.route.some(id => !['custom', null].includes(columnKind(id, project)));
   $('#autopilot-consent-detail').textContent = pipeline
-    ? `It takes the queued cards one at a time, in this order, through these columns${typedRoute ? ', completes each typed column when its checks pass (or waits for you where completion is manual), sends review findings and failing tests back to Executing within the rework limit' : ' and sends each column’s instruction'}${merges ? `, and merges each finished card into ${project.targetBranch?.name || 'the target branch'} before the next one starts` : ', then moves the card to Done'}. It never pushes or force-pushes; agents keep the permissions set in Columns.`
+    ? `It moves each card through these steps${typedRoute ? ', finishes a step when its checks pass (or waits for you where you finish steps yourself), and sends problems back to Executing within the rework limit' : ' and gives each column its instruction'}${merges ? `. It merges each finished card into ${project.targetBranch?.name || 'the target branch'} before the next one starts` : ', then moves the card to Done'}. It never pushes to a remote.`
     : 'It confirms stages, commits, accepts clean reviews, and merges into your local target branch or pushes the task branch for a pull request, without asking each time. It never force-pushes or bypasses agent permissions.';
+  renderAutopilotReady(project, draft, typedRoute);
   const instructions = $('#autopilot-instructions');
   instructions.hidden = !pipeline;
   let missing = [];
@@ -4385,7 +4392,8 @@ function renderAutopilotDialog() {
     missing = rows.filter(row => !row.message);
     instructions.replaceChildren(document.createElement('legend'), ...rows.map(row => paragraph(`${row.name}: ${row.message ? `“${row.message.length > 140 ? `${row.message.slice(0, 139)}…` : row.message}”` : 'needs an instruction — its agent would get nothing new here.'}`, row.message ? 'note' : 'inline-error')));
     instructions.firstChild.textContent = 'Instructions on arrival';
-    if (!rows.length) instructions.append(paragraph('The first column starts the agent with the card’s own task.', 'note'));
+    // Typed steps bring their own instructions; the box only shows for custom columns that need one.
+    instructions.hidden = !rows.length;
     if (missing.length) {
       const add = detailButton('Add default instructions', async () => {
         add.disabled = true;
@@ -4427,10 +4435,34 @@ function renderAutopilotDialog() {
   if (!draft.order.length) list.replaceChildren(Object.assign(document.createElement('li'), { className: 'note', textContent: 'No cards in To Do. Add the tasks first (one card per subtask), then come back.' }));
   $('#autopilot-save').disabled = running;
   $('#autopilot-start').disabled = running || !included.length || missing.length > 0;
-  $('#autopilot-start').firstChild.textContent = project.autopilot?.status === 'paused' ? 'Save and restart ' : 'Save and start ';
+  $('#autopilot-start').firstChild.textContent = project.autopilot?.status === 'paused' ? 'Restart Autopilot ' : 'Start Autopilot ';
   const log = (project.autopilot?.log || []).slice(-30).reverse();
   $('#autopilot-log-box').hidden = !log.length;
   $('#autopilot-log').replaceChildren(...log.map(entry => { const li = document.createElement('li'); li.textContent = `${new Date(entry.at).toLocaleTimeString()} · ${entry.text}`; return li; }));
+}
+
+/** "Before you start": what a typed board needs for Autopilot to get through a card without you. Informational only. */
+function renderAutopilotReady(project, draft, typedRoute) {
+  const box = $('#autopilot-ready');
+  box.hidden = !pipelineBoard(project);
+  if (box.hidden) return;
+  const toColumns = () => { $('#autopilot-dialog').close(); openColumns({ tab: 'board' }); };
+  const items = [project.repository && project.targetBranch
+    ? [true, `Code folder connected · finished work goes into ${project.targetBranch.name}`]
+    : [false, 'Connect a code folder and choose a target branch in Project settings.']];
+  if (draft.route.some(id => columnKind(id, project) === 'testing')) items.push(project.testCommands?.length
+    ? [true, `Test command: ${testCommandsText(project).split('\n')[0]}`]
+    : [false, 'No test command yet, so Testing would stop.', 'Add one']);
+  if (typedRoute) items.push(handsOff(project.execution || {})
+    ? [true, 'Hands-off: agents work on their own and steps finish by themselves']
+    : [false, 'Step by step: agents will ask you, and each step waits for you.', 'Change']);
+  box.replaceChildren(...items.map(([ok, text, action]) => {
+    const item = document.createElement('li'); item.className = `ready-item${ok ? ' ok' : ''}`;
+    const mark = document.createElement('span'); mark.className = 'ready-mark'; mark.setAttribute('aria-hidden', 'true'); mark.textContent = ok ? '✓' : '!';
+    item.append(mark, Object.assign(document.createElement('span'), { textContent: text }));
+    if (action) item.append(detailButton(action, toColumns, 'text-button'));
+    return item;
+  }));
 }
 
 async function saveAutopilot(start) {
@@ -4528,7 +4560,9 @@ function renderPipelineProfiles() {
       actions.replaceChildren(confirm, yes, detailButton('Cancel', () => { renderColumns(); $('#columns-profile').focus(); }));
     }, 'danger'); remove.id = 'columns-profile-delete'; actions.append(duplicate, rename, remove);
   }
-  box.replaceChildren(field, actions, renameField);
+  // Profiles are for advanced boards: folded away unless one is being edited.
+  if (columnsDraft.profileId) columnsDraft.open.add('profiles');
+  box.replaceChildren(columnsSection('profiles', columnsDraft.profiles.length ? `Task profiles · ${columnsDraft.profiles.length}` : 'Task profiles', field, actions, renameField));
 }
 
 function profileStrategyEditor(entry, profile) {
@@ -4566,17 +4600,31 @@ function profileStrategyEditor(entry, profile) {
 const COLUMN_COLOR_NAMES = { gray: 'Gray', red: 'Red', orange: 'Orange', amber: 'Amber', green: 'Green', teal: 'Teal', blue: 'Blue', violet: 'Violet', pink: 'Pink' };
 const BUILTIN_DEFAULT_COLORS = { todo: 'gray', planning: 'violet', executing: 'blue', code_review: 'amber', testing: 'teal', merge: 'orange', done: 'green' };
 const columnsDraft = { list: [], selected: null, project: null, revision: null, pipeline: false, profiles: [], profileId: null, headerDrafts: new Map(),
-  execution: {}, applyAll: false, original: '', tests: '', presetConfirm: false };
+  execution: {}, applyAll: false, original: '', tests: '', presetConfirm: false, tab: 'columns', open: new Set() };
 // Column types decide what a pipeline column does; the display name never does.
 const COLUMN_KIND_OPTIONS = [['custom', 'Custom: one conversation continues'], ['planning', 'Planning'], ['execution', 'Executing'], ['review', 'Code Review'], ['testing', 'Testing'], ['merge', 'Merge']];
 const COLUMN_KIND_NOTES = {
-  custom: 'One agent conversation continues across compatible custom columns. Moves send no stage instructions; an “on enter” agent message is the next instruction.',
-  planning: 'Each arrival starts a fresh, read-only session that writes a plan. Completing the stage accepts the plan only if the agent changed no files.',
-  execution: 'Each arrival starts a fresh session in the task worktree, with the accepted plan or the findings to fix. Completing the stage commits a checkpoint.',
-  review: 'Each arrival starts a fresh, read-only session that reviews the committed diff and must end with a JSON verdict. Findings send the card back to Executing.',
-  testing: 'An agent checks the work, then Promptboard runs the project’s test commands itself. Only their exit codes decide; failures go back to Executing.',
-  merge: 'Promptboard merges the reviewed and tested commit into the target branch (squashed by default). An agent starts only to resolve conflicts, and its result is reviewed and tested again.',
+  custom: 'Keeps one agent conversation going from column to column. An “on enter” message gives it the next instruction.',
+  planning: 'A fresh agent writes a plan. It can read the code but not change it.',
+  execution: 'A fresh agent builds the plan, or fixes what review found. Promptboard saves the result as a commit.',
+  review: 'A fresh agent checks the changes without editing them. Problems send the card back to Executing.',
+  testing: 'Promptboard runs your test command. If it fails, the card goes back to Executing with the output.',
+  merge: 'Promptboard merges the reviewed and tested work into your target branch. An agent only helps if there is a conflict.',
 };
+/** A disclosure whose open state survives the editor's re-renders (one key per section; see rememberColumnsSections). */
+function columnsSection(key, summaryText, ...children) {
+  const box = document.createElement('details'); box.className = 'columns-section'; box.dataset.section = key; box.open = columnsDraft.open.has(key);
+  const summary = document.createElement('summary'); summary.textContent = summaryText;
+  box.append(summary, ...children); return box;
+}
+// The sections on screen are the truth: a toggle event can arrive after a key press has already re-rendered them.
+function rememberColumnsSections() {
+  if (!$('#columns-dialog').open) return;
+  for (const box of document.querySelectorAll('#columns-dialog details.columns-section')) box.open ? columnsDraft.open.add(box.dataset.section) : columnsDraft.open.delete(box.dataset.section);
+}
+// Hands-off is the Full Autopilot policy: no approvals, automatic completion, and trust questions answered for task worktrees.
+const handsOff = policy => policy.interaction === 'autonomous' && policy.completion === 'automatic' && policy.workspaceTrust === 'task_workspaces';
+const stepByStep = policy => (policy.interaction || 'ask') === 'ask' && (policy.completion || 'manual') === 'manual';
 const EXECUTION_CHOICES = {
   interaction: [['ask', 'Ask for approval'], ['autonomous', 'Autonomous: never pause for approval']],
   filesystem: [['read_only', 'Read only'], ['workspace_write', 'Write in the task workspace'], ['full', 'Full access']],
@@ -4585,15 +4633,22 @@ const EXECUTION_CHOICES = {
 const EXECUTION_DEFAULT_TEXT = { interaction: 'Ask for approval', filesystem: 'Write in the task workspace', completion: 'Manual' };
 const testCommandsText = project => (project?.testCommands || []).map(item => item.argv.map(arg => /[\s"']/.test(arg) ? JSON.stringify(arg) : arg).join(' ')).join('\n');
 
-/** Board-wide execution permissions, test commands and the Full Autopilot preset (column pipelines only). */
+/** "How it runs": one choice between hands-off and step by step, the test command, and the detailed policy under Advanced (column pipelines only). */
 function renderExecutionPolicy() {
   const box = $('#columns-execution');
   const project = board?.projects.find(item => item.id === columnsDraft.project);
-  box.hidden = !columnsDraft.pipeline || Boolean(columnsDraft.profileId) || !project;
-  if (box.hidden) return;
+  const available = columnsDraft.pipeline && !columnsDraft.profileId && Boolean(project);
+  if (!available) columnsDraft.tab = 'columns';
+  $('#columns-tabs').hidden = !available;
+  for (const [id, tab] of [['columns-tab-columns', 'columns'], ['columns-tab-board', 'board']]) {
+    $(`#${id}`).setAttribute('aria-selected', String(columnsDraft.tab === tab)); $(`#${id}`).tabIndex = columnsDraft.tab === tab ? 0 : -1;
+  }
+  $('#columns-layout').hidden = columnsDraft.tab === 'board';
+  // Built even while the Columns tab shows, so the saved values stay readable and the draft stays one object.
+  box.hidden = !available || columnsDraft.tab !== 'board';
+  if (!available) return;
   const draft = columnsDraft.execution;
-  const heading = document.createElement('h3'); heading.id = 'columns-execution-heading'; heading.textContent = 'Execution permissions (whole board)';
-  const field = (title, input) => { const label = document.createElement('label'); label.className = 'field-label'; label.append(title, input); return label; };
+  const field = (title, input, help = '') => { const label = document.createElement('label'); label.className = 'field-label'; label.append(title, input); if (help) label.append(Object.assign(document.createElement('small'), { textContent: help })); return label; };
   const select = (key, title) => {
     const input = document.createElement('select'); input.id = `execution-${key}`;
     input.append(option('', `Default: ${EXECUTION_DEFAULT_TEXT[key]}`), ...EXECUTION_CHOICES[key].map(([value, label]) => option(value, label)));
@@ -4602,6 +4657,41 @@ function renderExecutionPolicy() {
     input.addEventListener('change', () => { if (input.value) draft[key] = input.value; else delete draft[key]; updateWarning(); });
     return field(title, input);
   };
+  // The two ways of working. Hands-off is the Full Autopilot preset (applied at once, after a confirmation);
+  // step by step returns the board to its defaults when you save.
+  const off = handsOff(draft), steps = !off && stepByStep(draft);
+  const mode = (id, title, text, checked, pick) => {
+    const button = detailButton('', pick, `run-mode${checked ? ' selected' : ''}`); button.id = id;
+    button.setAttribute('role', 'radio'); button.setAttribute('aria-checked', String(checked));
+    button.append(Object.assign(document.createElement('strong'), { textContent: title }), Object.assign(document.createElement('small'), { textContent: text }));
+    return button;
+  };
+  const modes = document.createElement('div'); modes.className = 'run-modes'; modes.setAttribute('role', 'radiogroup'); modes.setAttribute('aria-labelledby', 'columns-execution-heading');
+  modes.append(
+    mode('execution-preset', 'Hands-off', 'Agents work on their own in each card’s workspace, and every step finishes by itself. Best with Autopilot.', off,
+      () => { columnsDraft.tab = 'board'; if (!off) columnsDraft.presetConfirm = true; renderColumns(); (off ? $('#execution-preset') : $('#execution-preset-apply'))?.focus(); }),
+    mode('execution-step-by-step', 'Step by step', 'Agents ask before they act, and you finish each step yourself with Complete stage.', steps,
+      () => { for (const key of ['interaction', 'completion', 'workspaceTrust']) delete draft[key]; columnsDraft.presetConfirm = false; renderColumns(); $('#execution-step-by-step')?.focus(); }));
+  const heading = document.createElement('h3'); heading.id = 'columns-execution-heading'; heading.textContent = 'How agents work';
+  const nodes = [heading, modes];
+  if (!off && !steps) nodes.push(paragraph('Custom settings are in use. You can see them under Advanced.', 'note'));
+  if (columnsDraft.presetConfirm) {
+    const apply = detailButton('Turn on hands-off', async () => {
+      apply.disabled = true;
+      try {
+        await boardCall('POST', `/api/projects/${encodeURIComponent(project.id)}/full-autopilot`, { expectedRevision: currentProject().revision, confirm: true });
+        openColumns({ tab: 'board' }); announce('Hands-off is on: agents work on their own, steps finish by themselves, and finished cards are squash-merged. Nothing started.');
+      } catch (error) { $('#columns-error').textContent = error.message; $('#columns-error').hidden = false; apply.disabled = false; }
+    }, 'danger'); apply.id = 'execution-preset-apply';
+    const cancel = detailButton('Cancel', () => { columnsDraft.presetConfirm = false; renderColumns(); $('#execution-preset')?.focus(); });
+    const confirm = document.createElement('div'); confirm.className = 'run-mode-confirm';
+    confirm.append(paragraph('Agents will change files in each card’s own workspace without asking, answer the CLI’s folder-trust question for that workspace, finish each step when its checks pass, send problems back to Executing up to twice, and merge every finished card. The standard columns get their types; unsaved column changes are discarded. Nothing starts until you run a card or Autopilot.'), detailActions(cancel, apply));
+    nodes.push(confirm);
+  }
+  const tests = document.createElement('textarea'); tests.id = 'pipeline-test-commands'; tests.rows = 2; tests.placeholder = 'npm test'; tests.value = columnsDraft.tests;
+  tests.addEventListener('input', () => { columnsDraft.tests = tests.value; });
+  nodes.push(field('Test command', tests, 'Promptboard runs it in the card’s workspace; Testing passes only if it succeeds. One command per line.'));
+  // Advanced: every individual setting, as before.
   const rework = document.createElement('input'); rework.type = 'number'; rework.min = 0; rework.max = 5; rework.step = 1; rework.id = 'execution-max-rework';
   rework.placeholder = '2'; rework.value = draft.maxRework ?? '';
   rework.addEventListener('change', () => { const value = Number(rework.value); if (rework.value === '') delete draft.maxRework; else if (Number.isInteger(value) && value >= 0 && value <= 5) draft.maxRework = value; });
@@ -4610,14 +4700,12 @@ function renderExecutionPolicy() {
   merge.value = draft.mergeMethod || '';
   merge.addEventListener('change', () => { if (merge.value) draft.mergeMethod = merge.value; else delete draft.mergeMethod; });
   const trust = document.createElement('select'); trust.id = 'execution-workspace-trust';
-  trust.append(option('', 'Ask me (default)'), option('ask', 'Ask me'), option('task_workspaces', 'Trust Promptboard task worktrees automatically'));
+  trust.append(option('', 'Ask me (default)'), option('ask', 'Ask me'), option('task_workspaces', 'Answer yes for the card’s own workspace'));
   trust.value = draft.workspaceTrust || '';
   trust.addEventListener('change', () => { if (trust.value) draft.workspaceTrust = trust.value; else delete draft.workspaceTrust; });
-  const tests = document.createElement('textarea'); tests.id = 'pipeline-test-commands'; tests.rows = 2; tests.placeholder = 'npm test'; tests.value = columnsDraft.tests;
-  tests.addEventListener('input', () => { columnsDraft.tests = tests.value; });
   const all = document.createElement('input'); all.type = 'checkbox'; all.id = 'execution-apply-all'; all.checked = columnsDraft.applyAll;
   all.addEventListener('change', () => { columnsDraft.applyAll = all.checked; });
-  const allLabel = document.createElement('label'); allLabel.className = 'check-row'; allLabel.append(all, ' Apply to all columns (remove the columns’ own permission and completion overrides)');
+  const allLabel = document.createElement('label'); allLabel.className = 'check-row'; allLabel.append(all, ' Use these for every column (clears the columns’ own settings)');
   const warning = paragraph('', 'note execution-warning');
   const updateWarning = () => {
     warning.hidden = draft.interaction !== 'autonomous';
@@ -4626,29 +4714,19 @@ function renderExecutionPolicy() {
       : 'Autonomous: agents do not stop for approvals. Claude Code uses its own auto mode, Codex its workspace sandbox without prompts, Gemini yolo inside its sandbox. Planning and Code Review stay read-only.';
   };
   updateWarning();
-  const preset = detailButton('Full Autopilot preset…', () => { columnsDraft.presetConfirm = true; renderColumns(); $('#execution-preset-apply')?.focus(); }, 'secondary-button');
-  preset.id = 'execution-preset';
-  const nodes = [heading, paragraph('Every column inherits these unless it sets its own. Planning and Code Review columns are always read-only. Saving starts nothing.', 'note'),
-    select('interaction', 'Agent questions'), select('filesystem', 'Workspace access'), select('completion', 'Stage completion'),
-    field('Automatic rework rounds (0–5)', rework), field('Merge method', merge),
-    field('Folder trust questions (answered only for a recognized Claude Code or Codex trust menu naming the card’s own worktree)', trust), field('Test commands (one per line; run without a shell in the task worktree; their exit codes decide Testing)', tests), allLabel,
-    warning, detailActions(preset)];
-  if (columnsDraft.presetConfirm) {
-    const apply = detailButton('Apply Full Autopilot', async () => {
-      apply.disabled = true;
-      try {
-        await boardCall('POST', `/api/projects/${encodeURIComponent(project.id)}/full-autopilot`, { expectedRevision: currentProject().revision, confirm: true });
-        openColumns(); announce('Full Autopilot preset applied: typed stage columns, autonomous workspace access, automatic completion, two rework rounds, squash merges. Nothing started.');
-      } catch (error) { $('#columns-error').textContent = error.message; $('#columns-error').hidden = false; apply.disabled = false; }
-    }, 'danger'); apply.id = 'execution-preset-apply';
-    const cancel = detailButton('Cancel', () => { columnsDraft.presetConfirm = false; renderColumns(); $('#execution-preset')?.focus(); });
-    nodes.push(paragraph('Full Autopilot types the standard columns (Planning, Executing, Code Review, Testing, Merge), lets agents work in each task worktree without asking (including the CLI’s folder-trust question for that worktree), completes stages automatically when their checks pass, sends review findings and failing tests back to Executing up to twice, and squash-merges each finished card before the next one starts. Unsaved column edits are discarded.', 'note'), detailActions(cancel, apply));
-  }
+  const grid = document.createElement('div'); grid.className = 'execution-grid';
+  grid.append(select('interaction', 'Agent questions'), select('filesystem', 'Workspace access'), select('completion', 'Stage completion'),
+    field('Automatic rework rounds (0–5)', rework), field('Merge method', merge), field('CLI folder-trust question', trust));
+  const repository = $('#columns-repository-actions'); repository.hidden = !columnsDraft.pipeline;
+  nodes.push(columnsSection('advanced', 'Advanced', paragraph('Every column uses these unless it sets its own. Planning and Code Review are always read-only. Saving starts nothing.', 'note'), grid, allLabel, warning, repository));
   box.replaceChildren(...nodes);
 }
 const builtinTitle = id => board?.columns?.find(column => column.id === id)?.title || id;
-function openColumns() {
+/** `tab`: 'columns' (default) or 'board' (How it runs). Also used directly as a click handler. */
+function openColumns({ tab = 'columns' } = {}) {
   columnsDraft.headerDrafts.clear();
+  columnsDraft.tab = tab === 'board' ? 'board' : 'columns';
+  if (!$('#columns-dialog').open) columnsDraft.open = new Set();
   const project = currentProject();
   if (!project) return;
   const layout = project.columnLayout?.length ? project.columnLayout : (board?.columns || []).map(column => ({ id: column.id }));
@@ -4665,18 +4743,27 @@ function openColumns() {
   $('#columns-project').textContent = `${project.name} · COLUMNS`;
   $('#columns-error').hidden = true;
   renderColumns();
-  $('#columns-dialog').showModal();
+  if (!$('#columns-dialog').open) $('#columns-dialog').showModal();
+}
+for (const [id, tab] of [['columns-tab-columns', 'columns'], ['columns-tab-board', 'board']]) {
+  $(`#${id}`).addEventListener('click', () => { columnsDraft.tab = tab; renderColumns(); $(`#${id}`).focus(); });
+  // Arrow keys move between the two tabs, as in any tab list.
+  $(`#${id}`).addEventListener('keydown', event => {
+    if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+    event.preventDefault(); $(`#${id === 'columns-tab-columns' ? 'columns-tab-board' : 'columns-tab-columns'}`).click();
+  });
 }
 const draftAnchor = entry => { let anchor = 'todo'; for (const item of columnsDraft.list) { if (item === entry) return anchor; if (!item.custom && !item.hidden) anchor = item.id; } return anchor; };
 function renderColumns() {
+  rememberColumnsSections();
   renderPipelineProfiles();
   $('#columns-repository-actions').hidden = !columnsDraft.pipeline;
   $('#columns-repository-read').disabled = !board?.projects.find(project => project.id === columnsDraft.project)?.repository;
   $('#columns-add').disabled = Boolean(columnsDraft.profileId);
   $('#columns-remove').disabled = Boolean(columnsDraft.profileId);
   $('#columns-use-pipeline').hidden = columnsDraft.pipeline;
-  $('#columns-mode-note').textContent = columnsDraft.pipeline
-    ? 'Each column’s type decides what it does: typed columns (Planning, Executing, Code Review, Testing, Merge) start a fresh agent session in the task worktree and check their result; custom columns continue one conversation. Pause agents before changing column structure.'
+  $('#columns-mode-note').hidden = columnsDraft.pipeline;
+  $('#columns-mode-note').textContent = columnsDraft.pipeline ? ''
     : 'This board uses the original stage rules. Switching keeps the saved tasks, files, and run history; the built-in stages become typed columns. Save to confirm the switch.';
   renderExecutionPolicy();
   if (columnsDraft.pipeline) return renderPipelineColumns();
@@ -4785,21 +4872,22 @@ function renderPipelineColumns() {
     return row;
   }));
   const entry = list.find(column => column.id === columnsDraft.selected) || list[0];
-  $('#columns-remove').hidden = entry.role !== 'active';
+  $('#columns-remove').hidden = entry.role !== 'active' || columnsDraft.tab === 'board';
   $('#columns-remove').disabled = Boolean(profile);
   const editor = $('#columns-editor');
   const field = (title, input) => { const label = document.createElement('label'); label.className = 'field-label'; label.append(title, input); return label; };
   const name = document.createElement('input'); name.id = 'column-name'; name.maxLength = 80; name.value = entry.name;
   name.addEventListener('input', () => { entry.name = name.value; const item = $('#columns-list [aria-current="true"]'); if (item) item.textContent = name.value; });
-  const description = document.createElement('textarea'); description.id = 'column-description'; description.maxLength = 4000; description.value = entry.description;
+  const description = document.createElement('textarea'); description.id = 'column-description'; description.maxLength = 4000; description.value = entry.description; description.placeholder = 'What is this column for? (optional)';
   description.addEventListener('input', () => { entry.description = description.value; });
   const color = document.createElement('select'); color.setAttribute('aria-label', 'Column colour');
   color.append(...Object.entries(COLUMN_COLOR_NAMES).map(([value, label]) => option(value, label))); color.value = entry.color;
   color.addEventListener('change', () => { entry.color = color.value; });
-  const nodes = [field('Name', name), field('Description', description), field('Colour', color)];
+  // Essentials stay in view; everything else waits under More options and Automations.
+  const nodes = [field('Name', name)], more = [field('Description', description), field('Colour', color)];
   if (profile) {
     name.disabled = description.disabled = color.disabled = true;
-    nodes.push(paragraph('Column structure, automations and Base assignments are shared. Select Default to edit them.', 'note'));
+    nodes.push(...more, paragraph('Column structure, automations and Base assignments are shared. Select Default to edit them.', 'note'));
     if (entry.role === 'active') nodes.push(profileStrategyEditor(entry, profile));
     else nodes.push(paragraph('This system role never starts an agent; profiles do not change that rule.', 'note'));
   } else if (entry.role === 'active') {
@@ -4812,47 +4900,49 @@ function renderPipelineColumns() {
       if (type.value !== 'custom') entry.strategy.planExitTargetId = null;
       renderColumns(); $('#column-kind')?.focus();
     });
-    nodes.push(field('Column type', type), paragraph(COLUMN_KIND_NOTES[kind], 'note column-kind-note'));
-    const automatic = document.createElement('input'); automatic.type = 'checkbox'; automatic.checked = entry.strategy.autoSpawn !== false; automatic.id = 'column-auto-spawn';
-    automatic.addEventListener('change', () => { entry.strategy.autoSpawn = automatic.checked; renderColumns(); $('#column-auto-spawn')?.focus(); });
-    const label = document.createElement('label'); label.className = 'check-row'; label.append(automatic, kind === 'merge' ? ' Merge when a card arrives (with automatic completion)' : typed ? ' Start this stage when a card arrives' : ' Start or resume an agent when a card arrives'); nodes.push(label);
+    nodes.push(field('What this column does', type), paragraph(COLUMN_KIND_NOTES[kind], 'note column-kind-note'));
     const provider = document.createElement('select'); provider.setAttribute('aria-label', 'Column agent');
     provider.append(option('', 'Use project agent'), ...['claude', 'codex', 'gemini'].map(id => option(id, board?.execution?.providers?.[id]?.name || id)));
     provider.value = entry.strategy.agentOverride || '';
     provider.addEventListener('change', () => { entry.strategy.agentOverride = provider.value || null; }); nodes.push(field('Agent', provider));
+    const automatic = document.createElement('input'); automatic.type = 'checkbox'; automatic.checked = entry.strategy.autoSpawn !== false; automatic.id = 'column-auto-spawn';
+    automatic.addEventListener('change', () => { entry.strategy.autoSpawn = automatic.checked; renderColumns(); $('#column-auto-spawn')?.focus(); });
+    const label = document.createElement('label'); label.className = 'check-row'; label.append(automatic, kind === 'merge' ? ' Merge when a card arrives (with automatic completion)' : typed ? ' Start this stage when a card arrives' : ' Start or resume an agent when a card arrives'); nodes.push(label);
     for (const [key, title, max] of [['modelOverride', 'Model ID (empty uses the agent default)', 100], ['effortOverride', 'Effort (empty uses the agent default)', 20]]) {
       const input = key === 'effortOverride' ? document.createElement('select') : document.createElement('input'); input.maxLength = max;
       if (key === 'effortOverride') input.append(option('', 'Use agent default'), ...['low', 'medium', 'high', 'xhigh', 'max'].map(value => option(value, value)));
-      input.value = entry.strategy[key] || ''; input.addEventListener('change', () => { entry.strategy[key] = input.value || null; }); nodes.push(field(title, input));
+      input.value = entry.strategy[key] || ''; input.addEventListener('change', () => { entry.strategy[key] = input.value || null; }); more.push(field(title, input));
     }
-    // Execution policy overrides; empty inherits the board (Execution permissions above).
+    // Execution policy overrides; empty inherits the board (How it runs).
     const readOnlyKind = kind === 'planning' || kind === 'review';
     for (const [key, title] of [['interaction', 'Agent questions'], ['filesystem', 'Workspace access'], ['completion', 'Stage completion']]) {
       if (key === 'completion' && !typed) continue;
       const input = document.createElement('select'); input.id = `column-${key}`;
-      input.append(option('', 'Inherit the board setting'), ...EXECUTION_CHOICES[key].map(([value, text]) => option(value, text)));
+      input.append(option('', 'Same as the board (How it runs)'), ...EXECUTION_CHOICES[key].map(([value, text]) => option(value, text)));
       input.value = entry.strategy[key] || '';
       if (key === 'filesystem' && readOnlyKind) { input.value = 'read_only'; input.disabled = true; }
       input.addEventListener('change', () => { entry.strategy[key] = input.value || null; });
-      nodes.push(field(title, input));
+      more.push(field(title, input));
     }
-    if (readOnlyKind) nodes.push(paragraph(`${kind === 'planning' ? 'Planning' : 'Code Review'} columns are always read-only; no setting can change that.`, 'note'));
+    if (readOnlyKind) more.push(paragraph(`${kind === 'planning' ? 'Planning' : 'Code Review'} columns are always read-only; no setting can change that.`, 'note'));
     if (!typed) {
       const permissions = document.createElement('select'); permissions.setAttribute('aria-label', 'Column permissions');
       permissions.append(...[['', 'Use agent default'], ['plan', 'Plan mode'], ['default', 'Ask for permission'], ['acceptEdits', 'Claude: accept file edits'], ['workspace-write', 'Codex: write in workspace'], ['auto_edit', 'Gemini: accept file edits']].map(([value, label]) => option(value, label)));
-      permissions.value = entry.strategy.permissionMode || ''; permissions.addEventListener('change', () => { entry.strategy.permissionMode = permissions.value || null; }); nodes.push(field('CLI permission mode (used when no workspace access is chosen above)', permissions));
+      permissions.value = entry.strategy.permissionMode || ''; permissions.addEventListener('change', () => { entry.strategy.permissionMode = permissions.value || null; }); more.push(field('CLI permission mode (used when no workspace access is chosen above)', permissions));
       const target = document.createElement('select'); target.id = 'column-plan-target';
       target.append(option('', 'Stay in this column'), ...list.filter(column => column.role === 'active' && column.id !== entry.id).map(column => option(column.id, column.name)));
-      target.value = entry.strategy.planExitTargetId || ''; target.addEventListener('change', () => { entry.strategy.planExitTargetId = target.value || null; }); nodes.push(field('After native plan approval', target));
-      nodes.push(paragraph('Claude and Gemini can move to this target after a native plan is approved in the terminal. A request or finished response does not count as approval. Codex currently requires an explicit move.', 'note'));
-      nodes.push(paragraph('Live moves retain the CLI’s current permissions. New model, effort or Base settings wait for the current turn before resuming. Permissions apply on startup/resume. Pause before editing this board or switching providers.', 'note'));
-    } else nodes.push(paragraph('Typed columns use the agent chosen above with a fresh session on every arrival, so each column can use a different provider. Enabled “on enter” agent messages are sent with the task as column instructions.', 'note'));
-  } else nodes.push(paragraph(entry.role === 'todo' ? 'The holding role never starts agents. Returning a card stops its agent and resets the current session; files and historical output are kept.'
-    : 'The completion role pauses the agent and archives its task, preserving the conversation and worktree for restoration.', 'note'));
+      target.value = entry.strategy.planExitTargetId || ''; target.addEventListener('change', () => { entry.strategy.planExitTargetId = target.value || null; }); more.push(field('After native plan approval', target));
+      more.push(paragraph('Claude and Gemini can move to this target after a native plan is approved in the terminal. A request or finished response does not count as approval. Codex currently requires an explicit move.', 'note'));
+      more.push(paragraph('Live moves retain the CLI’s current permissions. New model, effort or Base settings wait for the current turn before resuming. Permissions apply on startup/resume. Pause before editing this board or switching providers.', 'note'));
+    } else more.push(paragraph('Each arrival starts a fresh session with the agent chosen above, so every column can use a different provider. Enabled “on enter” messages go to the agent as column instructions.', 'note'));
+  } else nodes.push(paragraph(entry.role === 'todo' ? 'Cards wait here. Moving a card back here stops its agent; its files and history are kept.'
+    : 'Finished cards land here. Their agent pauses and the card is archived; its conversation and files are kept.', 'note'));
+  if (!profile && projectColumnsOf().some(column => column.id === entry.id)) more.push(basePicker({ target: { scope: 'column', projectId: currentProject().id, columnId: entry.id }, inactive: entry.role !== 'active' }));
+  if (!profile) nodes.push(columnsSection('more', 'More options', ...more));
   const automations = pipelineAutomationEditor(entry);
   if (profile) for (const control of automations.querySelectorAll('input, textarea, select, button')) control.disabled = true;
-  nodes.push(automations);
-  if (!profile && projectColumnsOf().some(column => column.id === entry.id)) nodes.push(basePicker({ target: { scope: 'column', projectId: currentProject().id, columnId: entry.id }, inactive: entry.role !== 'active' }));
+  const count = entry.automations.onEnter.length + entry.automations.onExit.length;
+  nodes.push(columnsSection('automations', count ? `Automations · ${count}` : 'Automations', automations));
   editor.replaceChildren(...nodes);
 }
 

@@ -69,7 +69,7 @@
           <div class="detail-actions"><button type="submit" class="danger">Open</button><button type="button" id="workspace-path-cancel">Cancel</button></div>
           <p class="inline-error" id="workspace-path-error" role="alert" hidden></p>
         </form>
-        <div class="history-label"><span>WORKSPACE</span><span id="workspace-count">00</span></div>
+        <div class="history-label"><span>PROJECTS</span><span id="workspace-count">00</span></div>
         <ul class="workspace-list" id="workspace-list" aria-label="Projects"></ul>
         <div class="history-empty" id="workspace-empty" hidden><p>No projects yet.</p><small>Each project gets its own board and repository.</small></div>
         <section class="sidebar-project-settings" id="sidebar-project-settings" aria-label="Current project settings">
@@ -277,17 +277,10 @@
       <p class="storage-warning board-warning" role="alert" hidden></p>
       <div class="kanban-layout">
       <section id="project-settings" aria-label="Project settings" hidden>
-      <div class="settings-panel-heading"><h2 class="sr-only">Project settings</h2><button type="button" class="text-button" id="project-settings-close" aria-label="Collapse project settings">Done</button></div>
-      <p class="note settings-panel-note">Repository setup is required. Agent and workflow choices are optional.</p>
+      <p class="note settings-panel-note" hidden>Connect a code folder so agents can work on your cards.</p>
       <section class="card project-context" id="project-context" aria-labelledby="project-context-heading" hidden>
-        <div class="project-context-heading">
-          <div class="project-identity"><h2 id="project-context-heading">Project</h2><span id="project-target" class="context-target"></span></div>
-          <div class="project-context-actions">
-            <button type="button" class="context-agent" id="project-agent-toggle" aria-expanded="false" aria-controls="project-agent-panel">Project agent</button>
-            <button type="button" class="text-button" id="project-files-toggle" aria-expanded="false" aria-controls="project-location">Files</button>
-          </div>
-        </div>
-        <div id="project-location" class="project-location" hidden></div>
+        <h2 id="project-context-heading" class="sr-only">Project</h2><span id="project-target" class="sr-only"></span>
+        <div class="settings-row"><span class="settings-label">Agent</span><button type="button" class="context-agent" id="project-agent-toggle" aria-expanded="false" aria-controls="project-agent-panel">Project agent</button></div>
         <form id="project-agent-form">
           <div id="project-agent-panel" hidden>
           <div id="project-agent-fields"></div>
@@ -300,20 +293,35 @@
         <h2 id="projects-heading" class="sr-only">Project settings</h2><span class="project-summary sr-only" id="project-summary" hidden></span>
         <div id="project-body">
         <div class="kanban-toolbar">
-          <div class="toolbar-cell">
-            <span class="field-label" id="repo-label">Repository</span>
+          <div class="toolbar-cell settings-row">
+            <span class="field-label settings-label" id="repo-label">Code folder</span>
             <p class="toolbar-value" id="repo-summary">Not linked</p>
-            <button type="button" class="text-button" id="repo-edit" aria-controls="repo-panel" aria-expanded="false">Link or change</button>
+            <button type="button" class="text-button" id="repo-edit" aria-controls="repo-panel" aria-expanded="false">Change</button>
           </div>
-          <div class="toolbar-cell" id="branch-field" hidden>
-            <label class="field-label" for="target-branch">Target branch<select id="target-branch"></select></label>
-            <div class="kanban-project-actions"><button type="button" class="text-button" id="branch-save">Use this branch</button><button type="button" class="text-button" id="branch-refresh">Refresh</button></div>
+          <div class="kanban-repo" id="repo-panel" hidden>
+            <form class="kanban-repo-row" id="repo-form" novalidate>
+              <label class="field-label" for="repo-path">Git repository folder<input id="repo-path" type="text" maxlength="4096" autocomplete="off" spellcheck="false" placeholder="/Users/you/code/project"></label>
+              <div class="kanban-form-actions"><button type="button" class="secondary-button" id="repo-browse">Browse…</button><button type="submit" class="secondary-button" id="repo-link">Check and link</button><button type="button" class="text-button" id="repo-unlink" hidden>Unlink</button></div>
+            </form>
+            <p class="note" id="repo-state" role="status"></p>
+            <p class="note" id="branch-state"></p>
+            <p class="inline-error" id="repo-message" role="alert" hidden></p>
+            <div class="connection-detail" id="repo-setup" hidden></div>
+            <div class="connection-detail" id="import-pending" hidden><p id="import-pending-text"></p><div class="detail-actions"><button type="button" class="danger" id="import-confirm">Check and apply</button><button type="button" id="import-dismiss">Dismiss</button></div></div>
           </div>
-          <div class="toolbar-cell">
-            <span class="field-label">Workflow</span>
+          <div class="toolbar-cell settings-row" id="branch-field" hidden>
+            <label class="field-label settings-label" for="target-branch">Merges into<select id="target-branch"></select></label>
+            <div class="kanban-project-actions"><button type="button" class="text-button" id="branch-save">Save</button><button type="button" class="text-button" id="branch-refresh">Refresh</button></div>
+          </div>
+          <div class="toolbar-cell settings-row">
+            <span class="field-label settings-label">Columns</span>
             <p class="toolbar-value" id="workflow-summary">Planning: Ask · Executing: Ask</p>
-            <button type="button" class="text-button" id="workflow-open">Workflow settings</button>
+            <button type="button" class="text-button" id="workflow-open">Edit</button>
           </div>
+          <div class="toolbar-cell settings-row">
+            <span class="field-label settings-label">Location</span><button type="button" class="text-button" id="project-files-toggle" aria-expanded="false" aria-controls="project-location">Show</button>
+          </div>
+          <div id="project-location" class="project-location" hidden></div>
         </div>
         <details class="base-disclosure project-backup"><summary>Backup and restore</summary><div class="project-backup-actions"><button class="secondary-button" id="import-board" type="button" title="Restore a board backup (JSON)" aria-label="Import board backup"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M12 15V3m-5 5 5-5 5 5M5 16v5h14v-5"/></svg><span>Import</span></button><button class="secondary-button" id="export-board" type="button" title="Download a board backup (JSON). Document content follows the option below." aria-label="Export board backup"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 16v5h14v-5"/></svg><span>Export</span></button><input type="file" id="import-file" accept=".json,application/json" hidden></div><label class="check-row"><input type="checkbox" id="export-base-content"> Include Base document content</label><p class="note">Resource definitions and assignments are included. Document bodies and supporting files are omitted unless selected.</p></details>
         <form class="kanban-project-form" id="project-form" novalidate hidden>
@@ -322,20 +330,10 @@
           <div class="kanban-form-actions"><button type="submit" class="copy-button">Save project</button><button type="button" class="secondary-button" id="project-cancel">Cancel</button></div>
           <p class="inline-error" id="project-error" role="alert" hidden></p>
         </form>
-        <div class="kanban-repo" id="repo-panel" hidden>
-          <form class="kanban-repo-row" id="repo-form" novalidate>
-            <label class="field-label" for="repo-path">Git repository folder<input id="repo-path" type="text" maxlength="4096" autocomplete="off" spellcheck="false" placeholder="/Users/you/code/project"></label>
-            <div class="kanban-form-actions"><button type="button" class="secondary-button" id="repo-browse">Browse…</button><button type="submit" class="secondary-button" id="repo-link">Check and link</button><button type="button" class="text-button" id="repo-unlink" hidden>Unlink</button></div>
-          </form>
-          <p class="note" id="repo-state" role="status"></p>
-          <p class="note" id="branch-state"></p>
-          <p class="inline-error" id="repo-message" role="alert" hidden></p>
-          <div class="connection-detail" id="repo-setup" hidden></div>
-          <div class="connection-detail" id="import-pending" hidden><p id="import-pending-text"></p><div class="detail-actions"><button type="button" class="danger" id="import-confirm">Check and apply</button><button type="button" id="import-dismiss">Dismiss</button></div></div>
-        </div>
         </div>
         <div class="connection-detail kanban-detail" id="project-detail" role="status" hidden></div>
       </section>
+      <div class="settings-panel-heading"><button type="button" class="text-button" id="project-settings-close" aria-label="Collapse project settings">Done</button></div>
       </section>
       <section class="card kanban-board" aria-labelledby="board-heading">
         <div class="card-heading"><div><h2 id="board-heading" class="sr-only">Project views</h2><div class="view-switch" role="tablist" aria-label="Project views"><button type="button" role="tab" id="view-board" aria-selected="true" aria-controls="kanban-columns">Board</button><button type="button" role="tab" id="view-timeline" aria-selected="false" aria-controls="timeline">Timeline</button></div><span class="kanban-count" id="board-count" aria-label="Cards">00</span></div><div class="board-actions" id="board-actions"><button class="secondary-button" id="agents-open" type="button" aria-haspopup="dialog" title="Choose this project’s default agent and per-column overrides">Agents</button><button class="secondary-button" id="columns-open" type="button" aria-haspopup="dialog"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><rect x="3.5" y="4.5" width="5" height="15" rx="1"/><rect x="9.5" y="4.5" width="5" height="15" rx="1"/><rect x="15.5" y="4.5" width="5" height="15" rx="1"/></svg><span>Columns</span></button><button class="secondary-button autopilot-open" id="autopilot-open" type="button" aria-haspopup="dialog"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h9m-4-4 4 4-4 4"/><path d="M15 5h4v14h-4"/></svg><span>Autopilot</span></button><button class="secondary-button autopilot-open" id="coordinator-toggle" type="button" aria-controls="coordinator" aria-pressed="false" hidden title="Open or close the Coordinator"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/></svg><span>Coordinator</span></button><button class="icon-button board-scroll" id="board-left" type="button" aria-controls="kanban-columns" aria-label="Scroll the board left" title="Scroll left"><span aria-hidden="true">‹</span></button><button class="icon-button board-scroll" id="board-right" type="button" aria-controls="kanban-columns" aria-label="Scroll the board right" title="Scroll right"><span aria-hidden="true">›</span></button><button class="copy-button" id="card-new" type="button"><span aria-hidden="true">＋</span> New card</button></div></div>
@@ -504,15 +502,15 @@
     <dialog id="columns-dialog" class="kanban-dialog columns-dialog" aria-labelledby="columns-heading"><button class="dialog-close icon-button" id="columns-close" type="button" aria-label="Close">×</button><p class="eyebrow" id="columns-project">COLUMNS</p><h2 id="columns-heading">Column Manager</h2>
       <form id="columns-form" novalidate>
         <p id="columns-mode-note" class="note"></p>
-        <section id="columns-execution" class="columns-execution" aria-labelledby="columns-execution-heading" hidden></section>
+        <div class="columns-tabs" id="columns-tabs" role="tablist" aria-label="Column Manager sections" hidden><button type="button" role="tab" id="columns-tab-columns" aria-controls="columns-layout" aria-selected="true">Columns</button><button type="button" role="tab" id="columns-tab-board" aria-controls="columns-execution" aria-selected="false">How it runs</button></div>
+        <section id="columns-execution" class="columns-execution" role="tabpanel" aria-labelledby="columns-tab-board" hidden></section>
         <button type="button" class="secondary-button" id="columns-use-pipeline">Switch to a column pipeline…</button>
-        <div id="columns-repository-actions" class="kanban-dialog-actions" hidden><button type="button" class="secondary-button" id="columns-repository-read">Review repository configuration…</button></div>
-        <div class="columns-layout">
+        <div id="columns-repository-actions" class="columns-repository-actions" hidden><button type="button" class="text-button" id="columns-repository-read">Use the board from the repository’s configuration…</button></div>
+        <div class="columns-layout" id="columns-layout" role="tabpanel" aria-labelledby="columns-tab-columns">
           <div class="columns-side">
-            <div id="columns-profiles" hidden></div>
-            <p class="history-label"><span>COLUMNS</span></p>
             <ol class="columns-list" id="columns-list" aria-label="Columns, left to right"></ol>
             <button type="button" class="secondary-button columns-add" id="columns-add">＋ Add column</button>
+            <div id="columns-profiles" hidden></div>
           </div>
           <div class="columns-editor" id="columns-editor"></div>
         </div>
@@ -546,18 +544,19 @@
     </dialog>
     <dialog id="autopilot-dialog" class="kanban-dialog autopilot-dialog" aria-labelledby="autopilot-heading"><button class="dialog-close icon-button" id="autopilot-close" type="button" aria-label="Close">×</button><p class="eyebrow" id="autopilot-project">AUTOPILOT</p><h2 id="autopilot-heading">Autopilot</h2>
       <form id="autopilot-form" novalidate>
-        <p class="note" id="autopilot-about-pipeline" hidden>Autopilot takes the queued To Do cards one at a time, in the order below, through the columns you choose, then moves each to Done. Entering the first column starts the card’s agent with its task; each later column gives the agent its instruction when it arrives. A column is finished when its agent has completed a new turn and is idle; a plan column waits for you to approve the plan in the terminal. It pauses when an agent stops, a card is moved by hand, or an agent asks you something.</p>
-        <p class="note" id="autopilot-about">Autopilot takes the queued To Do cards one at a time, in the order below, through the stages you choose. It confirms each finished agent turn, commits with your Git identity, accepts reviews that report no issues, runs your test commands, and sends a card back to Executing (with the findings or failing output) up to the rework limit. It pauses whenever an agent asks you something, a check fails, or something unexpected happens.</p>
+        <p class="note autopilot-lede" id="autopilot-about-pipeline" hidden>Autopilot takes your To Do cards one at a time, from the top, through the steps below. It pauses and tells you why if an agent needs you or a check fails.</p>
+        <p class="note autopilot-lede" id="autopilot-about">Autopilot takes your To Do cards one at a time, from the top, through the stages below. It confirms finished turns, commits, accepts clean reviews and runs your tests, and pauses if an agent needs you or a check fails.</p>
+        <ul class="autopilot-ready" id="autopilot-ready" aria-label="Before you start" hidden></ul>
         <fieldset class="autopilot-route"><legend id="autopilot-route-legend">Default route</legend><div class="route-chips" id="autopilot-route"></div></fieldset>
         <div class="select-grid">
           <label class="field-label" for="autopilot-finish">At Merge<select id="autopilot-finish"><option value="merge">Merge locally (fast-forward)</option><option value="pull_request">Open a pull request</option></select></label>
           <label class="field-label" for="autopilot-rework">Automatic rework rounds<select id="autopilot-rework"><option value="0">None: pause at the first problem</option><option value="1">1 round</option><option value="2" selected>2 rounds</option><option value="3">3 rounds</option></select></label>
         </div>
         <fieldset class="autopilot-instructions" id="autopilot-instructions" hidden></fieldset>
-        <fieldset class="autopilot-queue"><legend>Queue <span class="note" id="autopilot-queue-note"></span></legend><ol id="autopilot-queue"></ol></fieldset>
-        <label class="check-option"><input type="checkbox" id="autopilot-consent"><span><strong>I understand what Autopilot does for me</strong><small id="autopilot-consent-detail">It confirms stages, commits, accepts clean reviews, and merges into your local target branch or pushes the task branch for a pull request, without asking each time. It never force-pushes or bypasses agent permissions.</small></span></label>
+        <fieldset class="autopilot-queue"><legend>Order <span class="note" id="autopilot-queue-note"></span></legend><ol id="autopilot-queue"></ol></fieldset>
+        <label class="check-option autopilot-consent"><input type="checkbox" id="autopilot-consent"><span><strong>I understand Autopilot works on its own</strong><small id="autopilot-consent-detail">It confirms stages, commits, accepts clean reviews, and merges into your local target branch or pushes the task branch for a pull request, without asking each time. It never force-pushes or bypasses agent permissions.</small></span></label>
         <p class="inline-error" id="autopilot-error" role="alert" hidden></p>
-        <div class="kanban-dialog-actions"><button type="button" class="secondary-button" id="autopilot-save">Save settings</button><button type="submit" class="dialog-done" id="autopilot-start">Save and start <span aria-hidden="true">↗</span></button></div>
+        <div class="kanban-dialog-actions"><button type="button" class="secondary-button" id="autopilot-save">Save</button><button type="submit" class="dialog-done" id="autopilot-start">Start Autopilot <span aria-hidden="true">↗</span></button></div>
         <details class="autopilot-log" id="autopilot-log-box"><summary>Activity</summary><ol id="autopilot-log"></ol></details>
       </form>
     </dialog>

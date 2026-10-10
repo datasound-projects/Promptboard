@@ -38,8 +38,9 @@ failures). Enabled "on enter" agent messages of a typed column are sent with the
 
 ## Execution policy
 
-**Columns → Execution permissions** sets the board-wide policy; each active column can override it; board profiles and a
-card's task-wide agent override can override it too. One function resolves it for every launch, most specific first:
+**Columns → How it runs** offers two ways of working: **Hands-off** (the Full Autopilot preset below) and **Step by step**
+(the defaults: agents ask, you complete each stage). Its **Advanced** section sets the board-wide policy; each active
+column can override it under **More options**; board profiles and a card's task-wide agent override can override it too. One function resolves it for every launch, most specific first:
 
 task override → board profile → column → board → defaults (ask, task workspace, manual completion).
 
@@ -88,7 +89,7 @@ it. For typed columns it follows the recorded outcome: succeeded → next column
 (or to Code Review after a merge conflict), up to the board's rework limit (`REWORK_LIMIT_REACHED`); failed → pause with
 the reason. It never pushes, never answers an agent's question for you, and pauses for its own card only.
 
-**Full Autopilot** (in Columns) applies, explicitly and with a confirmation: typed standard columns, autonomous
+**Full Autopilot** (Columns → How it runs → **Hands-off**) applies, explicitly and with a confirmation: typed standard columns, autonomous
 workspace access, folder trust for task worktrees, automatic completion, two rework rounds, squash merges and a route through every active column.
 Any column can still override it.
 

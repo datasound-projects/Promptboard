@@ -60,7 +60,8 @@ test('external repository changes show a keyboard review banner across themes an
   await browser.until(`document.getElementById('repository-pipeline-warning-text').textContent.includes('configuration changed')`, 'recovered definition detected');
   // An open editor retains its draft during background reads and opens review
   // through its own repository button while the modal owns keyboard focus.
-  await enter('columns-repository-read'); await browser.until(`window.__repositoryReads.length > 0`, 'fresh reviewed read dispatched'); await reviewed('fresh definition reviewed');
+  // The repository button lives under How it runs → Advanced.
+  await browser.eval(`document.getElementById('columns-tab-board').click(); document.querySelector('[data-section="advanced"]').open = true;`); await enter('columns-repository-read'); await browser.until(`window.__repositoryReads.length > 0`, 'fresh reviewed read dispatched'); await reviewed('fresh definition reviewed');
   assert.equal(await browser.eval(`return document.getElementById('column-name').value==='Unsaved keyboard draft' && !document.querySelector('#repository-pipeline-preview img') && !window.__watchPwned;`), true);
   await enter('repository-pipeline-cancel'); await enter('columns-close');
   await enter('repository-pipeline-warning-review'); await browser.until(`window.__repositoryReads.length === 2`, 'banner keyboard action dispatched'); await reviewed('banner opens fresh review');
@@ -93,7 +94,7 @@ test('repository board review works by keyboard in both themes and narrow Chrome
   const enter = async id => { if (id) await browser.eval(`const node=document.getElementById(${JSON.stringify(id)}); node.scrollIntoView({block:'center'}); node.focus();`); await browser.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' }); await browser.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 }); };
   const read = async () => {
     const count = await browser.eval('return window.__repositoryReads.length;');
-    await enter('columns-repository-read');
+    await browser.eval(`document.getElementById('columns-tab-board').click(); document.querySelector('[data-section="advanced"]').open = true;`); await enter('columns-repository-read');
     await browser.until(`window.__repositoryReads.length === ${count + 1}`, 'owned repository read dispatched');
     await browser.eval(`await window.__repositoryReads[${count}]; return true;`);
   };
@@ -132,7 +133,7 @@ test('automation editing, Stop and receipt history work by keyboard in light/dar
   await browser.goto(`${app.url}/#/kanban`); await browser.until(`document.querySelector('[data-id="${task.id}"]')`, 'task ready'); await browser.send('Page.bringToFront');
   await browser.eval(`document.querySelector('#columns-open').focus();`); await enter(); await browser.until(`document.querySelector('#columns-dialog').open`, 'editor opened');
   await browser.eval(`[...document.querySelectorAll('.columns-item')].find(button => button.textContent === 'To Do').focus();`); await enter();
-  await browser.eval(`document.querySelector('[data-trigger="onExit"] .automation-add').scrollIntoView({block:'center'}); document.querySelector('[data-trigger="onExit"] .automation-add').focus();`); await enter();
+  await browser.eval(`document.querySelector('[data-section="automations"]').open = true; document.querySelector('[data-trigger="onExit"] .automation-add').scrollIntoView({block:'center'}); document.querySelector('[data-trigger="onExit"] .automation-add').focus();`); await enter();
   await browser.until(`document.querySelector('.automation-row [data-field="script"]')`, 'script row created');
   await browser.eval(`const type = document.querySelector('.automation-row [data-field="type"]'); type.value = 'webhook'; type.dispatchEvent(new Event('change',{bubbles:true}));`);
   await browser.eval(`const name = document.querySelector('.automation-row [data-field="name"]'); name.value = 'Recorded <img src=x onerror="window.__historyPwned=1">'; name.dispatchEvent(new Event('input',{bubbles:true})); const url = document.querySelector('.automation-row [data-field="url"]'); url.value = 'https://example.test/offline'; url.dispatchEvent(new Event('input',{bubbles:true}));`);
@@ -225,7 +226,7 @@ test('column pipeline conversion and editing work by keyboard in both themes and
   await browser.eval(`const kind = document.querySelector('#column-kind'); kind.value = 'custom'; kind.dispatchEvent(new Event('change'));`);
   await browser.until(`document.querySelector('#column-plan-target') && document.activeElement?.id === 'column-kind'`, 'custom column plan route');
   assert.equal(await browser.eval(`return document.querySelector('#column-kind').value;`), 'custom');
-  await browser.eval(`document.querySelector('#column-plan-target').focus();`);
+  await browser.eval(`document.querySelector('[data-section="more"]').open = true; document.querySelector('#column-plan-target').focus();`);
   await browser.type('Testing'); await browser.key('Tab', 'Tab', 9);
   assert.equal(await browser.eval(`return document.querySelector('#column-plan-target').value;`), 'testing');
   assert.equal(await browser.eval(`return document.querySelector('#columns-dialog').open;`), true);
@@ -318,7 +319,7 @@ test('board profiles and task agent choices work by keyboard in both themes and 
   const choose = (selector, value) => browser.eval(`const node = document.querySelector(${JSON.stringify(selector)}); node.value = ${JSON.stringify(value)}; node.dispatchEvent(new Event('change',{bubbles:true}));`);
   const shot = async name => { if (process.env.PB_BROWSER_SHOTS) { await mkdir(process.env.PB_BROWSER_SHOTS, { recursive: true }); await writeFile(join(process.env.PB_BROWSER_SHOTS, name+'.png'), await browser.screenshot()); } };
   await browser.goto(app.url+'/#/kanban'); await browser.until(`document.querySelector('[data-id="${task.id}"]')`, 'task displayed');
-  await enter('#columns-open'); await enter('#columns-profile-new');
+  await enter('#columns-open'); await browser.eval(`document.querySelector('[data-section="profiles"]').open = true;`); await enter('#columns-profile-new');
   await browser.eval(`const name = document.querySelector('#columns-profile-name'); name.value = 'Economy <img src=x>'; name.dispatchEvent(new Event('input',{bubbles:true}));`);
   assert.equal(await browser.eval(`return document.querySelector('#column-name').disabled && document.querySelector('#columns-add').disabled && document.querySelector('#columns-remove').disabled && [...document.querySelectorAll('.column-automations input, .column-automations button')].every(control=>control.disabled) && !document.querySelector('#columns-profiles img');`), true);
   await choose('#profile-modelOverride-mode','default'); await choose('#profile-effortOverride-mode','override'); await choose('#profile-effortOverride-value','low');
