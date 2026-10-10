@@ -165,6 +165,9 @@ test('full flow: commit, review, send back, fix, accept, test, and a confirmed f
   assert.deepEqual(mergeView.files, ['M\tfeature.txt']);
   await assert.rejects(w.delivery.merge(task.id, { taskCommit: mergeView.taskCommit, targetCommit: mergeView.targetCommit }), { code: 'CONFIRMATION_REQUIRED' });
   await assert.rejects(w.delivery.merge(task.id, { confirm: true, taskCommit: 'f'.repeat(40), targetCommit: mergeView.targetCommit }), { code: 'MERGE_STALE' });
+  // A target that moved since the preview is named as such; nothing changes.
+  await assert.rejects(w.delivery.merge(task.id, { confirm: true, taskCommit: mergeView.taskCommit, targetCommit: 'e'.repeat(40) }), { code: 'TARGET_CHANGED' });
+  assert.equal(git(w.root, 'rev-parse', 'trunk'), mergeView.targetCommit);
   const remoteBefore = git(w.remote, 'rev-parse', 'trunk');
   const done = await w.delivery.merge(task.id, { confirm: true, taskCommit: mergeView.taskCommit, targetCommit: mergeView.targetCommit });
   assert.equal(done.column, 'done');

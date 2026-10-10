@@ -1288,7 +1288,7 @@ export class Board {
    *   the card back to Code Review, because resolving conflicts changes code).
    * Returns { state: merged | ready | testing | resolving | blocked, message }.
    */
-  async #prepareMerge(id, { auto = false, runLocked = false } = {}) {
+  async #prepareMerge(id, { auto = false, runLocked = false, retried = false } = {}) {
     const { project, task } = this.#task(await this.state(), id);
     const pipeline = project.workflowMode === 'pipeline';
     // The stage engine records merge progress as the Merge column's outcome (there is no agent run unless conflicts need one).
@@ -1338,7 +1338,13 @@ export class Board {
       return { state: 'ready', message: `Ready to merge into ${preview.targetBranch}.` };
     }
     // Stage-engine boards squash the task's checkpoint commits into one commit with the reviewed and tested tree.
-    const done = await this.delivery.merge(id, { confirm: true, taskCommit: preview.taskCommit, targetCommit: preview.targetCommit, trigger: 'automation', squash: pipeline && (project.execution?.mergeMethod ?? 'squash') === 'squash' });
+    let done;
+    try { done = await this.delivery.merge(id, { confirm: true, taskCommit: preview.taskCommit, targetCommit: preview.targetCommit, trigger: 'automation', squash: pipeline && (project.execution?.mergeMethod ?? 'squash') === 'squash' }); }
+    catch (error) {
+      // The target moved between preview and merge: prepare once more on the new target (bring it in, test again).
+      if (error.code === 'TARGET_CHANGED' && !retried) return this.#prepareMerge(id, { auto, runLocked, retried: true });
+      return blocked(`${error.message}${error.code ? ` (${error.code})` : ''}`);
+    }
     return { state: 'merged', message: `Merged into ${preview.targetBranch}.`, task: done };
   }
 
@@ -3088,6 +3094,12 @@ export class Board {
       if (project.workflowMode !== 'pipeline') continue;
       for (const task of project.tasks) {
         const outcome = task.stageOutcome;
+        // A reported question that was answered: the same live run works again, so its stage continues.
+        if (outcome?.status === 'failed' && outcome.code === 'PERMISSION_REQUIRED' && outcome.columnId === task.column) {
+          const run = state.runs.find(item => item.id === outcome.runId);
+          if (run && ACTIVE_RUN_STATUSES.includes(run.status) && !(run.status === 'waiting_for_input' && !run.turnComplete)) await this.#locked(`transition:${task.id}`, () => this.#recordOutcome(task.id, run, 'working', { reason: 'The question was answered; the stage continues.' })).catch(() => {});
+          continue;
+        }
         if (!outcome || !['working', 'verifying'].includes(outcome.status) || !columnStage(project, task.column) || outcome.columnId !== task.column) continue;
         await this.#locked(`transition:${task.id}`, async () => {
           const fresh = await this.state(), { project: owner, task: card } = this.#task(fresh, task.id), current = card.stageOutcome;
@@ -3107,6 +3119,15 @@ export class Board {
           }
           if (['failed', 'cancelled', 'interrupted'].includes(run.status)) return this.#recordOutcome(task.id, run, 'failed', { code: run.errorCode || (run.status === 'interrupted' ? 'AGENT_INTERRUPTED' : 'AGENT_STOPPED'), reason: run.reason || `The agent ${run.status}.` });
           const policy = resolveExecutionPolicy(owner.pipeline, card.column, card, owner.execution);
+          // An autonomous column should never wait for a person. A question or permission prompt that persists is
+          // reported (Autopilot pauses on it); answering it in the terminal lets the stage continue.
+          const asking = run.status === 'waiting_for_input' && !run.turnComplete && (run.activity?.permissionPending || /answer|permission|asking/i.test(run.waitingReason || ''));
+          if (policy.interaction === 'autonomous' && asking) {
+            const since = (this.askingSince ??= new Map()).get(run.id) ?? Date.now(); this.askingSince.set(run.id, since);
+            if (Date.now() - since >= 5000) return this.#recordOutcome(task.id, run, 'failed', { code: 'PERMISSION_REQUIRED', reason: `The ${policy.stage.replace('_', ' ')} agent is waiting for an answer in its terminal although this column is autonomous: ${run.waitingReason || 'a permission prompt'}. Answer it there; the stage continues by itself.` });
+            return;
+          }
+          this.askingSince?.delete(run.id);
           if (policy.completion === 'automatic' && this.#turnFinished(run)) await this.#finishStageRun(task.id, run.id, { by: 'automatic' });
         }).catch(async error => {
           const latest = (await this.state()).runs.find(item => item.id === outcome.runId);

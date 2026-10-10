@@ -201,3 +201,36 @@ test('Reset task: restarting sessions keeps the branch and files; a workspace re
   assert.equal(reset.task.column, 'todo'); assert.equal(reset.task.workspace, null); assert.equal(reset.attempt.branch, ws.branch);
   assert.ok(git(w.root, 'branch', '--list', ws.branch), 'The old branch is kept.');
 });
+
+test('recovery: an app restart mid-stage interrupts the run and Autopilot restarts that stage fresh in the same worktree; an autonomous column reports a waiting prompt', { skip, timeout: 150000 }, async t => {
+  const w = await world(t, { agents: { executing: 'claude', code_review: 'claude', testing: 'claude' } });
+  await w.board.setExecutionPolicy(w.project.id, { policy: { interaction: 'autonomous', completion: 'automatic' }, expectedRevision: (await w.projectNow()).revision });
+  const card = await w.board.createTask({ projectId: w.project.id, title: 'Survives a restart', prompt: 'Do it. WRITE_FILE:restart.txt HANG_ONCE TASK_KEY:restart' });
+  await w.board.setAutopilot(w.project.id, { route: ['executing', 'code_review', 'testing', 'merge'], queue: [card.id], expectedRevision: (await w.projectNow()).revision });
+  await w.board.controlAutopilot(w.project.id, { action: 'start', confirm: true });
+  let autopilot = new Autopilot(w.board, { tickMs: 1e9 });
+  const hung = await until(async () => { await autopilot.tick(); return (await w.board.state()).runs.find(run => run.taskId === card.id && run.status === 'running'); }, 'first Executing run');
+  const ws = (await w.task(card.id)).workspace;
+  // The app stops: its agents end; a new process reads the same data folder.
+  await w.supervisor.shutdown(500);
+  const board = new Board({ dataDir: w.dataDir }), supervisor = new Supervisor({ board, dataDir: w.dataDir }); board.executor = supervisor;
+  t.after(() => supervisor.shutdown(500));
+  assert.equal((await board.run(hung.id)).status, 'interrupted');
+  autopilot = new Autopilot(board, { tickMs: 1e9 });
+  const paused = await until(async () => { await autopilot.tick(); const project = (await board.state()).projects[0]; return project.autopilot.status === 'paused' && project.autopilot; }, 'Autopilot pauses on the interrupted stage');
+  assert.match(paused.reason, /Executing failed \(AGENT_INTERRUPTED\)/);
+  await board.controlAutopilot(w.project.id, { action: 'resume' });
+  await until(async () => { await autopilot.tick(); return (await board.state()).projects[0].autopilot.status === 'finished'; }, 'Autopilot finished after the restart', 120000);
+  const done = (await board.state()).projects[0].tasks.find(item => item.id === card.id);
+  assert.equal(done.completion.kind, 'merged');
+  const runs = (await board.state()).runs.filter(run => run.taskId === card.id);
+  assert.deepEqual([...new Set(runs.map(run => run.workspacePath))], [ws.path], 'The restarted stage used the same worktree.');
+  assert.ok(runs.filter(run => run.stageKind === 'executing').length >= 2);
+  // An autonomous column whose agent stops at a permission prompt is reported, and continues once answered.
+  const asking = await board.createTask({ projectId: w.project.id, title: 'Asks permission', prompt: 'Do it. WRITE_FILE:ask.txt ASK_PERMISSION' });
+  const run = (await board.transition(asking.id, { column: 'executing', expectedRevision: asking.revision })).run;
+  const reported = await until(async () => { await board.advanceFlows(); const item = (await board.state()).projects[0].tasks.find(task => task.id === asking.id); return item.stageOutcome?.code === 'PERMISSION_REQUIRED' && item.stageOutcome; }, 'PERMISSION_REQUIRED', 30000);
+  assert.match(reported.reason, /waiting for an answer in its terminal although this column is autonomous/);
+  supervisor.input(run.id, 'y\r');
+  await until(async () => { await board.advanceFlows(); return (await board.state()).projects[0].tasks.find(task => task.id === asking.id).stageOutcome?.status === 'succeeded'; }, 'the answered stage completed', 30000);
+});

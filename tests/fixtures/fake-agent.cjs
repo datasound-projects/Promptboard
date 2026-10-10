@@ -121,6 +121,11 @@ function turn(text) {
   }
   emit('UserPromptSubmit');
   process.stdout.write(`working on ${text.length} characters\r\n`);
+  // HANG_ONCE: the first session of this task never finishes its turn (as when the app stops mid-stage); later ones do.
+  if (text.includes('HANG_ONCE') && process.env.FAKE_AGENT_STATE) {
+    const marker = join(process.env.FAKE_AGENT_STATE, `hang-${(text.match(/TASK_KEY:(\w+)/) || [])[1] || 'task'}`);
+    try { readFileSync(marker); } catch { writeFileSync(marker, 'hung once\n'); process.stdout.write('still working…\r\n'); return; }
+  }
   if (text.includes('BILLING')) { emit('StopFailure', { error: 'billing_error', last_assistant_message: 'API Error: billing' }); return; }
   // Real CLIs enforce read-only planning (plan mode, read-only tools or sandbox, deny policy).
   // The fake models that: it only writes when no read-only flag was passed.
