@@ -754,9 +754,12 @@ test('native approved plans move immediately while implementation continues; req
     const owned = w.board.executor.sessions.get(original.id), pid = owned.proc.pid;
     w.board.executor.input(original.id, 'activity-plan-request\r'); await until(async () => (await w.board.run(original.id)).activity?.permissionPending);
     assert.equal((await w.taskNow(card.id)).column, 'planning'); assert.equal((await w.board.run(original.id)).planRoutes, undefined);
+    const eventsFile = join(w.dataDir, original.artifactsDir, 'events.jsonl'), sent = Buffer.byteLength(await readFile(eventsFile, 'utf8'));
     w.board.executor.input(original.id, 'activity-plan-reject\r');
-    await until(async () => (await readFile(join(w.dataDir, original.artifactsDir, 'output.log'), 'utf8')).includes('activity-plan-reject emitted') && !owned.reading);
-    assert.equal((await w.board.run(original.id)).activity.permissionPending, true);
+    // Wait until the rejection's events were read, not just written: the rejected dialog is answered.
+    await until(async () => (await readFile(join(w.dataDir, original.artifactsDir, 'output.log'), 'utf8')).includes('activity-plan-reject emitted')
+      && owned.eventsOffset > sent && owned.eventsOffset === Buffer.byteLength(await readFile(eventsFile, 'utf8')) && !owned.reading);
+    assert.equal((await w.board.run(original.id)).activity.permissionPending, false);
     assert.equal((await w.taskNow(card.id)).column, 'planning'); assert.equal((await w.board.run(original.id)).planRoutes, undefined);
     w.board.executor.input(original.id, 'activity-finish\r'); await until(async () => (await w.board.run(original.id)).activity?.ready);
     assert.equal((await w.taskNow(card.id)).column, 'planning'); assert.equal((await w.board.run(original.id)).planRoutes, undefined);
