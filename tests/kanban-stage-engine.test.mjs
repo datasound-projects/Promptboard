@@ -210,6 +210,8 @@ test('recovery: an app restart mid-stage interrupts the run and Autopilot restar
   await w.board.controlAutopilot(w.project.id, { action: 'start', confirm: true });
   let autopilot = new Autopilot(w.board, { tickMs: 1e9 });
   const hung = await until(async () => { await autopilot.tick(); return (await w.board.state()).runs.find(run => run.taskId === card.id && run.status === 'running'); }, 'first Executing run');
+  // Restart only once that agent is really mid-turn (it received the task and is working).
+  await until(() => readFile(join(w.state, 'hang-restart'), 'utf8').then(() => true, () => false), 'the first agent is mid-turn');
   const ws = (await w.task(card.id)).workspace;
   // The app stops: its agents end; a new process reads the same data folder.
   await w.supervisor.shutdown(500);
@@ -220,7 +222,10 @@ test('recovery: an app restart mid-stage interrupts the run and Autopilot restar
   const paused = await until(async () => { await autopilot.tick(); const project = (await board.state()).projects[0]; return project.autopilot.status === 'paused' && project.autopilot; }, 'Autopilot pauses on the interrupted stage');
   assert.match(paused.reason, /Executing failed \(AGENT_INTERRUPTED\)/);
   await board.controlAutopilot(w.project.id, { action: 'resume' });
-  await until(async () => { await autopilot.tick(); return (await board.state()).projects[0].autopilot.status === 'finished'; }, 'Autopilot finished after the restart', 120000);
+  await until(async () => { await autopilot.tick(); return (await board.state()).projects[0].autopilot.status === 'finished'; }, 'Autopilot finished after the restart', 120000).catch(async error => {
+    const state = await board.state(), item = state.projects[0];
+    throw new Error(`${error.message}: ${JSON.stringify({ autopilot: { status: item.autopilot.status, reason: item.autopilot.reason, current: item.autopilot.current, log: item.autopilot.log.slice(-6).map(entry => entry.text) }, card: item.tasks.find(task => task.id === card.id)?.stageOutcome, column: item.tasks.find(task => task.id === card.id)?.column, runs: state.runs.filter(run => run.taskId === card.id).map(run => [run.stage, run.status, run.turnComplete, run.activity?.ready, run.lifecycle]) })}`);
+  });
   const done = (await board.state()).projects[0].tasks.find(item => item.id === card.id);
   assert.equal(done.completion.kind, 'merged');
   const runs = (await board.state()).runs.filter(run => run.taskId === card.id);
