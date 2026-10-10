@@ -4332,7 +4332,8 @@ function openAutopilot({ first = [] } = {}) {
   const order = [...lead, ...queued, ...todo.map(task => task.id).filter(id => !queued.includes(id) && !lead.includes(id))];
   autopilotDraft = {
     route: saved?.route?.some(stage => stages.includes(stage)) ? stages.filter(stage => saved.route.includes(stage)) : [...stages], finish: saved?.finish === 'pull_request' ? 'pull_request' : 'merge', maxRework: saved?.maxRework ?? 2,
-    order, included: new Set(lead.length ? lead : saved ? queued : order), routes: { ...(saved?.routes || {}) },
+    // A saved empty queue (for example right after the Full Autopilot preset) starts nothing, so To Do is offered again.
+    order, included: new Set(lead.length ? lead : saved?.queue?.length ? queued : order), routes: { ...(saved?.routes || {}) },
   };
   $('#autopilot-project').textContent = `${project.name} · AUTOPILOT`;
   $('#autopilot-consent').checked = false;
@@ -4595,7 +4596,8 @@ function renderExecutionPolicy() {
     const input = document.createElement('select'); input.id = `execution-${key}`;
     input.append(option('', `Default: ${EXECUTION_DEFAULT_TEXT[key]}`), ...EXECUTION_CHOICES[key].map(([value, label]) => option(value, label)));
     input.value = draft[key] || '';
-    input.addEventListener('change', () => { if (input.value) draft[key] = input.value; else delete draft[key]; renderColumns(); $(`#execution-${key}`)?.focus(); });
+    // Only the draft and the warning change: rebuilding the section would reset a select's keyboard typeahead.
+    input.addEventListener('change', () => { if (input.value) draft[key] = input.value; else delete draft[key]; updateWarning(); });
     return field(title, input);
   };
   const rework = document.createElement('input'); rework.type = 'number'; rework.min = 0; rework.max = 5; rework.step = 1; rework.id = 'execution-max-rework';
@@ -4614,16 +4616,21 @@ function renderExecutionPolicy() {
   const all = document.createElement('input'); all.type = 'checkbox'; all.id = 'execution-apply-all'; all.checked = columnsDraft.applyAll;
   all.addEventListener('change', () => { columnsDraft.applyAll = all.checked; });
   const allLabel = document.createElement('label'); allLabel.className = 'check-row'; allLabel.append(all, ' Apply to all columns (remove the columns’ own permission and completion overrides)');
-  const warning = draft.interaction === 'autonomous' ? paragraph(draft.filesystem === 'full'
-    ? 'Autonomous full access: agents act anywhere your account can, without asking. Use it only on a machine or container you can afford to lose.'
-    : 'Autonomous: agents do not stop for approvals. Claude Code uses its own auto mode, Codex its workspace sandbox without prompts, Gemini yolo inside its sandbox. Planning and Code Review stay read-only.', 'note execution-warning') : null;
+  const warning = paragraph('', 'note execution-warning');
+  const updateWarning = () => {
+    warning.hidden = draft.interaction !== 'autonomous';
+    warning.textContent = draft.filesystem === 'full'
+      ? 'Autonomous full access: agents act anywhere your account can, without asking. Use it only on a machine or container you can afford to lose.'
+      : 'Autonomous: agents do not stop for approvals. Claude Code uses its own auto mode, Codex its workspace sandbox without prompts, Gemini yolo inside its sandbox. Planning and Code Review stay read-only.';
+  };
+  updateWarning();
   const preset = detailButton('Full Autopilot preset…', () => { columnsDraft.presetConfirm = true; renderColumns(); $('#execution-preset-apply')?.focus(); }, 'secondary-button');
   preset.id = 'execution-preset';
   const nodes = [heading, paragraph('Every column inherits these unless it sets its own. Planning and Code Review columns are always read-only. Saving starts nothing.', 'note'),
     select('interaction', 'Agent questions'), select('filesystem', 'Workspace access'), select('completion', 'Stage completion'),
     field('Automatic rework rounds (0–5)', rework), field('Merge method', merge),
     field('Folder trust questions (answered only for a recognized Claude Code or Codex trust menu naming the card’s own worktree)', trust), field('Test commands (one per line; run without a shell in the task worktree; their exit codes decide Testing)', tests), allLabel,
-    ...(warning ? [warning] : []), detailActions(preset)];
+    warning, detailActions(preset)];
   if (columnsDraft.presetConfirm) {
     const apply = detailButton('Apply Full Autopilot', async () => {
       apply.disabled = true;
@@ -4989,7 +4996,9 @@ async function saveColumns(event) {
     else {
       // Only what changed is saved: structure (needs paused agents), then permissions, then test commands.
       const fresh = () => board?.projects.find(item => item.id === project.id);
-      if (project.workflowMode !== 'pipeline' || JSON.stringify({ columns: columnsDraft.list, profiles: columnsDraft.profiles }) !== columnsDraft.original)
+      // An unchanged structure is skipped only while the board is as it was when the dialog opened; a draft that
+      // became stale is still sent, so the server refuses it instead of the person losing sight of the change.
+      if (project.workflowMode !== 'pipeline' || JSON.stringify({ columns: columnsDraft.list, profiles: columnsDraft.profiles }) !== columnsDraft.original || project.revision !== columnsDraft.revision)
         await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/pipeline`, { pipeline: { version: 1, columns: columnsDraft.list, profiles: columnsDraft.profiles }, expectedRevision: columnsDraft.revision, confirm: true });
       if (columnsDraft.applyAll || JSON.stringify(columnsDraft.execution) !== JSON.stringify(fresh().execution || {}))
         await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/execution`, { policy: columnsDraft.execution, applyToAllColumns: columnsDraft.applyAll, expectedRevision: fresh().revision });
