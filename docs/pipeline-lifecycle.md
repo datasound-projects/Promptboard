@@ -1,5 +1,7 @@
 # Column pipeline: main-session checkpoint
 
+This page describes **custom** columns (one conversation that continues across compatible columns). Typed columns (Planning, Executing, Code Review, Testing, Merge) run Promptboard's stage engine instead: a fresh session per arrival in the task's own worktree, stage checks, and automatic or manual completion. See [Kanban execution](kanban-execution.md). New boards use typed columns; columns saved before column types are custom.
+
 New projects created through the app use an empty seven-column pipeline. Existing projects keep their saved workflow; migrated stage projects receive `workflowMode: "legacy"` explicitly. Column Manager offers a confirmed switch from that original stage workflow to a pipeline. Creating a project, opening settings, reading configuration, and importing a backup never launch work. The legacy stage instructions, review/test gates, merge behavior, and Autopilot remain available on legacy boards.
 
 Pipeline columns use stable IDs and `todo`, `active`, or `done` roles. Display names do not trigger instructions, commits, tests, review acceptance, or merges. Active columns can be renamed, reordered, added, and removed independently; occupied columns cannot be removed. To Do and Done roles remain first and last. Base assignments follow stable IDs across renames and reordering, and assignments to removed IDs are detached.
