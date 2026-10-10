@@ -1,5 +1,7 @@
 # Pipeline Autopilot
 
+Typed columns (Planning, Executing, Code Review, Testing, Merge): Autopilot moves each card by the stage engine's recorded outcome. Succeeded goes to the next column, changes required goes back to Executing within the board's rework limit (`REWORK_LIMIT_REACHED` pauses), failed pauses with the reason, and a Merge column merges the card before the next card starts from the updated target. Typed columns need no "on enter" instruction. See [Kanban execution](kanban-execution.md). The rest of this page describes custom columns.
+
 On a column-pipeline board, **Autopilot** (next to **Columns**) takes queued To Do cards one at a time through the active columns you choose, then moves each card to Done.
 
 ## How a card goes through
