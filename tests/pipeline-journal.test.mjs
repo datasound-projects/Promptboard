@@ -4,14 +4,17 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { PipelineJournal } from '../src/pipeline-journal.mjs';
+import { setTimeout as delay } from 'node:timers/promises';
+import { ownsMove, PipelineJournal } from '../src/pipeline-journal.mjs';
 import { PipelineActions } from '../src/pipeline-actions.mjs';
+import { expireLease } from './helpers/journal.mjs';
 
 const move = (transitionId = 'move-one', fields = {}) => ({ projectId: 'project-one', taskId: 'task-one', transitionId,
   taskRevision: 12, projectRevision: 3, from: { id: 'planning', name: 'Planning' }, to: { id: 'build', name: 'Build' }, ...fields });
 const row = (id, fields = {}) => ({ id, name: id, type: 'notify', enabled: true, ...fields });
 async function temp(t) { const dir = await mkdtemp(join(tmpdir(), 'pb-journal-')); t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })); return dir; }
 async function folder(dir) { return join(dir, 'automations', (await readdir(join(dir, 'automations'))).find(name => /^[a-f0-9]{64}$/.test(name))); }
+async function until(fn) { const end = Date.now() + 15000; for (;;) { const value = await fn(); if (value) return value; if (Date.now() > end) assert.fail('The journal fixture did not reach the expected state.'); await delay(50); } }
 function child(dir, input, code) {
   const source = `import { PipelineJournal } from ${JSON.stringify(new URL('../src/pipeline-journal.mjs', import.meta.url).href)};
     const journal = new PipelineJournal(process.argv[1]), input = JSON.parse(process.argv[2]);
@@ -30,6 +33,7 @@ test('scoped restart recovery ignores an unrelated corrupt journal and never gra
   await writeFile(join(await folder(dir), '00000000.json'), 'unreadable fixture');
   const current = move('owned-dead', { taskId: 'task-two', onExit: [row('unknown')] });
   await child(dir, current, 'const saved=await journal.beginMove(input); await journal.startAction(input,saved.move.actions[0].id); console.log(JSON.stringify({ok:true}));');
+  await expireLease(dir, current);
   const recovered = await journal.recoverInterrupted(current);
   assert.equal(recovered.length, 1); assert.equal(recovered[0].taskId, 'task-two');
   assert.equal((await journal.read(current)).actions[0].status, 'interrupted');
@@ -122,6 +126,7 @@ test('independent OS processes create one intent; dead-owner recovery preserves 
     if (begun.created) { const [a,b] = begun.move.actions; await journal.startAction(input,a.id); await journal.finishAction(input,a.id,{status:'succeeded'}); await journal.startAction(input,b.id); }
     console.log(JSON.stringify(begun));`;
   const begun = await Promise.all([child(dir, input, code), child(dir, input, code)]); assert.equal(begun.filter(value => value.created).length, 1);
+  await expireLease(dir, input);
   const journal = new PipelineJournal(dir), prior = await journal.read(input), recovered = await journal.recoverInterrupted(input);
   assert.equal(recovered.length, 1); assert.equal(recovered[0].status, 'interrupted'); assert.deepEqual(recovered[0].actions.map(action => action.status), ['succeeded', 'interrupted', 'interrupted']);
   assert.equal(recovered[0].actions[1].startedAt, prior.actions[1].startedAt); assert.equal(recovered[0].actions[2].startedAt, undefined); assert.equal(recovered[0].lifecycle.status, 'interrupted');
@@ -140,7 +145,7 @@ test('recovery never interrupts a live owner, including another OS process', asy
   assert.equal(result.code, 'JOURNAL_OWNER_MISMATCH');
 });
 
-test('a move left by an earlier process with this same PID is recovered, while PID-only legacy moves keep their owner', async t => {
+test('a move left by an earlier process with this same PID is recovered once its lease expires, while PID-only legacy moves keep their owner', async t => {
   const dir = await temp(t), journal = new PipelineJournal(dir);
   const rewrite = async change => { const location = await folder(dir);
     for (const file of (await readdir(location)).filter(name => name.endsWith('.json'))) { const path = join(location, file), data = JSON.parse(await readFile(path, 'utf8')); change(data); await writeFile(path, JSON.stringify(data)); } };
@@ -149,13 +154,87 @@ test('a move left by an earlier process with this same PID is recovered, while P
   await journal.startAction(reused, saved.actions[0].id);
   await rewrite(data => { data.ownerInstance = '00000000-0000-4000-8000-000000000000'; });
   await assert.rejects(journal.startAction(reused, saved.actions[1].id), { code: 'JOURNAL_OWNER_MISMATCH' });
+  assert.deepEqual(await journal.recoverInterrupted(reused), []);
+  await expireLease(dir, reused);
   const recovered = await journal.recoverInterrupted(reused);
   assert.equal(recovered.length, 1); assert.deepEqual(recovered[0].actions.map(action => action.status), ['interrupted', 'interrupted']);
   await rm(join(dir, 'automations'), { recursive: true });
   const legacy = move('legacy-pid', { onExit: [row('live')] }), { move: old } = await journal.beginMove(legacy);
   await journal.startAction(legacy, old.actions[0].id);
-  await rewrite(data => { delete data.ownerInstance; });
+  await rewrite(data => { for (const field of ['ownerInstance', 'leaseId', 'heartbeatAt', 'leaseExpiresAt']) delete data[field]; });
   assert.deepEqual(await journal.recoverInterrupted(legacy), []); assert.equal((await journal.read(legacy)).actions[0].status, 'running');
+});
+
+test('PID reuse cannot pin a move: an expired lease is recovered although its PID is live, an unexpired one waits for a retry', async t => {
+  const dir = await temp(t), journal = new PipelineJournal(dir), input = move('foreign-lease', { onExit: [row('unknown')] });
+  const { move: saved } = await journal.beginMove(input); await journal.startAction(input, saved.actions[0].id);
+  assert.match(saved.leaseId, /^[0-9a-f-]{36}$/); assert.equal(saved.heartbeatAt, saved.createdAt); assert.equal(saved.leaseExpiresAt, saved.createdAt + 60000);
+  // Another instance holds the lease; its PID is a live, unrelated process.
+  const foreign = data => { data.ownerPid = process.ppid; data.ownerInstance = '00000000-0000-4000-8000-000000000000'; };
+  await expireLease(dir, input, data => { foreign(data); data.leaseExpiresAt = Date.now() + 60000; });
+  assert.deepEqual(await journal.recoverInterrupted(input), []); assert.equal((await journal.read(input)).actions[0].status, 'running');
+  assert.deepEqual(journal.pendingRecoveries(), [{ projectId: input.projectId, taskId: input.taskId, transitionId: input.transitionId }]);
+  await expireLease(dir, input, foreign);
+  const [recovered] = await journal.recoverInterrupted(input);
+  assert.equal(recovered.status, 'interrupted'); assert.equal(recovered.actions[0].status, 'interrupted'); assert.equal(recovered.ownerPid, process.ppid);
+  assert.deepEqual(journal.pendingRecoveries(), []); assert.deepEqual(await journal.recoverInterrupted(input), []);
+});
+
+test('legacy moves without a lease keep the PID and instance rule', async t => {
+  const dir = await temp(t), journal = new PipelineJournal(dir), legacy = data => { for (const field of ['ownerInstance', 'leaseId', 'heartbeatAt', 'leaseExpiresAt']) delete data[field]; };
+  for (const [transitionId, ownerPid, recoveredCount] of [['live-pid', process.ppid, 0], ['dead-pid', 2147483647, 1]]) {
+    const input = move(transitionId, { onExit: [row('unknown')] }), { move: saved } = await journal.beginMove(input);
+    await journal.startAction(input, saved.actions[0].id);
+    await expireLease(dir, input, data => { legacy(data); data.ownerPid = ownerPid; });
+    assert.equal((await journal.read(input)).leaseExpiresAt, undefined);
+    assert.equal((await journal.recoverInterrupted(input)).length, recoveredCount);
+    assert.equal((await journal.read(input)).actions[0].status, recoveredCount ? 'interrupted' : 'running');
+  }
+  const own = move('own-pid', { onExit: [row('first'), row('second')] }), { move: saved } = await journal.beginMove(own);
+  await journal.startAction(own, saved.actions[0].id); await expireLease(dir, own, legacy);
+  assert.deepEqual(await journal.recoverInterrupted(own), []);
+  await journal.finishAction(own, saved.actions[0].id, { status: 'succeeded' }); assert.equal((await journal.startAction(own, saved.actions[1].id)).accepted, true);
+  // A lease is complete or absent, and unknown owner fields stay invalid.
+  const partial = move('partial-lease'), { move: leased } = await journal.beginMove(partial);
+  for (const change of ['ownerInstance', 'leaseId', 'heartbeatAt', 'leaseExpiresAt'].map(field => data => { delete data[field]; })
+    .concat(data => { data.leaseId = '../lease'; }, data => { data.leaseOwner = process.pid; })) {
+    await expireLease(dir, partial, data => { Object.assign(data, leased); change(data); });
+    await assert.rejects(journal.read(partial), { code: 'JOURNAL_CORRUPT' });
+  }
+});
+
+test('the owner renews its lease while work is active and stops once the move completes', async t => {
+  const dir = await temp(t), journal = new PipelineJournal(dir, { leaseMs: 3000 }), input = move('renewal', { onExit: [row('effect')] });
+  const { move: saved } = await journal.beginMove(input); await journal.startAction(input, saved.actions[0].id);
+  const renewed = await until(async () => { const current = await journal.read(input); return current.leaseExpiresAt > saved.leaseExpiresAt && current; });
+  assert.ok(renewed.heartbeatAt > saved.heartbeatAt); assert.equal(renewed.leaseId, saved.leaseId); assert.equal(renewed.actions[0].status, 'running');
+  await journal.finishAction(input, saved.actions[0].id, { status: 'succeeded' }); await journal.cancelMove(input);
+  const finished = await journal.read(input); await delay(2500);
+  assert.deepEqual(await journal.read(input), finished);
+});
+
+test('an expired lease that no process recovered stays with its owner, as after the computer slept', async t => {
+  const dir = await temp(t), journal = new PipelineJournal(dir), input = move('slept', { onExit: [row('effect'), row('next')] });
+  const { move: saved } = await journal.beginMove(input); await journal.startAction(input, saved.actions[0].id);
+  await expireLease(dir, input); assert.equal(ownsMove(await journal.read(input)), false);
+  await assert.rejects(new PipelineJournal(dir).finishAction(input, saved.actions[0].id, { status: 'succeeded' }), { code: 'AUTOMATION_LEASE_LOST' });
+  await journal.finishAction(input, saved.actions[0].id, { status: 'succeeded' });
+  assert.equal((await journal.startAction(input, saved.actions[1].id)).accepted, true);
+  assert.deepEqual((await journal.read(input)).actions.map(action => action.status), ['succeeded', 'running']);
+});
+
+test('an owner whose lease another process recovered gets AUTOMATION_LEASE_LOST and replays nothing', async t => {
+  const dir = await temp(t), lost = [], journal = new PipelineJournal(dir, { leaseMs: 3000, onLeaseLost: key => lost.push(key) });
+  const input = move('lease-lost', { onExit: [row('effect'), row('next')] }), { move: saved } = await journal.beginMove(input);
+  await journal.startAction(input, saved.actions[0].id);
+  // The owner stalled past its lease; another process recovers the move.
+  await expireLease(dir, input); assert.equal((await new PipelineJournal(dir).recoverInterrupted(input)).length, 1);
+  const recovered = await journal.read(input); assert.notEqual(recovered.leaseId, saved.leaseId);
+  await assert.rejects(journal.finishAction(input, saved.actions[0].id, { status: 'succeeded' }), { code: 'AUTOMATION_LEASE_LOST' });
+  await assert.rejects(journal.startAction(input, saved.actions[1].id), { code: 'AUTOMATION_LEASE_LOST' });
+  await until(() => lost.length);
+  assert.deepEqual(lost, [{ projectId: input.projectId, taskId: input.taskId, transitionId: input.transitionId }]);
+  assert.deepEqual(await journal.read(input), recovered); assert.deepEqual(recovered.actions.map(action => action.status), ['interrupted', 'interrupted']);
 });
 
 test('restart recovery covers pending, lifecycle and enter phases without changing confirmed effects', async t => {
@@ -168,7 +247,7 @@ test('restart recovery covers pending, lifecycle and enter phases without changi
       console.log(JSON.stringify(saved));`);
   }
   const recovered = [];
-  for (const phase of ['pending', 'lifecycle', 'enter']) recovered.push(...await journal.recoverInterrupted(move(phase)));
+  for (const phase of ['pending', 'lifecycle', 'enter']) { await expireLease(dir, move(phase)); recovered.push(...await journal.recoverInterrupted(move(phase))); }
   assert.equal(recovered.length, 3);
   for (const saved of recovered) {
     assert.equal(saved.status, 'interrupted'); assert.equal(saved.phase, 'complete');
