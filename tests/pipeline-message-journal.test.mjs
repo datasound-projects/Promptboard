@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { PipelineJournal } from '../src/pipeline-journal.mjs';
 import { PipelineAutomations } from '../src/pipeline-automations.mjs';
 import { NativeMessageReceipts } from '../src/native-message-receipts.mjs';
+import { expireLease } from './helpers/journal.mjs';
 
 const message = { id: 'message', name: 'Review', type: 'send_message', message: 'PRIVATE Review text', mode: 'deferred' };
 const input = (transitionId = 'move', fields = {}) => ({ projectId: 'project', taskId: 'task', transitionId, taskRevision: 4, projectRevision: 2,
@@ -133,7 +134,7 @@ test('dead-owner recovery covers every asynchronous delivery phase even after pl
       console.log(JSON.stringify(await journal.read(key)));`);
   }
   const recovered = [];
-  for (const phase of phases) recovered.push(...await journal.recoverInterrupted(input(phase)));
+  for (const phase of phases) { await expireLease(dir, input(phase)); recovered.push(...await journal.recoverInterrupted(input(phase))); }
   assert.equal(recovered.length, 4);
   for (const move of recovered) { assert.equal(move.status, 'completed'); assert.equal(move.phase, 'complete'); assert.equal(move.lifecycle.status, 'succeeded'); assert.equal(move.actions[0].status, 'scheduled'); assert.equal(move.actions[0].delivery.status, 'interrupted'); }
   assert.equal((await journal.read(input('confirmed'))).actions[0].delivery.status, 'confirmed');
@@ -203,6 +204,7 @@ test('interrupted unfinished enter groups preserve scheduled handoff and known n
     await journal.startAction(key,message.id); await journal.scheduleMessage(key,message.id,scope); await journal.startMessageDelivery(key,message.id);
     await journal.markMessageSubmitted(key,message.id); await journal.finishMessageDelivery(key,message.id,{status:'confirmed'});
     await journal.startAction(key,unknown.id); console.log(JSON.stringify(await journal.read(key)));`);
+  await expireLease(dir, key);
   const journal = new PipelineJournal(dir), [saved] = await journal.recoverInterrupted(key);
   assert.equal(saved.status, 'interrupted'); assert.equal(saved.phase, 'complete'); assert.equal(saved.lifecycle.status, 'succeeded');
   assert.equal(saved.actions[0].status, 'scheduled'); assert.equal(saved.actions[0].delivery.status, 'confirmed'); assert.equal(saved.actions[1].status, 'interrupted');

@@ -220,8 +220,8 @@ test('restart recovers a completed placement pending message outside the history
   await w.move('code_review'); await entered.promise;
   const state = structuredClone(await w.board.state()), move = structuredClone((await w.receipts()).at(-1));
   const task = state.projects[0].tasks[0]; task.automationMoves = []; delete task.automationMove;
-  // Clone a dead owner's durable state, never mutate a live application's files.
-  move.ownerPid = 2147483647;
+  // Clone a dead owner's durable state after its lease expired, never mutate a live application's files.
+  move.ownerPid = 2147483647; move.leaseExpiresAt = Date.now() - 1;
   const dir = await temp(t), folder = join(dir, 'automations', createHash('sha256').update(JSON.stringify([move.projectId, move.taskId, move.transitionId])).digest('hex'));
   await mkdir(folder, { recursive: true });
   for (let index = 0; index <= move.revision; index++) await writeFile(join(folder, String(index).padStart(8, '0') + '.json'), JSON.stringify({ ...move, revision: index }));

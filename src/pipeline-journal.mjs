@@ -65,12 +65,19 @@ function validateDelivery(value) {
   if (value.outcome) deliveryOutcome(value.outcome, true);
 }
 const hasPendingDelivery = move => move.actions.some(action => action.delivery && DELIVERY_ACTIVE.includes(action.delivery.status));
+const unfinished = move => move.phase !== 'complete' || hasPendingDelivery(move);
+// ponytail: each renewal is one journal revision, so at TTL/3 the 4,096-revision cap allows ~22 h of
+// continuous ownership per move. Move heartbeats to a side file if a move must stay active longer.
+const LEASE_MS = 60000;
 // A PID can be reused, even by a later Promptboard process. A per-process instance ID tells this
 // process's own moves from those of an earlier process that had the same PID.
 export const OWNER_INSTANCE = randomUUID();
-/** This process owns the move. Moves saved without an instance ID keep the PID-only check. */
-export const ownsMove = move => move?.ownerPid === process.pid && (move.ownerInstance === undefined || move.ownerInstance === OWNER_INSTANCE);
+/** This process owns the move: same PID and instance, and an unexpired lease. Moves saved without a lease keep the PID/instance check. */
+export const ownsMove = move => move?.ownerPid === process.pid && (move.ownerInstance === undefined || move.ownerInstance === OWNER_INSTANCE)
+  && (move.leaseExpiresAt === undefined || move.leaseExpiresAt > Date.now());
 function ownerAlive(move) {
+  // A live PID can belong to an unrelated process, so only an expired lease releases a leased move.
+  if (move.leaseExpiresAt !== undefined) return move.leaseExpiresAt >= Date.now();
   if (move.ownerPid === process.pid) return ownsMove(move);
   try { process.kill(move.ownerPid, 0); return true; } catch (error) { return error.code !== 'ESRCH'; }
 }
@@ -95,10 +102,11 @@ async function syncDirectory(path) {
 
 function validate(data, key, revision) {
   if (data?.schema === SCHEMA && data.version > VERSION) fail('This automation journal needs a newer Promptboard version.', 'JOURNAL_VERSION_UNSUPPORTED');
-  if (!keys(data, ['schema', 'version', 'revision', 'projectId', 'taskId', 'transitionId', 'taskRevision', 'projectRevision', 'from', 'to', 'ownerPid', 'ownerInstance', 'status', 'phase', 'createdAt', 'updatedAt', 'finishedAt', 'actions', 'lifecycle'])
+  if (!keys(data, ['schema', 'version', 'revision', 'projectId', 'taskId', 'transitionId', 'taskRevision', 'projectRevision', 'from', 'to', 'ownerPid', 'ownerInstance', 'leaseId', 'heartbeatAt', 'leaseExpiresAt', 'status', 'phase', 'createdAt', 'updatedAt', 'finishedAt', 'actions', 'lifecycle'])
     || data.schema !== SCHEMA || ![1, VERSION].includes(data.version) || data.revision !== revision
     || Object.entries(key).some(([name, value]) => data[name] !== value)
     || !integer(data.taskRevision) || !integer(data.projectRevision) || !Number.isSafeInteger(data.ownerPid) || data.ownerPid < 1 || (data.ownerInstance !== undefined && !id(data.ownerInstance))
+    || (['leaseId', 'heartbeatAt', 'leaseExpiresAt'].some(name => data[name] !== undefined) && (data.ownerInstance === undefined || !id(data.leaseId) || !integer(data.heartbeatAt) || !integer(data.leaseExpiresAt)))
     || !integer(data.createdAt) || !integer(data.updatedAt) || (data.finishedAt !== undefined && !integer(data.finishedAt))
     || !['pending', 'running', 'completed', 'failed', 'cancelled', 'interrupted'].includes(data.status)
     || !['exit', 'lifecycle', 'enter', 'complete'].includes(data.phase) || !Array.isArray(data.actions) || data.actions.length > 80) fail('The automation journal is invalid; it was not changed.', 'JOURNAL_CORRUPT');
@@ -151,7 +159,11 @@ function validate(data, key, revision) {
 }
 
 export class PipelineJournal {
-  constructor(dataDir) { this.dir = join(dataDir, 'automations'); this.dataDir = dataDir; }
+  #leases = new Map(); #waiting = new Map();
+  /** `onLeaseLost(key)` runs when another process recovered a move this process still renewed. */
+  constructor(dataDir, { leaseMs = LEASE_MS, onLeaseLost = null } = {}) {
+    this.dir = join(dataDir, 'automations'); this.dataDir = dataDir; this.leaseMs = leaseMs; this.onLeaseLost = onLeaseLost;
+  }
 
   async read(input) {
     const key = identity(input), folder = join(this.dir, folderName(key));
@@ -181,12 +193,56 @@ export class PipelineJournal {
       try { await link(temporary, join(folder, `${String(data.revision).padStart(8, '0')}.json`)); }
       catch (error) { if (error.code === 'EEXIST') return false; throw error; }
       await syncDirectory(folder);
+      this.#track(data);
       return true;
     } catch (error) {
       if (error instanceof PipelineJournalError) throw error;
       fail('The journal save was not acknowledged. Do not start or replay work.', 'JOURNAL_WRITE_FAILED');
     } finally { await rm(temporary, { force: true }).catch(() => {}); }
   }
+
+  // This journal still holds the lease, even past its expiry (for example after the computer slept), unless
+  // recovery replaced its ID. The compare-and-swap write then decides between a late owner and a recoverer.
+  #holds(move) {
+    return move.ownerPid === process.pid && move.ownerInstance === OWNER_INSTANCE && move.leaseId !== undefined
+      && this.#leases.get(folderName(move))?.leaseId === move.leaseId;
+  }
+
+  // One renewal per unfinished move this process owns, through the same compare-and-swap write.
+  #track(move) {
+    const name = folderName(move), held = this.#leases.get(name);
+    if (move.leaseId !== undefined && (ownsMove(move) || this.#holds(move)) && unfinished(move)) {
+      if (held) held.expiresAt = move.leaseExpiresAt;
+      else this.#renewLater(name, { key: identity(move), leaseId: move.leaseId, expiresAt: move.leaseExpiresAt });
+    } else if (held) { clearTimeout(held.timer); this.#leases.delete(name); }
+  }
+
+  #renewLater(name, held) {
+    this.#leases.set(name, held);
+    held.timer = setTimeout(() => this.#renew(name, held), Math.ceil(this.leaseMs / 3));
+    held.timer.unref();
+  }
+
+  async #renew(name, held) {
+    let renewed = true, lost = false;
+    try {
+      renewed = await this.#change(held.key, move => {
+        if (!unfinished(move)) return { changed: false, value: false };
+        const now = Date.now(); move.heartbeatAt = now; move.leaseExpiresAt = now + this.leaseMs;
+        return { changed: true, value: true };
+      });
+    } catch (error) {
+      // A failed save retries until the lease would lapse anyway; a lost lease is never renewed.
+      lost = error.code === 'AUTOMATION_LEASE_LOST' || Date.now() > held.expiresAt;
+    }
+    if (this.#leases.get(name) !== held) return;
+    if (renewed && !lost) return this.#renewLater(name, held);
+    this.#leases.delete(name);
+    if (lost) try { this.onLeaseLost?.(held.key); } catch {}
+  }
+
+  /** Shutdown: stop renewing. Leases left unfinished then expire, so a later process can recover them. */
+  stopRenewals() { for (const held of this.#leases.values()) clearTimeout(held.timer); this.#leases.clear(); }
 
   async beginMove(input) {
     const key = identity(input), previous = await this.read(key);
@@ -204,7 +260,7 @@ export class PipelineJournal {
     }
     const now = Date.now(), move = { schema: SCHEMA, version: VERSION, revision: 0, ...key, from, to,
       taskRevision: input.taskRevision, projectRevision: input.projectRevision, ownerPid: process.pid, ownerInstance: OWNER_INSTANCE,
-      status: 'pending', phase: 'exit', createdAt: now, updatedAt: now, actions, lifecycle: { status: 'pending' } };
+      leaseId: randomUUID(), heartbeatAt: now, leaseExpiresAt: now + this.leaseMs, status: 'pending', phase: 'exit', createdAt: now, updatedAt: now, actions, lifecycle: { status: 'pending' } };
     if (await this.#append(move)) return { created: true, move: structuredClone(move) };
     return { created: false, move: await this.read(key) };
   }
@@ -214,7 +270,10 @@ export class PipelineJournal {
     for (let tries = 0; tries < LIMIT; tries++) {
       const current = await this.read(key);
       if (!current) fail('The move has not been recorded.', 'JOURNAL_NOT_FOUND');
-      if (!recovery && !ownsMove(current)) fail('This move belongs to another application process; it cannot be replayed.', 'JOURNAL_OWNER_MISMATCH');
+      if (!recovery && !ownsMove(current) && !this.#holds(current)) {
+        if (current.ownerPid === process.pid && current.ownerInstance === OWNER_INSTANCE) fail('This process no longer holds the lease on this move; another process may have recovered it. Its work stops without replay.', 'AUTOMATION_LEASE_LOST');
+        fail('This move belongs to another application process; it cannot be replayed.', 'JOURNAL_OWNER_MISMATCH');
+      }
       const next = structuredClone(current), result = apply(next);
       if (!result.changed) return result.value;
       next.revision++; next.updatedAt = Date.now(); validate(next, key, next.revision);
@@ -387,12 +446,21 @@ export class PipelineJournal {
     const recovered = [];
     // Runtime recovery inspects a task's persisted move reference without
     // depending on every other project's historical journal folder.
-    const snapshots = [await this.read(key)].filter(Boolean);
+    const snapshots = [await this.read(key)].filter(Boolean), name = folderName(key);
+    const skip = move => {
+      if (!unfinished(move)) { this.#waiting.delete(name); return true; }
+      if (!ownerAlive(move)) return false;
+      // Another live owner, such as the unexpired lease of a crashed process: pendingRecoveries() lists it for a retry.
+      if (!ownsMove(move)) this.#waiting.set(name, identity(move));
+      return true;
+    };
     for (const snapshot of snapshots) {
-      if (snapshot.phase === 'complete' && !hasPendingDelivery(snapshot) || ownerAlive(snapshot)) continue;
+      if (skip(snapshot)) continue;
       const changed = await this.#change(snapshot, move => {
-        if (move.phase === 'complete' && !hasPendingDelivery(move) || ownerAlive(move)) return { changed: false, value: false };
-        const result = { status: 'interrupted', reason: 'The application stopped before this move finished. It will not be replayed.' };
+        if (skip(move)) return { changed: false, value: false };
+        // A new lease ID revokes the old one: its late owner can neither renew nor write after this revision.
+        if (move.leaseId !== undefined) move.leaseId = randomUUID();
+        const result ={ status: 'interrupted', reason: 'The application stopped before this move finished. It will not be replayed.' };
         for (const action of move.actions) if (action.delivery && DELIVERY_ACTIVE.includes(action.delivery.status)) Object.assign(action.delivery, {
           status: 'interrupted', finishedAt: Date.now(), outcome: { status: 'interrupted', reason: 'The message scheduler stopped before delivery finished. Input will not be replayed.' } });
         // Placement can already be complete while its enter messages await delivery.
@@ -402,8 +470,11 @@ export class PipelineJournal {
         move.status = 'interrupted'; move.phase = 'complete'; move.finishedAt = Date.now();
         return { changed: true, value: true };
       }, true);
-      if (changed) recovered.push(await this.read(snapshot));
+      if (changed) { this.#waiting.delete(name); recovered.push(await this.read(snapshot)); }
     }
     return recovered;
   }
+
+  /** Moves whose recovery last found another live owner; retry them with recoverInterrupted(). */
+  pendingRecoveries() { return [...this.#waiting.values()]; }
 }

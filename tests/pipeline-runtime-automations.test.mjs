@@ -11,6 +11,7 @@ import { defaultPipelineConfig } from '../src/pipeline-config.mjs';
 import { resolveConfig } from '../src/agents.mjs';
 import { PipelineActions } from '../src/pipeline-actions.mjs';
 import { pipelineTaskEnvelope } from '../src/pipeline-templates.mjs';
+import { expireLease } from './helpers/journal.mjs';
 
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null' } }).trim();
 const quote = text => process.platform === 'win32' ? `'${text.replaceAll("'", "''")}'` : `'${text.replaceAll("'", "'\\''")}'`;
@@ -181,6 +182,7 @@ test('startup recovers only referenced dead-owner moves, preserves known receipt
   const key = { projectId: w.projectId, taskId: card.id, transitionId: randomUUID() }, module = new URL('../src/pipeline-journal.mjs', import.meta.url).href;
   const code = `import {PipelineJournal} from ${JSON.stringify(module)}; const j=new PipelineJournal(process.argv[1]); const key=JSON.parse(process.argv[2]); const r=await j.beginMove({...key,taskRevision:1,projectRevision:4,from:{id:'todo',name:'To Do'},to:{id:'executing',name:'Executing'},onExit:[{id:'unknown',name:'Unknown',type:'run_script',enabled:true,script:'echo NEVER_REPLAY'}]}); await j.startAction(key,r.move.actions[0].id);`;
   execFileSync(process.execPath, ['--input-type=module', '-e', code, w.dataDir, JSON.stringify(key)], { encoding: 'utf8' });
+  await expireLease(w.dataDir, key);
   await w.board.store.update(state => { const task = state.projects[0].tasks[0]; task.automationMoves = [key]; task.automationMove = { ...key, status: 'running', phase: 'exit' }; });
   const recovered = new Board({ dataDir: w.dataDir }); t.after(() => recovered.shutdownAutomations());
   const task = (await recovered.state()).projects[0].tasks[0]; assert.equal(task.automationMove.status, 'interrupted'); assert.equal(task.column, 'todo');
