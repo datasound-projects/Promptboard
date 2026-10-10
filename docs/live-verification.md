@@ -3,6 +3,22 @@
 Real CLI runs, recorded separately from the simulated (fake-CLI) test suite. Each checkpoint names its smoke script and uses an installed, signed-in CLI in its own disposable repository. Nothing here ran against a user repository.
 
 
+## 10 October 2026 — Full Autopilot across providers (typed columns)
+
+`node scripts/live-kanban.mjs --tasks 2 --plan codex --exec codex --review claude --test claude --claude-model haiku` on macOS arm64, Node.js 24.14.1, Codex CLI 0.160.0 and Claude Code 2.1.296 (Haiku), in a disposable repository and data folder. The board used the Full Autopilot preset (typed columns, autonomous workspace access, automatic completion, two rework rounds, squash merges, workspace trust for task worktrees). Nothing was typed into any terminal.
+
+- **Result:** finished. The queue was set in reverse creation order and Autopilot followed it exactly: "Add a multiply function", then "Add an add function", one card at a time.
+- **Every stage, every card:** Planning (Codex, read-only, completed by its plan without any native approval event) → Executing (Codex, autonomous, checkpoint commit) → Code Review (Claude, fresh read-only session, JSON verdict) → Testing (Claude, then Promptboard's own `node test.js` run) → Merge (one squash commit with the tested tree) → Done.
+- **Zero waits for a person:** no permission prompt, question or not-ready input. Both CLIs' folder-trust menus were answered only by the recognizer for the card's own worktree; Codex's update offer and background-server menus did not appear (`-c check_for_update_on_startup=false --disable daemon_auto_start`).
+- **Each next card from the merged target:** the second card's squash commit sits on the first card's merge commit; `trunk` holds both functions and its own tests pass (2 checks).
+- **Same worktree and branch** for all four agent sessions of each card, with a different provider per column.
+
+Two earlier runs on the same day found real issues that are fixed:
+1. Under heavy memory pressure a worktree took 70 s to create and a later Git command timed out; Autopilot paused with only "git failed". Git errors now name the command and its reason, and a timeout is `GIT_TIMEOUT`.
+2. The user's ambient Serena MCP server (configured for Claude Code) wrote `.serena/` into the worktree during Testing. Testing correctly refused untested files, the reworked commit carried them, and review flagged them until `REWORK_LIMIT_REACHED` stopped the loop. The outcome now names the files (`TESTER_CHANGED_FILES`); such tool folders belong in the repository's `.gitignore` (as in the passing run).
+
+Gemini CLI 0.30.0 is installed but not signed in on this machine (authentication error), so the Gemini columns are covered by simulated tests only.
+
 ## 4 October 2026 — Codex busy queue observation
 
 macOS arm64, Node.js 24.14.1, Codex CLI 0.157.0, `gpt-6-luna` with low effort. An authorized prototype used its own disposable board/repository, answered startup trust only in a warmup, then started a fresh process. A configured deferred Code Review row was confirmed on the continued task run. During its longer second turn, one deliberately manual bracketed-paste follow-up and Tab queued the next input. The manual-input guard remained set.
