@@ -40,13 +40,16 @@ function gitEnv() {
 /** Run git. `config` adds -c overrides (for example, disabled hooks). Resolves stdout; rejects with {code, stderr}. */
 export async function git(args, { cwd, config = [], timeoutMs = 20000 } = {}) {
   const command = await commandOnPath('git');
-  if (!command) throw Object.assign(new Error('git failed'), { code: 'GIT_MISSING', exitCode: 'ENOENT', stderr: '' });
+  if (!command) throw Object.assign(new Error('Git is not installed (no git on PATH). Install Git, then try again.'), { code: 'GIT_MISSING', exitCode: 'ENOENT', stderr: '' });
   return new Promise((resolve, reject) => {
     execFile(command, [...config.flatMap(item => ['-c', item]), ...args], { cwd, env: gitEnv(), shell: false, windowsHide: true, timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 },
       (error, stdout, stderr) => {
         if (!error) { resolve(stdout); return; }
         if (error.code === 'ENOENT') forgetCommand('git');
-        reject(Object.assign(new Error('git failed'), { code: error.code === 'ENOENT' ? 'GIT_MISSING' : 'GIT_FAILED', exitCode: error.code, stderr: String(stderr) }));
+        // Say which command failed and why: a bare "git failed" reached Autopilot's pause reason and helped nobody.
+        const detail = String(stderr || '').split('\n').map(line => line.trim()).find(Boolean)?.slice(0, 300) || '';
+        const why = error.killed ? `it did not finish within ${timeoutMs < 1000 ? `${timeoutMs} ms` : `${Math.round(timeoutMs / 1000)} s`} (the computer may be overloaded)` : detail || `exit code ${error.code}`;
+        reject(Object.assign(new Error(`git ${args[0]} failed: ${why}`), { code: error.code === 'ENOENT' ? 'GIT_MISSING' : error.killed ? 'GIT_TIMEOUT' : 'GIT_FAILED', exitCode: error.code, stderr: String(stderr) }));
       });
   });
 }
