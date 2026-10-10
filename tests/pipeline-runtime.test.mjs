@@ -299,8 +299,9 @@ test('real PTY activity hooks track outstanding work and native approval without
     // dialog's own (only) call of that tool does, as the rejected plan's result shows.
     await observedInput('activity-plan-reject');
     assert.equal((await w.board.run(run.id)).activity.permissionPending, false);
-    await input('activity-finish');
-    await until(async () => !(await w.board.run(run.id)).activity?.permissionPending);
+    // Observed before the next input: two lines typed back to back can reach the fixture as one chunk.
+    await observedInput('activity-finish');
+    assert.equal((await w.board.run(run.id)).activity.permissionPending, false);
     assert.equal((await w.board.run(run.id)).activity.planApproval, undefined);
     await input('activity-plan-approve');
     const approved = await until(async () => (await w.board.run(run.id)).activity?.planApproval);
