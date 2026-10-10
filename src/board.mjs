@@ -3055,7 +3055,8 @@ export class Board {
     }
     if (stage === 'testing') {
       const rev = await this.delivery.revision(taskId);
-      if (!rev.clean) return this.#recordOutcome(taskId, run, 'changes_required', { next: 'executing', reason: 'The testing agent changed files. They go back to Executing so they are committed, reviewed and tested.' });
+      // Name the files: a tool folder (for example an MCP server's .serena/) belongs in .gitignore, not in the task.
+      if (!rev.clean) return this.#recordOutcome(taskId, run, 'changes_required', { next: 'executing', code: 'TESTER_CHANGED_FILES', reason: `The testing agent changed files (${rev.changes.slice(0, 5).map(line => line.slice(3)).join(', ')}${rev.changes.length > 5 ? ', …' : ''}). They go back to Executing so they are committed, reviewed and tested; files a tool writes on its own belong in the repository's .gitignore.` });
       const tests = this.#task(await this.state(), taskId).task.evidence?.tests;
       // recordStageResult (during confirm) started Promptboard's own test run of the configured commands.
       if (tests?.status === 'running' && tests.taskCommit === rev.taskCommit) return this.#recordOutcome(taskId, run, 'verifying', { testsId: tests.id, reason: 'Promptboard is running the configured test commands.' });

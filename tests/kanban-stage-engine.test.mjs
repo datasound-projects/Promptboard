@@ -239,3 +239,15 @@ test('recovery: an app restart mid-stage interrupts the run and Autopilot restar
   supervisor.input(run.id, 'y\r');
   await until(async () => { await board.advanceFlows(); return (await board.state()).projects[0].tasks.find(task => task.id === asking.id).stageOutcome?.status === 'succeeded'; }, 'the answered stage completed', 30000);
 });
+
+test('a testing agent that changes files sends the card back with the file names (TESTER_CHANGED_FILES)', { skip, timeout: 120000 }, async t => {
+  const w = await world(t, { agents: { executing: 'claude', code_review: 'claude', testing: 'claude' } });
+  await w.board.setExecutionPolicy(w.project.id, { policy: { completion: 'automatic' }, expectedRevision: (await w.projectNow()).revision });
+  const card = await w.board.createTask({ projectId: w.project.id, title: 'Tester writes', prompt: 'Do it. WRITE_FILE:tested.txt TESTER_WRITES' });
+  await w.go(card.id, 'executing'); await w.outcome(card.id, 'succeeded');
+  await w.go(card.id, 'code_review'); await w.outcome(card.id, 'succeeded');
+  await w.go(card.id, 'testing');
+  const outcome = await w.outcome(card.id, 'changes_required');
+  assert.equal(outcome.code, 'TESTER_CHANGED_FILES'); assert.equal(outcome.next, 'executing');
+  assert.match(outcome.reason, /tested\.txt/); assert.match(outcome.reason, /\.gitignore/);
+});
