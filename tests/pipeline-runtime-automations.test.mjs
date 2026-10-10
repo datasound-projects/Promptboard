@@ -11,6 +11,7 @@ import { defaultPipelineConfig } from '../src/pipeline-config.mjs';
 import { resolveConfig } from '../src/agents.mjs';
 import { PipelineActions } from '../src/pipeline-actions.mjs';
 import { pipelineTaskEnvelope } from '../src/pipeline-templates.mjs';
+import { PipelineJournal } from '../src/pipeline-journal.mjs';
 import { expireLease } from './helpers/journal.mjs';
 
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null' } }).trim();
@@ -189,6 +190,49 @@ test('startup recovers only referenced dead-owner moves, preserves known receipt
   const [receipt] = await recovered.automationRuns(card.id); assert.equal(receipt.actions[0].status, 'interrupted'); assert.equal(receipt.lifecycle.status, 'interrupted');
   const duplicate = await recovered.transition(card.id, { column: 'executing', expectedRevision: -1, transitionId: key.transitionId }); assert.equal(duplicate.duplicate, true);
   assert.equal((await w.observations()).length, 0); assert.equal((await recovered.state()).runs.length, 0);
+});
+
+test('a crashed owner whose PID was reused keeps its move only until its lease expires; the board then recovers it unasked', async t => {
+  const w = await world(t); await w.configure();
+  const card = await w.board.createTask({ projectId: w.projectId, title: 'Leased', prompt: 'Original input' });
+  const key = { projectId: w.projectId, taskId: card.id, transitionId: randomUUID() }, module = new URL('../src/pipeline-journal.mjs', import.meta.url).href;
+  const code = `import {PipelineJournal} from ${JSON.stringify(module)}; const j=new PipelineJournal(process.argv[1]); const key=JSON.parse(process.argv[2]); const r=await j.beginMove({...key,taskRevision:1,projectRevision:4,from:{id:'todo',name:'To Do'},to:{id:'executing',name:'Executing'},onExit:[{id:'unknown',name:'Unknown',type:'run_script',enabled:true,script:'echo NEVER_REPLAY'}]}); await j.startAction(key,r.move.actions[0].id);`;
+  execFileSync(process.execPath, ['--input-type=module', '-e', code, w.dataDir, JSON.stringify(key)], { encoding: 'utf8' });
+  // The crashed owner's PID now belongs to an unrelated live process, and its lease has not expired yet.
+  const expiresAt = Date.now() + 60000, reused = data => { data.ownerPid = process.ppid; };
+  await expireLease(w.dataDir, key, data => { reused(data); data.leaseExpiresAt = expiresAt; });
+  await w.board.store.update(state => { const task = state.projects[0].tasks[0]; task.automationMoves = [key]; task.automationMove = { ...key, status: 'running', phase: 'exit' }; });
+  const restarted = new Board({ dataDir: w.dataDir }); t.after(() => restarted.shutdownAutomations());
+  const task = (await restarted.state()).projects[0].tasks[0]; assert.equal(task.automationMove.status, 'running');
+  await assert.rejects(restarted.transition(card.id, { column: 'code_review', expectedRevision: task.revision }), { code: 'AUTOMATION_MOVE_ACTIVE' });
+  await assert.rejects(restarted.cancelAutomationMove(card.id, { confirm: true }),
+    error => error.code === 'AUTOMATION_OWNER_ACTIVE' && error.message.includes(new Date(expiresAt).toISOString()));
+  await restarted.advanceFlows(); assert.equal((await restarted.automationRuns(card.id))[0].actions[0].status, 'running');
+  await expireLease(w.dataDir, key, reused);
+  await restarted.advanceFlows();
+  const recovered = (await restarted.state()).projects[0].tasks[0]; assert.equal(recovered.automationMove.status, 'interrupted');
+  const [receipt] = await restarted.automationRuns(card.id); assert.equal(receipt.actions[0].status, 'interrupted'); assert.equal(receipt.lifecycle.status, 'interrupted');
+  await restarted.transition(card.id, { column: 'code_review', expectedRevision: recovered.revision });
+  assert.equal((await restarted.state()).projects[0].tasks[0].column, 'code_review'); assert.equal((await w.observations()).length, 0); assert.equal(w.starts.length, 0);
+});
+
+test('an owner that loses its lease to another process stops its owned script and replays nothing', async t => {
+  const w = await world(t); w.config.columns[0].automations.onExit = [w.row('busy')]; await w.configure();
+  w.board.automationJournal.leaseMs = 3000;
+  const card = await w.board.createTask({ projectId: w.projectId, title: 'Stalled', prompt: 'Keep exact' });
+  const moving = w.move(card.id, 'executing'), stopped = assert.rejects(moving, { code: 'AUTOMATION_LEASE_LOST' });
+  const beat = () => readFile(join(w.fixture, 'heartbeat-' + card.id), 'utf8').catch(() => null);
+  await until(beat);
+  // This process stalled past its lease; another process recovers the move.
+  const key = (await w.taskNow(card.id)).automationMove, other = new PipelineJournal(w.dataDir);
+  await until(async () => { await expireLease(w.dataDir, key); return (await other.recoverInterrupted(key)).length; });
+  await stopped;
+  const last = await beat(); await new Promise(resolve => setTimeout(resolve, 300)); assert.equal(await beat(), last);
+  const [receipt] = await w.board.automationRuns(card.id); assert.equal(receipt.status, 'interrupted'); assert.equal(receipt.actions[0].status, 'interrupted');
+  assert.equal((await w.taskNow(card.id)).automationMove.status, 'blocked');
+  await w.board.cancelAutomationMove(card.id, { confirm: true });
+  const task = await w.taskNow(card.id); assert.equal(task.automationMove.status, 'interrupted'); assert.equal(task.column, 'todo');
+  assert.equal(w.board.automationMoves.size, 0); assert.equal((await w.observations()).length, 1); assert.equal(w.starts.length, 0);
 });
 
 test('shutdown records cancellation before returning and refuses later executable moves', async t => {
