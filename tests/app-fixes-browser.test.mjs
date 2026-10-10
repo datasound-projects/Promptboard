@@ -204,6 +204,8 @@ test('running tests refresh open task details only when their status changes', {
   await wait(`document.querySelector('#kanban-columns .kanban-open')`, 'board');
   await ev(`openTaskDetails(${JSON.stringify(card.id)}); document.querySelector('#task-details section').dataset.kept = 'yes';`);
   await wait(`document.querySelector('#task-dialog').open`, 'details');
+  // Each poll's load behaves as if shared with the 2 s background refresh of an unchanged board, which renders nothing.
+  await ev(`const load = loadBoard; window.loadBoard = options => load(options || { ifChanged: true });`);
   // Several polls pass; typed fields in the dialog would survive.
   await new Promise(resolve => setTimeout(resolve, 4000));
   assert.equal(await ev(`return document.querySelector('#task-details section').dataset.kept;`), 'yes');
