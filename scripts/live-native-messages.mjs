@@ -120,8 +120,9 @@ try {
   project = await board.createProject({ name: 'Private native smoke' });
   await board.linkRepository(project.id, { path: root, expectedRevision: 1 });
   await board.setTargetBranch(project.id, { branch: 'trunk', expectedRevision: 2 });
+  // Native message delivery belongs to custom columns (one conversation across columns); typed columns start fresh sessions.
   const pipeline = defaultPipelineConfig();
-  for (const column of pipeline.columns) if (column.role === 'active') Object.assign(column.strategy, strategy);
+  for (const column of pipeline.columns) if (column.role === 'active') { column.kind = 'custom'; Object.assign(column.strategy, strategy); }
   if (columnAutomation) pipeline.columns.find(column => column.id === 'code_review').automations.onEnter = [
     { id: 'live-column-message', name: 'Live column check', type: 'send_message', enabled: true, mode: 'deferred', message }];
   await board.setPipeline(project.id, { pipeline, expectedRevision: 3, confirm: true });
