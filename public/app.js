@@ -3233,7 +3233,7 @@ function openWorkflowDialog(focusStage = null) {
     const instructions = document.createElement('textarea'); instructions.maxLength = 4000; instructions.value = settings.instructions || ''; instructions.dataset.field = 'instructions';
     instructionsField.append(instructions);
     if (stage === 'testing') {
-      const commandsField = document.createElement('label'); commandsField.className = 'field-label'; commandsField.textContent = 'Test commands (one per line; run without a shell, in the task worktree)';
+      const commandsField = document.createElement('label'); commandsField.className = 'field-label'; commandsField.textContent = 'Test commands, optional (one per line; run without a shell, in the task worktree). Leave empty and the Testing agent finds and runs the project’s tests itself.';
       const commands = document.createElement('textarea'); commands.id = 'test-commands'; commands.value = (project.testCommands || []).map(item => item.argv.map(arg => /[\s"']/.test(arg) ? JSON.stringify(arg) : arg).join(' ')).join('\n');
       commands.placeholder = 'npm test';
       commandsField.append(commands);
@@ -3447,16 +3447,17 @@ async function renderDelivery(card, container, section, pre) {
   const tests = card.evidence?.tests;
   if (['testing', 'merge'].includes(card.column) || tests) {
     const commands = project.testCommands || [];
-    const box = section('Tests', paragraph(commands.length ? `Configured: ${commands.map(item => item.argv.join(' ')).join(' · ')}` : 'No test commands yet. Add them in Workflow settings. Promptboard runs only commands you configure.'));
+    const box = section('Tests', paragraph(commands.length ? `Configured: ${commands.map(item => item.argv.join(' ')).join(' · ')}` : 'No test command set: the Testing agent finds and runs the project’s tests, and its verdict decides.'));
     if (tests) {
       const current = tests.taskCommit === rev.taskCommit && tests.targetCommit === rev.targetCommit;
-      box.append(paragraph(`Last run: ${tests.status}${tests.note ? ` (${tests.note})` : ''} · for commit ${short(tests.taskCommit)} against ${short(tests.targetCommit)}${current ? '' : ' (stale: run again)'}.`));
+      box.append(paragraph(`Last run: ${tests.status}${tests.source === 'agent' ? ' (reported by the Testing agent)' : ''}${tests.note ? ` (${tests.note})` : ''} · for commit ${short(tests.taskCommit)} against ${short(tests.targetCommit)}${current ? '' : ' (stale: run again)'}.`));
       const table = document.createElement('table');
       for (const result of tests.results || []) {
         const row = document.createElement('tr');
-        for (const value of [result.label, result.status, result.exitCode ?? '—', `${(result.durationMs / 1000).toFixed(1)}s`, result.reason || '']) { const td = document.createElement('td'); td.textContent = String(value); row.append(td); }
+        for (const value of [result.label, result.status, result.exitCode ?? '—', result.durationMs == null ? '—' : `${(result.durationMs / 1000).toFixed(1)}s`, result.reason || '']) { const td = document.createElement('td'); td.textContent = String(value); row.append(td); }
         table.append(row);
       }
+      if (tests.summary) box.append(paragraph(tests.summary));
       if (tests.results?.length) box.append(table);
       const failed = (tests.results || []).find(result => result.status !== 'passed' && result.tail);
       if (failed) box.append(pre(failed.tail));
@@ -4452,7 +4453,7 @@ function renderAutopilotReady(project, draft, typedRoute) {
     : [false, 'Connect a code folder and choose a target branch in Project settings.']];
   if (draft.route.some(id => columnKind(id, project) === 'testing')) items.push(project.testCommands?.length
     ? [true, `Test command: ${testCommandsText(project).split('\n')[0]}`]
-    : [false, 'No test command yet, so Testing would stop.', 'Add one']);
+    : [true, 'Testing: the agent finds and runs the project’s tests (no test command set)']);
   if (typedRoute) items.push(handsOff(project.execution || {})
     ? [true, 'Hands-off: agents work on their own and steps finish by themselves']
     : [false, 'Step by step: agents will ask you, and each step waits for you.', 'Change']);
@@ -4608,7 +4609,7 @@ const COLUMN_KIND_NOTES = {
   planning: 'A fresh agent writes a plan. It can read the code but not change it.',
   execution: 'A fresh agent builds the plan, or fixes what review found. Promptboard saves the result as a commit.',
   review: 'A fresh agent checks the changes without editing them. Problems send the card back to Executing.',
-  testing: 'Promptboard runs your test command. If it fails, the card goes back to Executing with the output.',
+  testing: 'The Testing agent finds and runs the project’s tests (or Promptboard runs your test command, if you set one). If they fail, the card goes back to Executing with the results.',
   merge: 'Promptboard merges the reviewed and tested work into your target branch. An agent only helps if there is a conflict.',
 };
 /** A disclosure whose open state survives the editor's re-renders (one key per section; see rememberColumnsSections). */
@@ -4690,7 +4691,7 @@ function renderExecutionPolicy() {
   }
   const tests = document.createElement('textarea'); tests.id = 'pipeline-test-commands'; tests.rows = 2; tests.placeholder = 'npm test'; tests.value = columnsDraft.tests;
   tests.addEventListener('input', () => { columnsDraft.tests = tests.value; });
-  nodes.push(field('Test command', tests, 'Promptboard runs it in the card’s workspace; Testing passes only if it succeeds. One command per line.'));
+  nodes.push(field('Test command (optional)', tests, 'Leave it empty and the Testing agent finds and runs the project’s tests itself; its verdict decides. Add one and Promptboard runs it after the agent; only its result decides. One command per line.'));
   // Advanced: every individual setting, as before.
   const rework = document.createElement('input'); rework.type = 'number'; rework.min = 0; rework.max = 5; rework.step = 1; rework.id = 'execution-max-rework';
   rework.placeholder = '2'; rework.value = draft.maxRework ?? '';

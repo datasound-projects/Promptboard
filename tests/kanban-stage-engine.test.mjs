@@ -11,6 +11,7 @@ import { Board } from '../src/board.mjs';
 import { Supervisor } from '../src/supervisor.mjs';
 import { Autopilot } from '../src/autopilot.mjs';
 import { defaultPipelineConfig } from '../src/pipeline-config.mjs';
+import { parseTestVerdict } from '../src/delivery.mjs';
 
 const skip = process.platform === 'win32';
 const fake = fileURLToPath(new URL('./fixtures/fake-agent.cjs', import.meta.url));
@@ -39,7 +40,8 @@ async function world(t, { agents = {}, testCommand = `${process.execPath} -e "pr
   const config = defaultPipelineConfig();
   for (const [id, provider] of Object.entries(agents)) config.columns.find(column => column.id === id).strategy.agentOverride = provider;
   await board.setPipeline(project.id, { pipeline: config, expectedRevision: (await projectNow()).revision });
-  await board.delivery.setTestCommands(project.id, { commands: [{ command: testCommand }], expectedRevision: (await projectNow()).revision });
+  // testCommand null: no configured commands, so the Testing agent finds and runs the tests and its verdict decides.
+  if (testCommand !== null) await board.delivery.setTestCommands(project.id, { commands: [{ command: testCommand }], expectedRevision: (await projectNow()).revision });
   const task = async id => (await projectNow()).tasks.find(item => item.id === id);
   const go = async (id, column) => board.transition(id, { column, expectedRevision: (await task(id)).revision });
   const finished = runId => until(async () => { const run = await board.run(runId); return run.status === 'waiting_for_input' && run.turnComplete && (run.activity ? run.activity.ready !== false : true) && run; }, 'finished turn');
@@ -268,4 +270,65 @@ test('a planner that ends its turn without a plan pauses Autopilot (PLAN_MISSING
   await until(async () => { const value = await w.board.run(run.id); return value.turns >= 2 && value.hasPlan && value.activity?.ready; }, 'second planning turn with a plan', 30000);
   await w.board.controlAutopilot(w.project.id, { action: 'resume' });
   await until(async () => { await autopilot.tick(); const item = await w.task(card.id); return item.column === 'executing' && item.stageHistory.some(entry => entry.columnId === 'planning' && entry.status === 'succeeded'); }, 'the stage was checked again and accepted', 60000);
+});
+
+test('the testing agent verdict: a pass needs listed commands that all exited 0; anything else is invalid, never a pass', () => {
+  const block = value => `Ran the tests.\n\`\`\`json\n${JSON.stringify(value)}\n\`\`\``;
+  assert.equal(parseTestVerdict(block({ verdict: 'passed', commands: [{ command: 'npm test', exitCode: 0 }], failures: [] })).verdict, 'passed');
+  const failed = parseTestVerdict(block({ verdict: 'failed', commands: [{ command: 'pytest', exitCode: 1, output: 'E   assert 2 == 3' }], failures: [{ file: 'a.py', line: 3, explanation: 'Off by one.' }], summary: 'One test fails.' }));
+  assert.deepEqual([failed.verdict, failed.failures[0].file, failed.commands[0].output, failed.summary], ['failed', 'a.py', 'E   assert 2 == 3', 'One test fails.']);
+  for (const [value, problem] of [[{ verdict: 'passed', commands: [] }, /without listing any command/], [{ verdict: 'passed', commands: [{ command: 'npm test', exitCode: 1 }] }, /did not exit with 0/],
+    [{ verdict: 'passed', commands: [{ command: 'npm test' }] }, /did not exit with 0/], [{ verdict: 'passed', commands: [{ command: 'npm test', exitCode: 0 }], failures: [{ explanation: 'x' }] }, /together with failures/]]) {
+    const result = parseTestVerdict(block(value)); assert.equal(result.verdict, 'invalid'); assert.match(result.problem, problem);
+  }
+  assert.equal(parseTestVerdict('All good, trust me.').verdict, 'invalid');
+  assert.equal(parseTestVerdict(block({ verdict: 'maybe', commands: [] })).parsed, false);
+  // The last valid block wins, as for review verdicts.
+  assert.equal(parseTestVerdict(`${block({ verdict: 'failed', commands: [{ command: 'a', exitCode: 1 }] })}\n${block({ verdict: 'passed', commands: [{ command: 'a', exitCode: 0 }] })}`).verdict, 'passed');
+});
+
+test('without test commands the Testing agent finds and runs the tests: its verdict decides, a failure goes back through Executing, review and testing, and the card merges', { skip, timeout: 180000 }, async t => {
+  const w = await world(t, { agents: { planning: 'codex', executing: 'codex', code_review: 'claude', testing: 'claude' }, testCommand: null });
+  assert.deepEqual((await w.projectNow()).testCommands || [], []);
+  const flaky = await w.board.createTask({ projectId: w.project.id, title: 'Flaky', prompt: 'Change it. WRITE_FILE:flaky.txt TEST_FAIL_ONCE TASK_KEY:flaky' });
+  const plain = await w.board.createTask({ projectId: w.project.id, title: 'Plain', prompt: 'Change it too. WRITE_FILE:plain.txt TASK_KEY:plain' });
+  await w.board.applyFullAutopilot(w.project.id, { expectedRevision: (await w.projectNow()).revision, confirm: true });
+  let project = await w.projectNow();
+  await w.board.setAutopilot(w.project.id, { route: project.autopilot.route, queue: [flaky.id, plain.id], expectedRevision: project.revision });
+  await w.board.controlAutopilot(w.project.id, { action: 'start', confirm: true });
+  const autopilot = new Autopilot(w.board, { tickMs: 1e9 });
+  await until(async () => {
+    await autopilot.tick(); project = await w.projectNow();
+    if (project.autopilot.status === 'paused') assert.fail(`Autopilot paused: ${project.autopilot.reason}`);
+    return project.autopilot.status === 'finished';
+  }, 'Autopilot finished', 150000);
+  for (const id of [flaky.id, plain.id]) assert.equal(project.tasks.find(item => item.id === id).column, 'done');
+  for (const file of ['flaky.txt', 'plain.txt']) assert.ok(git(w.root, 'ls-tree', '--name-only', 'trunk', file), `${file} is on trunk`);
+  // The first verdict failed: back to Executing with the agent's findings, then review and testing again.
+  const history = project.tasks.find(item => item.id === flaky.id).stageHistory;
+  const failedTest = history.find(item => item.columnId === 'testing' && item.status === 'changes_required');
+  assert.ok(failedTest, history.map(item => `${item.columnId}:${item.status}`).join(' '));
+  assert.equal(failedTest.code, 'TESTS_FAILED');
+  const after = history.slice(history.indexOf(failedTest) + 1).map(item => `${item.columnId}:${item.status}`);
+  assert.deepEqual(after.slice(0, 3), ['executing:succeeded', 'code_review:succeeded', 'testing:succeeded'], after.join(' '));
+  const runs = (await w.board.state()).runs.filter(run => run.taskId === flaky.id && run.stageKind === 'executing');
+  assert.ok(runs.length >= 2, 'Executing ran again to fix the failing test.');
+  const fix = runs.sort((x, y) => x.createdAt - y.createdAt)[1];
+  assert.match(await readFile(join(w.dataDir, fix.artifactsDir, 'prompt.md'), 'utf8'), /Testing failed[\s\S]*off by one[\s\S]*npm test/, 'The rework run got the failing verdict.');
+  // The merged evidence is the agent's own passing verdict for the merged commit.
+  const tests = project.tasks.find(item => item.id === flaky.id).evidence.tests;
+  assert.deepEqual([tests.source, tests.status, tests.results[0].label], ['agent', 'passed', 'npm test']);
+  assert.match(project.autopilot.log.map(entry => entry.text).join('\n'), /back to Executing/);
+});
+
+test('a testing agent without a structured verdict fails closed with INVALID_TEST_RESULT instead of passing', { skip, timeout: 120000 }, async t => {
+  const w = await world(t, { agents: { planning: 'claude', executing: 'claude', code_review: 'claude', testing: 'claude' }, testCommand: null });
+  await w.board.setExecutionPolicy(w.project.id, { policy: { completion: 'automatic' }, expectedRevision: (await w.projectNow()).revision });
+  const card = await w.board.createTask({ projectId: w.project.id, title: 'Vague tester', prompt: 'Change it. WRITE_FILE:vague.txt TEST_NO_VERDICT' });
+  await w.go(card.id, 'executing'); await w.outcome(card.id, 'succeeded');
+  await w.go(card.id, 'code_review'); await w.outcome(card.id, 'succeeded');
+  await w.go(card.id, 'testing');
+  const outcome = await w.outcome(card.id, 'failed');
+  assert.equal(outcome.code, 'INVALID_TEST_RESULT'); assert.match(outcome.reason, /JSON test verdict/);
+  assert.notEqual((await w.task(card.id)).evidence.tests.status, 'passed');
 });

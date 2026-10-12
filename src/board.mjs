@@ -1490,6 +1490,10 @@ export class Board {
     if (from === 'code_review' && review?.status === 'completed' && review.verdict !== 'no_issues') {
       return { review: true, text: review.findings?.length ? findingLines(review.findings) : review.text || '' };
     }
+    if (from === 'testing' && tests?.source === 'agent' && tests.status === 'failed') {
+      const output = (tests.results || []).filter(result => result.status !== 'passed').map(result => `$ ${result.label}\nexit ${result.exitCode ?? 'unknown'}\n${(result.tail || '').slice(-4000)}`).join('\n\n');
+      return { text: ['Testing failed. Fix the cause (not the tests, unless they are wrong):', tests.summary, tests.failures?.length ? findingLines(tests.failures) : '', output].filter(Boolean).join('\n') };
+    }
     if (from === 'testing' && tests && ['failed', 'invalid'].includes(tests.status)) {
       const output = (tests.results || []).filter(result => result.status !== 'passed').map(result => `$ ${result.argv.join(' ')}\n${result.reason || `exit ${result.exitCode}`}\n${(result.tail || '').slice(-4000)}`).join('\n\n');
       return { text: `The project's tests failed. Fix the cause (not the tests, unless they are wrong):\n${output || tests.note || tests.status}` };
@@ -1703,10 +1707,8 @@ export class Board {
     });
     if (runStage(run) !== 'testing') return;
     const { project } = this.#task(await this.state(), run.taskId);
-    if (!(project.testCommands || []).length) {
-      await this.#setFlow(run.taskId, { kind: 'blocked', reason: 'Testing agent finished. Configure test commands to verify exit codes before merging or completing.' });
-      return;
-    }
+    // Without configured commands the testing agent is responsible: its structured verdict is the test result.
+    if (!(project.testCommands || []).length) { await this.delivery.recordAgentTests(run, summary); return; }
     try { await this.delivery.runTests(run.taskId, { confirm: true }); }
     catch (error) { await this.#setFlow(run.taskId, { kind: 'blocked', reason: error.message }); }
   }
@@ -3058,10 +3060,18 @@ export class Board {
       // Name the files: a tool folder (for example an MCP server's .serena/) belongs in .gitignore, not in the task.
       if (!rev.clean) return this.#recordOutcome(taskId, run, 'changes_required', { next: 'executing', code: 'TESTER_CHANGED_FILES', reason: `The testing agent changed files (${rev.changes.slice(0, 5).map(line => line.slice(3)).join(', ')}${rev.changes.length > 5 ? ', …' : ''}). They go back to Executing so they are committed, reviewed and tested; files a tool writes on its own belong in the repository's .gitignore.` });
       const tests = this.#task(await this.state(), taskId).task.evidence?.tests;
+      const project = this.#project(state, run.projectId);
+      // No configured commands: the testing agent found and ran the tests; its verdict (recorded during confirm) decides.
+      if (!(project.testCommands || []).length) {
+        if (tests?.source !== 'agent' || tests.runId !== runId || tests.status === 'invalid') {
+          const why = tests?.runId === runId && tests.note ? tests.note : 'The testing agent did not end with a valid JSON test verdict.';
+          return this.#recordOutcome(taskId, run, 'failed', { code: 'INVALID_TEST_RESULT', reason: `${why} Test again: move the card to Testing again, or resume Autopilot (a fresh testing agent starts).` });
+        }
+        if (tests.status === 'passed') return this.#recordOutcome(taskId, run, 'succeeded', { reason: `The testing agent ran ${tests.results.length} ${tests.results.length === 1 ? 'command' : 'commands'}; all passed. ${reasonBy}` });
+        return this.#recordOutcome(taskId, run, 'changes_required', { code: 'TESTS_FAILED', next: 'executing', findings: tests.failures, reason: `Tests failed${tests.summary ? `: ${tests.summary}` : '.'}` });
+      }
       // recordStageResult (during confirm) started Promptboard's own test run of the configured commands.
       if (tests?.status === 'running' && tests.taskCommit === rev.taskCommit) return this.#recordOutcome(taskId, run, 'verifying', { testsId: tests.id, reason: 'Promptboard is running the configured test commands.' });
-      const project = this.#project(state, run.projectId);
-      if (!(project.testCommands || []).length) return this.#recordOutcome(taskId, run, 'failed', { code: 'NO_TEST_COMMANDS', reason: 'Testing needs the project’s test commands. Add them in the Kanban settings; only their exit codes decide.' });
       const started = await this.delivery.runTests(taskId, { confirm: true }).catch(error => ({ error }));
       if (started.error) return this.#recordOutcome(taskId, run, 'failed', { code: started.error.code || 'VERIFICATION_FAILED', reason: started.error.message });
       return this.#recordOutcome(taskId, run, 'verifying', { testsId: started.id, reason: 'Promptboard is running the configured test commands.' });

@@ -291,11 +291,10 @@ export class Autopilot {
     return this.advance(projectId, task, stage, route);
   }
 
-  /** Testing: the agent assesses the task first, then independent command exit codes decide. */
+  /** Testing: the agent assesses the task; then the configured commands' exit codes decide, or, with none configured, the agent's own verdict. */
   async testing(projectId, project, task, cur, route) {
     const delivery = this.board.delivery;
     if (cur.step === 'start') {
-      if (!(project.testCommands || []).length) return this.pause(projectId, 'The route includes Testing, but this project has no test commands. Add them in Workflow settings, then resume.');
       const run = await this.board.requestRun(task.id, { stage: 'testing', consent: true, trigger: 'automation' });
       return this.set(projectId, a => { a.current = { ...a.current, step: 'agent', runId: run.id }; });
     }
@@ -309,7 +308,7 @@ export class Autopilot {
       const rev = await delivery.revision(task.id);
       if (!rev.clean) return this.rework(projectId, task, cur, project.autopilot, 'the testing agent changed files that need review');
       const fresh = (await this.board.state()).projects.find(item => item.id === projectId).tasks.find(item => item.id === task.id);
-      if (!fresh.evidence?.tests) return this.pause(projectId, fresh.flow?.reason || 'Testing could not start the configured commands.');
+      if (!fresh.evidence?.tests) return this.pause(projectId, fresh.flow?.reason || 'Testing recorded no result.');
       return this.set(projectId, a => { a.current = { ...a.current, step: 'running', testsId: fresh.evidence.tests.id }; });
     }
     const tests = task.evidence?.tests;
