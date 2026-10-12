@@ -63,6 +63,36 @@ export function parseFindings(text) {
   return { parsed: false, verdict: 'unknown', findings: [] };
 }
 
+/**
+ * The testing agent's own verdict, used when no test commands are configured: the last ```json block with
+ * { verdict, commands, failures, summary }. A pass counts only when it lists at least one command and every listed
+ * command exited 0; a pass that does not add up is `invalid` (tested again), never a pass.
+ */
+export function parseTestVerdict(text) {
+  const blocks = [...String(text || '').matchAll(/```json\s*([\s\S]*?)```/g)];
+  for (const block of blocks.reverse()) {
+    let data;
+    try { data = JSON.parse(block[1]); } catch { continue; }
+    if (!data || !['passed', 'failed'].includes(data.verdict) || !Array.isArray(data.commands)) continue;
+    const commands = data.commands.slice(0, 50).filter(item => item && typeof item.command === 'string' && item.command.trim()).map(item => ({
+      command: item.command.trim().slice(0, 500), exitCode: Number.isInteger(item.exitCode) ? item.exitCode : null, output: typeof item.output === 'string' ? item.output.slice(-4000) : '',
+    }));
+    const failures = (Array.isArray(data.failures) ? data.failures : []).slice(0, 100).filter(item => item && typeof item === 'object').map(item => ({
+      severity: ['critical', 'high', 'medium', 'low'].includes(item.severity) ? item.severity : 'high',
+      file: typeof item.file === 'string' ? item.file.slice(0, 300) : '',
+      line: Number.isInteger(item.line) && item.line > 0 ? item.line : null,
+      explanation: typeof item.explanation === 'string' ? item.explanation.slice(0, 2000) : '',
+    }));
+    const summary = typeof data.summary === 'string' ? data.summary.slice(0, 2000) : '';
+    if (data.verdict === 'failed') return { parsed: true, verdict: 'failed', commands, failures, summary };
+    const problem = !commands.length ? 'The testing agent reported a pass without listing any command it ran.'
+      : commands.some(item => item.exitCode !== 0) ? 'The testing agent reported a pass, but a command it listed did not exit with 0.'
+      : failures.length ? 'The testing agent reported a pass together with failures.' : '';
+    return { parsed: true, verdict: problem ? 'invalid' : 'passed', commands, failures, summary, ...(problem ? { problem } : {}) };
+  }
+  return { parsed: false, verdict: 'invalid', commands: [], failures: [], summary: '', problem: 'The testing agent did not end with a JSON test verdict ({"verdict", "commands", "failures", "summary"}).' };
+}
+
 export class Delivery {
   constructor(board) {
     this.board = board;
@@ -180,6 +210,18 @@ export class Delivery {
     const findings = parseFindings(text);
     return this.board.updateTaskEvidence(run.taskId, task => {
       task.evidence = { ...(task.evidence || {}), review: { status: 'completed', runId: run.id, taskCommit: run.review?.taskCommit, targetCommit: run.review?.targetCommit, promptRevision: run.promptRevision, ...findings, text: String(text || '').slice(0, 20000), at: Date.now() } };
+    });
+  }
+
+  /** Record a testing agent's own verdict (no test commands configured) as the tests of the current commits. */
+  async recordAgentTests(run, text) {
+    const result = parseTestVerdict(text), rev = await this.revision(run.taskId);
+    const now = Date.now();
+    return this.board.updateTaskEvidence(run.taskId, task => {
+      task.evidence = { ...(task.evidence || {}), tests: { status: result.verdict, source: 'agent', id: `agent-${run.id}`, runId: run.id,
+        taskCommit: rev.taskCommit, targetCommit: rev.targetCommit, promptRevision: run.promptRevision, startedAt: now, endedAt: now,
+        results: result.commands.map(item => ({ label: item.command, argv: [item.command], status: item.exitCode === 0 ? 'passed' : 'failed', exitCode: item.exitCode, tail: item.output, source: 'agent' })),
+        failures: result.failures, summary: result.summary, ...(result.problem ? { note: result.problem } : {}) } };
     });
   }
 
@@ -392,7 +434,18 @@ export class Delivery {
   /** Context for a Testing agent run. */
   async testingContext(taskId) {
     const { project } = await this.#context(taskId);
-    return `=== TEST COMMANDS CONFIGURED IN PROMPTBOARD ===\n${this.#commandsText(project)}\n=== END TEST COMMANDS ===`;
+    if ((project.testCommands || []).length) return `=== TEST COMMANDS CONFIGURED IN PROMPTBOARD ===\n${this.#commandsText(project)}\n=== END TEST COMMANDS ===\nPromptboard runs these commands itself when you finish; only their exit codes decide whether the tests pass.`;
+    return `=== HOW TESTING IS DECIDED ===
+No test commands are configured in Promptboard, so you are responsible for testing this task.
+1. Find how this project is tested: its README, package.json scripts, pyproject.toml or pytest settings, Makefile, CI configuration and test folders.
+2. Run the project's relevant tests, plus whatever checks that this task's change really works. If the project has no automated tests yet, check the change by running it (for example its command line or a short script) and list those commands.
+3. Do not fix anything: fixes belong in Executing. If your runs leave new files Git would see (caches, build output), remove them so the worktree is as you found it.
+4. End your final message with exactly one JSON block in this format:
+\`\`\`json
+{"verdict": "passed", "commands": [{"command": "the exact command", "exitCode": 0, "output": "the last lines when it failed"}], "failures": [{"file": "path", "line": 1, "explanation": "what is wrong"}], "summary": "one sentence"}
+\`\`\`
+Use "passed" only when every command you list exited with 0 and the change works. Otherwise use "failed" and describe each problem in failures, so Executing can fix it.
+=== END ===`;
   }
 
   /**

@@ -23,7 +23,7 @@ Each active pipeline column has a type; its name is only a label.
 | Planning | Fresh read-only session; the task and Base context | A non-empty plan and an unchanged worktree, else `PLAN_MISSING` or `PLAN_MODIFIED_WORKSPACE`. The accepted plan goes to Executing. |
 | Executing | Fresh session with the accepted plan, or the review findings / failing test output to fix | A checkpoint commit `promptboard(#N): <column> checkpoint` on the task branch; no changes at all is `NO_CHANGES`. |
 | Code Review | Commits pending work, then a fresh read-only session with the diff against the target and the execution summary | A JSON verdict. `no_issues` accepts the review; `changes_required` sends the findings back; anything else is `INVALID_REVIEW_RESULT`. |
-| Testing | A fresh session checks the work; then Promptboard runs the project's test commands | Only exit codes decide. Failures (or files the tester changed) go back to Executing with the exact output. |
+| Testing | A fresh session tests the work. With no test commands configured (they are optional) the agent finds the project's tests itself, runs them and ends with a JSON verdict (`verdict`, `commands` with exit codes, `failures`, `summary`); with commands configured, Promptboard runs them after the agent | Without commands, the verdict decides: a pass counts only when it lists commands that all exited 0, and a missing or inconsistent verdict is `INVALID_TEST_RESULT`. With commands, only their exit codes decide. Failures (or files the tester changed) go back to Executing with the findings or the exact output. |
 | Merge | Promptboard's own Git merge of the reviewed and tested commit | Squash (default) or fast-forward, compare-and-swap on the target. Conflicts start a resolver agent in the Merge column; its result is reviewed and tested again. |
 | Custom | One conversation continues across compatible custom columns (the earlier column-pipeline behaviour) | You move the card; "on enter" messages are the next instruction. |
 
@@ -113,7 +113,7 @@ Moving a card back to To Do stops its agent and keeps the branch, worktree, file
 ## Machine-readable stops
 
 `WORKTREE_MISSING`, `WORKTREE_BRANCH_MISMATCH`, `PLAN_MISSING`, `PLAN_MODIFIED_WORKSPACE`, `NO_CHANGES`,
-`INVALID_REVIEW_RESULT`, `VERIFICATION_FAILED`, `VERIFICATION_INTERRUPTED`, `NO_TEST_COMMANDS`, `REWORK_LIMIT_REACHED`,
+`INVALID_REVIEW_RESULT`, `VERIFICATION_FAILED`, `VERIFICATION_INTERRUPTED`, `INVALID_TEST_RESULT`, `TESTS_FAILED`, `REWORK_LIMIT_REACHED`,
 `MERGE_BLOCKED`, `MERGE_CONFLICT_UNRESOLVED`, `MERGE_STALE`, `AGENT_STOPPED`, `AGENT_INTERRUPTED`, `CLI_INPUT_NOT_READY`,
 `EXECUTION_POLICY_UNSUPPORTED`. Each comes with a sentence that says what failed and what to do; a failed task never
 changes the target branch.

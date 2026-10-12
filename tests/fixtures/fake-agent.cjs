@@ -162,7 +162,20 @@ function turn(text) {
     const marker = join(process.env.FAKE_AGENT_STATE, `noplan-${(text.match(/TASK_KEY:(\w+)/) || [])[1] || 'task'}`);
     try { readFileSync(marker); } catch { writeFileSync(marker, 'silent once\n'); silent = true; }
   }
-  emit('Stop', { last_assistant_message: silent ? '' : review || (plan ? `PLAN\n1. Change the code.\nsaw ${text.length} chars` : 'Implemented the change.') });
+  // With no configured test commands the tester is responsible and ends with its JSON test verdict.
+  // TEST_FAIL fails every time, TEST_FAIL_ONCE the first time (marker in FAKE_AGENT_STATE), TEST_NO_VERDICT gives none.
+  let testVerdict = null;
+  if (tester && text.includes('=== HOW TESTING IS DECIDED ===')) {
+    let failTests = text.includes('TEST_FAIL') && !text.includes('TEST_FAIL_ONCE');
+    if (text.includes('TEST_FAIL_ONCE') && process.env.FAKE_AGENT_STATE) {
+      const marker = join(process.env.FAKE_AGENT_STATE, `tests-${(text.match(/TASK_KEY:(\w+)/) || [])[1] || 'task'}`);
+      try { readFileSync(marker); } catch { writeFileSync(marker, 'failed once\n'); failTests = true; }
+    }
+    testVerdict = text.includes('TEST_NO_VERDICT') ? 'I ran the tests and they look fine.' : 'Found the tests in package.json.\n```json\n' + JSON.stringify(failTests
+      ? { verdict: 'failed', commands: [{ command: 'npm test', exitCode: 1, output: 'AssertionError: expected 2, got 3' }], failures: [{ file: 'feature.txt', line: 1, explanation: 'The value is off by one.' }], summary: 'One test fails.' }
+      : { verdict: 'passed', commands: [{ command: 'npm test', exitCode: 0 }], failures: [], summary: 'All 3 tests pass.' }) + '\n```';
+  }
+  emit('Stop', { last_assistant_message: silent ? '' : review || testVerdict || (plan ? `PLAN\n1. Change the code.\nsaw ${text.length} chars` : 'Implemented the change.') });
   process.stdout.write('turn complete\r\n');
 }
 // Codex asks through its terminal title, not a hook; answering it continues the turn.
