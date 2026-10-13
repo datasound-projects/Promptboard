@@ -260,7 +260,7 @@ test('Code Review → Executing with a finished review turn: the drag records th
   assert.deepEqual([card.column, card.evidence.review.status, card.evidence.review.verdict], ['executing', 'changes_requested', 'changes_required']);
   assert.match(card.reworkNotes, /\[high\] feature\.txt:1 The value is wrong\./);
   await w.turn(back.run.id);
-  assert.match(await readFile(promptFile, 'utf8'), /=== REVIEW FINDINGS TO FIX ===\n- \[high\] feature\.txt:1/);
+  assert.match(await readFile(promptFile, 'utf8'), /=== FINDINGS TO FIX ===\n- \[high\] feature\.txt:1/);
   assert.equal(back.run.workspacePath, review.run.workspacePath);
 });
 

@@ -32,21 +32,35 @@ async function world(t, { agents = {}, testCommand = `${process.execPath} -e "pr
   const dataDir = await temp(t, 'pb-se-data-');
   const board = new Board({ dataDir }), supervisor = new Supervisor({ board, dataDir });
   board.executor = supervisor;
-  t.after(async () => { await supervisor.shutdown(500); process.env.PATH = old.PATH; for (const [key, value] of [['FAKE_AGENT_STATE', old.FAKE_AGENT_STATE], ['GEMINI_CLI_SYSTEM_SETTINGS_PATH', old.GEMINI]]) if (value === undefined) delete process.env[key]; else process.env[key] = value; });
+  t.after(async () => { board.delivery.stopAllTests(); await supervisor.shutdown(500); process.env.PATH = old.PATH; for (const [key, value] of [['FAKE_AGENT_STATE', old.FAKE_AGENT_STATE], ['GEMINI_CLI_SYSTEM_SETTINGS_PATH', old.GEMINI]]) if (value === undefined) delete process.env[key]; else process.env[key] = value; });
   const project = await board.createProject({ name: 'Typed', workflowMode: 'pipeline' });
   await board.linkRepository(project.id, { path: root, expectedRevision: project.revision });
-  const projectNow = async () => (await board.state()).projects[0];
+  const projectNow = async (b = board) => (await b.state()).projects[0];
   await board.setTargetBranch(project.id, { branch: 'trunk', expectedRevision: (await projectNow()).revision });
   const config = defaultPipelineConfig();
   for (const [id, provider] of Object.entries(agents)) config.columns.find(column => column.id === id).strategy.agentOverride = provider;
   await board.setPipeline(project.id, { pipeline: config, expectedRevision: (await projectNow()).revision });
   // testCommand null: no configured commands, so the Testing agent finds and runs the tests and its verdict decides.
   if (testCommand !== null) await board.delivery.setTestCommands(project.id, { commands: [{ command: testCommand }], expectedRevision: (await projectNow()).revision });
-  const task = async id => (await projectNow()).tasks.find(item => item.id === id);
-  const go = async (id, column) => board.transition(id, { column, expectedRevision: (await task(id)).revision });
+  // `b` is another Board on the same data folder: the app after a restart.
+  const task = async (id, b = board) => (await projectNow(b)).tasks.find(item => item.id === id);
+  const go = async (id, column, b = board) => b.transition(id, { column, expectedRevision: (await task(id, b)).revision });
   const finished = runId => until(async () => { const run = await board.run(runId); return run.status === 'waiting_for_input' && run.turnComplete && (run.activity ? run.activity.ready !== false : true) && run; }, 'finished turn');
-  const outcome = (id, status) => until(async () => { await board.advanceFlows(); const card = await task(id); return card.stageOutcome?.status === status && card.stageOutcome; }, `outcome ${status}`);
-  return { board, supervisor, root, dataDir, state, project, projectNow, task, go, finished, outcome };
+  const outcome = (id, status, b = board) => until(async () => { await b.advanceFlows(); const card = await task(id, b); return card.stageOutcome?.status === status && card.stageOutcome; }, `outcome ${status}`);
+  // Someone else's work lands on the target branch.
+  const moveTarget = async file => { await writeFile(join(root, file), 'x\n'); git(root, 'add', file); git(root, 'commit', '-q', '-m', `add ${file}`); };
+  /** Automatic completion through Executing, Code Review (with any review rework) and Testing. */
+  const throughTesting = async id => {
+    await board.setExecutionPolicy(project.id, { policy: { completion: 'automatic' }, expectedRevision: (await projectNow()).revision });
+    await go(id, 'executing'); await outcome(id, 'succeeded');
+    await go(id, 'code_review');
+    const review = await until(async () => { await board.advanceFlows(); const card = await task(id); return ['succeeded', 'changes_required'].includes(card.stageOutcome?.status) && card.stageOutcome; }, 'review');
+    if (review.status === 'changes_required') { await go(id, 'executing'); await outcome(id, 'succeeded'); await go(id, 'code_review'); await outcome(id, 'succeeded'); }
+    await go(id, 'testing'); await outcome(id, 'succeeded');
+  };
+  /** A second app process on the same data folder (after the first one stopped). */
+  const restart = t2 => { const b = new Board({ dataDir }), s = new Supervisor({ board: b, dataDir }); b.executor = s; t2.after(() => { b.delivery.stopAllTests(); return s.shutdown(500); }); return b; };
+  return { board, supervisor, root, dataDir, state, project, projectNow, task, go, finished, outcome, moveTarget, throughTesting, restart };
 }
 
 test('manual moves through typed columns: fresh sessions per provider, one worktree, plan handoff, checkpoint, verdict, real test exit codes and a squash merge', { skip, timeout: 120000 }, async t => {
@@ -331,4 +345,60 @@ test('a testing agent without a structured verdict fails closed with INVALID_TES
   const outcome = await w.outcome(card.id, 'failed');
   assert.equal(outcome.code, 'INVALID_TEST_RESULT'); assert.match(outcome.reason, /JSON test verdict/);
   assert.notEqual((await w.task(card.id)).evidence.tests.status, 'passed');
+});
+
+test('a failed re-test on the moved target sends its failing output to Executing, not earlier review findings', { skip, timeout: 150000 }, async t => {
+  const w = await world(t, { testCommand: `${process.execPath} -e "process.exit(require('fs').existsSync('BREAK')?1:0)"` });
+  const card = await w.board.createTask({ projectId: w.project.id, title: 'Rework', prompt: 'Do it. WRITE_FILE:rework.txt REVIEW_FAIL_ONCE TASK_KEY:rw' });
+  await w.throughTesting(card.id);
+  await w.moveTarget('BREAK');
+  await w.go(card.id, 'merge');
+  assert.equal((await w.outcome(card.id, 'changes_required')).code, 'VERIFICATION_FAILED');
+  const run = (await w.go(card.id, 'executing')).run;
+  const prompt = await until(() => readFile(join(w.dataDir, run.artifactsDir, 'prompt.md'), 'utf8').catch(() => ''), 'prompt');
+  assert.match(prompt, /=== FINDINGS TO FIX ===\nThe project's tests failed[\s\S]*exit 1/);
+  assert.doesNotMatch(prompt, /The value is wrong/, 'The review findings fixed in the earlier round are not sent again.');
+});
+
+test('without test commands, a target that moved sends the card back to the Testing agent (TARGET_MOVED), then it merges', { skip, timeout: 150000 }, async t => {
+  const w = await world(t, { testCommand: null });
+  const card = await w.board.createTask({ projectId: w.project.id, title: 'Agent tested', prompt: 'Do it. WRITE_FILE:agent.txt TASK_KEY:at' });
+  await w.throughTesting(card.id);
+  await w.moveTarget('other.txt');
+  await w.go(card.id, 'merge');
+  const moved = (await w.task(card.id)).stageOutcome;
+  assert.deepEqual([moved.status, moved.code, moved.next], ['changes_required', 'TARGET_MOVED', 'testing']);
+  await w.go(card.id, 'testing'); await w.outcome(card.id, 'succeeded');
+  const merged = await w.go(card.id, 'merge');
+  assert.equal(merged.merged, true, JSON.stringify(merged.merge));
+  assert.ok(git(w.root, 'ls-tree', '--name-only', 'trunk', 'other.txt') && git(w.root, 'ls-tree', '--name-only', 'trunk', 'agent.txt'));
+});
+
+test('a restart during the Merge re-test: Merge runs the tests again instead of waiting for a run that no longer exists', { skip, timeout: 150000 }, async t => {
+  const w = await world(t, { testCommand: `${process.execPath} -e "if(require('fs').existsSync('SLOW'))setTimeout(()=>{},120000)"` });
+  const card = await w.board.createTask({ projectId: w.project.id, title: 'Restarted', prompt: 'Do it. WRITE_FILE:r.txt TASK_KEY:rs' });
+  await w.throughTesting(card.id);
+  await w.moveTarget('SLOW');
+  assert.equal((await w.go(card.id, 'merge')).merge.state, 'testing');
+  w.board.delivery.stopAllTests(); await w.supervisor.shutdown(500);
+  const board = w.restart(t);
+  assert.equal((await w.outcome(card.id, 'failed', board)).code, 'VERIFICATION_INTERRUPTED');
+  const again = await board.mergeNow(card.id);
+  assert.equal(again.merge.state, 'testing'); assert.equal(board.delivery.testsRunning.has(card.id), true, 'The tests run again.');
+  board.delivery.stopAllTests();
+});
+
+test('a stage confirmed just before the app stopped is completed after the restart, without waiting forever', { skip, timeout: 150000 }, async t => {
+  const w = await world(t);
+  const card = await w.board.createTask({ projectId: w.project.id, title: 'Crash window', prompt: 'Do it. WRITE_FILE:c.txt TASK_KEY:cw' });
+  await w.board.setExecutionPolicy(w.project.id, { policy: { completion: 'automatic' }, expectedRevision: (await w.projectNow()).revision });
+  // The app stops right after the run was saved as succeeded, before the stage outcome is written.
+  const real = w.supervisor.confirm.bind(w.supervisor);
+  w.supervisor.confirm = async id => { await real(id); return new Promise(() => {}); };
+  const runId = (await w.go(card.id, 'executing')).run.id;
+  await until(async () => { w.board.advanceFlows(); return (await w.board.run(runId)).status === 'succeeded'; }, 'confirmed');
+  await w.supervisor.shutdown(500);
+  const board = w.restart(t);
+  const done = await w.outcome(card.id, 'succeeded', board);
+  assert.equal(done.runId, runId); assert.ok(done.checkpointCommit, 'The Executing checkpoint commit was made.');
 });
