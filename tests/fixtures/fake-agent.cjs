@@ -75,7 +75,9 @@ let trustPending = trustScreen, trustChoice = provider === 'claude' ? 'no' : 'ye
 const drawTrust = () => process.stdout.write(provider === 'claude'
   ? `\x1b[2J\x1b[H Accessing workspace:\r\n ${process.cwd()}\r\n Quick safety check: Is this a project you created or one you trust?\r\n ${trustChoice === 'no' ? '❯' : ' '} No, exit\r\n ${trustChoice === 'yes' ? '❯' : ' '} Yes, I trust this folder\r\n Enter to confirm · Esc to cancel\r\n`
   : `\x1b[2J\x1b[H  Folder access\r\n  ${process.cwd()}\r\n  Trust this folder? Codex can read, edit, and run files here.\r\n${trustChoice === 'yes' ? '›' : ' '} 1. Trust and continue\r\n${trustChoice === 'no' ? '›' : ' '} 2. Quit\r\n  enter continue · esc quit\r\n`);
-if (!trustScreen) emit('SessionStart');
+// HOOKS_SCREEN: an unrecognized startup menu (like Codex's "Hooks need review"); the session starts after any Enter.
+let hooksPending = prompt.includes('HOOKS_SCREEN');
+if (!trustScreen && !hooksPending) emit('SessionStart');
 let planApprovalSequence = 0;
 function turn(text) {
   if (prompt.includes('ACTIVITY_FIXTURE') && text.startsWith('activity-')) {
@@ -181,6 +183,7 @@ function turn(text) {
 // Codex asks through its terminal title, not a hook; answering it continues the turn.
 let codexQuestion = prompt.includes('CODEX_QUESTION');
 if (trustScreen) drawTrust();
+else if (hooksPending) process.stdout.write('  Hooks need review\r\n  1 hook is new or changed.\r\n› 1. Review hooks\r\n  2. Trust all and continue\r\n  3. Continue without trusting\r\n');
 else if (codexQuestion) process.stdout.write('\x1b]0;[ ! ] Action Required | thread-1\x07Allow this command? (y)\r\n\x1b]0;[ . ] Action Required | thread-1\x07');
 else if (prompt.includes('ASK_PERMISSION')) {
   emit('PermissionRequest', { tool_name: 'Bash' });
@@ -199,6 +202,11 @@ process.stdin.on('data', chunk => {
     trustPending = false; process.stdout.write('\x1b[2J\x1b[Htrusted\r\n');
     if (provider === 'codex') process.stdout.write('\x1b]0;\u280b thread-1\x07'); else emit('SessionStart');
     if (prompt) turn(prompt);
+    return;
+  }
+  if (hooksPending) {
+    if (!chunk.toString().includes('\r')) return;
+    hooksPending = false; emit('SessionStart'); if (prompt) turn(prompt);
     return;
   }
   line += chunk.toString();
