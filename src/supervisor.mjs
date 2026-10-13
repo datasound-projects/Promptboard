@@ -25,6 +25,7 @@ import { untilStopped } from './native-message-common.mjs';
 const RING_BYTES = 1024 * 1024; // Live scrollback kept per run for reconnects.
 const LOG_BYTES = 20 * 1024 * 1024; // Output log file cap per run.
 const INPUT_BYTES = 64 * 1024;
+const ACTIVITY_COUNTS_MS = 1000; // Count-only activity changes (tool calls) are saved at most this often per run.
 const LINGER_MS = 30 * 60 * 1000; // Keep a finished session's output for reconnects.
 // A long initial prompt is pasted, then submitted with Enter, only after the CLI's own sign that it is past its
 // startup questions (folder trust, sign-in, setup). Elapsed time never authorizes it: a blind Enter could answer
@@ -509,8 +510,18 @@ export class Supervisor {
     if (!session.activity || !session.proc || session.cancelled || session.suspending || session.launchFailed) return;
     const activity = this.#activity(session), key = JSON.stringify(activity);
     if (key === session.activityKey) return;
+    // Every tool call starts and ends, and each save rewrites the whole board. When only the counts of running
+    // tools, subagents and background jobs changed, the latest snapshot is saved at most once per ACTIVITY_COUNTS_MS.
+    // Any other change (phase, ready, permission, plan approval, uncertainty) is saved at once, with the counts.
+    const { tools, subagents, background, scheduled, ...decision } = activity, decisionKey = JSON.stringify(decision);
+    const wait = ACTIVITY_COUNTS_MS - (Date.now() - (session.activitySavedAt || 0));
+    if (decisionKey === session.activityDecisionKey && wait > 0) {
+      session.activityFlush ??= setTimeout(() => { session.activityFlush = null; this.#publishActivity(session).catch(() => {}); }, wait);
+      return;
+    }
+    clearTimeout(session.activityFlush); session.activityFlush = null;
     await this.board.updateRun(session.runId, { activity });
-    session.activityKey = key;
+    session.activityKey = key; session.activityDecisionKey = decisionKey; session.activitySavedAt = Date.now();
     session.publishedPlanApprovalKey = JSON.stringify(activity.planApproval || null);
     this.#push(session, { activity });
   }
@@ -596,7 +607,7 @@ export class Supervisor {
 
   #kill(session) {
     this.#endTrust(session);
-    clearTimeout(session.readyDeadline); clearTimeout(session.pasteReadyTimer); clearTimeout(session.initialSubmitTimer);
+    clearTimeout(session.readyDeadline); clearTimeout(session.pasteReadyTimer); clearTimeout(session.initialSubmitTimer); clearTimeout(session.activityFlush);
     session.initialSubmitPending = false;
     session.terminalInput?.close();
     if (!session.proc) return;

@@ -8,6 +8,7 @@ import { readNewLines } from './usage.mjs';
 import { VERSION } from './version.mjs';
 
 const DAY = 86400000;
+const IDLE_MS = 5 * 60000; // No usage request for this long stops the 60 s background refresh.
 const IDS = ['codex', 'claude', 'gemini', 'agy'];
 const names = { codex: 'Codex', claude: 'Claude Code', gemini: 'Gemini CLI', agy: 'Antigravity' };
 const number = n => typeof n === 'number' && Number.isFinite(n) && n >= 0 ? n : 0;
@@ -95,8 +96,14 @@ export class UsageDashboard {
     this.cache = new Map(); this.abort = new AbortController();
   }
   close() { clearInterval(this.timer); this.abort.abort(); }
+  /** Background refresh runs only while someone reads usage: it stops after IDLE_MS without a request. */
+  #tick() {
+    if (this.now() - this.requestedAt > IDLE_MS) { clearInterval(this.timer); this.timer = null; return; }
+    this.refresh().catch(() => {});
+  }
   async get({ refresh = false } = {}) {
-    if (!this.timer) { this.timer = setInterval(() => this.refresh().catch(() => {}), 60000); this.timer.unref?.(); }
+    this.requestedAt = this.now();
+    if (!this.timer) { this.timer = setInterval(() => this.#tick(), 60000); this.timer.unref?.(); }
     if (!this.snapshot || (refresh && this.now() - this.snapshot.updatedAt >= 10000)) await this.refresh();
     if (this.pending) await this.pending;
     return this.snapshot;
