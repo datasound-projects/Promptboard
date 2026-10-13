@@ -86,7 +86,7 @@ The outcome is shown on the card and in **Stage and reset** in the task details,
 Autopilot takes the queued To Do cards strictly in your order, one card at a time from first column to Done. Before
 each card it refreshes the target branch, so a card starts from the target that already contains the cards merged before
 it. For typed columns it follows the recorded outcome: succeeded → next column; changes required → back to Executing
-(or to Code Review after a merge conflict), up to the board's rework limit (`REWORK_LIMIT_REACHED`); failed → pause with
+(to Code Review after a merge conflict, to Testing when the target moved), up to the board's rework limit (`REWORK_LIMIT_REACHED`); failed → pause with
 the reason. It never pushes, never answers an agent's question for you, and pauses for its own card only.
 
 **Full Autopilot** (Columns → How it runs → **Hands-off**) applies, explicitly and with a confirmation: typed standard columns, autonomous
@@ -98,8 +98,11 @@ Any column can still override it.
 Merge needs an accepted review and passing tests of the same task commit. The merge never touches your checkout unless
 the target branch is checked out there and clean, and then only fast-forwards it. Squash builds one commit with exactly
 the reviewed and tested tree on top of the previewed target commit; the target moves only if it still has that commit
-(otherwise `MERGE_STALE`, nothing changes). A target that moved is merged into the task branch first; a conflict starts
-the resolver agent, and the resolved commit goes back through Code Review and Testing. Nothing is pushed.
+(otherwise nothing changes and the merge is prepared again). A target that moved is merged into the task branch first;
+the combined code is tested again: by the configured test commands, or, without them, by sending the card back to the
+Testing agent (`TARGET_MOVED`). A conflict starts the resolver agent, and the resolved commit goes back through Code
+Review and Testing. If the app stops while those tests run, **Merge** (or resuming Autopilot) runs them again. Nothing is
+pushed.
 
 ## Reset task
 
@@ -113,7 +116,7 @@ Moving a card back to To Do stops its agent and keeps the branch, worktree, file
 ## Machine-readable stops
 
 `WORKTREE_MISSING`, `WORKTREE_BRANCH_MISMATCH`, `PLAN_MISSING`, `PLAN_MODIFIED_WORKSPACE`, `NO_CHANGES`,
-`INVALID_REVIEW_RESULT`, `VERIFICATION_FAILED`, `VERIFICATION_INTERRUPTED`, `INVALID_TEST_RESULT`, `TESTS_FAILED`, `REWORK_LIMIT_REACHED`,
+`INVALID_REVIEW_RESULT`, `VERIFICATION_FAILED`, `VERIFICATION_INTERRUPTED`, `INVALID_TEST_RESULT`, `TESTS_FAILED`, `TARGET_MOVED`, `REWORK_LIMIT_REACHED`,
 `MERGE_BLOCKED`, `MERGE_CONFLICT_UNRESOLVED`, `MERGE_STALE`, `AGENT_STOPPED`, `AGENT_INTERRUPTED`, `CLI_INPUT_NOT_READY`,
 `EXECUTION_POLICY_UNSUPPORTED`. Each comes with a sentence that says what failed and what to do; a failed task never
 changes the target branch.

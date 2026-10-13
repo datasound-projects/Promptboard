@@ -1249,9 +1249,10 @@ export class Board {
     if (gate.problems.length) throw new BoardError(`${title(column)} is not ready: ${gate.problems.join(' ')}`, 'STAGE_NOT_READY', 409);
     if (gate.acceptReview) await this.delivery.acceptReview(id);
     const notes = column === 'executing' ? await this.#reworkNotes(id, from) : null;
-    if (notes) await this.updateTaskEvidence(id, current => {
-      current.reworkNotes = notes.text.slice(0, 20000);
-      if (notes.review && current.evidence?.review) current.evidence.review = { ...current.evidence.review, status: 'changes_requested' };
+    // Notes from an earlier round never carry over: the next Executing run gets exactly what this move asks for.
+    if (column === 'executing') await this.updateTaskEvidence(id, current => {
+      current.reworkNotes = notes ? notes.text.slice(0, 20000) : '';
+      if (notes?.review && current.evidence?.review) current.evidence.review = { ...current.evidence.review, status: 'changes_requested' };
     });
 
     const move = { from, column, index, transitionId: id2, by: automation ? 'automation' : 'user' };
@@ -1302,8 +1303,10 @@ export class Board {
     };
     if (!rev.clean || rev.merging) return blocked(rev.merging ? 'A merge is in progress in the task worktree. Let the merge agent finish, or abort it in the task details.' : 'The task worktree has uncommitted changes. Send the card back to Executing so they are reviewed and tested.');
     if (review?.status !== 'accepted' || review.taskCommit !== rev.taskCommit || review.verdict !== 'no_issues' || review.findings?.length) return blocked('An accepted code review without issues for the current commit is required. Send the card back to Code Review.');
-    if (tests?.status === 'running') return { state: 'testing', message: 'Tests are running.' };
-    if (tests?.status !== 'passed' || tests.taskCommit !== rev.taskCommit) return blocked('Passing tests for the current commit are required. Send the card back to Testing.');
+    // A test run the app no longer owns (it restarted mid-run) is run again below instead of waited for.
+    const stale = tests?.status === 'running' && !this.delivery.testsRunning.has(id);
+    if (tests?.status === 'running' && !stale) return { state: 'testing', message: 'Tests are running.' };
+    if (!stale && (tests?.status !== 'passed' || tests.taskCommit !== rev.taskCommit)) return blocked('Passing tests for the current commit are required. Send the card back to Testing.');
     let preview = await this.delivery.mergePreview(id);
     if (!preview.fastForward) {
       try { await this.delivery.updateBranch(id, { confirm: true }); }
@@ -1324,7 +1327,15 @@ export class Board {
     }
     preview = await this.delivery.mergePreview(id);
     const current = this.#task(await this.state(), id).task.evidence?.tests;
-    if (current?.taskCommit !== preview.taskCommit || current?.targetCommit !== preview.targetCommit) {
+    if (stale || current?.taskCommit !== preview.taskCommit || current?.targetCommit !== preview.targetCommit) {
+      // Without configured commands only a Testing agent can test the combined code: the card goes back to Testing.
+      if (!(project.testCommands || []).length) {
+        const reason = `The task branch now contains the current ${preview.targetBranch}; it is tested again in Testing.`;
+        if (!pipeline) return blocked(`${reason} Move the card back to Testing.`);
+        await this.#setFlow(id, null);
+        await this.#recordOutcome(id, mergeRun, 'changes_required', { code: 'TARGET_MOVED', next: 'testing', reason });
+        return { state: 'retest', message: reason };
+      }
       const started = await this.delivery.runTests(id, { confirm: true }).catch(error => ({ error }));
       if (started.error) return blocked(started.error.message);
       await this.#setFlow(id, { kind: 'merge-tests', testsId: started.id, auto });
@@ -1399,8 +1410,8 @@ export class Board {
       if (tests?.id !== flow.testsId) return this.#setFlow(id, null);
       if (tests.status === 'running') {
         if (!this.delivery.testsRunning.has(id)) {
-          await this.#setFlow(id, { kind: 'blocked', reason: 'The test run stopped (the app restarted). Move the card again to run them.' });
-          if (pipeline) await this.#recordOutcome(id, mergeRun, 'failed', { code: 'VERIFICATION_INTERRUPTED', reason: 'The test run stopped (the app restarted). Move the card to Merge again.' });
+          await this.#setFlow(id, { kind: 'blocked', reason: 'The test run stopped (the app restarted). Choose Merge to run them again.' });
+          if (pipeline) await this.#recordOutcome(id, mergeRun, 'failed', { code: 'VERIFICATION_INTERRUPTED', reason: 'The test run stopped (the app restarted). Choose Merge, or resume Autopilot, to run them again.' });
         }
         return;
       }
@@ -1490,17 +1501,19 @@ export class Board {
     if (from === 'code_review' && review?.status === 'completed' && review.verdict !== 'no_issues') {
       return { review: true, text: review.findings?.length ? findingLines(review.findings) : review.text || '' };
     }
-    if (from === 'testing' && tests?.source === 'agent' && tests.status === 'failed') {
-      const output = (tests.results || []).filter(result => result.status !== 'passed').map(result => `$ ${result.label}\nexit ${result.exitCode ?? 'unknown'}\n${(result.tail || '').slice(-4000)}`).join('\n\n');
-      return { text: ['Testing failed. Fix the cause (not the tests, unless they are wrong):', tests.summary, tests.failures?.length ? findingLines(tests.failures) : '', output].filter(Boolean).join('\n') };
-    }
-    if (from === 'testing' && tests && ['failed', 'invalid'].includes(tests.status)) {
-      const output = (tests.results || []).filter(result => result.status !== 'passed').map(result => `$ ${result.argv.join(' ')}\n${result.reason || `exit ${result.exitCode}`}\n${(result.tail || '').slice(-4000)}`).join('\n\n');
-      return { text: `The project's tests failed. Fix the cause (not the tests, unless they are wrong):\n${output || tests.note || tests.status}` };
-    }
     if (from === 'merge') {
       const rev = await this.delivery.revision(taskId);
       if (rev.merging) return { text: `A merge of ${rev.targetBranch} into the task branch is in progress. Resolve the conflicts in: ${rev.conflicts.join(', ') || '(no files listed)'}. Keep both the task's intent and the target branch's changes, and remove every conflict marker.` };
+    }
+    // Merge only gets here with tests that passed before it, so a failure there is the re-test on the moved target.
+    if (!['testing', 'merge'].includes(from)) return null;
+    if (tests?.source === 'agent' && tests.status === 'failed') {
+      const output = (tests.results || []).filter(result => result.status !== 'passed').map(result => `$ ${result.label}\nexit ${result.exitCode ?? 'unknown'}\n${(result.tail || '').slice(-4000)}`).join('\n\n');
+      return { text: ['Testing failed. Fix the cause (not the tests, unless they are wrong):', tests.summary, tests.failures?.length ? findingLines(tests.failures) : '', output].filter(Boolean).join('\n') };
+    }
+    if (tests && ['failed', 'invalid'].includes(tests.status)) {
+      const output = (tests.results || []).filter(result => result.status !== 'passed').map(result => `$ ${result.argv.join(' ')}\n${result.reason || `exit ${result.exitCode}`}\n${(result.tail || '').slice(-4000)}`).join('\n\n');
+      return { text: `The project's tests failed. Fix the cause (not the tests, unless they are wrong):\n${output || tests.note || tests.status}` };
     }
     return null;
   }
@@ -1521,7 +1534,7 @@ export class Board {
     else if (review.status !== 'accepted') problems.push(review.status === 'changes_requested' || review.verdict === 'changes_required' ? 'The review asked for changes. Send the card back to Executing, or accept the review in the task details.' : 'Accept the review in the task details first.');
     if (to === 'merge' && (review?.verdict !== 'no_issues' || review?.findings?.length)) problems.push('The review detected issues. Resolve them and run Code Review again before merging.');
     if (to === 'merge' || to === 'done') {
-      if (tests?.status === 'running') problems.push('Tests are still running.');
+      if (tests?.status === 'running' && this.delivery.testsRunning.has(taskId)) problems.push('Tests are still running.');
       else if (tests?.status !== 'passed' || tests.taskCommit !== rev.taskCommit) problems.push(tests?.status === 'passed' ? 'The passing tests are for an older commit. Run the tests again.' : 'Passing tests for the current commit are required.');
     }
     return { problems, acceptReview };
@@ -2509,7 +2522,7 @@ export class Board {
       const executionContext = execution ? `=== EXECUTION RESULTS FOR THIS TASK (${task.id}, run ${execution.runId}) ===\n${execution.summary}\n=== END EXECUTION RESULTS ===` : '';
       // The stage engine hands over task state, never another agent's conversation.
       const handoff = pipeline ? await this.#handoffSummary(project, task, workspace) : '';
-      const extra = [handoff, review ? review.text : merge ? merge.text : testing || (semantic === 'executing' && task.reworkNotes ? `=== REVIEW FINDINGS TO FIX ===\n${task.reworkNotes}\n=== END FINDINGS ===` : ''), executionContext, restart, note].filter(Boolean).join('\n\n');
+      const extra = [handoff, review ? review.text : merge ? merge.text : testing || (semantic === 'executing' && task.reworkNotes ? `=== FINDINGS TO FIX ===\n${task.reworkNotes}\n=== END FINDINGS ===` : ''), executionContext, restart, note].filter(Boolean).join('\n\n');
       const startCommit = pipeline ? (await this.delivery.revision(taskId)).taskCommit : null;
       const run = await this.store.update(draft => {
         if (this.#activeRun(draft, taskId)) throw conflict('This card already has an active run.', 'RUN_ACTIVE');
@@ -2970,9 +2983,9 @@ export class Board {
     }
     if (semantic === 'executing') {
       const notes = await this.#reworkNotes(taskId, from);
-      if (notes) await this.updateTaskEvidence(taskId, item => {
-        item.reworkNotes = notes.text.slice(0, 20000);
-        if (notes.review && item.evidence?.review) item.evidence.review = { ...item.evidence.review, status: 'changes_requested' };
+      await this.updateTaskEvidence(taskId, item => {
+        item.reworkNotes = notes ? notes.text.slice(0, 20000) : '';
+        if (notes?.review && item.evidence?.review) item.evidence.review = { ...item.evidence.review, status: 'changes_requested' };
       });
     }
     const start = decision !== 'move' && (strategy.autoSpawn || decision === 'start');
@@ -3027,8 +3040,11 @@ export class Board {
     let run = state.runs.find(item => item.id === runId && item.taskId === taskId);
     if (!run?.stageKind) throw conflict('This run does not belong to a typed column.', 'NOT_A_STAGE_RUN');
     const { task } = this.#task(state, taskId);
-    if (run.status === 'succeeded') return task.stageOutcome?.runId === runId ? task.stageOutcome : null;
-    if (!this.#turnFinished(run)) throw conflict('Complete the stage after the agent has finished its turn and nothing is waiting for an answer.', 'NOT_CONFIRMABLE');
+    // A confirmed run whose outcome is still 'working' was interrupted between the two writes (the app stopped): the
+    // stage checks run now, without confirming again. Every caller holds the card's transition lock.
+    const confirmed = run.status === 'succeeded';
+    if (confirmed && !(task.stageOutcome?.runId === runId && task.stageOutcome.status === 'working')) return task.stageOutcome?.runId === runId ? task.stageOutcome : null;
+    if (!confirmed && !this.#turnFinished(run)) throw conflict('Complete the stage after the agent has finished its turn and nothing is waiting for an answer.', 'NOT_CONFIRMABLE');
     const stage = run.stageKind;
     if (stage === 'planning') {
       const rev = await this.delivery.revision(taskId);
@@ -3038,7 +3054,7 @@ export class Board {
       }
       if (!run.hasPlan) return this.#recordOutcome(taskId, run, 'failed', { code: 'PLAN_MISSING', reason: 'The planning agent finished its turn without a plan. Continue in its terminal, then complete the stage again.' });
     }
-    await this.executor.confirm(runId);
+    if (!confirmed) await this.executor.confirm(runId);
     state = await this.state(); run = state.runs.find(item => item.id === runId);
     const reasonBy = by === 'automatic' ? 'Completed automatically.' : by === 'automation' ? 'Completed by Autopilot.' : 'Completed by you.';
     if (stage === 'planning') return this.#recordOutcome(taskId, run, 'succeeded', { reason: `Plan accepted. ${reasonBy}` });
@@ -3152,7 +3168,7 @@ export class Board {
             return;
           }
           this.askingSince?.delete(run.id);
-          if (policy.completion === 'automatic' && this.#turnFinished(run)) await this.#finishStageRun(task.id, run.id, { by: 'automatic' });
+          if (run.status === 'succeeded' || (policy.completion === 'automatic' && this.#turnFinished(run))) await this.#finishStageRun(task.id, run.id, { by: run.status === 'succeeded' ? 'user' : 'automatic' });
         }).catch(async error => {
           const latest = (await this.state()).runs.find(item => item.id === outcome.runId);
           if (latest) await this.#recordOutcome(task.id, latest, 'failed', { code: error.code || 'STAGE_FAILED', reason: error.message }).catch(() => {});

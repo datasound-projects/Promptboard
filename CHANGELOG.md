@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Fix (Kanban): with no test command, a target branch that moved before the merge no longer blocks the card with "Add a test command"; it goes back to the Testing agent (`TARGET_MOVED`), and Autopilot follows it.
+- Fix (Kanban): when the re-test on a moved target fails, the next Executing run gets that failing output instead of review findings from an earlier round; rework notes never carry over between rounds.
+- Fix (Kanban): if the app stops while Merge re-runs the tests, **Merge** or resuming Autopilot runs them again; before, the card waited for a test run that no longer existed.
+- Fix (Kanban): a stage confirmed just before the app stopped is completed after the restart (checkpoint commit included) instead of leaving Autopilot waiting forever.
+- Security: the installed-CLI check (`/api/providers`), which starts `--version` processes, now needs the session token like every other API route.
+- Fix: a board backup larger than a restore accepts (48 MB) is refused at export with a clear message, instead of failing only at restore time.
+
 - **Workspace trust (opt-in).** Kanban execution permissions can let Promptboard answer the folder-trust question of Claude Code or Codex for a card's own task worktree. The answer is given only for the positively identified trust menu naming that exact worktree, after it settles; every other startup question waits for you. Autonomous Codex sessions start without its update offer and shared background server, whose menus would otherwise wait for an answer. Full Autopilot turns workspace trust on.
 - A queued agent held by its column's actions or a destination change no longer blocks later queued runs of other cards or projects. A free slot goes to the first run that is not held; once released, the held run starts before runs queued after it.
 - Fix: a task prompt too long for the command line is pasted only after the CLI shows it is ready (Claude and Gemini: their SessionStart hook; Codex: its first terminal title), never on a 15-second timer, so the paste and its Enter can no longer answer a startup question such as folder trust. With no sign after 60 seconds nothing is typed and the run reports `CLI_INPUT_NOT_READY`; a later sign still pastes.

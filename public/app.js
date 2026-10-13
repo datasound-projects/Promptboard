@@ -293,13 +293,15 @@ function updateProviderState() {
 
 async function loadProviders() {
   try {
-    const [sessionResponse, providerResponse] = await Promise.all([fetch('/api/session', { cache: 'no-store' }), fetch('/api/providers', { cache: 'no-store' })]);
-    if (!sessionResponse.ok || !providerResponse.ok) throw new Error('The local server could not report its status.');
-    const session = await sessionResponse.json();
-    const status = await providerResponse.json();
-    token = safeText(session.token, 1000);
-    providers = Array.isArray(status.providers) ? status.providers.filter((item) => item && KNOWN_PROVIDERS.includes(item.id)) : [];
+    // The session token comes first: every other API route, including the CLI check, requires it.
+    const sessionResponse = await fetch('/api/session', { cache: 'no-store' });
+    if (!sessionResponse.ok) throw new Error('The local server could not report its status.');
+    token = safeText((await sessionResponse.json()).token, 1000);
     if (!token) throw new Error('The local server did not return a session token.');
+    const providerResponse = await fetch('/api/providers', { cache: 'no-store', headers: { 'x-ste-token': token } });
+    if (!providerResponse.ok) throw new Error('The local server could not report its status.');
+    const status = await providerResponse.json();
+    providers = Array.isArray(status.providers) ? status.providers.filter((item) => item && KNOWN_PROVIDERS.includes(item.id)) : [];
     browserNotifications?.resume();
     for (const option of $('#provider').options) {
       const provider = providers.find((item) => item.id === option.value);

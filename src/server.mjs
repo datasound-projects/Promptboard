@@ -126,7 +126,12 @@ async function boardRoute(board, req, res, pathname, searchParams, origin) {
   const body = async (limit = TASK_BODY_LIMIT) => { const value = await jsonBody(req, limit); if (!value || typeof value !== 'object' || Array.isArray(value)) throw Object.assign(new Error('Send a JSON object.'), { status: 400 }); return value; };
   const view = async extra => send(res, 200, { ...extra, board: await board.view() });
   if (method === 'GET' && pathname === '/api/board') return view();
-  if (method === 'GET' && pathname === '/api/board/export') return send(res, 200, await board.exportBackup({ includeBaseContent: searchParams.get('includeBaseContent') === 'true' }));
+  if (method === 'GET' && pathname === '/api/board/export') {
+    const backup = await board.exportBackup({ includeBaseContent: searchParams.get('includeBaseContent') === 'true' });
+    // A backup the import cannot take back is refused here, not discovered at restore time (1 MiB left for the request wrapper).
+    if (Buffer.byteLength(JSON.stringify(backup)) > BOARD_BODY_LIMIT - 1024 * 1024) return send(res, 413, { error: `This backup would be larger than the ${BOARD_BODY_LIMIT / 1024 / 1024} MB a restore accepts. Export without Base document content, or shorten very long task prompts.`, code: 'BACKUP_TOO_LARGE' });
+    return send(res, 200, backup);
+  }
   if (method === 'POST' && pathname === '/api/board/migrate') return view({ migrated: await board.migrateBrowserBoard((await body(BOARD_BODY_LIMIT)).board) });
   if (method === 'POST' && pathname === '/api/board/import') { const data = await body(BOARD_BODY_LIMIT); return view({ imported: await board.importBackup(data.backup, { replace: data.replace === true }) }); }
   if (method === 'POST' && pathname === '/api/projects') {
@@ -378,7 +383,7 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
     let requestUrl;
     try { requestUrl = new URL(req.url, 'http://127.0.0.1'); } catch { return send(res, 400, { error: 'This request address is not valid.', code: 'INVALID_URL' }); }
     const pathname = requestUrl.pathname;
-    const isApi = pathname.startsWith('/api/') && pathname !== '/api/session' && pathname !== '/api/providers';
+    const isApi = pathname.startsWith('/api/') && pathname !== '/api/session';
     if (isApi && req.headers['x-ste-token'] !== token) return send(res, 403, { error: 'Reload this page before you try again.' });
     if (req.method === 'GET' && pathname === '/api/session') return send(res, 200, { token, capabilities: { pipelineTitleOnly: true, pipelineBulkRestore: true, pipelineDeferredMessages: true, taskPriority: true, taskLabels: true } });
     if (/^\/api\/notifications(?:\/|$)/.test(pathname)) {
