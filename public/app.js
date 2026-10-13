@@ -4,6 +4,7 @@ const $ = (selector) => document.querySelector(selector);
 const HISTORY_KEY = 'ste-prompt-engineer.history.v1';
 const THEME_KEY = 'ste-prompt-engineer.theme'; // Also read by prefs.js before first paint.
 const SIDEBAR_KEY = 'ste-prompt-engineer.sidebar';
+const SIDEBAR_WIDTH_KEY = 'ste-prompt-engineer.sidebar-width'; // Also read by prefs.js before first paint.
 const SETTINGS_KEY = 'ste-prompt-engineer.settings';
 const PROJECT_PANEL_KEY = 'promptboard.project-panel';
 const HISTORY_LIMIT = 500;
@@ -269,10 +270,70 @@ function toggleSidebar() {
     if (open) (location.hash === '#/kanban' ? $('#workspace-new') : location.hash === '#/origin' ? $('#origin-nav button') || $('#sidebar') : $('#new-prompt')).focus();
     return;
   }
-  const collapsed = document.documentElement.dataset.sidebar !== 'collapsed';
+  setSidebarCollapsed(!sidebarCollapsed());
+}
+function sidebarCollapsed() { return document.documentElement.dataset.sidebar === 'collapsed'; }
+function setSidebarCollapsed(collapsed) {
   document.documentElement.dataset.sidebar = collapsed ? 'collapsed' : 'expanded';
   savePref(SIDEBAR_KEY, collapsed ? 'collapsed' : 'expanded');
   syncSidebarToggle();
+  syncSidebarResizer();
+}
+
+// Wide screens: drag the sidebar's edge to resize it. Dragging it far to the left collapses it; dragging the
+// left screen edge opens it again. Double-click resets the width. Arrow keys resize, Enter collapses or opens.
+const SIDEBAR_MIN = 200, SIDEBAR_MAX = 560;
+function sidebarMax() { return Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, Math.round(window.innerWidth / 2))); }
+function sidebarWidth() { return Math.round(parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sidebar'))) || 272; }
+function setSidebarWidth(width, save) {
+  const next = Math.max(SIDEBAR_MIN, Math.min(sidebarMax(), Math.round(width)));
+  document.documentElement.style.setProperty('--sidebar', `${next}px`);
+  if (save) savePref(SIDEBAR_WIDTH_KEY, String(next));
+  syncSidebarResizer();
+}
+function resetSidebarWidth() {
+  document.documentElement.style.removeProperty('--sidebar');
+  try { localStorage.removeItem(SIDEBAR_WIDTH_KEY); } catch {}
+  if (sidebarCollapsed()) setSidebarCollapsed(false); else syncSidebarResizer();
+}
+function syncSidebarResizer() {
+  const resizer = $('#sidebar-resizer');
+  resizer.setAttribute('aria-valuemax', String(sidebarMax()));
+  resizer.setAttribute('aria-valuenow', String(sidebarCollapsed() ? 0 : sidebarWidth()));
+  resizer.setAttribute('aria-valuetext', sidebarCollapsed() ? 'Collapsed' : `${sidebarWidth()} pixels`);
+}
+{
+  const resizer = $('#sidebar-resizer');
+  resizer.addEventListener('pointerdown', event => {
+    if (event.button !== 0 || isMobile()) return;
+    event.preventDefault();
+    resizer.setPointerCapture(event.pointerId);
+    document.documentElement.dataset.sidebarDrag = 'true';
+    const move = moved => {
+      if (moved.clientX < SIDEBAR_MIN / 2) { if (!sidebarCollapsed()) setSidebarCollapsed(true); return; }
+      if (sidebarCollapsed()) setSidebarCollapsed(false);
+      setSidebarWidth(moved.clientX, false);
+    };
+    const stop = () => {
+      for (const [type, handler] of [['pointermove', move], ['pointerup', stop], ['pointercancel', stop]]) resizer.removeEventListener(type, handler);
+      delete document.documentElement.dataset.sidebarDrag;
+      if (!sidebarCollapsed()) savePref(SIDEBAR_WIDTH_KEY, String(sidebarWidth()));
+    };
+    for (const [type, handler] of [['pointermove', move], ['pointerup', stop], ['pointercancel', stop]]) resizer.addEventListener(type, handler);
+  });
+  resizer.addEventListener('dblclick', resetSidebarWidth);
+  resizer.addEventListener('keydown', event => {
+    if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setSidebarCollapsed(!sidebarCollapsed()); return; }
+    const width = { ArrowLeft: sidebarWidth() - 16, ArrowRight: sidebarWidth() + 16, Home: SIDEBAR_MIN, End: SIDEBAR_MAX }[event.key];
+    if (width === undefined) return;
+    event.preventDefault();
+    if (sidebarCollapsed()) { if (event.key === 'ArrowRight' || event.key === 'End') setSidebarCollapsed(false); return; }
+    setSidebarWidth(width, true);
+  });
+  // A saved width larger than half of a smaller window is narrowed for this window only.
+  const fit = () => { if (!isMobile() && sidebarWidth() > sidebarMax()) setSidebarWidth(sidebarMax(), false); else syncSidebarResizer(); };
+  window.addEventListener('resize', fit);
+  fit();
 }
 
 function selectedProvider() { return providers.find((provider) => provider.id === $('#provider').value); }
@@ -5680,6 +5741,7 @@ $('#board-left').addEventListener('click', () => scrollBoard(-1));
 $('#board-right').addEventListener('click', () => scrollBoard(1));
 $('#kanban-columns').addEventListener('scroll', updateBoardScroll, { passive: true });
 window.addEventListener('resize', updateBoardScroll);
+if (typeof ResizeObserver === 'function') new ResizeObserver(updateBoardScroll).observe($('#kanban-columns')); // Also when the sidebar is resized.
 {
   let pan = null;
   const columns = $('#kanban-columns');

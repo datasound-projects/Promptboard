@@ -9,4 +9,6 @@ try {
     document.querySelector('meta[name="color-scheme"]')?.setAttribute('content', 'dark');
   }
   if (localStorage.getItem('ste-prompt-engineer.sidebar') === 'collapsed') root.dataset.sidebar = 'collapsed';
+  const width = Number(localStorage.getItem('ste-prompt-engineer.sidebar-width'));
+  if (width >= 200 && width <= 560) root.style.setProperty('--sidebar', `${width}px`);
 } catch {}
