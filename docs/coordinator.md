@@ -33,7 +33,7 @@ The Coordinator is a read-only observer for one project. It sits above the Kanba
   - for a branch: its cards, commits, reviews and tests
   - for the project: the cards your question names or matches, and recent activity
   - Origin names, layers, accepted decisions and requirements only for design questions
-- The answer comes from one call to the CLI selected in Compose, without tools, in an empty temporary folder. The Coordinator cannot change code, cards, branches or agents.
+- The answer comes from one call to the CLI selected in Compose (Codex, Claude Code or Gemini; Antigravity cannot run without tools and is refused), without tools, in an empty temporary folder. The Coordinator cannot change code, cards, branches or agents.
 - Answers cite their evidence as [T12], [run:…] or [commit:…]. References that exist become links: cards open, commits copy their ID. Anything else stays text.
 - Asking the same question about the same evidence again uses the saved answer, without a model call.
 - Each project keeps its own chat (the last 200 messages).

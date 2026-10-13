@@ -42,6 +42,10 @@ test('dashboard refresh reads changed local files without double counting and ex
   assert.doesNotMatch(JSON.stringify(next),/private|secret|tool-one/);
   const fresh = new UsageDashboard({dataDir:dir,roots:{claude:[root]},now:()=>now,limitReader:async()=>({status:'unavailable',windows:[]})}); t.after(()=>fresh.close());
   assert.equal((await fresh.get()).providers[1].inputTokens,25);
+  // A resumed or forked session repeats earlier messages under a new session ID; they count once.
+  await writeFile(join(root,'fork.jsonl'),[{...claude('one','opus',10),sessionId:'fork'},{...claude('three','opus',7),sessionId:'fork'}].map(JSON.stringify).join('\n')+'\n');
+  const forked = new UsageDashboard({dataDir:dir,roots:{claude:[root]},now:()=>now,limitReader:async()=>({status:'unavailable',windows:[]})}); t.after(()=>forked.close());
+  const usage = (await forked.get()).providers[1]; assert.equal(usage.inputTokens,32); assert.equal(usage.tools[0].count,3);
 });
 test('the file cap counts only sessions inside the 30-day window', async t => {
   const dir = await temp(t), root = join(dir,'claude'), old = join(root,'a-old'), recent = join(root,'z-new'); await mkdir(old,{recursive:true}); await mkdir(recent);

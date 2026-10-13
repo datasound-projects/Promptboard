@@ -75,6 +75,19 @@ test('import remaps every Base reference, preserves existing local resources and
   assert.equal((await target.state()).settings.agentProfileId, importedProfile.id);
 });
 
+test('restoring the same backup again reuses identical Base resources instead of adding copies', async t => {
+  const { source, profile, pack } = await fixture(t), target = await board(t);
+  const backup = await source.exportBackup({ includeBaseContent: true });
+  for (let i = 0; i < 2; i++) await source.importBackup(backup, { replace: true });
+  let state = await source.state();
+  assert.equal(state.base.resources.length, 3);
+  assert.equal(state.projects[0].pendingImport.agentProfileId, profile.id); assert.equal(state.projects[0].pendingImport.baseBinding.include[0].resourceId, pack.id);
+  for (let i = 0; i < 3; i++) await target.importBackup(await source.exportBackup(), { replace: true });
+  state = await target.state();
+  assert.deepEqual(state.base.resources.map(resource => resource.name).sort(), ['Pack', 'Portable skill', 'Reusable agent']);
+  assert.equal(state.projects[0].pendingImport.baseBinding.include[0].resourceId, state.base.resources.find(resource => resource.name === 'Pack').id);
+});
+
 test('exporting an unconfirmed board import retains its pending Base selections', async t => {
   const { source } = await fixture(t), target = await board(t);
   await target.importBackup(await source.exportBackup());

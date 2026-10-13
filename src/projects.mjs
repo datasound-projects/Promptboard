@@ -10,8 +10,8 @@
  * prompt never creates a card; a card's instructions change only by an explicit update of an idle card.
  */
 import '../public/origin-model.js';
-import { randomUUID } from 'node:crypto';
-import { mkdir, rm } from 'node:fs/promises';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { mkdir, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { readWithBackup, serial, writeAtomic } from './durable.mjs';
 import { OriginError, escapeId } from './origin.mjs';
@@ -139,12 +139,16 @@ export class PromptStore {
   constructor(dataDir) { this.dir = join(dataDir, 'prompts'); }
   #path(id) { if (!ID.test(id)) fail('Choose a valid project.', 'INVALID_PROJECT'); return join(this.dir, `prompts-${escapeId(id)}.json`); }
   async #load(id) {
-    const path = this.#path(id);
-    return await readWithBackup([path, `${path}.bak`], bytes => {
-      let data; try { data = JSON.parse(bytes); } catch { return; }
+    const path = this.#path(id), damaged = [];
+    const loaded = await readWithBackup([path, `${path}.bak`], (bytes, file) => {
+      let data; try { data = JSON.parse(bytes); } catch { damaged.push(file); return; }
       if (data?.schema === SCHEMA && data.version > 1) fail('These saved prompts were written by a newer Promptboard version. Update the app; nothing was changed.', 'PROMPTS_VERSION_UNSUPPORTED', 409);
       if (data?.schema === SCHEMA && data.version === 1 && Array.isArray(data.prompts)) return data;
-    }) ?? { schema: SCHEMA, version: 1, projectId: id, prompts: [] };
+      damaged.push(file);
+    });
+    // A damaged file is kept aside (as the board's state is), so the next saves never overwrite the only copy.
+    for (const file of damaged) await rename(file, `${path.slice(0, -5)}.corrupt-${Date.now()}-${randomBytes(4).toString('hex')}${file === path ? '' : '.bak'}.json`);
+    return loaded ?? { schema: SCHEMA, version: 1, projectId: id, prompts: [] };
   }
   async #save(data) {
     const path = this.#path(data.projectId), body = `${JSON.stringify(data, null, 1)}\n`;

@@ -14,7 +14,7 @@ const same = (a, b) => a.dev === b.dev && a.ino === b.ino;
 const inside = (root, path) => { const part = relative(root, path); return part === '' || (!isAbsolute(part) && part !== '..' && !part.startsWith('..' + sep)); };
 const protectedName = input => {
   const name = input.replace(/[. ]+$/, ''); // Windows aliases must not bypass protection.
-  return name.toLowerCase() === '.git' || /^(?:\.env(?:\..+)?|\.npmrc|\.netrc|\.pypirc|credentials(?:\.json)?|id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?|.+\.(?:pem|key|p12|pfx))$/i.test(name)
+  return name.toLowerCase() === '.git' || /^(?:\.env(?:\..+)?|\.envrc|\.npmrc|\.netrc|\.git-credentials|\.pypirc|credentials(?:\.json)?|id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?|.+\.(?:pem|key|p12|pfx))$/i.test(name)
     && !/^\.env\.(?:example|sample|template)$/i.test(name);
 };
 

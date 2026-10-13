@@ -68,6 +68,18 @@ test('simple tasks and irrelevant queries/documents never invoke MCP or force ev
   assert.equal(gated.research.lookups, 0); assert.equal(queries.length, 0);
 });
 
+test('external research deferred for a missing project stays deferred in the follow-up round', async () => {
+  const queries = [], local = { retrieve: async (source, plan) => ({ evidence: plan.map(q => ({ sourceType: 'knowledge', purpose: 'reference', source: source.name, locator: 'notes.md', query: q.query, text: 'Widget configuration uses the acme-sdk client with retries.', score: 3, questionIds: q.questionIds })), truncated: false }), close() {} };
+  const plan = { assessment: { actionable: true, goal: 'Fix widget configuration bug in the existing app', entities: ['widget'], operations: ['fix'], constraints: [], expectedOutput: 'prompt', complexity: 'complex', research: 'deep', needsProject: true, reason: 'r' },
+    questions: [{ id: 'r1', kind: 'fact', question: 'How is widget configuration done?', reason: 'x', sourceHint: 's1', libraryHint: '', query: 'widget configuration' }], assumptions: [], unverified: [] };
+  const review = { findings: [], answers: [], questions: [{ id: 'r1', question: 'Which acme-sdk retry options exist?', reason: 'x', sourceHint: 'all', libraryHint: 'acme-sdk', query: 'widget configuration acme-sdk retry options' }], assumptions: [], unverified: [], continueResearch: true, reason: 'need sdk docs' };
+  let call = 0;
+  const result = await new ComposeContext({ mcp: mcp(queries), local }).prepare({ request: { input: 'Fix the widget configuration bug in our existing app' }, autonomous: true,
+    sources: [{ type: 'local', kind: 'knowledge', name: 'Notes', path: '/tmp/notes-folder' }, { type: 'mcp', preset: 'context7' }] }, { runner: async () => ({ text: JSON.stringify(++call === 1 ? plan : call === 2 ? review : { ...review, questions: [], continueResearch: false }) }) });
+  assert.ok(result.warnings.some(warning => warning.includes('External research was deferred')));
+  assert.deepEqual(queries, [], 'no MCP source is contacted once external research is deferred');
+});
+
 test('source failure still permits generation; malformed assessment never invents a goal', async () => {
   const context = new ComposeContext({ mcp: { retrieve: async () => { throw new Error('MCP unavailable'); } } });
   const body = { request: { input: questTask }, sources: [{ type: 'mcp', preset: 'context7' }] };

@@ -20,8 +20,10 @@ export function validateLocal(source) {
 }
 export function redactLocal(text) {
   return text.replace(/-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/g, '[private key omitted]')
-    .replace(/((?:api[_-]?key|secret|password|token|authorization|access[_-]?key)\s*["']?\s*[:=]\s*)["']?(?:(?:Bearer|Basic)\s+)?[^\s,;"'\n]+["']?/gi, '$1[redacted]')
-    .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/g, '$1[redacted]@');
+    // A quoted value is redacted whole, spaces included.
+    .replace(/((?:api[_-]?key|secret|password|token|authorization|access[_-]?key)\s*["']?\s*[:=]\s*)(?:"[^"\n]*"|'[^'\n]*'|(?:(?:Bearer|Basic)\s+)?[^\s,;"'\n]+)/gi, '$1[redacted]')
+    // Credentials in any URL scheme (postgres://user:pw@, redis://:pw@).
+    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s/@]*:[^\s/@]+@/gi, '$1[redacted]@');
 }
 const inside = (root, path) => { const rel = relative(root, path); return rel !== '..' && !/^\.\.[\\/]/.test(rel) && !isAbsolute(rel); };
 export class ComposeLocal {

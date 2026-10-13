@@ -29,7 +29,7 @@ export async function writeAtomic(path, bytes, { backup = true } = {}) {
 }
 
 /**
- * The first of `paths` (a file, then its backup) that `parse(bytes)` accepts, or undefined. `parse` returns
+ * The first of `paths` (a file, then its backup) that `parse(bytes, path)` accepts, or undefined. `parse` returns
  * undefined for a damaged file and may throw to stop. Only a missing file is skipped: any other read error
  * is thrown, so a failing disk is never taken for "no data" that the next save would overwrite.
  */
@@ -37,7 +37,7 @@ export async function readWithBackup(paths, parse) {
   for (const path of paths) {
     let bytes;
     try { bytes = await readFile(path); } catch (error) { if (error.code === 'ENOENT') continue; throw error; }
-    const value = await parse(bytes);
+    const value = await parse(bytes, path);
     if (value !== undefined) return value;
   }
 }

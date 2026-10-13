@@ -40,7 +40,7 @@ export function buildCommand({ provider, model, effort = '', policyPath } = {}) 
   model = validateModel(model);
   validateEffort(provider, effort);
   if (provider === 'agy' && effort) {
-    const pinned = model.match(/-(low|medium|high)$/)?.[1];
+    const pinned = model.match(/-(low|medium|xhigh|high|max)$/)?.[1];
     if (pinned && effort !== pinned) throw new ProviderError('This Antigravity model fixes its effort level. Choose the matching effort or CLI default.', 'INVALID_EFFORT');
   }
   let args;
@@ -457,7 +457,7 @@ export async function runProvider({ provider, model, effort = '', prompt, cwd, s
 }
 
 export function validateEffort(provider, effort = '') {
-  const levels = { codex: ['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'], claude: ['', 'low', 'medium', 'high', 'xhigh', 'max'], agy: ['', 'low', 'medium', 'high'], gemini: [''] };
+  const levels = { codex: ['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'], claude: ['', 'low', 'medium', 'high', 'xhigh', 'max'], agy: ['', 'low', 'medium', 'high', 'xhigh', 'max'], gemini: [''] };
   if (!levels[provider]?.includes(effort)) throw new ProviderError('This CLI does not support that effort setting.', 'INVALID_EFFORT');
 }
 

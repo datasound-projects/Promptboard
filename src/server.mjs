@@ -127,8 +127,9 @@ async function boardRoute(board, req, res, pathname, searchParams, origin) {
   const view = async extra => send(res, 200, { ...extra, board: await board.view() });
   if (method === 'GET' && pathname === '/api/board') return view();
   if (method === 'GET' && pathname === '/api/board/export') return send(res, 200, await board.exportBackup({ includeBaseContent: searchParams.get('includeBaseContent') === 'true' }));
-  if (method === 'POST' && pathname === '/api/board/migrate') return view({ migrated: await board.migrateBrowserBoard((await body(BOARD_BODY_LIMIT)).board) });
-  if (method === 'POST' && pathname === '/api/board/import') { const data = await body(BOARD_BODY_LIMIT); return view({ imported: await board.importBackup(data.backup, { replace: data.replace === true }) }); }
+  // Imported boards keep one name per project: a name an Origin project uses gets a “ (2)” suffix.
+  if (method === 'POST' && pathname === '/api/board/migrate') return view({ migrated: await board.migrateBrowserBoard((await body(BOARD_BODY_LIMIT)).board, { originProjects: await origin.list() }) });
+  if (method === 'POST' && pathname === '/api/board/import') { const data = await body(BOARD_BODY_LIMIT); return view({ imported: await board.importBackup(data.backup, { replace: data.replace === true, originProjects: await origin.list() }) }); }
   if (method === 'POST' && pathname === '/api/projects') {
     const { name, folder, workflowMode = 'pipeline' } = await body();
     // New app projects use column pipelines; an explicit legacy request preserves integrations. A project

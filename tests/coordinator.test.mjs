@@ -84,6 +84,8 @@ test('chat is read-only, scoped, cached and isolated per project', async t => {
   assert.equal(JSON.stringify(await board.state()), before, 'asking changes nothing on the board');
   // Questions about another project's card are refused; chats stay apart.
   await assert.rejects(coordinator.ask(project.id, { question: 'And this?', scope: { kind: 'task', id: foreign.id }, provider: 'codex' }, { runner }), { code: 'NOT_FOUND' });
+  // Antigravity cannot run without tools, so it never answers.
+  await assert.rejects(coordinator.ask(project.id, { question: 'Status?', provider: 'agy' }, { runner }), { code: 'INVALID_INPUT', message: /without tools/ });
   assert.equal((await coordinator.view(project.id)).chat.length, 6);
   assert.equal((await coordinator.view(other.id)).chat.length, 0);
   // Design questions add Origin names only when asked.

@@ -83,7 +83,8 @@ test('repeated questions have diminishing value and never repeat a tool lookup',
 });
 
 test('secret redaction removes the credential after an authorization scheme, not just the scheme', () => {
-  for (const line of ['Authorization: Bearer sk-live-SECRET', '"authorization": "Bearer SECRET"', 'Authorization: Basic dXNlcjpTRUNSRVQ=', 'token = bearer  SECRET']) {
+  for (const line of ['Authorization: Bearer sk-live-SECRET', '"authorization": "Bearer SECRET"', 'Authorization: Basic dXNlcjpTRUNSRVQ=', 'token = bearer  SECRET',
+    'password = "correct horse SECRET staple"', "secret: 'two SECRET words'", 'DATABASE_URL: postgres://admin:SECRET@db:5432/app', 'REDIS_URL=redis://:SECRET@cache:6379']) {
     const safe = redactLocal(line);
     assert.doesNotMatch(safe, /SECRET|dXNlcjpTRUNSRVQ/, line); assert.match(safe, /\[redacted\]/, line);
   }

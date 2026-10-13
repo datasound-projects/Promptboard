@@ -153,17 +153,19 @@ export class UsageDashboard {
             } catch { p.partial = true; continue; }
           }
         }
-        const metrics = entry.metrics, session = metrics.sessionId || path;
+        // Claude message and tool IDs are global, and resumed or forked sessions repeat earlier messages under a new
+        // session ID, so Claude rows count once by ID. Codex IDs are only unique within a session.
+        const metrics = entry.metrics, session = metrics.sessionId || path, key = rowId => id === 'claude' ? rowId : `${session}:${rowId}`;
         if (metrics.limits?.windows.length && (!p.limits.checkedAt || metrics.limits.checkedAt > p.limits.checkedAt)) p.limits = metrics.limits;
         for (const r of metrics.rows) {
-          if (r.at < since || r.at > now || messages.has(`${session}:${r.id}`)) continue;
-          messages.add(`${session}:${r.id}`); sessions.add(session);
+          if (r.at < since || r.at > now || messages.has(key(r.id))) continue;
+          messages.add(key(r.id)); sessions.add(session);
           const m = models.get(r.model) || { model: r.model, inputTokens: 0, cachedTokens: 0, outputTokens: 0 };
           for (const [key, source] of [['inputTokens', 'input'], ['cachedTokens', 'cached'], ['outputTokens', 'output']]) { m[key] += r[source]; p[key] += r[source]; }
           models.set(r.model, m);
           const day = new Date(r.at).toISOString().slice(0, 10); days.set(day, (days.get(day) || 0) + r.input + r.cached + r.output);
         }
-        for (const tool of metrics.tools) if (tool.at >= since && tool.at <= now && !calls.has(`${session}:${tool.id}`)) { calls.add(`${session}:${tool.id}`); tools.set(tool.name, (tools.get(tool.name) || 0) + 1); }
+        for (const tool of metrics.tools) if (tool.at >= since && tool.at <= now && !calls.has(key(tool.id))) { calls.add(key(tool.id)); tools.set(tool.name, (tools.get(tool.name) || 0) + 1); }
       }
       p.sessions = sessions.size; p.models = [...models.values()]; p.tools = [...tools].map(([name, count]) => ({ name, count })).sort((a,b) => b.count-a.count);
       p.daily = Array.from({ length: 30 }, (_, i) => { const day = new Date(now - (29-i)*DAY).toISOString().slice(0,10); return { day, tokens: days.get(day) || 0 }; });

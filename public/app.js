@@ -345,7 +345,7 @@ function updateEffort(preferred = '') {
   const model = chosenModel();
   const selected = catalog?.models?.find(item => item.id === (model || catalog.defaultModel));
   const unverified = model && !selected;
-  const choices = selected?.efforts || (unverified ? ({ codex: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'], claude: ['low', 'medium', 'high', 'xhigh', 'max'], agy: ['low', 'medium', 'high'], gemini: [] }[provider] || []) : []);
+  const choices = selected?.efforts || (unverified ? ({ codex: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'], claude: ['low', 'medium', 'high', 'xhigh', 'max'], agy: ['low', 'medium', 'high', 'xhigh', 'max'], gemini: [] }[provider] || []) : []);
   const defaultEffort = model ? selected?.defaultEffort : catalog?.defaultEffort;
   $('#effort').replaceChildren(option('', defaultEffort ? `CLI default (${defaultEffort})` : 'CLI default (not reported)'));
   for (const level of choices) $('#effort').append(option(level, level === 'xhigh' ? 'Extra high (xhigh)' : level[0].toUpperCase() + level.slice(1)));

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Board } from '../src/board.mjs';
@@ -215,4 +215,25 @@ test('renaming a board in Kanban keeps the one-name rule across Origin', async t
   const taken = await rename('plan ONLY');
   assert.equal(taken.status, 409); assert.equal(taken.data.code, 'NAME_TAKEN');
   assert.equal((await rename('Board two')).status, 200);
+});
+
+test('damaged saved-prompt files are kept aside, never overwritten by the next saves', async t => {
+  const { prompts } = await local(t);
+  for (const title of ['One', 'Two']) await prompts.create('p1', ['p1'], { title, prompt: `${title} body` });
+  const file = join(prompts.dir, 'prompts-p1.json'), good = await readFile(file, 'utf8');
+  await writeFile(file, good.slice(0, -20)); await writeFile(`${file}.bak`, good.slice(0, 50));
+  assert.equal((await prompts.list(['p1'])).length, 0);
+  for (const title of ['Three', 'Four']) await prompts.create('p1', ['p1'], { title, prompt: `${title} body` });
+  const kept = (await readdir(prompts.dir)).filter(name => name.includes('.corrupt-'));
+  assert.equal(kept.length, 2);
+  assert.ok((await Promise.all(kept.map(name => readFile(join(prompts.dir, name), 'utf8')))).some(text => text.includes('One body')));
+});
+
+test('board import and browser migration keep the one-name rule across Origin', async t => {
+  const { app, call } = await client(t);
+  await call('/api/origin/projects', 'POST', { name: 'Shop' });
+  const backup = { version: 1, kind: 'kanban-backup', projects: [{ id: 'imported', name: 'shop', cards: [] }] };
+  assert.equal((await call('/api/board/import', 'POST', { backup })).status, 200);
+  assert.equal((await call('/api/board/migrate', 'POST', { board: { version: 1, projects: [{ id: 'browser', name: 'SHOP', cards: [] }] } })).status, 200);
+  assert.deepEqual((await app.board.state()).projects.map(project => project.name), ['shop (2)', 'SHOP (3)']);
 });
