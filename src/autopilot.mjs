@@ -16,6 +16,20 @@ import { columnStage } from './board.mjs';
 const TICK_MS = 1000;
 const RESUME_MESSAGE = 'Promptboard Autopilot restarted this session. Continue the current step of this card from where you stopped; if it is already complete, say what you did and stop.';
 const done = new Set(['failed', 'cancelled', 'interrupted', 'suspended']);
+
+/**
+ * The first queued To Do card whose prerequisites are all Done, so a prerequisite queued lower still goes first.
+ * `waiting` explains a queue whose remaining cards all wait for prerequisites that are not Done (skipped or failed).
+ */
+function nextQueued(project, todoId, doneId) {
+  const ap = project.autopilot, handled = new Set(ap.done || []), cards = new Map(project.tasks.map(item => [item.id, item]));
+  const queued = ap.queue.map(id => cards.get(id)).filter(item => item && !handled.has(item.id) && item.column === todoId);
+  const pending = item => (item.dependsOn || []).filter(id => cards.has(id) && cards.get(id).column !== doneId);
+  const task = queued.find(item => !pending(item).length);
+  if (task || !queued.length) return { task };
+  const first = queued[0], names = pending(first).map(id => `#${cards.get(id).number ?? '?'} ${cards.get(id).title}`).join(', ');
+  return { waiting: `“${first.title}” waits for its prerequisites, which are not Done: ${names}. Finish them (or add them to the queue), or clear the prerequisite in the card's details, then resume.` };
+}
 const title = stage => ({ planning: 'Planning', executing: 'Executing', code_review: 'Code Review', testing: 'Testing', merge: 'Merge' })[stage] || stage;
 
 export class Autopilot {
@@ -77,8 +91,8 @@ export class Autopilot {
     const columns = project.pipeline.columns, name = id => columns.find(column => column.id === id)?.name || id;
     const todo = columns.find(column => column.role === 'todo').id, done = columns.find(column => column.role === 'done').id;
     if (!ap.current) {
-      const handled = new Set(ap.done || []);
-      const task = ap.queue.map(id => project.tasks.find(item => item.id === id)).find(item => item && !handled.has(item.id) && item.column === todo);
+      const { task, waiting } = nextQueued(project, todo, done);
+      if (waiting) return this.pause(projectId, waiting);
       if (!task) return this.set(projectId, (a, log) => { a.status = 'finished'; a.reason = ''; log('Every queued card has been through its columns.'); });
       // A new card branches from the target as it is now, including earlier cards' work if it was merged.
       if (!task.workspace && project.targetBranch) await this.board.setTargetBranch(projectId, { branch: project.targetBranch.name, expectedRevision: project.revision });
@@ -217,9 +231,8 @@ export class Autopilot {
   }
 
   async next(project) {
-    const ap = project.autopilot;
-    const handled = new Set(ap.done || []);
-    const task = ap.queue.map(id => project.tasks.find(item => item.id === id)).find(item => item && !handled.has(item.id) && item.column === 'todo');
+    const { task, waiting } = nextQueued(project, 'todo', 'done');
+    if (waiting) return this.pause(project.id, waiting);
     if (!task) return this.set(project.id, (a, log) => { a.status = 'finished'; a.reason = ''; log('Every queued card has been through its route.'); });
     // A new card branches from the target as it is now, including the cards merged before it.
     if (!task.workspace && project.targetBranch) await this.board.setTargetBranch(project.id, { branch: project.targetBranch.name, expectedRevision: project.revision });
