@@ -165,6 +165,10 @@ test('automation editing, Stop and receipt history work by keyboard in light/dar
   await enter(); await cancelled;
   await browser.until(`!document.querySelector('[data-id="${task.id}"] .kanban-stop-automations')`, 'Stop acknowledged');
   await browser.eval(`document.querySelector('[data-id="${task.id}"] .kanban-more-toggle').click(); document.querySelector('[data-id="${task.id}"] .kanban-details').focus();`); await enter();
+  // Column automations sit under the collapsed Advanced section of the details; open it by keyboard.
+  await browser.until(`document.querySelector('#task-dialog').open && document.querySelector('.task-advanced > summary')`, 'details open');
+  await browser.eval(`document.querySelector('.task-advanced > summary').focus();`); await enter();
+  await browser.until(`document.querySelector('.task-advanced').open`, 'Advanced open');
   await browser.until(`document.querySelector('.automation-history')?.textContent.includes('On exit')`, 'durable results loaded');
   assert.equal(await browser.eval(`return document.querySelector('.automation-history img')===null && !window.__historyPwned;`), true);
   for (const theme of ['light', 'dark']) {
@@ -339,6 +343,8 @@ test('board profiles and task agent choices work by keyboard in both themes and 
   assert.equal((await app.board.state()).projects[0].tasks[0].profileId,profile.id);
   await enter(`[data-id="${task.id}"] .kanban-more-toggle`); await enter(`[data-id="${task.id}"] .kanban-details`);
   await browser.until(`document.querySelector('#details-pipeline-profile')`, 'task settings shown');
+  // Card agent settings sit under the collapsed Advanced section; open it by keyboard.
+  await enter('.task-advanced > summary'); await browser.until(`document.querySelector('.task-advanced').open`, 'Advanced open');
   await browser.eval(`const radio=document.querySelector('#details-pipeline-mode-override'); radio.focus();`); await browser.key(' ','Space',32);
   await browser.until(`document.querySelector('#details-pipeline-mode-override').checked`, 'exclusive override selected');
   await choose('#details-pipeline-agentOverride','codex'); await choose('#details-pipeline-permissionMode','workspace-write');

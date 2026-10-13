@@ -126,6 +126,7 @@ window.PromptboardOrigin = (() => {
     let contextView = { itemId: null, open: false, loading: false, revision: 0, data: null, error: '' }, drawerMessage = null;
     let saveTimer = null, saving = null, changeCount = 0, savedCount = 0, saveState = 'saved', saveMessage = '', dirtySince = 0, shownSaveError = '';
     let baseResources = null, baseLoading = null, focusAfter = null, renderFrame = 0, uid = 0;
+    const quickDrafts = new Map(); // Unsent "Add …" text survives re-renders and view switches.
     const bp = () => record.blueprint;
     // The sidebar reads top to bottom as the order of work, in this project's own names.
     const phases = () => M.phaseList(record?.exists ? bp() : null).map((phase, index) => ({ ...phase, number: String(index + 1).padStart(2, '0') }));
@@ -739,6 +740,9 @@ window.PromptboardOrigin = (() => {
     function quickAdd(placeholder, onAdd, { id = section, extra, max = 200 } = {}) {
       const form = el('form', 'origin-quick');
       const control = el('input'); control.placeholder = placeholder; control.maxLength = max; control.autocomplete = 'off'; control.setAttribute('aria-label', placeholder); control.dataset.quick = id;
+      const draftKey = `${projectId}\0${id}`;
+      control.value = quickDrafts.get(draftKey) || '';
+      control.addEventListener('input', () => { if (control.value) quickDrafts.set(draftKey, control.value); else quickDrafts.delete(draftKey); });
       form.append(icon(ICON.plus, 16), control);
       if (extra) form.append(extra);
       form.append(el('kbd', 'origin-kbd', '↵'));
@@ -746,7 +750,7 @@ window.PromptboardOrigin = (() => {
         event.preventDefault();
         const value = control.value.trim();
         if (!value) return;
-        control.value = '';
+        control.value = ''; quickDrafts.delete(draftKey);
         focusAfter = () => main.querySelector(`[data-quick="${CSS.escape(id)}"]`);
         onAdd(value);
       });

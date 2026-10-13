@@ -283,6 +283,8 @@ function updateProviderState() {
   const available = Boolean(provider?.available);
   const availableCount = providers.filter((item) => item.available).length;
   $('#generate-button').disabled = running || authBusy || modelsLoading || invalidEffort || !available || !token;
+  // A dimmed button says why while the CLI check is still running, instead of ignoring the click.
+  if (!running) $('#generate-label').textContent = token && (authBusy || modelsLoading) ? 'Checking your CLI…' : 'Generate prompt';
   $('#cli-status-dot').classList.toggle('ready', availableCount > 0);
   $('#cli-status-label').textContent = availableCount ? `${availableCount} CLI${availableCount === 1 ? '' : 's'} installed` : 'Connect a CLI';
   $('#provider-note').classList.toggle('unavailable', !available);
@@ -453,11 +455,16 @@ function composeCancellation(controller) {
   return { id, dispose: () => controller.signal.removeEventListener('abort', cancel) };
 }
 
+// fetch() rejects with a TypeError when the local server is gone. Say that in words a person can act on.
+const OFFLINE_MESSAGE = 'Promptboard isn’t responding. Check that it is still running, then reload.';
+const offline = error => error instanceof TypeError ? new Error(OFFLINE_MESSAGE) : error;
+
 async function api(path, { method = 'GET', body, timeoutMs = 20000, signal, compose = false, requestId } = {}) {
   // Metadata requests are bounded. Compose model calls explicitly wait for completion or Cancel.
   const controller = new AbortController();
   const cancellation = compose && !requestId ? composeCancellation(controller) : null;
-  const timer = timeoutMs === null ? undefined : setTimeout(() => controller.abort(), timeoutMs);
+  let timedOut = false;
+  const timer = timeoutMs === null ? undefined : setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
   const forward = () => controller.abort(signal.reason);
   signal?.addEventListener('abort', forward, { once: true });
   if (signal?.aborted) forward();
@@ -467,7 +474,8 @@ async function api(path, { method = 'GET', body, timeoutMs = 20000, signal, comp
     let data = {};
     try { data = await response.json(); } catch {}
     return { response, data: data && typeof data === 'object' ? data : {} };
-  } finally { clearTimeout(timer); cancellation?.dispose(); signal?.removeEventListener('abort', forward); }
+  } catch (error) { throw timedOut && !signal?.aborted ? new Error(OFFLINE_MESSAGE) : offline(error); }
+  finally { clearTimeout(timer); cancellation?.dispose(); signal?.removeEventListener('abort', forward); }
 }
 
 function formatElapsed(ms) { const total = Math.max(0, Math.floor(ms / 1000)); return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`; }
@@ -753,7 +761,7 @@ async function generate(event) {
     const response = await fetch('/api/generate', {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'X-STE-Token': token, 'X-STE-Compose-Id': cancellation.id },
       body: JSON.stringify(request), signal: ownController.signal,
-    });
+    }).catch(error => { throw offline(error); });
     let data;
     try { data = await response.json(); } catch { throw new Error('The server returned an unreadable response. Your input is kept. Please try again.'); }
     // Ignore a response that belongs to an older submission.
@@ -1677,7 +1685,7 @@ function renderColumn(column, tasks) {
   });
   section.append(header, note, list);
   if ((column.role || column.id) === 'todo') {
-    const add = detailButton('Add task', () => openCard(null, true), 'secondary-button kanban-add-task');
+    const add = detailButton('Add card', () => openCard(null, true), 'secondary-button kanban-add-task');
     add.id = 'kanban-add-task';
     section.append(add);
   }
@@ -2761,7 +2769,7 @@ function renderRunControls(card, run) {
     if (card.column === 'testing') box.append(labelled(detailButton(card.evidence?.tests ? 'Run tests again' : 'Run tests', () => runTestsCard(card), 'primary kanban-deliver'), 'Run tests'));
     const start = labelled(detailButton(stageVerb(card.column), () => startStage(card, card.column), `${card.column === 'testing' ? '' : 'primary '}kanban-start`), stageVerb(card.column));
     start.disabled = !board?.execution?.available || !currentProject()?.repository;
-    if (start.disabled) start.title = !board?.execution?.available ? 'Agent terminals are not set up.' : 'Link a repository first.';
+    if (start.disabled) start.title = !board?.execution?.available ? 'Agent terminals are not set up.' : 'Connect a code folder first, in Project settings.';
     box.append(start);
     const selected = card.pipelineAgent || currentProject()?.effectiveWorkflow?.[card.column];
     box.append(paragraph(`Next run: ${agentText(selected)}`, 'run-agent'));
@@ -3067,6 +3075,8 @@ function automationHistory(card, section) {
 async function openTaskDetails(taskId) {
   const card = findTask(taskId);
   if (!card) return;
+  // A refresh of the same card keeps the Advanced section as the user left it.
+  const keepAdvanced = $('#task-dialog').open && $('#task-dialog').dataset.taskId === taskId && Boolean($('#task-details .task-advanced')?.open);
   $('#task-dialog').dataset.taskId = taskId;
   const project = currentProject();
   const runs = board.runs.filter(run => run.taskId === taskId);
@@ -3086,7 +3096,7 @@ async function openTaskDetails(taskId) {
     ...(card.source?.promptId ? [section('From a saved prompt', paragraph(`Made from revision ${card.source.promptRevision} of a saved project prompt. Newer revisions reach this card only when you update it.`, 'note'),
       detailActions(detailButton('Open the saved prompt in Compose', () => { $('#task-dialog').close(); void projectsView?.openPrompt(card.source.projectId, card.source.promptId); }, 'text-button')))] : []),
     ...(coordinatorView ? [section('Coordinator', detailActions(detailButton('Ask Coordinator about this card', () => { $('#task-dialog').close(); if (projectView() !== 'board') setProjectView('board'); coordinatorView.askAbout({ kind: 'task', id: card.id }); }, 'text-button')))] : []),
-    section('Original prompt', pre(card.prompt)),
+    ...(card.prompt?.trim() ? [section('Original prompt', pre(card.prompt))] : []),
     section('Branch and worktree', taskLocation(card, project)),
     section('Base resources for future runs', basePicker({ target: { scope: 'task', projectId: project.id, taskId: card.id } }), paragraph('Task selections can narrow or opt out of inherited resources without changing the task text or approved evidence.')),
   ];
@@ -3097,21 +3107,21 @@ async function openTaskDetails(taskId) {
   const columnScope = document.createElement('select'); columnScope.setAttribute('aria-label', 'Column for task-specific Base resources');
   columnScope.append(...projectColumnsOf(project).map(column => option(column.id, column.title)));
   columnScope.value = card.column;
-  const override = detailButton('Configure this task in this column…', () => baseView?.openPicker({ scope: 'task-column', projectId: project.id, taskId: card.id, columnId: columnScope.value }));
+  const override = detailButton('Configure this card in this column…', () => baseView?.openPicker({ scope: 'task-column', projectId: project.id, taskId: card.id, columnId: columnScope.value }));
   nodes.at(-1).append(detailActions(columnScope, override));
   if (project.workflowMode === 'pipeline') {
     const busy = runs.some(run => RUN_LIVE.includes(run.status)) || ['pending', 'running', 'blocked'].includes(card.automationMove?.status) || Boolean(card.pendingAutomationMessages?.length);
     const settings = pipelineTaskEditor(project, card, 'details', busy);
     const error = paragraph('', 'inline-error'); error.setAttribute('role', 'alert'); error.hidden = true;
-    const save = detailButton('Save task agent settings', async () => {
+    const save = detailButton('Save card agent settings', async () => {
       save.disabled = true; error.hidden = true;
       try {
         await boardCall('POST', `/api/tasks/${encodeURIComponent(card.id)}/pipeline-settings`, { ...settings.value(), expectedRevision: card.revision, expectedProjectRevision: project.revision });
-        await openTaskDetails(card.id); announce('Task agent settings saved. No agent was started.');
+        await openTaskDetails(card.id); announce('Card agent settings saved. No agent was started.');
       } catch (failure) { error.textContent = failure.message; error.hidden = false; save.disabled = false; }
     }); save.id = 'task-pipeline-save'; save.disabled = busy;
-    nodes.push(section('Task agent settings', settings.node, ...(busy ? [paragraph('Pause the agent and finish or stop column automations before changing these settings.', 'note')] : []), save, error));
-    nodes.push(stageSection(card, project, section, busy));
+    nodes.push(section('Card agent settings', settings.node, ...(busy ? [paragraph('Pause the agent and finish or stop column automations before changing these settings.', 'note')] : []), save, error));
+    nodes.push(...stageSection(card, project, section, busy));
   }
   const planRun = [...runs].reverse().find(run => run.stage === 'planning' && run.hasPlan);
   if (planRun) {
@@ -3147,9 +3157,20 @@ async function openTaskDetails(taskId) {
   const delivery = document.createElement('div');
   delivery.className = 'task-delivery';
   nodes.splice(3, 0, delivery);
-  $('#task-details').replaceChildren(...nodes);
-  if (project.workflowMode === 'pipeline') delivery.append(section('Conversation', renderRunControls(card, latestRun(card.id))));
-  else renderDelivery(card, delivery, section, pre);
+  // Everyday facts and actions stay in view; the technical sections wait behind one collapsed "Advanced".
+  const advanced = document.createElement('details'); advanced.className = 'task-advanced'; advanced.open = keepAdvanced;
+  advanced.append(Object.assign(document.createElement('summary'), { textContent: 'Advanced' }));
+  const technical = new Set(['Branch and worktree', 'Base resources for future runs', 'Card agent settings', 'Restart and reset', 'Run history', 'Column automations', 'Base resources']);
+  const visible = nodes.filter(node => {
+    if (!technical.has(node.querySelector(':scope > h3')?.textContent)) return true;
+    advanced.append(node); return false;
+  });
+  $('#task-details').replaceChildren(...visible, advanced);
+  if (project.workflowMode === 'pipeline') {
+    const controls = renderRunControls(card, latestRun(card.id));
+    controls.querySelector('.kanban-details')?.remove(); // This dialog is the details.
+    if (controls.childElementCount) delivery.append(section('Conversation', controls));
+  } else renderDelivery(card, delivery, section, pre);
   if (!$('#task-dialog').open) $('#task-dialog').showModal();
 }
 
@@ -3183,8 +3204,8 @@ function stageSection(card, project, section, busy) {
   reset.append(paragraph(`The current branch ${card.workspace?.branch || ''} is kept exactly as it is (uncommitted work is committed to it first); the card returns to To Do and the next run starts on a new branch from the current target.`, 'note'), reason, go);
   const open = detailButton('Reset workspace…', () => { reset.hidden = false; reason.focus(); }, 'text-button');
   open.disabled = !card.workspace || busy; actions.push(open);
-  nodes.push(detailActions(...actions), reset);
-  return section('Stage and reset', ...nodes);
+  // The result stays in view in the details; restarting and resetting go under Advanced.
+  return [...(nodes.length ? [section('Stage result', ...nodes)] : []), section('Restart and reset', detailActions(...actions), reset)];
 }
 
 function workflowSummary(project) {
@@ -3664,7 +3685,7 @@ function renderRepository(project) {
   const repository = project.repository;
   $('#repo-state').textContent = repository
     ? `Linked to ${repository.root}${repository.linkedWorktree ? ' (a linked worktree)' : ''}.`
-    : 'Not linked. Cards can wait in To Do, but they cannot move on or run agents until the project is linked to a Git repository.';
+    : 'Not linked. Cards can wait in To Do, but they cannot move on or run agents until the project has a code folder.';
   $('#repo-unlink').hidden = !repository;
   $('#branch-field').hidden = !repository;
   const known = repositories.get(project.id);
@@ -3889,7 +3910,7 @@ function renderSplit() {
   }));
   const count = split.tasks.filter(task => task.included).length;
   $('#split-add').disabled = !count;
-  $('#split-add').firstChild.textContent = `Add ${plural(count, 'card')} to To Do `;
+  $('#split-add').firstChild.textContent = `Add ${plural(count, 'card')} to To Do`;
 }
 async function openSplit({ previewOnly = false } = {}) {
   if (!currentResult || running) return;
@@ -4389,7 +4410,7 @@ function renderAutopilotDialog() {
   $('#autopilot-consent-detail').textContent = pipeline
     ? `It moves each card through these steps${typedRoute ? ', finishes a step when its checks pass (or waits for you where you finish steps yourself), and sends problems back to Executing within the rework limit' : ' and gives each column its instruction'}${merges ? `. It merges each finished card into ${project.targetBranch?.name || 'the target branch'} before the next one starts` : ', then moves the card to Done'}. It never pushes to a remote.`
     : 'It confirms stages, commits, accepts clean reviews, and merges into your local target branch or pushes the task branch for a pull request, without asking each time. It never force-pushes or bypasses agent permissions.';
-  renderAutopilotReady(project, draft, typedRoute);
+  const blocker = renderAutopilotReady(project, draft, typedRoute);
   const instructions = $('#autopilot-instructions');
   instructions.hidden = !pipeline;
   let missing = [];
@@ -4440,18 +4461,20 @@ function renderAutopilotDialog() {
   }));
   if (!draft.order.length) list.replaceChildren(Object.assign(document.createElement('li'), { className: 'note', textContent: 'No cards in To Do. Add the tasks first (one card per subtask), then come back.' }));
   $('#autopilot-save').disabled = running;
-  $('#autopilot-start').disabled = running || !included.length || missing.length > 0;
-  $('#autopilot-start').firstChild.textContent = project.autopilot?.status === 'paused' ? 'Restart Autopilot ' : 'Start Autopilot ';
+  // Start is only offered when nothing in the checklist blocks it; its tooltip names the blocker.
+  $('#autopilot-start').disabled = running || !included.length || missing.length > 0 || Boolean(blocker);
+  $('#autopilot-start').title = blocker || '';
+  $('#autopilot-start').firstChild.textContent = project.autopilot?.status === 'paused' ? 'Restart Autopilot' : 'Start Autopilot';
   const log = (project.autopilot?.log || []).slice(-30).reverse();
   $('#autopilot-log-box').hidden = !log.length;
   $('#autopilot-log').replaceChildren(...log.map(entry => { const li = document.createElement('li'); li.textContent = `${new Date(entry.at).toLocaleTimeString()} · ${entry.text}`; return li; }));
 }
 
-/** "Before you start": what a typed board needs for Autopilot to get through a card without you. Informational only. */
+/** "Before you start": what a typed board needs for Autopilot to get through a card without you. Returns the text of the item that blocks Start, if any. */
 function renderAutopilotReady(project, draft, typedRoute) {
   const box = $('#autopilot-ready');
   box.hidden = !pipelineBoard(project);
-  if (box.hidden) return;
+  if (box.hidden) return '';
   const toColumns = () => { $('#autopilot-dialog').close(); openColumns({ tab: 'board' }); };
   const items = [project.repository && project.targetBranch
     ? [true, `Code folder connected · finished work goes into ${project.targetBranch.name}`]
@@ -4469,6 +4492,7 @@ function renderAutopilotReady(project, draft, typedRoute) {
     if (action) item.append(detailButton(action, toColumns, 'text-button'));
     return item;
   }));
+  return project.repository && project.targetBranch ? '' : items[0][1];
 }
 
 async function saveAutopilot(start) {
@@ -4497,7 +4521,7 @@ const PIPELINE_PERMISSIONS = [['', 'Use agent default'], ['default', 'Ask for pe
 function pipelineTaskEditor(project, task, prefix, disabled = false) {
   const choice = pipelineTaskChoice(task), node = document.createElement('fieldset'); node.className = 'settings-group pipeline-task-settings';
   const render = focus => {
-    const legend = document.createElement('legend'); legend.textContent = 'How this task runs';
+    const legend = document.createElement('legend'); legend.textContent = 'How this card runs';
     const modes = document.createElement('div'); modes.className = 'pipeline-task-modes';
     for (const [mode, title] of [['profile', 'Column settings'], ['override', 'Agent override']]) {
       const label = document.createElement('label'); label.className = 'check-row';
@@ -5684,6 +5708,14 @@ if (typeof ResizeObserver === 'function') {
   // Some browsers expose a resized dock's new geometry only after the layout commits.
   for (const id of ['project-context', 'project-body', 'autopilot-bar', 'coordinator', 'dock', 'kanban-columns']) observer.observe($(`#${id}`));
 }
+// Long dialogs put their error under the fold. Scroll a newly shown or changed error into view.
+if (typeof MutationObserver === 'function') {
+  const reveal = new MutationObserver(records => {
+    const shown = records.map(({ target }) => target.closest('.inline-error')).find(node => node && !node.hidden && node.textContent.trim());
+    shown?.scrollIntoView({ block: 'nearest', behavior: scrollBehavior() });
+  });
+  for (const dialog of document.querySelectorAll('dialog')) reveal.observe(dialog, { subtree: true, childList: true, attributes: true, attributeFilter: ['hidden'] });
+}
 // A required field inside a collapsed card would block submit without a visible message. Reopen it.
 $('#settings-body').addEventListener('invalid', event => {
   setSettingsCollapsed(false, false);
@@ -5710,7 +5742,10 @@ function usageChart(points) {
 function renderUsage(data) {
   const open = new Set([...$('#usage-providers').querySelectorAll('details[open]')].map(x => x.dataset.provider));
   const content = document.createDocumentFragment();
-  for (const provider of data.providers) {
+  // A CLI that is not installed and left no sessions has nothing to show.
+  const shown = data.providers.filter(provider => provider.sessions || providers.find(item => item.id === provider.id)?.available !== false);
+  if (!shown.length) content.append(paragraph('No CLI usage on this machine yet.', 'usage-muted'));
+  for (const provider of shown) {
     const section = document.createElement('section'); section.className = 'usage-provider';
     const head = document.createElement('h3'); head.textContent = provider.name; section.append(head);
     const limits = provider.limits;
@@ -5718,7 +5753,8 @@ function renderUsage(data) {
       for (const window of limits.windows) {
         const label = document.createElement('p'); label.className = 'usage-limit-label';
         const remaining = document.createElement('strong'); remaining.textContent = `${Math.round(window.remainingPercent)}% left`;
-        const meta = document.createElement('span'); meta.textContent = window.windowMinutes ? `${window.label} · ${window.windowMinutes >= 1440 ? `${Math.round(window.windowMinutes / 1440)}d` : window.windowMinutes < 60 ? `${window.windowMinutes}m` : `${window.windowMinutes / 60}h`} window` : window.label.replaceAll('_', ' ');
+        const days = Math.round(window.windowMinutes / 1440), hours = Math.round(window.windowMinutes / 60);
+        const meta = document.createElement('span'); meta.textContent = window.windowMinutes ? `${window.windowMinutes >= 1440 ? `${days}-day` : window.windowMinutes < 60 ? `${window.windowMinutes}-minute` : `${hours}-hour`} limit` : window.label.replaceAll('_', ' ');
         label.append(remaining, meta);
         const bar = document.createElement('progress'); bar.max = 100; bar.value = window.remainingPercent; bar.setAttribute('aria-label', `${meta.textContent}: ${remaining.textContent}`);
         section.append(label, bar);
@@ -5732,7 +5768,7 @@ function renderUsage(data) {
     summary.append(paragraph(provider.sessions ? `${tokens(total)} tokens` : 'No local token data', 'usage-total'), paragraph(`${provider.sessions} sessions`, 'usage-muted'), paragraph(provider.costUSD === null ? 'Cost not reported' : `$${provider.costUSD.toFixed(2)} reported estimate`, 'usage-muted'));
     section.append(summary);
     if (provider.sessions) section.append(usageChart(provider.daily));
-    if (provider.partial) section.append(paragraph('Partial coverage: some session files exceeded scan limits or could not be read.', 'inline-error'));
+    if (provider.partial) section.append(paragraph('Some older session files were too large or unreadable, so totals may be a little low.', 'usage-muted'));
     const details = document.createElement('details'); details.dataset.provider = provider.id; details.open = open.has(provider.id);
     const toggle = document.createElement('summary'); toggle.textContent = 'Models and tools'; details.append(toggle);
     if (provider.models.length) {
@@ -5761,8 +5797,12 @@ function renderUsage(data) {
 async function loadUsage(force = false) {
   if (usageLoading || !$('#usage-dialog').open) return;
   usageLoading = true; $('#usage-refresh').disabled = true;
+  if (!$('#usage-providers').childElementCount) $('#usage-providers').replaceChildren(paragraph('Reading your local CLI sessions. This can take a few seconds…', 'usage-muted'));
   try { const { response, data } = await api(`/api/usage${force ? '?refresh=1' : ''}`, { timeoutMs: 60000 }); if (!response.ok) throw new Error(data.error || 'Usage unavailable.'); renderUsage(data); $('#usage-error').hidden = true; }
-  catch (error) { $('#usage-error').textContent = `${error.message} Previously shown figures may be stale.`; $('#usage-error').hidden = false; }
+  catch (error) {
+    if (!$('#usage-providers .usage-provider')) $('#usage-providers').replaceChildren(); // Drop the loading note.
+    $('#usage-error').textContent = `${error.message} Previously shown figures may be stale.`; $('#usage-error').hidden = false;
+  }
   finally { usageLoading = false; $('#usage-refresh').disabled = false; }
 }
 $('#usage-open').addEventListener('click', () => { $('#usage-dialog').showModal(); loadUsage(); });
