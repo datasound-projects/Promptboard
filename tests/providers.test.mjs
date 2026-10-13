@@ -240,7 +240,8 @@ test('each native effort flag is passed without changing the safety flags', () =
     assert.ok(!command.args.some(x => /dangerously|bypass/.test(x)));
   }
   assert.throws(() => buildCommand({ provider: 'gemini', effort: 'high' }), { code: 'INVALID_EFFORT' });
-  assert.throws(() => buildCommand({ provider: 'agy', effort: 'max' }), { code: 'INVALID_EFFORT' });
+  for (const effort of ['xhigh', 'max']) { const agy = buildCommand({ provider: 'agy', effort }); assert.equal(agy.args[agy.args.indexOf('--effort') + 1], effort); }
+  assert.throws(() => buildCommand({ provider: 'agy', effort: 'extreme' }), { code: 'INVALID_EFFORT' });
   assert.throws(() => buildCommand({ provider: 'agy', model: 'gemini-3.8-flash-high', effort: 'low' }), { code: 'INVALID_EFFORT' });
   assert.doesNotThrow(() => buildCommand({ provider: 'agy', model: 'gemini-3.8-flash-high', effort: 'high' }));
   assert.doesNotThrow(() => buildCommand({ provider: 'agy', model: 'gemini-3.8-flash-high' }));

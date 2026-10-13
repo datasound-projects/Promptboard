@@ -23,7 +23,8 @@ export function redactLocal(text) {
     // A quoted value is redacted whole, spaces included.
     .replace(/((?:api[_-]?key|secret|password|token|authorization|access[_-]?key)\s*["']?\s*[:=]\s*)(?:"[^"\n]*"|'[^'\n]*'|(?:(?:Bearer|Basic)\s+)?[^\s,;"'\n]+)/gi, '$1[redacted]')
     // Credentials in any URL scheme (postgres://user:pw@, redis://:pw@).
-    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s/@]*:[^\s/@]+@/gi, '$1[redacted]@');
+    // The scheme starts a word and is short, so long text is scanned once (no quadratic backtracking).
+    .replace(/(?<![a-z0-9+.-])([a-z][a-z0-9+.-]{0,31}:\/\/)[^\s/@]*:[^\s/@]+@/gi, '$1[redacted]@');
 }
 const inside = (root, path) => { const rel = relative(root, path); return rel !== '..' && !/^\.\.[\\/]/.test(rel) && !isAbsolute(rel); };
 export class ComposeLocal {
