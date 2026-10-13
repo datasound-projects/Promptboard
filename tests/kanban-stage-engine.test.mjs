@@ -166,7 +166,7 @@ test('Full Autopilot: strict queue order, automatic completion, review and test 
   const firstRuns = runs.filter(run => run.taskId === first.id);
   assert.ok(firstRuns.filter(run => run.stageKind === 'executing').length >= 2, 'Executing ran again for rework.');
   for (const run of firstRuns.filter(run => run.config.provider === 'codex' && run.stageKind === 'executing')) assert.equal(run.config.interaction, 'autonomous');
-  assert.match(project.autopilot.log.map(entry => entry.text).join('\n'), /back to Executing \(rework 1\/2\)/);
+  assert.match(project.autopilot.log.map(entry => entry.text).join('\n'), /back to Executing \(rework round 1\)/);
 });
 
 test('stage checks fail closed: a planner that writes, an unreadable review verdict, the rework limit and a missing worktree pause with a reason', { skip, timeout: 120000 }, async t => {
@@ -192,7 +192,7 @@ test('stage checks fail closed: a planner that writes, an unreadable review verd
   await w.board.controlAutopilot(w.project.id, { action: 'start', confirm: true });
   const autopilot = new Autopilot(w.board, { tickMs: 1e9 });
   const paused = await until(async () => { await autopilot.tick(); const now = await w.projectNow(); return now.autopilot.status === 'paused' && now.autopilot; }, 'Autopilot paused', 90000);
-  assert.match(paused.reason, /REWORK_LIMIT_REACHED after 1 rework round/);
+  assert.match(paused.reason, /REWORK_LIMIT_REACHED, the same problem came back 1 time/);
   await w.board.controlAutopilot(w.project.id, { action: 'stop' });
   // A deleted worktree is never recreated silently: the next move fails closed until Restore worktree.
   const ws = (await w.task(stubborn.id)).workspace;
@@ -357,7 +357,9 @@ test('a failed re-test on the moved target sends its failing output to Executing
   const run = (await w.go(card.id, 'executing')).run;
   const prompt = await until(() => readFile(join(w.dataDir, run.artifactsDir, 'prompt.md'), 'utf8').catch(() => ''), 'prompt');
   assert.match(prompt, /=== FINDINGS TO FIX ===\nThe project's tests failed[\s\S]*exit 1/);
-  assert.doesNotMatch(prompt, /The value is wrong/, 'The review findings fixed in the earlier round are not sent again.');
+  const current = prompt.slice(prompt.indexOf('=== FINDINGS TO FIX ==='), prompt.indexOf('=== END FINDINGS ==='));
+  assert.doesNotMatch(current, /The value is wrong/, 'The review findings fixed in the earlier round are not sent again as work to do…');
+  assert.match(prompt, /=== EARLIER ROUNDS OF THIS TASK ===[\s\S]*The value is wrong/, '…only as history.');
 });
 
 test('without test commands, a target that moved sends the card back to the Testing agent (TARGET_MOVED), then it merges', { skip, timeout: 150000 }, async t => {
@@ -448,4 +450,29 @@ test('a test command that cannot start fails clearly (TEST_COMMAND_NOT_FOUND) wi
   await w.go(card.id, 'testing');
   const outcome = await w.outcome(card.id, 'failed');
   assert.equal(outcome.code, 'TEST_COMMAND_NOT_FOUND'); assert.match(outcome.reason, /\.\/no-such-test-runner is not an installed program[\s\S]*leave it empty/);
+});
+
+test('rework goes on while each round brings a new problem, only nitpicks never block, and Executing sees earlier rounds', { skip, timeout: 180000 }, async t => {
+  const w = await world(t);
+  const card = await w.board.createTask({ projectId: w.project.id, title: 'Progressing', prompt: 'Do it. WRITE_FILE:p.txt REVIEW_VARIED TASK_KEY:prog' });
+  const nits = await w.board.createTask({ projectId: w.project.id, title: 'Nitpicked', prompt: 'Do it. WRITE_FILE:n.txt REVIEW_NITS_ONLY TASK_KEY:nits' });
+  await w.board.applyFullAutopilot(w.project.id, { expectedRevision: (await w.projectNow()).revision, confirm: true });
+  let project = await w.projectNow();
+  // One repeat allowed: a counter of rounds would stop after the first rework; progress keeps it going.
+  await w.board.setExecutionPolicy(w.project.id, { policy: { ...project.execution, maxRework: 1 }, expectedRevision: project.revision });
+  project = await w.projectNow();
+  await w.board.setAutopilot(w.project.id, { route: project.autopilot.route, queue: [card.id, nits.id], expectedRevision: project.revision });
+  await w.board.controlAutopilot(w.project.id, { action: 'start', confirm: true });
+  const autopilot = new Autopilot(w.board, { tickMs: 1e9 });
+  await until(async () => { await autopilot.tick(); project = await w.projectNow(); if (project.autopilot.status === 'paused') assert.fail(project.autopilot.reason); return project.autopilot.status === 'finished'; }, 'Autopilot finished', 170000);
+  for (const id of [card.id, nits.id]) assert.equal(project.tasks.find(item => item.id === id).column, 'done');
+  const reviews = project.tasks.find(item => item.id === card.id).stageHistory.filter(item => item.columnId === 'code_review').map(item => item.status);
+  assert.deepEqual(reviews, ['changes_required', 'changes_required', 'succeeded']);
+  const runs = (await w.board.state()).runs.filter(run => run.taskId === card.id && run.stageKind === 'executing').sort((x, y) => x.createdAt - y.createdAt);
+  const third = await readFile(join(w.dataDir, runs[2].artifactsDir, 'prompt.md'), 'utf8');
+  assert.match(third, /=== FINDINGS TO FIX ===\n- \[high\] other\.txt:1 A different problem\.[\s\S]*=== EARLIER ROUNDS OF THIS TASK ===[\s\S]*Round 1:\n- \[high\] feature\.txt:1 The value is wrong\./);
+  assert.doesNotMatch(third, /Optional naming nit/, 'Suggestions are not sent as work to do.');
+  // The nitpicked card went through review once: low findings are notes.
+  const nitsCard = project.tasks.find(item => item.id === nits.id);
+  assert.deepEqual(nitsCard.stageHistory.filter(item => item.columnId === 'code_review').map(item => item.status), ['succeeded']);
 });

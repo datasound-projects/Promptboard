@@ -3462,6 +3462,7 @@ async function renderDelivery(card, container, section, pre) {
       }
       box.append(table);
     } else if (review.text) box.append(pre(review.text));
+    if (review.notes?.length) box.append(paragraph(`Suggestions that did not block: ${review.notes.map(item => `${item.file}${item.line ? `:${item.line}` : ''} ${item.explanation}`).join(' · ')}`));
     const actions = [];
     if (review.status === 'completed' && current && !inactive) actions.push(detailButton('Accept review', () => deliveryAction(card, 'POST', 'accept-review', {}, 'Review accepted for this commit.'), 'danger'));
     if (['completed', 'accepted'].includes(review.status) && card.column === 'code_review') actions.push(detailButton('Send back to Executing', () => { $('#task-dialog').close(); placeCard(card.id, 'executing', null); }));
@@ -4746,7 +4747,7 @@ function renderExecutionPolicy() {
   updateWarning();
   const grid = document.createElement('div'); grid.className = 'execution-grid';
   grid.append(select('interaction', 'Agent questions'), select('filesystem', 'Workspace access'), select('completion', 'Stage completion'),
-    field('Automatic rework rounds (0–5)', rework), field('Merge method', merge), field('CLI folder-trust question', trust));
+    field('Pause when a problem comes back (times, 0–5)', rework), field('Merge method', merge), field('CLI folder-trust question', trust));
   const repository = $('#columns-repository-actions'); repository.hidden = !columnsDraft.pipeline;
   nodes.push(columnsSection('advanced', 'Advanced', paragraph('Every column uses these unless it sets its own. Planning and Code Review are always read-only. Saving starts nothing.', 'note'), grid, allLabel, warning, repository));
   box.replaceChildren(...nodes);

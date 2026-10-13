@@ -67,7 +67,11 @@ export function parseFindings(text) {
         line: Number.isInteger(item.line) && item.line > 0 ? item.line : null,
         explanation: typeof item.explanation === 'string' ? item.explanation.slice(0, 2000) : '',
       }));
-      return { parsed: true, verdict: data.verdict === 'no_issues' && !findings.length ? 'no_issues' : 'changes_required', findings };
+      // Low-severity findings are suggestions: kept as notes, they never send the work back on their own (a
+      // reviewer nearly always finds something small, which used to loop a card until its rework limit).
+      const blocking = findings.filter(item => item.severity !== 'low'), notes = findings.filter(item => item.severity === 'low');
+      const verdict = blocking.length || (data.verdict !== 'no_issues' && !findings.length) ? 'changes_required' : 'no_issues';
+      return { parsed: true, verdict, findings: blocking, ...(notes.length ? { notes } : {}) };
     } catch {}
   }
   return { parsed: false, verdict: 'unknown', findings: [] };

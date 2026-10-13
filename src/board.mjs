@@ -81,6 +81,11 @@ function promptText(value, label, allowBlank = false) {
   return value;
 }
 const clip = (value, max) => typeof value === 'string' ? value.slice(0, max) : '';
+/** Earlier rework rounds of the task, so a fix that undoes an earlier one is noticed (the last entry is the current round). */
+function earlierRounds(history = []) {
+  if (history.length < 2) return '';
+  return `\n\n=== EARLIER ROUNDS OF THIS TASK ===\nThese problems were reported and fixed before. If one of them is back, the earlier fix did not hold or this round undid it: take a different approach, and keep every earlier fix working.\n${history.slice(0, -1).map((text, index) => `Round ${index + 1}:\n${text}`).join('\n\n')}\n=== END EARLIER ROUNDS ===`;
+}
 const findingLines = findings => findings.map(item => `- [${item.severity}] ${item.file}${item.line ? `:${item.line}` : ''} ${item.explanation}`).join('\n');
 
 /**
@@ -1316,6 +1321,7 @@ export class Board {
     // Notes from an earlier round never carry over: the next Executing run gets exactly what this move asks for.
     if (column === 'executing') await this.updateTaskEvidence(id, current => {
       current.reworkNotes = notes ? notes.text.slice(0, 20000) : '';
+      current.reworkHistory = notes ? [...(current.reworkHistory || []), notes.text.slice(0, 4000)].slice(-6) : [];
       if (notes?.review && current.evidence?.review) current.evidence.review = { ...current.evidence.review, status: 'changes_requested' };
     });
 
@@ -1661,7 +1667,7 @@ export class Board {
         current.previousAttempts = [...(current.previousAttempts || []), attempt].slice(-10);
         current.restartNote = [attempt.reason && `Reason: ${attempt.reason}`, findings && `Review findings on the discarded attempt:\n${findings}`,
           `The discarded attempt is kept on branch ${attempt.branch} (${attempt.head.slice(0, 12)}). Start again from the current target branch; do not copy that attempt unless the reason says so.`].filter(Boolean).join('\n\n');
-        Object.assign(current, { evidence: {}, stageResults: {}, flow: null, reworkNotes: '', lastTransition: null });
+        Object.assign(current, { evidence: {}, stageResults: {}, flow: null, reworkNotes: '', reworkHistory: [], lastTransition: null });
         if (pipeline) Object.assign(current, { sessionId: null, stageOutcome: null, planApproval: null });
         if (current.column !== todo) {
           current.transitions = [...current.transitions, { at: Date.now(), from: current.column, to: todo, by: 'start-over', ...(attempt.reason ? { reason: clip(attempt.reason, 300) } : {}) }].slice(-TRANSITION_LOG_LIMIT);
@@ -2607,7 +2613,7 @@ export class Board {
       const executionContext = execution ? `=== EXECUTION RESULTS FOR THIS TASK (${task.id}, run ${execution.runId}) ===\n${execution.summary}\n=== END EXECUTION RESULTS ===` : '';
       // The stage engine hands over task state, never another agent's conversation.
       const handoff = pipeline ? await this.#handoffSummary(project, task, workspace) : '';
-      const extra = [handoff, review ? review.text : merge ? merge.text : testing || (semantic === 'executing' && task.reworkNotes ? `=== FINDINGS TO FIX ===\n${task.reworkNotes}\n=== END FINDINGS ===` : ''), executionContext, restart, note].filter(Boolean).join('\n\n');
+      const extra = [handoff, review ? review.text : merge ? merge.text : testing || (semantic === 'executing' && task.reworkNotes ? `=== FINDINGS TO FIX ===\n${task.reworkNotes}\n=== END FINDINGS ===${earlierRounds(task.reworkHistory)}` : ''), executionContext, restart, note].filter(Boolean).join('\n\n');
       const startCommit = pipeline ? (await this.delivery.revision(taskId)).taskCommit : null;
       const run = await this.store.update(draft => {
         if (this.#activeRun(draft, taskId)) throw conflict('This card already has an active run.', 'RUN_ACTIVE');
@@ -3070,6 +3076,7 @@ export class Board {
       const notes = await this.#reworkNotes(taskId, from);
       await this.updateTaskEvidence(taskId, item => {
         item.reworkNotes = notes ? notes.text.slice(0, 20000) : '';
+        item.reworkHistory = notes ? [...(item.reworkHistory || []), notes.text.slice(0, 4000)].slice(-6) : [];
         if (notes?.review && item.evidence?.review) item.evidence.review = { ...item.evidence.review, status: 'changes_requested' };
       });
     }

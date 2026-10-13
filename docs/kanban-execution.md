@@ -22,7 +22,7 @@ Each active pipeline column has a type; its name is only a label.
 | --- | --- | --- |
 | Planning | Fresh read-only session; the task and Base context | A non-empty plan and an unchanged worktree, else `PLAN_MISSING` or `PLAN_MODIFIED_WORKSPACE`. The accepted plan goes to Executing. |
 | Executing | Fresh session with the accepted plan, or the review findings / failing test output to fix | A checkpoint commit `promptboard(#N): <column> checkpoint` on the task branch; no changes at all is `NO_CHANGES`. |
-| Code Review | Commits pending work, then a fresh read-only session with the diff against the target and the execution summary | A JSON verdict. `no_issues` accepts the review; `changes_required` sends the findings back; anything else is `INVALID_REVIEW_RESULT`. |
+| Code Review | Commits pending work, then a fresh read-only session with the diff against the target and the execution summary | A JSON verdict. Critical, high and medium findings send the work back; low findings are kept as suggestions and never block. `no_issues` accepts the review; anything unreadable is `INVALID_REVIEW_RESULT`. |
 | Testing | A fresh session tests the work. With no test commands configured (they are optional) the agent finds the project's tests itself, runs them and ends with a JSON verdict (`verdict`, `commands` with exit codes, `failures`, `summary`); with commands configured, Promptboard runs them after the agent | Without commands, the verdict decides: a pass counts only when it lists commands that all exited 0, and a missing or inconsistent verdict is `INVALID_TEST_RESULT`. With commands, only their exit codes decide. Failures (or files the tester changed) go back to Executing with the findings or the exact output. |
 | Merge | Promptboard's own Git merge of the reviewed and tested commit | Squash (default) or fast-forward, compare-and-swap on the target. Conflicts start a resolver agent in the Merge column; its result is reviewed and tested again. |
 | Custom | One conversation continues across compatible custom columns (the earlier column-pipeline behaviour) | You move the card; "on enter" messages are the next instruction. |
@@ -88,11 +88,14 @@ prerequisites are not Done yet waits, and the next queued card that is ready goe
 for a prerequisite that is not Done, Autopilot pauses and names it. Before
 each card it refreshes the target branch, so a card starts from the target that already contains the cards merged before
 it. For typed columns it follows the recorded outcome: succeeded → next column; changes required → back to Executing
-(to Code Review after a merge conflict, to Testing when the target moved), up to the board's rework limit (`REWORK_LIMIT_REACHED`); failed → pause with
+(to Code Review after a merge conflict, to Testing when the target moved). Rework goes on while each round brings a
+new problem; each Executing run gets the current findings and the earlier rounds, so a fix that undoes another is
+noticed. Autopilot pauses with `REWORK_LIMIT_REACHED` only when a problem keeps coming back (the board's limit, 2 by
+default) or after 8 rounds in any case; failed → pause with
 the reason. It never pushes, never answers an agent's question for you, and pauses for its own card only.
 
 **Full Autopilot** (Columns → How it runs → **Hands-off**) applies, explicitly and with a confirmation: typed standard columns, autonomous
-workspace access, folder trust for task worktrees, automatic completion, two rework rounds, squash merges and a route through every active column.
+workspace access, folder trust for task worktrees, automatic completion, a pause when a problem comes back twice, squash merges and a route through every active column.
 Any column can still override it.
 
 ## Merge

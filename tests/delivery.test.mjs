@@ -66,6 +66,12 @@ test('command parsing never uses a shell; review findings are parsed from the st
   const parsed = parseFindings('Notes.\n```json\n{"verdict":"changes_required","findings":[{"severity":"high","file":"a.js","line":3,"explanation":"Bug."}]}\n```');
   assert.deepEqual(parsed, { parsed: true, verdict: 'changes_required', findings: [{ severity: 'high', file: 'a.js', line: 3, explanation: 'Bug.' }] });
   assert.equal(parseFindings('no json here').parsed, false);
+  // Low findings are suggestions: kept as notes, never a reason to send the work back.
+  const nits = parseFindings('```json\n{"verdict":"changes_required","findings":[{"severity":"low","file":"a.js","line":1,"explanation":"Rename."}]}\n```');
+  assert.deepEqual([nits.verdict, nits.findings.length, nits.notes.length], ['no_issues', 0, 1]);
+  const mixed = parseFindings('```json\n{"verdict":"no_issues","findings":[{"severity":"low","file":"a.js","explanation":"Rename."},{"severity":"medium","file":"b.js","explanation":"Wrong."}]}\n```');
+  assert.deepEqual([mixed.verdict, mixed.findings.map(item => item.file), mixed.notes.map(item => item.file)], ['changes_required', ['b.js'], ['a.js']]);
+  assert.equal(parseFindings('```json\n{"verdict":"changes_required","findings":[]}\n```').verdict, 'changes_required', 'Asking for changes without findings still counts.');
 });
 
 test('test runs: one claim per task, released on failed setup; a lost log or a background child never stalls the result', { skip, timeout: 60000 }, async t => {
