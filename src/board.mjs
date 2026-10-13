@@ -486,6 +486,7 @@ export class Board {
     this.automationMoves = new Map();
     this.deferredPipelineStarts = new Map();
     this.automationsStopping = false;
+    this.instance = randomUUID(); // With the state revision, names one exact board view of this process.
   }
 
   /** Serialize work per key (task or repository) inside this process. */
@@ -537,12 +538,43 @@ export class Board {
     })();
     try { await this.recoveryPromise; }
     catch (error) { this.recoveryPromise = null; throw error; }
+    this.runFolderSweep ??= this.#sweepRunFolders().catch(() => ({ removed: 0 }));
     return this.store.read();
+  }
+
+  /** Delete the artifact folders (logs, prompts, plans) of runs that were removed from the board. */
+  async #removeRunFolders(ids) {
+    for (const id of ids) if (RECORD_ID.test(id)) await rm(join(this.dataDir, 'runs', id), { recursive: true, force: true }).catch(() => {});
+  }
+
+  /**
+   * Once per start, best effort: remove run folders whose run is no longer on the board (left by deleted
+   * projects and cards in earlier versions). A folder changed in the last hour is kept, so a run that another
+   * process has just written is never touched. Bounded per start; the count is logged.
+   */
+  async #sweepRunFolders(limit = 500, minAgeMs = 60 * 60 * 1000) {
+    const dir = join(this.dataDir, 'runs');
+    const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+    const known = new Set((await this.store.read()).runs.map(run => run.id)), orphans = [];
+    for (const entry of entries) {
+      if (orphans.length >= limit) break;
+      if (!entry.isDirectory() || !RECORD_ID.test(entry.name) || known.has(entry.name)) continue;
+      const info = await stat(join(dir, entry.name)).catch(() => null);
+      if (info && Date.now() - info.mtimeMs >= minAgeMs) orphans.push(entry.name);
+    }
+    await this.#removeRunFolders(orphans);
+    if (orphans.length) console.info(`Promptboard removed ${orphans.length} run folder(s) of runs no longer on the board.`);
+    return { removed: orphans.length };
+  }
+
+  /** True when a client's board view (revision and process instance) is still the current one. */
+  async unchangedSince(revision, instance) {
+    return instance === this.instance && Number.isSafeInteger(revision) && revision === (await this.state()).revision;
   }
 
   async view() {
     const state = await this.state();
-    return { revision: state.revision, columns: COLUMNS, transitions: TRANSITIONS, settings: state.settings, runs: state.runs.slice(-500), sessions: state.sessions.slice(-500),
+    return { revision: state.revision, instance: this.instance, columns: COLUMNS, transitions: TRANSITIONS, settings: state.settings, runs: state.runs.slice(-500), sessions: state.sessions.slice(-500),
       baseRevision: state.base?.revision || 0,
       projects: state.projects.map(project => ({ ...project, columns: projectColumns(project), transitions: projectTransitions(project), effectiveWorkflow: effectiveWorkflow(project, state.settings.defaultAgent, state),
         ...(project.workflowMode === 'pipeline' ? { tasks: project.tasks.map(task => ({ ...task, pipelineAgent: effectiveWorkflow(project, state.settings.defaultAgent, state, task)[task.column] })) } : {}) })),
@@ -701,15 +733,18 @@ export class Board {
   }
 
   async deleteProject(id, { expectedRevision }) {
-    return this.store.update(state => {
+    let removed = [];
+    await this.store.update(state => {
       const project = this.#project(state, id);
       checkRevision(project, expectedRevision, 'This project');
       for (const task of project.tasks) this.#requireAutomationsStopped(task);
       if (this.#hasWorkspaceOrRun(state, [project])) throw conflict('Remove the task worktrees in this project first. Promptboard never deletes worktrees with a whole project.', 'WORKSPACES_EXIST');
+      removed = state.runs.filter(run => run.projectId === id).map(run => run.id);
       state.projects = state.projects.filter(item => item.id !== id);
       state.runs = state.runs.filter(run => run.projectId !== id);
       state.sessions = state.sessions.filter(session => session.projectId !== id);
     });
+    await this.#removeRunFolders(removed);
   }
 
   /** Validate a repository path without saving it. */
@@ -2041,10 +2076,15 @@ export class Board {
       checkRevision(task, expectedRevision, 'This card');
       let revision = expectedRevision;
       if (task.workspace && !keepFiles) revision = (await this.removeTaskWorktree(id)).revision;
-      return this.store.update(state => {
+      let removed = [];
+      await this.store.update(state => {
         const { project, task: current } = this.#task(state, id);
         checkRevision(current, revision, 'This card');
         if (this.#activeRun(state, id)) throw conflict('Stop this card’s active run before deleting it.', 'RUN_ACTIVE');
+        // The card's finished runs and sessions go with it; a kept worktree stays listed in retainedWorkspaces.
+        removed = state.runs.filter(run => run.taskId === id).map(run => run.id);
+        state.runs = state.runs.filter(run => run.taskId !== id);
+        state.sessions = state.sessions.filter(session => session.taskId !== id);
         if (current.workspace && keepFiles) {
           // Keep a durable locator even when the card has never had a run.
           state.retainedWorkspaces ??= [];
@@ -2063,6 +2103,7 @@ export class Board {
         project.tasks = project.tasks.filter(item => item.id !== id);
         project.revision++;
       });
+      await this.#removeRunFolders(removed);
     });
   }
 

@@ -43,6 +43,18 @@ test('dashboard refresh reads changed local files without double counting and ex
   const fresh = new UsageDashboard({dataDir:dir,roots:{claude:[root]},now:()=>now,limitReader:async()=>({status:'unavailable',windows:[]})}); t.after(()=>fresh.close());
   assert.equal((await fresh.get()).providers[1].inputTokens,25);
 });
+test('background refresh runs only while usage is requested and stops after five idle minutes', async t => {
+  const dir = await temp(t);
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  let now = Date.parse(stamp), calls = 0;
+  const service = new UsageDashboard({dataDir:dir,roots:{claude:[join(dir,'none')]},now:()=>now,limitReader:async()=>{calls++;return {status:'unavailable',windows:[]};}}); t.after(()=>service.close());
+  assert.equal(service.timer, undefined, 'nothing runs before the first request');
+  await service.get(); assert.equal(calls,1);
+  now += 60000; t.mock.timers.tick(60000); await service.pending; assert.equal(calls,2,'a recent request keeps the refresh going');
+  now += 5 * 60000; t.mock.timers.tick(60000); await service.pending; assert.equal(calls,2,'idle: no refresh');
+  assert.equal(service.timer, null);
+  await service.get({ refresh: true }); assert.equal(calls,3); assert.ok(service.timer, 'the next request starts it again');
+});
 test('the file cap counts only sessions inside the 30-day window', async t => {
   const dir = await temp(t), root = join(dir,'claude'), old = join(root,'a-old'), recent = join(root,'z-new'); await mkdir(old,{recursive:true}); await mkdir(recent);
   const long = new Date(Date.parse(stamp) - 90 * 86400000);

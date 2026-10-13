@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readWithBackup, serial, writeAtomic } from '../src/durable.mjs';
@@ -10,6 +10,10 @@ test('atomic writes keep the previous file as a backup and leave no temporary fi
   const path = join(dir, 'data.json');
   await writeAtomic(path, 'one'); await writeAtomic(path, 'two');
   assert.deepEqual([await readFile(path, 'utf8'), await readFile(`${path}.bak`, 'utf8')], ['two', 'one']);
+  // The backup is linked, not copied: the next replace must still leave the previous bytes in it.
+  await writeAtomic(path, 'three');
+  assert.deepEqual([await readFile(path, 'utf8'), await readFile(`${path}.bak`, 'utf8')], ['three', 'two']);
+  assert.notEqual((await stat(path)).ino, (await stat(`${path}.bak`)).ino, 'the backup is never the live file');
   await writeAtomic(join(dir, 'plain.md'), 'text', { backup: false });
   assert.deepEqual((await readdir(dir)).sort(), ['data.json', 'data.json.bak', 'plain.md']);
   await assert.rejects(writeAtomic(join(dir, 'missing', 'x.json'), 'x'), { code: 'ENOENT' });

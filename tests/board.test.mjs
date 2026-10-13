@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { access, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, readdir, realpath, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Board, COLUMNS, normalizeColumns, originSourceOf, TRANSITIONS } from '../src/board.mjs';
 import { defaultProjectsDir, Store, STATE_VERSION } from '../src/store.mjs';
+import { attachSession } from '../src/sessions.mjs';
 import { initRepository, validateRepository } from '../src/git.mjs';
 import { startServer } from '../src/server.mjs';
 import { chooseFolder } from '../src/folder.mjs';
@@ -448,6 +449,28 @@ test('board HTTP routes need the page token, resolve paths on the server, and ne
   assert.equal(run(root, 'worktree', 'list', '--porcelain').split('\n').filter(line => line.startsWith('worktree ')).length, 1);
 });
 
+test('a board poll that names the current revision and server instance gets no board back', async t => {
+  const dataDir = await temp(t, 'pb-data-');
+  const app = await startServer({ port: 0, dataDir, detector: async () => [], executor: null });
+  t.after(() => app.close());
+  const { token } = await fetch(app.url + '/api/session').then(r => r.json());
+  const get = path => fetch(app.url + path, { headers: { 'x-ste-token': token } }).then(r => r.json());
+  const project = await app.board.createProject({ name: 'Poll' });
+  const first = (await get('/api/board')).board;
+  assert.ok(first.instance && Number.isSafeInteger(first.revision));
+  const poll = (revision, instance = first.instance) => get(`/api/board?since=${revision}&instance=${encodeURIComponent(instance)}`);
+  assert.deepEqual(await poll(first.revision), { unchanged: true });
+  // Another process (a restarted app) or a stale or malformed revision always gets the whole board.
+  assert.equal((await poll(first.revision, 'other')).board.revision, first.revision);
+  assert.equal((await poll(first.revision - 1)).board.revision, first.revision);
+  assert.equal((await poll('x')).board.revision, first.revision);
+  await app.board.createTask({ projectId: project.id, title: 'New', prompt: 'P' });
+  const next = await poll(first.revision);
+  assert.equal(next.board.revision, first.revision + 1);
+  assert.equal(next.board.projects[0].tasks[0].title, 'New');
+  assert.deepEqual(await poll(next.board.revision), { unchanged: true });
+});
+
 test('starting the server does not create or touch board files', async t => {
   const dataDir = join(await temp(t, 'pb-lazy-'), 'data');
   const app = await startServer({ port: 0, dataDir, detector: async () => [] });
@@ -605,6 +628,46 @@ test('retaining files does not allow deleting active runs or stale card revision
   await assert.rejects(board.deleteTask(task.id, { expectedRevision: task.revision, keepFiles: true }), { code: 'RUN_ACTIVE' });
   await assert.rejects(board.deleteTask(task.id, { expectedRevision: task.revision + 1, keepFiles: true }));
   assert.ok(await taskIn(board, task.id));
+});
+
+test('deleting a card or project removes its finished runs, sessions and run folders; a start sweeps old orphans', async t => {
+  const dataDir = await temp(t, 'pb-data-');
+  const board = new Board({ dataDir });
+  await board.state(); assert.deepEqual(await board.runFolderSweep, { removed: 0 }, 'this start found no run folders yet');
+  const project = await board.createProject({ name: 'Runs' }), other = await board.createProject({ name: 'Other' });
+  const gone = await board.createTask({ projectId: project.id, title: 'Gone', prompt: 'x' });
+  const kept = await board.createTask({ projectId: project.id, title: 'Kept', prompt: 'x' });
+  const elsewhere = await board.createTask({ projectId: other.id, title: 'Elsewhere', prompt: 'x' });
+  const folder = id => join(dataDir, 'runs', id);
+  await board.store.update(state => {
+    for (const [id, task, projectId] of [['r-gone', gone, project.id], ['r-kept', kept, project.id], ['r-else', elsewhere, other.id]]) {
+      const record = { id, taskId: task.id, projectId, status: 'succeeded', config: { provider: 'claude' }, artifactsDir: join('runs', id) };
+      state.runs.push(record); attachSession(state, record);
+    }
+  });
+  for (const id of ['r-gone', 'r-kept', 'r-else', 'orphan-old', 'orphan-new']) { await mkdir(folder(id), { recursive: true }); await writeFile(join(folder(id), 'output.log'), id); }
+  const hourAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+  await utimes(folder('orphan-old'), hourAgo, hourAgo);
+
+  await board.deleteTask(gone.id, { expectedRevision: gone.revision });
+  let state = await board.state();
+  assert.deepEqual(state.runs.map(run => run.id), ['r-kept', 'r-else']);
+  assert.deepEqual(state.sessions.map(session => session.taskId), [kept.id, elsewhere.id]);
+  assert.equal(await exists(folder('r-gone')), false);
+  assert.equal(await exists(folder('r-kept')), true, 'runs of existing cards stay');
+
+  // A new start removes only old folders whose run is not on the board.
+  const fresh = new Board({ dataDir });
+  await fresh.state();
+  assert.deepEqual(await fresh.runFolderSweep, { removed: 1 });
+  assert.deepEqual(await Promise.all(['orphan-old', 'orphan-new', 'r-kept', 'r-else'].map(id => exists(folder(id)))), [false, true, true, true]);
+
+  await fresh.deleteProject(project.id, { expectedRevision: (await fresh.state()).projects[0].revision });
+  state = await fresh.state();
+  assert.deepEqual(state.runs.map(run => run.id), ['r-else']);
+  assert.deepEqual(state.sessions.map(session => session.projectId), [other.id]);
+  assert.equal(await exists(folder('r-kept')), false);
+  assert.equal(await exists(folder('r-else')), true);
 });
 
 test('an Origin reference needs string IDs, and every column name is unique, built-in stages included', () => {

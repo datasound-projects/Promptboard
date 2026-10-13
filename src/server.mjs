@@ -125,7 +125,12 @@ async function boardRoute(board, req, res, pathname, searchParams, origin) {
   const match = pathname.match(/^\/api\/(projects|tasks|runs)\/([A-Za-z0-9_-]{1,100})(?:\/([a-z-]+))?$/);
   const body = async (limit = TASK_BODY_LIMIT) => { const value = await jsonBody(req, limit); if (!value || typeof value !== 'object' || Array.isArray(value)) throw Object.assign(new Error('Send a JSON object.'), { status: 400 }); return value; };
   const view = async extra => send(res, 200, { ...extra, board: await board.view() });
-  if (method === 'GET' && pathname === '/api/board') return view();
+  if (method === 'GET' && pathname === '/api/board') {
+    // A poll that already holds the current board gets a few bytes instead of the whole board again.
+    const since = searchParams.get('since');
+    if (since !== null && await board.unchangedSince(Number(since), searchParams.get('instance'))) return send(res, 200, { unchanged: true });
+    return view();
+  }
   if (method === 'GET' && pathname === '/api/board/export') return send(res, 200, await board.exportBackup({ includeBaseContent: searchParams.get('includeBaseContent') === 'true' }));
   if (method === 'POST' && pathname === '/api/board/migrate') return view({ migrated: await board.migrateBrowserBoard((await body(BOARD_BODY_LIMIT)).board) });
   if (method === 'POST' && pathname === '/api/board/import') { const data = await body(BOARD_BODY_LIMIT); return view({ imported: await board.importBackup(data.backup, { replace: data.replace === true }) }); }
