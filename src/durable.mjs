@@ -4,7 +4,7 @@
  * Callers keep their own error classes and messages.
  */
 import { randomBytes } from 'node:crypto';
-import { copyFile, open, readFile, rename, rm } from 'node:fs/promises';
+import { copyFile, link, open, readFile, rename, rm } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
 /** Flush a folder's entries (after a rename) to disk. Some systems (Windows) cannot; that is ignored. */
@@ -13,7 +13,19 @@ export async function syncDir(dir) {
 }
 
 /**
- * Replace `path` with `bytes`: a new private temporary file, fsync, the old file copied to `.bak` (unless
+ * Keep `path` as `${path}.bak`. A hard link costs nothing at any file size, and the rename that follows
+ * replaces only the name `path`, so the backup keeps the previous bytes. Where links are not possible
+ * (some file systems, Windows quirks) the file is copied as before. A missing `path` has no backup.
+ */
+async function keepBackup(path) {
+  const bak = `${path}.bak`;
+  try { await rm(bak, { force: true }); await link(path, bak); return; }
+  catch (error) { if (error.code === 'ENOENT') return; }
+  try { await copyFile(path, bak); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+}
+
+/**
+ * Replace `path` with `bytes`: a new private temporary file, fsync, the old file kept as `.bak` (unless
  * `backup: false`), rename, then fsync the folder. On failure the temporary file is removed and the error
  * is thrown; the old file is unchanged.
  */
@@ -22,7 +34,7 @@ export async function writeAtomic(path, bytes, { backup = true } = {}) {
   try {
     const handle = await open(tmp, 'wx', 0o600);
     try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); }
-    if (backup) try { await copyFile(path, `${path}.bak`); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    if (backup) await keepBackup(path);
     await rename(tmp, path);
   } catch (error) { await rm(tmp, { force: true }).catch(() => {}); throw error; }
   await syncDir(dirname(path));

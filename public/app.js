@@ -1437,9 +1437,12 @@ async function loadBoard({ ifChanged = false } = {}) {
   const previousRevision = board?.revision;
   boardLoading ??= (async () => {
     try {
-      const { response, data } = await api('/api/board', { timeoutMs: 30000 });
-      if (!response.ok || !data.board) throw new Error(typeof data.error === 'string' ? data.error : 'The app could not read the board.');
-      acceptBoard(data.board);
+      // A background poll names the board it holds; the server answers { unchanged: true } instead of resending it.
+      const since = ifChanged && board?.instance ? `?since=${board.revision}&instance=${encodeURIComponent(board.instance)}` : '';
+      const { response, data } = await api(`/api/board${since}`, { timeoutMs: 30000 });
+      const unchanged = Boolean(since) && response.ok && data.unchanged === true;
+      if (!unchanged && (!response.ok || !data.board)) throw new Error(typeof data.error === 'string' ? data.error : 'The app could not read the board.');
+      if (!unchanged) acceptBoard(data.board);
       $('#kanban-load-warning').hidden = true;
       if (board.recovery?.quarantined) showLoadWarning(board.recovery.restoredFromBackup
         ? 'The board file was damaged, so the last good copy was restored. The damaged file was kept in the app data folder.'
