@@ -2,6 +2,43 @@
 
 Final verification of Promptboard 0.4.0 before its first open-source release (PB-05), done on 29 September 2026. Code verified at commit `37f5020`.
 
+## Quality pass, 13 October 2026
+
+A second whole-app pass aimed at client demonstrations and real deployments. Five reviewers each covered one area: the
+Kanban stage engine, the HTTP server and its security model, Origin/Compose/Base/backups, the UI in real headless Chrome
+(1440 and 700 px, both themes), and performance on a large synthetic board (20 projects × 200 cards, 2,000 runs,
+22 MB state). Each finding was reproduced before it was fixed, and each fix has a test that fails on the old code. A
+real Full Autopilot run with signed-in CLIs checked the result end to end. Merged as #105 and #108.
+
+### Readiness criteria
+
+| Criterion | Result | Evidence |
+| --- | --- | --- |
+| Autopilot never waits silently | PASS | Five dead ends fixed: a moved target with no test command (`TARGET_MOVED`, back to the Testing agent), a failed re-test that sent stale review findings, tests left "running" by a restart, a crash between confirming a run and recording its outcome, and a CLI stuck on a startup menu nobody answers (reported after 2 minutes as `PERMISSION_REQUIRED`). Tests in `tests/kanban-stage-engine.test.mjs`. |
+| Security model holds | PASS | About 150 routes fuzzed with no 5xx or crash; Host/Origin/fetch-site, token, path, symlink and body-limit checks held. The CLI check (`/api/providers`) needed no token and is now protected; backup IDs are validated; local redaction covers quoted secrets and URL credentials in linear time (a quadratic regex found by CI was fixed before merge). |
+| Backups round-trip | PASS | Execution policy and Autopilot route are kept; repeated restores reuse identical Base resources; a backup larger than a restore accepts is refused at export (`BACKUP_TOO_LARGE`). |
+| No silent data loss | PASS | A damaged saved-prompts file is kept aside instead of being reset and overwritten. |
+| Large boards stay responsive | PASS | Unchanged 2-second board poll: 17 MB → 18 bytes, 115–200 ms → 1–4 ms in the browser. Backups by hard link; activity writes coalesced; run folders of deleted cards and projects removed. |
+| Demo-ready UI | PASS | Layout defects fixed (board squeezed by the Coordinator, sideways scrolling, stray scrollbars); offline errors in plain words; Autopilot Start disabled with the blocking reason; card details show the essentials with an Advanced section; consistent wording. |
+| Live end-to-end, no test command | PASS | `node scripts/live-kanban.mjs --tasks 2 --plan claude --exec claude --review claude --test claude --claude-model '' --no-test-commands`: both cards To Do → Planning → Executing → Code Review → Testing → squash-merged in queue order in about 6 minutes, zero waits; the Testing agent found `node test.js` itself; the final target passes its tests. |
+| Live run with Codex | Blocked by the local machine, reported correctly | Codex 0.160 asked "Hooks need review" for a changed user hook in `~/.codex/hooks.json`. Promptboard does not approve third-party hooks; the run now reports it instead of waiting. |
+| CI | PASS | Ubuntu, macOS and Windows × Node 22 and 24 on each merged PR. |
+
+### Known limitations
+
+- Every save still clones, serializes and writes the whole state file (about 85 ms at 22 MB), and the first board load
+  and mutation responses carry every card prompt (about 17 MB on that board). Unchanged polls no longer do.
+- Without a test command, Testing trusts the Testing agent's report of the commands it ran and their exit codes; the
+  report is checked for consistency, not re-executed. Configure a test command when an independent run is required.
+- Promptboard answers only the folder-trust menu of Claude Code and Codex, and only when enabled. Other startup menus
+  (changed hooks, sign-in, updates) need a person; autonomous columns report them after 2 minutes.
+- Claude Code has no workspace sandbox in autonomous mode; Gemini remains not live-verified; Antigravity is unavailable
+  for Kanban.
+- An execution policy restored from a backup is not re-checked against every column until a card launches.
+- Removing run folders of deleted cards also removes their cost from the Usage page's 30-day totals.
+- Kanban's New project form and Origin's are still separate flows.
+- Local test runs on a heavily loaded machine can time out (seen at load averages of 17–36); CI is the reference.
+
 ## Stability audit, 9 October 2026
 
 A whole-app review after the Origin, Project Context, shared projects, pipeline Autopilot and Coordinator work. Seven read-only reviewers covered the board and workflow engine, agent execution, the HTTP server, the Origin/Base/Compose backends, the Kanban/Compose page, the other pages, and dead code and test stability. They reported about 100 findings, most reproduced with scripts or in real Chrome. Every confirmed defect was fixed with a regression test that fails on the old code.
