@@ -76,7 +76,7 @@ try {
     if (title && report.order.at(-1) !== title) { report.order.push(title); log('card', title); }
     // Any moment an agent waits for a person is recorded once per run and reason.
     for (const run of state.runs.filter(item => ['running', 'waiting_for_input'].includes(item.status))) {
-      const waiting = (run.status === 'waiting_for_input' && !run.turnComplete) || run.lifecycle === 'initial-input-not-ready' || run.activity?.permissionPending;
+      const waiting = (run.status === 'waiting_for_input' && !run.turnComplete) || ['initial-input-not-ready', 'no-events-yet'].includes(run.lifecycle) || run.activity?.permissionPending;
       const key = `${run.id}:${run.waitingReason || run.lifecycle}`;
       if (waiting && !seenWaits.has(key)) { seenWaits.add(key); report.waits.push({ card: current.tasks.find(task => task.id === run.taskId)?.title, column: run.stage, provider: run.config.provider, reason: run.waitingReason || run.lifecycle }); log('WAIT', run.config.provider, run.stage, run.waitingReason || run.lifecycle); }
     }
