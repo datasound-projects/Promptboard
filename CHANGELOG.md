@@ -13,6 +13,7 @@
 - Fix (Kanban): when the re-test on a moved target fails, the next Executing run gets that failing output instead of review findings from an earlier round; rework notes never carry over between rounds.
 - Fix (Kanban): if the app stops while Merge re-runs the tests, **Merge** or resuming Autopilot runs them again; before, the card waited for a test run that no longer existed.
 - Fix (Kanban): a stage confirmed just before the app stopped is completed after the restart (checkpoint commit included) instead of leaving Autopilot waiting forever.
+- Fix (Kanban): an agent in an autonomous column that never starts its session (its CLI shows a startup menu nobody answers, such as Codex's "Hooks need review" or a sign-in) is reported after 2 minutes (`PERMISSION_REQUIRED`), so Autopilot pauses with the reason instead of waiting silently; answering in the terminal lets the stage continue.
 - Security: the installed-CLI check (`/api/providers`), which starts `--version` processes, now needs the session token like every other API route.
 - Fix: a board backup larger than a restore accepts (48 MB) is refused at export with a clear message, instead of failing only at restore time.
 

@@ -96,6 +96,8 @@ export function columnStage(project, columnId) {
 /** The stage a run works on: the stage engine records it next to the pipeline column ID. */
 export const runStage = run => run?.stageKind || run?.stage;
 // Stage-engine outcomes. `next` tells Autopilot (and the board view) what follows; nothing moves by itself.
+// A run in one of these has not shown a sign of its session yet (src/supervisor.mjs sets them before the first event).
+const STARTUP_LIFECYCLES = new Set(['waiting-for-first-event', 'no-events-yet', 'workspace-trusted']);
 const OUTCOME_STATUSES = new Set(['working', 'verifying', 'succeeded', 'changes_required', 'failed']);
 const time = value => Number.isFinite(value) ? value : Date.now();
 
@@ -504,6 +506,7 @@ export class Board {
     this.executor = executor; // PB-02 registers one. Null means execution is inactive.
     this.locks = new Map();
     this.recoveryPromise = null;
+    this.startupStallMs = 120000; // An autonomous run with no session sign after this long is reported (PERMISSION_REQUIRED).
     this.delivery = new Delivery(this);
     this.automationJournal = new PipelineJournal(dataDir, { onLeaseLost: key => this.#automationLeaseLost(key) });
     this.messageScheduler = null;
@@ -3171,7 +3174,7 @@ export class Board {
         // A reported question that was answered: the same live run works again, so its stage continues.
         if (outcome?.status === 'failed' && outcome.code === 'PERMISSION_REQUIRED' && outcome.columnId === task.column) {
           const run = state.runs.find(item => item.id === outcome.runId);
-          if (run && ACTIVE_RUN_STATUSES.includes(run.status) && !(run.status === 'waiting_for_input' && !run.turnComplete)) await this.#locked(`transition:${task.id}`, () => this.#recordOutcome(task.id, run, 'working', { reason: 'The question was answered; the stage continues.' })).catch(() => {});
+          if (run && ACTIVE_RUN_STATUSES.includes(run.status) && !(run.status === 'waiting_for_input' && !run.turnComplete) && !STARTUP_LIFECYCLES.has(run.lifecycle)) await this.#locked(`transition:${task.id}`, () => this.#recordOutcome(task.id, run, 'working', { reason: 'The question was answered; the stage continues.' })).catch(() => {});
           continue;
         }
         if (!outcome || !['working', 'verifying'].includes(outcome.status) || !columnStage(project, task.column) || outcome.columnId !== task.column) continue;
@@ -3201,6 +3204,10 @@ export class Board {
             if (Date.now() - since >= 5000) return this.#recordOutcome(task.id, run, 'failed', { code: 'PERMISSION_REQUIRED', reason: `The ${policy.stage.replace('_', ' ')} agent is waiting for an answer in its terminal although this column is autonomous: ${run.waitingReason || 'a permission prompt'}. Answer it there; the stage continues by itself.` });
             return;
           }
+          // A CLI that never starts its session is almost always showing a startup menu nobody answers (for example
+          // reviewing changed hooks or signing in). Promptboard never answers those; it says so instead of waiting forever.
+          if (policy.interaction === 'autonomous' && run.status === 'running' && STARTUP_LIFECYCLES.has(run.lifecycle) && Date.now() - (run.startedAt || run.createdAt) >= this.startupStallMs)
+            return this.#recordOutcome(task.id, run, 'failed', { code: 'PERMISSION_REQUIRED', reason: `The ${policy.stage.replace('_', ' ')} agent (${run.config.provider}) has not started its session after ${Math.round(this.startupStallMs / 1000)} seconds. Its terminal is probably showing a startup question, such as reviewing changed hooks or signing in. Answer it there; the stage continues by itself.` });
           this.askingSince?.delete(run.id);
           if (run.status === 'succeeded' || (policy.completion === 'automatic' && this.#turnFinished(run))) await this.#finishStageRun(task.id, run.id, { by: run.status === 'succeeded' ? 'user' : 'automatic' });
         }).catch(async error => {

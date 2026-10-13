@@ -402,3 +402,15 @@ test('a stage confirmed just before the app stopped is completed after the resta
   const done = await w.outcome(card.id, 'succeeded', board);
   assert.equal(done.runId, runId); assert.ok(done.checkpointCommit, 'The Executing checkpoint commit was made.');
 });
+
+test('an autonomous agent stuck on an unrecognized startup menu is reported, and continues once answered in its terminal', { skip, timeout: 120000 }, async t => {
+  const w = await world(t);
+  await w.board.setExecutionPolicy(w.project.id, { policy: { interaction: 'autonomous', completion: 'automatic' }, expectedRevision: (await w.projectNow()).revision });
+  w.board.startupStallMs = 1500;
+  const card = await w.board.createTask({ projectId: w.project.id, title: 'Hooks menu', prompt: 'Do it. WRITE_FILE:h.txt HOOKS_SCREEN' });
+  const run = (await w.go(card.id, 'executing')).run;
+  const stuck = await w.outcome(card.id, 'failed');
+  assert.equal(stuck.code, 'PERMISSION_REQUIRED'); assert.match(stuck.reason, /has not started its session[\s\S]*startup question/);
+  w.supervisor.input(run.id, '\r');
+  assert.equal((await w.outcome(card.id, 'succeeded')).runId, run.id, 'Answered in the terminal, the same run finishes the stage.');
+});
