@@ -168,10 +168,10 @@ export class Autopilot {
   /** Review findings, failing tests or a resolved merge send the card back along its route, within the rework limit. */
   async stageRework(projectId, project, task, cur, route, outcome, name) {
     const maxRework = project.execution?.maxRework ?? EXECUTION_DEFAULTS.maxRework;
-    const wanted = outcome.next === 'code_review' ? 'code_review' : 'executing';
+    const wanted = ['code_review', 'testing'].includes(outcome.next) ? outcome.next : 'executing';
     const before = route.slice(0, route.indexOf(cur.stage) + 1).reverse();
     const target = before.find(id => columnStage(project, id) === wanted) || route.find(id => columnStage(project, id) === wanted);
-    if (!target) return this.pause(projectId, `“${task.title}”: ${name(cur.stage)} needs ${wanted === 'executing' ? 'an Executing' : 'a Code Review'} column for rework, and the Autopilot route has none. Fix it by hand, then resume, or skip the card.`);
+    if (!target) return this.pause(projectId, `“${task.title}”: ${name(cur.stage)} needs ${{ executing: 'an Executing', code_review: 'a Code Review', testing: 'a Testing' }[wanted]} column for rework, and the Autopilot route has none. Fix it by hand, then resume, or skip the card.`);
     // Every rework round counts, including a resolved merge going back to review, so nothing can loop forever.
     const attempts = cur.attempts || 0;
     if (attempts >= maxRework) return this.pause(projectId, `“${task.title}”: REWORK_LIMIT_REACHED after ${attempts} rework ${attempts === 1 ? 'round' : 'rounds'} (${(outcome.reason || '').replace(/[.\s]+$/, '')}). Fix it by hand, then resume, or skip the card.`);

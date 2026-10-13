@@ -131,7 +131,9 @@ test('static assets have local security headers and cannot expose source files',
   const prefs = await fetch(app.url + '/prefs.js');
   assert.equal(prefs.status, 200);
   assert.match(prefs.headers.get('content-type'), /^text\/javascript/);
-  const providers = await fetch(app.url + '/api/providers').then(r => r.json());
+  assert.equal((await fetch(app.url + '/api/providers')).status, 403, 'The CLI check starts processes: it needs the session token.');
+  const { token } = await fetch(app.url + '/api/session').then(r => r.json());
+  const providers = await fetch(app.url + '/api/providers', { headers: { 'x-ste-token': token } }).then(r => r.json());
   assert.equal(providers.providers[0].available, true);
 });
 

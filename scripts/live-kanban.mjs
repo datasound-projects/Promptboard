@@ -5,7 +5,9 @@
  * board's own Full Autopilot preset (workspace trust included) must get every card from To Do to Done.
  *
  *   node scripts/live-kanban.mjs [--tasks 2] [--plan codex] [--exec codex] [--review claude] [--test claude]
- *     [--claude-model haiku] [--codex-model ''] [--minutes 30] [--keep]
+ *     [--claude-model haiku] [--codex-model ''] [--minutes 30] [--keep] [--no-test-commands]
+ *
+ * --no-test-commands leaves Testing without a configured command: the Testing agent must find and run the tests itself.
  *
  * Reports, as JSON on stdout: the queue order Autopilot followed, every stage outcome with its provider, each merge,
  * the final target branch and its test result, and every moment an agent waited for a person (permission prompts,
@@ -21,7 +23,7 @@ import { Autopilot } from '../src/autopilot.mjs';
 import { defaultPipelineConfig } from '../src/pipeline-config.mjs';
 
 const option = (name, fallback) => { const at = process.argv.indexOf(`--${name}`); return at > 0 ? process.argv[at + 1] : fallback; };
-const tasks = Number(option('tasks', '2')), minutes = Number(option('minutes', '30')), keep = process.argv.includes('--keep');
+const tasks = Number(option('tasks', '2')), minutes = Number(option('minutes', '30')), keep = process.argv.includes('--keep'), agentTests = process.argv.includes('--no-test-commands');
 const agents = { planning: option('plan', 'codex'), executing: option('exec', 'codex'), code_review: option('review', 'claude'), testing: option('test', 'claude') };
 const models = { claude: option('claude-model', 'haiku'), codex: option('codex-model', ''), gemini: option('gemini-model', '') };
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
@@ -56,7 +58,7 @@ try {
   const config = defaultPipelineConfig();
   for (const [id, provider] of Object.entries(agents)) Object.assign(config.columns.find(column => column.id === id).strategy, { agentOverride: provider, ...(models[provider] ? { modelOverride: models[provider] } : {}) });
   await board.setPipeline(project.id, { pipeline: config, expectedRevision: (await now()).revision });
-  await board.delivery.setTestCommands(project.id, { commands: [{ command: 'node test.js', label: 'math checks' }], expectedRevision: (await now()).revision });
+  if (!agentTests) await board.delivery.setTestCommands(project.id, { commands: [{ command: 'node test.js', label: 'math checks' }], expectedRevision: (await now()).revision });
   await board.applyFullAutopilot(project.id, { expectedRevision: (await now()).revision, confirm: true });
   const cards = [];
   for (const [title, prompt] of work) cards.push(await board.createTask({ projectId: project.id, title, prompt }));
@@ -85,7 +87,7 @@ try {
   }
   const final = await now();
   for (const task of final.tasks) {
-    report.outcomes.push({ card: task.title, column: task.column, stages: (task.stageHistory || []).map(item => `${item.columnId}:${item.provider || 'promptboard'}:${item.status}${item.code ? `(${item.code})` : ''}`) });
+    report.outcomes.push({ card: task.title, column: task.column, tests: task.evidence?.tests && { source: task.evidence.tests.source || 'promptboard', status: task.evidence.tests.status, commands: task.evidence.tests.results?.map(item => `${item.label} → ${item.exitCode}`) }, stages: (task.stageHistory || []).map(item => `${item.columnId}:${item.provider || 'promptboard'}:${item.status}${item.code ? `(${item.code})` : ''}`) });
     if (task.completion?.kind === 'merged') report.merges.push({ card: task.title, commit: task.completion.mergedCommit.slice(0, 12), squash: task.completion.squash, onto: task.completion.previousTarget.slice(0, 12) });
   }
   report.autopilotLog = final.autopilot.log.map(entry => entry.text);

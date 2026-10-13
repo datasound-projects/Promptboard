@@ -135,7 +135,7 @@ test('full flow: commit, review, send back, fix, accept, test, and a confirmed f
   t.after(() => { delete process.env.FAKE_AGENT_PROMPT_FILE; });
   const fix = await w.board.requestRun(task.id, { stage: 'executing', consent: true, config: { provider: 'claude' } });
   await until(async () => (await w.board.run(fix.id)).status === 'waiting_for_input', 'fix turn');
-  assert.match(await readFile(promptFile, 'utf8'), /=== REVIEW FINDINGS TO FIX ===\n- \[high\] feature.txt:1 The value is wrong\./);
+  assert.match(await readFile(promptFile, 'utf8'), /=== FINDINGS TO FIX ===\n- \[high\] feature.txt:1 The value is wrong\./);
   await w.supervisor.confirm(fix.id);
   delete process.env.FAKE_AGENT_PROMPT_FILE;
   await writeFile(join(path, 'feature.txt'), 'two\nfixed\n');

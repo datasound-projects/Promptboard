@@ -9,6 +9,12 @@
 - Fix: a saved-prompts file whose backup is damaged too is kept aside as `prompts-<id>.corrupt-<time>-<random>.json` instead of being overwritten by the next saves.
 - Fix: local-folder redaction hides whole quoted secrets with spaces and credentials in any URL scheme (`postgres://user:pw@`, `redis://:pw@`). The file viewer also protects `.envrc` and `.git-credentials`.
 - Antigravity accepts the `xhigh` and `max` effort levels its CLI supports, and recognizes `-xhigh`/`-max` model slugs.
+- Fix (Kanban): with no test command, a target branch that moved before the merge no longer blocks the card with "Add a test command"; it goes back to the Testing agent (`TARGET_MOVED`), and Autopilot follows it.
+- Fix (Kanban): when the re-test on a moved target fails, the next Executing run gets that failing output instead of review findings from an earlier round; rework notes never carry over between rounds.
+- Fix (Kanban): if the app stops while Merge re-runs the tests, **Merge** or resuming Autopilot runs them again; before, the card waited for a test run that no longer existed.
+- Fix (Kanban): a stage confirmed just before the app stopped is completed after the restart (checkpoint commit included) instead of leaving Autopilot waiting forever.
+- Security: the installed-CLI check (`/api/providers`), which starts `--version` processes, now needs the session token like every other API route.
+- Fix: a board backup larger than a restore accepts (48 MB) is refused at export with a clear message, instead of failing only at restore time.
 
 - **Workspace trust (opt-in).** Kanban execution permissions can let Promptboard answer the folder-trust question of Claude Code or Codex for a card's own task worktree. The answer is given only for the positively identified trust menu naming that exact worktree, after it settles; every other startup question waits for you. Autonomous Codex sessions start without its update offer and shared background server, whose menus would otherwise wait for an answer. Full Autopilot turns workspace trust on.
 - A queued agent held by its column's actions or a destination change no longer blocks later queued runs of other cards or projects. A free slot goes to the first run that is not held; once released, the held run starts before runs queued after it.
