@@ -17,6 +17,21 @@ const TICK_MS = 1000;
 const RESUME_MESSAGE = 'Promptboard Autopilot restarted this session. Continue the current step of this card from where you stopped; if it is already complete, say what you did and stop.';
 const done = new Set(['failed', 'cancelled', 'interrupted', 'suspended']);
 
+// ponytail: a fixed cap bounds the cost of a card whose problems keep changing; make it a setting if 8 proves wrong.
+const REWORK_SAFETY_CAP = 8;
+
+/**
+ * What a rework round is about, so a problem that comes back can be told from a new one: review or test findings
+ * (file and the start of the explanation), else the failing output of configured tests, else the reason. Numbers
+ * are masked so timings and counts do not make the same failure look new.
+ */
+function problemKey(task, outcome) {
+  const norm = value => String(value || '').toLowerCase().replace(/\d+/g, '#').replace(/\s+/g, ' ').trim();
+  const findings = (outcome.findings || []).map(item => `${item.file}|${norm(item.explanation).slice(0, 60)}`).sort();
+  const output = outcome.code === 'VERIFICATION_FAILED' ? (task.evidence?.tests?.results || []).filter(item => item.status !== 'passed').map(item => norm(item.tail).slice(-300)) : [];
+  return `${outcome.code || outcome.status}:${(findings.length ? findings : output.length ? output : [norm(outcome.reason).slice(0, 200)]).join(';')}`;
+}
+
 /**
  * The first queued To Do card whose prerequisites are all Done, so a prerequisite queued lower still goes first.
  * `waiting` explains a queue whose remaining cards all wait for prerequisites that are not Done (skipped or failed).
@@ -186,14 +201,18 @@ export class Autopilot {
     const before = route.slice(0, route.indexOf(cur.stage) + 1).reverse();
     const target = before.find(id => columnStage(project, id) === wanted) || route.find(id => columnStage(project, id) === wanted);
     if (!target) return this.pause(projectId, `“${task.title}”: ${name(cur.stage)} needs ${{ executing: 'an Executing', code_review: 'a Code Review', testing: 'a Testing' }[wanted]} column for rework, and the Autopilot route has none. Fix it by hand, then resume, or skip the card.`);
-    // Every rework round counts, including a resolved merge going back to review, so nothing can loop forever.
-    const attempts = cur.attempts || 0;
-    if (attempts >= maxRework) return this.pause(projectId, `“${task.title}”: REWORK_LIMIT_REACHED after ${attempts} rework ${attempts === 1 ? 'round' : 'rounds'} (${(outcome.reason || '').replace(/[.\s]+$/, '')}). Fix it by hand, then resume, or skip the card.`);
+    // Rework goes on while each round brings a new problem (progress). It stops when a problem keeps coming back
+    // (`maxRework` repeats), and after REWORK_SAFETY_CAP rounds in any case, so nothing can loop forever.
+    const attempts = cur.attempts || 0, seen = cur.problems || [], problem = problemKey(task, outcome);
+    const stalls = (cur.stalls || 0) + (seen.includes(problem) ? 1 : 0);
+    const limit = maxRework === 0 ? 'rework is turned off' : stalls >= maxRework ? `the same problem came back ${stalls} ${stalls === 1 ? 'time' : 'times'}`
+      : attempts >= REWORK_SAFETY_CAP ? `${attempts} rework rounds` : '';
+    if (limit) return this.pause(projectId, `“${task.title}”: REWORK_LIMIT_REACHED, ${limit} (${(outcome.reason || '').replace(/[.\s]+$/, '')}). Fix it by hand, then resume, or skip the card.`);
     const enteredAt = Date.now() - 1;
     await this.pipelineMove(task, target, 'start');
     return this.set(projectId, (a, log) => {
-      a.current = { ...a.current, stage: target, step: 'working', enteredAt, attempts: attempts + 1 };
-      log(`“${task.title}”: ${(outcome.reason || name(cur.stage)).replace(/[.\s]+$/, '')}; back to ${name(target)} (rework ${attempts + 1}/${maxRework}).`);
+      a.current = { ...a.current, stage: target, step: 'working', enteredAt, attempts: attempts + 1, stalls, problems: [...seen, problem].slice(-20) };
+      log(`“${task.title}”: ${(outcome.reason || name(cur.stage)).replace(/[.\s]+$/, '')}; back to ${name(target)} (rework round ${attempts + 1}${stalls ? `; a problem came back ${stalls}/${maxRework}` : ''}).`);
     });
   }
 

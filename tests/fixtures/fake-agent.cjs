@@ -155,7 +155,17 @@ function turn(text) {
     const marker = join(process.env.FAKE_AGENT_STATE, `review-${(text.match(/TASK_KEY:(\w+)/) || [])[1] || 'task'}`);
     try { readFileSync(marker); } catch { writeFileSync(marker, 'failed once\n'); failOnce = true; }
   }
-  const review = text.includes('=== DIFF:') ? (text.includes('REVIEW_GARBAGE') ? 'Looks fine to me, no structured verdict.' : '```json\n' + JSON.stringify((text.includes('REVIEW_FAIL') && !text.includes('REVIEW_FAIL_ONCE')) || failOnce
+  // REVIEW_VARIED: the first two reviews each find a different problem (progress), the third passes.
+  let varied = 0;
+  if (text.includes('=== DIFF:') && text.includes('REVIEW_VARIED') && process.env.FAKE_AGENT_STATE) {
+    const marker = join(process.env.FAKE_AGENT_STATE, `varied-${(text.match(/TASK_KEY:(\w+)/) || [])[1] || 'task'}`);
+    let count = 0; try { count = Number(readFileSync(marker, 'utf8')); } catch {}
+    if (count < 2) { writeFileSync(marker, String(count + 1)); varied = count + 1; }
+  }
+  const review = text.includes('=== DIFF:') ? (text.includes('REVIEW_GARBAGE') ? 'Looks fine to me, no structured verdict.' : '```json\n' + JSON.stringify(varied
+    ? { verdict: 'changes_required', findings: [{ severity: 'high', file: varied === 1 ? 'feature.txt' : 'other.txt', line: 1, explanation: varied === 1 ? 'The value is wrong.' : 'A different problem.' }, { severity: 'low', file: 'style.txt', line: 2, explanation: 'Optional naming nit.' }] }
+    : text.includes('REVIEW_NITS_ONLY') ? { verdict: 'changes_required', findings: [{ severity: 'low', file: 'style.txt', line: 2, explanation: 'Optional naming nit.' }] }
+    : (text.includes('REVIEW_FAIL') && !text.includes('REVIEW_FAIL_ONCE')) || failOnce
     ? { verdict: 'changes_required', findings: [{ severity: 'high', file: 'feature.txt', line: 1, explanation: 'The value is wrong.' }] }
     : { verdict: 'no_issues', findings: [] }) + '\n```') : null;
   // NO_PLAN_ONCE: the first planning turn of the task ends without any final message (no plan to accept).

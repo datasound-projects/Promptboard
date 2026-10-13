@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Rework until the task is done.** Autopilot keeps sending a card back while each round brings a new problem, and pauses with `REWORK_LIMIT_REACHED` only when a problem keeps coming back (the limit, now "Pause when a problem comes back", 2 by default) or after 8 rounds. Low-severity review findings are suggestions that never send work back (reviewers nearly always find a nit, which looped cards until the limit). Each Executing rework run also gets the earlier rounds' findings, so a fix that undoes an earlier one is noticed.
+
 - Fix (Kanban): a test command must name an installed program. An instruction typed into the field (it ran as a program called “You” and failed every test run, using up the rework rounds) is refused when saved, with a hint to leave the field empty so the Testing agent finds the tests. A command that cannot start at run time stops the stage with `TEST_COMMAND_NOT_FOUND` instead of sending the card back to Executing.
 - Fix (Autopilot): a card whose prerequisites are not Done no longer holds up the queue; the next ready card goes first, so a prerequisite queued lower runs before the card that needs it. A queue that only waits for unfinished prerequisites pauses with their names.
 
