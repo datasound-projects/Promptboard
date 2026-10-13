@@ -89,7 +89,7 @@
         <nav id="origin-nav" class="origin-nav" aria-label="Blueprint sections"></nav>
       </div>
       <div class="sidebar-bottom">
-        <button class="text-link" id="privacy-help" type="button">How your data is used <span aria-hidden="true">↗</span></button>
+        <button class="text-link" id="privacy-help" type="button">How your data is used</button>
         <div class="sidebar-footer"><span>LOCAL WORKSPACE</span><span>v0.4.0</span></div>
       </div>
     </aside>
@@ -300,7 +300,7 @@
           </div>
           <div class="kanban-repo" id="repo-panel" hidden>
             <form class="kanban-repo-row" id="repo-form" novalidate>
-              <label class="field-label" for="repo-path">Git repository folder<input id="repo-path" type="text" maxlength="4096" autocomplete="off" spellcheck="false" placeholder="/Users/you/code/project"></label>
+              <label class="field-label" for="repo-path">Code folder<input id="repo-path" type="text" maxlength="4096" autocomplete="off" spellcheck="false" placeholder="/Users/you/code/project"></label>
               <div class="kanban-form-actions"><button type="button" class="secondary-button" id="repo-browse">Browse…</button><button type="submit" class="secondary-button" id="repo-link">Check and link</button><button type="button" class="text-button" id="repo-unlink" hidden>Unlink</button></div>
             </form>
             <p class="note" id="repo-state" role="status"></p>
@@ -457,7 +457,7 @@
         </div>
         <div class="connection-detail" id="auth-detail" role="status" hidden></div>
       </section>
-      <div id="dialog-content"></div><button class="dialog-done" id="dialog-done" type="button">Done <span aria-hidden="true">↗</span></button>
+      <div id="dialog-content"></div><button class="dialog-done" id="dialog-done" type="button">Done</button>
     </dialog>
     <dialog id="card-dialog" class="kanban-dialog" aria-labelledby="card-dialog-heading"><button class="dialog-close icon-button" id="card-dialog-close" type="button" aria-label="Close card">×</button><p class="eyebrow" id="card-dialog-project">TO DO</p><h2 id="card-dialog-heading">New card</h2>
       <form id="card-form" novalidate>
@@ -470,7 +470,7 @@
         <p class="note" id="card-note"></p>
         <details class="kanban-source" id="card-source" hidden><summary>Source details</summary><ul id="card-source-list"></ul></details>
         <p class="inline-error" id="card-error" role="alert" hidden></p>
-        <div class="kanban-dialog-actions"><button type="button" class="secondary-button" id="card-cancel">Cancel</button><button type="button" class="secondary-button" id="card-refine" hidden>Refine in Composer</button><button type="submit" class="dialog-done" id="card-save">Save card <span aria-hidden="true">↗</span></button></div>
+        <div class="kanban-dialog-actions"><button type="button" class="secondary-button" id="card-cancel">Cancel</button><button type="button" class="secondary-button" id="card-refine" hidden>Refine in Composer</button><button type="submit" class="dialog-done" id="card-save">Save card</button></div>
       </form>
     </dialog>
     <dialog id="labels-dialog" class="kanban-dialog" aria-labelledby="labels-dialog-heading"><button class="dialog-close icon-button" id="labels-dialog-close" type="button" aria-label="Close labels">×</button><p class="eyebrow" id="labels-dialog-project"></p><h2 id="labels-dialog-heading">Project labels</h2><form id="labels-form" novalidate><p class="note">Names and colors are shared by all tasks. Removing a label removes it from those tasks.</p><div id="label-definition-list"></div><button type="button" class="text-button" id="label-add">Add label</button><p class="inline-error" id="labels-error" role="alert" hidden></p><div class="kanban-dialog-actions"><button type="button" class="secondary-button" id="labels-cancel">Cancel</button><button type="button" class="secondary-button" id="labels-reload">Reload labels</button><button type="submit" class="dialog-done" id="labels-save">Save labels</button></div></form></dialog>
@@ -496,7 +496,7 @@
         </div>
         <label class="check-row" id="split-autopilot-field" hidden><input type="checkbox" id="split-autopilot" checked> Then open Autopilot with these cards in this order (you review and start it)</label>
         <p class="inline-error" id="split-error" role="alert" hidden></p>
-        <div class="kanban-dialog-actions"><button type="button" class="secondary-button" id="split-cancel">Cancel</button><button type="button" class="secondary-button" id="split-copy-tasks" hidden>Copy subtasks</button><button type="button" class="secondary-button" id="split-save-options" hidden>Save to Kanban…</button><button type="submit" class="dialog-done" id="split-add" disabled>Add cards to To Do <span aria-hidden="true">↗</span></button></div>
+        <div class="kanban-dialog-actions"><button type="button" class="secondary-button" id="split-cancel">Cancel</button><button type="button" class="secondary-button" id="split-copy-tasks" hidden>Copy subtasks</button><button type="button" class="secondary-button" id="split-save-options" hidden>Save to Kanban…</button><button type="submit" class="dialog-done" id="split-add" disabled>Add cards to To Do</button></div>
       </form>
     </dialog>
     <dialog id="columns-dialog" class="kanban-dialog columns-dialog" aria-labelledby="columns-heading"><button class="dialog-close icon-button" id="columns-close" type="button" aria-label="Close">×</button><p class="eyebrow" id="columns-project">COLUMNS</p><h2 id="columns-heading">Column Manager</h2>
@@ -515,7 +515,7 @@
           <div class="columns-editor" id="columns-editor"></div>
         </div>
         <p class="inline-error" id="columns-error" role="alert" hidden></p>
-        <div class="kanban-dialog-actions"><button type="button" class="text-button columns-remove" id="columns-remove">Remove column</button><button type="button" class="secondary-button" id="columns-cancel">Cancel</button><button type="submit" class="dialog-done">Save <span aria-hidden="true">↗</span></button></div>
+        <div class="kanban-dialog-actions"><button type="button" class="text-button columns-remove" id="columns-remove">Remove column</button><button type="button" class="secondary-button" id="columns-cancel">Cancel</button><button type="submit" class="dialog-done">Save</button></div>
       </form>
     </dialog>
     <dialog id="repository-pipeline-dialog" class="kanban-dialog" aria-labelledby="repository-pipeline-heading"><button class="dialog-close icon-button" id="repository-pipeline-close" type="button" aria-label="Close repository configuration">×</button><p class="eyebrow">REPOSITORY BOARD</p><h2 id="repository-pipeline-heading">Review repository configuration</h2><p class="note">Applying replaces saved column settings. Unsaved Column Manager edits are not included. No agent or automation runs on apply.</p><div id="repository-pipeline-preview"></div><p class="inline-error" id="repository-pipeline-error" role="alert" hidden></p><div class="kanban-dialog-actions"><button type="button" class="secondary-button" id="repository-pipeline-cancel">Close</button><button type="button" class="dialog-done" id="repository-pipeline-apply" disabled>Apply reviewed configuration</button></div></dialog>
@@ -527,7 +527,7 @@
         <p class="note" id="add-note"></p>
         <pre class="kanban-snapshot" id="add-preview" tabindex="0" aria-label="Prompt to copy into the card"></pre>
         <p class="inline-error" id="add-error" role="alert" hidden></p>
-        <div class="kanban-dialog-actions"><button type="button" class="secondary-button" id="add-cancel">Cancel</button><button type="submit" class="dialog-done">Add card <span aria-hidden="true">↗</span></button></div>
+        <div class="kanban-dialog-actions"><button type="button" class="secondary-button" id="add-cancel">Cancel</button><button type="submit" class="dialog-done">Add card</button></div>
       </form>
     </dialog>
     <dialog id="task-dialog" class="kanban-dialog task-dialog" aria-labelledby="task-dialog-heading"><button class="dialog-close icon-button" id="task-dialog-close" type="button" aria-label="Close">×</button><p class="eyebrow" id="task-dialog-stage">TASK</p><h2 id="task-dialog-heading">Task details</h2>
@@ -539,7 +539,7 @@
         <p class="note">What happens when a card enters each column. Changes apply to future runs, not to runs that are already active.</p>
         <div class="workflow-stages" id="workflow-stages"></div>
         <p class="inline-error" id="workflow-error" role="alert" hidden></p>
-        <div class="kanban-dialog-actions"><button type="button" class="secondary-button" id="workflow-cancel">Cancel</button><button type="submit" class="dialog-done">Save settings <span aria-hidden="true">↗</span></button></div>
+        <div class="kanban-dialog-actions"><button type="button" class="secondary-button" id="workflow-cancel">Cancel</button><button type="submit" class="dialog-done">Save settings</button></div>
       </form>
     </dialog>
     <dialog id="autopilot-dialog" class="kanban-dialog autopilot-dialog" aria-labelledby="autopilot-heading"><button class="dialog-close icon-button" id="autopilot-close" type="button" aria-label="Close">×</button><p class="eyebrow" id="autopilot-project">AUTOPILOT</p><h2 id="autopilot-heading">Autopilot</h2>
@@ -556,13 +556,14 @@
         <fieldset class="autopilot-queue"><legend>Order <span class="note" id="autopilot-queue-note"></span></legend><ol id="autopilot-queue"></ol></fieldset>
         <label class="check-option autopilot-consent"><input type="checkbox" id="autopilot-consent"><span><strong>I understand Autopilot works on its own</strong><small id="autopilot-consent-detail">It confirms stages, commits, accepts clean reviews, and merges into your local target branch or pushes the task branch for a pull request, without asking each time. It never force-pushes or bypasses agent permissions.</small></span></label>
         <p class="inline-error" id="autopilot-error" role="alert" hidden></p>
-        <div class="kanban-dialog-actions"><button type="button" class="secondary-button" id="autopilot-save">Save</button><button type="submit" class="dialog-done" id="autopilot-start">Start Autopilot <span aria-hidden="true">↗</span></button></div>
+        <div class="kanban-dialog-actions"><button type="button" class="secondary-button" id="autopilot-save">Save</button><button type="submit" class="dialog-done" id="autopilot-start">Start Autopilot</button></div>
         <details class="autopilot-log" id="autopilot-log-box"><summary>Activity</summary><ol id="autopilot-log"></ol></details>
       </form>
     </dialog>
     <div id="announcement" class="sr-only" aria-live="polite"></div>
     <dialog id="usage-dialog" class="kanban-dialog usage-dialog" aria-labelledby="usage-heading">
-      <div class="dialog-heading"><h2 id="usage-heading">Usage</h2><button type="button" id="usage-close" class="icon-button" aria-label="Close usage">×</button></div>
+      <button class="dialog-close icon-button" id="usage-close" type="button" aria-label="Close usage">×</button>
+      <div class="dialog-heading"><h2 id="usage-heading">Usage</h2></div>
       <p class="dialog-note">Local CLI sessions · last 30 days · this machine</p>
       <div class="usage-toolbar"><span id="usage-updated" role="status">Loading usage…</span><button type="button" id="usage-refresh">Refresh</button></div>
       <p id="usage-error" class="inline-error" role="alert" hidden></p>
