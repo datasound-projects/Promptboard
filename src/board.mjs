@@ -910,7 +910,7 @@ export class Board {
     const project = this.#project(await this.state(), id);
     if (project.workflowMode === 'pipeline' && (action === 'start' || action === 'resume')) {
       if (action === 'start' && confirm !== true) throw new BoardError('Confirm what Autopilot will do before you start it.', 'CONFIRMATION_REQUIRED');
-      if (!project.repository) throw new BoardError('Link a repository first.', 'REPOSITORY_REQUIRED', 409);
+      if (!project.repository) throw new BoardError('Connect a code folder first, in Project settings.', 'REPOSITORY_REQUIRED', 409);
       if (!this.executor) throw new BoardError('Agent execution is not available.', 'EXECUTION_UNAVAILABLE', 503);
       if (action === 'start' && !project.autopilot?.queue?.length) throw new BoardError('Choose at least one To Do card for the Autopilot queue.', 'AUTOPILOT_EMPTY');
       const queued = (project.autopilot?.queue || []).map(taskId => project.tasks.find(task => task.id === taskId)).filter(Boolean);

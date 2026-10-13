@@ -316,7 +316,7 @@ export function parseProviderOutput(provider, stdout) {
 export const FAILURE_MESSAGES = Object.freeze({
   QUOTA_EXHAUSTED: 'Your CLI account reports that its included usage is used up. Check your plan or add usage in the provider account, then try again.',
   RATE_LIMITED: 'The provider is temporarily limiting requests for this account. Wait, then try again.',
-  AUTH_REQUIRED: 'The CLI is not signed in, or its sign-in expired. Use Connect / Sign in, then try again.',
+  AUTH_REQUIRED: 'The CLI is not signed in, or its sign-in expired. Open CLI connections (the CLI status at the top right), sign in, then try again.',
   MODEL_UNAVAILABLE: 'The selected model is not available to this CLI account. Refresh models or choose another model.',
   PROVIDER_UNAVAILABLE: 'The provider service is overloaded or unavailable. Try again later.',
   NETWORK_ERROR: 'The CLI could not reach its provider. Check your network connection, then try again.',

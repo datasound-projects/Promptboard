@@ -360,7 +360,8 @@ export function exportProjectContext(record, { generatedAt = Date.now() } = {}) 
   const sourceHash = sha256(`${FORMAT_VERSION}\0${body}`);
   const title = `Project Context: ${record.name}`;
   const preamble = [`# ${escapeInline(title.replace(/\s+/g, ' '))}`, '',
-    `> Generated from Origin project \`${record.id}\` at blueprint revision ${record.revision} on ${iso(generatedAt)} (export format ${FORMAT_VERSION}).`,
+    // People read this line; the project ID and export format stay in Appendix A for tools.
+    `> Generated from the Origin blueprint (revision ${record.revision}) on ${new Date(generatedAt).toLocaleString('en-GB', { dateStyle: 'long', timeStyle: 'short', timeZone: 'UTC' })} UTC.`,
     '> This is a one-way copy of the saved design. Editing this document does not change Origin, and later Origin changes appear here only when you regenerate it.', '',
     '## Contents', '', ...toc, '- [Appendix A. Export report](#ctx-report)', '- [Appendix B. Layout data](#ctx-layout)', ''];
   const markdown = `${preamble.join('\n')}\n${body}\n${layout}\n`;

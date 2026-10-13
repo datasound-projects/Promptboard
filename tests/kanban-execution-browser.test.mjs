@@ -63,7 +63,8 @@ test('typed board settings: permissions, column types, the Full Autopilot confir
   assert.match(await ev(`return document.querySelector('#autopilot-consent-detail').textContent;`), /merges each finished card into/);
   assert.deepEqual(await ev(`return [...document.querySelectorAll('#autopilot-ready .ready-item')].map(item => [item.classList.contains('ok'), item.textContent]);`).then(rows => rows.map(([ok, text]) => [ok, /code folder|test command|hands-off/i.exec(text)?.[0].toLowerCase()])),
     [[false, 'code folder'], [true, 'test command'], [true, 'hands-off']]); // No test command: the Testing agent finds the tests.
-  assert.equal(await ev(`return document.querySelector('#autopilot-start').disabled;`), false);
+  // The missing code folder blocks Start, and the button says why in the checklist's own words.
+  assert.deepEqual(await ev(`const start = document.querySelector('#autopilot-start'); return [start.disabled, start.title];`), [true, 'Connect a code folder and choose a target branch in Project settings.']);
   await ev(`document.querySelector('#autopilot-dialog .dialog-close').click();`);
   // Phone width: the permissions section stays inside the viewport without horizontal scrolling.
   await browser.resize(390, 844);

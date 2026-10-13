@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **UI polish for client demos.**
+  - The open Coordinator scrolls inside its own panel, so the board keeps room for its cards.
+  - Long card titles no longer make the Autopilot dialog scroll sideways.
+  - Autopilot's Start stays disabled while its checklist shows a blocker, and its tooltip names that blocker.
+  - When the local server is gone, errors say "Promptboard isn't responding…" instead of "Failed to fetch", and an error in a long dialog scrolls into view.
+  - The sign-in error names the real control (CLI connections). Generate shows "Checking your CLI…" while that check runs, instead of looking enabled and doing nothing.
+  - The Kanban sidebar has no permanent horizontal scrollbar, and the page no longer overflows the window by one pixel.
+  - Buttons that open nothing outside the app lose the ↗ glyph, and the Usage close button matches the other dialogs.
+  - The board says "card" throughout (Add card, How this card runs), and the code folder has one name everywhere.
+  - Usage hides CLIs that are not installed and have no sessions, says "7-day limit", shows a loading note, and shows partial coverage as a quiet note.
+  - Card details keep status, stage result and actions in view; branch, Base resources, agent settings, run history, automations and reset sit under a collapsed **Advanced**. An empty prompt section is hidden.
+  - The Timeline has inner padding. Unsent text in Origin's "Add …" fields survives view switches. The Project Context header shows a readable date instead of a UUID and an ISO timestamp.
 - **Workspace trust (opt-in).** Kanban execution permissions can let Promptboard answer the folder-trust question of Claude Code or Codex for a card's own task worktree. The answer is given only for the positively identified trust menu naming that exact worktree, after it settles; every other startup question waits for you. Autonomous Codex sessions start without its update offer and shared background server, whose menus would otherwise wait for an answer. Full Autopilot turns workspace trust on.
 - A queued agent held by its column's actions or a destination change no longer blocks later queued runs of other cards or projects. A free slot goes to the first run that is not held; once released, the held run starts before runs queued after it.
 - Fix: a task prompt too long for the command line is pasted only after the CLI shows it is ready (Claude and Gemini: their SessionStart hook; Codex: its first terminal title), never on a 15-second timer, so the paste and its Enter can no longer answer a startup question such as folder trust. With no sign after 60 seconds nothing is typed and the run reports `CLI_INPUT_NOT_READY`; a later sign still pastes.
