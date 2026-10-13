@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Resizable sidebar on every page.** Drag its edge to make it wider (up to 560 px) or narrower (down to 200 px); drag it further left to collapse it, and drag the left screen edge to open it again. Double-click the edge to reset the width. The width is remembered. From the keyboard, focus the edge: the arrow keys resize, Enter collapses or opens. Phones keep the drawer.
+- The top bar, the sidebar and Origin's header use quieter hairlines, with a soft accent where the top bar meets the sidebar; the sidebar edge lights up while you resize it.
+
 - **Rework until the task is done.** Autopilot keeps sending a card back while each round brings a new problem, and pauses with `REWORK_LIMIT_REACHED` only when a problem keeps coming back (the limit, now "Pause when a problem comes back", 2 by default) or after 8 rounds. Low-severity review findings are suggestions that never send work back (reviewers nearly always find a nit, which looped cards until the limit). Each Executing rework run also gets the earlier rounds' findings, so a fix that undoes an earlier one is noticed.
 
 - Fix (Kanban): a test command must name an installed program. An instruction typed into the field (it ran as a program called “You” and failed every test run, using up the rework rounds) is refused when saved, with a hint to leave the field empty so the Testing agent finds the tests. A command that cannot start at run time stops the stage with `TEST_COMMAND_NOT_FOUND` instead of sending the card back to Executing.
