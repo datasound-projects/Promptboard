@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fix (Kanban): a test command must name an installed program. An instruction typed into the field (it ran as a program called “You” and failed every test run, using up the rework rounds) is refused when saved, with a hint to leave the field empty so the Testing agent finds the tests. A command that cannot start at run time stops the stage with `TEST_COMMAND_NOT_FOUND` instead of sending the card back to Executing.
+- Fix (Autopilot): a card whose prerequisites are not Done no longer holds up the queue; the next ready card goes first, so a prerequisite queued lower runs before the card that needs it. A queue that only waits for unfinished prerequisites pauses with their names.
+
 - **Backup and import fixes.** Board backups now carry each project's execution policy and Autopilot route (finish, rework rounds); like the workflow, they wait for **Accept imported settings**, and Autopilot always comes back off. Restoring the same backup again reuses identical Base resources instead of adding another copy of each. An import whose project or card IDs are not plain letters, digits, `-` or `_` is refused. Imported and migrated boards follow the one-name rule against Origin projects too (“Shop (2)”).
 - Fix: Claude usage on the Usage page no longer counts a message twice when a resumed or forked session repeats it under a new session ID.
 - Fix: when Compose defers external research because the project is not available, its follow-up round no longer contacts MCP sources either.

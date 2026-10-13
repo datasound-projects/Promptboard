@@ -1479,6 +1479,13 @@ export class Board {
         }
         return;
       }
+      const missing = (tests.results || []).find(result => result.status === 'missing');
+      if (missing) {
+        const reason = `The test command “${missing.argv.join(' ').slice(0, 80)}” could not start: ${missing.argv[0]} is not an installed program. Fix it in Columns → Testing, then choose Merge again.`;
+        await this.#setFlow(id, { kind: 'blocked', reason });
+        if (pipeline) await this.#recordOutcome(id, mergeRun, 'failed', { code: 'TEST_COMMAND_NOT_FOUND', reason });
+        return;
+      }
       if (tests.status !== 'passed') {
         await this.#setFlow(id, { kind: 'blocked', reason: `The tests failed on the task branch with the current target. Send the card back to Executing; the failing output goes with it.` });
         // The combined code (task + moved target) fails: it goes back to Executing with the failing output.
@@ -3232,6 +3239,9 @@ export class Board {
               return;
             }
             if (tests.status === 'passed') return this.#recordOutcome(task.id, run, 'succeeded', { reason: 'Every configured test command passed.' });
+            // A command that cannot start is a setting to fix, not code: no rework round is spent on it.
+            const missing = (tests.results || []).find(result => result.status === 'missing');
+            if (missing) return this.#recordOutcome(task.id, run, 'failed', { code: 'TEST_COMMAND_NOT_FOUND', reason: `The test command “${missing.argv.join(' ').slice(0, 80)}” could not start: ${missing.argv[0]} is not an installed program. Fix it in Columns → Testing, or leave it empty so the Testing agent finds the tests; then move the card to Testing again.` });
             const failed = (tests.results || []).filter(result => result.status !== 'passed').map(result => `${result.argv.join(' ')}: ${result.reason || `exit ${result.exitCode}`}`).join('; ');
             return this.#recordOutcome(task.id, run, 'changes_required', { code: 'VERIFICATION_FAILED', next: 'executing', reason: tests.status === 'invalid' ? 'The task commit changed while the tests ran.' : `Tests failed: ${failed || tests.status}` });
           }

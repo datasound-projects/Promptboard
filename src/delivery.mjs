@@ -9,8 +9,8 @@
 import { execFile, spawn } from 'node:child_process';
 import { gh } from './github.mjs';
 import { createWriteStream } from 'node:fs';
-import { mkdir, readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { access, constants, mkdir, readFile } from 'node:fs/promises';
+import { delimiter, join } from 'node:path';
 import { git, lines, listWorktrees } from './git.mjs';
 import { killPidGroup, trackPid, untrackPid } from './providers.mjs';
 
@@ -22,6 +22,16 @@ export class DeliveryError extends Error {
   constructor(message, code, status = 409) { super(message); this.code = code; this.status = status; }
 }
 const fail = (message, code, status) => new DeliveryError(message, code, status);
+
+/** Whether `program` can start: a bare name must be on PATH; a path (./gradlew) is checked when it runs. */
+async function installed(program) {
+  if (/[\\/]/.test(program)) return true;
+  const extensions = process.platform === 'win32' ? ['', ...(process.env.PATHEXT || '.EXE;.CMD;.BAT;.COM').split(';')] : [''];
+  for (const dir of (process.env.PATH || '').split(delimiter).filter(Boolean)) for (const extension of extensions) {
+    if (await access(join(dir, program + extension), constants.X_OK).then(() => true, () => false)) return true;
+  }
+  return false;
+}
 
 /** Split a command line into argv without a shell: spaces separate, quotes group, no expansion. */
 export function parseCommand(input) {
@@ -238,13 +248,16 @@ export class Delivery {
 
   async setTestCommands(projectId, { commands, expectedRevision }) {
     if (!Array.isArray(commands) || commands.length > 20) throw fail('Configure at most 20 test commands.', 'INVALID_INPUT', 400);
-    const clean = commands.map((item, index) => {
+    const clean = [];
+    for (const [index, item] of commands.entries()) {
       const argv = Array.isArray(item.argv) ? item.argv.map(String) : parseCommand(item.command);
       if (!argv.length || argv.some(arg => arg.length > 1000 || arg.includes('\0'))) throw fail(`Test command ${index + 1} is not valid.`, 'INVALID_COMMAND', 400);
+      // A sentence typed here would run as a program called “You”; say so now instead of failing every test run.
+      if (!(await installed(argv[0]))) throw fail(`“${argv[0].slice(0, 60)}” is not a program installed on this computer, so test command ${index + 1} cannot run. Enter a command such as npm test, or leave it empty: the Testing agent then finds and runs the project's tests itself.`, 'COMMAND_NOT_FOUND', 400);
       const timeoutSec = Number.isInteger(item.timeoutSec) ? item.timeoutSec : 600;
       if (timeoutSec < 1 || timeoutSec > 3600) throw fail('A test timeout must be 1 to 3,600 seconds.', 'INVALID_INPUT', 400);
-      return { label: typeof item.label === 'string' && item.label.trim() ? item.label.trim().slice(0, 80) : argv.join(' ').slice(0, 80), argv, timeoutSec };
-    });
+      clean.push({ label: typeof item.label === 'string' && item.label.trim() ? item.label.trim().slice(0, 80) : argv.join(' ').slice(0, 80), argv, timeoutSec });
+    }
     return this.board.setTestCommands(projectId, { commands: clean, expectedRevision });
   }
 

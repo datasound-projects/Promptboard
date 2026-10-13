@@ -414,3 +414,38 @@ test('an autonomous agent stuck on an unrecognized startup menu is reported, and
   w.supervisor.input(run.id, '\r');
   assert.equal((await w.outcome(card.id, 'succeeded')).runId, run.id, 'Answered in the terminal, the same run finishes the stage.');
 });
+
+test('Autopilot runs a prerequisite queued lower first, and explains a queue that only waits for unfinished prerequisites', { skip, timeout: 180000 }, async t => {
+  const w = await world(t);
+  const base = await w.board.createTask({ projectId: w.project.id, title: 'Base', prompt: 'Base change. WRITE_FILE:base.txt TASK_KEY:base' });
+  const app = await w.board.createTask({ projectId: w.project.id, title: 'App', prompt: 'App change. WRITE_FILE:app.txt TASK_KEY:app' });
+  await w.board.store.update(state => { state.projects[0].tasks.find(item => item.id === app.id).dependsOn = [base.id]; });
+  await w.board.applyFullAutopilot(w.project.id, { expectedRevision: (await w.projectNow()).revision, confirm: true });
+  let project = await w.projectNow();
+  // The dependent card is queued first; its prerequisite must still go first.
+  await w.board.setAutopilot(w.project.id, { route: project.autopilot.route, queue: [app.id, base.id], expectedRevision: project.revision });
+  await w.board.controlAutopilot(w.project.id, { action: 'start', confirm: true });
+  const autopilot = new Autopilot(w.board, { tickMs: 1e9 });
+  await until(async () => { await autopilot.tick(); project = await w.projectNow(); if (project.autopilot.status === 'paused') assert.fail(project.autopilot.reason); return project.autopilot.status === 'finished'; }, 'Autopilot finished', 150000);
+  assert.deepEqual(git(w.root, 'log', '--format=%s', 'trunk').split('\n').slice(0, 2), ['App', 'Base'], 'Base merged before App.');
+  // Only a card whose prerequisite is not Done (and not queued) remains: Autopilot pauses and says why.
+  const lone = await w.board.createTask({ projectId: w.project.id, title: 'Lone', prompt: 'x' }), later = await w.board.createTask({ projectId: w.project.id, title: 'Later', prompt: 'y' });
+  await w.board.store.update(state => { state.projects[0].tasks.find(item => item.id === later.id).dependsOn = [lone.id]; });
+  project = await w.projectNow();
+  await w.board.setAutopilot(w.project.id, { route: project.autopilot.route, queue: [later.id], expectedRevision: project.revision });
+  await w.board.controlAutopilot(w.project.id, { action: 'start', confirm: true });
+  await autopilot.tick();
+  project = await w.projectNow();
+  assert.equal(project.autopilot.status, 'paused'); assert.match(project.autopilot.reason, /“Later” waits for its prerequisites, which are not Done: #\d+ Lone/);
+});
+
+test('a test command that cannot start fails clearly (TEST_COMMAND_NOT_FOUND) without spending rework rounds', { skip, timeout: 120000 }, async t => {
+  const w = await world(t, { testCommand: './no-such-test-runner --all' });
+  const card = await w.board.createTask({ projectId: w.project.id, title: 'Missing runner', prompt: 'Do it. WRITE_FILE:m.txt' });
+  await w.board.setExecutionPolicy(w.project.id, { policy: { completion: 'automatic' }, expectedRevision: (await w.projectNow()).revision });
+  await w.go(card.id, 'executing'); await w.outcome(card.id, 'succeeded');
+  await w.go(card.id, 'code_review'); await w.outcome(card.id, 'succeeded');
+  await w.go(card.id, 'testing');
+  const outcome = await w.outcome(card.id, 'failed');
+  assert.equal(outcome.code, 'TEST_COMMAND_NOT_FOUND'); assert.match(outcome.reason, /\.\/no-such-test-runner is not an installed program[\s\S]*leave it empty/);
+});

@@ -83,7 +83,9 @@ The outcome is shown on the card and in **Stage and reset** in the task details,
 
 ## Autopilot
 
-Autopilot takes the queued To Do cards strictly in your order, one card at a time from first column to Done. Before
+Autopilot takes the queued To Do cards in your order, one card at a time from first column to Done. A card whose
+prerequisites are not Done yet waits, and the next queued card that is ready goes first; if every remaining card waits
+for a prerequisite that is not Done, Autopilot pauses and names it. Before
 each card it refreshes the target branch, so a card starts from the target that already contains the cards merged before
 it. For typed columns it follows the recorded outcome: succeeded → next column; changes required → back to Executing
 (to Code Review after a merge conflict, to Testing when the target moved), up to the board's rework limit (`REWORK_LIMIT_REACHED`); failed → pause with
@@ -116,7 +118,7 @@ Moving a card back to To Do stops its agent and keeps the branch, worktree, file
 ## Machine-readable stops
 
 `WORKTREE_MISSING`, `WORKTREE_BRANCH_MISMATCH`, `PLAN_MISSING`, `PLAN_MODIFIED_WORKSPACE`, `NO_CHANGES`,
-`INVALID_REVIEW_RESULT`, `VERIFICATION_FAILED`, `VERIFICATION_INTERRUPTED`, `INVALID_TEST_RESULT`, `TESTS_FAILED`, `TARGET_MOVED`, `REWORK_LIMIT_REACHED`,
+`INVALID_REVIEW_RESULT`, `VERIFICATION_FAILED`, `VERIFICATION_INTERRUPTED`, `INVALID_TEST_RESULT`, `TESTS_FAILED`, `TEST_COMMAND_NOT_FOUND`, `TARGET_MOVED`, `REWORK_LIMIT_REACHED`,
 `MERGE_BLOCKED`, `MERGE_CONFLICT_UNRESOLVED`, `MERGE_STALE`, `AGENT_STOPPED`, `AGENT_INTERRUPTED`, `CLI_INPUT_NOT_READY`,
 `EXECUTION_POLICY_UNSUPPORTED`. Each comes with a sentence that says what failed and what to do; a failed task never
 changes the target branch.

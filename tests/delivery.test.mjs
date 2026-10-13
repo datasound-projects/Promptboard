@@ -210,10 +210,12 @@ test('failed tests, missing commands, and timeouts never pass; source changes ma
   const task = await w.task('Tests', 'Test me.');
   await assert.rejects(w.delivery.runTests(task.id, { confirm: true }), { code: 'NO_TEST_COMMANDS' });
   const setCommands = async commands => w.delivery.setTestCommands(w.project.id, { commands, expectedRevision: (await w.board.view()).projects[0].revision });
+  // An instruction typed into the command field is refused when saved: it would run a program called “You”.
+  await assert.rejects(setCommands([{ command: 'You test the project and find the proper test commands.' }]), { code: 'COMMAND_NOT_FOUND', message: /“You” is not a program installed[\s\S]*leave it empty/ });
   await setCommands([
     { command: `${process.execPath} -e "console.log('fine')"`, label: 'ok' },
     { command: `${process.execPath} -e "console.error('boom'); process.exit(3)"`, label: 'fails' },
-    { command: 'definitely-not-installed-command --flag', label: 'missing' },
+    { command: './definitely-not-installed-command --flag', label: 'missing' },
     { command: `${process.execPath} -e "setInterval(() => {}, 1000)"`, label: 'hangs', timeoutSec: 1 },
   ]);
   const result = await w.tests(task.id);
