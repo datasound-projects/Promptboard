@@ -11,7 +11,7 @@ import { abortable } from '../src/cancellation.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
 import { researchPlan, researchReview, questTask, questText, pdfFixture } from './helpers/compose-fixtures.mjs';
 
-const efforts = { codex: ['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'], claude: ['', 'low', 'medium', 'high', 'xhigh', 'max'], gemini: [''], agy: ['', 'low', 'medium', 'high'] };
+const efforts = { codex: ['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'], claude: ['', 'low', 'medium', 'high', 'xhigh', 'max'], gemini: [''], agy: ['', 'low', 'medium', 'high', 'xhigh', 'max'] };
 const details = ['super-short', 'concise', 'detailed', 'extremely-detailed'];
 const tasks = ['unspecified', 'build', 'feature', 'debug', 'refactor', 'review', 'architecture', 'integration', 'ui-ux', 'data', 'testing', 'security', 'performance', 'migration', 'dependencies', 'devops', 'automation', 'documentation', 'agent-workflow', 'research'];
 const review = call => {

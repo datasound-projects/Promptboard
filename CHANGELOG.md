@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Backup and import fixes.** Board backups now carry each project's execution policy and Autopilot route (finish, rework rounds); like the workflow, they wait for **Accept imported settings**, and Autopilot always comes back off. Restoring the same backup again reuses identical Base resources instead of adding another copy of each. An import whose project or card IDs are not plain letters, digits, `-` or `_` is refused. Imported and migrated boards follow the one-name rule against Origin projects too (“Shop (2)”).
+- Fix: Claude usage on the Usage page no longer counts a message twice when a resumed or forked session repeats it under a new session ID.
+- Fix: when Compose defers external research because the project is not available, its follow-up round no longer contacts MCP sources either.
+- Fix: the Coordinator refuses Antigravity, which cannot run without tools; choose Codex, Claude Code or Gemini.
+- Fix: a saved-prompts file whose backup is damaged too is kept aside as `prompts-<id>.corrupt-<time>-<random>.json` instead of being overwritten by the next saves.
+- Fix: local-folder redaction hides whole quoted secrets with spaces and credentials in any URL scheme (`postgres://user:pw@`, `redis://:pw@`). The file viewer also protects `.envrc` and `.git-credentials`.
+- Antigravity accepts the `xhigh` and `max` effort levels its CLI supports, and recognizes `-xhigh`/`-max` model slugs.
+
 - **Workspace trust (opt-in).** Kanban execution permissions can let Promptboard answer the folder-trust question of Claude Code or Codex for a card's own task worktree. The answer is given only for the positively identified trust menu naming that exact worktree, after it settles; every other startup question waits for you. Autonomous Codex sessions start without its update offer and shared background server, whose menus would otherwise wait for an answer. Full Autopilot turns workspace trust on.
 - A queued agent held by its column's actions or a destination change no longer blocks later queued runs of other cards or projects. A free slot goes to the first run that is not held; once released, the held run starts before runs queued after it.
 - Fix: a task prompt too long for the command line is pasted only after the CLI shows it is ready (Claude and Gemini: their SessionStart hook; Codex: its first terminal title), never on a 15-second timer, so the paste and its Enter can no longer answer a startup question such as folder trust. With no sign after 60 seconds nothing is typed and the run reports `CLI_INPUT_NOT_READY`; a later sign still pastes.

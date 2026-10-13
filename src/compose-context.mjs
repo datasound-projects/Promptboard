@@ -160,10 +160,10 @@ export class ComposeContext {
         }
         const firstCap = limits.rounds > 1 ? limits.lookups - 6 : limits.lookups;
         await lookup(plan.questions, local, remote.length ? Math.min(firstCap, Math.max(1, Math.floor(limits.lookups / 3))) : firstCap);
-        let external = plan.questions;
+        let external = plan.questions, deferred = false;
         const hasTarget = () => evidence().some(row => [row, ...(row.alsoFrom || [])].some(origin => origin.sourceType === 'repository' && origin.purpose === 'target'));
         if (plan.assessment.needsProject && !hasTarget()) {
-          external = [];
+          external = []; deferred = true;
           plan.unverified.push('Inspect the actual project framework, dependencies, existing implementation and conventions before choosing compatible integration details.');
           warnings.push('Project context is unavailable. External research was deferred; the implementation agent must inspect the actual repository first.');
         }
@@ -184,7 +184,8 @@ export class ComposeContext {
           // Newly discovered dependencies can justify one additional targeted pass.
           const newQs = allocate(plan.questions, next.questions);
           const before = lookups;
-          const added = newQs.length ? await lookup(newQs, usable) : 0;
+          // Deferred external research stays deferred: the follow-up reads only local sources.
+          const added = newQs.length ? await lookup(newQs, deferred ? local : usable) : 0;
           if (lookups > before) { plan.questions.push(...newQs); rounds++; }
           if (added) review = await checkpoint(false) || review;
         }

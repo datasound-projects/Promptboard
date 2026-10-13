@@ -18,9 +18,10 @@ test('model normalization preserves native effort choices and excludes unsafe or
   assert.deepEqual(normalizeModels('gemini', [{ modelId: 'gemini-future', name: 'Future' }])[0].efforts, []);
   assert.deepEqual(parseAgyModels('Available models:\n  gemini-new-high    Gemini New (High)\n  claude-sonnet-4-6    Claude Sonnet\n').map(m => m.id), ['gemini-new-high', 'claude-sonnet-4-6']);
   assert.deepEqual(parseAgyModels('Fetching available models...\n\u001b[32mgemini-3.8-flash-high\u001b[0m\tGemini 3.8 Flash (High)\nclaude-sonnet-5-5-low\tClaude Sonnet 5.5 (Low)\n').map(m => m.id), ['gemini-3.8-flash-high', 'claude-sonnet-5-5-low']);
-  const agyModels = parseAgyModels('gemini-3.8-flash-high\tGemini 3.8 Flash (High)\nclaude-sonnet-5-5-low\tClaude Sonnet 5.5 (Low)\ngpt-oss-120b-medium\tGPT-OSS 120B (Medium)\n');
-  assert.deepEqual(agyModels.map(model => model.efforts), [['high'], ['low'], ['medium']]);
-  assert.deepEqual(agyModels.map(model => model.defaultEffort), ['high', 'low', 'medium']);
+  const agyModels = parseAgyModels('gemini-3.8-flash-high\tGemini 3.8 Flash (High)\nclaude-sonnet-5-5-low\tClaude Sonnet 5.5 (Low)\ngpt-oss-120b-medium\tGPT-OSS 120B (Medium)\ngemini-3.8-pro-xhigh\tGemini 3.8 Pro (Extra high)\ngemini-3.8-pro-max\tGemini 3.8 Pro (Max)\n');
+  assert.deepEqual(agyModels.map(model => model.efforts), [['high'], ['low'], ['medium'], ['xhigh'], ['max']]);
+  assert.deepEqual(agyModels.map(model => model.defaultEffort), ['high', 'low', 'medium', 'xhigh', 'max']);
+  assert.doesNotThrow(() => checkModelEffort('agy', agyModels[3].id, 'xhigh', { models: agyModels }));
   assert.deepEqual(normalizeModels('agy', [{ id: 'custom-model' }])[0].efforts, []);
   assert.throws(() => checkModelEffort('agy', agyModels[0].id, 'low', { models: agyModels }), { code: 'INVALID_EFFORT', status: 400 });
   assert.doesNotThrow(() => checkModelEffort('agy', agyModels[0].id, 'high', { models: agyModels }));

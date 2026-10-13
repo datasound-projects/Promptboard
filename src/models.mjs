@@ -21,7 +21,7 @@ export function normalizeModels(provider, rows) {
     if (provider === 'agy') {
       // `agy models` returns effort-pinned slugs. A different --effort conflicts
       // with the selected slug; an unsuffixed/custom ID reports no capabilities.
-      const pinned = id.match(/-(low|medium|high)$/)?.[1];
+      const pinned = id.match(/-(low|medium|xhigh|high|max)$/)?.[1];
       if (pinned) { efforts = [pinned]; defaultEffort = pinned; }
     }
     if (provider === 'gemini' || row.supportsEffort === false) efforts = [];

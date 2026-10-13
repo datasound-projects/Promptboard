@@ -169,7 +169,8 @@ function parseBackupData(data) {
   if (data.projects.length > PROJECT_LIMIT) throw new BoardError(`A board can have at most ${PROJECT_LIMIT} projects.`, 'INVALID_BACKUP');
   const ids = new Set();
   const unique = (value, label) => {
-    if (typeof value !== 'string' || !value || value.length > 100 || ids.has(value)) throw new BoardError(`${label} needs a unique ID.`, 'INVALID_BACKUP');
+    // IDs name worktree folders and HTTP routes, so they follow the same pattern the routes accept.
+    if (!recordId(value) || ids.has(value)) throw new BoardError(`${label} needs a unique ID of letters, digits, “-” or “_”.`, 'INVALID_BACKUP');
     ids.add(value);
     return value;
   };
@@ -203,6 +204,9 @@ function parseBackupData(data) {
       workflow: v2 && project.workflow && typeof project.workflow === 'object' ? project.workflow : v2 && project.automation?.autoRun === true ? { executing: { policy: 'start' } } : null,
       // Imported test commands never run until the user confirms them.
       testCommands: v2 && Array.isArray(project.testCommands) && project.testCommands.length ? project.testCommands.slice(0, 20) : null,
+      // The execution policy and Autopilot route also wait for confirmation; Autopilot always comes back off.
+      execution: pipeline && project.execution && Object.keys(project.execution).length ? normalizeExecutionPolicy(project.execution) : null,
+      autopilot: v2 && project.autopilot ? autopilotSettings(project.autopilot, { workflowMode: pipeline ? 'pipeline' : 'legacy', pipeline }) : null,
       // The user's timeline notes. Malformed entries are dropped; system events are rebuilt from the board.
       timelineNotes: v2 && Array.isArray(project.timelineNotes) ? project.timelineNotes.slice(0, 500).flatMap(note => note && typeof note.title === 'string' && note.title.trim() && Number.isFinite(note.at)
         ? [{ id: typeof note.id === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(note.id) ? note.id : randomUUID(), title: note.title.trim().slice(0, 120), text: typeof note.text === 'string' ? note.text.slice(0, 2000) : '', at: note.at, taskId: typeof note.taskId === 'string' ? note.taskId : null, createdAt: time(note.createdAt) }] : []) : [],
@@ -278,6 +282,28 @@ export function normalizeRoute(route, finish = 'merge') {
   if (clean.includes('testing') && !clean.includes('code_review')) throw new BoardError('A route with Testing must include Code Review: tests run on the reviewed commit.', 'INVALID_AUTOPILOT');
   if (clean.includes('merge') && !(clean.includes('code_review') && clean.includes('testing'))) throw new BoardError('A route that ends in Merge must include Code Review and Testing: the merge needs an accepted review and passing tests for the same commit.', 'INVALID_AUTOPILOT');
   return clean;
+}
+/**
+ * One name, one project: an imported board whose name an Origin project (other than its own) or a board already
+ * uses gets “Name (2)”, “Name (3)”, …. `originProjects` are Origin records ({ id, name, kanbanProjectId }).
+ */
+function freeName(incoming, originProjects, boardNames) {
+  const taken = name => boardNames.some(used => used.toLowerCase() === name.toLowerCase())
+    || originProjects.some(record => record.id !== incoming.id && record.kanbanProjectId !== incoming.id && record.name.trim().toLowerCase() === name.toLowerCase());
+  let name = incoming.name;
+  for (let n = 2; taken(name); n++) name = `${incoming.name.slice(0, 74)} (${n})`;
+  return name;
+}
+/**
+ * Autopilot settings carried by a backup: the route, finish and rework rounds only, never a queue or a running state.
+ * A route that no longer fits the board's columns is left out (null) instead of refusing the whole backup.
+ */
+function autopilotSettings(value, project) {
+  try {
+    const pipeline = project.workflowMode === 'pipeline', maxRework = value?.maxRework ?? 0;
+    if (!Number.isInteger(maxRework) || maxRework < 0 || maxRework > (pipeline ? 5 : 3) || (!pipeline && !['merge', 'pull_request'].includes(value.finish))) return null;
+    return pipeline ? { route: pipelineAutopilotRoute(project, value.route), finish: 'done', maxRework } : { route: normalizeRoute(value.route, value.finish), finish: value.finish, maxRework };
+  } catch { return null; }
 }
 
 /** Validate workflow overrides. Unknown stages and fields are dropped; invalid values are refused. */
@@ -1766,6 +1792,9 @@ export class Board {
         }
         if (pending.workflow) project.workflow = normalizeWorkflow(pending.workflow);
         if (pending.agentDefaults) project.agentDefaults = normalizeAgent(pending.agentDefaults);
+        if (pending.execution && project.workflowMode === 'pipeline') project.execution = normalizeExecutionPolicy(pending.execution);
+        const autopilot = pending.autopilot && !project.autopilot && autopilotSettings(pending.autopilot, project); // Settings saved since the import win.
+        if (autopilot) project.autopilot = { status: 'off', ...autopilot, queue: [], routes: {}, updatedAt: Date.now() };
         if (pending.baseBinding) project.baseBinding = pending.baseBinding;
         if (pending.baseColumns) project.baseColumns = pending.baseColumns;
         if (pending.agentProfileId) project.agentProfileId = pending.agentProfileId;
@@ -2072,7 +2101,7 @@ export class Board {
    * Import the browser's version 1 board once. IDs are kept, so a repeated migration
    * adds nothing. Cards keep their exact text, order, source details, and outdated flag.
    */
-  async migrateBrowserBoard(data) {
+  async migrateBrowserBoard(data, { originProjects = [] } = {}) {
     const parsed = parseBackup(data);
     return this.store.update(state => {
       let projects = 0, cards = 0, skipped = 0;
@@ -2081,8 +2110,7 @@ export class Board {
         let project = state.projects.find(item => item.id === incoming.id);
         if (!project) {
           if (state.projects.length >= PROJECT_LIMIT) throw new BoardError(`A board can have at most ${PROJECT_LIMIT} projects.`, 'LIMIT');
-          let name = incoming.name;
-          for (let n = 2; state.projects.some(item => item.name.toLowerCase() === name.toLowerCase()); n++) name = `${incoming.name.slice(0, 74)} (${n})`;
+          const name = freeName(incoming, originProjects, state.projects.map(item => item.name));
           project = newProject({ id: incoming.id, name, createdAt: incoming.createdAt, labels: incoming.labels });
           project.timelineNotes = incoming.timelineNotes;
           if (incoming.columnLayout) project.columnLayout = incoming.columnLayout;
@@ -2120,6 +2148,8 @@ export class Board {
         ...backupBaseScopes({ ...project.pendingImport, ...project, ...(project.baseBinding ? {} : project.pendingImport?.baseBinding ? { baseBinding: project.pendingImport.baseBinding } : {}) }),
         repository: project.repository ? { path: project.repository.path } : null, targetBranch: project.targetBranch ? { name: project.targetBranch.name } : null,
         agentDefaults: project.agentDefaults || null, workflow: project.workflow || {}, testCommands: project.testCommands || [], timelineNotes: project.timelineNotes || [], columnLayout: project.columnLayout || [],
+        ...(project.workflowMode === 'pipeline' && (project.execution || project.pendingImport?.execution) ? { execution: project.execution || project.pendingImport.execution } : {}),
+        ...(project.autopilot?.route || project.pendingImport?.autopilot ? { autopilot: project.autopilot?.route ? { route: project.autopilot.route, finish: project.autopilot.finish, maxRework: project.autopilot.maxRework } : project.pendingImport.autopilot } : {}),
         // Workspaces and runs are machine-specific and are not exported.
         tasks: project.tasks.map(task => ({ id: task.id, number: task.number, title: task.title, prompt: task.prompt, priority: taskPriority(task.priority), labelIds: taskLabelIds(task.labelIds, project.labels), source: task.source, ...(task.externalSource === undefined ? {} : { externalSource: externalIssueSource(task.externalSource) }),
           ...(validOrigin(task.originSource) ? { originSource: originSourceOf(task.originSource) } : {}), ...(task.dependsOn?.length ? { dependsOn: [...task.dependsOn] } : {}), checksOutdated: task.checksOutdated,
@@ -2136,11 +2166,11 @@ export class Board {
    * Replace the board with a backup. Execution state is not imported; repository paths
    * and automation settings wait for confirmation per project. Nothing runs.
    */
-  async importBackup(data, { replace = false } = {}) {
+  async importBackup(data, { replace = false, originProjects = [] } = {}) {
     const parsed = parseBackup(data);
     // Refuse before Base writes revision files for the import; the update checks again.
     this.#importRefusal(await this.state(), replace);
-    const preparedBase = parsed.base ? await this.base.prepareImport(parsed.base) : null;
+    const preparedBase = parsed.base ? await this.base.prepareImport(parsed.base, { reuseIdentical: true }) : null;
     if (data.version >= 3 && !preparedBase) throw new BoardError('This backup is missing its Base resource library.', 'INVALID_BACKUP');
     if (preparedBase) {
       for (const incoming of parsed.projects) {
@@ -2148,7 +2178,7 @@ export class Board {
         for (const task of incoming.tasks) Object.assign(task, remapBaseScopes(task, preparedBase.remap));
       }
       parsed.baseGlobal = remapBaseScopes(parsed.baseGlobal, preparedBase.remap);
-      const resourceKinds = new Map(preparedBase.resources.map(resource => [resource.id, resource.kind]));
+      const resourceKinds = new Map([...(await this.state()).base.resources, ...preparedBase.resources].map(resource => [resource.id, resource.kind]));
       for (const scope of [parsed.baseGlobal, ...parsed.projects]) {
         const profiles = [scope.agentProfileId, ...Object.values(scope.baseColumns || {}).map(column => column.profileId)].filter(Boolean);
         if (profiles.some(profileId => resourceKinds.get(profileId) !== 'profile')) throw new BoardError('An imported agent profile reference points to another resource type.', 'INVALID_BACKUP');
@@ -2159,8 +2189,10 @@ export class Board {
       if (preparedBase) this.base.publishPreparedImport(state, preparedBase);
       if (parsed.baseGlobal && Object.keys(parsed.baseGlobal).length) state.settings.pendingBaseImport = parsed.baseGlobal;
       else delete state.settings.pendingBaseImport;
+      const names = [];
       state.projects = parsed.projects.map(incoming => {
-        const project = newProject(incoming);
+        const project = newProject({ ...incoming, name: freeName(incoming, originProjects, names) });
+        names.push(project.name);
         project.tasks = incoming.tasks.map(task => ({ ...newTask(task), ...backupBaseScopes(task, true),
           ...(incoming.pipeline ? normalizePipelineTaskSelection(incoming.pipeline, { profileId: task.profileId, agentOverride: task.agentOverride }) : {}) }));
         if (incoming.pipeline) {
@@ -2175,9 +2207,11 @@ export class Board {
         }
         if (incoming.columnLayout) project.columnLayout = incoming.columnLayout;
         project.timelineNotes = incoming.timelineNotes.map(note => ({ ...note, taskId: project.tasks.some(task => task.id === note.taskId) ? note.taskId : null }));
-        if (incoming.repositoryPath || incoming.targetBranch || incoming.workflow || incoming.testCommands || incoming.agentDefaults || incoming.baseBinding || incoming.baseColumns || incoming.agentProfileId) {
+        if (incoming.repositoryPath || incoming.targetBranch || incoming.workflow || incoming.testCommands || incoming.agentDefaults || incoming.execution || incoming.autopilot || incoming.baseBinding || incoming.baseColumns || incoming.agentProfileId) {
           project.pendingImport = { repositoryPath: incoming.repositoryPath, targetBranch: incoming.targetBranch, workflow: incoming.workflow, testCommands: incoming.testCommands };
           if (incoming.agentDefaults) project.pendingImport.agentDefaults = incoming.agentDefaults;
+          if (incoming.execution) project.pendingImport.execution = incoming.execution;
+          if (incoming.autopilot) project.pendingImport.autopilot = incoming.autopilot;
           Object.assign(project.pendingImport, backupBaseScopes(incoming));
           if (incoming.baseBinding || incoming.baseColumns || incoming.agentProfileId) project.pendingImport.baseTargetRevision = 0;
         }

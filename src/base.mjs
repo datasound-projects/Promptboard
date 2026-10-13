@@ -523,13 +523,38 @@ export class Base {
     return { revision: state.base.revision, remap: prepared.remap, warnings: prepared.warnings, resources: prepared.resources.map(({ content, ...metadata }) => metadata) };
   }
   /** Write content first, then let a caller publish it alongside a board backup in one Store update. */
-  async prepareImport(bundle, { remap, expectedBaseRevision } = {}) {
+  async prepareImport(bundle, { remap, expectedBaseRevision, reuseIdentical = false } = {}) {
     const state = await this.store.read(); expected(state.base, expectedBaseRevision);
-    const prepared = this.#validateImport(bundle, remap);
+    let prepared = this.#validateImport(bundle, remap);
+    if (reuseIdentical) prepared = await this.#reuseIdentical(prepared, state.base.resources);
     if (state.base.resources.length + prepared.resources.length > BASE_LIMITS.resources) fail('The imported library would exceed 2,000 resources.');
     const resources = [];
     for (const definition of prepared.resources) resources.push(await this.#writeDefinition(definition));
     return { ...prepared, resources, expectedBaseRevision: state.base.revision };
+  }
+  /**
+   * A restore of the same backup reuses a resource identical to one already here (kind, name and definition, ignoring
+   * IDs, trust and availability) instead of adding a copy. References between resources are resolved first, so a pack
+   * of reused resources is reused too. Fresh IDs are random UUIDs, so replacing their text rewrites only references.
+   */
+  async #reuseIdentical(prepared, existing) {
+    const key = resource => JSON.stringify([resource.kind, resource.name, resource.description, resource.tags, resource.configuration, resource.dependencies, resource.contentStatus, resource.content], (field, value) => field === 'rootId' ? undefined : value);
+    const known = new Map();
+    for (const resource of existing) if (prepared.resources.some(item => item.kind === resource.kind && item.name === resource.name)) {
+      const definition = await this.readRevision(resource.revisionRef).catch(() => null); // An unreadable one is never reused.
+      if (definition) known.set(key(definition), resource.id);
+    }
+    const reused = new Map(), resolve = text => [...reused].reduce((result, [fresh, kept]) => result.replaceAll(fresh, kept), text);
+    for (let changed = true; changed;) {
+      changed = false;
+      for (const resource of prepared.resources) if (!reused.has(resource.id)) {
+        const match = known.get(resolve(key(resource)));
+        if (match) { reused.set(resource.id, match); changed = true; }
+      }
+    }
+    if (!reused.size) return prepared;
+    return { ...prepared, remap: Object.fromEntries(Object.entries(prepared.remap).map(([from, to]) => [from, reused.get(to) || to])),
+      resources: prepared.resources.filter(resource => !reused.has(resource.id)).map(resource => JSON.parse(resolve(JSON.stringify(resource)))) };
   }
   publishPreparedImport(state, prepared) {
     expected(state.base, prepared.expectedBaseRevision);

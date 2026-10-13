@@ -50,7 +50,7 @@ test('rejects path traversal, absolute paths, Windows escapes, nulls and excessi
 
 test('blocks credential files and Git internals but allows example configuration', async t => {
   const { root, board } = await fixture(t);
-  for (const name of ['.env', '.env.local', '.npmrc', 'id_ed25519', 'secret.pem', 'credentials.json', '.git']) {
+  for (const name of ['.env', '.env.local', '.envrc', '.git-credentials', '.npmrc', 'id_ed25519', 'secret.pem', 'credentials.json', '.git']) {
     await writeFile(join(root, name), 'SECRET');
     await assert.rejects(inspectWorkspace(board, 'p_fixture', { path: name, file: true }), error => error.code === 'FILE_PROTECTED');
   }

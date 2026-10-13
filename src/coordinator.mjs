@@ -127,6 +127,8 @@ export class Coordinator {
     const question = typeof input?.question === 'string' ? input.question.trim() : '';
     if (!question || question.length > LIMITS.question) throw new CoordinatorError(`Ask a question of 1 to ${LIMITS.question} characters.`, 'INVALID_INPUT');
     const scope = scopeOf(input.scope);
+    // Only CLIs that can run with every tool disabled (as AI file proposals require); Antigravity cannot.
+    if (!['codex', 'claude', 'gemini'].includes(input.provider)) throw new CoordinatorError('Choose Codex, Claude Code or Gemini in Compose: the Coordinator answers without tools.', 'INVALID_INPUT');
     if ((await this.#serial(() => this.#load(projectId))).enabled === false) throw new CoordinatorError('Turn the Coordinator on to ask it questions. Project knowledge is kept while it is off.', 'COORDINATOR_OFF', 409);
     if (this.asking.has(projectId)) throw new CoordinatorError('The Coordinator is already answering a question for this project.', 'COORDINATOR_BUSY', 409);
     this.asking.add(projectId);

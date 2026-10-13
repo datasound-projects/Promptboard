@@ -326,6 +326,8 @@ test('browser migration keeps IDs, order, exact text, sources, and flags, and is
   assert.ok(migrated.tasks.every(task => task.column === 'todo' && task.workspace === null));
   assert.deepEqual(view.runs, []);
   await assert.rejects(board.migrateBrowserBoard({ version: 1, projects: [{ id: 'x', name: 'X', cards: [{ id: 'y', title: 'T', prompt: '' }] }] }), { code: 'INVALID_BACKUP' });
+  // IDs name worktree folders: a path-like ID is refused, not stored.
+  for (const ids of [['../../escape', 'c9'], ['p9', '../../../tmp/owned']]) await assert.rejects(board.importBackup({ version: 1, kind: 'kanban-backup', projects: [{ id: ids[0], name: 'Esc', cards: [{ id: ids[1], title: 'T', prompt: 'P' }] }] }, { replace: true }), { code: 'INVALID_BACKUP', message: /unique ID of letters/ });
 });
 
 test('created and imported projects keep independent agent defaults and column layouts', async t => {
@@ -353,6 +355,28 @@ test('created and imported projects keep independent agent defaults and column l
   assert.deepEqual(projects.map(project => project.columns.length), [8, 7]);
   assert.equal(projects[0].columns[3].title, 'Documentation');
   assert.deepEqual((await imported.view()).runs, []);
+});
+
+test('a backup carries the execution policy and Autopilot route; both wait for confirmation and Autopilot stays off', async t => {
+  const board = new Board({ dataDir: await temp(t, 'pb-policy-') });
+  let project = await board.createProject({ name: 'RT', workflowMode: 'pipeline' });
+  project = await board.setExecutionPolicy(project.id, { policy: { mergeMethod: 'fast_forward', maxRework: 4, workspaceTrust: 'task_workspaces' }, expectedRevision: project.revision });
+  await board.setAutopilot(project.id, { route: ['executing'], expectedRevision: project.revision });
+  const backup = await board.exportBackup();
+  assert.deepEqual(backup.projects[0].autopilot, { route: ['executing'], finish: 'done', maxRework: 0 });
+  const other = new Board({ dataDir: await temp(t, 'pb-policy-import-') });
+  await other.importBackup(backup);
+  project = (await other.view()).projects[0];
+  assert.equal(project.execution, undefined, 'Imported policy waits.');
+  assert.equal(project.autopilot, undefined);
+  await other.confirmImport(project.id, { accept: true, expectedRevision: project.revision });
+  project = (await other.view()).projects[0];
+  assert.deepEqual(project.execution, { workspaceTrust: 'task_workspaces', mergeMethod: 'fast_forward', maxRework: 4 });
+  assert.deepEqual([project.autopilot.status, project.autopilot.route, project.autopilot.queue], ['off', ['executing'], []]);
+  // A route that no longer fits the columns is left out rather than refusing the backup.
+  backup.projects[0].autopilot.route = ['missing-column'];
+  await other.importBackup(backup, { replace: true });
+  assert.equal((await other.view()).projects[0].pendingImport.autopilot, undefined);
 });
 
 test('import keeps execution inactive and waits for confirmation of paths and automation', { skip: process.platform === 'win32' }, async t => {
