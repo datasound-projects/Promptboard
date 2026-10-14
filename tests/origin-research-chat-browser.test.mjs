@@ -120,12 +120,14 @@ test('Research sources: attach an excerpt, turn it off and on, remove it; answer
 });
 
 test('Swarm in the panel: pick parts, watch one live agent per part, stop one, read the summary', { skip: !chrome, timeout: 180000 }, async t => {
+  // Agents other than Security finish only after the page has shown all three live (a handshake, not a timer).
+  let release; const shown = new Promise(resolve => { release = resolve; });
   const researchRunner = async call => {
     const part = call.prompt.match(/## Focus: this (?:section|record)\n\[(?:section|components) (\w+)\]/)?.[1] || 'project';
     call.onEvent({ type: 'delta', text: `Researching ${part}` });
     await new Promise((resolve, reject) => {
-      const timer = setTimeout(resolve, part === 'security' ? 60000 : 1200);
-      call.signal.addEventListener('abort', () => { clearTimeout(timer); reject(Object.assign(new Error('stopped'), { code: 'ABORTED', partial: `Researching ${part}` })); }, { once: true });
+      if (part !== 'security') shown.then(resolve);
+      call.signal.addEventListener('abort', () => reject(Object.assign(new Error('stopped'), { code: 'ABORTED', partial: `Researching ${part}` })), { once: true });
     });
     return { text: `Findings for ${part}` };
   };
@@ -140,6 +142,7 @@ test('Swarm in the panel: pick parts, watch one live agent per part, stop one, r
   await wait(`document.querySelectorAll('.origin-research-targets .origin-research-chip').length === 3`, 'three parts');
   await ev(`document.querySelector('#origin-research-input').closest('form').requestSubmit();`);
   await wait(`document.querySelectorAll('.is-live').length === 3`, 'one live bubble per agent');
+  release();
   await wait(`[...document.querySelectorAll('.is-live')].some(n => n.textContent.includes('Researching security'))`, 'security running');
   await ev(`[...document.querySelectorAll('.is-live')].find(n => n.textContent.includes('Researching security')).querySelector('.origin-research-agent-stop').click();`);
   await wait(`document.querySelector('.origin-research-message.is-summary') && !document.querySelector('.is-live')`, 'summary after all agents');
