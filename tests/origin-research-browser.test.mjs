@@ -78,8 +78,8 @@ test('Research panel: opens beside Create Context, resizes, maximizes to the sid
   await browser.resize(390, 800);
   await click('#origin-research-open');
   await wait(`document.querySelector('#origin-drawer').dataset.mode === 'research'`, 'open on a phone');
-  const phone = await drawerState(ev);
-  assert.ok(phone.left <= 8 && phone.right >= 382, JSON.stringify(phone));
+  const phone = await drawerState(ev), visible = await ev(`return document.documentElement.clientWidth;`);
+  assert.ok(phone.left <= 8 && phone.right >= visible - 8, JSON.stringify({ phone, visible }), 'one sheet across the visible width (a classic scrollbar narrows it)');
   assert.equal(calls.length, 0, 'opening and arranging Research never calls a model');
   assert.deepEqual(browser.consoleMessages.filter(line => line.startsWith('EXCEPTION')), []);
 });
