@@ -225,7 +225,8 @@ export function proposalsFor(record, raw, { messageId, agent = null }) {
   const scope = messageId.slice(0, 8), local = value => `${scope}.${value}`;
   const scoped = raw.map(entry => {
     if (!entry || typeof entry !== 'object') return entry;
-    const own = Model.researchRef(entry), copy = { ...entry, ...(typeof own === 'string' ? { ref: local(own) } : {}) };
+    const flat = entry?.target?.target && typeof entry.target.target === 'object' ? { ...entry, ...entry.target } : entry; // as validateResearchSuggestion reads it
+    const own = Model.researchRef(flat), copy = { ...flat, ...(typeof own === 'string' ? { ref: local(own) } : {}) };
     const relink = given => (typeof given === 'string' && given.startsWith('@') ? `@${local(given.slice(1))}` : Array.isArray(given) ? given.map(relink) : given);
     if (copy.value && typeof copy.value === 'object' && !Array.isArray(copy.value)) copy.value = Object.fromEntries(Object.entries(copy.value).map(([key, given]) => [key, relink(given)]));
     else copy.value = relink(copy.value);

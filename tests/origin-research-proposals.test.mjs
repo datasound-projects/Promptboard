@@ -161,3 +161,10 @@ test('refs given inside the target or among the fields are local to their answer
   assert.deepEqual(proposals.map(proposal => proposal.ref), ['abcdefgh.n1', 'abcdefgh.t1']);
   assert.deepEqual(proposals[1].value.componentIds, ['@abcdefgh.n1']);
 });
+
+test('a whole suggestion written inside "target" is read as one', () => {
+  const record = { revision: 1, blueprint: blueprint() };
+  const { proposals, dropped } = proposalsFor(record, [{ title: 'Add a reader', target: { ref: 'n4', title: 'Date reader', target: { kind: 'add', collection: 'components' }, value: { name: 'Date reader', type: 'library' } } }], { messageId: 'xyzxyzxy-2' });
+  assert.equal(dropped, 0);
+  assert.deepEqual([proposals[0].target, proposals[0].value, proposals[0].ref], [{ kind: 'add', collection: 'components' }, { name: 'Date reader', type: 'library' }, 'xyzxyzxy.n4']);
+});

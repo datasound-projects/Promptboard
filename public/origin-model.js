@@ -1175,6 +1175,8 @@ globalThis.PromptboardOriginModel = (() => {
   const researchRef = raw => [raw?.ref, raw?.target?.ref, raw?.value?.ref].find(value => typeof value === 'string');
   function validateResearchSuggestion(blueprint, raw, { refs = new Map() } = {}) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) reject('A suggestion must be an object.');
+    // A whole suggestion written inside "target" (an agent copying the format into the wrong place) is read as one.
+    if (raw.target?.target && typeof raw.target.target === 'object') raw = { ...raw, ...raw.target };
     const source = raw.target && typeof raw.target === 'object' ? raw.target : {};
     let target, value, ref = '';
     if (source.kind === 'add') {
