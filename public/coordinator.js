@@ -16,6 +16,71 @@ window.PromptboardCoordinator = (() => {
     const asking = new Set();
     let chatNode = null;
     const key = () => `promptboard.coordinator.${projectId}`;
+    // Where the panel sits and how big it is. Layout only: it never changes what the Coordinator reads or does.
+    // Attached: above the columns. Detached: a window dragged by its top bar and resized from its corner.
+    // Minimized: a small box that can be dragged anywhere; a click opens it again. Phones always attach.
+    const LAYOUT_KEY = 'promptboard.coordinator.layout';
+    const layout = (() => {
+      let saved = {};
+      try { saved = JSON.parse(pref(LAYOUT_KEY, '{}')) || {}; } catch {}
+      const read = { mode: saved.mode === 'float' ? 'float' : 'attached', mini: saved.mini === true, overview: saved.overview !== false };
+      for (const name of ['x', 'y', 'w', 'h', 'mx', 'my']) if (Number.isFinite(saved[name])) read[name] = saved[name];
+      return read;
+    })();
+    const saveLayout = () => setPref(LAYOUT_KEY, JSON.stringify(layout));
+    const phone = () => window.innerWidth <= 730;
+    const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+    const topEdge = () => document.querySelector('.topbar')?.getBoundingClientRect().bottom || 60;
+    let draggedAt = -1e9; // A click right after a drag ends that drag; it is not a click.
+    const justDragged = () => performance.now() - draggedAt < 400;
+    function place() {
+      const dock = phone() ? 'attached' : layout.mini ? 'mini' : layout.mode;
+      panel.dataset.dock = dock;
+      for (const name of ['left', 'top', 'width', 'height']) panel.style.removeProperty(name);
+      if (dock === 'attached') return;
+      const vw = window.innerWidth, vh = window.innerHeight, top = topEdge();
+      if (dock === 'mini') {
+        const w = panel.offsetWidth || 200, h = panel.offsetHeight || 40;
+        layout.mx = clamp(layout.mx ?? vw - w - 24, 8, vw - w - 8); layout.my = clamp(layout.my ?? vh - h - 72, top + 8, vh - h - 8);
+        Object.assign(panel.style, { left: `${layout.mx}px`, top: `${layout.my}px` });
+        return;
+      }
+      const w = clamp(layout.w ?? 480, 320, vw - 16), h = clamp(layout.h ?? Math.min(560, vh - top - 96), 180, vh - top - 16);
+      layout.x = clamp(layout.x ?? vw - w - 24, 8, vw - w - 8); layout.y = clamp(layout.y ?? top + 72, top + 8, vh - h - 8);
+      Object.assign(panel.style, { left: `${layout.x}px`, top: `${layout.y}px`, width: `${w}px`, height: `${h}px` });
+    }
+    /** Drags the panel by `handle`; buttons and fields inside it keep working. A drag never counts as a click. */
+    function draggable(handle, save) {
+      handle.addEventListener('pointerdown', event => {
+        const control = event.target.closest('button, input, select, textarea, label, a');
+        if (event.button !== 0 || phone() || (control && control !== handle)) return;
+        const rect = panel.getBoundingClientRect(), dx = event.clientX - rect.left, dy = event.clientY - rect.top, sx = event.clientX, sy = event.clientY;
+        let moved = false;
+        const move = next => {
+          if (!moved && Math.hypot(next.clientX - sx, next.clientY - sy) < 4) return;
+          moved = true; panel.dataset.dragging = 'true';
+          panel.style.left = `${clamp(next.clientX - dx, 8, window.innerWidth - rect.width - 8)}px`;
+          panel.style.top = `${clamp(next.clientY - dy, topEdge() + 8, window.innerHeight - rect.height - 8)}px`;
+        };
+        const stop = () => {
+          window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', stop); window.removeEventListener('pointercancel', stop);
+          delete panel.dataset.dragging;
+          if (!moved) return;
+          draggedAt = performance.now();
+          save(Math.round(parseFloat(panel.style.left)), Math.round(parseFloat(panel.style.top))); saveLayout();
+        };
+        window.addEventListener('pointermove', move); window.addEventListener('pointerup', stop); window.addEventListener('pointercancel', stop);
+      });
+    }
+    function setLayout(change, focusId) { Object.assign(layout, change); saveLayout(); render(); if (focusId) document.getElementById(focusId)?.focus(); }
+    // The window keeps the size you drag its corner to.
+    if (typeof ResizeObserver === 'function') new ResizeObserver(() => {
+      if (panel.hidden || panel.dataset.dock !== 'float' || panel.dataset.dragging) return;
+      const w = Math.round(panel.offsetWidth), h = Math.round(panel.offsetHeight);
+      if (w && h && (w !== layout.w || h !== layout.h)) { layout.w = w; layout.h = h; saveLayout(); }
+    }).observe(panel);
+    let resizeFrame = 0;
+    window.addEventListener('resize', () => { cancelAnimationFrame(resizeFrame); resizeFrame = requestAnimationFrame(() => render()); });
     const isOpen = () => pref(key(), '') === 'open';
     const call = (path, options = {}) => host.api(`/api/coordinator/${encodeURIComponent(projectId)}${path}`, { timeoutMs: 200000, ...options })
       .then(({ response, data: body }) => (response.ok ? body : Promise.reject(new Error(body.error || 'The Coordinator is unavailable.'))));
@@ -50,7 +115,9 @@ window.PromptboardCoordinator = (() => {
       if (panel.hidden) return;
       const off = data?.enabled === false;
       panel.dataset.mode = off ? 'off' : 'on';
+      panel.dataset.overview = layout.overview ? 'shown' : 'folded';
       const focusId = panel.contains(document.activeElement) ? document.activeElement.id : '';
+      if (layout.mini && !phone()) { panel.replaceChildren(miniBox(off)); place(); if (focusId) document.getElementById(focusId)?.focus({ preventScroll: true }); return; }
       const bar = el('div', 'coordinator-bar');
       const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); icon.setAttribute('viewBox', '0 0 24 24'); icon.setAttribute('aria-hidden', 'true'); icon.classList.add('coordinator-icon');
       const path = document.createElementNS(icon.namespaceURI, 'path'); path.setAttribute('d', ICON); icon.append(path);
@@ -84,6 +151,7 @@ window.PromptboardCoordinator = (() => {
       });
       onOff.append(box, el('span', '', off ? 'Off' : 'On'));
       controls.append(onOff);
+      if (!phone()) controls.append(windowTools(off));
       bar.append(icon, title, status, controls);
       const nodes = [bar];
       if (!off && data) nodes.push(dashboard());
@@ -92,7 +160,37 @@ window.PromptboardCoordinator = (() => {
       for (const child of [...panel.children]) if (child !== kept) child.remove();
       panel.prepend(...nodes);
       if (kept && !kept.isConnected) panel.append(kept);
+      if (layout.mode === 'float' && !phone()) draggable(bar, (x, y) => Object.assign(layout, { x, y }));
+      place();
       if (focusId) document.getElementById(focusId)?.focus({ preventScroll: true });
+    }
+
+    function windowTools(off) {
+      const tools = el('div', 'coordinator-window');
+      const tool = (id, label, d, onClick, extra = {}) => {
+        const node = button('', onClick, 'coordinator-tool', label); node.id = id; node.title = label;
+        for (const [name, value] of Object.entries(extra)) node.setAttribute(name, value);
+        node.append(svg(d)); return node;
+      };
+      if (!off && data) tools.append(tool('coordinator-overview', layout.overview ? 'Hide overview' : 'Show overview', layout.overview ? 'M6 15l6-6 6 6' : 'M6 9l6 6 6-6',
+        () => setLayout({ overview: !layout.overview }, 'coordinator-overview'), { 'aria-expanded': String(layout.overview) }));
+      const floating = layout.mode === 'float';
+      tools.append(
+        tool('coordinator-dock', floating ? 'Attach above the board' : 'Detach into a window', floating ? 'M10 14H4v6M4 20l7-7M8 4h11a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-5' : 'M14 4h6v6M20 4l-8 8M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5',
+          () => { if (!floating && !off) chatOpen = true; setLayout({ mode: floating ? 'attached' : 'float' }, 'coordinator-dock'); }),
+        tool('coordinator-minimize', 'Minimize', 'M6 12h12', () => setLayout({ mini: true }, 'coordinator-mini')));
+      return tools;
+    }
+    /** The minimized Coordinator: icon, name and a one-line summary. Drag it anywhere; a click opens it again. */
+    function miniBox(off) {
+      const box = button('', () => { if (!justDragged()) setLayout({ mini: false }, layout.mode === 'float' ? 'coordinator-dock' : 'coordinator-toggle'); }, 'coordinator-mini', 'Open Coordinator');
+      box.id = 'coordinator-mini'; box.setAttribute('aria-label', 'Open Coordinator');
+      const icon = svg(ICON); icon.classList.add('coordinator-icon');
+      const needs = data ? data.agents.filter(agent => agent.needsYou).length + data.blockers.length : 0;
+      const summary = off ? 'Off' : asking.has(projectId) ? 'Thinking…' : data ? (needs ? `${needs} need${needs === 1 ? 's' : ''} attention` : `${data.agents.length} active · ${data.progress.done}/${data.progress.total} done`) : '…';
+      box.append(icon, el('strong', '', 'Coordinator'), el('span', `coordinator-mini-status${needs && !off ? ' is-alert' : ''}`, summary));
+      draggable(box, (x, y) => Object.assign(layout, { mx: x, my: y }));
+      return box;
     }
 
     function card(titleText, items, empty) {
