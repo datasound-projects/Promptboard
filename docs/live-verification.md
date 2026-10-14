@@ -3,6 +3,17 @@
 Real CLI runs, recorded separately from the simulated (fake-CLI) test suite. Each checkpoint names its smoke script and uses an installed, signed-in CLI in its own disposable repository. Nothing here ran against a user repository.
 
 
+## 14 October 2026 — five Origin tasks, task scope (typed columns)
+
+`node scripts/live-kanban.mjs --scenario portal --tasks 5 --plan claude --exec claude --review claude --test claude --claude-model haiku` on macOS arm64, Node.js 24.14.1 and Claude Code 2.1.299 (Haiku), in a disposable repository and data folder. Five Origin-style cards in a prerequisite chain (foundation, storage, authentication, request handlers, text UI); every card carries the whole project's design, and each may change only its own file and `checks.json`.
+
+- **Result:** finished in 9 minutes, in prerequisite order (the queue was set in reverse), with zero waits for a person.
+- **Scope, as Git shows it:** each squash merge changed exactly its own file and `checks.json`; nothing out of scope. Task 1 wrote only `createApp()` and its check, nothing of the later tasks. Its frozen plan named the same two files.
+- **Every stage, every card:** Planning, Executing, Code Review and Testing each succeeded in its own session; Promptboard ran the configured test command itself (exit 0) on the reviewed commit; Merge squashed it onto the previous card's merge. `trunk` holds five commits on the start commit and its 6 checks pass.
+- **What each agent was told:** each Executing prompt carried “task N of 5 planned in Origin” and the boundary that project goals do not authorize other tasks' work.
+
+The first attempt the same day used Codex for Planning: Codex showed a “Hooks need review: 1 hook is new or changed” screen for hooks in the user's own `~/.codex/hooks.json` (from other tools). Promptboard does not trust hooks for the user; it paused after 120 seconds with `PERMISSION_REQUIRED` and a reason naming that screen. That is the intended behaviour; the run was repeated with Claude Code. Codex's folder-trust screen now notes that trust applies to the repository root; Promptboard's recognizer answered it.
+
 ## 10 October 2026 — Full Autopilot across providers (typed columns)
 
 `node scripts/live-kanban.mjs --tasks 2 --plan codex --exec codex --review claude --test claude --claude-model haiku` on macOS arm64, Node.js 24.14.1, Codex CLI 0.160.0 and Claude Code 2.1.296 (Haiku), in a disposable repository and data folder. The board used the Full Autopilot preset (typed columns, autonomous workspace access, automatic completion, two rework rounds, squash merges, workspace trust for task worktrees). Nothing was typed into any terminal.
