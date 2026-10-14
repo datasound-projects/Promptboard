@@ -68,8 +68,8 @@ test('Add to Kanban stores an exact prompt snapshot in To Do; card edits never c
   assert.match($('#add-error').textContent, /project name/);
   assert.equal((await serverBoard(ctx)).projects.length, 0);
   $('#add-project-name').value = 'Alpha';
-  submitForm(ctx, '#add-form'); await ctx.idle();
-  assert.equal($('#add-dialog').open, false);
+  // Two requests (project, then card): wait for the dialog itself, not for a quiet gap between them on a slow runner.
+  submitForm(ctx, '#add-form'); await until(() => !$('#add-dialog').open, 'card added and dialog closed');
   const [card] = await serverTasks(ctx);
   assert.equal(card.prompt, exact);
   assert.equal(card.column, 'todo');
