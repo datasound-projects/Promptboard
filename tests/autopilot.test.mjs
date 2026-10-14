@@ -98,6 +98,8 @@ test('Autopilot takes queued cards one at a time through their own routes, in th
 });
 
 test('failing tests go back to Executing with the output, then Autopilot pauses at the rework limit; pause, skip, and stop are explicit', { skip, timeout: 180000 }, async t => {
+  // With a state folder the simulated agent writes new content each round, so each rework round changes the branch.
+  process.env.FAKE_AGENT_STATE = await temp(t, 'pb-ap-state-'); t.after(() => { delete process.env.FAKE_AGENT_STATE; });
   const w = await world(t, `${process.execPath} -e "console.error('boom: expected 2, got 3'); process.exit(1)"`);
   const task = await w.card('Broken', 'Change it. WRITE_FILE:broken.txt');
   await w.board.setAutopilot(w.project.id, { route: ['executing', 'code_review', 'testing', 'merge'], finish: 'merge', maxRework: 1, queue: [task], expectedRevision: (await w.view()).revision });
@@ -118,6 +120,17 @@ test('failing tests go back to Executing with the output, then Autopilot pauses 
   assert.ok(finished.log.some(entry => /Skipped the current card/.test(entry.text)));
   await w.board.controlAutopilot(w.project.id, { action: 'stop' });
   assert.equal((await w.view()).autopilot.status, 'off');
+});
+
+test('a rework round that changes nothing pauses with NO_NEW_CHANGES instead of testing the same commit again', { skip, timeout: 180000 }, async t => {
+  const w = await world(t, `${process.execPath} -e "process.exit(1)"`);
+  const task = await w.card('Same', 'Change it. WRITE_FILE:same.txt');
+  await w.board.setAutopilot(w.project.id, { route: ['executing', 'code_review', 'testing', 'merge'], finish: 'merge', maxRework: 2, queue: [task], expectedRevision: (await w.view()).revision });
+  await w.board.controlAutopilot(w.project.id, { action: 'start', confirm: true });
+  w.autopilot.start();
+  const ap = await until(async () => { const value = (await w.view()).autopilot; return value.status === 'paused' && value; }, 'paused', 150000);
+  assert.match(ap.reason, /“Same”: NO_NEW_CHANGES, the rework round made no new changes/);
+  assert.equal((await w.view()).tasks[0].column, 'executing', 'nothing is tested or merged again');
 });
 
 test('a permission prompt holds Autopilot until the agent finishes its turn', { skip, timeout: 120000 }, async t => {

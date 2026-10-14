@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Kanban: every agent knows where its task fits.** After the exact card text, each typed and legacy stage run gets a section built from the board: the project, the card's position among the cards planned together in Origin ("task 1 of 5"), the stage's own job, each prerequisite with how it was completed and what it did, the project's other cards for awareness only, and the boundary: project goals do not authorize other cards' work, and Promptboard owns moves, merging and Done. Custom columns still send exactly the task envelope.
+- Fix (Kanban): a prerequisite counts only when its code is on the target branch (merged, a merged pull request, or no code changes). Moving a pipeline card to Done without Merge now records that it was completed without merging, with its branch and commit, and its dependents wait. Moving a card out of Done keeps the old record as history instead of showing it as the current state.
+- Fix (Kanban): a task's worktree branches from the target branch as it is when the worktree is created, so a card started by hand after its prerequisites merged has their code (Autopilot already refreshed the target).
+- Fix (Kanban): an approved plan is frozen with its hash, so a later turn cannot change what Executing gets, and Executing stops with `PLAN_UNAVAILABLE` instead of starting without its plan. A plan completed automatically needs numbered steps; a question is not accepted as a plan.
+- Fix (Kanban): a rework round that changes nothing stops with `NO_NEW_CHANGES` instead of sending the same commit to review again; a commit made by the testing agent goes back to Code Review (`TESTER_COMMITTED`); a target that keeps moving no longer counts as the same problem coming back; an unreadable testing verdict on a legacy board pauses instead of sending the code back.
+- Fix (Kanban): a custom column after a typed stage starts its own conversation with the task instead of continuing the typed stage's session with no input.
+
 - **Coordinator layout.** The overview is a compact strip and can be folded away to give the chat more room. **Detach** turns the Coordinator into a window you can drag anywhere on the Kanban page and resize from its corner; **Minimize** turns it into a small box you can place anywhere; **Attach** puts it back above the board. Position and size are remembered. Only the layout changed: what the Coordinator reads, asks and records is the same.
 - Compose's **Generate prompt** button matches **New prompt**: a quiet outline with the arrow in the same accent chip, and the same accent edge on hover.
 - Compose's footer reads only “AI can make mistakes · Human review may be required”.

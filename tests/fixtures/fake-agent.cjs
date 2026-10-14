@@ -144,6 +144,8 @@ function turn(text) {
     if (readOnly) process.stdout.write('write denied: read-only planning session\r\n');
     else writeFileSync(join(process.cwd(), (text.match(/WRITE_FILE:([\w.-]+)/) || [])[1] || 'agent-output.txt'), `written by the agent${process.env.FAKE_AGENT_STATE ? ` ${Date.now()}` : ''}\n`);
   }
+  // TESTER_COMMITS: a testing agent that commits a change of its own.
+  if (tester && text.includes('TESTER_COMMITS')) { writeFileSync(join(process.cwd(), 'tester.txt'), 'tester change\n'); spawnSync('git', ['add', '-A']); spawnSync('git', ['commit', '-qm', 'tester sneaks a commit']); }
   // A misbehaving CLI that ignores its read-only mode (the stage engine must catch it).
   if (text.includes('WRITE_ANYWAY') && readOnly && !text.includes('=== DIFF:')) writeFileSync(join(process.cwd(), 'planner-wrote-this.txt'), 'should not exist\n');
   if (text.includes('EXIT_NOW')) process.exit(0);
@@ -187,7 +189,8 @@ function turn(text) {
       ? { verdict: 'failed', commands: [{ command: 'npm test', exitCode: 1, output: 'AssertionError: expected 2, got 3' }], failures: [{ file: 'feature.txt', line: 1, explanation: 'The value is off by one.' }], summary: 'One test fails.' }
       : { verdict: 'passed', commands: [{ command: 'npm test', exitCode: 0 }], failures: [], summary: 'All 3 tests pass.' }) + '\n```';
   }
-  emit('Stop', { last_assistant_message: silent ? '' : review || testVerdict || (plan ? `PLAN\n1. Change the code.\nsaw ${text.length} chars` : 'Implemented the change.') });
+  // PLAN_IS_QUESTION: the planner ends with a question instead of a plan.
+  emit('Stop', { last_assistant_message: silent ? '' : review || testVerdict || (plan ? (text.includes('PLAN_IS_QUESTION') ? 'Before I plan: which database should this use?' : `PLAN\n1. Change the code.\nsaw ${text.length} chars`) : 'Implemented the change.') });
   process.stdout.write('turn complete\r\n');
 }
 // Codex asks through its terminal title, not a hook; answering it continues the turn.

@@ -148,4 +148,4 @@ AI / Agents items can reference Base resources by ID. Origin reads the Base list
 - Per project: up to 50 own sections and 300 own questions. Phase and section names hold up to 60 characters (own section titles 80); questions up to 500.
 - There is no undo history. Copy the project's file before large changes.
 - One send covers up to 100 tasks; **Suggest tasks** returns at most 12. Snapshots are never pruned, so the `origin/snapshots/` folder grows with each send and update.
-- A prerequisite counts as finished only when its card is in Done; Promptboard never merges anything to satisfy it.
+- A prerequisite counts as finished only when its card is in Done with its code on the target branch (merged, a merged pull request, or no code changes); Promptboard never merges anything to satisfy it.
