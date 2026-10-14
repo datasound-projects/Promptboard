@@ -10,6 +10,12 @@ Origin is the planning layer before Compose and Kanban. It stores a structured *
 - Origin's project selection is its own; it does not follow the project selected in Kanban.
 - **Delete from Origin** (project menu) removes the Origin project after one confirmation. Its linked Kanban project and tasks stay. Removing the Kanban project too is a separate checkbox; it uses Kanban's own deletion checks, so running work or task worktrees block it and nothing is removed. Repository folders and worktrees are never deleted. A deleted project cannot be recreated by a stale save from another window.
 
+## Research
+
+**Research** in the Origin header opens a chat with your own Claude Code or Codex CLI about the selected part of the
+blueprint: Chat, Swarm, Decision Lab and Blueprint Audit, with optional web search, documents, Base knowledge and MCP
+sources. It suggests changes; only you apply them. See [Origin Research](origin-research.md).
+
 ## Storage
 
 - One file per Origin project: `<data folder>/origin/blueprint-<origin id>.json`. The data folder is the same one that holds `state.json` (on macOS `~/Library/Application Support/Promptboard`).

@@ -116,8 +116,13 @@ window.PromptboardOrigin = (() => {
     view.append(heading, header, errorBox, notice, main, drawer);
     // Project Context: a separate, editable Markdown document in the same right-side panel.
     const contextPanel = window.PromptboardOriginContext.create({ app, view, drawer, icon: name => icon(ICON[name]), exists: () => Boolean(record?.exists),
-      project: () => project(), revision: () => record?.revision, flushOrigin: () => flush(), closeEditor: () => { if (open) closeDrawer(); }, showError: message => showError(message) });
+      project: () => project(), revision: () => record?.revision, flushOrigin: () => flush(), closeEditor: () => { if (open) closeDrawer(); researchPanel.yieldDrawer(); }, showError: message => showError(message) });
     statusBox.prepend(contextPanel.button);
+    // Research: a chat with the user's CLI in the same panel. It suggests changes; only the user applies them.
+    const researchPanel = window.PromptboardOriginResearch.create({ app, view, drawer, blueprint: () => (record?.exists ? bp() : null), revision: () => record?.revision,
+      composeSettings: () => app.composeSettings?.(), closeOthers: () => { if (open) closeDrawer(); contextPanel.close(); },
+      currentFocus: () => ({ section, record: open ? { ...open } : null }), applyProposal: (proposal, options) => applyResearch(proposal, options), saveNow: () => flush() });
+    contextPanel.button.after(researchPanel.button);
 
     let projects = [], projectId = null, record = null, loading = null, loadError = null, visible = false;
     let section = pref(SECTION_KEY) || 'overview';
@@ -228,7 +233,7 @@ window.PromptboardOrigin = (() => {
       views = { map: null, canvas: null }; mapLinkFrom = null; selectedLink = null; taskMilestone = ''; contextView = { itemId: null, open: false, loading: false, revision: 0, data: null, error: '' };
       contextStatus = { revision: -1, loading: false, map: new Map() };
       changeCount = savedCount = 0; dirtySince = 0; saveState = 'saved'; showNotice(''); showError('');
-      renderDrawer(); void contextPanel.reset(id);
+      renderDrawer(); void contextPanel.reset(id); void researchPanel.reset(id);
       if (!id) { render(); return null; }
       main.replaceChildren(el('p', 'origin-empty-note', 'Loading blueprint…')); main.setAttribute('aria-busy', 'true');
       const attempt = (async () => {
@@ -767,6 +772,42 @@ window.PromptboardOrigin = (() => {
       app.announce(`${NOUN[collection]} added.`);
       return item;
     }
+    /**
+     * Apply one approved research suggestion to the open blueprint, like an edit made by hand: the normal autosave,
+     * revision check and redraws follow. A field that changed since the research ran, a removed target or a
+     * duplicate name is a conflict and changes nothing, unless the person chose to replace it anyway.
+     */
+    const KEYED = new Set(['requirements', 'decisions']);
+    function applyResearch(proposal, { force = false, value = proposal.value } = {}) {
+      if (!record?.exists) return { error: 'Open the project before applying suggestions.' };
+      const blueprint = bp(), target = proposal.target, same = (a, b) => String(a ?? '').trim() === String(b ?? '').trim();
+      const current = M.researchTargetValue(blueprint, target);
+      if (current === undefined) return { conflict: 'The part this suggestion changes no longer exists.', missing: true };
+      if (target.kind === 'add') {
+        const nameField = { components: 'name', technologies: 'name', dependencies: 'name', assumptions: 'statement' }[target.collection] || 'title';
+        const name = String(value?.[nameField] || '').trim();
+        if (!name) return { error: 'A new record needs a name.' };
+        if (!force && blueprint[target.collection].some(entry => String(entry[nameField] || '').trim().toLowerCase() === name.toLowerCase())) return { conflict: `A ${NOUN[target.collection].toLowerCase()} named “${name}” already exists.` };
+        const fields = Object.fromEntries(Object.entries(value).filter(([field]) => M.SUGGEST_FIELDS[target.collection][field] !== undefined));
+        const entry = { ...BLANK[target.collection](name), ...fields, origin: 'ai', ...(target.collection === 'sources' ? { verification: 'unverified', accessedAt: today() } : {}) };
+        const item = add(target.collection, entry, { keyed: KEYED.has(target.collection) });
+        changed({ structure: true, drawer: true });
+        return { ok: true, created: { collection: target.collection, id: item.id } };
+      }
+      if (!force && !same(current, proposal.original)) return { conflict: 'This field changed after the research ran.', current };
+      const text = typeof value === 'string' ? value : String(value ?? '');
+      if (target.kind === 'idea') blueprint.idea = text;
+      else if (target.kind === 'vision') blueprint.vision[target.field] = text;
+      else if (target.kind === 'record') blueprint[target.collection].find(item => item.id === target.id)[target.field] = text;
+      else if (target.kind === 'answer') blueprint.answers[target.questionId] = text;
+      else if (target.kind === 'componentAnswer') { const component = blueprint.components.find(item => item.id === target.componentId); component.answers = { ...component.answers, [target.questionId]: text }; }
+      else if (target.kind === 'topic') {
+        const entry = blueprint.areas.find(item => item.section === target.section && item.area === target.area);
+        if (entry) entry.title = text; else blueprint.areas.push({ id: newId(), origin: 'ai', ...BLANK.areas(text, target.section, target.area) });
+      }
+      changed({ structure: true, drawer: true });
+      return { ok: true };
+    }
     // A list of records. Each row opens the drawer.
     function list(collection, items, describe, empty, { leading } = {}) {
       if (!items.length) return el('p', 'origin-empty-note', empty);
@@ -928,6 +969,7 @@ window.PromptboardOrigin = (() => {
     };
     function openDrawer(collection, id) {
       contextPanel.close(); // Its unsaved text is kept and keeps saving.
+      researchPanel.yieldDrawer(); // Its chat and unsent text are kept.
       promptCache.at = 0; // Opening a record always reads its saved prompts fresh.
       if (baseResources?.failed) baseResources = null; // A failed Base read is tried again, not kept.
       open = { collection, id };
@@ -943,7 +985,7 @@ window.PromptboardOrigin = (() => {
       if (was) main.querySelector(`[data-id="${CSS.escape(was.id)}"] .origin-row-open, .origin-node[data-id="${CSS.escape(was.id)}"]`)?.focus({ preventScroll: true });
     }
     function renderDrawer({ restore = true } = {}) {
-      if (contextPanel.isOpen()) return; // The Project Context owns the panel while it is open.
+      if (contextPanel.isOpen() || researchPanel.isOpen()) return; // Project Context or Research owns the panel while it is open.
       const entry = open && record?.exists ? bp()[open.collection]?.find(item => item.id === open.id) : null;
       if (!entry) { open = null; drawer.hidden = true; drawer.replaceChildren(); view.dataset.drawer = 'closed'; return; }
       const focusKey = restore && drawer.contains(document.activeElement) ? document.activeElement.dataset.focusKey : null;
@@ -980,7 +1022,7 @@ window.PromptboardOrigin = (() => {
       body.scrollTop = scroll;
       if (focusKey) drawer.querySelector(`[data-focus-key="${CSS.escape(focusKey)}"]`)?.focus();
     }
-    drawer.addEventListener('keydown', event => { if (event.key === 'Escape' && !event.defaultPrevented) { event.preventDefault(); event.stopPropagation(); if (contextPanel.isOpen()) contextPanel.close(); else closeDrawer(); } });
+    drawer.addEventListener('keydown', event => { if (event.key === 'Escape' && !event.defaultPrevented) { event.preventDefault(); event.stopPropagation(); if (contextPanel.isOpen()) contextPanel.close(); else if (researchPanel.isOpen()) researchPanel.close(); else closeDrawer(); } });
     // Saved project prompts (and their cards) that link to this record. Read-only here; open them to change them.
     let promptCache = { projectId: null, at: 0, list: [] };
     function linkedPrompts(collection, id) {
@@ -2328,6 +2370,7 @@ window.PromptboardOrigin = (() => {
       if (connectFrom !== null || mapLinkFrom !== null || selectedLink) { event.preventDefault(); connectFrom = mapLinkFrom = selectedLink = null; renderMain(); return; }
       if (open) { event.preventDefault(); closeDrawer(); }
       else if (contextPanel.isOpen()) { event.preventDefault(); contextPanel.close(); }
+      else if (researchPanel.isOpen()) { event.preventDefault(); researchPanel.close(); }
     });
 
     /** Open one record of an Origin project from another page (reverse navigation). Unsaved work is saved first. */

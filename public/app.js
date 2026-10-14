@@ -5711,7 +5711,11 @@ originView = window.PromptboardOrigin?.create({ api, announce, closeSidebar: () 
   // Batch refinement and suggestions reuse Compose's own settings and job slot; Origin adds no prompt generator.
   composeSettings: () => { const { input, ...rest } = settings(); return rest; }, composeRunning: () => running,
   openKanban: (projectId, taskId) => { if (projectId) setSelectedProject(projectId); location.hash = '#/kanban'; if (taskId) setTimeout(() => void openTaskDetails(taskId), 0); },
-  openPrompt: (projectId, promptId) => projectsView?.openPrompt(projectId, promptId) }) || null;
+  openPrompt: (projectId, promptId) => projectsView?.openPrompt(projectId, promptId),
+  // Research streams NDJSON events: the raw response is read as it arrives. The token stays in a header.
+  streamApi: (path, body, { signal } = {}) => fetch(path, { method: 'POST', cache: 'no-store', signal, headers: { 'X-STE-Token': token, 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+  // Research documents use Compose's own upload and extraction route.
+  uploadApi: (path, file, { signal } = {}) => fetch(path, { method: 'POST', cache: 'no-store', signal, headers: { 'X-STE-Token': token, 'Content-Type': file.type || (/\.pdf$/i.test(file.name) ? 'application/pdf' : 'text/plain') }, body: file }) }) || null;
 // Shared projects: optional saved prompts beside History, with links back to Origin and Kanban.
 projectsView = window.PromptboardProjects?.create({ api, announce, getResult: () => currentResult, running: () => running,
   settingsOf: entry => ({ provider: entry.provider, model: entry.model, effort: entry.effort, language: entry.language, quality: entry.quality, task: entry.task, detail: entry.detail }),

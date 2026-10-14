@@ -400,6 +400,20 @@ export function classifyProviderFailure(provider, { stdout = '', stderr = '', ex
   return null;
 }
 
+/**
+ * Codex arguments that disable every MCP server from the user's configuration for one invocation, without
+ * editing that configuration. `mcp list` reads configuration names only; it does not connect to servers.
+ */
+export async function codexMcpOverride(executable, { cwd, signal } = {}) {
+  const metadata = await execute({ command: executable.command, args: [...executable.prefix, 'mcp', 'list', '--json'], cwd, signal, timeoutMs: 5000, maxStdout: 128_000 });
+  let servers;
+  try { servers = JSON.parse(metadata.stdout); } catch { throw failure('POLICY_DENIED'); }
+  if (!Array.isArray(servers) || servers.length > 100 || servers.some(row => typeof row?.name !== 'string' || !/^[A-Za-z0-9_.-]{1,100}$/.test(row.name) || !['stdio', 'streamable_http'].includes(row.transport?.type))) throw failure('POLICY_DENIED');
+  // Each override layer must contain a complete transport to pass Codex's
+  // bootstrap validation. Use inert placeholders, never credentials in argv.
+  return servers.length ? ['--config', `mcp_servers={${servers.map(server => `${JSON.stringify(server.name)}={enabled=false,${server.transport.type === 'stdio' ? `command=${JSON.stringify(process.execPath)}` : 'url="https://127.0.0.1/"'}}`).join(',')}}`] : [];
+}
+
 function prepareInput(provider, prompt) {
   if (provider === 'agy') return JSON.stringify({ event: 'user', message: { content: prompt } }) + '\n';
   if (provider !== 'gemini') return prompt;
@@ -431,18 +445,8 @@ export async function runProvider({ provider, model, effort = '', prompt, cwd, s
       await writeFile(policyPath, GEMINI_POLICY, { mode: 0o600 });
     }
     const { args } = buildCommand({ provider, model, effort, policyPath });
-    if (provider === 'codex') {
-      // Read configuration names only; `mcp list` does not connect to servers.
-      // Disable inherited MCPs for this invocation, without editing user config.
-      // Compose's selected read-only sources are retrieved by its own adapter.
-      const metadata = await execute({ command: executable.command, args: [...executable.prefix, 'mcp', 'list', '--json'], cwd, signal, timeoutMs: 5000, maxStdout: 128_000 });
-      let servers;
-      try { servers = JSON.parse(metadata.stdout); } catch { throw failure('POLICY_DENIED'); }
-      if (!Array.isArray(servers) || servers.length > 100 || servers.some(row => typeof row?.name !== 'string' || !/^[A-Za-z0-9_.-]{1,100}$/.test(row.name) || !['stdio', 'streamable_http'].includes(row.transport?.type))) throw failure('POLICY_DENIED');
-      // Each override layer must contain a complete transport to pass Codex's
-      // bootstrap validation. Use inert placeholders, never credentials in argv.
-      if (servers.length) args.push('--config', `mcp_servers={${servers.map(server => `${JSON.stringify(server.name)}={enabled=false,${server.transport.type === 'stdio' ? `command=${JSON.stringify(process.execPath)}` : 'url="https://127.0.0.1/"'}}`).join(',')}}`);
-    }
+    // Compose's selected read-only sources are retrieved by its own adapter.
+    if (provider === 'codex') args.push(...await codexMcpOverride(executable, { cwd, signal }));
     let result;
     try {
       result = await execute({ command: executable.command, args: [...executable.prefix, ...args], cwd, input: prepareInput(provider, prompt), signal, timeoutMs, env: provider === 'claude' && effort ? { CLAUDE_CODE_EFFORT_LEVEL: effort } : {} });
