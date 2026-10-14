@@ -2020,10 +2020,11 @@ button.origin-context-badge { cursor: pointer; }
 .autopilot-instructions button { justify-self: start; }
 
 /* Coordinator: a compact project observer above the Kanban columns. */
-.coordinator { margin: 12px 14px 0; border: 1px solid var(--line); border-radius: 14px; background: color-mix(in srgb, var(--surface) 92%, transparent); box-shadow: 0 1px 2px rgb(0 0 0 / 6%); overflow: hidden auto; max-height: 40dvh; animation: coordinator-in .16s ease-out; } /* Scrolls inside its own space, so the board below keeps room for cards. */
+.coordinator { margin: 12px 14px 0; border: 1px solid var(--line); border-radius: 14px; background: color-mix(in srgb, var(--surface) 92%, transparent); box-shadow: 0 1px 2px rgb(0 0 0 / 6%); display: flex; flex-direction: column; overflow: hidden; max-height: 40dvh; animation: coordinator-in .16s ease-out; container-type: inline-size; }
+.coordinator:has(.coordinator-chat) { max-height: 58dvh; } /* More room while chatting; only the messages scroll, so the board keeps room. */
 @keyframes coordinator-in { from { opacity: 0; transform: translateY(-3px); } }
 @media (prefers-reduced-motion: reduce) { .coordinator, .coordinator-thinking span { animation: none; } }
-.coordinator-bar { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 6px 10px 6px 14px; }
+.coordinator-bar { display: flex; flex: none; align-items: center; gap: 10px; min-height: 44px; padding: 6px 10px 6px 14px; }
 .coordinator-icon { flex: none; width: 18px; height: 18px; fill: var(--og-define, var(--primary)); }
 .coordinator[data-mode="off"] .coordinator-icon { fill: var(--subtle); }
 .coordinator-name { flex: none; color: var(--ink); font-size: 13.5px; font-weight: 650; }
@@ -2036,19 +2037,21 @@ button.origin-context-badge { cursor: pointer; }
 .coordinator-switch input::before { content: ''; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--muted); transition: transform .18s, background .18s; }
 .coordinator-switch input:checked { background: var(--og-define, var(--primary)); box-shadow: none; }
 .coordinator-switch input:checked::before { background: #fff; transform: translateX(12px); }
-.coordinator-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; padding: 4px 12px 12px; }
-.coordinator-card { min-width: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
-.coordinator-card h3 { margin: 0 0 8px; color: var(--muted); font: 600 11px var(--mono); letter-spacing: .8px; text-transform: uppercase; }
-.coordinator-card ul { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.coordinator-grid { display: grid; flex: none; grid-template-columns: repeat(4, minmax(0, 1fr)); border-top: 1px solid var(--divider); }
+.coordinator[data-overview="folded"] .coordinator-grid { display: none; }
+.coordinator-card { min-width: 0; padding: 7px 14px 9px; }
+.coordinator-card:not(:first-child) { border-left: 1px solid var(--divider); }
+.coordinator-card h3 { margin: 0 0 3px; color: var(--subtle); font: 600 10px var(--mono); letter-spacing: .8px; text-transform: uppercase; }
+.coordinator-card ul { display: grid; gap: 4px; max-height: 76px; margin: 0; padding: 0; overflow-y: auto; list-style: none; scrollbar-width: thin; }
 .coordinator-card li { display: grid; gap: 1px; min-width: 0; }
 .coordinator-card small { overflow: hidden; color: var(--subtle); font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; }
 .coordinator-link { overflow: hidden; padding: 0; border: 0; background: none; color: var(--text); font-size: 12.5px; font-weight: 550; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
 .coordinator-link:hover { color: var(--ink); text-decoration: underline; }
-.coordinator-empty { margin: 0; color: var(--subtle); font-size: 12px; }
-.coordinator-meter { height: 6px; margin: 4px 0 8px; overflow: hidden; border-radius: 999px; background: var(--line); }
+.coordinator-empty { margin: 0; color: var(--subtle); font-size: 11.5px; }
+.coordinator-meter { height: 4px; margin: 4px 0 5px; overflow: hidden; border-radius: 999px; background: var(--line); }
 .coordinator-meter span { display: block; height: 100%; border-radius: inherit; background: var(--og-operate, #059669); transition: width .3s ease; }
-.coordinator-columns { margin: 0; color: var(--muted); font-size: 11.5px; line-height: 1.5; }
-.coordinator-chat { display: grid; gap: 12px; padding: 12px 14px 14px; border-top: 1px solid var(--line); }
+.coordinator-columns { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
+.coordinator-chat { display: grid; flex: 1 1 auto; grid-template-rows: auto minmax(0, 1fr) auto; gap: 10px; min-height: 0; padding: 10px 14px 14px; border-top: 1px solid var(--divider); }
 .coordinator-chat-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .coordinator-scope { display: inline-flex; gap: 2px; padding: 3px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); }
 .coordinator-scope-option { height: 26px; padding: 0 11px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font-size: 12.5px; font-weight: 600; transition: background .15s, color .15s; }
@@ -2061,7 +2064,7 @@ button.origin-context-badge { cursor: pointer; }
 .coordinator-close:hover { background: var(--surface-2); color: var(--ink); }
 .coordinator-close svg, .coordinator-send svg { fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; }
 .coordinator-close svg { width: 15px; height: 15px; stroke-width: 1.8; }
-.coordinator-messages { display: grid; align-content: start; gap: 14px; max-height: 320px; padding: 2px 2px 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
+.coordinator-messages { display: grid; align-content: start; gap: 14px; min-height: 0; padding: 2px 2px 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
 .coordinator-message { max-width: 80%; font-size: 13.5px; line-height: 1.6; }
 .coordinator-message p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .coordinator-message small { display: block; margin-top: 4px; color: var(--subtle); font-size: 11px; }
@@ -2083,14 +2086,41 @@ button.origin-context-badge { cursor: pointer; }
 .coordinator-send:disabled { opacity: .3; cursor: default; }
 .coordinator-send svg { width: 16px; height: 16px; stroke-width: 2; }
 .coordinator-chat > .inline-error { margin: 0; }
-@media (max-width: 1100px) { .coordinator-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 730px) {
-  /* Two short rows on phones: controls, then one status line. */
+/* A narrow panel (phone, or a small detached window): controls first, then one status line. */
+@container (max-width: 620px) {
   .coordinator-bar { flex-wrap: wrap; row-gap: 2px; }
-  .coordinator-name { display: none; }
   .coordinator-controls { margin-left: auto; }
   .coordinator-status { flex-basis: 100%; flex-wrap: nowrap; order: 3; overflow: hidden; white-space: nowrap; }
+}
+@container (max-width: 860px) {
+  .coordinator-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .coordinator-card:nth-child(odd) { border-left: 0; }
+  .coordinator-card:nth-child(n + 3) { border-top: 1px solid var(--divider); }
+}
+@container (max-width: 440px) {
   .coordinator-grid { grid-template-columns: minmax(0, 1fr); }
+  .coordinator-card { border-left: 0 !important; }
+  .coordinator-card + .coordinator-card { border-top: 1px solid var(--divider); }
+  .coordinator-name { display: none; }
+}
+/* Window buttons: overview, detach or attach, minimize. */
+.coordinator-window { display: inline-flex; align-items: center; gap: 2px; margin-left: 4px; padding-left: 6px; border-left: 1px solid var(--divider); }
+.coordinator-tool { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 7px; background: transparent; color: var(--muted); }
+.coordinator-tool:hover { background: var(--surface-2); color: var(--ink); }
+.coordinator-tool svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+/* Detached: a floating window over the Kanban page. Drag the top bar; resize from the bottom-right corner. */
+.coordinator[data-dock="float"] { position: fixed; z-index: 28; min-width: 320px; min-height: 180px; max-width: calc(100vw - 16px); max-height: calc(100dvh - var(--topbar) - 16px); margin: 0; overflow: hidden; resize: both; border-color: color-mix(in srgb, var(--sash) 30%, var(--line)); background: color-mix(in srgb, var(--surface) 96%, transparent); backdrop-filter: blur(18px); box-shadow: 0 24px 60px rgb(0 0 0 / .35), 0 2px 10px rgb(0 0 0 / .18); animation: none; }
+.coordinator[data-dock="float"] .coordinator-bar { flex: none; cursor: grab; touch-action: none; }
+.coordinator[data-dock="float"] .coordinator-grid { max-height: 38%; overflow-y: auto; }
+.coordinator[data-dragging], .coordinator[data-dragging] * { cursor: grabbing !important; user-select: none; }
+/* Minimized: a small box anywhere on the page; a click opens the Coordinator again. */
+.coordinator[data-dock="mini"] { position: fixed; z-index: 28; max-height: none; margin: 0; overflow: visible; border: 0; background: none; box-shadow: none; container-type: normal; animation: none; }
+.coordinator-mini { display: inline-flex; align-items: center; gap: 8px; height: 38px; padding: 0 14px 0 11px; border: 1px solid color-mix(in srgb, var(--sash) 35%, var(--line)); border-radius: 999px; background: color-mix(in srgb, var(--surface) 94%, transparent); backdrop-filter: blur(14px); color: var(--ink); font-size: 12.5px; white-space: nowrap; box-shadow: 0 10px 30px rgb(0 0 0 / .28); cursor: grab; touch-action: none; transition: border-color .15s, box-shadow .15s; }
+.coordinator-mini:hover { border-color: var(--sash); box-shadow: 0 10px 30px rgb(0 0 0 / .28), 0 0 0 3px color-mix(in srgb, var(--sash) 14%, transparent); }
+.coordinator-mini strong { font-size: 12.5px; font-weight: 650; }
+.coordinator-mini-status { color: var(--muted); font-size: 11.5px; }
+.coordinator-mini-status.is-alert { color: var(--og-decide, #db2777); font-weight: 600; }
+@media (max-width: 730px) {
   .coordinator-message { max-width: 92%; }
   .coordinator-target { flex: 1 1 100%; order: 3; max-width: none; }
 }

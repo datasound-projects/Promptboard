@@ -7,6 +7,11 @@ The Coordinator is a read-only observer for one project. It sits above the Kanba
 - **Coordinator**, right after **Autopilot** in the board toolbar, opens and closes the panel with one click. It starts closed, and the choice is remembered per project in this browser.
 - Open, it shows active agents, progress per column, what needs attention (an agent waiting for you, a failed run, a review that asked for changes, failed tests, a failed column automation, paused Autopilot) and recent activity, with **Ask Coordinator** and an **On/Off** switch. Every card name opens the card.
 - **Off:** no updates and no questions. The project knowledge, history and chat are kept. On/Off is saved with the project's knowledge.
+- **Layout** (buttons at the right of its bar; layout only, the Coordinator works the same in every layout):
+  - **Hide overview** folds the four overview columns away so the chat has more room. The summary line stays.
+  - **Detach into a window** turns the panel into a window over the Kanban page, with the chat open. Drag its top bar to move it; drag its bottom-right corner to make it wider, narrower, taller or shorter. **Attach above the board** puts it back.
+  - **Minimize** turns it into a small box with a one-line summary. Drag the box anywhere; click it to open the Coordinator again where it was.
+  - Position, size and choices are remembered in this browser. Phones always show the attached panel.
 
 ## Project knowledge
 

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Coordinator layout.** The overview is a compact strip and can be folded away to give the chat more room. **Detach** turns the Coordinator into a window you can drag anywhere on the Kanban page and resize from its corner; **Minimize** turns it into a small box you can place anywhere; **Attach** puts it back above the board. Position and size are remembered. Only the layout changed: what the Coordinator reads, asks and records is the same.
 - Compose's **New prompt** button is quieter: an outlined button with a small accent chip for the plus, and no `N` key box. The `N` shortcut still works and is shown in the button's tooltip.
 - **Resizable sidebar on every page.** Drag its edge to make it wider (up to 560 px) or narrower (down to 200 px); drag it further left to collapse it, and drag the left screen edge to open it again. Double-click the edge to reset the width. The width is remembered. From the keyboard, focus the edge: the arrow keys resize, Enter collapses or opens. Phones keep the drawer.
 - The top bar, the sidebar and Origin's header use quieter hairlines, with a soft accent where the top bar meets the sidebar; the sidebar edge lights up while you resize it.
