@@ -7,6 +7,70 @@ suggests changes. **Nothing changes in the blueprint until you apply a suggestio
 It uses the Claude Code or Codex CLI that you already installed and signed in to. It needs no other model service and no
 API key. It never starts Kanban work.
 
+## Using Research
+
+1. In Origin, choose **Research** (beside **Create Context**). A panel opens on the right. On a new chat, it starts on the
+   record that was open or the current section; change it in the **What to research** list.
+2. Choose a mode:
+   - **Chat**: one agent and a continuous conversation. Follow-up questions continue the same CLI session.
+   - **Swarm**: add up to eight parts (sections, records or questions). Each part gets its own independent agent; three
+     work at the same time. Stop one agent with its own **Stop**, or all with the main **Stop**.
+   - **Decision Lab**: name two or three options (for example "PostgreSQL vs MongoDB"). You get one comparison table,
+     one recommendation with its reasons, the other options and the open tradeoffs.
+   - **Audit**: finds missing building blocks, conflicts, weak assumptions and security or dependency gaps, each with
+     the exact part it affects.
+3. Optional: turn on **Web search** (the globe) for this chat, or add **+ Sources**: a PDF, text or Markdown document
+   (with a page range), a pasted excerpt, a Base knowledge, context or skill resource, or an MCP server (Context7, an
+   HTTP server or a local program that you allow to start). Click a source chip to turn it off; × removes it.
+4. Read the answer as it arrives. Sources are cited as [S1], [S2]; web pages show their URL and access date.
+5. Review the suggestion cards: **Preview** shows the current and the suggested value, **Edit** changes the suggestion,
+   **Apply** writes it into the exact field, **Reject** discards it. Select several cards and use **Apply selected**.
+
+**History** (the clock) lists this project's chats: search them, open one to continue, or delete one after
+confirmation. Every message, source, suggestion and its state is restored after a restart.
+
+The panel resizes by dragging its left edge (or the arrow keys on the edge), maximizes up to the navigation sidebar,
+minimizes to a small box and closes with Esc. The record editor, Project Context and Research share one panel: opening
+one closes the others and keeps unsaved and unsent text. On phones the panel fills the screen.
+
+## How it works
+
+- **Context.** `researchContext` builds the context from the saved blueprint revision: the project's purpose, scope and
+  constraints first (never cut), the selected part in full with stable `[collection id]` tags, linked records, accepted
+  decisions, the selected stack, Origin's own open points, then the rest of the blueprint in brief while it fits
+  (24,000 characters; 16,000 per swarm agent). Recognizable secrets are removed. Renamed and custom sections and
+  questions need no code changes.
+- **CLI runs.** `src/research-cli.mjs` starts Claude Code (`--print --output-format stream-json
+  --include-partial-messages`) or Codex (`exec --json`) and reads their output line by line, so text and activity reach
+  the page while the CLI works. Every run has no shell and no file writes (Claude `--tools` limited to the allowed
+  tools; Codex `sandbox_mode="read-only"`, shell tools disabled, MCP servers from the user's configuration disabled).
+  Chat sessions continue with `--resume` / `exec resume`; when a session cannot continue, one new session starts with
+  the chat's recent history. Swarm agents leave no session behind.
+- **One job at a time.** A research run uses the app's shared job slot, so it never overlaps Compose, the Coordinator,
+  file proposals or a sign-in change. Closing the request (Stop, leaving, switching project) stops the CLI at once and
+  keeps the text it produced.
+- **Sources** are retrieved by the app, per question: Compose's document index and retrieval, Base `searchSources` and
+  Compose's read-only MCP lookup (the server must expose one annotated read-only query tool, or be Context7). Only
+  passages relevant to each agent's question are sent, bounded and cited. Text that looks like paths, URLs, code or
+  contact details is never sent to an MCP server. The CLI gets no MCP tools of its own.
+- **Suggestions** are checked against the saved blueprint by stable IDs (`validateResearchSuggestion`). The page applies
+  an approved suggestion through Origin's normal edit path (autosave with its revision check), so the sidebar, editors,
+  readiness and map update as for a hand edit. A field that changed since the research ran is a conflict.
+
+## Limits
+
+- Claude Code and Codex only. Gemini CLI and Antigravity are not offered for research.
+- Codex returns each answer as one complete message, so its text appears at once, not word by word.
+- A research run cannot start while Compose, the Coordinator or a sign-in change is running, and the other way round.
+- Uploaded documents stay loaded for 30 minutes without use and not across restarts (Compose's document cache).
+  Research then reports the document and asks you to attach it again.
+- A generic MCP server must expose exactly one annotated read-only query tool. Read-only annotations are not a security
+  boundary: add only MCP servers you trust. Claude Code skills are offered as instructions only; their scripts cannot
+  run because research has no shell.
+- The swarm summary lists each agent's outcome; it does not merge their texts with another model call. Suggestions
+  from all agents are reviewed together, with disagreements marked.
+- Your own Claude Code hooks and settings still run with each research call, as they do for Compose.
+
 ## Design rules
 
 - **Inactive until opened.** The page loads one small script. The server does no research work, reads no research

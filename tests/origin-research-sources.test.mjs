@@ -101,3 +101,21 @@ test('chat sources: added after checks, turned off and removed; runs receive onl
   const stored = (await api(`/api/origin/research/${project.id}/chats/${chat}`)).data.chat;
   assert.ok(!JSON.stringify(stored).includes('plus 25 cents'), 'document text is not stored in the chat');
 });
+
+test('sources the person has not trusted are refused: untrusted or disabled Base resources, local MCP programs without permission', async t => {
+  const composeMcp = { retrieve: async () => { throw new Error('No connection is expected.'); } };
+  const app = await startTestServer(t, { port: 0, executor: null, composeMcp });
+  const token = (await (await fetch(`${app.url}/api/session`)).json()).token;
+  const api = async (path, method = 'GET', body) => { const response = await fetch(`${app.url}${path}`, { method, headers: { 'X-STE-Token': token, ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) }); return { status: response.status, data: await response.json().catch(() => ({})) }; };
+  const project = (await api('/api/origin/projects', 'POST', { name: 'Shop' })).data.project;
+  const chat = (await api(`/api/origin/research/${project.id}/chats`, 'POST', { settings: { provider: 'claude' } })).data.chat.id;
+  const sources = `/api/origin/research/${project.id}/chats/${chat}/sources`;
+  const library = await app.board.base.list();
+  const untrusted = await app.board.base.create({ kind: 'mcp', name: 'Untrusted MCP', configuration: { transport: 'stdio', command: 'node', args: ['x.js'] } }, { expectedBaseRevision: library.revision });
+  const wiki = await app.board.base.create({ kind: 'knowledge', name: 'Wiki', configuration: {}, content: { pages: [{ id: 'p1', title: 'Rules', markdown: 'Use queues.', links: [] }] } }, { expectedBaseRevision: (await app.board.base.list()).revision });
+  assert.equal((await api(sources, 'POST', { source: { type: 'mcp', resourceId: untrusted.id ?? untrusted.resource?.id } })).status, 400, 'an untrusted Base MCP');
+  const wikiId = wiki.id ?? wiki.resource?.id, wikiState = (await app.board.base.list()).resources.find(resource => resource.id === wikiId);
+  if (wikiState.trust !== 'trusted' || !wikiState.enabled) assert.equal((await api(sources, 'POST', { source: { type: 'base', resourceId: wikiId, name: 'Wiki' } })).status, 400, 'a Base resource that is not enabled and trusted');
+  assert.equal((await api(sources, 'POST', { source: { type: 'mcp', config: { type: 'mcp', name: 'Local', transport: 'stdio', command: 'node', args: ['server.js'] } } })).status, 400, 'a local program without permission');
+  assert.equal((await api(`/api/origin/research/${project.id}/chats/${chat}`)).data.chat.sources.length, 0);
+});

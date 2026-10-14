@@ -69,6 +69,7 @@ You fill in a structured blueprint. Origin turns it into tasks that each carry e
 - **Send to Kanban.** Creates To Do cards with prerequisites first. Sending again never makes duplicates. When the design changes, only the affected cards are flagged: update them, keep them or improve them.
 - **Optional AI help.** **Improve with Compose** and **Suggest tasks** only propose. Nothing changes until you accept.
 - **Create Context.** Exports the design as one editable Markdown document, with Mermaid diagrams, ready to attach to prompts or agents.
+- **Research.** Chat with your own Claude Code or Codex about any part of the plan: guided chat, a swarm of parallel agents, a Decision Lab that compares options, or a blueprint audit. Add web search, documents, Base knowledge or MCP sources. Suggestions are applied only when you approve them.
 
 <p align="center">
   <img src="docs/origin-demo.gif" width="960" alt="Origin demo: describe an online shop, add requirements, connect building blocks into layers, accept a decision, prepare tasks with their context, and view the project mind map.">
@@ -177,7 +178,7 @@ Agents run through each CLI's own sign-in and plan. Promptboard has no account o
 ## Docs
 
 - [Kanban execution](docs/kanban-execution.md): stages, rework, merge and error codes
-- [Origin](docs/origin.md) · [Project Context](docs/origin-project-context.md) · [Shared projects](docs/shared-projects.md) · [Coordinator](docs/coordinator.md)
+- [Origin](docs/origin.md) · [Origin Research](docs/origin-research.md) · [Project Context](docs/origin-project-context.md) · [Shared projects](docs/shared-projects.md) · [Coordinator](docs/coordinator.md)
 - [Compose context research](docs/compose-context.md) · [Prompt checks](docs/verification.md)
 - [Base delivery](docs/base-delivery.md) · [CLI adapters](docs/cli-adapters.md) · [Session persistence](docs/session-persistence.md)
 - [Changelog](CHANGELOG.md) · [Release verification](RELEASE-VERIFICATION.md) · [All docs](docs/)

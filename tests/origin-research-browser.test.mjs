@@ -73,3 +73,36 @@ test('Research panel: opens beside Create Context, resizes, maximizes to the sid
   assert.equal(calls.length, 0, 'opening and arranging Research never calls a model');
   assert.deepEqual(browser.consoleMessages.filter(line => line.startsWith('EXCEPTION')), []);
 });
+
+test('Research and project switching: a run stops and keeps its partial answer; each project has its own chats; the edge resizes by keyboard', { skip: !chrome, timeout: 180000 }, async t => {
+  const researchRunner = call => new Promise((resolve, reject) => {
+    call.onEvent({ type: 'delta', text: 'Early notes' });
+    call.signal.addEventListener('abort', () => reject(Object.assign(new Error('stopped'), { code: 'ABORTED', partial: 'Early notes' })), { once: true });
+  });
+  const { browser, ev, wait, call, originId } = await researchPage(t, { server: { researchRunner } });
+  const other = (await call('/api/origin/projects', 'POST', { name: 'Blog' })).project;
+  await browser.reload();
+  await wait(`document.querySelector('#origin-view').dataset.save === 'saved' && [...document.querySelector('#origin-project').options].some(o => o.value === ${J(other.id)})`, 'two projects');
+  const click = selector => ev(`document.querySelector(${J(selector)}).click();`);
+  await click('#origin-research-open');
+  await wait(`document.querySelector('#origin-research-send') && !document.querySelector('#origin-research-send').disabled`, 'ready');
+  // Keyboard: the left edge is a separator; the arrow keys resize it.
+  const before = (await drawerState(ev)).width;
+  await ev(`document.querySelector('.origin-research-resize').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));`);
+  await wait(`Math.abs(document.querySelector('#origin-drawer').getBoundingClientRect().width - ${before + 40}) <= 2`, 'wider by keyboard');
+  assert.equal(await ev(`return document.querySelector('.origin-research-resize').getAttribute('role');`), 'separator');
+
+  await ev(`const i = document.querySelector('#origin-research-input'); i.value = 'Long research'; i.dispatchEvent(new Event('input', { bubbles: true })); i.closest('form').requestSubmit();`);
+  await wait(`document.querySelector('.is-live .origin-research-text')?.textContent === 'Early notes'`, 'running');
+  await ev(`const s = document.querySelector('#origin-project'); s.value = ${J(other.id)}; s.dispatchEvent(new Event('change', { bubbles: true }));`);
+  await wait(`document.querySelector('#origin-project').value === ${J(other.id)} && document.querySelector('#origin-drawer').hidden`, 'switched; the panel closed');
+  await click('#origin-research-open');
+  await click('#origin-research-history');
+  await wait(`document.querySelector('.origin-research-chats')?.textContent === 'No research chats yet.'`, 'the other project has no chats');
+  // The stopped run kept its partial answer in its own project.
+  let chats;
+  for (let i = 0; i < 40 && !(chats = (await call(`/api/origin/research/${originId}/chats`)).chats).some(chat => chat.messages === 2); i++) await new Promise(resolve => setTimeout(resolve, 100));
+  const stored = (await call(`/api/origin/research/${originId}/chats/${chats[0].id}`)).chat;
+  assert.deepEqual(stored.messages.map(message => [message.role, message.text, message.status || '']), [['user', 'Long research', ''], ['assistant', 'Early notes', 'stopped']]);
+  assert.deepEqual(browser.consoleMessages.filter(line => line.startsWith('EXCEPTION')), []);
+});
