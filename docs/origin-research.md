@@ -23,8 +23,9 @@ API key. It never starts Kanban work.
    (with a page range), a pasted excerpt, a Base knowledge, context or skill resource, or an MCP server (Context7, an
    HTTP server or a local program that you allow to start). Click a source chip to turn it off; × removes it.
 4. Read the answer as it arrives. Sources are cited as [S1], [S2]; web pages show their URL and access date.
-5. Review the suggestion cards: **Preview** shows the current and the suggested value, **Edit** changes the suggestion,
-   **Apply** writes it into the exact field, **Reject** discards it. Select several cards and use **Apply selected**.
+5. Review the suggestion cards: **Preview** shows the current and the suggested value (links by the names of the
+   records they point to, new ones marked), **Edit** changes the suggestion, **Apply** writes it into the exact field,
+   **Reject** discards it. Select several cards and use **Apply selected**, or **Apply all**.
 
 **History** (the clock) lists this project's chats: search them, open one to continue, or delete one after
 confirmation. Every message, source, suggestion and its state is restored after a restart.
@@ -53,9 +54,16 @@ one closes the others and keeps unsaved and unsent text. On phones the panel fil
   Compose's read-only MCP lookup (the server must expose one annotated read-only query tool, or be Context7). Only
   passages relevant to each agent's question are sent, bounded and cited. Text that looks like paths, URLs, code or
   contact details is never sent to an MCP server. The CLI gets no MCP tools of its own.
-- **Suggestions** are checked against the saved blueprint by stable IDs (`validateResearchSuggestion`). The page applies
-  an approved suggestion through Origin's normal edit path (autosave with its revision check), so the sidebar, editors,
-  readiness and map update as for a hand edit. A field that changed since the research ran is a conflict.
+- **Suggestions** are checked against the saved blueprint by stable IDs (`validateResearchSuggestion`). They can change
+  a field, answer a question, add links, or add a record of any type: layers, technologies, components, requirements,
+  dependencies, milestones, tasks, decisions, assumptions, risks, sources and architecture connections. A new record can
+  carry a short `ref`, and other new records in the same answer point to it as `@ref`; refs are local to one answer.
+  The page applies an approved suggestion through Origin's normal edit path (autosave with its revision check), so the
+  sidebar, editors, readiness, map and architecture diagram update as for a hand edit (`applyResearchSuggestion`).
+  **Apply all** applies new records in dependency order (layers and technologies before components, components before
+  tasks and connections), then resolves the links to records created later. A field that changed since the research
+  ran is a conflict. Links are only added, never removed; a single link (layer, milestone, connection end) that already
+  points elsewhere is a conflict.
 
 ## Limits
 
@@ -152,7 +160,7 @@ target    { kind: "vision", field } | { kind: "idea" }
           | { kind: "record", collection, id, field }
           | { kind: "answer", questionId } | { kind: "componentAnswer", componentId, questionId }
           | { kind: "topic", section, area }
-          | { kind: "add", collection }               value holds the new record's fields
+          | { kind: "add", collection }               value holds the new record's fields and links; `ref` names it
 ```
 
 `original` is the value at `baseRevision`. Before a suggestion is applied, the page compares it with the current

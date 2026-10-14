@@ -212,7 +212,7 @@ export function extractSuggestions(text) {
   try { parsed = JSON.parse(match[1]); } catch { return { text: text.slice(0, match.index).trimEnd(), raw: [], unreadable: true }; }
   const raw = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.suggestions) ? parsed.suggestions : null;
   if (!raw) return { text, raw: [] };
-  return { text: text.slice(0, match.index).trimEnd(), raw: raw.slice(0, 20) };
+  return { text: text.slice(0, match.index).trimEnd(), raw: raw.slice(0, 40) };
 }
 /**
  * Suggestions checked against the saved blueprint. Each keeps the value it would replace and the blueprint revision,
@@ -221,14 +221,25 @@ export function extractSuggestions(text) {
 export function proposalsFor(record, raw, { messageId, agent = null }) {
   const proposals = [];
   let dropped = 0;
-  for (const entry of raw) {
+  // References between new records are local to one answer: prefix them so two agents' "@n1" never meet.
+  const scope = messageId.slice(0, 8), local = value => `${scope}.${value}`;
+  const scoped = raw.map(entry => {
+    if (!entry || typeof entry !== 'object') return entry;
+    const copy = { ...entry, ...(typeof entry.ref === 'string' ? { ref: local(entry.ref) } : {}) };
+    const relink = given => (typeof given === 'string' && given.startsWith('@') ? `@${local(given.slice(1))}` : Array.isArray(given) ? given.map(relink) : given);
+    if (copy.value && typeof copy.value === 'object' && !Array.isArray(copy.value)) copy.value = Object.fromEntries(Object.entries(copy.value).map(([key, given]) => [key, relink(given)]));
+    else copy.value = relink(copy.value);
+    return copy;
+  });
+  const refs = new Map(scoped.filter(entry => entry?.target?.kind === 'add' && typeof entry.ref === 'string').map(entry => [entry.ref, entry.target.collection]));
+  for (const entry of scoped) {
     try {
-      const valid = Model.validateResearchSuggestion(record.blueprint, entry);
+      const valid = Model.validateResearchSuggestion(record.blueprint, entry, { refs });
       if (proposals.some(other => other.key === valid.key && JSON.stringify(other.value) === JSON.stringify(valid.value))) continue;
       proposals.push({ id: randomUUID(), messageId, ...valid, baseRevision: record.revision, status: 'pending', updatedAt: Date.now(), ...(agent ? { agent } : {}) });
     } catch { dropped++; }
   }
-  return { proposals: proposals.slice(0, 12), dropped };
+  return { proposals: proposals.slice(0, 40), dropped };
 }
 /** Swarm results reviewed together: the same change from several agents once; different values for one field marked. */
 export function mergeProposals(proposals) {
@@ -431,7 +442,13 @@ export async function researchRoute({ research, origin, runner, claim, track, so
       const proposal = value.proposals.find(entry => entry.id === sourceId);
       if (!proposal) throw new ResearchError('This suggestion is not in the chat.', 'NOT_FOUND', 404);
       proposal.status = input.status; proposal.updatedAt = Date.now();
-      if (input.status === 'applied') { proposal.appliedAt = Date.now(); if (Number.isSafeInteger(input.revision)) proposal.appliedRevision = input.revision; if (input.edited === true) proposal.edited = true; }
+      if (input.status === 'applied') {
+        proposal.appliedAt = Date.now();
+        if (Number.isSafeInteger(input.revision)) proposal.appliedRevision = input.revision;
+        if (input.edited === true) proposal.edited = true;
+        // The new record's ID: later suggestions that reference it (@ref) resolve to it.
+        if (typeof input.createdId === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(input.createdId)) proposal.createdId = input.createdId;
+      }
     });
     return send(res, 200, { proposals: updated.proposals });
   }
