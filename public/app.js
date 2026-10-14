@@ -1935,13 +1935,23 @@ function appendTaskExternalSource(parent, card) {
 }
 // Prerequisite cards (set by an Origin handoff) must reach Done before this card starts.
 const cardDone = (project, card) => { const column = projectColumnsOf(project).find(entry => entry.id === card?.column); return Boolean(card) && (column?.role === 'done' || (!column?.role && card.column === 'done')); };
+// The board's rule (prerequisiteMet in src/board.mjs): in Done with its code on the target branch, or no code to merge.
+const unmergedDone = card => Boolean(card?.workspace) && (card.completion?.kind === 'unmerged' || (card.completion?.kind === 'pull_request' && !card.completion.mergedAt));
+const prerequisiteMet = (project, card) => cardDone(project, card) && (!card.completion || !unmergedDone(card));
 function pendingPrerequisites(card, project) {
-  return (Array.isArray(card.dependsOn) ? card.dependsOn : []).filter(id => !cardDone(project, project?.tasks.find(task => task.id === id)));
+  return (Array.isArray(card.dependsOn) ? card.dependsOn : []).filter(id => !prerequisiteMet(project, project?.tasks.find(task => task.id === id)));
+}
+// "2 of 5": the card's place among the cards planned together in Origin (the order they were sent in).
+function appendTaskPosition(parent, card, project) {
+  const group = card.originSource && project ? project.tasks.filter(task => task.originSource?.originProjectId === card.originSource.originProjectId).sort((a, b) => (a.number ?? 0) - (b.number ?? 0)) : [];
+  if (group.length < 2) return;
+  const chip = document.createElement('span'); chip.className = 'task-position';
+  chip.textContent = `${group.indexOf(card) + 1} of ${group.length}`; chip.title = `Task ${group.indexOf(card) + 1} of ${group.length} planned in Origin`; parent.append(chip);
 }
 function appendTaskWaits(parent, card, project) {
   const pending = project ? pendingPrerequisites(card, project) : [];
   if (!pending.length) return;
-  const names = pending.map(id => { const other = project.tasks.find(task => task.id === id); return other ? taskNumberText(other) || other.title : 'a deleted card'; });
+  const names = pending.map(id => { const other = project.tasks.find(task => task.id === id); return other ? `${taskNumberText(other) || other.title}${unmergedDone(other) ? ' (not merged)' : ''}` : 'a deleted card'; });
   const badge = document.createElement('span'); badge.className = 'task-waits'; badge.textContent = `Waits for ${names.join(', ')}`;
   badge.title = 'Its prerequisites must be done before it starts.'; parent.append(badge);
 }
@@ -1949,8 +1959,8 @@ function taskPrerequisites(card, project) {
   if (!Array.isArray(card.dependsOn) || !card.dependsOn.length) return null;
   const list = document.createElement('ul'); list.className = 'task-prerequisites';
   for (const id of card.dependsOn) {
-    const other = project.tasks.find(task => task.id === id), done = cardDone(project, other), row = document.createElement('li');
-    row.append(other ? `${taskNumberText(other) ? `${taskNumberText(other)} ` : ''}${other.title} — ${columnTitle(other.column)}${done ? ' · done' : ''}` : 'A prerequisite card that was deleted');
+    const other = project.tasks.find(task => task.id === id), done = prerequisiteMet(project, other), row = document.createElement('li');
+    row.append(other ? `${taskNumberText(other) ? `${taskNumberText(other)} ` : ''}${other.title} — ${columnTitle(other.column)}${done ? ' · done' : unmergedDone(other) && cardDone(project, other) ? ' · not merged' : ''}` : 'A prerequisite card that was deleted');
     if (!done) row.append(' ', detailButton(other ? 'Remove prerequisite' : 'Clear', () => void clearPrerequisite(card, id), 'text-button'));
     list.append(row);
   }
@@ -1963,6 +1973,7 @@ async function clearPrerequisite(card, prerequisiteId) {
 }
 function appendTaskLabels(parent, card, project = currentProject()) {
   appendTaskExternalSource(parent, card);
+  appendTaskPosition(parent, card, project);
   appendTaskWaits(parent, card, project);
   if (project?.workflowMode !== 'pipeline' || !Array.isArray(card.labelIds)) return;
   const labels = projectLabels(project), badges = card.labelIds.flatMap(id => { const label = labels.find(row => row.id === id); return label ? [labelBadge(label)] : []; });
@@ -3461,7 +3472,7 @@ async function renderDelivery(card, container, section, pre) {
     nodes.push(section('Completed', paragraph(done.kind === 'merged'
       ? `Merged${done.trigger === 'automation' ? ' automatically (project workflow setting)' : ''} into ${done.targetBranch}: ${short(done.previousTarget)} → ${short(done.mergedCommit)} (${done.method}). Nothing was pushed.`
       : done.kind === 'pull_request' ? `Pull request ${done.number ? `#${done.number} ` : ''}merged on GitHub into ${done.base || 'the target branch'}. Pull ${done.base || 'the target branch'} to update your local checkout.`
-      : ['closed', 'unmerged'].includes(done.kind) ? 'Completed on the board. Nothing was merged or pushed; the task branch and worktree are kept.'
+      : ['closed', 'unmerged'].includes(done.kind) ? `Completed on the board. Nothing was merged or pushed; the task branch and worktree are kept${done.uncommittedChanges ? `, with ${done.uncommittedChanges} uncommitted ${done.uncommittedChanges === 1 ? 'change' : 'changes'}` : ''}. Cards that depend on it wait until it is merged.`
       : 'Reviewed: no changes required. Nothing was merged.')));
     if (done.summary) nodes.push(section('Accomplished', pre(done.summary)));
   }

@@ -656,6 +656,7 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
 .task-label-badges { display: flex; flex: 1 0 100%; flex-wrap: wrap; gap: 4px; min-width: 0; width: 100%; }
 .compose-origin { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 14px; padding: 10px 14px; border: 1px solid color-mix(in srgb, var(--og-define) 40%, transparent); border-radius: 12px; background: color-mix(in srgb, var(--og-define) 8%, transparent); color: var(--text); font-size: 13.5px; }
 .compose-origin span { flex: 1; min-width: 0; font-weight: 600; }
+.task-position { display: inline-flex; align-items: center; padding: 2px 6px; border: 1px solid var(--line); border-radius: 4px; color: var(--muted); font: 11px/1.5 var(--mono); }
 .task-waits { display: inline-flex; align-items: center; max-width: 100%; padding: 2px 6px; border: 1px solid color-mix(in srgb, var(--og-warn) 45%, transparent); border-radius: 4px; color: var(--og-warn); font: 11px/1.5 var(--mono); overflow-wrap: anywhere; }
 .task-prerequisites { margin: 6px 0 0; padding-left: 18px; }
 .task-prerequisites li { margin: 4px 0; }

@@ -753,6 +753,7 @@ test('Origin Send to Kanban asks before including prerequisites, never duplicate
   // Kanban shows what the card waits for, and why it cannot start yet.
   await ev(`[...document.querySelectorAll('#origin-handoff-dialog button')].find(b => b.textContent === 'Open Kanban').click();`);
   await wait(`location.hash === '#/kanban' && [...document.querySelectorAll('.task-waits')].some(n => n.textContent === 'Waits for #1')`, 'waiting badge on the card');
+  assert.deepEqual(await ev(`return [...document.querySelectorAll('.task-position')].map(n => [n.textContent, n.title]).sort();`), [['1 of 2', 'Task 1 of 2 planned in Origin'], ['2 of 2', 'Task 2 of 2 planned in Origin']], 'each card shows its place in the plan');
   assert.deepEqual(browser.consoleMessages.filter(message => message.startsWith('EXCEPTION')), []);
 });
 
