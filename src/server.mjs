@@ -33,6 +33,8 @@ import { inspectWorkspace, saveWorkspaceFile, WorkspaceFileError } from './works
 import { proposeWorkspaceFile, validateFileProposalRequest } from './workspace-file-ai.mjs';
 import { OriginError, OriginStore, originRoute } from './origin.mjs';
 import { ContextStore, contextRoute } from './origin-context.mjs';
+import { ResearchError, ResearchStore, researchRoute } from './origin-research.mjs';
+import { streamResearch } from './research-cli.mjs';
 import { PromptStore, createBoardProject, nameTaken, projectsRoute } from './projects.mjs';
 import { Coordinator, CoordinatorError, coordinatorRoute } from './coordinator.mjs';
 
@@ -51,6 +53,7 @@ const assets = new Map([
   ['/origin.js', ['origin.js', 'text/javascript; charset=utf-8']],
   ['/markdown-view.js', ['markdown-view.js', 'text/javascript; charset=utf-8']],
   ['/origin-context.js', ['origin-context.js', 'text/javascript; charset=utf-8']],
+  ['/origin-research.js', ['origin-research.js', 'text/javascript; charset=utf-8']],
   ['/projects.js', ['projects.js', 'text/javascript; charset=utf-8']],
   ['/coordinator.js', ['coordinator.js', 'text/javascript; charset=utf-8']],
   ['/dock.js', ['dock.js', 'text/javascript; charset=utf-8']],
@@ -100,7 +103,7 @@ export async function generate(request, { runner = runProvider, signal, catalogR
 // Map internal codes to HTTP statuses. Message text always comes from fixed strings.
 const STATUS = { ABORTED: 499, TIMEOUT: 504, BUSY: 409, AUTH_IN_PROGRESS: 409, NOT_INSTALLED: 409, UNSUPPORTED: 400, INVALID_PROVIDER: 400, INVALID_MODEL: 400, INVALID_EFFORT: 400, INVALID_INPUT: 400 };
 // Domain errors whose messages are fixed, user-facing strings.
-const EXPOSED = [AgentError, BaseDeliveryError, BaseError, BoardError, CoordinatorError, DeliveryError, GitError, GitHubError, NotificationError, OriginError, RepositoryPipelineError, StoreError, WorkspaceFileError];
+const EXPOSED = [AgentError, BaseDeliveryError, BaseError, BoardError, CoordinatorError, DeliveryError, GitError, GitHubError, NotificationError, OriginError, RepositoryPipelineError, ResearchError, StoreError, WorkspaceFileError];
 /** The one error-to-HTTP mapping. Unexpected errors get the route's fallback text, never internal details. */
 function failureBody(error, fallback, unknown = { status: 502, code: 'UNKNOWN' }) {
   if (EXPOSED.some(Type => error instanceof Type)) return { status: error.status || 500, body: { error: error.message, code: error.code || 'INVALID_REQUEST' } };
@@ -294,7 +297,7 @@ function streamRun(supervisor, req, res, runId, after) {
   req.on('close', () => { clearInterval(ping); unsubscribe(); });
 }
 
-export async function startServer({ port = 4318, runner = runProvider, detector = detectProviders, catalogReader = discoverModels, authAdapter = auth, dataDir = defaultDataDir(), projectsDir, executor = 'auto', folderPicker = chooseFolder, githubPty = loadPty, usageReader, mcpTester, imageGenerator, composeMcp } = {}) {
+export async function startServer({ port = 4318, runner = runProvider, detector = detectProviders, catalogReader = discoverModels, authAdapter = auth, dataDir = defaultDataDir(), projectsDir, executor = 'auto', folderPicker = chooseFolder, githubPty = loadPty, usageReader, mcpTester, imageGenerator, composeMcp, researchRunner = streamResearch } = {}) {
   // The board loads lazily, so starting the server never reads or writes board files.
   const usage = usageReader || new UsageDashboard({ dataDir });
   const notifications = new PipelineNotifications();
@@ -367,6 +370,7 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
   // Origin projects live in their own files; Kanban changes go only through the board service.
   const origin = new OriginStore(dataDir, { kanbanProjects: async () => (await board.state()).projects });
   const contexts = new ContextStore(dataDir);
+  const research = new ResearchStore(dataDir); // Creates nothing on disk until a chat is saved.
   const prompts = new PromptStore(dataDir);
   const coordinator = new Coordinator({ dataDir, board, origin });
   const baseRoutes = new BaseRoutes({ board, runner, claim, track, catalog: getCatalog, send, jsonBody, ...(mcpTester ? { mcpTester } : {}), imageGenerator });
@@ -418,6 +422,10 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
     if (/^\/api\/shared-projects(?:\/|$)/.test(pathname)) {
       try { return await projectsRoute({ origin, board, prompts, req, res, pathname, jsonBody, send }); }
       catch (error) { return sendFailure(res, error, 'The project request failed. Nothing was changed.', { status: 500, code: 'PROJECTS_FAILED' }); }
+    }
+    if (/^\/api\/origin\/research(?:\/|$)/.test(pathname)) {
+      try { return await researchRoute({ research, origin, runner: researchRunner, claim, track, sources: async () => { const compose = await getCompose(); return { documents: compose.documents, mcp: compose.mcp, base: board.base }; }, req, res, pathname, searchParams: requestUrl.searchParams, jsonBody, send }); }
+      catch (error) { return sendFailure(res, error, 'The research request failed. The blueprint is unchanged.', { status: 500, code: 'RESEARCH_FAILED' }); }
     }
     if (/^\/api\/origin(?:\/|$)/.test(pathname)) {
       const route = /^\/api\/origin\/projects\/[^/]+\/document(?:\/|$)/.test(pathname) ? contextRoute : originRoute;
