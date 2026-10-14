@@ -54,7 +54,6 @@
 .base-list-mode > li { margin-bottom: 8px; }
 #base-empty > button { margin: 4px 8px 4px 0; }
 #base-mobile-categories { min-width: 0; }
-.base-sidebar-note { margin-top: auto; font-size: 11px; }
 .base-category-count { font: 11px var(--mono); color: var(--subtle); }
 .base-toolbar h2 { flex: 1; font-size: 18px; margin: 0 0 6px; }
 .base-category { padding: 7px 9px; background: transparent; border: 1px solid transparent; border-radius: 7px; color: var(--muted); font-size: 12px; }
@@ -71,8 +70,7 @@
 .base-agent-card-head > div { min-width: 0; display: grid; gap: 3px; }
 .base-agent-avatar { width: 48px; height: 48px; flex-shrink: 0; border-radius: 10px; }
 .base-agent-loadout { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
-.base-agent-loadout .check-row { font-size: 11px; margin: 0; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; }
-.base-agent-loadout input { accent-color: var(--primary); }
+.base-agent-chip { font-size: 11px; padding: 3px 7px; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); }
 .base-agent-card .detail-actions { margin-top: 10px; }
 .base-agent-card .note { font-size: 11px; margin: 6px 0 0; }
 .base-avatar-editor { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
@@ -1920,7 +1918,7 @@ button.origin-context-badge { cursor: pointer; }
 .origin-context-badge.changed { border-color: color-mix(in srgb, var(--og-decide, #d08a1e) 55%, transparent); color: var(--og-decide, #b26b00); }
 .origin-context-save { display: inline-flex; margin-top: 6px; }
 .origin-context-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
-.origin-context-tools .origin-menu-list { left: auto; right: 0; }
+.origin-context-tools .origin-menu-list, .base-more .origin-menu-list { left: auto; right: 0; }
 .origin-context-tools .origin-context-tabs button.active { background: var(--surface); color: var(--ink); box-shadow: 0 1px 2px rgb(0 0 0 / 12%); }
 .origin-context-body { gap: 12px; }
 /* An id selector: the shared drawer field rule would otherwise make the editor a short, clipped box. */
