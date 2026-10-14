@@ -140,6 +140,21 @@ test('bulk application previews targets and sends one atomic revision-checked as
   assert.equal(applications[0].body.changes.every(item => !('profileId' in item)), true);
 });
 
+test('Apply to… on an agent profile makes it the agent profile of global, project or column targets, never a resource', async t => {
+  const profile = { ...skill, id: 'res_profile', kind: 'profile', name: 'Codex engineer', configuration: { agent: { provider: 'codex', model: 'gpt-x' }, binding: { mode: 'inherit', include: [], exclude: [] } }, content: {} };
+  const { $, view, calls, clickText, win } = setup(t, { resources: [skill, profile] });
+  await view.show(); await view.openResource(profile.id); clickText('Apply to…');
+  await until(() => $('.base-apply-targets'), 'target list');
+  assert.deepEqual([...$('.base-apply-targets').querySelectorAll('label')].map(node => node.textContent), ['Project Alpha', 'Project Beta'], 'a task cannot take a profile');
+  assert.match($('#base-dialog-content').textContent, /its provider, model, instructions and resources apply there/);
+  const box = $('.base-apply-targets input'); box.checked = true; box.dispatchEvent(new win.Event('change', { bubbles: true }));
+  clickText('Preview changes');
+  await until(() => [...$('#base-dialog-content').querySelectorAll('button')].some(node => node.textContent === 'Apply assignments' && !node.disabled), 'preview');
+  clickText('Apply assignments');
+  await until(() => calls.some(call => call.path === '/api/base/apply'), 'apply');
+  assert.deepEqual(calls.find(call => call.path === '/api/base/apply').body.changes, [{ target, expectedRevision: 2, binding: { mode: 'inherit', include: [], exclude: [] }, profileId: profile.id }]);
+});
+
 test('Base displays stale-write rejection without closing or discarding the editor', async t => {
   const { $, view, submit } = setup(t, { respond: request => request.method === 'PATCH' ? { response: { ok: false }, data: { code: 'BASE_REVISION_CONFLICT', error: 'Resource changed. Reload before saving.' } } : null });
   await view.show(); await view.openResource(skill.id);

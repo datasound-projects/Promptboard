@@ -16,6 +16,7 @@ import { taskLabels, taskLabelIds, labelRevision } from './task-labels.mjs';
 import { assignTaskNumbers, allocateTaskNumber, validateTaskNumbers } from './task-numbers.mjs';
 import { branchExists, commitExists, git, GitError, initRepository, listWorktrees, repositoryIdentity, validateRepository } from './git.mjs';
 import { ADAPTERS, resolveConfig, validateResumeId } from './agents.mjs';
+import { validateEffort } from './providers.mjs';
 import { Delivery } from './delivery.mjs';
 import { ensureClone, fastForward, fetchAndCompare, viewRepository } from './github.mjs';
 import { externalIssueSource } from './external-source.mjs';
@@ -362,7 +363,13 @@ export function effectiveWorkflow(project, globalAgent = null, state = null, tas
     const local = state ? profileDefaults(state, project.baseColumns?.[column.id]?.profileId) : null;
     const inherited = local?.provider ? local : defaults?.provider ? defaults : global || {};
     const agent = strategy.agentOverride ? { provider: strategy.agentOverride } : inherited;
-    const settings = { provider: agent.provider || 'claude', model: strategy.modelOverride ?? agent.model ?? '', effort: strategy.effortOverride ?? agent.effort ?? '',
+    // One tuple per level, as on legacy boards: a Base column profile brings its own model and effort, so the column's
+    // model and effort pins apply to its own agent or to the inherited project or global agent, never to the profile's.
+    const pins = strategy.agentOverride || !local?.provider;
+    const model = pins ? strategy.modelOverride ?? agent.model ?? '' : agent.model ?? '';
+    let effort = pins ? strategy.effortOverride ?? agent.effort ?? '' : agent.effort ?? '';
+    try { validateEffort(agent.provider || 'claude', effort); } catch { effort = ''; } // A setting the provider rejects is dropped, not failed on every run.
+    const settings = { provider: agent.provider || 'claude', model, effort,
       permissionMode: strategy.permissionMode ?? agent.permissionMode ?? '', pipeline: true, instructions: '', policy: strategy.autoSpawn ? 'start' : 'manual', agentSource: 'pipeline' };
     if (column.role !== 'active') return [column.id, settings];
     // Typed columns, and any column whose execution policy someone chose, launch through the policy. A custom column

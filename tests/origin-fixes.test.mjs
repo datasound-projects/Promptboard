@@ -55,3 +55,11 @@ test('Delete from Origin moves the project\'s research chats aside, so a project
   assert.ok((await readdir(join(origin, 'deleted'))).some(name => name.startsWith(`research-`)), 'kept in origin/deleted/');
   assert.deepEqual((await api(`/api/origin/research/${project.id}/chats`)).data.chats ?? [], []);
 });
+
+test('control characters pasted into Origin never reach a card: page breaks become line breaks, escape sequences go', () => {
+  const bp = M.emptyBlueprint();
+  bp.items.push({ id: 'i1', title: 'T', description: 'Page\x0cbreak \x1b[0mreset\ttab\nline\r\nok\x00' });
+  const { blueprint, repairs } = M.normalizeBlueprint(bp);
+  assert.equal(blueprint.items[0].description, 'Page\nbreak reset\ttab\nline\r\nok');
+  assert.equal(repairs, 1);
+});

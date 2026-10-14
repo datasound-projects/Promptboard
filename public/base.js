@@ -337,7 +337,11 @@ window.PromptboardBase = (() => {
       }
       // Keep unresolved references visible, rather than dropping them on an unrelated edit.
       for (const [id, required] of value) if (!candidates.some(item => item.id === id)) {
-        const row = check(`Unavailable reference: ${id}`, true); row.control.dataset.resource = id; row.control.dataset.missingRequired = String(required); box.append(row.label);
+        // A known resource only filtered out here keeps its name. An agent profile here (saved by an older version) starts
+        // unchecked, so saving drops it: it belongs in the target's agent profile instead.
+        const known = resource(id), stray = known?.kind === 'profile';
+        const row = check(known ? `${known.name} · ${KINDS[known.kind]} · ${stray ? 'choose it as the agent profile instead' : 'not available here'}` : `Unavailable reference: ${id}`, !stray);
+        row.control.dataset.resource = id; row.control.dataset.missingRequired = String(required); box.append(row.label);
       }
       if (!box.children.length) box.append(p('No resources yet. Create them in Base first.'));
       box.read = () => [...box.querySelectorAll('[data-resource]:checked')].map(node => exclusions ? node.dataset.resource : ({ resourceId: node.dataset.resource, required: box.querySelector(`[data-required="${node.dataset.resource}"]`)?.checked ?? node.dataset.missingRequired !== 'false' }));
@@ -432,7 +436,7 @@ window.PromptboardBase = (() => {
     }
     function editResource(original) {
       const item = clone(original); item.configuration ||= {}; item.content ||= {};
-      const expectedBaseRevision = state.revision, editorVersion = ++requestVersion;
+      const editorVersion = ++requestVersion;
       chosen = item.id || null; editingKind = item.kind; renderList();
       const form = el('form', undefined, 'base-resource-form'); form.dataset.kind = item.kind;
       const heading = el('h2', item.id ? item.name : `New ${KINDS[item.kind].toLowerCase()}`);
@@ -468,8 +472,10 @@ window.PromptboardBase = (() => {
         try {
           const values = config.read();
           const { skillImport, ...resourceValues } = values;
-          const body = skillImport ? { markdown: skillImport.markdown, files: skillImport.files, name: name.value.trim(), description: description.value, tags: tags.value.split(',').map(value => value.trim()).filter(Boolean), expectedBaseRevision }
-            : { kind: item.kind, name: name.value.trim(), description: description.value, tags: tags.value.split(',').map(value => value.trim()).filter(Boolean), enabled: enabled.control.checked, trust: trust.value, dependencies: dependencies.read(), ...resourceValues, expectedBaseRevision, ...(item.id ? { expectedRevision: item.revision } : {}) };
+          // The Base revision as it is now: Apply to… and root approvals from this page raise it while the editor is open;
+          // the resource's own revision and the server's graph checks still guard the save.
+          const body = skillImport ? { markdown: skillImport.markdown, files: skillImport.files, name: name.value.trim(), description: description.value, tags: tags.value.split(',').map(value => value.trim()).filter(Boolean), expectedBaseRevision: state.revision }
+            : { kind: item.kind, name: name.value.trim(), description: description.value, tags: tags.value.split(',').map(value => value.trim()).filter(Boolean), enabled: enabled.control.checked, trust: trust.value, dependencies: dependencies.read(), ...resourceValues, expectedBaseRevision: state.revision, ...(item.id ? { expectedRevision: item.revision } : {}) };
           const data = await request(skillImport ? '/api/base/skills/import' : item.id ? `/api/base/resources/${encodeURIComponent(item.id)}` : '/api/base/resources', { method: item.id && !skillImport ? 'PATCH' : 'POST', body });
           const savedId = data.resource?.id || data.id || item.id;
           await load(); if (savedId && editorVersion === requestVersion) await openResource(savedId, true);
@@ -543,7 +549,7 @@ window.PromptboardBase = (() => {
           catch (error) { importStatus.textContent = error.message; }
         });
         const preview = el('div'); const previewButton = button('Preview instructions', () => preview.replaceChildren(markdown(text.value)), 'text-button');
-        form.append(field('Instructions / SKILL.md', text), p('Instruction delivery: this text is appended separately to the existing agent message. It is not native skill installation.'), details('Import SKILL.md', field('Instruction file', imported), importStatus), files, previewButton, preview);
+        form.append(field('Instructions / SKILL.md', text), p('Instruction delivery: this text is appended separately to the existing agent message. It is not native skill installation.'), ...(item.id ? [] : [details('Import SKILL.md', field('Instruction file', imported), importStatus)]), files, previewButton, preview);
         return { read: () => ({ configuration: { ...config, format: 'instruction', ...(text.value.startsWith('---') ? { entrypoint: 'SKILL.md' } : {}) }, content: { ...content, body: text.value, files: files.read() }, ...(importedSkill ? { skillImport: { markdown: text.value, files: files.read() } } : {}) }) };
       }
       if (item.kind === 'mcp') {
@@ -569,7 +575,7 @@ window.PromptboardBase = (() => {
           const row = el('div', undefined, 'base-source-editor');
           const kind = select([['repository', 'Repository files'], ['external', 'Approved external files'], ['knowledge', 'Knowledge collection'], ['url', 'Documentation URL']], source.kind || 'repository');
           const path = input(source.path || '', 4096); path.placeholder = 'docs/';
-          const root = select([['', 'Choose an approved root'], ...(state.approvedRoots || []).map(item => [item.id, item.path || item.name || item.id])], source.rootId || '');
+          const root = select([['', 'Choose an approved root'], ...(state.approvedRoots || []).map(item => [item.id, item.path || item.name || item.id])], source.rootId || ''); root.classList.add('base-root-select');
           const url = input(source.url || '', 4096); url.placeholder = 'https://docs.example.com/guide';
           const knowledge = select([['', 'Choose a collection'], ...state.resources.filter(item => item.kind === 'knowledge').map(item => [item.id, item.name])], source.resourceId || '');
           const pathField = field('Relative path or folder', path), rootField = field('Approved root', root), urlField = field('URL', url), knowledgeField = field('Collection', knowledge);
@@ -707,7 +713,8 @@ window.PromptboardBase = (() => {
         if (needsProject && !repositoryProject.value) throw new Error('Choose a project for this repository source preview. Runs still use their own worktree.');
         return request(`/api/base/resources/${encodeURIComponent(item.id)}/refresh`, { method: 'POST', body: { expectedRevision: item.revision, ...(repositoryProject.value ? { projectId: repositoryProject.value } : {}) }, timeoutMs: 60000 });
       }, data => p(data.message || 'Sources refreshed. Live content is captured with its retrieval time and content hash.')));
-      box.append(repositoryProject, actions(query, search, refresh), result); return box;
+      // Only saved live sources can be refreshed; a resource with none has nothing to fetch.
+      box.append(repositoryProject, actions(query, search, ...(item.configuration?.sources?.length ? [refresh] : [])), result); return box;
     }
     function revisionHistory(item) {
       const revisions = item.revisions || Array.from({ length: Math.min(item.revision || 1, 100) }, (_, index) => (item.revision || 1) - index);
@@ -744,7 +751,12 @@ window.PromptboardBase = (() => {
       }
       form.addEventListener('submit', async event => {
         event.preventDefault(); if (!confirmation.control.checked) { fail('Confirm read access for this root.'); return; } save.disabled = true;
-        try { await request('/api/base/roots', { method: 'POST', body: { path: path.value, confirm: true, expectedBaseRevision: state.revision } }); await load(); closeDialog(); status('Root approved. Reopen this context editor to select it.'); }
+        try {
+          await request('/api/base/roots', { method: 'POST', body: { path: path.value, confirm: true, expectedBaseRevision: state.revision } }); await load(); closeDialog();
+          // An open context editor offers the new root at once; its unsaved draft stays.
+          for (const pick of document.querySelectorAll('select.base-root-select')) for (const root of state.approvedRoots || []) if (![...pick.options].some(option => option.value === root.id)) pick.append(new Option(root.path || root.name || root.id, root.id));
+          status('Root approved. Choose it for a source.');
+        }
         catch (error) { fail(error); } finally { save.disabled = false; }
       });
       openDialog('Approve external folder', [form]);
@@ -753,15 +765,19 @@ window.PromptboardBase = (() => {
       openDialog('Apply to…', [p('Loading targets…')]);
       try {
         await context.refreshBoard?.(); await load();
-        const targets = state.targets.filter(entry => entry.target.scope !== 'profile');
+        // A profile becomes the agent profile of a global, project or column target (its provider and model apply there).
+        const profile = item.kind === 'profile';
+        const targets = state.targets.filter(entry => entry.target.scope !== 'profile' && (!profile || ['global', 'project', 'column'].includes(entry.target.scope)));
         const form = el('form'), list = el('div', undefined, 'base-apply-targets'), preview = el('div');
         const mode = select([['extend', 'Add to current selection'], ['replace', 'Replace local selection']], 'extend');
         const required = check('Required: block the run if this resource cannot be delivered', true);
         for (const entry of targets) { const row = check(entry.label || targetKey(entry.target)); row.control.dataset.targetKey = targetKey(entry.target); list.append(row.label); }
-        form.append(p(`Apply “${item.name}” by reference. No task starts, provider changes, permissions are granted, or software is installed.`), field('Assignment operation', mode), required.label, list, preview);
+        if (profile) form.append(p(`Use “${item.name}” as the agent profile of the chosen targets: its provider, model, instructions and resources apply there. No task starts, no permissions are granted and no software is installed.`), list, preview);
+        else form.append(p(`Apply “${item.name}” by reference. No task starts, provider changes, permissions are granted, or software is installed.`), field('Assignment operation', mode), required.label, list, preview);
         const fail = inlineError(form);
         const selected = () => targets.filter(entry => [...list.querySelectorAll(':checked')].some(node => node.dataset.targetKey === targetKey(entry.target)));
         const changes = () => selected().map(entry => {
+          if (profile) return { target: entry.target, expectedRevision: entry.revision, binding: entry.binding || INHERIT, profileId: item.id };
           const old = entry.binding || INHERIT;
           const include = mode.value === 'replace' ? [] : old.mode === 'inherit' ? [] : [...(old.include || [])];
           const found = include.find(ref => ref.resourceId === item.id);

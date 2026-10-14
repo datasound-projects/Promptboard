@@ -225,6 +225,11 @@ export function normalizeExecutionPolicy(input = {}) {
  * columns are always read-only, whatever any layer says. The legacy `permissionMode: 'plan'` of a custom
  * column still means read-only when no layer chose a workspace access.
  */
+/** Typed Planning and Code Review columns: their sessions use each CLI's strict read-only mode (buildSession). */
+export function strictReadOnlyColumn(config, columnId) {
+  const column = config?.columns.find(item => item.id === columnId);
+  return column?.role === 'active' && ['planning', 'code_review'].includes(KIND_STAGES[column.kind]);
+}
 export function resolveExecutionPolicy(config, columnId, task = {}, projectPolicy = {}) {
   const column = config.columns.find(item => item.id === columnId);
   if (!column) fail('The task refers to a missing column.');

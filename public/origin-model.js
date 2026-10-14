@@ -120,7 +120,8 @@ globalThis.PromptboardOriginModel = (() => {
     const str = (value, max = TEXT) => {
       if (value === undefined || value === null) return '';
       if (typeof value !== 'string') { fix(); return ''; }
-      const clean = value.replace(/\u0000/g, '');
+      // Terminal escape sequences and control characters (common in pasted PDF text) never reach a card or an agent.
+      const clean = value.replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '').replace(/[\u000b\u000c]/g, '\n').replace(/[\u0000-\u0008\u000e-\u001f\u007f]/g, '');
       if (clean.length > max || clean !== value) { fix(); return clean.slice(0, max); }
       return clean;
     };

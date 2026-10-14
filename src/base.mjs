@@ -288,9 +288,11 @@ function validateDiscoveredTool(resource, resources) {
   const server = resources.find(item => item.id === resource.configuration.serverId);
   if (!server?.connectionTest?.tools?.some(tool => tool.name === resource.configuration.toolName)) throw new BaseError('Choose a tool returned by an explicit connection test of its parent MCP server.', 'BASE_TOOL_NOT_DISCOVERED');
 }
-function validateSelection(state, binding, profileId) {
+function validateSelection(state, binding, profileId, scope) {
   const resources = new Map(state.base.resources.map(resource => [resource.id, resource]));
   for (const resourceId of [...binding.include.map(ref => ref.resourceId), ...binding.exclude]) if (!resources.has(resourceId)) throw new BaseError('A selected Base resource no longer exists.', 'BASE_NOT_FOUND', 404);
+  // An agent profile is a target's profile (its provider and model apply), not a resource; only a profile nests profiles.
+  if (scope !== 'profile' && binding.include.some(ref => resources.get(ref.resourceId)?.kind === 'profile')) fail('Choose an agent profile as the agent profile of a global, project or column target, not as one of its resources.');
   if (profileId && resources.get(profileId)?.kind !== 'profile') fail('Choose an existing agent profile.');
 }
 function targetEntity(state, target, create = false) {
@@ -380,7 +382,7 @@ export class Base {
         const scope = targetEntity(state, change.target, true);
         if (change.expectedRevision !== undefined && (scope.entity.baseRevision || 0) !== change.expectedRevision) throw new BaseError('A target changed. Reload the assignment preview.', 'BASE_TARGET_REVISION_CONFLICT', 409);
         if (change.profileId !== undefined && !scope.profileKey) fail('Task resource overrides do not change provider profiles.');
-        validateSelection(state, change.binding, change.profileId);
+        validateSelection(state, change.binding, change.profileId, change.target?.scope);
         scope.entity[scope.bindingKey] = change.binding;
         if (change.profileId !== undefined) scope.entity[scope.profileKey] = change.profileId ? id(change.profileId) : null;
         scope.entity.baseRevision = (scope.entity.baseRevision || 0) + 1;
@@ -582,6 +584,6 @@ export class Base {
       meta[field[1]] = field[2].replace(/^(?:"(.*)"|'(.*)')$/, (_, double, single) => double ?? single);
     }
     if (!meta.name || !meta.description || !markdown.slice(match[0].length).trim()) fail('SKILL.md needs name, description, and instruction text.');
-    return this.create({ kind: 'skill', name: name || meta.name, description: description || meta.description, tags, enabled: false, trust: 'untrusted', configuration: { format: 'instruction', entrypoint: 'SKILL.md' }, content: { body: markdown.slice(match[0].length), files: [{ path: 'SKILL.md', text: markdown }, ...files] } }, options);
+    return this.create({ kind: 'skill', name: name || meta.name, description: description || meta.description, tags, enabled: false, trust: 'untrusted', configuration: { format: 'instruction', entrypoint: 'SKILL.md' }, content: { body: markdown.slice(match[0].length), files: [{ path: 'SKILL.md', text: markdown }, ...files.filter(file => file?.path !== 'SKILL.md')] } }, options); // The imported SKILL.md replaces any earlier copy.
   }
 }
