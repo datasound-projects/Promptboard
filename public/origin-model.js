@@ -809,7 +809,7 @@ globalThis.PromptboardOriginModel = (() => {
     items: [['title'], ['description'], ['acceptanceCriteria']],
   };
   const RESEARCH_NOUN = { requirements: 'requirement', components: 'component', technologies: 'technology', dependencies: 'dependency', decisions: 'decision', assumptions: 'assumption',
-    risks: 'risk', sources: 'source', layers: 'layer', areas: 'planning answer', milestones: 'milestone', items: 'task' };
+    risks: 'risk', sources: 'source', layers: 'layer', areas: 'planning answer', milestones: 'milestone', items: 'task', connections: 'connection' };
   const RESEARCH_GROUPS = [['components', 'Building blocks'], ['requirements', 'Requirements'], ['technologies', 'Technologies'], ['dependencies', 'Dependencies'],
     ['decisions', 'Decisions'], ['assumptions', 'Assumptions'], ['risks', 'Risks'], ['layers', 'Layers']];
   // The records each built-in section is made of.
@@ -852,7 +852,8 @@ globalThis.PromptboardOriginModel = (() => {
     const links = [['technologyIds', 'technologies', 'technologies'], ['componentIds', 'components', 'components'], ['requirementIds', 'requirements', 'requirements'],
       ['requiredBy', 'components', 'required by'], ['dependsOn', collection === 'items' ? 'items' : 'dependencies', 'depends on'], ['dependencyIds', 'dependencies', 'dependencies']];
     for (const [field, list, title] of links) { const names = name(list, entry[field]); if (names.length) lines2.push(`  ${title}: ${names.join(', ')}`); }
-    if (collection === 'components' && entry.layerId) lines2.push(`  layer: ${recordTitle(blueprint, 'layers', blueprint.layers.find(layer => layer.id === entry.layerId) || { id: entry.layerId })}`);
+    if (entry.layerId) lines2.push(`  layer: ${recordTitle(blueprint, 'layers', blueprint.layers.find(layer => layer.id === entry.layerId) || { id: entry.layerId })}`);
+    if (collection === 'items' && entry.milestoneId) lines2.push(`  milestone: ${recordTitle(blueprint, 'milestones', blueprint.milestones.find(item => item.id === entry.milestoneId) || { id: entry.milestoneId })}`);
     if (collection === 'components') for (const question of blueprint.questions.filter(item => item.scope === 'component' && hasText(entry.answers?.[item.id]))) lines2.push(`  [question ${question.id}] ${clip(question.text, 200)} → ${clip(entry.answers[question.id], max)}`);
     return lines2.join('\n');
   }
@@ -872,7 +873,7 @@ globalThis.PromptboardOriginModel = (() => {
     }
     if (id === 'architecture' && !brief) for (const connection of blueprint.connections) {
       const from = blueprint.components.find(entry => entry.id === connection.from), to = blueprint.components.find(entry => entry.id === connection.to);
-      out.push(`  connection: ${from?.name || 'Unnamed'} → ${to?.name || 'Unnamed'}${[connection.label, connection.protocol].filter(hasText).length ? ` (${[connection.label, connection.protocol].filter(hasText).join(', ')})` : ''}`);
+      out.push(`  [connections ${connection.id}] connection: ${from?.name || 'Unnamed'} → ${to?.name || 'Unnamed'}${[connection.label, connection.protocol].filter(hasText).length ? ` (${[connection.label, connection.protocol].filter(hasText).join(', ')})` : ''}`);
     }
     if (AREAS[id]) {
       const open = [];
@@ -963,6 +964,38 @@ globalThis.PromptboardOriginModel = (() => {
     return { text: text.trim(), label: label2, size: text.length, omitted };
   }
 
+  // New-record defaults, shared by the Origin page (quick add) and research suggestions.
+  const today = () => new Date().toLocaleDateString('en-CA');
+  const RECORD_DEFAULTS = {
+    requirements: title => ({ title, description: '', type: 'functional', priority: 'should', status: 'draft', acceptanceCriteria: '', componentIds: [], sourceIds: [] }),
+    components: name => ({ name, type: 'service', purpose: '', responsibilities: '', technologyIds: [], interfaces: '', dataHandled: '', status: 'draft', notes: '', sourceIds: [], x: null, y: null, layerId: '', answers: {} }),
+    technologies: name => ({ name, category: 'other', purpose: '', version: '', status: 'candidate', reason: '', alternatives: '', sourceIds: [] }),
+    dependencies: name => ({ name, type: 'package', version: '', requiredBy: [], dependsOn: [], sourceIds: [], notes: '' }),
+    decisions: title => ({ title, context: '', decision: '', alternatives: '', reason: '', consequences: '', status: 'proposed', date: today(), supersededBy: '', componentIds: [], technologyIds: [], requirementIds: [], dependencyIds: [], sourceIds: [] }),
+    assumptions: statement => ({ statement, reason: '', impact: '', status: 'open', decisionId: '', sourceIds: [] }),
+    sources: title => ({ title, url: '', type: 'documentation', claim: '', accessedAt: today(), verification: 'unverified', notes: '' }),
+    risks: title => ({ title, description: '', kind: 'risk', severity: 'medium', mitigation: '', status: 'open', componentIds: [] }),
+    milestones: title => ({ title, goal: '', definitionOfDone: '' }),
+    items: title => ({ milestoneId: '', workstream: '', title, description: '', acceptanceCriteria: '', dependsOn: [], requirementIds: [], componentIds: [], layerId: '', contextIds: [], status: 'planned', handoff: null, refinement: null, lostLinks: [] }),
+    layers: name => ({ name, description: '', technologyIds: [], constraints: '' }),
+    areas: (title, section, area) => ({ section, area, title, description: '', status: 'defined', componentIds: [], requirementIds: [], technologyIds: [], baseResourceIds: [] }),
+    connections: () => ({ from: '', to: '', label: '', protocol: '', notes: '' }),
+  };
+  // Relationships a suggestion may set: field → the collection it points to. Single links hold one ID.
+  const LINKS = {
+    components: { technologyIds: 'technologies', layerId: 'layers' },
+    requirements: { componentIds: 'components' },
+    dependencies: { requiredBy: 'components', dependsOn: 'dependencies' },
+    decisions: { componentIds: 'components', technologyIds: 'technologies', requirementIds: 'requirements', dependencyIds: 'dependencies' },
+    risks: { componentIds: 'components' },
+    layers: { technologyIds: 'technologies' },
+    items: { componentIds: 'components', requirementIds: 'requirements', dependsOn: 'items', milestoneId: 'milestones', layerId: 'layers' },
+    connections: { from: 'components', to: 'components' },
+    areas: { componentIds: 'components', requirementIds: 'requirements', technologyIds: 'technologies' },
+  };
+  const SINGLE_LINKS = new Set(['layerId', 'milestoneId', 'from', 'to']);
+  const REF = /^@[A-Za-z0-9_.-]{1,60}$/;
+
   // ---- Origin Research suggestions: validated against the blueprint by stable IDs, applied only by the person ----
   // Fields a suggestion may set, per collection: a maximum length, an enum name, or 'url'. Links, keys and
   // positions are never set by a suggestion, and a source can never be marked verified by one.
@@ -978,8 +1011,11 @@ globalThis.PromptboardOriginModel = (() => {
     layers: { name: 80, description: 2000, constraints: TEXT },
     areas: { title: NAME, description: TEXT },
     milestones: { title: NAME, goal: TEXT, definitionOfDone: TEXT },
+    items: { title: NAME, description: TEXT, acceptanceCriteria: TEXT, workstream: 80 },
+    connections: { label: 80, protocol: 80, notes: 2000 },
   };
-  const SUGGEST_ADD = ['requirements', 'components', 'technologies', 'dependencies', 'decisions', 'assumptions', 'risks', 'sources'];
+  // New records research may suggest, in the order a batch applies them (what others point to comes first).
+  const SUGGEST_ADD = ['layers', 'technologies', 'components', 'requirements', 'dependencies', 'milestones', 'items', 'decisions', 'assumptions', 'risks', 'sources', 'connections'];
   const NAME_FIELD = { components: 'name', technologies: 'name', dependencies: 'name', assumptions: 'statement', layers: 'name' };
   const nameField = collection => NAME_FIELD[collection] || 'title';
   class SuggestionError extends Error {}
@@ -998,13 +1034,27 @@ globalThis.PromptboardOriginModel = (() => {
     }
     return text.length > rule ? `${text.slice(0, rule - 1)}…` : text;
   }
+  /**
+   * A relationship value: existing IDs of the right collection, or @references to new records suggested in the same
+   * batch (`refs` maps a reference to its collection). Many-links are lists; layerId, milestoneId, from and to hold one.
+   */
+  function linkValue(blueprint, collection, field, value, refs) {
+    const to = LINKS[collection]?.[field];
+    if (!to) reject(`${collection}.${field} is not a relationship.`);
+    const valid = id => (typeof id === 'string' && (REF.test(id) ? refs.get(id.slice(1)) === to : blueprint[to].some(entry => entry.id === id)));
+    if (SINGLE_LINKS.has(field)) { if (!valid(value)) reject(`${field} must name one existing ${to.replace(/ies$/, 'y').replace(/s$/, '')}.`); return value; }
+    if (!Array.isArray(value)) reject(`${field} must be a list of IDs.`);
+    const ids = [...new Set(value)].slice(0, 50);
+    if (!ids.length || !ids.every(valid)) reject(`${field} must list existing ${to} (or new ones from this answer).`);
+    return ids;
+  }
   /** A stable key for a suggestion's target: suggestions with the same key change the same field. */
   const researchTargetKey = target => target.kind === 'add' ? `add:${target.collection}` : [target.kind, target.collection, target.id, target.field, target.componentId, target.questionId, target.section, target.area].filter(Boolean).join(':');
   /** The current value of a target, '' when empty, or undefined when the target no longer exists. */
   function researchTargetValue(blueprint, target) {
     if (target.kind === 'idea') return blueprint.idea || '';
     if (target.kind === 'vision') return VISION.includes(target.field) ? blueprint.vision[target.field] || '' : undefined;
-    if (target.kind === 'record') { const entry = blueprint[target.collection]?.find(item => item.id === target.id); return entry ? entry[target.field] ?? '' : undefined; }
+    if (target.kind === 'record') { const entry = blueprint[target.collection]?.find(item => item.id === target.id); return entry ? entry[target.field] ?? (SINGLE_LINKS.has(target.field) ? '' : LINKS[target.collection]?.[target.field] ? [] : '') : undefined; }
     if (target.kind === 'answer') return blueprint.questions.some(item => item.id === target.questionId && item.scope === 'section') ? blueprint.answers[target.questionId] || '' : undefined;
     if (target.kind === 'componentAnswer') {
       const component = blueprint.components.find(item => item.id === target.componentId);
@@ -1014,6 +1064,77 @@ globalThis.PromptboardOriginModel = (() => {
     if (target.kind === 'add') return null;
     return undefined;
   }
+  /**
+   * Apply one approved suggestion to a blueprint in place, like a hand edit. `refs` maps batch references to the IDs of
+   * records already created from them; links to records not created yet are returned in `pending`, to be resolved
+   * with resolveResearchLinks once the batch is applied. A removed target, a field that changed since the research
+   * (unless `force`), a duplicate name or a duplicate connection is a conflict: nothing changes.
+   */
+  function applyResearchSuggestion(blueprint, proposal, { value = proposal.value, force = false, newId, refs = new Map() } = {}) {
+    const target = proposal.target, pending = [];
+    const current = researchTargetValue(blueprint, target);
+    if (current === undefined) return { conflict: 'The part this suggestion changes no longer exists.', missing: true };
+    // Resolve one link value: @references through `refs`, IDs only while their record still exists.
+    const resolve = (collection, field, given, recordId) => {
+      const to = LINKS[collection][field], exists = id => blueprint[to].some(entry => entry.id === id);
+      const one = id => { if (REF.test(id)) { const made = refs.get(id.slice(1)); if (made && exists(made)) return made; pending.push({ collection, id: recordId, field, ref: id.slice(1) }); return null; } return exists(id) ? id : null; };
+      return SINGLE_LINKS.has(field) ? one(given) || '' : given.map(one).filter(Boolean);
+    };
+    if (target.kind === 'add') {
+      const collection = target.collection, fields = value && typeof value === 'object' ? value : {};
+      const id = newId(), entry = { id, origin: 'ai', ...RECORD_DEFAULTS[collection](collection === 'connections' ? undefined : String(fields[nameField(collection)] || '').trim()) };
+      for (const [field, given] of Object.entries(fields)) {
+        if (LINKS[collection]?.[field] !== undefined) entry[field] = resolve(collection, field, given, id);
+        else if (SUGGEST_FIELDS[collection]?.[field] !== undefined && typeof given === 'string') entry[field] = suggestionValue(collection, field, given);
+      }
+      if (collection === 'connections') {
+        if (!entry.from || !entry.to) return { conflict: 'Apply the two components of this connection first.' };
+        if (!force && blueprint.connections.some(item => item.from === entry.from && item.to === entry.to)) return { conflict: 'These components are already connected.' };
+      } else {
+        const name = String(entry[nameField(collection)] || '').trim();
+        if (!name) return { error: 'A new record needs a name.' };
+        if (!force && blueprint[collection].some(item => String(item[nameField(collection)] || '').trim().toLowerCase() === name.toLowerCase())) return { conflict: `A ${RESEARCH_NOUN[collection]} named “${name}” already exists.` };
+      }
+      if (collection === 'sources') Object.assign(entry, { verification: 'unverified', accessedAt: today() }); // Research never verifies a source.
+      if (KEYS[collection]) entry.key = nextKey(blueprint, collection);
+      blueprint[collection].push(entry);
+      if (proposal.ref) refs.set(proposal.ref, id);
+      return { ok: true, created: { collection, id }, pending };
+    }
+    const same = (a, b) => JSON.stringify(a ?? '') === JSON.stringify(b ?? '') || (typeof a === 'string' && typeof b === 'string' && a.trim() === b.trim());
+    if (target.kind === 'record' && LINKS[target.collection]?.[target.field] !== undefined) {
+      const entry = blueprint[target.collection].find(item => item.id === target.id);
+      if (SINGLE_LINKS.has(target.field)) {
+        if (!force && !same(current, proposal.original)) return { conflict: 'This link changed after the research ran.', current };
+        entry[target.field] = resolve(target.collection, target.field, value, entry.id);
+      } else entry[target.field] = [...new Set([...(entry[target.field] || []), ...resolve(target.collection, target.field, value, entry.id)])]; // Links are added, never removed.
+      return { ok: true, pending };
+    }
+    if (!force && !same(current, proposal.original)) return { conflict: 'This field changed after the research ran.', current };
+    const text = typeof value === 'string' ? value : String(value ?? '');
+    if (target.kind === 'idea') blueprint.idea = text;
+    else if (target.kind === 'vision') blueprint.vision[target.field] = text;
+    else if (target.kind === 'record') blueprint[target.collection].find(item => item.id === target.id)[target.field] = text;
+    else if (target.kind === 'answer') blueprint.answers[target.questionId] = text;
+    else if (target.kind === 'componentAnswer') { const component = blueprint.components.find(item => item.id === target.componentId); component.answers = { ...component.answers, [target.questionId]: text }; }
+    else if (target.kind === 'topic') {
+      const entry = blueprint.areas.find(item => item.section === target.section && item.area === target.area);
+      if (entry) entry.title = text; else blueprint.areas.push({ id: newId(), origin: 'ai', ...RECORD_DEFAULTS.areas(text, target.section, target.area) });
+    }
+    return { ok: true, pending };
+  }
+  /** Links that pointed at records created later in the same batch. Returns the ones that still cannot be resolved. */
+  function resolveResearchLinks(blueprint, pending, refs) {
+    const left = [];
+    for (const link of pending) {
+      const entry = blueprint[link.collection]?.find(item => item.id === link.id), made = refs.get(link.ref), to = LINKS[link.collection]?.[link.field];
+      if (!entry || !made || !blueprint[to]?.some(item => item.id === made)) { left.push(link); continue; }
+      if (SINGLE_LINKS.has(link.field)) entry[link.field] = made; else entry[link.field] = [...new Set([...(entry[link.field] || []), made])];
+    }
+    return left;
+  }
+  /** A record's display name, for review cards and links. */
+  const researchName = (blueprint, collection, id) => { const entry = blueprint[collection]?.find(item => item.id === id); return entry ? recordTitle(blueprint, collection, entry) : ''; };
   /** Where a suggestion goes, in the project's own words, for the review card. */
   function researchTargetLabel(blueprint, target) {
     const noun = RESEARCH_NOUN[target.collection] || target.collection;
@@ -1030,17 +1151,22 @@ globalThis.PromptboardOriginModel = (() => {
    * Check one suggestion from a research agent against the blueprint. Returns { op, target, value, original, title, why,
    * evidence } or throws when the target does not exist, the field cannot be suggested or the value is invalid.
    */
-  function validateResearchSuggestion(blueprint, raw) {
+  function validateResearchSuggestion(blueprint, raw, { refs = new Map() } = {}) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) reject('A suggestion must be an object.');
     const source = raw.target && typeof raw.target === 'object' ? raw.target : {};
-    let target, value;
+    let target, value, ref = '';
     if (source.kind === 'add') {
-      if (!SUGGEST_ADD.includes(source.collection)) reject('New records can be requirements, components, technologies, dependencies, decisions, assumptions, risks or sources.');
+      if (!SUGGEST_ADD.includes(source.collection)) reject(`New records can be: ${SUGGEST_ADD.join(', ')}.`);
       if (!raw.value || typeof raw.value !== 'object' || Array.isArray(raw.value)) reject('A new record needs its fields.');
       target = { kind: 'add', collection: source.collection };
       value = {};
-      for (const [field, given] of Object.entries(raw.value)) if (SUGGEST_FIELDS[source.collection][field] !== undefined && typeof given === 'string' && given.trim()) value[field] = suggestionValue(source.collection, field, given);
-      if (!hasText(value[nameField(source.collection)])) reject(`A new ${RESEARCH_NOUN[source.collection]} needs a ${nameField(source.collection)}.`);
+      for (const [field, given] of Object.entries(raw.value)) {
+        if (LINKS[source.collection]?.[field] !== undefined) { if (given !== undefined && given !== null && !(Array.isArray(given) && !given.length) && given !== '') value[field] = linkValue(blueprint, source.collection, field, given, refs); }
+        else if (SUGGEST_FIELDS[source.collection][field] !== undefined && typeof given === 'string' && given.trim()) value[field] = suggestionValue(source.collection, field, given);
+      }
+      if (source.collection === 'connections') { if (!value.from || !value.to || value.from === value.to) reject('A new connection needs two different components: from and to.'); }
+      else if (!hasText(value[nameField(source.collection)])) reject(`A new ${RESEARCH_NOUN[source.collection] || source.collection} needs a ${nameField(source.collection)}.`);
+      if (typeof raw.ref === 'string' && /^[A-Za-z0-9_.-]{1,60}$/.test(raw.ref)) ref = raw.ref;
     } else {
       if (source.kind === 'idea') target = { kind: 'idea' };
       else if (source.kind === 'vision') target = { kind: 'vision', field: String(source.field) };
@@ -1050,18 +1176,20 @@ globalThis.PromptboardOriginModel = (() => {
       else if (source.kind === 'topic') target = { kind: 'topic', section: String(source.section), area: String(source.area) };
       else reject('Unknown suggestion target.');
       if (researchTargetValue(blueprint, target) === undefined) reject('The suggested target does not exist in this blueprint.');
-      value = target.kind === 'record' ? suggestionValue(target.collection, target.field, raw.value)
+      value = target.kind === 'record' && LINKS[target.collection]?.[target.field] !== undefined ? linkValue(blueprint, target.collection, target.field, raw.value, refs)
+        : target.kind === 'record' ? suggestionValue(target.collection, target.field, raw.value)
         : typeof raw.value === 'string' && raw.value.trim() ? (raw.value.trim().length > (target.kind === 'topic' ? NAME : TEXT) ? raw.value.trim().slice(0, target.kind === 'topic' ? NAME : TEXT) : raw.value.trim()) : reject('A suggested value must be text.');
     }
     const original = researchTargetValue(blueprint, target);
-    if (target.kind !== 'add' && original.trim() === value) reject('The suggestion does not change anything.');
+    if (Array.isArray(value) && Array.isArray(original) && value.every(id => original.includes(id))) reject('The suggestion does not change anything.');
+    if (target.kind !== 'add' && typeof original === 'string' && original.trim() === value) reject('The suggestion does not change anything.');
     const text = (input, max) => (typeof input === 'string' ? clip(input, max) : '');
-    return { op: target.kind === 'add' ? 'add' : 'set', target, key: researchTargetKey(target), value, original, title: text(raw.title, 160) || researchTargetLabel(blueprint, target), why: text(raw.why, 2000),
+    return { op: target.kind === 'add' ? 'add' : 'set', target, key: researchTargetKey(target), value, original, ...(ref ? { ref } : {}), title: text(raw.title, 160) || researchTargetLabel(blueprint, target), why: text(raw.why, 2000),
       evidence: (Array.isArray(raw.evidence) ? raw.evidence : []).filter(item => typeof item === 'string' && item.trim()).slice(0, 10).map(item => clip(item, 500)) };
   }
 
   return { SCHEMA, VERSION, ID, PHASES, SECTIONS, ENUMS, AREAS, VISION, LIMITS, CONTEXT_COLLECTIONS, QUESTIONS, VISION_QUESTIONS, COMPONENT_FIELDS, SECTION_STATE, VERIFICATION_LABELS,
     label, sectionLabel, sectionTitle, phaseTitle, phaseList, questionText, lines, emptyBlueprint, nextKey, normalizeBlueprint, verification, isStarted, itemName, issues, readiness, sectionStates,
     composeSpec, orderItems, taskHome, taskContext, taskBody, suggestionBrief, researchTargets, researchContext, researchRecord, RESEARCH_FIELDS,
-    SUGGEST_FIELDS, SUGGEST_ADD, researchTargetKey, researchTargetValue, researchTargetLabel, validateResearchSuggestion };
+    SUGGEST_FIELDS, SUGGEST_ADD, LINKS, RECORD_DEFAULTS, researchTargetKey, researchTargetValue, researchTargetLabel, researchName, validateResearchSuggestion, applyResearchSuggestion, resolveResearchLinks };
 })();
