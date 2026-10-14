@@ -35,7 +35,7 @@ test('suggestions are checked against the blueprint by stable IDs; sources are n
     [{ target: { kind: 'record', collection: 'technologies', id: 't1', field: 'status' }, value: 'perfect' }, /not a valid status/],
     [{ target: { kind: 'vision', field: 'goal' }, value: 'Sell online' }, /does not change anything/],
     [{ target: { kind: 'answer', questionId: 'missing' }, value: 'x' }, /does not exist/],
-    [{ target: { kind: 'add', collection: 'items' }, value: { title: 'x' } }, /New records can be/],
+    [{ target: { kind: 'add', collection: 'customSections' }, value: { title: 'x' } }, /New records can be/], // The project's own structure stays the person's.
     [{ target: { kind: 'add', collection: 'technologies' }, value: { purpose: 'no name' } }, /needs a name/],
     [{ target: { kind: 'add', collection: 'sources' }, value: { title: 'Bad', url: 'https://user:pw@example.com/x' } }, /without credentials/],
     [{ target: { kind: 'other' }, value: 'x' }, /Unknown suggestion target/],
@@ -85,4 +85,57 @@ test('runs store suggestions with the answer; the review state is saved with the
   assert.equal((await api(`${path}/${proposals[1].id}`, 'PATCH', { status: 'done' })).status, 400);
   const after = (await api(`/api/origin/projects/${project.id}`)).data;
   assert.deepEqual([after.revision, after.blueprint.vision.goal, after.blueprint.technologies.length], [before.revision, '', 0], 'only the page applies suggestions, through Origin’s save');
+});
+
+test('whole-project suggestions: new layers, components, connections and tasks link to each other by reference; applied in order with links resolved', () => {
+  const bp = blueprint();
+  let n = 0; const newId = () => `x${++n}`;
+  const raw = [
+    { ref: 'task', title: 'Build the cart API', target: { kind: 'add', collection: 'items' }, value: { title: 'Cart API', acceptanceCriteria: 'Items can be added and removed', componentIds: ['@cart'], dependsOn: ['@schema'] } },
+    { ref: 'schema', title: 'Create the schema', target: { kind: 'add', collection: 'items' }, value: { title: 'Database schema', acceptanceCriteria: 'Migrations run', componentIds: ['@db'] } },
+    { ref: 'cart', title: 'Cart service', target: { kind: 'add', collection: 'components' }, value: { name: 'Cart service', type: 'service', purpose: 'Keeps carts', technologyIds: ['t1'], layerId: '@backend' } },
+    { ref: 'db', title: 'Orders DB', target: { kind: 'add', collection: 'components' }, value: { name: 'Orders DB', type: 'database', purpose: 'Stores orders', layerId: '@backend' } },
+    { ref: 'backend', title: 'Backend layer', target: { kind: 'add', collection: 'layers' }, value: { name: 'Backend', technologyIds: ['t1'] } },
+    { title: 'Cart uses the DB', target: { kind: 'add', collection: 'connections' }, value: { from: '@cart', to: '@db', label: 'reads and writes', protocol: 'SQL' } },
+    { title: 'API uses PostgreSQL', target: { kind: 'record', collection: 'components', id: 'c1', field: 'technologyIds' }, value: ['t1'] },
+    { title: 'Broken link', target: { kind: 'add', collection: 'items' }, value: { title: 'Orphan', componentIds: ['@nowhere'] } },
+    { title: 'Wrong kind of link', target: { kind: 'add', collection: 'items' }, value: { title: 'Bad', componentIds: ['t1'] } },
+  ];
+  const record = { revision: 3, blueprint: bp };
+  const { proposals, dropped } = proposalsFor(record, raw, { messageId: 'abcdef1234' });
+  assert.equal(dropped, 2, 'links to unknown references or to the wrong collection are refused');
+  assert.ok(proposals.every(proposal => !proposal.ref || proposal.ref.startsWith('abcdef12.')), 'references are local to one answer');
+  // Apply in the panel's order: new records by collection order, then field changes, then the links left.
+  const order = M.SUGGEST_ADD, refs = new Map(), pending = [];
+  const sorted = [...proposals].sort((a, b) => (a.op === 'add' ? order.indexOf(a.target.collection) : 99) - (b.op === 'add' ? order.indexOf(b.target.collection) : 99));
+  for (const proposal of sorted) { const result = M.applyResearchSuggestion(bp, proposal, { newId, refs }); assert.ok(result.ok, JSON.stringify(result)); pending.push(...result.pending); }
+  assert.deepEqual(M.resolveResearchLinks(bp, pending, refs), [], 'every link resolves once the batch is applied');
+  const byName = (list, name, field = 'name') => bp[list].find(entry => entry[field] === name);
+  const backend = byName('layers', 'Backend'), cart = byName('components', 'Cart service'), db = byName('components', 'Orders DB');
+  assert.deepEqual([cart.layerId, db.layerId, cart.technologyIds, cart.origin], [backend.id, backend.id, ['t1'], 'ai']);
+  assert.deepEqual(bp.connections.map(entry => [entry.from, entry.to, entry.protocol]), [[cart.id, db.id, 'SQL']], 'the architecture diagram gets its edge');
+  const schema = byName('items', 'Database schema', 'title'), api = byName('items', 'Cart API', 'title');
+  assert.deepEqual([api.dependsOn, api.componentIds, schema.componentIds], [[schema.id], [cart.id], [db.id]]);
+  assert.match(api.key, /^IMP-\d{3}$/, 'tasks get their stable key');
+  assert.deepEqual(bp.components.find(entry => entry.id === 'c1').technologyIds, ['t1'], 'links are added');
+  assert.equal(M.normalizeBlueprint(structuredClone(bp)).repairs ?? 0, 0, 'the result is a valid blueprint');
+  // Applying the same result twice never duplicates records or connections.
+  const again = M.applyResearchSuggestion(bp, sorted.find(proposal => proposal.target.collection === 'components'), { newId, refs: new Map() });
+  assert.match(again.conflict, /already exists/);
+  const edge = M.applyResearchSuggestion(bp, sorted.find(proposal => proposal.target.collection === 'connections'), { newId, refs });
+  assert.match(edge.conflict, /already connected/);
+});
+
+test('a single link has a conflict check; many-links only add; a source suggested by research is never verified', () => {
+  const bp = blueprint(); let n = 0; const newId = () => `y${++n}`;
+  bp.layers.push({ id: 'l1', origin: 'human', name: 'Web', description: '', technologyIds: [], constraints: '' }, { id: 'l2', origin: 'human', name: 'Data', description: '', technologyIds: [], constraints: '' });
+  const move = M.validateResearchSuggestion(bp, { target: { kind: 'record', collection: 'components', id: 'c1', field: 'layerId' }, value: 'l2' });
+  bp.components[0].layerId = 'l1'; // The person chose a layer after the research ran.
+  assert.match(M.applyResearchSuggestion(bp, move, { newId }).conflict, /changed after the research/);
+  assert.ok(M.applyResearchSuggestion(bp, move, { newId, force: true }).ok);
+  assert.equal(bp.components[0].layerId, 'l2');
+  const source = M.validateResearchSuggestion(bp, { target: { kind: 'add', collection: 'sources' }, value: { title: 'Postgres docs', url: 'https://www.postgresql.org/docs/' } });
+  M.applyResearchSuggestion(bp, { ...source, value: { ...source.value, verification: 'verified' } }, { newId });
+  assert.equal(bp.sources.at(-1).verification, 'unverified');
+  assert.throws(() => M.validateResearchSuggestion(bp, { target: { kind: 'record', collection: 'components', id: 'c1', field: 'technologyIds' }, value: [] }), /must list/);
 });

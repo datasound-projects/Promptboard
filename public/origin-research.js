@@ -274,6 +274,14 @@ window.PromptboardOriginResearch = (() => {
       }
       if (running) for (const agent of running.agents.values()) log.append(liveView(agent));
       const pending = [...selected].filter(id => chat?.proposals?.some(entry => entry.id === id && ['pending', 'conflict'].includes(entry.status)));
+      const open = (chat?.proposals || []).filter(entry => entry.status === 'pending');
+      if (!pending.length && open.length > 1 && !running) {
+        const bar = el('div', 'origin-research-apply-bar');
+        const all = button(`Apply all (${open.length})`, () => void applyMany(open.map(entry => entry.id)), 'origin-ghost origin-research-apply-selected', 'Apply every pending suggestion. Conflicts change nothing and stay for your choice.');
+        all.id = 'origin-research-apply-all'; all.disabled = applying;
+        bar.append(all, el('span', 'origin-research-hint', 'Or select cards to apply only some.'));
+        return [log, bar];
+      }
       if (pending.length) {
         const bar = el('div', 'origin-research-apply-bar');
         const apply = button(`Apply selected (${pending.length})`, () => void applyMany(pending), 'origin-ghost origin-research-apply-selected'); apply.id = 'origin-research-apply-selected'; apply.disabled = applying || Boolean(running);
@@ -330,7 +338,19 @@ window.PromptboardOriginResearch = (() => {
     }
     // ---- Suggestions: Preview | Edit | Apply | Reject ----
     const STATUS = { pending: '', applied: 'Applied', rejected: 'Rejected', conflict: 'Conflict' };
-    const valueText = value => (value && typeof value === 'object' ? Object.entries(value).map(([field, text]) => `${field}: ${text}`).join('\n') : String(value ?? ''));
+    /** Names for linked IDs: existing records by name, new records from this chat by name with "(new)". */
+    const linkName = (collection, id) => {
+      if (typeof id === 'string' && id.startsWith('@')) { const made = chat?.proposals?.find(entry => entry.ref === id.slice(1)); const name = made && (made.value?.name || made.value?.title || made.value?.statement); return name ? `${name} (new)` : 'a new record'; }
+      return M().researchName(host.blueprint() || {}, collection, id) || 'a removed record';
+    };
+    const valueText = (value, collection = '') => {
+      const links = M().LINKS[collection] || {};
+      const show = (field, given) => (links[field] ? (Array.isArray(given) ? given.map(id => linkName(links[field], id)).join(', ') : linkName(links[field], given)) : String(given ?? ''));
+      if (Array.isArray(value)) return value.map(id => linkName(collection, id)).join(', ');
+      return value && typeof value === 'object' ? Object.entries(value).map(([field, given]) => `${field}: ${show(field, given)}`).join('\n') : String(value ?? '');
+    };
+    const targetCollection = proposal => (proposal.target.kind === 'add' ? proposal.target.collection : proposal.target.collection || '');
+    const linkTarget = proposal => proposal.target.kind === 'record' && M().LINKS[proposal.target.collection]?.[proposal.target.field];
     function proposalCard(proposal) {
       const state = cards.get(proposal.id) || {}, blueprint = host.blueprint();
       const card = el('article', 'origin-research-proposal'); card.dataset.status = proposal.status; card.dataset.id = proposal.id;
@@ -350,12 +370,14 @@ window.PromptboardOriginResearch = (() => {
       if (proposal.evidence?.length) card.append(el('p', 'origin-research-evidence', `Evidence: ${proposal.evidence.join(' · ')}`));
       if (state.preview) {
         const diff = el('div', 'origin-research-diff');
-        if (proposal.op === 'set') diff.append(el('p', 'is-old', proposal.original ? valueText(proposal.original) : '(empty)'));
-        diff.append(el('p', 'is-new', valueText(state.draft ?? proposal.value)));
+        const linkCollection = linkTarget(proposal);
+        if (proposal.op === 'set') diff.append(el('p', 'is-old', proposal.original?.length ? valueText(proposal.original, linkCollection) : '(empty)'));
+        diff.append(el('p', 'is-new', state.draft ?? (linkCollection ? `+ ${valueText(proposal.value, linkCollection)}` : valueText(proposal.value, targetCollection(proposal)))));
         card.append(diff);
       }
       if (state.edit) {
-        const editor = el('textarea', 'origin-research-edit'); editor.rows = 4; editor.value = state.draft ?? valueText(proposal.value); editor.setAttribute('aria-label', `Edit “${proposal.title}”`);
+        const editable = proposal.op === 'add' ? Object.fromEntries(Object.entries(proposal.value).filter(([field]) => !M().LINKS[proposal.target.collection]?.[field])) : proposal.value;
+        const editor = el('textarea', 'origin-research-edit'); editor.rows = 4; editor.value = state.draft ?? valueText(editable); editor.setAttribute('aria-label', `Edit “${proposal.title}”`);
         editor.addEventListener('input', () => cards.set(proposal.id, { ...cards.get(proposal.id), draft: editor.value }));
         card.append(editor);
       }
@@ -365,7 +387,7 @@ window.PromptboardOriginResearch = (() => {
       const actions = el('div', 'origin-research-proposal-actions');
       if (['pending', 'conflict'].includes(proposal.status)) {
         const toggle = (key, label) => { const node = button(label, () => { cards.set(proposal.id, { ...state, [key]: !state[key] }); render(); }, 'origin-link'); node.setAttribute('aria-pressed', String(Boolean(state[key]))); return node; };
-        actions.append(toggle('preview', 'Preview'), toggle('edit', 'Edit'));
+        actions.append(toggle('preview', 'Preview'), ...(linkTarget(proposal) ? [] : [toggle('edit', 'Edit')])); // Links are chosen by ID; only text is edited.
         const apply = button(proposal.status === 'conflict' ? 'Replace anyway' : 'Apply', () => void applyOne(proposal, { force: proposal.status === 'conflict' }), 'origin-ghost origin-research-apply');
         apply.disabled = applying || Boolean(running);
         actions.append(apply, button(proposal.status === 'conflict' ? 'Keep mine' : 'Reject', () => void decide(proposal, 'rejected'), 'origin-link origin-research-reject'));
@@ -378,7 +400,8 @@ window.PromptboardOriginResearch = (() => {
       const draft = cards.get(proposal.id)?.draft;
       if (draft === undefined) return { value: proposal.value, edited: false };
       if (proposal.op === 'set') return { value: draft, edited: true };
-      const value = {};
+      const links = M().LINKS[proposal.target.collection] || {};
+      const value = Object.fromEntries(Object.entries(proposal.value).filter(([field]) => links[field])); // Links stay as suggested.
       for (const line of draft.split('\n')) { const match = line.match(/^(\w+):\s?(.*)$/); if (match && M().SUGGEST_FIELDS[proposal.target.collection]?.[match[1]] !== undefined) value[match[1]] = match[2]; }
       return { value, edited: true };
     }
@@ -389,23 +412,36 @@ window.PromptboardOriginResearch = (() => {
       render();
     }
     /** Apply through Origin's own editing path; a conflict changes nothing and is shown on the card. */
-    async function applyOne(proposal, { force = false } = {}) {
+    /** New records already created from this chat's suggestions, by their batch reference. */
+    const createdRefs = () => new Map((chat?.proposals || []).filter(entry => entry.ref && entry.createdId).map(entry => [entry.ref, entry.createdId]));
+    async function applyOne(proposal, { force = false, refs = createdRefs(), pending = [] } = {}) {
       const { value, edited } = chosenValue(proposal);
-      const result = host.applyProposal(proposal, { force, value });
-      if (result.ok) { await decide(proposal, 'applied', { edited, revision: host.revision() }); app.announce(`Applied: ${proposal.title}.`); return 'applied'; }
+      const result = host.applyProposal(proposal, { force, value, refs });
+      if (result.ok) {
+        pending.push(...(result.pending || []));
+        await decide(proposal, 'applied', { edited, revision: host.revision(), ...(result.created ? { createdId: result.created.id } : {}) });
+        // A single apply can complete links that earlier suggestions made to this record.
+        if (result.created && proposal.ref) host.resolveLinks?.(pendingLinks.splice(0), refs).forEach(link => pendingLinks.push(link));
+        if (result.pending?.length) pendingLinks.push(...result.pending);
+        app.announce(`Applied: ${proposal.title}.`); return 'applied';
+      }
       if (result.conflict) { cards.set(proposal.id, { ...cards.get(proposal.id), conflict: result.conflict, preview: true }); await decide(proposal, 'conflict'); return 'conflict'; }
       error = result.error || 'The suggestion could not be applied.'; render(); return 'error';
     }
+    // Links to new records that are not applied yet; completed when those records are applied.
+    const pendingLinks = [];
+    /** Apply several suggestions: new records first (what others link to comes first), then field changes, then links. */
     async function applyMany(ids) {
       applying = true; render();
-      const counts = { applied: 0, conflict: 0, error: 0 };
-      for (const id of ids) {
-        const proposal = chat?.proposals?.find(entry => entry.id === id);
-        if (proposal && ['pending', 'conflict'].includes(proposal.status)) counts[await applyOne(proposal, { force: false })]++;
-      }
+      const counts = { applied: 0, conflict: 0, error: 0 }, refs = createdRefs(), order = M().SUGGEST_ADD;
+      const chosen = ids.map(id => chat?.proposals?.find(entry => entry.id === id)).filter(entry => entry && ['pending', 'conflict'].includes(entry.status))
+        .sort((a, b) => (a.op === 'add' ? order.indexOf(a.target.collection) : 99) - (b.op === 'add' ? order.indexOf(b.target.collection) : 99));
+      for (const proposal of chosen) counts[await applyOne(proposal, { force: false, refs })]++;
+      const left = host.resolveLinks?.(pendingLinks.splice(0), refs) || [];
+      pendingLinks.push(...left);
       applying = false; selected.clear();
       await host.saveNow?.();
-      app.announce(`Applied ${counts.applied}${counts.conflict ? `; ${counts.conflict} conflict${counts.conflict === 1 ? '' : 's'} need${counts.conflict === 1 ? 's' : ''} your choice` : ''}.`);
+      app.announce(`Applied ${counts.applied}${counts.conflict ? `; ${counts.conflict} conflict${counts.conflict === 1 ? '' : 's'} need${counts.conflict === 1 ? 's' : ''} your choice` : ''}${left.length ? `; ${left.length} link${left.length === 1 ? '' : 's'} wait for records that are not applied` : ''}.`);
       render();
     }
     function settingsView() {

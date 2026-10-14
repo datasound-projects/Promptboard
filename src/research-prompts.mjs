@@ -14,18 +14,17 @@ const RULES = `# Rules
 - Do not run commands, write files or change anything outside this answer.`;
 
 // How agents propose blueprint changes. The person reviews each one; nothing is applied by the agent.
-const SUGGEST = `# Suggestions for the blueprint (optional)
-When your research shows a concrete improvement to the blueprint, end your answer with one fenced block of this form. Give at most 8 suggestions. Give none when you are not confident.
+const SUGGEST = `# Suggestions for the blueprint
+When your research shows concrete improvements, end your answer with one fenced block of this form. Suggest what the project really needs, from small field fixes to the missing records. Give none when you are not confident.
 \`\`\`origin-suggestions
 {"suggestions":[{"title":"short title","why":"one or two sentences","evidence":["S1","https://source.example/page"],"target":{...},"value":...}]}
 \`\`\`
-Targets use only the IDs that appear in brackets in the blueprint context:
-- {"kind":"record","collection":"technologies","id":"<id>","field":"reason"} with a text value. Fields: requirements title, description, acceptanceCriteria, type, priority; components name, type, purpose, responsibilities, interfaces, dataHandled, notes; technologies name, category, status, version, purpose, reason, alternatives; dependencies name, type, version, notes; decisions title, status, context, decision, alternatives, reason, consequences; assumptions statement, status, reason, impact; risks title, kind, severity, status, description, mitigation; sources title, type, url, claim, notes; layers name, description, constraints; areas title, description; milestones title, goal, definitionOfDone.
-- {"kind":"vision","field":"goal"} (or summary, problem, users, useCases, inScope, outOfScope, successCriteria, constraints, architectureSummary) with a text value.
-- {"kind":"topic","section":"security","area":"secrets"} with a short text answer, for a [topic …] line.
-- {"kind":"answer","questionId":"<id>"} or {"kind":"componentAnswer","componentId":"<id>","questionId":"<id>"} with a text answer, for a [question …] line.
-- {"kind":"add","collection":"technologies"} with an object of the fields above, for a new requirement, component, technology, dependency, decision, assumption, risk or source.
-Keep the person's existing text unless you improve it. Never weaken or remove a requirement or a constraint. A source you suggest stays unverified until the person checks it.`;
+Use only the IDs that appear in brackets in the blueprint context.
+Change a field: {"kind":"record","collection":"technologies","id":"<id>","field":"reason"} with a text value. Text fields: requirements title, description, acceptanceCriteria, type, priority; components name, type, purpose, responsibilities, interfaces, dataHandled, notes; technologies name, category, status, version, purpose, reason, alternatives; dependencies name, type, version, notes; decisions title, status, context, decision, alternatives, reason, consequences; assumptions statement, status, reason, impact; risks title, kind, severity, status, description, mitigation; sources title, type, url, claim, notes; layers name, description, constraints; areas title, description; milestones title, goal, definitionOfDone; items (tasks) title, description, acceptanceCriteria, workstream; connections label, protocol, notes.
+Add links: the same target with a link field and a list of IDs; links are added, never removed. Link fields: components technologyIds, layerId; requirements componentIds; dependencies requiredBy (components), dependsOn; decisions componentIds, technologyIds, requirementIds, dependencyIds; risks componentIds; layers technologyIds; items componentIds, requirementIds, dependsOn (tasks), milestoneId, layerId; areas componentIds, requirementIds, technologyIds.
+Answer a question: {"kind":"vision","field":"goal"} (or summary, problem, users, useCases, inScope, outOfScope, successCriteria, constraints, architectureSummary); {"kind":"topic","section":"security","area":"secrets"} for a [topic …] line; {"kind":"answer","questionId":"<id>"} or {"kind":"componentAnswer","componentId":"<id>","questionId":"<id>"} for a [question …] line. The value is the answer text.
+Add a record: {"kind":"add","collection":"<collection>"} with an object of its fields and links, and a short "ref" (for example "n1") so other new records can point to it as "@n1". Collections: layers, technologies, components, requirements, dependencies, milestones, items (implementation tasks with acceptanceCriteria and dependsOn), decisions, assumptions, risks, sources, connections (architecture links: {"from":"<component>","to":"<component>","label":"calls","protocol":"HTTPS"}).
+Keep the person's text unless you improve it. Never weaken or remove a requirement or a constraint. Do not add a record that already exists under another name. A source you suggest stays unverified until the person checks it.`;
 
 const WEB = { on: 'Web search is available. Use it when current facts matter, for example versions, prices, licenses, maintenance status or known problems. Prefer official documentation and primary sources.',
   off: 'Web search is not available. Use only the blueprint context and your own knowledge. Mark knowledge that can be out of date as an assumption.' };
