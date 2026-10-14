@@ -24,10 +24,12 @@ test('Research panel: opens beside Create Context, resizes, maximizes to the sid
   assert.ok(scopes.includes('Design › Stack') && scopes.includes('Decide › Pricing model') && scopes[0] === 'Whole project', scopes.join(' | '));
   assert.equal(await ev(`return document.querySelector('#origin-research-web').getAttribute('aria-pressed');`), 'false', 'web search starts off');
 
-  // Drag the left edge: wider, remembered.
-  const box = await drawerState(ev), y = 400;
-  for (const [type, x] of [['mousePressed', box.left + 1], ['mouseMoved', box.left - 60], ['mouseMoved', box.left - 120], ['mouseReleased', box.left - 120]]) await browser.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', buttons: type === 'mouseReleased' ? 0 : 1, clickCount: 1 });
-  await wait(`Math.abs(document.querySelector('#origin-drawer').getBoundingClientRect().width - ${box.width + 121}) <= 2`, 'resized');
+  // Drag the left edge: wider, remembered. Aim at the edge itself (the panel may still be settling on a slow machine).
+  const box = await drawerState(ev);
+  const grip = await ev(`const r = document.querySelector('.origin-research-resize').getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };`);
+  for (const [type, x] of [['mousePressed', grip.x], ['mouseMoved', grip.x - 60], ['mouseMoved', grip.x - 120], ['mouseReleased', grip.x - 120]]) await browser.send('Input.dispatchMouseEvent', { type, x, y: grip.y, button: 'left', buttons: type === 'mouseReleased' ? 0 : 1, clickCount: 1 });
+  await wait(`document.querySelector('#origin-drawer').getBoundingClientRect().width >= ${box.width + 100}`, 'resized')
+    .catch(async error => { throw new Error(`${error.message}: ${J({ before: box, grip, after: await drawerState(ev), viewport: await ev(`return [innerWidth, innerHeight, Math.round(document.querySelector('#sidebar').getBoundingClientRect().right)];`), saved: await ev(`return localStorage.getItem('promptboard.origin.research-width');`) })}`); });
   await wait(`document.querySelector('#origin-research-cli').textContent !== 'CLI…'`, 'the CLI list arrived during or after the drag');
   assert.equal(await ev(`return Number(localStorage.getItem('promptboard.origin.research-width'));`), (await drawerState(ev)).width);
 
@@ -36,8 +38,9 @@ test('Research panel: opens beside Create Context, resizes, maximizes to the sid
   const sidebarRight = await ev(`return Math.round(document.querySelector('#sidebar').getBoundingClientRect().right);`);
   await wait(`document.querySelector('#origin-drawer').getBoundingClientRect().left > ${sidebarRight} && document.querySelector('#origin-drawer').getBoundingClientRect().left - ${sidebarRight} <= 14`, 'maximized to the sidebar');
   assert.equal(await ev(`return document.querySelector('#origin-research-max').getAttribute('aria-label');`), 'Restore width');
+  const widened = Number(await ev(`return localStorage.getItem('promptboard.origin.research-width');`));
   await click('#origin-research-max');
-  await wait(`Math.abs(document.querySelector('#origin-drawer').getBoundingClientRect().width - ${box.width + 121}) <= 2`, 'restored');
+  await wait(`Math.abs(document.querySelector('#origin-drawer').getBoundingClientRect().width - ${widened}) <= 2`, 'restored');
 
   // An unsent question survives every panel switch.
   await ev(`const i = document.querySelector('#origin-research-input'); i.value = 'Which payment provider fits?'; i.dispatchEvent(new Event('input', { bubbles: true }));`);

@@ -244,3 +244,22 @@ test('Decision Lab and Blueprint Audit use their own instructions; a mode switch
     assert.equal((await run(app, token, project.id, audit, { text: '', settings: { provider: 'codex', mode: 'swarm', targets } })).status, 400, JSON.stringify(targets).slice(0, 60));
   }
 });
+
+test('Stop through the server: the run ends, its partial answer is stored and the stream reports it before closing', async t => {
+  const researchRunner = call => new Promise((resolve, reject) => {
+    call.onEvent({ type: 'delta', text: 'Partial' });
+    call.signal.addEventListener('abort', () => reject(Object.assign(new Error('stopped'), { code: 'ABORTED', partial: 'Partial' })), { once: true });
+  });
+  const app = await startTestServer(t, { port: 0, executor: null, researchRunner });
+  const { token } = (await api(app, '/api/session')).data;
+  const project = (await api(app, '/api/origin/projects', { method: 'POST', token, body: { name: 'Shop' } })).data.project;
+  const settings = { provider: 'claude', mode: 'chat' };
+  const chat = (await api(app, `/api/origin/research/${project.id}/chats`, { method: 'POST', token, body: { settings } })).data.chat.id;
+  assert.equal((await api(app, `/api/origin/research/${project.id}/chats/${chat}/stop`, { method: 'POST', token })).status, 409, 'nothing to stop yet');
+  const result = await run(app, token, project.id, chat, { text: 'Research', settings }, { onEvent: event => {
+    if (event.type === 'delta') void api(app, `/api/origin/research/${project.id}/chats/${chat}/stop`, { method: 'POST', token });
+  } });
+  const answer = result.events.find(event => event.type === 'message' && event.message.role === 'assistant').message;
+  assert.deepEqual([answer.text, answer.status], ['Partial', 'stopped']);
+  assert.equal(result.events.at(-1).type, 'done', 'the stream ends normally with the stored chat');
+});

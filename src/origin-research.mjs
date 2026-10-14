@@ -293,7 +293,7 @@ const activeRuns = new Map();
  * own part's context, the project's constraints and the sources relevant to its own question; never another agent's
  * results. A failed or stopped agent does not discard the others. When all have finished, one summary is stored.
  */
-export async function runSwarm({ research, origin, originId, chat, settings, question, runner, signal, emit, sources: services = {} }) {
+export async function runSwarm({ research, origin, originId, chat, settings, question, runner, signal, emit, sources: services = {}, control = {} }) {
   const record = await origin.read(originId, { report: false });
   if (!record || record.damaged) throw new ResearchError('This Origin project no longer exists. Choose another project.', 'NOT_FOUND', 404);
   const saved = await research.read(originId, chat);
@@ -307,8 +307,7 @@ export async function runSwarm({ research, origin, originId, chat, settings, que
   await research.update(originId, chat, value => { value.messages.push(asked); value.settings = settings; if (!value.title) value.title = titleFrom(question || `Swarm: ${agents.map(agent => agent.label).join(', ')}`); });
   emit({ type: 'message', message: asked });
   emit({ type: 'start', mode: 'swarm', agents: agents.map(agent => ({ id: agent.id, label: agent.label, status: 'queued' })) });
-  const key = `${originId}/${chat}`;
-  activeRuns.set(key, { stop: id => { const agent = agents.find(entry => entry.id === id); if (agent && ['queued', 'running'].includes(agent.status)) { agent.controller.abort(); return true; } return false; } });
+  control.stop = id => { const agent = agents.find(entry => entry.id === id); if (agent && ['queued', 'running'].includes(agent.status)) { agent.controller.abort(); return true; } return false; };
   const stopAll = () => { for (const agent of agents) agent.controller.abort(); };
   signal?.addEventListener('abort', stopAll, { once: true });
   const workspace = await research.workspace(originId), results = [], collected = [];
@@ -342,7 +341,7 @@ export async function runSwarm({ research, origin, originId, chat, settings, que
     // A bounded pool: each worker takes the next queued agent.
     const queue = [...agents];
     await Promise.all(Array.from({ length: Math.min(SWARM_CONCURRENCY, agents.length) }, async () => { for (let agent = queue.shift(); agent; agent = queue.shift()) await work(agent); }));
-  } finally { activeRuns.delete(key); signal?.removeEventListener('abort', stopAll); }
+  } finally { control.stop = () => false; signal?.removeEventListener('abort', stopAll); }
   // The combined result: built from the finished work only, with no extra model call.
   const done = agents.filter(agent => agent.status === 'done').length, mark = { done: '✓', failed: '✗', stopped: '■' };
   const summary = { id: randomUUID(), role: 'assistant', at: Date.now(), mode: 'swarm', provider: settings.provider, model: settings.model, status: 'done', summary: true,
@@ -366,7 +365,7 @@ export async function runSwarm({ research, origin, originId, chat, settings, que
  * so it never overlaps Compose, the Coordinator or a sign-in change. Closing the request stops the run.
  */
 export async function researchRoute({ research, origin, runner, claim, track, sources: services, req, res, pathname, searchParams, jsonBody, send }) {
-  const match = pathname.match(/^\/api\/origin\/research\/([A-Za-z0-9_-]{1,100})\/chats(?:\/([0-9a-f-]{36})(?:\/(run|sources|agents|proposals)(?:\/([0-9a-f-]{36}|a[0-9]{1,2})(?:\/(stop))?)?)?)?$/);
+  const match = pathname.match(/^\/api\/origin\/research\/([A-Za-z0-9_-]{1,100})\/chats(?:\/([0-9a-f-]{36})(?:\/(run|stop|sources|agents|proposals)(?:\/([0-9a-f-]{36}|a[0-9]{1,2})(?:\/(stop))?)?)?)?$/);
   if (!match) return send(res, 404, { error: 'This research route does not exist.' });
   const [, originId, chat, action, sourceId, verb] = match;
   // The Origin project must exist; this also rejects IDs that are not projects.
@@ -389,11 +388,20 @@ export async function researchRoute({ research, origin, runner, claim, track, so
     res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' });
     const emit = event => { if (!res.writableEnded && !res.destroyed) res.write(`${JSON.stringify(event)}\n`); };
     const ping = setInterval(() => emit({ ping: true }), 15000); ping.unref();
-    const run = settings.mode === 'swarm' ? runSwarm : runChat;
-    try { await track(run({ research, origin, originId, chat, settings, question, runner, signal: job.controller.signal, emit, sources: await services?.() })); }
+    const run = settings.mode === 'swarm' ? runSwarm : runChat, key = `${originId}/${chat}`;
+    // Stop through the server: the run ends, stores what it produced and the stream reports it before closing.
+    const control = { stopAll: () => job.controller.abort(), stop: () => false };
+    activeRuns.set(key, control);
+    try { await track(run({ research, origin, originId, chat, settings, question, runner, signal: job.controller.signal, emit, sources: await services?.(), control })); }
     catch (error) { emit({ type: 'error', ...publicError(error) }); }
-    finally { clearInterval(ping); res.off('close', abort); if (!res.writableEnded) res.end(); claimed.release(); }
+    finally { if (activeRuns.get(key) === control) activeRuns.delete(key); clearInterval(ping); res.off('close', abort); if (!res.writableEnded) res.end(); claimed.release(); }
     return;
+  }
+  if (action === 'stop' && !sourceId && req.method === 'POST') {
+    const control = activeRuns.get(`${originId}/${chat}`);
+    if (!control) return send(res, 409, { error: 'Nothing is running in this chat.', code: 'NOT_RUNNING' });
+    control.stopAll();
+    return send(res, 200, { stopped: true });
   }
   if (action === 'agents' && verb === 'stop' && req.method === 'POST') {
     // Stop one swarm agent; the others continue.

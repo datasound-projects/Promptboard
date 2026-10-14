@@ -445,7 +445,7 @@ window.PromptboardOriginResearch = (() => {
       const send = el('button', `origin-research-send${running ? ' is-stop' : ''}`); send.type = running ? 'button' : 'submit'; send.id = 'origin-research-send';
       send.setAttribute('aria-label', running ? 'Stop' : 'Send'); send.append(icon(running ? 'stop' : 'send'));
       send.disabled = !running && !settings.provider;
-      if (running) send.addEventListener('click', () => running?.controller.abort());
+      if (running) send.addEventListener('click', () => void stopRun());
       form.append(input, send);
       form.addEventListener('submit', event => { event.preventDefault(); if (!running) void submit(input.value); });
       return form;
@@ -648,6 +648,15 @@ window.PromptboardOriginResearch = (() => {
       renderButton();
       if (run.done && !isOpen) app.announce('Research finished.');
     }
+    /** Stop asks the server, which stores what was produced and reports it; the connection closes only as a fallback. */
+    async function stopRun() {
+      const run = running;
+      if (!run || run.stopping) return;
+      run.stopping = true;
+      const { response } = await api(`/chats/${run.chatId}/stop`, { method: 'POST' });
+      if (!response.ok) { run.controller.abort(); return; }
+      setTimeout(() => { if (running === run) run.controller.abort(); }, 10000);
+    }
     async function stopAgent(agent) {
       if (!running) return;
       const { response, data } = await api(`/chats/${running.chatId}/agents/${agent.id}/stop`, { method: 'POST' });
@@ -668,7 +677,7 @@ window.PromptboardOriginResearch = (() => {
           // The suggestions block is shown as review cards when the answer is complete, not as raw text.
           const marker = agent.text.indexOf('```origin-suggestions'), shown = marker >= 0 ? agent.text.slice(0, marker) : agent.text;
           if (marker >= 0) agent.activity = { kind: 'note', label: 'Preparing suggestions' };
-          if (visible && agent.textNode?.isConnected) { agent.textNode.data = shown; if (marker >= 0) renderActivity(agent); } else if (visible) render();
+          if (visible && agent.textNode?.isConnected) { agent.textNode.data = shown; renderActivity(agent); } else if (visible) render();
         }
         else { agent.activity = { kind: event.kind, label: event.label }; if (visible) renderActivity(agent); }
         followEnd(stick);

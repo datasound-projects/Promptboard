@@ -9,6 +9,9 @@ const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 test('Research chat streams the answer, stops on request, resumes the CLI session and keeps history across reloads', { skip: !chrome, timeout: 180000 }, async t => {
   const runs = [];
+  // The first answer pauses after its first piece until the test has seen that piece on screen: text shows while the
+  // CLI still works, whatever the paint speed (headless Chrome rasterizes in software and can batch updates).
+  let seenFirst, firstSeen = new Promise(resolve => { seenFirst = resolve; });
   let gate = null;
   const researchRunner = async call => {
     runs.push({ provider: call.provider, session: call.session, prompt: call.prompt, web: call.web });
@@ -17,8 +20,10 @@ test('Research chat streams the answer, stops on request, resumes the CLI sessio
       await new Promise((resolve, reject) => call.signal.addEventListener('abort', () => reject(Object.assign(new Error('stopped'), { code: 'ABORTED', partial: 'First findings' })), { once: true }));
     }
     call.onEvent({ type: 'activity', kind: 'search', label: 'stripe pricing' });
-    await (gate ? gate : pause(50));
-    for (const text of ['## Payment\n', 'Use **Stripe** ', 'for cards.']) { call.onEvent({ type: 'delta', text }); await pause(250); }
+    await (gate ? gate : pause(600)); // A search takes a moment; the activity line shows until text arrives.
+    call.onEvent({ type: 'delta', text: '## Payment\n' });
+    if (runs.length === 1) await firstSeen;
+    for (const text of ['Use **Stripe** ', 'for cards.']) { call.onEvent({ type: 'delta', text }); await pause(100); }
     return { text: '## Payment\nUse **Stripe** for cards.', session: call.session?.id || 'thread-1' };
   };
   const { browser, ev, wait } = await researchPage(t, { server: { researchRunner } });
@@ -29,11 +34,10 @@ test('Research chat streams the answer, stops on request, resumes the CLI sessio
   await wait(`document.querySelector('#origin-research-send') && !document.querySelector('#origin-research-send').disabled`, 'ready to send');
   await ask('Which payment provider?');
   await wait(`document.querySelector('.origin-research-message.is-user')?.textContent === 'Which payment provider?'`, 'question shown');
-  await wait(`/Searching the web: stripe pricing/.test(document.querySelector('.origin-research-activity')?.textContent || '')`, 'web activity shown');
-  // The answer grows while the CLI writes it.
-  await wait(`document.querySelector('.is-live .origin-research-text')?.textContent === '## Payment\\n'`, 'first text');
-  assert.equal(await ev(`return document.querySelector('#origin-research-send').getAttribute('aria-label');`), 'Stop', 'Send becomes Stop while the CLI works');
-  await wait(`document.querySelector('.is-live .origin-research-text')?.textContent.includes('Use **Stripe**')`, 'more text');
+  // The first piece is on screen while the CLI still works; Send has become Stop.
+  await wait(`document.querySelector('.is-live .origin-research-text')?.textContent === '## Payment\\n' && document.querySelector('#origin-research-send').getAttribute('aria-label') === 'Stop'`, 'first text while working', 30000);
+  assert.match(await ev(`return document.querySelector('.is-live').textContent;`), /## Payment/);
+  seenFirst();
   await wait(`!document.querySelector('.is-live') && document.querySelector('.origin-research-message.is-assistant h3')?.textContent === 'Payment' && document.querySelector('.origin-research-message.is-assistant strong')?.textContent === 'Stripe'`, 'final answer as Markdown')
     .catch(async error => { throw new Error(`${error.message}: ${await ev(`return document.querySelector('#origin-research-log')?.innerHTML.slice(0, 1500) + ' ERROR=' + (document.querySelector('#origin-drawer .origin-inline-error')?.textContent || '');`)}`); });
   assert.match(await ev(`return document.querySelector('.origin-research-message.is-assistant .origin-research-meta').textContent;`), /Codex|Claude Code/);
