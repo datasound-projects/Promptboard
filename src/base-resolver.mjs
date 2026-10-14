@@ -1,5 +1,6 @@
 /** Pure Base assignment resolution, shared by previews and run acceptance. */
 import { ADAPTERS } from './agents.mjs';
+import { strictReadOnlyColumn } from './pipeline-config.mjs';
 
 const refs = values => (values || []).map(value => typeof value === 'string' ? { resourceId: value, required: true } : value);
 const resourcesOf = state => new Map((state?.base?.resources || []).map(resource => [resource.id, resource]));
@@ -24,9 +25,9 @@ export function baseDependencies(resource) {
 }
 const dependencies = baseDependencies;
 
-export function deliveryFor(resource, provider, columnId, capabilities = null, pipeline = false) {
+/** `readOnly`: the session runs in the CLI's strict read-only mode (legacy Planning and Code Review, typed pipeline ones). */
+export function deliveryFor(resource, provider, columnId, capabilities = null, readOnly = ['planning', 'code_review'].includes(columnId)) {
   const adapter = capabilities?.[provider] || ADAPTERS[provider];
-  const readOnly = !pipeline && ['planning', 'code_review'].includes(columnId);
   const supported = adapter?.capabilities?.[readOnly ? 'planning' : 'execution']?.supported;
   if (!supported) return { delivery: 'unavailable', issue: 'This provider does not support this Kanban stage.' };
   if (['pack', 'profile'].includes(resource.kind)) return { delivery: 'configuration' };
@@ -42,10 +43,12 @@ export function deliveryFor(resource, provider, columnId, capabilities = null, p
 
 export function resolveBase({ state, project, task, columnId, provider, capabilities = null }) {
   const pipeline = project?.workflowMode === 'pipeline';
+  // As buildSession runs it: strict read-only sessions get no MCP servers or subagents, so none is recorded as supplied.
+  const readOnly = pipeline ? strictReadOnlyColumn(project.pipeline, columnId) : ['planning', 'code_review'].includes(columnId);
   const registry = resourcesOf(state), selected = new Map(), excluded = new Set();
   const exclusions = [], warnings = [], errors = [], profiles = [];
-  const canExpand = resource => resource?.enabled && resource.trust === 'trusted' && resource.contentStatus !== 'omitted' && !deliveryFor(resource, provider, columnId, capabilities, pipeline).issue;
-  const subagentsSupported = resource => ADAPTERS[provider]?.capabilities?.base?.subagents && (pipeline || !['planning', 'code_review'].includes(columnId)) && (!resource?.configuration?.agent?.provider || resource.configuration.agent.provider === provider);
+  const canExpand = resource => resource?.enabled && resource.trust === 'trusted' && resource.contentStatus !== 'omitted' && !deliveryFor(resource, provider, columnId, capabilities, readOnly).issue;
+  const subagentsSupported = resource => ADAPTERS[provider]?.capabilities?.base?.subagents && !readOnly && (!resource?.configuration?.agent?.provider || resource.configuration.agent.provider === provider);
   const layers = [
     ['global', state?.settings?.baseBinding, state?.settings?.agentProfileId],
     [`project:${project?.id || ''}`, project?.baseBinding, project?.agentProfileId],
@@ -142,10 +145,10 @@ export function resolveBase({ state, project, task, columnId, provider, capabili
       for (const source of resource.configuration?.sources || []) if (source.kind === 'external' && !state?.base?.approvedRoots?.some(root => root.id === source.rootId && root.enabled !== false)) issues.push('The external source root is not approved or its approval was revoked.');
       if (resource.kind === 'tool' && resource.configuration?.delivery === 'mcp' && !registry.get(resource.configuration.serverId)?.connectionTest?.tools?.some(tool => tool.name === resource.configuration.toolName)) issues.push('The parent MCP server has not discovered this tool. Run an explicit connection test before attaching it.');
     }
-    const result = resource ? deliveryFor(resource, provider, columnId, capabilities, pipeline) : { delivery: 'unavailable' };
+    const result = resource ? deliveryFor(resource, provider, columnId, capabilities, readOnly) : { delivery: 'unavailable' };
     if (entry.nativeSubagent) {
       result.delivery = 'native-subagent';
-      if (!ADAPTERS[provider]?.capabilities?.base?.subagents || (!pipeline && ['planning', 'code_review'].includes(columnId))) result.issue = 'Native Base subagents are supported only by Claude Code writing stages; selections are retained for other providers and read-only stages.';
+      if (!ADAPTERS[provider]?.capabilities?.base?.subagents || readOnly) result.issue = 'Native Base subagents are supported only by Claude Code writing stages; selections are retained for other providers and read-only stages.';
       else if (resource?.configuration?.agent?.provider && resource.configuration.agent.provider !== provider) result.issue = 'A native subagent must inherit the parent provider or select that same provider.';
     }
     if (resource?.kind === 'knowledge' && entry.origins.every(origin => origin.startsWith('dependency:'))) result.delivery = 'dependency-definition';

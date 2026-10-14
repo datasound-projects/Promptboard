@@ -163,7 +163,7 @@ window.PromptboardOrigin = (() => {
     }
     async function save({ force = false } = {}) {
       clearTimeout(saveTimer); saveTimer = null;
-      if (!record?.exists || saveState === 'conflict' && !force || changeCount === savedCount && !force) return true;
+      if (!record?.exists || saveState === 'gone' || saveState === 'conflict' && !force || changeCount === savedCount && !force) return true;
       if (saving) { await saving; return changeCount === savedCount ? true : save(); }
       const target = changeCount, id = projectId;
       saveState = 'saving'; renderSave();
@@ -173,6 +173,12 @@ window.PromptboardOrigin = (() => {
         if (id !== projectId) return false;
         if (response.ok) {
           record.revision = data.revision; savedCount = target;
+          // The server stores what fits (over-long text shortened, broken links removed): show the stored version and say so.
+          if (data.repairs > 0 && data.blueprint && changeCount === target) {
+            record.blueprint = data.blueprint;
+            showNotice(`${plural(data.repairs, 'entry was', 'entries were')} too long or invalid and ${data.repairs === 1 ? 'was' : 'were'} shortened or removed when saved. The page shows what was saved.`);
+            renderMain(); renderDrawer();
+          }
           if (data.project) projects = projects.map(item => (item.id === id ? data.project : item));
           saveState = changeCount === savedCount ? 'saved' : 'dirty'; saveMessage = '';
           if (saveState === 'saved' && (section === 'plan' || open?.collection === 'items')) void refreshContextStatus();
@@ -181,6 +187,8 @@ window.PromptboardOrigin = (() => {
           contextPanel.originSaved();
           return true;
         }
+        // Deleted in another window: nothing here can be saved any more, and it must not keep you from moving on.
+        if (response.status === 404) { saveState = 'gone'; saveMessage = 'This project was deleted in another window, so the changes made here cannot be saved. Choose another project.'; void refreshProjects(); return true; }
         saveState = response.status === 409 && data.code === 'ORIGIN_REVISION_CONFLICT' ? 'conflict' : 'error';
         saveMessage = typeof data.error === 'string' ? data.error : 'The blueprint could not be saved.';
         return false;
@@ -191,7 +199,7 @@ window.PromptboardOrigin = (() => {
       saveStatus.replaceChildren();
       view.dataset.save = saveState;
       if (!record?.exists) return;
-      const text = { saved: 'Saved', dirty: 'Editing…', saving: 'Saving…', error: 'Not saved', conflict: 'Changed in another window' }[saveState];
+      const text = { saved: 'Saved', dirty: 'Editing…', saving: 'Saving…', error: 'Not saved', conflict: 'Changed in another window', gone: 'Deleted in another window' }[saveState];
       const dot = el('span', 'origin-save-dot'); dot.setAttribute('aria-hidden', 'true');
       saveStatus.append(dot, el('span', '', text));
       saveStatus.title = saveMessage || (saveState === 'saved' ? `Saved revision ${record.revision}` : text);
@@ -199,7 +207,7 @@ window.PromptboardOrigin = (() => {
       if (saveState === 'conflict') saveStatus.append(button('Reload saved version', () => void load(projectId, { force: true }), 'origin-link'),
         button('Keep mine', () => void keepMine(), 'origin-link', 'Save this window’s version over the newer saved one'));
       // Only save problems are shown or cleared here; other messages keep their own lifetime.
-      const message = ['error', 'conflict'].includes(saveState) ? saveMessage : '';
+      const message = ['error', 'conflict', 'gone'].includes(saveState) ? saveMessage : '';
       if (message !== shownSaveError) { if (message || errorBox.textContent === shownSaveError) showError(message); shownSaveError = message; }
     }
     async function keepMine() {
@@ -208,12 +216,12 @@ window.PromptboardOrigin = (() => {
       record.revision = data.revision; saveState = 'dirty'; await save({ force: true });
     }
     async function flush() {
-      if (!record?.exists) return true;
+      if (!record?.exists || saveState === 'gone') return true;
       if (saveTimer || changeCount !== savedCount) return save();
       if (saving) return saving;
       return saveState !== 'error' && saveState !== 'conflict';
     }
-    window.addEventListener('beforeunload', event => { if (record?.exists && changeCount !== savedCount) { event.preventDefault(); event.returnValue = ''; } });
+    window.addEventListener('beforeunload', event => { if (record?.exists && saveState !== 'gone' && changeCount !== savedCount) { event.preventDefault(); event.returnValue = ''; } });
 
     // ---- Loading ----
     async function load(id, { force = false } = {}) {
@@ -290,7 +298,9 @@ window.PromptboardOrigin = (() => {
       projectSelect.replaceChildren(...projects.map(item => Object.assign(el('option', '', item.name), { value: item.id })));
       projectSelect.value = projectId || '';
       const current = project();
-      projectSelect.hidden = menu.hidden = linkChip.hidden = !current;
+      // After a failed load the selector stays, so you can choose another project; it hides only when there is none.
+      projectSelect.hidden = !projects.length || (!current && !loadError);
+      menu.hidden = linkChip.hidden = !current;
       if (!current) return;
       const linked = current.kanban;
       linkChip.replaceChildren(el('span', `origin-link-dot${linked?.exists ? ' on' : ''}`), el('span', '', linked?.exists ? `Kanban · ${linked.name}` : linked ? 'Kanban project removed' : 'Not on Kanban'));
@@ -299,7 +309,7 @@ window.PromptboardOrigin = (() => {
     }
     function renderDerived() {
       view.dataset.empty = String(!record?.exists);
-      if (!record?.exists) { navigator.replaceChildren(el('p', 'origin-nav-empty', record || !projectId ? 'Your blueprint sections appear here once you start.' : 'Loading…')); readinessButton.hidden = true; return; }
+      if (!record?.exists) { navigator.replaceChildren(el('p', 'origin-nav-empty', loadError ? 'This project could not be loaded.' : record || !projectId ? 'Your blueprint sections appear here once you start.' : 'Loading…')); readinessButton.hidden = true; return; }
       const found = M.issues(bp()), ready = M.readiness(bp(), found), states = M.sectionStates(bp(), found);
       renderNavigator(states);
       readinessButton.hidden = false;
@@ -313,9 +323,11 @@ window.PromptboardOrigin = (() => {
       const counts = { vision: M.VISION.filter(key => key !== 'architectureSummary' && blueprint.vision[key].trim()).length, requirements: blueprint.requirements.length,
         architecture: blueprint.components.length, technology: blueprint.technologies.length, dependencies: blueprint.dependencies.length,
         research: blueprint.sources.length + blueprint.assumptions.length + blueprint.risks.length, decisions: blueprint.decisions.length, plan: blueprint.items.length };
-      if (counts[id] !== undefined) return counts[id];
-      if (M.AREAS[id]) return blueprint.areas.filter(item => item.section === id).length;
-      return blueprint.questions.filter(question => question.sectionId === id && blueprint.answers[question.id]?.trim()).length;
+      // Your own answered questions count in built-in sections too.
+      const own = blueprint.questions.filter(question => question.sectionId === id && blueprint.answers[question.id]?.trim()).length;
+      if (counts[id] !== undefined) return counts[id] + own;
+      if (M.AREAS[id]) return blueprint.areas.filter(item => item.section === id).length + own;
+      return own;
     }
     function renderNavigator(states) {
       // A rename in progress is never thrown away by a redraw.
@@ -458,7 +470,7 @@ window.PromptboardOrigin = (() => {
           const next = control.value.trim().replace(/\s+/g, ' ');
           control.replaceWith(node); edit.hidden = false;
           if (keep && next !== value) onSave(next === fallback ? '' : next);
-          if (refocus) view.querySelector(`[data-edit="${CSS.escape(key)}"]`)?.focus({ preventScroll: true });
+          if (refocus) document.querySelector(`[data-edit="${CSS.escape(key)}"]`)?.focus({ preventScroll: true }); // Phase names live in the sidebar, outside the view.
         };
         control.addEventListener('keydown', event => {
           if (event.key === 'Enter') { event.preventDefault(); finish(true, true); }
@@ -830,6 +842,8 @@ window.PromptboardOrigin = (() => {
         else if (name === 'contextIds') entry.contextIds = entry.contextIds.filter(ref => ref.collection !== collection || ref.id !== id);
         else if (Array.isArray(entry[name])) entry[name] = entry[name].filter(value => value !== id);
         else entry[name] = '';
+        // An assumption turned into this decision is open again: the decision that resolved it is gone.
+        if (owner === 'assumptions' && name === 'decisionId' && entry.status === 'converted') entry.status = 'open';
       }
       planSelection.delete(id);
       if (open?.id === id) open = null;
@@ -1043,7 +1057,8 @@ window.PromptboardOrigin = (() => {
         row.append(el('span', 'origin-connection-target', `→ ${name(connection.to)}`), label, protocol, remove);
         box.append(row);
       }
-      const others = blueprint.components.filter(component => component.id !== item.id);
+      // Components it already connects to are left out: one connection per pair and direction.
+      const others = blueprint.components.filter(component => component.id !== item.id && !blueprint.connections.some(entry => entry.from === item.id && entry.to === component.id));
       if (others.length) {
         const pick = el('select', 'origin-link-add'); pick.setAttribute('aria-label', 'Connect to a component'); pick.dataset.focusKey = 'connect';
         pick.append(Object.assign(el('option', '', '＋ Connect to…'), { value: '' }), ...others.map(component => Object.assign(el('option', '', component.name || 'Unnamed component'), { value: component.id })));
@@ -1982,7 +1997,8 @@ window.PromptboardOrigin = (() => {
           if (connectFrom === component.id) return;
           const from = connectFrom;
           views.canvas ||= boxOf(svg);
-          bp().connections.push({ id: newId(), origin: 'human', from, to: component.id, label: 'calls', protocol: '', notes: '' });
+          if (bp().connections.some(entry => entry.from === from && entry.to === component.id)) app.announce('These components are already connected.');
+          else bp().connections.push({ id: newId(), origin: 'human', from, to: component.id, label: 'calls', protocol: '', notes: '' });
           connectFrom = null;
           changed({ structure: true });
           openDrawer('components', from);
@@ -2124,12 +2140,14 @@ window.PromptboardOrigin = (() => {
       }
       const item = record?.exists ? bp().items.find(entry => entry.id === itemId) : null;
       if (!item) return 'That Origin task no longer exists.';
-      item.refinement = { proposal: String(text).slice(0, 100000), proposedAt: Date.now(), basis, originalDescription: '', acceptedAt: null };
+      item.refinement = { proposal: String(text).slice(0, 100000), proposedAt: Date.now(), basis, originalDescription: '', acceptedAt: null, kept: keptRefinement(item) };
       section = 'plan'; setPref(SECTION_KEY, section);
       changed({ structure: true });
       openDrawer('items', item.id);
       return 'ok';
     }
+    // A new proposal keeps the accepted one it replaces (one level), so Reject and Restore the original still work.
+    const keptRefinement = item => (item.refinement?.acceptedAt ? { ...item.refinement, kept: null } : item.refinement?.kept || null);
     function proposalPanel(item) {
       const refinement = item.refinement;
       if (!refinement?.proposal || refinement.acceptedAt) return null;
@@ -2140,11 +2158,12 @@ window.PromptboardOrigin = (() => {
       text.addEventListener('input', () => { refinement.proposal = text.value; changed(); });
       const actions = el('div', 'origin-inline-actions');
       actions.append(button('Use as What to do', () => {
-        Object.assign(refinement, { originalDescription: item.description, acceptedAt: Date.now() });
+        // The original is the text before Compose's first accepted proposal.
+        Object.assign(refinement, { originalDescription: refinement.kept ? refinement.kept.originalDescription : item.description, acceptedAt: Date.now(), kept: null });
         item.description = refinement.proposal;
         changed({ structure: true, drawer: true });
         app.announce('Proposal used. Done when, links and the original text are kept.');
-      }, 'origin-primary'), button('Reject', () => { item.refinement = null; changed({ structure: true, drawer: true }); app.announce('Proposal rejected.'); }, 'origin-link'));
+      }, 'origin-primary'), button('Reject', () => { item.refinement = refinement.kept || null; changed({ structure: true, drawer: true }); app.announce('Proposal rejected.'); }, 'origin-link'));
       box.append(autoGrow(text), actions);
       return box;
     }
@@ -2185,7 +2204,7 @@ window.PromptboardOrigin = (() => {
           }
           // Late answers never overwrite your text: they arrive as proposals.
           const current = bp().items.find(entry => entry.id === item.id);
-          if (current) { current.refinement = { proposal: data.prompt.slice(0, 100000), proposedAt: Date.now(), basis, originalDescription: '', acceptedAt: null }; changed(); }
+          if (current) { current.refinement = { proposal: data.prompt.slice(0, 100000), proposedAt: Date.now(), basis, originalDescription: '', acceptedAt: null, kept: keptRefinement(current) }; changed(); }
           mark(item.id, 'Proposal ready', 'ok'); done++;
         }
         if (job.signal.aborted) progress.textContent = `Cancelled. ${plural(done, 'proposal')} kept.`;
@@ -2267,7 +2286,12 @@ window.PromptboardOrigin = (() => {
         .catch(() => ({ response: { ok: false }, data: { error: 'The app did not answer. Nothing was sent.' } }));
       if (!response.ok) { showError(typeof data.error === 'string' ? data.error : 'The tasks could not be prepared. Nothing was sent.'); return; }
       const contexts = new Map(data.tasks.map(task => [task.itemId, task]));
-      const missing = [...new Set(selection.flatMap(id => items.get(id).dependsOn).filter(id => !selection.includes(id) && items.has(id) && !cardOf(items.get(id))))];
+      // Every prerequisite down the chain that has no card, as the server adds them (handoff in src/origin.mjs).
+      const missing = [];
+      for (let next = selection; next.length;) {
+        next = [...new Set(next.flatMap(id => items.get(id).dependsOn || []))].filter(id => items.has(id) && !selection.includes(id) && !missing.includes(id) && !cardOf(items.get(id)));
+        missing.push(...next);
+      }
       const list = el('ol', 'origin-handoff-list'), recreate = new Map();
       for (const id of M.orderItems(blueprint, selection)) {
         const item = items.get(id), card = cardOf(item), context = contexts.get(id), li = el('li');
@@ -2289,8 +2313,13 @@ window.PromptboardOrigin = (() => {
       const include = el('input'); include.type = 'checkbox'; include.id = 'origin-handoff-prerequisites'; include.addEventListener('change', () => paint());
       const prerequisites = el('div', 'origin-callout warn origin-handoff-prerequisites');
       if (missing.length) {
-        const row = el('label', 'origin-check-row'); row.append(include, el('span', '', `Include prerequisites: ${missing.map(id => `${items.get(id).key} ${items.get(id).title.trim() || 'Untitled task'}`).join(', ')}`));
+        const row = el('label', 'origin-check-row'); row.append(include, el('span', '', `Include prerequisites: ${M.orderItems(blueprint, missing).map(id => `${items.get(id).key} ${items.get(id).title.trim() || 'Untitled task'}`).join(', ')}`));
         prerequisites.append(el('p', '', 'Some tasks start after tasks that have no card yet.'), row);
+        // A prerequisite whose card was deleted in Kanban is created again only if you say so.
+        for (const id of missing.filter(entry => items.get(entry).handoff?.projectId === destination)) {
+          const again = el('label', 'origin-check-row'), box = el('input'); box.type = 'checkbox'; box.addEventListener('change', () => paint());
+          again.append(box, el('span', '', `Create ${items.get(id).key} again (its card was deleted in Kanban)`)); recreate.set(id, box); prerequisites.append(again);
+        }
       } else prerequisites.hidden = true;
       const error = el('p', 'origin-inline-error'); error.hidden = true; error.setAttribute('role', 'alert');
       const results = el('ol', 'origin-handoff-results'); results.hidden = true;
@@ -2298,7 +2327,7 @@ window.PromptboardOrigin = (() => {
       const confirm = button('', () => void send(selection), 'origin-primary'); confirm.id = 'origin-handoff-confirm';
       const actions = el('div', 'origin-modal-actions');
       const paint = () => {
-        const blocked = missing.length && !include.checked, waiting = [...recreate.values()].some(box => !box.checked);
+        const blocked = missing.length && !include.checked, waiting = [...recreate].some(([id, box]) => !box.checked && (!missing.includes(id) || include.checked));
         confirm.disabled = handoffBusy || blocked || waiting || tooLarge;
         confirm.textContent = `Send ${plural(selection.length + (include.checked ? missing.length : 0), 'task')}`;
         confirm.title = tooLarge ? 'A task’s essential context is too large.' : blocked ? 'Include the prerequisites or send them first.' : waiting ? 'Choose whether to create the deleted cards again, or leave those tasks out.' : 'Creates To Do cards. No agent starts.';

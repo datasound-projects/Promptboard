@@ -139,3 +139,32 @@ test('a single link has a conflict check; many-links only add; a source suggeste
   assert.equal(bp.sources.at(-1).verification, 'unverified');
   assert.throws(() => M.validateResearchSuggestion(bp, { target: { kind: 'record', collection: 'components', id: 'c1', field: 'technologyIds' }, value: [] }), /must list/);
 });
+
+test('agents\' own words for Origin values are understood; a new record with an unknown value keeps the default; ref may sit beside, inside the target or among the fields', () => {
+  const bp = blueprint(), refs = new Map([['n1', 'components'], ['n2', 'components']]), check = raw => M.validateResearchSuggestion(bp, raw, { refs });
+  const web = check({ target: { kind: 'add', collection: 'components', ref: 'n1' }, value: { name: 'Clinic web app', type: 'frontend' } });
+  assert.deepEqual([web.ref, web.value.type], ['n1', 'client']);
+  const db = check({ target: { kind: 'add', collection: 'components' }, value: { ref: 'n2', name: 'Clinic DB', type: 'data store' } });
+  assert.deepEqual([db.ref, db.value.type], ['n2', 'database']);
+  const python = check({ target: { kind: 'add', collection: 'technologies' }, value: { name: 'Python', category: 'Language', status: 'proposed' } });
+  assert.deepEqual([python.value.category, python.value.status], ['languages', 'candidate']);
+  const odd = check({ target: { kind: 'add', collection: 'components' }, value: { name: 'Thing', type: 'quantum mesh' } });
+  assert.equal(odd.value.type, undefined, 'the record keeps Origin\'s default type');
+  assert.throws(() => check({ target: { kind: 'record', collection: 'components', id: 'c1', field: 'type' }, value: 'quantum mesh' }), /not a valid type/, 'a field change still needs a valid value');
+  assert.equal(check({ target: { kind: 'add', collection: 'connections' }, value: { from: '@n1', to: '@n2', label: 'calls' } }).value.from, '@n1');
+});
+
+test('refs given inside the target or among the fields are local to their answer too', () => {
+  const record = { revision: 1, blueprint: blueprint() };
+  const { proposals } = proposalsFor(record, [{ target: { kind: 'add', collection: 'components', ref: 'n1' }, value: { name: 'Web', type: 'client' } },
+    { target: { kind: 'add', collection: 'items' }, value: { ref: 't1', title: 'Build the web app', componentIds: ['@n1'] } }], { messageId: 'abcdefgh-1' });
+  assert.deepEqual(proposals.map(proposal => proposal.ref), ['abcdefgh.n1', 'abcdefgh.t1']);
+  assert.deepEqual(proposals[1].value.componentIds, ['@abcdefgh.n1']);
+});
+
+test('a whole suggestion written inside "target" is read as one', () => {
+  const record = { revision: 1, blueprint: blueprint() };
+  const { proposals, dropped } = proposalsFor(record, [{ title: 'Add a reader', target: { ref: 'n4', title: 'Date reader', target: { kind: 'add', collection: 'components' }, value: { name: 'Date reader', type: 'library' } } }], { messageId: 'xyzxyzxy-2' });
+  assert.equal(dropped, 0);
+  assert.deepEqual([proposals[0].target, proposals[0].value, proposals[0].ref], [{ kind: 'add', collection: 'components' }, { name: 'Date reader', type: 'library' }, 'xyzxyzxy.n4']);
+});

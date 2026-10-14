@@ -303,10 +303,11 @@ test('Document redirects revalidate public DNS, pin connections, and bound DNS c
   assert.equal(isPublicAddress('::ffff:7f00:1'), false);
 });
 
-test('Base MCP is withheld from Planning and Code Review only on legacy boards; pipeline columns receive it', () => {
+test('Base MCP is withheld only from strict read-only sessions: legacy and typed Planning and Code Review; custom columns receive it', () => {
   const mcp = { kind: 'mcp', configuration: { transport: 'stdio', env: {} } };
   for (const column of ['planning', 'code_review']) {
-    assert.match(deliveryFor(mcp, 'claude', column, null, false).issue, /unavailable in read-only Planning and Code Review/);
-    assert.deepEqual(deliveryFor(mcp, 'claude', column, null, true), { delivery: 'native-mcp' });
+    assert.match(deliveryFor(mcp, 'claude', column).issue, /unavailable in read-only Planning and Code Review/, 'legacy stage');
+    assert.match(deliveryFor(mcp, 'claude', column, null, true).issue, /unavailable in read-only Planning and Code Review/, 'typed pipeline column');
+    assert.deepEqual(deliveryFor(mcp, 'claude', column, null, false), { delivery: 'native-mcp' }, 'a custom column with this ID');
   }
 });

@@ -52,6 +52,8 @@ async function launchOnce({ width = 1280, height = 900, motion = false } = {}) {
     };
     const send = (method, params = {}) => new Promise((resolve, reject) => { id++; waiting.set(id, { resolve, reject }); socket.send(JSON.stringify({ id, method, params })); });
     await startup.wait(send('Page.enable')); await startup.wait(send('Runtime.enable')); await startup.wait(send('Log.enable'));
+    // PB_CPU_THROTTLE=6 slows every test page like a busy CI runner, to find timing assumptions locally.
+    if (Number(process.env.PB_CPU_THROTTLE) > 1) await startup.wait(send('Emulation.setCPUThrottlingRate', { rate: Number(process.env.PB_CPU_THROTTLE) }));
     // Tests click and measure settled layout; the app turns every transition off under reduced motion.
     if (!motion) await startup.wait(send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] }));
     startup.close();

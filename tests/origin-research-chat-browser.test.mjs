@@ -142,9 +142,10 @@ test('Swarm in the panel: pick parts, watch one live agent per part, stop one, r
   await wait(`document.querySelectorAll('.origin-research-targets .origin-research-chip').length === 3`, 'three parts');
   await ev(`document.querySelector('#origin-research-input').closest('form').requestSubmit();`);
   await wait(`document.querySelectorAll('.is-live').length === 3`, 'one live bubble per agent');
-  release();
-  await wait(`[...document.querySelectorAll('.is-live')].some(n => n.textContent.includes('Researching security'))`, 'security running');
+  // Stop Security while the others still run: a per-agent Stop shows only while more than one agent is running.
+  await wait(`[...document.querySelectorAll('.is-live')].find(n => n.textContent.includes('Researching security'))?.querySelector('.origin-research-agent-stop')`, 'security stop offered');
   await ev(`[...document.querySelectorAll('.is-live')].find(n => n.textContent.includes('Researching security')).querySelector('.origin-research-agent-stop').click();`);
+  release();
   await wait(`document.querySelector('.origin-research-message.is-summary') && !document.querySelector('.is-live')`, 'summary after all agents');
   const summary = await ev(`return document.querySelector('.origin-research-message.is-summary').textContent;`);
   assert.match(summary, /2 of 3 agents finished/);

@@ -89,7 +89,8 @@ test('Base sidebar categories change the visible collection, editor, creation ty
   await view.show(); await view.openResource(skill.id); clickText('Agents');
   assert.equal($('#base-categories').closest('#base-sidebar-panel') !== null, true);
   assert.equal($('#base-category-heading').textContent, 'Agents'); assert.equal($('#base-list').children.length, 1); assert.equal($('#base-detail').hidden, true);
-  assert.equal($('.base-agent-card .base-agent-loadout input').checked, true);
+  assert.deepEqual([...$('.base-agent-card .base-agent-loadout').children].map(node => [node.tagName, node.textContent]), [['SPAN', 'Review checklist']], 'what the profile brings, as plain chips');
+  assert.equal([...$('.base-agent-card').querySelectorAll('button')].some(node => node.textContent === 'Configure'), false, 'the card itself opens the profile');
   assert.match($('.base-agent-card').textContent, /Review checklist/);
   clickText('Agents'); assert.equal($('#base-new-kind').value, 'profile');
   clickText('MCPs'); assert.equal($('#base-list').children.length, 0); assert.match($('#base-empty').textContent, /No mcps yet/);
@@ -128,9 +129,8 @@ test('bulk application previews targets and sends one atomic revision-checked as
   await until(() => $('.base-apply-targets'), 'target list');
   const boxes = [...$('.base-apply-targets').querySelectorAll('input')].slice(0, 2);
   for (const box of boxes) { box.checked = true; box.dispatchEvent(new win.Event('change', { bubbles: true })); }
-  assert.equal([...$('#base-dialog-content').querySelectorAll('button')].find(node => node.textContent === 'Apply assignments').disabled, true);
-  clickText('Preview changes');
-  await until(() => [...$('#base-dialog-content').querySelectorAll('button')].some(node => node.textContent === 'Apply assignments' && !node.disabled), 'bulk preview');
+  assert.equal([...$('#base-dialog-content').querySelectorAll('button')].find(node => node.textContent === 'Apply assignments').disabled, true, 'Apply waits for the preview');
+  await until(() => [...$('#base-dialog-content').querySelectorAll('button')].some(node => node.textContent === 'Apply assignments' && !node.disabled), 'bulk preview runs by itself');
   assert.match($('#base-dialog-content').textContent, /Project Alpha/); assert.match($('#base-dialog-content').textContent, /Project Beta/);
   clickText('Apply assignments');
   await until(() => calls.some(call => call.path === '/api/base/apply'), 'bulk apply');
@@ -138,6 +138,20 @@ test('bulk application previews targets and sends one atomic revision-checked as
   assert.equal(applications.length, 1); assert.equal(applications[0].body.changes.length, 2);
   assert.deepEqual(applications[0].body.changes.map(item => item.expectedRevision), [2, 1]);
   assert.equal(applications[0].body.changes.every(item => !('profileId' in item)), true);
+});
+
+test('Apply to… on an agent profile makes it the agent profile of global, project or column targets, never a resource', async t => {
+  const profile = { ...skill, id: 'res_profile', kind: 'profile', name: 'Codex engineer', configuration: { agent: { provider: 'codex', model: 'gpt-x' }, binding: { mode: 'inherit', include: [], exclude: [] } }, content: {} };
+  const { $, view, calls, clickText, win } = setup(t, { resources: [skill, profile] });
+  await view.show(); await view.openResource(profile.id); clickText('Apply to…');
+  await until(() => $('.base-apply-targets'), 'target list');
+  assert.deepEqual([...$('.base-apply-targets').querySelectorAll('label')].map(node => node.textContent), ['Project Alpha', 'Project Beta'], 'a task cannot take a profile');
+  assert.match($('#base-dialog-content').textContent, /its provider, model, instructions and resources apply there/);
+  const box = $('.base-apply-targets input'); box.checked = true; box.dispatchEvent(new win.Event('change', { bubbles: true }));
+  await until(() => [...$('#base-dialog-content').querySelectorAll('button')].some(node => node.textContent === 'Apply assignments' && !node.disabled), 'preview');
+  clickText('Apply assignments');
+  await until(() => calls.some(call => call.path === '/api/base/apply'), 'apply');
+  assert.deepEqual(calls.find(call => call.path === '/api/base/apply').body.changes, [{ target, expectedRevision: 2, binding: { mode: 'inherit', include: [], exclude: [] }, profileId: profile.id }]);
 });
 
 test('Base displays stale-write rejection without closing or discarding the editor', async t => {

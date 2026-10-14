@@ -50,7 +50,7 @@ test('Base saved-resource actions, sidebar categories, agent cards and avatar dr
   await open(mcp.id); await editName('Unsaved MCP name'); await click('Test connection and discover tools');
   await browser.until(`document.querySelector('#base-detail').textContent.includes('Save your edits')`, 'unsaved draft protected');
   assert.equal(tests, 0); assert.equal(await browser.eval(`return document.querySelector('#base-resource-name').value;`), 'Unsaved MCP name');
-  await click('Cancel'); await browser.until(`document.querySelector('#base-resource-name')?.value === 'Browser MCP'`, 'saved MCP reopened');
+  await click('Discard changes'); await browser.until(`document.querySelector('#base-resource-name')?.value === 'Browser MCP'`, 'saved MCP reopened');
   await click('Test connection and discover tools');
   await browser.until(`document.querySelector('.base-resource-form')?.textContent.includes('r2')`, 'successful discovery revision')
     .catch(async failure => {
@@ -74,7 +74,7 @@ test('Base saved-resource actions, sidebar categories, agent cards and avatar dr
   await browser.until(`document.querySelector('.base-avatar-editor img')?.naturalWidth > 0`, 'illustration draft visible');
   await click('Save resource'); await browser.until(`document.querySelector('.base-resource-form')?.textContent.includes('r2')`, 'profile portrait saved');
   assert.equal((await app.board.base.detail(parent.id)).content.avatar.data, image.data);
-  assert.equal(await browser.eval(`return [...document.querySelectorAll('.base-agent-card .base-agent-loadout input')].every(node => node.checked);`), true);
+  assert.equal(await browser.eval(`return document.querySelectorAll('.base-agent-card .base-agent-loadout .base-agent-chip').length > 0 && !document.querySelector('.base-agent-card .base-agent-loadout input');`), true);
   for (const width of [1280, 850, 390]) {
     await browser.resize(width, 900);
     assert.equal(await browser.layout(`return document.documentElement.scrollWidth <= innerWidth && document.querySelector('#base-detail').getBoundingClientRect().right <= innerWidth;`), true);
@@ -246,7 +246,7 @@ test('terminal dock in a real browser: start, render, type, collapse, resize, se
   // Base is a global third page. Creating and assigning an instruction while the
   // first PTY is live must preserve that exact terminal and affect only future runs.
   await browser.eval(`window.__baseLiveSession = window.promptboardDock.sessions.get(${JSON.stringify(firstRun)}); location.hash = '#/base';`);
-  await browser.until(`!document.querySelector('#base-view').hidden && document.querySelector('#base-status').textContent.includes('resources')`, 'Base loaded');
+  await browser.until(`!document.querySelector('#base-view').hidden && document.querySelector('.base-list-panel')?.getAttribute('aria-busy') === 'false'`, 'Base loaded');
   assert.equal(await browser.eval(`return [...document.querySelectorAll('.page-nav a')].map(link => link.textContent).join(' | ');`), 'Origin | Compose | Kanban | Base');
   assert.equal(await browser.eval(`document.querySelector('#skip-link').click(); return document.activeElement.id;`), 'base-view');
   await browser.eval(`document.querySelector('#base-new-kind').value = 'skill'; [...document.querySelectorAll('#base-actions button')].find(button => button.textContent === 'Create').click(); document.querySelector('#base-resource-name').value = 'Browser instruction'; document.querySelector('#base-skill-body').value = 'BASE_BROWSER_CHECK: preserve invariants.\\n'; document.querySelector('#base-resource-save').click();`);
@@ -264,8 +264,8 @@ test('terminal dock in a real browser: start, render, type, collapse, resize, se
   await browser.resize(1280, 900);
   await browser.eval(`[...document.querySelectorAll('#base-detail button')].find(button => button.textContent === 'Apply to…').click();`);
   await browser.until(`document.querySelector('.base-apply-targets input')`, 'Base targets available');
-  await browser.eval(`const box = [...document.querySelectorAll('[data-target-key]')].find(node => node.dataset.targetKey === ${JSON.stringify(`project:${project.id}::`)}); box.checked = true; box.dispatchEvent(new Event('change', { bubbles: true })); [...document.querySelectorAll('#base-dialog button')].find(button => button.textContent === 'Preview changes').click();`);
-  await browser.until(`[...document.querySelectorAll('#base-dialog button')].some(button => button.textContent === 'Apply assignments' && !button.disabled)`, 'assignment preview');
+  await browser.eval(`const box = [...document.querySelectorAll('[data-target-key]')].find(node => node.dataset.targetKey === ${JSON.stringify(`project:${project.id}::`)}); box.checked = true; box.dispatchEvent(new Event('change', { bubbles: true }));`);
+  await browser.until(`[...document.querySelectorAll('#base-dialog button')].some(button => button.textContent === 'Apply assignments' && !button.disabled)`, 'assignment preview runs by itself');
   await browser.eval(`[...document.querySelectorAll('#base-dialog button')].find(button => button.textContent === 'Apply assignments').click();`);
   await browser.until(`!document.querySelector('#base-dialog').open`, 'assignment saved');
   assert.equal((await board.run(firstRun)).baseManifest.resources.length, 0, 'An already accepted run retains its original resource snapshot.');

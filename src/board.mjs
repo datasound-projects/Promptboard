@@ -16,6 +16,7 @@ import { taskLabels, taskLabelIds, labelRevision } from './task-labels.mjs';
 import { assignTaskNumbers, allocateTaskNumber, validateTaskNumbers } from './task-numbers.mjs';
 import { branchExists, commitExists, git, GitError, initRepository, listWorktrees, repositoryIdentity, validateRepository } from './git.mjs';
 import { ADAPTERS, resolveConfig, validateResumeId } from './agents.mjs';
+import { validateEffort } from './providers.mjs';
 import { Delivery } from './delivery.mjs';
 import { ensureClone, fastForward, fetchAndCompare, viewRepository } from './github.mjs';
 import { externalIssueSource } from './external-source.mjs';
@@ -438,7 +439,13 @@ export function effectiveWorkflow(project, globalAgent = null, state = null, tas
     const local = state ? profileDefaults(state, project.baseColumns?.[column.id]?.profileId) : null;
     const inherited = local?.provider ? local : defaults?.provider ? defaults : global || {};
     const agent = strategy.agentOverride ? { provider: strategy.agentOverride } : inherited;
-    const settings = { provider: agent.provider || 'claude', model: strategy.modelOverride ?? agent.model ?? '', effort: strategy.effortOverride ?? agent.effort ?? '',
+    // One tuple per level, as on legacy boards: a Base column profile brings its own model and effort, so the column's
+    // model and effort pins apply to its own agent or to the inherited project or global agent, never to the profile's.
+    const pins = strategy.agentOverride || !local?.provider;
+    const model = pins ? strategy.modelOverride ?? agent.model ?? '' : agent.model ?? '';
+    let effort = pins ? strategy.effortOverride ?? agent.effort ?? '' : agent.effort ?? '';
+    try { validateEffort(agent.provider || 'claude', effort); } catch { effort = ''; } // A setting the provider rejects is dropped, not failed on every run.
+    const settings = { provider: agent.provider || 'claude', model, effort,
       permissionMode: strategy.permissionMode ?? agent.permissionMode ?? '', pipeline: true, instructions: '', policy: strategy.autoSpawn ? 'start' : 'manual', agentSource: 'pipeline' };
     if (column.role !== 'active') return [column.id, settings];
     // Typed columns, and any column whose execution policy someone chose, launch through the policy. A custom column
@@ -3119,8 +3126,16 @@ export class Board {
     const semantic = columnStage(project, target.id), from = columnStage(project, task.column);
     const name = id => columnTitleIn(project, id);
     if (active) {
-      const finished = active.status === 'waiting_for_input' && active.turnComplete && active.turns > 0 && (active.activity ? active.activity.ready !== false : true);
-      if (!finished) throw conflict(`The ${name(task.column)} agent is still working or waiting for your answer. Let it finish its turn, or pause it, before moving the card.`, 'RUN_ACTIVE');
+      const turnEnded = run => run.status === 'waiting_for_input' && run.turnComplete && run.turns > 0;
+      const finished = run => turnEnded(run) && (run.activity ? run.activity.ready !== false : true);
+      // A turn that has just ended is ready after a short quiet period (docs/pipeline-activity.md): wait for it, briefly,
+      // rather than refuse a move made the moment the agent finished. Real work or a question still blocks the move.
+      let current = active;
+      for (let wait = 0; !finished(current) && turnEnded(current) && wait < 25; wait++) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        current = (await this.state()).runs.find(run => run.id === active.id) || current;
+      }
+      if (!finished(current)) throw conflict(`The ${name(task.column)} agent is still working or waiting for your answer. Let it finish its turn, or pause it, before moving the card.`, 'RUN_ACTIVE');
       if (active.stageKind) {
         const outcome = await this.#finishStageRun(taskId, active.id, { by: trigger === 'automation' ? 'automation' : 'move' });
         if (outcome?.status === 'failed') throw conflict(`${name(task.column)} did not complete: ${outcome.reason}`, outcome.code || 'STAGE_FAILED');
