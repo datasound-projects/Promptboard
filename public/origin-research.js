@@ -45,6 +45,8 @@ window.PromptboardOriginResearch = (() => {
       mode: MODES.some(([id]) => id === stored.mode) ? stored.mode : 'chat', web: false, scope: { kind: 'project' } };
     let projectId = null, isOpen = false, minimized = false, maximized = false, panel = 'chat', providers = null, models = new Map();
     let chats = null, chatsQuery = '', chat = null, error = '', confirmDelete = null;
+    // The run in progress: its stop controller and the live text of each agent, kept across re-renders.
+    let running = null;
     const drafts = new Map(); // Unsent text per project survives closing the panel and switching projects.
     const saveSettings = () => setPref(SETTINGS_KEY, JSON.stringify({ provider: settings.provider, model: settings.model, effort: settings.effort, mode: settings.mode }));
     const api = (path, options = {}) => app.api(`/api/origin/research/${encodeURIComponent(projectId)}${path}`, { timeoutMs: 30000, ...options })
@@ -55,6 +57,7 @@ window.PromptboardOriginResearch = (() => {
       headerButton.hidden = !projectId;
       headerButton.setAttribute('aria-pressed', String(isOpen));
       mini.hidden = !minimized || !projectId;
+      mini.querySelector('.origin-research-mini-status').textContent = running ? 'Researching…' : '';
     }
     async function open() {
       if (!projectId) return;
@@ -86,6 +89,7 @@ window.PromptboardOriginResearch = (() => {
     async function reset(id) {
       if (id === projectId) return;
       if (isOpen || minimized) { keepDraft(); isOpen = false; minimized = false; hide(); }
+      if (running) { running.switched = true; running.controller.abort(); } // A run belongs to its project; its partial answer is kept.
       projectId = id; chats = null; chat = null; chatsQuery = ''; panel = 'chat'; error = ''; confirmDelete = null;
       settings.scope = { kind: 'project' }; settings.web = false;
       renderButton();
@@ -217,6 +221,7 @@ window.PromptboardOriginResearch = (() => {
         if (providers && !providers.length) log.append(el('p', 'origin-inline-error', 'Install and sign in to Claude Code or Codex to research. Open CLI connections at the top right.'));
       }
       for (const message of messages) log.append(messageView(message));
+      if (running) for (const agent of running.agents.values()) log.append(liveView(agent));
       return [log];
     }
     function messageView(message) {
@@ -227,6 +232,23 @@ window.PromptboardOriginResearch = (() => {
       const meta = [when(message.at), message.provider && PROVIDERS[message.provider], message.status === 'stopped' && 'Stopped', message.error?.message].filter(Boolean).join(' · ');
       if (message.role !== 'user' && meta) item.append(el('small', `origin-research-meta${message.error ? ' is-error' : ''}`, meta));
       return item;
+    }
+    /** A reply while the CLI writes it: plain text that grows, and the latest activity (search, fetch, tool). */
+    function liveView(agent) {
+      const item = el('article', 'origin-research-message is-assistant is-live'); item.dataset.agent = agent.id;
+      if (agent.label) item.append(el('p', 'origin-research-agent', agent.label));
+      const text = el('p', 'origin-research-text'); text.append(agent.textNode = document.createTextNode(agent.text));
+      const activity = el('p', 'origin-research-activity'); activity.setAttribute('aria-live', 'off');
+      agent.activityNode = activity; renderActivity(agent);
+      item.append(text, activity);
+      return item;
+    }
+    function renderActivity(agent) {
+      if (!agent.activityNode) return;
+      const labels = { search: 'Searching the web', fetch: 'Reading', tool: 'Using', skill: 'Using skill', note: '' };
+      const dots = el('span', 'origin-research-dots'); dots.append(el('span'), el('span'), el('span'));
+      const words = agent.status === 'running' ? (agent.activity ? `${labels[agent.activity.kind] ?? ''}${labels[agent.activity.kind] ? ': ' : ''}${agent.activity.label}` : agent.text ? '' : 'Thinking') : agent.status === 'failed' ? 'Failed' : '';
+      agent.activityNode.replaceChildren(...(agent.status === 'running' ? [dots] : []), document.createTextNode(words));
     }
     function settingsView() {
       const box = el('section', 'origin-research-settings'); box.setAttribute('aria-label', 'CLI and model');
@@ -260,10 +282,12 @@ window.PromptboardOriginResearch = (() => {
       input.setAttribute('aria-label', 'Research request');
       input.addEventListener('input', () => drafts.set(projectId, input.value));
       input.addEventListener('keydown', event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); form.requestSubmit(); } });
-      const send = el('button', 'origin-research-send'); send.type = 'submit'; send.id = 'origin-research-send'; send.setAttribute('aria-label', 'Send'); send.append(icon('send'));
-      send.disabled = !settings.provider;
+      const send = el('button', `origin-research-send${running ? ' is-stop' : ''}`); send.type = running ? 'button' : 'submit'; send.id = 'origin-research-send';
+      send.setAttribute('aria-label', running ? 'Stop' : 'Send'); send.append(icon(running ? 'stop' : 'send'));
+      send.disabled = !running && !settings.provider;
+      if (running) send.addEventListener('click', () => running?.controller.abort());
       form.append(input, send);
-      form.addEventListener('submit', event => { event.preventDefault(); void submit(input.value); });
+      form.addEventListener('submit', event => { event.preventDefault(); if (!running) void submit(input.value); });
       return form;
     }
 
@@ -322,10 +346,82 @@ window.PromptboardOriginResearch = (() => {
     function newChat() { chat = null; panel = 'chat'; error = ''; settings.web = false; render(); drawer.querySelector('#origin-research-input')?.focus(); }
     const scrollToEnd = () => { const log = drawer.querySelector('#origin-research-log'); if (log) log.scrollTop = log.scrollHeight; };
 
-    // ---- Sending (connected to the CLI in the streaming milestone) ----
-    async function submit(text) {
+    // ---- Sending: one streamed run at a time ----
+    const runSettings = () => ({ provider: settings.provider, model: settings.model, effort: settings.effort, mode: settings.mode, web: settings.web, scope: settings.scope });
+    const nearEnd = () => { const body = drawer.querySelector('#origin-research-body'); return !body || body.scrollHeight - body.scrollTop - body.clientHeight < 80; };
+    const followEnd = stick => { if (stick) { const body = drawer.querySelector('#origin-research-body'); if (body) body.scrollTop = body.scrollHeight; } };
+    async function submit(value) {
+      const question = value.trim();
       if (!settings.provider) { error = 'Choose Claude Code or Codex first.'; render(); return; }
-      void text; error = 'Research runs arrive in the next update.'; render();
+      if (!question && settings.mode === 'chat') return;
+      const id = projectId;
+      error = '';
+      if (!chat) {
+        const { response, data } = await api('/chats', { method: 'POST', body: { settings: runSettings() } });
+        if (id !== projectId) return;
+        if (!response.ok) { error = data.error || 'The chat could not be created.'; render(); return; }
+        chat = data.chat;
+      }
+      const run = running = { controller: new AbortController(), agents: new Map(), chatId: chat.id, projectId: id };
+      drafts.delete(id); panel = 'chat'; render(); renderButton(); followEnd(true);
+      let response;
+      try { response = await app.streamApi(`/api/origin/research/${encodeURIComponent(id)}/chats/${chat.id}/run`, { text: question, settings: runSettings() }, { signal: run.controller.signal }); }
+      catch { response = null; }
+      if (!response?.ok) {
+        const data = response ? await response.json().catch(() => ({})) : {};
+        if (running === run) running = null;
+        if (id === projectId) { error = run.controller.signal.aborted ? '' : data.error || 'Research could not start. Check that the app is running.'; drafts.set(id, value); render(); }
+        renderButton(); return;
+      }
+      const reader = response.body.getReader(), decoder = new TextDecoder();
+      let pending = '';
+      try {
+        for (;;) {
+          const { value: chunk, done } = await reader.read();
+          if (done) break;
+          pending += decoder.decode(chunk, { stream: true });
+          const lines = pending.split('\n'); pending = lines.pop();
+          for (const line of lines) if (line.trim()) { try { receive(run, JSON.parse(line)); } catch {} }
+        }
+      } catch {}
+      if (running === run) running = null;
+      if (run.projectId === projectId && !run.done) {
+        // Stopped or disconnected: the server keeps what was produced. Read the stored chat.
+        const { response: again, data } = await api(`/chats/${run.chatId}`);
+        if (again.ok && chat?.id === run.chatId) chat = data.chat;
+        if (run.switched === undefined && !run.controller.signal.aborted && !run.failed) error = 'The connection to the app ended. What was stored is shown.';
+      }
+      if (run.projectId === projectId) { render(); followEnd(true); if (isOpen) drawer.querySelector('#origin-research-input')?.focus({ preventScroll: true }); }
+      renderButton();
+      if (run.done && !isOpen) app.announce('Research finished.');
+    }
+    /** One streamed event. Only the live text node changes for text; whole redraws happen on new messages. */
+    function receive(run, event) {
+      const visible = run.projectId === projectId && chat?.id === run.chatId && isOpen && panel === 'chat';
+      const stick = visible && nearEnd();
+      if (event.type === 'start') {
+        for (const agent of event.agents || []) run.agents.set(agent.id, { id: agent.id, label: agent.label || '', text: '', status: 'running', activity: null });
+        if (visible) { render(); followEnd(stick); }
+      } else if (event.type === 'delta' || event.type === 'activity') {
+        const agent = run.agents.get(event.agent);
+        if (!agent) return;
+        if (event.type === 'delta') { agent.text += event.text; agent.activity = null; if (visible && agent.textNode?.isConnected) agent.textNode.appendData(event.text); else if (visible) render(); }
+        else { agent.activity = { kind: event.kind, label: event.label }; if (visible) renderActivity(agent); }
+        followEnd(stick);
+      } else if (event.type === 'agent') {
+        const agent = run.agents.get(event.agent);
+        if (agent) { agent.status = event.status; if (visible) renderActivity(agent); }
+      } else if (event.type === 'message') {
+        if (chat?.id === run.chatId) chat = { ...chat, messages: [...chat.messages.filter(message => message.id !== event.message.id), event.message] };
+        if (event.message.role !== 'user') { const agent = run.agents.get(event.message.agent?.id || 'main'); if (agent) run.agents.delete(agent.id); }
+        if (visible) { render(); followEnd(stick); }
+      } else if (event.type === 'done') {
+        run.done = true;
+        if (chat?.id === run.chatId) chat = event.chat;
+      } else if (event.type === 'error') {
+        run.failed = true;
+        if (run.projectId === projectId) error = event.message || 'Research failed.';
+      }
     }
 
     return { button: headerButton, reset, close, minimize, yieldDrawer, isOpen: () => isOpen, isMinimized: () => minimized };

@@ -34,6 +34,7 @@ import { proposeWorkspaceFile, validateFileProposalRequest } from './workspace-f
 import { OriginError, OriginStore, originRoute } from './origin.mjs';
 import { ContextStore, contextRoute } from './origin-context.mjs';
 import { ResearchError, ResearchStore, researchRoute } from './origin-research.mjs';
+import { streamResearch } from './research-cli.mjs';
 import { PromptStore, createBoardProject, nameTaken, projectsRoute } from './projects.mjs';
 import { Coordinator, CoordinatorError, coordinatorRoute } from './coordinator.mjs';
 
@@ -296,7 +297,7 @@ function streamRun(supervisor, req, res, runId, after) {
   req.on('close', () => { clearInterval(ping); unsubscribe(); });
 }
 
-export async function startServer({ port = 4318, runner = runProvider, detector = detectProviders, catalogReader = discoverModels, authAdapter = auth, dataDir = defaultDataDir(), projectsDir, executor = 'auto', folderPicker = chooseFolder, githubPty = loadPty, usageReader, mcpTester, imageGenerator, composeMcp } = {}) {
+export async function startServer({ port = 4318, runner = runProvider, detector = detectProviders, catalogReader = discoverModels, authAdapter = auth, dataDir = defaultDataDir(), projectsDir, executor = 'auto', folderPicker = chooseFolder, githubPty = loadPty, usageReader, mcpTester, imageGenerator, composeMcp, researchRunner = streamResearch } = {}) {
   // The board loads lazily, so starting the server never reads or writes board files.
   const usage = usageReader || new UsageDashboard({ dataDir });
   const notifications = new PipelineNotifications();
@@ -423,7 +424,7 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
       catch (error) { return sendFailure(res, error, 'The project request failed. Nothing was changed.', { status: 500, code: 'PROJECTS_FAILED' }); }
     }
     if (/^\/api\/origin\/research(?:\/|$)/.test(pathname)) {
-      try { return await researchRoute({ research, origin, req, res, pathname, searchParams: requestUrl.searchParams, jsonBody, send }); }
+      try { return await researchRoute({ research, origin, runner: researchRunner, claim, track, req, res, pathname, searchParams: requestUrl.searchParams, jsonBody, send }); }
       catch (error) { return sendFailure(res, error, 'The research request failed. The blueprint is unchanged.', { status: 500, code: 'RESEARCH_FAILED' }); }
     }
     if (/^\/api\/origin(?:\/|$)/.test(pathname)) {

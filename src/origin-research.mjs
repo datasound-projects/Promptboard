@@ -1,11 +1,14 @@
 // Origin Research: chats about one Origin project, run through the user's own CLI. Research is read-only: it never
 // writes the blueprint. Suggestions are stored with the chat and applied only by the page, after the user approves.
 import '../public/origin-model.js';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readdir, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { ORIGIN_DIR, escapeId } from './origin.mjs';
 import { serial, writeAtomic } from './durable.mjs';
+import { redactLocal } from './compose-local.mjs';
+import { FAILURE_MESSAGES } from './providers.mjs';
+import { chatPrompt } from './research-prompts.mjs';
 
 const Model = globalThis.PromptboardOriginModel;
 export const RESEARCH_DIR = 'research';
@@ -77,6 +80,8 @@ export class ResearchStore {
     this.queues = new Map();
   }
   #folder(originId) { return join(this.dir, escapeId(id(originId, 'project'))); }
+  /** The empty working folder of a project's research runs. CLI sessions are tied to it, so it never changes. */
+  async workspace(originId) { const path = join(this.#folder(originId), 'workspace'); await mkdir(path, { recursive: true, mode: 0o700 }); return path; }
   #file(originId, chat) { return join(this.#folder(originId), `${escapeId(chatId(chat))}.json`); }
   #serial(originId, work) {
     if (!this.queues.has(originId)) this.queues.set(originId, serial());
@@ -139,14 +144,86 @@ export class ResearchStore {
   }
 }
 
+const sha = text => createHash('sha256').update(text).digest('hex');
+const titleFrom = text => { const line = text.trim().split('\n')[0].replace(/\s+/g, ' '); return line.length > 60 ? `${line.slice(0, 59)}…` : line; };
+/** A message the page can show. Provider details stay on the server; only fixed messages leave it. */
+export function publicError(error) {
+  if (error instanceof ResearchError) return { code: error.code, message: error.message };
+  if (typeof error?.code === 'string' && Object.hasOwn(FAILURE_MESSAGES, error.code)) return { code: error.code, message: FAILURE_MESSAGES[error.code] };
+  if (error?.code === 'NOT_INSTALLED' || error?.code === 'OUTPUT_LIMIT' || error?.code === 'INVALID_OUTPUT' || error?.code === 'SPAWN_FAILED') return { code: error.code, message: error.message };
+  return { code: 'RESEARCH_FAILED', message: 'Research failed. The blueprint is unchanged; try again.' };
+}
+/** Earlier turns for a CLI without a resumable session: the newest that fit, oldest first. */
+export function boundedHistory(messages, budget = 16_000) {
+  const picked = [];
+  let used = 0;
+  for (const message of [...messages].reverse()) {
+    if (!['user', 'assistant'].includes(message.role) || !message.text) continue;
+    const text = message.text.length > 4000 ? `${message.text.slice(0, 3999)}…` : message.text;
+    if (used + text.length > budget) break;
+    used += text.length; picked.unshift({ role: message.role, text });
+  }
+  return picked;
+}
+/** Read-only context for one scope of the saved blueprint, with recognizable secrets removed. */
+function researchContext(record, scope) {
+  const blueprint = record.blueprint, vision = blueprint.vision || {};
+  const text = [`Project: ${record.name}`, blueprint.idea && `Idea: ${blueprint.idea}`, ...Model.VISION.filter(key => vision[key]).map(key => `${Model.VISION_QUESTIONS[key]} ${vision[key]}`)].filter(Boolean).join('\n');
+  return { text: redactLocal(text), label: 'the whole project', scope };
+}
+
 /**
- * HTTP for chats. GET/POST /api/origin/research/:origin/chats, GET/PATCH/DELETE …/chats/:chat.
- * Running research (…/chats/:chat/run) is added by the streaming milestone.
+ * One Chat turn: store the question, stream the CLI's answer as events, store the answer. A resumed CLI session
+ * gets only the new question (and the context again when it changed). When a session cannot continue, one new
+ * session starts with this chat's bounded history. A stopped run keeps the text it produced.
  */
-export async function researchRoute({ research, origin, req, res, pathname, searchParams, jsonBody, send }) {
-  const match = pathname.match(/^\/api\/origin\/research\/([A-Za-z0-9_-]{1,100})\/chats(?:\/([0-9a-f-]{36}))?$/);
+export async function runChat({ research, origin, originId, chat, settings, question, runner, signal, emit }) {
+  const record = await origin.read(originId, { report: false });
+  if (!record || record.damaged) throw new ResearchError('This Origin project no longer exists. Choose another project.', 'NOT_FOUND', 404);
+  const saved = await research.read(originId, chat);
+  const context = researchContext(record, settings.scope), contextHash = sha(`${JSON.stringify(settings.scope)}\n${context.text}`);
+  const native = saved.native?.provider === settings.provider && saved.native.sessionId ? saved.native : null;
+  const fresh = () => chatPrompt({ question, context: context.text, history: boundedHistory(saved.messages), web: settings.web, scopeLabel: context.label });
+  const prompt = native ? chatPrompt({ question, context: native.contextHash === contextHash ? null : context.text, followUp: true, scopeLabel: context.label }) : fresh();
+  const asked = { id: randomUUID(), role: 'user', text: question, at: Date.now(), mode: 'chat', scope: settings.scope };
+  await research.update(originId, chat, value => { value.messages.push(asked); value.settings = settings; if (!value.title) value.title = titleFrom(question); });
+  emit({ type: 'message', message: asked });
+  emit({ type: 'start', mode: 'chat', agents: [{ id: 'main', label: '' }] });
+  const workspace = await research.workspace(originId), started = Date.now();
+  const onEvent = event => emit({ ...event, agent: 'main' });
+  const call = (input, session) => runner({ provider: settings.provider, model: settings.model, effort: settings.effort, web: settings.web, cwd: workspace, signal, onEvent, prompt: input, session });
+  const newSession = () => (settings.provider === 'claude' ? { id: randomUUID(), resume: false } : null);
+  let result, failure;
+  try { result = await call(prompt, native ? { id: native.sessionId, resume: true } : newSession()); }
+  catch (error) {
+    failure = error;
+    if (error.resumeFailed && !signal?.aborted) {
+      onEvent({ type: 'activity', kind: 'note', label: 'The earlier CLI session could not continue. A new session starts with this chat’s history.' });
+      try { result = await call(fresh(), newSession()); failure = null; } catch (again) { failure = again; }
+    }
+  }
+  const stopped = failure?.code === 'ABORTED';
+  const answer = { id: randomUUID(), role: 'assistant', at: Date.now(), mode: 'chat', provider: settings.provider, model: settings.model, durationMs: Date.now() - started,
+    text: result?.text ?? failure?.partial ?? '', status: result ? 'done' : stopped ? 'stopped' : 'failed', ...(failure && !stopped ? { error: publicError(failure) } : {}) };
+  const updated = await research.update(originId, chat, value => {
+    value.messages.push(answer);
+    if (result?.session) value.native = { provider: settings.provider, sessionId: result.session, contextHash };
+    else if (failure?.resumeFailed) value.native = null;
+  });
+  emit({ type: 'message', message: answer });
+  emit({ type: 'done', chat: updated });
+  return updated;
+}
+
+/**
+ * HTTP for chats. GET/POST /api/origin/research/:origin/chats, GET/PATCH/DELETE …/chats/:chat, and
+ * POST …/chats/:chat/run, which streams NDJSON events while the CLI works. A run uses the shared one-job slot,
+ * so it never overlaps Compose, the Coordinator or a sign-in change. Closing the request stops the run.
+ */
+export async function researchRoute({ research, origin, runner, claim, track, req, res, pathname, searchParams, jsonBody, send }) {
+  const match = pathname.match(/^\/api\/origin\/research\/([A-Za-z0-9_-]{1,100})\/chats(?:\/([0-9a-f-]{36})(?:\/(run))?)?$/);
   if (!match) return send(res, 404, { error: 'This research route does not exist.' });
-  const [, originId, chat] = match;
+  const [, originId, chat, action] = match;
   // The Origin project must exist; this also rejects IDs that are not projects.
   const project = await origin.read(originId, { report: false });
   if (!project || project.damaged) throw new ResearchError('This Origin project no longer exists. Choose another project.', 'NOT_FOUND', 404);
@@ -155,8 +232,27 @@ export async function researchRoute({ research, origin, req, res, pathname, sear
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw invalid('Send a JSON object.');
     return value;
   };
+  if (action === 'run' && req.method === 'POST') {
+    const input = await body();
+    const settings = settingsOf(input.settings);
+    const question = text(input.text, LIMITS.question, 'A question', { empty: settings.mode !== 'chat' }).trim();
+    if (settings.mode !== 'chat') throw invalid('Swarm, Decision Lab and Audit are not available yet. Use Chat.');
+    await research.read(originId, chat); // A missing chat is reported before the job slot is taken.
+    const claimed = await claim('research', settings.provider), { job } = claimed;
+    job.stage = `research-${settings.mode}`;
+    const abort = () => { if (!res.writableEnded) job.controller.abort(); };
+    res.once('close', abort); if (res.destroyed) job.controller.abort();
+    res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' });
+    const emit = event => { if (!res.writableEnded && !res.destroyed) res.write(`${JSON.stringify(event)}\n`); };
+    const ping = setInterval(() => emit({ ping: true }), 15000); ping.unref();
+    try { await track(runChat({ research, origin, originId, chat, settings, question, runner, signal: job.controller.signal, emit })); }
+    catch (error) { emit({ type: 'error', ...publicError(error) }); }
+    finally { clearInterval(ping); res.off('close', abort); if (!res.writableEnded) res.end(); claimed.release(); }
+    return;
+  }
   if (!chat && req.method === 'GET') return send(res, 200, { chats: await research.list(originId, { query: searchParams?.get('q') || '' }) });
   if (!chat && req.method === 'POST') return send(res, 200, { chat: await research.create(originId, (await body()).settings) });
+  if (action) return send(res, 404, { error: 'This research route does not exist.' });
   if (chat && req.method === 'GET') return send(res, 200, { chat: await research.read(originId, chat) });
   if (chat && req.method === 'PATCH') {
     const input = await body();
