@@ -83,3 +83,38 @@ test('Research suggestions: preview, edit, apply one, apply selected; a changed 
   assert.deepEqual(await ev(`return [...document.querySelectorAll('.origin-research-proposal')].map(c => c.dataset.status);`), ['applied', 'applied', 'applied', 'rejected']);
   assert.deepEqual(browser.consoleMessages.filter(line => line.startsWith('EXCEPTION')), []);
 });
+
+test('Apply all: one answer adds a layer, components, a connection and dependent tasks; the architecture diagram and Tasks show them', { skip: !chrome, timeout: 180000 }, async t => {
+  const batch = { suggestions: [
+    { ref: 'api', title: 'Order API', target: { kind: 'add', collection: 'components' }, value: { name: 'Order API', type: 'api', purpose: 'Takes orders', layerId: '@back' } },
+    { ref: 'db', title: 'Orders database', target: { kind: 'add', collection: 'components' }, value: { name: 'Orders database', type: 'database', purpose: 'Stores orders', layerId: '@back' } },
+    { ref: 'back', title: 'Backend layer', target: { kind: 'add', collection: 'layers' }, value: { name: 'Backend' } },
+    { title: 'API writes orders', target: { kind: 'add', collection: 'connections' }, value: { from: '@api', to: '@db', label: 'writes', protocol: 'SQL' } },
+    { ref: 't2', title: 'Order endpoints', target: { kind: 'add', collection: 'items' }, value: { title: 'Order endpoints', acceptanceCriteria: 'POST /orders stores an order', componentIds: ['@api'], dependsOn: ['@t1'] } },
+    { ref: 't1', title: 'Orders schema', target: { kind: 'add', collection: 'items' }, value: { title: 'Orders schema', acceptanceCriteria: 'Migration creates the orders table', componentIds: ['@db'] } },
+  ] };
+  const researchRunner = async call => ({ text: `Plan for orders.\n\n\`\`\`origin-suggestions\n${J(batch)}\n\`\`\``, session: call.session?.id || 'thread-1' });
+  const { ev, wait, call, originId } = await researchPage(t, { server: { researchRunner } });
+  await ev(`document.querySelector('#origin-research-open').click();`);
+  await wait(`document.querySelector('#origin-research-send') && !document.querySelector('#origin-research-send').disabled`, 'ready');
+  await ev(`const i = document.querySelector('#origin-research-input'); i.value = 'Design the order flow'; i.dispatchEvent(new Event('input', { bubbles: true })); i.closest('form').requestSubmit();`);
+  await wait(`document.querySelector('#origin-research-apply-all')?.textContent === 'Apply all (6)'`, 'Apply all offered');
+  // Cards name links by the records they point to, new ones marked.
+  await ev(`[...document.querySelectorAll('.origin-research-proposal')].find(c => c.textContent.includes('Order endpoints')).querySelector('button').click();`);
+  await wait(`/componentIds: Order API \\(new\\)[\\s\\S]*dependsOn: Orders schema \\(new\\)/.test([...document.querySelectorAll('.origin-research-proposal')].find(c => c.textContent.includes('Order endpoints')).querySelector('.is-new')?.textContent || '')`, 'preview names linked records');
+  await ev(`document.querySelector('#origin-research-apply-all').click();`);
+  await wait(`[...document.querySelectorAll('.origin-research-proposal')].every(c => c.dataset.status === 'applied')`, 'all applied');
+  await wait(`document.querySelector('#origin-view').dataset.save === 'saved'`, 'saved');
+  const bp = (await call(`/api/origin/projects/${originId}`)).blueprint;
+  const id = name => bp.components.find(entry => entry.name === name)?.id;
+  assert.deepEqual(bp.connections.map(entry => [entry.from, entry.to, entry.label]), [[id('Order API'), id('Orders database'), 'writes']]);
+  const layer = bp.layers.find(entry => entry.name === 'Backend').id;
+  assert.deepEqual([bp.components.find(entry => entry.name === 'Order API').layerId, bp.components.find(entry => entry.name === 'Orders database').layerId], [layer, layer]);
+  const schema = bp.items.find(entry => entry.title === 'Orders schema'), endpoints = bp.items.find(entry => entry.title === 'Order endpoints');
+  assert.deepEqual([endpoints.dependsOn, endpoints.componentIds, schema.componentIds], [[schema.id], [id('Order API')], [id('Orders database')]]);
+  // Origin's own views show the result: the canvas edge and the tasks with their prerequisite.
+  await ev(`document.querySelector('.origin-nav-item[data-section="architecture"]').click();`);
+  await wait(`document.querySelectorAll('#origin-main svg path[data-from], #origin-main .origin-edge, #origin-main svg line').length > 0 || /writes/.test(document.querySelector('#origin-main').textContent)`, 'connection on the architecture canvas');
+  await ev(`document.querySelector('.origin-nav-item[data-section="plan"]').click();`);
+  await wait(`/Order endpoints/.test(document.querySelector('#origin-main').textContent) && /Orders schema/.test(document.querySelector('#origin-main').textContent)`, 'tasks listed');
+});
