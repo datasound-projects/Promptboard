@@ -963,7 +963,105 @@ globalThis.PromptboardOriginModel = (() => {
     return { text: text.trim(), label: label2, size: text.length, omitted };
   }
 
+  // ---- Origin Research suggestions: validated against the blueprint by stable IDs, applied only by the person ----
+  // Fields a suggestion may set, per collection: a maximum length, an enum name, or 'url'. Links, keys and
+  // positions are never set by a suggestion, and a source can never be marked verified by one.
+  const SUGGEST_FIELDS = {
+    requirements: { title: NAME, description: TEXT, acceptanceCriteria: TEXT, type: 'requirementType', priority: 'priority' },
+    components: { name: NAME, type: 'componentType', purpose: TEXT, responsibilities: TEXT, interfaces: TEXT, dataHandled: TEXT, notes: TEXT },
+    technologies: { name: NAME, category: 'techCategory', status: 'techStatus', version: 80, purpose: TEXT, reason: TEXT, alternatives: TEXT },
+    dependencies: { name: NAME, type: 'dependencyType', version: 80, notes: TEXT },
+    decisions: { title: NAME, status: 'decisionStatus', context: TEXT, decision: TEXT, alternatives: TEXT, reason: TEXT, consequences: TEXT },
+    assumptions: { statement: 2000, status: 'assumptionStatus', reason: TEXT, impact: TEXT },
+    risks: { title: NAME, kind: 'riskKind', severity: 'severity', status: 'riskStatus', description: TEXT, mitigation: TEXT },
+    sources: { title: NAME, type: 'sourceType', url: 'url', claim: 4000, notes: TEXT },
+    layers: { name: 80, description: 2000, constraints: TEXT },
+    areas: { title: NAME, description: TEXT },
+    milestones: { title: NAME, goal: TEXT, definitionOfDone: TEXT },
+  };
+  const SUGGEST_ADD = ['requirements', 'components', 'technologies', 'dependencies', 'decisions', 'assumptions', 'risks', 'sources'];
+  const NAME_FIELD = { components: 'name', technologies: 'name', dependencies: 'name', assumptions: 'statement', layers: 'name' };
+  const nameField = collection => NAME_FIELD[collection] || 'title';
+  class SuggestionError extends Error {}
+  const reject = message => { throw new SuggestionError(message); };
+  /** One field value, checked like the blueprint itself checks it. Enum labels are accepted for their IDs. */
+  function suggestionValue(collection, field, value) {
+    const rule = SUGGEST_FIELDS[collection]?.[field];
+    if (rule === undefined) reject(`${collection}.${field} cannot be suggested.`);
+    if (typeof value !== 'string') reject('A suggested value must be text.');
+    const text = value.trim();
+    if (rule === 'url') { if (text && !/^https?:\/\/[^\s/@]+(?:\/[^\s]*)?$/i.test(text)) reject('A source URL must be an http(s) address without credentials.'); return text; }
+    if (typeof rule === 'string') {
+      const found = ENUMS[rule].find(([id, name]) => id === text || name.toLowerCase() === text.toLowerCase());
+      if (!found) reject(`“${clip(text, 40)}” is not a valid ${field}.`);
+      return found[0];
+    }
+    return text.length > rule ? `${text.slice(0, rule - 1)}…` : text;
+  }
+  /** A stable key for a suggestion's target: suggestions with the same key change the same field. */
+  const researchTargetKey = target => target.kind === 'add' ? `add:${target.collection}` : [target.kind, target.collection, target.id, target.field, target.componentId, target.questionId, target.section, target.area].filter(Boolean).join(':');
+  /** The current value of a target, '' when empty, or undefined when the target no longer exists. */
+  function researchTargetValue(blueprint, target) {
+    if (target.kind === 'idea') return blueprint.idea || '';
+    if (target.kind === 'vision') return VISION.includes(target.field) ? blueprint.vision[target.field] || '' : undefined;
+    if (target.kind === 'record') { const entry = blueprint[target.collection]?.find(item => item.id === target.id); return entry ? entry[target.field] ?? '' : undefined; }
+    if (target.kind === 'answer') return blueprint.questions.some(item => item.id === target.questionId && item.scope === 'section') ? blueprint.answers[target.questionId] || '' : undefined;
+    if (target.kind === 'componentAnswer') {
+      const component = blueprint.components.find(item => item.id === target.componentId);
+      return component && blueprint.questions.some(item => item.id === target.questionId && item.scope === 'component') ? component.answers?.[target.questionId] || '' : undefined;
+    }
+    if (target.kind === 'topic') return AREAS[target.section]?.some(([area]) => area === target.area) ? blueprint.areas.find(item => item.section === target.section && item.area === target.area)?.title || '' : undefined;
+    if (target.kind === 'add') return null;
+    return undefined;
+  }
+  /** Where a suggestion goes, in the project's own words, for the review card. */
+  function researchTargetLabel(blueprint, target) {
+    const noun = RESEARCH_NOUN[target.collection] || target.collection;
+    if (target.kind === 'idea') return 'Idea';
+    if (target.kind === 'vision') return `${sectionTitle(blueprint, 'vision')} › ${questionText(blueprint, `vision:${target.field}`, VISION_QUESTIONS[target.field] || target.field)}`;
+    if (target.kind === 'record') { const entry = blueprint[target.collection]?.find(item => item.id === target.id); return `${noun[0].toUpperCase()}${noun.slice(1)} “${clip(entry ? recordTitle(blueprint, target.collection, entry) : 'removed', 60)}” › ${target.field}`; }
+    if (target.kind === 'answer') { const question = blueprint.questions.find(item => item.id === target.questionId); return question ? `${sectionTitle(blueprint, question.sectionId)} › ${clip(question.text, 80)}` : 'A removed question'; }
+    if (target.kind === 'componentAnswer') { const component = blueprint.components.find(item => item.id === target.componentId), question = blueprint.questions.find(item => item.id === target.questionId); return `${component?.name || 'A removed component'} › ${clip(question?.text || 'a removed question', 60)}`; }
+    if (target.kind === 'topic') return `${sectionTitle(blueprint, target.section)} › ${questionText(blueprint, `topic:${target.section}:${target.area}`, label(target.section, target.area))}`;
+    if (target.kind === 'add') return `New ${noun}`;
+    return 'Unknown target';
+  }
+  /**
+   * Check one suggestion from a research agent against the blueprint. Returns { op, target, value, original, title, why,
+   * evidence } or throws when the target does not exist, the field cannot be suggested or the value is invalid.
+   */
+  function validateResearchSuggestion(blueprint, raw) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) reject('A suggestion must be an object.');
+    const source = raw.target && typeof raw.target === 'object' ? raw.target : {};
+    let target, value;
+    if (source.kind === 'add') {
+      if (!SUGGEST_ADD.includes(source.collection)) reject('New records can be requirements, components, technologies, dependencies, decisions, assumptions, risks or sources.');
+      if (!raw.value || typeof raw.value !== 'object' || Array.isArray(raw.value)) reject('A new record needs its fields.');
+      target = { kind: 'add', collection: source.collection };
+      value = {};
+      for (const [field, given] of Object.entries(raw.value)) if (SUGGEST_FIELDS[source.collection][field] !== undefined && typeof given === 'string' && given.trim()) value[field] = suggestionValue(source.collection, field, given);
+      if (!hasText(value[nameField(source.collection)])) reject(`A new ${RESEARCH_NOUN[source.collection]} needs a ${nameField(source.collection)}.`);
+    } else {
+      if (source.kind === 'idea') target = { kind: 'idea' };
+      else if (source.kind === 'vision') target = { kind: 'vision', field: String(source.field) };
+      else if (source.kind === 'record') target = { kind: 'record', collection: String(source.collection), id: String(source.id), field: String(source.field) };
+      else if (source.kind === 'answer') target = { kind: 'answer', questionId: String(source.questionId) };
+      else if (source.kind === 'componentAnswer') target = { kind: 'componentAnswer', componentId: String(source.componentId), questionId: String(source.questionId) };
+      else if (source.kind === 'topic') target = { kind: 'topic', section: String(source.section), area: String(source.area) };
+      else reject('Unknown suggestion target.');
+      if (researchTargetValue(blueprint, target) === undefined) reject('The suggested target does not exist in this blueprint.');
+      value = target.kind === 'record' ? suggestionValue(target.collection, target.field, raw.value)
+        : typeof raw.value === 'string' && raw.value.trim() ? (raw.value.trim().length > (target.kind === 'topic' ? NAME : TEXT) ? raw.value.trim().slice(0, target.kind === 'topic' ? NAME : TEXT) : raw.value.trim()) : reject('A suggested value must be text.');
+    }
+    const original = researchTargetValue(blueprint, target);
+    if (target.kind !== 'add' && original.trim() === value) reject('The suggestion does not change anything.');
+    const text = (input, max) => (typeof input === 'string' ? clip(input, max) : '');
+    return { op: target.kind === 'add' ? 'add' : 'set', target, key: researchTargetKey(target), value, original, title: text(raw.title, 160) || researchTargetLabel(blueprint, target), why: text(raw.why, 2000),
+      evidence: (Array.isArray(raw.evidence) ? raw.evidence : []).filter(item => typeof item === 'string' && item.trim()).slice(0, 10).map(item => clip(item, 500)) };
+  }
+
   return { SCHEMA, VERSION, ID, PHASES, SECTIONS, ENUMS, AREAS, VISION, LIMITS, CONTEXT_COLLECTIONS, QUESTIONS, VISION_QUESTIONS, COMPONENT_FIELDS, SECTION_STATE, VERIFICATION_LABELS,
     label, sectionLabel, sectionTitle, phaseTitle, phaseList, questionText, lines, emptyBlueprint, nextKey, normalizeBlueprint, verification, isStarted, itemName, issues, readiness, sectionStates,
-    composeSpec, orderItems, taskHome, taskContext, taskBody, suggestionBrief, researchTargets, researchContext, researchRecord, RESEARCH_FIELDS };
+    composeSpec, orderItems, taskHome, taskContext, taskBody, suggestionBrief, researchTargets, researchContext, researchRecord, RESEARCH_FIELDS,
+    SUGGEST_FIELDS, SUGGEST_ADD, researchTargetKey, researchTargetValue, researchTargetLabel, validateResearchSuggestion };
 })();

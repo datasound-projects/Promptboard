@@ -50,6 +50,9 @@ window.PromptboardOriginResearch = (() => {
     const drafts = new Map(); // Unsent text per project survives closing the panel and switching projects.
     const saveSettings = () => setPref(SETTINGS_KEY, JSON.stringify({ provider: settings.provider, model: settings.model, effort: settings.effort, mode: settings.mode, skills: settings.skills }));
     let sourceBusy = false, baseLibrary = null, sourceForm = 'document', mcpKind = 'context7';
+    // Review state of suggestion cards (preview, edit draft, conflict text, selection); the decision itself is stored with the chat.
+    const cards = new Map(), selected = new Set();
+    let applying = false;
     const api = (path, options = {}) => app.api(`/api/origin/research/${encodeURIComponent(projectId)}${path}`, { timeoutMs: 30000, ...options })
       .catch(() => ({ response: { ok: false, status: 0 }, data: { error: 'The app did not answer. Nothing was changed; try again.' } }));
 
@@ -263,8 +266,18 @@ window.PromptboardOriginResearch = (() => {
         log.append(el('p', 'origin-research-hint', `${mode[2]}. Choose what to research above, then ask. Research reads the saved blueprint and changes nothing until you apply a suggestion.`));
         if (providers && !providers.length) log.append(el('p', 'origin-inline-error', 'Install and sign in to Claude Code or Codex to research. Open CLI connections at the top right.'));
       }
-      for (const message of messages) log.append(messageView(message));
+      for (const message of messages) {
+        log.append(messageView(message));
+        for (const proposal of (chat?.proposals || []).filter(entry => entry.messageId === message.id)) log.append(proposalCard(proposal));
+      }
       if (running) for (const agent of running.agents.values()) log.append(liveView(agent));
+      const pending = [...selected].filter(id => chat?.proposals?.some(entry => entry.id === id && ['pending', 'conflict'].includes(entry.status)));
+      if (pending.length) {
+        const bar = el('div', 'origin-research-apply-bar');
+        const apply = button(`Apply selected (${pending.length})`, () => void applyMany(pending), 'origin-ghost origin-research-apply-selected'); apply.id = 'origin-research-apply-selected'; apply.disabled = applying || Boolean(running);
+        bar.append(apply, button('Clear selection', () => { selected.clear(); render(); }, 'origin-link'));
+        return [log, bar];
+      }
       return [log];
     }
     function messageView(message) {
@@ -298,7 +311,8 @@ window.PromptboardOriginResearch = (() => {
         }
         item.append(head);
       }
-      const text = el('p', 'origin-research-text'); text.append(agent.textNode = document.createTextNode(agent.text));
+      const marker = agent.text.indexOf('```origin-suggestions');
+      const text = el('p', 'origin-research-text'); text.append(agent.textNode = document.createTextNode(marker >= 0 ? agent.text.slice(0, marker) : agent.text));
       const activity = el('p', 'origin-research-activity'); activity.setAttribute('aria-live', 'off');
       agent.activityNode = activity; renderActivity(agent);
       item.append(text, activity);
@@ -311,6 +325,86 @@ window.PromptboardOriginResearch = (() => {
       const words = agent.status === 'running' ? (agent.activity ? `${labels[agent.activity.kind] ?? ''}${labels[agent.activity.kind] ? ': ' : ''}${agent.activity.label}` : agent.text ? '' : 'Thinking')
         : { queued: 'Waiting for a free agent slot', failed: `Failed${agent.error ? `: ${agent.error}` : ''}`, stopped: 'Stopped', done: 'Finished' }[agent.status] || '';
       agent.activityNode.replaceChildren(...(agent.status === 'running' ? [dots] : []), document.createTextNode(words));
+    }
+    // ---- Suggestions: Preview | Edit | Apply | Reject ----
+    const STATUS = { pending: '', applied: 'Applied', rejected: 'Rejected', conflict: 'Conflict' };
+    const valueText = value => (value && typeof value === 'object' ? Object.entries(value).map(([field, text]) => `${field}: ${text}`).join('\n') : String(value ?? ''));
+    function proposalCard(proposal) {
+      const state = cards.get(proposal.id) || {}, blueprint = host.blueprint();
+      const card = el('article', 'origin-research-proposal'); card.dataset.status = proposal.status; card.dataset.id = proposal.id;
+      const head = el('div', 'origin-research-proposal-head');
+      if (['pending', 'conflict'].includes(proposal.status)) {
+        const pick = el('input'); pick.type = 'checkbox'; pick.checked = selected.has(proposal.id); pick.setAttribute('aria-label', `Select “${proposal.title}”`);
+        pick.addEventListener('change', () => { if (pick.checked) selected.add(proposal.id); else selected.delete(proposal.id); render(); });
+        head.append(pick);
+      }
+      head.append(el('strong', '', proposal.title));
+      if (STATUS[proposal.status]) head.append(el('span', `origin-research-badge is-${proposal.status}`, STATUS[proposal.status]));
+      if (proposal.disagree) head.append(el('span', 'origin-research-badge is-disagree', 'Agents disagree'));
+      card.append(head, el('p', 'origin-research-target', blueprint ? M().researchTargetLabel(blueprint, proposal.target) : ''));
+      const from = [proposal.agent?.label, ...(proposal.alsoFrom || [])].filter(Boolean);
+      if (from.length) card.append(el('p', 'origin-research-from', `From ${from.join(', ')}`));
+      if (proposal.why) card.append(el('p', 'origin-research-why', proposal.why));
+      if (proposal.evidence?.length) card.append(el('p', 'origin-research-evidence', `Evidence: ${proposal.evidence.join(' · ')}`));
+      if (state.preview) {
+        const diff = el('div', 'origin-research-diff');
+        if (proposal.op === 'set') diff.append(el('p', 'is-old', proposal.original ? valueText(proposal.original) : '(empty)'));
+        diff.append(el('p', 'is-new', valueText(state.draft ?? proposal.value)));
+        card.append(diff);
+      }
+      if (state.edit) {
+        const editor = el('textarea', 'origin-research-edit'); editor.rows = 4; editor.value = state.draft ?? valueText(proposal.value); editor.setAttribute('aria-label', `Edit “${proposal.title}”`);
+        editor.addEventListener('input', () => cards.set(proposal.id, { ...cards.get(proposal.id), draft: editor.value }));
+        card.append(editor);
+      }
+      if (state.conflict || proposal.status === 'conflict') {
+        const note = el('p', 'origin-inline-error', state.conflict || 'This suggestion conflicts with the current blueprint.'); note.setAttribute('role', 'alert'); card.append(note);
+      }
+      const actions = el('div', 'origin-research-proposal-actions');
+      if (['pending', 'conflict'].includes(proposal.status)) {
+        const toggle = (key, label) => { const node = button(label, () => { cards.set(proposal.id, { ...state, [key]: !state[key] }); render(); }, 'origin-link'); node.setAttribute('aria-pressed', String(Boolean(state[key]))); return node; };
+        actions.append(toggle('preview', 'Preview'), toggle('edit', 'Edit'));
+        const apply = button(proposal.status === 'conflict' ? 'Replace anyway' : 'Apply', () => void applyOne(proposal, { force: proposal.status === 'conflict' }), 'origin-ghost origin-research-apply');
+        apply.disabled = applying || Boolean(running);
+        actions.append(apply, button(proposal.status === 'conflict' ? 'Keep mine' : 'Reject', () => void decide(proposal, 'rejected'), 'origin-link origin-research-reject'));
+      } else if (proposal.status === 'rejected') actions.append(button('Review again', () => void decide(proposal, 'pending'), 'origin-link'));
+      card.append(actions);
+      return card;
+    }
+    /** The value to apply: the suggestion, or the person's edit of it. Edited fields of a new record are read back line by line. */
+    function chosenValue(proposal) {
+      const draft = cards.get(proposal.id)?.draft;
+      if (draft === undefined) return { value: proposal.value, edited: false };
+      if (proposal.op === 'set') return { value: draft, edited: true };
+      const value = {};
+      for (const line of draft.split('\n')) { const match = line.match(/^(\w+):\s?(.*)$/); if (match && M().SUGGEST_FIELDS[proposal.target.collection]?.[match[1]] !== undefined) value[match[1]] = match[2]; }
+      return { value, edited: true };
+    }
+    async function decide(proposal, status, extra = {}) {
+      const { response, data } = await api(`/chats/${chat.id}/proposals/${proposal.id}`, { method: 'PATCH', body: { status, ...extra } });
+      if (response.ok) chat = { ...chat, proposals: data.proposals }; else error = data.error || 'The suggestion state could not be saved.';
+      if (status !== 'conflict') { cards.delete(proposal.id); selected.delete(proposal.id); }
+      render();
+    }
+    /** Apply through Origin's own editing path; a conflict changes nothing and is shown on the card. */
+    async function applyOne(proposal, { force = false } = {}) {
+      const { value, edited } = chosenValue(proposal);
+      const result = host.applyProposal(proposal, { force, value });
+      if (result.ok) { await decide(proposal, 'applied', { edited, revision: host.revision() }); app.announce(`Applied: ${proposal.title}.`); return 'applied'; }
+      if (result.conflict) { cards.set(proposal.id, { ...cards.get(proposal.id), conflict: result.conflict, preview: true }); await decide(proposal, 'conflict'); return 'conflict'; }
+      error = result.error || 'The suggestion could not be applied.'; render(); return 'error';
+    }
+    async function applyMany(ids) {
+      applying = true; render();
+      const counts = { applied: 0, conflict: 0, error: 0 };
+      for (const id of ids) {
+        const proposal = chat?.proposals?.find(entry => entry.id === id);
+        if (proposal && ['pending', 'conflict'].includes(proposal.status)) counts[await applyOne(proposal, { force: false })]++;
+      }
+      applying = false; selected.clear();
+      await host.saveNow?.();
+      app.announce(`Applied ${counts.applied}${counts.conflict ? `; ${counts.conflict} conflict${counts.conflict === 1 ? '' : 's'} need${counts.conflict === 1 ? 's' : ''} your choice` : ''}.`);
+      render();
     }
     function settingsView() {
       const box = el('section', 'origin-research-settings'); box.setAttribute('aria-label', 'CLI and model');
@@ -568,7 +662,13 @@ window.PromptboardOriginResearch = (() => {
       } else if (event.type === 'delta' || event.type === 'activity') {
         const agent = run.agents.get(event.agent);
         if (!agent) return;
-        if (event.type === 'delta') { agent.text += event.text; agent.activity = null; if (visible && agent.textNode?.isConnected) agent.textNode.appendData(event.text); else if (visible) render(); }
+        if (event.type === 'delta') {
+          agent.text += event.text; agent.activity = null;
+          // The suggestions block is shown as review cards when the answer is complete, not as raw text.
+          const marker = agent.text.indexOf('```origin-suggestions'), shown = marker >= 0 ? agent.text.slice(0, marker) : agent.text;
+          if (marker >= 0) agent.activity = { kind: 'note', label: 'Preparing suggestions' };
+          if (visible && agent.textNode?.isConnected) { agent.textNode.data = shown; if (marker >= 0) renderActivity(agent); } else if (visible) render();
+        }
         else { agent.activity = { kind: event.kind, label: event.label }; if (visible) renderActivity(agent); }
         followEnd(stick);
       } else if (event.type === 'agent') {
@@ -577,6 +677,9 @@ window.PromptboardOriginResearch = (() => {
       } else if (event.type === 'message') {
         if (chat?.id === run.chatId) chat = { ...chat, messages: [...chat.messages.filter(message => message.id !== event.message.id), event.message] };
         if (event.message.role !== 'user') { const agent = run.agents.get(event.message.agent?.id || 'main'); if (agent) run.agents.delete(agent.id); }
+        if (visible) { render(); followEnd(stick); }
+      } else if (event.type === 'proposals') {
+        if (chat?.id === run.chatId) chat = { ...chat, proposals: [...(chat.proposals || []), ...event.proposals] };
         if (visible) { render(); followEnd(stick); }
       } else if (event.type === 'done') {
         run.done = true;

@@ -121,7 +121,7 @@ window.PromptboardOrigin = (() => {
     // Research: a chat with the user's CLI in the same panel. It suggests changes; only the user applies them.
     const researchPanel = window.PromptboardOriginResearch.create({ app, view, drawer, blueprint: () => (record?.exists ? bp() : null), revision: () => record?.revision,
       composeSettings: () => app.composeSettings?.(), closeOthers: () => { if (open) closeDrawer(); contextPanel.close(); },
-      currentFocus: () => ({ section, record: open ? { ...open } : null }) });
+      currentFocus: () => ({ section, record: open ? { ...open } : null }), applyProposal: (proposal, options) => applyResearch(proposal, options), saveNow: () => flush() });
     contextPanel.button.after(researchPanel.button);
 
     let projects = [], projectId = null, record = null, loading = null, loadError = null, visible = false;
@@ -769,6 +769,42 @@ window.PromptboardOrigin = (() => {
       if (edit) openDrawer(collection, item.id);
       app.announce(`${NOUN[collection]} added.`);
       return item;
+    }
+    /**
+     * Apply one approved research suggestion to the open blueprint, like an edit made by hand: the normal autosave,
+     * revision check and redraws follow. A field that changed since the research ran, a removed target or a
+     * duplicate name is a conflict and changes nothing, unless the person chose to replace it anyway.
+     */
+    const KEYED = new Set(['requirements', 'decisions']);
+    function applyResearch(proposal, { force = false, value = proposal.value } = {}) {
+      if (!record?.exists) return { error: 'Open the project before applying suggestions.' };
+      const blueprint = bp(), target = proposal.target, same = (a, b) => String(a ?? '').trim() === String(b ?? '').trim();
+      const current = M.researchTargetValue(blueprint, target);
+      if (current === undefined) return { conflict: 'The part this suggestion changes no longer exists.', missing: true };
+      if (target.kind === 'add') {
+        const nameField = { components: 'name', technologies: 'name', dependencies: 'name', assumptions: 'statement' }[target.collection] || 'title';
+        const name = String(value?.[nameField] || '').trim();
+        if (!name) return { error: 'A new record needs a name.' };
+        if (!force && blueprint[target.collection].some(entry => String(entry[nameField] || '').trim().toLowerCase() === name.toLowerCase())) return { conflict: `A ${NOUN[target.collection].toLowerCase()} named “${name}” already exists.` };
+        const fields = Object.fromEntries(Object.entries(value).filter(([field]) => M.SUGGEST_FIELDS[target.collection][field] !== undefined));
+        const entry = { ...BLANK[target.collection](name), ...fields, origin: 'ai', ...(target.collection === 'sources' ? { verification: 'unverified', accessedAt: today() } : {}) };
+        const item = add(target.collection, entry, { keyed: KEYED.has(target.collection) });
+        changed({ structure: true, drawer: true });
+        return { ok: true, created: { collection: target.collection, id: item.id } };
+      }
+      if (!force && !same(current, proposal.original)) return { conflict: 'This field changed after the research ran.', current };
+      const text = typeof value === 'string' ? value : String(value ?? '');
+      if (target.kind === 'idea') blueprint.idea = text;
+      else if (target.kind === 'vision') blueprint.vision[target.field] = text;
+      else if (target.kind === 'record') blueprint[target.collection].find(item => item.id === target.id)[target.field] = text;
+      else if (target.kind === 'answer') blueprint.answers[target.questionId] = text;
+      else if (target.kind === 'componentAnswer') { const component = blueprint.components.find(item => item.id === target.componentId); component.answers = { ...component.answers, [target.questionId]: text }; }
+      else if (target.kind === 'topic') {
+        const entry = blueprint.areas.find(item => item.section === target.section && item.area === target.area);
+        if (entry) entry.title = text; else blueprint.areas.push({ id: newId(), origin: 'ai', ...BLANK.areas(text, target.section, target.area) });
+      }
+      changed({ structure: true, drawer: true });
+      return { ok: true };
     }
     // A list of records. Each row opens the drawer.
     function list(collection, items, describe, empty, { leading } = {}) {

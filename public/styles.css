@@ -2010,6 +2010,25 @@ button.origin-context-badge { cursor: pointer; }
 .origin-research-check input { flex: none; width: 16px !important; min-height: 16px !important; margin-top: 2px; }
 .origin-research-citations { display: grid; gap: 3px; margin: 8px 0 0; padding: 8px 0 0; border-top: 1px solid var(--divider); color: var(--muted); font-size: 11.5px; list-style: none; }
 .origin-research-citations a { color: var(--ink); text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; }
+.origin-research-proposal { display: grid; gap: 6px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--sash) 30%, var(--line)); border-radius: 12px; background: color-mix(in srgb, var(--sash) 5%, var(--og-glass-2)); font-size: 12.5px; }
+.origin-research-proposal[data-status="applied"] { border-color: color-mix(in srgb, var(--og-ok) 45%, var(--line)); background: color-mix(in srgb, var(--og-ok) 6%, transparent); }
+.origin-research-proposal[data-status="rejected"] { opacity: .6; border-style: dashed; }
+.origin-research-proposal[data-status="conflict"] { border-color: color-mix(in srgb, var(--og-warn) 55%, var(--line)); }
+.origin-research-proposal-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--ink); font-size: 13px; }
+.origin-research-proposal-head input { width: 15px !important; min-height: 15px !important; margin: 0; }
+.origin-research-badge { padding: 1px 8px; border-radius: 999px; background: var(--surface-3); color: var(--muted); font-size: 11px; font-weight: 600; }
+.origin-research-badge.is-applied { background: color-mix(in srgb, var(--og-ok) 18%, transparent); color: var(--og-ok); }
+.origin-research-badge.is-conflict, .origin-research-badge.is-disagree { background: color-mix(in srgb, var(--og-warn) 18%, transparent); color: var(--og-warn); }
+.origin-research-target, .origin-research-from, .origin-research-evidence { margin: 0; color: var(--subtle); font-size: 11.5px; overflow-wrap: anywhere; }
+.origin-research-why { margin: 0; color: var(--text); line-height: 1.5; }
+.origin-research-diff { display: grid; gap: 4px; }
+.origin-research-diff p { margin: 0; padding: 6px 8px; border-radius: 8px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+.origin-research-diff .is-old { background: color-mix(in srgb, var(--error) 8%, transparent); color: var(--muted); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--error) 50%, transparent); }
+.origin-research-diff .is-new { background: color-mix(in srgb, var(--og-ok) 9%, transparent); color: var(--ink); }
+.origin-drawer .origin-research-edit { min-height: 70px; font-size: 12.5px; }
+.origin-research-proposal-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.origin-research-proposal-actions .origin-ghost { height: 28px; padding: 0 12px; font-size: 12px; }
+.origin-research-apply-bar { position: sticky; bottom: 0; display: flex; align-items: center; gap: 12px; margin-top: 12px; padding: 8px 0; background: linear-gradient(transparent, var(--surface) 30%); }
 .origin-research-field { display: grid; gap: 6px; color: var(--muted); font-size: 12px; font-weight: 600; }
 .origin-research-settings > button { justify-self: start; }
 #origin-research-search { margin-bottom: 10px; }

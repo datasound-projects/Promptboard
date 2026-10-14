@@ -190,6 +190,44 @@ export function citations(text, evidence = []) {
   return [...citationsOf(evidence, text), ...[...found.values()].slice(0, 40)];
 }
 
+/** The suggestions block at the end of an answer, if any, and the answer without it. */
+export function extractSuggestions(text) {
+  const match = [...text.matchAll(/```(?:origin-suggestions|json)\s*\n([\s\S]*?)\n```\s*$/g)].at(-1) || [...text.matchAll(/```origin-suggestions\s*\n([\s\S]*?)(?:\n```|$)/g)].at(-1);
+  if (!match) return { text, raw: [] };
+  let parsed;
+  try { parsed = JSON.parse(match[1]); } catch { return { text: text.slice(0, match.index).trimEnd(), raw: [], unreadable: true }; }
+  const raw = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.suggestions) ? parsed.suggestions : null;
+  if (!raw) return { text, raw: [] };
+  return { text: text.slice(0, match.index).trimEnd(), raw: raw.slice(0, 20) };
+}
+/**
+ * Suggestions checked against the saved blueprint. Each keeps the value it would replace and the blueprint revision,
+ * so the page can refuse to overwrite a field that changed since. Invalid suggestions are dropped and counted.
+ */
+export function proposalsFor(record, raw, { messageId, agent = null }) {
+  const proposals = [];
+  let dropped = 0;
+  for (const entry of raw) {
+    try {
+      const valid = Model.validateResearchSuggestion(record.blueprint, entry);
+      if (proposals.some(other => other.key === valid.key && JSON.stringify(other.value) === JSON.stringify(valid.value))) continue;
+      proposals.push({ id: randomUUID(), messageId, ...valid, baseRevision: record.revision, status: 'pending', updatedAt: Date.now(), ...(agent ? { agent } : {}) });
+    } catch { dropped++; }
+  }
+  return { proposals: proposals.slice(0, 12), dropped };
+}
+/** Swarm results reviewed together: the same change from several agents once; different values for one field marked. */
+export function mergeProposals(proposals) {
+  const merged = [];
+  for (const proposal of proposals) {
+    const same = merged.find(other => other.key === proposal.key && proposal.op === 'set' && JSON.stringify(other.value) === JSON.stringify(proposal.value));
+    if (same) { same.alsoFrom = [...new Set([...(same.alsoFrom || []), proposal.agent?.label].filter(Boolean))]; continue; }
+    merged.push({ ...proposal });
+  }
+  for (const proposal of merged) if (proposal.op === 'set' && merged.some(other => other !== proposal && other.op === 'set' && other.key === proposal.key)) proposal.disagree = true;
+  return merged;
+}
+
 /**
  * One Chat turn: store the question, stream the CLI's answer as events, store the answer. A resumed CLI session
  * gets only the new question (and the context again when it changed). When a session cannot continue, one new
@@ -227,16 +265,22 @@ export async function runChat({ research, origin, originId, chat, settings, ques
       try { result = await call(fresh(), newSession()); failure = null; } catch (again) { failure = again; }
     }
   }
-  const stopped = failure?.code === 'ABORTED';
-  const answer = { id: randomUUID(), role: 'assistant', at: Date.now(), mode, provider: settings.provider, model: settings.model, durationMs: Date.now() - started,
-    text: result?.text ?? failure?.partial ?? '', status: result ? 'done' : stopped ? 'stopped' : 'failed', ...(failure && !stopped ? { error: publicError(failure) } : {}),
-    citations: citations(result?.text ?? failure?.partial ?? '', found.evidence), ...(found.warnings.length ? { warnings: found.warnings.slice(0, 12) } : {}) };
+  const stopped = failure?.code === 'ABORTED', answerId = randomUUID();
+  const extracted = extractSuggestions(result?.text ?? failure?.partial ?? '');
+  const { proposals, dropped } = result ? proposalsFor(record, extracted.raw, { messageId: answerId }) : { proposals: [], dropped: 0 };
+  const warnings = [...found.warnings, ...(dropped ? [`${dropped} suggestion${dropped === 1 ? ' was' : 's were'} left out because ${dropped === 1 ? 'it' : 'they'} did not match this blueprint.`] : []),
+    ...(extracted.unreadable ? ['The suggestions block could not be read, so no suggestions are shown.'] : [])];
+  const answer = { id: answerId, role: 'assistant', at: Date.now(), mode, provider: settings.provider, model: settings.model, durationMs: Date.now() - started,
+    text: extracted.text, status: result ? 'done' : stopped ? 'stopped' : 'failed', ...(failure && !stopped ? { error: publicError(failure) } : {}),
+    citations: citations(extracted.text, found.evidence), ...(warnings.length ? { warnings: warnings.slice(0, 12) } : {}) };
   const updated = await research.update(originId, chat, value => {
     value.messages.push(answer);
+    value.proposals.push(...proposals);
     if (result?.session) value.native = { provider: settings.provider, sessionId: result.session, contextHash };
     else if (failure?.resumeFailed) value.native = null;
   });
   emit({ type: 'message', message: answer });
+  if (proposals.length) emit({ type: 'proposals', proposals });
   emit({ type: 'done', chat: updated });
   return updated;
 }
@@ -267,7 +311,7 @@ export async function runSwarm({ research, origin, originId, chat, settings, que
   activeRuns.set(key, { stop: id => { const agent = agents.find(entry => entry.id === id); if (agent && ['queued', 'running'].includes(agent.status)) { agent.controller.abort(); return true; } return false; } });
   const stopAll = () => { for (const agent of agents) agent.controller.abort(); };
   signal?.addEventListener('abort', stopAll, { once: true });
-  const workspace = await research.workspace(originId), results = [];
+  const workspace = await research.workspace(originId), results = [], collected = [];
   const work = async agent => {
     if (agent.controller.signal.aborted || signal?.aborted) { agent.status = 'stopped'; emit({ type: 'agent', agent: agent.id, status: 'stopped' }); return; }
     agent.status = 'running'; emit({ type: 'agent', agent: agent.id, status: 'running' });
@@ -282,9 +326,13 @@ export async function runSwarm({ research, origin, originId, chat, settings, que
     } catch (error) { failure = error; }
     const stopped = failure?.code === 'ABORTED' || (failure && agent.controller.signal.aborted);
     agent.status = result ? 'done' : stopped ? 'stopped' : 'failed';
-    const message = { id: randomUUID(), role: 'agent', at: Date.now(), mode: 'swarm', provider: settings.provider, model: settings.model, durationMs: Date.now() - started,
-      agent: { id: agent.id, label: agent.label, target: agent.target }, text: result?.text ?? failure?.partial ?? '', status: agent.status,
-      ...(failure && !stopped ? { error: publicError(failure) } : {}), citations: citations(result?.text ?? failure?.partial ?? '', found.evidence) };
+    const messageId = randomUUID(), extracted = extractSuggestions(result?.text ?? failure?.partial ?? '');
+    const own = result ? proposalsFor(record, extracted.raw, { messageId, agent: { id: agent.id, label: agent.label } }) : { proposals: [], dropped: 0 };
+    collected.push(...own.proposals);
+    const message = { id: messageId, role: 'agent', at: Date.now(), mode: 'swarm', provider: settings.provider, model: settings.model, durationMs: Date.now() - started,
+      agent: { id: agent.id, label: agent.label, target: agent.target }, text: extracted.text, status: agent.status,
+      ...(failure && !stopped ? { error: publicError(failure) } : {}), citations: citations(extracted.text, found.evidence),
+      ...(own.dropped ? { warnings: [`${own.dropped} suggestion${own.dropped === 1 ? ' was' : 's were'} left out because ${own.dropped === 1 ? 'it' : 'they'} did not match this blueprint.`] } : {}) };
     results.push(message);
     await research.update(originId, chat, value => { value.messages.push(message); });
     emit({ type: 'agent', agent: agent.id, status: agent.status, ...(message.error ? { error: message.error } : {}) });
@@ -302,8 +350,12 @@ export async function runSwarm({ research, origin, originId, chat, settings, que
       const message = results.find(entry => entry.agent.id === agent.id);
       return `- ${mark[agent.status] || '•'} **${agent.label}**: ${agent.status === 'done' ? 'finished' : agent.status === 'stopped' ? 'stopped' : `failed (${message?.error?.message || 'no reason'})`}`;
     }), '', 'Each agent researched its part on its own. Read their findings above; suggestions from every agent are reviewed together.'].join('\n') };
-  const updated = await research.update(originId, chat, value => { value.messages.push(summary); });
+  // Suggestions are combined only after every agent has finished: duplicates once, disagreements marked.
+  const proposals = mergeProposals(collected), disagreements = new Set(proposals.filter(proposal => proposal.disagree).map(proposal => proposal.key)).size;
+  if (proposals.length) summary.text += `\n\n${proposals.length} suggestion${proposals.length === 1 ? '' : 's'} to review${disagreements ? `; agents disagree on ${disagreements} field${disagreements === 1 ? '' : 's'}` : ''}.`;
+  const updated = await research.update(originId, chat, value => { value.messages.push(summary); value.proposals.push(...proposals); });
   emit({ type: 'message', message: summary });
+  if (proposals.length) emit({ type: 'proposals', proposals });
   emit({ type: 'done', chat: updated });
   return updated;
 }
@@ -314,7 +366,7 @@ export async function runSwarm({ research, origin, originId, chat, settings, que
  * so it never overlaps Compose, the Coordinator or a sign-in change. Closing the request stops the run.
  */
 export async function researchRoute({ research, origin, runner, claim, track, sources: services, req, res, pathname, searchParams, jsonBody, send }) {
-  const match = pathname.match(/^\/api\/origin\/research\/([A-Za-z0-9_-]{1,100})\/chats(?:\/([0-9a-f-]{36})(?:\/(run|sources|agents)(?:\/([0-9a-f-]{36}|a[0-9]{1,2})(?:\/(stop))?)?)?)?$/);
+  const match = pathname.match(/^\/api\/origin\/research\/([A-Za-z0-9_-]{1,100})\/chats(?:\/([0-9a-f-]{36})(?:\/(run|sources|agents|proposals)(?:\/([0-9a-f-]{36}|a[0-9]{1,2})(?:\/(stop))?)?)?)?$/);
   if (!match) return send(res, 404, { error: 'This research route does not exist.' });
   const [, originId, chat, action, sourceId, verb] = match;
   // The Origin project must exist; this also rejects IDs that are not projects.
@@ -347,6 +399,19 @@ export async function researchRoute({ research, origin, runner, claim, track, so
     // Stop one swarm agent; the others continue.
     const stopped = activeRuns.get(`${originId}/${chat}`)?.stop(sourceId) || false;
     return send(res, stopped ? 200 : 409, stopped ? { stopped: true } : { error: 'This agent is not running.', code: 'NOT_RUNNING' });
+  }
+  if (action === 'proposals' && sourceId && req.method === 'PATCH') {
+    // The page records what the person did with a suggestion. Applying happens in the page, through Origin's own
+    // revision-checked save; this only keeps the review state with the chat.
+    const input = await body();
+    if (!['applied', 'rejected', 'pending', 'conflict'].includes(input.status)) throw invalid('Send applied, rejected, pending or conflict.');
+    const updated = await research.update(originId, chat, value => {
+      const proposal = value.proposals.find(entry => entry.id === sourceId);
+      if (!proposal) throw new ResearchError('This suggestion is not in the chat.', 'NOT_FOUND', 404);
+      proposal.status = input.status; proposal.updatedAt = Date.now();
+      if (input.status === 'applied') { proposal.appliedAt = Date.now(); if (Number.isSafeInteger(input.revision)) proposal.appliedRevision = input.revision; if (input.edited === true) proposal.edited = true; }
+    });
+    return send(res, 200, { proposals: updated.proposals });
   }
   if (action === 'sources') {
     // Add: documents must be loaded, Base resources usable, MCP servers reachable with an eligible read-only tool.
