@@ -90,7 +90,7 @@ test('pipeline Autopilot takes each queued card through its columns to Done, one
   assert.deepEqual(state.tasks.map(task => task.column), ['done', 'done']);
   assert.equal(state.autopilot.status, 'finished');
   assert.ok(state.autopilot.log.some(entry => /all columns finished/.test(entry.text)));
-  assert.equal(state.tasks.every(task => !task.completion), true, 'nothing was merged');
+  assert.deepEqual(state.tasks.map(task => [task.completion?.kind, task.completion?.taskCommit]).map(([kind, commit]) => [kind, typeof commit]), [['unmerged', 'string'], ['unmerged', 'string']], 'nothing was merged, and Done says so with the branch commit');
 });
 
 test('pipeline Autopilot follows an approved plan, and pauses for a hand move or a stopped agent', async t => {

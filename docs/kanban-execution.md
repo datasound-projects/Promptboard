@@ -20,15 +20,30 @@ Each active pipeline column has a type; its name is only a label.
 
 | Type | What an arrival does | How the stage completes |
 | --- | --- | --- |
-| Planning | Fresh read-only session; the task and Base context | A non-empty plan and an unchanged worktree, else `PLAN_MISSING` or `PLAN_MODIFIED_WORKSPACE`. The accepted plan goes to Executing. |
-| Executing | Fresh session with the accepted plan, or the review findings / failing test output to fix | A checkpoint commit `promptboard(#N): <column> checkpoint` on the task branch; no changes at all is `NO_CHANGES`. |
+| Planning | Fresh read-only session; the task and Base context | A non-empty plan and an unchanged worktree, else `PLAN_MISSING` or `PLAN_MODIFIED_WORKSPACE`. A plan completed automatically or by Autopilot also needs numbered steps (a question is `PLAN_MISSING`). The accepted plan is frozen with its hash and goes to Executing; a missing or changed copy stops Executing with `PLAN_UNAVAILABLE`. |
+| Executing | Fresh session with the accepted plan, or the review findings / failing test output to fix | A checkpoint commit `promptboard(#N): <column> checkpoint` on the task branch; no changes at all is `NO_CHANGES`, and a rework round with no new commit is `NO_NEW_CHANGES`. |
 | Code Review | Commits pending work, then a fresh read-only session with the diff against the target and the execution summary | A JSON verdict. Critical, high and medium findings send the work back; low findings are kept as suggestions and never block. `no_issues` accepts the review; anything unreadable is `INVALID_REVIEW_RESULT`. |
-| Testing | A fresh session tests the work. With no test commands configured (they are optional) the agent finds the project's tests itself, runs them and ends with a JSON verdict (`verdict`, `commands` with exit codes, `failures`, `summary`); with commands configured, Promptboard runs them after the agent | Without commands, the verdict decides: a pass counts only when it lists commands that all exited 0, and a missing or inconsistent verdict is `INVALID_TEST_RESULT`. With commands, only their exit codes decide. Failures (or files the tester changed) go back to Executing with the findings or the exact output. |
+| Testing | A fresh session tests the work. With no test commands configured (they are optional) the agent finds the project's tests itself, runs them and ends with a JSON verdict (`verdict`, `commands` with exit codes, `failures`, `summary`); with commands configured, Promptboard runs them after the agent | Without commands, the verdict decides: a pass counts only when it lists commands that all exited 0, and a missing or inconsistent verdict is `INVALID_TEST_RESULT`. With commands, only their exit codes decide. Failures (or files the tester changed) go back to Executing with the findings or the exact output; a commit the tester made (`TESTER_COMMITTED`) goes back to Code Review. |
 | Merge | Promptboard's own Git merge of the reviewed and tested commit | Squash (default) or fast-forward, compare-and-swap on the target. Conflicts start a resolver agent in the Merge column; its result is reviewed and tested again. |
 | Custom | One conversation continues across compatible custom columns (the earlier column-pipeline behaviour) | You move the card; "on enter" messages are the next instruction. |
 
 New boards use typed columns. Columns saved before types existed stay custom, so existing boards behave exactly as before
 until you choose a type in **Columns** or apply the **Full Autopilot** preset.
+
+### What every typed run is told
+
+After the exact card text, each Planning, Executing, Code Review, Testing and Merge run (and each legacy stage) gets a
+section **Where this task fits**, built from the board only: the project, the card and its position among the cards
+planned together in Origin ("task 2 of 5"), the stage's own job, each prerequisite with how it was completed and what it
+did, the other cards of the project for awareness (an Origin card with its "What to do" line, any other card by title,
+at most 20), and the boundary: the project's goals and design describe the whole project and do not authorize other
+cards' work; Promptboard owns card moves, merging and Done. Custom columns keep sending exactly the task envelope.
+
+### Done
+
+Merge, a pull request or "no changes" records how the card was completed. Moving a card to Done in any other way
+completes it **without merging**: the record says so, with the branch, its commit and any uncommitted changes, and the
+stage it left is no longer shown as running. Moving the card out of Done again keeps that record in its history.
 
 Every typed arrival starts a **fresh native session** in the same worktree. Nothing resumes another provider's
 conversation, so consecutive columns can use different providers (for example Codex executes, Claude reviews, Gemini
@@ -84,8 +99,10 @@ The outcome is shown on the card and in **Stage and reset** in the task details,
 ## Autopilot
 
 Autopilot takes the queued To Do cards in your order, one card at a time from first column to Done. A card whose
-prerequisites are not Done yet waits, and the next queued card that is ready goes first; if every remaining card waits
-for a prerequisite that is not Done, Autopilot pauses and names it. Before
+prerequisites are not complete waits, and the next queued card that is ready goes first; if every remaining card waits,
+Autopilot pauses and names what it waits for. A prerequisite is complete when its card is in Done and its code is on the
+target branch: merged, a merged pull request, or no code changes (a card that never had a worktree counts too). Done
+without merging does not count, for a card you start by hand either. Before
 each card it refreshes the target branch, so a card starts from the target that already contains the cards merged before
 it. For typed columns it follows the recorded outcome: succeeded → next column; changes required → back to Executing
 (to Code Review after a merge conflict, to Testing when the target moved). Rework goes on while each round brings a
@@ -120,7 +137,7 @@ Moving a card back to To Do stops its agent and keeps the branch, worktree, file
 
 ## Machine-readable stops
 
-`WORKTREE_MISSING`, `WORKTREE_BRANCH_MISMATCH`, `PLAN_MISSING`, `PLAN_MODIFIED_WORKSPACE`, `NO_CHANGES`,
+`WORKTREE_MISSING`, `WORKTREE_BRANCH_MISMATCH`, `PLAN_MISSING`, `PLAN_MODIFIED_WORKSPACE`, `PLAN_UNAVAILABLE`, `NO_CHANGES`, `NO_NEW_CHANGES`, `TESTER_COMMITTED`,
 `INVALID_REVIEW_RESULT`, `VERIFICATION_FAILED`, `VERIFICATION_INTERRUPTED`, `INVALID_TEST_RESULT`, `TESTS_FAILED`, `TEST_COMMAND_NOT_FOUND`, `TARGET_MOVED`, `REWORK_LIMIT_REACHED`,
 `MERGE_BLOCKED`, `MERGE_CONFLICT_UNRESOLVED`, `MERGE_STALE`, `AGENT_STOPPED`, `AGENT_INTERRUPTED`, `CLI_INPUT_NOT_READY`,
 `EXECUTION_POLICY_UNSUPPORTED`. Each comes with a sentence that says what failed and what to do; a failed task never

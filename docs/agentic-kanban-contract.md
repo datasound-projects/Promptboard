@@ -130,7 +130,7 @@ Base has its own registry and target revisions so run polling does not conflict 
 - The user picks any local target branch; there is no `main` assumption. Its commit is recorded at that moment.
 - `ensureTaskWorktree(taskId)` runs on the first authorized Planning or Executing run:
   - It creates branch `promptboard/<slug>-<id8>` (suffixed `-2`, `-3`, … if taken) at `<dataDir>/worktrees/<projectId>/<taskId>`, outside the user's checkout.
-  - The base is the recorded commit, not the current branch tip.
+  - The base is the target branch's commit when the worktree is created, so a card started after its prerequisites merged has their code.
   - It runs `git worktree add -b` with repository hooks disabled and fsmonitor off. It does not change the user's checkout.
   - Ownership (`task.workspace = {status, branch, path, baseCommit, repositoryRoot, commonDir}`) is saved before Git runs.
   - Per-task and per-repository locks, plus the saved record, prevent duplicates. Later stages reuse the same branch and folder.

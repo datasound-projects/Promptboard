@@ -438,7 +438,7 @@ test('Autopilot runs a prerequisite queued lower first, and explains a queue tha
   await w.board.controlAutopilot(w.project.id, { action: 'start', confirm: true });
   await autopilot.tick();
   project = await w.projectNow();
-  assert.equal(project.autopilot.status, 'paused'); assert.match(project.autopilot.reason, /“Later” waits for its prerequisites, which are not Done: #\d+ Lone/);
+  assert.equal(project.autopilot.status, 'paused'); assert.match(project.autopilot.reason, /“Later” waits for its prerequisites, which are not complete: #\d+ Lone/);
 });
 
 test('a test command that cannot start fails clearly (TEST_COMMAND_NOT_FOUND) without spending rework rounds', { skip, timeout: 120000 }, async t => {

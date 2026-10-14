@@ -90,6 +90,65 @@ function earlierRounds(history = []) {
 const findingLines = findings => findings.map(item => `- [${item.severity}] ${item.file}${item.line ? `:${item.line}` : ''} ${item.explanation}`).join('\n');
 
 /**
+ * Whether a prerequisite card lets its dependents start: it is in Done and its code is on the target branch (merged, a
+ * merged pull request, or no code changes). A card that never had a worktree has no code to merge. A Done card saved
+ * before completions were recorded counts, as it did then. Done without merging does not count.
+ */
+export function prerequisiteMet(project, card) {
+  const doneId = project.workflowMode === 'pipeline' ? project.pipeline.columns.find(column => column.role === 'done')?.id : 'done';
+  if (!card || card.column !== doneId) return false;
+  const { kind, mergedAt } = card.completion || {};
+  return !card.completion || ['merged', 'no_changes'].includes(kind) || (kind === 'pull_request' && Boolean(mergedAt)) || !card.workspace;
+}
+
+const STAGE_DUTY = {
+  planning: 'plan this task only: what must change for its acceptance criteria and how to verify it. Do not plan work that belongs to the other tasks below.',
+  executing: 'implement this task only. Add other tasks\' work only where this task needs a minimal interface or placeholder for it.',
+  code_review: 'review this task\'s changes only, against its own acceptance criteria. Report work that belongs to another task below as a finding.',
+  testing: 'test this task\'s acceptance criteria, and check that completed prerequisite work still works.',
+  merge: 'prepare this task\'s branch for merging. Do not add features.',
+};
+const completionText = completion => ({ merged: `merged into ${completion?.targetBranch || 'the target branch'}`, no_changes: 'completed with no code changes',
+  unmerged: 'completed without merging; its code is not on the target branch', pull_request: completion?.mergedAt ? 'pull request merged' : 'pull request opened, not merged yet' })[completion?.kind];
+// Another card's scope in one line: only an Origin card's structured "What to do", never free card text.
+const scopeLine = task => (task.originSource ? /^## What to do\s*\n([\s\S]*?)(?=\n#|\n---|$)/m.exec(String(task.prompt || ''))?.[1] || '' : '').replace(/\s+/g, ' ').trim().slice(0, 200);
+
+/**
+ * Where a run's task fits, kept apart from the card text: the project, this task's position and prerequisites, the
+ * other tasks (awareness only), this stage's duty and who owns transitions. Built from board data only.
+ */
+export function taskScope(project, task, columnId) {
+  const pipeline = project.workflowMode === 'pipeline', semantic = columnStage(project, columnId);
+  const doneId = pipeline ? project.pipeline.columns.find(column => column.role === 'done')?.id : 'done';
+  const cards = new Map(project.tasks.map(entry => [entry.id, entry])), ref = entry => `#${entry.number ?? '?'} ${clip(entry.title, 100)}`;
+  const status = entry => entry.column === doneId ? `Done${completionText(entry.completion) ? `, ${completionText(entry.completion)}` : ''}` : columnTitleIn(project, entry.column);
+  const group = task.originSource ? project.tasks.filter(entry => entry.originSource?.originProjectId === task.originSource.originProjectId).sort((a, b) => (a.number ?? 0) - (b.number ?? 0)) : [];
+  const route = project.autopilot?.routes?.[task.id] || project.autopilot?.route || [], order = projectColumns(project).map(column => column.id);
+  const next = route.includes(columnId) ? route[route.indexOf(columnId) + 1] || doneId : order.slice(order.indexOf(columnId) + 1).find(id => id !== order[0]);
+  const lines = [`Project: ${clip(project.name, 120)}`, `This task: ${ref(task)}${group.length > 1 ? ` (task ${group.indexOf(task) + 1} of ${group.length} planned in Origin)` : ''}`,
+    `Stage: ${columnTitleIn(project, columnId)}. Your job: ${STAGE_DUTY[semantic] || 'follow this column\'s instructions for this task only.'}`];
+  const prerequisites = (task.dependsOn || []).map(id => cards.get(id));
+  if (prerequisites.length) {
+    lines.push('', 'Prerequisites (must be complete before this task):');
+    for (const entry of prerequisites) lines.push(entry ? `- ${ref(entry)}: ${status(entry)}${entry.completion?.summary ? `\n  What it did: ${clip(entry.completion.summary, 600).replace(/\s+/g, ' ')}` : ''}` : '- a deleted card');
+  }
+  // The rest of the project, nearest first: tasks that wait for this one, then by number. Bounded.
+  const others = project.tasks.filter(entry => entry !== task && !task.dependsOn?.includes(entry.id))
+    .sort((a, b) => Number(!(a.dependsOn || []).includes(task.id)) - Number(!(b.dependsOn || []).includes(task.id)) || (a.number ?? 0) - (b.number ?? 0));
+  if (others.length) {
+    lines.push('', 'Other tasks in this project (for awareness only; they are not your job):');
+    for (const entry of others.slice(0, 20)) {
+      const waits = (entry.dependsOn || []).map(id => cards.get(id)).filter(Boolean).map(item => `#${item.number ?? '?'}`);
+      lines.push(`- ${ref(entry)} (${status(entry)}${waits.length ? `; after ${waits.join(', ')}` : ''})${scopeLine(entry) ? `: ${scopeLine(entry)}` : ''}`);
+    }
+    if (others.length > 20) lines.push(`- and ${others.length - 20} more`);
+  }
+  lines.push('', `Boundary: project goals and design context in the task text describe the whole project. They do not authorize work assigned to other tasks. Complete only this task's acceptance criteria, and keep the result compatible with the tasks above.`,
+    `Promptboard checks this stage's result and owns every card move${next ? ` (the next column is ${columnTitleIn(project, next)})` : ''}, merging and Done. Do not merge, move or complete cards, or start another task.`);
+  return `=== WHERE THIS TASK FITS (from Promptboard; the task text above stays authoritative) ===\n${lines.join('\n')}\n=== END WHERE THIS TASK FITS ===`;
+}
+
+/**
  * The stage contract of a column: a legacy board's own stage ID, the stage of a pipeline column's kind
  * (Planning, Executing, Code Review, Testing, Merge), or null for custom pipeline columns and To Do/Done.
  * Manual moves and Autopilot both decide stage behaviour through this, never through a column's name.
@@ -118,6 +177,17 @@ export function originSourceOf(value) {
 // Export keeps going past a malformed reference saved by an older version; it just leaves it out.
 const validOrigin = value => { try { return value !== undefined && Boolean(originSourceOf(value)); } catch { return false; } };
 /** Prerequisite cards: other cards of the same project that must be done before this one starts. */
+/** The first prerequisite loop reachable from `startId` (card IDs, ending where it began), or null. */
+function prerequisiteLoop(cards, startId) {
+  const path = [], explored = new Set(), visit = id => {
+    if (path.includes(id)) return [...path.slice(path.indexOf(id)), id];
+    if (explored.has(id)) return null;
+    path.push(id);
+    for (const next of cards.get(id)?.dependsOn || []) { const loop = visit(next); if (loop) return loop; }
+    path.pop(); explored.add(id); return null;
+  };
+  return visit(startId);
+}
 function prerequisiteIds(value, ids, selfId) {
   if (!Array.isArray(value) || value.length > 50) throw new BoardError('A card can have at most 50 prerequisites.', 'INVALID_INPUT');
   const list = [...new Set(value)];
@@ -139,13 +209,17 @@ export function pipelineAutopilotRoute(project, route) {
   return clean;
 }
 /** Later route columns without an instruction: an enabled deferred "on enter" message, or the plan route that leads there (with each card's profile). */
-export function pipelineAutopilotGaps(project, route, tasks = []) {
+export function pipelineAutopilotGaps(project, route, tasks = [], providerOf = () => null) {
   const columns = new Map(project.pipeline.columns.map(column => [column.id, column]));
+  // A message reaches the agent only as text: never a slash command, and never a template that can render empty.
+  const sendable = text => !text.startsWith('/') && Boolean(text.replace(/\{\{[A-Za-z0-9_]+\}\}/g, '').trim() || /\{\{(title|task_xml)\}\}/.test(text));
   return route.slice(1).filter((id, index) => {
     // Typed columns start their own session with stage instructions; they need no "on enter" message.
     if (columnStage(project, id)) return false;
-    const instructed = columns.get(id).automations.onEnter.some(row => row.enabled && row.type === 'send_message' && row.mode === 'deferred');
-    return !instructed && (tasks.length ? tasks : [{}]).some(task => resolvePipelineStrategy(project.pipeline, route[index], task).planExitTargetId !== id);
+    const instructed = columns.get(id).automations.onEnter.some(row => row.enabled && row.type === 'send_message' && row.mode === 'deferred' && sendable(String(row.message || '').trim()));
+    // An approved plan moves the card here only where native plan approval is observed (Claude Code, Gemini CLI).
+    return !instructed && (tasks.length ? tasks : [{}]).some(task => resolvePipelineStrategy(project.pipeline, route[index], task).planExitTargetId !== id
+      || !['claude', 'gemini', null].includes(providerOf(route[index], task)));
   }).map(id => `“${columns.get(id).name}”`);
 }
 
@@ -239,6 +313,8 @@ function parseBackupData(data) {
     for (const task of project.tasks) if (task.dependsOn !== undefined) {
       try { task.dependsOn = prerequisiteIds(task.dependsOn, ids, task.id); } catch { throw new BoardError(`${project.name || 'A project'}: a card refers to a missing prerequisite.`, 'INVALID_BACKUP'); }
     }
+    const cards = new Map(project.tasks.map(task => [task.id, task]));
+    if (project.tasks.some(task => prerequisiteLoop(cards, task.id))) throw new BoardError(`${project.name || 'A project'}: its cards' prerequisites form a loop.`, 'INVALID_BACKUP');
   }
   for (const project of projects) {
     try { validateTaskNumbers(project, { required: data.version >= 6 }); assignTaskNumbers(project); }
@@ -983,14 +1059,15 @@ export class Board {
 
   /** Start (confirmed), pause, resume, stop, or skip the current card. The engine does the work. */
   async controlAutopilot(id, { action, confirm }) {
-    const project = this.#project(await this.state(), id);
+    const state = await this.state(), project = this.#project(state, id);
     if (project.workflowMode === 'pipeline' && (action === 'start' || action === 'resume')) {
       if (action === 'start' && confirm !== true) throw new BoardError('Confirm what Autopilot will do before you start it.', 'CONFIRMATION_REQUIRED');
       if (!project.repository) throw new BoardError('Connect a code folder first, in Project settings.', 'REPOSITORY_REQUIRED', 409);
       if (!this.executor) throw new BoardError('Agent execution is not available.', 'EXECUTION_UNAVAILABLE', 503);
       if (action === 'start' && !project.autopilot?.queue?.length) throw new BoardError('Choose at least one To Do card for the Autopilot queue.', 'AUTOPILOT_EMPTY');
       const queued = (project.autopilot?.queue || []).map(taskId => project.tasks.find(task => task.id === taskId)).filter(Boolean);
-      const missing = pipelineAutopilotGaps(project, pipelineAutopilotRoute(project, project.autopilot?.route), queued);
+      const providerOf = (column, task) => effectiveWorkflow(project, state.settings.defaultAgent, state, task?.id ? task : null)[column]?.provider || 'claude';
+      const missing = pipelineAutopilotGaps(project, pipelineAutopilotRoute(project, project.autopilot?.route), queued, providerOf);
       if (missing.length) throw conflict(`Give ${missing.join(', ')} an instruction (an “on enter” agent message) so its agent knows what to do there.`, 'AUTOPILOT_INSTRUCTION_MISSING');
     }
     if (project.workflowMode !== 'pipeline' && action === 'start') {
@@ -1997,24 +2074,18 @@ export class Board {
     });
   }
 
-  // A card starts only when every prerequisite card is done. Card order alone never enforces this, and
-  // nothing is merged to satisfy it: a prerequisite counts once its card has reached Done.
+  // A card starts only when every prerequisite is complete (prerequisiteMet). Card order alone never enforces this,
+  // and nothing is merged to satisfy it.
   #checkPrerequisites(project, task) {
     if (!task.dependsOn?.length) return;
     const cards = new Map(project.tasks.map(entry => [entry.id, entry]));
-    const done = id => (project.workflowMode === 'pipeline' ? project.pipeline.columns.find(column => column.id === cards.get(id)?.column)?.role === 'done' : cards.get(id)?.column === 'done');
-    const path = [], explored = new Set(), visit = id => {
-      if (path.includes(id)) return [...path.slice(path.indexOf(id)), id];
-      if (explored.has(id)) return null;
-      path.push(id);
-      for (const next of cards.get(id)?.dependsOn || []) { const loop = visit(next); if (loop) return loop; }
-      path.pop(); explored.add(id); return null;
-    };
-    const loop = visit(task.id);
+    const done = id => prerequisiteMet(project, cards.get(id));
+    const loop = prerequisiteLoop(cards, task.id);
     if (loop) throw new BoardError(`Its prerequisites form a loop (${loop.map(id => `#${cards.get(id)?.number ?? '?'}`).join(' → ')}). Clear one prerequisite in the card's details.`, 'PREREQUISITES_CYCLE', 409);
     const pending = task.dependsOn.filter(id => !done(id));
     if (!pending.length) return;
-    const describe = id => (cards.has(id) ? `#${cards.get(id).number} ${cards.get(id).title} (${columnTitleIn(project, cards.get(id).column)})` : 'a prerequisite card that was deleted — clear it in the card\'s details');
+    const describe = id => (!cards.has(id) ? 'a prerequisite card that was deleted — clear it in the card\'s details'
+      : `#${cards.get(id).number} ${cards.get(id).title} (${cards.get(id).completion ? `Done, ${completionText(cards.get(id).completion)}: merge it, or clear the prerequisite` : columnTitleIn(project, cards.get(id).column)})`);
     throw new BoardError(`Finish its prerequisites first: ${pending.map(describe).join('; ')}.`, 'PREREQUISITES_PENDING', 409);
   }
 
@@ -2121,6 +2192,12 @@ export class Board {
     const at = before ? others.indexOf(before) : (inColumn.length ? others.indexOf(inColumn.at(-1)) + 1 : others.length);
     if (task.column !== column) {
       task.flow = null; // A follow-up belongs to the stage the card leaves.
+      // Leaving Done starts a new cycle: the earlier completion becomes history, as legacy Reopen does.
+      const role = id => project.pipeline?.columns.find(item => item.id === id)?.role;
+      if (project.workflowMode === 'pipeline' && task.completion && role(task.column) === 'done' && role(column) !== 'done') {
+        task.previousCompletions = [...(task.previousCompletions || []), task.completion].slice(-10);
+        task.completion = null;
+      }
       task.transitions = [...task.transitions, { at: Date.now(), from: task.column, to: column, by, ...(reason ? { reason } : {}) }].slice(-TRANSITION_LOG_LIMIT);
       task.column = column;
       if (transitionId) task.lastTransition = { id: transitionId, to: column, at: Date.now(), ...(runId ? { runId } : {}) };
@@ -2360,7 +2437,7 @@ export class Board {
   }
 
   /**
-   * Return the task's worktree, creating it once from the recorded target commit.
+   * Return the task's worktree, creating it once from the target branch's current commit.
    * Concurrent and repeated calls get the same branch and folder.
    */
   ensureTaskWorktree(taskId, { recover = false } = {}) {
@@ -2382,7 +2459,9 @@ export class Board {
         const path = join(await realpath(join(this.worktreeRoot, project.id)), task.id);
         if (inside(repository.root, path)) throw new BoardError('The worktree folder would be inside the repository. Choose a different app data folder.', 'WORKTREE_PATH_INVALID', 409);
         if (await access(path).then(() => true, () => false)) throw new BoardError('A folder already exists where this task worktree would go. Promptboard will not overwrite it.', 'WORKTREE_PATH_EXISTS', 409);
-        const baseCommit = project.targetBranch.commit;
+        // The target branch as it is now, so a task that starts after its prerequisites merged builds on their code.
+        const baseCommit = (await git(['rev-parse', '--verify', `refs/heads/${project.targetBranch.name}^{commit}`], { cwd: repository.root }).catch(() => '')).trim();
+        if (!baseCommit) throw conflict(`The target branch ${project.targetBranch.name} no longer exists. Choose the target branch again.`, 'TARGET_BRANCH_NOT_FOUND');
         // Record ownership before Git creates anything, so cleanup only touches what this app made.
         await this.store.update(draft => {
           const { task: current } = this.#task(draft, taskId);
@@ -2620,7 +2699,7 @@ export class Board {
       const executionContext = execution ? `=== EXECUTION RESULTS FOR THIS TASK (${task.id}, run ${execution.runId}) ===\n${execution.summary}\n=== END EXECUTION RESULTS ===` : '';
       // The stage engine hands over task state, never another agent's conversation.
       const handoff = pipeline ? await this.#handoffSummary(project, task, workspace) : '';
-      const extra = [handoff, review ? review.text : merge ? merge.text : testing || (semantic === 'executing' && task.reworkNotes ? `=== FINDINGS TO FIX ===\n${task.reworkNotes}\n=== END FINDINGS ===${earlierRounds(task.reworkHistory)}` : ''), executionContext, restart, note].filter(Boolean).join('\n\n');
+      const extra = [taskScope(project, task, stage), handoff, review ? review.text : merge ? merge.text : testing || (semantic === 'executing' && task.reworkNotes ? `=== FINDINGS TO FIX ===\n${task.reworkNotes}\n=== END FINDINGS ===${earlierRounds(task.reworkHistory)}` : ''), executionContext, restart, note].filter(Boolean).join('\n\n');
       const startCommit = pipeline ? (await this.delivery.revision(taskId)).taskCommit : null;
       const run = await this.store.update(draft => {
         if (this.#activeRun(draft, taskId)) throw conflict('This card already has an active run.', 'RUN_ACTIVE');
@@ -2635,7 +2714,7 @@ export class Board {
         const id = randomUUID();
         const record = { id, taskId, projectId: project.id, stage, ...(pipeline ? { stageKind: semantic, startCommit } : {}), status: 'queued', createdAt: now, updatedAt: now,
           promptRevision: task.contentRevision ?? 1, config: resolved, trigger: trigger === 'automation' ? 'automation' : 'user', workspacePath: workspace.path, branch: workspace.branch,
-          planRunId: plan?.runId || null, artifactsDir: join('runs', id), turns: 0, baseManifest: { ...baseManifest, acceptedAt: now, deliveryState: 'configured' },
+          planRunId: plan?.runId || null, ...(plan?.sha256 ? { planSha256: plan.sha256 } : {}), artifactsDir: join('runs', id), turns: 0, baseManifest: { ...baseManifest, acceptedAt: now, deliveryState: 'configured' },
           ...(plan ? { planBaseChanged: baseSignature(draft.runs.find(item => item.id === plan.runId)?.baseManifest) !== baseSignature(baseManifest) } : {}),
           ...(review ? { review: { taskCommit: review.taskCommit, targetCommit: review.targetCommit } } : {}),
           ...(move ? { transition: { id: move.transitionId, from: move.from } } : {}) };
@@ -2956,6 +3035,7 @@ export class Board {
         if (target.role === 'done') await this.executor.suspend(active.id, { withinAutomationMove, reason: 'The card moved to Done. The conversation, worktree and output are kept.' });
         else await this.executor.cancel(active.id, { withinAutomationMove });
       }
+      const rev = target.role === 'done' && task.workspace?.status === 'ready' ? await this.delivery.revision(taskId).catch(() => null) : null;
       const saved = await this.store.update(draft => {
         const current = this.#task(draft, taskId);
         checkRevision(current.task, expectedRevision, 'This card');
@@ -2963,6 +3043,12 @@ export class Board {
         const result = this.#place(draft, taskId, move);
         if (target.role === 'todo') { result.sessionId = null; delete result.archivedAt; }
         else result.archivedAt = Date.now();
+        if (target.role === 'done') {
+          // A move to Done (not a merge) completes the card without merging; the record says so, with its branch and commit.
+          result.completion = { kind: 'unmerged', at: Date.now(), by: move.by, summary: result.stageResults?.executing?.summary || '', executionRunId: result.stageResults?.executing?.runId || null,
+            branch: result.workspace?.branch || null, taskCommit: rev?.taskCommit || null, ...(rev && !rev.clean ? { uncommittedChanges: rev.changes.length } : {}) };
+          if (['working', 'verifying'].includes(result.stageOutcome?.status)) result.stageOutcome = null; // The stage it left never finished.
+        }
         return result;
       });
       return { task: saved };
@@ -3152,6 +3238,8 @@ export class Board {
         return this.#recordOutcome(taskId, run, 'failed', { code: 'PLAN_MODIFIED_WORKSPACE', reason: 'The planning agent changed the task worktree, which Planning must never do. Review the changes in the worktree before continuing.' });
       }
       if (!run.hasPlan) return this.#recordOutcome(taskId, run, 'failed', { code: 'PLAN_MISSING', reason: 'The planning agent finished its turn without a plan. Continue in its terminal, then complete the stage again.' });
+      // Nobody reads a plan accepted automatically, so it must look like one: numbered steps, not a question.
+      if (by !== 'user' && !/^\s*\d+[.)]\s+\S/m.test(run.planExcerpt || '')) return this.#recordOutcome(taskId, run, 'failed', { code: 'PLAN_MISSING', reason: 'The planning agent\'s last message has no numbered steps, so it is not accepted as a plan (it may be a question). Answer it in its terminal, then complete the stage again.' });
     }
     if (!confirmed) await this.executor.confirm(runId);
     state = await this.state(); run = state.runs.find(item => item.id === runId);
@@ -3162,6 +3250,8 @@ export class Board {
       if (rev.merging) return this.#recordOutcome(taskId, run, 'failed', { code: 'MERGE_IN_PROGRESS', reason: 'A merge is in progress in the task worktree. Commit or abort it, then complete the stage again.' });
       if (!rev.clean) rev = await this.delivery.commit(taskId, { message: this.#checkpointMessage(this.#project(state, run.projectId), task, run.stage), confirm: true });
       if (!rev.ahead) return this.#recordOutcome(taskId, run, 'failed', { code: 'NO_CHANGES', reason: 'The agent made no changes to the task branch.' });
+      // A rework round must change something; otherwise the same commit would be reviewed and tested again.
+      if (run.startCommit && rev.taskCommit === run.startCommit) return this.#recordOutcome(taskId, run, 'failed', { code: 'NO_NEW_CHANGES', reason: 'This round made no new changes to the task branch. Continue in its terminal to make the requested fix, then complete the stage again.' });
       return this.#recordOutcome(taskId, run, 'succeeded', { checkpointCommit: rev.taskCommit, reason: reasonBy });
     }
     if (stage === 'code_review') {
@@ -3174,6 +3264,8 @@ export class Board {
       const rev = await this.delivery.revision(taskId);
       // Name the files: a tool folder (for example an MCP server's .serena/) belongs in .gitignore, not in the task.
       if (!rev.clean) return this.#recordOutcome(taskId, run, 'changes_required', { next: 'executing', code: 'TESTER_CHANGED_FILES', reason: `The testing agent changed files (${rev.changes.slice(0, 5).map(line => line.slice(3)).join(', ')}${rev.changes.length > 5 ? ', …' : ''}). They go back to Executing so they are committed, reviewed and tested; files a tool writes on its own belong in the repository's .gitignore.` });
+      // A commit made by the tester was never reviewed: it is reviewed and tested again, as a resolved merge is.
+      if (run.startCommit && rev.taskCommit !== run.startCommit) return this.#recordOutcome(taskId, run, 'changes_required', { next: 'code_review', code: 'TESTER_COMMITTED', checkpointCommit: rev.taskCommit, reason: 'The testing agent committed to the task branch. The new commit is reviewed and tested again.' });
       const tests = this.#task(await this.state(), taskId).task.evidence?.tests;
       const project = this.#project(state, run.projectId);
       // No configured commands: the testing agent found and ran the tests; its verdict (recorded during confirm) decides.
@@ -3405,7 +3497,8 @@ export class Board {
     const saved = state.sessions.find(item => item.id === task.sessionId && item.taskId === taskId);
     const previous = saved && state.runs.find(item => item.id === saved.currentRunId);
     const resume = saved?.nativeSessionId && saved.provider === config.provider && previous?.promptRevision === (task.contentRevision ?? 1)
-      && ['suspended', 'orphaned', 'exited'].includes(saved.status) && previous.config.pipeline === true;
+      && ['suspended', 'orphaned', 'exited'].includes(saved.status) && previous.config.pipeline === true
+      && !previous.stageKind; // A typed stage's own session is never continued by a custom column; it starts fresh.
     const nativeSessionId = resume ? validateResumeId(saved.nativeSessionId) : null;
     if (requireResume && !resume) throw conflict('This task has no unchanged native conversation to resume.', 'SESSION_NOT_RESUMABLE');
     const workspace = await this.ensureTaskWorktree(taskId);
@@ -3455,13 +3548,13 @@ export class Board {
   }
 
   /** Record plan approval against the current task content. */
-  async approvePlan(taskId, { runId }) {
+  async approvePlan(taskId, { runId, sha256 = null }) {
     return this.store.update(state => {
       const { task } = this.#task(state, taskId);
       const run = state.runs.find(item => item.id === runId && item.taskId === taskId && runStage(item) === 'planning');
       if (!run?.hasPlan) throw new BoardError('This planning run has no plan to approve.', 'PLAN_MISSING', 409);
       if (run.promptRevision !== (task.contentRevision ?? 1)) throw conflict('The task changed after this plan was written. Run Planning again.', 'PLAN_STALE');
-      task.planApproval = { runId, contentRevision: task.contentRevision ?? 1, approvedAt: Date.now() };
+      task.planApproval = { runId, contentRevision: task.contentRevision ?? 1, approvedAt: Date.now(), ...(sha256 ? { sha256 } : {}) };
       task.revision++;
       return task;
     });
