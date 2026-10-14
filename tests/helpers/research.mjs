@@ -25,6 +25,8 @@ export async function researchPage(t, { runner = async () => { throw new Error('
   extend(blueprint);
   const saved = await call(`/api/origin/projects/${created.project.id}`, 'PUT', { expectedRevision: created.project.revision ?? 1, blueprint });
   const browser = await launch({ width, height }); assert.ok(browser); t.after(() => browser.close());
+  // CI runners can give headless Chrome a smaller window than requested; width matters for the panel, so set it.
+  await browser.resize(width, height);
   await browser.send('Page.addScriptToEvaluateOnNewDocument', { source: `if (!sessionStorage.getItem('seeded')) { localStorage.setItem('promptboard.origin.project', ${J(created.project.id)}); sessionStorage.setItem('seeded', '1'); }` });
   await browser.goto(`${app.url}/#/origin`);
   const ev = code => browser.eval(code), wait = (expression, label, ms = 15000) => browser.until(expression, label, ms);
