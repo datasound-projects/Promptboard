@@ -165,11 +165,13 @@ export function boundedHistory(messages, budget = 16_000) {
   }
   return picked;
 }
-/** Read-only context for one scope of the saved blueprint, with recognizable secrets removed. */
-function researchContext(record, scope) {
-  const blueprint = record.blueprint, vision = blueprint.vision || {};
-  const text = [`Project: ${record.name}`, blueprint.idea && `Idea: ${blueprint.idea}`, ...Model.VISION.filter(key => vision[key]).map(key => `${Model.VISION_QUESTIONS[key]} ${vision[key]}`)].filter(Boolean).join('\n');
-  return { text: redactLocal(text), label: 'the whole project', scope };
+/**
+ * Read-only context for one scope of the saved blueprint (see researchContext in origin-model.js), with
+ * recognizable secrets removed. `missing` is true when the chosen part no longer exists.
+ */
+export function researchContext(record, scope, { limit = 24000 } = {}) {
+  const built = Model.researchContext(record.blueprint, scope, { projectName: record.name, limit });
+  return { ...built, text: redactLocal(built.text), missing: scope.kind !== 'project' && built.label === 'the whole project' };
 }
 
 /**
@@ -189,6 +191,7 @@ export async function runChat({ research, origin, originId, chat, settings, ques
   await research.update(originId, chat, value => { value.messages.push(asked); value.settings = settings; if (!value.title) value.title = titleFrom(question); });
   emit({ type: 'message', message: asked });
   emit({ type: 'start', mode: 'chat', agents: [{ id: 'main', label: '' }] });
+  if (context.missing) emit({ type: 'activity', agent: 'main', kind: 'note', label: 'The selected part no longer exists. The whole project is used.' });
   const workspace = await research.workspace(originId), started = Date.now();
   const onEvent = event => emit({ ...event, agent: 'main' });
   const call = (input, session) => runner({ provider: settings.provider, model: settings.model, effort: settings.effort, web: settings.web, cwd: workspace, signal, onEvent, prompt: input, session });

@@ -61,6 +61,14 @@ window.PromptboardOriginResearch = (() => {
     }
     async function open() {
       if (!projectId) return;
+      // A new chat starts on what the person is looking at: the open record, otherwise the current section.
+      const focus = host.currentFocus?.();
+      if (!chat?.messages?.length && !running && focus) {
+        const options = scopeOptions().map(option => scopeKey(option.value));
+        const record = focus.record && { kind: 'record', collection: focus.record.collection, id: focus.record.id };
+        if (record && options.includes(scopeKey(record))) settings.scope = record;
+        else if (focus.section && focus.section !== 'overview' && options.includes(scopeKey({ kind: 'section', id: focus.section }))) settings.scope = { kind: 'section', id: focus.section };
+      }
       host.closeOthers(); // The record editor and Project Context close; their unsaved work is kept and keeps saving.
       isOpen = true; minimized = false; error = '';
       applyWidth(); render(); renderButton();

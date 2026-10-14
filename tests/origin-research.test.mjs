@@ -115,7 +115,7 @@ test('a chat turn streams events, stores both messages, resumes the CLI session 
   assert.equal(done.title, 'Which payment provider?');
   assert.equal(calls[0].web, true);
   assert.equal(calls[0].session.resume, false);
-  assert.match(calls[0].prompt, /# Rules[\s\S]*Web search is available[\s\S]*<<<BLUEPRINT[\s\S]*Project: Shop[\s\S]*# Question\nWhich payment provider\?/);
+  assert.match(calls[0].prompt, /# Rules[\s\S]*Web search is available[\s\S]*<<<BLUEPRINT\n## Project\nShop[\s\S]*\[section vision\][\s\S]*BLUEPRINT>>>[\s\S]*Answer the question about the whole project[\s\S]*# Question\nWhich payment provider\?/);
   assert.equal(done.native.sessionId, calls[0].session.id);
 
   // A follow-up resumes the same CLI session and sends only the question: no rules, no repeated context.

@@ -120,7 +120,8 @@ window.PromptboardOrigin = (() => {
     statusBox.prepend(contextPanel.button);
     // Research: a chat with the user's CLI in the same panel. It suggests changes; only the user applies them.
     const researchPanel = window.PromptboardOriginResearch.create({ app, view, drawer, blueprint: () => (record?.exists ? bp() : null), revision: () => record?.revision,
-      composeSettings: () => app.composeSettings?.(), closeOthers: () => { if (open) closeDrawer(); contextPanel.close(); } });
+      composeSettings: () => app.composeSettings?.(), closeOthers: () => { if (open) closeDrawer(); contextPanel.close(); },
+      currentFocus: () => ({ section, record: open ? { ...open } : null }) });
     contextPanel.button.after(researchPanel.button);
 
     let projects = [], projectId = null, record = null, loading = null, loadError = null, visible = false;

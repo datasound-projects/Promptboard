@@ -791,7 +791,174 @@ globalThis.PromptboardOriginModel = (() => {
 
 
 
+  // ---- Origin Research: what can be researched, and bounded read-only context for one scope ----
+
+  // Fields shown to research agents, per collection: [field, enum name for a label]. Text only; positions and layout never.
+  const RESEARCH_FIELDS = {
+    requirements: [['title'], ['type', 'requirementType'], ['priority', 'priority'], ['status', 'itemStatus'], ['description'], ['acceptanceCriteria']],
+    components: [['name'], ['type', 'componentType'], ['status', 'itemStatus'], ['purpose'], ['responsibilities'], ['interfaces'], ['dataHandled'], ['notes']],
+    technologies: [['name'], ['category', 'techCategory'], ['status', 'techStatus'], ['version'], ['purpose'], ['reason'], ['alternatives']],
+    dependencies: [['name'], ['type', 'dependencyType'], ['version'], ['notes']],
+    decisions: [['title'], ['status', 'decisionStatus'], ['context'], ['decision'], ['alternatives'], ['reason'], ['consequences']],
+    assumptions: [['statement'], ['status', 'assumptionStatus'], ['reason'], ['impact']],
+    risks: [['title'], ['kind', 'riskKind'], ['severity', 'severity'], ['status', 'riskStatus'], ['description'], ['mitigation']],
+    sources: [['title'], ['type', 'sourceType'], ['verification', 'sourceVerification'], ['url'], ['accessedAt'], ['claim']],
+    layers: [['name'], ['description'], ['constraints']],
+    areas: [['title'], ['status', 'itemStatus'], ['description']],
+    milestones: [['title'], ['goal'], ['definitionOfDone']],
+    items: [['title'], ['description'], ['acceptanceCriteria']],
+  };
+  const RESEARCH_NOUN = { requirements: 'requirement', components: 'component', technologies: 'technology', dependencies: 'dependency', decisions: 'decision', assumptions: 'assumption',
+    risks: 'risk', sources: 'source', layers: 'layer', areas: 'planning answer', milestones: 'milestone', items: 'task' };
+  const RESEARCH_GROUPS = [['components', 'Building blocks'], ['requirements', 'Requirements'], ['technologies', 'Technologies'], ['dependencies', 'Dependencies'],
+    ['decisions', 'Decisions'], ['assumptions', 'Assumptions'], ['risks', 'Risks'], ['layers', 'Layers']];
+  // The records each built-in section is made of.
+  const SECTION_RECORDS = { requirements: ['requirements'], architecture: ['layers', 'components'], technology: ['technologies'], dependencies: ['dependencies'],
+    research: ['assumptions', 'sources', 'risks'], decisions: ['decisions'], plan: ['milestones', 'items'] };
+  const recordTitle = (blueprint, collection, entry) => itemName(blueprint, collection, entry.id) || entry.title || entry.name || entry.statement || 'Untitled';
+
+  /** Everything the person can choose to research, from stable IDs and in this project's own words. */
+  function researchTargets(blueprint) {
+    const options = [{ value: { kind: 'project' }, label: 'Whole project' }];
+    for (const phase of phaseList(blueprint)) for (const id of phase.sections) {
+      const skipped = blueprint.sections[id]?.notApplicable || blueprint.customSections.find(entry => entry.id === id)?.notApplicable;
+      options.push({ value: { kind: 'section', id }, label: `${phase.label} › ${sectionTitle(blueprint, id)}${skipped ? ' (not needed)' : ''}`, group: 'Sections' });
+    }
+    for (const [collection, group] of RESEARCH_GROUPS) for (const entry of blueprint[collection].slice(0, 200)) {
+      const open = (collection === 'decisions' && entry.status === 'proposed') || entry.status === 'needs_decision' || (collection === 'assumptions' && entry.status === 'open');
+      options.push({ value: { kind: 'record', collection, id: entry.id }, label: `${clip(recordTitle(blueprint, collection, entry), 80)}${open ? ' (open)' : ''}`, group });
+    }
+    for (const key of VISION) options.push({ value: { kind: 'question', key: `vision:${key}` }, label: clip(questionText(blueprint, `vision:${key}`, VISION_QUESTIONS[key]), 90), group: 'Questions' });
+    for (const question of blueprint.questions.filter(entry => entry.scope === 'section')) options.push({ value: { kind: 'question', key: `question:${question.id}` }, label: `${sectionTitle(blueprint, question.sectionId)}: ${clip(question.text, 80)}`, group: 'Questions' });
+    for (const [section, topics] of Object.entries(AREAS)) {
+      if (blueprint.sections[section]?.notApplicable) continue;
+      for (const [area, name] of topics) options.push({ value: { kind: 'question', key: `topic:${section}:${area}` }, label: `${sectionTitle(blueprint, section)}: ${clip(questionText(blueprint, `topic:${section}:${area}`, name), 70)}`, group: 'Questions' });
+    }
+    for (const component of blueprint.components.slice(0, 50)) for (const question of blueprint.questions.filter(entry => entry.scope === 'component')) {
+      options.push({ value: { kind: 'question', key: `component:${component.id}:${question.id}` }, label: `${clip(component.name || 'Unnamed component', 40)}: ${clip(question.text, 60)}`, group: 'Questions' });
+    }
+    return options;
+  }
+
+  /** One record as research context: a stable ID tag, its text fields, and the names of what it links to. */
+  function researchRecord(blueprint, collection, entry, max = 1500) {
+    const name = (list, ids) => (ids || []).map(id => recordTitle(blueprint, list, blueprint[list].find(item => item.id === id) || { id })).filter(Boolean);
+    const lines2 = [`[${collection} ${entry.id}] ${RESEARCH_NOUN[collection] || collection}: ${clip(recordTitle(blueprint, collection, entry), 200)}`];
+    for (const [field, enumName] of RESEARCH_FIELDS[collection] || []) {
+      const value = entry[field];
+      if (!hasText(value) || ['title', 'name'].includes(field)) continue;
+      lines2.push(`  ${field}: ${enumName ? label(enumName, value) : clip(value, max)}`);
+    }
+    const links = [['technologyIds', 'technologies', 'technologies'], ['componentIds', 'components', 'components'], ['requirementIds', 'requirements', 'requirements'],
+      ['requiredBy', 'components', 'required by'], ['dependsOn', collection === 'items' ? 'items' : 'dependencies', 'depends on'], ['dependencyIds', 'dependencies', 'dependencies']];
+    for (const [field, list, title] of links) { const names = name(list, entry[field]); if (names.length) lines2.push(`  ${title}: ${names.join(', ')}`); }
+    if (collection === 'components' && entry.layerId) lines2.push(`  layer: ${recordTitle(blueprint, 'layers', blueprint.layers.find(layer => layer.id === entry.layerId) || { id: entry.layerId })}`);
+    if (collection === 'components') for (const question of blueprint.questions.filter(item => item.scope === 'component' && hasText(entry.answers?.[item.id]))) lines2.push(`  [question ${question.id}] ${clip(question.text, 200)} → ${clip(entry.answers[question.id], max)}`);
+    return lines2.join('\n');
+  }
+
+  /** A section's own content: its records, topic answers and questions with their answers. */
+  function researchSection(blueprint, id, { brief = false } = {}) {
+    const custom = blueprint.customSections.find(entry => entry.id === id), out = [];
+    const notNeeded = blueprint.sections[id]?.notApplicable || custom?.notApplicable;
+    out.push(`[section ${id}] ${sectionTitle(blueprint, id)}${notNeeded ? ' — marked as not needed for this project' : ''}`);
+    if (custom && hasText(custom.description)) out.push(`  description: ${clip(custom.description, 1500)}`);
+    if (!custom && QUESTIONS[id]) out.push(`  guiding question: ${questionText(blueprint, `section:${id}`, QUESTIONS[id])}`);
+    if (id === 'vision') for (const key of VISION.filter(key => !brief || hasText(blueprint.vision[key]))) out.push(`  [vision ${key}] ${questionText(blueprint, `vision:${key}`, VISION_QUESTIONS[key])} → ${hasText(blueprint.vision[key]) ? clip(blueprint.vision[key], brief ? 300 : 2000) : '(no answer yet)'}`);
+    for (const collection of SECTION_RECORDS[id] || []) {
+      const entries = blueprint[collection];
+      if (brief) { if (entries.length) out.push(`  ${collection} (${entries.length}): ${entries.slice(0, 30).map(entry => `${clip(recordTitle(blueprint, collection, entry), 60)} [${entry.id}]`).join('; ')}`); }
+      else for (const entry of entries) out.push(researchRecord(blueprint, collection, entry));
+    }
+    if (id === 'architecture' && !brief) for (const connection of blueprint.connections) {
+      const from = blueprint.components.find(entry => entry.id === connection.from), to = blueprint.components.find(entry => entry.id === connection.to);
+      out.push(`  connection: ${from?.name || 'Unnamed'} → ${to?.name || 'Unnamed'}${[connection.label, connection.protocol].filter(hasText).length ? ` (${[connection.label, connection.protocol].filter(hasText).join(', ')})` : ''}`);
+    }
+    if (AREAS[id]) for (const [area, name] of AREAS[id]) {
+      const answers = blueprint.areas.filter(entry => entry.section === id && entry.area === area);
+      const heading = `  [topic ${id}:${area}] ${questionText(blueprint, `topic:${id}:${area}`, name)}`;
+      if (!answers.length) { if (!brief) out.push(`${heading} → (no answer yet)`); continue; }
+      out.push(`${heading} → ${answers.map(entry => `${clip(entry.title, 200)}${hasText(entry.description) && !brief ? ` — ${clip(entry.description, 1000)}` : ''} [areas ${entry.id}]`).join('; ')}`);
+    }
+    for (const question of blueprint.questions.filter(entry => entry.scope === 'section' && entry.sectionId === id)) {
+      out.push(`  [question ${question.id}] ${clip(question.text, 300)} → ${hasText(blueprint.answers[question.id]) ? clip(blueprint.answers[question.id], brief ? 300 : 2000) : '(no answer yet)'}`);
+    }
+    return out.join('\n');
+  }
+
+  /**
+   * Read-only context for one research scope, built from stable IDs in the project's own words. The project's
+   * purpose, scope and constraints always come first and are never cut; the focus of the scope comes next; the rest
+   * of the blueprint is added in brief form while it fits. Returns { text, label, size, omitted }.
+   */
+  function researchContext(blueprint, scope = { kind: 'project' }, { projectName = '', limit = 24000 } = {}) {
+    const vision = blueprint.vision, blocks = [], push = (title, body, optional = true) => { if (hasText(body)) blocks.push({ title, body: body.trim(), optional }); };
+    push('Project', [`${projectName || 'Unnamed project'}`, hasText(blueprint.idea) && `Idea: ${clip(blueprint.idea, 2000)}`,
+      ...['summary', 'problem', 'goal', 'users', 'successCriteria'].filter(key => hasText(vision[key])).map(key => `${questionText(blueprint, `vision:${key}`, VISION_QUESTIONS[key])} ${clip(vision[key], 1200)}`)].filter(Boolean).join('\n'), false);
+    push('In scope', vision.inScope, false); push('Out of scope', vision.outOfScope, false); push('Constraints (keep them)', vision.constraints, false);
+    let label2 = 'the whole project';
+    const sectionIds = phaseList(blueprint).flatMap(phase => phase.sections);
+    if (scope.kind === 'section' && sectionIds.includes(scope.id)) {
+      label2 = `the section “${sectionTitle(blueprint, scope.id)}”`;
+      push('Focus: this section', scope.id === 'overview' ? sectionIds.filter(id => id !== 'overview').map(id => researchSection(blueprint, id, { brief: true })).join('\n') : researchSection(blueprint, scope.id), false);
+    } else if (scope.kind === 'record' && blueprint[scope.collection]?.some(entry => entry.id === scope.id)) {
+      const entry = blueprint[scope.collection].find(item => item.id === scope.id);
+      label2 = `the ${RESEARCH_NOUN[scope.collection] || 'record'} “${clip(recordTitle(blueprint, scope.collection, entry), 80)}”`;
+      push('Focus: this record', researchRecord(blueprint, scope.collection, entry, 4000), false);
+      // One hop: what this record links to and what links to it.
+      const near = [];
+      for (const [collection] of Object.entries(RESEARCH_FIELDS)) for (const other of blueprint[collection] || []) {
+        if (other === entry) continue;
+        const linksOut = ['technologyIds', 'componentIds', 'requirementIds', 'requiredBy', 'dependsOn', 'dependencyIds'].some(field => (entry[field] || []).includes(other.id)) || entry.layerId === other.id;
+        const linksIn = ['technologyIds', 'componentIds', 'requirementIds', 'requiredBy', 'dependsOn', 'dependencyIds'].some(field => (other[field] || []).includes(entry.id)) || other.layerId === entry.id;
+        if (linksOut || linksIn) near.push(researchRecord(blueprint, collection, other, 600));
+      }
+      if (scope.collection === 'components') for (const connection of blueprint.connections.filter(item => item.from === entry.id || item.to === entry.id)) {
+        const other = blueprint.components.find(item => item.id === (connection.from === entry.id ? connection.to : connection.from));
+        near.push(`connection ${connection.from === entry.id ? '→' : '←'} ${other?.name || 'Unnamed'}${[connection.label, connection.protocol].filter(hasText).length ? ` (${[connection.label, connection.protocol].filter(hasText).join(', ')})` : ''}`);
+      }
+      push('Linked records', near.join('\n'));
+    } else if (scope.kind === 'question') {
+      const [kind, a, b] = scope.key.split(':');
+      let focus = '';
+      if (kind === 'vision' && VISION.includes(a)) { label2 = `the question “${questionText(blueprint, scope.key, VISION_QUESTIONS[a])}”`; focus = `[vision ${a}] ${questionText(blueprint, scope.key, VISION_QUESTIONS[a])} → ${hasText(vision[a]) ? vision[a] : '(no answer yet)'}`; }
+      else if (kind === 'topic' && AREAS[a]?.some(([area]) => area === b)) {
+        const name = questionText(blueprint, scope.key, label(a, b));
+        label2 = `the topic “${name}” in ${sectionTitle(blueprint, a)}`;
+        const answers = blueprint.areas.filter(entry => entry.section === a && entry.area === b);
+        focus = [`[topic ${a}:${b}] ${name} (section ${sectionTitle(blueprint, a)})`, ...(answers.length ? answers.map(entry => researchRecord(blueprint, 'areas', entry, 2000)) : ['(no answer yet)'])].join('\n');
+      } else if (kind === 'question' && blueprint.questions.some(entry => entry.id === a && entry.scope === 'section')) {
+        const question = blueprint.questions.find(entry => entry.id === a);
+        label2 = `the question “${clip(question.text, 80)}”`;
+        focus = `[question ${a}] ${question.text} (section ${sectionTitle(blueprint, question.sectionId)}) → ${hasText(blueprint.answers[a]) ? blueprint.answers[a] : '(no answer yet)'}`;
+        push('Its section', researchSection(blueprint, question.sectionId, { brief: true }));
+      } else if (kind === 'component' && blueprint.components.some(entry => entry.id === a) && blueprint.questions.some(entry => entry.id === b && entry.scope === 'component')) {
+        const component = blueprint.components.find(entry => entry.id === a), question = blueprint.questions.find(entry => entry.id === b);
+        label2 = `“${clip(question.text, 60)}” for ${component.name || 'a component'}`;
+        focus = `[component ${a}] [question ${b}] ${question.text} → ${hasText(component.answers?.[b]) ? component.answers[b] : '(no answer yet)'}`;
+        push('The component', researchRecord(blueprint, 'components', component, 2000));
+      }
+      push('Focus: this question', focus, false);
+    }
+    // Accepted decisions and the selected stack apply everywhere; then the rest of the blueprint in brief.
+    push('Accepted decisions (keep them)', bullets(blueprint.decisions.filter(entry => entry.status === 'accepted').map(entry => `${entry.key} ${entry.title}: ${clip(entry.decision, 500)} [decisions ${entry.id}]`)));
+    push('Selected technologies', bullets(blueprint.technologies.filter(entry => entry.status === 'selected').map(entry => `${entry.name}${entry.version ? ` ${entry.version}` : ''} [technologies ${entry.id}]`)));
+    push('Open points found by Origin’s checks', bullets(issues(blueprint).slice(0, 40).map(issue => `${issue.title}${issue.target?.id ? ` [${issue.target.collection} ${issue.target.id}]` : issue.target?.section ? ` [section ${issue.target.section}]` : ''}`)));
+    if (scope.kind !== 'project') push('The rest of the blueprint (brief)', sectionIds.filter(id => id !== 'overview' && !(scope.kind === 'section' && scope.id === id)).map(id => researchSection(blueprint, id, { brief: true })).join('\n'));
+    else push('The blueprint', sectionIds.filter(id => id !== 'overview').map(id => researchSection(blueprint, id, { brief: blueprint.components.length + blueprint.requirements.length + blueprint.technologies.length > 60 })).join('\n'));
+    // Required blocks first, then optional blocks in order while they fit.
+    let text = '', omitted = [];
+    for (const entry of blocks.filter(entry => !entry.optional)) text += `## ${entry.title}\n${entry.body}\n\n`;
+    if (text.length > limit) text = `${text.slice(0, limit - 40)}\n…(cut to the size limit)\n`;
+    for (const entry of blocks.filter(entry => entry.optional)) {
+      const part = `## ${entry.title}\n${entry.body}\n\n`;
+      if (text.length + part.length <= limit) text += part; else omitted.push(entry.title);
+    }
+    if (omitted.length) text += `## Left out for size\n${bullets(omitted)}\n`;
+    return { text: text.trim(), label: label2, size: text.length, omitted };
+  }
+
   return { SCHEMA, VERSION, ID, PHASES, SECTIONS, ENUMS, AREAS, VISION, LIMITS, CONTEXT_COLLECTIONS, QUESTIONS, VISION_QUESTIONS, COMPONENT_FIELDS, SECTION_STATE, VERIFICATION_LABELS,
     label, sectionLabel, sectionTitle, phaseTitle, phaseList, questionText, lines, emptyBlueprint, nextKey, normalizeBlueprint, verification, isStarted, itemName, issues, readiness, sectionStates,
-    composeSpec, orderItems, taskHome, taskContext, taskBody, suggestionBrief };
+    composeSpec, orderItems, taskHome, taskContext, taskBody, suggestionBrief, researchTargets, researchContext, researchRecord, RESEARCH_FIELDS };
 })();

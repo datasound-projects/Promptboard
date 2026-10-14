@@ -49,6 +49,7 @@ test('Research panel: opens beside Create Context, resizes, maximizes to the sid
   assert.equal(await ev(`return document.querySelectorAll('#origin-drawer').length + document.querySelectorAll('.origin-research-body').length;`), 1, 'never two panels');
   await click('#origin-research-open');
   await wait(`document.querySelector('#origin-drawer').dataset.mode === 'research' && document.querySelector('#origin-research-input').value === 'Which payment provider fits?'`, 'research back, editor closed');
+  assert.equal(await ev(`return JSON.parse(document.querySelector('#origin-research-scope').value).id + ' ' + document.querySelector('#origin-research-scope').selectedOptions[0].textContent;`), 'c1 Checkout API', 'a new chat starts on the record that was open');
   await click('#origin-context-open');
   await wait(`document.querySelector('#origin-drawer').dataset.mode === 'context'`, 'Project Context took the drawer');
   await click('#origin-research-open');
