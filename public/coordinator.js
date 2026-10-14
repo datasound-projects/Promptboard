@@ -128,7 +128,7 @@ window.PromptboardCoordinator = (() => {
       else if (!data) status.textContent = readError || message || 'Reading the board…';
       else {
         const needs = data.agents.filter(agent => agent.needsYou).length;
-        status.append(...[`${data.agents.length} ${data.agents.length === 1 ? 'agent' : 'agents'} active`, `${data.progress.done}/${data.progress.total} done`,
+        status.append(...[`${data.agents.length} ${data.agents.length === 1 ? 'agent' : 'agents'} active`, `${data.progress.done}/${data.progress.total} done${data.progress.unmerged ? ` (${data.progress.unmerged} not merged)` : ''}`,
           ...(needs ? [`${needs} ${needs === 1 ? 'needs' : 'need'} you`] : []), ...(data.blockers.length ? [`${data.blockers.length} ${data.blockers.length === 1 ? 'blocker' : 'blockers'}`] : []),
           ...(readError ? [`Not refreshed: ${readError}`] : [])]
           .map((text, index) => el('span', index >= 2 ? 'coordinator-alert' : '', text)));

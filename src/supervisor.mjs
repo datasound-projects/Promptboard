@@ -6,7 +6,7 @@
  * Lifecycle comes from provider hook/notify events (agents.mjs), never from silence or
  * exit codes. A stage succeeds only when the user confirms it.
  */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { access, chmod, mkdir, open, readFile, writeFile } from 'node:fs/promises';
 import { constants, createWriteStream } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -225,7 +225,10 @@ export class Supervisor {
       currentResources: state.base?.resources || [], workspacePath: run.workspacePath, runDir, signal, approvedRoots: state.base?.approvedRoots || [] });
     onPrepared(baseDelivery);
     signal.throwIfAborted();
-    const plan = planRunId ? await readFile(join(this.dataDir, 'runs', planRunId, 'plan.md'), 'utf8').catch(() => null) : null;
+    // Approvals before plans were frozen have no copy; their plan.md is read as before.
+    const planDir = planRunId && join(this.dataDir, 'runs', planRunId);
+    const plan = planRunId ? await readFile(join(planDir, 'approved-plan.md'), 'utf8').catch(() => run.planSha256 ? null : readFile(join(planDir, 'plan.md'), 'utf8')).catch(() => null) : null;
+    if (planRunId && (plan === null || (run.planSha256 && createHash('sha256').update(plan).digest('hex') !== run.planSha256))) throw new AgentError('The approved plan is missing or changed after it was approved. Run Planning again.', 'PLAN_UNAVAILABLE');
     // Custom pipeline columns send the task envelope; legacy stages and typed columns send stage instructions with a handoff.
     const message = run.config.pipeline && !run.stageKind
       ? [run.resumeFrom ? continuation || '' : firstPrompt, (!run.resumeFrom || run.baseChanged) ? baseDelivery.sections : ''].filter(Boolean).join('\n\n')
@@ -912,7 +915,13 @@ export class Supervisor {
     if (run.config.pipeline && !run.stageKind) throw new AgentError('Move this pipeline card or pause its agent; a finished turn does not complete a stage.', 'PIPELINE_STAGE_CONFIRM_UNAVAILABLE', 409);
     if (run.status !== 'waiting_for_input' || !run.turns) throw new AgentError('Confirm after the agent has finished a turn and is waiting.', 'NOT_CONFIRMABLE', 409);
     const stage = run.stageKind || run.stage;
-    if (stage === 'planning') await this.board.approvePlan(run.taskId, { runId });
+    if (stage === 'planning') {
+      // The approved plan is frozen: later turns rewrite plan.md; Executing reads this copy and checks its hash.
+      const dir = join(this.dataDir, run.artifactsDir), plan = await readFile(join(dir, 'plan.md'), 'utf8').catch(() => null);
+      if (plan === null) throw new AgentError('The plan file is missing, so there is nothing to approve. Ask the planner to write its plan again.', 'PLAN_MISSING', 409);
+      await writeFile(join(dir, 'approved-plan.md'), plan, { mode: 0o600 });
+      await this.board.approvePlan(run.taskId, { runId, sha256: createHash('sha256').update(plan).digest('hex') });
+    }
     // A confirmed review records its findings for the reviewed commits; accepting it is a separate step.
     if (stage === 'code_review') await this.board.delivery.recordReview(run, await readFile(join(this.dataDir, run.artifactsDir, 'review.md'), 'utf8').catch(() => ''));
     const reason = run.stageKind ? (stage === 'planning' ? 'Plan accepted; the stage is complete.' : stage === 'code_review' ? 'Review completed.' : 'Stage completed.')

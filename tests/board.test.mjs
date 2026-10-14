@@ -147,12 +147,12 @@ test('repository validation explains each invalid case and accepts linked worktr
   assert.equal(await exists(join(outside, '.git')), false);
 });
 
-test('two tasks get different branches and folders from the recorded target commit; the checkout is untouched', { skip: process.platform === 'win32' }, async t => {
+test('two tasks get different branches and folders from the target branch as it is now; the checkout is untouched', { skip: process.platform === 'win32' }, async t => {
   const { board, root, dataDir, projectId } = await linkedBoard(t);
-  const recorded = run(root, 'rev-parse', 'trunk');
-  // The target branch moves after it was recorded; worktrees still use the recorded commit.
+  // The target branch moves after it was chosen (for example, an earlier task merged): worktrees start from its tip.
   await writeFile(join(root, 'later.txt'), 'later\n');
   run(root, 'add', '.'); run(root, 'commit', '-q', '-m', 'Later');
+  const recorded = run(root, 'rev-parse', 'trunk');
   await writeFile(join(root, 'README.md'), 'uncommitted user edit\n');
   const before = { head: run(root, 'rev-parse', 'HEAD'), branch: run(root, 'branch', '--show-current'), status: run(root, 'status', '--porcelain'), readme: await readFile(join(root, 'README.md'), 'utf8') };
   const one = await board.createTask({ projectId, title: 'Add login', prompt: 'Add login.' });

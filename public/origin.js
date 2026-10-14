@@ -133,7 +133,9 @@ window.PromptboardOrigin = (() => {
     // Progress comes from Kanban: the card's current column, never Origin's own planning status.
     const kanbanCards = () => new Map(app.projects().flatMap(item => item.tasks.map(task => {
       const column = (item.columns || []).find(entry => entry.id === task.column);
-      return [task.id, { task, column: column?.title || column?.name || task.column, done: task.column === 'done' || column?.role === 'done' }];
+      // Done without merging is not finished work: its code is not on the target branch.
+      const inDone = task.column === 'done' || column?.role === 'done', unmerged = inDone && Boolean(task.workspace) && (task.completion?.kind === 'unmerged' || (task.completion?.kind === 'pull_request' && !task.completion.mergedAt));
+      return [task.id, { task, column: `${column?.title || column?.name || task.column}${unmerged ? ' · not merged' : ''}`, done: inDone && !unmerged }];
     })));
     const showError = message => { errorBox.textContent = message; errorBox.hidden = !message; };
     // A project whose blueprint could not be read can still be renamed, connected or deleted: the list carries its revision.

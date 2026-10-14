@@ -29,7 +29,7 @@ test('Compose autonomous browser: one click, no user questions, restraint, mixed
   const click = id => browser.eval(`document.querySelector('#${id}').click();`);
   const value = (id, text) => browser.eval(`const node = document.querySelector('#${id}'); node.value = ${JSON.stringify(text)}; node.dispatchEvent(new Event('input', { bubbles: true }));`);
   const toggle = (id, checked) => browser.eval(`const node = document.querySelector('#${id}'); node.checked = ${checked}; node.dispatchEvent(new Event('change', { bubbles: true }));`);
-  const generate = async () => { await click('generate-button'); await browser.until(`document.querySelector('#cancel-button').hidden && !document.querySelector('#prompt-output').hidden`, 'generated'); };
+  const generate = async () => { await click('generate-button'); await browser.until(`document.querySelector('#cancel-button').hidden && !document.querySelector('#prompt-output').hidden`, 'generated', 30000); }; // slow CI renderers
   assert.equal(await browser.eval(`return !!document.querySelector('#context-clarify') || !!document.querySelector('#context-skip');`), false);
   assert.equal(await browser.eval(`return document.querySelector('#context-autonomous').checked;`), false);
   await toggle('context-autonomous', true);

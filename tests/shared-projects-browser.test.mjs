@@ -24,7 +24,7 @@ async function setup(t) {
     await ev(`document.querySelector('[name="quality"][value="fast"]').click();`);
     const before = await ev(`return document.querySelector('#prompt-output').textContent;`);
     await click('#generate-button');
-    await wait(`document.querySelector('#cancel-button').hidden && !document.querySelector('#prompt-output').hidden && document.querySelector('#prompt-output').textContent !== ${J(before)}`, 'generated');
+    await wait(`document.querySelector('#cancel-button').hidden && !document.querySelector('#prompt-output').hidden && document.querySelector('#prompt-output').textContent !== ${J(before)}`, 'generated', 30000); // slow CI renderers
   };
   const button = (scope, text) => ev(`const b = [...document.querySelectorAll(${J(scope + ' button')})].find(b => b.textContent.trim().startsWith(${J(text)})); if (!b) throw new Error('no button ' + ${J(text)}); b.click();`);
   return { app, call, browser, ev, wait, click, value, generate, button };

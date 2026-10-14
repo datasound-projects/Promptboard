@@ -20,7 +20,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { buildTimeline } from './timeline.mjs';
-import { COLUMNS } from './board.mjs';
+import { COLUMNS, prerequisiteMet } from './board.mjs';
 import { readWithBackup, serial, writeAtomic } from './durable.mjs';
 import { escapeId } from './origin.mjs';
 import { listProjects } from './projects.mjs';
@@ -174,7 +174,7 @@ export class Coordinator {
       return `- [${taskRef(task)}] “${clip(task.title, 160)}” · column ${facts.column} · ${facts.state}${facts.branch ? ` · branch ${facts.branch}` : ''}${facts.review ? ` · review ${facts.review}` : ''}${facts.tests ? ` · tests ${facts.tests}` : ''}${facts.completion ? ` · completed: ${facts.completion}` : ''}${facts.prompt ? ` · from saved prompt revision ${facts.prompt.revision}` : ''}${facts.originKey ? ` · Origin task ${facts.originKey}` : ''}`;
     };
     const over = overview(project, runs, index);
-    lines.push(`Project “${project.name}”. Columns: ${over.columns.map(column => `${column.name} ${column.count}`).join(', ')}. ${over.progress.done} of ${over.progress.total} cards done.`);
+    lines.push(`Project “${project.name}”. Columns: ${over.columns.map(column => `${column.name} ${column.count}`).join(', ')}. ${over.progress.done} of ${over.progress.total} cards done${over.progress.unmerged ? ` (${over.progress.unmerged} without merging)` : ''}.`);
     lines.push('Active agents:', ...(over.agents.length ? over.agents.map(agent => `- [${runRef(runs.find(run => run.id === agent.runId))}] on [${taskRef(byId.get(agent.taskId))}] in ${agent.column}: ${agent.status}${agent.needsYou ? ' (waiting for the user)' : ''}`) : ['- none']));
     lines.push('Blockers:', ...(over.blockers.length ? over.blockers.map(blocker => `- ${blocker.taskId ? `[${taskRef(byId.get(blocker.taskId))}] ` : ''}${blocker.text}`) : ['- none']));
     const taskEvents = taskId => index.events.filter(event => event.task === taskId);
@@ -268,7 +268,9 @@ function overview(project, runs, index) {
   }
   if (project.autopilot?.status === 'paused') blockers.push({ kind: 'autopilot', text: `Autopilot is paused: ${clip(project.autopilot.reason, 200)}` });
   const numbers = new Map(project.tasks.map(task => [task.id, task.number ?? null]));
-  return { columns: counts, progress: { done: counts.find(column => column.role === 'done')?.count || 0, total: project.tasks.length }, agents, blockers,
+  // Done without merging is shown apart: its code is not on the target branch.
+  const unmerged = project.tasks.filter(task => task.column === done && !prerequisiteMet(project, task)).length;
+  return { columns: counts, progress: { done: counts.find(column => column.role === 'done')?.count || 0, unmerged, total: project.tasks.length }, agents, blockers,
     recent: index.events.filter(event => event.kind !== 'note').slice(-8).reverse().map(event => ({ ...event, number: event.task ? numbers.get(event.task) ?? null : null, taskTitle: event.task ? tasks.get(event.task)?.title || '' : '' })) };
 }
 function promptFor(question, scope, evidence) {

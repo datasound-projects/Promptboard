@@ -11,7 +11,7 @@
  */
 
 import { EXECUTION_DEFAULTS, resolvePipelineStrategy } from './pipeline-config.mjs';
-import { columnStage } from './board.mjs';
+import { columnStage, prerequisiteMet } from './board.mjs';
 
 const TICK_MS = 1000;
 const RESUME_MESSAGE = 'Promptboard Autopilot restarted this session. Continue the current step of this card from where you stopped; if it is already complete, say what you did and stop.';
@@ -36,14 +36,15 @@ function problemKey(task, outcome) {
  * The first queued To Do card whose prerequisites are all Done, so a prerequisite queued lower still goes first.
  * `waiting` explains a queue whose remaining cards all wait for prerequisites that are not Done (skipped or failed).
  */
-function nextQueued(project, todoId, doneId) {
+function nextQueued(project, todoId) {
   const ap = project.autopilot, handled = new Set(ap.done || []), cards = new Map(project.tasks.map(item => [item.id, item]));
   const queued = ap.queue.map(id => cards.get(id)).filter(item => item && !handled.has(item.id) && item.column === todoId);
-  const pending = item => (item.dependsOn || []).filter(id => cards.has(id) && cards.get(id).column !== doneId);
+  // The board's own rule (merged, or no code to merge); a deleted prerequisite is pending too, as the board treats it.
+  const pending = item => (item.dependsOn || []).filter(id => !prerequisiteMet(project, cards.get(id)));
   const task = queued.find(item => !pending(item).length);
   if (task || !queued.length) return { task };
-  const first = queued[0], names = pending(first).map(id => `#${cards.get(id).number ?? '?'} ${cards.get(id).title}`).join(', ');
-  return { waiting: `“${first.title}” waits for its prerequisites, which are not Done: ${names}. Finish them (or add them to the queue), or clear the prerequisite in the card's details, then resume.` };
+  const describe = id => !cards.has(id) ? 'a deleted card' : `#${cards.get(id).number ?? '?'} ${cards.get(id).title}${cards.get(id).completion ? ' (Done without merging)' : ''}`;
+  return { waiting: `“${queued[0].title}” waits for its prerequisites, which are not complete: ${pending(queued[0]).map(describe).join(', ')}. Finish or merge them (or add them to the queue), or clear the prerequisite in the card's details, then resume.` };
 }
 const title = stage => ({ planning: 'Planning', executing: 'Executing', code_review: 'Code Review', testing: 'Testing', merge: 'Merge' })[stage] || stage;
 
@@ -106,7 +107,7 @@ export class Autopilot {
     const columns = project.pipeline.columns, name = id => columns.find(column => column.id === id)?.name || id;
     const todo = columns.find(column => column.role === 'todo').id, done = columns.find(column => column.role === 'done').id;
     if (!ap.current) {
-      const { task, waiting } = nextQueued(project, todo, done);
+      const { task, waiting } = nextQueued(project, todo);
       if (waiting) return this.pause(projectId, waiting);
       if (!task) return this.set(projectId, (a, log) => { a.status = 'finished'; a.reason = ''; log('Every queued card has been through its columns.'); });
       // A new card branches from the target as it is now, including earlier cards' work if it was merged.
@@ -204,7 +205,8 @@ export class Autopilot {
     // Rework goes on while each round brings a new problem (progress). It stops when a problem keeps coming back
     // (`maxRework` repeats), and after REWORK_SAFETY_CAP rounds in any case, so nothing can loop forever.
     const attempts = cur.attempts || 0, seen = cur.problems || [], problem = problemKey(task, outcome);
-    const stalls = (cur.stalls || 0) + (seen.includes(problem) ? 1 : 0);
+    // A target that moved again is other work landing, not this card's problem coming back; the round cap still applies.
+    const stalls = (cur.stalls || 0) + (seen.includes(problem) && outcome.code !== 'TARGET_MOVED' ? 1 : 0);
     const limit = maxRework === 0 ? 'rework is turned off' : stalls >= maxRework ? `the same problem came back ${stalls} ${stalls === 1 ? 'time' : 'times'}`
       : attempts >= REWORK_SAFETY_CAP ? `${attempts} rework rounds` : '';
     if (limit) return this.pause(projectId, `“${task.title}”: REWORK_LIMIT_REACHED, ${limit} (${(outcome.reason || '').replace(/[.\s]+$/, '')}). Fix it by hand, then resume, or skip the card.`);
@@ -250,7 +252,7 @@ export class Autopilot {
   }
 
   async next(project) {
-    const { task, waiting } = nextQueued(project, 'todo', 'done');
+    const { task, waiting } = nextQueued(project, 'todo');
     if (waiting) return this.pause(project.id, waiting);
     if (!task) return this.set(project.id, (a, log) => { a.status = 'finished'; a.reason = ''; log('Every queued card has been through its route.'); });
     // A new card branches from the target as it is now, including the cards merged before it.
@@ -284,8 +286,9 @@ export class Autopilot {
   async rework(projectId, task, cur, ap, why) {
     if ((cur.attempts || 0) >= ap.maxRework) return this.pause(projectId, `“${task.title}”: ${why} after ${cur.attempts || 0} rework ${cur.attempts === 1 ? 'round' : 'rounds'}. Fix it by hand, then resume, or skip the card.`);
     // The move back records the findings or test output for the next Executing run (board.transition).
+    const reworkFrom = (await this.board.delivery.revision(task.id).catch(() => null))?.taskCommit || null;
     await this.move(task, 'executing');
-    return this.set(projectId, (a, log) => { a.current = { ...a.current, stage: 'executing', step: 'start', runId: null, testsId: null, attempts: (a.current.attempts || 0) + 1 }; log(`“${task.title}”: ${why}; sent back to Executing (rework ${a.current.attempts}/${a.maxRework}).`); });
+    return this.set(projectId, (a, log) => { a.current = { ...a.current, stage: 'executing', step: 'start', runId: null, testsId: null, reworkFrom, attempts: (a.current.attempts || 0) + 1 }; log(`“${task.title}”: ${why}; sent back to Executing (rework ${a.current.attempts}/${a.maxRework}).`); });
   }
 
   /** Planning, Executing, and Code Review: run the agent, confirm its finished turn, then act on the result. */
@@ -311,6 +314,8 @@ export class Autopilot {
       if (rev.merging) return this.pause(projectId, `A merge is in progress in the worktree of “${task.title}”. Commit or abort it, then resume.`);
       if (!rev.clean) rev = await delivery.commit(task.id, { message: task.title, confirm: true });
       if (!rev.ahead) return this.pause(projectId, `The Executing agent made no changes for “${task.title}”. Check the task, then resume, or skip it.`);
+      // A rework round that changed nothing would send the same commit to review again.
+      if (cur.reworkFrom && rev.taskCommit === cur.reworkFrom) return this.pause(projectId, `“${task.title}”: NO_NEW_CHANGES, the rework round made no new changes. Make the fix in its terminal, then resume, or skip the card.`);
     }
     if (stage === 'code_review') {
       const review = (await this.board.state()).projects.find(item => item.id === projectId).tasks.find(item => item.id === task.id).evidence?.review;
@@ -351,6 +356,8 @@ export class Autopilot {
       return;
     }
     if (tests.status === 'passed') return this.advance(projectId, task, 'testing', route);
+    // An unreadable agent verdict is not a failing test: it fails closed instead of sending code back.
+    if (tests.status === 'invalid' && tests.source === 'agent') return this.pause(projectId, `“${task.title}”: INVALID_TEST_RESULT, ${tests.note || 'the testing agent did not end with a valid JSON test verdict'}. Test again, or skip the card.`);
     return this.rework(projectId, task, cur, project.autopilot, `the tests ${tests.status === 'invalid' ? 'were invalidated' : 'failed'}`);
   }
 
