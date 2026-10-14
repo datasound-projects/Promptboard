@@ -52,6 +52,7 @@ const assets = new Map([
   ['/origin.js', ['origin.js', 'text/javascript; charset=utf-8']],
   ['/markdown-view.js', ['markdown-view.js', 'text/javascript; charset=utf-8']],
   ['/origin-context.js', ['origin-context.js', 'text/javascript; charset=utf-8']],
+  ['/origin-research.js', ['origin-research.js', 'text/javascript; charset=utf-8']],
   ['/projects.js', ['projects.js', 'text/javascript; charset=utf-8']],
   ['/coordinator.js', ['coordinator.js', 'text/javascript; charset=utf-8']],
   ['/dock.js', ['dock.js', 'text/javascript; charset=utf-8']],
