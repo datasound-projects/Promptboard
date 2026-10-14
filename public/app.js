@@ -4412,7 +4412,7 @@ function renderAutopilotBar(project) {
   const run = task && board.runs.filter(item => item.taskId === task.id && RUN_LIVE.includes(item.status)).at(-1);
   const needsYou = run && ((run.status === 'waiting_for_input' && !run.turnComplete) || ['no-events-yet', 'initial-input-not-ready'].includes(run.lifecycle));
   // A typed stage that waits for a person (manual completion, or Merge) is said so, instead of looking busy.
-  const outcome = task?.stageOutcome?.columnId === task?.column && task.stageOutcome.status === 'working' ? task.stageOutcome : null;
+  const outcome = task?.stageOutcome && task.stageOutcome.columnId === task.column && task.stageOutcome.status === 'working' ? task.stageOutcome : null;
   const yourTurn = !needsYou && outcome && (outcome.reason || (run?.status === 'waiting_for_input' && run.turnComplete && project.execution?.completion !== 'automatic'))
     ? ` · waiting for you: ${outcome.reason || 'the agent finished its turn; complete the stage on the card'}` : '';
   const text = ap.status === 'running' ? (task ? `Autopilot is working on “${task.title}” · ${columnTitle(ap.current.stage || todoColumnId(project))} · ${left} more queued${needsYou ? ' · the agent is waiting for your answer in the terminal' : yourTurn}` : 'Autopilot is choosing the next card…')
