@@ -1028,17 +1028,30 @@ globalThis.PromptboardOriginModel = (() => {
   const nameField = collection => NAME_FIELD[collection] || 'title';
   class SuggestionError extends Error {}
   const reject = message => { throw new SuggestionError(message); };
-  /** One field value, checked like the blueprint itself checks it. Enum labels are accepted for their IDs. */
-  function suggestionValue(collection, field, value) {
+  // Words agents use for Origin's own values. Anything else is matched by ID or label, ignoring case, spacing and a plural s.
+  const ENUM_WORDS = { componentType: { frontend: 'client', web: 'client', webapp: 'client', ui: 'client', mobile: 'client', backend: 'service', backendservice: 'service', microservice: 'service', server: 'service',
+    datastore: 'database', db: 'database', externalservice: 'external', thirdparty: 'external', saas: 'external', cache: 'storage', job: 'worker' },
+  techCategory: { language: 'languages', programminglanguage: 'languages', framework: 'frameworks', library: 'frameworks', bi: 'other', queue: 'messaging', auth: 'authentication', ci: 'ci_cd', cicd: 'ci_cd', monitoring: 'observability', ai: 'models', llm: 'models' },
+  techStatus: { proposed: 'candidate', recommended: 'candidate', option: 'candidate', chosen: 'selected', adopted: 'selected', accepted: 'selected' }, decisionStatus: { draft: 'proposed' } };
+  const enumKey = text => String(text).toLowerCase().replace(/[^a-z0-9]/g, '');
+  function enumValue(rule, text) {
+    const key = enumKey(text), word = ENUM_WORDS[rule]?.[key] || ENUM_WORDS[rule]?.[key.replace(/s$/, '')];
+    return ENUMS[rule].find(([id, name]) => id === word || [enumKey(id), enumKey(name)].some(known => known === key || known === `${key}s` || `${known}s` === key))?.[0];
+  }
+  /**
+   * One field value, checked like the blueprint itself checks it. Enum labels and common words are accepted for their
+   * IDs; for a new record (`lenient`) an unknown enum value is left out, so the record keeps Origin's default.
+   */
+  function suggestionValue(collection, field, value, { lenient = false } = {}) {
     const rule = SUGGEST_FIELDS[collection]?.[field];
     if (rule === undefined) reject(`${collection}.${field} cannot be suggested.`);
     if (typeof value !== 'string') reject('A suggested value must be text.');
     const text = value.trim();
     if (rule === 'url') { if (text && !/^https?:\/\/[^\s/@]+(?:\/[^\s]*)?$/i.test(text)) reject('A source URL must be an http(s) address without credentials.'); return text; }
     if (typeof rule === 'string') {
-      const found = ENUMS[rule].find(([id, name]) => id === text || name.toLowerCase() === text.toLowerCase());
-      if (!found) reject(`“${clip(text, 40)}” is not a valid ${field}.`);
-      return found[0];
+      const found = enumValue(rule, text);
+      if (!found && !lenient) reject(`“${clip(text, 40)}” is not a valid ${field}.`);
+      return found;
     }
     return text.length > rule ? `${text.slice(0, rule - 1)}…` : text;
   }
@@ -1159,6 +1172,7 @@ globalThis.PromptboardOriginModel = (() => {
    * Check one suggestion from a research agent against the blueprint. Returns { op, target, value, original, title, why,
    * evidence } or throws when the target does not exist, the field cannot be suggested or the value is invalid.
    */
+  const researchRef = raw => [raw?.ref, raw?.target?.ref, raw?.value?.ref].find(value => typeof value === 'string');
   function validateResearchSuggestion(blueprint, raw, { refs = new Map() } = {}) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) reject('A suggestion must be an object.');
     const source = raw.target && typeof raw.target === 'object' ? raw.target : {};
@@ -1170,11 +1184,12 @@ globalThis.PromptboardOriginModel = (() => {
       value = {};
       for (const [field, given] of Object.entries(raw.value)) {
         if (LINKS[source.collection]?.[field] !== undefined) { if (given !== undefined && given !== null && !(Array.isArray(given) && !given.length) && given !== '') value[field] = linkValue(blueprint, source.collection, field, given, refs); }
-        else if (SUGGEST_FIELDS[source.collection][field] !== undefined && typeof given === 'string' && given.trim()) value[field] = suggestionValue(source.collection, field, given);
+        else if (SUGGEST_FIELDS[source.collection][field] !== undefined && typeof given === 'string' && given.trim()) { const checked = suggestionValue(source.collection, field, given, { lenient: true }); if (checked !== undefined) value[field] = checked; }
       }
       if (source.collection === 'connections') { if (!value.from || !value.to || value.from === value.to) reject('A new connection needs two different components: from and to.'); }
       else if (!hasText(value[nameField(source.collection)])) reject(`A new ${RESEARCH_NOUN[source.collection] || source.collection} needs a ${nameField(source.collection)}.`);
-      if (typeof raw.ref === 'string' && /^[A-Za-z0-9_.-]{1,60}$/.test(raw.ref)) ref = raw.ref;
+      const given = researchRef(raw); // Agents put it beside the target, inside it or among the fields.
+      if (typeof given === 'string' && /^[A-Za-z0-9_.-]{1,60}$/.test(given)) ref = given;
     } else {
       if (source.kind === 'idea') target = { kind: 'idea' };
       else if (source.kind === 'vision') target = { kind: 'vision', field: String(source.field) };
@@ -1199,5 +1214,5 @@ globalThis.PromptboardOriginModel = (() => {
   return { SCHEMA, VERSION, ID, PHASES, SECTIONS, ENUMS, AREAS, VISION, LIMITS, CONTEXT_COLLECTIONS, QUESTIONS, VISION_QUESTIONS, COMPONENT_FIELDS, SECTION_STATE, VERIFICATION_LABELS,
     label, sectionLabel, sectionTitle, phaseTitle, phaseList, questionText, lines, emptyBlueprint, nextKey, normalizeBlueprint, verification, isStarted, itemName, issues, readiness, sectionStates,
     composeSpec, orderItems, taskHome, taskContext, taskBody, suggestionBrief, researchTargets, researchContext, researchRecord, RESEARCH_FIELDS,
-    SUGGEST_FIELDS, SUGGEST_ADD, LINKS, RECORD_DEFAULTS, researchTargetKey, researchTargetValue, researchTargetLabel, researchName, validateResearchSuggestion, applyResearchSuggestion, resolveResearchLinks };
+    SUGGEST_FIELDS, SUGGEST_ADD, LINKS, RECORD_DEFAULTS, researchTargetKey, researchTargetValue, researchTargetLabel, researchName, researchRef, validateResearchSuggestion, applyResearchSuggestion, resolveResearchLinks };
 })();

@@ -58,6 +58,9 @@ one closes the others and keeps unsaved and unsent text. On phones the panel fil
   a field, answer a question, add links, or add a record of any type: layers, technologies, components, requirements,
   dependencies, milestones, tasks, decisions, assumptions, risks, sources and architecture connections. A new record can
   carry a short `ref`, and other new records in the same answer point to it as `@ref`; refs are local to one answer.
+  The prompt lists the values Origin accepts for each choice field (built from the model, so it never drifts); common
+  words agents use map to them (for example “frontend” → client, status “proposed” → candidate). A new record with an
+  unknown value keeps Origin's default; a change to an existing field still needs a valid value.
   The page applies an approved suggestion through Origin's normal edit path (autosave with its revision check), so the
   sidebar, editors, readiness, map and architecture diagram update as for a hand edit (`applyResearchSuggestion`).
   **Apply all** applies new records in dependency order (layers and technologies before components, components before
