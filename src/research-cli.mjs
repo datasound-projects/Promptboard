@@ -14,18 +14,19 @@ export const WEB_TOOLS = ['WebSearch', 'WebFetch'];
  * `tools` are extra Claude tool names (approved MCP tools, `Skill`); `mcpConfig` is Claude's MCP JSON;
  * `codexArgs` are extra Codex config arguments for approved MCP servers.
  */
-export function researchArgs({ provider, model = '', effort = '', web = false, session = null, tools = [], mcpConfig = '{"mcpServers":{}}', codexArgs = [] }) {
+export function researchArgs({ provider, model = '', effort = '', web = false, session = null, persist = true, tools = [], mcpConfig = '{"mcpServers":{}}', codexArgs = [] }) {
   if (provider === 'claude') {
     const allowed = [...(web ? WEB_TOOLS : []), ...tools];
     const args = ['--print', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--strict-mcp-config', '--mcp-config', mcpConfig,
       '--disable-slash-commands', '--tools', allowed.join(','), ...(allowed.length ? ['--allowedTools', allowed.join(',')] : []), '--max-turns', allowed.length ? '30' : '1'];
     if (session) args.push(session.resume ? '--resume' : '--session-id', session.id);
+    else if (!persist) args.push('--no-session-persistence'); // One-off agents (a swarm) leave no session behind.
     if (effort) args.push('--effort', effort);
     if (model) args.push('--model', model);
     return args;
   }
   // `exec resume` has no --sandbox flag; the same policy is set as configuration for new and resumed threads.
-  const args = ['exec', ...(session?.resume ? ['resume', session.id] : []), '--json', '--skip-git-repo-check',
+  const args = ['exec', ...(session?.resume ? ['resume', session.id] : []), ...(!persist && !session ? ['--ephemeral'] : []), '--json', '--skip-git-repo-check',
     '--config', 'sandbox_mode="read-only"', '--config', 'approval_policy="never"', '--config', `web_search="${web ? 'live' : 'disabled'}"`,
     '--config', 'features.apps=false', '--config', 'features.plugins=false', '--config', 'features.hooks=false',
     '--disable', 'shell_tool', '--disable', 'unified_exec', ...codexArgs];
@@ -76,7 +77,7 @@ function readLine(provider, event, state, onEvent) {
  * with { text, session, durationMs }. A cancelled or failed run rejects; its error carries the text produced so far
  * (`partial`) and `resumeFailed` when a resumed session could not continue before any text.
  */
-export async function streamResearch({ provider, model = '', effort = '', prompt, cwd, signal, session = null, web = false, tools = [], mcpConfig, codexArgs = [], onEvent = () => {} } = {}) {
+export async function streamResearch({ provider, model = '', effort = '', prompt, cwd, signal, session = null, persist = true, web = false, tools = [], mcpConfig, codexArgs = [], onEvent = () => {} } = {}) {
   if (!['claude', 'codex'].includes(provider)) throw fail('Research uses Claude Code or Codex.', 'INVALID_PROVIDER');
   if (model && (typeof model !== 'string' || !SAFE_MODEL.test(model))) throw fail('Use a model ID or alias with no spaces or command flags.', 'INVALID_MODEL');
   validateEffort(provider, effort);
@@ -86,7 +87,7 @@ export async function streamResearch({ provider, model = '', effort = '', prompt
   if (signal?.aborted) throw fail('Generation was cancelled.', 'ABORTED');
   const executable = await resolveExecutable(provider);
   if (!executable) throw fail(`${provider === 'claude' ? 'Claude Code' : 'Codex'} was not found. Install it and sign in from your terminal.`, 'NOT_INSTALLED');
-  const args = researchArgs({ provider, model, effort, web, session, tools, mcpConfig, codexArgs });
+  const args = researchArgs({ provider, model, effort, web, session, persist, tools, mcpConfig, codexArgs });
   if (provider === 'codex') args.push(...await codexMcpOverride(executable, { cwd, signal }), '-');
   const started = Date.now();
   const state = { session: provider === 'claude' && session ? session.id : null, streamed: '', final: null, error: false };

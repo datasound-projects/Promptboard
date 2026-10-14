@@ -20,8 +20,8 @@ test('research scopes and settings use stable IDs and accept only Claude Code an
   for (const bad of [{ kind: 'record', collection: 'questions', id: 'x' }, { kind: 'record', collection: 'nope', id: 'x' }, { kind: 'section', id: '../x' }, { kind: 'question', key: 'field:x' }, { kind: 'other' }, []]) {
     assert.throws(() => scopeOf(bad), /Choose|Invalid/);
   }
-  assert.deepEqual(settingsOf({ provider: 'codex', model: 'gpt-5.5', effort: 'low', mode: 'swarm', web: true, scope: { kind: 'section', id: 'security' } }),
-    { provider: 'codex', model: 'gpt-5.5', effort: 'low', mode: 'swarm', web: true, skills: false, scope: { kind: 'section', id: 'security' } });
+  assert.deepEqual(settingsOf({ provider: 'codex', model: 'gpt-5.5', effort: 'low', mode: 'swarm', web: true, scope: { kind: 'section', id: 'security' }, targets: [{ kind: 'section', id: 'data' }] }),
+    { provider: 'codex', model: 'gpt-5.5', effort: 'low', mode: 'swarm', web: true, skills: false, scope: { kind: 'section', id: 'security' }, targets: [{ kind: 'section', id: 'data' }] });
   assert.equal(settingsOf({ provider: 'claude', skills: true }).skills, true, 'Claude Code skills only when asked for');
   assert.equal(settingsOf({ provider: 'codex', skills: true }).skills, false, 'only Claude Code offers skills');
   assert.equal(settingsOf({ provider: 'claude' }).web, false, 'web research is off unless asked for');
@@ -168,4 +168,79 @@ test('stopping a run keeps its partial answer; runs share the one-job slot; inva
   }
   assert.deepEqual(stored.messages.map(message => [message.role, message.text, message.status || '']), [['user', 'Long research', ''], ['assistant', 'Partial findings', 'stopped']]);
   assert.equal(release === undefined, false);
+});
+
+test('swarm: one independent agent per part, at most three at a time; one stopped and one failed agent keep the others; a summary without an extra model call', async t => {
+  const prompts = [];
+  let active = 0, peak = 0;
+  const researchRunner = async call => {
+    prompts.push(call);
+    active++; peak = Math.max(peak, active);
+    try {
+      call.onEvent({ type: 'delta', text: 'Working' });
+      if (call.prompt.includes('[section security]') && call.prompt.includes('## Focus: this section\n[section security]')) {
+        await new Promise((resolve, reject) => call.signal.addEventListener('abort', () => reject(Object.assign(new Error('stopped'), { code: 'ABORTED', partial: 'Partial security notes' })), { once: true }));
+      }
+      await new Promise(resolve => setTimeout(resolve, 80));
+      if (call.prompt.includes('## Focus: this section\n[section testing]')) throw Object.assign(new Error('limit'), { code: 'RATE_LIMITED' });
+      return { text: `Findings for ${call.prompt.match(/## Focus: this section\n\[section (\w+)\]/)[1]}` };
+    } finally { active--; }
+  };
+  const app = await startTestServer(t, { port: 0, executor: null, researchRunner });
+  const { token } = (await api(app, '/api/session')).data;
+  const project = (await api(app, '/api/origin/projects', { method: 'POST', token, body: { name: 'Shop' } })).data.project;
+  const targets = ['architecture', 'security', 'testing', 'deployment', 'data'].map(id => ({ kind: 'section', id }));
+  const settings = { provider: 'codex', mode: 'swarm', targets };
+  const chat = (await api(app, `/api/origin/research/${project.id}/chats`, { method: 'POST', token, body: { settings } })).data.chat.id;
+  const result = await run(app, token, project.id, chat, { text: 'Find gaps', settings }, { onEvent: event => {
+    if (event.type === 'agent' && event.status === 'running' && event.agent === 'a2') setTimeout(() => void fetch(`${app.url}/api/origin/research/${project.id}/chats/${chat}/agents/a2/stop`, { method: 'POST', headers: { 'X-STE-Token': token } }), 30);
+  } });
+  assert.equal(peak, 3, 'three agents at the same time, the rest wait');
+  assert.equal(prompts.length, 5, 'one model call per agent and none to combine');
+  for (const [index, id] of targets.map(target => target.id).entries()) {
+    const own = prompts.find(call => call.prompt.includes(`## Focus: this section\n[section ${id}]`));
+    assert.ok(own, id);
+    assert.match(own.prompt, /# Mode: swarm research[\s\S]*# What the person wants to find out\nFind gaps/);
+    assert.ok(!own.prompt.includes('Findings for'), `agent ${index + 1} never sees another agent’s results`);
+    assert.equal(own.persist, false, 'swarm agents leave no CLI session behind');
+  }
+  const start = result.events.find(event => event.type === 'start');
+  assert.deepEqual(start.agents.map(agent => [agent.id, agent.status]), [['a1', 'queued'], ['a2', 'queued'], ['a3', 'queued'], ['a4', 'queued'], ['a5', 'queued']]);
+  const finals = result.events.filter(event => event.type === 'agent' && event.status !== 'running').map(event => [event.agent, event.status]);
+  assert.deepEqual(Object.fromEntries(finals), { a1: 'done', a2: 'stopped', a3: 'failed', a4: 'done', a5: 'done' });
+  const chatAfter = result.events.at(-1).chat;
+  const agentMessages = chatAfter.messages.filter(message => message.role === 'agent');
+  assert.equal(agentMessages.length, 5);
+  assert.equal(agentMessages.find(message => message.agent.id === 'a2').text, 'Partial security notes');
+  assert.equal(agentMessages.find(message => message.agent.id === 'a3').error.code, 'RATE_LIMITED');
+  const summary = chatAfter.messages.at(-1);
+  assert.equal(summary.summary, true);
+  assert.match(summary.text, /3 of 5 agents finished\.[\s\S]*✓ \*\*Architecture\*\*: finished/);
+  assert.match(summary.text, /■ \*\*Security\*\*: stopped[\s\S]*✗ \*\*Testing\*\*: failed \(The provider is temporarily limiting/);
+  assert.equal((await api(app, `/api/origin/research/${project.id}/chats/${chat}/agents/a1/stop`, { method: 'POST', token })).status, 409, 'nothing to stop after the run');
+});
+
+test('Decision Lab and Blueprint Audit use their own instructions; a mode switch in a resumed session says so; swarm parts are validated', async t => {
+  const prompts = [];
+  const researchRunner = async call => { prompts.push(call.prompt); return { text: 'Done.', session: call.session?.id || 'thread-1' }; };
+  const app = await startTestServer(t, { port: 0, executor: null, researchRunner });
+  const { token } = (await api(app, '/api/session')).data;
+  const project = (await api(app, '/api/origin/projects', { method: 'POST', token, body: { name: 'Shop' } })).data.project;
+  const create = async settings => (await api(app, `/api/origin/research/${project.id}/chats`, { method: 'POST', token, body: { settings } })).data.chat.id;
+  const decision = { provider: 'claude', mode: 'decision', scope: { kind: 'section', id: 'technology' } };
+  const lab = await create(decision);
+  await run(app, token, project.id, lab, { text: 'PostgreSQL vs MongoDB', settings: decision });
+  assert.match(prompts[0], /# Mode: Decision Lab[\s\S]*suitability for this project, complexity, performance, security, maturity, maintenance, licensing, cost[\s\S]*Do not change a requirement[\s\S]*# Question\nPostgreSQL vs MongoDB/);
+  // The same CLI session continues in another mode: the follow-up carries the new mode's instructions.
+  await run(app, token, project.id, lab, { text: '', settings: { ...decision, mode: 'audit' } });
+  assert.match(prompts[1], /^# Mode: Blueprint Audit[\s\S]*# Request\nAudit this part of the blueprint\.$/);
+  // Origin's own checks start once the project has content.
+  const saved = (await api(app, `/api/origin/projects/${project.id}`, { token })).data;
+  await api(app, `/api/origin/projects/${project.id}`, { method: 'PUT', token, body: { expectedRevision: saved.revision, blueprint: { ...saved.blueprint, idea: 'An online shop' } } });
+  const audit = await create({ provider: 'codex', mode: 'audit' });
+  await run(app, token, project.id, audit, { text: '', settings: { provider: 'codex', mode: 'audit' } });
+  assert.match(prompts[2], /## Open points found by Origin’s checks[\s\S]*# Mode: Blueprint Audit[\s\S]*missing building blocks, incompatible technologies/);
+  for (const targets of [[], Array.from({ length: 9 }, (_, i) => ({ kind: 'section', id: `s${i}` })), [{ kind: 'section', id: 'data' }, { kind: 'section', id: 'data' }]]) {
+    assert.equal((await run(app, token, project.id, audit, { text: '', settings: { provider: 'codex', mode: 'swarm', targets } })).status, 400, JSON.stringify(targets).slice(0, 60));
+  }
 });

@@ -42,7 +42,7 @@ window.PromptboardOriginResearch = (() => {
     // Saved per browser: the CLI choice and the mode. Web search is chosen per chat and starts off.
     const stored = (() => { try { return JSON.parse(pref(SETTINGS_KEY, '{}')) || {}; } catch { return {}; } })();
     const settings = { provider: PROVIDERS[stored.provider] ? stored.provider : '', model: typeof stored.model === 'string' ? stored.model : '', effort: typeof stored.effort === 'string' ? stored.effort : '',
-      mode: MODES.some(([id]) => id === stored.mode) ? stored.mode : 'chat', web: false, skills: stored.skills === true, scope: { kind: 'project' } };
+      mode: MODES.some(([id]) => id === stored.mode) ? stored.mode : 'chat', web: false, skills: stored.skills === true, scope: { kind: 'project' }, targets: [] };
     let projectId = null, isOpen = false, minimized = false, maximized = false, panel = 'chat', providers = null, models = new Map();
     let chats = null, chatsQuery = '', chat = null, error = '', confirmDelete = null;
     // The run in progress: its stop controller and the live text of each agent, kept across re-renders.
@@ -214,10 +214,27 @@ window.PromptboardOriginResearch = (() => {
         if (!groups.has(option.group)) { const group = el('optgroup'); group.label = option.group; groups.set(option.group, group); scope.append(group); }
         groups.get(option.group).append(node);
       }
-      scope.value = scopeKey(settings.scope);
-      if (scope.selectedIndex < 0) { settings.scope = { kind: 'project' }; scope.value = scopeKey(settings.scope); }
-      scope.addEventListener('change', () => { settings.scope = JSON.parse(scope.value); });
-      box.append(modes, scope, sourceChips());
+      if (settings.mode === 'swarm') {
+        // Swarm: the picker adds parts; each part gets its own independent agent.
+        const placeholder = el('option', '', settings.targets.length >= 8 ? 'Eight parts at most' : 'Add a part for an agent…'); placeholder.value = ''; scope.prepend(placeholder); scope.value = '';
+        scope.setAttribute('aria-label', 'Add a part to research');
+        scope.disabled = settings.targets.length >= 8;
+        scope.addEventListener('change', () => { const value = JSON.parse(scope.value); if (!settings.targets.some(target => scopeKey(target) === scopeKey(value))) settings.targets.push(value); render(); drawer.querySelector('#origin-research-scope')?.focus(); });
+        const labels = new Map(scopeOptions().map(option => [scopeKey(option.value), option.label]));
+        const parts = el('div', 'origin-research-sources origin-research-targets'); parts.setAttribute('aria-label', 'Parts the swarm researches');
+        for (const target of settings.targets) {
+          const chip = el('span', 'origin-research-chip'), name = labels.get(scopeKey(target)) || 'Removed part';
+          const remove = button('×', () => { settings.targets = settings.targets.filter(item => scopeKey(item) !== scopeKey(target)); render(); }, 'origin-research-chip-remove', `Remove ${name}`); remove.setAttribute('aria-label', `Remove ${name}`);
+          chip.append(el('span', 'origin-research-chip-toggle', name), remove); parts.append(chip);
+        }
+        if (!settings.targets.length) parts.append(el('span', 'origin-research-hint', 'No parts yet. Each part gets one agent; three work at the same time.'));
+        box.append(modes, scope, parts, sourceChips());
+      } else {
+        scope.value = scopeKey(settings.scope);
+        if (scope.selectedIndex < 0) { settings.scope = { kind: 'project' }; scope.value = scopeKey(settings.scope); }
+        scope.addEventListener('change', () => { settings.scope = JSON.parse(scope.value); });
+        box.append(modes, scope, sourceChips());
+      }
       return box;
     }
     /** Attached sources as small chips: a click turns one on or off, × removes it. */
@@ -252,7 +269,8 @@ window.PromptboardOriginResearch = (() => {
     }
     function messageView(message) {
       const item = el('article', `origin-research-message is-${message.role}`); item.dataset.id = message.id;
-      if (message.agent?.label) item.append(el('p', 'origin-research-agent', message.agent.label));
+      if (message.agent?.label) item.append(el('p', 'origin-research-agent', `Agent · ${message.agent.label}`));
+      if (message.summary) item.classList.add('is-summary');
       if (message.role === 'user') item.append(el('p', 'origin-research-text', message.text));
       else item.append(window.PromptboardMarkdown.render(message.text || ''));
       if (message.citations?.length) {
@@ -273,7 +291,13 @@ window.PromptboardOriginResearch = (() => {
     /** A reply while the CLI writes it: plain text that grows, and the latest activity (search, fetch, tool). */
     function liveView(agent) {
       const item = el('article', 'origin-research-message is-assistant is-live'); item.dataset.agent = agent.id;
-      if (agent.label) item.append(el('p', 'origin-research-agent', agent.label));
+      if (agent.label) {
+        const head = el('div', 'origin-research-agent-head'); head.append(el('p', 'origin-research-agent', agent.label));
+        if (['queued', 'running'].includes(agent.status) && running?.agents.size > 1) {
+          const stop = button('Stop', () => void stopAgent(agent), 'origin-link origin-research-agent-stop', `Stop the agent for ${agent.label}`); stop.dataset.agent = agent.id; head.append(stop);
+        }
+        item.append(head);
+      }
       const text = el('p', 'origin-research-text'); text.append(agent.textNode = document.createTextNode(agent.text));
       const activity = el('p', 'origin-research-activity'); activity.setAttribute('aria-live', 'off');
       agent.activityNode = activity; renderActivity(agent);
@@ -284,7 +308,8 @@ window.PromptboardOriginResearch = (() => {
       if (!agent.activityNode) return;
       const labels = { search: 'Searching the web', fetch: 'Reading', tool: 'Using', skill: 'Using skill', note: '' };
       const dots = el('span', 'origin-research-dots'); dots.append(el('span'), el('span'), el('span'));
-      const words = agent.status === 'running' ? (agent.activity ? `${labels[agent.activity.kind] ?? ''}${labels[agent.activity.kind] ? ': ' : ''}${agent.activity.label}` : agent.text ? '' : 'Thinking') : agent.status === 'failed' ? 'Failed' : '';
+      const words = agent.status === 'running' ? (agent.activity ? `${labels[agent.activity.kind] ?? ''}${labels[agent.activity.kind] ? ': ' : ''}${agent.activity.label}` : agent.text ? '' : 'Thinking')
+        : { queued: 'Waiting for a free agent slot', failed: `Failed${agent.error ? `: ${agent.error}` : ''}`, stopped: 'Stopped', done: 'Finished' }[agent.status] || '';
       agent.activityNode.replaceChildren(...(agent.status === 'running' ? [dots] : []), document.createTextNode(words));
     }
     function settingsView() {
@@ -476,7 +501,7 @@ window.PromptboardOriginResearch = (() => {
     const scrollToEnd = () => { const log = drawer.querySelector('#origin-research-log'); if (log) log.scrollTop = log.scrollHeight; };
 
     // ---- Sending: one streamed run at a time ----
-    const runSettings = () => ({ provider: settings.provider, model: settings.model, effort: settings.effort, mode: settings.mode, web: settings.web, skills: settings.skills, scope: settings.scope });
+    const runSettings = () => ({ provider: settings.provider, model: settings.model, effort: settings.effort, mode: settings.mode, web: settings.web, skills: settings.skills, scope: settings.scope, ...(settings.mode === 'swarm' ? { targets: settings.targets } : {}) });
     /** The current chat, created on first use so sources can be attached before the first question. */
     async function ensureChat() {
       if (chat) return chat;
@@ -491,6 +516,7 @@ window.PromptboardOriginResearch = (() => {
       const question = value.trim();
       if (!settings.provider) { error = 'Choose Claude Code or Codex first.'; render(); return; }
       if (!question && settings.mode === 'chat') return;
+      if (settings.mode === 'swarm' && !settings.targets.length) { error = 'Add at least one part for the swarm to research.'; render(); return; }
       const id = projectId;
       error = '';
       if (!(await ensureChat()) || id !== projectId) return;
@@ -527,12 +553,17 @@ window.PromptboardOriginResearch = (() => {
       renderButton();
       if (run.done && !isOpen) app.announce('Research finished.');
     }
+    async function stopAgent(agent) {
+      if (!running) return;
+      const { response, data } = await api(`/chats/${running.chatId}/agents/${agent.id}/stop`, { method: 'POST' });
+      if (!response.ok && response.status !== 409) { error = data.error || 'The agent could not be stopped.'; render(); }
+    }
     /** One streamed event. Only the live text node changes for text; whole redraws happen on new messages. */
     function receive(run, event) {
       const visible = run.projectId === projectId && chat?.id === run.chatId && isOpen && panel === 'chat';
       const stick = visible && nearEnd();
       if (event.type === 'start') {
-        for (const agent of event.agents || []) run.agents.set(agent.id, { id: agent.id, label: agent.label || '', text: '', status: 'running', activity: null });
+        for (const agent of event.agents || []) run.agents.set(agent.id, { id: agent.id, label: agent.label || '', text: '', status: agent.status || 'running', activity: null });
         if (visible) { render(); followEnd(stick); }
       } else if (event.type === 'delta' || event.type === 'activity') {
         const agent = run.agents.get(event.agent);
@@ -542,7 +573,7 @@ window.PromptboardOriginResearch = (() => {
         followEnd(stick);
       } else if (event.type === 'agent') {
         const agent = run.agents.get(event.agent);
-        if (agent) { agent.status = event.status; if (visible) renderActivity(agent); }
+        if (agent) { const was = agent.status; agent.status = event.status; agent.error = event.error?.message || ''; if (visible) { if ((was === 'queued') !== (agent.status === 'queued') || !['queued', 'running'].includes(agent.status)) render(); else renderActivity(agent); } }
       } else if (event.type === 'message') {
         if (chat?.id === run.chatId) chat = { ...chat, messages: [...chat.messages.filter(message => message.id !== event.message.id), event.message] };
         if (event.message.role !== 'user') { const agent = run.agents.get(event.message.agent?.id || 'main'); if (agent) run.agents.delete(agent.id); }

@@ -22,16 +22,32 @@ const contextBlock = context => `# Blueprint context (data)\nThis is the saved b
 /** Earlier turns of this chat, for a CLI session that cannot be resumed. Oldest first, bounded by the caller. */
 const historyBlock = history => history.length ? `# Earlier conversation (data)\n${history.map(entry => `${entry.role === 'user' ? 'Person' : 'Assistant'}: ${entry.text}`).join('\n\n')}` : '';
 
+// What each mode asks for. All modes work on the person's own blueprint, never on a template.
+const MODE = {
+  chat: scope => `# Mode: guided research\nAnswer the question about ${scope}. Be specific to this project. Give a short answer first, then the details. Use Markdown headings and lists.`,
+  decision: scope => `# Mode: Decision Lab\nCompare the two or three options the person names for ${scope}. If they name none, choose the two or three strongest options for this project and say why you chose them.
+Compare every option against the project's real constraints and requirements. Use one Markdown table with these rows: suitability for this project, complexity, performance, security, maturity, maintenance, licensing, cost.
+Then give one recommendation and the reasons for it. Keep the other options and say when each one would be the better choice. List the tradeoffs that stay open. Do not change a requirement to make an option fit.`,
+  audit: scope => `# Mode: Blueprint Audit\nReview ${scope} for design gaps. Look for: missing building blocks, incompatible technologies, weak or untested assumptions, security gaps, unresolved dependencies, architectural conflicts and requirements without a way to test them.
+Use Origin's own open points as a start, but do not only repeat them. For each finding give: the affected part with its ID in brackets (for example [section security] or [components c1]), what is wrong, why it matters for this project, and a precise improvement. Order the findings from most to least important. Say clearly when you find no problem in an area.`,
+  swarm: scope => `# Mode: swarm research (you are one of several independent agents)\nResearch only ${scope}. Other agents research other parts at the same time; do not research their parts and do not guess their results.
+Find what is missing or weak in this part, research good options for it, and give concrete, project-specific findings. Keep your answer focused and short enough to read in two minutes.`,
+};
+
 /**
  * One Chat (guided research) turn. A resumed CLI session already has the rules and the context, so a follow-up sends
  * only the question, plus the context again when the blueprint or the scope changed.
  */
-export function chatPrompt({ question, context = null, history = [], web = false, followUp = false, scopeLabel = '', sources = '' }) {
+export function chatPrompt({ question, context = null, history = [], web = false, followUp = false, scopeLabel = '', sources = '', mode = 'chat', modeChanged = false }) {
+  const ask = question ? `# Question\n${question}` : `# Request\n${mode === 'audit' ? 'Audit this part of the blueprint.' : 'Research this part of the blueprint.'}`;
   if (followUp) {
     return [context ? `The blueprint changed or a different part is selected${scopeLabel ? ` (${scopeLabel})` : ''}. Use this context from now on.\n\n${contextBlock(context)}` : '',
-      sources, `# Question\n${question}`].filter(Boolean).join('\n\n');
+      modeChanged ? MODE[mode](scopeLabel || 'the project') : '', sources, ask].filter(Boolean).join('\n\n');
   }
-  return [RULES, `# Web\n${web ? WEB.on : WEB.off}`, context ? contextBlock(context) : '', sources, historyBlock(history),
-    `# Mode: guided research\nAnswer the question about ${scopeLabel || 'the project'}. Be specific to this project. Give a short answer first, then the details. Use Markdown headings and lists.`,
-    `# Question\n${question}`].filter(Boolean).join('\n\n');
+  return [RULES, `# Web\n${web ? WEB.on : WEB.off}`, context ? contextBlock(context) : '', sources, historyBlock(history), MODE[mode](scopeLabel || 'the project'), ask].filter(Boolean).join('\n\n');
+}
+
+/** One independent swarm agent: its own part, the project's constraints, its own sources. No other agent's results. */
+export function swarmPrompt({ request = '', context, web = false, targetLabel, sources = '' }) {
+  return [RULES, `# Web\n${web ? WEB.on : WEB.off}`, contextBlock(context), sources, MODE.swarm(targetLabel), request ? `# What the person wants to find out\n${request}` : ''].filter(Boolean).join('\n\n');
 }

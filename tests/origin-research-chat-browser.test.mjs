@@ -114,3 +114,34 @@ test('Research sources: attach an excerpt, turn it off and on, remove it; answer
   await ev(`const p = document.querySelector('#origin-research-provider'); p.value = 'codex'; p.dispatchEvent(new Event('change', { bubbles: true }));`);
   await wait(`!document.querySelector('#origin-research-skills')`, 'no skills option for Codex');
 });
+
+test('Swarm in the panel: pick parts, watch one live agent per part, stop one, read the summary', { skip: !chrome, timeout: 180000 }, async t => {
+  const researchRunner = async call => {
+    const part = call.prompt.match(/## Focus: this (?:section|record)\n\[(?:section|components) (\w+)\]/)?.[1] || 'project';
+    call.onEvent({ type: 'delta', text: `Researching ${part}` });
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(resolve, part === 'security' ? 60000 : 1200);
+      call.signal.addEventListener('abort', () => { clearTimeout(timer); reject(Object.assign(new Error('stopped'), { code: 'ABORTED', partial: `Researching ${part}` })); }, { once: true });
+    });
+    return { text: `Findings for ${part}` };
+  };
+  const { ev, wait } = await researchPage(t, { server: { researchRunner } });
+  const click = selector => ev(`document.querySelector(${J(selector)}).click();`);
+  const pick = async label => ev(`const s = document.querySelector('#origin-research-scope'); s.value = [...s.options].find(o => o.textContent === ${J(label)}).value; s.dispatchEvent(new Event('change', { bubbles: true }));`);
+  await click('#origin-research-open');
+  await wait(`document.querySelector('#origin-research-mode-swarm')`, 'panel');
+  await click('#origin-research-mode-swarm');
+  await wait(`document.querySelector('#origin-research-scope').getAttribute('aria-label') === 'Add a part to research'`, 'swarm picker');
+  for (const label of ['Operate › Security', 'Operate › Testing', 'Checkout API']) await pick(label);
+  await wait(`document.querySelectorAll('.origin-research-targets .origin-research-chip').length === 3`, 'three parts');
+  await ev(`document.querySelector('#origin-research-input').closest('form').requestSubmit();`);
+  await wait(`document.querySelectorAll('.is-live').length === 3`, 'one live bubble per agent');
+  await wait(`[...document.querySelectorAll('.is-live')].some(n => n.textContent.includes('Researching security'))`, 'security running');
+  await ev(`[...document.querySelectorAll('.is-live')].find(n => n.textContent.includes('Researching security')).querySelector('.origin-research-agent-stop').click();`);
+  await wait(`document.querySelector('.origin-research-message.is-summary') && !document.querySelector('.is-live')`, 'summary after all agents');
+  const summary = await ev(`return document.querySelector('.origin-research-message.is-summary').textContent;`);
+  assert.match(summary, /2 of 3 agents finished/);
+  assert.match(summary, /Security: stopped/);
+  assert.deepEqual(await ev(`return [...document.querySelectorAll('.origin-research-message.is-agent .origin-research-agent')].map(n => n.textContent).sort();`),
+    ['Agent · Security', 'Agent · Testing', 'Agent · Checkout API'].sort());
+});

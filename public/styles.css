@@ -1971,6 +1971,11 @@ button.origin-context-badge { cursor: pointer; }
 .origin-research-message.is-user { justify-self: end; max-width: 86%; padding: 8px 13px; border-radius: 16px 16px 4px 16px; background: var(--surface-3); color: var(--ink); }
 .origin-research-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .origin-research-agent { margin: 0 0 4px; color: var(--sash); font-size: 11px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; }
+.origin-research-agent-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.origin-research-agent-stop { font-size: 11.5px; }
+.origin-research-message.is-agent { padding: 10px 12px; border: 1px solid var(--divider); border-radius: 12px; background: var(--og-glass-2); }
+.origin-research-message.is-summary { padding: 10px 12px; border-left: 2px solid var(--sash); background: color-mix(in srgb, var(--sash) 6%, transparent); border-radius: 0 10px 10px 0; }
+.origin-research-targets .origin-research-chip-toggle { cursor: default; text-decoration: none; }
 .origin-research-meta { display: block; margin-top: 4px; color: var(--subtle); font-size: 11px; }
 .origin-research-activity { display: flex; align-items: center; gap: 8px; min-height: 18px; margin: 6px 0 0; overflow: hidden; color: var(--subtle); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .origin-research-activity:empty { display: none; }
