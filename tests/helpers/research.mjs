@@ -27,8 +27,6 @@ export async function researchPage(t, { runner = async () => { throw new Error('
   const browser = await launch({ width, height }); assert.ok(browser); t.after(() => browser.close());
   // CI runners can give headless Chrome a smaller window than requested; width matters for the panel, so set it.
   await browser.resize(width, height);
-  // PB_CPU_THROTTLE=6 slows the page like a busy CI runner, to find timing assumptions locally.
-  if (Number(process.env.PB_CPU_THROTTLE) > 1) await browser.send('Emulation.setCPUThrottlingRate', { rate: Number(process.env.PB_CPU_THROTTLE) });
   await browser.send('Page.addScriptToEvaluateOnNewDocument', { source: `if (!sessionStorage.getItem('seeded')) { localStorage.setItem('promptboard.origin.project', ${J(created.project.id)}); sessionStorage.setItem('seeded', '1'); }` });
   await browser.goto(`${app.url}/#/origin`);
   const ev = code => browser.eval(code), wait = (expression, label, ms = 15000) => browser.until(expression, label, ms);

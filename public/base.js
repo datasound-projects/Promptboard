@@ -162,11 +162,11 @@ window.PromptboardBase = (() => {
       try { return await job; } finally { if (loading === job) loading = null; }
     }
     async function show() {
-      error(''); if (state.revision < 0) resultLoading = true; renderList();
+      // Opening the page clears the last message first, so one set while it loads (Saved, Applied …) stays.
+      error(''); status(''); if (state.revision < 0) resultLoading = true; renderList();
       window.requestAnimationFrame?.(placeCategories);
       try {
         if (state.revision < 0) { await context.ensureBoard?.(); await load(); }
-        status('');
       } catch (failure) {
         // load() owns its generation-guarded error state. Only an initial board-load
         // failure needs a local error; an obsolete show() failure must not replace it.
