@@ -163,3 +163,35 @@ test('a commit made by the testing agent is reviewed and tested again', { skip, 
   assert.deepEqual([outcome.status, outcome.code, outcome.next], ['changes_required', 'TESTER_COMMITTED', 'code_review']);
   await assert.rejects(w.go(card.id, 'merge'), { code: 'STAGE_NOT_READY' });
 });
+
+test('on a column pipeline the merge route merges only from the Merge column', async t => {
+  const { startTestServer } = await import('./helpers/test-server.mjs');
+  const app = await startTestServer(t, { port: 0, executor: null });
+  const token = (await (await fetch(`${app.url}/api/session`)).json()).token;
+  const project = await app.board.createProject({ name: 'Merge route', workflowMode: 'pipeline' });
+  const card = await app.board.createTask({ projectId: project.id, title: 'Not ready', prompt: 'x' });
+  const response = await fetch(`${app.url}/api/tasks/${card.id}/merge`, { method: 'POST', headers: { 'X-STE-Token': token, 'Content-Type': 'application/json' }, body: JSON.stringify({ confirm: true, taskCommit: 'a'.repeat(40), targetCommit: 'b'.repeat(40) }) });
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).code, 'STAGE_MISMATCH');
+});
+
+test('Autopilot\'s start check names custom columns whose instruction can never reach the agent', async () => {
+  const { pipelineAutopilotGaps } = await import('../src/board.mjs');
+  const { normalizePipelineConfig } = await import('../src/pipeline-config.mjs');
+  const message = (text, enabled = true) => ({ onEnter: [{ name: 'i', type: 'send_message', mode: 'deferred', enabled, message: text }] });
+  const column = (id, automations = {}, strategy = {}) => ({ id, name: id, kind: 'custom', strategy, automations });
+  const pipeline = normalizePipelineConfig({ version: 1, columns: [{ id: 'todo', name: 'To Do', role: 'todo', strategy: {}, automations: {} }, column('first'),
+    column('slash', message('/compact')), column('pr', message('{{prUrl}}')), column('off', message('Do the thing', false)), column('ok', message('Review {{title}} for typos.')),
+    column('plan', message('Plan the change.'), { planExitTargetId: 'afterplan' }), column('afterplan'), { id: 'done', name: 'Done', role: 'done', strategy: {}, automations: {} }] });
+  const project = { workflowMode: 'pipeline', pipeline }, route = ['first', 'slash', 'pr', 'off', 'ok', 'plan', 'afterplan'];
+  assert.deepEqual(pipelineAutopilotGaps(project, route, [{}], () => 'claude'), ['“slash”', '“pr”', '“off”'], 'a Claude plan approval moves the card on');
+  assert.deepEqual(pipelineAutopilotGaps(project, route, [{}], () => 'codex'), ['“slash”', '“pr”', '“off”', '“afterplan”'], 'Codex has no native plan approval to move it');
+});
+
+test('a backup whose prerequisites form a loop is refused at import', async () => {
+  const { parseBackup } = await import('../src/board.mjs');
+  const card = (id, number, dependsOn) => ({ id, number, title: id, prompt: 'x', labelIds: [], column: 'todo', dependsOn, createdAt: 1, updatedAt: 1 });
+  const backup = tasks => ({ kind: 'promptboard-backup', version: 10, base: { version: 1, resources: [] }, projects: [{ id: 'p1', name: 'P', nextTaskNumber: 4, labels: [], tasks }] });
+  assert.throws(() => parseBackup(backup([card('a', 1, ['c']), card('b', 2, ['a']), card('c', 3, ['b'])])), error => error.code === 'INVALID_BACKUP' && /prerequisites form a loop/.test(error.message));
+  assert.deepEqual(parseBackup(backup([card('a', 1, []), card('b', 2, ['a']), card('c', 3, ['a', 'b'])])).projects[0].tasks.map(task => task.dependsOn), [[], ['a'], ['a', 'b']]);
+});

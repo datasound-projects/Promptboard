@@ -176,6 +176,17 @@ export function originSourceOf(value) {
 // Export keeps going past a malformed reference saved by an older version; it just leaves it out.
 const validOrigin = value => { try { return value !== undefined && Boolean(originSourceOf(value)); } catch { return false; } };
 /** Prerequisite cards: other cards of the same project that must be done before this one starts. */
+/** The first prerequisite loop reachable from `startId` (card IDs, ending where it began), or null. */
+function prerequisiteLoop(cards, startId) {
+  const path = [], explored = new Set(), visit = id => {
+    if (path.includes(id)) return [...path.slice(path.indexOf(id)), id];
+    if (explored.has(id)) return null;
+    path.push(id);
+    for (const next of cards.get(id)?.dependsOn || []) { const loop = visit(next); if (loop) return loop; }
+    path.pop(); explored.add(id); return null;
+  };
+  return visit(startId);
+}
 function prerequisiteIds(value, ids, selfId) {
   if (!Array.isArray(value) || value.length > 50) throw new BoardError('A card can have at most 50 prerequisites.', 'INVALID_INPUT');
   const list = [...new Set(value)];
@@ -197,13 +208,17 @@ export function pipelineAutopilotRoute(project, route) {
   return clean;
 }
 /** Later route columns without an instruction: an enabled deferred "on enter" message, or the plan route that leads there (with each card's profile). */
-export function pipelineAutopilotGaps(project, route, tasks = []) {
+export function pipelineAutopilotGaps(project, route, tasks = [], providerOf = () => null) {
   const columns = new Map(project.pipeline.columns.map(column => [column.id, column]));
+  // A message reaches the agent only as text: never a slash command, and never a template that can render empty.
+  const sendable = text => !text.startsWith('/') && Boolean(text.replace(/\{\{[A-Za-z0-9_]+\}\}/g, '').trim() || /\{\{(title|task_xml)\}\}/.test(text));
   return route.slice(1).filter((id, index) => {
     // Typed columns start their own session with stage instructions; they need no "on enter" message.
     if (columnStage(project, id)) return false;
-    const instructed = columns.get(id).automations.onEnter.some(row => row.enabled && row.type === 'send_message' && row.mode === 'deferred');
-    return !instructed && (tasks.length ? tasks : [{}]).some(task => resolvePipelineStrategy(project.pipeline, route[index], task).planExitTargetId !== id);
+    const instructed = columns.get(id).automations.onEnter.some(row => row.enabled && row.type === 'send_message' && row.mode === 'deferred' && sendable(String(row.message || '').trim()));
+    // An approved plan moves the card here only where native plan approval is observed (Claude Code, Gemini CLI).
+    return !instructed && (tasks.length ? tasks : [{}]).some(task => resolvePipelineStrategy(project.pipeline, route[index], task).planExitTargetId !== id
+      || !['claude', 'gemini', null].includes(providerOf(route[index], task)));
   }).map(id => `“${columns.get(id).name}”`);
 }
 
@@ -297,6 +312,8 @@ function parseBackupData(data) {
     for (const task of project.tasks) if (task.dependsOn !== undefined) {
       try { task.dependsOn = prerequisiteIds(task.dependsOn, ids, task.id); } catch { throw new BoardError(`${project.name || 'A project'}: a card refers to a missing prerequisite.`, 'INVALID_BACKUP'); }
     }
+    const cards = new Map(project.tasks.map(task => [task.id, task]));
+    if (project.tasks.some(task => prerequisiteLoop(cards, task.id))) throw new BoardError(`${project.name || 'A project'}: its cards' prerequisites form a loop.`, 'INVALID_BACKUP');
   }
   for (const project of projects) {
     try { validateTaskNumbers(project, { required: data.version >= 6 }); assignTaskNumbers(project); }
@@ -1035,14 +1052,15 @@ export class Board {
 
   /** Start (confirmed), pause, resume, stop, or skip the current card. The engine does the work. */
   async controlAutopilot(id, { action, confirm }) {
-    const project = this.#project(await this.state(), id);
+    const state = await this.state(), project = this.#project(state, id);
     if (project.workflowMode === 'pipeline' && (action === 'start' || action === 'resume')) {
       if (action === 'start' && confirm !== true) throw new BoardError('Confirm what Autopilot will do before you start it.', 'CONFIRMATION_REQUIRED');
       if (!project.repository) throw new BoardError('Connect a code folder first, in Project settings.', 'REPOSITORY_REQUIRED', 409);
       if (!this.executor) throw new BoardError('Agent execution is not available.', 'EXECUTION_UNAVAILABLE', 503);
       if (action === 'start' && !project.autopilot?.queue?.length) throw new BoardError('Choose at least one To Do card for the Autopilot queue.', 'AUTOPILOT_EMPTY');
       const queued = (project.autopilot?.queue || []).map(taskId => project.tasks.find(task => task.id === taskId)).filter(Boolean);
-      const missing = pipelineAutopilotGaps(project, pipelineAutopilotRoute(project, project.autopilot?.route), queued);
+      const providerOf = (column, task) => effectiveWorkflow(project, state.settings.defaultAgent, state, task?.id ? task : null)[column]?.provider || 'claude';
+      const missing = pipelineAutopilotGaps(project, pipelineAutopilotRoute(project, project.autopilot?.route), queued, providerOf);
       if (missing.length) throw conflict(`Give ${missing.join(', ')} an instruction (an “on enter” agent message) so its agent knows what to do there.`, 'AUTOPILOT_INSTRUCTION_MISSING');
     }
     if (project.workflowMode !== 'pipeline' && action === 'start') {
@@ -2055,14 +2073,7 @@ export class Board {
     if (!task.dependsOn?.length) return;
     const cards = new Map(project.tasks.map(entry => [entry.id, entry]));
     const done = id => prerequisiteMet(project, cards.get(id));
-    const path = [], explored = new Set(), visit = id => {
-      if (path.includes(id)) return [...path.slice(path.indexOf(id)), id];
-      if (explored.has(id)) return null;
-      path.push(id);
-      for (const next of cards.get(id)?.dependsOn || []) { const loop = visit(next); if (loop) return loop; }
-      path.pop(); explored.add(id); return null;
-    };
-    const loop = visit(task.id);
+    const loop = prerequisiteLoop(cards, task.id);
     if (loop) throw new BoardError(`Its prerequisites form a loop (${loop.map(id => `#${cards.get(id)?.number ?? '?'}`).join(' → ')}). Clear one prerequisite in the card's details.`, 'PREREQUISITES_CYCLE', 409);
     const pending = task.dependsOn.filter(id => !done(id));
     if (!pending.length) return;

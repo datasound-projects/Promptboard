@@ -12,7 +12,7 @@ import { COMPOSE_PROMPT_CHARS } from './compose-limits.mjs';
 import { buildSplitPrompt, parseSplit, splitCoverage } from './split.mjs';
 import { detectProviders, FAILURE_MESSAGES, killOwnedProcesses, makeTempDir, ProviderError, removeTempDir, resolveExecutable, runProvider, validateEffort } from './providers.mjs';
 import { AUTH_CAPABILITIES, logout, readAuthStatus, startLogin } from './auth.mjs';
-import { Board, BoardError } from './board.mjs';
+import { Board, BoardError, columnStage } from './board.mjs';
 import { GitError } from './git.mjs';
 import { defaultDataDir, StoreError } from './store.mjs';
 import { loadPty, Supervisor } from './supervisor.mjs';
@@ -252,7 +252,13 @@ async function boardRoute(board, req, res, pathname, searchParams, origin) {
     if (method === 'POST' && action === 'commit') return view({ revision: await delivery.commit(id, await body()) });
     if (method === 'POST' && action === 'accept-review') { await body(); return view({ task: await delivery.acceptReview(id) }); }
     if (method === 'POST' && action === 'tests') return view({ tests: await delivery.runTests(id, await body()) });
-    if (method === 'POST' && action === 'merge') { const { confirm, taskCommit, targetCommit } = await body(); return view({ task: await delivery.merge(id, { confirm, taskCommit, targetCommit }) }); }
+    if (method === 'POST' && action === 'merge') {
+      const { confirm, taskCommit, targetCommit } = await body();
+      // On a column pipeline a card merges from its Merge column only, as the Merge button and Autopilot do.
+      const owner = (await board.state()).projects.find(project => project.tasks.some(task => task.id === id));
+      if (owner?.workflowMode === 'pipeline' && columnStage(owner, owner.tasks.find(task => task.id === id).column) !== 'merge') throw new BoardError('Move the card to Merge first.', 'STAGE_MISMATCH', 409);
+      return view({ task: await delivery.merge(id, { confirm, taskCommit, targetCommit }) });
+    }
     if (method === 'POST' && action === 'update-branch') return view({ revision: await delivery.updateBranch(id, await body()) });
     if (method === 'POST' && action === 'abort-merge') return view({ revision: await delivery.abortMerge(id, await body()) });
     if (method === 'POST' && action === 'pull-request') { const { confirm, title, body: text } = await body(); return view({ task: await delivery.openPullRequest(id, { confirm, title, body: text }) }); }
