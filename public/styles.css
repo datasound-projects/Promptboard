@@ -679,7 +679,7 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
 [data-theme="dark"] .priority-3 { color: #ffb177; }
 [data-theme="dark"] .priority-4 { color: #ff929e; }
 .kanban-card h4 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
-.kanban-card h4 .kanban-open { flex: 1; min-width: 0; }
+.kanban-card h4 .kanban-open { flex: 1 1 14ch; min-width: 0; } /* A title keeps room to read; chips wrap below it. */
 .kanban-done-preview, .kanban-done-time { margin: 6px 0 0; color: var(--subtle); font-size: 12px; }
 .kanban-done-preview { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kanban-done-all { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; padding: 9px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--muted); font-size: 13px; }
