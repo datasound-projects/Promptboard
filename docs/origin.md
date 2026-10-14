@@ -136,7 +136,7 @@ The saved blueprint is the current design; each card keeps the context it was ap
 
 ## Safety boundaries
 
-- Building, previewing and sending tasks is local and deterministic: no model call. Only **Improve with Compose**, **Suggest tasks** and Compose's own Generate call your CLI, and only when you start them, through Compose's services, limits and job slot.
+- Building, previewing and sending tasks is local and deterministic: no model call. Only **Improve with Compose**, **Suggest tasks**, Compose's own Generate and [Research](origin-research.md) call your CLI, and only when you start them, through the shared job slot (Research has its own read-only runs).
 - Handoff creates idle To Do cards through the board service only: no agent, column automation, script, webhook or worktree. Agents receive the card's saved prompt through the existing delivery; moving a card between columns does not add the context again.
 - Every route checks the session token, validated IDs (`[A-Za-z0-9_-]{1,100}`), revisions and size limits (4 MB request bodies, 100 tasks per request, 50 prerequisites per card, a 60,000-character context). User text is stored and shown as text.
 - Secrets that look like keys, tokens, passwords, private keys or credentials in URLs are removed from task context; Base resources are never assigned by Origin.
@@ -147,7 +147,7 @@ AI / Agents items can reference Base resources by ID. Origin reads the Base list
 
 ## Limits
 
-- AI research is not implemented, and all issues are deterministic checks. Proposals and suggestions come only from **Improve with Compose** and **Suggest tasks** (Compose's services), never on their own, and Origin does not read or change project repositories for them.
+- All issues are deterministic checks. Proposals and suggestions come only from **Improve with Compose**, **Suggest tasks** and [Research](origin-research.md), never on their own, and nothing changes until you apply it. Origin does not read or change project repositories for them.
 - Origin does not fetch sources. You open a source, check it and set its verification and access date. A failed or unsafe URL is never followed by the app.
 - One blueprint per project, edited from one window at a time; a second window gets a revision conflict instead of overwriting.
 - Board backups do not include blueprints. A project deleted from Origin moves to `origin/deleted/`; deleting a Kanban project leaves its Origin project in place, marked “Kanban project removed”.

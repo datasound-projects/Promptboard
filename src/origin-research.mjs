@@ -2,7 +2,7 @@
 // writes the blueprint. Suggestions are stored with the chat and applied only by the page, after the user approves.
 import '../public/origin-model.js';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readdir, readFile, rm } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rename, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { ORIGIN_DIR, escapeId } from './origin.mjs';
 import { serial, writeAtomic } from './durable.mjs';
@@ -86,6 +86,20 @@ export class ResearchStore {
     this.queues = new Map();
   }
   #folder(originId) { return join(this.dir, escapeId(id(originId, 'project'))); }
+  /** “Delete from Origin”: running research of the project stops; its chats move to origin/deleted/, as Project Context does. */
+  async archive(originId) {
+    const own = () => [...activeRuns].filter(([key]) => key.startsWith(`${originId}/`));
+    for (const [, control] of own()) control.stopAll();
+    for (let wait = 0; own().length && wait < 100; wait++) await new Promise(resolve => setTimeout(resolve, 50)); // A stopped run saves what it produced first.
+    return this.#serial(originId, async () => {
+      const folder = this.#folder(originId);
+      try { await stat(folder); } catch { return false; }
+      const deleted = join(this.dir, '..', 'deleted');
+      await mkdir(deleted, { recursive: true, mode: 0o700 });
+      await rename(folder, join(deleted, `research-${escapeId(originId)}.deleted-${Date.now()}`));
+      return true;
+    });
+  }
   /** The empty working folder of a project's research runs. CLI sessions are tied to it, so it never changes. */
   async workspace(originId) { const path = join(this.#folder(originId), 'workspace'); await mkdir(path, { recursive: true, mode: 0o700 }); return path; }
   #file(originId, chat) { return join(this.#folder(originId), `${escapeId(chatId(chat))}.json`); }

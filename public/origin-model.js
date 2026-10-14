@@ -271,7 +271,9 @@ globalThis.PromptboardOriginModel = (() => {
       const lostLinks = lost.slice(0, 20).map(obj).filter(entry => entry.collection === 'components' && typeof entry.name === 'string').map(entry => ({ collection: 'components', name: str(entry.name, NAME) }));
       if (lostLinks.length !== lost.length) fix();
       const r = obj(v.refinement);
-      const refinement = isObject(v.refinement) ? { proposal: str(r.proposal, 100000), proposedAt: stamp(r.proposedAt), basis: str(r.basis, 100000), originalDescription: str(r.originalDescription, 100000), acceptedAt: stamp(r.acceptedAt) }
+      // `kept`: the accepted refinement a newer proposal would replace, so rejecting that proposal brings it back.
+      const accepted = value => (isObject(value) ? { proposal: str(value.proposal, 100000), proposedAt: stamp(value.proposedAt), basis: str(value.basis, 100000), originalDescription: str(value.originalDescription, 100000), acceptedAt: stamp(value.acceptedAt) } : null);
+      const refinement = isObject(v.refinement) ? { ...accepted(r), kept: accepted(r.kept)?.acceptedAt ? accepted(r.kept) : null }
         : (v.refinement === undefined || v.refinement === null ? null : (fix(), null));
       return { key: str(v.key, 20), milestoneId: one(v.milestoneId, ids.milestones), workstream: str(v.workstream, 80), title: str(v.title, NAME), description: str(v.description),
         acceptanceCriteria: str(v.acceptanceCriteria), dependsOn: refs(v.dependsOn, ids.items, v.id), requirementIds: refs(v.requirementIds, ids.requirements),
@@ -436,6 +438,9 @@ globalThis.PromptboardOriginModel = (() => {
     const tests = areas.filter(area => area.section === 'testing'), plans = areas.filter(area => area.section !== 'testing');
     push('Planned tests', bullets(tests.map(area => `${label('testing', area.area)}: ${area.title}${hasText(area.description) ? ` — ${clip(area.description, 600)}` : ''}`)));
     push('Data, AI, security, deployment and observability', bullets(plans.map(area => `${sectionLabel(area.section)} · ${label(area.section, area.area)}: ${area.title}${hasText(area.description) ? ` — ${clip(area.description, 600)}` : ''}`)));
+    // Your own questions in built-in sections are project-wide notes, like the planning answers above.
+    const own = blueprint.questions.filter(question => question.scope === 'section' && SECTIONS.some(entry => entry.id === question.sectionId) && hasText(blueprint.answers[question.id]));
+    push('Your questions', bullets(own.slice(0, 30).map(question => `${sectionLabel(question.sectionId)} · ${clip(question.text, 300)} → ${clip(blueprint.answers[question.id], 1500)}`)));
     const milestone = blueprint.milestones.find(entry => entry.id === item.milestoneId);
     if (milestone) { use('milestones', milestone); push(`Milestone: ${milestone.title || 'Untitled milestone'}`, [hasText(milestone.goal) && clip(milestone.goal, 600), lines(milestone.definitionOfDone).length && `Done when:\n${milestone.definitionOfDone.trim()}`].filter(Boolean).join('\n')); }
     // Research is reference data: risks, assumptions (as assumptions, never as requirements) and your own notes.
@@ -653,6 +658,8 @@ globalThis.PromptboardOriginModel = (() => {
       decisions: blueprint.decisions.length, plan: blueprint.items.length + blueprint.milestones.length,
     };
     for (const section of Object.keys(AREAS)) content[section] = blueprint.areas.filter(item => item.section === section).length;
+    // Your own answered questions are content of the built-in section they belong to.
+    for (const question of blueprint.questions) if (question.scope === 'section' && content[question.sectionId] !== undefined && hasText(blueprint.answers[question.id])) content[question.sectionId] = Number(content[question.sectionId]) + 1;
     const complete = {
       vision: ['problem', 'goal', 'users', 'inScope'].every(key => hasText(blueprint.vision[key])),
       requirements: blueprint.requirements.every(item => lines(item.acceptanceCriteria).length > 0), architecture: blueprint.components.every(item => hasText(item.purpose)),

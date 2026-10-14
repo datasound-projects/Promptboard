@@ -415,10 +415,12 @@ async function handoff({ origin, board, originId, input }) {
   const made = new Map((entries.length ? await board.createOriginTasks(destination.id, { originProjectId: originId, tasks: entries }) : []).map(result => [result.originTaskId, result]));
   const results = ordered.map(id => {
     const item = items.get(id), existing = cardOf(item);
-    if (existing && !built.has(id)) return { itemId: id, key: item.key, status: 'existing', taskId: existing.id, number: existing.number, title: existing.title };
+    // An existing card keeps what it was sent with (its own Origin identity), so edit checks still compare against it.
+    const sent = card => ({ snapshotId: card?.originSource?.snapshotId || '', hash: card?.originSource?.hash || '' });
+    if (existing && !built.has(id)) return { itemId: id, key: item.key, status: 'existing', taskId: existing.id, number: existing.number, title: existing.title, ...sent(existing) };
     const result = made.get(id);
     return { itemId: id, key: item.key, status: result.status, taskId: result.taskId || '', number: result.number || null, title: result.title || item.title, error: result.error || '',
-      snapshotId: result.status === 'created' ? snapshots.get(id).id : '', hash: result.status === 'created' ? snapshots.get(id).hash : '' };
+      ...(result.status === 'created' ? { snapshotId: snapshots.get(id).id, hash: snapshots.get(id).hash } : result.status === 'existing' ? sent(cards.get(result.taskId)) : { snapshotId: '', hash: '' }) };
   });
   // The Origin side records each link; a link lost by an interrupted handoff is restored from the card.
   const saved = await origin.recordHandoff(originId, results.filter(result => result.taskId).map(result => ({ itemId: result.itemId, projectId: destination.id, taskId: result.taskId, snapshotId: result.snapshotId || '', hash: result.hash || '' })));
@@ -494,7 +496,7 @@ const nameInUse = () => new OriginError('A project with this name already exists
  * the linked Kanban project through Kanban's own deletion checks. `prompts` (the saved project prompts)
  * lets a delete that keeps a board with another ID hand that board the prompts saved under this ID.
  */
-export async function originRoute({ origin, contexts, board, prompts, req, res, pathname, jsonBody, send }) {
+export async function originRoute({ origin, contexts, research, board, prompts, req, res, pathname, jsonBody, send }) {
   const kanban = async () => (await board.state()).projects, services = { origin, board };
   const named = value => (typeof value === 'string' ? value.trim() : '');
   const body = async () => {
@@ -591,6 +593,7 @@ export async function originRoute({ origin, contexts, board, prompts, req, res, 
     if (!kanbanDeleted && record.kanbanProjectId && record.kanbanProjectId !== originId && (await kanban()).some(project => project.id === record.kanbanProjectId)) await prompts?.merge(originId, record.kanbanProjectId);
     await origin.remove(originId, { expectedRevision: record.revision });
     await contexts?.archive(originId).catch(() => {}); // Kept in origin/deleted/; Base copies stay usable.
+    await research?.archive(originId).catch(() => {}); // So a project created later under this ID starts without them.
     return send(res, 200, { deleted: true, kanbanDeleted });
   }
   return send(res, 404, { error: 'This Origin route does not exist.' });
