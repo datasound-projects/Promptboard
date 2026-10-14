@@ -9,6 +9,7 @@ import { serial, writeAtomic } from './durable.mjs';
 import { redactLocal } from './compose-local.mjs';
 import { FAILURE_MESSAGES } from './providers.mjs';
 import { chatPrompt } from './research-prompts.mjs';
+import { SOURCE_LIMIT, citationsOf, gatherSources, sourceOf, sourcesBlock } from './research-sources.mjs';
 
 const Model = globalThis.PromptboardOriginModel;
 export const RESEARCH_DIR = 'research';
@@ -62,7 +63,8 @@ export function settingsOf(value = {}) {
   if (typeof effort !== 'string' || !/^[a-z]{0,10}$/.test(effort)) throw invalid('Choose a supported effort level.');
   const mode = value.mode ?? 'chat';
   if (!MODES.includes(mode)) throw invalid('Choose Chat, Swarm, Decision Lab or Blueprint Audit.');
-  return { provider: value.provider, model, effort, mode, web: value.web === true, scope: scopeOf(value.scope) };
+  // CLI skills: Claude Code's own installed skills, as instructions only (no shell, so their scripts cannot run).
+  return { provider: value.provider, model, effort, mode, web: value.web === true, skills: value.provider === 'claude' && value.skills === true, scope: scopeOf(value.scope) };
 }
 
 const emptyChat = (originId, settings) => {
@@ -174,27 +176,42 @@ export function researchContext(record, scope, { limit = 24000 } = {}) {
   return { ...built, text: redactLocal(built.text), missing: scope.kind !== 'project' && built.label === 'the whole project' };
 }
 
+/** Web pages and attached sources the answer cites. Web citations carry the research date as their access date. */
+export function citations(text, evidence = []) {
+  const today = new Date().toISOString().slice(0, 10), found = new Map();
+  for (const match of text.matchAll(/\[([^\]\n]{1,200})\]\((https?:\/\/[^\s)]{1,2000})\)|(?<![(\w])(https?:\/\/[^\s)<>\]]{4,2000})/g)) {
+    const url = (match[2] || match[3]).replace(/[.,;:]+$/, '');
+    if (!found.has(url)) found.set(url, { title: (match[1] || url).slice(0, 200), url, accessedAt: today });
+  }
+  return [...citationsOf(evidence, text), ...[...found.values()].slice(0, 40)];
+}
+
 /**
  * One Chat turn: store the question, stream the CLI's answer as events, store the answer. A resumed CLI session
  * gets only the new question (and the context again when it changed). When a session cannot continue, one new
  * session starts with this chat's bounded history. A stopped run keeps the text it produced.
  */
-export async function runChat({ research, origin, originId, chat, settings, question, runner, signal, emit }) {
+export async function runChat({ research, origin, originId, chat, settings, question, runner, signal, emit, sources: services = {} }) {
   const record = await origin.read(originId, { report: false });
   if (!record || record.damaged) throw new ResearchError('This Origin project no longer exists. Choose another project.', 'NOT_FOUND', 404);
   const saved = await research.read(originId, chat);
   const context = researchContext(record, settings.scope), contextHash = sha(`${JSON.stringify(settings.scope)}\n${context.text}`);
   const native = saved.native?.provider === settings.provider && saved.native.sessionId ? saved.native : null;
-  const fresh = () => chatPrompt({ question, context: context.text, history: boundedHistory(saved.messages), web: settings.web, scopeLabel: context.label });
-  const prompt = native ? chatPrompt({ question, context: native.contextHash === contextHash ? null : context.text, followUp: true, scopeLabel: context.label }) : fresh();
+  // Attached sources: passages relevant to this question only, as cited data.
+  const found = await gatherSources(saved.sources, `${question} ${context.label}`.trim(), { ...services, signal });
+  const block = sourcesBlock(found.evidence);
+  const fresh = () => chatPrompt({ question, context: context.text, history: boundedHistory(saved.messages), web: settings.web, scopeLabel: context.label, sources: block });
+  const prompt = native ? chatPrompt({ question, context: native.contextHash === contextHash ? null : context.text, followUp: true, scopeLabel: context.label, sources: block }) : fresh();
   const asked = { id: randomUUID(), role: 'user', text: question, at: Date.now(), mode: 'chat', scope: settings.scope };
   await research.update(originId, chat, value => { value.messages.push(asked); value.settings = settings; if (!value.title) value.title = titleFrom(question); });
   emit({ type: 'message', message: asked });
   emit({ type: 'start', mode: 'chat', agents: [{ id: 'main', label: '' }] });
   if (context.missing) emit({ type: 'activity', agent: 'main', kind: 'note', label: 'The selected part no longer exists. The whole project is used.' });
+  for (const warning of found.warnings) emit({ type: 'activity', agent: 'main', kind: 'note', label: warning });
+  if (found.evidence.length) emit({ type: 'activity', agent: 'main', kind: 'sources', label: `${found.evidence.length} passages from attached sources` });
   const workspace = await research.workspace(originId), started = Date.now();
   const onEvent = event => emit({ ...event, agent: 'main' });
-  const call = (input, session) => runner({ provider: settings.provider, model: settings.model, effort: settings.effort, web: settings.web, cwd: workspace, signal, onEvent, prompt: input, session });
+  const call = (input, session) => runner({ provider: settings.provider, model: settings.model, effort: settings.effort, web: settings.web, tools: settings.skills ? ['Skill'] : [], cwd: workspace, signal, onEvent, prompt: input, session });
   const newSession = () => (settings.provider === 'claude' ? { id: randomUUID(), resume: false } : null);
   let result, failure;
   try { result = await call(prompt, native ? { id: native.sessionId, resume: true } : newSession()); }
@@ -207,7 +224,8 @@ export async function runChat({ research, origin, originId, chat, settings, ques
   }
   const stopped = failure?.code === 'ABORTED';
   const answer = { id: randomUUID(), role: 'assistant', at: Date.now(), mode: 'chat', provider: settings.provider, model: settings.model, durationMs: Date.now() - started,
-    text: result?.text ?? failure?.partial ?? '', status: result ? 'done' : stopped ? 'stopped' : 'failed', ...(failure && !stopped ? { error: publicError(failure) } : {}) };
+    text: result?.text ?? failure?.partial ?? '', status: result ? 'done' : stopped ? 'stopped' : 'failed', ...(failure && !stopped ? { error: publicError(failure) } : {}),
+    citations: citations(result?.text ?? failure?.partial ?? '', found.evidence), ...(found.warnings.length ? { warnings: found.warnings.slice(0, 12) } : {}) };
   const updated = await research.update(originId, chat, value => {
     value.messages.push(answer);
     if (result?.session) value.native = { provider: settings.provider, sessionId: result.session, contextHash };
@@ -223,10 +241,10 @@ export async function runChat({ research, origin, originId, chat, settings, ques
  * POST …/chats/:chat/run, which streams NDJSON events while the CLI works. A run uses the shared one-job slot,
  * so it never overlaps Compose, the Coordinator or a sign-in change. Closing the request stops the run.
  */
-export async function researchRoute({ research, origin, runner, claim, track, req, res, pathname, searchParams, jsonBody, send }) {
-  const match = pathname.match(/^\/api\/origin\/research\/([A-Za-z0-9_-]{1,100})\/chats(?:\/([0-9a-f-]{36})(?:\/(run))?)?$/);
+export async function researchRoute({ research, origin, runner, claim, track, sources: services, req, res, pathname, searchParams, jsonBody, send }) {
+  const match = pathname.match(/^\/api\/origin\/research\/([A-Za-z0-9_-]{1,100})\/chats(?:\/([0-9a-f-]{36})(?:\/(run|sources)(?:\/([0-9a-f-]{36}))?)?)?$/);
   if (!match) return send(res, 404, { error: 'This research route does not exist.' });
-  const [, originId, chat, action] = match;
+  const [, originId, chat, action, sourceId] = match;
   // The Origin project must exist; this also rejects IDs that are not projects.
   const project = await origin.read(originId, { report: false });
   if (!project || project.damaged) throw new ResearchError('This Origin project no longer exists. Choose another project.', 'NOT_FOUND', 404);
@@ -248,10 +266,54 @@ export async function researchRoute({ research, origin, runner, claim, track, re
     res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' });
     const emit = event => { if (!res.writableEnded && !res.destroyed) res.write(`${JSON.stringify(event)}\n`); };
     const ping = setInterval(() => emit({ ping: true }), 15000); ping.unref();
-    try { await track(runChat({ research, origin, originId, chat, settings, question, runner, signal: job.controller.signal, emit })); }
+    try { await track(runChat({ research, origin, originId, chat, settings, question, runner, signal: job.controller.signal, emit, sources: await services?.() })); }
     catch (error) { emit({ type: 'error', ...publicError(error) }); }
     finally { clearInterval(ping); res.off('close', abort); if (!res.writableEnded) res.end(); claimed.release(); }
     return;
+  }
+  if (action === 'sources') {
+    // Add: documents must be loaded, Base resources usable, MCP servers reachable with an eligible read-only tool.
+    if (!sourceId && req.method === 'POST') {
+      const tools = await services?.();
+      let input = (await body()).source;
+      // A Base MCP server is used only while it is enabled and trusted; its connection is mapped to Compose's form.
+      if (input?.type === 'mcp' && typeof input.resourceId === 'string') {
+        const resource = (await tools.base.list()).resources.find(entry => entry.id === input.resourceId);
+        if (!resource || resource.kind !== 'mcp' || !resource.enabled || resource.trust !== 'trusted') throw new ResearchError('Choose an enabled, trusted Base MCP server.', 'INVALID_SOURCE');
+        const config = resource.configuration || {}, refs = map => (map && Object.keys(map).length ? { ...map } : undefined);
+        input = { type: 'mcp', config: config.transport === 'streamable-http' ? { type: 'mcp', name: resource.name.slice(0, 80), transport: 'streamable-http', endpoint: config.endpoint, ...(refs(config.headers) ? { headers: refs(config.headers) } : {}) }
+          : { type: 'mcp', name: resource.name.slice(0, 80), transport: 'stdio', command: config.command, args: config.args || [], ...(refs(config.env) ? { env: refs(config.env) } : {}), allowStart: true } };
+      }
+      const source = sourceOf(input);
+      const current = await research.read(originId, chat);
+      if (current.sources.length >= SOURCE_LIMIT) throw new ResearchError(`A chat can have at most ${SOURCE_LIMIT} sources. Remove one first.`, 'LIMIT', 409);
+      if (source.type === 'document') { try { if (!tools.documents.get(source.documentId)) throw new Error(); } catch { throw new ResearchError('This document is no longer loaded. Attach it again.', 'INVALID_SOURCE'); } }
+      if (source.type === 'base') {
+        const resource = (await tools.base.list()).resources.find(entry => entry.id === source.resourceId);
+        if (!resource || !resource.enabled || resource.trust !== 'trusted' || !['knowledge', 'context', 'skill'].includes(resource.kind)) throw new ResearchError('Choose an enabled, trusted Base knowledge, context or skill resource.', 'INVALID_SOURCE');
+      }
+      if (source.type === 'mcp') {
+        // Discovery connects to the server (a local program starts only with explicit permission). It shares the one-job slot.
+        const claimed = await claim('research-source', null);
+        try { source.tools = (await track(tools.mcp.retrieve(source.config, [], { discoveryOnly: true, signal: claimed.job.controller.signal }))).tools; }
+        catch (error) { throw new ResearchError(error instanceof ResearchError ? error.message : (error.message || 'The MCP server is not available.').slice(0, 300), 'INVALID_SOURCE'); }
+        finally { claimed.release(); }
+        if (!source.tools.length) throw new ResearchError('This MCP server has no read-only retrieval tool, so research cannot use it.', 'INVALID_SOURCE');
+      }
+      const updated = await research.update(originId, chat, value => { value.sources.push(source); });
+      return send(res, 200, { source, sources: updated.sources });
+    }
+    if (sourceId && req.method === 'PATCH') {
+      const input = await body();
+      if (typeof input.enabled !== 'boolean') throw invalid('Send enabled: true or false.');
+      const updated = await research.update(originId, chat, value => { const source = value.sources.find(entry => entry.id === sourceId); if (!source) throw new ResearchError('This source is not in the chat.', 'NOT_FOUND', 404); source.enabled = input.enabled; });
+      return send(res, 200, { sources: updated.sources });
+    }
+    if (sourceId && req.method === 'DELETE') {
+      const updated = await research.update(originId, chat, value => { const before = value.sources.length; value.sources = value.sources.filter(entry => entry.id !== sourceId); if (value.sources.length === before) throw new ResearchError('This source is not in the chat.', 'NOT_FOUND', 404); });
+      return send(res, 200, { sources: updated.sources });
+    }
+    return send(res, 404, { error: 'This research route does not exist.' });
   }
   if (!chat && req.method === 'GET') return send(res, 200, { chats: await research.list(originId, { query: searchParams?.get('q') || '' }) });
   if (!chat && req.method === 'POST') return send(res, 200, { chat: await research.create(originId, (await body()).settings) });

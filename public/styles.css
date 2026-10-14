@@ -1988,6 +1988,23 @@ button.origin-context-badge { cursor: pointer; }
 .origin-research-send:disabled { opacity: .35; cursor: default; }
 .origin-research-send.is-stop { background: var(--surface-3); color: var(--ink); }
 .origin-research-settings { display: grid; gap: 12px; }
+.origin-research-sources { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.origin-research-chip { display: inline-flex; align-items: center; max-width: 100%; border: 1px solid var(--line); border-radius: 999px; background: var(--og-glass-2); }
+.origin-research-chip.is-off { opacity: .55; }
+.origin-research-chip-toggle { max-width: 220px; overflow: hidden; padding: 3px 4px 3px 10px; border: 0; background: none; color: var(--text); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.origin-research-chip.is-off .origin-research-chip-toggle { text-decoration: line-through; }
+.origin-research-chip-remove { width: 22px; height: 22px; margin-right: 2px; padding: 0; border: 0; border-radius: 50%; background: none; color: var(--muted); font-size: 14px; line-height: 1; }
+.origin-research-chip-remove:hover { background: var(--surface-3); color: var(--ink); }
+.origin-research-add-source { height: 26px; padding: 0 10px; border: 1px dashed var(--line-strong); border-radius: 999px; background: none; color: var(--muted); font-size: 12px; }
+.origin-research-add-source:hover, .origin-research-add-source[aria-expanded="true"] { border-color: var(--sash); color: var(--ink); }
+.origin-research-source-form { display: grid; gap: 12px; }
+.origin-research-source-form > .origin-link { justify-self: start; }
+.origin-research-source-add { justify-self: start; }
+.origin-research-pages { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.origin-research-check { display: flex; align-items: flex-start; gap: 8px; color: var(--muted); font-size: 12.5px; line-height: 1.45; }
+.origin-research-check input { flex: none; width: 16px !important; min-height: 16px !important; margin-top: 2px; }
+.origin-research-citations { display: grid; gap: 3px; margin: 8px 0 0; padding: 8px 0 0; border-top: 1px solid var(--divider); color: var(--muted); font-size: 11.5px; list-style: none; }
+.origin-research-citations a { color: var(--ink); text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; }
 .origin-research-field { display: grid; gap: 6px; color: var(--muted); font-size: 12px; font-weight: 600; }
 .origin-research-settings > button { justify-self: start; }
 #origin-research-search { margin-bottom: 10px; }

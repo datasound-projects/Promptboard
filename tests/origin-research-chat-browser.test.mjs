@@ -79,3 +79,38 @@ test('Research chat streams the answer, stops on request, resumes the CLI sessio
   await wait(`document.querySelector('.origin-research-chats')?.textContent.includes('No chat matches.') || document.querySelector('.origin-research-chats')?.textContent === 'No research chats yet.'`, 'deleted');
   assert.deepEqual(browser.consoleMessages.filter(line => line.startsWith('EXCEPTION')), []);
 });
+
+test('Research sources: attach an excerpt, turn it off and on, remove it; answers list their citations', { skip: !chrome, timeout: 180000 }, async t => {
+  const prompts = [];
+  const researchRunner = async call => { prompts.push(call.prompt); call.onEvent({ type: 'delta', text: 'x' }); return { text: 'Keep fees under 2% [S1]. See [Stripe pricing](https://stripe.com/pricing).', session: call.session?.id || 'thread-1' }; };
+  const { ev, wait } = await researchPage(t, { server: { researchRunner } });
+  const click = selector => ev(`document.querySelector(${J(selector)}).click();`);
+  await click('#origin-research-open');
+  await wait(`document.querySelector('#origin-research-add-source')`, 'sources button');
+  await click('#origin-research-add-source');
+  await wait(`document.querySelector('#origin-research-source-excerpt')`, 'source form');
+  await click('#origin-research-source-excerpt');
+  await wait(`document.querySelector('#origin-research-excerpt')`, 'excerpt form');
+  await ev(`document.querySelector('#origin-research-excerpt-name').value = 'Finance policy'; document.querySelector('#origin-research-excerpt').value = 'Card fees must stay under 2% of the order value.';`);
+  await click('#origin-research-source-submit');
+  await wait(`document.querySelector('.origin-research-chip-toggle')?.textContent.includes('Finance policy') && document.querySelector('#origin-research-input')`, 'chip shown, back to the chat');
+  // The chip turns the source off and on.
+  await click('.origin-research-chip-toggle');
+  await wait(`document.querySelector('.origin-research-chip.is-off .origin-research-chip-toggle')?.getAttribute('aria-pressed') === 'false'`, 'turned off');
+  await click('.origin-research-chip-toggle');
+  await wait(`document.querySelector('.origin-research-chip:not(.is-off)')`, 'turned on');
+  await ev(`const i = document.querySelector('#origin-research-input'); i.value = 'What card fees are acceptable?'; i.dispatchEvent(new Event('input', { bubbles: true })); i.closest('form').requestSubmit();`);
+  await wait(`document.querySelector('.origin-research-citations')`, 'citations shown');
+  assert.ok(prompts[0].includes('<<<S1 Finance policy (selected excerpt)'));
+  assert.deepEqual(await ev(`return [...document.querySelectorAll('.origin-research-citations li')].map(li => li.textContent.replace(/accessed \\d{4}-\\d{2}-\\d{2}/, 'accessed DATE'));`), ['[S1] Finance policy · selected excerpt', 'Stripe pricing · accessed DATE']);
+  assert.equal(await ev(`return document.querySelector('.origin-research-citations a').getAttribute('rel');`), 'noopener noreferrer');
+  await click('.origin-research-chip-remove');
+  await wait(`!document.querySelector('.origin-research-chip') && document.activeElement?.id === 'origin-research-add-source'`, 'removed');
+  // Claude Code offers its installed skills as an explicit option; Codex does not show it.
+  await click('#origin-research-cli');
+  await wait(`document.querySelector('#origin-research-provider')`, 'settings');
+  await ev(`const p = document.querySelector('#origin-research-provider'); p.value = 'claude'; p.dispatchEvent(new Event('change', { bubbles: true }));`);
+  await wait(`document.querySelector('#origin-research-skills') && !document.querySelector('#origin-research-skills').checked`, 'skills option, off');
+  await ev(`const p = document.querySelector('#origin-research-provider'); p.value = 'codex'; p.dispatchEvent(new Event('change', { bubbles: true }));`);
+  await wait(`!document.querySelector('#origin-research-skills')`, 'no skills option for Codex');
+});

@@ -26,12 +26,12 @@ const historyBlock = history => history.length ? `# Earlier conversation (data)\
  * One Chat (guided research) turn. A resumed CLI session already has the rules and the context, so a follow-up sends
  * only the question, plus the context again when the blueprint or the scope changed.
  */
-export function chatPrompt({ question, context = null, history = [], web = false, followUp = false, scopeLabel = '' }) {
+export function chatPrompt({ question, context = null, history = [], web = false, followUp = false, scopeLabel = '', sources = '' }) {
   if (followUp) {
     return [context ? `The blueprint changed or a different part is selected${scopeLabel ? ` (${scopeLabel})` : ''}. Use this context from now on.\n\n${contextBlock(context)}` : '',
-      `# Question\n${question}`].filter(Boolean).join('\n\n');
+      sources, `# Question\n${question}`].filter(Boolean).join('\n\n');
   }
-  return [RULES, `# Web\n${web ? WEB.on : WEB.off}`, context ? contextBlock(context) : '', historyBlock(history),
+  return [RULES, `# Web\n${web ? WEB.on : WEB.off}`, context ? contextBlock(context) : '', sources, historyBlock(history),
     `# Mode: guided research\nAnswer the question about ${scopeLabel || 'the project'}. Be specific to this project. Give a short answer first, then the details. Use Markdown headings and lists.`,
     `# Question\n${question}`].filter(Boolean).join('\n\n');
 }

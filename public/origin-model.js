@@ -874,11 +874,16 @@ globalThis.PromptboardOriginModel = (() => {
       const from = blueprint.components.find(entry => entry.id === connection.from), to = blueprint.components.find(entry => entry.id === connection.to);
       out.push(`  connection: ${from?.name || 'Unnamed'} → ${to?.name || 'Unnamed'}${[connection.label, connection.protocol].filter(hasText).length ? ` (${[connection.label, connection.protocol].filter(hasText).join(', ')})` : ''}`);
     }
-    if (AREAS[id]) for (const [area, name] of AREAS[id]) {
-      const answers = blueprint.areas.filter(entry => entry.section === id && entry.area === area);
-      const heading = `  [topic ${id}:${area}] ${questionText(blueprint, `topic:${id}:${area}`, name)}`;
-      if (!answers.length) { if (!brief) out.push(`${heading} → (no answer yet)`); continue; }
-      out.push(`${heading} → ${answers.map(entry => `${clip(entry.title, 200)}${hasText(entry.description) && !brief ? ` — ${clip(entry.description, 1000)}` : ''} [areas ${entry.id}]`).join('; ')}`);
+    if (AREAS[id]) {
+      const open = [];
+      for (const [area, name] of AREAS[id]) {
+        const answers = blueprint.areas.filter(entry => entry.section === id && entry.area === area);
+        const topic = questionText(blueprint, `topic:${id}:${area}`, name);
+        if (!answers.length) { open.push(`${topic} [${id}:${area}]`); continue; }
+        out.push(`  [topic ${id}:${area}] ${topic} → ${answers.map(entry => `${clip(entry.title, 200)}${hasText(entry.description) && !brief ? ` — ${clip(entry.description, 1000)}` : ''} [areas ${entry.id}]`).join('; ')}`);
+      }
+      // Unanswered topics share one line: their names and stable topic IDs, without repeating "no answer".
+      if (open.length && !brief) out.push(`  unanswered topics: ${open.join('; ')}`);
     }
     for (const question of blueprint.questions.filter(entry => entry.scope === 'section' && entry.sectionId === id)) {
       out.push(`  [question ${question.id}] ${clip(question.text, 300)} → ${hasText(blueprint.answers[question.id]) ? clip(blueprint.answers[question.id], brief ? 300 : 2000) : '(no answer yet)'}`);

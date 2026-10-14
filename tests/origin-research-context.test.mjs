@@ -59,7 +59,7 @@ test('research context: constraints first, the focus in full with stable IDs, th
 
   const security = context({ kind: 'section', id: 'security' });
   assert.match(security.text, /\[topic security:secrets\] Where do keys live\? → Environment variables in the VM — Loaded at start \[areas a1\]/);
-  assert.match(security.text, /\[topic security:authentication\] Authentication → \(no answer yet\)/);
+  assert.match(security.text, /unanswered topics: Authentication \[security:authentication\]; Authorization \[security:authorization\]/);
 
   const own = context({ kind: 'section', id: 'pricing' });
   assert.match(own.text, /## Focus: this section\n\[section pricing\] Pricing model\n  description: How sellers pay us\n  \[question q_fee\] Which fee model\? → A 5% commission per sale/);

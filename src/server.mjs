@@ -424,7 +424,7 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
       catch (error) { return sendFailure(res, error, 'The project request failed. Nothing was changed.', { status: 500, code: 'PROJECTS_FAILED' }); }
     }
     if (/^\/api\/origin\/research(?:\/|$)/.test(pathname)) {
-      try { return await researchRoute({ research, origin, runner: researchRunner, claim, track, req, res, pathname, searchParams: requestUrl.searchParams, jsonBody, send }); }
+      try { return await researchRoute({ research, origin, runner: researchRunner, claim, track, sources: async () => { const compose = await getCompose(); return { documents: compose.documents, mcp: compose.mcp, base: board.base }; }, req, res, pathname, searchParams: requestUrl.searchParams, jsonBody, send }); }
       catch (error) { return sendFailure(res, error, 'The research request failed. The blueprint is unchanged.', { status: 500, code: 'RESEARCH_FAILED' }); }
     }
     if (/^\/api\/origin(?:\/|$)/.test(pathname)) {

@@ -28,7 +28,7 @@ if (cli === 'claude') {
   const thread = args[1] === 'resume' ? args[2] : 'thread-1';
   if (thread === 'missing-thread') { out({ type: 'error', message: 'thread not found' }); process.exit(1); }
   out({ type: 'thread.started', thread_id: thread }); out({ type: 'turn.started' });
-  if (args.includes('web_search="live"')) out({ type: 'item.started', item: { id: 'w1', type: 'web_search', query: 'kafka vs rabbitmq' } });
+  if (args.includes('web_search="live"')) { out({ type: 'item.started', item: { id: 'w1', type: 'web_search', query: '', action: { type: 'other' } } }); out({ type: 'item.completed', item: { id: 'w1', type: 'web_search', query: 'kafka vs rabbitmq', action: { type: 'search', query: 'kafka vs rabbitmq' } } }); }
   await pause(150);
   out({ type: 'item.completed', item: { id: 'r1', type: 'reasoning', text: 'HIDDEN REASONING' } });
   out({ type: 'item.completed', item: { id: 'm1', type: 'agent_message', text: 'Use RabbitMQ.' } });
@@ -81,7 +81,7 @@ test('Codex research streams messages and web activity, never its reasoning, and
   const events = [];
   const result = await streamResearch({ provider: 'codex', prompt: 'Queue?', cwd: dir, web: true, onEvent: event => events.push(event) });
   assert.deepEqual([result.text, result.session], ['Use RabbitMQ.', 'thread-1']);
-  assert.deepEqual(events.map(event => event.type), ['activity', 'delta']);
+  assert.deepEqual(events.map(event => [event.type, event.label]), [['activity', 'kafka vs rabbitmq'], ['delta', undefined]]);
   assert.ok(!JSON.stringify(events).includes('HIDDEN REASONING'));
   const { args } = await seen();
   assert.ok(args.includes('--config') && args.some(arg => arg.startsWith('mcp_servers={"ambient"={enabled=false')), 'MCP servers from the user’s configuration are disabled');

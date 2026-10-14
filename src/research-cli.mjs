@@ -66,7 +66,7 @@ function readLine(provider, event, state, onEvent) {
     if (item.type === 'agent_message' && event.type === 'item.completed' && typeof item.text === 'string') {
       const text = (state.streamed ? '\n\n' : '') + item.text;
       state.streamed += text; state.final = item.text; onEvent({ type: 'delta', text });
-    } else if (item.type === 'web_search' && event.type === 'item.started') onEvent({ type: 'activity', kind: 'search', label: short(item.query || item.action?.query || 'web') });
+    } else if (item.type === 'web_search' && event.type === 'item.completed') onEvent({ type: 'activity', kind: 'search', label: short(item.action?.query || item.query || 'the web') }); // The query is known only when the search completes.
     else if (item.type === 'mcp_tool_call' && event.type === 'item.started') onEvent({ type: 'activity', kind: 'tool', label: short(`${item.server || ''} · ${item.tool || ''}`) });
   } else if (event.type === 'error' || event.type === 'turn.failed') state.error = true;
 }

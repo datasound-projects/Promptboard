@@ -21,7 +21,9 @@ test('research scopes and settings use stable IDs and accept only Claude Code an
     assert.throws(() => scopeOf(bad), /Choose|Invalid/);
   }
   assert.deepEqual(settingsOf({ provider: 'codex', model: 'gpt-5.5', effort: 'low', mode: 'swarm', web: true, scope: { kind: 'section', id: 'security' } }),
-    { provider: 'codex', model: 'gpt-5.5', effort: 'low', mode: 'swarm', web: true, scope: { kind: 'section', id: 'security' } });
+    { provider: 'codex', model: 'gpt-5.5', effort: 'low', mode: 'swarm', web: true, skills: false, scope: { kind: 'section', id: 'security' } });
+  assert.equal(settingsOf({ provider: 'claude', skills: true }).skills, true, 'Claude Code skills only when asked for');
+  assert.equal(settingsOf({ provider: 'codex', skills: true }).skills, false, 'only Claude Code offers skills');
   assert.equal(settingsOf({ provider: 'claude' }).web, false, 'web research is off unless asked for');
   assert.equal(settingsOf({ provider: 'claude', web: 'yes' }).web, false);
   for (const bad of [{ provider: 'gemini' }, { provider: 'agy' }, { provider: 'claude', model: '--dangerous' }, { provider: 'claude', model: 'a b' }, { provider: 'claude', mode: 'other' }, { provider: 'claude', effort: 'HIGH;' }]) {
@@ -62,7 +64,7 @@ test('research routes need the session token and an existing Origin project; no 
   assert.equal((await api(app, '/api/origin/research/missing/chats', { token })).status, 404);
   const created = await api(app, base, { method: 'POST', token, body: { settings: { provider: 'claude', mode: 'decision', scope: { kind: 'section', id: 'technology' } } } });
   assert.equal(created.status, 200);
-  assert.deepEqual(created.data.chat.settings, { provider: 'claude', model: '', effort: '', mode: 'decision', web: false, scope: { kind: 'section', id: 'technology' } });
+  assert.deepEqual(created.data.chat.settings, { provider: 'claude', model: '', effort: '', mode: 'decision', web: false, skills: false, scope: { kind: 'section', id: 'technology' } });
   const chat = created.data.chat.id;
   assert.equal((await api(app, base, { method: 'POST', token, body: { settings: { provider: 'gemini' } } })).status, 400);
   assert.equal((await api(app, `${base}/${chat}`, { method: 'PATCH', token, body: { title: 'Pick a database' } })).data.chat.title, 'Pick a database');

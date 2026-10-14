@@ -42,13 +42,14 @@ window.PromptboardOriginResearch = (() => {
     // Saved per browser: the CLI choice and the mode. Web search is chosen per chat and starts off.
     const stored = (() => { try { return JSON.parse(pref(SETTINGS_KEY, '{}')) || {}; } catch { return {}; } })();
     const settings = { provider: PROVIDERS[stored.provider] ? stored.provider : '', model: typeof stored.model === 'string' ? stored.model : '', effort: typeof stored.effort === 'string' ? stored.effort : '',
-      mode: MODES.some(([id]) => id === stored.mode) ? stored.mode : 'chat', web: false, scope: { kind: 'project' } };
+      mode: MODES.some(([id]) => id === stored.mode) ? stored.mode : 'chat', web: false, skills: stored.skills === true, scope: { kind: 'project' } };
     let projectId = null, isOpen = false, minimized = false, maximized = false, panel = 'chat', providers = null, models = new Map();
     let chats = null, chatsQuery = '', chat = null, error = '', confirmDelete = null;
     // The run in progress: its stop controller and the live text of each agent, kept across re-renders.
     let running = null;
     const drafts = new Map(); // Unsent text per project survives closing the panel and switching projects.
-    const saveSettings = () => setPref(SETTINGS_KEY, JSON.stringify({ provider: settings.provider, model: settings.model, effort: settings.effort, mode: settings.mode }));
+    const saveSettings = () => setPref(SETTINGS_KEY, JSON.stringify({ provider: settings.provider, model: settings.model, effort: settings.effort, mode: settings.mode, skills: settings.skills }));
+    let sourceBusy = false, baseLibrary = null, sourceForm = 'document', mcpKind = 'context7';
     const api = (path, options = {}) => app.api(`/api/origin/research/${encodeURIComponent(projectId)}${path}`, { timeoutMs: 30000, ...options })
       .catch(() => ({ response: { ok: false, status: 0 }, data: { error: 'The app did not answer. Nothing was changed; try again.' } }));
 
@@ -216,11 +217,28 @@ window.PromptboardOriginResearch = (() => {
       scope.value = scopeKey(settings.scope);
       if (scope.selectedIndex < 0) { settings.scope = { kind: 'project' }; scope.value = scopeKey(settings.scope); }
       scope.addEventListener('change', () => { settings.scope = JSON.parse(scope.value); });
-      box.append(modes, scope);
+      box.append(modes, scope, sourceChips());
       return box;
+    }
+    /** Attached sources as small chips: a click turns one on or off, × removes it. */
+    function sourceChips() {
+      const row = el('div', 'origin-research-sources'); row.setAttribute('aria-label', 'Sources for this chat');
+      for (const source of chat?.sources || []) {
+        const chip = el('span', `origin-research-chip${source.enabled ? '' : ' is-off'}`);
+        const toggle = button(`${{ document: '📄', excerpt: '❝', base: '◆', mcp: '⇄' }[source.type] || ''} ${source.name}${source.from ? ` · pp. ${source.from}–${source.to}` : ''}`, () => void setSource(source.id, { enabled: !source.enabled }), 'origin-research-chip-toggle',
+          source.enabled ? 'Used for research. Click to turn off.' : 'Not used. Click to turn on.');
+        toggle.setAttribute('aria-pressed', String(source.enabled));
+        const remove = button('×', () => void removeSource(source.id), 'origin-research-chip-remove', `Remove ${source.name}`); remove.setAttribute('aria-label', `Remove ${source.name}`);
+        chip.append(toggle, remove); row.append(chip);
+      }
+      const add = button('+ Sources', () => { panel = panel === 'sources' ? 'chat' : 'sources'; render(); }, 'origin-research-add-source', 'Attach documents, excerpts, Base knowledge or a read-only MCP server to this chat');
+      add.id = 'origin-research-add-source'; add.setAttribute('aria-expanded', String(panel === 'sources'));
+      row.append(add);
+      return row;
     }
     function chatView() {
       if (panel === 'settings') return [settingsView()];
+      if (panel === 'sources') return [sourcesView()];
       const log = el('div', 'origin-research-log'); log.id = 'origin-research-log'; log.setAttribute('aria-live', 'polite');
       const messages = chat?.messages || [];
       if (!messages.length) {
@@ -237,6 +255,17 @@ window.PromptboardOriginResearch = (() => {
       if (message.agent?.label) item.append(el('p', 'origin-research-agent', message.agent.label));
       if (message.role === 'user') item.append(el('p', 'origin-research-text', message.text));
       else item.append(window.PromptboardMarkdown.render(message.text || ''));
+      if (message.citations?.length) {
+        const list = el('ul', 'origin-research-citations'); list.setAttribute('aria-label', 'Sources');
+        for (const cite of message.citations) {
+          const row = el('li');
+          if (cite.url) { const link = el('a', '', cite.title || cite.url); link.href = cite.url; link.target = '_blank'; link.rel = 'noopener noreferrer'; row.append(link, el('span', '', ` · accessed ${cite.accessedAt}`)); }
+          else row.append(el('strong', '', `[${cite.ref}]`), el('span', '', ` ${cite.title} · ${cite.locator}`));
+          list.append(row);
+        }
+        item.append(list);
+      }
+      for (const warning of message.warnings || []) item.append(el('small', 'origin-research-meta is-error', warning));
       const meta = [when(message.at), message.provider && PROVIDERS[message.provider], message.status === 'stopped' && 'Stopped', message.error?.message].filter(Boolean).join(' · ');
       if (message.role !== 'user' && meta) item.append(el('small', `origin-research-meta${message.error ? ' is-error' : ''}`, meta));
       return item;
@@ -279,7 +308,10 @@ window.PromptboardOriginResearch = (() => {
       effort.value = efforts.includes(settings.effort) ? settings.effort : '';
       effort.addEventListener('change', () => { settings.effort = effort.value; saveSettings(); });
       const done = button('Done', () => { panel = 'chat'; render(); drawer.querySelector('#origin-research-cli')?.focus(); }, 'origin-ghost');
-      box.append(field('CLI', provider), field('Model', model), field('Effort', effort),
+      const skills = el('label', 'origin-research-check'); const box2 = el('input'); box2.type = 'checkbox'; box2.id = 'origin-research-skills'; box2.checked = settings.skills;
+      box2.addEventListener('change', () => { settings.skills = box2.checked; saveSettings(); });
+      skills.append(box2, el('span', '', 'Use my installed Claude Code skills as instructions (their scripts never run)'));
+      box.append(field('CLI', provider), field('Model', model), field('Effort', effort), ...(settings.provider === 'claude' ? [skills] : []),
         el('p', 'origin-research-hint', 'Research runs read-only: no shell and no file changes. Web search, MCP tools and skills stay off until you turn them on for a chat.'), done);
       return box;
     }
@@ -297,6 +329,95 @@ window.PromptboardOriginResearch = (() => {
       form.append(input, send);
       form.addEventListener('submit', event => { event.preventDefault(); if (!running) void submit(input.value); });
       return form;
+    }
+
+    // ---- Sources ----
+    function sourcesView() {
+      const box = el('section', 'origin-research-source-form'); box.setAttribute('aria-label', 'Add a source');
+      const kinds = el('div', 'origin-seg'); kinds.setAttribute('role', 'radiogroup'); kinds.setAttribute('aria-label', 'Source type');
+      for (const [id, label] of [['document', 'Document'], ['excerpt', 'Excerpt'], ['base', 'Base'], ['mcp', 'MCP']]) {
+        const option = button(label, () => { sourceForm = id; render(); }, ''); option.setAttribute('role', 'radio'); option.setAttribute('aria-checked', String(sourceForm === id)); option.id = `origin-research-source-${id}`;
+        kinds.append(option);
+      }
+      const field = (label, control) => { const wrap = el('label', 'origin-research-field'); wrap.append(el('span', '', label), control); return wrap; };
+      const input = (id, placeholder, type = 'text') => { const node = el('input'); node.id = id; node.type = type; node.placeholder = placeholder; return node; };
+      const action = (label, onClick) => { const node = button(label, onClick, 'origin-ghost origin-research-source-add'); node.id = 'origin-research-source-submit'; node.disabled = sourceBusy; return node; };
+      const forms = {
+        document: () => {
+          const file = input('origin-research-file', '', 'file'); file.accept = '.pdf,.txt,.md,application/pdf,text/plain,text/markdown';
+          const from = input('origin-research-from', 'From page', 'number'), to = input('origin-research-to', 'To page', 'number'); from.min = to.min = '1';
+          const pages = el('div', 'origin-research-pages'); pages.append(from, to);
+          return [field('PDF, text or Markdown (up to 20 MiB)', file), field('Pages (PDF only, optional)', pages), el('p', 'origin-research-hint', 'The text is read on this computer. Only passages that match each question are sent to the CLI, with page or section references.'),
+            action('Attach document', () => void attachDocument(file.files[0], from.value, to.value))];
+        },
+        excerpt: () => {
+          const title = input('origin-research-excerpt-name', 'For example: Chapter 4, Designing Data-Intensive Applications'), text = el('textarea'); text.id = 'origin-research-excerpt'; text.rows = 6; text.maxLength = 20000; text.placeholder = 'Paste the passage to use…';
+          return [field('Title and location', title), field('Excerpt', text), action('Add excerpt', () => void addSource({ type: 'excerpt', name: title.value, text: text.value }))];
+        },
+        base: () => {
+          if (!baseLibrary) { void loadBase(); return [el('p', 'origin-research-hint', 'Reading Base…')]; }
+          if (!baseLibrary.length) return [el('p', 'origin-research-hint', 'No enabled, trusted Base knowledge, context, skill or MCP resource yet. Add one in Base first.')];
+          const pick = el('select'); pick.id = 'origin-research-base';
+          for (const resource of baseLibrary) pick.append(Object.assign(el('option', '', `${resource.name} · ${resource.kind === 'mcp' ? 'MCP' : resource.kind}`), { value: resource.id }));
+          return [field('Base resource', pick), action('Add from Base', () => { const resource = baseLibrary.find(item => item.id === pick.value); void addSource(resource.kind === 'mcp' ? { type: 'mcp', resourceId: resource.id } : { type: 'base', resourceId: resource.id, name: resource.name }); })];
+        },
+        mcp: () => {
+          const preset = el('select'); preset.id = 'origin-research-mcp-kind';
+          for (const [value, label] of [['context7', 'Context7 (documentation)'], ['http', 'HTTP server'], ['stdio', 'Local program']]) preset.append(Object.assign(el('option', '', label), { value }));
+          preset.value = mcpKind; preset.addEventListener('change', () => { mcpKind = preset.value; render(); });
+          const name = input('origin-research-mcp-name', 'Name'), library = input('origin-research-mcp-library', 'Library to look up, for example PostgreSQL'), endpoint = input('origin-research-mcp-url', 'https://…'),
+            command = input('origin-research-mcp-command', 'Program, for example npx'), args = input('origin-research-mcp-args', 'Arguments, separated by spaces');
+          const allow = el('label', 'origin-research-check'); const allowBox = el('input'); allowBox.type = 'checkbox'; allowBox.id = 'origin-research-mcp-allow'; allow.append(allowBox, el('span', '', 'I trust this program. Allow Promptboard to start it for research.'));
+          const kind = preset.value, fields = [field('Kind', preset)];
+          if (kind === 'context7') fields.push(field('Library', library));
+          else fields.push(field('Name', name), ...(kind === 'http' ? [field('Server URL', endpoint)] : [field('Program', command), field('Arguments', args), allow]));
+          fields.push(el('p', 'origin-research-hint', 'Promptboard connects first and lists the server’s tools. Only one annotated read-only query tool can be used; the app asks it and gives the answers to the agent as cited data. Credentials stay in environment variables.'),
+            action('Test and add', () => void addSource(kind === 'context7' ? { type: 'mcp', config: { type: 'mcp', preset: 'context7' }, library: library.value }
+              : { type: 'mcp', config: kind === 'http' ? { type: 'mcp', name: name.value, transport: 'streamable-http', endpoint: endpoint.value } : { type: 'mcp', name: name.value, transport: 'stdio', command: command.value, args: args.value.split(/\s+/).filter(Boolean), allowStart: allowBox.checked } })));
+          return fields;
+        },
+      };
+      box.append(kinds, ...forms[sourceForm](), button('Back to chat', () => { panel = 'chat'; render(); }, 'origin-link'));
+      return box;
+    }
+    async function loadBase() {
+      const { response, data } = await app.api('/api/base', { timeoutMs: 30000 }).catch(() => ({ response: { ok: false }, data: {} }));
+      baseLibrary = response.ok ? (data.resources || []).filter(resource => resource.enabled && resource.trust === 'trusted' && ['knowledge', 'context', 'skill', 'mcp'].includes(resource.kind)) : [];
+      if (isOpen && panel === 'sources') render();
+    }
+    async function addSource(source) {
+      if (sourceBusy) return;
+      sourceBusy = true; error = ''; render();
+      const id = projectId, current = await ensureChat();
+      if (!current || id !== projectId) { sourceBusy = false; render(); return; }
+      const { response, data } = await api(`/chats/${current.id}/sources`, { method: 'POST', body: { source }, timeoutMs: 60000 });
+      sourceBusy = false;
+      if (id !== projectId) return;
+      if (!response.ok) { error = data.error || 'The source could not be added.'; render(); return; }
+      chat = { ...chat, sources: data.sources }; panel = 'chat'; app.announce(`${data.source.name} attached to this chat.`); render();
+    }
+    async function attachDocument(file, from, to) {
+      if (!file) { error = 'Choose a PDF, .txt or .md file.'; render(); return; }
+      if (file.size > 20 * 1024 * 1024) { error = 'Choose a document up to 20 MiB.'; render(); return; }
+      const params = new URLSearchParams({ name: file.name });
+      if (from) params.set('from', from); if (to) params.set('to', to);
+      sourceBusy = true; error = ''; render();
+      let data = {};
+      try { const response = await app.uploadApi(`/api/compose/sources/document?${params}`, file); data = await response.json().catch(() => ({})); if (!response.ok) throw new Error(data.error || 'The document could not be read.'); }
+      catch (failure) { sourceBusy = false; error = failure.message; render(); return; }
+      sourceBusy = false;
+      const doc = data.document;
+      await addSource({ type: 'document', documentId: doc.id, name: doc.name, ...(doc.sourceType === 'pdf' && doc.from ? { from: doc.from, to: doc.to } : {}) });
+    }
+    async function setSource(sourceId, change) {
+      const { response, data } = await api(`/chats/${chat.id}/sources/${sourceId}`, { method: 'PATCH', body: change });
+      if (response.ok) chat = { ...chat, sources: data.sources }; else error = data.error || 'The source could not be changed.';
+      render();
+    }
+    async function removeSource(sourceId) {
+      const { response, data } = await api(`/chats/${chat.id}/sources/${sourceId}`, { method: 'DELETE' });
+      if (response.ok) chat = { ...chat, sources: data.sources }; else error = data.error || 'The source could not be removed.';
+      render(); drawer.querySelector('#origin-research-add-source')?.focus();
     }
 
     // ---- History ----
@@ -355,7 +476,15 @@ window.PromptboardOriginResearch = (() => {
     const scrollToEnd = () => { const log = drawer.querySelector('#origin-research-log'); if (log) log.scrollTop = log.scrollHeight; };
 
     // ---- Sending: one streamed run at a time ----
-    const runSettings = () => ({ provider: settings.provider, model: settings.model, effort: settings.effort, mode: settings.mode, web: settings.web, scope: settings.scope });
+    const runSettings = () => ({ provider: settings.provider, model: settings.model, effort: settings.effort, mode: settings.mode, web: settings.web, skills: settings.skills, scope: settings.scope });
+    /** The current chat, created on first use so sources can be attached before the first question. */
+    async function ensureChat() {
+      if (chat) return chat;
+      const id = projectId, { response, data } = await api('/chats', { method: 'POST', body: { settings: runSettings() } });
+      if (id !== projectId) return null;
+      if (!response.ok) { error = data.error || 'The chat could not be created.'; render(); return null; }
+      return (chat = data.chat);
+    }
     const nearEnd = () => { const body = drawer.querySelector('#origin-research-body'); return !body || body.scrollHeight - body.scrollTop - body.clientHeight < 80; };
     const followEnd = stick => { if (stick) { const body = drawer.querySelector('#origin-research-body'); if (body) body.scrollTop = body.scrollHeight; } };
     async function submit(value) {
@@ -364,12 +493,7 @@ window.PromptboardOriginResearch = (() => {
       if (!question && settings.mode === 'chat') return;
       const id = projectId;
       error = '';
-      if (!chat) {
-        const { response, data } = await api('/chats', { method: 'POST', body: { settings: runSettings() } });
-        if (id !== projectId) return;
-        if (!response.ok) { error = data.error || 'The chat could not be created.'; render(); return; }
-        chat = data.chat;
-      }
+      if (!(await ensureChat()) || id !== projectId) return;
       const run = running = { controller: new AbortController(), agents: new Map(), chatId: chat.id, projectId: id };
       drafts.delete(id); panel = 'chat'; render(); renderButton(); followEnd(true);
       let response;
