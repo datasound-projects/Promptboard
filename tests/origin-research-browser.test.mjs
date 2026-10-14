@@ -7,12 +7,16 @@ const chrome = await findChrome();
 const J = JSON.stringify;
 
 test('Research panel: opens beside Create Context, resizes, maximizes to the sidebar, minimizes, and shares the drawer without losing work', { skip: !chrome, timeout: 180000 }, async t => {
-  const { browser, ev, wait, calls } = await researchPage(t);
+  // A slow CLI check makes the panel redraw while the edge is dragged, as on a busy machine.
+  let slow = false;
+  const detector = async () => { if (slow) await new Promise(resolve => setTimeout(resolve, 900)); return [{ id: 'claude', available: true, version: '2.1.296' }, { id: 'codex', available: true, version: '0.160.0' }]; };
+  const { browser, ev, wait, calls } = await researchPage(t, { server: { detector } });
+  slow = true;
   const click = selector => ev(`document.querySelector(${J(selector)}).click();`);
   assert.equal(await ev(`return document.querySelector('#origin-context-open').nextElementSibling.id;`), 'origin-research-open', 'beside Create Context');
 
   await click('#origin-research-open');
-  await wait(`document.querySelector('#origin-drawer').dataset.mode === 'research' && document.querySelector('#origin-research-provider, #origin-research-cli')`, 'open');
+  await wait(`document.querySelector('#origin-drawer').dataset.mode === 'research' && document.querySelector('#origin-research-cli')`, 'open');
   assert.equal((await drawerState(ev)).width, 500, 'about 500 px by default');
   assert.deepEqual(await ev(`return [...document.querySelectorAll('.origin-research-modes [role=radio]')].map(b => [b.textContent, b.getAttribute('aria-checked')]);`),
     [['Chat', 'true'], ['Swarm', 'false'], ['Decision Lab', 'false'], ['Audit', 'false']]);
@@ -24,6 +28,7 @@ test('Research panel: opens beside Create Context, resizes, maximizes to the sid
   const box = await drawerState(ev), y = 400;
   for (const [type, x] of [['mousePressed', box.left + 1], ['mouseMoved', box.left - 60], ['mouseMoved', box.left - 120], ['mouseReleased', box.left - 120]]) await browser.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', buttons: type === 'mouseReleased' ? 0 : 1, clickCount: 1 });
   await wait(`Math.abs(document.querySelector('#origin-drawer').getBoundingClientRect().width - ${box.width + 121}) <= 2`, 'resized');
+  await wait(`document.querySelector('#origin-research-cli').textContent !== 'CLI…'`, 'the CLI list arrived during or after the drag');
   assert.equal(await ev(`return Number(localStorage.getItem('promptboard.origin.research-width'));`), (await drawerState(ev)).width);
 
   // Maximize up to the navigation sidebar, then restore.

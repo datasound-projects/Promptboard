@@ -123,10 +123,11 @@ window.PromptboardOriginResearch = (() => {
     }
     function resizer(grip) {
       grip.addEventListener('pointerdown', event => {
-        event.preventDefault(); grip.setPointerCapture(event.pointerId);
+        // The drag is followed on the window: the panel can redraw (and replace this edge) while it runs.
+        event.preventDefault();
         const move = moved => applyWidth(window.innerWidth - moved.clientX - 12, { save: true });
-        const stop = () => { grip.removeEventListener('pointermove', move); grip.removeEventListener('pointerup', stop); grip.removeEventListener('pointercancel', stop); renderTools(); };
-        grip.addEventListener('pointermove', move); grip.addEventListener('pointerup', stop); grip.addEventListener('pointercancel', stop);
+        const stop = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', stop); window.removeEventListener('pointercancel', stop); renderTools(); };
+        window.addEventListener('pointermove', move); window.addEventListener('pointerup', stop); window.addEventListener('pointercancel', stop);
       });
       grip.addEventListener('keydown', event => {
         const step = { ArrowLeft: 40, ArrowRight: -40, Home: 1e6, End: -1e6 }[event.key];
