@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Compose's **Generate prompt** button matches **New prompt**: a quiet outline with the arrow in the same accent chip, and the same accent edge on hover.
+- Compose's footer reads only “AI can make mistakes · Human review may be required”.
 - Compose's **New prompt** button is quieter: an outlined button with a small accent chip for the plus, and no `N` key box. The `N` shortcut still works and is shown in the button's tooltip.
 - **Resizable sidebar on every page.** Drag its edge to make it wider (up to 560 px) or narrower (down to 200 px); drag it further left to collapse it, and drag the left screen edge to open it again. Double-click the edge to reset the width. The width is remembered. From the keyboard, focus the edge: the arrow keys resize, Enter collapses or opens. Phones keep the drawer.
 - The top bar, the sidebar and Origin's header use quieter hairlines, with a soft accent where the top bar meets the sidebar; the sidebar edge lights up while you resize it.
