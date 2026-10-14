@@ -3126,8 +3126,16 @@ export class Board {
     const semantic = columnStage(project, target.id), from = columnStage(project, task.column);
     const name = id => columnTitleIn(project, id);
     if (active) {
-      const finished = active.status === 'waiting_for_input' && active.turnComplete && active.turns > 0 && (active.activity ? active.activity.ready !== false : true);
-      if (!finished) throw conflict(`The ${name(task.column)} agent is still working or waiting for your answer. Let it finish its turn, or pause it, before moving the card.`, 'RUN_ACTIVE');
+      const turnEnded = run => run.status === 'waiting_for_input' && run.turnComplete && run.turns > 0;
+      const finished = run => turnEnded(run) && (run.activity ? run.activity.ready !== false : true);
+      // A turn that has just ended is ready after a short quiet period (docs/pipeline-activity.md): wait for it, briefly,
+      // rather than refuse a move made the moment the agent finished. Real work or a question still blocks the move.
+      let current = active;
+      for (let wait = 0; !finished(current) && turnEnded(current) && wait < 25; wait++) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        current = (await this.state()).runs.find(run => run.id === active.id) || current;
+      }
+      if (!finished(current)) throw conflict(`The ${name(task.column)} agent is still working or waiting for your answer. Let it finish its turn, or pause it, before moving the card.`, 'RUN_ACTIVE');
       if (active.stageKind) {
         const outcome = await this.#finishStageRun(taskId, active.id, { by: trigger === 'automation' ? 'automation' : 'move' });
         if (outcome?.status === 'failed') throw conflict(`${name(task.column)} did not complete: ${outcome.reason}`, outcome.code || 'STAGE_FAILED');
