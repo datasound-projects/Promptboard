@@ -31,7 +31,8 @@ test('Compose real UI grounds simple writing, preserves roles/settings, keeps di
   const click = id => browser.eval(`document.getElementById(${JSON.stringify(id)}).click();`);
   const toggle = (id, checked) => browser.eval(`const el=document.getElementById(${JSON.stringify(id)});el.checked=${checked};el.dispatchEvent(new Event('change',{bubbles:true}));`);
   const value = (id, text) => browser.eval(`const el=document.getElementById(${JSON.stringify(id)});el.value=${JSON.stringify(text)};el.dispatchEvent(new Event('input',{bubbles:true}));`);
-  const done = () => browser.until('document.querySelector("#cancel-button").hidden && !document.querySelector("#prompt-output").hidden', 'finished');
+  // A generation renders a long result; slow CI renderers (macOS software raster) need more than the default 10 s.
+  const done = () => browser.until('document.querySelector("#cancel-button").hidden && !document.querySelector("#prompt-output").hidden', 'finished', 30000);
   await browser.eval('document.querySelector("#compose-context").open=true;document.querySelector("input[name=quality][value=fast]").checked=true;document.querySelector("input[name=language][value=pl]").checked=true;');
   await value('prompt-input', input); await toggle('context-autonomous', true); await toggle('context-use-sources', true);
   await click('context-add-expert'); await browser.eval(`const el=document.querySelector('#context-source-list textarea');el.value=${JSON.stringify(style)};el.dispatchEvent(new Event('input',{bubbles:true}));`);
