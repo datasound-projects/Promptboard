@@ -150,7 +150,8 @@ window.PromptboardBase = (() => {
         try {
           const { response, data } = await context.api('/api/base');
           if (!response.ok) throw new Error(data.error || 'Base could not load resources.');
-          if (version === loadVersion) { accept(data); resultLoading = false; renderList(); status(''); }
+          // A reload never clears the status: a message from your own action (Saved, Applied, …) stays until the next one.
+          if (version === loadVersion) { accept(data); resultLoading = false; renderList(); }
           return data;
         } catch (failure) {
           if (version === loadVersion) { resultLoading = false; loadError = failure.message; renderList(); }
