@@ -36,7 +36,9 @@ test('Research panel: opens beside Create Context, resizes, maximizes to the sid
   // Maximize up to the navigation sidebar, then restore.
   await click('#origin-research-max');
   const sidebarRight = await ev(`return Math.round(document.querySelector('#sidebar').getBoundingClientRect().right);`);
-  await wait(`document.querySelector('#origin-drawer').getBoundingClientRect().left > ${sidebarRight} && document.querySelector('#origin-drawer').getBoundingClientRect().left - ${sidebarRight} <= 14`, 'maximized to the sidebar');
+  // Up to the sidebar and never over it, also with a classic scrollbar (Windows, Linux) that narrows the visible width.
+  await wait(`document.querySelector('#origin-drawer').getBoundingClientRect().left > ${sidebarRight} && document.querySelector('#origin-drawer').getBoundingClientRect().left - ${sidebarRight} <= 14`, 'maximized to the sidebar')
+    .catch(async error => { throw new Error(`${error.message}: ${J(await ev(`return { drawer: document.querySelector('#origin-drawer').getBoundingClientRect().toJSON(), innerWidth, clientWidth: document.documentElement.clientWidth, sidebar: ${sidebarRight} };`))}`); });
   assert.equal(await ev(`return document.querySelector('#origin-research-max').getAttribute('aria-label');`), 'Restore width');
   const widened = Number(await ev(`return localStorage.getItem('promptboard.origin.research-width');`));
   await click('#origin-research-max');

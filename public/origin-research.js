@@ -110,7 +110,8 @@ window.PromptboardOriginResearch = (() => {
     // ---- Width: drag the left edge; maximize up to the navigation sidebar ----
     const maxWidth = () => {
       const sidebar = document.querySelector('#sidebar'), edge = sidebar && !sidebar.hidden && getComputedStyle(sidebar).display !== 'none' ? sidebar.getBoundingClientRect().right : 0;
-      return Math.max(MIN_WIDTH, Math.floor(window.innerWidth - Math.max(0, edge) - 24));
+      // The visible width: a classic scrollbar (Windows, Linux) is not part of it; overlay scrollbars (macOS) take none.
+      return Math.max(MIN_WIDTH, Math.floor(document.documentElement.clientWidth - Math.max(0, edge) - 24));
     };
     const width = () => Math.min(maxWidth(), Math.max(MIN_WIDTH, Number(pref(WIDTH_KEY)) || DEFAULT_WIDTH));
     function applyWidth(value = maximized ? maxWidth() : width(), { save = false } = {}) {
@@ -125,7 +126,7 @@ window.PromptboardOriginResearch = (() => {
       grip.addEventListener('pointerdown', event => {
         // The drag is followed on the window: the panel can redraw (and replace this edge) while it runs.
         event.preventDefault();
-        const move = moved => applyWidth(window.innerWidth - moved.clientX - 12, { save: true });
+        const move = moved => applyWidth(document.documentElement.clientWidth - moved.clientX - 12, { save: true });
         const stop = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', stop); window.removeEventListener('pointercancel', stop); renderTools(); };
         window.addEventListener('pointermove', move); window.addEventListener('pointerup', stop); window.addEventListener('pointercancel', stop);
       });
