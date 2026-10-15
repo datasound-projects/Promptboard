@@ -37,6 +37,7 @@ import { ResearchError, ResearchStore, researchRoute } from './origin-research.m
 import { streamResearch } from './research-cli.mjs';
 import { PromptStore, createBoardProject, nameTaken, projectsRoute } from './projects.mjs';
 import { Coordinator, CoordinatorError, coordinatorRoute } from './coordinator.mjs';
+import { BatchError, ComposeBatches, batchRoute } from './compose-batch.mjs';
 
 const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
 const assets = new Map([
@@ -56,6 +57,7 @@ const assets = new Map([
   ['/origin-research.js', ['origin-research.js', 'text/javascript; charset=utf-8']],
   ['/projects.js', ['projects.js', 'text/javascript; charset=utf-8']],
   ['/coordinator.js', ['coordinator.js', 'text/javascript; charset=utf-8']],
+  ['/compose-batch.js', ['compose-batch.js', 'text/javascript; charset=utf-8']],
   ['/dock.js', ['dock.js', 'text/javascript; charset=utf-8']],
 ]);
 // Pinned terminal assets, served from the installed packages by exact path only (no CDN,
@@ -103,7 +105,7 @@ export async function generate(request, { runner = runProvider, signal, catalogR
 // Map internal codes to HTTP statuses. Message text always comes from fixed strings.
 const STATUS = { ABORTED: 499, TIMEOUT: 504, BUSY: 409, AUTH_IN_PROGRESS: 409, NOT_INSTALLED: 409, UNSUPPORTED: 400, INVALID_PROVIDER: 400, INVALID_MODEL: 400, INVALID_EFFORT: 400, INVALID_INPUT: 400 };
 // Domain errors whose messages are fixed, user-facing strings.
-const EXPOSED = [AgentError, BaseDeliveryError, BaseError, BoardError, CoordinatorError, DeliveryError, GitError, GitHubError, NotificationError, OriginError, RepositoryPipelineError, ResearchError, StoreError, WorkspaceFileError];
+const EXPOSED = [AgentError, BatchError, BaseDeliveryError, BaseError, BoardError, CoordinatorError, DeliveryError, GitError, GitHubError, NotificationError, OriginError, RepositoryPipelineError, ResearchError, StoreError, WorkspaceFileError];
 /** The one error-to-HTTP mapping. Unexpected errors get the route's fallback text, never internal details. */
 function failureBody(error, fallback, unknown = { status: 502, code: 'UNKNOWN' }) {
   if (EXPOSED.some(Type => error instanceof Type)) return { status: error.status || 500, body: { error: error.message, code: error.code || 'INVALID_REQUEST' } };
@@ -303,7 +305,7 @@ function streamRun(supervisor, req, res, runId, after) {
   req.on('close', () => { clearInterval(ping); unsubscribe(); });
 }
 
-export async function startServer({ port = 4318, runner = runProvider, detector = detectProviders, catalogReader = discoverModels, authAdapter = auth, dataDir = defaultDataDir(), projectsDir, executor = 'auto', folderPicker = chooseFolder, githubPty = loadPty, usageReader, mcpTester, imageGenerator, composeMcp, researchRunner = streamResearch } = {}) {
+export async function startServer({ batchTimeoutMs, port = 4318, runner = runProvider, detector = detectProviders, catalogReader = discoverModels, authAdapter = auth, dataDir = defaultDataDir(), projectsDir, executor = 'auto', folderPicker = chooseFolder, githubPty = loadPty, usageReader, mcpTester, imageGenerator, composeMcp, researchRunner = streamResearch } = {}) {
   // The board loads lazily, so starting the server never reads or writes board files.
   const usage = usageReader || new UsageDashboard({ dataDir });
   const notifications = new PipelineNotifications();
@@ -344,6 +346,7 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
     if (busy?.controller.signal.aborted) await Promise.race([busy.done, new Promise(resolve => setTimeout(resolve, 5000).unref())]);
     // Changing sign-in under a running agent session would break it.
     if (kind === 'auth' && board.executor?.activeCount?.() > 0) throw Object.assign(new ProviderError('Agent sessions are running. Stop them before you change sign-in.', 'RUNS_ACTIVE'), { status: 409 });
+    if (kind === 'auth' && batches.activeCount() > 0) throw Object.assign(new ProviderError('Compose Batch is running. Wait for it or cancel it before you change sign-in.', 'RUNS_ACTIVE'), { status: 409 });
     if (busy) {
       throw Object.assign(new ProviderError(busy.kind === 'auth' ? 'A sign-in change is in progress. Finish or cancel it first.' : 'A prompt is already in progress. Wait or cancel that prompt.', busy.kind === 'auth' ? 'AUTH_IN_PROGRESS' : 'BUSY'), { status: 409 });
     }
@@ -379,6 +382,9 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
   const research = new ResearchStore(dataDir); // Creates nothing on disk until a chat is saved.
   const prompts = new PromptStore(dataDir);
   const coordinator = new Coordinator({ dataDir, board, origin });
+  // Compose Batch has its own bounded pool beside the one-job slot: each task is one tracked Compose run.
+  const batches = new ComposeBatches({ dataDir, origin, board, track, call: input => track(runner(input)), authBusy: () => busy?.kind === 'auth', ...(batchTimeoutMs ? { timeoutMs: batchTimeoutMs } : {}),
+    generate: (request, options) => generate(request, { runner: call => track(runner(call)), catalogReader: provider => getCatalog(provider, { maxAgeMs: Infinity }), ...options }) });
   const baseRoutes = new BaseRoutes({ board, runner, claim, track, catalog: getCatalog, send, jsonBody, ...(mcpTester ? { mcpTester } : {}), imageGenerator });
   let composeContext;
   const getCompose = () => composeContext ??= import('./compose-context.mjs').then(({ ComposeContext }) => new ComposeContext(composeMcp ? { mcp: composeMcp } : {}));
@@ -519,6 +525,10 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
         if (matched) busy.controller.abort();
         return send(res, 200, { cancelled: Boolean(matched) });
       } catch (error) { return send(res, error.status || 400, { error: error.message }); }
+    }
+    if (/^\/api\/compose\/batches(?:\/|$)/.test(pathname)) {
+      try { return await batchRoute({ batches, req, res, pathname, searchParams: requestUrl.searchParams, jsonBody, send }); }
+      catch (error) { return sendFailure(res, error, 'The batch request failed. Origin and Kanban are unchanged.', { status: 500, code: 'BATCH_FAILED' }); }
     }
     if (pathname.startsWith('/api/compose/')) {
       let claimed;
@@ -674,6 +684,7 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
     notifications.close();
     const listening = new Promise(resolve => server.close(() => resolve()));
     busy?.controller.abort();
+    const batchesClosed = batches.close();
     baseRoutes.close();
     if (composeContext) (await composeContext).close();
     catalogAbort.abort();
@@ -685,7 +696,7 @@ export async function startServer({ port = 4318, runner = runProvider, detector 
     autopilot.stop();
     board.githubLogin.cancel('The app stopped.');
     board.delivery.stopAllTests();
-    const settle = Promise.allSettled([...tasks, ...lookups.values(), busy?.done, automations, agents].filter(Boolean));
+    const settle = Promise.allSettled([...tasks, ...lookups.values(), busy?.done, automations, agents, batchesClosed].filter(Boolean));
     // An accepted shutdown must keep Node alive even when a broken adapter has
     // no remaining handles. Observe cleanup or reach this bounded terminal state.
     let cleanupTimer;

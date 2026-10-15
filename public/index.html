@@ -24,6 +24,7 @@
     <script src="/origin.js" defer></script>
     <script src="/projects.js" defer></script>
     <script src="/coordinator.js" defer></script>
+    <script src="/compose-batch.js" defer></script>
     <script src="/app.js" defer></script>
     <script src="/dock.js" defer></script>
   </head>
@@ -97,6 +98,8 @@
 
     <main class="workspace" id="prompt-view">
       <h1 id="page-title" class="sr-only">Compose a prompt</h1>
+      <div class="compose-mode view-switch" role="tablist" aria-label="Compose mode"><button type="button" role="tab" id="compose-mode-single" aria-selected="true" aria-controls="prompt-form" title="One prompt at a time">Single</button><button type="button" role="tab" id="compose-mode-batch" aria-selected="false" aria-controls="batch-view" tabindex="-1" title="Many Origin tasks at once, each reviewed before Kanban">Batch</button></div>
+      <section class="batch-view" id="batch-view" aria-label="Compose Batch" hidden></section>
       <div class="compose-origin" id="compose-origin" hidden><span id="compose-origin-text"></span><button class="secondary-button" id="compose-origin-use" type="button" disabled title="Add this result to the Origin task as a proposal to review">Use in Origin task</button><button class="text-button" id="compose-origin-back" type="button">Back to Origin</button><button class="text-button" id="compose-origin-unlink" type="button" title="Keep the prompt here without linking it to the Origin task">Unlink</button></div>
 
       <form id="prompt-form">

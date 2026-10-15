@@ -1572,7 +1572,8 @@ window.PromptboardOrigin = (() => {
         bar.append(el('span', 'origin-selection-text', count ? `${plural(count, 'task')} selected` : 'Select tasks to send them to Kanban'),
           Object.assign(button('Select all drafts', () => { planSelection = new Set(visible.filter(item => !item.handoff).map(item => item.id)); focusAfter = () => main.querySelector('#origin-select-drafts'); renderMain(); }, 'origin-link'), { id: 'origin-select-drafts' }),
           count ? button('Clear', () => { planSelection = new Set(); focusAfter = () => main.querySelector('#origin-select-drafts'); renderMain(); }, 'origin-link') : '',
-          count ? Object.assign(button('Improve with Compose', () => openImprove([...planSelection]), 'origin-ghost', 'Get a Compose proposal for each selected task. Optional.'), { id: 'origin-improve' }) : '', send);
+          count ? Object.assign(button('Improve with Compose', () => openImprove([...planSelection]), 'origin-ghost', 'Get a Compose proposal for each selected task. Optional.'), { id: 'origin-improve' }) : '',
+          count ? composeSelection([...planSelection].filter(id => blueprint.items.some(item => item.id === id))) : '', send);
         nodes.push(bar);
       }
       return nodes;
@@ -2090,8 +2091,8 @@ window.PromptboardOrigin = (() => {
       compare.append(el('summary', '', 'Compare'), grid);
       const update = button('Update context', async () => {
         if (status.edited && update.dataset.confirm !== 'true') {
-          update.dataset.confirm = 'true'; update.textContent = 'Replace the edited card prompt?'; update.classList.add('danger');
-          message.textContent = 'The card’s prompt was edited in Kanban. Compare first; replacing it discards that edit.'; message.hidden = false; return;
+          update.dataset.confirm = 'true'; update.textContent = status.engineered ? 'Replace the Compose Batch prompt?' : 'Replace the edited card prompt?'; update.classList.add('danger');
+          message.textContent = status.engineered ? 'The card carries a prompt approved in Compose Batch. Compare first; replacing it discards that prompt.' : 'The card’s prompt was edited in Kanban. Compare first; replacing it discards that edit.'; message.hidden = false; return;
         }
         update.disabled = true;
         const { response, data } = await app.api(`/api/origin/projects/${encodeURIComponent(projectId)}/update-context`, { method: 'POST', timeoutMs: 30000,
@@ -2105,7 +2106,8 @@ window.PromptboardOrigin = (() => {
         app.announce(`Kanban #${status.cardNumber} now has the current context. It stays in To Do; nothing started.`);
         contextStatus.revision = -1; void refreshContextStatus();
       }, 'origin-primary', status.idle ? 'Replace the card’s prompt with the current context. The card stays idle in To Do.' : 'Stop its work and move the card back to To Do first.');
-      update.disabled = !status.idle;
+      update.disabled = !status.idle || status.splitPart;
+      if (status.splitPart) update.title = 'This card is one part of a task split in Compose Batch. Regenerate the task there.';
       const keep = button('Keep current', () => { item.handoff.keptHash = status.hash; changed({ structure: true, drawer: true }); app.announce('Kept the card as it is. It is flagged again only if the context changes further.'); }, 'origin-link');
       const actions = el('div', 'origin-inline-actions'); actions.append(update, improveButton(item, message, 'Improve again'), keep);
       box.append(...(status.idle ? [] : [el('p', 'origin-hint', 'The card is no longer idle in To Do. Stop its work and move it back to update it.')]), compare, actions);
@@ -2128,6 +2130,27 @@ window.PromptboardOrigin = (() => {
         if (prepared.error) { message.textContent = prepared.error; message.hidden = false; return null; }
         return { text: prepared.body, task: 'feature', origin: { originId: projectId, itemId: item.id, key: item.key, title: item.title, basis: basisOf(item) } };
       }, () => `Opened ${item.key} in Compose with its context. Choose Generate there, then Use in Origin task. Nothing was generated yet.`);
+    }
+    /**
+     * Send to Compose from the selection: one task opens in Compose (Single) with its context, as Improve does;
+     * several join this project's Compose Batch once each, in build order. Nothing is generated or sent.
+     */
+    function composeSelection(ids) {
+      const message = el('span', 'origin-hint'); message.hidden = true; message.setAttribute('role', 'status');
+      const item = ids.length === 1 ? bp().items.find(entry => entry.id === ids[0]) : null;
+      const control = item ? improveButton(item, message, 'Send to Compose') : button(`Send ${plural(ids.length, 'task')} to Compose`, async () => {
+        control.disabled = true;
+        try {
+          if (!(await flush())) { showError('Save the blueprint first, then try again.'); return; }
+          const result = await app.toBatch({ originId: projectId, expectedRevision: record.revision, itemIds: ids });
+          if (!result.ok) { showError(result.error); return; }
+          app.announce(`${plural(result.added, 'task')} added to Compose Batch${result.existing ? `; ${plural(result.existing, 'task')} already there` : ''}. Nothing runs until you choose Run.`);
+        } finally { control.disabled = false; }
+      }, 'origin-ghost origin-compose', 'Engineer a prompt for each selected task in Compose Batch, review them, then send the approved ones to Kanban. Nothing runs until you choose Run.');
+      if (!item) control.prepend(icon(ICON.arrow, 14));
+      control.id = 'origin-send-compose';
+      const wrap = el('span', 'origin-compose-send'); wrap.append(control, message);
+      return wrap;
     }
     /** Compose hands a result back: it becomes a proposal on the same task, to accept, edit or reject. */
     async function receiveProposal({ originId, itemId, text, basis }) {

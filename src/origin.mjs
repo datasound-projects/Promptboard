@@ -286,7 +286,9 @@ export class OriginStore {
       const dir = join(this.dir, 'snapshots', escapeId(validId(originId)));
       await mkdir(dir, { recursive: true, mode: 0o700 });
       const id = randomUUID(), snapshot = { schema: 'promptboard.origin-snapshot', version: 1, id, originId, itemId: built.itemId, key: built.key, revision, createdAt: Date.now(),
-        instruction: built.instruction, context: built.context, body: built.body, included: built.included, omitted: built.omitted, hash: built.hash };
+        instruction: built.instruction, context: built.context, body: built.body, included: built.included, omitted: built.omitted, hash: built.hash,
+        // A card made from a Compose Batch prompt also records which approved prompt version it carries.
+        ...(built.compose ? { compose: built.compose } : {}) };
       try {
         const handle = await open(join(dir, `${escapeId(id)}.json`), 'wx', 0o600);
         try { await handle.writeFile(`${JSON.stringify(snapshot, null, 1)}\n`); await handle.sync(); } finally { await handle.close(); }
@@ -352,7 +354,7 @@ export function buildContext(record, itemId) {
 }
 
 /** The first dependency loop reachable from these tasks, as display keys; prerequisites must be acyclic. */
-function loopFrom(items, ids) {
+export function loopFrom(items, ids) {
   const path = [], explored = new Set();
   const visit = id => {
     if (path.includes(id)) return [...path.slice(path.indexOf(id)), id];
@@ -447,7 +449,9 @@ async function contextStatus({ origin, board, originId, input }) {
     const sent = item.handoff.hash || card.originSource?.hash || '', body = sentBody(snapshot, record, item.id);
     const before = new Set((snapshot?.included || []).map(entry => entry.name)), after = new Set(built.included.map(entry => entry.name));
     tasks.push({ itemId: item.id, key: item.key, status: !sent ? 'unknown' : built.hash === sent ? 'current' : built.hash === item.handoff.keptHash ? 'kept' : 'changed',
-      hash: built.hash, sentHash: sent, cardId: card.id, cardNumber: card.number, cardRevision: card.revision, idle: card.column === todoOf(destination), edited: body !== null && card.prompt !== body,
+      hash: built.hash, sentHash: sent, cardId: card.id, cardNumber: card.number, cardRevision: card.revision, idle: card.column === todoOf(destination),
+      // A prompt approved in Compose Batch counts as edited: Update context replaces it only after a confirmation, and never on a split part.
+      edited: (body !== null && card.prompt !== body) || Boolean(snapshot?.compose), engineered: Boolean(snapshot?.compose), splitPart: Boolean(snapshot?.compose?.childId),
       added: [...after].filter(name => !before.has(name)), removed: snapshot ? [...before].filter(name => !after.has(name)) : [],
       sent: snapshot ? `${snapshot.instruction}\n\n${snapshot.context}` : '', now: built.tooLarge ? '' : `${built.instruction}\n\n${built.context}`, error: built.error || '' });
   }
@@ -471,7 +475,9 @@ async function updateContext({ origin, board, originId, input }) {
   if (built.tooLarge) throw new OriginError(built.error, 'CONTEXT_TOO_LARGE', 409);
   if (built.hash !== input.expectedHash) throw new OriginError('The design changed again. Review the new context first.', 'CONTEXT_CHANGED_AGAIN', 409);
   if (card.revision !== input.expectedCardRevision) throw new OriginError('The card changed in Kanban. Review it again.', 'REVISION_CONFLICT', 409);
-  const body = sentBody(await origin.readSnapshot(originId, item.handoff.snapshotId), record, item.id);
+  const sentSnapshot = await origin.readSnapshot(originId, item.handoff.snapshotId), body = sentBody(sentSnapshot, record, item.id);
+  if (sentSnapshot?.compose?.childId) throw new OriginError('This card is one part of a task split in Compose Batch. Regenerate the task there instead.', 'SPLIT_PART', 409);
+  if (sentSnapshot?.compose && input.replaceEdited !== true) throw new OriginError('The card has a prompt approved in Compose Batch. Compare both, then confirm to replace it with the task and its context.', 'CARD_ENGINEERED', 409);
   if (body !== null && card.prompt !== body && input.replaceEdited !== true) throw new OriginError('The card’s prompt was edited in Kanban. Compare both, then confirm to replace it.', 'CARD_EDITED', 409);
   const snapshot = await origin.snapshot(originId, built, record.revision);
   const task = await board.refreshOriginTask(card.id, { prompt: built.body, snapshotId: snapshot.id, hash: snapshot.hash, expectedRevision: card.revision });
