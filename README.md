@@ -21,7 +21,7 @@
 ## Demo
 
 <p align="center">
-  <img src="docs/promptboard-demo.gif" width="960" alt="Promptboard demo, 60 seconds: plan the Northstar enterprise AI platform in Origin, engineer its eight task prompts in parallel in Compose Batch, equip two agent profiles in Base, and let Kanban Autopilot build, review, test and merge all 13 cards; then the finished app.">
+  <img src="docs/promptboard-demo.gif" width="960" alt="Promptboard demo, 60 seconds.">
 </p>
 <p align="center"><sub>60 seconds: Promptboard plans an enterprise AI platform, engineers its prompts, and Claude Code agents build, review, test and merge it. Real runs, time-lapsed.</sub></p>
 
