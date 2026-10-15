@@ -286,7 +286,9 @@ export class OriginStore {
       const dir = join(this.dir, 'snapshots', escapeId(validId(originId)));
       await mkdir(dir, { recursive: true, mode: 0o700 });
       const id = randomUUID(), snapshot = { schema: 'promptboard.origin-snapshot', version: 1, id, originId, itemId: built.itemId, key: built.key, revision, createdAt: Date.now(),
-        instruction: built.instruction, context: built.context, body: built.body, included: built.included, omitted: built.omitted, hash: built.hash };
+        instruction: built.instruction, context: built.context, body: built.body, included: built.included, omitted: built.omitted, hash: built.hash,
+        // A card made from a Compose Batch prompt also records which approved prompt version it carries.
+        ...(built.compose ? { compose: built.compose } : {}) };
       try {
         const handle = await open(join(dir, `${escapeId(id)}.json`), 'wx', 0o600);
         try { await handle.writeFile(`${JSON.stringify(snapshot, null, 1)}\n`); await handle.sync(); } finally { await handle.close(); }
@@ -352,7 +354,7 @@ export function buildContext(record, itemId) {
 }
 
 /** The first dependency loop reachable from these tasks, as display keys; prerequisites must be acyclic. */
-function loopFrom(items, ids) {
+export function loopFrom(items, ids) {
   const path = [], explored = new Set();
   const visit = id => {
     if (path.includes(id)) return [...path.slice(path.indexOf(id)), id];
