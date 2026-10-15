@@ -2091,8 +2091,8 @@ window.PromptboardOrigin = (() => {
       compare.append(el('summary', '', 'Compare'), grid);
       const update = button('Update context', async () => {
         if (status.edited && update.dataset.confirm !== 'true') {
-          update.dataset.confirm = 'true'; update.textContent = 'Replace the edited card prompt?'; update.classList.add('danger');
-          message.textContent = 'The card’s prompt was edited in Kanban. Compare first; replacing it discards that edit.'; message.hidden = false; return;
+          update.dataset.confirm = 'true'; update.textContent = status.engineered ? 'Replace the Compose Batch prompt?' : 'Replace the edited card prompt?'; update.classList.add('danger');
+          message.textContent = status.engineered ? 'The card carries a prompt approved in Compose Batch. Compare first; replacing it discards that prompt.' : 'The card’s prompt was edited in Kanban. Compare first; replacing it discards that edit.'; message.hidden = false; return;
         }
         update.disabled = true;
         const { response, data } = await app.api(`/api/origin/projects/${encodeURIComponent(projectId)}/update-context`, { method: 'POST', timeoutMs: 30000,
@@ -2106,7 +2106,8 @@ window.PromptboardOrigin = (() => {
         app.announce(`Kanban #${status.cardNumber} now has the current context. It stays in To Do; nothing started.`);
         contextStatus.revision = -1; void refreshContextStatus();
       }, 'origin-primary', status.idle ? 'Replace the card’s prompt with the current context. The card stays idle in To Do.' : 'Stop its work and move the card back to To Do first.');
-      update.disabled = !status.idle;
+      update.disabled = !status.idle || status.splitPart;
+      if (status.splitPart) update.title = 'This card is one part of a task split in Compose Batch. Regenerate the task there.';
       const keep = button('Keep current', () => { item.handoff.keptHash = status.hash; changed({ structure: true, drawer: true }); app.announce('Kept the card as it is. It is flagged again only if the context changes further.'); }, 'origin-link');
       const actions = el('div', 'origin-inline-actions'); actions.append(update, improveButton(item, message, 'Improve again'), keep);
       box.append(...(status.idle ? [] : [el('p', 'origin-hint', 'The card is no longer idle in To Do. Stop its work and move it back to update it.')]), compare, actions);

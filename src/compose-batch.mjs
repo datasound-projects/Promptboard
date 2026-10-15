@@ -147,7 +147,7 @@ function stateOf(item, origin, card) {
   // A failed review or split keeps the prompt it was about; only a failed generation makes the task Failed.
   if (item.error && (!version || item.error.kind === 'generate')) return 'failed';
   if (!version) return 'pending';
-  if (item.split?.state === 'accepted') return origin === 'current' && item.split.fromVersionId === version.id && item.split.children.every(childApproved) ? 'approved' : 'review';
+  if (item.split?.state === 'accepted') return origin === 'current' && item.split.fromVersionId === version.id && item.split.coverage.status !== 'issues' && item.split.children.every(childApproved) ? 'approved' : 'review';
   if (approvedNow(item, version) && origin === 'current') return 'approved';
   return severityStatus(versionFindings(item, version, origin)) === 'pass' ? 'generated' : 'review';
 }
@@ -177,8 +177,8 @@ export class ComposeBatches {
    * `generate(request, { signal, onStage })` is Compose's own generation (validation, effort check, pipeline);
    * `call({ provider, model, effort, prompt, cwd, signal })` runs one isolated CLI call for a review or a split.
    */
-  constructor({ dataDir, origin, board, generate, call, track = promise => promise, timeoutMs = BATCH_LIMITS.timeoutMs }) {
-    Object.assign(this, { dir: join(dataDir, BATCH_DIR), origin, board, generate, call, track, timeoutMs });
+  constructor({ dataDir, origin, board, generate, call, track = promise => promise, timeoutMs = BATCH_LIMITS.timeoutMs, authBusy = () => false }) {
+    Object.assign(this, { dir: join(dataDir, BATCH_DIR), origin, board, generate, call, track, timeoutMs, authBusy });
   }
 
   activeCount() { return this.#active.size; }
@@ -205,9 +205,9 @@ export class ComposeBatches {
       if (!item) continue;
       // Runs live only in this process. A run saved by an earlier process stopped with it: never restart it on its own.
       if (item.run) {
-        const started = item.run.state === 'running';
+        const started = item.run.state === 'running', run = item.run;
         item.run = null;
-        if (started) item.error = { code: 'INTERRUPTED', message: 'The app stopped while this task was running. Run it again.', at: Date.now() };
+        if (started) item.error = { code: 'INTERRUPTED', message: 'The app stopped while this task was running. Run it again.', kind: run.kind, at: Date.now() };
         await this.#write(this.#path(batchId, itemId), item);
       }
       items.set(itemId, item);
@@ -326,7 +326,7 @@ export class ComposeBatches {
   async view(batchId) {
     const batch = await this.#require(batchId), record = await this.#record(batch.meta.id);
     const origin = this.#originStates(batch, record), { destination, cards } = await this.#cards(batch.meta.id, record);
-    const items = batch.meta.order.map(itemId => batch.items.get(itemId)).map(item => {
+    const items = batch.meta.order.map(itemId => batch.items.get(itemId)).filter(Boolean).map(item => {
       const version = current(item), findings = versionFindings(item, item.split?.state === 'accepted' ? null : version, origin.get(item.id)), card = cards.get(item.id);
       return { id: item.id, key: item.key, title: item.title, revision: item.revision, state: stateOf(item, origin.get(item.id), card), stage: this.#active.get(item.run?.id)?.stage || '',
         error: item.error, origin: origin.get(item.id), dependsOn: item.source.dependsOn, versions: item.versions.length, card: card ? { id: card.id, number: card.number } : null,
@@ -414,10 +414,10 @@ export class ComposeBatches {
     return this.#serial(async () => {
       const batch = await this.#require(batchId), item = this.#item(batch, itemId);
       if (item.run) throw conflict('This task is running. Cancel it first.', 'TASK_RUNNING');
+      await this.#touch(batch, { order: batch.meta.order.filter(entry => entry !== item.id) });
+      batch.items.delete(item.id);
       await rm(this.#path(batch.meta.id, item.id), { force: true });
       await rm(`${this.#path(batch.meta.id, item.id)}.bak`, { force: true });
-      batch.items.delete(item.id);
-      await this.#touch(batch, { order: batch.meta.order.filter(entry => entry !== item.id) });
     });
   }
 
@@ -426,8 +426,9 @@ export class ComposeBatches {
     return this.#serial(async () => {
       const batch = await this.#require(batchId);
       if ([...batch.items.values()].some(item => item.run)) throw conflict('Tasks are running. Cancel them first.', 'TASK_RUNNING');
-      this.#cache.delete(batch.meta.id);
+      // The cached copy goes last, so a read during the removal never caches a half-deleted folder.
       await rm(join(this.dir, escapeId(batch.meta.id)), { recursive: true, force: true });
+      this.#cache.delete(batch.meta.id);
     });
   }
 
@@ -439,12 +440,14 @@ export class ComposeBatches {
   run(batchId, { itemIds, kind = 'generate', defaults, all = false } = {}) {
     return this.#serial(async () => {
       if (this.#closing) throw conflict('The app is shutting down.', 'SHUTTING_DOWN');
+      if (this.authBusy()) throw conflict('A sign-in change is in progress. Finish or cancel it first.', 'AUTH_IN_PROGRESS');
       if (!['generate', 'review', 'split'].includes(kind)) throw new BatchError('Choose a valid run.');
       const batch = await this.#require(batchId), record = await this.#record(batch.meta.id);
       if (defaults !== undefined) await this.#touch(batch, { defaults: normalizeDefaults(defaults), notice: null });
       else if (batch.meta.notice) await this.#touch(batch, { notice: null });
       const { cards } = await this.#cards(batch.meta.id, record);
-      const ids = all ? batch.meta.order.filter(itemId => { const item = batch.items.get(itemId); return !item.versions.length || item.error; }) : (Array.isArray(itemIds) ? [...new Set(itemIds)] : []);
+      // Run all: tasks without a prompt and tasks whose generation failed; a failed check or split keeps its prompt.
+      const ids = all ? batch.meta.order.filter(itemId => { const item = batch.items.get(itemId); return item && (!item.versions.length || item.error?.kind === 'generate'); }) : (Array.isArray(itemIds) ? [...new Set(itemIds)] : []);
       if (!ids.length) return { queued: 0, skipped: [] };
       let queued = 0; const skipped = [];
       for (const itemId of ids) {
@@ -453,16 +456,18 @@ export class ComposeBatches {
         if (cards.has(item.id)) { skip('Already on Kanban.'); continue; }
         if (item.rejected) { skip('Rejected. Restore it first.'); continue; }
         if (kind !== 'generate' && !current(item)) { skip('Generate a prompt first.'); continue; }
-        if (kind === 'split' && severityStatus(versionFindings(item, current(item), 'current')) === 'blocked') { skip('Resolve the blocking findings before you split.'); continue; }
         if (kind === 'generate') {
+          if (item.split?.children.some(child => child.sent)) { skip('Some parts of its split are already on Kanban.'); continue; }
           // A regenerated prompt always uses the task as Origin has it now.
           const fresh = record && snapshotSource(record, item.id);
           if (!fresh) { skip('The task no longer exists in Origin.'); continue; }
           if (fresh.hash !== item.source.hash) Object.assign(item, { source: fresh, key: fresh.key, title: fresh.title, split: null });
-          if (item.source.secret) { skip('The task text looks like it contains a secret.'); await this.#saveItem(batch, item); continue; }
-          if (item.source.tooLarge) { skip(item.source.error); await this.#saveItem(batch, item); continue; }
-          item.split = null;
-        }
+        } else if (current(item).sourceHash !== item.source.hash) { skip('The task changed since this prompt was made. Regenerate it first.'); continue; }
+        // Every run sends the task's words to a CLI: never one that looks like it holds a secret.
+        if (item.source.secret) { skip('The task text looks like it contains a secret.'); await this.#saveItem(batch, item); continue; }
+        if (item.source.tooLarge) { skip(item.source.error); await this.#saveItem(batch, item); continue; }
+        if (kind === 'split' && severityStatus(versionFindings(item, current(item), 'current')) === 'blocked') { skip('Resolve the blocking findings before you split.'); continue; }
+        if (kind === 'generate') item.split = null;
         if (kind === 'split' && item.split?.state === 'accepted') { skip('Undo the split first.'); continue; }
         // The effective settings are fixed when the task is queued and saved with the version it produces.
         const settings = resolveSettings(batch.meta.defaults, batch.meta.settings, item.overrides).value;
@@ -514,7 +519,8 @@ export class ComposeBatches {
       try {
         const snapshot = structuredClone(this.#cache.get(job.batchId).items.get(job.itemId)); // This run's own copy; nothing it reads is shared.
         const outcome = await this.#work(job, snapshot, signal);
-        await this.#apply(job, item => outcome(item));
+        // Cancel can be queued behind other changes while the answer arrives: a cancelled run never adds its result.
+        await this.#apply(job, item => { if (job.cancelled) item.run = null; else outcome(item); });
       } catch (error) {
         const failure = job.cancelled ? null : failureOf(error, this.#closing);
         await this.#apply(job, item => { item.run = null; item.error = failure && { ...failure, kind: job.kind, at: Date.now() }; }).catch(() => {});
@@ -590,7 +596,9 @@ export class ComposeBatches {
   async #once(settings, prompt, signal) {
     const cwd = await makeTempDir('ste-batch-');
     try {
-      const result = await this.call({ provider: settings.provider, model: settings.model, effort: settings.effort, prompt, cwd, signal, timeoutMs: null });
+      let result;
+      try { result = await this.call({ provider: settings.provider, model: settings.model, effort: settings.effort, prompt, cwd, signal, timeoutMs: null }); }
+      catch (error) { signal.throwIfAborted(); throw error; } // A deadline reports a timeout, not a cancellation.
       signal.throwIfAborted();
       if (typeof result?.text !== 'string' || !result.text.trim()) throw new Error('The CLI returned no text.');
       return result.text;
@@ -630,16 +638,19 @@ export class ComposeBatches {
         if (target.childId !== undefined) {
           const child = item.split?.state === 'accepted' && item.split.children.find(entry => entry.id === target.childId);
           if (!child) { refuse('Accept the split first.'); continue; }
+          if (approve && item.split.coverage.status === 'issues') { refuse('Some exact values of the prompt are in no part. Edit the parts first.'); continue; }
           child.approval = approve ? { promptHash: hash(child.prompt), at: Date.now() } : null;
           await this.#saveItem(batch, item); approved++; continue;
         }
         if (!approve) { item.approval = null; await this.#saveItem(batch, item); approved++; continue; }
         if (item.split || !version) { if (!passing) refuse(item.split ? 'Approve the split tasks instead.' : 'Generate a prompt first.'); continue; }
+        if (passing && item.error) continue;
         if (!passing && target.versionId !== version.id) { refuse('A newer version exists. Review it first.'); continue; }
         if (approvedNow(item, version)) continue;
         const status = severityStatus(versionFindings(item, version, origin.get(item.id)));
         if (status === 'blocked' || (passing && status !== 'pass')) { if (!passing) refuse('Resolve the blocking findings first.'); continue; }
-        item.approval = { versionId: version.id, promptHash: version.promptHash, sourceHash: item.source.hash, at: Date.now() };
+        // Approving the current prompt also settles an earlier failed run of it.
+        item.approval = { versionId: version.id, promptHash: version.promptHash, sourceHash: item.source.hash, at: Date.now() }; item.error = null;
         await this.#saveItem(batch, item); approved++;
       }
       return { approved, refused };
@@ -688,7 +699,8 @@ export class ComposeBatches {
         let previous = null;
         for (const part of parts) {
           const body = Model.taskBody({ ...built, instruction: part.prompt }, { projectName: record.name, itemId });
-          const snapshot = await this.origin.snapshot(originId, { ...built, body, compose: { batchId: originId, itemId, childId: part.childId || '', versionId: item.current, promptHash: part.promptHash } }, record.revision);
+          // The snapshot records what the card got, so Origin compares and protects the approved prompt, not the raw task.
+          const snapshot = await this.origin.snapshot(originId, { ...built, instruction: part.prompt, body, compose: { batchId: originId, itemId, childId: part.childId || '', versionId: item.current, promptHash: part.promptHash } }, record.revision);
           entries.push({ originTaskId: part.originTaskId, key: part.key, title: `${part.key} ${part.title}`.slice(0, 120), prompt: body, snapshotId: snapshot.id, hash: snapshot.hash,
             dependsOnTaskIds: previous ? [] : before.filter(row => row.card).map(row => row.card), dependsOnOrigin: previous ? [previous] : before.filter(row => row.origin).map(row => row.origin) });
           links.push({ itemId, childId: part.childId, snapshotId: snapshot.id, hash: snapshot.hash, originTaskId: part.originTaskId });

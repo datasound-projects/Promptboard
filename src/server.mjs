@@ -383,7 +383,7 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
   const prompts = new PromptStore(dataDir);
   const coordinator = new Coordinator({ dataDir, board, origin });
   // Compose Batch has its own bounded pool beside the one-job slot: each task is one tracked Compose run.
-  const batches = new ComposeBatches({ dataDir, origin, board, track, call: input => track(runner(input)), ...(batchTimeoutMs ? { timeoutMs: batchTimeoutMs } : {}),
+  const batches = new ComposeBatches({ dataDir, origin, board, track, call: input => track(runner(input)), authBusy: () => busy?.kind === 'auth', ...(batchTimeoutMs ? { timeoutMs: batchTimeoutMs } : {}),
     generate: (request, options) => generate(request, { runner: call => track(runner(call)), catalogReader: provider => getCatalog(provider, { maxAgeMs: Infinity }), ...options }) });
   const baseRoutes = new BaseRoutes({ board, runner, claim, track, catalog: getCatalog, send, jsonBody, ...(mcpTester ? { mcpTester } : {}), imageGenerator });
   let composeContext;

@@ -59,13 +59,15 @@ window.PromptboardBatch = (() => {
         render();
       }
     }
+    // Origin and Kanban change a task's state without changing the task itself, so the whole row is compared.
+    const signature = entry => entry && JSON.stringify([entry.revision, entry.state, entry.origin, entry.card?.id, entry.findings]);
     function accept(next) {
-      const before = batch?.items.find(entry => entry.id === selectedId)?.revision;
+      const before = signature(batch?.items.find(entry => entry.id === selectedId));
       batch = next;
       if (!batch.items.some(entry => entry.id === selectedId)) selectedId = batch.items[0]?.id || '';
       checked = new Set([...checked].filter(id => batch.items.some(entry => entry.id === id)));
       const now = batch.items.find(entry => entry.id === selectedId);
-      if (now && (now.revision !== before || item?.id !== now.id)) void loadItem();
+      if (now && (signature(now) !== before || item?.id !== now.id)) void loadItem();
       render();
     }
     async function loadItem() {
@@ -237,7 +239,7 @@ window.PromptboardBatch = (() => {
       const li = el('li', 'batch-row'); li.dataset.id = entry.id;
       const box = el('input'); box.type = 'checkbox'; box.checked = checked.has(entry.id); box.setAttribute('aria-label', `Select ${entry.key} ${entry.title}`);
       box.addEventListener('change', () => { box.checked ? checked.add(entry.id) : checked.delete(entry.id); render(); });
-      const main = button('', () => { if (selectedId === entry.id) return; selectedId = entry.id; draft = null; message = null; item = null; render(); renderInspector(); void loadItem(); }, 'batch-row-main');
+      const main = button('', () => { if (selectedId === entry.id) return; selectedId = entry.id; draft = null; splitDrafts.clear(); message = null; item = null; render(); renderInspector(); void loadItem(); }, 'batch-row-main');
       main.setAttribute('aria-current', String(entry.id === selectedId));
       const name = el('span', 'batch-row-name'); name.append(el('span', 'batch-key', entry.key), document.createTextNode(` ${entry.title || 'Untitled task'}`));
       const meta = el('span', 'batch-row-meta', [entry.state === 'running' && STAGES[entry.stage], entry.findings.blocking && plural(entry.findings.blocking, 'blocking finding'), !entry.findings.blocking && entry.findings.warning && plural(entry.findings.warning, 'note'),
@@ -280,10 +282,12 @@ window.PromptboardBatch = (() => {
       const bar = el('div', 'batch-inspector-actions');
       const path = `/${enc()}`, id = item.id;
       if (running) { bar.append(button('Cancel', () => act(`${path}/cancel`, { itemIds: [id] }, 'Cancelled.', { where: 'item' }), 'secondary-button')); return bar; }
-      if (sent) { bar.append(button(`Open Kanban #${item.card.number}`, () => app.openKanban(batch.kanban?.id, item.card.id), 'secondary-button')); return bar; }
+      if (sent) { bar.append(button(item.card ? `Open Kanban #${item.card.number}` : 'Open Kanban', () => app.openKanban(batch.kanban?.id, item.card?.id), 'secondary-button')); return bar; }
       if (item.rejected) { bar.append(button('Restore', () => act(`${path}/items/${id}`, { rejected: false }, 'Restored.', { method: 'PATCH', where: 'item' }), 'secondary-button')); return bar; }
       const generate = button(version ? 'Regenerate' : 'Generate', () => {
-        if (item.approved && generate.dataset.confirm !== 'true') { generate.dataset.confirm = 'true'; generate.textContent = 'Regenerate and remove the approval?'; generate.classList.add('danger'); return; }
+        if ((item.approved || item.split?.state === 'accepted') && generate.dataset.confirm !== 'true') {
+          generate.dataset.confirm = 'true'; generate.textContent = item.split ? 'Regenerate and drop the split?' : 'Regenerate and remove the approval?'; generate.classList.add('danger'); return;
+        }
         void act(`${path}/run`, { itemIds: [id], defaults: app.composeSettings() }, data => (data.queued ? 'Queued.' : data.skipped[0]?.reason || 'Not queued.'), { where: 'item' });
       }, version ? 'secondary-button' : 'copy-button', 'Write this task’s prompt again in a fresh, separate run');
       generate.id = 'batch-generate';
@@ -293,7 +297,7 @@ window.PromptboardBatch = (() => {
         if (item.approved) bar.append(button('Remove approval', () => act(`${path}/approve`, { items: [{ itemId: id }], approve: false }, 'Approval removed.', { where: 'item' }), 'secondary-button'));
         else {
           const approve = button('Approve', () => act(`${path}/approve`, { items: [{ itemId: id, versionId: version.id }] }, data => (data.approved ? `${item.key} approved for Kanban.` : data.refused[0]?.reason || 'Not approved.'), { where: 'item' }), 'copy-button', blocked ? 'Resolve the blocking findings first' : 'Approve exactly this version for Kanban');
-          approve.disabled = blocked; approve.id = 'batch-approve';
+          approve.disabled = blocked || draft?.itemId === item.id; approve.dataset.blocked = String(blocked); approve.id = 'batch-approve';
           bar.append(approve);
         }
         bar.append(button('Check again', () => act(`${path}/run`, { itemIds: [id], kind: 'review' }, 'A fresh review of this prompt is queued.', { where: 'item' }), 'secondary-button', 'A separate model call reviews the current prompt against the task. The prompt does not change.'));
@@ -333,7 +337,12 @@ window.PromptboardBatch = (() => {
       const discard = button('Discard edit', () => { draft = null; renderInspector(); }, 'text-button');
       const copy = button('Copy', () => navigator.clipboard.writeText(text.value).then(() => app.announce('Prompt copied.'), () => app.announce('Copy failed. Select the text and copy it.')), 'text-button');
       save.id = 'batch-save-edit';
-      const dirty = () => { const changed = text.value !== version.prompt; save.hidden = discard.hidden = !changed; draft = changed ? { itemId: item.id, base: draft?.itemId === item.id ? draft.base : version.id, text: text.value } : null; };
+      const dirty = () => {
+        const changed = text.value !== version.prompt; save.hidden = discard.hidden = !changed;
+        draft = changed ? { itemId: item.id, base: draft?.itemId === item.id ? draft.base : version.id, text: text.value } : null;
+        // Approval is for the saved version: unsaved text must be saved (and checked) first.
+        const approve = regions?.inspector.querySelector('#batch-approve'); if (approve) approve.disabled = approve.dataset.blocked === 'true' || changed;
+      };
       text.addEventListener('input', dirty);
       const row = el('div', 'batch-editor-actions'); row.append(save, discard, copy);
       save.hidden = discard.hidden = !mine;
@@ -386,14 +395,17 @@ window.PromptboardBatch = (() => {
       if (split.coverage.status === 'issues') { const list = el('ul', 'inline-error'); for (const issue of split.coverage.issues) list.append(el('li', '', `${issue.message}${issue.excerpt ? `: ${issue.excerpt}` : ''}`)); box.append(list); }
       const path = `/${enc()}/items/${encodeURIComponent(item.id)}`;
       for (const child of split.children) {
-        const part = el('div', 'batch-part');
+        const part = el('div', 'batch-part'), key = `${batchId}:${item.id}:${split.createdAt}:${child.id}`;
         part.append(el('p', 'batch-part-title', `${item.key}.${child.id} ${child.title}${child.approved ? ' · approved' : ''}`));
-        const text = el('textarea', 'batch-prompt small'); text.value = splitDrafts.get(child.id) ?? child.prompt; text.readOnly = sent || Boolean(child.sent); text.setAttribute('aria-label', `Prompt of part ${child.id}`);
-        text.addEventListener('input', () => splitDrafts.set(child.id, text.value));
+        const text = el('textarea', 'batch-prompt small'); text.value = splitDrafts.get(key) ?? child.prompt; text.readOnly = sent || Boolean(child.sent); text.setAttribute('aria-label', `Prompt of part ${child.id}`);
         const row = el('div', 'batch-editor-actions');
-        row.append(button('Save part', async () => { if (await act(path, { child: { childId: child.id, prompt: text.value } }, 'Part saved. Approve it again.', { method: 'PATCH', where: 'item' })) splitDrafts.delete(child.id); }, 'text-button'));
-        if (split.state === 'accepted' && !child.sent) row.append(child.approved ? button('Remove approval', () => act(`/${enc()}/approve`, { items: [{ itemId: item.id, childId: child.id }], approve: false }, 'Approval removed.', { where: 'item' }), 'text-button')
-          : button('Approve part', () => act(`/${enc()}/approve`, { items: [{ itemId: item.id, childId: child.id }] }, `Part ${child.id} approved.`, { where: 'item' }), 'secondary-button'));
+        row.append(button('Save part', async () => { if (await act(path, { child: { childId: child.id, prompt: text.value } }, 'Part saved. Approve it again.', { method: 'PATCH', where: 'item' })) { splitDrafts.delete(key); renderInspector(); } }, 'text-button'));
+        let approve = null;
+        if (split.state === 'accepted' && !child.sent) row.append(approve = child.approved ? button('Remove approval', () => act(`/${enc()}/approve`, { items: [{ itemId: item.id, childId: child.id }], approve: false }, 'Approval removed.', { where: 'item' }), 'text-button')
+          : button('Approve part', () => act(`/${enc()}/approve`, { items: [{ itemId: item.id, childId: child.id }] }, data => (data.approved ? `Part ${child.id} approved.` : data.refused[0]?.reason || 'Not approved.'), { where: 'item' }), 'secondary-button'));
+        // Approval is for the saved text: unsaved changes must be saved first.
+        const dirty = () => { const changed = text.value !== child.prompt; changed ? splitDrafts.set(key, text.value) : splitDrafts.delete(key); if (approve && !child.approved) approve.disabled = changed; };
+        text.addEventListener('input', dirty); dirty();
         part.append(text, row);
         box.append(part);
       }
@@ -476,7 +488,7 @@ window.PromptboardBatch = (() => {
     }
 
     async function open(id) {
-      batchId = id; setPref(KEY, id); selectedId = ''; item = null; draft = null; checked = new Set(); message = null; filter = 'all'; regions = null;
+      batchId = id; setPref(KEY, id); selectedId = ''; item = null; draft = null; splitDrafts.clear(); checked = new Set(); message = null; filter = 'all'; regions = null;
       await refresh({ force: true });
       schedule();
     }

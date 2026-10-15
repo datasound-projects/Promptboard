@@ -354,3 +354,72 @@ test('cycles are reported; sign-in waits for running batch work; unknown routes 
   assert.equal((await call(`/${record.id}/nope`, {})).status, 404);
   assert.equal((await api(app, `/api/compose/batches/${record.id}`, { method: 'GET', token: 'wrong' })).status, 403);
 });
+
+test('review fixes: secrets never reach a check, engineered and split cards are protected in Origin, part coverage stays a gate', async t => {
+  let splitFails = false, draftFails = false;
+  const runner = engineer({ fail: text => (draftFails && /MARK3\b/.test(text) ? Object.assign(new Error('x'), { code: 'CLI_FAILED' }) : null) });
+  const wrapped = async call => { if (splitFails && call.prompt.startsWith('# Task split')) return { text: 'not json' }; return runner(call); };
+  wrapped.calls = runner.calls;
+  const { app, call, token } = await setup(t, wrapped, { authAdapter: { installed: async () => true, status: async () => ({ state: 'signed-in' }), login: async (provider, { signal }) => new Promise(resolve => signal.addEventListener('abort', resolve, { once: true })) } });
+  const { store, record } = await project(app, 3, { dependsOn: i => (i === 3 ? ['t2'] : []) });
+  await call('', { originId: record.id, expectedRevision: record.revision, itemIds: ['t1', 't2', 't3'] });
+  await call(`/${record.id}/run`, { all: true });
+  await settle(call, record.id);
+  // A secret pasted into Origin: neither Regenerate nor Check again sends it.
+  let saved = await store.read(record.id);
+  saved.blueprint.items.find(entry => entry.id === 't1').description += ' Use api_key=abcdef0123456789.';
+  await store.write(record.id, { expectedRevision: saved.revision, blueprint: saved.blueprint });
+  const before = runner.calls.length;
+  assert.match((await call(`/${record.id}/run`, { itemIds: ['t1'] })).data.skipped[0].reason, /secret/);
+  assert.match((await call(`/${record.id}/run`, { itemIds: ['t1'], kind: 'review' })).data.skipped[0].reason, /changed|secret/);
+  assert.equal(runner.calls.length, before);
+  assert.ok(runner.calls.every(entry => !entry.prompt.includes('abcdef0123456789')));
+  // A failed split keeps its prompt and is not part of Run all; approving settles a failed run.
+  splitFails = true;
+  await call(`/${record.id}/run`, { itemIds: ['t2'], kind: 'split' });
+  let batch = await settle(call, record.id);
+  assert.deepEqual([states(batch)['IMP-002'], batch.items[1].error.kind], ['generated', 'split']);
+  assert.equal((await call(`/${record.id}/run`, { all: true })).data.queued, 0, 'Run all does not regenerate a task whose split failed.');
+  splitFails = false;
+  // Split IMP-002, accept, then remove an exact value from a part: the part cannot be approved.
+  await call(`/${record.id}/run`, { itemIds: ['t2'], kind: 'split' });
+  await settle(call, record.id);
+  await call(`/${record.id}/items/t2/split`, { accept: true });
+  let item = (await call(`/${record.id}/items/t2`)).data.item;
+  await call(`/${record.id}/items/t2`, { child: { childId: '1', prompt: 'Part one without the path.' } }, 'PATCH');
+  let response = await call(`/${record.id}/approve`, { items: [{ itemId: 't2', childId: '1' }] });
+  assert.match(response.data.refused[0].reason, /in no part/);
+  await call(`/${record.id}/items/t2`, { child: { childId: '1', prompt: item.split.children[0].prompt } }, 'PATCH');
+  for (const childId of ['1', '2']) assert.equal((await call(`/${record.id}/approve`, { items: [{ itemId: 't2', childId }] })).data.approved, 1);
+  // A failed regeneration keeps the earlier prompt; approving that prompt settles the failure.
+  draftFails = true;
+  await call(`/${record.id}/run`, { itemIds: ['t3'] });
+  batch = await settle(call, record.id);
+  assert.equal(states(batch)['IMP-003'], 'failed');
+  draftFails = false;
+  item = (await call(`/${record.id}/items/t3`)).data.item;
+  assert.equal((await call(`/${record.id}/approve`, { passing: true })).data.approved, 0, 'Bulk approval skips a task whose last run failed.');
+  response = await call(`/${record.id}/approve`, { items: [{ itemId: 't3', versionId: item.current }] });
+  assert.equal(states(response.data.batch)['IMP-003'], 'approved');
+  response = await call(`/${record.id}/export`, { itemIds: ['t2', 't3'] });
+  assert.equal(response.status, 200, JSON.stringify(response.data));
+  // Origin protects the approved prompts: Update context asks first, and refuses on a split part.
+  saved = await store.read(record.id);
+  for (const entry of saved.blueprint.items) if (entry.id !== 't1') entry.acceptanceCriteria += '\nIt logs one line.';
+  saved.blueprint.items.find(entry => entry.id === 't1').description = 'Implement feature 1 with marker MARK1 in `src/f1.js`.';
+  saved = await store.write(record.id, { expectedRevision: saved.revision, blueprint: saved.blueprint });
+  const status = await api(app, `/api/origin/projects/${record.id}/context-status`, { method: 'POST', token, body: { expectedRevision: saved.revision } });
+  const byItem = Object.fromEntries(status.data.tasks.map(row => [row.itemId, row]));
+  assert.deepEqual([byItem.t3.status, byItem.t3.edited, byItem.t3.engineered, byItem.t2.splitPart], ['changed', true, true, true]);
+  const update = (itemId, extra = {}) => api(app, `/api/origin/projects/${record.id}/update-context`, { method: 'POST', token, body: { expectedRevision: saved.revision, itemId, expectedHash: byItem[itemId].hash, expectedCardRevision: byItem[itemId].cardRevision, ...extra } });
+  assert.equal((await update('t3')).data.code, 'CARD_ENGINEERED');
+  assert.equal((await update('t2', { replaceEdited: true })).data.code, 'SPLIT_PART');
+  const sent = JSON.parse(await readFile(join(app.board.store.dir, 'origin', 'snapshots', record.id, `${saved.blueprint.items.find(entry => entry.id === 't3').handoff.snapshotId}.json`), 'utf8'));
+  assert.equal(sent.instruction, item.versions.at(-1).prompt, 'Origin compares against what the card got.');
+  // No batch run starts during a sign-in change.
+  const login = api(app, '/api/auth/login', { method: 'POST', token, body: { provider: 'codex' } });
+  await wait(100);
+  assert.equal((await call(`/${record.id}/run`, { itemIds: ['t1'] })).data.code, 'AUTH_IN_PROGRESS');
+  await api(app, '/api/auth/cancel', { method: 'POST', token, body: {} });
+  await login;
+});
