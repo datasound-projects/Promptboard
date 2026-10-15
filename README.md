@@ -17,6 +17,18 @@
   <a href="#docs">Docs</a>
 </p>
 
+## Demo
+
+VARIANT-A
+<video src="https://github.com/datasound-projects/Promptboard/raw/readme-video/docs/promptboard-demo.mp4" controls muted playsinline poster="docs/promptboard-demo-poster.jpg" width="960"></video>
+
+VARIANT-B
+<video src="docs/promptboard-demo.mp4" controls width="960"></video>
+
+VARIANT-C
+
+https://github.com/datasound-projects/Promptboard/raw/readme-video/docs/promptboard-demo.mp4
+
 ## Install
 
 You need **Node.js 22.13+**, **Git**, and at least one [supported CLI](#supported-clis), signed in.
