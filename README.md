@@ -9,6 +9,7 @@
 </p>
 
 <p align="center">
+  <a href="#demo">Demo</a> ·
   <a href="#install">Install</a> ·
   <a href="#origin">Origin</a> ·
   <a href="#compose">Compose</a> ·
@@ -19,15 +20,10 @@
 
 ## Demo
 
-VARIANT-A
-<video src="https://github.com/datasound-projects/Promptboard/raw/readme-video/docs/promptboard-demo.mp4" controls muted playsinline poster="docs/promptboard-demo-poster.jpg" width="960"></video>
-
-VARIANT-B
-<video src="docs/promptboard-demo.mp4" controls width="960"></video>
-
-VARIANT-C
-
-https://github.com/datasound-projects/Promptboard/raw/readme-video/docs/promptboard-demo.mp4
+<p align="center">
+  <a href="docs/promptboard-demo.mp4"><img src="docs/promptboard-demo-poster.jpg" width="960" alt="Promptboard demo, 60 seconds: plan the Northstar enterprise AI platform in Origin, engineer its eight task prompts in parallel in Compose Batch, equip two agent profiles in Base, and let Kanban Autopilot build, review, test and merge all 13 cards."></a>
+</p>
+<p align="center"><sub>▶ <a href="docs/promptboard-demo.mp4">Watch the 60-second demo (1080p)</a>: Promptboard plans an enterprise AI platform, engineers its prompts, and Claude Code agents build, review, test and merge it. Real runs, time-lapsed.</sub></p>
 
 ## Install
 
@@ -92,7 +88,7 @@ Ask your own Claude Code or Codex about any part of the plan.
 - **Reviewed or Fast.** Reviewed mode makes a second, fresh call that checks every part of your request is covered, then repairs only confirmed problems. Fast mode makes one call.
 - **Context grounding (optional).** Researches only the sources you choose: a project folder, documents, Context7 or your own read-only MCP servers.
 - **Use the result.** Copy, edit, download as Markdown, save to a project with revisions, or split into Kanban cards.
-- **Batch.** Send many Origin tasks to Compose at once. Each gets its own parallel, isolated run and integrity checks (exact values, requirement coverage, acceptance checks). You review and approve each prompt, and only approved prompts go to Kanban, prerequisites first. See [Compose Batch](docs/compose-batch.md).
+- **Batch.** Send many Origin tasks to Compose at once: each is engineered in its own isolated, parallel run and checked for exact values, requirement coverage and acceptance checks. You approve each prompt, and only approved prompts go to Kanban, prerequisites first ([Compose Batch](docs/compose-batch.md)).
 
 <p align="center">
   <img src="docs/compose-demo.gif" width="960" alt="Compose demo: describe a login task, choose settings, generate a structured prompt, edit it, and split it into three To Do cards.">
