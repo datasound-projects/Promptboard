@@ -21,9 +21,9 @@
 ## Demo
 
 <p align="center">
-  <a href="docs/promptboard-demo.mp4"><img src="docs/promptboard-demo-poster.jpg" width="960" alt="Promptboard demo, 60 seconds: plan the Northstar enterprise AI platform in Origin, engineer its eight task prompts in parallel in Compose Batch, equip two agent profiles in Base, and let Kanban Autopilot build, review, test and merge all 13 cards."></a>
+  <img src="docs/promptboard-demo.gif" width="960" alt="Promptboard demo, 60 seconds: plan the Northstar enterprise AI platform in Origin, engineer its eight task prompts in parallel in Compose Batch, equip two agent profiles in Base, and let Kanban Autopilot build, review, test and merge all 13 cards; then the finished app.">
 </p>
-<p align="center"><sub>▶ <a href="docs/promptboard-demo.mp4">Watch the 60-second demo (1080p)</a>: Promptboard plans an enterprise AI platform, engineers its prompts, and Claude Code agents build, review, test and merge it. Real runs, time-lapsed.</sub></p>
+<p align="center"><sub>60 seconds: Promptboard plans an enterprise AI platform, engineers its prompts, and Claude Code agents build, review, test and merge it. Real runs, time-lapsed.</sub></p>
 
 ## Install
 
