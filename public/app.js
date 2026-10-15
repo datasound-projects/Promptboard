@@ -379,6 +379,7 @@ async function loadProviders() {
     loadBoard();
     if (currentPage() === 'base') baseView?.show();
     if (currentPage() === 'origin') originView?.show();
+    if (currentPage() === 'compose' && composeMode === 'batch') void batchView?.show(true);
     await loadModels({ model: chosenModel(), effort: $('#effort').value });
   } catch (error) {
     token = '';
@@ -1311,7 +1312,21 @@ function openHelp(privacy = false) {
 }
 
 // All views stay in the document. Routing does not replace forms, boards or terminals.
-let baseView = null, originView = null, projectsView = null, coordinatorView = null;
+let baseView = null, originView = null, projectsView = null, coordinatorView = null, batchView = null;
+// Compose has two modes: Single (one prompt, as before) and Batch (many Origin tasks). The choice is remembered.
+const COMPOSE_MODE_KEY = 'promptboard.compose.mode';
+let composeMode = (() => { try { return localStorage.getItem(COMPOSE_MODE_KEY) === 'batch' ? 'batch' : 'single'; } catch { return 'single'; } })();
+function setComposeMode(mode, { focus = false } = {}) {
+  composeMode = mode === 'batch' ? 'batch' : 'single';
+  savePref(COMPOSE_MODE_KEY, composeMode);
+  $('#prompt-view').dataset.mode = composeMode;
+  $('#batch-view').hidden = composeMode !== 'batch';
+  for (const [name, tab] of [['single', $('#compose-mode-single')], ['batch', $('#compose-mode-batch')]]) {
+    tab.setAttribute('aria-selected', String(name === composeMode)); tab.tabIndex = name === composeMode ? 0 : -1;
+    if (focus && name === composeMode) tab.focus();
+  }
+  void batchView?.show(composeMode === 'batch' && currentPage() === 'compose' && Boolean(token));
+}
 function currentPage() { return location.hash === '#/kanban' ? 'kanban' : location.hash === '#/base' ? 'base' : location.hash === '#/origin' ? 'origin' : 'compose'; }
 function showPage() {
   const page = currentPage();
@@ -1337,6 +1352,7 @@ function showPage() {
   $('#sidebar').setAttribute('aria-label', base ? 'Base library' : kanban ? 'Projects' : origin ? 'Blueprint sections' : 'Prompt history');
   $('#sidebar-scrim').setAttribute('aria-label', base ? 'Close Base categories' : kanban ? 'Close projects' : origin ? 'Close blueprint sections' : 'Close history');
   if (kanban) renderBoard();
+  void batchView?.show(page === 'compose' && composeMode === 'batch' && Boolean(token));
   if (base && token) baseView?.show();
   // Leaving Origin saves pending blueprint edits; opening it reads the selected project's blueprint.
   if (origin && token) void originView?.show(); else if (!origin) void originView?.leave();
@@ -1366,6 +1382,7 @@ function prefillCompose({ text, task, replace = false, origin = null, link = nul
   if (running) return 'busy';
   const input = $('#prompt-input');
   if (!replace && input.value.trim() && input.value !== text) return 'draft';
+  setComposeMode('single');
   composeOrigin = origin; renderComposeOrigin(); projectsView?.setLink(link);
   currentId = null;
   clearOutput();
@@ -5706,8 +5723,23 @@ baseView = window.PromptboardBase?.create({ api, announce, ensureBoard: loadBoar
 window.PromptboardBaseView = baseView;
 // Origin owns its blueprint requests. It reaches Compose and Kanban only through these explicit seams,
 // which prefill or create through the existing validated APIs and never start an agent.
+// Compose Batch reads and changes its batches only through its own routes; it starts nothing until Run is chosen.
+batchView = window.PromptboardBatch?.create({ api, announce, composeSettings: () => { const { input, ...rest } = settings(); return rest; },
+  openKanban: (projectId, taskId) => { if (projectId) setSelectedProject(projectId); location.hash = '#/kanban'; if (taskId) setTimeout(() => void openTaskDetails(taskId), 0); } }) || null;
+for (const [mode, tab] of [['single', $('#compose-mode-single')], ['batch', $('#compose-mode-batch')]]) {
+  tab.addEventListener('click', () => setComposeMode(mode));
+  tab.addEventListener('keydown', event => { if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) { event.preventDefault(); setComposeMode(mode === 'single' ? 'batch' : 'single', { focus: true }); } });
+}
+setComposeMode(composeMode);
+/** Origin sends several tasks: they join that project's batch (once each) and Compose opens in Batch mode. Nothing runs. */
+async function sendToBatch(spec) {
+  if (!batchView) return { ok: false, error: 'Compose Batch is not available. Reload the page.' };
+  const result = await batchView.receive(spec);
+  if (result.ok) { location.hash = '#/'; setComposeMode('batch'); showPage(); }
+  return result;
+}
 originView = window.PromptboardOrigin?.create({ api, announce, closeSidebar: () => setSidebar(false), ensureBoard: options => loadBoard(options),
-  projects: () => board?.projects || [], toCompose: prefillCompose, attachComposeContext,
+  projects: () => board?.projects || [], toCompose: prefillCompose, toBatch: sendToBatch, attachComposeContext,
   // Batch refinement and suggestions reuse Compose's own settings and job slot; Origin adds no prompt generator.
   composeSettings: () => { const { input, ...rest } = settings(); return rest; }, composeRunning: () => running,
   openKanban: (projectId, taskId) => { if (projectId) setSelectedProject(projectId); location.hash = '#/kanban'; if (taskId) setTimeout(() => void openTaskDetails(taskId), 0); },

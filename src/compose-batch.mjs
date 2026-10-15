@@ -338,7 +338,7 @@ export class ComposeBatches {
     const known = new Map((record?.blueprint.items || []).map(item => [item.id, item]));
     const loop = loopFrom(known, items.filter(item => known.has(item.id)).map(item => item.id));
     return { id: batch.meta.id, name: batch.meta.name, revision: batch.meta.revision, instance: this.instance, originRevision: record?.revision ?? null, settings: batch.meta.settings, defaults: batch.meta.defaults,
-      concurrency: batch.meta.concurrency, notice: batch.meta.notice, counts, items, cycle: loop || null,
+      concurrency: batch.meta.concurrency, notice: batch.meta.notice, counts, items, cycle: loop || null, inherited: resolveSettings(batch.meta.defaults),
       kanban: destination ? { id: destination.id, name: destination.name } : null, keys: Object.fromEntries([...known.values()].map(item => [item.id, item.key])) };
   }
 
@@ -348,7 +348,7 @@ export class ComposeBatches {
     const origin = this.#originStates(batch, record).get(item.id), { cards } = await this.#cards(batch.meta.id, record);
     const resolved = resolveSettings(batch.meta.defaults, batch.meta.settings, item.overrides);
     const latest = current(item);
-    return { ...item, origin, state: stateOf(item, origin, cards.get(item.id)), settings: resolved, approved: approvedNow(item, latest), stage: this.#active.get(item.run?.id)?.stage || '',
+    return { ...item, origin, state: stateOf(item, origin, cards.get(item.id)), settings: resolved, inherited: resolveSettings(batch.meta.defaults, batch.meta.settings), approved: approvedNow(item, latest), stage: this.#active.get(item.run?.id)?.stage || '',
       findings: versionFindings(item, latest, origin), card: cards.get(item.id) ? { id: cards.get(item.id).id, number: cards.get(item.id).number } : null,
       split: item.split ? { ...item.split, children: item.split.children.map(child => ({ ...child, approved: childApproved(child) })) } : null };
   }
