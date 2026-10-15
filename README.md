@@ -23,7 +23,6 @@
 <p align="center">
   <img src="docs/promptboard-demo.gif" width="960" alt="Promptboard demo, 60 seconds.">
 </p>
-<p align="center"><sub>60 seconds: Promptboard plans an enterprise AI platform, engineers its prompts, and Claude Code agents build, review, test and merge it. Real runs, time-lapsed.</sub></p>
 
 ## Install
 
