@@ -167,7 +167,7 @@ Agents run through each CLI's own sign-in and plan. Promptboard has no account o
 
 - Without a test command, Testing relies on the agent's own report. Set a command for an independent check.
 - Promptboard answers only the CLI's folder-trust prompt. Other prompts (sign-in, changed hooks, updates) need you in the terminal.
-- Another port: `npm start -- --port 4320`. Check your CLIs: `node bin/ste.mjs --doctor`.
+- Another port: `npm start -- --port 4320`. One Promptboard runs per data folder: a second start on the same folder is refused, so two apps never overwrite each other's board. Check your CLIs: `node bin/ste.mjs --doctor`.
 
 ## Docs
 

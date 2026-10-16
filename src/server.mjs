@@ -15,6 +15,7 @@ import { AUTH_CAPABILITIES, logout, readAuthStatus, startLogin } from './auth.mj
 import { Board, BoardError, columnStage } from './board.mjs';
 import { GitError } from './git.mjs';
 import { defaultDataDir, StoreError } from './store.mjs';
+import { lockDataDir } from './instance-lock.mjs';
 import { loadPty, Supervisor } from './supervisor.mjs';
 import { AgentError } from './agents.mjs';
 import { DeliveryError } from './delivery.mjs';
@@ -306,7 +307,9 @@ function streamRun(supervisor, req, res, runId, after) {
 }
 
 export async function startServer({ batchTimeoutMs, port = 4318, runner = runProvider, detector = detectProviders, catalogReader = discoverModels, authAdapter = auth, dataDir = defaultDataDir(), projectsDir, executor = 'auto', folderPicker = chooseFolder, githubPty = loadPty, usageReader, mcpTester, imageGenerator, composeMcp, researchRunner = streamResearch } = {}) {
-  // The board loads lazily, so starting the server never reads or writes board files.
+  if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('The port must be 0–65535.');
+  // One app per data folder; the board itself loads lazily, so starting never reads or writes board files.
+  const lock = await lockDataDir(dataDir);
   const usage = usageReader || new UsageDashboard({ dataDir });
   const notifications = new PipelineNotifications();
   const board = new Board({ dataDir, ...(projectsDir ? { projectsDir } : {}), automationActions: new PipelineActions({ notifier: (message, options) => notifications.deliver(message, options) }) });
@@ -316,7 +319,6 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
   // Autopilot runs only for projects where the user started it; otherwise each tick does nothing.
   const autopilot = new Autopilot(board);
   if (board.executor) autopilot.start();
-  if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('The port must be 0–65535.');
   const token = randomBytes(32).toString('hex');
   const catalogAbort = new AbortController();
   const catalogs = new Map(), lookups = new Map();
@@ -672,10 +674,13 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
   server.requestTimeout = 30_000;
   server.headersTimeout = 15_000;
   server.keepAliveTimeout = 2_000;
-  await new Promise((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(port, '127.0.0.1', resolve);
-  });
+  try {
+    await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(port, '127.0.0.1', resolve);
+    });
+  } catch (error) { autopilot.stop(); await lock.release(); throw error; }
+  await lock.setPort(server.address().port);
   let closed;
   // Idempotent and bounded: stop accepting, cancel owned work, close sockets, then
   // SIGKILL any owned CLI process group that is still alive.
@@ -705,6 +710,7 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
     killOwnedProcesses('SIGKILL');
     server.closeAllConnections();
     await listening;
+    await lock.release();
   })();
   return { server, url: `http://127.0.0.1:${server.address().port}`, close, board };
 }
