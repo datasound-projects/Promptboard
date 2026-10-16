@@ -423,3 +423,32 @@ test('review fixes: secrets never reach a check, engineered and split cards are 
   await api(app, '/api/auth/cancel', { method: 'POST', token, body: {} });
   await login;
 });
+
+test('the queue shows what each task asks and when its run started; Cancel all stops every running agent at once', async t => {
+  const aborted = [];
+  const runner = engineer({ hold: text => /MARK[2-4]\b/.test(text) });
+  const watched = async call => { call.signal?.addEventListener('abort', () => aborted.push(Date.now()), { once: true }); return runner(call); };
+  const { app, call } = await setup(t, watched);
+  const { record } = await project(app, 4);
+  await call('', { originId: record.id, expectedRevision: record.revision, itemIds: ['t1', 't2', 't3', 't4'] });
+  await call(`/${record.id}/settings`, { concurrency: 1 });
+  await call(`/${record.id}/run`, { itemIds: ['t1'] });
+  let batch = await settle(call, record.id);
+  assert.ok(batch.typicalMs > 0, 'a finished run gives the typical time');
+  assert.match(batch.items[0].hint, /^Implement feature 1 with marker MARK1/);
+  assert.equal(batch.items[0].startedAt, null, 'only running tasks carry a start time');
+  assert.match(batch.items[0].current, /\S/, 'the current prompt version is named, so a new one is seen even when old versions are dropped');
+  // In parallel: three agents at once, each with its own task.
+  await call(`/${record.id}/settings`, { concurrency: 3 });
+  const before = Date.now();
+  await call(`/${record.id}/run`, { itemIds: ['t2', 't3', 't4'] });
+  batch = await settle(call, record.id, view => view.items.filter(item => item.state === 'running').length === 3);
+  assert.ok(batch.items.filter(item => item.state === 'running').every(item => item.startedAt >= before - 50));
+  assert.equal(runner.max, 3);
+  const stopped = Date.now();
+  assert.equal((await call(`/${record.id}/cancel`, {})).data.cancelled, 3);
+  assert.equal(aborted.length, 3, 'every running agent got its stop before Cancel answered');
+  assert.ok(aborted.every(at => at - stopped < 200), `stops were immediate (${aborted.map(at => at - stopped).join(', ')} ms)`);
+  batch = await settle(call, record.id);
+  assert.deepEqual(states(batch), { 'IMP-001': 'generated', 'IMP-002': 'pending', 'IMP-003': 'pending', 'IMP-004': 'pending' });
+});

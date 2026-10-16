@@ -799,10 +799,11 @@ test('Origin refines tasks through Compose only when asked, keeps your words unt
   assert.deepEqual([first.description, first.acceptanceCriteria, first.refinement.originalDescription, typeof first.refinement.acceptedAt, first.componentIds], ['Build the orders endpoint with validation.', 'Orders can be placed', 'Make orders work', 'number', ['api']]);
   await ev(`document.querySelector('#origin-drawer [aria-label="Close editor"]').click();`);
 
-  // Several tasks: one proposal each, through Compose's job slot; your text stays until you accept.
+  // Several tasks: they run on Compose Batch with the settings chosen in the window (here Compose's own, Fast); one proposal each; your text stays until you accept.
   await ev(`[...document.querySelectorAll('#origin-main .origin-row')].find(r => r.textContent.includes('IMP-002')).querySelector('.origin-check').click();`);
   await ev(`document.querySelector('#origin-improve').click();`);
-  await wait(`document.querySelector('#origin-improve-dialog')?.open`, 'improve dialog');
+  await wait(`document.querySelector('#origin-improve-dialog')?.open && !document.querySelector('#origin-improve-start')?.disabled`, 'improve settings', 20000);
+  assert.equal(await ev(`return [...document.querySelectorAll('#origin-improve-dialog select')].map(s => s.selectedOptions[0]?.textContent).join(' | ');`), 'codex | CLI default | CLI default | Fast: one call per task | In parallel: 3 at once, each task with its own agent');
   await ev(`document.querySelector('#origin-improve-start').click();`);
   await wait(`[...document.querySelectorAll('#origin-improve-dialog .origin-chip')].map(n => n.textContent).join() === 'Proposal ready'`, 'batch done', 20000);
   await ev(`[...document.querySelectorAll('#origin-improve-dialog button')].find(b => b.textContent === 'Close').click();`);

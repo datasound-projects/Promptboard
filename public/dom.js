@@ -16,5 +16,31 @@ window.PromptboardDom = (() => {
     const link = el('a'); link.href = url; link.download = name; document.body.append(link); link.click(); link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
-  return { el, button, pref, setPref, plural, clip, safeUrl, download };
+  /** A short, readable duration: "45s", "3:05", "1 h 20 min". */
+  const duration = ms => { const s = Math.max(0, Math.round(ms / 1000)), m = Math.round(s / 60); return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}` : `${Math.floor(m / 60)} h ${m % 60} min`; };
+  /** Minutes left in words, rounded up: "less than a minute", "about 12 min". */
+  const left = ms => (ms < 60000 ? 'less than a minute' : `about ${Math.ceil(ms / 60000)} min`);
+  /**
+   * An estimate for one running step: its elapsed time against the typical time of finished steps. Without a finished
+   * step there is no basis, so `percent` is null (the bar moves instead of claiming a number). Stays below 100 until done.
+   */
+  const estimate = (elapsed, typical) => (typical > 0 ? { percent: Math.min(95, Math.round((elapsed / typical) * 100)), left: Math.max(0, typical - elapsed) } : { percent: null, left: null });
+  /**
+   * Time left for a set of runs: what the running ones still need, plus the waiting ones, shared by the runs that work at
+   * the same time. Null before a finished run gives a typical time.
+   */
+  const remaining = ({ startedAt = [], waiting = 0, typical = 0, slots = 1, now = Date.now() }) => (typical > 0
+    ? (startedAt.reduce((sum, at) => sum + Math.max(0, typical - (now - at)), 0) + waiting * typical) / Math.max(1, Math.min(slots, startedAt.length + waiting)) : null);
+  /** A thin progress bar. `set(percent)` fills it; `set(null)` makes it a moving "working" bar. */
+  function meter(label) {
+    const bar = el('div', 'pb-meter'), fill = el('span', 'pb-meter-fill');
+    bar.setAttribute('role', 'progressbar'); bar.setAttribute('aria-label', label); bar.setAttribute('aria-valuemin', '0'); bar.setAttribute('aria-valuemax', '100'); bar.append(fill);
+    bar.set = percent => {
+      bar.classList.toggle('is-moving', percent === null);
+      if (percent === null) { bar.removeAttribute('aria-valuenow'); fill.style.width = ''; return bar; }
+      bar.setAttribute('aria-valuenow', String(percent)); fill.style.width = `${percent}%`; return bar;
+    };
+    return bar.set(0);
+  }
+  return { el, button, pref, setPref, plural, clip, safeUrl, download, duration, left, estimate, remaining, meter };
 })();

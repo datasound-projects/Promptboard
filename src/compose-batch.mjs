@@ -113,6 +113,11 @@ export function snapshotSource(record, itemId) {
     otherKeys: blueprint.items.filter(entry => entry.id !== itemId && !prerequisites.has(entry.id) && KEY_LIKE.test(entry.key)).map(entry => entry.key).slice(0, 500), takenAt: Date.now() };
 }
 
+/** The first line of what the task says to do, for the queue: the line after its title, unless that is a Done when. */
+export function hintOf(input = '') {
+  const line = String(input).split('\n').slice(1).map(text => text.trim()).find(Boolean) || '';
+  return line.startsWith('Done when:') ? '' : line.length > 160 ? `${line.slice(0, 159)}…` : line;
+}
 /** The Compose request for one task: its own words as the request, its context as evidence, its instructions as user answers. */
 export function requestFor(source, settings) {
   const { includeContext, instructions, ...compose } = settings;
@@ -170,6 +175,7 @@ export class ComposeBatches {
   #loading = new Map();
   #queue = [];
   #active = new Map();
+  #timings = new Map(); // Recent run times per batch, in memory only: the page estimates progress and time left from them.
   #closing = false;
   instance = randomUUID();
 
@@ -328,8 +334,9 @@ export class ComposeBatches {
     const origin = this.#originStates(batch, record), { destination, cards } = await this.#cards(batch.meta.id, record);
     const items = batch.meta.order.map(itemId => batch.items.get(itemId)).filter(Boolean).map(item => {
       const version = current(item), findings = versionFindings(item, item.split?.state === 'accepted' ? null : version, origin.get(item.id)), card = cards.get(item.id);
-      return { id: item.id, key: item.key, title: item.title, revision: item.revision, state: stateOf(item, origin.get(item.id), card), stage: this.#active.get(item.run?.id)?.stage || '',
-        error: item.error, origin: origin.get(item.id), dependsOn: item.source.dependsOn, versions: item.versions.length, card: card ? { id: card.id, number: card.number } : null,
+      return { id: item.id, key: item.key, title: item.title, hint: hintOf(item.source.input), revision: item.revision, state: stateOf(item, origin.get(item.id), card), stage: this.#active.get(item.run?.id)?.stage || '',
+        startedAt: item.run?.state === 'running' ? item.run.startedAt || null : null,
+        error: item.error, origin: origin.get(item.id), dependsOn: item.source.dependsOn, versions: item.versions.length, current: item.current || '', card: card ? { id: card.id, number: card.number } : null,
         findings: { blocking: findings.filter(row => row.severity === 'blocking').length, warning: findings.filter(row => row.severity === 'warning').length },
         split: item.split ? { state: item.split.state, children: item.split.children.map(child => ({ id: child.id, title: child.title, approved: childApproved(child), card: cards.get(child.originTaskId) ? { number: cards.get(child.originTaskId).number } : null })) } : null };
     });
@@ -338,7 +345,7 @@ export class ComposeBatches {
     const known = new Map((record?.blueprint.items || []).map(item => [item.id, item]));
     const loop = loopFrom(known, items.filter(item => known.has(item.id)).map(item => item.id));
     return { id: batch.meta.id, name: batch.meta.name, revision: batch.meta.revision, instance: this.instance, originRevision: record?.revision ?? null, settings: batch.meta.settings, defaults: batch.meta.defaults,
-      concurrency: batch.meta.concurrency, notice: batch.meta.notice, counts, items, cycle: loop || null, inherited: resolveSettings(batch.meta.defaults),
+      concurrency: batch.meta.concurrency, notice: batch.meta.notice, counts, items, cycle: loop || null, inherited: resolveSettings(batch.meta.defaults), typicalMs: this.#typical(batch.meta.id),
       kanban: destination ? { id: destination.id, name: destination.name } : null, keys: Object.fromEntries([...known.values()].map(item => [item.id, item.key])) };
   }
 
@@ -485,19 +492,29 @@ export class ComposeBatches {
 
   /** Cancel queued and running work. A late answer from a cancelled run is ignored. */
   cancel(batchId, { itemIds } = {}) {
+    const wanted = Array.isArray(itemIds) ? new Set(itemIds) : null, match = job => job.batchId === batchId && (!wanted || wanted.has(job.itemId));
+    // Running agents stop at once (their process group is ended), not after the changes queued before this one.
+    let stopped = 0;
+    for (const job of this.#active.values()) if (match(job) && !job.cancelled) { job.cancelled = true; job.controller.abort(); stopped++; }
     return this.#serial(async () => {
-      const batch = await this.#require(batchId), wanted = Array.isArray(itemIds) ? new Set(itemIds) : null;
-      const match = job => job.batchId === batch.meta.id && (!wanted || wanted.has(job.itemId));
-      let cancelled = 0;
+      const batch = await this.#require(batchId);
+      let cancelled = stopped;
+      // A run the queue started between the first pass and now is stopped here, so Cancel never misses one.
+      for (const job of this.#active.values()) if (match(job) && !job.cancelled) { job.cancelled = true; job.controller.abort(); cancelled++; }
       for (const job of this.#queue.filter(match)) {
         this.#queue.splice(this.#queue.indexOf(job), 1);
         const item = structuredClone(batch.items.get(job.itemId));
         if (item?.run?.id === job.runId) { item.run = null; await this.#saveItem(batch, item); }
         cancelled++;
       }
-      for (const job of this.#active.values()) if (match(job)) { job.cancelled = true; job.controller.abort(); cancelled++; }
       return { cancelled };
     });
+  }
+
+  /** The typical time of one generation in this batch (its recent finished runs), or 0 before the first one. */
+  #typical(batchId) {
+    const times = this.#timings.get(batchId) || [];
+    return times.length ? Math.round(times.reduce((sum, ms) => sum + ms, 0) / times.length) : 0;
   }
 
   #pump() {
@@ -518,7 +535,8 @@ export class ComposeBatches {
       if (!marked) return;
       try {
         const snapshot = structuredClone(this.#cache.get(job.batchId).items.get(job.itemId)); // This run's own copy; nothing it reads is shared.
-        const outcome = await this.#work(job, snapshot, signal);
+        const started = Date.now(), outcome = await this.#work(job, snapshot, signal);
+        if (job.kind === 'generate' && !job.cancelled) this.#timings.set(job.batchId, [...(this.#timings.get(job.batchId) || []), Date.now() - started].slice(-12));
         // Cancel can be queued behind other changes while the answer arrives: a cancelled run never adds its result.
         await this.#apply(job, item => { if (job.cancelled) item.run = null; else outcome(item); });
       } catch (error) {

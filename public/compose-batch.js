@@ -5,7 +5,7 @@
 // in one collapsed panel. The server runs and checks every task; this page only shows state and sends choices.
 // All text is set as text. Nothing runs until Run is chosen, and nothing reaches Kanban unless approved.
 window.PromptboardBatch = (() => {
-  const { el, button, plural, clip, pref, setPref } = window.PromptboardDom;
+  const { el, button, plural, clip, pref, setPref, duration, left, estimate, remaining, meter } = window.PromptboardDom;
   const STATES = {
     pending: ['Pending', 'muted'], queued: ['Queued', 'muted'], running: ['Running', 'accent'], generated: ['Generated', 'ok'], review: ['Needs review', 'warn'],
     approved: ['Approved', 'ok'], failed: ['Failed', 'error'], rejected: ['Rejected', 'muted'], sent: ['On Kanban', 'ok'],
@@ -51,7 +51,7 @@ window.PromptboardBatch = (() => {
         const query = !force && batch?.id === batchId ? `?since=${batch.revision}&origin=${batch.originRevision ?? ''}&instance=${encodeURIComponent(batch.instance)}` : '';
         const data = await call(`/${encodeURIComponent(batchId)}${query}`);
         error = '';
-        if (data.unchanged) return;
+        if (data.unchanged) { tick(); return; }
         accept(data.batch);
       } catch (failure) {
         if (failure.status === 404) { batches = batches.filter(entry => entry.id !== batchId); batchId = batches[0]?.id || ''; batch = null; item = null; }
@@ -149,6 +149,7 @@ window.PromptboardBatch = (() => {
         [...(scope?.querySelectorAll(focused.tag) || [])].find(node => node.className === focused.cls)?.focus();
       }
       if (!regions.advanced.contains(document.activeElement)) regions.advanced.replaceChildren(advanced());
+      tick();
     }
     /** A collapsible section whose open state is remembered by name. */
     function section(name, title, className = 'batch-details') {
@@ -178,7 +179,8 @@ window.PromptboardBatch = (() => {
       const counts = batch.counts, total = batch.items.length, busy = (counts.running || 0) + (counts.queued || 0);
       title.append(el('p', 'batch-progress', [`${total} ${total === 1 ? 'task' : 'tasks'}`, counts.running && `${counts.running} running`, counts.queued && `${counts.queued} queued`, counts.approved && `${counts.approved} approved`, counts.review && `${counts.review} to review`, counts.failed && `${counts.failed} failed`, counts.sent && `${counts.sent} on Kanban`].filter(Boolean).join(' · ')));
       const bar = el('progress', 'batch-bar'); bar.max = total || 1; bar.value = total - (counts.pending || 0) - busy; bar.setAttribute('aria-label', 'Tasks with a prompt');
-      title.append(bar);
+      const eta = el('p', 'batch-eta'); eta.id = 'batch-eta'; eta.setAttribute('aria-live', 'off');
+      title.append(bar, eta);
       const actions = el('div', 'batch-actions');
       const runnable = batch.items.filter(entry => entry.state === 'pending' || entry.state === 'failed').length;
       const run = button(runnable ? `Run all (${runnable})` : 'Run all', () => act(`/${enc()}/run`, { all: true, defaults: app.composeSettings() }, data => `${plural(data.queued, 'task')} queued.${data.skipped.length ? ` ${plural(data.skipped.length, 'task')} skipped.` : ''}`), runnable ? 'copy-button' : 'secondary-button', 'Generate a prompt for every pending or failed task, a few at a time');
@@ -188,12 +190,36 @@ window.PromptboardBatch = (() => {
       approve.disabled = !passing; approve.id = 'batch-approve-passing';
       const send = button(`Send ${counts.approved || 0} to Kanban`, () => sendToKanban(), counts.approved ? 'copy-button' : 'secondary-button', batch.kanban ? `Create To Do cards in ${batch.kanban.name}, prerequisites first. No agent starts.` : 'Connect the Origin project to a Kanban project first.');
       send.disabled = !counts.approved || !batch.kanban; send.id = 'batch-send';
-      if (busy) actions.append(Object.assign(button('Cancel all', () => act(`/${enc()}/cancel`, {}, data => `${plural(data.cancelled, 'run')} cancelled.`), 'secondary-button'), { id: 'batch-cancel-all' }));
-      actions.append(run, approve, send);
+      if (busy) actions.append(Object.assign(button('Cancel all', () => act(`/${enc()}/cancel`, {}, data => `${plural(data.cancelled, 'run')} cancelled.`), 'secondary-button', 'Stops every running agent at once and empties the queue'), { id: 'batch-cancel-all' }));
+      actions.append(runMode(), run, approve, send);
       head.append(title, actions);
       return head;
     }
     const enc = () => encodeURIComponent(batchId);
+    // How many tasks run at once: one at a time, or in parallel, each task with its own agent.
+    function runMode() {
+      const pick = el('select', 'batch-run-mode'); pick.id = 'batch-run-mode'; pick.setAttribute('aria-label', 'How tasks run');
+      pick.title = 'One at a time: one agent works on one task. In parallel: each task gets its own agent, up to this many at once.';
+      for (let n = 1; n <= 8; n++) pick.append(Object.assign(el('option', '', n === 1 ? 'One at a time' : `${n} in parallel`), { value: String(n) }));
+      pick.value = String(batch.concurrency);
+      pick.addEventListener('change', () => act(`/${enc()}/settings`, { concurrency: Number(pick.value) }, Number(pick.value) === 1 ? 'Tasks now run one at a time.' : `Up to ${pick.value} tasks now run at once, each with its own agent.`));
+      return pick;
+    }
+    // Live progress of running tasks, every second between polls: elapsed time, an estimate and the time left.
+    function tick() {
+      if (!regions || !batch) return;
+      const now = Date.now(), typical = batch.typicalMs || 0;
+      for (const node of regions.queue.querySelectorAll('[data-started]')) {
+        const elapsed = now - Number(node.dataset.started), guess = estimate(elapsed, typical);
+        node.querySelector('.pb-meter')?.set(guess.percent);
+        const time = node.querySelector('.batch-row-time');
+        if (time) time.textContent = [duration(elapsed), guess.left !== null && `${left(guess.left)} left`].filter(Boolean).join(' · ');
+      }
+      const eta = root.querySelector('#batch-eta'), running = batch.items.filter(entry => entry.state === 'running' && entry.startedAt), waiting = batch.items.filter(entry => entry.state === 'queued').length;
+      if (!eta) return;
+      const rest = remaining({ startedAt: running.map(entry => entry.startedAt), waiting, typical, slots: batch.concurrency, now });
+      eta.textContent = running.length || waiting ? (rest === null ? `${running.length} running · the first result gives a time estimate` : `${left(rest)} left (estimated from this batch's finished tasks)`) : '';
+    }
     async function sendToKanban(recreate) {
       const data = await act(`/${enc()}/export`, recreate ? { recreate } : {}, result => `${plural(result.results.filter(row => row.status === 'created').length, 'card')} added to ${result.destination.name}. Nothing started.`);
       if (data && message) { message.data = { sent: true }; render(); }
@@ -245,6 +271,12 @@ window.PromptboardBatch = (() => {
       const meta = el('span', 'batch-row-meta', [entry.state === 'running' && STAGES[entry.stage], entry.findings.blocking && plural(entry.findings.blocking, 'blocking finding'), !entry.findings.blocking && entry.findings.warning && plural(entry.findings.warning, 'note'),
         entry.card && `#${entry.card.number}`, entry.split && plural(entry.split.children.length, 'part'), entry.origin === 'changed' && 'changed in Origin'].filter(Boolean).join(' · '));
       main.append(name, meta, chip(entry.state));
+      if (entry.hint) main.append(el('span', 'batch-row-hint', entry.hint));
+      if (entry.state === 'running' && entry.startedAt) {
+        const live = el('span', 'batch-row-live'); live.dataset.started = String(entry.startedAt);
+        live.append(meter(`${entry.key} progress`), el('span', 'batch-row-time'));
+        main.append(live);
+      }
       li.append(box, main);
       return li;
     }
@@ -292,6 +324,13 @@ window.PromptboardBatch = (() => {
       }, version ? 'secondary-button' : 'copy-button', 'Write this task’s prompt again in a fresh, separate run');
       generate.id = 'batch-generate';
       bar.append(generate);
+      if (version && !item.split && app.toOrigin) {
+        const back = button('Use in Origin task', async () => { const result = await app.toOrigin({ originId: batch.id, itemId: item.id, text: version.prompt }); if (result !== 'ok') say(result, 'item', true); }, 'secondary-button',
+          'Send this prompt back to the Origin task as a proposal. The task changes only when you accept it there.');
+        back.id = 'batch-to-origin'; back.disabled = summary.origin !== 'current' || item.findings.some(row => row.code === 'source-old');
+        if (back.disabled) back.title = 'The task changed in Origin since this prompt. Regenerate it first.';
+        bar.append(back);
+      }
       const blocked = item.findings.some(row => row.severity === 'blocking');
       if (version && !item.split) {
         if (item.approved) bar.append(button('Remove approval', () => act(`${path}/approve`, { items: [{ itemId: id }], approve: false }, 'Approval removed.', { where: 'item' }), 'secondary-button'));
@@ -417,6 +456,18 @@ window.PromptboardBatch = (() => {
     }
 
     // ---- Settings (Compose defaults → batch → task) ----
+    // The models a CLI reports, offered as suggestions; any model ID can still be typed.
+    const catalogs = new Map();
+    function suggestModels(control, provider) {
+      if (!provider) return;
+      const id = `batch-models-${provider}`;
+      control.setAttribute('list', id);
+      if (catalogs.has(provider)) return;
+      const list = el('datalist'); list.id = id; document.body.append(list); catalogs.set(provider, list);
+      void app.api(`/api/models?provider=${encodeURIComponent(provider)}`, { timeoutMs: 60000 }).then(({ response, data }) => {
+        if (response.ok) list.replaceChildren(...(data.models || []).map(model => Object.assign(el('option', '', model.name || model.id), { value: model.id })));
+      }).catch(() => {});
+    }
     function settingsPanel(level, overrides, inherited, save, locked = false) {
       const details = section(`settings-${level}`, level === 'task' ? 'Settings for this task' : 'Batch settings');
       details.append(el('p', 'note', level === 'task' ? 'Each setting is inherited from the batch unless you choose a value for this task. A different CLI resets the model and effort it does not set.' : 'Each setting is inherited from your Compose settings unless you choose a value for the whole batch. Tasks can override it.'));
@@ -428,6 +479,7 @@ window.PromptboardBatch = (() => {
         let control;
         if (kind === 'text' || kind === 'textarea') {
           control = el(kind === 'text' ? 'input' : 'textarea'); control.value = own ?? '';
+          if (path === 'model') suggestModels(control, read(overrides, 'provider') ?? read(inherited.value, 'provider'));
           control.placeholder = `Inherit · ${shown ? clip(shown, 40) : kind === 'text' ? 'CLI default' : 'none'} (${from})`;
           if (kind === 'textarea') control.rows = 2;
         } else {
@@ -458,7 +510,7 @@ window.PromptboardBatch = (() => {
     function advanced() {
       const details = section('advanced', 'Batch settings, dependencies and quality', 'card batch-advanced'); details.id = 'batch-advanced';
       const body = el('div', 'batch-advanced-body');
-      const parallel = el('label', 'field-label', 'Parallel runs');
+      const parallel = el('label', 'field-label', 'Runs at once (1 = one at a time)');
       const number = el('input'); number.type = 'number'; number.min = '1'; number.max = '8'; number.value = String(batch.concurrency); number.id = 'batch-concurrency';
       parallel.append(number);
       const saveParallel = button('Save', () => act(`/${enc()}/settings`, { concurrency: Number(number.value) }, `Up to ${number.value} tasks now run at once.`), 'secondary-button');
