@@ -2505,15 +2505,16 @@ window.PromptboardOrigin = (() => {
     let improve = null, improveMini = null;
     const improvePath = (run, path = '') => `/api/compose/batches${run.batchId ? `/${encodeURIComponent(run.batchId)}` : ''}${path}`;
     function openImprove(ids) {
-      if (improve?.active) { showImprove(); app.announce('Improving is running. Its window is open again.'); return; }
+      if (improve?.active || improve?.phase === 'starting') { improve.hidden = false; showImprove(); app.announce('Improving is running. Its window is open again.'); return; }
       const list = ids.map(id => bp().items.find(item => item.id === id)).filter(Boolean);
       if (!list.length) return;
       const compose = app.composeSettings();
       improve = { projectId, phase: 'setup', active: false, timer: 0, ticks: 0, busy: false, batchId: '', typical: 0, message: '', providers: null, models: new Map(),
         settings: { provider: compose.provider || '', model: compose.model || '', effort: compose.effort || '', quality: compose.quality === 'fast' ? 'fast' : 'reviewed', includeContext: true }, concurrency: 3, keep: {},
-        rows: list.map(item => ({ id: item.id, key: item.key, title: item.title.trim() || 'Untitled task', hint: firstLine(item.description), state: 'waiting', startedAt: 0, ms: 0, stage: '', versions: 0, note: '', open: false, proposal: '' })) };
+        rows: list.map(item => ({ id: item.id, key: item.key, title: item.title.trim() || 'Untitled task', hint: firstLine(item.description), state: 'waiting', startedAt: 0, ms: 0, stage: '', current: '', basis: '', note: '', open: false, proposal: '' })) };
       improve.box = el('div', 'origin-improve');
-      modal('origin-improve-dialog', { eyebrow: 'Compose', title: `Improve ${plural(list.length, 'task')} with Compose`, body: [improve.box] });
+      // While the run is being set up it cannot be closed half-way; afterwards closing only minimizes it.
+      modal('origin-improve-dialog', { eyebrow: 'Compose', title: `Improve ${plural(list.length, 'task')} with Compose`, body: [improve.box], busy: () => improve?.phase === 'starting' });
       dialogs['origin-improve-dialog'].onclose = () => { if (improve?.phase !== 'setup') paintMini(); };
       renderImprove();
       void prepareImprove(improve);
@@ -2524,7 +2525,7 @@ window.PromptboardOrigin = (() => {
         app.api(`/api/compose/batches/${encodeURIComponent(run.projectId)}`, { timeoutMs: 30000 }).catch(() => ({ response: { ok: false }, data: {} }))]);
       run.providers = providers.response.ok ? (providers.data.providers || []).filter(entry => entry.available) : [];
       if (existing.response.ok && existing.data.batch) {
-        const batch = existing.data.batch; run.keep = { ...batch.settings };
+        const batch = existing.data.batch;
         Object.assign(run.settings, Object.fromEntries(['provider', 'model', 'effort', 'quality', 'includeContext'].filter(key => batch.settings[key] !== undefined).map(key => [key, batch.settings[key]])));
         run.concurrency = batch.concurrency || run.concurrency;
       }
@@ -2539,6 +2540,7 @@ window.PromptboardOrigin = (() => {
     }
     function showImprove() {
       const dialog = dialogs['origin-improve-dialog'];
+      if (improve) improve.hidden = false;
       if (dialog && !dialog.open) dialog.showModal();
       improveMini?.remove(); improveMini = null;
       renderImprove();
@@ -2546,9 +2548,17 @@ window.PromptboardOrigin = (() => {
     function renderImprove() {
       const run = improve;
       if (!run?.box) return;
+      // Rows and buttons are rebuilt when a task changes state: focus returns to the same control.
+      const active = run.box.contains(document.activeElement) ? document.activeElement : null, row = active?.closest('[data-id]');
+      const focusKey = active ? active.id || (row ? `${row.dataset.id}|${active.className}` : '') : '';
       run.nodes = new Map();
       if (run.phase === 'setup' || run.phase === 'starting') run.box.replaceChildren(...improveSetup(run));
       else run.box.replaceChildren(...improveProgress(run));
+      if (focusKey) {
+        const [id, className] = focusKey.split('|'), target = className === undefined ? run.box.querySelector(`#${CSS.escape(id)}`)
+          : [...(run.box.querySelector(`[data-id="${CSS.escape(id)}"]`)?.querySelectorAll('button, select, input') || [])].find(node => node.className === className);
+        target?.focus({ preventScroll: true });
+      }
       paintImprove();
     }
     // Before the run: where it runs, with what, and how many at once. Nothing starts until Start.
@@ -2560,12 +2570,12 @@ window.PromptboardOrigin = (() => {
         control.value = list.some(([id]) => id === value) ? value : list[0]?.[0] ?? ''; control.addEventListener('change', () => onChange(control.value)); return control;
       };
       const providers = run.providers === null ? [['', 'Checking installed CLIs…']] : run.providers.length ? run.providers.map(entry => [entry.id, entry.name || entry.id]) : [['', 'No CLI installed']];
-      const cli = select(providers, s.provider, async value => { s.provider = value; s.model = ''; s.effort = ''; await improveModels(run, value); renderImprove(); }, 'CLI');
+      const cli = select(providers, s.provider, async value => { s.provider = value; s.model = ''; s.effort = ''; await improveModels(run, value); renderImprove(); }, 'CLI'); cli.id = 'origin-improve-cli';
       const models = run.models.get(s.provider) || [];
-      const model = select([['', 'CLI default'], ...models.map(entry => [entry.id, entry.name || entry.id]), ...(s.model && !models.some(entry => entry.id === s.model) ? [[s.model, s.model]] : [])], s.model, value => { s.model = value; s.effort = ''; renderImprove(); }, 'Model');
+      const model = select([['', 'CLI default'], ...models.map(entry => [entry.id, entry.name || entry.id]), ...(s.model && !models.some(entry => entry.id === s.model) ? [[s.model, s.model]] : [])], s.model, value => { s.model = value; s.effort = ''; renderImprove(); }, 'Model'); model.id = 'origin-improve-model';
       const efforts = models.find(entry => entry.id === s.model)?.efforts || ['low', 'medium', 'high'];
-      const effort = select([['', 'CLI default'], ...efforts.map(level => [level, level])], s.effort, value => { s.effort = value; }, 'Effort');
-      const checks = select([['reviewed', 'Reviewed: a second call checks every requirement'], ['fast', 'Fast: one call per task']], s.quality, value => { s.quality = value; }, 'Checks');
+      const effort = select([['', 'CLI default'], ...efforts.map(level => [level, level]), ...(s.effort && !efforts.includes(s.effort) ? [[s.effort, s.effort]] : [])], s.effort, value => { s.effort = value; }, 'Effort'); effort.id = 'origin-improve-effort';
+      const checks = select([['reviewed', 'Reviewed: a second call checks every requirement'], ['fast', 'Fast: one call per task']], s.quality, value => { s.quality = value; }, 'Checks'); checks.id = 'origin-improve-checks';
       const grounding = el('label', 'origin-check-row origin-improve-grounding'); const box = el('input'); box.type = 'checkbox'; box.checked = s.includeContext !== false; box.id = 'origin-improve-grounding';
       box.addEventListener('change', () => { s.includeContext = box.checked; }); grounding.append(box, el('span', '', 'Give each agent its task’s Origin context (linked components, requirements, decisions) as grounding'));
       const runs = select(Array.from({ length: 8 }, (_, index) => [String(index + 1), index ? `In parallel: ${index + 1} at once, each task with its own agent` : 'One at a time: one agent works on one task']), String(run.concurrency), value => { run.concurrency = Number(value); }, 'How tasks run');
@@ -2576,7 +2586,7 @@ window.PromptboardOrigin = (() => {
       for (const row of run.rows) { const li = el('li'); li.append(el('span', 'origin-improve-key', row.key), el('span', 'origin-improve-title', row.title), ...(row.hint ? [el('span', 'origin-improve-hint', row.hint)] : [])); preview.append(li); }
       const start = button(run.phase === 'starting' ? 'Starting…' : `Start ${plural(run.rows.length, 'task')}`, () => void startImprove(run), 'origin-primary'); start.id = 'origin-improve-start';
       start.disabled = run.phase === 'starting' || run.providers === null || !s.provider;
-      const close = button('Close', () => dialogs['origin-improve-dialog'].close(), 'origin-ghost');
+      const close = button('Close', () => dialogs['origin-improve-dialog'].close(), 'origin-ghost'); close.disabled = run.phase === 'starting';
       const actions = el('div', 'origin-modal-actions'); actions.append(close, start);
       const message = el('p', 'origin-inline-error', run.message); message.hidden = !run.message; message.setAttribute('role', 'alert');
       return [grid, grounding, preview, message, actions];
@@ -2609,7 +2619,7 @@ window.PromptboardOrigin = (() => {
         const minimize = button('Minimize', () => dialogs['origin-improve-dialog'].close(), 'origin-ghost'); minimize.id = 'origin-improve-minimize';
         const cancel = button('Cancel', () => void cancelImprove(run), 'origin-ghost danger', 'Stops every running agent at once; finished proposals are kept'); cancel.id = 'origin-improve-cancel';
         actions.append(cancel, toCompose, minimize);
-      } else actions.append(toCompose, button('Close', () => { dialogs['origin-improve-dialog'].close(); improveMini?.remove(); improveMini = null; }, 'origin-primary'));
+      } else actions.append(toCompose, Object.assign(button('Close', () => { improve = null; improveMini?.remove(); improveMini = null; dialogs['origin-improve-dialog'].close(); }, 'origin-primary'), { id: 'origin-improve-close' }));
       return [total, list, message, actions];
     }
     // The task's own words (what Compose works from), and the proposal once it is back.
@@ -2621,20 +2631,23 @@ window.PromptboardOrigin = (() => {
       return box;
     }
     async function startImprove(run) {
-      if (!(await flush())) { run.message = 'Save the blueprint first, then try again.'; renderImprove(); return; }
+      if (run.phase !== 'setup') return; // One start, even on a double click while the blueprint saves.
       run.phase = 'starting'; run.message = ''; renderImprove();
+      if (!(await flush())) { run.phase = 'setup'; run.message = 'Save the blueprint first, then try again.'; renderImprove(); return; }
+      // What each task said when it was sent: a proposal is marked when the task changes after this.
+      for (const row of run.rows) { const item = bp().items.find(entry => entry.id === row.id); if (item) row.basis = basisOf(item); }
       const post = async (path, body) => { const { response, data } = await app.api(path, { method: 'POST', body, timeoutMs: 60000 }).catch(() => ({ response: { ok: false }, data: {} })); if (!response.ok) throw new Error(typeof data.error === 'string' ? data.error : 'Compose Batch did not answer.'); return data; };
       try {
         const ids = run.rows.map(row => row.id), defaults = app.composeSettings();
         let data = await post('/api/compose/batches', { originId: run.projectId, expectedRevision: record.revision, itemIds: ids, defaults });
         run.batchId = data.batch.id;
         // Only the settings chosen here change; the batch keeps its other settings (detail, language, instructions…).
-        const chosen = { ...run.keep };
-        for (const key of ['provider', 'model', 'effort', 'quality']) { if (run.settings[key]) chosen[key] = run.settings[key]; else delete chosen[key]; }
-        chosen.includeContext = run.settings.includeContext !== false;
+        // "CLI default" is sent as itself, so a model or effort from Compose is never used instead.
+        const chosen = { ...data.batch.settings, provider: run.settings.provider, model: run.settings.model || '', effort: run.settings.effort || '', quality: run.settings.quality, includeContext: run.settings.includeContext !== false };
         await post(improvePath(run, '/settings'), { settings: chosen, concurrency: run.concurrency });
-        const before = new Map(data.batch.items.map(entry => [entry.id, entry.versions]));
-        for (const row of run.rows) row.versions = before.get(row.id) ?? 0;
+        // The prompt each task has now: only a different one, made by this run, becomes a proposal.
+        const before = new Map(data.batch.items.map(entry => [entry.id, entry.current || '']));
+        for (const row of run.rows) row.current = before.get(row.id) ?? '';
         data = await post(improvePath(run, '/run'), { itemIds: ids, defaults });
         for (const skipped of data.skipped || []) { const row = run.rows.find(entry => entry.id === skipped.id); if (row) { row.state = 'skipped'; row.note = skipped.reason; } }
         for (const row of run.rows) if (row.state === 'waiting') row.state = 'queued';
@@ -2664,14 +2677,15 @@ window.PromptboardOrigin = (() => {
         if (!entry) { row.state = 'stopped'; row.note = 'Removed from the batch.'; continue; }
         if (entry.state === 'running') { if (row.state !== 'running') changes.push(row.id); row.state = 'running'; row.startedAt = entry.startedAt || row.startedAt || Date.now(); row.stage = entry.stage; continue; }
         if (entry.state === 'queued') { row.state = 'queued'; continue; }
-        if (entry.versions > row.versions) {
+        if (entry.current && entry.current !== row.current) {
           row.ms = row.startedAt ? Date.now() - row.startedAt : 0;
           const { response, data } = await app.api(improvePath(run, `/items/${encodeURIComponent(row.id)}`), { timeoutMs: 15000 }).catch(() => ({ response: { ok: false }, data: {} }));
           const version = response.ok ? data.item?.versions.find(entry2 => entry2.id === data.item.current) : null;
           if (!version?.prompt) continue; // Read again on the next tick.
           row.proposal = version.prompt;
           const task = projectId === run.projectId && record?.exists ? bp().items.find(item => item.id === row.id) : null;
-          if (task) { task.refinement = { proposal: version.prompt.slice(0, 100000), proposedAt: Date.now(), basis: basisOf(task), originalDescription: '', acceptedAt: null, kept: keptRefinement(task) }; changed(); row.state = 'ready'; }
+          row.current = entry.current;
+          if (task) { task.refinement = { proposal: version.prompt.slice(0, 100000), proposedAt: Date.now(), basis: row.basis || basisOf(task), originalDescription: '', acceptedAt: null, kept: keptRefinement(task) }; changed(); row.state = 'ready'; }
           else { row.state = 'elsewhere'; row.note = 'Use it from Compose → Batch with “Use in Origin task”.'; }
           changes.push(row.id);
           continue;
@@ -2679,7 +2693,7 @@ window.PromptboardOrigin = (() => {
         if (entry.state === 'failed') { row.state = 'failed'; row.note = entry.error?.message || 'The run failed.'; changes.push(row.id); continue; }
         if (row.state === 'running' || row.state === 'queued') { row.state = 'stopped'; changes.push(row.id); }
       }
-      if (run.active && !run.rows.some(row => ['queued', 'running'].includes(row.state))) {
+      if (run.active && !run.cancelling && !run.rows.some(row => ['queued', 'running'].includes(row.state))) {
         run.active = false; clearInterval(run.timer);
         const ready = run.rows.filter(row => row.state === 'ready').length, failed = run.rows.filter(row => row.state === 'failed').length;
         run.message = `${plural(ready, 'proposal')} ready to review${failed ? `; ${plural(failed, 'task')} failed` : ''}. Nothing was changed or sent.`;
@@ -2688,9 +2702,13 @@ window.PromptboardOrigin = (() => {
       } else if (changes.length && dialogs['origin-improve-dialog']?.open) renderImprove();
     }
     async function cancelImprove(run) {
+      if (run.cancelling) return;
+      run.cancelling = true;
       const ids = run.rows.filter(row => ['queued', 'running'].includes(row.state)).map(row => row.id);
       const { response, data } = await app.api(improvePath(run, '/cancel'), { method: 'POST', body: { itemIds: ids }, timeoutMs: 30000 }).catch(() => ({ response: { ok: false }, data: {} }));
-      if (!response.ok) { run.message = typeof data.error === 'string' ? data.error : 'The run could not be cancelled. Try again.'; renderImprove(); return; }
+      if (!response.ok) { run.cancelling = false; run.message = typeof data.error === 'string' ? data.error : 'The run could not be cancelled. Try again.'; renderImprove(); paintMini(); return; }
+      // A prompt that finished just before Cancel is still delivered; only the rest stops.
+      if (data.batch) await accept(run, data.batch).catch(() => {});
       for (const row of run.rows) if (['queued', 'running'].includes(row.state)) row.state = 'stopped';
       run.active = false; clearInterval(run.timer);
       run.message = `Cancelled: every running agent was stopped. ${plural(run.rows.filter(row => row.state === 'ready').length, 'proposal')} kept.`;
@@ -2721,23 +2739,29 @@ window.PromptboardOrigin = (() => {
       }
       paintMini();
     }
-    // The minimized run: a small card on every page, with the whole run's progress.
+    // The minimized run: a small card on every page, with the whole run's progress. It is built once per state
+    // (running or finished) and then only its text and bar change, so its buttons keep focus.
     function paintMini() {
       const run = improve, dialog = dialogs['origin-improve-dialog'];
-      if (!run || run.phase === 'setup' || dialog?.open) { improveMini?.remove(); improveMini = null; return; }
-      if (!improveMini) {
-        improveMini = el('div', 'origin-improve-mini'); improveMini.id = 'origin-improve-mini'; improveMini.setAttribute('role', 'region'); improveMini.setAttribute('aria-label', 'Improving tasks');
+      if (!run || run.phase === 'setup' || run.hidden || dialog?.open) { improveMini?.remove(); improveMini = null; return; }
+      const mode = run.active || run.phase === 'starting' ? 'running' : 'finished';
+      if (!improveMini || improveMini.dataset.mode !== mode || improveMini.run !== run) {
+        improveMini?.remove();
+        improveMini = el('div', 'origin-improve-mini'); improveMini.id = 'origin-improve-mini'; improveMini.dataset.mode = mode; improveMini.setAttribute('role', 'region'); improveMini.setAttribute('aria-label', 'Improving tasks');
+        const text = el('div', 'origin-improve-mini-text'), title = el('strong'), line = el('span'); text.append(title, line);
+        const show = button(mode === 'running' ? 'Show' : 'Review', () => showImprove(), 'origin-link'); show.id = 'origin-improve-show';
+        const end = mode === 'running' ? button('Cancel', () => void cancelImprove(run), 'origin-link danger', 'Stop every running agent now')
+          : Object.assign(button('×', () => { improveMini?.remove(); improveMini = null; improve = null; }, 'origin-icon origin-small'), { title: 'Dismiss' });
+        // While it runs, × only hides the card; Improve with Compose shows the run again.
+        const hide = mode === 'running' ? Object.assign(button('×', () => { run.hidden = true; paintMini(); app.announce('Improving goes on. Choose Improve with Compose to see it again.'); }, 'origin-icon origin-small'), { title: 'Hide this card' }) : null;
+        improveMini.bar = meter('Improving tasks'); improveMini.title2 = title; improveMini.line = line; improveMini.run = run;
+        improveMini.append(text, improveMini.bar, show, end, ...(hide ? [hide] : []));
         document.body.append(improveMini);
       }
-      const done = run.rows.filter(row => ['ready', 'elsewhere', 'failed', 'stopped', 'skipped'].includes(row.state)).length, bar = meter('Improving tasks').set(Math.round((done / run.rows.length) * 100));
-      const now = run.rows.find(row => row.state === 'running');
-      const text = el('div', 'origin-improve-mini-text');
-      text.append(el('strong', '', run.active ? `Improving ${done} of ${run.rows.length}` : run.message || 'Improving finished'), el('span', '', run.active ? (now ? `${now.key} ${now.title}` : 'Waiting for a free agent') : ''));
-      const show = button(run.active ? 'Show' : 'Review', () => showImprove(), 'origin-link'); show.id = 'origin-improve-show';
-      const parts = [text, bar, show];
-      if (run.active) parts.push(button('Cancel', () => void cancelImprove(run), 'origin-link danger'));
-      else parts.push(Object.assign(button('×', () => { improveMini?.remove(); improveMini = null; improve = null; }, 'origin-icon origin-small'), { title: 'Dismiss' }));
-      improveMini.replaceChildren(...parts);
+      const done = run.rows.filter(row => ['ready', 'elsewhere', 'failed', 'stopped', 'skipped'].includes(row.state)).length, now = run.rows.find(row => row.state === 'running');
+      improveMini.bar.set(Math.round((done / run.rows.length) * 100));
+      improveMini.title2.textContent = mode === 'running' ? `Improving ${done} of ${run.rows.length}` : run.message || 'Improving finished';
+      improveMini.line.textContent = mode === 'running' ? (now ? `${now.key} ${now.title}` : run.phase === 'starting' ? 'Starting…' : 'Waiting for a free agent') : '';
     }
     // Suggest tasks: the split service proposes tasks from one component, one layer or the project's requirements.
     function openSuggest(scope) {

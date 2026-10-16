@@ -113,12 +113,12 @@ export function snapshotSource(record, itemId) {
     otherKeys: blueprint.items.filter(entry => entry.id !== itemId && !prerequisites.has(entry.id) && KEY_LIKE.test(entry.key)).map(entry => entry.key).slice(0, 500), takenAt: Date.now() };
 }
 
-/** The Compose request for one task: its own words as the request, its context as evidence, its instructions as user answers. */
 /** The first line of what the task says to do, for the queue: the line after its title, unless that is a Done when. */
 export function hintOf(input = '') {
   const line = String(input).split('\n').slice(1).map(text => text.trim()).find(Boolean) || '';
   return line.startsWith('Done when:') ? '' : line.length > 160 ? `${line.slice(0, 159)}…` : line;
 }
+/** The Compose request for one task: its own words as the request, its context as evidence, its instructions as user answers. */
 export function requestFor(source, settings) {
   const { includeContext, instructions, ...compose } = settings;
   const evidence = includeContext ? source.evidence : [];
@@ -336,7 +336,7 @@ export class ComposeBatches {
       const version = current(item), findings = versionFindings(item, item.split?.state === 'accepted' ? null : version, origin.get(item.id)), card = cards.get(item.id);
       return { id: item.id, key: item.key, title: item.title, hint: hintOf(item.source.input), revision: item.revision, state: stateOf(item, origin.get(item.id), card), stage: this.#active.get(item.run?.id)?.stage || '',
         startedAt: item.run?.state === 'running' ? item.run.startedAt || null : null,
-        error: item.error, origin: origin.get(item.id), dependsOn: item.source.dependsOn, versions: item.versions.length, card: card ? { id: card.id, number: card.number } : null,
+        error: item.error, origin: origin.get(item.id), dependsOn: item.source.dependsOn, versions: item.versions.length, current: item.current || '', card: card ? { id: card.id, number: card.number } : null,
         findings: { blocking: findings.filter(row => row.severity === 'blocking').length, warning: findings.filter(row => row.severity === 'warning').length },
         split: item.split ? { state: item.split.state, children: item.split.children.map(child => ({ id: child.id, title: child.title, approved: childApproved(child), card: cards.get(child.originTaskId) ? { number: cards.get(child.originTaskId).number } : null })) } : null };
     });
@@ -499,6 +499,8 @@ export class ComposeBatches {
     return this.#serial(async () => {
       const batch = await this.#require(batchId);
       let cancelled = stopped;
+      // A run the queue started between the first pass and now is stopped here, so Cancel never misses one.
+      for (const job of this.#active.values()) if (match(job) && !job.cancelled) { job.cancelled = true; job.controller.abort(); cancelled++; }
       for (const job of this.#queue.filter(match)) {
         this.#queue.splice(this.#queue.indexOf(job), 1);
         const item = structuredClone(batch.items.get(job.itemId));

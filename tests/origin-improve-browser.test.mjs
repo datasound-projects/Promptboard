@@ -53,7 +53,8 @@ test('Improve with Compose runs tasks on the batch: chosen settings, parallel or
   await wait(`[...document.querySelectorAll('${dialog} .origin-improve-row .origin-chip')].filter(chip => !['Queued', 'Waiting'].includes(chip.textContent)).length === 3`, 'three agents working', 20000);
   assert.equal(cli.max, 3, 'three agents at once, never more');
   const batch = (await call(`/api/compose/batches/${originId}`)).batch;
-  assert.deepEqual([batch.concurrency, batch.settings.quality, batch.settings.includeContext], [3, 'fast', false], 'the settings chosen here are the batch settings');
+  assert.deepEqual([batch.concurrency, batch.settings.quality, batch.settings.includeContext, batch.settings.model, batch.settings.effort], [3, 'fast', false, '', ''],
+    'the settings chosen here are the batch settings; "CLI default" is saved as itself, never Compose’s model');
   assert.match(await ev(`return document.querySelector('${dialog} .origin-improve-total-text').textContent;`), /0 of 6 done · 3 working · 3 waiting/);
   assert.equal(await ev(`return document.querySelector('${dialog} .origin-improve-row .pb-meter').getAttribute('role');`), 'progressbar');
   // Read shows the task's own words while it runs.
@@ -64,6 +65,9 @@ test('Improve with Compose runs tasks on the batch: chosen settings, parallel or
   await wait(`!document.querySelector('${dialog}').open && document.querySelector('#origin-improve-mini')`, 'minimized');
   await ev(`location.hash = '#/';`);
   await wait(`location.hash === '#/' && /Improving 0 of 6/.test(document.querySelector('#origin-improve-mini')?.textContent || '')`, 'card on Compose');
+  await ev(`document.querySelector('#origin-improve-show').focus();`);
+  await pause(2200);
+  assert.equal(await ev(`return document.activeElement?.id;`), 'origin-improve-show', 'the card updates without taking focus from its buttons');
   // Cancel from the card stops every running agent at once.
   const before = cli.aborted;
   await ev(`[...document.querySelectorAll('#origin-improve-mini button')].find(b => b.textContent === 'Cancel').click();`);
@@ -86,6 +90,9 @@ test('Improve with Compose runs tasks on the batch: chosen settings, parallel or
   assert.equal(cli.max, 1, 'one agent at a time');
   assert.deepEqual(await chips(), Array(6).fill('Proposal ready'));
   await wait(`document.querySelector('#origin-view').dataset.save === 'saved'`, 'saved', 20000);
+  await ev(`document.querySelector('#origin-improve-close').click();`);
+  await pause(600);
+  assert.equal(await ev(`return Boolean(document.querySelector('#origin-improve-mini')) || document.querySelector('${dialog}').open;`), false, 'Close leaves no card behind');
   const items = (await call(`/api/origin/projects/${originId}`)).blueprint.items;
   assert.deepEqual(items.map(item => [item.key, item.description, item.refinement?.proposal.startsWith(`# Goal\n${item.key}`)]), items.map(item => [item.key, `Build part ${item.key.at(-1)} with tests.`, true]),
     'each task has its own proposal; its text is unchanged until accepted');

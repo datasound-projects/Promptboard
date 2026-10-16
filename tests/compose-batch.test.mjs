@@ -437,6 +437,7 @@ test('the queue shows what each task asks and when its run started; Cancel all s
   assert.ok(batch.typicalMs > 0, 'a finished run gives the typical time');
   assert.match(batch.items[0].hint, /^Implement feature 1 with marker MARK1/);
   assert.equal(batch.items[0].startedAt, null, 'only running tasks carry a start time');
+  assert.match(batch.items[0].current, /\S/, 'the current prompt version is named, so a new one is seen even when old versions are dropped');
   // In parallel: three agents at once, each with its own task.
   await call(`/${record.id}/settings`, { concurrency: 3 });
   const before = Date.now();

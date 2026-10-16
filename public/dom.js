@@ -17,7 +17,7 @@ window.PromptboardDom = (() => {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
   /** A short, readable duration: "45s", "3:05", "1 h 20 min". */
-  const duration = ms => { const s = Math.max(0, Math.round(ms / 1000)); return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}` : `${Math.floor(s / 3600)} h ${Math.round((s % 3600) / 60)} min`; };
+  const duration = ms => { const s = Math.max(0, Math.round(ms / 1000)), m = Math.round(s / 60); return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}` : `${Math.floor(m / 60)} h ${m % 60} min`; };
   /** Minutes left in words, rounded up: "less than a minute", "about 12 min". */
   const left = ms => (ms < 60000 ? 'less than a minute' : `about ${Math.ceil(ms / 60000)} min`);
   /**
