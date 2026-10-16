@@ -5725,6 +5725,8 @@ window.PromptboardBaseView = baseView;
 // which prefill or create through the existing validated APIs and never start an agent.
 // Compose Batch reads and changes its batches only through its own routes; it starts nothing until Run is chosen.
 batchView = window.PromptboardBatch?.create({ api, announce, composeSettings: () => { const { input, ...rest } = settings(); return rest; },
+  // A batch prompt goes back to its Origin task as a proposal, as Compose's own "Use in Origin task" does.
+  toOrigin: async proposal => { const result = await originView?.receiveProposal(proposal); if (result === 'ok') location.hash = '#/origin'; return result || 'Origin is not available. Reload the page.'; },
   openKanban: (projectId, taskId) => { if (projectId) setSelectedProject(projectId); location.hash = '#/kanban'; if (taskId) setTimeout(() => void openTaskDetails(taskId), 0); } }) || null;
 for (const [mode, tab] of [['single', $('#compose-mode-single')], ['batch', $('#compose-mode-batch')]]) {
   tab.addEventListener('click', () => setComposeMode(mode));
@@ -5740,6 +5742,7 @@ async function sendToBatch(spec) {
 }
 originView = window.PromptboardOrigin?.create({ api, announce, closeSidebar: () => setSidebar(false), ensureBoard: options => loadBoard(options),
   projects: () => board?.projects || [], toCompose: prefillCompose, toBatch: sendToBatch, attachComposeContext,
+  openBatch: id => { if (!batchView) return; location.hash = '#/'; setComposeMode('batch'); showPage(); void batchView.open(id); },
   // Batch refinement and suggestions reuse Compose's own settings and job slot; Origin adds no prompt generator.
   composeSettings: () => { const { input, ...rest } = settings(); return rest; }, composeRunning: () => running,
   openKanban: (projectId, taskId) => { if (projectId) setSelectedProject(projectId); location.hash = '#/kanban'; if (taskId) setTimeout(() => void openTaskDetails(taskId), 0); },
