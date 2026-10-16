@@ -48,9 +48,14 @@ globalThis.PromptboardOriginModel = (() => {
   };
   const VISION = ['summary', 'problem', 'goal', 'users', 'useCases', 'inScope', 'outOfScope', 'successCriteria', 'constraints', 'architectureSummary'];
   const LIMITS = { requirements: 500, components: 200, connections: 1000, technologies: 300, dependencies: 500, decisions: 300, assumptions: 300, sources: 500, risks: 300, areas: 1000, milestones: 100, items: 1000,
-    layers: 50, customSections: 50, questions: 300 };
+    layers: 50, customSections: 50, questions: 300, blocks: 300 };
+  // Blocks the person adds to any section page (except the Overview): [type, label, what it holds]. Each type has one
+  // fixed shape, so the page, the context export and research agents read and write it the same way.
+  const BLOCK_TYPES = [['qa', 'Q&A', 'Questions with their answers'], ['table', 'Table', 'Rows under columns you name'], ['checklist', 'Checklist', 'Points to tick off'],
+    ['flow', 'Flow', 'Steps joined by arrows'], ['notes', 'Notes', 'Free text']];
+  const BLOCK_PARTS = { entries: 100, checks: 300, columns: 20, rows: 300, nodes: 100, edges: 300 };
   // Records a task can link through More details, beyond its components, requirements and prerequisites.
-  const CONTEXT_COLLECTIONS = ['decisions', 'technologies', 'dependencies', 'areas', 'sources', 'assumptions', 'risks', 'customSections'];
+  const CONTEXT_COLLECTIONS = ['decisions', 'technologies', 'dependencies', 'areas', 'sources', 'assumptions', 'risks', 'customSections', 'blocks'];
   const QUESTION_KEY = /^(section|vision|topic|field):[A-Za-z0-9_:-]{1,100}$/;
   // Built-in wording shown in Origin. Each project can reword it (questionText); the wording never changes what a section does.
   const QUESTIONS = {
@@ -216,7 +221,39 @@ globalThis.PromptboardOriginModel = (() => {
       const value = str(text, 500).trim();
       if (value) blueprint.questionText[key] = value;
     }
-    blueprint.layers = collection('layers', v => ({ name: str(v.name, 80), description: str(v.description, 2000), technologyIds: refs(v.technologyIds, ids.technologies), constraints: str(v.constraints) }));
+    // Blocks: a section's own Q&A, tables, checklists, flows and notes. Parts have IDs that are unique in their block.
+    const parts = (value, max, shape) => {
+      if (value === undefined || value === null) return [];
+      if (!Array.isArray(value)) { fix(); return []; }
+      if (value.length > max) fix();
+      const seen = new Set(), list = [];
+      for (const entry of value.slice(0, max)) {
+        const part = obj(entry);
+        if (typeof part.id !== 'string' || !ID.test(part.id) || seen.has(part.id)) { fix(); continue; }
+        seen.add(part.id); list.push({ id: part.id, ...shape(part) });
+      }
+      return list;
+    };
+    blueprint.blocks = collection('blocks', v => {
+      const type = BLOCK_TYPES.some(([id]) => id === v.type) ? v.type : (fix(), 'notes');
+      const own = { sectionId: typeof v.sectionId === 'string' && sectionIds.has(v.sectionId) && v.sectionId !== 'overview' ? v.sectionId : '', type, title: str(v.title, 120) };
+      if (type === 'notes') return { ...own, text: str(v.text) };
+      if (type === 'qa') return { ...own, entries: parts(v.entries, BLOCK_PARTS.entries, e => ({ question: str(e.question, 500), answer: str(e.answer) })) };
+      if (type === 'checklist') return { ...own, checks: parts(v.checks, BLOCK_PARTS.checks, e => ({ text: str(e.text, 1000), done: e.done === true })) };
+      if (type === 'table') {
+        const columns = parts(v.columns, BLOCK_PARTS.columns, e => ({ name: str(e.name, 80) })), names = new Set(columns.map(column => column.id));
+        return { ...own, columns, rows: parts(v.rows, BLOCK_PARTS.rows, e => {
+          const cells = {};
+          for (const [key, text] of Object.entries(obj(e.cells))) { if (!names.has(key)) { fix(); continue; } const cell = str(text, 2000); if (cell) cells[key] = cell; }
+          return { cells };
+        }) };
+      }
+      const nodes = parts(v.nodes, BLOCK_PARTS.nodes, e => ({ label: str(e.label, 120), notes: str(e.notes, 2000), x: num(e.x), y: num(e.y) })), nodeIds = new Set(nodes.map(node => node.id));
+      const edges = parts(v.edges, BLOCK_PARTS.edges, e => ({ from: one(e.from, nodeIds), to: one(e.to, nodeIds), label: str(e.label, 80) }))
+        .filter(edge => { const valid = edge.from && edge.to && edge.from !== edge.to; if (!valid) fix(); return valid; });
+      return { ...own, nodes, edges };
+    }).filter(entry => { if (entry.sectionId) return true; fix(); return false; });
+    blueprint.layers =collection('layers', v => ({ name: str(v.name, 80), description: str(v.description, 2000), technologyIds: refs(v.technologyIds, ids.technologies), constraints: str(v.constraints) }));
 
     blueprint.requirements = collection('requirements', v => ({ key: str(v.key, 20), title: str(v.title, NAME), description: str(v.description),
       type: pick(v.type, ENUMS.requirementType), priority: pick(v.priority, ENUMS.priority), status: pick(v.status, ENUMS.itemStatus),
@@ -318,6 +355,31 @@ globalThis.PromptboardOriginModel = (() => {
   const byId = list => new Map(list.map(entry => [entry.id, entry]));
   const plural = (count, word, many = `${word}s`) => `${count} ${count === 1 ? word : many}`;
   const hasText = value => typeof value === 'string' && value.trim().length > 0;
+  const blockType = type => BLOCK_TYPES.find(([id]) => id === type) || BLOCK_TYPES[4];
+  /** A block with something written in it, and a block with nothing left open. */
+  const blockStarted = block => ({ notes: () => hasText(block.text), qa: () => block.entries.some(entry => hasText(entry.answer)), checklist: () => block.checks.some(entry => hasText(entry.text)),
+    table: () => block.rows.some(row => Object.values(row.cells).some(hasText)), flow: () => block.nodes.length > 0 })[block.type]();
+  const blockComplete = block => blockStarted(block) && (block.type !== 'qa' || block.entries.every(entry => hasText(entry.answer)));
+  /**
+   * A block as plain lines: `ids` adds the stable tags research agents write to ([entry …], [row …], [node …]).
+   * Used for task context, research context and the Overview, so every reader sees the same content.
+   */
+  function blockLines(block, { ids = false, max = 1500 } = {}) {
+    const tag = (kind, id) => (ids ? `[${kind} ${id}] ` : ''), out = [];
+    if (block.type === 'notes' && hasText(block.text)) out.push(clip(block.text, max * 3));
+    if (block.type === 'qa') for (const entry of block.entries) if (ids || hasText(entry.answer)) out.push(`${tag('entry', entry.id)}${clip(entry.question, 300) || 'Untitled question'} → ${hasText(entry.answer) ? clip(entry.answer, max) : '(no answer yet)'}`);
+    if (block.type === 'checklist') for (const entry of block.checks) if (ids || hasText(entry.text)) out.push(`${tag('check', entry.id)}[${entry.done ? 'x' : ' '}] ${clip(entry.text, 400)}`);
+    if (block.type === 'table') {
+      if (ids) out.push(`columns: ${block.columns.map(column => `${tag('column', column.id)}${clip(column.name, 60) || 'Untitled'}`).join('; ') || '(none yet)'}`);
+      for (const row of block.rows) if (ids || Object.values(row.cells).some(hasText)) out.push(`${tag('row', row.id)}${block.columns.map(column => `${clip(column.name, 40) || 'Untitled'}: ${clip(row.cells[column.id] || '', 400) || '—'}`).join(' | ')}`);
+    }
+    if (block.type === 'flow') {
+      const name = id => clip(block.nodes.find(node => node.id === id)?.label || 'Untitled', 80);
+      for (const node of block.nodes) out.push(`${tag('node', node.id)}${clip(node.label, 120) || 'Untitled'}${hasText(node.notes) ? ` — ${clip(node.notes, 400)}` : ''}`);
+      for (const edge of block.edges) out.push(`${tag('edge', edge.id)}${name(edge.from)} → ${name(edge.to)}${hasText(edge.label) ? ` (${clip(edge.label, 80)})` : ''}`);
+    }
+    return out;
+  }
 
   /** Evidence decides verification. A URL alone never verifies anything. */
   function verification(entity, sources) {
@@ -458,6 +520,13 @@ globalThis.PromptboardOriginModel = (() => {
         .map(question => `${clip(question.text, 300)} → ${clip(blueprint.answers[question.id], 1500)}`);
       push(`Notes: ${section.title.trim() || 'Untitled section'}`, [hasText(section.description) && clip(section.description, 1500), answers.length && bullets(answers)].filter(Boolean).join('\n'));
     }
+    // Blocks: linked one by one, or with their own section. A block of a section marked not needed is left out.
+    const linkedSections = new Set(blueprint.customSections.filter(entry => explicit('customSections').has(entry.id) && !entry.notApplicable).map(entry => entry.id));
+    for (const block of blueprint.blocks.filter(entry => (explicit('blocks').has(entry.id) || linkedSections.has(entry.sectionId)) && !notNeeded(entry.sectionId) && !blueprint.customSections.find(custom => custom.id === entry.sectionId)?.notApplicable)) {
+      const name = `${sectionTitle(blueprint, block.sectionId)} · ${block.title.trim() || blockType(block.type)[1]}`;
+      use('blocks', block, name);
+      push(`${blockType(block.type)[1]}: ${name}`, block.type === 'notes' ? blockLines(block).join('\n') : bullets(blockLines(block)));
+    }
     for (const id of explicit('sources')) evidence.add(id);
     const cited = [...evidence].map(id => sources.get(id)).filter(Boolean);
     for (const source of cited) use('sources', source, source.title || source.url || 'Source');
@@ -526,6 +595,7 @@ globalThis.PromptboardOriginModel = (() => {
   function itemName(blueprint, collection, id) {
     const entry = blueprint[collection]?.find(item => item.id === id);
     if (!entry) return '';
+    if (collection === 'blocks') return `${sectionTitle(blueprint, entry.sectionId)} · ${entry.title.trim() || blockType(entry.type)[1]}`;
     const name = entry.name || entry.title || entry.statement || entry.label || 'Untitled';
     return entry.key ? `${entry.key} ${name}` : name;
   }
@@ -659,8 +729,9 @@ globalThis.PromptboardOriginModel = (() => {
       decisions: blueprint.decisions.length, plan: blueprint.items.length + blueprint.milestones.length,
     };
     for (const section of Object.keys(AREAS)) content[section] = blueprint.areas.filter(item => item.section === section).length;
-    // Your own answered questions are content of the built-in section they belong to.
+    // Your own answered questions and filled blocks are content of the built-in section they belong to.
     for (const question of blueprint.questions) if (question.scope === 'section' && content[question.sectionId] !== undefined && hasText(blueprint.answers[question.id])) content[question.sectionId] = Number(content[question.sectionId]) + 1;
+    for (const block of blueprint.blocks) if (content[block.sectionId] !== undefined && blockStarted(block)) content[block.sectionId] = Number(content[block.sectionId]) + 1;
     const complete = {
       vision: ['problem', 'goal', 'users', 'inScope'].every(key => hasText(blueprint.vision[key])),
       requirements: blueprint.requirements.every(item => lines(item.acceptanceCriteria).length > 0), architecture: blueprint.components.every(item => hasText(item.purpose)),
@@ -669,11 +740,12 @@ globalThis.PromptboardOriginModel = (() => {
     };
     for (const section of Object.keys(AREAS)) complete[section] = blueprint.areas.filter(item => item.section === section).every(item => item.status === 'defined');
     const ready = readiness(blueprint, found);
-    // A custom section is complete when every question it asks has an answer.
+    // A custom section is complete when every question it asks has an answer and every block is filled in.
     for (const custom of blueprint.customSections) {
       const asked = blueprint.questions.filter(question => question.scope === 'section' && question.sectionId === custom.id);
-      const answered = asked.filter(question => hasText(blueprint.answers[question.id])).length;
-      states[custom.id] = custom.notApplicable ? 'na' : !hasText(custom.description) && !answered ? 'empty' : answered === asked.length ? 'defined' : 'progress';
+      const answered = asked.filter(question => hasText(blueprint.answers[question.id])).length, own = blueprint.blocks.filter(block => block.sectionId === custom.id);
+      states[custom.id] = custom.notApplicable ? 'na' : !hasText(custom.description) && !answered && !own.some(blockStarted) ? 'empty'
+        : answered === asked.length && own.every(blockComplete) ? 'defined' : 'progress';
     }
     for (const { id } of SECTIONS) {
       const related = found.filter(issue => issue.target?.section === id && id !== 'overview');
@@ -817,9 +889,9 @@ globalThis.PromptboardOriginModel = (() => {
     items: [['title'], ['description'], ['acceptanceCriteria']],
   };
   const RESEARCH_NOUN = { requirements: 'requirement', components: 'component', technologies: 'technology', dependencies: 'dependency', decisions: 'decision', assumptions: 'assumption',
-    risks: 'risk', sources: 'source', layers: 'layer', areas: 'planning answer', milestones: 'milestone', items: 'task', connections: 'connection' };
+    risks: 'risk', sources: 'source', layers: 'layer', areas: 'planning answer', milestones: 'milestone', items: 'task', connections: 'connection', blocks: 'block' };
   const RESEARCH_GROUPS = [['components', 'Building blocks'], ['requirements', 'Requirements'], ['technologies', 'Technologies'], ['dependencies', 'Dependencies'],
-    ['decisions', 'Decisions'], ['assumptions', 'Assumptions'], ['risks', 'Risks'], ['layers', 'Layers']];
+    ['decisions', 'Decisions'], ['assumptions', 'Assumptions'], ['risks', 'Risks'], ['layers', 'Layers'], ['blocks', 'Your blocks']];
   // The records each built-in section is made of.
   const SECTION_RECORDS = { requirements: ['requirements'], architecture: ['layers', 'components'], technology: ['technologies'], dependencies: ['dependencies'],
     research: ['assumptions', 'sources', 'risks'], decisions: ['decisions'], plan: ['milestones', 'items'] };
@@ -897,7 +969,15 @@ globalThis.PromptboardOriginModel = (() => {
     for (const question of blueprint.questions.filter(entry => entry.scope === 'section' && entry.sectionId === id)) {
       out.push(`  [question ${question.id}] ${clip(question.text, 300)} → ${hasText(blueprint.answers[question.id]) ? clip(blueprint.answers[question.id], brief ? 300 : 2000) : '(no answer yet)'}`);
     }
+    for (const block of blueprint.blocks.filter(entry => entry.sectionId === id)) out.push(researchBlock(block, { brief }));
     return out.join('\n');
+  }
+  /** One block as research context: its type, title and every part with its stable tag. */
+  function researchBlock(block, { brief = false } = {}) {
+    const head = `  [blocks ${block.id}] ${blockType(block.type)[1]} block “${clip(block.title, 120) || 'Untitled'}”`;
+    if (brief) return `${head}${blockStarted(block) ? '' : ' (empty)'}`;
+    const body = blockLines(block, { ids: true, max: 1500 });
+    return [head, ...(body.length ? body : ['(empty)']).map(line => `    ${line}`)].join('\n');
   }
 
   /**
@@ -915,6 +995,11 @@ globalThis.PromptboardOriginModel = (() => {
     if (scope.kind === 'section' && sectionIds.includes(scope.id)) {
       label2 = `the section “${sectionTitle(blueprint, scope.id)}”`;
       push('Focus: this section', scope.id === 'overview' ? sectionIds.filter(id => id !== 'overview').map(id => researchSection(blueprint, id, { brief: true })).join('\n') : researchSection(blueprint, scope.id), false);
+    } else if (scope.kind === 'record' && scope.collection === 'blocks' && blueprint.blocks.some(entry => entry.id === scope.id)) {
+      const block = blueprint.blocks.find(entry => entry.id === scope.id);
+      label2 = `the ${blockType(block.type)[1]} block “${clip(block.title, 80) || 'Untitled'}” in ${sectionTitle(blueprint, block.sectionId)}`;
+      push('Focus: this block', researchBlock(block), false);
+      push('Its section', researchSection(blueprint, block.sectionId, { brief: true }));
     } else if (scope.kind === 'record' && blueprint[scope.collection]?.some(entry => entry.id === scope.id)) {
       const entry = blueprint[scope.collection].find(item => item.id === scope.id);
       label2 = `the ${RESEARCH_NOUN[scope.collection] || 'record'} “${clip(recordTitle(blueprint, scope.collection, entry), 80)}”`;
@@ -972,6 +1057,78 @@ globalThis.PromptboardOriginModel = (() => {
     return { text: text.trim(), label: label2, size: text.length, omitted };
   }
 
+  // ---- Where research writes: the exact places of one scope, in this project's own words and IDs ----
+  // The records each built-in section holds, in the order an agent should fill them.
+  const GUIDE_RECORDS = { requirements: ['requirements'], architecture: ['components', 'connections', 'layers'], technology: ['technologies', 'decisions'], dependencies: ['dependencies'],
+    research: ['sources', 'assumptions', 'risks'], decisions: ['decisions'], plan: ['items', 'milestones'] };
+  const fieldsOf = collection => Object.keys(SUGGEST_FIELDS[collection] || {}).filter(field => !(collection === 'sources' && field === 'verification'));
+  const addFormat = collection => `${RESEARCH_NOUN[collection]}: {"kind":"add","collection":"${collection}"} with ${collection === 'connections' ? 'from and to (component IDs), label, protocol, notes' : fieldsOf(collection).join(', ')}${collection !== 'connections' && LINKS[collection] ? `; links ${Object.keys(LINKS[collection]).join(', ')}` : ''}`;
+  const changeFormat = collection => `change one with {"kind":"record","collection":"${collection}","id":"<id>","field":"<field>"}`;
+  const BLOCK_WRITE = {
+    notes: id => `rewrite its text with {"kind":"block","block":"${id}","field":"text"} (the value is the whole new text: keep what is there and add to it)`,
+    qa: id => `answer a question with {"kind":"block","block":"${id}","part":"<entry id>","field":"answer"}; add a question with {"kind":"blockAdd","block":"${id}"} and {"question":"…","answer":"…"}`,
+    checklist: id => `add a point with {"kind":"blockAdd","block":"${id}"} and {"text":"…"}; reword one with {"kind":"block","block":"${id}","part":"<check id>","field":"text"}`,
+    table: id => `fill a cell with {"kind":"block","block":"${id}","part":"<row id>","field":"<column id>"}; add a row with {"kind":"blockAdd","block":"${id}"} and an object of column name → cell text (a new column name adds the column); add a column with {"column":"name"}`,
+    flow: id => `add a step with {"kind":"blockAdd","block":"${id}"} and {"label":"…","notes":"…","ref":"s1"}; add an arrow with {"from":"<node id or @ref>","to":"<node id or @ref>","label":"…"}; change a step with {"kind":"block","block":"${id}","part":"<node id>","field":"label" or "notes"}`,
+  };
+  const NEW_BLOCK = `{"kind":"add","collection":"blocks"} with {"section":"<section id>","type":"qa|table|checklist|flow|notes","title":"…"} and its content: notes "text"; qa "entries":[{"question","answer"}]; table "columns":["Name",…] and "rows":[["cell",…],…]; checklist "checks":["…",…]; flow "nodes":[{"ref":"a","label":"…","notes":"…"}] and "edges":[{"from":"a","to":"b","label":"…"}]. Use a table for structured facts (fields, schemas, parameters, comparisons), a flow for processes and data flows, Q&A for questions and answers, a checklist for checks to do`;
+  /** The writable places of one section: its built-in content, its topics, its own questions and its blocks. */
+  function sectionGuide(blueprint, id) {
+    const custom = blueprint.customSections.find(entry => entry.id === id), out = [];
+    if (id === 'vision') out.push(`Answer each question of this section with {"kind":"vision","field":"<field>"}: ${VISION.map(key => `${key} (${clip(questionText(blueprint, `vision:${key}`, VISION_QUESTIONS[key]), 60)})`).join('; ')}.`);
+    for (const collection of GUIDE_RECORDS[id] || []) out.push(`Add a new ${addFormat(collection)}; ${changeFormat(collection)} for a [${collection} <id>] line.`);
+    if (id === 'architecture') out.push('Link components to their layer (layerId) and technologies (technologyIds). Name each connection with a label and a protocol.');
+    if (AREAS[id]) {
+      out.push(`Answer the topics of this section. A new answer: {"kind":"add","collection":"areas"} with "section":"${id}", "area":"<topic id>", "title" (the answer in one line), "description" (the details), and links componentIds, requirementIds, technologyIds. Improve an answer with {"kind":"record","collection":"areas","id":"<id>","field":"title" or "description"}.`);
+      out.push(`Topics (topic id: name): ${AREAS[id].map(([area, name]) => `${area}: ${clip(questionText(blueprint, `topic:${id}:${area}`, name), 60)}`).join('; ')}.`);
+    }
+    if (custom) out.push(`Describe the section with {"kind":"section","section":"${id}","field":"description"}.`);
+    const asked = blueprint.questions.filter(entry => entry.scope === 'section' && entry.sectionId === id);
+    if (asked.length) out.push(`Answer this section's own questions with {"kind":"answer","questionId":"<id>"}: ${asked.map(question => `${question.id} (${clip(question.text, 60)})`).join('; ')}.`);
+    for (const block of blueprint.blocks.filter(entry => entry.sectionId === id)) out.push(`${blockType(block.type)[1]} block “${clip(block.title, 60) || 'Untitled'}” [blocks ${block.id}]: ${BLOCK_WRITE[block.type](block.id)}.`);
+    if (id !== 'overview') out.push(`When a finding fits none of these places, add a block to this section: ${NEW_BLOCK.replace('<section id>', id)}.`);
+    return out;
+  }
+  /**
+   * Instructions, not data: where an agent writes its findings for one scope. Built from the stored blueprint, so renamed
+   * sections, your own sections, questions and blocks are covered without code changes.
+   */
+  function researchGuide(blueprint, scope = { kind: 'project' }) {
+    const sectionIds = phaseList(blueprint).flatMap(phase => phase.sections);
+    const place = id => `${sectionTitle(blueprint, id)} [section ${id}]`;
+    let lines2 = [], where = 'the selected part';
+    if (scope.kind === 'section' && sectionIds.includes(scope.id) && scope.id !== 'overview') { where = `the section ${place(scope.id)}`; lines2 = sectionGuide(blueprint, scope.id); }
+    else if (scope.kind === 'record' && scope.collection === 'blocks' && blueprint.blocks.some(entry => entry.id === scope.id)) {
+      const block = blueprint.blocks.find(entry => entry.id === scope.id);
+      where = `the block [blocks ${block.id}]`; lines2 = [`${blockType(block.type)[1]} block “${clip(block.title, 60) || 'Untitled'}”: ${BLOCK_WRITE[block.type](block.id)}.`, `Rename it with {"kind":"block","block":"${block.id}","field":"title"}.`];
+    } else if (scope.kind === 'record' && blueprint[scope.collection]?.some(entry => entry.id === scope.id)) {
+      where = `the record [${scope.collection} ${scope.id}]`;
+      lines2 = [`Fill or improve its fields with {"kind":"record","collection":"${scope.collection}","id":"${scope.id}","field":"<field>"}: ${fieldsOf(scope.collection).join(', ')}.`,
+        ...(LINKS[scope.collection] ? [`Add links with the same target and "field" set to a link field (${Object.keys(LINKS[scope.collection]).join(', ')}); the value is a list of IDs or @refs (one ID for ${Object.keys(LINKS[scope.collection]).filter(field => SINGLE_LINKS.has(field)).join(' and ') || 'single links'}).`] : []),
+        ...(scope.collection === 'components' && blueprint.questions.some(entry => entry.scope === 'component') ? [`Answer the component questions with {"kind":"componentAnswer","componentId":"${scope.id}","questionId":"<id>"}.`] : []),
+        'Add the records it needs (technologies, dependencies, decisions, risks) when your research shows they are missing.'];
+    } else if (scope.kind === 'question') {
+      const [kind, a, b] = scope.key.split(':');
+      where = 'the selected question';
+      lines2 = [kind === 'vision' ? `Answer it with {"kind":"vision","field":"${a}"}.`
+        : kind === 'topic' ? `Answer it with {"kind":"add","collection":"areas"} and "section":"${a}", "area":"${b}", "title" (one line), "description" (the details); improve an existing [areas <id>] answer with {"kind":"record","collection":"areas","id":"<id>","field":"title" or "description"}.`
+        : kind === 'question' ? `Answer it with {"kind":"answer","questionId":"${a}"}.`
+        : `Answer it with {"kind":"componentAnswer","componentId":"${a}","questionId":"${b}"}.`];
+    } else {
+      where = 'the whole project';
+      lines2 = ['Put each finding into the section it belongs to:', ...sectionIds.filter(id => id !== 'overview').map(id => {
+        const records = (GUIDE_RECORDS[id] || []).map(collection => RESEARCH_NOUN[collection]);
+        const own = [AREAS[id] && `topic answers (areas, section "${id}")`, id === 'vision' && 'the vision fields', blueprint.customSections.some(entry => entry.id === id) && 'its description',
+          blueprint.questions.some(entry => entry.scope === 'section' && entry.sectionId === id) && 'its questions', blueprint.blocks.some(entry => entry.sectionId === id) && 'its blocks'].filter(Boolean);
+        return `- ${place(id)}: ${[...records.map(noun => `${noun} records`), ...own].join(', ') || 'blocks'}`;
+      }), `New records: ${SUGGEST_ADD.filter(collection => !['areas', 'blocks'].includes(collection)).map(addFormat).join('. ')}.`,
+      'A topic answer: {"kind":"add","collection":"areas"} with "section", "area" (the topic id), "title" (one line) and "description" (the details).', `New block in any section: ${NEW_BLOCK}.`];
+    }
+    return [`# Where to write (${where})`, 'Put each finding into the place it belongs to in the selected part, as listed here. Fill every empty field, unanswered topic, unanswered question and empty block that your research can answer, and improve weak ones. Write the full content into the fields: do not leave the details only in your answer text.',
+      'Add records of other sections only when a finding belongs there (for example a decision between options, a risk or a source). Suggest tasks (items) only when the selected part is the task plan or the person asks for tasks.',
+      ...lines2.map(line => (line.startsWith('- ') ? line : `- ${line}`))].join('\n');
+  }
+
   // New-record defaults, shared by the Origin page (quick add) and research suggestions.
   const today = () => new Date().toLocaleDateString('en-CA');
   const RECORD_DEFAULTS = {
@@ -988,6 +1145,7 @@ globalThis.PromptboardOriginModel = (() => {
     layers: name => ({ name, description: '', technologyIds: [], constraints: '' }),
     areas: (title, section, area) => ({ section, area, title, description: '', status: 'defined', componentIds: [], requirementIds: [], technologyIds: [], baseResourceIds: [] }),
     connections: () => ({ from: '', to: '', label: '', protocol: '', notes: '' }),
+    blocks: (title, sectionId, type) => ({ sectionId, type, title, ...{ notes: { text: '' }, qa: { entries: [] }, checklist: { checks: [] }, table: { columns: [], rows: [] }, flow: { nodes: [], edges: [] } }[type] }),
   };
   // Relationships a suggestion may set: field → the collection it points to. Single links hold one ID.
   const LINKS = {
@@ -1023,7 +1181,7 @@ globalThis.PromptboardOriginModel = (() => {
     connections: { label: 80, protocol: 80, notes: 2000 },
   };
   // New records research may suggest, in the order a batch applies them (what others point to comes first).
-  const SUGGEST_ADD = ['layers', 'technologies', 'components', 'requirements', 'dependencies', 'milestones', 'items', 'decisions', 'assumptions', 'risks', 'sources', 'connections'];
+  const SUGGEST_ADD = ['layers', 'technologies', 'components', 'requirements', 'dependencies', 'milestones', 'items', 'decisions', 'assumptions', 'risks', 'sources', 'connections', 'areas', 'blocks'];
   const NAME_FIELD = { components: 'name', technologies: 'name', dependencies: 'name', assumptions: 'statement', layers: 'name' };
   const nameField = collection => NAME_FIELD[collection] || 'title';
   class SuggestionError extends Error {}
@@ -1063,14 +1221,137 @@ globalThis.PromptboardOriginModel = (() => {
     const to = LINKS[collection]?.[field];
     if (!to) reject(`${collection}.${field} is not a relationship.`);
     const valid = id => (typeof id === 'string' && (REF.test(id) ? refs.get(id.slice(1)) === to : blueprint[to].some(entry => entry.id === id)));
+    if (SINGLE_LINKS.has(field) && Array.isArray(value) && value.length === 1) value = value[0]; // A list of one is read as the one link.
     if (SINGLE_LINKS.has(field)) { if (!valid(value)) reject(`${field} must name one existing ${to.replace(/ies$/, 'y').replace(/s$/, '')}.`); return value; }
     if (!Array.isArray(value)) reject(`${field} must be a list of IDs.`);
     const ids = [...new Set(value)].slice(0, 50);
     if (!ids.length || !ids.every(valid)) reject(`${field} must list existing ${to} (or new ones from this answer).`);
     return ids;
   }
+  // ---- Blocks and topic answers in suggestions: agents may name a section, topic, block type or column by its words ----
+  // Names in any script, ignoring case, spaces and punctuation. An empty name never matches anything.
+  const wordKey = text => String(text ?? '').toLowerCase().normalize('NFKD').replace(/[^\p{L}\p{N}]/gu, '');
+  const sameWords = (a, b) => { const key = wordKey(a); return key !== '' && (key === wordKey(b) || `${key}s` === wordKey(b) || key === `${wordKey(b)}s`); };
+  const sectionFor = (blueprint, given) => {
+    if (typeof given !== 'string' || !given.trim()) return '';
+    const ids = phaseList(blueprint).flatMap(phase => phase.sections).filter(id => id !== 'overview');
+    return ids.includes(given) ? given : ids.find(id => [sectionTitle(blueprint, id), sectionLabel(id)].some(name => sameWords(name, given))) || '';
+  };
+  const areaFor = (blueprint, section, given) => {
+    if (typeof given !== 'string' || !AREAS[section]) return '';
+    return AREAS[section].find(([id, name]) => id === given || [id, name, questionText(blueprint, `topic:${section}:${id}`, name)].some(word => sameWords(word, given)))?.[0] || '';
+  };
+  const BLOCK_WORDS = { qa: ['qa', 'qanda', 'questions', 'question', 'questionsandanswers', 'faq'], table: ['table', 'grid', 'matrix'], checklist: ['checklist', 'checks', 'list', 'todo', 'todos'],
+    flow: ['flow', 'flowchart', 'diagram', 'graph', 'process', 'map', 'mindmap', 'pipeline'], notes: ['notes', 'note', 'text', 'markdown', 'summary'] };
+  const blockTypeFor = given => { const key = enumKey(given || ''); return Object.entries(BLOCK_WORDS).find(([id, words]) => id === given || words.includes(key))?.[0] || ''; };
+  // Text up to `max` characters, the ellipsis included, so a save never has to shorten it again.
+  const fit = (text, max) => clip(text, max - 1);
+  const cellText = (value, max) => (typeof value === 'string' ? fit(value, max) : typeof value === 'number' || typeof value === 'boolean' ? String(value) : '');
+  const listOf = (value, max) => (Array.isArray(value) ? value.slice(0, max) : []);
+  /** The content of a new block as an agent wrote it, in the block's own shape but without IDs (they are made on apply). */
+  function blockContent(type, value) {
+    if (type === 'notes') return { text: cellText(value.text ?? value.content, TEXT) };
+    if (type === 'qa') return { entries: listOf(value.entries ?? value.questions, BLOCK_PARTS.entries).map(entry => (typeof entry === 'string' ? { question: fit(entry, 500), answer: '' }
+      : { question: cellText(entry?.question ?? entry?.q, 500), answer: cellText(entry?.answer ?? entry?.a, TEXT) })).filter(entry => entry.question) };
+    if (type === 'checklist') return { checks: listOf(value.checks ?? value.items ?? value.points, BLOCK_PARTS.checks).map(entry => cellText(typeof entry === 'object' && entry ? entry.text : entry, 1000)).filter(Boolean) };
+    if (type === 'table') {
+      const given = listOf(value.rows, BLOCK_PARTS.rows);
+      let columns = listOf(value.columns, BLOCK_PARTS.columns).map(column => cellText(typeof column === 'object' && column ? column.name : column, 80)).filter(Boolean);
+      if (!columns.length) columns = [...new Set(given.flatMap(row => (row && typeof row === 'object' && !Array.isArray(row) ? Object.keys(row) : [])))].slice(0, BLOCK_PARTS.columns).map(name => fit(name, 80)).filter(Boolean);
+      const rows = given.map(row => (Array.isArray(row) ? columns.map((_, index) => cellText(row[index], 2000))
+        : row && typeof row === 'object' ? columns.map(column => cellText(row[column] ?? Object.entries(row).find(([key]) => sameWords(key, column))?.[1], 2000)) : [])).filter(cells => cells.some(Boolean));
+      return { columns, rows };
+    }
+    // Each step keeps a reference that is unique in the block, so two steps never share one ID.
+    const refs = new Set();
+    const nodes = listOf(value.nodes ?? value.steps, BLOCK_PARTS.nodes).map((node, index) => (typeof node === 'string' ? { ref: String(index + 1), label: fit(node, 120), notes: '' }
+      : { ref: String(node?.ref ?? node?.id ?? index + 1).replace(/^@/, ''), label: cellText(node?.label ?? node?.name ?? node?.title, 120), notes: cellText(node?.notes ?? node?.description, 2000) })).filter(node => node.label)
+      .map((node, index) => { if (refs.has(node.ref)) node.ref = `${node.ref}~${index}`; refs.add(node.ref); return node; });
+    const end = given => { const key = String(given ?? '').replace(/^@/, ''); return nodes.some(node => node.ref === key) ? key : nodes.find(node => sameWords(node.label, key))?.ref || ''; };
+    const edges = listOf(value.edges ?? value.arrows ?? value.links, BLOCK_PARTS.edges).map(edge => ({ from: end(edge?.from), to: end(edge?.to), label: cellText(edge?.label, 80) })).filter(edge => edge.from && edge.to && edge.from !== edge.to);
+    return { nodes, edges };
+  }
+  const blockStartedValue = (type, content) => ({ notes: hasText(content.text), qa: content.entries?.length > 0, checklist: content.checks?.length > 0, table: content.columns?.length > 0, flow: content.nodes?.length > 0 })[type];
+  /** A new block from checked content: every part gets its own ID; flow arrows follow their steps. */
+  function makeBlock(value, newId) {
+    const block = { id: newId(), origin: 'ai', ...RECORD_DEFAULTS.blocks(value.title, value.section, value.type) };
+    if (value.type === 'notes') block.text = value.text || '';
+    if (value.type === 'qa') block.entries = (value.entries || []).map(entry => ({ id: newId(), question: entry.question, answer: entry.answer || '' }));
+    if (value.type === 'checklist') block.checks = (value.checks || []).map(text => ({ id: newId(), text, done: false }));
+    if (value.type === 'table') {
+      block.columns = (value.columns || []).map(name => ({ id: newId(), name }));
+      block.rows = (value.rows || []).map(cells => ({ id: newId(), cells: Object.fromEntries(cells.map((text, index) => [block.columns[index]?.id, text]).filter(([key, text]) => key && text)) }));
+    }
+    if (value.type === 'flow') {
+      const ids = new Map((value.nodes || []).map(node => [node.ref, newId()]));
+      block.nodes = (value.nodes || []).map(node => ({ id: ids.get(node.ref), label: node.label, notes: node.notes || '', x: null, y: null }));
+      block.edges = (value.edges || []).filter(edge => ids.has(edge.from) && ids.has(edge.to)).map(edge => ({ id: newId(), from: ids.get(edge.from), to: ids.get(edge.to), label: edge.label || '' }));
+    }
+    return block;
+  }
+  /** One writable text of a block (its title, notes, an answer, a cell, a step), or undefined when it no longer exists. */
+  function blockSlot(blueprint, target) {
+    const block = blueprint.blocks.find(entry => entry.id === target.block), slot = (entry, field, max) => ({ max, block, get: () => entry[field] || '', set: text => { entry[field] = text; } });
+    if (!block) return undefined;
+    if (!target.part) return target.field === 'title' ? slot(block, 'title', 120) : block.type === 'notes' && target.field === 'text' ? slot(block, 'text', TEXT) : undefined;
+    const find = list => (list || []).find(entry => entry.id === target.part);
+    if (block.type === 'qa' && find(block.entries) && ['question', 'answer'].includes(target.field)) return slot(find(block.entries), target.field, target.field === 'question' ? 500 : TEXT);
+    if (block.type === 'checklist' && find(block.checks) && target.field === 'text') return slot(find(block.checks), 'text', 1000);
+    if (block.type === 'table') {
+      const row = find(block.rows);
+      if (row && block.columns.some(column => column.id === target.field)) return { max: 2000, block, get: () => row.cells[target.field] || '', set: text => { if (text) row.cells[target.field] = text; else delete row.cells[target.field]; } };
+      if (find(block.columns) && target.field === 'name') return slot(find(block.columns), 'name', 80);
+    }
+    if (block.type === 'flow') {
+      if (find(block.nodes) && ['label', 'notes'].includes(target.field)) return slot(find(block.nodes), target.field, target.field === 'label' ? 120 : 2000);
+      if (find(block.edges) && target.field === 'label') return slot(find(block.edges), 'label', 80);
+    }
+    return undefined;
+  }
+  /** What one "blockAdd" suggestion adds to an existing block: a question, a point, a row, a column, a step or an arrow. */
+  function blockPart(blueprint, block, given, refs) {
+    // A table row may come as a list of cells in column order; an unnamed column is then named by its ID.
+    const value = typeof given === 'string' ? { [{ qa: 'question', flow: 'label' }[block.type] || 'text']: given } : given && typeof given === 'object' && !Array.isArray(given) ? given
+      : Array.isArray(given) && block.type === 'table' ? Object.fromEntries(given.map((cell, index) => [block.columns[index] ? block.columns[index].name.trim() || block.columns[index].id : `Column ${index + 1}`, cell])) : null;
+    if (!value) reject('Describe what to add to the block.');
+    if (block.type === 'notes') { const text = cellText(value.text ?? value.content, TEXT); if (!hasText(text)) reject('Give the text to add.'); return { text }; }
+    if (block.type === 'qa') { const question = cellText(value.question ?? value.q, 500); if (!hasText(question)) reject('A new question needs its text.'); return { question, answer: cellText(value.answer ?? value.a, TEXT) }; }
+    if (block.type === 'checklist') { const text = cellText(value.text ?? value.check ?? value.point, 1000); if (!hasText(text)) reject('A new point needs its text.'); return { text }; }
+    if (block.type === 'table') {
+      if (typeof value.column === 'string' && Object.keys(value).length === 1) { if (!hasText(value.column)) reject('A new column needs a name.'); return { column: fit(value.column, 80) }; }
+      const cells = {};
+      for (const [key, text] of Object.entries(value).slice(0, BLOCK_PARTS.columns)) {
+        const column = block.columns.find(entry => entry.id === key) || block.columns.find(entry => sameWords(entry.name, key)), cell = cellText(text, 2000);
+        if (hasText(cell) && hasText(key)) cells[column ? column.name.trim() || column.id : fit(key, 80)] = cell;
+      }
+      if (!Object.keys(cells).length) reject('A new row needs at least one cell.');
+      return cells;
+    }
+    if (value.from !== undefined || value.to !== undefined) { // Only a flow block gets here: the other types returned above.
+      const end = side => {
+        const id = String(value[side] ?? '');
+        if (REF.test(id)) { if (refs.get(id.slice(1)) === `node:${block.id}`) return id; reject('An arrow can point only to steps of the same flow.'); }
+        const node = block.nodes.find(entry => entry.id === id) || block.nodes.find(entry => sameWords(entry.label, id));
+        return node ? node.id : reject(`${side} must name a step of this flow.`);
+      };
+      const from = end('from'), to = end('to');
+      if (from === to) reject('An arrow needs two different steps.');
+      return { from, to, label: cellText(value.label, 80) };
+    }
+    const label = cellText(value.label ?? value.name ?? value.title, 120);
+    if (!hasText(label)) reject('A new step needs a label.');
+    return { label, notes: cellText(value.notes ?? value.description, 2000) };
+  }
+  /** The order a batch applies suggestions in: records others point to first, then parts of blocks, then field changes. */
+  const researchApplyOrder = proposal => (proposal.op === 'add' && proposal.target.kind === 'add' ? SUGGEST_ADD.indexOf(proposal.target.collection)
+    : proposal.target.kind === 'blockAdd' ? (proposal.value?.from !== undefined && proposal.value?.to !== undefined && Object.keys(proposal.value).every(key => ['from', 'to', 'label'].includes(key)) ? 32 : proposal.value?.column !== undefined && Object.keys(proposal.value).length === 1 ? 30 : 31) : 99);
+  /** What a suggestion's batch reference names: a record collection, or the steps of one flow. */
+  const researchRefKind = entry => (entry?.target?.kind === 'add' ? entry.target.collection : entry?.target?.kind === 'blockAdd' ? `node:${entry.target.block}` : '');
+  /** Readable lines for a suggested new block, for the review card. */
+  const researchBlockPreview = value => blockLines(makeBlock(value, (() => { let next = 0; return () => `p${++next}`; })()));
   /** A stable key for a suggestion's target: suggestions with the same key change the same field. */
-  const researchTargetKey = target => target.kind === 'add' ? `add:${target.collection}` : [target.kind, target.collection, target.id, target.field, target.componentId, target.questionId, target.section, target.area].filter(Boolean).join(':');
+  const researchTargetKey = target => target.kind === 'add' ? `add:${target.collection}` : target.kind === 'blockAdd' ? `blockAdd:${target.block}`
+    : [target.kind, target.collection, target.id, target.block, target.part, target.field, target.componentId, target.questionId, target.section, target.area].filter(Boolean).join(':');
   /** The current value of a target, '' when empty, or undefined when the target no longer exists. */
   function researchTargetValue(blueprint, target) {
     if (target.kind === 'idea') return blueprint.idea || '';
@@ -1082,6 +1363,9 @@ globalThis.PromptboardOriginModel = (() => {
       return component && blueprint.questions.some(item => item.id === target.questionId && item.scope === 'component') ? component.answers?.[target.questionId] || '' : undefined;
     }
     if (target.kind === 'topic') return AREAS[target.section]?.some(([area]) => area === target.area) ? blueprint.areas.find(item => item.section === target.section && item.area === target.area)?.title || '' : undefined;
+    if (target.kind === 'section') { const custom = blueprint.customSections.find(item => item.id === target.section); return custom && target.field === 'description' ? custom.description || '' : undefined; }
+    if (target.kind === 'block') return blockSlot(blueprint, target)?.get();
+    if (target.kind === 'blockAdd') return blueprint.blocks.some(item => item.id === target.block) ? null : undefined;
     if (target.kind === 'add') return null;
     return undefined;
   }
@@ -1101,9 +1385,69 @@ globalThis.PromptboardOriginModel = (() => {
       const one = id => { if (REF.test(id)) { const made = refs.get(id.slice(1)); if (made && exists(made)) return made; pending.push({ collection, id: recordId, field, ref: id.slice(1) }); return null; } return exists(id) ? id : null; };
       return SINGLE_LINKS.has(field) ? one(given) || '' : given.map(one).filter(Boolean);
     };
+    if (target.kind === 'add' && target.collection === 'blocks') {
+      const fields = { ...proposal.value, ...(value && typeof value === 'object' ? value : {}) };
+      const section = sectionFor(blueprint, fields.section);
+      if (!section) return { conflict: 'The section for this block no longer exists.', missing: true };
+      if (blueprint.blocks.length >= LIMITS.blocks) return { error: `A project can have at most ${LIMITS.blocks} blocks.` };
+      const title = fit(String(fields.title || '').trim() || blockType(fields.type)[1], 120);
+      if (!force && blueprint.blocks.some(item => item.sectionId === section && item.title.trim().toLowerCase() === title.toLowerCase())) return { conflict: `A block named “${title}” already exists in this section.` };
+      const block = makeBlock({ ...fields, section, title }, newId);
+      blueprint.blocks.push(block);
+      return { ok: true, created: { collection: 'blocks', id: block.id }, pending };
+    }
+    if (target.kind === 'blockAdd') {
+      const block = blueprint.blocks.find(item => item.id === target.block), part = value && typeof value === 'object' ? value : {};
+      const full = (list, max, noun) => (list.length >= max ? { error: `A block can hold at most ${max} ${noun}.` } : null);
+      const same = (a, b) => String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
+      if (block.type === 'notes') {
+        const text = hasText(block.text) ? `${block.text.trimEnd()}\n\n${part.text}` : part.text;
+        if (text.length > TEXT) return { error: `A notes block holds at most ${TEXT.toLocaleString('en-US')} characters. Shorten the text first.` };
+        block.text = text; return { ok: true, pending };
+      }
+      if (block.type === 'qa') {
+        if (!force && block.entries.some(entry => same(entry.question, part.question))) return { conflict: 'This question is already in the block.' };
+        const limit = full(block.entries, BLOCK_PARTS.entries, 'questions'); if (limit) return limit;
+        block.entries.push({ id: newId(), question: part.question, answer: part.answer || '' }); return { ok: true, pending };
+      }
+      if (block.type === 'checklist') {
+        if (!force && block.checks.some(entry => same(entry.text, part.text))) return { conflict: 'This point is already in the checklist.' };
+        const limit = full(block.checks, BLOCK_PARTS.checks, 'points'); if (limit) return limit;
+        block.checks.push({ id: newId(), text: part.text, done: false }); return { ok: true, pending };
+      }
+      if (block.type === 'table') {
+        const column = name => block.columns.find(entry => entry.id === name) || block.columns.find(entry => entry.name.trim() && same(entry.name, name)) || block.columns.find(entry => entry.name.trim() && same(entry.name, fit(name, 80)));
+        if (part.column !== undefined && Object.keys(part).length === 1) {
+          if (column(part.column)) return { conflict: `The column “${part.column}” already exists.` };
+          const limit = full(block.columns, BLOCK_PARTS.columns, 'columns'); if (limit) return limit;
+          block.columns.push({ id: newId(), name: fit(part.column, 80) }); return { ok: true, pending };
+        }
+        const names = Object.keys(part).filter(name => hasText(String(part[name] ?? '')));
+        if (block.columns.length + names.filter(name => !column(name)).length > BLOCK_PARTS.columns) return { error: `A table can have at most ${BLOCK_PARTS.columns} columns.` };
+        const limit = full(block.rows, BLOCK_PARTS.rows, 'rows'); if (limit) return limit;
+        for (const name of names) if (!column(name)) block.columns.push({ id: newId(), name: fit(name, 80) });
+        block.rows.push({ id: newId(), cells: Object.fromEntries(names.map(name => [column(name).id, fit(String(part[name]), 2000)])) });
+        return { ok: true, pending };
+      }
+      if (part.from !== undefined) {
+        const end = id => { const made = REF.test(id) ? refs.get(id.slice(1)) : id; return block.nodes.some(node => node.id === made) ? made : ''; };
+        const from = end(part.from), to = end(part.to);
+        if (!from || !to) return { conflict: 'Apply the two steps of this arrow first.' };
+        if (!force && block.edges.some(edge => edge.from === from && edge.to === to)) return { conflict: 'These steps are already joined.' };
+        const limit = full(block.edges, BLOCK_PARTS.edges, 'arrows'); if (limit) return limit;
+        block.edges.push({ id: newId(), from, to, label: part.label || '' }); return { ok: true, pending };
+      }
+      if (!force && block.nodes.some(node => same(node.label, part.label))) return { conflict: `A step named “${part.label}” is already in this flow.` };
+      const limit = full(block.nodes, BLOCK_PARTS.nodes, 'steps'); if (limit) return limit;
+      const node = { id: newId(), label: part.label, notes: part.notes || '', x: null, y: null };
+      block.nodes.push(node);
+      if (proposal.ref) refs.set(proposal.ref, node.id);
+      return { ok: true, created: { collection: 'nodes', id: node.id }, pending };
+    }
     if (target.kind === 'add') {
       const collection = target.collection, fields = value && typeof value === 'object' ? value : {};
-      const id = newId(), entry = { id, origin: 'ai', ...RECORD_DEFAULTS[collection](collection === 'connections' ? undefined : String(fields[nameField(collection)] || '').trim()) };
+      if (collection === 'areas' && !areaFor(blueprint, proposal.value?.section, proposal.value?.area)) return { conflict: 'This topic is not part of the blueprint any more.', missing: true };
+      const id = newId(), entry = { id, origin: 'ai', ...RECORD_DEFAULTS[collection](collection === 'connections' ? undefined : String(fields[nameField(collection)] || '').trim(), proposal.value?.section, proposal.value?.area) };
       for (const [field, given] of Object.entries(fields)) {
         if (LINKS[collection]?.[field] !== undefined) entry[field] = resolve(collection, field, given, id);
         else if (SUGGEST_FIELDS[collection]?.[field] !== undefined && typeof given === 'string') entry[field] = suggestionValue(collection, field, given);
@@ -1114,7 +1458,8 @@ globalThis.PromptboardOriginModel = (() => {
       } else {
         const name = String(entry[nameField(collection)] || '').trim();
         if (!name) return { error: 'A new record needs a name.' };
-        if (!force && blueprint[collection].some(item => String(item[nameField(collection)] || '').trim().toLowerCase() === name.toLowerCase())) return { conflict: `A ${RESEARCH_NOUN[collection]} named “${name}” already exists.` };
+        const peers = collection === 'areas' ? blueprint.areas.filter(item => item.section === entry.section && item.area === entry.area) : blueprint[collection];
+        if (!force && peers.some(item => String(item[nameField(collection)] || '').trim().toLowerCase() === name.toLowerCase())) return { conflict: collection === 'areas' ? 'This answer is already given for the topic.' : `A ${RESEARCH_NOUN[collection]} named “${name}” already exists.` };
       }
       if (collection === 'sources') Object.assign(entry, { verification: 'unverified', accessedAt: today() }); // Research never verifies a source.
       if (KEYS[collection]) entry.key = nextKey(blueprint, collection);
@@ -1138,6 +1483,8 @@ globalThis.PromptboardOriginModel = (() => {
     else if (target.kind === 'record') blueprint[target.collection].find(item => item.id === target.id)[target.field] = text;
     else if (target.kind === 'answer') blueprint.answers[target.questionId] = text;
     else if (target.kind === 'componentAnswer') { const component = blueprint.components.find(item => item.id === target.componentId); component.answers = { ...component.answers, [target.questionId]: text }; }
+    else if (target.kind === 'section') blueprint.customSections.find(item => item.id === target.section).description = fit(text, 2000);
+    else if (target.kind === 'block') { const slot = blockSlot(blueprint, target); slot.set(text.length > slot.max ? fit(text, slot.max) : text); }
     else if (target.kind === 'topic') {
       const entry = blueprint.areas.find(item => item.section === target.section && item.area === target.area);
       if (entry) entry.title = text; else blueprint.areas.push({ id: newId(), origin: 'ai', ...RECORD_DEFAULTS.areas(text, target.section, target.area) });
@@ -1157,8 +1504,28 @@ globalThis.PromptboardOriginModel = (() => {
   /** A record's display name, for review cards and links. */
   const researchName = (blueprint, collection, id) => { const entry = blueprint[collection]?.find(item => item.id === id); return entry ? recordTitle(blueprint, collection, entry) : ''; };
   /** Where a suggestion goes, in the project's own words, for the review card. */
-  function researchTargetLabel(blueprint, target) {
+  function researchTargetLabel(blueprint, target, value = null) {
     const noun = RESEARCH_NOUN[target.collection] || target.collection;
+    const blockName = id => { const block = blueprint.blocks.find(item => item.id === id); return block ? `${sectionTitle(blueprint, block.sectionId)} › ${clip(block.title, 60) || blockType(block.type)[1]}` : 'A removed block'; };
+    if (target.kind === 'section') return `${sectionTitle(blueprint, target.section)} › What this section is about`;
+    if (target.kind === 'block') {
+      const block = blueprint.blocks.find(item => item.id === target.block), find = list => (list || []).find(item => item.id === target.part);
+      if (!block) return 'A removed block';
+      if (!target.part) return `${blockName(block.id)} › ${target.field === 'title' ? 'Title' : 'Text'}`;
+      const row = find(block.rows), column = block.columns?.find(item => item.id === target.field);
+      const part = block.type === 'qa' ? `“${clip(find(block.entries)?.question, 60)}”${target.field === 'question' ? ' (question)' : ''}`
+        : block.type === 'checklist' ? `“${clip(find(block.checks)?.text, 60)}”`
+        : block.type === 'table' ? (row ? `Row “${clip(Object.values(row.cells)[0] || 'untitled', 40)}” › ${clip(column?.name, 40) || 'cell'}` : `Column “${clip(find(block.columns)?.name, 40)}”`)
+        : find(block.nodes) ? `Step “${clip(find(block.nodes).label, 50)}”${target.field === 'notes' ? ' › notes' : ''}` : 'Arrow label';
+      return `${blockName(block.id)} › ${part}`;
+    }
+    if (target.kind === 'blockAdd') {
+      const type = blueprint.blocks.find(item => item.id === target.block)?.type;
+      const what = type === 'qa' ? 'New question' : type === 'checklist' ? 'New point' : type === 'table' ? (value?.column !== undefined ? 'New column' : 'New row') : type === 'flow' ? (value?.from !== undefined ? 'New arrow' : 'New step') : 'More text';
+      return `${blockName(target.block)} › ${what}`;
+    }
+    if (target.kind === 'add' && target.collection === 'areas' && value?.section) return `${sectionTitle(blueprint, value.section)} › ${questionText(blueprint, `topic:${value.section}:${value.area}`, label(value.section, value.area))}`;
+    if (target.kind === 'add' && target.collection === 'blocks' && value?.section) return `New ${blockType(value.type)[1]} block in ${sectionTitle(blueprint, value.section)}`;
     if (target.kind === 'idea') return 'Idea';
     if (target.kind === 'vision') return `${sectionTitle(blueprint, 'vision')} › ${questionText(blueprint, `vision:${target.field}`, VISION_QUESTIONS[target.field] || target.field)}`;
     if (target.kind === 'record') { const entry = blueprint[target.collection]?.find(item => item.id === target.id); return `${noun[0].toUpperCase()}${noun.slice(1)} “${clip(entry ? recordTitle(blueprint, target.collection, entry) : 'removed', 60)}” › ${target.field}`; }
@@ -1177,9 +1544,40 @@ globalThis.PromptboardOriginModel = (() => {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) reject('A suggestion must be an object.');
     // A whole suggestion written inside "target" (an agent copying the format into the wrong place) is read as one.
     if (raw.target?.target && typeof raw.target.target === 'object') raw = { ...raw, ...raw.target };
-    const source = raw.target && typeof raw.target === 'object' ? raw.target : {};
+    let source = raw.target && typeof raw.target === 'object' ? raw.target : {};
     let target, value, ref = '';
-    if (source.kind === 'add') {
+    // A topic answer is a planning answer: a new one for an open topic, or a change to the answer already there.
+    if (source.kind === 'topic') {
+      const section = String(source.section), area = areaFor(blueprint, section, String(source.area));
+      if (!area) reject('The suggested topic does not exist in this blueprint.');
+      const answer = typeof raw.value === 'string' ? raw.value.trim() : '', [first, ...rest] = answer.split('\n'), existing = blueprint.areas.find(item => item.section === section && item.area === area);
+      if (!answer) reject('A suggested value must be text.');
+      // One line is the answer; longer text keeps its first line as the answer and the rest as the details.
+      const long = first.trim().length > NAME || rest.some(line => line.trim()), details = first.trim().length > NAME ? answer : rest.join('\n').trim();
+      if (!existing) { source = { kind: 'add', collection: 'areas' }; raw = { ...raw, value: { section, area, title: clip(first, NAME - 1), ...(long ? { description: details } : {}) } }; }
+      else { source = { kind: 'record', collection: 'areas', id: existing.id, field: long ? 'description' : 'title' }; raw = { ...raw, value: long ? answer : first.trim() }; }
+    }
+    if (source.kind === 'add' && ['areas', 'blocks'].includes(source.collection)) {
+      if (!raw.value || typeof raw.value !== 'object' || Array.isArray(raw.value)) reject('A new record needs its fields.');
+      const given = raw.value;
+      target = { kind: 'add', collection: source.collection };
+      if (source.collection === 'areas') {
+        const section = sectionFor(blueprint, given.section ?? source.section), area = areaFor(blueprint, section, String(given.area ?? given.topic ?? source.area ?? ''));
+        if (!AREAS[section] || !area) reject('A topic answer needs a section with topics and one of its topic IDs.');
+        value = { section, area };
+        for (const field of ['title', 'description']) if (typeof given[field] === 'string' && given[field].trim()) value[field] = suggestionValue('areas', field, given[field]);
+        if (!value.title && value.description) { value.title = clip(value.description.split('\n')[0], NAME - 1); }
+        if (!hasText(value.title)) reject('A topic answer needs a title.');
+        for (const field of Object.keys(LINKS.areas)) if (Array.isArray(given[field]) && given[field].length) value[field] = linkValue(blueprint, 'areas', field, given[field], refs);
+      } else {
+        const section = sectionFor(blueprint, given.section ?? given.sectionId ?? source.section), type = blockTypeFor(given.type);
+        if (!section) reject('A new block needs one of the sections of this blueprint.');
+        if (!type) reject('A block type is one of qa, table, checklist, flow or notes.');
+        const content = blockContent(type, given), title = cellText(given.title ?? given.name, 120).trim();
+        if (!blockStartedValue(type, content) && !title) reject('A new block needs a title or content.');
+        value = { section, type, title: title || blockType(type)[1], ...content };
+      }
+    } else if (source.kind === 'add') {
       if (!SUGGEST_ADD.includes(source.collection)) reject(`New records can be: ${SUGGEST_ADD.join(', ')}.`);
       if (!raw.value || typeof raw.value !== 'object' || Array.isArray(raw.value)) reject('A new record needs its fields.');
       target = { kind: 'add', collection: source.collection };
@@ -1195,26 +1593,42 @@ globalThis.PromptboardOriginModel = (() => {
     } else {
       if (source.kind === 'idea') target = { kind: 'idea' };
       else if (source.kind === 'vision') target = { kind: 'vision', field: String(source.field) };
-      else if (source.kind === 'record') target = { kind: 'record', collection: String(source.collection), id: String(source.id), field: String(source.field) };
+      else if (source.kind === 'record') target = { kind: 'record', collection: String(source.collection), id: String(source.id), field: String(source.field ?? source.link) }; // Agents sometimes name a link field "link".
       else if (source.kind === 'answer') target = { kind: 'answer', questionId: String(source.questionId) };
       else if (source.kind === 'componentAnswer') target = { kind: 'componentAnswer', componentId: String(source.componentId), questionId: String(source.questionId) };
-      else if (source.kind === 'topic') target = { kind: 'topic', section: String(source.section), area: String(source.area) };
-      else reject('Unknown suggestion target.');
+      else if (source.kind === 'section') target = { kind: 'section', section: String(source.section ?? source.id), field: String(source.field || 'description') };
+      else if (source.kind === 'block') {
+        const block = blueprint.blocks.find(item => item.id === String(source.block ?? source.id));
+        const part = source.part ?? source.item ?? source.entry ?? source.row ?? source.node, field = String(source.field ?? source.column ?? '');
+        // A table cell may name its column by name instead of its ID.
+        const column = block?.type === 'table' && part !== undefined ? block.columns.find(item => item.id === field) || block.columns.find(item => sameWords(item.name, field)) : null;
+        target = { kind: 'block', block: String(source.block ?? source.id), ...(part !== undefined && part !== null && part !== '' ? { part: String(part) } : {}), field: column ? column.id : field || (block?.type === 'notes' ? 'text' : '') };
+      } else if (source.kind === 'blockAdd') {
+        const block = blueprint.blocks.find(item => item.id === String(source.block ?? source.id));
+        if (!block) reject('The suggested block does not exist in this blueprint.');
+        target = { kind: 'blockAdd', block: block.id };
+        value = blockPart(blueprint, block, raw.value, refs);
+        const given = researchRef(raw);
+        if (block.type === 'flow' && value.label !== undefined && typeof given === 'string' && /^[A-Za-z0-9_.-]{1,60}$/.test(given)) ref = given;
+      } else reject('Unknown suggestion target.');
       if (researchTargetValue(blueprint, target) === undefined) reject('The suggested target does not exist in this blueprint.');
-      value = target.kind === 'record' && LINKS[target.collection]?.[target.field] !== undefined ? linkValue(blueprint, target.collection, target.field, raw.value, refs)
+      const textValue = max => (typeof raw.value === 'string' && raw.value.trim() ? (raw.value.trim().length > max ? clip(raw.value.trim(), max - 1) : raw.value.trim()) : reject('A suggested value must be text.'));
+      if (target.kind !== 'blockAdd') value = target.kind === 'record' && LINKS[target.collection]?.[target.field] !== undefined ? linkValue(blueprint, target.collection, target.field, raw.value, refs)
         : target.kind === 'record' ? suggestionValue(target.collection, target.field, raw.value)
-        : typeof raw.value === 'string' && raw.value.trim() ? (raw.value.trim().length > (target.kind === 'topic' ? NAME : TEXT) ? raw.value.trim().slice(0, target.kind === 'topic' ? NAME : TEXT) : raw.value.trim()) : reject('A suggested value must be text.');
+        : target.kind === 'block' ? textValue(blockSlot(blueprint, target).max)
+        : textValue(target.kind === 'section' ? 2000 : TEXT);
     }
     const original = researchTargetValue(blueprint, target);
     if (Array.isArray(value) && Array.isArray(original) && value.every(id => original.includes(id))) reject('The suggestion does not change anything.');
-    if (target.kind !== 'add' && typeof original === 'string' && original.trim() === value) reject('The suggestion does not change anything.');
+    if (!['add', 'blockAdd'].includes(target.kind) && typeof original === 'string' && original.trim() === value) reject('The suggestion does not change anything.');
     const text = (input, max) => (typeof input === 'string' ? clip(input, max) : '');
-    return { op: target.kind === 'add' ? 'add' : 'set', target, key: researchTargetKey(target), value, original, ...(ref ? { ref } : {}), title: text(raw.title, 160) || researchTargetLabel(blueprint, target), why: text(raw.why, 2000),
+    return { op: ['add', 'blockAdd'].includes(target.kind) ? 'add' : 'set', target, key: researchTargetKey(target), value, original, ...(ref ? { ref } : {}), title: text(raw.title, 160) || researchTargetLabel(blueprint, target, value), why: text(raw.why, 2000),
       evidence: (Array.isArray(raw.evidence) ? raw.evidence : []).filter(item => typeof item === 'string' && item.trim()).slice(0, 10).map(item => clip(item, 500)) };
   }
 
   return { SCHEMA, VERSION, ID, PHASES, SECTIONS, ENUMS, AREAS, VISION, LIMITS, CONTEXT_COLLECTIONS, QUESTIONS, VISION_QUESTIONS, COMPONENT_FIELDS, SECTION_STATE, VERIFICATION_LABELS,
     label, sectionLabel, sectionTitle, phaseTitle, phaseList, questionText, lines, emptyBlueprint, nextKey, normalizeBlueprint, verification, isStarted, itemName, issues, readiness, sectionStates,
     composeSpec, orderItems, taskHome, taskContext, taskBody, suggestionBrief, researchTargets, researchContext, researchRecord, RESEARCH_FIELDS,
-    SUGGEST_FIELDS, SUGGEST_ADD, LINKS, RECORD_DEFAULTS, researchTargetKey, researchTargetValue, researchTargetLabel, researchName, researchRef, validateResearchSuggestion, applyResearchSuggestion, resolveResearchLinks };
+    SUGGEST_FIELDS, SUGGEST_ADD, LINKS, RECORD_DEFAULTS, researchTargetKey, researchTargetValue, researchTargetLabel, researchName, researchRef, validateResearchSuggestion, applyResearchSuggestion, resolveResearchLinks,
+    BLOCK_TYPES, BLOCK_PARTS, blockLines, blockStarted, blockComplete, researchBlock, researchGuide, researchApplyOrder, researchRefKind, researchBlockPreview };
 })();

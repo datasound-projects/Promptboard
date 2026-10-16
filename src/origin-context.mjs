@@ -44,6 +44,7 @@ export const FIELDS = {
   layers: ['name', 'description', 'technologyIds', 'constraints'],
   customSections: ['phase', 'title', 'description', 'notApplicable'],
   questions: ['scope', 'sectionId', 'text'],
+  blocks: ['sectionId', 'type', 'title', 'text', 'entries', 'checks', 'columns', 'rows', 'nodes', 'edges'],
 };
 // `sequence` only reserves the next display key; it is application bookkeeping, not design content.
 export const TOP_FIELDS = ['idea', 'vision', 'sections', 'labels', 'answers', 'questionText', 'layout', 'sequence', ...Object.keys(FIELDS)];
@@ -119,6 +120,34 @@ function exporter(record) {
   const enumLabel = (name, value) => Model.label(name, value);
   const questionsFor = (sectionId, answers) => bp.questions.filter(question => question.scope === 'section' && question.sectionId === sectionId)
     .map(question => `**${inline(question.text, `question ${question.id}`, 'Untitled question')}** (\`${question.id}\`)\n\n${block(answers[question.id], `answer ${question.id}`) || NOT_PROVIDED}`);
+
+  // A section's own blocks, each in a form that reads well and keeps every stored part with its ID.
+  function blockPart(item) {
+    const where = `blocks ${item.id}`, type = Model.BLOCK_TYPES.find(([id]) => id === item.type)?.[1] || item.type;
+    const out = [`#### ${type}: ${inline(item.title, `${where} title`, 'Untitled')}`, '', `- **Block ID:** \`${item.id}\``, `- **Entered by:** ${Model.label('origin', item.origin)}`, ''];
+    if (item.type === 'notes') out.push(block(item.text, `${where} text`) || NOT_PROVIDED, '');
+    if (item.type === 'qa') {
+      for (const entry of item.entries) out.push(`**${inline(entry.question, `${where} question ${entry.id}`, 'Untitled question')}** (\`${entry.id}\`)`, '', block(entry.answer, `${where} answer ${entry.id}`) || NOT_PROVIDED, '');
+      if (!item.entries.length) out.push(NOT_PROVIDED, '');
+    }
+    if (item.type === 'checklist') out.push(...(item.checks.length ? item.checks.map(entry => `- [${entry.done ? 'x' : ' '}] ${inline(entry.text, `${where} check ${entry.id}`, 'Untitled')} (\`${entry.id}\`)`) : [NOT_PROVIDED]), '');
+    if (item.type === 'table') {
+      if (!item.columns.length) out.push(NOT_PROVIDED, '');
+      else out.push(`| Row | ${item.columns.map(column => `${inline(column.name, `${where} column ${column.id}`, 'Untitled')} (\`${column.id}\`)`).join(' | ')} |`, `| --- |${item.columns.map(() => ' --- |').join('')}`,
+        ...item.rows.map(row => `| \`${row.id}\` | ${item.columns.map(column => inline(row.cells[column.id], `${where} cell ${row.id}`) || '—').join(' | ')} |`), '');
+    }
+    if (item.type === 'flow') {
+      if (!item.nodes.length) out.push(NOT_PROVIDED, '');
+      else {
+        const lines = ['flowchart LR', ...item.nodes.map(node => `  ${nodeId('N', node.id)}["${mermaidText(clean(node.label, `${where} step ${node.id}`)) || mermaidText(node.id)}"]`),
+          ...item.edges.map(edge => { const text = mermaidText(clean(edge.label, `${where} arrow ${edge.id}`)); return `  ${nodeId('N', edge.from)} -->${text ? `|"${text}"|` : ''} ${nodeId('N', edge.to)}`; })];
+        out.push(fence(lines.join('\n'), 'mermaid'), '', '**Steps**', '', ...item.nodes.map(node => `- ${inline(node.label, `${where} step ${node.id}`, 'Untitled')} (\`${node.id}\`)${node.notes.trim() ? ` — ${inline(node.notes, `${where} notes ${node.id}`)}` : ''}`), '');
+        if (item.edges.length) out.push('**Arrows**', '', ...item.edges.map(edge => `- ${inline(item.nodes.find(node => node.id === edge.from)?.label, `${where} step`, 'Untitled')} → ${inline(item.nodes.find(node => node.id === edge.to)?.label, `${where} step`, 'Untitled')}${edge.label.trim() ? ` (${inline(edge.label, `${where} arrow ${edge.id}`)})` : ''} (\`${edge.id}\`)`), '');
+      }
+    }
+    for (const key of Object.keys(item)) if (!['id', 'origin', ...FIELDS.blocks].includes(key)) unsupported.push({ path: `blocks.${item.id}.${key}`, value: item[key] });
+    return out;
+  }
 
   const states = Model.sectionStates(bp);
   const SECTION = {
@@ -325,9 +354,10 @@ function exporter(record) {
         const body = SECTION[id]();
         parts.push(...(body.length ? body : [NOT_PROVIDED]), '');
       }
-      const asked = questionsFor(id, bp.answers);
+      const asked = questionsFor(id, bp.answers), own = (bp.blocks || []).filter(entry => entry.sectionId === id);
       if (asked.length) parts.push(custom ? '#### Questions' : '#### Your questions', '', asked.join('\n\n'), '');
-      else if (custom) parts.push('#### Questions', '', NOT_PROVIDED, '');
+      else if (custom && !own.length) parts.push('#### Questions', '', NOT_PROVIDED, '');
+      for (const item of own) parts.push(...blockPart(item));
     }
   });
   for (const question of bp.questions) for (const key of Object.keys(question)) if (!['id', 'origin', ...FIELDS.questions].includes(key)) unsupported.push({ path: `questions.${question.id}.${key}`, value: question[key] });
@@ -348,6 +378,8 @@ function exporter(record) {
   layout.push('**Overview map positions**', '', ...(mapNodes.length ? ['| Map node | x | y |', '| --- | --- | --- |', ...mapNodes.map(([key, point]) => `| ${key === 'center' ? 'project' : `${inline(sectionTitle(key), `section ${key} title`)} (\`${key}\`)`} | ${point.x} | ${point.y} |`)] : ['Automatic placement.']), '');
   const placed = bp.components.filter(component => component.x !== null && component.y !== null);
   layout.push('**Architecture canvas positions**', '', ...(placed.length ? ['| Component | x | y |', '| --- | --- | --- |', ...placed.map(component => `| ${ref('components', component.id)} | ${component.x} | ${component.y} |`)] : ['Automatic placement.']), '');
+  const flows = (bp.blocks || []).filter(item => item.type === 'flow' && item.nodes.length), steps = flows.flatMap(item => item.nodes.filter(node => node.x !== null && node.y !== null).map(node => ({ item, node })));
+  if (flows.length) layout.push('**Flow step positions**', '', ...(steps.length ? ['| Flow | Step | x | y |', '| --- | --- | --- | --- |', ...steps.map(({ item, node }) => `| ${inline(item.title, `blocks ${item.id} title`, 'Untitled')} (\`${item.id}\`) | \`${node.id}\` | ${node.x} | ${node.y} |`)] : ['Automatic placement.']), '');
   return { body: [...parts, ...report].join('\n'), layout: layout.join('\n'), toc, redactions: [...new Set(redactions)], unsupported: unsupported.map(row => row.path) };
 }
 

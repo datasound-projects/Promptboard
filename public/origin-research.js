@@ -350,6 +350,25 @@ window.PromptboardOriginResearch = (() => {
       return value && typeof value === 'object' ? Object.entries(value).map(([field, given]) => `${field}: ${show(field, given)}`).join('\n') : String(value ?? '');
     };
     const targetCollection = proposal => (proposal.target.kind === 'add' ? proposal.target.collection : proposal.target.collection || '');
+    // A step of a flow by name: an existing one, or a new one suggested in this chat.
+    const stepName = (proposal, id) => {
+      if (typeof id === 'string' && id.startsWith('@')) return `${chat?.proposals?.find(entry => entry.ref === id.slice(1))?.value?.label || 'a new step'} (new)`;
+      return host.blueprint()?.blocks?.find(block => block.id === proposal.target.block)?.nodes.find(node => node.id === id)?.label || 'a removed step';
+    };
+    /** What a suggestion would write, as readable text. Where it goes is shown above it, so placement keys are left out. */
+    const proposalText = (proposal, value = proposal.value) => {
+      if (proposal.target.kind === 'add' && proposal.target.collection === 'blocks') return [`${value.title}`, ...M().researchBlockPreview(value).map(line => `• ${line}`)].join('\n');
+      if (proposal.target.kind === 'blockAdd' && isFlow(proposal) && value?.from !== undefined) return `${stepName(proposal, value.from)} → ${stepName(proposal, value.to)}${value.label ? ` (${value.label})` : ''}`;
+      if (proposal.target.kind === 'add' && proposal.target.collection === 'areas') return valueText(Object.fromEntries(Object.entries(value).filter(([field]) => !['section', 'area'].includes(field))), 'areas');
+      return valueText(value, targetCollection(proposal));
+    };
+    const isFlow = proposal => host.blueprint()?.blocks?.find(block => block.id === proposal.target.block)?.type === 'flow';
+    // The text fields of a suggestion that can be edited; links, placement, arrow ends and nested content stay as suggested.
+    const editableOf = proposal => {
+      if (proposal.op === 'set') return proposal.value;
+      const fixed = proposal.target.kind === 'add' ? ['section', 'area', 'type'] : proposal.target.kind === 'blockAdd' && isFlow(proposal) ? ['from', 'to', 'ref'] : [];
+      return Object.fromEntries(Object.entries(proposal.value).filter(([field, given]) => typeof given === 'string' && !M().LINKS[proposal.target.collection]?.[field] && !fixed.includes(field)));
+    };
     const linkTarget = proposal => proposal.target.kind === 'record' && M().LINKS[proposal.target.collection]?.[proposal.target.field];
     function proposalCard(proposal) {
       const state = cards.get(proposal.id) || {}, blueprint = host.blueprint();
@@ -363,7 +382,7 @@ window.PromptboardOriginResearch = (() => {
       head.append(el('strong', '', proposal.title));
       if (STATUS[proposal.status]) head.append(el('span', `origin-research-badge is-${proposal.status}`, STATUS[proposal.status]));
       if (proposal.disagree) head.append(el('span', 'origin-research-badge is-disagree', 'Agents disagree'));
-      card.append(head, el('p', 'origin-research-target', blueprint ? M().researchTargetLabel(blueprint, proposal.target) : ''));
+      card.append(head, el('p', 'origin-research-target', blueprint ? M().researchTargetLabel(blueprint, proposal.target, proposal.value) : ''));
       const from = [proposal.agent?.label, ...(proposal.alsoFrom || [])].filter(Boolean);
       if (from.length) card.append(el('p', 'origin-research-from', `From ${from.join(', ')}`));
       if (proposal.why) card.append(el('p', 'origin-research-why', proposal.why));
@@ -372,11 +391,11 @@ window.PromptboardOriginResearch = (() => {
         const diff = el('div', 'origin-research-diff');
         const linkCollection = linkTarget(proposal);
         if (proposal.op === 'set') diff.append(el('p', 'is-old', proposal.original?.length ? valueText(proposal.original, linkCollection) : '(empty)'));
-        diff.append(el('p', 'is-new', state.draft ?? (linkCollection ? `+ ${valueText(proposal.value, linkCollection)}` : valueText(proposal.value, targetCollection(proposal)))));
+        diff.append(el('p', 'is-new', state.draft ?? (linkCollection ? `+ ${valueText(proposal.value, linkCollection)}` : proposalText(proposal))));
         card.append(diff);
       }
       if (state.edit) {
-        const editable = proposal.op === 'add' ? Object.fromEntries(Object.entries(proposal.value).filter(([field]) => !M().LINKS[proposal.target.collection]?.[field])) : proposal.value;
+        const editable = editableOf(proposal);
         const editor = el('textarea', 'origin-research-edit'); editor.rows = 4; editor.value = state.draft ?? valueText(editable); editor.setAttribute('aria-label', `Edit “${proposal.title}”`);
         editor.addEventListener('input', () => cards.set(proposal.id, { ...cards.get(proposal.id), draft: editor.value }));
         card.append(editor);
@@ -387,7 +406,8 @@ window.PromptboardOriginResearch = (() => {
       const actions = el('div', 'origin-research-proposal-actions');
       if (['pending', 'conflict'].includes(proposal.status)) {
         const toggle = (key, label) => { const node = button(label, () => { cards.set(proposal.id, { ...state, [key]: !state[key] }); render(); }, 'origin-link'); node.setAttribute('aria-pressed', String(Boolean(state[key]))); return node; };
-        actions.append(toggle('preview', 'Preview'), ...(linkTarget(proposal) ? [] : [toggle('edit', 'Edit')])); // Links are chosen by ID; only text is edited.
+        const canEdit = !linkTarget(proposal) && (proposal.op === 'set' ? typeof proposal.value === 'string' : Object.keys(editableOf(proposal)).length > 0);
+        actions.append(toggle('preview', 'Preview'), ...(canEdit ? [toggle('edit', 'Edit')] : [])); // Links are chosen by ID; only text is edited.
         const apply = button(proposal.status === 'conflict' ? 'Replace anyway' : 'Apply', () => void applyOne(proposal, { force: proposal.status === 'conflict' }), 'origin-ghost origin-research-apply');
         apply.disabled = applying || Boolean(running);
         actions.append(apply, button(proposal.status === 'conflict' ? 'Keep mine' : 'Reject', () => void decide(proposal, 'rejected'), 'origin-link origin-research-reject'));
@@ -400,9 +420,15 @@ window.PromptboardOriginResearch = (() => {
       const draft = cards.get(proposal.id)?.draft;
       if (draft === undefined) return { value: proposal.value, edited: false };
       if (proposal.op === 'set') return { value: draft, edited: true };
-      const links = M().LINKS[proposal.target.collection] || {};
-      const value = Object.fromEntries(Object.entries(proposal.value).filter(([field]) => links[field])); // Links stay as suggested.
-      for (const line of draft.split('\n')) { const match = line.match(/^(\w+):\s?(.*)$/); if (match && M().SUGGEST_FIELDS[proposal.target.collection]?.[match[1]] !== undefined) value[match[1]] = match[2]; }
+      // Edited text fields replace the suggested ones; links, placement and nested content stay as suggested.
+      // A line that starts with a field name and a colon starts that field (names may hold spaces or any script); other lines continue the last one.
+      const editable = editableOf(proposal), value = { ...proposal.value }, names = Object.keys(editable).sort((a, b) => b.length - a.length);
+      let field = null;
+      for (const line of draft.split('\n')) {
+        const name = names.find(key => line.startsWith(`${key}:`));
+        if (name) { field = name; value[field] = line.slice(name.length + 1).replace(/^ /, ''); }
+        else if (field) value[field] += `\n${line}`;
+      }
       return { value, edited: true };
     }
     async function decide(proposal, status, extra = {}) {
@@ -433,9 +459,9 @@ window.PromptboardOriginResearch = (() => {
     /** Apply several suggestions: new records first (what others link to comes first), then field changes, then links. */
     async function applyMany(ids) {
       applying = true; render();
-      const counts = { applied: 0, conflict: 0, error: 0 }, refs = createdRefs(), order = M().SUGGEST_ADD;
+      const counts = { applied: 0, conflict: 0, error: 0 }, refs = createdRefs();
       const chosen = ids.map(id => chat?.proposals?.find(entry => entry.id === id)).filter(entry => entry && ['pending', 'conflict'].includes(entry.status))
-        .sort((a, b) => (a.op === 'add' ? order.indexOf(a.target.collection) : 99) - (b.op === 'add' ? order.indexOf(b.target.collection) : 99));
+        .sort((a, b) => M().researchApplyOrder(a) - M().researchApplyOrder(b));
       for (const proposal of chosen) counts[await applyOne(proposal, { force: false, refs })]++;
       const left = host.resolveLinks?.(pendingLinks.splice(0), refs) || [];
       pendingLinks.push(...left);
@@ -578,6 +604,9 @@ window.PromptboardOriginResearch = (() => {
     }
 
     // ---- History ----
+    // Each chat's color says what is left to do: red waits for you, green was applied, grey had nothing to apply, orange failed.
+    const CHAT_STATES = { pending: entry => `${entry.pending} suggestion${entry.pending === 1 ? '' : 's'} not applied yet`, applied: entry => `Applied${entry.applied ? ` · ${entry.applied}` : ''}`,
+      none: () => 'Nothing to apply', error: () => 'Something went wrong — open it to see what' };
     async function openHistory() {
       if (panel === 'history') { panel = 'chat'; render(); return; }
       panel = 'history'; confirmDelete = null; render();
@@ -599,9 +628,10 @@ window.PromptboardOriginResearch = (() => {
       if (!chats) list.append(el('li', 'origin-research-hint', 'Loading…'));
       else if (!chats.length) list.append(el('li', 'origin-research-hint', chatsQuery ? 'No chat matches.' : 'No research chats yet.'));
       for (const entry of chats || []) {
-        const row = el('li', 'origin-research-chat'); row.dataset.id = entry.id;
+        const row = el('li', 'origin-research-chat'); row.dataset.id = entry.id; row.dataset.state = CHAT_STATES[entry.state] ? entry.state : 'none';
         const openChat = button('', () => void resume(entry.id), 'origin-research-chat-open');
-        openChat.append(el('strong', '', entry.title), el('small', '', [when(entry.updatedAt), MODES.find(([id]) => id === entry.mode)?.[1], PROVIDERS[entry.provider], `${entry.messages} messages`, entry.pending ? `${entry.pending} suggestions to review` : ''].filter(Boolean).join(' · ')));
+        const state = el('span', 'origin-research-chat-state', CHAT_STATES[row.dataset.state](entry));
+        openChat.append(el('strong', '', entry.title), state, el('small', '', [when(entry.updatedAt), MODES.find(([id]) => id === entry.mode)?.[1], PROVIDERS[entry.provider], `${entry.messages} messages`].filter(Boolean).join(' · ')));
         row.append(openChat);
         if (confirmDelete === entry.id) {
           const yes = button('Delete', () => void removeChat(entry.id), 'origin-ghost danger'); yes.id = 'origin-research-delete-confirm';

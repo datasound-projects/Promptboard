@@ -75,9 +75,24 @@ const emptyChat = (originId, settings) => {
   const now = Date.now();
   return { schema: SCHEMA, version: VERSION, id: randomUUID(), originId, title: '', createdAt: now, updatedAt: now, settings, native: null, sources: [], messages: [], proposals: [] };
 };
+const UNREADABLE = 'The suggestions block could not be read, so no suggestions are shown.';
+/**
+ * Where a chat stands, for the history list: `pending` while a suggestion waits for review (or has a conflict), else
+ * `error` when the latest run failed or its suggestions were lost, else `applied` once something was applied, else `none`.
+ */
+export function chatState(chat) {
+  if (chat.proposals.some(proposal => ['pending', 'conflict'].includes(proposal.status))) return 'pending';
+  const lastAsk = chat.messages.findLastIndex(message => message.role === 'user');
+  const latest = chat.messages.slice(lastAsk + 1).filter(message => message.role !== 'user');
+  const lost = message => message.status === 'failed' || message.warnings?.includes(UNREADABLE)
+    || (message.warnings?.some(warning => warning.includes('left out because')) && !chat.proposals.some(proposal => proposal.messageId === message.id));
+  if (latest.some(lost)) return 'error';
+  return chat.proposals.some(proposal => proposal.status === 'applied') ? 'applied' : 'none';
+}
 /** A short, readable summary for the history list. */
 export const summary = chat => ({ id: chat.id, title: chat.title || 'New research', createdAt: chat.createdAt, updatedAt: chat.updatedAt, mode: chat.settings?.mode || 'chat',
-  provider: chat.settings?.provider || '', messages: chat.messages.length, pending: chat.proposals.filter(proposal => proposal.status === 'pending').length });
+  provider: chat.settings?.provider || '', messages: chat.messages.length, pending: chat.proposals.filter(proposal => ['pending', 'conflict'].includes(proposal.status)).length,
+  applied: chat.proposals.filter(proposal => proposal.status === 'applied').length, state: chatState(chat) });
 
 /** Research chats, one file per chat, beside the Origin project files. Every change is atomic and serialized. */
 export class ResearchStore {
@@ -204,15 +219,31 @@ export function citations(text, evidence = []) {
   return [...citationsOf(evidence, text), ...[...found.values()].slice(0, 40)];
 }
 
-/** The suggestions block at the end of an answer, if any, and the answer without it. */
+/** JSON as agents write it: strict first, then without trailing commas or a stray comment line. */
+function parseLoose(body) {
+  try { return JSON.parse(body); } catch {}
+  // [ \t] and not \s: a line start must never re-scan the blank lines after it (quadratic on agent-made input).
+  try { return JSON.parse(body.replace(/^[ \t]*\/\/.*$/gm, '').replace(/,(\s*[}\]])/g, '$1')); } catch { return undefined; }
+}
+export const SUGGESTION_LIMIT = 80;
+/**
+ * The suggestions block of an answer, if any, and the answer without it. Only the LAST `origin-suggestions` fence
+ * counts (or a final ```json fence holding "suggestions"), so code examples earlier in the answer (JSON, JSONL, YAML)
+ * are never mistaken for it and never cut the answer short. Text after the block is kept.
+ */
 export function extractSuggestions(text) {
-  const match = [...text.matchAll(/```(?:origin-suggestions|json)\s*\n([\s\S]*?)\n```\s*$/g)].at(-1) || [...text.matchAll(/```origin-suggestions\s*\n([\s\S]*?)(?:\n```|$)/g)].at(-1);
-  if (!match) return { text, raw: [] };
-  let parsed;
-  try { parsed = JSON.parse(match[1]); } catch { return { text: text.slice(0, match.index).trimEnd(), raw: [], unreadable: true }; }
+  let start = text.lastIndexOf('```origin-suggestions'), found = null;
+  if (start >= 0) found = /^```origin-suggestions[^\n]*\n?([\s\S]*?)(?:\n[ \t]*```[ \t]*(?=\n|$)|$)/.exec(text.slice(start));
+  else {
+    const last = /```json[ \t]*\n((?:(?!```)[\s\S])*?)\n[ \t]*```\s*$/.exec(text);
+    if (last && /"suggestions"\s*:/.test(last[1])) { start = last.index; found = last; }
+  }
+  if (!found) return { text, raw: [] };
+  const rest = text.slice(start + found[0].length).trim(), answer = [text.slice(0, start).trimEnd(), rest].filter(Boolean).join('\n\n');
+  const parsed = parseLoose(found[1]);
   const raw = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.suggestions) ? parsed.suggestions : null;
-  if (!raw) return { text, raw: [] };
-  return { text: text.slice(0, match.index).trimEnd(), raw: raw.slice(0, 40) };
+  if (!raw) return { text: answer, raw: [], unreadable: true };
+  return { text: answer, raw: raw.slice(0, SUGGESTION_LIMIT) };
 }
 /**
  * Suggestions checked against the saved blueprint. Each keeps the value it would replace and the blueprint revision,
@@ -227,12 +258,14 @@ export function proposalsFor(record, raw, { messageId, agent = null }) {
     if (!entry || typeof entry !== 'object') return entry;
     const flat = entry?.target?.target && typeof entry.target.target === 'object' ? { ...entry, ...entry.target } : entry; // as validateResearchSuggestion reads it
     const own = Model.researchRef(flat), copy = { ...flat, ...(typeof own === 'string' ? { ref: local(own) } : {}) };
-    const relink = given => (typeof given === 'string' && given.startsWith('@') ? `@${local(given.slice(1))}` : Array.isArray(given) ? given.map(relink) : given);
-    if (copy.value && typeof copy.value === 'object' && !Array.isArray(copy.value)) copy.value = Object.fromEntries(Object.entries(copy.value).map(([key, given]) => [key, relink(given)]));
-    else copy.value = relink(copy.value);
+    // Only references in link fields are renamed, never text (a cell "@alice" stays "@alice"). A new block's own steps refer to each other inside it.
+    const relink = given => (typeof given === 'string' && /^@[A-Za-z0-9_.-]{1,60}$/.test(given) ? `@${local(given.slice(1))}` : Array.isArray(given) ? given.map(relink) : given);
+    const target = copy.target || {}, links = target.kind === 'add' ? Object.keys(Model.LINKS[target.collection] || {}) : target.kind === 'blockAdd' ? ['from', 'to'] : [];
+    if (links.length && copy.value && typeof copy.value === 'object' && !Array.isArray(copy.value)) copy.value = Object.fromEntries(Object.entries(copy.value).map(([key, given]) => [key, links.includes(key) ? relink(given) : given]));
+    else if (target.kind === 'record' && Model.LINKS[target.collection]?.[target.field]) copy.value = relink(copy.value);
     return copy;
   });
-  const refs = new Map(scoped.filter(entry => entry?.target?.kind === 'add' && typeof entry.ref === 'string').map(entry => [entry.ref, entry.target.collection]));
+  const refs = new Map(scoped.filter(entry => Model.researchRefKind(entry) && typeof entry.ref === 'string').map(entry => [entry.ref, Model.researchRefKind(entry)]));
   for (const entry of scoped) {
     try {
       const valid = Model.validateResearchSuggestion(record.blueprint, entry, { refs });
@@ -240,7 +273,7 @@ export function proposalsFor(record, raw, { messageId, agent = null }) {
       proposals.push({ id: randomUUID(), messageId, ...valid, baseRevision: record.revision, status: 'pending', updatedAt: Date.now(), ...(agent ? { agent } : {}) });
     } catch { dropped++; }
   }
-  return { proposals: proposals.slice(0, 40), dropped };
+  return { proposals: proposals.slice(0, SUGGESTION_LIMIT), dropped };
 }
 /** Swarm results reviewed together: the same change from several agents once; different values for one field marked. */
 export function mergeProposals(proposals) {
@@ -263,14 +296,15 @@ export async function runChat({ research, origin, originId, chat, settings, ques
   const record = await origin.read(originId, { report: false });
   if (!record || record.damaged) throw new ResearchError('This Origin project no longer exists. Choose another project.', 'NOT_FOUND', 404);
   const saved = await research.read(originId, chat);
-  const context = researchContext(record, settings.scope), contextHash = sha(`${JSON.stringify(settings.scope)}\n${context.text}`);
+  // A follow-up sends the context and the places to write again when either changed (also for a chat from before them).
+  const context = researchContext(record, settings.scope), guide = Model.researchGuide(record.blueprint, settings.scope), contextHash = sha(`${JSON.stringify(settings.scope)}\n${context.text}\n${guide}`);
   const native = saved.native?.provider === settings.provider && saved.native.sessionId ? saved.native : null;
   // Attached sources: passages relevant to this question only, as cited data.
   const found = await gatherSources(saved.sources, `${question} ${context.label}`.trim(), { ...services, signal });
   const block = sourcesBlock(found.evidence);
   const mode = settings.mode, lastMode = [...saved.messages].reverse().find(message => message.role === 'assistant')?.mode;
-  const fresh = () => chatPrompt({ question, context: context.text, history: boundedHistory(saved.messages), web: settings.web, scopeLabel: context.label, sources: block, mode });
-  const prompt = native ? chatPrompt({ question, context: native.contextHash === contextHash ? null : context.text, followUp: true, scopeLabel: context.label, sources: block, mode, modeChanged: lastMode !== mode }) : fresh();
+  const fresh = () => chatPrompt({ question, context: context.text, guide, history: boundedHistory(saved.messages), web: settings.web, scopeLabel: context.label, sources: block, mode });
+  const prompt = native ? chatPrompt({ question, context: native.contextHash === contextHash ? null : context.text, guide, followUp: true, scopeLabel: context.label, sources: block, mode, modeChanged: lastMode !== mode }) : fresh();
   const asked = { id: randomUUID(), role: 'user', text: question || { decision: 'Compare the options for this part.', audit: 'Audit this part of the blueprint.' }[mode], at: Date.now(), mode, scope: settings.scope };
   await research.update(originId, chat, value => { value.messages.push(asked); value.settings = settings; if (!value.title) value.title = titleFrom(question); });
   emit({ type: 'message', message: asked });
@@ -295,7 +329,7 @@ export async function runChat({ research, origin, originId, chat, settings, ques
   const extracted = extractSuggestions(result?.text ?? failure?.partial ?? '');
   const { proposals, dropped } = result ? proposalsFor(record, extracted.raw, { messageId: answerId }) : { proposals: [], dropped: 0 };
   const warnings = [...found.warnings, ...(dropped ? [`${dropped} suggestion${dropped === 1 ? ' was' : 's were'} left out because ${dropped === 1 ? 'it' : 'they'} did not match this blueprint.`] : []),
-    ...(extracted.unreadable ? ['The suggestions block could not be read, so no suggestions are shown.'] : [])];
+    ...(extracted.unreadable ? [UNREADABLE] : [])];
   const answer = { id: answerId, role: 'assistant', at: Date.now(), mode, provider: settings.provider, model: settings.model, durationMs: Date.now() - started,
     text: extracted.text, status: result ? 'done' : stopped ? 'stopped' : 'failed', ...(failure && !stopped ? { error: publicError(failure) } : {}),
     citations: citations(extracted.text, found.evidence), ...(warnings.length ? { warnings: warnings.slice(0, 12) } : {}) };
@@ -347,7 +381,7 @@ export async function runSwarm({ research, origin, originId, chat, settings, que
       found = await gatherSources(saved.sources, `${question} ${agent.context.label}`.trim(), { ...services, signal: agent.controller.signal });
       for (const warning of found.warnings) onEvent({ type: 'activity', kind: 'note', label: warning });
       result = await runner({ provider: settings.provider, model: settings.model, effort: settings.effort, web: settings.web, tools: settings.skills ? ['Skill'] : [], persist: false, session: null,
-        cwd: workspace, signal: agent.controller.signal, onEvent, prompt: swarmPrompt({ request: question, context: agent.context.text, web: settings.web, targetLabel: agent.context.label, sources: sourcesBlock(found.evidence) }) });
+        cwd: workspace, signal: agent.controller.signal, onEvent, prompt: swarmPrompt({ request: question, context: agent.context.text, guide: Model.researchGuide(record.blueprint, agent.target), web: settings.web, targetLabel: agent.context.label, sources: sourcesBlock(found.evidence) }) });
     } catch (error) { failure = error; }
     const stopped = failure?.code === 'ABORTED' || (failure && agent.controller.signal.aborted);
     agent.status = result ? 'done' : stopped ? 'stopped' : 'failed';
@@ -357,7 +391,7 @@ export async function runSwarm({ research, origin, originId, chat, settings, que
     const message = { id: messageId, role: 'agent', at: Date.now(), mode: 'swarm', provider: settings.provider, model: settings.model, durationMs: Date.now() - started,
       agent: { id: agent.id, label: agent.label, target: agent.target }, text: extracted.text, status: agent.status,
       ...(failure && !stopped ? { error: publicError(failure) } : {}), citations: citations(extracted.text, found.evidence),
-      ...(own.dropped ? { warnings: [`${own.dropped} suggestion${own.dropped === 1 ? ' was' : 's were'} left out because ${own.dropped === 1 ? 'it' : 'they'} did not match this blueprint.`] } : {}) };
+      ...(own.dropped || extracted.unreadable ? { warnings: [...(own.dropped ? [`${own.dropped} suggestion${own.dropped === 1 ? ' was' : 's were'} left out because ${own.dropped === 1 ? 'it' : 'they'} did not match this blueprint.`] : []), ...(extracted.unreadable ? [UNREADABLE] : [])] } : {}) };
     results.push(message);
     await research.update(originId, chat, value => { value.messages.push(message); });
     emit({ type: 'agent', agent: agent.id, status: agent.status, ...(message.error ? { error: message.error } : {}) });
