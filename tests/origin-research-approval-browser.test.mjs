@@ -118,3 +118,25 @@ test('Apply all: one answer adds a layer, components, a connection and dependent
   await ev(`document.querySelector('.origin-nav-item[data-section="plan"]').click();`);
   await wait(`/Order endpoints/.test(document.querySelector('#origin-main').textContent) && /Orders schema/.test(document.querySelector('#origin-main').textContent)`, 'tasks listed');
 });
+
+test('Apply, Reject and Preview keep the chat where you are reading, and keep focus on that card', { skip: !chrome, timeout: 120000 }, async t => {
+  const many = { suggestions: Array.from({ length: 14 }, (_, index) => ({ title: `Risk ${index + 1}`, why: 'Found while reading the design. '.repeat(3), target: { kind: 'add', collection: 'risks' }, value: { title: `Risk ${index + 1}` } })) };
+  const researchRunner = async call => ({ text: `Findings.\n\n\`\`\`origin-suggestions\n${J(many)}\n\`\`\``, session: call.session?.id || 'thread-1' });
+  const { ev, wait } = await researchPage(t, { height: 800, server: { researchRunner } });
+  await ev(`document.querySelector('#origin-research-open').click();`);
+  await wait(`document.querySelector('#origin-drawer')?.dataset.mode === 'research'`, 'research');
+  await ev(`const i = document.querySelector('#origin-research-input'); i.value = 'Find risks'; i.form.requestSubmit();`);
+  await wait(`document.querySelectorAll('.origin-research-proposal').length === 14`, 'suggestions', 30000);
+  const body = `document.querySelector('#origin-research-body')`, card = n => `[...document.querySelectorAll('.origin-research-proposal')].find(c => c.querySelector('strong').textContent === 'Risk ${n}')`;
+  // Read near the end, then decide on cards there: the list must not jump back to the top.
+  await ev(`${card(12)}.scrollIntoView({ block: 'center' });`);
+  const before = await ev(`return ${body}.scrollTop;`);
+  assert.ok(before > 400, `the chat is scrolled down (${before})`);
+  for (const [n, action] of [[12, 'Apply'], [13, 'Reject'], [11, 'Preview']]) {
+    await ev(`const b = [...${card(n)}.querySelectorAll('button')].find(b => b.textContent === ${J(action)}); b.focus(); b.click();`);
+    await wait(`${action === 'Preview' ? `${card(n)}.querySelector('.origin-research-diff')` : `${card(n)}.dataset.status === ${J(action === 'Apply' ? 'applied' : 'rejected')}`}`, `${action} on risk ${n}`);
+    const now = await ev(`return ${body}.scrollTop;`);
+    assert.ok(Math.abs(now - before) < 200, `${action} keeps the position (${before} → ${now})`);
+    assert.equal(await ev(`return ${card(n)}.contains(document.activeElement);`), true, `${action}: focus stays on the card`);
+  }
+});
