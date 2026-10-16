@@ -28,7 +28,9 @@ API key. It never starts Kanban work.
    **Reject** discards it. Select several cards and use **Apply selected**, or **Apply all**.
 
 **History** (the clock) lists this project's chats: search them, open one to continue, or delete one after
-confirmation. Every message, source, suggestion and its state is restored after a restart.
+confirmation. Each chat is marked by color: **red** while suggestions wait to be applied (or have a conflict),
+**green** once applied, **grey** when there was nothing to apply, **orange** when its latest run failed or its
+suggestions could not be read. Every message, source, suggestion and its state is restored after a restart.
 
 The panel resizes by dragging its left edge (or the arrow keys on the edge), maximizes up to the navigation sidebar,
 minimizes to a small box and closes with Esc. The record editor, Project Context and Research share one panel: opening
@@ -54,13 +56,27 @@ one closes the others and keeps unsaved and unsent text. On phones the panel fil
   Compose's read-only MCP lookup (the server must expose one annotated read-only query tool, or be Context7). Only
   passages relevant to each agent's question are sent, bounded and cited. Text that looks like paths, URLs, code or
   contact details is never sent to an MCP server. The CLI gets no MCP tools of its own.
+- **Where to write.** Each run also gets instructions built from the saved blueprint for the selected part
+  (`researchGuide`): the exact places its findings go, in the project's own names and IDs. For a section these are its
+  vision fields or records (technologies for Technology, components, connections and layers for Architecture, …), every
+  topic of Data, AI / Agents, Security, Testing, Deployment and Observability with its topic ID, the section's own
+  questions, its description (own sections) and each block with the formats for its parts. A new block may be added
+  when a finding fits nowhere else. Tasks are suggested only for the task plan (Build › Tasks) or when you ask. A whole-
+  project scope lists every section with what it holds. Renamed and custom sections, questions and blocks need no code
+  changes.
 - **Suggestions** are checked against the saved blueprint by stable IDs (`validateResearchSuggestion`). They can change
   a field, answer a question, add links, or add a record of any type: layers, technologies, components, requirements,
-  dependencies, milestones, tasks, decisions, assumptions, risks, sources and architecture connections. A new record can
+  dependencies, milestones, tasks, decisions, assumptions, risks, sources, architecture connections, topic answers and
+  blocks. They also fill blocks: a table cell, row or column, a Q&A answer or question, a checklist point, a flow step or
+  arrow, a block title or notes text, and an own section's description. A topic answer has a one-line answer and its
+  details; sections, topics, block types and table columns may be named by their words instead of their IDs. A new record can
   carry a short `ref`, and other new records in the same answer point to it as `@ref`; refs are local to one answer.
   The prompt lists the values Origin accepts for each choice field (built from the model, so it never drifts); common
   words agents use map to them (for example “frontend” → client, status “proposed” → candidate). A new record with an
   unknown value keeps Origin's default; a change to an existing field still needs a valid value.
+  Only the last `origin-suggestions` block of an answer counts, so code examples earlier in the answer (JSON, JSONL)
+  never cut it short; text after the block is kept and trailing commas are forgiven. An unreadable block is reported
+  under the answer.
   The page applies an approved suggestion through Origin's normal edit path (autosave with its revision check), so the
   sidebar, editors, readiness, map and architecture diagram update as for a hand edit (`applyResearchSuggestion`).
   **Apply all** applies new records in dependency order (layers and technologies before components, components before
@@ -124,7 +140,7 @@ A chat keeps no hidden model reasoning, no credentials and no copy of the bluepr
 ```text
 { kind: "project" }
 { kind: "section", id }                      built-in or custom section ID
-{ kind: "record", collection, id }           a component, requirement, technology, decision, ...
+{ kind: "record", collection, id }           a component, requirement, technology, decision, block, ...
 { kind: "question", key }                    vision:<field> | topic:<section>:<area> | question:<id> |
                                              component:<componentId>:<questionId>
 ```
@@ -162,8 +178,13 @@ Proposal  { id, messageId, op: "set" | "add", target, value, original, baseRevis
 target    { kind: "vision", field } | { kind: "idea" }
           | { kind: "record", collection, id, field }
           | { kind: "answer", questionId } | { kind: "componentAnswer", componentId, questionId }
-          | { kind: "topic", section, area }
+          | { kind: "topic", section, area }          read as a new topic answer (areas), or a change to the one there
+          | { kind: "section", section, field: "description" }                   an own section
+          | { kind: "block", block, part?, field }    a block's title or text, an answer, a point, a cell, a step or arrow
+          | { kind: "blockAdd", block }               value: a question, point, row (column name → text), column, step or arrow
           | { kind: "add", collection }               value holds the new record's fields and links; `ref` names it
+                                                      (areas: section, area, title, description; blocks: section, type,
+                                                      title and its content)
 ```
 
 `original` is the value at `baseRevision`. Before a suggestion is applied, the page compares it with the current

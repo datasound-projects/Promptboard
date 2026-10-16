@@ -14,7 +14,7 @@ window.PromptboardOrigin = (() => {
   const MAP_LEFT = ['vision', 'requirements', 'architecture', 'technology', 'dependencies', 'data', 'ai'];
   const MAP_RIGHT = ['security', 'testing', 'deployment', 'observability', 'research', 'decisions', 'plan'];
   const NOUN = { requirements: 'Requirement', components: 'Component', connections: 'Connection', technologies: 'Technology', dependencies: 'Dependency', decisions: 'Decision',
-    assumptions: 'Assumption', sources: 'Source', risks: 'Risk', areas: 'Approach', milestones: 'Milestone', items: 'Task', layers: 'Layer' };
+    assumptions: 'Assumption', sources: 'Source', risks: 'Risk', areas: 'Approach', milestones: 'Milestone', items: 'Task', layers: 'Layer', blocks: 'Block' };
   // Reference fields → the collection they point to. Used for deletes and “used by”.
   const REFS = { componentIds: 'components', technologyIds: 'technologies', requirementIds: 'requirements', dependencyIds: 'dependencies', sourceIds: 'sources',
     requiredBy: 'components', dependsOn: owner => (owner === 'dependencies' ? 'dependencies' : 'items'), supersededBy: 'decisions', decisionId: 'decisions',
@@ -37,7 +37,12 @@ window.PromptboardOrigin = (() => {
     const path = document.createElementNS(svg.namespaceURI, 'path'); path.setAttribute('d', d); svg.append(path);
     return svg;
   }
-  const ICON = { edit: 'M4 20h4L19 9l-4-4L4 16v4zM13.5 6.5l4 4', plus: 'M12 5v14M5 12h14', minus: 'M5 12h14', fit: 'M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5', grip: 'M20 10L10 20M20 15l-5 5M20 4L4 20', close: 'M6 6l12 12M18 6 6 18', dots: 'M5 12h.01M12 12h.01M19 12h.01', arrow: 'M5 12h14M13 6l6 6-6 6', link: 'M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1' };
+  const ICON = { edit: 'M4 20h4L19 9l-4-4L4 16v4zM13.5 6.5l4 4', plus: 'M12 5v14M5 12h14', minus: 'M5 12h14', fit: 'M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5', grip: 'M20 10L10 20M20 15l-5 5M20 4L4 20', close: 'M6 6l12 12M18 6 6 18', dots: 'M5 12h.01M12 12h.01M19 12h.01', arrow: 'M5 12h14M13 6l6 6-6 6', link: 'M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1',
+    up: 'M6 15l6-6 6 6', down: 'M6 9l6 6 6-6' };
+  // One small picture per block type.
+  const BLOCK_ICON = { qa: 'M4 5h16v11H10l-6 4zM9 9h6M9 12h4', table: 'M3 5h18v14H3zM3 10h18M3 15h18M10 5v14', checklist: 'M4 7l2 2 3-3M4 16l2 2 3-3M13 8h7M13 17h7',
+    flow: 'M3 5h7v5H3zM14 14h7v5h-7zM10 7.5h2.5a2 2 0 0 1 2 2V14', notes: 'M6 3h9l4 4v14H6zM9 11h7M9 15h7M9 7h3' };
+  const FLOW_W = 168, FLOW_H = 46, FLOW_X = 230, FLOW_Y = 82;
   /** An SVG element factory for one drawing: make(tag, attributes, parent = the drawing). */
   const svgMaker = root => (tag, attrs = {}, parent = root) => {
     const node = document.createElementNS('http://www.w3.org/2000/svg', tag);
@@ -117,6 +122,7 @@ window.PromptboardOrigin = (() => {
     let section = pref(SECTION_KEY) || 'overview';
     let open = null, connectFrom = null, planSelection = new Set(), handoffBusy = false, lastHandoff = '';
     let views = { map: null, canvas: null }, mapLinkFrom = null, selectedLink = null, taskMilestone = '', taskView = pref(TASK_VIEW_KEY, 'layers');
+    let flowConnect = null, flowStep = null; // A flow block: the arrow being drawn ({ block, from }) and the step being edited ({ block, node }).
     let contextView = { itemId: null, open: false, loading: false, revision: 0, data: null, error: '' }, drawerMessage = null;
     let saveTimer = null, saving = null, changeCount = 0, savedCount = 0, saveState = 'saved', saveMessage = '', dirtySince = 0, shownSaveError = '';
     let baseResources = null, baseLoading = null, focusAfter = null, renderFrame = 0, uid = 0;
@@ -227,7 +233,7 @@ window.PromptboardOrigin = (() => {
     async function load(id, { force = false } = {}) {
       if (!force && id === projectId && (record || loading)) return loading;
       projectId = id; record = null; loadError = null; open = null; connectFrom = null; planSelection = new Set(); lastHandoff = '';
-      views = { map: null, canvas: null }; mapLinkFrom = null; selectedLink = null; taskMilestone = ''; contextView = { itemId: null, open: false, loading: false, revision: 0, data: null, error: '' };
+      views = { map: null, canvas: null }; mapLinkFrom = null; selectedLink = null; flowConnect = null; flowStep = null; taskMilestone = ''; contextView = { itemId: null, open: false, loading: false, revision: 0, data: null, error: '' };
       contextStatus = { revision: -1, loading: false, map: new Map() };
       changeCount = savedCount = 0; dirtySince = 0; saveState = 'saved'; showNotice(''); showError('');
       renderDrawer(); void contextPanel.reset(id); void researchPanel.reset(id);
@@ -324,7 +330,7 @@ window.PromptboardOrigin = (() => {
         architecture: blueprint.components.length, technology: blueprint.technologies.length, dependencies: blueprint.dependencies.length,
         research: blueprint.sources.length + blueprint.assumptions.length + blueprint.risks.length, decisions: blueprint.decisions.length, plan: blueprint.items.length };
       // Your own answered questions count in built-in sections too.
-      const own = blueprint.questions.filter(question => question.sectionId === id && blueprint.answers[question.id]?.trim()).length;
+      const own = blueprint.questions.filter(question => question.sectionId === id && blueprint.answers[question.id]?.trim()).length + blueprint.blocks.filter(block => block.sectionId === id && M.blockStarted(block)).length;
       if (counts[id] !== undefined) return counts[id] + own;
       if (M.AREAS[id]) return blueprint.areas.filter(item => item.section === id).length + own;
       return own;
@@ -382,7 +388,7 @@ window.PromptboardOrigin = (() => {
 
     function openSection(id) {
       if (!order().includes(id)) return;
-      section = id; setPref(SECTION_KEY, id); connectFrom = null; mapLinkFrom = null; selectedLink = null;
+      section = id; setPref(SECTION_KEY, id); connectFrom = null; mapLinkFrom = null; selectedLink = null; flowConnect = null; flowStep = null;
       if (open && sectionOf(open) !== id) { open = null; renderDrawer(); }
       renderMain();
       window.scrollTo(0, 0);
@@ -390,6 +396,7 @@ window.PromptboardOrigin = (() => {
     }
     function sectionOf(target) {
       if (target.collection === 'areas') return bp().areas.find(item => item.id === target.id)?.section;
+      if (target.collection === 'blocks') return bp().blocks.find(item => item.id === target.id)?.sectionId;
       return { requirements: 'requirements', components: 'architecture', connections: 'architecture', technologies: 'technology', dependencies: 'dependencies', decisions: 'decisions',
         assumptions: 'research', sources: 'research', risks: 'research', milestones: 'plan', items: 'plan', layers: 'architecture' }[target.collection];
     }
@@ -398,6 +405,8 @@ window.PromptboardOrigin = (() => {
       if (target.collection === 'connections') { const connection = bp().connections.find(item => item.id === target.id); target = connection ? { collection: 'components', id: connection.from } : { section: 'architecture' }; }
       const id = target.collection ? sectionOf(target) || target.section : target.section;
       if (id && id !== section) { section = id; setPref(SECTION_KEY, id); renderMain(); window.scrollTo(0, 0); }
+      // A block lives on its section page, not in the editor panel.
+      if (target.collection === 'blocks') { const card = main.querySelector(`[data-block="${CSS.escape(target.id)}"]`); card?.scrollIntoView?.({ block: 'start' }); card?.querySelector('.origin-block-title')?.focus({ preventScroll: true }); return; }
       if (target.collection && target.id) openDrawer(target.collection, target.id);
       else main.querySelector('h2')?.focus();
     }
@@ -412,7 +421,7 @@ window.PromptboardOrigin = (() => {
       if (loadError && !record) { main.replaceChildren(errorState()); renderDerived(); return; }
       if (!record) return;
       const y = window.scrollY;
-      const body = isCustom(section) ? customSection(section) : [...(SECTIONS[section] || SECTIONS.overview)(), ...(section === 'overview' ? [] : questionsBlock(section))];
+      const body = isCustom(section) ? customSection(section) : [...(SECTIONS[section] || SECTIONS.overview)(), ...(section === 'overview' ? [] : [...questionsBlock(section), ...blocksBlock(section)])];
       main.replaceChildren(sectionHeader(), el('div', 'origin-next-slot'), ...body);
       renderDerived();
       markSelected();
@@ -1269,16 +1278,17 @@ window.PromptboardOrigin = (() => {
       about.append(el('span', 'origin-q-label', 'What is this section about?'), control);
       about.addEventListener('click', event => { if (event.target === about) control.focus(); });
       const remove = button('Delete section', () => deleteSection(entry, remove), 'origin-link origin-delete origin-section-delete');
-      nodes.push(about, ...questionsBlock(id), remove);
+      nodes.push(about, ...questionsBlock(id), ...blocksBlock(id), remove);
       return nodes;
     }
     function deleteSection(entry, control) {
-      const blueprint = bp(), asked = blueprint.questions.filter(question => question.sectionId === entry.id);
-      const written = entry.description.trim() || asked.some(question => blueprint.answers[question.id]?.trim());
+      const blueprint = bp(), asked = blueprint.questions.filter(question => question.sectionId === entry.id), blocks = blueprint.blocks.filter(block => block.sectionId === entry.id);
+      const written = entry.description.trim() || asked.some(question => blueprint.answers[question.id]?.trim()) || blocks.some(M.blockStarted);
       if (written && control.dataset.confirm !== 'true') { control.dataset.confirm = 'true'; control.textContent = 'Delete the section and what you wrote in it?'; control.classList.add('danger'); return; }
       removeEntity('customSections', entry.id); // Also unlinks it from tasks that include it.
       blueprint.questions = blueprint.questions.filter(question => question.sectionId !== entry.id);
       for (const question of asked) delete blueprint.answers[question.id];
+      for (const block of blocks) removeEntity('blocks', block.id); // Also unlinks them from tasks that include them.
       delete blueprint.layout.map.nodes[entry.id];
       blueprint.layout.map.links = blueprint.layout.map.links.filter(link => link.from !== entry.id && link.to !== entry.id);
       section = 'overview'; setPref(SECTION_KEY, section);
@@ -1344,9 +1354,288 @@ window.PromptboardOrigin = (() => {
       return box;
     }
 
+    // ---- Blocks: your own Q&A, tables, checklists, flows and notes on any section page ----
+    const blockLabel = type => M.BLOCK_TYPES.find(([id]) => id === type)?.[1] || 'Block';
+    const blockFocus = (block, selector) => { focusAfter = () => main.querySelector(`[data-block="${CSS.escape(block.id)}"] ${selector}`); };
+    function blocksBlock(id) {
+      const own = bp().blocks.filter(block => block.sectionId === id);
+      const empty = isCustom(id) && !own.length && !bp().questions.some(question => question.sectionId === id);
+      return [...own.map(blockCard), blockPicker(id, { big: empty })];
+    }
+    // The page's own building blocks: a click adds one below the others.
+    function blockPicker(id, { big = false } = {}) {
+      const box = el('div', `origin-block-picker${big ? ' big' : ''}`); box.setAttribute('role', 'group'); box.setAttribute('aria-label', 'Add a block');
+      box.append(el(big ? 'p' : 'span', 'origin-block-picker-lead', big ? 'Choose what this page holds. Add as many blocks as you need, in any order.' : 'Add a block'));
+      const options = el('div', 'origin-block-options');
+      for (const [type, label, help] of M.BLOCK_TYPES) {
+        const option = button('', () => addBlock(id, type), 'origin-block-option', help);
+        option.dataset.type = type; option.setAttribute('aria-label', `Add a ${label} block: ${help}`);
+        option.append(icon(BLOCK_ICON[type], big ? 20 : 15), el('span', 'origin-block-option-name', label));
+        if (big) option.append(el('span', 'origin-block-option-help', help));
+        options.append(option);
+      }
+      box.append(options);
+      return box;
+    }
+    function addBlock(sectionId, type) {
+      if (bp().blocks.length >= M.LIMITS.blocks) { app.announce(`A project can have at most ${M.LIMITS.blocks} blocks.`); return; }
+      const block = { id: newId(), origin: 'human', ...M.RECORD_DEFAULTS.blocks('', sectionId, type) };
+      if (type === 'qa') block.entries.push({ id: newId(), question: '', answer: '' });
+      if (type === 'table') block.columns.push({ id: newId(), name: '' }, { id: newId(), name: '' });
+      bp().blocks.push(block);
+      blockFocus(block, '.origin-block-title');
+      changed({ structure: true });
+      app.announce(`${blockLabel(type)} block added.`);
+    }
+    function blockCard(block) {
+      const label = blockLabel(block.type), own = bp().blocks.filter(entry => entry.sectionId === block.sectionId), index = own.indexOf(block);
+      const card = el('section', 'origin-block'); card.dataset.block = block.id; card.dataset.type = block.type;
+      const head = el('div', 'origin-block-head');
+      const kind = el('span', 'origin-block-kind'); kind.append(icon(BLOCK_ICON[block.type], 14), el('span', '', label));
+      const title = el('input', 'origin-block-title'); title.value = block.title; title.maxLength = 120; title.placeholder = `Untitled ${label === 'Q&A' ? 'Q&A' : label.toLowerCase()}`;
+      title.setAttribute('aria-label', `${label} block title`);
+      title.addEventListener('input', () => { block.title = title.value; changed(); });
+      card.setAttribute('aria-label', `${label} block${block.title.trim() ? `: ${block.title.trim()}` : ''}`);
+      const tools = el('div', 'origin-block-tools');
+      const move = (step, name, path) => { const control = button('', () => moveBlock(block, step), 'origin-icon origin-small', name); control.setAttribute('aria-label', `${name}: ${label} block`); control.dataset.move = String(step); control.disabled = !own[index + step]; control.append(icon(path, 14)); return control; };
+      const remove = button('Delete', () => removeBlock(block, remove), 'origin-link origin-block-remove'); remove.setAttribute('aria-label', `Delete the ${label} block`);
+      tools.append(move(-1, 'Move up', ICON.up), move(1, 'Move down', ICON.down), remove);
+      head.append(kind, title, ...(block.origin === 'ai' ? [chip('AI suggestion', 'accent')] : []), tools);
+      card.append(head, BLOCK_BODY[block.type](block));
+      return card;
+    }
+    function moveBlock(block, step) {
+      const list = bp().blocks, own = list.filter(entry => entry.sectionId === block.sectionId), other = own[own.indexOf(block) + step];
+      if (!other) return;
+      const a = list.indexOf(block), b = list.indexOf(other); [list[a], list[b]] = [list[b], list[a]];
+      focusAfter = () => { const card = main.querySelector(`[data-block="${CSS.escape(block.id)}"]`); return card?.querySelector(`[data-move="${step}"]:enabled`) || card?.querySelector('.origin-block-title'); };
+      changed({ structure: true });
+    }
+    // A block with something written in it is deleted only after a second, explicit click.
+    function removeBlock(block, control) {
+      if (M.blockStarted(block) && control.dataset.confirm !== 'true') { control.dataset.confirm = 'true'; control.textContent = 'Delete with its content?'; control.classList.add('danger'); return; }
+      removeEntity('blocks', block.id); // Also unlinks it from tasks that include it.
+      if (flowStep?.block === block.id) flowStep = null;
+      if (flowConnect?.block === block.id) flowConnect = null;
+      app.announce('Block deleted.');
+      changed({ structure: true });
+    }
+    /** Adds one part (a question, point, row, column or step); focus moves to it. */
+    function addPart(block, list, part, { focus = 'input, textarea', limit = M.BLOCK_PARTS[list] } = {}) {
+      if (block[list].length >= limit) { app.announce(`A block can hold at most ${limit} of these.`); return null; }
+      const entry = { id: newId(), ...part };
+      block[list].push(entry);
+      if (focus) blockFocus(block, `[data-part="${CSS.escape(entry.id)}"] ${focus}`);
+      changed({ structure: true });
+      return entry;
+    }
+    /** Removes one part; a part with content asks for a second click. */
+    function partRemove(block, list, entry, name, filled = () => false) {
+      const control = button('', () => {
+        if (filled() && control.dataset.confirm !== 'true') { control.dataset.confirm = 'true'; control.classList.add('danger'); control.setAttribute('aria-label', `Click again to remove ${name}`); control.title = 'Click again to remove'; return; }
+        block[list] = block[list].filter(item => item !== entry);
+        if (list === 'nodes') { block.edges = block.edges.filter(edge => edge.from !== entry.id && edge.to !== entry.id); if (flowStep?.node === entry.id) flowStep = null; }
+        if (list === 'columns') for (const row of block.rows) delete row.cells[entry.id];
+        blockFocus(block, '.origin-block-title');
+        changed({ structure: true });
+      }, 'origin-icon origin-small origin-block-part-remove', `Remove ${name}`);
+      control.setAttribute('aria-label', `Remove ${name}`); control.append(icon(ICON.close, 12));
+      return control;
+    }
+    const BLOCK_BODY = {
+      notes: block => { const box = el('div', 'origin-block-body origin-block-notes'); box.append(area(block, 'text', 'Write anything this section needs…', { label: `${block.title.trim() || 'Notes'}: text` })); return box; },
+      qa(block) {
+        const box = el('div', 'origin-block-body origin-block-qa');
+        block.entries.forEach((entry, index) => {
+          const row = el('div', 'origin-block-qa-row'); row.dataset.part = entry.id;
+          const question = el('input', 'origin-block-question'); question.value = entry.question; question.maxLength = 500; question.placeholder = 'Question';
+          question.setAttribute('aria-label', `Question ${index + 1}`);
+          question.addEventListener('input', () => { entry.question = question.value; changed(); });
+          question.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); row.querySelector('textarea')?.focus(); } });
+          const top = el('div', 'origin-block-qa-head'); top.append(question, partRemove(block, 'entries', entry, `question ${index + 1}`, () => Boolean(entry.question.trim() || entry.answer.trim())));
+          row.append(top, area(entry, 'answer', 'Answer', { label: `Answer to ${entry.question.trim() || `question ${index + 1}`}` }));
+          box.append(row);
+        });
+        box.append(button('＋ Add a question', () => addPart(block, 'entries', { question: '', answer: '' }, { focus: '.origin-block-question' }), 'origin-link origin-block-add'));
+        return box;
+      },
+      checklist(block) {
+        const box = el('div', 'origin-block-body origin-block-checks'), list = el('ul', 'origin-block-check-list');
+        block.checks.forEach((entry, index) => {
+          const row = el('li', `origin-block-check${entry.done ? ' done' : ''}`); row.dataset.part = entry.id;
+          const done = el('input'); done.type = 'checkbox'; done.checked = entry.done; done.setAttribute('aria-label', `Done: ${entry.text.trim() || `point ${index + 1}`}`);
+          done.addEventListener('change', () => { entry.done = done.checked; row.classList.toggle('done', entry.done); changed(); });
+          const text = el('input', 'origin-block-check-text'); text.value = entry.text; text.maxLength = 1000; text.placeholder = 'A point to check'; text.setAttribute('aria-label', `Point ${index + 1}`);
+          text.addEventListener('input', () => { entry.text = text.value; changed(); });
+          row.append(done, text, partRemove(block, 'checks', entry, `point ${index + 1}`, () => Boolean(entry.text.trim())));
+          list.append(row);
+        });
+        if (block.checks.length) box.append(list);
+        box.append(quickAdd('Add a point to check…', value => addPart(block, 'checks', { text: value, done: false }, { focus: '' }), { id: `checks:${block.id}`, max: 1000 }));
+        return box;
+      },
+      table(block) {
+        const box = el('div', 'origin-block-body origin-block-table-box'), scroll = el('div', 'origin-block-table-scroll'), table = el('table', 'origin-block-table');
+        const headRow = el('tr');
+        block.columns.forEach((column, index) => {
+          const cell = el('th'); cell.dataset.part = column.id; cell.scope = 'col';
+          const name = el('input', 'origin-block-column'); name.value = column.name; name.maxLength = 80; name.placeholder = `Column ${index + 1}`; name.setAttribute('aria-label', `Column ${index + 1} name`);
+          name.addEventListener('input', () => { column.name = name.value; changed(); });
+          cell.append(name, partRemove(block, 'columns', column, `column ${column.name.trim() || index + 1}`, () => block.rows.some(row => row.cells[column.id]?.trim())));
+          headRow.append(cell);
+        });
+        const plus = el('th', 'origin-block-table-add'); const addColumn = button('', () => addPart(block, 'columns', { name: '' }, { focus: '.origin-block-column' }), 'origin-icon origin-small', 'Add a column');
+        addColumn.setAttribute('aria-label', 'Add a column'); addColumn.disabled = block.columns.length >= M.BLOCK_PARTS.columns; addColumn.append(icon(ICON.plus, 13)); plus.append(addColumn); headRow.append(plus);
+        const head = el('thead'); head.append(headRow);
+        const body = el('tbody');
+        block.rows.forEach((row, index) => {
+          const line = el('tr'); line.dataset.part = row.id;
+          for (const column of block.columns) {
+            const cell = el('td'), text = el('textarea', 'origin-block-cell'); text.rows = 1; text.maxLength = 2000; text.value = row.cells[column.id] || '';
+            text.setAttribute('aria-label', `${column.name.trim() || 'Column'}, row ${index + 1}`);
+            text.addEventListener('input', () => { if (text.value) row.cells[column.id] = text.value; else delete row.cells[column.id]; changed(); });
+            cell.append(autoGrow(text)); line.append(cell);
+          }
+          const tools = el('td', 'origin-block-row-tools'); tools.append(partRemove(block, 'rows', row, `row ${index + 1}`, () => Object.values(row.cells).some(value => value.trim()))); line.append(tools);
+          body.append(line);
+        });
+        table.append(head, body); scroll.append(table);
+        const addRow = button('＋ Add a row', () => addPart(block, 'rows', { cells: {} }, { focus: 'textarea' }), 'origin-link origin-block-add');
+        addRow.disabled = !block.columns.length;
+        box.append(scroll, addRow);
+        return box;
+      },
+      flow: block => flowEditor(block),
+    };
+    // A flow: steps you add, joined by arrows. Like the architecture canvas: drag to move, Connect to draw an arrow.
+    function flowEditor(block) {
+      const ns = 'http://www.w3.org/2000/svg', name = `flow:${block.id}`, connecting = flowConnect?.block === block.id;
+      const box = el('div', 'origin-block-body origin-flow-card');
+      const tools = el('div', 'origin-canvas-tools');
+      const connect = button(connecting ? 'Cancel' : 'Connect', () => { flowConnect = connecting ? null : { block: block.id, from: '' }; flowStep = null; renderMain(); }, `origin-ghost${connecting ? ' active' : ''}`, 'Draw an arrow between two steps');
+      connect.dataset.flowConnect = block.id; connect.disabled = block.nodes.length < 2;
+      const arrange = button('Arrange', () => { for (const node of block.nodes) { node.x = null; node.y = null; } views[name] = null; changed({ structure: true }); }, 'origin-ghost', 'Lay out the steps by their arrows');
+      arrange.disabled = !block.nodes.length;
+      tools.append(quickAdd('Add a step — e.g. “Upload a document”', value => { views[name] = null; addPart(block, 'nodes', { label: value, notes: '', x: null, y: null }, { focus: '' }); }, { id: name, max: 120 }), connect, arrange);
+      const stepName = id => block.nodes.find(node => node.id === id)?.label.trim() || 'that step';
+      const hint = el('p', 'origin-canvas-hint', connecting ? (flowConnect.from ? `Now click the step that ${stepName(flowConnect.from)} leads to · Esc cancels` : 'Click the step the arrow starts from · Esc cancels') : 'Click a step to edit it · drag to move');
+      hint.setAttribute('role', 'status');
+      box.append(tools, hint);
+      const svg = document.createElementNS(ns, 'svg'); svg.classList.add('origin-canvas', 'origin-flow');
+      svg.setAttribute('role', 'group'); svg.setAttribute('aria-label', `${block.title.trim() || 'Flow'}: ${plural(block.nodes.length, 'step')}, ${plural(block.edges.length, 'arrow')}`);
+      const make = svgMaker(svg), arrowId = `origin-flow-arrow-${block.id}`;
+      const marker = make('marker', { id: arrowId, viewBox: '0 0 10 10', refX: 8.5, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse' }, make('defs'));
+      make('path', { d: 'M1 1.5L8.5 5L1 8.5', class: 'origin-arrow' }, marker);
+      if (!block.nodes.length) {
+        svg.setAttribute('viewBox', '0 0 640 150');
+        const empty = make('text', { x: 320, y: 70, 'text-anchor': 'middle', class: 'origin-canvas-empty' }); empty.textContent = 'Add the first step above — then the next, and connect them.';
+        const sub = make('text', { x: 320, y: 94, 'text-anchor': 'middle', class: 'origin-canvas-empty faint' }); sub.textContent = 'For example: Upload → Split into chunks → Embed → Index';
+        box.append(svg); return box;
+      }
+      const at = positions(block.nodes, block.edges, FLOW_X, FLOW_Y);
+      const edges = make('g', { class: 'origin-edges' }), nodes = make('g', { class: 'origin-nodes' });
+      const drawEdges = () => {
+        edges.replaceChildren();
+        for (const edge of block.edges) {
+          const a = at.get(edge.from), b = at.get(edge.to);
+          if (!a || !b) continue;
+          const ac = { x: a.x + FLOW_W / 2, y: a.y + FLOW_H / 2 }, bc = { x: b.x + FLOW_W / 2, y: b.y + FLOW_H / 2 }, dx = bc.x - ac.x, dy = bc.y - ac.y;
+          const horizontal = Math.abs(dx) * FLOW_H >= Math.abs(dy) * FLOW_W, s = Math.sign(horizontal ? dx : dy) || 1;
+          const p0 = horizontal ? { x: ac.x + s * FLOW_W / 2, y: ac.y } : { x: ac.x, y: ac.y + s * FLOW_H / 2 }, p3 = horizontal ? { x: bc.x - s * (FLOW_W / 2 + 2), y: bc.y } : { x: bc.x, y: bc.y - s * (FLOW_H / 2 + 2) };
+          const bend = Math.max(28, Math.abs(horizontal ? dx : dy) / 2.2), p1 = horizontal ? { x: p0.x + s * bend, y: p0.y } : { x: p0.x, y: p0.y + s * bend }, p2 = horizontal ? { x: p3.x - s * bend, y: p3.y } : { x: p3.x, y: p3.y - s * bend };
+          const group2 = make('g', { class: `origin-edge${flowStep?.block === block.id && [edge.from, edge.to].includes(flowStep.node) ? ' related' : ''}` }, edges);
+          make('path', { d: `M${p0.x} ${p0.y}C${p1.x} ${p1.y} ${p2.x} ${p2.y} ${p3.x} ${p3.y}`, 'marker-end': `url(#${arrowId})` }, group2);
+          const words = clip(edge.label, 26);
+          if (words) {
+            const mx = (p0.x + 3 * p1.x + 3 * p2.x + p3.x) / 8, my = (p0.y + 3 * p1.y + 3 * p2.y + p3.y) / 8, w = words.length * 6.1 + 14;
+            make('rect', { x: mx - w / 2, y: my - 10, width: w, height: 20, rx: 10, class: 'origin-edge-pill' }, group2);
+            const text = make('text', { x: mx, y: my + 3.8, 'text-anchor': 'middle', class: 'origin-edge-label' }, group2); text.textContent = words;
+          }
+        }
+      };
+      const fit = () => {
+        const xs = [...at.values()].map(point => point.x), ys = [...at.values()].map(point => point.y);
+        let x = Math.min(...xs) - 36, y = Math.min(...ys) - 36, w = Math.max(...xs) - Math.min(...xs) + FLOW_W + 72, h = Math.max(...ys) - Math.min(...ys) + FLOW_H + 72;
+        if (w < 640) { x -= (640 - w) / 2; w = 640; }
+        if (h < 180) { y -= (180 - h) / 2; h = 180; }
+        return { x, y, w, h };
+      };
+      const keep = () => { for (const node of block.nodes) { const point = at.get(node.id); node.x = point.x; node.y = point.y; } };
+      for (const step of block.nodes) {
+        const point = at.get(step.id), selected = flowStep?.block === block.id && flowStep.node === step.id;
+        const node = make('g', { class: `origin-node origin-flow-node${connecting && flowConnect.from === step.id ? ' connecting' : ''}${selected ? ' selected' : ''}`, transform: `translate(${point.x} ${point.y})`, tabindex: 0, role: 'button', 'data-id': step.id,
+          'aria-label': `${step.label.trim() || 'Untitled step'}. Enter edits, arrow keys move.` }, nodes);
+        make('rect', { width: FLOW_W, height: FLOW_H, rx: 12, class: 'origin-node-box' }, node);
+        make('rect', { x: 10, y: 13, width: 4, height: FLOW_H - 26, rx: 2, class: 'origin-node-accent' }, node);
+        const text = make('text', { x: 24, y: FLOW_H / 2 + 5, class: 'origin-node-name' }, node); text.textContent = clip(step.label.trim() || 'Untitled step', 19);
+        const tip = make('title', {}, node); tip.textContent = [step.label, step.notes].filter(value => value.trim()).join('\n') || 'Step';
+        const activate = () => {
+          if (!connecting) { flowStep = selected ? null : { block: block.id, node: step.id }; focusAfter = () => main.querySelector(selected ? `.origin-flow-node[data-id="${CSS.escape(step.id)}"]` : '.origin-flow-editor input'); renderMain(); return; }
+          if (!flowConnect.from) { flowConnect = { block: block.id, from: step.id }; focusAfter = () => main.querySelector(`.origin-flow-node[data-id="${CSS.escape(step.id)}"]`); renderMain(); return; }
+          if (flowConnect.from === step.id) return;
+          const from = flowConnect.from;
+          views[name] ||= boxOf(svg);
+          flowConnect = null;
+          if (block.edges.some(edge => edge.from === from && edge.to === step.id)) { app.announce('These steps are already joined.'); renderMain(); return; }
+          if (block.edges.length >= M.BLOCK_PARTS.edges) { app.announce(`A flow can have at most ${M.BLOCK_PARTS.edges} arrows.`); renderMain(); return; }
+          block.edges.push({ id: newId(), from, to: step.id, label: '' });
+          flowStep = { block: block.id, node: from };
+          changed({ structure: true });
+          app.announce('Joined. Name the arrow in the step editor if you like.');
+        };
+        let origin = null;
+        draggable(svg, node, {
+          start: () => { origin = { ...point }; },
+          move: (dx, dy) => { point.x = Math.round(origin.x + dx); point.y = Math.round(origin.y + dy); node.setAttribute('transform', `translate(${point.x} ${point.y})`); drawEdges(); },
+          drop: () => { keep(); holdView(name, svg, point.x, point.y, FLOW_W, FLOW_H); changed({ structure: true }); },
+          click: activate,
+          cancel: renderMain,
+        });
+        node.addEventListener('keydown', event => {
+          const move = { ArrowLeft: [-20, 0], ArrowRight: [20, 0], ArrowUp: [0, -20], ArrowDown: [0, 20] }[event.key];
+          if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); activate(); }
+          else if (move) {
+            event.preventDefault(); keep();
+            step.x += move[0]; step.y += move[1]; holdView(name, svg, step.x, step.y, FLOW_W, FLOW_H);
+            focusAfter = () => main.querySelector(`.origin-flow-node[data-id="${CSS.escape(step.id)}"]`);
+            changed({ structure: true });
+          }
+        });
+      }
+      drawEdges();
+      tools.append(viewport(svg, name, fit()));
+      box.append(svg);
+      const step = flowStep?.block === block.id && block.nodes.find(node => node.id === flowStep.node);
+      if (step) box.append(stepEditor(block, step));
+      return box;
+    }
+    // The selected step: its name, its details and its arrows.
+    function stepEditor(block, step) {
+      const box = el('div', 'origin-flow-editor'); box.setAttribute('role', 'group'); box.setAttribute('aria-label', `Step: ${step.label.trim() || 'Untitled step'}`);
+      const label = el('input', 'origin-flow-step-name'); label.value = step.label; label.maxLength = 120; label.placeholder = 'Step name'; label.setAttribute('aria-label', 'Step name');
+      label.addEventListener('input', () => { step.label = label.value; changed(); });
+      const close = button('Done', () => { flowStep = null; focusAfter = () => main.querySelector(`.origin-flow-node[data-id="${CSS.escape(step.id)}"]`); renderMain(); }, 'origin-ghost');
+      const top = el('div', 'origin-flow-editor-head'); top.append(label, partRemove(block, 'nodes', step, `step ${step.label.trim() || ''}`.trim(), () => Boolean(step.notes.trim() || block.edges.some(edge => [edge.from, edge.to].includes(step.id)))), close);
+      box.append(top, area(step, 'notes', 'Details: inputs, outputs, rules, who does it…', { max: 2000, label: 'Step details' }));
+      const arrows = block.edges.filter(edge => edge.from === step.id || edge.to === step.id);
+      if (arrows.length) {
+        const list = el('ul', 'origin-flow-arrows'); list.setAttribute('aria-label', 'Arrows of this step');
+        for (const edge of arrows) {
+          const out = edge.from === step.id, other = block.nodes.find(node => node.id === (out ? edge.to : edge.from));
+          const row = el('li'); row.dataset.part = edge.id;
+          const text = el('input'); text.value = edge.label; text.maxLength = 80; text.placeholder = 'Label (optional)'; text.setAttribute('aria-label', `Label of the arrow ${out ? 'to' : 'from'} ${other?.label.trim() || 'a step'}`);
+          text.addEventListener('input', () => { edge.label = text.value; changed(); });
+          row.append(el('span', 'origin-flow-arrow-name', `${out ? '→' : '←'} ${other?.label.trim() || 'Untitled step'}`), text, partRemove(block, 'edges', edge, `the arrow ${out ? 'to' : 'from'} ${other?.label.trim() || 'a step'}`));
+          list.append(row);
+        }
+        box.append(list);
+      }
+      return box;
+    }
+
     // ---- Context included: built on the server from the saved blueprint, shown before anything is sent ----
     const CONTEXT_NAMES = { components: 'Components', layers: 'Layer', technologies: 'Technologies', requirements: 'Requirements', items: 'Starts after', decisions: 'Decisions',
-      dependencies: 'Dependencies', areas: 'Planning answers', milestones: 'Milestone', risks: 'Risks', assumptions: 'Assumptions', sources: 'Evidence', customSections: 'Your sections' };
+      dependencies: 'Dependencies', areas: 'Planning answers', milestones: 'Milestone', risks: 'Risks', assumptions: 'Assumptions', sources: 'Evidence', customSections: 'Your sections', blocks: 'Your blocks' };
     function contextPreview(item) {
       const box = el('details', 'origin-context'), mine = contextView.itemId === item.id;
       box.open = mine && contextView.open;
@@ -1581,6 +1870,11 @@ window.PromptboardOrigin = (() => {
 
     // ---- Overview: the blueprint as a mind map ----
     function leaves(id) {
+      const blueprint = bp(), own = blueprint.blocks.filter(block => block.sectionId === id && M.blockStarted(block))
+        .map(block => ({ label: `${M.BLOCK_TYPES.find(([type]) => type === block.type)[1]}: ${block.title.trim() || 'Untitled'}`, target: { collection: 'blocks', id: block.id } }));
+      return [...builtinLeaves(id), ...own];
+    }
+    function builtinLeaves(id) {
       const blueprint = bp(), entry = (collection, item, label) => ({ label, target: { collection, id: item.id } });
       switch (id) {
         case 'vision': return [['problem', 'Problem'], ['goal', 'Goal'], ['users', 'For'], ['inScope', 'Scope'], ['successCriteria', 'Success']].filter(([name]) => blueprint.vision[name].trim())
@@ -1902,18 +2196,19 @@ window.PromptboardOrigin = (() => {
     }
 
     // ---- Architecture canvas: a view over components and connections ----
-    function positions(blueprint) {
-      const map = new Map(), level = new Map(blueprint.components.map(item => [item.id, 0]));
-      for (let pass = 0; pass < blueprint.components.length; pass++) {
+    // Placed items keep their place; the others are laid out in columns by how far along the arrows they are.
+    function positions(items, links, gapX = GAP_X, gapY = GAP_Y) {
+      const map = new Map(), level = new Map(items.map(item => [item.id, 0]));
+      for (let pass = 0; pass < items.length; pass++) {
         let moved = false;
-        for (const connection of blueprint.connections) if (level.get(connection.to) <= level.get(connection.from) && level.get(connection.from) < blueprint.components.length) { level.set(connection.to, level.get(connection.from) + 1); moved = true; }
+        for (const link of links) if (level.get(link.to) <= level.get(link.from) && level.get(link.from) < items.length) { level.set(link.to, level.get(link.from) + 1); moved = true; }
         if (!moved) break;
       }
       const rows = new Map();
-      for (const item of blueprint.components) {
+      for (const item of items) {
         if (item.x !== null && item.y !== null) { map.set(item.id, { x: item.x, y: item.y }); continue; }
         const column = level.get(item.id), row = rows.get(column) || 0; rows.set(column, row + 1);
-        map.set(item.id, { x: column * GAP_X, y: row * GAP_Y });
+        map.set(item.id, { x: column * gapX, y: row * gapY });
       }
       return map;
     }
@@ -1944,7 +2239,7 @@ window.PromptboardOrigin = (() => {
         const sub = make('text', { x: 320, y: 120, 'text-anchor': 'middle', class: 'origin-canvas-empty faint' }); sub.textContent = 'For example: Web app → API → Database';
         wrap.append(svg); return wrap;
       }
-      const at = positions(blueprint);
+      const at = positions(blueprint.components, blueprint.connections);
       const edges = make('g', { class: 'origin-edges' }), nodes = make('g', { class: 'origin-nodes' });
       const drawEdges = () => {
         edges.replaceChildren();
@@ -2390,7 +2685,7 @@ window.PromptboardOrigin = (() => {
     view.addEventListener('keydown', event => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') { event.preventDefault(); void save({ force: changeCount !== savedCount }); return; }
       if (event.key !== 'Escape' || event.defaultPrevented) return;
-      if (connectFrom !== null || mapLinkFrom !== null || selectedLink) { event.preventDefault(); connectFrom = mapLinkFrom = selectedLink = null; renderMain(); return; }
+      if (connectFrom !== null || mapLinkFrom !== null || selectedLink || flowConnect || flowStep) { event.preventDefault(); const step = flowStep; connectFrom = mapLinkFrom = selectedLink = flowConnect = flowStep = null; renderMain(); if (step) main.querySelector(`.origin-flow-node[data-id="${CSS.escape(step.node)}"]`)?.focus({ preventScroll: true }); return; }
       if (open) { event.preventDefault(); closeDrawer(); }
       else if (contextPanel.isOpen()) { event.preventDefault(); contextPanel.close(); }
       else if (researchPanel.isOpen()) { event.preventDefault(); researchPanel.close(); }

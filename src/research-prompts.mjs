@@ -21,15 +21,17 @@ const RULES = `# Rules
 
 // How agents propose blueprint changes. The person reviews each one; nothing is applied by the agent.
 const SUGGEST = `# Suggestions for the blueprint
-When your research shows concrete improvements, end your answer with one fenced block of this form. Suggest what the project really needs, from small field fixes to the missing records. Give none when you are not confident.
+When your research shows concrete improvements, end your answer with one fenced block of this form. Suggest what the project really needs, from small field fixes to the missing records, and write each one into the place listed under "Where to write". Give none when you are not confident.
 \`\`\`origin-suggestions
 {"suggestions":[{"title":"short title","why":"one or two sentences","evidence":["S1","https://source.example/page"],"target":{...},"value":...}]}
 \`\`\`
+The block is strict JSON (no comments, no trailing commas) and comes once, at the very end. Write code examples in your answer with other fence names (json, yaml, sql), never origin-suggestions.
 Use only the IDs that appear in brackets in the blueprint context.
 Change a field: {"kind":"record","collection":"technologies","id":"<id>","field":"reason"} with a text value. Text fields: requirements title, description, acceptanceCriteria, type, priority; components name, type, purpose, responsibilities, interfaces, dataHandled, notes; technologies name, category, status, version, purpose, reason, alternatives; dependencies name, type, version, notes; decisions title, status, context, decision, alternatives, reason, consequences; assumptions statement, status, reason, impact; risks title, kind, severity, status, description, mitigation; sources title, type, url, claim, notes; layers name, description, constraints; areas title, description; milestones title, goal, definitionOfDone; items (tasks) title, description, acceptanceCriteria, workstream; connections label, protocol, notes.
-Add links: the same target with a link field and a list of IDs; links are added, never removed. Link fields: components technologyIds, layerId; requirements componentIds; dependencies requiredBy (components), dependsOn; decisions componentIds, technologyIds, requirementIds, dependencyIds; risks componentIds; layers technologyIds; items componentIds, requirementIds, dependsOn (tasks), milestoneId, layerId; areas componentIds, requirementIds, technologyIds.
-Answer a question: {"kind":"vision","field":"goal"} (or summary, problem, users, useCases, inScope, outOfScope, successCriteria, constraints, architectureSummary); {"kind":"topic","section":"security","area":"secrets"} for a [topic …] line; {"kind":"answer","questionId":"<id>"} or {"kind":"componentAnswer","componentId":"<id>","questionId":"<id>"} for a [question …] line. The value is the answer text.
-Add a record: {"kind":"add","collection":"<collection>"} with an object of its fields and links as the value. Give the suggestion a short "ref" (for example "n1") next to "target" and "value"; other new records point to it as "@n1". Collections: layers, technologies, components, requirements, dependencies, milestones, items (implementation tasks with acceptanceCriteria and dependsOn), decisions, assumptions, risks, sources, connections (architecture links: {"from":"<component>","to":"<component>","label":"calls","protocol":"HTTPS"}).
+Add links: the same target with "field" set to a link field and a list of IDs (or @refs to new records) as the value; layerId and milestoneId take one ID. Links are added, never removed. Link fields: components technologyIds, layerId; requirements componentIds; dependencies requiredBy (components), dependsOn; decisions componentIds, technologyIds, requirementIds, dependencyIds; risks componentIds; layers technologyIds; items componentIds, requirementIds, dependsOn (tasks), milestoneId, layerId; areas componentIds, requirementIds, technologyIds.
+Answer a question: {"kind":"vision","field":"goal"} (or summary, problem, users, useCases, inScope, outOfScope, successCriteria, constraints, architectureSummary); {"kind":"answer","questionId":"<id>"} or {"kind":"componentAnswer","componentId":"<id>","questionId":"<id>"} for a [question …] line. The value is the answer text. A [topic …] line is answered with a new planning answer (collection areas, see "Where to write").
+Blocks ([blocks …] lines: Q&A, tables, checklists, flows, notes): fill and extend them as "Where to write" shows. Give a new flow step a "ref" so arrows in the same answer can point to it as "@ref".
+Add a record: {"kind":"add","collection":"<collection>"} with an object of its fields and links as the value. Give the suggestion a short "ref" (for example "n1") next to "target" and "value"; other new records point to it as "@n1". Collections: layers, technologies, components, requirements, dependencies, milestones, items (implementation tasks with acceptanceCriteria and dependsOn), decisions, assumptions, risks, sources, connections (architecture links: {"from":"<component>","to":"<component>","label":"calls","protocol":"HTTPS"}), areas (topic answers: {"section":"data","area":"<topic id>","title":"…","description":"…"}), blocks (a new Q&A, table, checklist, flow or notes block in a section).
 Choice fields take only these values (${ALLOWED}).
 Keep the person's text unless you improve it. Never weaken or remove a requirement or a constraint. Do not add a record that already exists under another name. A source you suggest stays unverified until the person checks it.`;
 
@@ -58,16 +60,17 @@ Find what is missing or weak in this part, research good options for it, and giv
  * One Chat (guided research) turn. A resumed CLI session already has the rules and the context, so a follow-up sends
  * only the question, plus the context again when the blueprint or the scope changed.
  */
-export function chatPrompt({ question, context = null, history = [], web = false, followUp = false, scopeLabel = '', sources = '', mode = 'chat', modeChanged = false }) {
+export function chatPrompt({ question, context = null, guide = '', history = [], web = false, followUp = false, scopeLabel = '', sources = '', mode = 'chat', modeChanged = false }) {
   const ask = question ? `# Question\n${question}` : `# Request\n${mode === 'audit' ? 'Audit this part of the blueprint.' : 'Research this part of the blueprint.'}`;
   if (followUp) {
+    // The places to write change with the scope and the blueprint, so they come again with a new context.
     return [context ? `The blueprint changed or a different part is selected${scopeLabel ? ` (${scopeLabel})` : ''}. Use this context from now on.\n\n${contextBlock(context)}` : '',
-      modeChanged ? MODE[mode](scopeLabel || 'the project') : '', sources, ask].filter(Boolean).join('\n\n');
+      context ? guide : '', modeChanged ? MODE[mode](scopeLabel || 'the project') : '', sources, ask].filter(Boolean).join('\n\n');
   }
-  return [RULES, `# Web\n${web ? WEB.on : WEB.off}`, context ? contextBlock(context) : '', sources, historyBlock(history), MODE[mode](scopeLabel || 'the project'), SUGGEST, ask].filter(Boolean).join('\n\n');
+  return [RULES, `# Web\n${web ? WEB.on : WEB.off}`, context ? contextBlock(context) : '', sources, historyBlock(history), MODE[mode](scopeLabel || 'the project'), SUGGEST, guide, ask].filter(Boolean).join('\n\n');
 }
 
 /** One independent swarm agent: its own part, the project's constraints, its own sources. No other agent's results. */
-export function swarmPrompt({ request = '', context, web = false, targetLabel, sources = '' }) {
-  return [RULES, `# Web\n${web ? WEB.on : WEB.off}`, contextBlock(context), sources, MODE.swarm(targetLabel), SUGGEST, request ? `# What the person wants to find out\n${request}` : ''].filter(Boolean).join('\n\n');
+export function swarmPrompt({ request = '', context, guide = '', web = false, targetLabel, sources = '' }) {
+  return [RULES, `# Web\n${web ? WEB.on : WEB.off}`, contextBlock(context), sources, MODE.swarm(targetLabel), SUGGEST, guide, request ? `# What the person wants to find out\n${request}` : ''].filter(Boolean).join('\n\n');
 }

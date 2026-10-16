@@ -58,6 +58,7 @@ All pages share one project: a plan in Origin becomes cards in Kanban, with noth
 - **Checks.** Missing details, open decisions, conflicts and dependency cycles, each with the rule that found it.
 - **Tasks with exact context.** Each task carries its own words, then only what it links to. Secrets are removed, and you see the exact text first.
 - **Send to Kanban.** Creates To Do cards in build order, prerequisites first. Sending again never makes duplicates. When the design changes, only the affected cards are flagged.
+- **Your own blocks.** Add Q&A, tables, checklists, flows and notes to any section, or build a page of your own from them.
 - **Create Context.** Exports the design as one Markdown document with Mermaid diagrams.
 
 Origin is local and deterministic. No model is called unless you ask.
@@ -72,6 +73,7 @@ Ask your own Claude Code or Codex about any part of the plan.
 
 - **Four modes.** Chat, Swarm (parallel agents, one per part), Decision Lab (compare options) and Audit (find gaps and weak assumptions).
 - **Your sources.** Web search, documents and PDFs, Base knowledge, or a read-only MCP server.
+- **Writes where you point it.** Choose a section (for example Design › Data) and the agent fills its fields, topics, questions and blocks, in your own names, even after you rename or add them.
 - **Suggestions you approve.** An answer can propose decisions, blocks, connections and tasks. Preview, edit, apply one, or **Apply all**: new records arrive already linked. Nothing changes until you apply.
 
 <p align="center">
