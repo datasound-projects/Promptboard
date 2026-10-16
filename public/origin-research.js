@@ -168,11 +168,14 @@ window.PromptboardOriginResearch = (() => {
     const scopeKey = scope => JSON.stringify(scope);
 
     // ---- Rendering ----
-    let toolsBox = null;
+    let toolsBox = null, shown = '';
     function render() {
       if (!isOpen) return;
       drawer.dataset.mode = 'research'; view.dataset.drawer = 'open'; drawer.hidden = false;
       const focusId = drawer.contains(document.activeElement) ? document.activeElement.id : '';
+      // A redraw of the same chat (Apply, Reject, Preview…) keeps the reading position and the card in focus.
+      const view2 = `${panel}:${chat?.id || ''}`, previous = drawer.querySelector('#origin-research-body'), scroll = shown === view2 && previous ? previous.scrollTop : 0;
+      const card = drawer.contains(document.activeElement) ? document.activeElement.closest('.origin-research-proposal')?.dataset.id : '';
       const grip = el('div', 'origin-context-resize origin-research-resize'); grip.tabIndex = 0;
       for (const [name, value] of Object.entries({ role: 'separator', 'aria-orientation': 'vertical', 'aria-label': 'Resize the Research panel', 'aria-valuemin': String(MIN_WIDTH), 'aria-valuemax': String(maxWidth()), 'aria-valuenow': String(Math.round(drawer.getBoundingClientRect().width || width())) })) grip.setAttribute(name, value);
       resizer(grip);
@@ -189,7 +192,10 @@ window.PromptboardOriginResearch = (() => {
       if (error) { const message = el('p', 'origin-inline-error', error); message.setAttribute('role', 'alert'); nodes.push(message); }
       if (panel === 'chat') nodes.push(composer());
       drawer.replaceChildren(...nodes);
+      shown = view2;
+      if (scroll) body.scrollTop = scroll;
       if (focusId) drawer.querySelector(`#${CSS.escape(focusId)}`)?.focus({ preventScroll: true });
+      else if (card) { const next = drawer.querySelector(`.origin-research-proposal[data-id="${CSS.escape(card)}"]`); (next?.querySelector(':is(button, input, textarea)') || next)?.focus({ preventScroll: true }); }
     }
     function renderTools() {
       if (!toolsBox) return;
@@ -372,7 +378,7 @@ window.PromptboardOriginResearch = (() => {
     const linkTarget = proposal => proposal.target.kind === 'record' && M().LINKS[proposal.target.collection]?.[proposal.target.field];
     function proposalCard(proposal) {
       const state = cards.get(proposal.id) || {}, blueprint = host.blueprint();
-      const card = el('article', 'origin-research-proposal'); card.dataset.status = proposal.status; card.dataset.id = proposal.id;
+      const card = el('article', 'origin-research-proposal'); card.dataset.status = proposal.status; card.dataset.id = proposal.id; card.tabIndex = -1; // Keeps focus here once it has no buttons left.
       const head = el('div', 'origin-research-proposal-head');
       if (['pending', 'conflict'].includes(proposal.status)) {
         const pick = el('input'); pick.type = 'checkbox'; pick.checked = selected.has(proposal.id); pick.setAttribute('aria-label', `Select “${proposal.title}”`);
@@ -660,7 +666,7 @@ window.PromptboardOriginResearch = (() => {
       drawer.querySelector('#origin-research-search')?.focus();
     }
     function newChat() { chat = null; panel = 'chat'; error = ''; settings.web = false; render(); drawer.querySelector('#origin-research-input')?.focus(); }
-    const scrollToEnd = () => { const log = drawer.querySelector('#origin-research-log'); if (log) log.scrollTop = log.scrollHeight; };
+    const scrollToEnd = () => { const body = drawer.querySelector('#origin-research-body'); if (body) body.scrollTop = body.scrollHeight; };
 
     // ---- Sending: one streamed run at a time ----
     const runSettings = () => ({ provider: settings.provider, model: settings.model, effort: settings.effort, mode: settings.mode, web: settings.web, skills: settings.skills, scope: settings.scope, ...(settings.mode === 'swarm' ? { targets: settings.targets } : {}) });

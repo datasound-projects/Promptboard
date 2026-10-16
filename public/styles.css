@@ -2078,6 +2078,8 @@ button.origin-context-badge { cursor: pointer; }
 .origin-research-citations { display: grid; gap: 3px; margin: 8px 0 0; padding: 8px 0 0; border-top: 1px solid var(--divider); color: var(--muted); font-size: 11.5px; list-style: none; }
 .origin-research-citations a { color: var(--ink); text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; }
 .origin-research-proposal { display: grid; gap: 6px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--sash) 30%, var(--line)); border-radius: 12px; background: color-mix(in srgb, var(--sash) 5%, var(--og-glass-2)); font-size: 12.5px; }
+.origin-research-proposal:focus { outline: none; }
+.origin-research-proposal:focus-visible { box-shadow: 0 0 0 2px color-mix(in srgb, var(--sash) 60%, transparent); }
 .origin-research-proposal[data-status="applied"] { border-color: color-mix(in srgb, var(--og-ok) 45%, var(--line)); background: color-mix(in srgb, var(--og-ok) 6%, transparent); }
 .origin-research-proposal[data-status="rejected"] { opacity: .6; border-style: dashed; }
 .origin-research-proposal[data-status="conflict"] { border-color: color-mix(in srgb, var(--og-warn) 55%, var(--line)); }
