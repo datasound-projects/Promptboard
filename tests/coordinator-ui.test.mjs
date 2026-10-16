@@ -106,3 +106,18 @@ test('board renders leave the open chat in place: caret, open target menu and sc
   assert.equal($('#coordinator').lastElementChild, $('.coordinator-chat'), 'the chat stays below the overview');
   assert.ok($('.coordinator-grid'), 'the overview is still drawn');
 });
+
+test('minimizing a Coordinator that is Off shows it as Off and keeps every later board render working', async t => {
+  const { win, $, show, view, reads, errors } = setup(t);
+  // The Off view carries knowledge and chat only: no agents, progress or blockers.
+  reads.set('a', { enabled: false, knowledge: { since: 1, updatedAt: 1, events: 0, tasks: 0, snapshots: 0, reconciled: 0 }, chat: [] });
+  win.localStorage.setItem('promptboard.coordinator.a', 'open');
+  show('a');
+  await until(() => $('#coordinator-minimize') && /Off/.test($('.coordinator-status')?.textContent || ''), 'Off Coordinator open');
+  $('#coordinator-minimize').click();
+  await until(() => $('#coordinator-mini'), 'minimized');
+  assert.match($('#coordinator-mini').textContent, /Off/);
+  view.sync({ id: 'a', tasks: [] }, 2, true);
+  await tick();
+  assert.deepEqual(errors, []);
+});

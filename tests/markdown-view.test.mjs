@@ -29,3 +29,13 @@ test('quotes and lists nest at most 20 levels; deeper text stays as plain text i
   assert.equal(preview.querySelectorAll('ul').length, 20);
   assert.match(preview.querySelector('li:not(:has(ul))').textContent, /^item 19- item 20- item 21.*- item 99$/);
 });
+
+test('a fence with code on its own line (as agents write it) is a paragraph, never an endless loop', t => {
+  const dom = new JSDOM('<article id="preview"></article>', { runScripts: 'outside-only' }), win = dom.window;
+  t.after(() => win.close());
+  win.eval(domSource); win.eval(source);
+  const preview = win.document.querySelector('#preview'), started = Date.now();
+  preview.append(win.PromptboardMarkdown.render('Run\n```npm test```\nthen deploy\n\n~~~js const a = `x`\nnext'));
+  assert.ok(Date.now() - started < 1000);
+  assert.deepEqual([...preview.querySelectorAll('p')].map(node => node.textContent), ['Run', 'npm testthen deploy', '~~~js const a = xnext']);
+});
