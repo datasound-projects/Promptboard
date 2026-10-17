@@ -840,6 +840,9 @@ window.PromptboardBase = (() => {
         const noun = kind => KINDS[kind].replace(/^[A-Z](?=[a-z])/, letter => letter.toLowerCase()); // "MCP server" keeps its capitals.
         const counts = Object.entries(active.reduce((map, target) => ({ ...map, [target.kind]: (map[target.kind] || 0) + 1 }), {})).map(([kind, count]) => `${count} ${noun(kind)}${count === 1 ? '' : 's'}`);
         inventory.append(p(`${supporting.length} supporting agent${supporting.length === 1 ? '' : 's'} · ${counts.join(' · ') || 'no resources'} on.`));
+        // Two attached files with the same name are both sent: usually one of them is not meant to be there.
+        const fileNames = active.filter(target => target.kind === 'markdown').map(target => target.configuration?.fileName);
+        for (const name of new Set(fileNames.filter((name, index) => fileNames.indexOf(name) !== index))) issues.push(`Two files named ${name} are attached; both are sent. Keep one.`);
         if (issues.length) { const list = el('ul', undefined, 'base-inventory-issues'); for (const issue of issues) list.append(el('li', issue)); inventory.append(list); }
         else if (primary) inventory.append(p('Everything switched on can be delivered.'));
       };
@@ -1070,7 +1073,14 @@ window.PromptboardBase = (() => {
       const selected = select(revisions.map(value => [String(typeof value === 'object' ? value.revision : value), `Revision ${typeof value === 'object' ? value.revision : value}`]), String(item.revision));
       const output = el('div');
       return details('Revision history', actions(selected, busyButton('View revision', async () => {
-        try { const data = await request(`/api/base/resources/${encodeURIComponent(item.id)}/revisions/${encodeURIComponent(selected.value)}`); const saved = data.resource || data; output.replaceChildren(p(`Immutable revision ${saved.revision || selected.value}; viewing does not replace current content.`), el('pre', JSON.stringify(saved.content || saved, null, 2), 'base-code')); }
+        try { const data = await request(`/api/base/resources/${encodeURIComponent(item.id)}/revisions/${encodeURIComponent(selected.value)}`); const saved = data.resource || data; output.replaceChildren(p(`Immutable revision ${saved.revision || selected.value}; viewing does not replace current content.`), el('pre', JSON.stringify(saved.content || saved, null, 2), 'base-code'),
+          // Restoring saves that version's definition as a new revision; every revision stays in the history.
+          ...(Number(selected.value) !== item.revision ? [busyButton('Restore this version', async () => {
+            try {
+              await request(`/api/base/resources/${encodeURIComponent(item.id)}`, { method: 'PATCH', body: { configuration: saved.configuration, content: saved.content, expectedRevision: item.revision, expectedBaseRevision: state.revision } });
+              await load(); await openResource(item.id, true); status(`Restored revision ${selected.value} as a new revision. The history keeps every version.`);
+            } catch (error) { output.append(el('p', error.message, 'inline-error')); }
+          })] : [])); }
         catch (error) { output.replaceChildren(el('p', error.message, 'inline-error')); }
       }, 'text-button')), output);
     }
