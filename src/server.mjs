@@ -23,6 +23,7 @@ import { discoverModels, checkModelEffort } from './models.mjs';
 import { chooseFolder } from './folder.mjs';
 import { Autopilot } from './autopilot.mjs';
 import { GitHubError, GitHubLogin, githubStatus, listRepositories } from './github.mjs';
+import { RemoteAccess, remoteRoute } from './remote-access.mjs';
 import { BaseRoutes } from './base-http.mjs';
 import { BaseError } from './base.mjs';
 import { BaseDeliveryError } from './base-resolver.mjs';
@@ -392,26 +393,35 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
   const baseRoutes = new BaseRoutes({ board, runner, claim, track, catalog: getCatalog, send, jsonBody, ...(mcpTester ? { mcpTester } : {}), imageGenerator });
   let composeContext;
   const getCompose = () => composeContext ??= import('./compose-context.mjs').then(({ ComposeContext }) => new ComposeContext(composeMcp ? { mcp: composeMcp } : {}));
-  let closing = false;
-  const handle = async (req, res) => {
+  let closing = false, remoteAccess = null;
+  // `remote` is a paired device, already checked by the remote listener (its host, origin and session).
+  const handle = async (req, res, remote = null) => {
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
     if (closing) { res.setHeader('Connection', 'close'); return send(res, 503, { error: 'The app is shutting down.', code: 'SHUTTING_DOWN' }); }
-    const actualPort = server.address()?.port;
-    const allowedHosts = [`127.0.0.1:${actualPort}`, `localhost:${actualPort}`];
-    const allowedOrigins = allowedHosts.map(host => `http://${host}`);
-    if (!allowedHosts.includes(req.headers.host)) return send(res, 403, { error: 'This server accepts local requests only.' });
-    if (req.headers.origin && !allowedOrigins.includes(req.headers.origin)) return send(res, 403, { error: 'This origin is not allowed.' });
+    if (!remote) {
+      const actualPort = server.address()?.port;
+      const allowedHosts = [`127.0.0.1:${actualPort}`, `localhost:${actualPort}`];
+      const allowedOrigins = allowedHosts.map(host => `http://${host}`);
+      if (!allowedHosts.includes(req.headers.host)) return send(res, 403, { error: 'This server accepts local requests only.' });
+      if (req.headers.origin && !allowedOrigins.includes(req.headers.origin)) return send(res, 403, { error: 'This origin is not allowed.' });
+      // A proxy in front of the local app (one that rewrites Host) would skip pairing: those requests are refused.
+      if (['x-forwarded-for', 'x-forwarded-host', 'forwarded', 'tailscale-user-login', 'tailscale-funnel-request'].some(name => req.headers[name] !== undefined)) {
+        return send(res, 403, { error: 'This port accepts direct local requests only. For other devices, turn on Remote access in Settings.', code: 'PROXY_REFUSED' });
+      }
+    }
     if (req.headers['sec-fetch-site'] === 'cross-site') return send(res, 403, { error: 'Cross-site requests are not allowed.' });
     let requestUrl;
     try { requestUrl = new URL(req.url, 'http://127.0.0.1'); } catch { return send(res, 400, { error: 'This request address is not valid.', code: 'INVALID_URL' }); }
     const pathname = requestUrl.pathname;
     const isApi = pathname.startsWith('/api/') && pathname !== '/api/session';
     if (isApi && req.headers['x-ste-token'] !== token) return send(res, 403, { error: 'Reload this page before you try again.' });
-    if (req.method === 'GET' && pathname === '/api/session') return send(res, 200, { token, capabilities: { pipelineTitleOnly: true, pipelineBulkRestore: true, pipelineDeferredMessages: true, taskPriority: true, taskLabels: true } });
+    if (pathname.startsWith('/api/remote') && remote) return send(res, 403, { error: 'Remote access is managed on the computer that runs Promptboard.', code: 'REMOTE_LOCAL_ONLY' });
+    if (pathname.startsWith('/api/remote')) return remoteAccess ? remoteRoute(remoteAccess, req, res, pathname, { jsonBody, send }) : send(res, 503, { error: 'The app is starting. Try again.' }); // Local only: the remote listener refuses these.
+    if (req.method === 'GET' && pathname === '/api/session') return send(res, 200, { token, ...(remote ? { remote: { name: remote.name } } : {}), capabilities: { pipelineTitleOnly: true, pipelineBulkRestore: true, pipelineDeferredMessages: true, taskPriority: true, taskLabels: true } });
     if (/^\/api\/notifications(?:\/|$)/.test(pathname)) {
       try { return await notificationRoute(notifications, req, res, pathname, { jsonBody, send }); }
       catch (error) {
@@ -683,11 +693,14 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
     });
   } catch (error) { autopilot.stop(); await lock.release(); throw error; }
   await lock.setPort(server.address().port);
+  // Remote access stays off unless it was turned on; a listener that cannot start is reported in Settings.
+  remoteAccess = await new RemoteAccess({ dataDir, localPort: server.address().port, handle: (req, res, who) => handle(req, res, who) }).load();
   let closed;
   // Idempotent and bounded: stop accepting, cancel owned work, close sockets, then
   // SIGKILL any owned CLI process group that is still alive.
   const close = ({ graceMs = 4000 } = {}) => closed ??= (async () => {
     closing = true;
+    await remoteAccess?.close();
     notifications.close();
     const listening = new Promise(resolve => server.close(() => resolve()));
     busy?.controller.abort();

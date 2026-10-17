@@ -144,6 +144,7 @@ Each card gets its own Git branch and worktree. When a card enters a column, a f
 - **CLIs** (top bar): connect, sign in and check each CLI.
 - **Usage**: tokens, tool calls and cost estimates from your CLIs' local records.
 - **Settings**: theme, start page, default agents, how many agents run at once, terminal and notifications.
+- **Remote access (iPhone)**: open Promptboard in Safari on your phone through Tailscale or Twingate after pairing it once. Everything keeps running on the computer. See [Remote access](docs/remote-access.md).
 - **Command line**: `node bin/ste.mjs --provider claude < request.txt` writes a prompt without the app. Run `--help` for all options.
 
 ## Supported CLIs
@@ -159,7 +160,7 @@ Agents run through each CLI's own sign-in and plan. Promptboard has no account o
 
 ## Privacy and security
 
-- Runs only on `127.0.0.1`. No analytics or telemetry.
+- Runs only on `127.0.0.1`. No analytics or telemetry. [Remote access](docs/remote-access.md) for your iPhone is off until you turn it on: then a paired device reaches it through Tailscale or Twingate, never the public internet.
 - Prompts and the context you select go only to the provider you choose, through its CLI.
 - Boards, logs and worktrees stay in your local data folder. New repositories go in `~/Promptboard/projects`.
 - In autonomous mode an agent can change files in its task workspace. Read [SECURITY.md](SECURITY.md) before you use sensitive repositories.
@@ -172,7 +173,7 @@ Agents run through each CLI's own sign-in and plan. Promptboard has no account o
 
 ## Docs
 
-- [Kanban execution](docs/kanban-execution.md): stages, rework, merge and error codes · [GitHub](docs/github.md)
+- [Kanban execution](docs/kanban-execution.md): stages, rework, merge and error codes · [GitHub](docs/github.md) · [Remote access](docs/remote-access.md)
 - [Origin](docs/origin.md) · [Research](docs/origin-research.md) · [Project Context](docs/origin-project-context.md) · [Shared projects](docs/shared-projects.md) · [Coordinator](docs/coordinator.md)
 - [Compose context](docs/compose-context.md) · [Prompt checks](docs/verification.md)
 - [Base delivery](docs/base-delivery.md) · [CLI adapters](docs/cli-adapters.md) · [Session persistence](docs/session-persistence.md)

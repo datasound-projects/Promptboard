@@ -21,6 +21,7 @@ const providerInfo = {
 };
 
 let token = '';
+let remoteSession = null; // Set when this page is a paired remote device.
 let providers = [];
 let history = readHistory();
 let currentId = null;
@@ -358,8 +359,11 @@ async function loadProviders() {
   try {
     // The session token comes first: every other API route, including the CLI check, requires it.
     const sessionResponse = await fetch('/api/session', { cache: 'no-store' });
+    if (sessionResponse.status === 401) { location.replace('/remote'); return; } // A remote device that must pair again.
     if (!sessionResponse.ok) throw new Error('The local server could not report its status.');
-    token = safeText((await sessionResponse.json()).token, 1000);
+    const session = await sessionResponse.json();
+    token = safeText(session.token, 1000);
+    remoteSession = session.remote && typeof session.remote.name === 'string' ? { name: safeText(session.remote.name, 60) } : null; // A paired phone.
     if (!token) throw new Error('The local server did not return a session token.');
     const providerResponse = await fetch('/api/providers', { cache: 'no-store', headers: { 'x-ste-token': token } });
     if (!providerResponse.ok) throw new Error('The local server could not report its status.');
@@ -535,6 +539,8 @@ async function api(path, { method = 'GET', body, timeoutMs = 20000, signal, comp
       headers: { 'X-STE-Token': token, ...(requestId || cancellation ? { 'X-STE-Compose-Id': requestId || cancellation.id } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
     let data = {};
     try { data = await response.json(); } catch {}
+    // A paired phone whose device was revoked or expired pairs again; nothing else on the page can work meanwhile.
+    if (response.status === 401 && data?.code === 'REMOTE_PAIRING_REQUIRED') location.replace('/remote');
     return { response, data: data && typeof data === 'object' ? data : {} };
   } catch (error) { throw timedOut && !signal?.aborted ? new Error(OFFLINE_MESSAGE) : offline(error); }
   finally { clearTimeout(timer); cancellation?.dispose(); signal?.removeEventListener('abort', forward); }
@@ -5581,6 +5587,7 @@ function renderSettings() {
   $('#set-project-name').textContent = project?.name || 'no project';
   $('#set-workflow').disabled = !project; $('#set-autopilot').disabled = !project; $('#set-columns').disabled = !project;
   window.PromptboardGitHub?.render();
+  loadRemoteAccess();
 }
 async function openSettings() {
   settingsError('');
@@ -5737,6 +5744,101 @@ function renderProjectGitHub(project) {
   return section;
 }
 window.PromptboardGitHub = { render: () => { renderGitHub(); if (!github.status && !github.busy) checkGitHub(); } };
+
+// ---- Remote access (a paired phone through Tailscale or Twingate). Managed only on this computer. ----
+const remoteAccess = { status: null, pairing: null, busy: false, message: '', draft: null };
+const REMOTE_METHODS = [['local', 'Local only (default)'], ['tailscale', 'Tailscale (recommended)'], ['twingate', 'Twingate']];
+async function remoteCall(method, path, body) {
+  const { response, data } = await api(path, { method, body, timeoutMs: 40000 });
+  if (!response.ok) throw new Error(typeof data.error === 'string' ? data.error : 'Remote access could not be changed.');
+  if (data.remote) remoteAccess.status = data.remote;
+  return data;
+}
+async function remoteAction(work) {
+  remoteAccess.busy = true; remoteAccess.message = ''; renderRemoteAccess();
+  try { await work(); } catch (error) { remoteAccess.message = error.message; }
+  finally { remoteAccess.busy = false; renderRemoteAccess(); }
+}
+function renderRemoteAccess() {
+  const box = $('#set-remote-group');
+  if (!box) return;
+  const legend = box.querySelector('legend'), nodes = [];
+  // On the phone itself: who this device is, and how to leave. Remote access is never changed from a remote device.
+  if (remoteSession) {
+    nodes.push(paragraph(`You are using Promptboard remotely as “${remoteSession.name}”. Agents, CLIs and Git run on the computer: closing Safari or locking the phone stops nothing.`, 'note'),
+      detailActions(detailButton('Sign out this device', async () => { await fetch('/api/remote/logout', { method: 'POST', headers: { 'X-STE-Token': token } }).catch(() => {}); location.replace('/remote'); }, 'secondary-button')));
+    box.replaceChildren(legend, ...nodes); return;
+  }
+  const st = remoteAccess.status;
+  if (!st) { box.replaceChildren(legend, paragraph('Reading remote access…', 'note')); return; }
+  const draft = remoteAccess.draft ||= { method: st.method, port: st.port, bind: st.bind, host: st.host, cert: '', key: '' };
+  const field = (label, control) => { const wrap = document.createElement('label'); wrap.className = 'field-label'; wrap.append(label, control); return wrap; };
+  const input = (id, key, placeholder = '') => { const node = document.createElement('input'); node.id = id; node.value = draft[key] ?? ''; node.placeholder = placeholder; node.addEventListener('input', () => { draft[key] = node.value.trim(); }); return node; };
+  const method = document.createElement('select'); method.id = 'set-remote-method';
+  for (const [value, label] of REMOTE_METHODS) method.append(Object.assign(document.createElement('option'), { value, textContent: label }));
+  method.value = draft.method;
+  method.addEventListener('change', () => { draft.method = method.value; if (method.value === 'tailscale') draft.bind = '127.0.0.1'; renderRemoteAccess(); });
+  nodes.push(paragraph(st.method === 'local' ? 'Off. Promptboard answers only on this computer.' : `${st.method === 'tailscale' ? 'Tailscale' : 'Twingate'} · ${st.listening ? `listening on ${st.bind}:${st.port}` : 'not listening'}${st.sessions.length ? ` · ${st.sessions.length} paired device${st.sessions.length === 1 ? '' : 's'}` : ''}`, 'github-status'),
+    field('Access from other devices', method));
+  if (draft.method !== 'local') {
+    const port = input('set-remote-port', 'port'); port.inputMode = 'numeric'; nodes.push(field('Remote port', port));
+  }
+  if (draft.method === 'twingate') {
+    const bind = document.createElement('select'); bind.id = 'set-remote-bind';
+    for (const address of [...new Set(['127.0.0.1', ...(st.addresses || []), draft.bind].filter(Boolean))]) bind.append(Object.assign(document.createElement('option'), { value: address, textContent: address === '127.0.0.1' ? '127.0.0.1 (Connector on this computer)' : address }));
+    bind.value = draft.bind; bind.addEventListener('change', () => { draft.bind = bind.value; });
+    nodes.push(field('Listen on', bind), field('Name or address the phone opens (the Twingate Resource)', input('set-remote-host', 'host', 'promptboard.internal')),
+      field('Certificate file for HTTPS (optional)', input('set-remote-cert', 'cert', '/path/to/cert.pem')), field('Key file', input('set-remote-key', 'key', '/path/to/key.pem')));
+  }
+  nodes.push(detailActions(detailButton('Save', () => remoteAction(async () => {
+    const body = { method: draft.method, ...(draft.method !== 'local' ? { port: Number(draft.port) } : {}), ...(draft.method === 'twingate' ? { bind: draft.bind, host: draft.host, cert: draft.cert, key: draft.key } : { bind: '127.0.0.1', host: '', cert: '', key: '' }) };
+    await remoteCall('POST', '/api/remote/settings', body); remoteAccess.draft = null; remoteAccess.pairing = null;
+    announce(body.method === 'local' ? 'Remote access is off.' : 'Remote access settings saved.');
+  }), 'secondary-button')));
+  if (st.method === 'tailscale') {
+    const ts = st.tailscale || {};
+    if (!ts.installed || !ts.running || (!ts.httpsPort && !ts.serving)) nodes.push(paragraph(ts.message || 'Tailscale is not connected.', 'inline-error'));
+    else {
+      const row = detailActions();
+      if (!ts.serving) row.append(detailButton('Turn on Tailscale Serve…', () => confirmStep(row, `Run “${ts.command}” on this computer? It makes Promptboard reachable inside your tailnet only (never Funnel). Devices still need pairing.`, 'Turn on', () => remoteAction(() => remoteCall('POST', '/api/remote/serve', { on: true, confirm: true })))));
+      else row.append(detailButton('Turn off Tailscale Serve…', () => confirmStep(row, `Run “${ts.offCommand}” on this computer?`, 'Turn off', () => remoteAction(() => remoteCall('POST', '/api/remote/serve', { on: false, confirm: true })))));
+      row.append(detailButton('Check again', () => remoteAction(() => remoteCall('GET', '/api/remote?refresh=1')), 'secondary-button'));
+      nodes.push(row, paragraph(`Or run it yourself in a terminal: ${ts.serving ? ts.offCommand : ts.command}`, 'note'));
+    }
+  }
+  if (st.method === 'twingate') nodes.push(paragraph(`In the Twingate Admin Console, add a Resource for ${st.host || st.bind} on port ${st.port}, on a Connector that can reach this computer, and give your account access. Promptboard does not change Twingate.`, 'note'));
+  for (const warning of st.warnings || []) nodes.push(paragraph(warning, 'inline-error'));
+  if (st.error) nodes.push(paragraph(st.error, 'inline-error'));
+  if (st.url) {
+    const url = document.createElement('code'); url.id = 'set-remote-url'; url.textContent = st.url;
+    const line = document.createElement('p'); line.className = 'note'; line.append('Private address: ', url);
+    nodes.push(line, detailActions(detailButton('Copy URL', async () => {
+      try { await navigator.clipboard.writeText(st.url); announce('Address copied.'); } catch { announce('Clipboard unavailable. Select and copy the address shown here.'); }
+    }, 'secondary-button')));
+  }
+  if (st.method !== 'local' && st.listening) {
+    if (remoteAccess.pairing && remoteAccess.pairing.expiresAt > Date.now()) {
+      const code = document.createElement('code'); code.className = 'github-code'; code.id = 'set-remote-code'; code.textContent = remoteAccess.pairing.code;
+      const p = document.createElement('p'); p.className = 'note';
+      p.append('On the phone, open the private address and enter ', code, ` within ${Math.max(1, Math.round((remoteAccess.pairing.expiresAt - Date.now()) / 60000))} minutes. It works once.`);
+      nodes.push(p);
+    }
+    nodes.push(detailActions(detailButton('Pair a device', () => remoteAction(async () => { remoteAccess.pairing = (await remoteCall('POST', '/api/remote/pairing', {})).pairing; }), 'secondary-button')));
+  }
+  if (st.sessions.length) {
+    const list = document.createElement('ul'); list.className = 'remote-sessions';
+    for (const device of st.sessions) {
+      const item = document.createElement('li');
+      item.append(`${device.name} · paired ${timeAgo(device.createdAt)} · last seen ${timeAgo(device.lastSeenAt)} `, detailButton('Revoke', () => remoteAction(() => remoteCall('DELETE', `/api/remote/sessions/${encodeURIComponent(device.id)}`)), 'text-button'));
+      list.append(item);
+    }
+    nodes.push(paragraph('Paired devices', 'field-label'), list, detailActions(detailButton('Revoke all devices', () => remoteAction(() => remoteCall('DELETE', '/api/remote/sessions/all')), 'text-button')));
+  }
+  if (remoteAccess.message) nodes.push(paragraph(remoteAccess.message, 'inline-error'));
+  box.replaceChildren(legend, ...nodes);
+  for (const button of box.querySelectorAll('button')) button.disabled ||= remoteAccess.busy;
+}
+const loadRemoteAccess = () => { if (remoteSession) { renderRemoteAccess(); return; } remoteAction(() => remoteCall('GET', '/api/remote')); };
 
 $('#set-workflow').addEventListener('click', () => { $('#app-settings').close(); if (location.hash !== '#/kanban') location.hash = '#/kanban'; openWorkflowDialog(); });
 $('#set-autopilot').addEventListener('click', () => { $('#app-settings').close(); if (location.hash !== '#/kanban') location.hash = '#/kanban'; openAutopilot(); });

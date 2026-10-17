@@ -446,7 +446,8 @@ export async function researchRoute({ research, origin, runner, claim, track, so
     const claimed = await claim('research', settings.provider), { job } = claimed;
     job.stage = `research-${settings.mode}`;
     const abort = () => { if (!res.writableEnded) job.controller.abort(); };
-    res.once('close', abort); if (res.destroyed) job.controller.abort();
+    // A paired phone that locks or loses its connection does not stop the research: it is saved with the chat.
+    if (!req.promptboardRemote) { res.once('close', abort); if (res.destroyed) job.controller.abort(); }
     res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' });
     const emit = event => { if (!res.writableEnded && !res.destroyed) res.write(`${JSON.stringify(event)}\n`); };
     const ping = setInterval(() => emit({ ping: true }), 15000); ping.unref();

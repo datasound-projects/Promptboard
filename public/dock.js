@@ -179,7 +179,7 @@ async function streamSession(session) {
       const response = await fetch(`/api/runs/${encodeURIComponent(session.runId)}/stream?after=${session.lastSeq}`, { cache: 'no-store', headers: { 'X-STE-Token': token }, signal: controller.signal });
       if (response.status === 404) { await replayRecordedOutput(session); markEnded(session); return; }
       // The app restarted: this page's session is no longer valid, and retrying every second cannot fix that.
-      if (response.status === 403) { session.connection = 'stale'; renderDockConnection(session); return; }
+      if (response.status === 403 || response.status === 401) { session.connection = 'stale'; renderDockConnection(session); return; }
       if (!response.ok || !response.body) throw new Error('stream');
       session.connection = 'connected';
       renderDockConnection(session);
