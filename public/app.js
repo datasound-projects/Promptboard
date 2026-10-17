@@ -22,6 +22,7 @@ const providerInfo = {
 
 let token = '';
 let remoteSession = null; // Set when this page is a paired remote device.
+let serverPlatform = ''; // The computer's platform (darwin, win32, linux): names Finder, Explorer or the file manager.
 let providers = [];
 let history = readHistory();
 let currentId = null;
@@ -364,6 +365,7 @@ async function loadProviders() {
     const session = await sessionResponse.json();
     token = safeText(session.token, 1000);
     remoteSession = session.remote && typeof session.remote.name === 'string' ? { name: safeText(session.remote.name, 60) } : null; // A paired phone.
+    serverPlatform = safeText(session.platform, 20);
     if (!token) throw new Error('The local server did not return a session token.');
     const providerResponse = await fetch('/api/providers', { cache: 'no-store', headers: { 'x-ste-token': token } });
     if (!providerResponse.ok) throw new Error('The local server could not report its status.');
@@ -1690,6 +1692,7 @@ function renderBoard() {
   renderWorkspace(project);
   renderAgents(project);
   renderAutopilotBar(project);
+  renderRunPanel(project, timelineView);
   if (timelineView) { $('#autopilot-bar').hidden = true; refreshTimeline(project); }
   coordinatorView?.sync(project, board?.revision, !timelineView);
   updateBoardScroll();
@@ -1739,7 +1742,8 @@ function renderColumn(column, tasks) {
     const settings = currentProject()?.effectiveWorkflow?.[column.id];
     const agent = detailButton(`Agent: ${agentText(settings)}`, () => openWorkflowDialog(column.id), 'column-agent');
     agent.id = `column-agent-${column.id}`;
-    agent.setAttribute('aria-label', `Choose provider and model for ${column.title}`);
+    // The visible text starts the name (voice control users say what they see).
+    agent.setAttribute('aria-label', `Agent: ${agentText(settings)}. Choose provider and model for ${column.title}`);
     agent.title = `${agentText(settings)} · ${settings?.agentSource || 'default'} setting`;
     header.append(agent);
   }
@@ -3714,8 +3718,13 @@ function workspaceMenuFor(project, card) {
     const item = (label, action, className = '') => { const button = detailButton(label, action, className); button.setAttribute('role', 'menuitem'); return button; };
     box.setAttribute('role', 'menu');
     box.setAttribute('aria-label', `Manage ${project.name}`);
+    const folder = projectFolder(project);
     box.append(
       item('Rename', () => setWorkspaceMenu({ id: project.id, mode: 'rename' })),
+      // Where the project lives on this computer, and how to run it.
+      ...(folder ? [item('Copy path', () => { setWorkspaceMenu(null); copyText(folder, 'Path'); }),
+        ...(remoteSession ? [] : [item(`Open in ${folderOpenerName()}`, () => { setWorkspaceMenu(null); openOnComputer(project, 'folder'); })]),
+        item('How to run…', () => { setWorkspaceMenu(null); showRunPanel(project); })] : []),
       item('Delete…', () => setWorkspaceMenu({ id: project.id, mode: 'delete' }), 'workspace-delete'));
   }
   return box;
@@ -3745,6 +3754,9 @@ function renderWorkspace(current) {
     button.className = 'workspace-item';
     if (project.id === current?.id) { button.setAttribute('aria-current', 'true'); item.classList.add('current'); }
     const name = document.createElement('span'); name.className = 'workspace-name'; name.textContent = project.name;
+    // A linked project's name opens and closes its folders and files right below it.
+    const files = Boolean(project.repository && workspaceFiles);
+    if (files) { button.setAttribute('aria-expanded', String(workspaceFiles.isOpen(project.id))); button.setAttribute('aria-controls', `workspace-files-${project.id}`); }
     const repo = project.repository ? project.repository.root.split(/[\\/]/).pop() + (project.targetBranch ? ` → ${project.targetBranch.name}` : '') : 'Not linked';
     const meta = document.createElement('span'); meta.className = 'workspace-meta';
     meta.textContent = `${repo} · ${project.tasks.length} ${project.tasks.length === 1 ? 'card' : 'cards'}`;
@@ -3756,7 +3768,15 @@ function renderWorkspace(current) {
       button.append(status);
     }
     button.title = [project.name, project.repository?.root, live.length ? `${live.length} active agent ${live.length === 1 ? 'run' : 'runs'}` : ''].filter(Boolean).join('\n');
-    button.addEventListener('click', () => { if (project.id !== current?.id) selectProject(project.id); setSidebar(false); });
+    button.addEventListener('click', () => {
+      if (project.id !== current?.id) selectProject(project.id);
+      if (!files) { setSidebar(false); return; }
+      const open = workspaceFiles.toggle(project.id);
+      // The board follows the selected project; the sidebar stays open while its files are shown.
+      const shown = $('#workspace-list').querySelector(`[data-project-id="${CSS.escape(project.id)}"] .workspace-item`);
+      shown?.setAttribute('aria-expanded', String(open)); // Its chevron follows (CSS).
+      if (!open) setSidebar(false);
+    });
     const open = workspaceMenu?.id === project.id;
     const toggle = detailButton('⋯', () => setWorkspaceMenu(open ? null : { id: project.id, mode: 'menu' }), 'workspace-menu-toggle');
     toggle.setAttribute('aria-label', `Manage project: ${project.name}`);
@@ -4427,6 +4447,105 @@ async function autopilotCall(action, extra = {}) {
   if (!project) return false;
   try { await boardCall('POST', `/api/projects/${encodeURIComponent(project.id)}/autopilot`, { action, ...extra }); return true; }
   catch (error) { showBoardError(error); return false; }
+}
+
+// ---- Where the project lives and how to run it (finished projects, or "How to run…" in the project menu) ----
+const projectFolder = project => project?.repository?.path || project?.repository?.root || '';
+const folderOpenerName = () => (serverPlatform === 'darwin' ? 'Finder' : serverPlatform === 'win32' ? 'Explorer' : 'file manager');
+async function copyText(text, label) {
+  try { await navigator.clipboard.writeText(text); announce(`${label} copied.`); }
+  catch { announce(`Clipboard unavailable. Select and copy the ${label.toLowerCase()} shown here.`); }
+}
+async function openOnComputer(project, target) {
+  try { await boardCall('POST', `/api/projects/${encodeURIComponent(project.id)}/open`, { target }); announce(target === 'terminal' ? 'Terminal opened in the project folder.' : target === 'index' ? 'index.html opened in your browser.' : `Project folder opened in ${folderOpenerName()}.`); }
+  catch (error) { announce(error.message); runPanel.message = error.message; renderRunPanel(currentProject()); }
+}
+const RUN_DISMISSED_KEY = 'promptboard.kanban.runPanelDismissed';
+const runPanel = { open: null, key: '', info: null, loading: false, message: '' };
+const runDismissed = () => { try { return JSON.parse(localStorage.getItem(RUN_DISMISSED_KEY) || '{}') || {}; } catch { return {}; } };
+function projectFinished(project) {
+  const ids = new Set(project.tasks.map(task => task.id));
+  return project.tasks.length > 0 && project.tasks.every(task => cardDone(project, task)) && !(board.runs || []).some(run => ids.has(run.taskId) && RUN_LIVE.includes(run.status));
+}
+function showRunPanel(project) {
+  runPanel.open = project.id; runPanel.key = ''; runPanel.message = '';
+  if (project.id !== currentProject()?.id) selectProject(project.id); else renderRunPanel(project);
+  setTimeout(() => $('#project-run-heading')?.focus?.(), 0);
+}
+function renderRunPanel(project, hide = false) {
+  const panel = $('#project-run');
+  // A finished project shows it until closed (again once more cards are done); "How to run…" shows it any time.
+  const finished = project && projectFinished(project), dismissed = project && runDismissed()[project.id] === project.tasks.length;
+  const shown = Boolean(project) && !hide && (runPanel.open === project.id || (finished && !dismissed));
+  if (!shown) { panel.hidden = true; panel.replaceChildren(); panel.dataset.signature = ''; return; }
+  const key = `${project.id}:${project.targetBranch?.commit || ''}:${project.tasks.length}:${project.repository?.path || ''}`;
+  if (runPanel.key !== key && !runPanel.loading) {
+    runPanel.key = key; runPanel.loading = true; runPanel.info = null;
+    api(`/api/projects/${encodeURIComponent(project.id)}/run-info`, { timeoutMs: 20000 })
+      .then(({ response, data }) => { runPanel.info = response.ok ? data.run : { error: data.error || 'How to run this project could not be read.' }; },
+        () => { runPanel.info = { error: 'The app did not answer. Try again.' }; })
+      .finally(() => { runPanel.loading = false; if (currentProject()?.id === project.id) renderRunPanel(currentProject()); });
+  }
+  const info = runPanel.info, nodes = [];
+  const heading = document.createElement('h3'); heading.id = 'project-run-heading'; heading.tabIndex = -1;
+  heading.textContent = finished ? `All ${plural(project.tasks.length, 'card')} done: run ${project.name}` : `How to run ${project.name}`;
+  nodes.push(heading);
+  const row = (label, command) => {
+    const line = document.createElement('li'); line.className = 'project-run-command';
+    const name = document.createElement('span'); name.textContent = label;
+    const code = document.createElement('code'); code.textContent = command;
+    line.append(name, code, detailButton('Copy', () => copyText(command, label), 'text-button'));
+    return line;
+  };
+  if (!project.repository) nodes.push(paragraph('Link this project to a folder first. Then this shows where it is and how to start it.', 'note'));
+  else if (!info) nodes.push(paragraph('Reading the project’s files…', 'note'));
+  else if (info.error) nodes.push(paragraph(info.error, 'inline-error'));
+  else {
+    nodes.push(paragraph(info.target ? `The finished code is on ${info.target}, in ${info.path}.` : `The project is in ${info.path}.`));
+    const unmerged = project.tasks.filter(task => cardDone(project, task) && task.completion && !['merged', 'no_changes'].includes(task.completion.kind) && !task.completion.mergedAt).length;
+    if (unmerged) nodes.push(paragraph(`${unmerged} ${unmerged === 1 ? 'card was' : 'cards were'} completed without merging; ${unmerged === 1 ? 'its' : 'their'} changes are not on ${info.target || 'the target branch'}.`, 'note'));
+    const steps = document.createElement('ol'); steps.className = 'project-run-commands';
+    steps.append(row('Go to the folder', `cd "${info.path.replace(/"/g, '\\"')}"`));
+    if (info.target && !info.onTarget) steps.append(row(`Your folder has ${info.folderBranch || 'no branch'} checked out: switch to the finished code`, `git switch ${info.target}`));
+    for (const command of info.commands) steps.append(row(command.label, command.command));
+    nodes.push(steps);
+    if (!info.commands.length && !info.staticSite) {
+      nodes.push(paragraph('No start command was found in the project’s files.', 'note'),
+        detailActions(detailButton('Add a card: write down how to run it', () => addRunCard(project), 'secondary-button')));
+    }
+    if (info.readme) {
+      const details = document.createElement('details'); details.className = 'project-run-readme';
+      const summary = document.createElement('summary'); summary.textContent = `From the README: ${info.readme.heading}`;
+      const text = document.createElement('pre'); text.textContent = info.readme.text;
+      details.append(summary, text); nodes.push(details);
+    }
+  }
+  const canOpen = target => !remoteSession && info?.open?.includes(target);
+  const actions = [
+    ...(info && !info.error && canOpen('folder') ? [detailButton(`Open in ${folderOpenerName()}`, () => openOnComputer(project, 'folder'), 'secondary-button')] : []),
+    ...(info && !info.error && canOpen('terminal') ? [detailButton('Open in Terminal', () => openOnComputer(project, 'terminal'), 'secondary-button')] : []),
+    ...(info?.staticSite && canOpen('index') ? [detailButton('Open index.html', () => openOnComputer(project, 'index'), 'secondary-button')] : []),
+    ...(info?.path ? [detailButton('Copy path', () => copyText(info.path, 'Path'), 'text-button')] : []),
+    detailButton('Close', () => {
+      runPanel.open = null;
+      try { localStorage.setItem(RUN_DISMISSED_KEY, JSON.stringify({ ...runDismissed(), [project.id]: project.tasks.length })); } catch {}
+      renderRunPanel(project);
+    }, 'text-button'),
+  ];
+  nodes.push(detailActions(...actions));
+  if (runPanel.message) nodes.push(paragraph(runPanel.message, 'inline-error'));
+  // Board renders come often; an unchanged panel keeps its focus and open README.
+  const signature = JSON.stringify([key, finished, info, runPanel.message, remoteSession ? 1 : 0]);
+  if (panel.dataset.signature !== signature) { panel.dataset.signature = signature; panel.replaceChildren(...nodes); }
+  panel.className = `project-run${finished ? ' finished' : ''}`;
+  panel.hidden = false;
+}
+async function addRunCard(project) {
+  try {
+    await boardCall('POST', '/api/tasks', { projectId: project.id, title: 'Write down how to run the project',
+      prompt: 'Find out how to install and start this project. Add the exact commands to README.md under a "Run" heading, and check that they work from a fresh checkout.' });
+    announce('Card added to To Do. Nothing runs until you start it.'); renderBoard();
+  } catch (error) { announce(error.message); }
 }
 
 function renderAutopilotBar(project) {
@@ -5746,17 +5865,18 @@ function renderProjectGitHub(project) {
 window.PromptboardGitHub = { render: () => { renderGitHub(); if (!github.status && !github.busy) checkGitHub(); } };
 
 // ---- Remote access (a paired phone through Tailscale or Twingate). Managed only on this computer. ----
-const remoteAccess = { status: null, pairing: null, busy: false, message: '', draft: null };
+const remoteAccess = { status: null, pairing: null, busy: false, message: '', link: '', draft: null };
 const REMOTE_METHODS = [['local', 'Local only (default)'], ['tailscale', 'Tailscale (recommended)'], ['twingate', 'Twingate']];
 async function remoteCall(method, path, body) {
   const { response, data } = await api(path, { method, body, timeoutMs: 40000 });
-  if (!response.ok) throw new Error(typeof data.error === 'string' ? data.error : 'Remote access could not be changed.');
+  // Tailscale's own link (for example to enable Serve for the tailnet) is shown beside the message.
+  if (!response.ok) throw Object.assign(new Error(typeof data.error === 'string' ? data.error : 'Remote access could not be changed.'), { link: typeof data.link === 'string' && /^https:\/\/login\.tailscale\.com\//.test(data.link) ? data.link : '' });
   if (data.remote) remoteAccess.status = data.remote;
   return data;
 }
 async function remoteAction(work) {
-  remoteAccess.busy = true; remoteAccess.message = ''; renderRemoteAccess();
-  try { await work(); } catch (error) { remoteAccess.message = error.message; }
+  remoteAccess.busy = true; remoteAccess.message = ''; remoteAccess.link = ''; renderRemoteAccess();
+  try { await work(); } catch (error) { remoteAccess.message = error.message; remoteAccess.link = error.link || ''; }
   finally { remoteAccess.busy = false; renderRemoteAccess(); }
 }
 function renderRemoteAccess() {
@@ -5810,6 +5930,7 @@ function renderRemoteAccess() {
     const ts = st.tailscale || {};
     if (!ts.installed || !ts.running || (!ts.httpsPort && !ts.serving)) nodes.push(paragraph(ts.message || 'Tailscale is not connected.', 'inline-error'));
     else {
+      if (!ts.https && !ts.serving) nodes.push(paragraph('HTTPS certificates are not enabled for your tailnet yet. Turn on Tailscale Serve to get Tailscale’s link that enables them.', 'note'));
       const row = detailActions();
       if (!ts.serving) row.append(detailButton('Turn on Tailscale Serve…', () => confirmStep(row, `Run “${ts.command}” on this computer? It makes Promptboard reachable inside your tailnet only (never Funnel). Devices still need pairing.`, 'Turn on', () => remoteAction(() => remoteCall('POST', '/api/remote/serve', { on: true, confirm: true })))));
       else row.append(detailButton('Turn off Tailscale Serve…', () => confirmStep(row, `Run “${ts.offCommand}” on this computer?`, 'Turn off', () => remoteAction(() => remoteCall('POST', '/api/remote/serve', { on: false, confirm: true })))));
@@ -5846,6 +5967,7 @@ function renderRemoteAccess() {
     nodes.push(paragraph('Paired devices', 'field-label'), list, detailActions(detailButton('Revoke all devices', () => remoteAction(() => remoteCall('DELETE', '/api/remote/sessions/all')), 'text-button')));
   }
   if (remoteAccess.message) nodes.push(paragraph(remoteAccess.message, 'inline-error'));
+  if (remoteAccess.link) nodes.push(detailActions(externalLink(remoteAccess.link, 'Open Tailscale to enable it')));
   box.replaceChildren(legend, ...nodes);
   for (const button of box.querySelectorAll('button')) button.disabled ||= remoteAccess.busy;
 }
@@ -5963,9 +6085,11 @@ try { if (localStorage.getItem(SETTINGS_KEY) === 'collapsed') setSettingsCollaps
 try { setProjectCollapsed(localStorage.getItem(PROJECT_PANEL_KEY) !== 'expanded', false); } catch { setProjectCollapsed(true, false); }
 window.addEventListener('resize', fitBoardHeight);
 if (typeof ResizeObserver === 'function') {
-  const observer = new ResizeObserver(fitBoardHeight);
+  // Resized on the next frame: resizing inside the callback would loop (WebKit reports it as a page error).
+  let fitFrame = 0;
+  const observer = new ResizeObserver(() => { if (!fitFrame) fitFrame = requestAnimationFrame(() => { fitFrame = 0; fitBoardHeight(); }); });
   // Some browsers expose a resized dock's new geometry only after the layout commits.
-  for (const id of ['project-context', 'project-body', 'autopilot-bar', 'coordinator', 'dock', 'kanban-columns']) observer.observe($(`#${id}`));
+  for (const id of ['project-context', 'project-body', 'autopilot-bar', 'project-run', 'coordinator', 'dock', 'kanban-columns']) observer.observe($(`#${id}`));
 }
 // Long dialogs put their error under the fold. Scroll a newly shown or changed error into view.
 if (typeof MutationObserver === 'function') {

@@ -90,7 +90,7 @@ test('a paired device reaches the app through the remote listener; everything el
   assert.equal((await remote('/api/board', { headers: { ...jar, 'X-STE-Token': session.token, 'Sec-Fetch-Site': 'cross-site' } })).status, 403);
   // What stays on the computer: remote access itself, CLI and GitHub sign-in, native dialogs, starting local programs.
   const authed = { ...jar, 'X-STE-Token': session.token };
-  for (const [path, method] of [['/api/remote', 'GET'], ['/api/remote/settings', 'POST'], ['/api/remote/pairing', 'POST'], ['/api/auth/login', 'POST'], ['/api/github/login', 'POST'], ['/api/folder/choose', 'POST']]) {
+  for (const [path, method] of [['/api/remote', 'GET'], ['/api/remote/settings', 'POST'], ['/api/remote/pairing', 'POST'], ['/api/auth/login', 'POST'], ['/api/github/login', 'POST'], ['/api/folder/choose', 'POST'], ['/api/projects/p1/open', 'POST']]) {
     const refused = await remote(path, { method, headers: authed, ...(method === 'POST' ? { body: {} } : {}) });
     assert.deepEqual([refused.status, refused.json?.code], [403, 'REMOTE_LOCAL_ONLY'], path);
   }
@@ -239,4 +239,18 @@ test('Tailscale off uses the port Promptboard is served on; a shared host name i
   assert.equal((await tailscaleState(4319, cli)).shared, true);
   access.tailscale = null;
   assert.ok((await access.status()).warnings.some(line => /sign-in to it as well/.test(line)));
+});
+
+test('Tailscale Serve not enabled for the tailnet: the refusal carries Tailscale’s own link and nothing is changed', async t => {
+  const cli = { run: async args => {
+    if (args[0] === 'status') return JSON.stringify({ BackendState: 'Running', Self: { DNSName: 'mac.tail1234.ts.net.' }, CertDomains: [] });
+    if (args.join(' ') === 'serve status --json') return '{}';
+    // As the real CLI does: it prints the link and waits until Serve is enabled (here: it is stopped by the timeout).
+    throw Object.assign(new Error('timed out'), { stdout: 'Serve is not enabled on your tailnet.\nTo enable, visit:\n\n         https://login.tailscale.com/f/serve?node=abc123\n', stderr: '' });
+  } };
+  assert.equal((await tailscaleState(4319, cli)).https, false);
+  const dataDir = await mkdtemp(join(tmpdir(), 'pb-remote-enable-')); t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const access = await new RemoteAccess({ dataDir, localPort: 1, handle: () => {}, cli }).load(); t.after(() => access.close());
+  access.settings = { ...access.settings, method: 'tailscale', port: 4319 };
+  await assert.rejects(access.setServe(true), error => error.code === 'REMOTE_TAILSCALE_NOT_ENABLED' && error.link === 'https://login.tailscale.com/f/serve?node=abc123');
 });

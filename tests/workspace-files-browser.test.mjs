@@ -26,7 +26,13 @@ test('Workspace inspection in real Chrome: import, nested tree, multiple viewers
   await browser.until('!!document.querySelector(".workspace-files")', 'imported project files');
   const before = await app.board.store.read(), project = before.projects[0];
   assert.ok(project.repository);
-  await browser.eval('document.querySelector(".file-tree-toggle").click();');
+  // The project's name opens its files (there is no separate Files row); a second click hides them, a third shows them again.
+  assert.equal(await browser.eval('return document.querySelector(".file-tree-toggle");'), null);
+  await browser.eval('document.querySelector(".workspace-item").click();');
+  await browser.until('document.querySelector(".workspace-item").getAttribute("aria-expanded") === "true"', 'files shown');
+  await browser.eval('document.querySelector(".workspace-item").click();');
+  await browser.until('document.querySelector(".workspace-item").getAttribute("aria-expanded") === "false" && document.querySelector(".workspace-files-body").hidden', 'files hidden');
+  await browser.eval('document.querySelector(".workspace-item").click();');
   await browser.until('!!document.querySelector("[data-file-path=src]")', 'root directory');
   for (let i = 1; i <= deepParts.length; i++) {
     const selector = `[data-file-path="${deepParts.slice(0, i).join('/')}"]`;
@@ -59,6 +65,8 @@ test('Workspace inspection in real Chrome: import, nested tree, multiple viewers
   assert.equal(await browser.eval('return document.querySelector("[data-file-path=src]").getAttribute("aria-expanded");'), 'true');
   await browser.eval('document.querySelector("[aria-label=\\"Minimize file viewer\\"]").click();');
   assert.equal(await browser.eval('return document.querySelector("#workspace-file-viewer").open;'), false);
+  // The minimized file's chip sits above the agent dock, never over its buttons.
+  assert.equal(await browser.layout('const tray = document.querySelector(".file-viewer-tray").getBoundingClientRect(), dock = document.querySelector("#dock").getBoundingClientRect(); return tray.height > 0 && tray.bottom <= dock.top + 1;'), true);
   await browser.eval('document.querySelector("[data-file-path=\\"readme.md\\"]").click();');
   await browser.until('document.querySelector(".file-code").textContent.includes("Imported project")', 'second file');
   assert.equal(await browser.eval('return window.INJECTED || false;'), false);

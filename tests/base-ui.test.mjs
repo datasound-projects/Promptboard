@@ -57,7 +57,7 @@ function setup(t, { resources = [skill, pack], respond, savedView } = {}) {
   };
   const view = win.PromptboardBase.create({ api, announce: value => announcements.push(value), ensureBoard: async () => {}, refreshBoard: async () => {},
     agentFields: () => { const node = win.document.createElement('div'); node.textContent = 'Existing provider controls'; return node; }, readAgentFields: () => ({ provider: 'claude', model: 'fixture' }) });
-  const clickText = (text, root = win.document) => { const node = [...root.querySelectorAll('button')].find(node => node.textContent === text || node.getAttribute('aria-label') === text); assert.ok(node, `button ${text}`); node.click(); return node; };
+  const clickText = (text, root = win.document) => { const node = [...root.querySelectorAll('button')].find(node => node.textContent === text || node.getAttribute('aria-label') === text || node.firstElementChild?.textContent === text); assert.ok(node, `button ${text}`); node.click(); return node; };
   const change = (node, value) => { node.value = value; node.dispatchEvent(new win.Event('change', { bubbles: true })); };
   const submit = form => form.dispatchEvent(new win.Event('submit', { bubbles: true, cancelable: true }));
   return { win, $, view, calls, state, announcements, clickText, change, submit, confirms, answerConfirm: value => { confirmAnswer = value; } };
@@ -274,7 +274,7 @@ const categoryResources = () => categoryCases.slice(1).flatMap(([type], index) =
 test('exactly eight categories filter stored types locally with shared AND filters, sort, view and canonical counts', async t => {
   const { $, win, view, calls, clickText, change } = setup(t, { resources: categoryResources() });
   await view.show();
-  assert.deepEqual([...$('#base-categories').children].map(node => node.getAttribute('aria-label')), categoryCases.map(([, name]) => name));
+  assert.deepEqual([...$('#base-categories').children].map(node => node.firstElementChild.textContent), categoryCases.map(([, name]) => name));
   assert.equal($('#base-categories [aria-pressed="true"]').dataset.kind, '');
   assert.equal($('#base-list').children.length, 14);
   for (const [type, label] of categoryCases) {

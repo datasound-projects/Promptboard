@@ -273,7 +273,7 @@ window.PromptboardBase = (() => {
         persistView(); renderList(); libraryScroll = 0; $('.base-list-panel').scrollTop = 0;
         revealCategory(node); context.closeSidebar?.();
       }, 'base-category');
-      node.append(el('span', label), el('span', '', 'base-category-count')); node.dataset.kind = kind; node.setAttribute('aria-label', label); node.setAttribute('aria-pressed', String(kind === category)); $('#base-categories').append(node);
+      node.append(el('span', label), el('span', '', 'base-category-count')); node.dataset.kind = kind; node.setAttribute('aria-pressed', String(kind === category)); $('#base-categories').append(node);
     }
     // Buttons provide Tab/Enter/Space; arrows and Home/End move focus without changing
     // the active filter. Only activation changes the collection.

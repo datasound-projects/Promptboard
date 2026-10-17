@@ -448,27 +448,42 @@ window.PromptboardOriginResearch = (() => {
     /** Apply through Origin's own editing path; a conflict changes nothing and is shown on the card. */
     /** New records already created from this chat's suggestions, by their batch reference. */
     const createdRefs = () => new Map((chat?.proposals || []).filter(entry => entry.ref && entry.createdId).map(entry => [entry.ref, entry.createdId]));
-    async function applyOne(proposal, { force = false, refs = createdRefs(), pending = [] } = {}) {
+    /**
+     * Links that applied suggestions make to records of this chat that were not applied when they were (written as
+     * @ref). They are rebuilt from the chat itself (each applied suggestion keeps its value and the ID it created), so
+     * they survive a reload; `ref` limits them to links to one record. Edited suggestions are left out: their edit is
+     * not stored, so their links are not known.
+     */
+    function waitingLinks(ref = null) {
+      const LINKS = M().LINKS, links = [];
+      for (const entry of chat?.proposals || []) {
+        const target = entry.target || {}, collection = target.collection;
+        if (entry.status !== 'applied' || entry.edited || !LINKS[collection]) continue;
+        const id = target.kind === 'add' ? entry.createdId : target.kind === 'record' ? target.id : null;
+        const fields = target.kind === 'add' ? Object.entries(entry.value || {}) : target.kind === 'record' ? [[target.field, entry.value]] : [];
+        for (const [field, value] of fields) {
+          if (!id || LINKS[collection][field] === undefined) continue;
+          for (const item of [value].flat()) {
+            const named = typeof item === 'string' && /^@[A-Za-z0-9_.-]{1,60}$/.test(item) ? item.slice(1) : null;
+            if (named && (ref === null || named === ref)) links.push({ collection, id, field, ref: named });
+          }
+        }
+      }
+      return links;
+    }
+    async function applyOne(proposal, { force = false, refs = createdRefs() } = {}) {
       const { value, edited } = chosenValue(proposal), owner = chat?.id;
-      linksFor(owner);
       const result = host.applyProposal(proposal, { force, value, refs });
       if (result.ok) {
-        pending.push(...(result.pending || []));
         await decide(proposal, 'applied', { edited, revision: host.revision(), ...(result.created ? { createdId: result.created.id } : {}) });
         if (chat?.id !== owner) return 'applied'; // Its links belong to the project that was open.
-        // A single apply can complete links that earlier suggestions made to this record.
-        if (result.created && proposal.ref) host.resolveLinks?.(pendingLinks.splice(0), refs).forEach(link => pendingLinks.push(link));
-        if (result.pending?.length) pendingLinks.push(...result.pending);
+        // A new record completes the links that suggestions applied earlier (even before a reload) made to it.
+        if (result.created && proposal.ref) host.resolveLinks?.(waitingLinks(proposal.ref), createdRefs());
         app.announce(`Applied: ${proposal.title}.`); return 'applied';
       }
       if (result.conflict) { cards.set(proposal.id, { ...cards.get(proposal.id), conflict: result.conflict, preview: true }); await decide(proposal, 'conflict'); return 'conflict'; }
       error = result.error || 'The suggestion could not be applied.'; render(); return 'error';
     }
-    // Links to new records that are not applied yet; completed when those records are applied. They belong to one
-    // chat (its batch references) and are dropped when another chat or project is opened.
-    const pendingLinks = [];
-    let linksChat = null;
-    const linksFor = id => { if (linksChat !== id) { pendingLinks.length = 0; linksChat = id; } };
     /** Apply several suggestions: new records first (what others link to comes first), then field changes, then links. */
     async function applyMany(ids) {
       applying = true; render();
@@ -480,7 +495,8 @@ window.PromptboardOriginResearch = (() => {
       let left = [];
       try {
         for (const proposal of chosen) { if (!here()) break; counts[await applyOne(proposal, { force: false, refs })]++; }
-        if (here()) { left = host.resolveLinks?.(pendingLinks.splice(0), refs) || []; pendingLinks.push(...left); }
+        // What still waits: links to records whose suggestions are not applied.
+        if (here()) { const made = createdRefs(); left = waitingLinks().filter(link => !made.has(link.ref)); }
       } finally { applying = false; selected.clear(); }
       if (!here()) return;
       await host.saveNow?.();

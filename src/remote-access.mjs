@@ -62,7 +62,7 @@ export const tailscaleCli = {
     const command = await commandOnPath('tailscale') || (process.platform === 'darwin' ? '/Applications/Tailscale.app/Contents/MacOS/Tailscale' : '');
     if (!command) throw Object.assign(new Error('Tailscale is not installed.'), { missing: true });
     return new Promise((resolve, reject) => execFile(command, args, { shell: false, windowsHide: true, timeout: timeoutMs, maxBuffer: 2 * 1024 * 1024 },
-      (error, stdout, stderr) => (error ? reject(Object.assign(error, { missing: error.code === 'ENOENT', stderr: String(stderr) })) : resolve(String(stdout)))));
+      (error, stdout, stderr) => (error ? reject(Object.assign(error, { missing: error.code === 'ENOENT', stdout: String(stdout), stderr: String(stderr) })) : resolve(String(stdout)))));
   },
 };
 
@@ -77,7 +77,8 @@ export async function tailscaleState(port, cli = tailscaleCli) {
   catch (error) { return { installed: !error.missing, running: false, message: error.missing ? 'Tailscale is not installed on this computer.' : 'Tailscale did not answer. Open the Tailscale app.' }; }
   const name = String(status?.Self?.DNSName || '').replace(/\.$/, '').toLowerCase();
   const running = status?.BackendState === 'Running';
-  const state = { installed: true, running, name, online: Boolean(status?.Self?.Online), message: running ? '' : 'Tailscale is not connected. Open the Tailscale app and connect.' };
+  const state = { installed: true, running, name, online: Boolean(status?.Self?.Online), message: running ? '' : 'Tailscale is not connected. Open the Tailscale app and connect.',
+    https: Array.isArray(status?.CertDomains) && status.CertDomains.length > 0 }; // Serve needs HTTPS certificates for the tailnet.
   if (!running) return state;
   let serve = {};
   try { serve = JSON.parse(await cli.run(['serve', 'status', '--json']) || '{}') || {}; } catch {}
@@ -220,8 +221,11 @@ export class RemoteAccess {
     if (!on && !state.serving) return this.status({ refresh: true });
     const target = `http://127.0.0.1:${this.settings.port}`;
     const args = on ? ['serve', '--bg', `--https=${state.httpsPort}`, target] : ['serve', '--bg', `--https=${state.servePort}`, target, 'off'];
-    await this.cli.run(args, { timeoutMs: 30000 }).catch(error => {
-      throw new RemoteError(/https|certificate|cert/i.test(error.stderr || '') ? 'Tailscale needs HTTPS certificates for your tailnet. Run the command in a terminal once and follow its link, then check again.' : 'Tailscale Serve could not be changed. Run the command in a terminal to see why.', 'REMOTE_TAILSCALE', 409);
+    // Serve waits while it is not enabled for the tailnet; Promptboard stops waiting and shows Tailscale's own link.
+    await this.cli.run(args, { timeoutMs: 15000 }).catch(error => {
+      const output = `${error.stdout || ''}\n${error.stderr || ''}`, link = output.match(/https:\/\/login\.tailscale\.com\/[^\s]+/)?.[0] || '';
+      if (/not enabled on your tailnet/i.test(output)) throw Object.assign(new RemoteError('Tailscale Serve and HTTPS are not enabled for your tailnet yet. Open the link from Tailscale as a tailnet admin, enable them, then choose Turn on again.', 'REMOTE_TAILSCALE_NOT_ENABLED', 409), { link });
+      throw new RemoteError(/https|certificate|cert/i.test(output) ? 'Tailscale needs HTTPS certificates for your tailnet. Run the command in a terminal once and follow its link, then check again.' : 'Tailscale Serve could not be changed. Run the command in a terminal to see why.', 'REMOTE_TAILSCALE', 409);
     });
     return this.status({ refresh: true });
   }
@@ -305,17 +309,18 @@ export async function remoteRoute(remote, req, res, pathname, { jsonBody, send }
     return send(res, 404, { error: 'This route does not exist.' });
   } catch (error) {
     const status = error.status || 500; // Expected refusals carry their own fixed text; anything else stays generic.
-    return send(res, status, { error: status < 500 ? error.message : 'Remote access could not be changed.', code: error.code || 'REMOTE_FAILED' });
+    return send(res, status, { error: status < 500 ? error.message : 'Remote access could not be changed.', code: error.code || 'REMOTE_FAILED', ...(error.link ? { link: error.link } : {}) });
   }
 }
 
 /**
  * What needs someone at the computer: remote access itself, CLI and GitHub sign-in (they open a browser or terminal
- * there) and native dialogs. Everything else is allowed: a paired device has the same control as the computer.
+ * there), native dialogs and opening a project folder or terminal there. Everything else is allowed: a paired device has the same control as the computer.
  */
 function localOnly(method, path) {
   if (method === 'GET' || method === 'HEAD') return /^\/api\/remote(\/|$)/.test(path);
-  return /^\/api\/remote(\/|$)/.test(path) || /^\/api\/auth\/(login|logout|cancel)$/.test(path) || /^\/api\/github\/login(\/cancel)?$/.test(path) || path === '/api/folder/choose';
+  return /^\/api\/remote(\/|$)/.test(path) || /^\/api\/auth\/(login|logout|cancel)$/.test(path) || /^\/api\/github\/login(\/cancel)?$/.test(path) || path === '/api/folder/choose'
+    || /^\/api\/projects\/[^/]+\/open$/.test(path); // Opens a window on the computer's screen.
 }
 /** This computer's private addresses, offered as listening addresses for Twingate. */
 function localAddresses() {

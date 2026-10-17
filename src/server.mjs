@@ -24,6 +24,7 @@ import { chooseFolder } from './folder.mjs';
 import { Autopilot } from './autopilot.mjs';
 import { GitHubError, GitHubLogin, githubStatus, listRepositories } from './github.mjs';
 import { RemoteAccess, remoteRoute } from './remote-access.mjs';
+import { openProject, openTargets, runInfo } from './project-run.mjs';
 import { BaseRoutes } from './base-http.mjs';
 import { BaseError } from './base.mjs';
 import { BaseDeliveryError } from './base-resolver.mjs';
@@ -200,6 +201,13 @@ async function boardRoute(board, req, res, pathname, searchParams, origin) {
     if (method === 'POST' && action === 'timeline') return send(res, 200, { note: await board.addTimelineNote(id, await body()) });
     if (method === 'POST' && action === 'github') return view({ project: await board.connectGitHub(id, await body()) });
     if (method === 'GET' && action === 'github-remote') return view({ repository: await board.githubRemote(id) });
+    // How to run the project, and opening its folder, a terminal there or its index.html on this computer.
+    if (method === 'GET' && action === 'run-info') return send(res, 200, { run: { ...await runInfo(await storedProject(board, id)), open: openTargets() } });
+    if (method === 'POST' && action === 'open') {
+      const { target } = await body();
+      try { return send(res, 200, await board.projectOpener(await storedProject(board, id), typeof target === 'string' ? target : '')); }
+      catch (error) { throw new BoardError(error.message, error.code || 'OPEN_FAILED', error.status || 500); }
+    }
     if (method === 'DELETE' && action === 'github') return view({ project: await board.disconnectGitHub(id, { expectedRevision: expected() }) });
     if (method === 'POST' && action === 'github-fetch') return view({ project: await board.fetchGitHub(id) });
     if (method === 'POST' && action === 'github-update') return view({ project: await board.updateTargetFromGitHub(id, await body()) });
@@ -276,6 +284,12 @@ async function boardRoute(board, req, res, pathname, searchParams, origin) {
   return false;
 }
 
+async function storedProject(board, id) {
+  const project = (await board.state()).projects.find(item => item.id === id);
+  if (!project) throw new BoardError('This project no longer exists.', 'NOT_FOUND', 404);
+  return project;
+}
+
 /** GitHub CLI status, browser sign-in, and repository search. No route returns a token. */
 async function githubRoute(board, req, res, pathname, searchParams, body) {
   const method = req.method;
@@ -308,7 +322,7 @@ function streamRun(supervisor, req, res, runId, after) {
   req.on('close', () => { clearInterval(ping); unsubscribe(); });
 }
 
-export async function startServer({ batchTimeoutMs, port = 4318, runner = runProvider, detector = detectProviders, catalogReader = discoverModels, authAdapter = auth, dataDir = defaultDataDir(), projectsDir, executor = 'auto', folderPicker = chooseFolder, githubPty = loadPty, usageReader, mcpTester, imageGenerator, composeMcp, researchRunner = streamResearch } = {}) {
+export async function startServer({ batchTimeoutMs, port = 4318, runner = runProvider, detector = detectProviders, catalogReader = discoverModels, authAdapter = auth, dataDir = defaultDataDir(), projectsDir, executor = 'auto', folderPicker = chooseFolder, projectOpener = openProject, githubPty = loadPty, usageReader, mcpTester, imageGenerator, composeMcp, researchRunner = streamResearch } = {}) {
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('The port must be 0–65535.');
   // One app per data folder; the board itself loads lazily, so starting never reads or writes board files.
   const lock = await lockDataDir(dataDir);
@@ -317,6 +331,7 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
   const board = new Board({ dataDir, ...(projectsDir ? { projectsDir } : {}), automationActions: new PipelineActions({ notifier: (message, options) => notifications.deliver(message, options) }) });
   board.executor = executor === 'auto' ? new Supervisor({ board, dataDir }) : executor;
   board.folderPicker = folderPicker;
+  board.projectOpener = projectOpener; // Opens a project's folder, a terminal or index.html (tests pass a fake).
   board.githubLogin = new GitHubLogin({ ptyLoader: githubPty });
   // Autopilot runs only for projects where the user started it; otherwise each tick does nothing.
   const autopilot = new Autopilot(board);
@@ -421,7 +436,7 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
     if (isApi && req.headers['x-ste-token'] !== token) return send(res, 403, { error: 'Reload this page before you try again.' });
     if (pathname.startsWith('/api/remote') && remote) return send(res, 403, { error: 'Remote access is managed on the computer that runs Promptboard.', code: 'REMOTE_LOCAL_ONLY' });
     if (pathname.startsWith('/api/remote')) return remoteAccess ? remoteRoute(remoteAccess, req, res, pathname, { jsonBody, send }) : send(res, 503, { error: 'The app is starting. Try again.' }); // Local only: the remote listener refuses these.
-    if (req.method === 'GET' && pathname === '/api/session') return send(res, 200, { token, ...(remote ? { remote: { name: remote.name } } : {}), capabilities: { pipelineTitleOnly: true, pipelineBulkRestore: true, pipelineDeferredMessages: true, taskPriority: true, taskLabels: true } });
+    if (req.method === 'GET' && pathname === '/api/session') return send(res, 200, { token, platform: process.platform, ...(remote ? { remote: { name: remote.name } } : {}), capabilities: { pipelineTitleOnly: true, pipelineBulkRestore: true, pipelineDeferredMessages: true, taskPriority: true, taskLabels: true } });
     if (/^\/api\/notifications(?:\/|$)/.test(pathname)) {
       try { return await notificationRoute(notifications, req, res, pathname, { jsonBody, send }); }
       catch (error) {

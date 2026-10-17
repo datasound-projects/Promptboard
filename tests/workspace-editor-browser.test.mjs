@@ -23,7 +23,7 @@ test('IDE-style project folders and editor in Chrome: native typing, explicit sa
   await app.board.createProjectWithRepository({ name: 'Two', folder: join(root, 'two') }); const before = await app.board.store.read();
   const browser = await launch(); assert.ok(browser); t.after(() => browser.close());
   await browser.goto(app.url + '#/kanban'); await browser.until('document.querySelectorAll(".workspace-files").length === 2', 'two separate projects');
-  await browser.eval('for (const el of document.querySelectorAll(".file-tree-toggle")) el.click();');
+  await browser.eval('for (const el of document.querySelectorAll(".workspace-item")) el.click();');
   await browser.until('document.querySelectorAll("[data-file-path=src]").length === 2', 'project roots loaded');
   assert.equal(await browser.eval('return [...document.querySelectorAll("[data-file-path]")].some(e => ["one","two",".git"].includes(e.dataset.filePath));'), false);
   await browser.eval('document.querySelector("[data-file-path=src]").click();'); await browser.until('!!document.querySelector("[data-file-path=\\"src/index.js\\"]")', 'nested file');
