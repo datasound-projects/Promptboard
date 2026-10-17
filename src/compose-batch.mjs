@@ -395,7 +395,7 @@ export class ComposeBatches {
     const base = current(item);
     if (!base || base.id !== baseVersionId) throw conflict('A newer version of this prompt exists. Review it first.', 'VERSION_CONFLICT');
     if (item.split) throw conflict('Undo the split before you edit the parent prompt.', 'SPLIT_ACTIVE');
-    if (typeof prompt !== 'string' || !prompt.trim() || prompt.length > COMPOSE_PROMPT_CHARS || prompt.includes('\0')) throw new BatchError('Enter a prompt of at most 2 MiB.');
+    if (typeof prompt !== 'string' || !prompt.trim() || prompt.length > COMPOSE_PROMPT_CHARS || prompt.includes('\0')) throw new BatchError(`Enter a prompt of at most ${COMPOSE_PROMPT_CHARS.toLocaleString('en-US')} characters.`);
     if (prompt === base.prompt) return;
     const language = base.settings.language;
     // The edit keeps the last review for reference only; repair notes and call details belong to the generated text.
@@ -406,7 +406,7 @@ export class ComposeBatches {
     const child = item.split?.children.find(entry => entry.id === childId);
     if (!child) throw new BatchError('This split task does not exist.', 'NOT_FOUND', 404);
     if (child.sent) throw conflict('This split task is already on Kanban.', 'TASK_SENT');
-    if (typeof prompt !== 'string' || !prompt.trim() || prompt.length > COMPOSE_PROMPT_CHARS || prompt.includes('\0')) throw new BatchError('Enter a prompt of at most 2 MiB.');
+    if (typeof prompt !== 'string' || !prompt.trim() || prompt.length > COMPOSE_PROMPT_CHARS || prompt.includes('\0')) throw new BatchError(`Enter a prompt of at most ${COMPOSE_PROMPT_CHARS.toLocaleString('en-US')} characters.`);
     Object.assign(child, { prompt: prompt.trim(), approval: null, edited: true });
     const parent = current(item);
     item.split.coverage = splitCoverage(parent.prompt, item.split.children, parent.settings.language);
@@ -544,8 +544,10 @@ export class ComposeBatches {
         await this.#apply(job, item => { if (job.cancelled) item.run = null; else outcome(item); });
       } catch (error) {
         const failure = job.cancelled ? null : failureOf(error, this.#closing);
+        // Called first: the queued tasks leave the queue at once, so another run ending meanwhile cannot start one.
+        const stopping = failure && STOP_CODES.has(failure.code) ? this.#stopQueued(job.batchId, failure) : null;
         await this.#apply(job, item => { item.run = null; item.error = failure && { ...failure, kind: job.kind, at: Date.now() }; }).catch(() => this.#release(job, failure));
-        if (failure && STOP_CODES.has(failure.code)) await this.#stopQueued(job.batchId, failure).catch(() => {});
+        await stopping?.catch(() => {});
       }
     })();
     this.track(work).finally(() => { this.#active.delete(job.runId); this.#pump(); }).catch(() => {});
@@ -574,13 +576,15 @@ export class ComposeBatches {
 
   /** After an account-level failure every queued call would fail the same way: put them back, do not spend more usage. */
   #stopQueued(batchId, failure) {
+    const stopped = this.#queue.filter(entry => entry.batchId === batchId);
+    for (const job of stopped) this.#queue.splice(this.#queue.indexOf(job), 1);
     return this.#serial(async () => {
       const batch = this.#cache.get(batchId);
-      await this.#touch(batch, { notice: { code: failure.code, message: `${failure.message} Queued tasks were not started.`, at: Date.now() } });
-      for (const job of this.#queue.filter(entry => entry.batchId === batchId)) {
-        this.#queue.splice(this.#queue.indexOf(job), 1);
+      // The tasks taken out of the queue are freed even when the disk refuses the save.
+      await this.#touch(batch, { notice: { code: failure.code, message: `${failure.message} Queued tasks were not started.`, at: Date.now() } }).catch(() => {});
+      for (const job of stopped) {
         const item = structuredClone(batch.items.get(job.itemId));
-        if (item?.run?.id === job.runId) { item.run = null; await this.#saveItem(batch, item); }
+        if (item?.run?.id === job.runId) { item.run = null; await this.#saveItem(batch, item).catch(() => this.#release(job, null)); }
       }
     });
   }
