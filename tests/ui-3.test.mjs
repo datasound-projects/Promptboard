@@ -39,6 +39,27 @@ test('Kanban model selection keeps CLI default while discovery is pending and ig
   assert.equal($('#project-agent-fields [data-field="model-custom"]').value, '', 'Switching provider clears its custom model.');
 });
 
+test('a terminal whose app restarted stops retrying and asks for a reload', { skip: process.platform === 'win32' }, async t => {
+  const ctx = await linkedKanban(t);
+  const { $, win } = ctx;
+  await link(ctx);
+  win.Terminal = undefined;
+  const task = await ctx.app.board.createTask({ projectId: ctx.project.id, title: 'Live run', prompt: 'Fix it.' });
+  const now = Date.now();
+  await ctx.app.board.store.update(state => state.runs.push({ id: 'live-run', taskId: task.id, projectId: ctx.project.id, stage: 'executing', status: 'running', createdAt: now, updatedAt: now,
+    config: { provider: 'codex', model: 'codex-one' }, branch: 'promptboard/live', workspacePath: '/tmp/live-worktree', artifactsDir: 'runs/live-run' }));
+  // What a page sees after the app restarted with a new session token.
+  let streams = 0;
+  const pass = win.fetch;
+  win.fetch = (url, options) => (/\/stream\?/.test(url) ? (streams++, Promise.resolve(new Response(JSON.stringify({ error: 'Reload this page before you try again.' }), { status: 403 }))) : pass(url, options));
+  await win.__pbTest.loadBoard(); await ctx.idle();
+  cardItem(ctx, 'Live run').querySelector('.kanban-terminal').click(); await ctx.idle();
+  await until(() => /Reload this page/.test($('#dock-connection').textContent), 'reload asked for');
+  await new Promise(resolve => setTimeout(resolve, 2500));
+  assert.equal(streams, 1, 'no retry every second');
+  win.fetch = pass;
+});
+
 test('ended agent output is available after a restart and remains readable without terminal graphics', { skip: process.platform === 'win32' }, async t => {
   const ctx = await linkedKanban(t);
   const { $, win } = ctx;
@@ -152,6 +173,8 @@ test('GitHub in Settings: status, repository search, connect a managed clone, fe
   assert.deepEqual(Array.from($('#set-github-group').querySelectorAll('.github-result'), b => b.textContent), ['acme/app · private · main']);
   $('#set-github-group .github-result').click();
   assert.equal($('#github-branch').value, 'main');
+  assert.equal($('#github-parent').value, '', 'the data folder unless a folder of my own is named');
+  assert.match($('#set-github-group').textContent, /clones acme\/app into its data folder/);
   byText($('#set-github-group'), 'Connect repository').click();
   await until(() => /GitHub: acme\/app \(private\) · Target: main · Remote: origin · Sync: Not fetched yet/.test($('#set-github-group').textContent), 'connected repository');
   const project = (await serverBoard(ctx)).projects[0];
@@ -162,6 +185,15 @@ test('GitHub in Settings: status, repository search, connect a managed clone, fe
   byText($('#set-github-group'), 'Disconnect').click();
   await until(() => $('#github-search'), 'disconnected');
   assert.equal((await serverBoard(ctx)).projects[0].github, null);
+  // The clone stays linked, so it is offered as it is: connecting it again clones nothing.
+  await until(() => byText($('#set-github-group'), 'Connect this folder'), 'linked clone offered');
+  assert.match($('#set-github-group').textContent, /The linked folder is a clone of acme\/app/);
+  byText($('#set-github-group'), 'Connect this folder').click();
+  await until(() => /GitHub: acme\/app \(private\)/.test($('#set-github-group').textContent), 'connected as it is');
+  assert.equal((await gh.log()).filter(args => args[0] === 'repo' && args[1] === 'clone').length, 1);
+  byText($('#set-github-group'), 'Disconnect…').click();
+  byText($('#set-github-group'), 'Disconnect').click();
+  await until(() => $('#github-search'), 'disconnected again');
   assert.ok(!(await gh.log()).some(args => args.includes('logout')));
   // Signed out: the sign-in button appears. Without a terminal library here, it explains the terminal command.
   await gh.setMode('none');

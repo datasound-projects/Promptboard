@@ -21,6 +21,7 @@ const providerInfo = {
 };
 
 let token = '';
+let remoteSession = null; // Set when this page is a paired remote device.
 let providers = [];
 let history = readHistory();
 let currentId = null;
@@ -358,8 +359,11 @@ async function loadProviders() {
   try {
     // The session token comes first: every other API route, including the CLI check, requires it.
     const sessionResponse = await fetch('/api/session', { cache: 'no-store' });
+    if (sessionResponse.status === 401) { location.replace('/remote'); return; } // A remote device that must pair again.
     if (!sessionResponse.ok) throw new Error('The local server could not report its status.');
-    token = safeText((await sessionResponse.json()).token, 1000);
+    const session = await sessionResponse.json();
+    token = safeText(session.token, 1000);
+    remoteSession = session.remote && typeof session.remote.name === 'string' ? { name: safeText(session.remote.name, 60) } : null; // A paired phone.
     if (!token) throw new Error('The local server did not return a session token.');
     const providerResponse = await fetch('/api/providers', { cache: 'no-store', headers: { 'x-ste-token': token } });
     if (!providerResponse.ok) throw new Error('The local server could not report its status.');
@@ -535,6 +539,8 @@ async function api(path, { method = 'GET', body, timeoutMs = 20000, signal, comp
       headers: { 'X-STE-Token': token, ...(requestId || cancellation ? { 'X-STE-Compose-Id': requestId || cancellation.id } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
     let data = {};
     try { data = await response.json(); } catch {}
+    // A paired phone whose device was revoked or expired pairs again; nothing else on the page can work meanwhile.
+    if (response.status === 401 && data?.code === 'REMOTE_PAIRING_REQUIRED') location.replace('/remote');
     return { response, data: data && typeof data === 'object' ? data : {} };
   } catch (error) { throw timedOut && !signal?.aborted ? new Error(OFFLINE_MESSAGE) : offline(error); }
   finally { clearTimeout(timer); cancellation?.dispose(); signal?.removeEventListener('abort', forward); }
@@ -2201,7 +2207,9 @@ function renderCard(card, index, count) {
     const id = dragId; dragId = null;
     if (id && id !== card.id) {
       const position = currentProject().tasks.filter(task => task.column === card.column && task.id !== id).findIndex(task => task.id === card.id);
-      if (position >= 0) placeCard(id, card.column, position);
+      // The lower half of a card places the dropped one after it, the upper half before it.
+      const box = item.getBoundingClientRect(), after = event.clientY > box.top + box.height / 2;
+      if (position >= 0) placeCard(id, card.column, position + (after ? 1 : 0));
     }
   });
   return item;
@@ -2514,6 +2522,8 @@ async function saveCard(event, retried = false) {
   const project = currentProject();
   if (!project) return;
   const card = editingCardId ? project.tasks.find(item => item.id === editingCardId) : null;
+  // Deleted while this dialog was open: saving must not quietly add it again as a new card.
+  if (editingCardId && !card) { $('#card-error').textContent = 'This card was deleted meanwhile, so it cannot be saved. Copy your text before you close this window.'; $('#card-error').hidden = false; return; }
   const typed = $('#card-prompt').value;
   const title = $('#card-title').value.trim() || (quickTask ? typed.replace(/\s+/g, ' ').trim().slice(0, 80) : '');
   const error = !title ? 'Enter a short title.' : title.length > 120 ? 'Use a title of at most 120 characters.'
@@ -3442,7 +3452,7 @@ async function deliveryAction(card, method, action, body, message) {
 function startOverSection(card, section, rev) {
   const target = currentProject()?.targetBranch?.name || 'the target branch';
   const pr = card.evidence?.pullRequest;
-  const box = section('Start over', paragraph(`Not happy with this attempt? Start the same task again from a fresh branch of ${target}. Nothing is deleted.`));
+  const box = section('Start over', paragraph(`Not happy with this attempt? Start the same task again from a fresh branch of ${target}. Your work stays on its branch.`));
   const open = () => {
     const reason = document.createElement('textarea'); reason.id = 'start-over-reason'; reason.maxLength = 4000; reason.rows = 3; reason.placeholder = 'Why? (optional: the next run gets this)';
     const now = document.createElement('label'); now.className = 'check-row';
@@ -3453,13 +3463,14 @@ function startOverSection(card, section, rev) {
       `The branch ${card.workspace.branch} stays exactly as it is (${plural(rev.ahead, 'commit')}). It is not deleted, reset, or pushed.`,
       ...(rev.clean ? [] : [`${plural(rev.changes.length, 'uncommitted change')} will be committed to that branch first, so nothing is lost.`]),
       'The task worktree folder is removed. Review and test results move to the card’s history.',
+      ...(rev.ignored?.length ? [`Files Git ignores in that folder are deleted with it: ${rev.ignored.slice(0, 6).join(', ')}${rev.ignored.length > 6 ? ` and ${rev.ignored.length - 6} more` : ''}. Move what you need first.`] : []),
       `The card goes to To Do. Its next run starts a new branch from the current ${target}.`,
       ...(pr?.url && pr.state === 'OPEN' ? [`Pull request #${pr.number ?? ''} stays open on GitHub. Close it there if you no longer want it.`] : []),
     ]) { const li = document.createElement('li'); li.textContent = line; facts.append(li); }
     const go = detailButton('Start over', async () => {
       go.disabled = true;
       try {
-        const result = await boardCall('POST', `/api/tasks/${encodeURIComponent(card.id)}/start-over`, { expectedRevision: card.revision, reason: reason.value.trim(), startExecuting: startNow.checked }, 180000);
+        const result = await boardCall('POST', `/api/tasks/${encodeURIComponent(card.id)}/start-over`, { expectedRevision: card.revision, reason: reason.value.trim(), startExecuting: startNow.checked, deleteIgnored: Boolean(rev.ignored?.length) }, 180000);
         $('#task-dialog').close();
         announce(result.run ? `Started “${card.title}” over. Executing started on a fresh branch; the old attempt is kept on ${result.attempt.branch}.` : `Started “${card.title}” over. It is in To Do; the old attempt is kept on ${result.attempt.branch}.`);
         if (result.run) showStartedRun(result.run.id);
@@ -3640,7 +3651,10 @@ async function renderDelivery(card, container, section, pre) {
   if (card.workspace?.status === 'ready' && card.column !== 'done') nodes.push(startOverSection(card, section, rev));
   if (card.column === 'done') {
     const box = section('Worktree', paragraph(`The worktree at ${card.workspace.path} is no longer needed. Removing it keeps the branch ${card.workspace.branch}. A worktree with uncommitted changes is never removed.`));
-    box.append(detailActions(detailButton('Remove worktree…', () => confirmStep(box, 'Remove this task worktree? The branch stays.', 'Remove worktree', () => deliveryAction(card, 'DELETE', 'worktree', undefined, 'Worktree removed; the branch was kept.')))));
+    // Files Git ignores (.env, build output) go with the folder: they are named before the second click.
+    const ignored = rev?.ignored || [], names = `${ignored.slice(0, 6).join(', ')}${ignored.length > 6 ? ` and ${ignored.length - 6} more` : ''}`;
+    box.append(detailActions(detailButton('Remove worktree…', () => confirmStep(box, ignored.length ? `Remove this task worktree? The branch stays. These files Git ignores are deleted with it: ${names}.` : 'Remove this task worktree? The branch stays.',
+      ignored.length ? 'Remove worktree and these files' : 'Remove worktree', () => deliveryAction(card, 'DELETE', `worktree${ignored.length ? '?deleteIgnored=1' : ''}`, undefined, 'Worktree removed; the branch was kept.')))));
     nodes.push(box);
   }
   container.replaceChildren(...nodes);
@@ -5544,6 +5558,8 @@ window.addEventListener('pagehide', () => browserNotifications?.stop());
 window.addEventListener('pageshow', event => { if (event.persisted) browserNotifications?.resume(); });
 window.addEventListener('storage', event => {
   if ((event.key === 'promptboard:browser-notifications' && event.newValue !== '1') || event.key === null) browserNotifications?.disable();
+  // Another tab saved Compose History: take its list, so this tab's next save does not drop those prompts.
+  if (event.key === HISTORY_KEY) { history = readHistory(); renderHistory(); }
 });
 function renderSettings() {
   renderNotificationSettings();
@@ -5571,6 +5587,7 @@ function renderSettings() {
   $('#set-project-name').textContent = project?.name || 'no project';
   $('#set-workflow').disabled = !project; $('#set-autopilot').disabled = !project; $('#set-columns').disabled = !project;
   window.PromptboardGitHub?.render();
+  loadRemoteAccess();
 }
 async function openSettings() {
   settingsError('');
@@ -5668,16 +5685,28 @@ function renderProjectGitHub(project) {
     const sync = gh.sync ? `${SYNC_TEXT[gh.sync.sync] || 'Unknown'}${gh.sync.behind ? ` ${gh.sync.behind}` : ''}${gh.sync.sync === 'ahead' ? ` ${gh.sync.ahead}` : ''}` : 'Not fetched yet';
     section.append(paragraph(`GitHub: ${gh.nameWithOwner}${gh.private ? ' (private)' : ' (public)'} · Target: ${project.targetBranch?.name || 'not set'} · Remote: ${gh.remote} · Sync: ${sync}${gh.lastFetchAt ? ` · Fetched ${timeAgo(gh.lastFetchAt)}` : ''}`, 'github-repo'));
     if (gh.sync?.message) section.append(paragraph(gh.sync.message, 'note'));
-    section.append(paragraph(`Managed clone: ${gh.clonePath}`, 'note'));
+    section.append(paragraph(`${gh.managed === false ? 'Folder' : 'Managed clone'}: ${gh.clonePath}`, 'note'));
     const row = detailActions(
       detailButton('Fetch', () => githubAction(() => githubCall('POST', `/api/projects/${encodeURIComponent(project.id)}/github-fetch`, {}))),
       ...(gh.sync?.sync === 'behind' ? [detailButton(`Update ${project.targetBranch?.name}…`, () => confirmStep(row, `Fast-forward ${project.targetBranch?.name} to origin? Only a fast-forward is allowed; nothing is merged, reset, or discarded.`, 'Update', () => githubAction(() => githubCall('POST', `/api/projects/${encodeURIComponent(project.id)}/github-update`, { confirm: true }))))] : []),
       externalLink(gh.url, 'Open on GitHub'),
-      detailButton('Disconnect…', () => confirmStep(row, 'Disconnect this project from GitHub? The managed clone, its worktrees, and all local work stay. The GitHub CLI stays signed in.', 'Disconnect', () => githubAction(() => githubCall('DELETE', `/api/projects/${encodeURIComponent(project.id)}/github?expectedRevision=${project.revision}`)))));
+      detailButton('Disconnect…', () => confirmStep(row, `Disconnect this project from GitHub? The ${gh.managed === false ? 'folder' : 'managed clone'}, its worktrees, and all local work stay. The GitHub CLI stays signed in.`, 'Disconnect', () => githubAction(() => githubCall('DELETE', `/api/projects/${encodeURIComponent(project.id)}/github?expectedRevision=${project.revision}`)))));
     section.append(row);
     return section;
   }
   if (github.status?.state !== 'connected') { section.append(paragraph('Connect GitHub first to use a GitHub repository. Local folders work without GitHub.', 'note')); return section; }
+  // A linked folder that is already a GitHub clone is connected as it is: nothing is cloned or changed.
+  const remoteKey = `${project.id}:${project.repository?.root || ''}`;
+  if (project.repository && github.remote?.key !== remoteKey) {
+    github.remote = { key: remoteKey, repository: '' };
+    githubCall('GET', `/api/projects/${encodeURIComponent(project.id)}/github-remote`).then(data => { if (github.remote?.key === remoteKey) { github.remote.repository = data.repository || ''; renderGitHub(); } }, () => {});
+  }
+  if (project.repository && github.remote?.key === remoteKey && github.remote.repository) {
+    section.append(paragraph(`The linked folder is a clone of ${github.remote.repository}.`, 'note'), detailActions(detailButton('Connect this folder', () => githubAction(async () => {
+      await githubCall('POST', `/api/projects/${encodeURIComponent(project.id)}/github`, { existing: true, expectedRevision: project.revision });
+      announce(`${project.name} is connected to ${github.remote.repository}. Its folder was not changed.`);
+    }), 'secondary-button')));
+  }
   const label = document.createElement('label'); label.className = 'field-label'; label.textContent = 'Search your repositories';
   const search = document.createElement('input'); search.type = 'search'; search.id = 'github-search'; search.maxLength = 100; search.placeholder = 'owner/name'; search.autocomplete = 'off';
   search.value = github.query || '';
@@ -5698,16 +5727,129 @@ function renderProjectGitHub(project) {
     const branch = document.createElement('input'); branch.id = 'github-branch'; branch.maxLength = 255; branch.value = github.branch || '';
     branch.addEventListener('input', () => { github.branch = branch.value.trim(); });
     branchLabel.append(branch);
-    section.append(branchLabel, paragraph(`Promptboard clones ${github.chosen.nameWithOwner} into its data folder and links that clone to this project. Agents work in task worktrees of the clone. ${project.repository ? 'This replaces the current repository link.' : ''}`, 'note'),
+    // Where the clone goes: Promptboard's data folder unless the person names a folder of their own.
+    const placeLabel = document.createElement('label'); placeLabel.className = 'field-label'; placeLabel.textContent = 'Clone into a folder of my own (optional)';
+    const place = document.createElement('input'); place.id = 'github-parent'; place.maxLength = 4096; place.placeholder = 'Promptboard’s data folder'; place.value = github.parent || '';
+    place.addEventListener('input', () => { github.parent = place.value.trim(); });
+    placeLabel.append(place);
+    const choose = detailButton('Choose folder…', () => githubAction(async () => { const path = await pickFolder(); if (path) github.parent = path; else if (path === undefined) github.message = 'No folder picker here. Type the folder path.'; }), 'secondary-button');
+    const name = github.chosen.nameWithOwner.split('/')[1];
+    section.append(branchLabel, placeLabel, detailActions(choose), paragraph(`Promptboard clones ${github.chosen.nameWithOwner} ${github.parent ? `into ${github.parent.replace(/[\\/]+$/, '')}/${name}` : 'into its data folder'} and links that clone to this project. Agents work in task worktrees of the clone. ${project.repository ? 'This replaces the current repository link.' : ''}`, 'note'),
       detailActions(detailButton('Connect repository', () => githubAction(async () => {
-        await githubCall('POST', `/api/projects/${encodeURIComponent(project.id)}/github`, { repository: github.chosen.nameWithOwner, branch: github.branch || '', expectedRevision: project.revision });
-        github.chosen = null; github.results = []; github.query = '';
+        await githubCall('POST', `/api/projects/${encodeURIComponent(project.id)}/github`, { repository: github.chosen.nameWithOwner, branch: github.branch || '', expectedRevision: project.revision, ...(github.parent ? { parent: github.parent } : {}) });
+        github.chosen = null; github.results = []; github.query = ''; github.parent = '';
         announce('The GitHub repository is connected.');
       }), 'danger')));
   }
   return section;
 }
 window.PromptboardGitHub = { render: () => { renderGitHub(); if (!github.status && !github.busy) checkGitHub(); } };
+
+// ---- Remote access (a paired phone through Tailscale or Twingate). Managed only on this computer. ----
+const remoteAccess = { status: null, pairing: null, busy: false, message: '', draft: null };
+const REMOTE_METHODS = [['local', 'Local only (default)'], ['tailscale', 'Tailscale (recommended)'], ['twingate', 'Twingate']];
+async function remoteCall(method, path, body) {
+  const { response, data } = await api(path, { method, body, timeoutMs: 40000 });
+  if (!response.ok) throw new Error(typeof data.error === 'string' ? data.error : 'Remote access could not be changed.');
+  if (data.remote) remoteAccess.status = data.remote;
+  return data;
+}
+async function remoteAction(work) {
+  remoteAccess.busy = true; remoteAccess.message = ''; renderRemoteAccess();
+  try { await work(); } catch (error) { remoteAccess.message = error.message; }
+  finally { remoteAccess.busy = false; renderRemoteAccess(); }
+}
+function renderRemoteAccess() {
+  const box = $('#set-remote-group');
+  if (!box) return;
+  const legend = box.querySelector('legend'), nodes = [];
+  // On the phone itself: who this device is, and how to leave. Remote access is never changed from a remote device.
+  if (remoteSession) {
+    nodes.push(paragraph(`You are using Promptboard remotely as “${remoteSession.name}”, with the same control as at the computer. Agents, CLIs and Git run there: closing Safari or locking the phone stops nothing.`, 'note'),
+      detailActions(detailButton('Sign out this device', async () => { await fetch('/api/remote/logout', { method: 'POST', headers: { 'X-STE-Token': token } }).catch(() => {}); location.replace('/remote'); }, 'secondary-button')));
+    box.replaceChildren(legend, ...nodes); return;
+  }
+  const st = remoteAccess.status;
+  if (!st) {
+    // A failed first read says why and offers another try, instead of "Reading…" forever.
+    box.replaceChildren(legend, ...(remoteAccess.message && !remoteAccess.busy ? [paragraph(remoteAccess.message, 'inline-error'), detailActions(detailButton('Try again', loadRemoteAccess, 'secondary-button'))] : [paragraph('Reading remote access…', 'note')]));
+    return;
+  }
+  const draft = remoteAccess.draft ||= { method: st.method, port: st.port, bind: st.bind, host: st.host, cert: '', key: '' };
+  const field = (label, control) => { const wrap = document.createElement('label'); wrap.className = 'field-label'; wrap.append(label, control); return wrap; };
+  const input = (id, key, placeholder = '') => { const node = document.createElement('input'); node.id = id; node.value = draft[key] ?? ''; node.placeholder = placeholder; node.addEventListener('input', () => { draft[key] = node.value.trim(); }); return node; };
+  const method = document.createElement('select'); method.id = 'set-remote-method';
+  for (const [value, label] of REMOTE_METHODS) method.append(Object.assign(document.createElement('option'), { value, textContent: label }));
+  method.value = draft.method;
+  method.addEventListener('change', () => {
+    draft.method = method.value;
+    if (method.value === 'tailscale') draft.bind = '127.0.0.1';
+    // Twingate: this computer's private address first (the local app never listens there).
+    if (method.value === 'twingate' && draft.bind === '127.0.0.1' && st.addresses?.[0]) draft.bind = st.addresses[0];
+    renderRemoteAccess();
+  });
+  if (draft.method !== 'local') nodes.push(paragraph('A paired device has the same control as you at this computer: it can start agents, type into their terminals, change test commands and approve steps. Pair only your own devices.', 'note'));
+  nodes.push(paragraph(st.method === 'local' ? 'Off. Promptboard answers only on this computer.' : `${st.method === 'tailscale' ? 'Tailscale' : 'Twingate'} · ${st.listening ? `listening on ${st.bind}:${st.port}` : 'not listening'}${st.sessions.length ? ` · ${st.sessions.length} paired device${st.sessions.length === 1 ? '' : 's'}` : ''}`, 'github-status'),
+    field('Access from other devices', method));
+  if (draft.method !== 'local') {
+    const port = input('set-remote-port', 'port'); port.inputMode = 'numeric'; nodes.push(field('Remote port', port));
+  }
+  if (draft.method === 'twingate') {
+    const bind = document.createElement('select'); bind.id = 'set-remote-bind';
+    for (const address of [...new Set(['127.0.0.1', ...(st.addresses || []), draft.bind].filter(Boolean))]) bind.append(Object.assign(document.createElement('option'), { value: address, textContent: address === '127.0.0.1' ? '127.0.0.1 (only with the Resource limited to this port)' : address }));
+    bind.value = draft.bind; bind.addEventListener('change', () => { draft.bind = bind.value; });
+    nodes.push(field('Listen on', bind), field('Name or address the phone opens (the Twingate Resource)', input('set-remote-host', 'host', 'promptboard.internal')),
+      field('Certificate file for HTTPS (optional)', input('set-remote-cert', 'cert', '/path/to/cert.pem')), field('Key file', input('set-remote-key', 'key', '/path/to/key.pem')));
+  }
+  nodes.push(detailActions(detailButton('Save', () => remoteAction(async () => {
+    const body = { method: draft.method, ...(draft.method !== 'local' ? { port: Number(draft.port) } : {}), ...(draft.method === 'twingate' ? { bind: draft.bind, host: draft.host, cert: draft.cert, key: draft.key } : { bind: '127.0.0.1', host: '', cert: '', key: '' }) };
+    await remoteCall('POST', '/api/remote/settings', body); remoteAccess.draft = null; remoteAccess.pairing = null;
+    announce(body.method === 'local' ? 'Remote access is off.' : 'Remote access settings saved.');
+  }), 'secondary-button')));
+  if (st.method === 'tailscale') {
+    const ts = st.tailscale || {};
+    if (!ts.installed || !ts.running || (!ts.httpsPort && !ts.serving)) nodes.push(paragraph(ts.message || 'Tailscale is not connected.', 'inline-error'));
+    else {
+      const row = detailActions();
+      if (!ts.serving) row.append(detailButton('Turn on Tailscale Serve…', () => confirmStep(row, `Run “${ts.command}” on this computer? It makes Promptboard reachable inside your tailnet only (never Funnel). Devices still need pairing.`, 'Turn on', () => remoteAction(() => remoteCall('POST', '/api/remote/serve', { on: true, confirm: true })))));
+      else row.append(detailButton('Turn off Tailscale Serve…', () => confirmStep(row, `Run “${ts.offCommand}” on this computer?`, 'Turn off', () => remoteAction(() => remoteCall('POST', '/api/remote/serve', { on: false, confirm: true })))));
+      row.append(detailButton('Check again', () => remoteAction(() => remoteCall('GET', '/api/remote?refresh=1')), 'secondary-button'));
+      nodes.push(row, paragraph(`Or run it yourself in a terminal: ${ts.serving ? ts.offCommand : ts.command}`, 'note'));
+    }
+  }
+  if (st.method === 'twingate') nodes.push(paragraph(`In the Twingate Admin Console, add a Resource for ${st.host || st.bind}, limited to TCP port ${st.port}, on a Connector that can reach this computer, and give your account access. Promptboard does not change Twingate.`, 'note'));
+  for (const warning of st.warnings || []) nodes.push(paragraph(warning, 'inline-error'));
+  if (st.error) nodes.push(paragraph(st.error, 'inline-error'));
+  if (st.url) {
+    const url = document.createElement('code'); url.id = 'set-remote-url'; url.textContent = st.url;
+    const line = document.createElement('p'); line.className = 'note'; line.append('Private address: ', url);
+    nodes.push(line, detailActions(detailButton('Copy URL', async () => {
+      try { await navigator.clipboard.writeText(st.url); announce('Address copied.'); } catch { announce('Clipboard unavailable. Select and copy the address shown here.'); }
+    }, 'secondary-button')));
+  }
+  if (st.method !== 'local' && st.listening) {
+    if (remoteAccess.pairing && remoteAccess.pairing.expiresAt > Date.now()) {
+      const code = document.createElement('code'); code.className = 'github-code'; code.id = 'set-remote-code'; code.textContent = remoteAccess.pairing.code;
+      const p = document.createElement('p'); p.className = 'note';
+      p.append('On the phone, open the private address and enter ', code, ` within ${Math.max(1, Math.round((remoteAccess.pairing.expiresAt - Date.now()) / 60000))} minutes. It works once.`);
+      nodes.push(p);
+    }
+    nodes.push(detailActions(detailButton('Pair a device', () => remoteAction(async () => { remoteAccess.pairing = (await remoteCall('POST', '/api/remote/pairing', {})).pairing; }), 'secondary-button')));
+  }
+  if (st.sessions.length) {
+    const list = document.createElement('ul'); list.className = 'remote-sessions';
+    for (const device of st.sessions) {
+      const item = document.createElement('li');
+      item.append(`${device.name} · paired ${timeAgo(device.createdAt)} · last seen ${timeAgo(device.lastSeenAt)} `, detailButton('Revoke', () => remoteAction(() => remoteCall('DELETE', `/api/remote/sessions/${encodeURIComponent(device.id)}`)), 'text-button'));
+      list.append(item);
+    }
+    nodes.push(paragraph('Paired devices', 'field-label'), list, detailActions(detailButton('Revoke all devices', () => remoteAction(() => remoteCall('DELETE', '/api/remote/sessions/all')), 'text-button')));
+  }
+  if (remoteAccess.message) nodes.push(paragraph(remoteAccess.message, 'inline-error'));
+  box.replaceChildren(legend, ...nodes);
+  for (const button of box.querySelectorAll('button')) button.disabled ||= remoteAccess.busy;
+}
+const loadRemoteAccess = () => { if (remoteSession) { renderRemoteAccess(); return; } remoteAction(() => remoteCall('GET', '/api/remote')); };
 
 $('#set-workflow').addEventListener('click', () => { $('#app-settings').close(); if (location.hash !== '#/kanban') location.hash = '#/kanban'; openWorkflowDialog(); });
 $('#set-autopilot').addEventListener('click', () => { $('#app-settings').close(); if (location.hash !== '#/kanban') location.hash = '#/kanban'; openAutopilot(); });
@@ -5753,7 +5895,7 @@ originView = window.PromptboardOrigin?.create({ api, announce, closeSidebar: () 
   uploadApi: (path, file, { signal } = {}) => fetch(path, { method: 'POST', cache: 'no-store', signal, headers: { 'X-STE-Token': token, 'Content-Type': file.type || (/\.pdf$/i.test(file.name) ? 'application/pdf' : 'text/plain') }, body: file }) }) || null;
 // Shared projects: optional saved prompts beside History, with links back to Origin and Kanban.
 projectsView = window.PromptboardProjects?.create({ api, announce, getResult: () => currentResult, running: () => running,
-  settingsOf: entry => ({ provider: entry.provider, model: entry.model, effort: entry.effort, language: entry.language, quality: entry.quality, task: entry.task, detail: entry.detail }),
+  settingsOf: entry => ({ provider: entry.provider, model: entry.model, effort: entry.effort, language: entry.language, quality: entry.quality, task: entry.task, detail: entry.detail, options: entry.options, terminology: entry.terminology }),
   verificationOf: entry => snapshotSource(entry).verification,
   removeHistory: id => { history = history.filter(item => item.id !== id); if (currentId === id) currentId = null; persistHistory(); renderHistory(); },
   openInCompose, openOrigin, refreshBoard: () => loadBoard(),

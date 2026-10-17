@@ -7,7 +7,7 @@
  * task worktrees of that clone, exactly as for a local repository.
  */
 import { execFile } from 'node:child_process';
-import { mkdir, stat } from 'node:fs/promises';
+import { mkdir, realpath, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { git } from './git.mjs';
 import { commandOnPath, forgetCommand, trackPid, untrackPid } from './providers.mjs';
@@ -136,19 +136,32 @@ function ghFailure(error, fallback) {
   return fail(fallback, 'GH_FAILED');
 }
 
+/** owner/name of a GitHub remote URL (HTTPS or SSH), or '' for anything else. */
+export function githubRepositoryOf(url) {
+  const match = /^(?:https:\/\/(?:[^@/\s]+@)?github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([^/\s]+\/[^/\s]+?)(?:\.git)?\/?$/i.exec(String(url || '').trim());
+  return match && REPO.test(match[1]) ? match[1] : '';
+}
+/** The GitHub repository a local clone's origin points to, or ''. Reads Git config only. */
+export async function originRepository(path) {
+  return githubRepositoryOf(await git(['config', '--get', 'remote.origin.url'], { cwd: path }).then(out => out.trim(), () => ''));
+}
+
 /** The managed clone's folder, inside Promptboard's data folder (never inside a user repository). */
 export function clonePath(dataDir, nameWithOwner) {
   const [owner, name] = nameWithOwner.split('/');
   return join(dataDir, 'clones', owner.toLowerCase(), name.toLowerCase());
 }
 
-/** Clone once; an existing clone of the same repository is reused, anything else is refused. */
-export async function ensureClone(dataDir, repo) {
-  const path = clonePath(dataDir, repo.nameWithOwner);
+/**
+ * Clone once into `path` (the managed folder unless the person chose one); an existing clone of the same repository
+ * is reused, anything else in that place is refused and left as it is.
+ */
+export async function ensureClone(dataDir, repo, { path = clonePath(dataDir, repo.nameWithOwner) } = {}) {
   const exists = await stat(path).then(() => true, () => false);
   if (exists) {
-    const origin = await git(['config', '--get', 'remote.origin.url'], { cwd: path }).then(out => out.trim(), () => '');
-    const matches = new RegExp(`github\\.com[:/]${repo.nameWithOwner.replace(/[.]/g, '\\.')}(?:\\.git)?$`, 'i').test(origin);
+    // The folder itself must be the clone (a plain folder inside another clone would read that clone's origin).
+    const top = await git(['rev-parse', '--show-toplevel'], { cwd: path }).then(out => realpath(out.trim()), () => '');
+    const matches = top === await realpath(path) && (await originRepository(path)).toLowerCase() === repo.nameWithOwner.toLowerCase();
     if (!matches) throw fail(`The folder ${path} exists but is not a clone of ${repo.nameWithOwner}. Promptboard does not change it.`, 'CLONE_CONFLICT');
     return { path, reused: true };
   }

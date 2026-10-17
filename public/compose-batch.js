@@ -500,6 +500,9 @@ window.PromptboardBatch = (() => {
           else { if (control.value === '__inherit') continue; value = JSON.parse(control.value); }
           if (path.startsWith('options.')) (next.options ||= {})[path.slice(8)] = value; else next[path] = value;
         }
+        // A model or effort belongs to a CLI: saved with the one shown now, a later change of CLI cannot pair them wrongly.
+        const shownProvider = read(inherited.value, 'provider');
+        if ((next.model !== undefined || next.effort !== undefined) && next.provider === undefined && shownProvider) next.provider = shownProvider;
         void save(next);
       }, 'secondary-button');
       saveButton.disabled = locked;

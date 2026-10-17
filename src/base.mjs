@@ -1,10 +1,10 @@
 /** Local Base registry. The caller injects Board's Store; this module never opens state.json. */
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, realpath, stat } from 'node:fs/promises';
-import { isAbsolute, join, posix } from 'node:path';
+import { dirname, isAbsolute, join, posix } from 'node:path';
 import { resolveConfig } from './agents.mjs';
 import { normalizeAvatarImage } from './base-avatar.mjs';
-import { writeAtomic } from './durable.mjs';
+import { syncDir, writeAtomic } from './durable.mjs';
 
 export const BASE_KINDS = Object.freeze(['skill', 'mcp', 'knowledge', 'context', 'tool', 'profile', 'pack']);
 export const BASE_EXPORT_VERSION = 1;
@@ -339,8 +339,11 @@ export class Base {
     const text = JSON.stringify(immutable), ref = { id: definition.id, revision: definition.revision, hash: hash(text) };
     if (Buffer.byteLength(text) > BASE_LIMITS.definitionBytes) throw new BaseError('The resource definition exceeds its storage limit.', 'BASE_CONTENT_LIMIT');
     const dir = join(this.dir, 'revisions', ref.id);
-    try { await mkdir(dir, { recursive: true, mode: 0o700 }); await writeAtomic(join(dir, `${ref.revision}-${ref.hash}.json`), text, { backup: false }); }
-    catch { throw new BaseError('Resource content could not be saved. The registry was not changed.', 'BASE_CONTENT_WRITE_FAILED', 500); }
+    try {
+      // A folder made now is recorded in its parents too, so a power loss cannot leave the registry naming a lost file.
+      if (await mkdir(dir, { recursive: true, mode: 0o700 })) { await syncDir(dirname(dir)); await syncDir(this.dir); }
+      await writeAtomic(join(dir, `${ref.revision}-${ref.hash}.json`), text, { backup: false });
+    } catch { throw new BaseError('Resource content could not be saved. The registry was not changed.', 'BASE_CONTENT_WRITE_FAILED', 500); }
     const { content, ...metadata } = immutable;
     return { ...metadata, revisionRef: ref, revisions: [...(previous?.revisions || []), ref] };
   }

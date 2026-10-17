@@ -34,7 +34,10 @@ async function target(root, parts) {
     if (info.isSymbolicLink()) fail('Symbolic links are not followed by the viewer.', 'FILE_LINK_BLOCKED', 403);
     if (i < parts.length - 1 && !info.isDirectory()) fail('This folder is unavailable.', 'FILE_NOT_FOUND', 404);
   }
-  if (!inside(root, await realpath(path))) fail('This path is outside the selected project.', 'FILE_PATH_INVALID', 403);
+  const real = await realpath(path);
+  if (!inside(root, real)) fail('This path is outside the selected project.', 'FILE_PATH_INVALID', 403);
+  // The names the file system resolved: a Windows short name (ENV~1 for .env) must not reach a protected file.
+  if (relative(root, real).split(sep).some(protectedName)) fail('Git internals and credential files are not available in the viewer.', 'FILE_PROTECTED', 403);
   return { path, info };
 }
 

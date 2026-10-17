@@ -81,8 +81,8 @@ one closes the others and keeps unsaved and unsent text. On phones the panel fil
   sidebar, editors, readiness, map and architecture diagram update as for a hand edit (`applyResearchSuggestion`).
   **Apply all** applies new records in dependency order (layers and technologies before components, components before
   tasks and connections), then resolves the links to records created later. A field that changed since the research
-  ran is a conflict. Links are only added, never removed; a single link (layer, milestone, connection end) that already
-  points elsewhere is a conflict.
+  ran is a conflict. Link lists are only added to, never removed from; a single link (layer, milestone, connection end) is
+  replaced, and it is a conflict only when it changed after the research ran.
 
 ## Limits
 

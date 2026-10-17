@@ -67,7 +67,8 @@ async function main() {
       app = await startServer({ port, projectsDir: defaultProjectsDir() });
     } catch (error) {
       if (error.code === 'EADDRINUSE') {
-        throw new Error(`Port ${port} is already in use. If Promptboard is already running, open http://127.0.0.1:${port}.\nOr start on another port: npm start -- --port ${port === 4320 ? 4321 : 4320}`);
+        // A second Promptboard on the same data folder is refused before this (DATA_DIR_IN_USE), so another port is safe here.
+        throw new Error(`Port ${port} is already in use. If another Promptboard runs there, open http://127.0.0.1:${port}.\nOr start on another port: npm start -- --port ${port === 4320 ? 4321 : 4320}`);
       }
       throw error;
     }

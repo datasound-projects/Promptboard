@@ -26,6 +26,8 @@
       finally { this.busy = false; this.changed(); }
     }
     resume() {
+      // A live connection is kept: reconnecting would close the alerts it is showing.
+      if (this.controller && !this.controller.signal.aborted) return;
       if (this.enabled && this.supported() && window.Notification.permission === 'granted') this.connect();
       else if (this.enabled) { this.status = 'Notifications need browser permission. Enable them in Settings.'; this.changed(); }
     }

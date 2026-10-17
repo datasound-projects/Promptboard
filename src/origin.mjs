@@ -67,6 +67,7 @@ export class OriginStore {
     this.queue = serial();
     this.ready = null;
     this.recoveries = new Map(); // A restore found while listing is reported when the project is opened.
+    this.unreadable = []; // Blueprint IDs the last list left out (newer version or unreadable).
   }
 
   // ponytail: one queue for all Origin files; per-project queues if saves ever contend.
@@ -160,13 +161,15 @@ export class OriginStore {
   }
 
   async #list() {
-    const records = [];
+    // A file this version cannot read (saved by a newer app, unreadable) is left out, not allowed to hide every project.
+    const records = [], unreadable = [];
     for (const name of (await readdir(this.dir)).filter(entry => /^blueprint-[a-z0-9_-]+\.json$/.test(entry))) {
       const id = name.slice(10, -5).replace(/_(.)/g, (_, character) => (character === '_' ? '_' : character.toUpperCase()));
       if (!Model.ID.test(id) || blueprintFileName(id) !== name) continue;
-      const record = await this.#read(id);
+      const record = await this.#read(id).catch(error => { if (!['ORIGIN_VERSION_UNSUPPORTED', 'ORIGIN_READ_FAILED'].includes(error.code)) throw error; unreadable.push(id); return null; });
       if (record && !record.damaged) records.push(record);
     }
+    this.unreadable = unreadable;
     return records.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0) || a.id.localeCompare(b.id));
   }
 
@@ -490,7 +493,7 @@ function view(record, kanban) {
   const linked = record.kanbanProjectId ? kanban.find(project => project.id === record.kanbanProjectId) : null;
   return { id: record.id, name: record.name, description: record.description, kanbanProjectId: record.kanbanProjectId, revision: record.revision,
     createdAt: record.createdAt, updatedAt: record.updatedAt,
-    kanban: record.kanbanProjectId ? (linked ? { exists: true, name: linked.name, revision: linked.revision } : { exists: false }) : null };
+    kanban: record.kanbanProjectId ? (linked ? { exists: true, name: linked.name, revision: linked.revision, github: linked.github?.nameWithOwner || '' } : { exists: false }) : null };
 }
 
 const kanbanFailure = error => ({ message: error.message || 'The Kanban project could not be created.', code: error.code || 'KANBAN_FAILED' });
@@ -511,7 +514,7 @@ export async function originRoute({ origin, contexts, research, board, prompts, 
     return value;
   };
   if (pathname === '/api/origin/projects') {
-    if (req.method === 'GET') { const projects = await kanban(); return send(res, 200, { projects: (await origin.list()).map(record => view(record, projects)) }); }
+    if (req.method === 'GET') { const projects = await kanban(); const records = await origin.list(); return send(res, 200, { projects: records.map(record => view(record, projects)), unreadable: origin.unreadable?.length || 0 }); }
     if (req.method !== 'POST') return send(res, 404, { error: 'This Origin route does not exist.' });
     const input = await body();
     // One project per name across Origin, Compose and Kanban, its own name or its board's. A board of this

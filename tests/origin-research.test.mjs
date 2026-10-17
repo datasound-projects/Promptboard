@@ -263,3 +263,13 @@ test('Stop through the server: the run ends, its partial answer is stored and th
   assert.deepEqual([answer.text, answer.status], ['Partial', 'stopped']);
   assert.equal(result.events.at(-1).type, 'done', 'the stream ends normally with the stored chat');
 });
+
+test('at the suggestion cap a chat drops decided suggestions before the ones still waiting for a decision', async t => {
+  const dir = await folder(t), store = new ResearchStore(dir);
+  const chat = await store.create('p1', { provider: 'claude' });
+  const proposal = (n, status) => ({ id: `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`, status, title: `S${n}`, target: { kind: 'idea' }, value: '' });
+  await store.update('p1', chat.id, value => { value.proposals.push(...Array.from({ length: 300 }, (_, n) => proposal(n, n < 10 ? 'pending' : 'applied'))); });
+  const updated = await store.update('p1', chat.id, value => { value.proposals.push(...Array.from({ length: 5 }, (_, n) => proposal(1000 + n, 'pending'))); });
+  assert.equal(updated.proposals.length, 300);
+  assert.equal(updated.proposals.filter(entry => entry.status === 'pending').length, 15, 'every open suggestion is kept');
+});

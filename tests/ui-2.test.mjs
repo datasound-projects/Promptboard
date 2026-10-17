@@ -237,6 +237,15 @@ test('seven stages render; cards are created, edited, duplicated, deleted, and r
   await ctx.idle();
   assert.deepEqual(titles($), ['Three', 'Two', 'One']);
   assert.deepEqual((await serverTasks(ctx)).map(card => card.title), ['Three', 'Two', 'One']);
+  // Dropped on the lower half of the last card, "Three" goes after it, not one slot above.
+  cardItem(ctx, 'Three').dispatchEvent(new win.Event('dragstart', { bubbles: true }));
+  cardItem(ctx, 'One').dispatchEvent(new win.MouseEvent('drop', { bubbles: true, cancelable: true, clientY: 10 }));
+  await ctx.idle();
+  assert.deepEqual((await serverTasks(ctx)).map(card => card.title), ['Two', 'One', 'Three']);
+  cardItem(ctx, 'Three').dispatchEvent(new win.Event('dragstart', { bubbles: true }));
+  cardItem(ctx, 'Two').dispatchEvent(new win.Event('drop', { bubbles: true, cancelable: true }));
+  await ctx.idle();
+  assert.deepEqual(titles($), ['Three', 'Two', 'One']);
   // An unlinked project keeps cards in To Do and explains why.
   await unlink(ctx);
   const menu = cardItem(ctx, 'One').querySelector('.kanban-move-to');
@@ -426,16 +435,16 @@ test('the browser board migrates once with exact text; unreadable data and faile
   assert.equal(broken.win.localStorage.getItem(`${KANBAN_KEY}.unreadable`), raw);
   assert.equal(broken.win.localStorage.getItem(KANBAN_KEY), raw);
   assert.equal((await serverBoard(broken)).projects.length, 0);
-  // A failed server write is visible and the board keeps its last saved state.
-  await chmod(ctx.dataDir, 0o500);
-  t.after(() => chmod(ctx.dataDir, 0o700).catch(() => {}));
-  await goTo(ctx, '#/kanban');
-  ctx.pick('a');
-  await newCard(ctx, 'Unsaved', 'Not written.');
-  assert.match(ctx.$('#card-error').textContent, /could not be saved/);
-  assert.equal(ctx.$('#kanban-view .board-warning').hidden, false);
-  assert.deepEqual(titles(ctx.$), ['First', 'Second']);
-  await chmod(ctx.dataDir, 0o700);
+  // A failed server write is visible and the board keeps its last saved state (on the app now serving the folder).
+  await chmod(again.dataDir, 0o500);
+  t.after(() => chmod(again.dataDir, 0o700).catch(() => {}));
+  await goTo(again, '#/kanban');
+  again.pick('a');
+  await newCard(again, 'Unsaved', 'Not written.');
+  assert.match(again.$('#card-error').textContent, /could not be saved/);
+  assert.equal(again.$('#kanban-view .board-warning').hidden, false);
+  assert.deepEqual(titles(again.$), ['First', 'Second']);
+  await chmod(again.dataDir, 0o700);
 });
 
 test('the settings step collapses and expands, is remembered, and reopens for an invalid field', async t => {
@@ -1257,4 +1266,31 @@ test('Run details keep keyboard focus and inspected Base resources while run fac
   assert.equal(result.textContent, inspected, 'the inspected resources stay shown');
   assert.equal(win.document.activeElement, inspect, 'focus stays on the inspect button');
   assert.equal(context.open, true);
+});
+
+test('saving an edit of a card deleted meanwhile is refused and never adds the card again', async t => {
+  const ctx = await setup(t);
+  const { $, win } = ctx;
+  await goTo(ctx, '#/kanban');
+  await savedStageProject(ctx, 'Work');
+  await newCard(ctx, 'Gone', 'Prompt');
+  cardItem(ctx, 'Gone').querySelector('.kanban-open').click();
+  $('#card-prompt').value = 'Edited after it was deleted';
+  const [card] = await serverTasks(ctx);
+  await ctx.app.board.deleteTask(card.id, { expectedRevision: card.revision, keepFiles: true });
+  await win.__pbTest.loadBoard(); await ctx.idle();
+  submitForm(ctx, '#card-form'); await ctx.idle();
+  assert.match($('#card-error').textContent, /deleted meanwhile/);
+  assert.equal($('#card-prompt').value, 'Edited after it was deleted', 'the typed text is kept');
+  assert.deepEqual(await serverTasks(ctx), []);
+});
+
+test('a prompt saved in another tab stays in History when this tab saves the next one', async t => {
+  const { $, win, submit, requests } = await setup(t, { generationResponse: { prompt: 'Add a test.', verification: report() } });
+  const other = { id: 'other-tab', input: 'From the other tab', prompt: 'Other prompt', createdAt: Date.now(), provider: 'codex' };
+  win.localStorage.setItem(HISTORY_KEY, JSON.stringify([other]));
+  win.dispatchEvent(new win.StorageEvent('storage', { key: HISTORY_KEY, newValue: JSON.stringify([other]) }));
+  $('#prompt-input').value = 'Add a test.'; submit();
+  await until(() => !$('#generate-button').disabled && requests.length === 1, 'result');
+  assert.deepEqual(JSON.parse(win.localStorage.getItem(HISTORY_KEY)).map(entry => entry.prompt), ['Add a test.', 'Other prompt']);
 });

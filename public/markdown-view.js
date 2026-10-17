@@ -100,7 +100,9 @@ window.PromptboardMarkdown = (() => {
         };
         out.append(build(root.children)); continue;
       }
-      const paragraph = [];
+      // This line matched no block above (for example "```npm test```", a fence with code on its own line), so it
+      // starts a paragraph; taking it first means the loop always moves on.
+      const paragraph = [source[index++]];
       while (index < source.length && source[index].trim() && !ANCHOR.test(source[index]) && !/^ {0,3}(`{3,}|~{3,}|#{1,6}\s|>)/.test(source[index]) && !(paragraph.length && listItem.test(source[index]))) paragraph.push(source[index++]);
       out.append(lines(paragraph, el('p')));
     }

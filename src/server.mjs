@@ -15,6 +15,7 @@ import { AUTH_CAPABILITIES, logout, readAuthStatus, startLogin } from './auth.mj
 import { Board, BoardError, columnStage } from './board.mjs';
 import { GitError } from './git.mjs';
 import { defaultDataDir, StoreError } from './store.mjs';
+import { lockDataDir } from './instance-lock.mjs';
 import { loadPty, Supervisor } from './supervisor.mjs';
 import { AgentError } from './agents.mjs';
 import { DeliveryError } from './delivery.mjs';
@@ -22,6 +23,7 @@ import { discoverModels, checkModelEffort } from './models.mjs';
 import { chooseFolder } from './folder.mjs';
 import { Autopilot } from './autopilot.mjs';
 import { GitHubError, GitHubLogin, githubStatus, listRepositories } from './github.mjs';
+import { RemoteAccess, remoteRoute } from './remote-access.mjs';
 import { BaseRoutes } from './base-http.mjs';
 import { BaseError } from './base.mjs';
 import { BaseDeliveryError } from './base-resolver.mjs';
@@ -197,6 +199,7 @@ async function boardRoute(board, req, res, pathname, searchParams, origin) {
     if (method === 'GET' && action === 'timeline') return send(res, 200, { events: await board.timeline(id) });
     if (method === 'POST' && action === 'timeline') return send(res, 200, { note: await board.addTimelineNote(id, await body()) });
     if (method === 'POST' && action === 'github') return view({ project: await board.connectGitHub(id, await body()) });
+    if (method === 'GET' && action === 'github-remote') return view({ repository: await board.githubRemote(id) });
     if (method === 'DELETE' && action === 'github') return view({ project: await board.disconnectGitHub(id, { expectedRevision: expected() }) });
     if (method === 'POST' && action === 'github-fetch') return view({ project: await board.fetchGitHub(id) });
     if (method === 'POST' && action === 'github-update') return view({ project: await board.updateTargetFromGitHub(id, await body()) });
@@ -239,7 +242,7 @@ async function boardRoute(board, req, res, pathname, searchParams, origin) {
     if (method === 'GET' && action === 'automations') return send(res, 200, { moves: await board.automationRuns(id) });
     if (method === 'POST' && action === 'cancel-automations') return view({ task: await board.cancelAutomationMove(id, await body()) });
     if (method === 'POST' && action === 'merge-now') { await body(); return view(await board.mergeNow(id)); }
-    if (method === 'POST' && action === 'start-over') { const { expectedRevision, reason, startExecuting, confirm } = await body(); return view(await board.startOver(id, { expectedRevision, reason, startExecuting: startExecuting === true, confirm: confirm === true })); }
+    if (method === 'POST' && action === 'start-over') { const { expectedRevision, reason, startExecuting, confirm, deleteIgnored } = await body(); return view(await board.startOver(id, { expectedRevision, reason, startExecuting: startExecuting === true, confirm: confirm === true, deleteIgnored: deleteIgnored === true })); }
     if (method === 'POST' && action === 'restart-sessions') { const { expectedRevision } = await body(); return view({ task: await board.restartTaskSessions(id, { expectedRevision }) }); }
     if (method === 'POST' && action === 'restore-worktree') { await body(); await board.restoreTaskWorktree(id); return view({ task: (await board.state()).projects.flatMap(project => project.tasks).find(task => task.id === id) }); }
     if (method === 'POST' && action === 'complete-stage') { const { runId } = await body(); return view(await board.completeStage(id, { runId })); }
@@ -248,7 +251,7 @@ async function boardRoute(board, req, res, pathname, searchParams, origin) {
     if (method === 'POST' && action === 'prerequisites') return view({ task: await board.clearPrerequisite(id, await body()) });
     if (method === 'POST' && action === 'runs') return view({ run: await board.requestRun(id, await body()) });
     if (method === 'POST' && action === 'resume') return view({ run: await board.resumeTask(id, await body(128 * 1024)) });
-    if (method === 'DELETE' && action === 'worktree') return view({ task: await board.removeTaskWorktree(id) });
+    if (method === 'DELETE' && action === 'worktree') return view({ task: await board.removeTaskWorktree(id, { deleteIgnored: searchParams.get('deleteIgnored') === '1' }) });
     // Review, testing, merge, and completion (PB-04). Every change needs an explicit confirm flag.
     const delivery = board.delivery;
     if (method === 'GET' && action === 'revision') return send(res, 200, { revision: await delivery.revision(id) });
@@ -306,7 +309,9 @@ function streamRun(supervisor, req, res, runId, after) {
 }
 
 export async function startServer({ batchTimeoutMs, port = 4318, runner = runProvider, detector = detectProviders, catalogReader = discoverModels, authAdapter = auth, dataDir = defaultDataDir(), projectsDir, executor = 'auto', folderPicker = chooseFolder, githubPty = loadPty, usageReader, mcpTester, imageGenerator, composeMcp, researchRunner = streamResearch } = {}) {
-  // The board loads lazily, so starting the server never reads or writes board files.
+  if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('The port must be 0–65535.');
+  // One app per data folder; the board itself loads lazily, so starting never reads or writes board files.
+  const lock = await lockDataDir(dataDir);
   const usage = usageReader || new UsageDashboard({ dataDir });
   const notifications = new PipelineNotifications();
   const board = new Board({ dataDir, ...(projectsDir ? { projectsDir } : {}), automationActions: new PipelineActions({ notifier: (message, options) => notifications.deliver(message, options) }) });
@@ -316,7 +321,6 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
   // Autopilot runs only for projects where the user started it; otherwise each tick does nothing.
   const autopilot = new Autopilot(board);
   if (board.executor) autopilot.start();
-  if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('The port must be 0–65535.');
   const token = randomBytes(32).toString('hex');
   const catalogAbort = new AbortController();
   const catalogs = new Map(), lookups = new Map();
@@ -345,7 +349,7 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
     // A just-cancelled generation may still be stopping its CLI. Wait briefly for it.
     if (busy?.controller.signal.aborted) await Promise.race([busy.done, new Promise(resolve => setTimeout(resolve, 5000).unref())]);
     // Changing sign-in under a running agent session would break it.
-    if (kind === 'auth' && board.executor?.activeCount?.() > 0) throw Object.assign(new ProviderError('Agent sessions are running. Stop them before you change sign-in.', 'RUNS_ACTIVE'), { status: 409 });
+    if (kind === 'auth' && (board.executor?.pendingCount?.() ?? board.executor?.activeCount?.()) > 0) throw Object.assign(new ProviderError('Agent sessions are running. Stop them before you change sign-in.', 'RUNS_ACTIVE'), { status: 409 });
     if (kind === 'auth' && batches.activeCount() > 0) throw Object.assign(new ProviderError('Compose Batch is running. Wait for it or cancel it before you change sign-in.', 'RUNS_ACTIVE'), { status: 409 });
     if (busy) {
       throw Object.assign(new ProviderError(busy.kind === 'auth' ? 'A sign-in change is in progress. Finish or cancel it first.' : 'A prompt is already in progress. Wait or cancel that prompt.', busy.kind === 'auth' ? 'AUTH_IN_PROGRESS' : 'BUSY'), { status: 409 });
@@ -355,7 +359,7 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
     busy = { kind, provider, stage: 'starting', startedAt: Date.now(), controller: new AbortController(), done };
     const job = busy;
     return { job, release: () => {
-      const free = () => { if (busy === job) busy = null; release(); };
+      const free = () => { if (busy === job) busy = null; release(); if (job.kind === 'auth') board.executor?.wake?.(); };
       if (!job.controller.signal.aborted || closing) { free(); return; }
       // The UI can finish cancelling before provider pipes have closed. Keep the
       // slot until tracked cleanup settles; a broken injected adapter is bounded.
@@ -385,29 +389,39 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
   // Compose Batch has its own bounded pool beside the one-job slot: each task is one tracked Compose run.
   const batches = new ComposeBatches({ dataDir, origin, board, track, call: input => track(runner(input)), authBusy: () => busy?.kind === 'auth', ...(batchTimeoutMs ? { timeoutMs: batchTimeoutMs } : {}),
     generate: (request, options) => generate(request, { runner: call => track(runner(call)), catalogReader: provider => getCatalog(provider, { maxAgeMs: Infinity }), ...options }) });
+  if (board.executor) board.executor.authBusy = () => busy?.kind === 'auth'; // Kanban runs wait while sign-in changes.
   const baseRoutes = new BaseRoutes({ board, runner, claim, track, catalog: getCatalog, send, jsonBody, ...(mcpTester ? { mcpTester } : {}), imageGenerator });
   let composeContext;
   const getCompose = () => composeContext ??= import('./compose-context.mjs').then(({ ComposeContext }) => new ComposeContext(composeMcp ? { mcp: composeMcp } : {}));
-  let closing = false;
-  const handle = async (req, res) => {
+  let closing = false, remoteAccess = null;
+  // `remote` is a paired device, already checked by the remote listener (its host, origin and session).
+  const handle = async (req, res, remote = null) => {
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
     if (closing) { res.setHeader('Connection', 'close'); return send(res, 503, { error: 'The app is shutting down.', code: 'SHUTTING_DOWN' }); }
-    const actualPort = server.address()?.port;
-    const allowedHosts = [`127.0.0.1:${actualPort}`, `localhost:${actualPort}`];
-    const allowedOrigins = allowedHosts.map(host => `http://${host}`);
-    if (!allowedHosts.includes(req.headers.host)) return send(res, 403, { error: 'This server accepts local requests only.' });
-    if (req.headers.origin && !allowedOrigins.includes(req.headers.origin)) return send(res, 403, { error: 'This origin is not allowed.' });
+    if (!remote) {
+      const actualPort = server.address()?.port;
+      const allowedHosts = [`127.0.0.1:${actualPort}`, `localhost:${actualPort}`];
+      const allowedOrigins = allowedHosts.map(host => `http://${host}`);
+      if (!allowedHosts.includes(req.headers.host)) return send(res, 403, { error: 'This server accepts local requests only.' });
+      if (req.headers.origin && !allowedOrigins.includes(req.headers.origin)) return send(res, 403, { error: 'This origin is not allowed.' });
+      // A proxy in front of the local app (one that rewrites Host) would skip pairing: those requests are refused.
+      if (['x-forwarded-for', 'x-forwarded-host', 'x-forwarded-proto', 'x-real-ip', 'forwarded', 'via', 'tailscale-user-login', 'tailscale-funnel-request'].some(name => req.headers[name] !== undefined)) {
+        return send(res, 403, { error: 'This port accepts direct local requests only. For other devices, turn on Remote access in Settings.', code: 'PROXY_REFUSED' });
+      }
+    }
     if (req.headers['sec-fetch-site'] === 'cross-site') return send(res, 403, { error: 'Cross-site requests are not allowed.' });
     let requestUrl;
     try { requestUrl = new URL(req.url, 'http://127.0.0.1'); } catch { return send(res, 400, { error: 'This request address is not valid.', code: 'INVALID_URL' }); }
     const pathname = requestUrl.pathname;
     const isApi = pathname.startsWith('/api/') && pathname !== '/api/session';
     if (isApi && req.headers['x-ste-token'] !== token) return send(res, 403, { error: 'Reload this page before you try again.' });
-    if (req.method === 'GET' && pathname === '/api/session') return send(res, 200, { token, capabilities: { pipelineTitleOnly: true, pipelineBulkRestore: true, pipelineDeferredMessages: true, taskPriority: true, taskLabels: true } });
+    if (pathname.startsWith('/api/remote') && remote) return send(res, 403, { error: 'Remote access is managed on the computer that runs Promptboard.', code: 'REMOTE_LOCAL_ONLY' });
+    if (pathname.startsWith('/api/remote')) return remoteAccess ? remoteRoute(remoteAccess, req, res, pathname, { jsonBody, send }) : send(res, 503, { error: 'The app is starting. Try again.' }); // Local only: the remote listener refuses these.
+    if (req.method === 'GET' && pathname === '/api/session') return send(res, 200, { token, ...(remote ? { remote: { name: remote.name } } : {}), capabilities: { pipelineTitleOnly: true, pipelineBulkRestore: true, pipelineDeferredMessages: true, taskPriority: true, taskLabels: true } });
     if (/^\/api\/notifications(?:\/|$)/.test(pathname)) {
       try { return await notificationRoute(notifications, req, res, pathname, { jsonBody, send }); }
       catch (error) {
@@ -672,15 +686,21 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
   server.requestTimeout = 30_000;
   server.headersTimeout = 15_000;
   server.keepAliveTimeout = 2_000;
-  await new Promise((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(port, '127.0.0.1', resolve);
-  });
+  try {
+    await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(port, '127.0.0.1', resolve);
+    });
+  } catch (error) { autopilot.stop(); await lock.release(); throw error; }
+  await lock.setPort(server.address().port);
+  // Remote access stays off unless it was turned on; a listener that cannot start is reported in Settings.
+  remoteAccess = await new RemoteAccess({ dataDir, localPort: server.address().port, handle: (req, res, who) => handle(req, res, who) }).load();
   let closed;
   // Idempotent and bounded: stop accepting, cancel owned work, close sockets, then
   // SIGKILL any owned CLI process group that is still alive.
   const close = ({ graceMs = 4000 } = {}) => closed ??= (async () => {
     closing = true;
+    await remoteAccess?.shutdown();
     notifications.close();
     const listening = new Promise(resolve => server.close(() => resolve()));
     busy?.controller.abort();
@@ -705,6 +725,7 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
     killOwnedProcesses('SIGKILL');
     server.closeAllConnections();
     await listening;
+    await lock.release();
   })();
   return { server, url: `http://127.0.0.1:${server.address().port}`, close, board };
 }

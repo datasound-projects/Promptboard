@@ -131,3 +131,27 @@ test('Compose Batch: Origin selection → parallel generation → review and edi
   await until(`!document.querySelector('#prompt-output').hidden && document.querySelector('#prompt-output').textContent.includes('Add a dark mode toggle')`, 'single generated');
   assert.deepEqual(errors, []);
 });
+
+test('a model saved in Batch settings keeps the CLI it was chosen for', { skip, timeout: 120000 }, async t => {
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [{ id: 'codex', available: true }, { id: 'claude', available: true }], authAdapter: { installed: async () => true, status: async () => ({ state: 'signed-in' }) }, runner });
+  const store = new OriginStore(app.board.store.dir);
+  let record = await store.create({ name: 'Shop' });
+  const blueprint = Model.emptyBlueprint();
+  blueprint.items.push({ id: 'i1', key: 'IMP-001', title: 'Set up', description: 'Create the project.', acceptanceCriteria: 'npm test runs', dependsOn: [] });
+  record = await store.write(record.id, { expectedRevision: record.revision, blueprint });
+  const token = (await (await fetch(`${app.url}/api/session`)).json()).token;
+  const call = (path, body) => fetch(`${app.url}/api/compose/batches${path}`, { method: body ? 'POST' : 'GET', headers: { 'X-STE-Token': token, ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) }).then(r => r.json());
+  await call('', { originId: record.id, expectedRevision: record.revision, itemIds: ['i1'], defaults: { provider: 'codex' } });
+  const browser = await launch(); if (!browser) { t.skip('Chrome did not start.'); return; } t.after(() => browser.close());
+  await browser.resize(1360, 900);
+  const ev = expression => browser.eval(expression), until = (expression, label, ms = 30000) => browser.until(expression, label, ms);
+  await browser.goto(`${app.url}/#/`);
+  await until(`!!document.querySelector('#compose-mode-batch')`, 'Compose');
+  await ev(`document.querySelector('#compose-mode-batch').click();`);
+  await until(`document.querySelectorAll('.batch-row').length === 1`, 'batch shown');
+  await ev(`const d = document.querySelector('#batch-advanced'); d.open = true; d.querySelector('.batch-details').open = true;`);
+  await ev(`const panel = document.querySelector('#batch-advanced .batch-settings'); const model = [...panel.querySelectorAll('label')].find(l => l.textContent.startsWith('Model')).querySelector('input'); model.value = 'gpt-5.5'; [...document.querySelectorAll('#batch-advanced button')].find(b => b.textContent === 'Save settings').click();`);
+  await until(`/Batch settings saved/.test(document.body.textContent)`, 'saved');
+  const { batch } = await call(`/${record.id}`);
+  assert.deepEqual([batch.settings.provider, batch.settings.model], ['codex', 'gpt-5.5']);
+});

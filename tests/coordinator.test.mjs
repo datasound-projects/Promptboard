@@ -81,6 +81,7 @@ test('chat is read-only, scoped, cached and isolated per project', async t => {
   assert.equal(cached.cached, true); assert.equal(calls.length, 1);
   await coordinator.ask(project.id, { question: 'What is the overall progress?', provider: 'codex' }, { runner });
   assert.equal(calls[1].prompt.includes(SECRET_SPEC), false, 'a project question does not copy card texts');
+  assert.match(calls[1].prompt, /Repository: not linked · target branch not set\./, 'the repository is named, never a local path');
   assert.equal(JSON.stringify(await board.state()), before, 'asking changes nothing on the board');
   // Questions about another project's card are refused; chats stay apart.
   await assert.rejects(coordinator.ask(project.id, { question: 'And this?', scope: { kind: 'task', id: foreign.id }, provider: 'codex' }, { runner }), { code: 'NOT_FOUND' });

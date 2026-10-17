@@ -23,6 +23,7 @@ function applyDockHeight() {
   const height = dock.state === 'collapsed' ? barHeight + promptHeight + 1 : Math.max(Math.min(limit, barHeight + promptHeight + 80), Math.max(160, Math.min(limit, dock.height)));
   $('#dock').style.height = dock.state === 'max' ? '' : `${height}px`;
   view.style.setProperty('--dock-height', `${dock.state === 'max' ? dock.height : height}px`);
+  document.documentElement.style.setProperty('--dock-height', `${dock.state === 'max' ? dock.height : height}px`); // For the minimized file chips.
   $('#dock-divider').setAttribute('aria-valuenow', String(height));
   $('#dock-divider').setAttribute('aria-valuemax', String(limit));
   fitBoardHeight(true);
@@ -177,6 +178,8 @@ async function streamSession(session) {
       // fetch keeps the session token in a header; it never appears in a URL.
       const response = await fetch(`/api/runs/${encodeURIComponent(session.runId)}/stream?after=${session.lastSeq}`, { cache: 'no-store', headers: { 'X-STE-Token': token }, signal: controller.signal });
       if (response.status === 404) { await replayRecordedOutput(session); markEnded(session); return; }
+      // The app restarted: this page's session is no longer valid, and retrying every second cannot fix that.
+      if (response.status === 403 || response.status === 401) { session.connection = 'stale'; renderDockConnection(session); return; }
       if (!response.ok || !response.body) throw new Error('stream');
       session.connection = 'connected';
       renderDockConnection(session);
@@ -309,11 +312,12 @@ function renderDockDetails(session) {
 function renderDockConnection(session = dock.sessions.get(dock.selected)) {
   if (!session || session.closed || session.runId !== dock.selected || typeof document === 'undefined') return;
   const status = $('#dock-connection'); status.hidden = false;
-  status.classList.toggle('kanban-error', session.connection === 'reconnecting');
+  status.classList.toggle('kanban-error', ['reconnecting', 'stale'].includes(session.connection));
   status.textContent = session.savedOutput ? 'Saved output · this session has ended.'
     : session.connection === 'ended' ? 'Session ended · output remains available.'
     : session.connection === 'connecting' ? 'Connecting to the agent terminal…'
     : session.connection === 'reconnecting' ? 'Connection lost. Reconnecting to this agent…'
+    : session.connection === 'stale' ? 'Promptboard restarted. Reload this page to reconnect to this agent.'
     : session.lastOutputAt ? `Connected · last output ${Math.max(0, Math.floor((Date.now() - session.lastOutputAt) / 1000))}s ago.`
     : session.run.status === 'queued' ? 'Connected · waiting for an agent slot.' : 'Connected · waiting for CLI output. Check the terminal for a startup or permission question.';
 }

@@ -118,7 +118,10 @@ function promptBody(value) {
 function settingsOf(value = {}) {
   const v = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   const pick = (key, max) => (typeof v[key] === 'string' ? v[key].slice(0, max) : '');
-  return { provider: PROVIDERS.includes(v.provider) ? v.provider : '', model: pick('model', 100), effort: pick('effort', 20), language: pick('language', 10), quality: pick('quality', 20), task: pick('task', 40), detail: pick('detail', 20) };
+  return { provider: PROVIDERS.includes(v.provider) ? v.provider : '', model: pick('model', 100), effort: pick('effort', 20), language: pick('language', 10), quality: pick('quality', 20), task: pick('task', 40), detail: pick('detail', 20),
+    // Compose's option switches and terminology, so opening the prompt again restores how it was made.
+    options: Object.fromEntries(Object.entries(v.options && typeof v.options === 'object' && !Array.isArray(v.options) ? v.options : {}).filter(([key, flag]) => /^[A-Za-z]{1,40}$/.test(key) && typeof flag === 'boolean').slice(0, 20)),
+    terminology: pick('terminology', 2000) };
 }
 function originLinks(value) {
   if (value === undefined) return [];

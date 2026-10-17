@@ -74,6 +74,7 @@ export class Supervisor {
     this.nodePath = nodePath;
     this.basePreparer = basePreparer;
     this.preparing = new Map();
+    this.authBusy = () => false; // Set by the server: true while a CLI sign-in change runs.
     this.sessions = new Map(); // runId -> session
     this.queue = [];
     this.heldQueue = new Set();
@@ -100,6 +101,10 @@ export class Supervisor {
   }
 
   activeCount() { return [...this.sessions.values()].filter(session => session.proc).length; }
+  /** Runs that hold or wait for an agent: a sign-in change must not start under any of them. */
+  pendingCount() { return this.activeCount() + this.queue.length + this.preparing.size; }
+  /** Start queued runs that waited, e.g. for a sign-in change to finish. */
+  wake() { this.#pump(); }
 
   async limit() { return (await this.board.state()).settings.maxConcurrentRuns || 1; }
 
@@ -114,6 +119,7 @@ export class Supervisor {
     this.pumping = (async () => {
       while (this.queue.length && !this.stopping) {
         if (this.activeCount() >= await this.limit()) break;
+        if (this.authBusy()) break; // Credentials are being changed: queued runs wait and start after it (wake).
         // Re-read after the await: a cancel may have emptied the queue. A held entry keeps its place
         // (it starts before later entries once released) but never blocks later runnable entries.
         const index = this.queue.findIndex(item => !this.heldQueue.has(item.runId));

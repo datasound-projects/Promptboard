@@ -103,7 +103,7 @@ window.PromptboardOriginResearch = (() => {
       if (isOpen || minimized) { keepDraft(); isOpen = false; minimized = false; hide(); }
       if (running) { running.switched = true; running.controller.abort(); } // A run belongs to its project; its partial answer is kept.
       projectId = id; chats = null; chat = null; chatsQuery = ''; panel = 'chat'; error = ''; confirmDelete = null;
-      settings.scope = { kind: 'project' }; settings.web = false;
+      settings.scope = { kind: 'project' }; settings.web = false; settings.targets = []; // Swarm targets name this project's records.
       renderButton();
     }
 
@@ -438,7 +438,9 @@ window.PromptboardOriginResearch = (() => {
       return { value, edited: true };
     }
     async function decide(proposal, status, extra = {}) {
-      const { response, data } = await api(`/chats/${chat.id}/proposals/${proposal.id}`, { method: 'PATCH', body: { status, ...extra } });
+      const id = chat.id;
+      const { response, data } = await api(`/chats/${id}/proposals/${proposal.id}`, { method: 'PATCH', body: { status, ...extra } });
+      if (chat?.id !== id) return; // Another chat or project was opened meanwhile; this one keeps its saved state.
       if (response.ok) chat = { ...chat, proposals: data.proposals }; else error = data.error || 'The suggestion state could not be saved.';
       if (status !== 'conflict') { cards.delete(proposal.id); selected.delete(proposal.id); }
       render();
@@ -447,11 +449,13 @@ window.PromptboardOriginResearch = (() => {
     /** New records already created from this chat's suggestions, by their batch reference. */
     const createdRefs = () => new Map((chat?.proposals || []).filter(entry => entry.ref && entry.createdId).map(entry => [entry.ref, entry.createdId]));
     async function applyOne(proposal, { force = false, refs = createdRefs(), pending = [] } = {}) {
-      const { value, edited } = chosenValue(proposal);
+      const { value, edited } = chosenValue(proposal), owner = chat?.id;
+      linksFor(owner);
       const result = host.applyProposal(proposal, { force, value, refs });
       if (result.ok) {
         pending.push(...(result.pending || []));
         await decide(proposal, 'applied', { edited, revision: host.revision(), ...(result.created ? { createdId: result.created.id } : {}) });
+        if (chat?.id !== owner) return 'applied'; // Its links belong to the project that was open.
         // A single apply can complete links that earlier suggestions made to this record.
         if (result.created && proposal.ref) host.resolveLinks?.(pendingLinks.splice(0), refs).forEach(link => pendingLinks.push(link));
         if (result.pending?.length) pendingLinks.push(...result.pending);
@@ -460,18 +464,25 @@ window.PromptboardOriginResearch = (() => {
       if (result.conflict) { cards.set(proposal.id, { ...cards.get(proposal.id), conflict: result.conflict, preview: true }); await decide(proposal, 'conflict'); return 'conflict'; }
       error = result.error || 'The suggestion could not be applied.'; render(); return 'error';
     }
-    // Links to new records that are not applied yet; completed when those records are applied.
+    // Links to new records that are not applied yet; completed when those records are applied. They belong to one
+    // chat (its batch references) and are dropped when another chat or project is opened.
     const pendingLinks = [];
+    let linksChat = null;
+    const linksFor = id => { if (linksChat !== id) { pendingLinks.length = 0; linksChat = id; } };
     /** Apply several suggestions: new records first (what others link to comes first), then field changes, then links. */
     async function applyMany(ids) {
       applying = true; render();
       const counts = { applied: 0, conflict: 0, error: 0 }, refs = createdRefs();
       const chosen = ids.map(id => chat?.proposals?.find(entry => entry.id === id)).filter(entry => entry && ['pending', 'conflict'].includes(entry.status))
         .sort((a, b) => M().researchApplyOrder(a) - M().researchApplyOrder(b));
-      for (const proposal of chosen) counts[await applyOne(proposal, { force: false, refs })]++;
-      const left = host.resolveLinks?.(pendingLinks.splice(0), refs) || [];
-      pendingLinks.push(...left);
-      applying = false; selected.clear();
+      // Each suggestion belongs to this chat's project: opening another project or chat stops the rest.
+      const owner = chat?.id, here = () => chat?.id === owner;
+      let left = [];
+      try {
+        for (const proposal of chosen) { if (!here()) break; counts[await applyOne(proposal, { force: false, refs })]++; }
+        if (here()) { left = host.resolveLinks?.(pendingLinks.splice(0), refs) || []; pendingLinks.push(...left); }
+      } finally { applying = false; selected.clear(); }
+      if (!here()) return;
       await host.saveNow?.();
       app.announce(`Applied ${counts.applied}${counts.conflict ? `; ${counts.conflict} conflict${counts.conflict === 1 ? '' : 's'} need${counts.conflict === 1 ? 's' : ''} your choice` : ''}${left.length ? `; ${left.length} link${left.length === 1 ? '' : 's'} wait for records that are not applied` : ''}.`);
       render();

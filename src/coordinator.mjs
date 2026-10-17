@@ -175,6 +175,9 @@ export class Coordinator {
     };
     const over = overview(project, runs, index);
     lines.push(`Project “${project.name}”. Columns: ${over.columns.map(column => `${column.name} ${column.count}`).join(', ')}. ${over.progress.done} of ${over.progress.total} cards done${over.progress.unmerged ? ` (${over.progress.unmerged} without merging)` : ''}.`);
+    // Names only, never local paths: this text can reach a cloud-backed CLI.
+    const gh = project.github, sync = gh?.sync?.sync ? gh.sync.sync.replace(/_/g, ' ') : 'not fetched yet';
+    lines.push(`Repository: ${gh ? `GitHub ${gh.nameWithOwner}${gh.private ? ' (private)' : ''}, ${sync}` : project.repository ? 'a local folder (not on GitHub)' : 'not linked'} · target branch ${project.targetBranch?.name || 'not set'}.`);
     lines.push('Active agents:', ...(over.agents.length ? over.agents.map(agent => `- [${runRef(runs.find(run => run.id === agent.runId))}] on [${taskRef(byId.get(agent.taskId))}] in ${agent.column}: ${agent.status}${agent.needsYou ? ' (waiting for the user)' : ''}`) : ['- none']));
     lines.push('Blockers:', ...(over.blockers.length ? over.blockers.map(blocker => `- ${blocker.taskId ? `[${taskRef(byId.get(blocker.taskId))}] ` : ''}${blocker.text}`) : ['- none']));
     const taskEvents = taskId => index.events.filter(event => event.task === taskId);

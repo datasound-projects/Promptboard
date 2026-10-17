@@ -186,7 +186,8 @@ window.PromptboardCoordinator = (() => {
       const box = button('', () => { if (!justDragged()) setLayout({ mini: false }, layout.mode === 'float' ? 'coordinator-dock' : 'coordinator-toggle'); }, 'coordinator-mini', 'Open Coordinator');
       box.id = 'coordinator-mini'; box.setAttribute('aria-label', 'Open Coordinator');
       const icon = svg(ICON); icon.classList.add('coordinator-icon');
-      const needs = data ? data.agents.filter(agent => agent.needsYou).length + data.blockers.length : 0;
+      // An Off Coordinator's view has no agents or blockers.
+      const needs = !off && data?.agents ? data.agents.filter(agent => agent.needsYou).length + (data.blockers?.length || 0) : 0;
       const summary = off ? 'Off' : asking.has(projectId) ? 'Thinking…' : data ? (needs ? `${needs} need${needs === 1 ? 's' : ''} attention` : `${data.agents.length} active · ${data.progress.done}/${data.progress.total} done`) : '…';
       box.append(icon, el('strong', '', 'Coordinator'), el('span', `coordinator-mini-status${needs && !off ? ' is-alert' : ''}`, summary));
       draggable(box, (x, y) => Object.assign(layout, { mx: x, my: y }));

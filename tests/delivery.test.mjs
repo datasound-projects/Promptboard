@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Board } from '../src/board.mjs';
 import { Supervisor } from '../src/supervisor.mjs';
-import { Delivery, parseCommand, parseFindings } from '../src/delivery.mjs';
+import { Delivery, parseCommand, parseFindings, startArgv } from '../src/delivery.mjs';
 import { resolveConfig } from '../src/agents.mjs';
 
 const skip = process.platform === 'win32';
@@ -586,4 +586,58 @@ test('the destination column alone decides what runs: skipped stages never run, 
   const reloaded = new Board({ dataDir: w.board.dataDir });
   const columns = Object.fromEntries((await reloaded.view()).projects[0].tasks.map(task => [task.title, task.column]));
   assert.deepEqual(columns, { Direct: 'todo', Planned: 'executing', Ahead: 'todo', Twice: 'executing', Again: 'executing' });
+});
+
+test('a merge that the card cannot complete changes nothing; the automation move that owns the merge may complete it', { skip, timeout: 120000 }, async t => {
+  const w = await world(t);
+  const task = await w.task('Change value', 'Set the value to two.');
+  await writeFile(join(await w.workspace(task.id), 'feature.txt'), 'two\n');
+  await w.board.delivery.setTestCommands(w.project.id, { commands: [{ command: `${process.execPath} -e "process.exit(0)"`, label: 'unit' }], expectedRevision: (await w.board.view()).projects[0].revision });
+  await w.delivery.commit(task.id, { message: 'Set two', confirm: true });
+  await w.move(task.id, 'code_review'); await w.review(task.id); await w.delivery.acceptReview(task.id);
+  await w.move(task.id, 'testing'); assert.equal((await w.tests(task.id)).status, 'passed');
+  await w.move(task.id, 'merge');
+  const view = await w.delivery.mergePreview(task.id);
+  assert.equal(view.eligible, true, view.problems.join(' '));
+  // Another column automation is still running for this card: the merge is refused before the target moves.
+  w.board.automationMoves.set(task.id, { key: { projectId: w.project.id, taskId: task.id, transitionId: 'move-1' }, blocked: false });
+  t.after(() => w.board.automationMoves.delete(task.id));
+  await assert.rejects(w.delivery.merge(task.id, { confirm: true, taskCommit: view.taskCommit, targetCommit: view.targetCommit }), { code: 'AUTOMATIONS_ACTIVE' });
+  assert.equal(git(w.root, 'rev-parse', 'trunk'), view.targetCommit, 'the target branch did not move');
+  assert.equal((await w.current(task.id)).column, 'merge');
+  // The move into Merge that runs this automatic merge owns it, so it may complete the card.
+  const done = await w.delivery.merge(task.id, { confirm: true, taskCommit: view.taskCommit, targetCommit: view.targetCommit, owner: { transitionId: 'move-1' } });
+  assert.deepEqual([done.column, done.completion.kind, git(w.root, 'rev-parse', 'trunk')], ['done', 'merged', view.taskCommit]);
+});
+
+test('removing a worktree never deletes files Git ignores without a yes; an unfinished worktree creation recovers', { skip, timeout: 120000 }, async t => {
+  const w = await world(t);
+  await writeFile(join(w.root, '.gitignore'), '.env\n'); git(w.root, 'add', '.gitignore'); git(w.root, 'commit', '-q', '-m', 'ignore env');
+  const task = await w.task('Keep env', 'Do it.');
+  const path = await w.workspace(task.id);
+  await writeFile(join(path, '.env'), 'SECRET=1\n');
+  assert.deepEqual((await w.delivery.revision(task.id)).ignored, ['.env'], 'the card shows the ignored files before any removal');
+  await assert.rejects(w.board.removeTaskWorktree(task.id), { code: 'WORKTREE_IGNORED_FILES', message: /\.env/ });
+  assert.equal(await readFile(join(path, '.env'), 'utf8'), 'SECRET=1\n', 'the file is still there');
+  await w.board.removeTaskWorktree(task.id, { deleteIgnored: true });
+  assert.equal((await w.current(task.id)).workspace, null);
+  // A creation that stopped half-way (the app quit after saving "creating"): with nothing on disk it starts again.
+  const other = await w.board.createTask({ projectId: w.project.id, title: 'Interrupted', prompt: 'x' });
+  await w.board.store.update(state => { const card = state.projects[0].tasks.find(item => item.id === other.id); card.workspace = { status: 'creating', branch: 'promptboard/never-made', path: join(path, '..', 'never-made'), repositoryRoot: w.root, commonDir: join(w.root, '.git'), baseCommit: '', targetBranch: 'trunk', createdAt: 1 }; card.revision++; });
+  const made = await w.board.ensureTaskWorktree(other.id);
+  assert.equal(made.status, 'ready');
+  // A creation whose Git step finished before the app quit is taken as it is.
+  await w.board.store.update(state => { const card = state.projects[0].tasks.find(item => item.id === other.id); card.workspace = { ...card.workspace, status: 'creating' }; card.revision++; });
+  assert.equal((await w.board.ensureTaskWorktree(other.id)).path, made.path);
+  assert.equal((await w.current(other.id)).workspace.status, 'ready');
+});
+
+test('on Windows, npm and npx test commands start through Node without a shell; other commands start as written', () => {
+  const win = { platform: 'win32', execPath: 'C:/node/node.exe', exists: () => true };
+  const [node, cli, ...rest] = startArgv(['npm', 'test', '--', '--grep', 'a & b'], win);
+  assert.deepEqual([node, cli.replace(/\\/g, '/'), rest], ['C:/node/node.exe', 'C:/node/node_modules/npm/bin/npm-cli.js', ['test', '--', '--grep', 'a & b']]);
+  assert.match(startArgv(['NPX.cmd', 'vitest'], win)[1], /npx-cli\.js$/);
+  assert.deepEqual(startArgv(['pytest', '-q'], win), ['pytest', '-q']);
+  assert.deepEqual(startArgv(['npm', 'test'], { ...win, exists: () => false }), ['npm', 'test'], 'no bundled npm: started as written');
+  assert.deepEqual(startArgv(['npm', 'test'], { ...win, platform: 'darwin' }), ['npm', 'test']);
 });

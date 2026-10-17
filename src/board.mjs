@@ -14,11 +14,11 @@ import { Store, draftsToCards } from './store.mjs';
 import { taskPriority } from './task-priority.mjs';
 import { taskLabels, taskLabelIds, labelRevision } from './task-labels.mjs';
 import { assignTaskNumbers, allocateTaskNumber, validateTaskNumbers } from './task-numbers.mjs';
-import { branchExists, commitExists, git, GitError, initRepository, listWorktrees, repositoryIdentity, validateRepository } from './git.mjs';
+import { branchExists, commitExists, git, GitError, ignoredFiles, initRepository, listWorktrees, repositoryIdentity, validateRepository } from './git.mjs';
 import { ADAPTERS, resolveConfig, validateResumeId } from './agents.mjs';
 import { validateEffort } from './providers.mjs';
 import { Delivery } from './delivery.mjs';
-import { ensureClone, fastForward, fetchAndCompare, viewRepository } from './github.mjs';
+import { clonePath, ensureClone, fastForward, fetchAndCompare, originRepository, viewRepository } from './github.mjs';
 import { externalIssueSource } from './external-source.mjs';
 import { buildTimeline } from './timeline.mjs';
 import { Base, normalizeBinding, listTargets, remapBaseScopes } from './base.mjs';
@@ -98,7 +98,11 @@ export function prerequisiteMet(project, card) {
   const doneId = project.workflowMode === 'pipeline' ? project.pipeline.columns.find(column => column.role === 'done')?.id : 'done';
   if (!card || card.column !== doneId) return false;
   const { kind, mergedAt } = card.completion || {};
-  return !card.completion || ['merged', 'no_changes'].includes(kind) || (kind === 'pull_request' && Boolean(mergedAt)) || !card.workspace;
+  // Without a worktree there is no code to merge, unless the card was completed from a branch (Done without merging)
+  // whose worktree was removed afterwards: its code is still not on the target branch.
+  if (!card.completion) return true;
+  if (kind === 'pull_request') return Boolean(mergedAt); // An open pull request is not merged, with or without its worktree.
+  return ['merged', 'no_changes'].includes(kind) || (!card.workspace && !card.completion.branch);
 }
 
 const STAGE_DUTY = {
@@ -946,26 +950,52 @@ export class Board {
   // ---- GitHub (managed clone) ----
 
   /**
-   * Connect a GitHub repository: clone it once into the data folder, link that clone as this
-   * project's repository, and select the target branch. Credentials stay with the GitHub CLI.
+   * Connect a GitHub repository. By default it is cloned once into the data folder; `parent` clones it into a folder
+   * the person chose instead; `existing` uses the folder this project already links when its origin is on GitHub
+   * (nothing is cloned or changed). The clone is linked as this project's repository and the target branch selected.
+   * Credentials stay with the GitHub CLI.
    */
-  async connectGitHub(id, { repository, branch = '', expectedRevision }) {
+  async connectGitHub(id, { repository, branch = '', expectedRevision, existing = false, parent = '' }) {
     const project = this.#project(await this.state(), id);
     checkRevision(project, expectedRevision, 'This project');
+    if (existing === true) {
+      if (!project.repository) throw conflict('Link this project to a local folder first.', 'REPOSITORY_REQUIRED');
+      const name = await originRepository(project.repository.root);
+      if (!name) throw conflict('This folder has no GitHub remote named origin. Add one in Git, or connect a repository from the list.', 'NO_GITHUB_REMOTE');
+      const repo = await viewRepository(name);
+      let current = project;
+      if (branch && current.targetBranch?.name !== branch) current = await this.setTargetBranch(id, { branch, expectedRevision: current.revision });
+      return this.#saveGitHub(id, repo, project.repository.root, project.repository.root === clonePath(this.dataDir, repo.nameWithOwner));
+    }
     if (project.tasks.some(task => task.workspace)) throw conflict('Tasks in this project have worktrees in the current repository. Remove them before you change the repository.', 'WORKSPACES_EXIST');
     const repo = await viewRepository(typeof repository === 'string' ? repository.trim() : '');
-    const clone = await this.#locked(`clone:${repo.nameWithOwner.toLowerCase()}`, () => ensureClone(this.dataDir, repo));
+    let path;
+    if (parent) {
+      // A folder the person chose: the clone becomes <folder>/<name>; an existing folder there is used only if it is that clone.
+      const info = typeof parent === 'string' && isAbsolute(parent) ? await stat(parent).catch(() => null) : null;
+      if (!info?.isDirectory()) throw new BoardError('Choose an existing folder for the clone.', 'INVALID_FOLDER');
+      path = join(await realpath(parent), repo.nameWithOwner.split('/')[1]);
+    }
+    const clone = await this.#locked(`clone:${(path || repo.nameWithOwner).toLowerCase()}`, () => ensureClone(this.dataDir, repo, path ? { path } : {}));
     const target = branch || repo.defaultBranch;
     const linked = await this.linkRepository(id, { path: clone.path, expectedRevision });
     if (target && linked.project.targetBranch?.name !== target) await this.setTargetBranch(id, { branch: target, expectedRevision: linked.project.revision });
+    return this.#saveGitHub(id, repo, clone.path, !path);
+  }
+  #saveGitHub(id, repo, clonePath, managed) {
     return this.store.update(state => {
       const current = this.#project(state, id);
       const [owner, name] = repo.nameWithOwner.split('/');
       current.github = { owner, name, nameWithOwner: repo.nameWithOwner, url: repo.url, private: repo.private, defaultBranch: repo.defaultBranch,
-        clonePath: clone.path, remote: 'origin', connectedAt: Date.now(), lastFetchAt: null, sync: null };
+        clonePath, managed, remote: 'origin', connectedAt: Date.now(), lastFetchAt: null, sync: null };
       current.revision++;
       return current;
     });
+  }
+  /** The GitHub repository the linked folder's origin points to ('' when none). */
+  async githubRemote(id) {
+    const project = this.#project(await this.state(), id);
+    return project.repository ? originRepository(project.repository.root) : '';
   }
 
   /** Forget the GitHub link. The clone, its repository link, and all local work stay. gh stays signed in. */
@@ -1504,7 +1534,7 @@ export class Board {
     }
     // Stage-engine boards squash the task's checkpoint commits into one commit with the reviewed and tested tree.
     let done;
-    try { done = await this.delivery.merge(id, { confirm: true, taskCommit: preview.taskCommit, targetCommit: preview.targetCommit, trigger: 'automation', squash: pipeline && (project.execution?.mergeMethod ?? 'squash') === 'squash' }); }
+    try { done = await this.delivery.merge(id, { confirm: true, taskCommit: preview.taskCommit, targetCommit: preview.targetCommit, trigger: 'automation', owner: this.mergeOwner(id), squash: pipeline && (project.execution?.mergeMethod ?? 'squash') === 'squash' }); }
     catch (error) {
       // The target moved between preview and merge: prepare once more on the new target (bring it in, test again).
       if (error.code === 'TARGET_CHANGED' && !retried) return this.#prepareMerge(id, { auto, runLocked, retried: true });
@@ -1709,7 +1739,7 @@ export class Board {
    * The next Planning or Executing run creates a new branch from the target branch's current tip and
    * gets the reason. With `startExecuting`, the normal To Do → Executing transition follows.
    */
-  startOver(id, { expectedRevision, reason = '', startExecuting = false, confirm = false } = {}) {
+  startOver(id, { expectedRevision, reason = '', startExecuting = false, confirm = false, deleteIgnored = false } = {}) {
     if (typeof reason !== 'string' || reason.length > 4000) throw new BoardError('The reason can have at most 4,000 characters.', 'INVALID_INPUT');
     return this.#locked(`transition:${id}`, async () => {
       const state = await this.state();
@@ -1740,8 +1770,9 @@ export class Board {
         review: before.evidence?.review ? { status: before.evidence.review.status, verdict: before.evidence.review.verdict || '', taskCommit: before.evidence.review.taskCommit, findings: (before.evidence.review.findings || []).slice(0, 20) } : null,
         tests: before.evidence?.tests ? { status: before.evidence.tests.status, taskCommit: before.evidence.tests.taskCommit } : null,
         pullRequest: before.evidence?.pullRequest ? { url: before.evidence.pullRequest.url, number: before.evidence.pullRequest.number ?? null, state: before.evidence.pullRequest.state } : null };
-      // The worktree is clean now; removing it keeps the branch (removeTaskWorktree never removes dirty ones).
-      await this.removeTaskWorktree(id);
+      // The worktree is clean now; removing it keeps the branch (removeTaskWorktree never removes dirty ones, and removes
+      // files Git ignores only when the person confirmed it).
+      await this.removeTaskWorktree(id, { deleteIgnored });
       // The next attempt branches from the target branch as it is now.
       const fresh = this.#project(await this.state(), project.id);
       if (fresh.targetBranch) await this.setTargetBranch(project.id, { branch: fresh.targetBranch.name, expectedRevision: fresh.revision }).catch(() => {});
@@ -1853,10 +1884,22 @@ export class Board {
   }
 
   /** Save completion, optionally without merging; this method never starts task work. */
-  async completeTask(id, { kind, details, transitionId }) {
+  /**
+   * Whether `completeTask` would accept the card now. A merge asks first, so a refused completion never leaves the
+   * target branch moved with the card still in Merge.
+   */
+  async checkCompletable(id, { owner = null } = {}) {
+    const state = await this.state(), { task } = this.#task(state, id);
+    this.#requireAutomationsStopped(task, { owner });
+    if (this.#activeRun(state, id)) throw conflict('This card has an active run. Stop it before you merge.', 'RUN_ACTIVE');
+  }
+  /** The automation move that owns this card's automatic merge, if it is running and not blocked. */
+  mergeOwner(id) { const job = this.automationMoves.get(id); return job && !job.blocked ? job.key : null; }
+
+  async completeTask(id, { kind, details, transitionId, owner = null }) {
     return this.store.update(state => {
       const { project, task } = this.#task(state, id);
-      this.#requireAutomationsStopped(task);
+      this.#requireAutomationsStopped(task, { owner });
       if (this.#activeRun(state, id)) throw conflict('This card has an active run.', 'RUN_ACTIVE');
       const done = project.workflowMode === 'pipeline' ? project.pipeline.columns.find(column => column.role === 'done').id : 'done';
       task.completion = { kind, at: Date.now(), summary: task.stageResults?.executing?.summary || '', executionRunId: task.stageResults?.executing?.runId || null, ...details };
@@ -2445,6 +2488,20 @@ export class Board {
       const state = await this.state();
       const { project, task } = this.#task(state, taskId);
       const repository = await this.#checkedRepository(project);
+      // A creation that did not finish (the app stopped, or Git failed or timed out): see what Git really made.
+      // This task's lock is held, so nothing in this app is still creating it.
+      if (task.workspace && ['creating', 'failed'].includes(task.workspace.status)) {
+        const ws = task.workspace, registered = await this.#registered(ws.repositoryRoot, ws.path).catch(() => null);
+        if (registered?.branch === ws.branch) {
+          const ready = await this.store.update(draft => { const { task: current } = this.#task(draft, taskId); current.workspace = { ...current.workspace, status: 'ready', readyAt: Date.now() }; current.revision++; return current.workspace; });
+          return this.#verifyWorktree(taskId, repository, ready, { recover });
+        }
+        const folder = await access(ws.path).then(() => true, () => false), branch = await branchExists(ws.repositoryRoot, ws.branch).catch(() => true);
+        if (folder || branch) throw new BoardError(`An earlier worktree creation for this task did not finish and left ${[folder && `the folder ${ws.path}`, branch && `the branch ${ws.branch}`].filter(Boolean).join(' and ')}. Remove ${folder && branch ? 'them' : 'it'} yourself (Promptboard never deletes them), then try again.`, 'WORKTREE_INCOMPLETE', 409);
+        // Nothing was made: forget the record and create the worktree now.
+        await this.store.update(draft => { const { task: current } = this.#task(draft, taskId); if (current.workspace?.path === ws.path && current.workspace.status === ws.status) { current.workspace = null; current.revision++; } });
+        task.workspace = null;
+      }
       if (task.workspace?.status === 'ready') return this.#verifyWorktree(taskId, repository, task.workspace, { recover });
       if (recover) throw conflict('This task has no worktree to restore.', 'NOTHING_TO_RESTORE');
       if (task.workspace) throw new BoardError('An earlier worktree creation for this task did not finish. Check the folder and branch manually.', 'WORKTREE_INCOMPLETE', 409);
@@ -2501,7 +2558,7 @@ export class Board {
    * Remove a task worktree that this app created. Refuses dirty worktrees and anything
    * outside the app's worktree folder. The task branch is kept.
    */
-  removeTaskWorktree(taskId) {
+  removeTaskWorktree(taskId, { deleteIgnored = false } = {}) {
     return this.#locked(`task:${taskId}`, async () => {
       const { task } = this.#task(await this.state(), taskId);
       this.#requireAutomationsStopped(task);
@@ -2511,10 +2568,17 @@ export class Board {
       const root = await realpath(this.worktreeRoot).catch(() => this.worktreeRoot);
       if (!inside(root, workspace.path) || workspace.path === root) throw new BoardError('This worktree is not in Promptboard\'s folder, so it is not removed.', 'WORKTREE_NOT_OWNED', 409);
       const registered = await this.#registered(workspace.repositoryRoot, workspace.path);
+      // A worktree whose creation never finished and left no folder: only the record is cleared.
+      if (!registered && workspace.status !== 'ready' && !(await access(workspace.path).then(() => true, () => false))) {
+        return this.store.update(draft => { const { task: current } = this.#task(draft, taskId); current.workspace = null; current.revision++; return current; });
+      }
       if (!registered || registered.branch !== workspace.branch) throw new BoardError('Git does not list this worktree for the task branch, so nothing was removed.', 'WORKTREE_NOT_OWNED', 409);
       const status = await git(['status', '--porcelain', '--untracked-files=all'], { cwd: workspace.path });
       if (status.trim()) throw new BoardError('The task worktree has uncommitted changes. Commit or move them first; Promptboard never discards files.', 'WORKTREE_DIRTY', 409);
-      await git(['worktree', 'remove', workspace.path], { cwd: workspace.repositoryRoot });
+      // Git deletes the files it ignores (.env, local databases, build output) with the worktree: never without a yes.
+      const ignored = await ignoredFiles(workspace.path);
+      if (ignored.length && !deleteIgnored) throw Object.assign(new BoardError(`The task worktree holds files Git ignores, which removing it would delete: ${ignored.slice(0, 8).join(', ')}${ignored.length > 8 ? ` and ${ignored.length - 8} more` : ''}. Move what you need out of ${workspace.path}, or confirm deleting them.`, 'WORKTREE_IGNORED_FILES', 409), { files: ignored.slice(0, 50) });
+      await git(['worktree', 'remove', ...(ignored.length ? ['--force'] : []), workspace.path], { cwd: workspace.repositoryRoot });
       return this.store.update(draft => {
         const { task: current } = this.#task(draft, taskId);
         current.retainedBranches = [...current.retainedBranches, { branch: workspace.branch, removedAt: Date.now() }];
@@ -2897,9 +2961,11 @@ export class Board {
     return Boolean(group && [...group.started].some(id => this.automations.actions.jobs.has(id)));
   }
 
-  #requireAutomationsStopped(task) {
-    if (this.automationMoves.has(task.id) || task.pendingAutomationMessages?.length
-      || task.automationMove && !['completed', 'failed', 'cancelled', 'interrupted'].includes(task.automationMove.status)) throw conflict('Stop or resolve this card’s column automations before removing its task, project or workspace, or recording a separate completion.', 'AUTOMATIONS_ACTIVE');
+  // `owner`: the automation move that is itself completing the card (an automatic merge inside its move into Merge).
+  #requireAutomationsStopped(task, { owner = null } = {}) {
+    const own = key => Boolean(owner) && key?.transitionId === owner.transitionId;
+    if ((this.automationMoves.has(task.id) && !own(this.automationMoves.get(task.id).key)) || task.pendingAutomationMessages?.length
+      || task.automationMove && !['completed', 'failed', 'cancelled', 'interrupted'].includes(task.automationMove.status) && !own(task.automationMove)) throw conflict('Stop or resolve this card’s column automations before removing its task, project or workspace, or recording a separate completion.', 'AUTOMATIONS_ACTIVE');
   }
 
   async #scheduleColumnMessage(request, options) {

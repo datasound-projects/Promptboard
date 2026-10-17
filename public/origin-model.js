@@ -1446,6 +1446,7 @@ globalThis.PromptboardOriginModel = (() => {
     }
     if (target.kind === 'add') {
       const collection = target.collection, fields = value && typeof value === 'object' ? value : {};
+      if (blueprint[collection].length >= LIMITS[collection]) return { error: `A project can have at most ${LIMITS[collection]} ${collection}.` };
       if (collection === 'areas' && !areaFor(blueprint, proposal.value?.section, proposal.value?.area)) return { conflict: 'This topic is not part of the blueprint any more.', missing: true };
       const id = newId(), entry = { id, origin: 'ai', ...RECORD_DEFAULTS[collection](collection === 'connections' ? undefined : String(fields[nameField(collection)] || '').trim(), proposal.value?.section, proposal.value?.area) };
       for (const [field, given] of Object.entries(fields)) {
@@ -1477,7 +1478,9 @@ globalThis.PromptboardOriginModel = (() => {
       return { ok: true, pending };
     }
     if (!force && !same(current, proposal.original)) return { conflict: 'This field changed after the research ran.', current };
-    const text = typeof value === 'string' ? value : String(value ?? '');
+    let text = typeof value === 'string' ? value : String(value ?? '');
+    // An edited choice or link is checked like a suggested one (it throws when it is not valid).
+    if (target.kind === 'record' && SUGGEST_FIELDS[target.collection]?.[target.field] !== undefined) text = suggestionValue(target.collection, target.field, text);
     if (target.kind === 'idea') blueprint.idea = text;
     else if (target.kind === 'vision') blueprint.vision[target.field] = text;
     else if (target.kind === 'record') blueprint[target.collection].find(item => item.id === target.id)[target.field] = text;
@@ -1487,7 +1490,9 @@ globalThis.PromptboardOriginModel = (() => {
     else if (target.kind === 'block') { const slot = blockSlot(blueprint, target); slot.set(text.length > slot.max ? fit(text, slot.max) : text); }
     else if (target.kind === 'topic') {
       const entry = blueprint.areas.find(item => item.section === target.section && item.area === target.area);
-      if (entry) entry.title = text; else blueprint.areas.push({ id: newId(), origin: 'ai', ...RECORD_DEFAULTS.areas(text, target.section, target.area) });
+      if (entry) entry.title = text;
+      else if (blueprint.areas.length >= LIMITS.areas) return { error: `A project can have at most ${LIMITS.areas} answers.` };
+      else blueprint.areas.push({ id: newId(), origin: 'ai', ...RECORD_DEFAULTS.areas(text, target.section, target.area) });
     }
     return { ok: true, pending };
   }
