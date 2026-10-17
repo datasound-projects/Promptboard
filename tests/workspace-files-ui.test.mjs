@@ -7,8 +7,9 @@ const domSource = await readFile(new URL('../public/dom.js', import.meta.url), '
 const script = await readFile(new URL('../public/workspace-files.js', import.meta.url), 'utf8');
 const project = (id, name = id) => ({ id, name, repository: { root: '/projects/' + id }, tasks: [] });
 async function settle() { for (let i = 0; i < 8; i++) await new Promise(resolve => setTimeout(resolve, 0)); }
-function setup(t, adapter) {
-  const dom = new JSDOM('<body><aside></aside></body>', { runScripts: 'outside-only', pretendToBeVisual: true });
+function setup(t, adapter, { url, stored } = {}) {
+  const dom = new JSDOM('<body><aside></aside></body>', { runScripts: 'outside-only', pretendToBeVisual: true, ...(url ? { url } : {}) });
+  if (stored) for (const [key, value] of Object.entries(stored)) dom.window.localStorage.setItem(key, value);
   t.after(() => dom.window.close()); const win = dom.window, ticks = [], calls = [];
   win.setInterval = callback => ticks.push(callback); win.AbortController = AbortController;
   win.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
@@ -23,14 +24,17 @@ function setup(t, adapter) {
     return { ...base, version: id + path, text: `const value = "${id}";\n// Read-only\n`, unchanged: false };
   } });
   const $ = selector => win.document.querySelector(selector);
-  const mount = p => { $('aside').append(ui.mount(p)); ui.setVisible(true); return $('aside').lastChild; };
+  // `open()` stands in for clicking the project's name in the sidebar, which opens its files.
+  const mount = p => { const host = ui.mount(p); host.open = () => ui.toggle(p.id, true); $('aside').append(host); ui.setVisible(true); return host; };
   return { ui, win, $, ticks, calls, mount };
 }
 
 test('loads only explicitly expanded folders; keeps tree DOM and keyboard focus on board refresh', async t => {
   const { ui, mount, calls, $ } = setup(t), p = project('p_one');
   const host = mount(p); assert.equal(calls.length, 0);
-  host.querySelector('.file-tree-toggle').click(); await settle();
+  assert.equal(host.querySelector('.file-tree-toggle'), null, 'no separate Files row: the project name opens the list');
+  assert.equal(ui.isOpen(p.id), false); assert.equal(host.querySelector('.workspace-files-body').hidden, true);
+  assert.equal(ui.toggle(p.id), true); await settle();
   assert.equal(calls.length, 1); assert.equal(new URL(calls[0].url, 'http://local').searchParams.get('path'), '');
   host.querySelector('[data-file-path="src"]').click(); await settle();
   const file = $('[data-file-path="src/index.js"]'); assert.ok(file); file.focus();
@@ -41,7 +45,7 @@ test('loads only explicitly expanded folders; keeps tree DOM and keyboard focus 
 test('multiple project/file identities minimize, restore, switch, close and Escape independently', async t => {
   const { ui, mount, $ , win } = setup(t), one = project('p_one'), two = project('p_two');
   const first = mount(one), second = mount(two); ui.sync([one, two]);
-  first.querySelector('.file-tree-toggle').click(); second.querySelector('.file-tree-toggle').click(); await settle();
+  ui.toggle(one.id); ui.toggle(two.id); await settle();
   first.querySelector('[data-file-path="readme.md"]').click(); await settle();
   assert.equal($('#workspace-file-title').textContent, 'p_one');
   $('[aria-label="Minimize file viewer"]').click(); assert.equal($('#workspace-file-viewer').open, false);
@@ -62,7 +66,7 @@ test('source and filenames remain inert text, with exact visible code, line numb
   const { mount, $, win } = setup(t, async ({ parsed, id }) => parsed.pathname.endsWith('/files')
     ? { scopes: [{ id: '', name: 'Project checkout' }], entries: [{ name: filename, kind: 'file' }], next: null }
     : { project: { id, name: '<script>Project</script>' }, text: source, version: 'a' });
-  const host = mount(project('p_one')); host.querySelector('button').click(); await settle();
+  const host = mount(project('p_one')); host.open(); await settle();
   host.querySelector('.file-tree-row').click(); await settle();
   assert.equal(win.HACKED, undefined); assert.equal($('img'), null); assert.equal($('script'), null);
   assert.equal([...win.document.querySelectorAll('.file-line-text')].map(el => el.textContent).join('\n'), source);
@@ -75,7 +79,7 @@ test('refreshes file contents without losing scroll, selected file, expanded fol
   const { mount, $, ticks } = setup(t, async ({ parsed, id, path }) => parsed.pathname.endsWith('/files')
     ? { scopes: [{ id: '', name: 'Project checkout' }], entries: path ? [{ name: 'index.js', kind: 'file' }] : [{ name: 'src', kind: 'directory' }], next: null }
     : { project: { id, name: id }, text: `const revision = ${revision};\n`.repeat(100), version: String(revision) });
-  const host = mount(project('p_one')); host.querySelector('button').click(); await settle();
+  const host = mount(project('p_one')); host.open(); await settle();
   $('[data-file-path="src"]').click(); await settle(); $('[data-file-path="src/index.js"]').click(); await settle();
   $('.file-code').scrollTop = 150; $('.file-code').scrollLeft = 20; revision = 2;
   await ticks[0](); await settle();
@@ -88,7 +92,7 @@ test('refreshes file contents without losing scroll, selected file, expanded fol
 
 test('switching checkout resets only that tree; file requests use the selected task ID', async t => {
   const { mount, $, calls, win } = setup(t); const host = mount(project('p_one'));
-  host.querySelector('button').click(); await settle();
+  host.open(); await settle();
   $('.file-scope').value = 'task_1'; $('.file-scope').dispatchEvent(new win.Event('change')); await settle();
   $('[data-file-path="readme.md"]').click(); await settle();
   assert.ok(calls.filter(c => c.url.includes('/file?')).every(c => new URL(c.url, 'http://local').searchParams.get('workspace') === 'task_1'));
@@ -102,7 +106,7 @@ test('unavailable refreshed files retain the last snapshot with a clear notice; 
     if (failed || path === 'binary.png') throw new Error('File unavailable.');
     return { project: { id, name: id }, version: 'one', text: 'const good = true;' };
   });
-  const host = mount(project('p_one')); host.querySelector('button').click(); await settle();
+  const host = mount(project('p_one')); host.open(); await settle();
   $('[data-file-path="good.js"]').click(); await settle(); failed = true; await ticks[0](); await settle();
   assert.match($('.file-status').textContent, /Showing the last read version/); assert.match($('.file-code').textContent, /const good/);
   $('[aria-label="Minimize file viewer"]').click(); $('[data-file-path="binary.png"]').click(); await settle();
@@ -111,7 +115,7 @@ test('unavailable refreshed files retain the last snapshot with a clear notice; 
 
 test('page changes abort work, hide viewers and restore minimized files only in Kanban; deletion closes snapshots', async t => {
   const { ui, mount, $, calls, ticks } = setup(t), p = project('p_one');
-  const host = mount(p); host.querySelector('button').click(); await settle(); $('[data-file-path="readme.md"]').click(); await settle();
+  const host = mount(p); host.open(); await settle(); $('[data-file-path="readme.md"]').click(); await settle();
   ui.setVisible(false); assert.equal($('#workspace-file-viewer').open, false); assert.equal($('.file-viewer-tray').hidden, true);
   const count = calls.length; await ticks[0](); await settle(); assert.equal(calls.length, count);
   ui.setVisible(true); assert.equal($('.file-viewer-tray').hidden, false);
@@ -123,7 +127,7 @@ test('aborted old directory responses cannot repopulate a replacement project ro
   let release;
   const gate = new Promise(resolve => { release = resolve; });
   const { ui, mount, $ } = setup(t, async () => { await gate; return { scopes: [], entries: [{ name: 'old-secret.js', kind: 'file' }], next: null }; });
-  const p = project('p_one'); const host = mount(p); host.querySelector('button').click(); await settle();
+  const p = project('p_one'); const host = mount(p); host.open(); await settle();
   const replaced = { ...p, repository: { root: '/projects/replaced' } }; ui.sync([replaced]); mount(replaced);
   release(); await settle(); assert.equal($('.workspace-files:last-child').textContent.includes('old-secret'), false);
 });
@@ -134,7 +138,7 @@ function enterDraft(win, $, text) {
 
 test('explicit edits survive refresh, minimize, tab switching and navigation; close warns before discarding', async t => {
   const { ui, mount, $, ticks, win } = setup(t), p = project('p_one');
-  const host = mount(p); host.querySelector('button').click(); await settle(); $('[data-file-path="readme.md"]').click(); await settle();
+  const host = mount(p); host.open(); await settle(); $('[data-file-path="readme.md"]').click(); await settle();
   enterDraft(win, $, 'manual draft');
   await ticks[0](); await settle(); assert.equal($('.file-editor').value, 'manual draft'); assert.match($('.file-status').textContent, /Unsaved draft/);
   $('[aria-label="Minimize file viewer"]').click(); $('.file-viewer-chip button').click(); await settle(); assert.equal($('.file-editor').value, 'manual draft');
@@ -150,7 +154,7 @@ test('external edits never replace an unsaved draft; conflict requires explicit 
   const { mount, $, ticks, win } = setup(t, async ({ parsed, id }) => parsed.pathname.endsWith('/files')
     ? { scopes: [{ id: '', name: 'Project checkout' }], entries: [{ name: 'index.js', kind: 'file' }], next: null }
     : { project: { id, name: id }, version, scopeVersion: 'scope', text: version });
-  const host = mount(project('p_one')); host.querySelector('button').click(); await settle(); $('[data-file-path="index.js"]').click(); await settle();
+  const host = mount(project('p_one')); host.open(); await settle(); $('[data-file-path="index.js"]').click(); await settle();
   enterDraft(win, $, 'mine'); version = 'agent change'; await ticks[0](); await settle();
   assert.equal($('.file-editor').value, 'mine'); assert.match($('.file-status').textContent, /changed on disk/); assert.equal($('.file-save').disabled, true);
   $('[aria-label="Discard draft and reload disk file"]').click(); await settle(); assert.equal($('.file-editor').value, 'agent change'); assert.equal($('.file-close-confirm').hidden, true);
@@ -158,7 +162,7 @@ test('external edits never replace an unsaved draft; conflict requires explicit 
 
 test('relinking a subfolder inside the same Git root replaces its tree and closes only clean viewers', async t => {
   const { ui, mount, $ } = setup(t); const p = { ...project('p_one'), repository: { root: '/repo', path: '/repo/one' } };
-  const host = mount(p); host.querySelector('button').click(); await settle(); $('[data-file-path="readme.md"]').click(); await settle();
+  const host = mount(p); host.open(); await settle(); $('[data-file-path="readme.md"]').click(); await settle();
   const replaced = { ...p, repository: { root: '/repo', path: '/repo/two' } }; ui.sync([replaced]);
   assert.equal($('#workspace-file-viewer').open, false); assert.notEqual(ui.mount(replaced), host);
 });
@@ -171,7 +175,7 @@ test('saving requires explicit action and retains drafts on error; AI proposal r
     if (options.method === 'PUT') { saves++; if (rejectSave) throw new Error('Permission denied'); disk = options.body.text; version = 'v2'; return { version, scopeVersion: 'scope' }; }
     return { project: { id, name: id }, text: disk, version, scopeVersion: 'scope', unchanged: false };
   });
-  const host = mount(project('p_one')); host.querySelector('button').click(); await settle(); $('[data-file-path="index.js"]').click(); await settle();
+  const host = mount(project('p_one')); host.open(); await settle(); $('[data-file-path="index.js"]').click(); await settle();
   enterDraft(win, $, 'my draft'); assert.equal(saves, 0); assert.equal(models, 0);
   $('.file-save').click(); await settle(); assert.equal(saves, 1); assert.equal($('.file-editor').value, 'my draft'); assert.match($('.file-status').textContent, /Permission denied/);
   $('[aria-label="Show AI file panel"]').click(); const input = $('[aria-label="Describe the change to this file"]'); input.value = 'Change constant'; input.dispatchEvent(new win.Event('input'));
@@ -190,9 +194,25 @@ test('cancelled proposals ignore late results, preserve draft and can be retried
     if (options.method === 'POST') { aiSignal = signal; return delayed; }
     return { project: { id, name: id }, text: 'const original = 1;', version: 'v1', scopeVersion: 'scope' };
   });
-  const host = mount(project('p_one')); host.querySelector('button').click(); await settle(); $('[data-file-path="index.js"]').click(); await settle();
+  const host = mount(project('p_one')); host.open(); await settle(); $('[data-file-path="index.js"]').click(); await settle();
   enterDraft(win, $, 'mine'); $('[aria-label="Show AI file panel"]').click(); const input = $('[aria-label="Describe the change to this file"]'); input.value = 'Change it'; input.dispatchEvent(new win.Event('input'));
   $('[aria-label="Propose changes to this file"]').click(); await settle(); assert.equal($('.file-editor').readOnly, true);
   $('[aria-label="Cancel file AI proposal"]').click(); assert.equal(aiSignal.aborted, true); assert.equal($('.file-editor').readOnly, false);
   release({ text: 'Late unwanted result', summary: 'Too late' }); await settle(); assert.equal($('.file-editor').value, 'mine'); assert.equal($('[aria-label="Use AI proposal in draft"]').hidden, true);
+});
+
+test('a project’s files open and close from its name, and stay open after a reload', async t => {
+  const { ui, mount, win } = setup(t, undefined, { url: 'http://localhost:4318/' }), p = project('p_open');
+  const host = mount(p);
+  assert.equal(ui.toggle(p.id), true); await settle();
+  assert.equal(host.querySelector('.workspace-files-body').hidden, false);
+  assert.equal(ui.toggle(p.id), false);
+  assert.equal(host.querySelector('.workspace-files-body').hidden, true);
+  ui.toggle(p.id); await settle();
+  // A new page (a reload) in the same browser: the list is open again, without a click.
+  const key = 'promptboard.kanban.filesOpen';
+  const again = setup(t, undefined, { url: 'http://localhost:4318/', stored: { [key]: win.localStorage.getItem(key) } });
+  const reopened = again.mount(p); await settle();
+  assert.equal(again.ui.isOpen(p.id), true);
+  assert.equal(reopened.querySelector('.workspace-files-body').hidden, false);
 });

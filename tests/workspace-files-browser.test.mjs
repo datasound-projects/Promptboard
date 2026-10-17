@@ -26,7 +26,13 @@ test('Workspace inspection in real Chrome: import, nested tree, multiple viewers
   await browser.until('!!document.querySelector(".workspace-files")', 'imported project files');
   const before = await app.board.store.read(), project = before.projects[0];
   assert.ok(project.repository);
-  await browser.eval('document.querySelector(".file-tree-toggle").click();');
+  // The project's name opens its files (there is no separate Files row); a second click hides them, a third shows them again.
+  assert.equal(await browser.eval('return document.querySelector(".file-tree-toggle");'), null);
+  await browser.eval('document.querySelector(".workspace-item").click();');
+  await browser.until('document.querySelector(".workspace-item").getAttribute("aria-expanded") === "true"', 'files shown');
+  await browser.eval('document.querySelector(".workspace-item").click();');
+  await browser.until('document.querySelector(".workspace-item").getAttribute("aria-expanded") === "false" && document.querySelector(".workspace-files-body").hidden', 'files hidden');
+  await browser.eval('document.querySelector(".workspace-item").click();');
   await browser.until('!!document.querySelector("[data-file-path=src]")', 'root directory');
   for (let i = 1; i <= deepParts.length; i++) {
     const selector = `[data-file-path="${deepParts.slice(0, i).join('/')}"]`;

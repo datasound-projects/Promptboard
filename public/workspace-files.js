@@ -260,14 +260,25 @@ window.PromptboardFiles = (() => {
       const status = node('p', 'file-tree-note'); status.setAttribute('role', 'status');
       const list = node('ul', 'file-tree-list'); list.setAttribute('aria-label', `${project.name} files`);
       state = { project, host, body, select, status, list, workspace: '', scopes: [{ id: '', name: 'Project checkout' }], open: false, epoch: ++sequence, expanded: new Set(), pending: new Map(), errors: new Map(), directories: new Map(), lists: new Map([['', list]]) };
-      const toggle = button('▸ Files', `Show files in ${project.name}`, () => {
-        state.open = !state.open; body.hidden = !state.open; toggle.textContent = state.open ? '▾ Files' : '▸ Files'; toggle.setAttribute('aria-expanded', String(state.open));
-        if (state.open) void loadDirectory(state, ''); else abortTree(state);
-      }, 'file-tree-toggle'); toggle.setAttribute('aria-expanded', 'false');
-      body.id = `workspace-files-${project.id}`; toggle.setAttribute('aria-controls', body.id);
+      // The project's name in the sidebar opens and closes this list (toggle below); there is no separate Files row.
+      body.id = `workspace-files-${project.id}`;
       select.addEventListener('change', () => { abortTree(state); state.workspace = select.value; state.expanded.clear(); state.errors.clear(); state.directories.clear(); state.lists = new Map([['', list]]); list.replaceChildren(); void loadDirectory(state, ''); });
-      body.append(select, status, list); host.append(toggle, body); projects.set(project.id, state); return host;
+      body.append(select, status, list); host.append(body); projects.set(project.id, state);
+      if (openIds().has(project.id)) setOpen(state, true); // Open again after a reload, as it was left.
+      return host;
     }
+    // Which projects show their files is remembered in this browser; a list loads only while it is open.
+    const OPEN_KEY = 'promptboard.kanban.filesOpen';
+    function openIds() { try { return new Set(JSON.parse(localStorage.getItem(OPEN_KEY) || '[]')); } catch { return new Set(); } }
+    function setOpen(state, open) {
+      state.open = open; state.body.hidden = !open;
+      if (open) void loadDirectory(state, ''); else abortTree(state);
+      const ids = openIds(); if (open) ids.add(state.project.id); else ids.delete(state.project.id);
+      try { localStorage.setItem(OPEN_KEY, JSON.stringify([...ids].slice(-50))); } catch {}
+    }
+    /** Show or hide a project's files; returns whether they are shown now. */
+    function toggle(projectId, open) { const state = projects.get(projectId); if (!state) return false; setOpen(state, open ?? !state.open); return state.open; }
+    const isOpen = projectId => Boolean(projects.get(projectId)?.open);
     function sync(nextProjects) {
       const linked = new Map(nextProjects.filter(p => p.repository).map(p => [p.id, p]));
       for (const [id, state] of projects) {
@@ -301,7 +312,7 @@ window.PromptboardFiles = (() => {
       renderTray(); if (value) void refresh();
     }
     setInterval(() => void refresh(), 3000);
-    return { mount, sync, setVisible };
+    return { mount, sync, setVisible, toggle, isOpen };
   }
   return { create };
 })();

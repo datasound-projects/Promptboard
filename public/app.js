@@ -3754,6 +3754,9 @@ function renderWorkspace(current) {
     button.className = 'workspace-item';
     if (project.id === current?.id) { button.setAttribute('aria-current', 'true'); item.classList.add('current'); }
     const name = document.createElement('span'); name.className = 'workspace-name'; name.textContent = project.name;
+    // A linked project's name opens and closes its folders and files right below it.
+    const files = Boolean(project.repository && workspaceFiles);
+    if (files) { button.setAttribute('aria-expanded', String(workspaceFiles.isOpen(project.id))); button.setAttribute('aria-controls', `workspace-files-${project.id}`); }
     const repo = project.repository ? project.repository.root.split(/[\\/]/).pop() + (project.targetBranch ? ` → ${project.targetBranch.name}` : '') : 'Not linked';
     const meta = document.createElement('span'); meta.className = 'workspace-meta';
     meta.textContent = `${repo} · ${project.tasks.length} ${project.tasks.length === 1 ? 'card' : 'cards'}`;
@@ -3765,7 +3768,15 @@ function renderWorkspace(current) {
       button.append(status);
     }
     button.title = [project.name, project.repository?.root, live.length ? `${live.length} active agent ${live.length === 1 ? 'run' : 'runs'}` : ''].filter(Boolean).join('\n');
-    button.addEventListener('click', () => { if (project.id !== current?.id) selectProject(project.id); setSidebar(false); });
+    button.addEventListener('click', () => {
+      if (project.id !== current?.id) selectProject(project.id);
+      if (!files) { setSidebar(false); return; }
+      const open = workspaceFiles.toggle(project.id);
+      // The board follows the selected project; the sidebar stays open while its files are shown.
+      const shown = $('#workspace-list').querySelector(`[data-project-id="${CSS.escape(project.id)}"] .workspace-item`);
+      shown?.setAttribute('aria-expanded', String(open)); // Its chevron follows (CSS).
+      if (!open) setSidebar(false);
+    });
     const open = workspaceMenu?.id === project.id;
     const toggle = detailButton('⋯', () => setWorkspaceMenu(open ? null : { id: project.id, mode: 'menu' }), 'workspace-menu-toggle');
     toggle.setAttribute('aria-label', `Manage project: ${project.name}`);

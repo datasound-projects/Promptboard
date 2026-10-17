@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Kanban sidebar:** a linked project's name opens and closes its folders and files right below it (no separate Files row). Which projects are open is remembered in this browser, and a list loads only while it is open.
 - **Run a finished project.** When every card of a project is done, Kanban shows where the project is (folder and branch) and how to start it: the commands from its own files (package.json scripts, Makefile, Python, Go, Rust, Docker Compose), its README's run section, and a `git switch` hint when the folder has another branch checked out. Copy buttons, Open in Finder (Explorer on Windows), Open in Terminal (macOS) and Open index.html for static sites. Nothing runs by itself. With no start command found, one click adds a card to write it down.
 - **Project menu:** each linked project's ⋯ menu has Copy path, Open in Finder (or Explorer / the file manager) and How to run…. Opening a folder stays on the computer; a paired phone can copy the path.
 
