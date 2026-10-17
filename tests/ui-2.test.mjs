@@ -237,6 +237,15 @@ test('seven stages render; cards are created, edited, duplicated, deleted, and r
   await ctx.idle();
   assert.deepEqual(titles($), ['Three', 'Two', 'One']);
   assert.deepEqual((await serverTasks(ctx)).map(card => card.title), ['Three', 'Two', 'One']);
+  // Dropped on the lower half of the last card, "Three" goes after it, not one slot above.
+  cardItem(ctx, 'Three').dispatchEvent(new win.Event('dragstart', { bubbles: true }));
+  cardItem(ctx, 'One').dispatchEvent(new win.MouseEvent('drop', { bubbles: true, cancelable: true, clientY: 10 }));
+  await ctx.idle();
+  assert.deepEqual((await serverTasks(ctx)).map(card => card.title), ['Two', 'One', 'Three']);
+  cardItem(ctx, 'Three').dispatchEvent(new win.Event('dragstart', { bubbles: true }));
+  cardItem(ctx, 'Two').dispatchEvent(new win.Event('drop', { bubbles: true, cancelable: true }));
+  await ctx.idle();
+  assert.deepEqual(titles($), ['Three', 'Two', 'One']);
   // An unlinked project keeps cards in To Do and explains why.
   await unlink(ctx);
   const menu = cardItem(ctx, 'One').querySelector('.kanban-move-to');
@@ -1257,4 +1266,21 @@ test('Run details keep keyboard focus and inspected Base resources while run fac
   assert.equal(result.textContent, inspected, 'the inspected resources stay shown');
   assert.equal(win.document.activeElement, inspect, 'focus stays on the inspect button');
   assert.equal(context.open, true);
+});
+
+test('saving an edit of a card deleted meanwhile is refused and never adds the card again', async t => {
+  const ctx = await setup(t);
+  const { $, win } = ctx;
+  await goTo(ctx, '#/kanban');
+  await savedStageProject(ctx, 'Work');
+  await newCard(ctx, 'Gone', 'Prompt');
+  cardItem(ctx, 'Gone').querySelector('.kanban-open').click();
+  $('#card-prompt').value = 'Edited after it was deleted';
+  const [card] = await serverTasks(ctx);
+  await ctx.app.board.deleteTask(card.id, { expectedRevision: card.revision, keepFiles: true });
+  await win.__pbTest.loadBoard(); await ctx.idle();
+  submitForm(ctx, '#card-form'); await ctx.idle();
+  assert.match($('#card-error').textContent, /deleted meanwhile/);
+  assert.equal($('#card-prompt').value, 'Edited after it was deleted', 'the typed text is kept');
+  assert.deepEqual(await serverTasks(ctx), []);
 });

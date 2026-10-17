@@ -2201,7 +2201,9 @@ function renderCard(card, index, count) {
     const id = dragId; dragId = null;
     if (id && id !== card.id) {
       const position = currentProject().tasks.filter(task => task.column === card.column && task.id !== id).findIndex(task => task.id === card.id);
-      if (position >= 0) placeCard(id, card.column, position);
+      // The lower half of a card places the dropped one after it, the upper half before it.
+      const box = item.getBoundingClientRect(), after = event.clientY > box.top + box.height / 2;
+      if (position >= 0) placeCard(id, card.column, position + (after ? 1 : 0));
     }
   });
   return item;
@@ -2514,6 +2516,8 @@ async function saveCard(event, retried = false) {
   const project = currentProject();
   if (!project) return;
   const card = editingCardId ? project.tasks.find(item => item.id === editingCardId) : null;
+  // Deleted while this dialog was open: saving must not quietly add it again as a new card.
+  if (editingCardId && !card) { $('#card-error').textContent = 'This card was deleted meanwhile, so it cannot be saved. Copy your text before you close this window.'; $('#card-error').hidden = false; return; }
   const typed = $('#card-prompt').value;
   const title = $('#card-title').value.trim() || (quickTask ? typed.replace(/\s+/g, ' ').trim().slice(0, 80) : '');
   const error = !title ? 'Enter a short title.' : title.length > 120 ? 'Use a title of at most 120 characters.'
