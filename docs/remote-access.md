@@ -27,8 +27,11 @@ must come from a **paired device**:
 Paired devices are listed in Settings with when they were paired and last seen. **Revoke** ends a device at once,
 including its open terminal streams. Sessions expire after 30 days.
 
-Some things stay on the computer and are refused from a phone: changing remote access, CLI and GitHub sign-in, native
-folder pickers, and testing local MCP programs. GitHub, CLI and agent credentials are never sent to the phone.
+**A paired device has the same control as you at the computer.** It can start agents (which run commands), type into
+their terminals, change test commands and column actions, and approve steps. Pair only your own devices, and revoke any
+you no longer use. A few things need someone at the computer and are refused from a phone: changing remote access, CLI
+and GitHub sign-in (they open a browser or terminal there) and native folder pickers. GitHub, CLI and agent credentials
+are never sent to the phone.
 
 ### When the phone sleeps
 
@@ -51,24 +54,28 @@ is cancelled so no usage is spent on a result nobody receives. Use Compose Batch
 5. Promptboard shows the address Tailscale reports (`https://<computer>.<tailnet>.ts.net`). It never builds this
    address itself. **Copy URL**, open it in Safari on the iPhone, and pair.
 
-**Turn off Tailscale Serve…** runs the matching `… off` command for that port. If 443 and 8443 both already serve
+**Turn off Tailscale Serve…** runs the matching `… off` command for the port Promptboard is served on. When another
+Serve service uses the same address on another port, Settings warns: browsers send Promptboard's device cookie to every
+port of a host name. If 443 and 8443 both already serve
 other things, Promptboard changes nothing and asks you to choose a port yourself. Tailscale identity headers (`Tailscale-User-*`)
 are not used for sign-in: the paired session decides.
 
 ## Twingate
 
-Twingate reaches this computer through a Connector, so the Connector must be able to reach Promptboard's listener:
+Twingate reaches this computer through a Connector, so the Connector must be able to reach Promptboard's listener.
+**Listen on this computer's private address** (Settings lists them, for example `192.168.1.20`): the local app never
+listens there, so the Resource reaches only the paired listener. Public, wildcard and IPv6 addresses are refused.
 
-- **Connector on this computer (installed natively):** listen on `127.0.0.1`.
-- **Connector in Docker or on another machine:** it cannot reach this computer's `127.0.0.1`. Listen on this computer's
-  private address (Settings lists them, for example `192.168.1.20`). Public and wildcard addresses are refused.
+`127.0.0.1` works only with a Connector installed directly on this computer, and is risky: a Resource that allows all
+ports would then also reach Promptboard's local port (4318) without pairing. If you use it, limit the Resource to TCP
+on the remote port only. A Connector in Docker or on another machine cannot reach `127.0.0.1` at all.
 
 Then:
 
 1. In Promptboard: **Settings → Remote access → Twingate**. Choose the listening address and port, and enter the name or
    address the phone will open (the Resource address, for example `promptboard.internal`). Save.
-2. In the Twingate Admin Console, add a Resource for that address and port on a Connector that can reach this computer,
-   and give your account access. Promptboard does not change Twingate settings.
+2. In the Twingate Admin Console, add a Resource for that address on a Connector that can reach this computer, limit it
+   to TCP on the remote port, and give your account access. Promptboard does not change Twingate settings.
 3. On the iPhone, connect the Twingate app, open the address and pair.
 
 Twingate encrypts the phone-to-Connector path, but the last hop from the Connector to this computer is plain HTTP on

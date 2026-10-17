@@ -5765,7 +5765,7 @@ function renderRemoteAccess() {
   const legend = box.querySelector('legend'), nodes = [];
   // On the phone itself: who this device is, and how to leave. Remote access is never changed from a remote device.
   if (remoteSession) {
-    nodes.push(paragraph(`You are using Promptboard remotely as “${remoteSession.name}”. Agents, CLIs and Git run on the computer: closing Safari or locking the phone stops nothing.`, 'note'),
+    nodes.push(paragraph(`You are using Promptboard remotely as “${remoteSession.name}”, with the same control as at the computer. Agents, CLIs and Git run there: closing Safari or locking the phone stops nothing.`, 'note'),
       detailActions(detailButton('Sign out this device', async () => { await fetch('/api/remote/logout', { method: 'POST', headers: { 'X-STE-Token': token } }).catch(() => {}); location.replace('/remote'); }, 'secondary-button')));
     box.replaceChildren(legend, ...nodes); return;
   }
@@ -5777,7 +5777,14 @@ function renderRemoteAccess() {
   const method = document.createElement('select'); method.id = 'set-remote-method';
   for (const [value, label] of REMOTE_METHODS) method.append(Object.assign(document.createElement('option'), { value, textContent: label }));
   method.value = draft.method;
-  method.addEventListener('change', () => { draft.method = method.value; if (method.value === 'tailscale') draft.bind = '127.0.0.1'; renderRemoteAccess(); });
+  method.addEventListener('change', () => {
+    draft.method = method.value;
+    if (method.value === 'tailscale') draft.bind = '127.0.0.1';
+    // Twingate: this computer's private address first (the local app never listens there).
+    if (method.value === 'twingate' && draft.bind === '127.0.0.1' && st.addresses?.[0]) draft.bind = st.addresses[0];
+    renderRemoteAccess();
+  });
+  if (draft.method !== 'local') nodes.push(paragraph('A paired device has the same control as you at this computer: it can start agents, type into their terminals, change test commands and approve steps. Pair only your own devices.', 'note'));
   nodes.push(paragraph(st.method === 'local' ? 'Off. Promptboard answers only on this computer.' : `${st.method === 'tailscale' ? 'Tailscale' : 'Twingate'} · ${st.listening ? `listening on ${st.bind}:${st.port}` : 'not listening'}${st.sessions.length ? ` · ${st.sessions.length} paired device${st.sessions.length === 1 ? '' : 's'}` : ''}`, 'github-status'),
     field('Access from other devices', method));
   if (draft.method !== 'local') {
@@ -5785,7 +5792,7 @@ function renderRemoteAccess() {
   }
   if (draft.method === 'twingate') {
     const bind = document.createElement('select'); bind.id = 'set-remote-bind';
-    for (const address of [...new Set(['127.0.0.1', ...(st.addresses || []), draft.bind].filter(Boolean))]) bind.append(Object.assign(document.createElement('option'), { value: address, textContent: address === '127.0.0.1' ? '127.0.0.1 (Connector on this computer)' : address }));
+    for (const address of [...new Set(['127.0.0.1', ...(st.addresses || []), draft.bind].filter(Boolean))]) bind.append(Object.assign(document.createElement('option'), { value: address, textContent: address === '127.0.0.1' ? '127.0.0.1 (only with the Resource limited to this port)' : address }));
     bind.value = draft.bind; bind.addEventListener('change', () => { draft.bind = bind.value; });
     nodes.push(field('Listen on', bind), field('Name or address the phone opens (the Twingate Resource)', input('set-remote-host', 'host', 'promptboard.internal')),
       field('Certificate file for HTTPS (optional)', input('set-remote-cert', 'cert', '/path/to/cert.pem')), field('Key file', input('set-remote-key', 'key', '/path/to/key.pem')));
@@ -5806,7 +5813,7 @@ function renderRemoteAccess() {
       nodes.push(row, paragraph(`Or run it yourself in a terminal: ${ts.serving ? ts.offCommand : ts.command}`, 'note'));
     }
   }
-  if (st.method === 'twingate') nodes.push(paragraph(`In the Twingate Admin Console, add a Resource for ${st.host || st.bind} on port ${st.port}, on a Connector that can reach this computer, and give your account access. Promptboard does not change Twingate.`, 'note'));
+  if (st.method === 'twingate') nodes.push(paragraph(`In the Twingate Admin Console, add a Resource for ${st.host || st.bind}, limited to TCP port ${st.port}, on a Connector that can reach this computer, and give your account access. Promptboard does not change Twingate.`, 'note'));
   for (const warning of st.warnings || []) nodes.push(paragraph(warning, 'inline-error'));
   if (st.error) nodes.push(paragraph(st.error, 'inline-error'));
   if (st.url) {

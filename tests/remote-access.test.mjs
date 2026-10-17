@@ -36,6 +36,7 @@ test('settings: off by default; only loopback or private addresses; Tailscale st
   for (const bind of ['0.0.0.0', '::', '8.8.8.8', '100.128.0.1', 'example.com', '']) assert.throws(() => remoteSettings({ method: 'twingate', bind }), /private address/, bind);
   for (const address of ['127.0.0.1', '10.1.2.3', '172.16.0.9', '192.168.1.20', '100.64.0.1', 'fd12:3456::1', '::1']) assert.equal(privateAddress(address), true, address);
   assert.throws(() => remoteSettings({ method: 'tailscale', bind: '192.168.1.20' }), /127\.0\.0\.1/);
+  for (const bind of ['::1', 'fd12:3456::1']) assert.throws(() => remoteSettings({ method: 'twingate', bind }), /IPv4/, bind);
   assert.throws(() => remoteSettings({ method: 'twingate', port: 4318 }, { localPort: 4318 }), /does not use/);
   assert.throws(() => remoteSettings({ method: 'twingate', port: 80 }), /1024/);
   assert.throws(() => remoteSettings({ method: 'twingate', host: 'https://x.example' }), /without http/);
@@ -47,7 +48,7 @@ test('the local app refuses proxied requests, and remote access is off until it 
   const { port, local } = await app(t);
   const { json } = await local('/api/remote');
   assert.deepEqual([json.remote.method, json.remote.listening, json.remote.sessions], ['local', false, []]);
-  for (const header of ['X-Forwarded-For', 'X-Forwarded-Host', 'Forwarded', 'Tailscale-User-Login', 'Tailscale-Funnel-Request']) {
+  for (const header of ['X-Forwarded-For', 'X-Forwarded-Host', 'X-Forwarded-Proto', 'X-Real-IP', 'Forwarded', 'Via', 'Tailscale-User-Login', 'Tailscale-Funnel-Request']) {
     const refused = await request(port, '/api/session', { headers: { [header]: 'x' } });
     assert.deepEqual([refused.status, refused.json?.code], [403, 'PROXY_REFUSED'], header);
   }
@@ -61,7 +62,7 @@ test('a paired device reaches the app through the remote listener; everything el
   const on = await local('/api/remote/settings', 'POST', { method: 'twingate', port: remotePort, bind: '127.0.0.1', host: 'promptboard.internal' });
   assert.equal(on.json.remote.listening, true, JSON.stringify(on.json));
   assert.match(on.json.remote.url, new RegExp(`^http://promptboard\\.internal:${remotePort}$`));
-  assert.ok(on.json.remote.warnings.some(line => /cannot reach 127\.0\.0\.1/.test(line)) && on.json.remote.warnings.some(line => /unencrypted/.test(line)));
+  assert.ok(on.json.remote.warnings.some(line => /also reaches Promptboard’s local port .* without pairing/.test(line)) && on.json.remote.warnings.some(line => /unencrypted/.test(line)));
   const host = `promptboard.internal:${remotePort}`, remote = (path, options = {}) => request(remotePort, path, { host, ...options });
   // Without pairing: the page goes to the pairing screen, the API answers 401, nothing else is served.
   assert.deepEqual([(await remote('/')).status, (await remote('/')).headers.location], [302, '/remote']);
@@ -200,4 +201,42 @@ test('a Research run started from a paired phone keeps going when the phone disc
     if (Date.now() > end) assert.fail(`The answer was not saved: ${JSON.stringify(messages)}`);
     await new Promise(resolve => setTimeout(resolve, 100));
   }
+});
+
+test('overlapping saves end in the last setting, a busy port is retried on Save, and shutdown leaves no listener', async t => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'pb-remote-race-')); t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const port = await freePort();
+  const access = await new RemoteAccess({ dataDir, localPort: 1, handle: (req, res) => { res.writeHead(200); res.end(); } }).load(); t.after(() => access.close());
+  await Promise.all([access.configure({ method: 'twingate', port, bind: '127.0.0.1' }), access.configure({ method: 'local' })]);
+  assert.deepEqual([access.settings.method, Boolean(access.server)], ['local', false]);
+  await assert.rejects(request(port, '/remote'), 'nothing answers after it was turned off');
+  // A port that is busy: the listener reports it, and the same Save works once the port is free.
+  const busy = http.createServer().listen(port, '127.0.0.1'); await new Promise(resolve => busy.once('listening', resolve));
+  let status = await access.configure({ method: 'twingate', port, bind: '127.0.0.1' });
+  assert.deepEqual([status.listening, /already in use/.test(status.error)], [false, true]);
+  await new Promise(resolve => busy.close(resolve));
+  status = await access.configure({ method: 'twingate', port, bind: '127.0.0.1' });
+  assert.equal(status.listening, true);
+  // Shutdown while a change is on its way: no listener is left behind.
+  const change = access.configure({ method: 'twingate', port: await freePort(), bind: '127.0.0.1' });
+  await access.shutdown(); await change.catch(() => {});
+  assert.equal(access.server, null);
+});
+
+test('Tailscale off uses the port Promptboard is served on; a shared host name is flagged', async t => {
+  const calls = [];
+  let serve = { Web: { 'mac.tail1234.ts.net:8443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:4319' } } } } };
+  const cli = { run: async args => { calls.push(args); if (args[0] === 'status') return JSON.stringify({ BackendState: 'Running', Self: { DNSName: 'mac.tail1234.ts.net.' } }); if (args.join(' ') === 'serve status --json') return JSON.stringify(serve); return ''; } };
+  const state = await tailscaleState(4319, cli);
+  assert.deepEqual([state.servePort, state.httpsPort, state.offCommand, Boolean(state.shared)], [8443, 443, 'tailscale serve --bg --https=8443 http://127.0.0.1:4319 off', false]);
+  const dataDir = await mkdtemp(join(tmpdir(), 'pb-remote-off-')); t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const access = await new RemoteAccess({ dataDir, localPort: 1, handle: () => {}, cli }).load(); t.after(() => access.close());
+  access.settings = { ...access.settings, method: 'tailscale', port: 4319 };
+  calls.length = 0;
+  await access.setServe(false);
+  assert.deepEqual(calls.find(args => args.includes('off')), ['serve', '--bg', '--https=8443', 'http://127.0.0.1:4319', 'off']);
+  serve = { Web: { ...serve.Web, 'mac.tail1234.ts.net:443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:3000' } } } } };
+  assert.equal((await tailscaleState(4319, cli)).shared, true);
+  access.tailscale = null;
+  assert.ok((await access.status()).warnings.some(line => /sign-in to it as well/.test(line)));
 });

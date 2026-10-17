@@ -23,9 +23,12 @@ test('Settings turns remote access on and pairs a phone; the phone uses the same
   assert.match(await ev(`return document.querySelector('#set-remote-group').textContent`), /Off\. Promptboard answers only on this computer/);
   await ev(`const s = document.querySelector('#set-remote-method'); s.value = 'twingate'; s.dispatchEvent(new Event('change'));`);
   await wait(`!!document.querySelector('#set-remote-port')`, 'Twingate fields');
+  // The test stands in for a Connector on this computer, so it listens on 127.0.0.1 (a private address is the default).
+  await ev(`const b = document.querySelector('#set-remote-bind'); b.value = '127.0.0.1'; b.dispatchEvent(new Event('change'));`);
+  assert.match(await ev(`return document.querySelector('#set-remote-group').textContent`), /same control as you at this computer/);
   await ev(`const p = document.querySelector('#set-remote-port'); p.value = '${remotePort}'; p.dispatchEvent(new Event('input')); [...document.querySelectorAll('#set-remote-group button')].find(b => b.textContent === 'Save').click();`);
   await wait(`/Twingate · listening on 127\\.0\\.0\\.1:${remotePort}/.test(document.querySelector('#set-remote-group').textContent)`, 'listening');
-  assert.match(await ev(`return document.querySelector('#set-remote-group').textContent`), new RegExp(`add a Resource for 127\\.0\\.0\\.1 on port ${remotePort}`));
+  assert.match(await ev(`return document.querySelector('#set-remote-group').textContent`), new RegExp(`add a Resource for 127\\.0\\.0\\.1, limited to TCP port ${remotePort}`));
   await ev(`[...document.querySelectorAll('#set-remote-group button')].find(b => b.textContent === 'Pair a device').click();`);
   const code = await wait(`document.querySelector('#set-remote-code')?.textContent`, 'pairing code');
   assert.match(code, /^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/);

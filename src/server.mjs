@@ -409,7 +409,7 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
       if (!allowedHosts.includes(req.headers.host)) return send(res, 403, { error: 'This server accepts local requests only.' });
       if (req.headers.origin && !allowedOrigins.includes(req.headers.origin)) return send(res, 403, { error: 'This origin is not allowed.' });
       // A proxy in front of the local app (one that rewrites Host) would skip pairing: those requests are refused.
-      if (['x-forwarded-for', 'x-forwarded-host', 'forwarded', 'tailscale-user-login', 'tailscale-funnel-request'].some(name => req.headers[name] !== undefined)) {
+      if (['x-forwarded-for', 'x-forwarded-host', 'x-forwarded-proto', 'x-real-ip', 'forwarded', 'via', 'tailscale-user-login', 'tailscale-funnel-request'].some(name => req.headers[name] !== undefined)) {
         return send(res, 403, { error: 'This port accepts direct local requests only. For other devices, turn on Remote access in Settings.', code: 'PROXY_REFUSED' });
       }
     }
@@ -700,7 +700,7 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
   // SIGKILL any owned CLI process group that is still alive.
   const close = ({ graceMs = 4000 } = {}) => closed ??= (async () => {
     closing = true;
-    await remoteAccess?.close();
+    await remoteAccess?.shutdown();
     notifications.close();
     const listening = new Promise(resolve => server.close(() => resolve()));
     busy?.controller.abort();

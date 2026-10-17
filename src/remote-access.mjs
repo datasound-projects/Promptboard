@@ -46,6 +46,7 @@ export function remoteSettings(input = {}, { localPort } = {}) {
   if (!Number.isInteger(value.port) || value.port < 1024 || value.port > 65535 || value.port === localPort) throw invalid('Choose a remote port from 1024 to 65535 that the local app does not use.');
   const bind = String(value.bind || '').trim();
   if (!privateAddress(bind)) throw invalid('Listen only on 127.0.0.1 or a private address of this computer (for example 192.168.x.x or 10.x.x.x). Public and wildcard addresses are refused.');
+  if (isIP(bind) === 6) throw invalid('Use an IPv4 address of this computer (for example 192.168.x.x).');
   if (value.method === 'tailscale' && bind !== '127.0.0.1') throw invalid('Tailscale Serve reaches Promptboard on 127.0.0.1.');
   const host = String(value.host || '').trim().toLowerCase();
   if (host && !(HOSTNAME.test(host) || isIP(host))) throw invalid('Enter the private name or address the phone opens, without http:// or a port.');
@@ -85,15 +86,18 @@ export async function tailscaleState(port, cli = tailscaleCli) {
     const proxy = Object.entries(config?.Handlers || {}).find(([path, handler]) => path === '/' && String(handler?.Proxy || '').replace(/\/$/, '') === target);
     if (!proxy) continue;
     const [hostName, listenPort] = listener.split(':');
-    state.serving = true; state.url = `https://${hostName}${listenPort && listenPort !== '443' ? `:${listenPort}` : ''}`;
+    state.serving = true; state.servePort = Number(listenPort) || 443; state.url = `https://${hostName}${listenPort && listenPort !== '443' ? `:${listenPort}` : ''}`;
     state.funnel = Boolean(serve.AllowFunnel?.[listener]);
+    // Browsers send cookies to every port of a host name: another service on this name would receive Promptboard's.
+    state.shared = Object.keys(serve.Web || {}).some(other => other !== listener && other.split(':')[0] === hostName);
   }
   // Another service already answers at the root of 443: Promptboard then uses 8443; when both are taken it changes nothing.
   const taken = port => Object.entries(serve.Web || {}).some(([listener, config]) => listener.endsWith(`:${port}`) && config?.Handlers?.['/'] && String(config.Handlers['/'].Proxy || '').replace(/\/$/, '') !== target);
   state.httpsPort = !taken(443) ? 443 : !taken(8443) ? 8443 : null;
-  if (!state.httpsPort) { state.message = 'Tailscale Serve already uses ports 443 and 8443 for other services. Promptboard changes nothing; run tailscale serve yourself with another port.'; return state; }
+  // Off always names the port Promptboard is served on, which may not be the one it would choose today.
+  if (state.serving) state.offCommand = `tailscale serve --bg --https=${state.servePort} ${target} off`;
+  if (!state.httpsPort) { if (!state.serving) state.message = 'Tailscale Serve already uses ports 443 and 8443 for other services. Promptboard changes nothing; run tailscale serve yourself with another port.'; return state; }
   state.command = `tailscale serve --bg --https=${state.httpsPort} ${target}`;
-  state.offCommand = `${state.command} off`;
   return state;
 }
 
@@ -103,6 +107,7 @@ export class RemoteAccess {
     this.path = join(dataDir, FILE); this.localPort = localPort; this.handle = handle; this.cli = cli; this.now = now;
     this.settings = { ...DEFAULTS }; this.sessions = []; this.pairing = null; this.failures = []; this.server = null; this.error = '';
     this.queue = serial(); this.tailscale = null;
+    this.changes = serial(); this.closed = false; // Listener changes run one at a time; none after shutdown.
     this.open = new Map(); // Session ID → its open responses (live streams), ended when the session is revoked.
   }
   async load() {
@@ -110,21 +115,27 @@ export class RemoteAccess {
     try { this.settings = remoteSettings(stored?.settings || {}, { localPort: this.localPort }); } catch { this.settings = { ...DEFAULTS }; }
     const now = this.now();
     this.sessions = (Array.isArray(stored?.sessions) ? stored.sessions : []).filter(row => typeof row?.hash === 'string' && /^[a-f0-9]{64}$/.test(row.hash) && row.expiresAt > now).slice(-REMOTE_LIMITS.sessions);
-    if (this.settings.method !== 'local') await this.listen().catch(() => {});
+    if (this.settings.method !== 'local') await this.changes(() => this.listen().catch(() => {}));
     return this;
   }
   #save() { return this.queue(() => writeAtomic(this.path, JSON.stringify({ schema: SCHEMA, version: VERSION, settings: this.settings, sessions: this.sessions }))); }
 
   // ---- Settings and listener ----
-  async configure(input) {
-    const next = remoteSettings({ ...this.settings, ...input }, { localPort: this.localPort });
-    const changed = JSON.stringify(next) !== JSON.stringify(this.settings);
-    this.settings = next;
-    if (changed) { await this.close(); if (next.method !== 'local') await this.listen().catch(() => {}); }
-    await this.#save();
-    return this.status();
+  configure(input) {
+    return this.changes(async () => {
+      const next = remoteSettings({ ...this.settings, ...input }, { localPort: this.localPort });
+      const changed = JSON.stringify(next) !== JSON.stringify(this.settings);
+      this.settings = next;
+      // Saving again also retries a listener that could not start (a port that was busy).
+      if (changed || (!this.server && next.method !== 'local')) { await this.close(); if (next.method !== 'local') await this.listen().catch(() => {}); }
+      await this.#save();
+      return this.status();
+    });
   }
+  /** At app shutdown: the listener closes after any change in progress, and none starts later. */
+  shutdown() { this.closed = true; return this.changes(() => this.close()); }
   async listen() {
+    if (this.closed) return;
     const { cert, key, port, bind } = this.settings;
     let server;
     try {
@@ -134,6 +145,7 @@ export class RemoteAccess {
     server.requestTimeout = 30_000; server.headersTimeout = 15_000; server.keepAliveTimeout = 5_000;
     await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, bind, () => { server.off('error', reject); resolve(); }); })
       .catch(error => { this.error = error.code === 'EADDRINUSE' ? `Port ${port} is already in use. Choose another remote port.` : error.code === 'EADDRNOTAVAIL' ? `${bind} is not an address of this computer.` : 'The remote listener could not start.'; throw new RemoteError(this.error, 'REMOTE_LISTEN', 409); });
+    if (this.closed) { server.close(); return; }
     this.server = server; this.error = '';
   }
   async close() {
@@ -163,7 +175,9 @@ export class RemoteAccess {
     const secret = randomBytes(32).toString('base64url');
     const session = { id: randomUUID(), hash: hash(secret), name: String(name || 'Phone').replace(/[\u0000-\u001f]/g, '').slice(0, REMOTE_LIMITS.name) || 'Phone',
       createdAt: now, lastSeenAt: now, expiresAt: now + REMOTE_LIMITS.sessionDays * 86400000 };
-    this.sessions = [...this.sessions, session].slice(-REMOTE_LIMITS.sessions);
+    const all = [...this.sessions, session];
+    this.sessions = all.slice(-REMOTE_LIMITS.sessions);
+    for (const old of all.slice(0, -REMOTE_LIMITS.sessions)) { for (const res of this.open.get(old.id) || []) res.destroy(); this.open.delete(old.id); }
     await this.#save();
     return { secret, session: publicSession(session) };
   }
@@ -191,8 +205,9 @@ export class RemoteAccess {
     const tailscale = method === 'tailscale' ? this.tailscale.state : null;
     const url = method === 'tailscale' ? tailscale?.url || '' : method === 'twingate' && (host || bind !== '127.0.0.1') ? `${cert ? 'https' : 'http'}://${host || bind}:${port}` : '';
     const warnings = [];
-    if (method === 'twingate' && bind === '127.0.0.1') warnings.push('A Twingate Connector in Docker or on another computer cannot reach 127.0.0.1. Listen on this computer’s private address unless the Connector runs directly on this computer.');
+    if (method === 'twingate' && bind === '127.0.0.1') warnings.push(`On 127.0.0.1, a Twingate Resource that allows all ports also reaches Promptboard’s local port ${this.localPort} on this computer, without pairing. Listen on this computer’s private address instead (the local app never listens there), or limit the Resource to TCP port ${port} only. A Connector in Docker or on another computer cannot reach 127.0.0.1 at all.`);
     if (method === 'twingate' && !cert) warnings.push('Without a certificate, the last hop from the Connector to this computer is unencrypted on your network. Add a certificate and key for HTTPS.');
+    if (tailscale?.shared) warnings.push('Another Tailscale Serve service uses this same address on a different port. Browsers send Promptboard’s device sign-in to it as well; keep it only if you trust that service.');
     if (tailscale?.funnel) warnings.push('Tailscale Funnel is on for this address: it is reachable from the public internet. Promptboard refuses those requests; turn Funnel off.');
     return { method, port, bind, host, tls: Boolean(cert), listening: Boolean(this.server), error: this.error, url, tailscale, warnings, addresses: localAddresses(),
       pairing: this.pairing && this.pairing.expiresAt > this.now() ? { expiresAt: this.pairing.expiresAt } : null,
@@ -202,9 +217,10 @@ export class RemoteAccess {
     if (this.settings.method !== 'tailscale') throw invalid('Choose Tailscale first.');
     const state = await tailscaleState(this.settings.port, this.cli);
     if (!state.running || (!state.httpsPort && !state.serving)) throw new RemoteError(state.message || 'Tailscale is not connected.', 'REMOTE_TAILSCALE', 409);
-    const args = ['serve', '--bg', `--https=${state.httpsPort}`, `http://127.0.0.1:${this.settings.port}`];
     if (!on && !state.serving) return this.status({ refresh: true });
-    await this.cli.run(on ? args : [...args, 'off'], { timeoutMs: 30000 }).catch(error => {
+    const target = `http://127.0.0.1:${this.settings.port}`;
+    const args = on ? ['serve', '--bg', `--https=${state.httpsPort}`, target] : ['serve', '--bg', `--https=${state.servePort}`, target, 'off'];
+    await this.cli.run(args, { timeoutMs: 30000 }).catch(error => {
       throw new RemoteError(/https|certificate|cert/i.test(error.stderr || '') ? 'Tailscale needs HTTPS certificates for your tailnet. Run the command in a terminal once and follow its link, then check again.' : 'Tailscale Serve could not be changed. Run the command in a terminal to see why.', 'REMOTE_TAILSCALE', 409);
     });
     return this.status({ refresh: true });
@@ -255,7 +271,7 @@ export class RemoteAccess {
       res.setHeader('Set-Cookie', `${COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${secure ? '; Secure' : ''}`);
       return reply(res, 200, { signedOut: true });
     }
-    if (localOnly(req.method, path, req)) return reply(res, 403, { error: 'Do this on the computer that runs Promptboard. Remote devices cannot change sign-ins, remote access, start local programs or open folder pickers there.', code: 'REMOTE_LOCAL_ONLY' });
+    if (localOnly(req.method, path, req)) return reply(res, 403, { error: 'Do this on the computer that runs Promptboard. Remote devices cannot change remote access or sign-ins, or open dialogs on that screen.', code: 'REMOTE_LOCAL_ONLY' });
     req.promptboardRemote = { id: session.id, name: session.name };
     const open = this.open.get(session.id) || new Set(); this.open.set(session.id, open);
     open.add(res); res.once('close', () => open.delete(res));
@@ -293,11 +309,13 @@ export async function remoteRoute(remote, req, res, pathname, { jsonBody, send }
   }
 }
 
-/** Changes that stay on the computer: remote access itself, sign-ins, native dialogs and starting local programs. */
+/**
+ * What needs someone at the computer: remote access itself, CLI and GitHub sign-in (they open a browser or terminal
+ * there) and native dialogs. Everything else is allowed: a paired device has the same control as the computer.
+ */
 function localOnly(method, path) {
   if (method === 'GET' || method === 'HEAD') return /^\/api\/remote(\/|$)/.test(path);
-  return /^\/api\/remote(\/|$)/.test(path) || /^\/api\/auth\/(login|logout|cancel)$/.test(path) || /^\/api\/github\/login(\/cancel)?$/.test(path)
-    || path === '/api/folder/choose' || path === '/api/compose/mcp/test' || /^\/api\/base\/resources\/[^/]+\/test$/.test(path);
+  return /^\/api\/remote(\/|$)/.test(path) || /^\/api\/auth\/(login|logout|cancel)$/.test(path) || /^\/api\/github\/login(\/cancel)?$/.test(path) || path === '/api/folder/choose';
 }
 /** This computer's private addresses, offered as listening addresses for Twingate. */
 function localAddresses() {
