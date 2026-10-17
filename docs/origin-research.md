@@ -56,6 +56,13 @@ one closes the others and keeps unsaved and unsent text. On phones the panel fil
   Compose's read-only MCP lookup (the server must expose one annotated read-only query tool, or be Context7). Only
   passages relevant to each agent's question are sent, bounded and cited. Text that looks like paths, URLs, code or
   contact details is never sent to an MCP server. The CLI gets no MCP tools of its own.
+- **The project's own structure.** Research reads the structure the project has now. What it may research and where
+  it may write come from the sections, topics and questions that exist: a deleted section, topic or Vision question is
+  never offered, its records are never suggested, and a suggestion for one is refused. A run saves pending edits first,
+  so a section added a moment ago is part of it. With the panel open, adding, renaming, moving or deleting a section
+  updates its scopes at once. A suggestion whose section, topic, question or record was deleted after the research
+  ran (also while it was running) is shown as no longer applicable with only **Dismiss**: nothing brings the removed
+  part back. A project with no sections gets a chat answer and no suggestions.
 - **Where to write.** Each run also gets instructions built from the saved blueprint for the selected part
   (`researchGuide`): the exact places its findings go, in the project's own names and IDs. For a section these are its
   vision fields or records (technologies for Technology, components, connections and layers for Architecture, …), every

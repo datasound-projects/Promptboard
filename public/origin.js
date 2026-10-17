@@ -11,8 +11,8 @@ window.PromptboardOrigin = (() => {
   const NODE_W = 184, NODE_H = 58, GAP_X = 270, GAP_Y = 100;
   // Built-in guiding questions. Each project can reword them; the wording never changes what a section does.
   const QUESTION = M.QUESTIONS;
-  const MAP_LEFT = ['vision', 'requirements', 'architecture', 'technology', 'dependencies', 'data', 'ai'];
-  const MAP_RIGHT = ['security', 'testing', 'deployment', 'observability', 'research', 'decisions', 'plan'];
+  // Built-in categories keep their colour; a project's own categories take the five colours in turn.
+  const TONES = M.PHASES.map(phase => phase.id);
   const NOUN = { requirements: 'Requirement', components: 'Component', connections: 'Connection', technologies: 'Technology', dependencies: 'Dependency', decisions: 'Decision',
     assumptions: 'Assumption', sources: 'Source', risks: 'Risk', areas: 'Approach', milestones: 'Milestone', items: 'Task', layers: 'Layer', blocks: 'Block' };
   // Reference fields → the collection they point to. Used for deletes and “used by”.
@@ -37,7 +37,7 @@ window.PromptboardOrigin = (() => {
     const path = document.createElementNS(svg.namespaceURI, 'path'); path.setAttribute('d', d); svg.append(path);
     return svg;
   }
-  const ICON = { edit: 'M4 20h4L19 9l-4-4L4 16v4zM13.5 6.5l4 4', plus: 'M12 5v14M5 12h14', minus: 'M5 12h14', fit: 'M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5', grip: 'M20 10L10 20M20 15l-5 5M20 4L4 20', close: 'M6 6l12 12M18 6 6 18', dots: 'M5 12h.01M12 12h.01M19 12h.01', arrow: 'M5 12h14M13 6l6 6-6 6', link: 'M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1',
+  const ICON = { edit: 'M4 20h4L19 9l-4-4L4 16v4zM13.5 6.5l4 4', plus: 'M12 5v14M5 12h14', minus: 'M5 12h14', fit: 'M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5', grip: 'M20 10L10 20M20 15l-5 5M20 4L4 20', close: 'M6 6l12 12M18 6 6 18', dots: 'M5 12h.01M12 12h.01M19 12h.01', handle: 'M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01', arrow: 'M5 12h14M13 6l6 6-6 6', link: 'M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1',
     up: 'M6 15l6-6 6 6', down: 'M6 9l6 6 6-6' };
   // One small picture per block type.
   const BLOCK_ICON = { qa: 'M4 5h16v11H10l-6 4zM9 9h6M9 12h4', table: 'M3 5h18v14H3zM3 10h18M3 15h18M10 5v14', checklist: 'M4 7l2 2 3-3M4 16l2 2 3-3M13 8h7M13 17h7',
@@ -93,7 +93,7 @@ window.PromptboardOrigin = (() => {
     const menuSummary = el('summary', 'origin-icon'); menuSummary.setAttribute('aria-label', 'Project options'); menuSummary.title = 'Project options'; menuSummary.append(icon(ICON.dots));
     const menuList = el('div', 'origin-menu-list');
     menuList.append(button('Rename…', () => { menu.open = false; openRename(); }, 'origin-menu-item'), button('Connect to Kanban…', () => { menu.open = false; openConnect(); }, 'origin-menu-item'),
-      button('Delete from Origin…', () => { menu.open = false; openDelete(); }, 'origin-menu-item danger'));
+      button('Save structure as blueprint…', () => { menu.open = false; openSaveBlueprint(); }, 'origin-menu-item'), button('Reset structure…', () => { menu.open = false; openReset(); }, 'origin-menu-item'), button('Delete from Origin…', () => { menu.open = false; openDelete(); }, 'origin-menu-item danger'));
     menu.append(menuSummary, menuList);
     const linkChip = button('', () => { const linked = project(); if (linked?.kanban?.exists) app.openKanban(linked.kanbanProjectId); else openConnect(); }, 'origin-link-pill');
     linkChip.id = 'origin-kanban-link';
@@ -105,9 +105,11 @@ window.PromptboardOrigin = (() => {
     header.append(projectBox, statusBox);
     const errorBox = el('p', 'origin-banner origin-error'); errorBox.id = 'origin-error'; errorBox.setAttribute('role', 'alert'); errorBox.hidden = true;
     const notice = el('p', 'origin-banner'); notice.id = 'origin-notice'; notice.setAttribute('role', 'status'); notice.hidden = true;
+    // After a removal: one Undo, until the next change.
+    const undoBar = el('div', 'origin-banner origin-undo'); undoBar.id = 'origin-undo'; undoBar.setAttribute('role', 'status'); undoBar.hidden = true;
     const main = el('section', 'origin-main'); main.id = 'origin-main'; main.setAttribute('aria-labelledby', 'origin-section-heading');
     const drawer = el('aside', 'origin-drawer'); drawer.id = 'origin-drawer'; drawer.hidden = true; drawer.tabIndex = -1; drawer.setAttribute('aria-labelledby', 'origin-drawer-title');
-    view.append(heading, header, errorBox, notice, main, drawer);
+    view.append(heading, header, errorBox, notice, undoBar, main, drawer);
     // Project Context: a separate, editable Markdown document in the same right-side panel.
     const contextPanel = window.PromptboardOriginContext.create({ app, view, drawer, icon: name => icon(ICON[name]), exists: () => Boolean(record?.exists),
       project: () => project(), revision: () => record?.revision, flushOrigin: () => flush(), closeEditor: () => { if (open) closeDrawer(); researchPanel.yieldDrawer(); }, showError: message => showError(message) });
@@ -125,13 +127,15 @@ window.PromptboardOrigin = (() => {
     let flowConnect = null, flowStep = null; // A flow block: the arrow being drawn ({ block, from }) and the step being edited ({ block, node }).
     let contextView = { itemId: null, open: false, loading: false, revision: 0, data: null, error: '' }, drawerMessage = null;
     let saveTimer = null, saving = null, changeCount = 0, savedCount = 0, saveState = 'saved', saveMessage = '', dirtySince = 0, shownSaveError = '';
-    let baseResources = null, baseLoading = null, focusAfter = null, renderFrame = 0, uid = 0;
+    let baseResources = null, baseLoading = null, focusAfter = null, renderFrame = 0, uid = 0, undo = null, dragging = null;
     const quickDrafts = new Map(); // Unsent "Add …" text survives re-renders and view switches.
     const bp = () => record.blueprint;
     // The sidebar reads top to bottom as the order of work, in this project's own names.
-    const phases = () => M.phaseList(record?.exists ? bp() : null).map((phase, index) => ({ ...phase, number: String(index + 1).padStart(2, '0') }));
-    const order = () => phases().flatMap(phase => phase.sections);
-    const phaseOf = id => phases().find(phase => phase.sections.includes(id)) || phases()[0];
+    const phases = () => M.phaseList(record?.exists ? bp() : null).map((phase, index) => ({ ...phase, number: String(index + 1).padStart(2, '0'), tone: TONES.includes(phase.id) ? phase.id : TONES[index % TONES.length] }));
+    // Overview is the project's home: always first, never in a category.
+    const order = () => [M.HOME, ...phases().flatMap(phase => phase.sections)];
+    const phaseOf = id => phases().find(phase => phase.sections.includes(id)) || null;
+    const toneOf = id => phaseOf(id)?.tone || 'define';
     const sectionName = id => M.sectionTitle(record?.exists ? bp() : null, id);
     const isCustom = id => Boolean(record?.exists && bp().customSections.some(entry => entry.id === id));
     const topicName = (id, topic) => M.questionText(bp(), `topic:${id}:${topic}`, M.label(id, topic));
@@ -153,6 +157,7 @@ window.PromptboardOrigin = (() => {
     function changed({ structure = false, drawer: redraw = false } = {}) {
       if (!record?.exists) return;
       changeCount++;
+      if (undo) hideUndo();
       if (saveState !== 'conflict') { saveState = 'dirty'; saveMessage = ''; }
       // Debounced, but continuous editing still saves at least every few seconds.
       dirtySince ||= Date.now();
@@ -236,7 +241,7 @@ window.PromptboardOrigin = (() => {
       projectId = id; record = null; loadError = null; open = null; connectFrom = null; planSelection = new Set(); lastHandoff = '';
       views = { map: null, canvas: null }; mapLinkFrom = null; selectedLink = null; flowConnect = null; flowStep = null; taskMilestone = ''; contextView = { itemId: null, open: false, loading: false, revision: 0, data: null, error: '' };
       contextStatus = { revision: -1, loading: false, map: new Map() };
-      changeCount = savedCount = 0; dirtySince = 0; saveState = 'saved'; showNotice(''); showError('');
+      changeCount = savedCount = 0; dirtySince = 0; saveState = 'saved'; showNotice(''); showError(''); hideUndo();
       renderDrawer(); void contextPanel.reset(id); void researchPanel.reset(id);
       if (!id) { render(); return null; }
       main.replaceChildren(el('p', 'origin-empty-note', 'Loading blueprint…')); main.setAttribute('aria-busy', 'true');
@@ -332,48 +337,267 @@ window.PromptboardOrigin = (() => {
         architecture: blueprint.components.length, technology: blueprint.technologies.length, dependencies: blueprint.dependencies.length,
         research: blueprint.sources.length + blueprint.assumptions.length + blueprint.risks.length, decisions: blueprint.decisions.length, plan: blueprint.items.length };
       // Your own answered questions count in built-in sections too.
-      const own = blueprint.questions.filter(question => question.sectionId === id && blueprint.answers[question.id]?.trim()).length + blueprint.blocks.filter(block => block.sectionId === id && M.blockStarted(block)).length;
+      const own = blueprint.questions.filter(question => question.sectionId === id && blueprint.answers[question.id]?.trim()).length + blueprint.blocks.filter(block => block.sectionId === id && M.blockWorked(block)).length;
       if (counts[id] !== undefined) return counts[id] + own;
       if (M.AREAS[id]) return blueprint.areas.filter(item => item.section === id).length + own;
       return own;
     }
+    // ---- The sidebar: Overview, then the project's categories with their sections. Every category and section has a
+    // ⋯ menu (also the keyboard way to move them); drag a section or a category's handle to reorder. ----
     function renderNavigator(states) {
-      // A rename in progress is never thrown away by a redraw.
-      if (navigator.contains(document.activeElement) && document.activeElement.matches('.origin-inline-input')) return;
-      const focused = navigator.contains(document.activeElement) ? document.activeElement.dataset.section : null;
-      const groups = phases().map(phase => {
-        const box = el('div', `origin-phase phase-${phase.id}`);
-        const label = el('div', 'origin-phase-label');
-        const builtin = M.PHASES.find(entry => entry.id === phase.id).label;
-        const add = button('', () => addSection(phase.id), 'origin-icon origin-phase-add', `Add a section to ${phase.label}`);
-        add.setAttribute('aria-label', `Add a section to ${phase.label}`); add.append(icon(ICON.plus, 13));
-        label.append(el('span', 'origin-phase-number', phase.number),
-          renamable(el('span', 'origin-phase-name', phase.label), { key: `phase:${phase.id}`, value: phase.label, fallback: builtin, label: `${phase.label} name`, max: 60,
-            onSave: value => { if (value) bp().labels.phases[phase.id] = value; else delete bp().labels.phases[phase.id]; changed({ structure: true }); } }), add);
-        const list = el('ul');
-        for (const id of phase.sections) {
-          const meaning = M.SECTION_STATE[states[id]][1];
-          const item = el('button', 'origin-nav-item'); item.type = 'button'; item.dataset.section = id; item.title = meaning;
-          if (id === section) item.setAttribute('aria-current', 'page');
-          const dot = el('span', 'origin-dot'); dot.dataset.state = states[id]; dot.setAttribute('aria-hidden', 'true');
-          item.append(dot, el('span', 'origin-nav-label', sectionName(id)), el('span', 'sr-only', `, ${meaning}`));
-          const count = id === 'overview' ? 0 : sectionCount(id);
-          if (count) item.append(el('span', 'origin-nav-count', String(count)));
-          item.addEventListener('click', () => { openSection(id); app.closeSidebar(); });
-          item.addEventListener('keydown', event => {
-            const ids = order(), index = ids.indexOf(id);
-            const next = { ArrowDown: index + 1, ArrowUp: index - 1, Home: 0, End: ids.length - 1 }[event.key];
-            if (next === undefined) return;
-            event.preventDefault();
-            navigator.querySelector(`[data-section="${CSS.escape(ids[(next + ids.length) % ids.length])}"]`)?.focus();
-          });
-          const entry = el('li'); entry.append(item); list.append(entry);
-        }
-        box.append(label, list);
-        return box;
+      // A rename in progress, an open menu or a drag is never thrown away by a redraw.
+      if (navigator.contains(document.activeElement) && document.activeElement.matches('.origin-inline-input') || navigator.querySelector('.origin-menu[open]') || dragging) return;
+      const focused = navigator.contains(document.activeElement) ? document.activeElement.dataset.nav : null;
+      const home = el('div', 'origin-nav-home phase-define'); home.append(navItem(M.HOME, states));
+      const all = phases(), groups = all.map((phase, index) => categoryBox(phase, index, all, states));
+      const add = button('Add category', () => addCategoryHere(), 'origin-link origin-add-category'); add.id = 'origin-add-category'; add.dataset.nav = 'add-category'; add.prepend(icon(ICON.plus, 13));
+      const nodes = [home, ...groups];
+      if (groups.length) nodes.push(add);
+      else {
+        const empty = el('div', 'origin-nav-start');
+        empty.append(el('p', 'origin-nav-empty', 'No categories yet. Add one, then add sections to it.'), add,
+          button('Use the default categories', () => restructure(() => M.restoreDefaultStructure(bp()), { announce: 'The default categories and sections were added.' }), 'origin-link origin-use-default'));
+        nodes.push(empty);
+      }
+      navigator.replaceChildren(...nodes);
+      if (focused) navigator.querySelector(`[data-nav="${CSS.escape(focused)}"]`)?.focus();
+    }
+    function navItem(id, states) {
+      const meaning = M.SECTION_STATE[states[id] || 'empty'][1];
+      const item = el('button', 'origin-nav-item'); item.type = 'button'; item.dataset.section = id; item.dataset.nav = `section:${id}`; item.title = meaning;
+      if (id === section) item.setAttribute('aria-current', 'page');
+      const dot = el('span', 'origin-dot'); dot.dataset.state = states[id] || 'empty'; dot.setAttribute('aria-hidden', 'true');
+      item.append(dot, el('span', 'origin-nav-label', sectionName(id)), el('span', 'sr-only', `, ${meaning}`));
+      const count = id === M.HOME ? 0 : sectionCount(id);
+      if (count) item.append(el('span', 'origin-nav-count', String(count)));
+      item.addEventListener('click', () => { openSection(id); app.closeSidebar(); });
+      item.addEventListener('keydown', event => {
+        const ids = order(), index = ids.indexOf(id);
+        const next = { ArrowDown: index + 1, ArrowUp: index - 1, Home: 0, End: ids.length - 1 }[event.key];
+        if (next === undefined) return;
+        event.preventDefault();
+        navigator.querySelector(`[data-section="${CSS.escape(ids[(next + ids.length) % ids.length])}"]`)?.focus();
       });
-      navigator.replaceChildren(...groups);
-      if (focused) navigator.querySelector(`[data-section="${CSS.escape(focused)}"]`)?.focus();
+      return item;
+    }
+    function categoryBox(phase, index, all, states) {
+      const box = el('div', `origin-phase phase-${phase.tone}`); box.dataset.phase = phase.id;
+      const label = el('div', 'origin-phase-label');
+      const builtin = M.PHASES.find(entry => entry.id === phase.id)?.label;
+      const add = button('', () => addSection(phase.id), 'origin-icon origin-phase-add', `Add a section to ${phase.label}`);
+      add.setAttribute('aria-label', `Add a section to ${phase.label}`); add.dataset.nav = `add:${phase.id}`; add.append(icon(ICON.plus, 13));
+      const missing = M.SECTIONS.filter(entry => entry.id !== M.HOME && !M.hasPage(bp(), entry.id));
+      const options = itemMenu(`Options for the category ${phase.label}`, `phase:${phase.id}`, [
+        ['Rename', () => navigator.querySelector(`[data-edit="${CSS.escape(`phase:${phase.id}`)}"]`)?.click()],
+        ['Add a section', () => addSection(phase.id)],
+        ['Add sections from a blueprint…', () => openAddFromBlueprint(phase)],
+        ...missing.map(entry => [`Add back: ${M.sectionLabel(entry.id)}`, () => addBuiltin(phase.id, entry.id)]),
+        ['Move up', () => restructure(() => M.moveCategory(bp(), phase.id, index - 1)), { disabled: index === 0 }],
+        ['Move down', () => restructure(() => M.moveCategory(bp(), phase.id, index + 1)), { disabled: index === all.length - 1 }],
+        ['Duplicate', () => duplicateCategory(phase.id)],
+        ['Delete category…', () => removeCategoryFlow(phase), { danger: true }],
+      ]);
+      const grip = dragHandle(`Drag to move the category ${phase.label}`);
+      label.append(grip, el('span', 'origin-phase-number', phase.number),
+        renamable(el('span', 'origin-phase-name', phase.label), { key: `phase:${phase.id}`, value: phase.label, fallback: builtin || 'Untitled category', label: `${phase.label} name`, max: 60,
+          onSave: value => restructure(() => M.renameCategory(bp(), phase.id, value)) }), add, options);
+      const list = el('ul');
+      for (const id of phase.sections) {
+        const entry = el('li', 'origin-nav-entry'); entry.dataset.page = id;
+        entry.append(navItem(id, states), sectionMenu(id, phase));
+        dragSource(entry, 'section', id);
+        // A section dropped on a section takes its place, before or after it, in that category.
+        dropTarget(entry, ['section'], (drag, after) => {
+          const others = phase.sections.filter(page => page !== drag.id);
+          restructure(() => M.movePage(bp(), drag.id, { phase: phase.id, index: others.indexOf(id) + (after ? 1 : 0) }));
+        });
+        list.append(entry);
+      }
+      if (!phase.sections.length) list.append(el('li', 'origin-nav-none', 'No sections yet'));
+      box.append(label, list);
+      dragSource(box, 'category', phase.id, { handle: grip });
+      // A section dropped on a category goes to its end; a category dropped on another takes its place.
+      dropTarget(box, ['section', 'category'], (drag, after) => {
+        if (drag.kind === 'section') { restructure(() => M.movePage(bp(), drag.id, { phase: phase.id })); return; }
+        const others = all.filter(item => item.id !== drag.id).map(item => item.id);
+        restructure(() => M.moveCategory(bp(), drag.id, others.indexOf(phase.id) + (after ? 1 : 0)));
+      }, { into: kind => kind === 'section' });
+      return box;
+    }
+    function sectionMenu(id, phase) {
+      const at = phase.sections.indexOf(id);
+      return itemMenu(`Options for ${sectionName(id)}`, `section:${id}`, [
+        ['Rename', () => { openSection(id); main.querySelector('[data-edit="title"]')?.click(); }],
+        ['Move up', () => restructure(() => M.movePage(bp(), id, { index: at - 1 })), { disabled: at === 0 }],
+        ['Move down', () => restructure(() => M.movePage(bp(), id, { index: at + 1 })), { disabled: at === phase.sections.length - 1 }],
+        ['Move to category…', () => openMoveSection(id), { disabled: phases().length < 2 }],
+        ...(isCustom(id) ? [['Duplicate', () => duplicateSection(id)]] : []),
+        ['Delete section…', () => removeSectionFlow(id), { danger: true }],
+      ]);
+    }
+
+    /** A small ⋯ menu. Items are [text, run, { disabled, danger }]; a choice, Escape or a click elsewhere closes it. */
+    function itemMenu(label, key, items) {
+      const box = el('details', 'origin-menu origin-item-menu');
+      const summary = el('summary', 'origin-icon origin-small origin-menu-toggle'); summary.setAttribute('aria-label', label); summary.title = label; summary.dataset.nav = `menu:${key}`;
+      summary.append(icon(ICON.dots, 14));
+      const list = el('div', 'origin-menu-list');
+      for (const [text, run, { disabled = false, danger = false } = {}] of items) {
+        const item = button(text, () => { box.open = false; run(); }, `origin-menu-item${danger ? ' danger' : ''}`);
+        item.disabled = disabled; list.append(item);
+      }
+      box.addEventListener('toggle', () => { if (box.open) for (const other of document.querySelectorAll('.origin-menu[open]')) if (other !== box) other.open = false; });
+      box.append(summary, list);
+      return box;
+    }
+    document.addEventListener('pointerdown', event => { for (const node of document.querySelectorAll('.origin-menu[open]')) if (!node.contains(event.target)) node.open = false; });
+    window.addEventListener('keydown', event => {
+      const node = event.key === 'Escape' && event.target.closest?.('.origin-menu[open]');
+      if (!node) return;
+      event.preventDefault(); event.stopImmediatePropagation(); node.open = false; node.querySelector('summary')?.focus();
+    }, true);
+
+    // ---- Drag and drop. The ⋯ menus move the same things by keyboard. ----
+    const dragHandle = label => { const grip = el('span', 'origin-drag-handle'); grip.title = label; grip.setAttribute('aria-hidden', 'true'); grip.append(icon(ICON.handle, 14)); return grip; };
+    const clearDropMarks = () => { for (const mark of document.querySelectorAll('.drop-before, .drop-after, .drop-into')) mark.classList.remove('drop-before', 'drop-after', 'drop-into'); };
+    function dragSource(node, kind, id, { handle = node } = {}) {
+      handle.draggable = true;
+      handle.addEventListener('dragstart', event => {
+        event.stopPropagation();
+        dragging = { kind, id };
+        event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', id);
+        if (handle !== node) event.dataTransfer.setDragImage?.(node, 20, 16);
+        requestAnimationFrame(() => node.classList.add('dragging'));
+      });
+      handle.addEventListener('dragend', () => { node.classList.remove('dragging'); clearDropMarks(); if (dragging) { dragging = null; renderDerived(); } });
+    }
+    function dropTarget(node, kinds, onDrop, { into = () => false } = {}) {
+      const place = event => { const box = node.getBoundingClientRect(); return event.clientY > box.top + box.height / 2; };
+      node.addEventListener('dragover', event => {
+        if (!dragging || !kinds.includes(dragging.kind) || dragging.id === node.dataset.page || dragging.id === node.dataset.phase && dragging.kind === 'category') return;
+        event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = 'move';
+        clearDropMarks(); node.classList.add(into(dragging.kind) ? 'drop-into' : place(event) ? 'drop-after' : 'drop-before');
+      });
+      node.addEventListener('dragleave', event => { if (!node.contains(event.relatedTarget)) node.classList.remove('drop-before', 'drop-after', 'drop-into'); });
+      node.addEventListener('drop', event => {
+        if (!dragging || !kinds.includes(dragging.kind)) return;
+        event.preventDefault(); event.stopPropagation();
+        const drag = dragging; dragging = null; clearDropMarks();
+        if (drag.id !== node.dataset.page && drag.id !== node.dataset.block && drag.id !== node.dataset.question) onDrop(drag, place(event));
+        else renderDerived();
+      });
+    }
+
+    // ---- Changing the structure: one path, drawn everywhere at once (sidebar, page, map, Research) ----
+    /** Runs one structure change. `undo` names a removal that can be taken back right after. */
+    function restructure(run, { undo: label = '', announce = '' } = {}) {
+      if (!record?.exists) return null;
+      const before = label ? JSON.stringify(bp()) : '', from = section;
+      const result = run();
+      if (!result || result.error) { if (result?.error) { showNotice(result.error); app.announce(result.error); } return result; }
+      if (label) {
+        record.blueprint = M.normalizeBlueprint(bp()).blueprint; // Links to what was removed go too.
+        if (open && !bp()[open.collection]?.some(item => item.id === open.id)) { open = null; renderDrawer(); }
+      }
+      views.map = null;
+      changed({ structure: true });
+      if (label) showUndo(label, before, from);
+      researchPanel.structureChanged();
+      if (announce || label) app.announce(announce || label);
+      return result;
+    }
+    function showUndo(label, snapshot, from) {
+      undo = { snapshot, section: from };
+      const dismiss = button('', () => hideUndo(), 'origin-icon origin-small', 'Dismiss'); dismiss.setAttribute('aria-label', 'Dismiss'); dismiss.append(icon(ICON.close, 13));
+      undoBar.replaceChildren(el('span', '', label), button('Undo', () => takeBack(), 'origin-link origin-undo-button'), dismiss);
+      undoBar.hidden = false;
+    }
+    function hideUndo() { undo = null; undoBar.hidden = true; undoBar.replaceChildren(); }
+    function takeBack() {
+      if (!undo || !record?.exists) return;
+      const { snapshot, section: from } = undo;
+      hideUndo();
+      record.blueprint = JSON.parse(snapshot); section = from; setPref(SECTION_KEY, from); views.map = null;
+      changed({ structure: true }); researchPanel.structureChanged();
+      app.announce('Undone. Everything is back as it was.');
+      main.querySelector('h2')?.focus({ preventScroll: true });
+    }
+    /** What a removal takes with it, in words. */
+    function contentWords(content) {
+      const parts = [];
+      if (content.records) parts.push(plural(content.records, 'entry', 'entries'));
+      if (content.questions) parts.push(`${plural(content.questions, 'question')}${content.answers ? ` (${content.answers} answered)` : ''}`);
+      if (content.blocks) parts.push(plural(content.blocks, 'block'));
+      if (content.description) parts.push('a description');
+      return parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts.at(-1)}` : parts[0] || 'nothing';
+    }
+    const total = list => list.reduce((sum, content) => ({ records: sum.records + content.records, questions: sum.questions + content.questions, answers: sum.answers + content.answers,
+      blocks: sum.blocks + content.blocks, description: sum.description || content.description, total: sum.total + content.total }), { records: 0, questions: 0, answers: 0, blocks: 0, description: false, total: 0 });
+    /** A removal with content asks first and names what goes with it; an empty one happens at once. Both can be undone. */
+    function confirmRemoval(title, lead, submit, run) {
+      modal('origin-remove-dialog', { title, lead, body: [dialogForm('origin-remove-dialog', [], submit, async () => { run(); }, { danger: true })] });
+      document.querySelector('#origin-remove-dialog-submit')?.focus();
+    }
+    function removeSectionFlow(id) {
+      const content = M.pageContent(bp(), id), name = sectionName(id);
+      const run = () => restructure(() => M.removePage(bp(), id), { undo: `Section “${name}” deleted.` });
+      if (!content.total) { run(); return; }
+      confirmRemoval(`Delete the section “${name}”?`, `It holds ${contentWords(content)}, deleted with it.${isCustom(id) ? '' : ' Its category’s menu can add it back, empty.'} You can undo this right after.`, 'Delete section', run);
+    }
+    function removeCategoryFlow(phase) {
+      const content = total(phase.sections.map(id => M.pageContent(bp(), id)));
+      const run = () => restructure(() => M.removeCategory(bp(), phase.id), { undo: `Category “${phase.label}” deleted.` });
+      if (!phase.sections.length) { run(); return; }
+      const names = phase.sections.map(sectionName).join(', ');
+      confirmRemoval(`Delete the category “${phase.label}”?`, `Its ${plural(phase.sections.length, 'section')} (${names}) ${phase.sections.length === 1 ? 'is' : 'are'} deleted with it${content.total ? `, holding ${contentWords(content)}` : ''}. You can undo this right after.`, 'Delete category', run);
+    }
+    function addCategoryHere() {
+      const id = newId();
+      if (!restructure(() => M.addCategory(bp(), { id, title: 'New category' }))?.ok) return;
+      navigator.querySelector(`[data-edit="${CSS.escape(`phase:${id}`)}"]`)?.click();
+    }
+    function duplicateCategory(id) {
+      const result = restructure(() => M.duplicateCategory(bp(), id, newId));
+      if (result?.ok) app.announce(`Category copied${result.copied ? ` with ${plural(result.copied, 'section')} of its own` : ''}.${result.skipped ? ` ${plural(result.skipped, 'built-in section')} exist${result.skipped === 1 ? 's' : ''} once and stayed.` : ''}`);
+    }
+    function addBuiltin(phaseId, pageId) {
+      if (restructure(() => M.addPage(bp(), { phase: phaseId, kind: pageId }), { announce: `${M.sectionLabel(pageId)} added back, empty.` })?.ok) openSection(pageId);
+    }
+    function duplicateSection(id) {
+      const result = restructure(() => M.duplicatePage(bp(), id, newId), { announce: 'Section copied with its questions, answers and blocks.' });
+      if (result?.ok) openSection(result.id);
+    }
+    function openMoveSection(id) {
+      const pick = el('select'); pick.id = 'origin-move-category';
+      for (const phase of phases()) pick.append(Object.assign(el('option', '', phase.label), { value: phase.id }));
+      pick.value = phaseOf(id)?.id || '';
+      modal('origin-move-dialog', { title: `Move “${sectionName(id)}”`, lead: 'It moves with everything in it, to the end of the category.',
+        body: [dialogForm('origin-move-dialog', [field('Category', pick)], 'Move', async () => { const result = restructure(() => M.movePage(bp(), id, { phase: pick.value })); if (result?.error) throw new Error(result.error); })] });
+      pick.focus();
+    }
+    /** Moves one of a section's own questions or blocks to another section, with its answer or content. */
+    function openMoveTo(kind, id, from) {
+      const pick = el('select'); pick.id = 'origin-move-section';
+      for (const phase of phases()) {
+        const group = el('optgroup'); group.label = phase.label;
+        for (const page of phase.sections) if (page !== from) group.append(Object.assign(el('option', '', sectionName(page)), { value: page }));
+        if (group.children.length) pick.append(group);
+      }
+      if (!pick.options.length) { showNotice('There is no other section to move it to. Add one first.'); return; }
+      modal('origin-move-dialog', { title: kind === 'question' ? 'Move the question' : 'Move the block', lead: `It moves with its ${kind === 'question' ? 'answer' : 'content'}, to the end of the section.`,
+        body: [dialogForm('origin-move-dialog', [field('Section', pick)], 'Move', async () => {
+          const to = pick.value, result = restructure(() => (kind === 'question' ? M.moveQuestion(bp(), id, { section: to }) : M.moveBlockTo(bp(), id, to)), { announce: `Moved to ${sectionName(to)}.` });
+          if (result?.error) throw new Error(result.error);
+        })] });
+      pick.focus();
+    }
+    /** A list's entry dropped before or after another of the same section: questions among questions, blocks among blocks. */
+    function place(list, dragId, targetId, after, sectionKey = 'sectionId') {
+      const moved = list.find(entry => entry.id === dragId), target = list.find(entry => entry.id === targetId);
+      if (!moved || !target || moved === target) return null;
+      list.splice(list.indexOf(moved), 1); list.splice(list.indexOf(target) + (after ? 1 : 0), 0, moved);
+      moved[sectionKey] = target[sectionKey];
+      return { ok: true };
     }
     // One clear next step per section, taken from the deterministic checks.
     function nextStep(found) {
@@ -416,8 +640,7 @@ window.PromptboardOrigin = (() => {
     function renderMain() {
       if (renderFrame) { cancelAnimationFrame(renderFrame); renderFrame = 0; }
       if (record?.exists && !order().includes(section)) section = 'overview';
-      const phase = phaseOf(section);
-      main.className = `origin-main phase-${phase.id}${['overview', 'architecture'].includes(section) ? ' origin-wide' : ''}`;
+      main.className = `origin-main phase-${toneOf(section)}${['overview', 'architecture'].includes(section) ? ' origin-wide' : ''}`;
       view.dataset.section = section;
       if (!projectId) { main.className = 'origin-main phase-define'; main.replaceChildren(startState()); renderDerived(); return; }
       if (loadError && !record) { main.replaceChildren(errorState()); renderDerived(); return; }
@@ -438,12 +661,13 @@ window.PromptboardOrigin = (() => {
       const heading = el('h2', '', sectionName(section)); heading.id = 'origin-section-heading'; heading.tabIndex = -1;
       const builtin = M.sectionLabel(section);
       const rename = section === 'overview' ? heading : renamable(heading, { key: 'title', value: sectionName(section), fallback: custom ? 'New section' : builtin, label: 'section name', max: custom ? 80 : 60,
-        onSave: value => {
-          if (custom) custom.title = value || 'New section';
-          else if (value) bp().labels.sections[section] = value; else delete bp().labels.sections[section];
-          changed({ structure: true });
-        } });
-      text.append(el('p', 'origin-eyebrow', `${phase.number} · ${phase.label}`), rename);
+        onSave: value => restructure(() => M.renamePage(bp(), section, value)) });
+      text.append(el('p', 'origin-eyebrow', phase ? `${phase.number} · ${phase.label}` : 'Home'), rename);
+      if (custom && bp().questionText[`section:${section}`]) {
+        // A section from a blueprint keeps the template's explanation as its guiding text; clearing it removes it.
+        const key = `section:${section}`, wording = bp().questionText[key];
+        text.append(renamable(el('p', 'origin-question', wording), { key, value: wording, fallback: '', label: 'guiding text', max: 500, onSave: value => setQuestion(key, value) }));
+      }
       if (!custom) {
         const key = `section:${section}`, wording = M.questionText(bp(), key, QUESTION[section]);
         text.append(section === 'overview' ? el('p', 'origin-question', wording) : renamable(el('p', 'origin-question', wording), { key, value: wording, fallback: QUESTION[section], label: 'guiding question', max: 500,
@@ -502,7 +726,7 @@ window.PromptboardOrigin = (() => {
     // ---- Start: every project begins here ----
     function flowStrip() {
       const strip = el('ol', 'origin-flow'); strip.setAttribute('aria-label', 'How Origin works');
-      for (const phase of phases()) { const step = el('li', `phase-${phase.id}`); step.append(el('span', 'origin-flow-dot'), phase.label); strip.append(step); }
+      for (const phase of phases()) { const step = el('li', `phase-${phase.tone}`); step.append(el('span', 'origin-flow-dot'), phase.label); strip.append(step); }
       return strip;
     }
     // The only start screen: Origin has no projects yet. Later projects come from New project.
@@ -514,17 +738,17 @@ window.PromptboardOrigin = (() => {
       const name = el('input'); name.id = 'origin-first-project'; name.maxLength = 80; name.autocomplete = 'off'; name.placeholder = 'Project name'; name.setAttribute('aria-label', 'Project name');
       const idea = el('textarea', 'origin-idea'); idea.id = 'origin-idea'; idea.rows = 4; idea.maxLength = 20000; idea.placeholder = 'A web app that helps small teams…';
       idea.setAttribute('aria-label', 'What do you want to build?');
-      const kanban = kanbanOption('origin-first-kanban');
+      const kanban = kanbanOption('origin-first-kanban'), begin = blueprintPicker('origin-first-start', { others: [] });
       const error = el('p', 'origin-inline-error'); error.hidden = true; error.setAttribute('role', 'alert');
       const start = el('button', 'origin-primary', 'Start blueprint'); start.type = 'submit'; start.id = 'origin-start'; start.append(icon(ICON.arrow, 16));
       const actions = el('div', 'origin-hero-actions'); actions.append(start, el('span', 'origin-hint', '⌘/Ctrl + Enter'));
-      form.append(name, idea, kanban.box, actions, error);
+      form.append(name, idea, begin.box, kanban.box, actions, error);
       form.addEventListener('submit', async event => {
         event.preventDefault();
         error.hidden = true;
         if (!name.value.trim()) { error.textContent = 'Give the project a name first.'; error.hidden = false; name.focus(); return; }
         start.disabled = true;
-        try { await createProject(name.value, idea.value, kanban.input.checked); }
+        try { await createProject(name.value, idea.value, kanban.input.checked, begin.value(), begin.preferences()); }
         catch (failure) { error.textContent = failure.message; error.hidden = false; }
         finally { start.disabled = false; }
       });
@@ -544,8 +768,98 @@ window.PromptboardOrigin = (() => {
       box.append(input, text);
       return { box, input };
     }
-    async function createProject(name, description, createKanban) {
-      const { response, data } = await app.api('/api/origin/projects', { method: 'POST', body: { name: name.trim(), description: description.trim(), createKanban }, timeoutMs: 120000 })
+    // ---- The blueprint library: how a new project starts ----
+    const TEMPLATES = globalThis.PromptboardOriginTemplates;
+    /** What a choice gives a project, as categories → sections → questions, for the preview. */
+    function previewOf(choice, saved) {
+      if (choice.kind === 'blank') return { name: 'Start blank', description: 'Only the Overview. Add your own categories and sections, or add sections from a blueprint later.', categories: [] };
+      if (choice.kind === 'default') {
+        const blueprint = M.emptyBlueprint();
+        return { name: 'General software project', description: 'A technology-independent plan for any project: Define, Design, Operate, Decide and Build with their sections.',
+          categories: M.phaseList(blueprint).map(phase => ({ title: phase.label, sections: phase.sections.map(id => ({ title: M.sectionLabel(id), questions: [] })) })) };
+      }
+      if (choice.kind === 'saved') { const entry = saved.find(item => item.id === choice.id); return entry && { name: entry.name, description: entry.description || 'Your saved blueprint.', categories: entry.categories.map(category => ({ title: category.title, sections: category.sections.map(title => ({ title, questions: [] })) })) }; }
+      if (choice.kind === 'from') return { name: 'Another project’s structure', description: 'Its categories, sections, questions and empty blocks. None of its answers or entries.', categories: [] };
+      const template = TEMPLATES.get(choice.id);
+      return { name: template.name, description: template.description, research: template.research,
+        categories: template.categories.map(category => ({ title: category.title, sections: category.sections.map(ref => {
+          const module = typeof ref === 'string' ? TEMPLATES.MODULES[ref] : null, own = module ? (module.section ? null : module) : ref;
+          return { title: (own || module).title, questions: [...(own || module).questions || [], ...(own ? [] : template.questions?.[module.section] || [])], blocks: [...(own || module).blocks || [], ...(own ? [] : template.blocks?.[module.section] || [])].map(block => block.title) };
+        }) })) };
+    }
+    /**
+     * Start with: Blank, the general structure, one of the library's blueprints, a blueprint you saved, or another
+     * project's structure. Cards are searchable and filtered by category; the preview shows what the project gets.
+     */
+    function blueprintPicker(id, { others = projects } = {}) {
+      const box = el('div', 'origin-blueprints'); box.id = id;
+      let choice = { kind: 'default' }, category = '', saved = [];
+      const search = el('input', 'origin-blueprint-search'); search.type = 'search'; search.id = `${id}-search`; search.placeholder = 'Search blueprints'; search.setAttribute('aria-label', 'Search blueprints');
+      const chips = el('div', 'origin-blueprint-chips'); chips.setAttribute('role', 'group'); chips.setAttribute('aria-label', 'Blueprint categories');
+      const cards = el('div', 'origin-blueprint-cards'); cards.setAttribute('role', 'radiogroup'); cards.setAttribute('aria-label', 'Blueprints');
+      const preview = el('div', 'origin-blueprint-preview'); preview.setAttribute('aria-live', 'polite');
+      const from = el('select'); from.id = `${id}-from`; from.setAttribute('aria-label', 'Project to copy the structure from');
+      from.append(...others.map(item => Object.assign(el('option', '', item.name), { value: item.id })));
+      const preferences = el('textarea'); preferences.id = `${id}-preferences`; preferences.rows = 2; preferences.maxLength = 2000; preferences.placeholder = 'Technology preferences (optional), for example “TypeScript, PostgreSQL, deploy on our Kubernetes”';
+      preferences.setAttribute('aria-label', 'Technology preferences (optional)');
+      const options = () => [
+        { kind: 'blank', name: 'Start blank', summary: 'Only the Overview: build your own structure.', category: 'start' },
+        { kind: 'default', name: 'General software project', summary: 'Define, Design, Operate, Decide and Build: works for any project.', category: 'start' },
+        ...TEMPLATES.TEMPLATES.map(template => ({ kind: 'template', id: template.id, name: template.name, summary: template.summary, category: template.category, sections: TEMPLATES.templateSections(template).length,
+          words: [template.description, ...TEMPLATES.templateSections(template).map(entry => entry.title)].join(' ') })),
+        ...saved.map(entry => ({ kind: 'saved', id: entry.id, name: entry.name, summary: entry.description || 'Your saved blueprint.', category: 'saved' })),
+        ...(others.length ? [{ kind: 'from', name: 'Another project’s structure', summary: 'Copy the categories and questions of a project you have.', category: 'start' }] : []),
+      ];
+      const same = (a, b) => a.kind === b.kind && (a.id || '') === (b.id || '');
+      const renderChips = () => {
+        const list = [['', 'All'], ...TEMPLATES.CATEGORIES, ...(saved.length ? [['saved', 'Saved']] : [])];
+        chips.replaceChildren(...list.map(([value, label]) => { const chip = button(label, () => { category = value; renderChips(); renderCards(); }, 'origin-blueprint-chip'); chip.setAttribute('aria-pressed', String(category === value)); chip.dataset.category = value; return chip; }));
+      };
+      const renderCards = () => {
+        const query = search.value.trim().toLowerCase();
+        const shown = options().filter(option => (!category || option.category === category) && (!query || `${option.name} ${option.summary} ${option.words || ''}`.toLowerCase().includes(query)));
+        cards.replaceChildren(...shown.map(option => {
+          const card = el('button', 'origin-blueprint-card'); card.type = 'button'; card.setAttribute('role', 'radio'); card.setAttribute('aria-checked', String(same(option, choice)));
+          card.dataset.kind = option.kind; if (option.id) card.dataset.id = option.id;
+          card.append(el('strong', '', option.name), el('span', '', option.summary), ...(option.sections ? [el('small', '', plural(option.sections, 'section'))] : []));
+          card.addEventListener('click', () => { choice = { kind: option.kind, ...(option.id ? { id: option.id } : {}) }; renderCards(); renderPreview(); });
+          return card;
+        }));
+        if (!shown.length) cards.append(el('p', 'origin-empty-note', 'No blueprint matches. Try another word or category.'));
+      };
+      const renderPreview = () => {
+        const shown = previewOf(choice, saved);
+        if (!shown) { preview.replaceChildren(); return; }
+        const tree = el('ol', 'origin-blueprint-tree');
+        for (const group of shown.categories) {
+          const item = el('li'); item.append(el('strong', '', group.title));
+          const sections = el('ul');
+          for (const section of group.sections) {
+            const row = el('li');
+            if (section.questions?.length || section.blocks?.length) {
+              const more = el('details'); more.append(el('summary', '', section.title));
+              const inner = el('ul', 'origin-blueprint-questions'); inner.append(...section.questions.map(text => el('li', '', text)), ...(section.blocks || []).map(text => el('li', 'block', text)));
+              more.append(inner); row.append(more);
+            } else row.textContent = section.title;
+            sections.append(row);
+          }
+          item.append(sections); tree.append(item);
+        }
+        preview.replaceChildren(el('h3', '', shown.name), el('p', '', shown.description), ...(choice.kind === 'from' ? [from] : []), ...(shown.categories.length ? [tree] : []),
+          ...(shown.research?.length ? [el('p', 'origin-hint', `Research starts with: ${shown.research.slice(0, 3).join('; ')}…`)] : []),
+          el('p', 'origin-hint', 'Every category, section and question stays yours to rename, move or delete.'));
+      };
+      search.addEventListener('input', renderCards);
+      const layout = el('div', 'origin-blueprint-layout'); layout.append(cards, preview);
+      box.append(el('span', 'origin-field-label', 'Start with'), search, chips, layout, preferences);
+      renderChips(); renderCards(); renderPreview();
+      // Saved blueprints come from the app; the library is ready at once.
+      void app.api('/api/origin/blueprints', { timeoutMs: 15000 }).then(({ response, data }) => { if (response.ok && Array.isArray(data.blueprints) && data.blueprints.length) { saved = data.blueprints; renderChips(); renderCards(); } }).catch(() => {});
+      const value = () => (choice.kind === 'template' ? { template: choice.id } : choice.kind === 'saved' ? { saved: choice.id } : choice.kind === 'from' ? { from: from.value } : choice.kind);
+      return { box, value, preferences: () => preferences.value.trim() };
+    }
+    async function createProject(name, description, createKanban, start = 'default', preferences = '') {
+      const { response, data } = await app.api('/api/origin/projects', { method: 'POST', body: { name: name.trim(), description: description.trim(), createKanban, start, ...(preferences ? { preferences } : {}) }, timeoutMs: 120000 })
         .catch(() => ({ response: { ok: false }, data: {} }));
       if (!response.ok || !data.project) throw new Error(typeof data.error === 'string' ? data.error : 'The project could not be created. Nothing was changed.');
       projects = [...projects.filter(item => item.id !== data.project.id), data.project];
@@ -591,15 +905,58 @@ window.PromptboardOrigin = (() => {
     }
     function openNewProject() {
       const name = el('input'); name.id = 'origin-new-name'; name.maxLength = 80; name.autocomplete = 'off'; name.placeholder = 'Project name';
-      const idea = el('textarea'); idea.id = 'origin-new-idea'; idea.rows = 4; idea.maxLength = 20000; idea.placeholder = 'What do you want to build? (optional)';
-      const kanban = kanbanOption('origin-new-kanban');
+      const idea = el('textarea'); idea.id = 'origin-new-idea'; idea.rows = 2; idea.maxLength = 20000; idea.placeholder = 'What do you want to build? (optional)';
+      const kanban = kanbanOption('origin-new-kanban'), begin = blueprintPicker('origin-new-start');
       modal('origin-new-dialog', { title: 'New project', lead: 'Name it and describe the idea. You shape the design step by step; no agent starts.',
-        body: [dialogForm('origin-new-dialog', [field('Name', name), field('Description', idea), kanban.box], 'Create project', async () => {
+        body: [dialogForm('origin-new-dialog', [field('Name', name), field('Description', idea), begin.box, kanban.box], 'Create project', async () => {
           if (!name.value.trim()) { name.focus(); throw new Error('Give the project a name.'); }
           const problem = await unsaved(); if (problem) throw new Error(problem);
-          await createProject(name.value, idea.value, kanban.input.checked);
-        })] });
+          await createProject(name.value, idea.value, kanban.input.checked, begin.value(), begin.preferences());
+        })] }).classList.add('wide');
       name.focus();
+    }
+    /** The project's structure, questions and empty blocks as a blueprint for new projects. Nothing written is copied. */
+    function openSaveBlueprint() {
+      const current = project(); if (!current || !record?.exists) return;
+      const name = el('input'); name.id = 'origin-save-blueprint-name'; name.maxLength = 80; name.value = `${current.name} blueprint`;
+      const about = el('textarea'); about.id = 'origin-save-blueprint-description'; about.rows = 2; about.maxLength = 500; about.placeholder = 'What kind of project is it for? (optional)';
+      modal('origin-save-blueprint-dialog', { title: 'Save structure as blueprint', lead: 'New projects can start from it. It keeps the categories, sections, questions and empty blocks — none of the answers or entries — and later changes to this project do not change it.',
+        body: [dialogForm('origin-save-blueprint-dialog', [field('Name', name), field('Description', about)], 'Save blueprint', async () => {
+          if (!(await flush())) throw new Error('This blueprint has unsaved changes. Save or reload it first.');
+          const data = await call(`/api/origin/projects/${encodeURIComponent(current.id)}/save-blueprint`, { name: name.value, description: about.value }, 'The blueprint could not be saved.');
+          app.announce(`Saved the blueprint “${data.blueprint.name}”. Choose it under Saved when you create a project.`);
+        })] });
+      name.select();
+    }
+    /** Sections of a library blueprint added to a category; sections the project already has are skipped, never replaced. */
+    function openAddFromBlueprint(phase) {
+      const pick = el('select'); pick.id = 'origin-add-blueprint';
+      for (const [value, label] of TEMPLATES.CATEGORIES) {
+        const group = el('optgroup'); group.label = label;
+        group.append(...TEMPLATES.TEMPLATES.filter(template => template.category === value).map(template => Object.assign(el('option', '', template.name), { value: template.id })));
+        pick.append(group);
+      }
+      if (bp().template && TEMPLATES.get(bp().template.id)) pick.value = bp().template.id;
+      const list = el('div', 'origin-add-blueprint-sections'); list.setAttribute('role', 'group'); list.setAttribute('aria-label', 'Sections to add');
+      const render = () => {
+        const template = TEMPLATES.get(pick.value);
+        list.replaceChildren(...TEMPLATES.templateSections(template).map(entry => {
+          const present = entry.own ? bp().customSections.some(item => item.title.trim().toLowerCase() === entry.title.trim().toLowerCase()) : M.hasPage(bp(), entry.key);
+          const label = el('label', 'origin-check-row'); const box = el('input'); box.type = 'checkbox'; box.value = entry.key; box.disabled = present;
+          const words = el('span'); words.append(el('strong', '', entry.title), el('small', 'origin-hint', present ? 'Already in the project' : entry.category));
+          label.append(box, words); return label;
+        }));
+      };
+      pick.addEventListener('change', render); render();
+      modal('origin-add-blueprint-dialog', { title: `Add sections to “${phase.label}”`, lead: 'Choose a blueprint and the sections you want. They arrive with their questions and starter blocks; nothing already in the project is replaced.',
+        body: [dialogForm('origin-add-blueprint-dialog', [field('Blueprint', pick), list], 'Add sections', async () => {
+          const keys = [...list.querySelectorAll('input:checked')].map(input => input.value);
+          if (!keys.length) throw new Error('Choose at least one section.');
+          const result = restructure(() => M.addTemplateSections(bp(), TEMPLATES.get(pick.value), keys, phase.id, { modules: TEMPLATES.MODULES, newId }));
+          if (result?.error) throw new Error(result.error);
+          app.announce(`${plural(result.added.length, 'section')} added${result.skipped.length ? `; ${plural(result.skipped.length, 'section')} already there` : ''}.`);
+        })] }).classList.add('wide');
+      pick.focus();
     }
     function openRename() {
       const current = project(); if (!current) return;
@@ -652,6 +1009,35 @@ window.PromptboardOrigin = (() => {
           then?.();
         })] });
       (existing.radio.checked ? pick : name).focus();
+    }
+    /**
+     * Reset the structure. Restoring the default categories adds what is missing and removes nothing. Starting blank
+     * removes every category and section with what is in them: it asks for the project's name, keeps a copy of the
+     * project in the app data folder first, and can be undone right after.
+     */
+    function openReset() {
+      const current = project(); if (!current || !record?.exists) return;
+      const mode = (value, text, hint, checked) => { const label = el('label', 'origin-radio'); const radio = el('input'); radio.type = 'radio'; radio.name = 'origin-reset-mode'; radio.value = value; radio.checked = checked;
+        const words = el('span'); words.append(el('strong', '', text), el('small', 'origin-hint', hint)); label.append(radio, words); return { label, radio }; };
+      const content = total(order().filter(id => id !== M.HOME).map(id => M.pageContent(bp(), id)));
+      const restore = mode('default', 'Restore the default categories and sections', 'Adds back the built-in categories, sections and questions that are missing. Nothing is removed.', true);
+      const blank = mode('blank', 'Start over, blank', `Deletes every category and section${content.total ? `, with ${contentWords(content)}` : ''}. The Overview stays.`, false);
+      const typed = el('input'); typed.id = 'origin-reset-name'; typed.autocomplete = 'off'; typed.placeholder = current.name;
+      const confirm = field(`Type “${current.name}” to confirm`, typed); confirm.hidden = true;
+      for (const option of [restore, blank]) option.radio.addEventListener('change', () => { confirm.hidden = !blank.radio.checked; });
+      modal('origin-reset-dialog', { title: 'Reset structure', lead: 'Choose how. A copy of the project as it is now is kept in the app data folder first.',
+        body: [dialogForm('origin-reset-dialog', [restore.label, blank.label, confirm], 'Reset structure', async () => {
+          if (blank.radio.checked && typed.value.trim() !== current.name) { typed.focus(); throw new Error('Type the project’s name exactly to start over blank.'); }
+          if (!(await flush())) throw new Error('This blueprint has unsaved changes. Save or reload it first.');
+          const before = JSON.stringify(bp()), from = section;
+          const data = await call(`/api/origin/projects/${encodeURIComponent(current.id)}/reset`, { expectedRevision: record.revision, mode: blank.radio.checked ? 'blank' : 'default' }, 'The structure could not be reset. Nothing was changed.');
+          record.blueprint = data.blueprint; saveRevision(data.revision, data.project); views.map = null; open = null;
+          render(); researchPanel.structureChanged();
+          // Undo saves the copy taken just before as a normal change.
+          if (blank.radio.checked) showUndo('The structure was reset to blank.', before, from);
+          showNotice(`The structure was reset. The project as it was is kept in the app data folder as ${data.kept}.`);
+          app.announce(blank.radio.checked ? 'Started over blank.' : 'The default categories and sections are back.');
+        }, { danger: false })] });
     }
     function openDelete() {
       const current = project(); if (!current) return;
@@ -1124,20 +1510,27 @@ window.PromptboardOrigin = (() => {
     const SECTIONS = {
       overview: () => [mindMap(), overviewPanels()],
       vision() {
-        const vision = bp().vision, grid = el('div', 'origin-q-grid');
-        const question = (key2, text, placeholder, wide = false) => {
-          const box = el('div', `origin-q${wide ? ' wide' : ''}`), key = `vision:${key2}`, wording = M.questionText(bp(), key, text);
-          const control = area(vision, key2, placeholder, { label: wording });
-          box.append(renamable(el('span', 'origin-q-label', wording), { key, value: wording, fallback: text, label: 'question', max: 500, onSave: value => setQuestion(key, value) }), control);
+        const vision = bp().vision, grid = el('div', 'origin-q-grid'), shown = M.visionFields(bp()), V = M.VISION_QUESTIONS;
+        const HINT = { summary: 'A web app that…', problem: 'What is broken or missing today', goal: 'What changes once it exists', users: 'One group per line', useCases: 'One use case per line',
+          inScope: 'One item per line', outOfScope: 'One item per line — agents get this as a guardrail', successCriteria: 'Observable outcomes, one per line', constraints: 'Budget, deadlines, platforms, compliance…' };
+        shown.forEach((key2, index) => {
+          const box = el('div', `origin-q${key2 === 'summary' ? ' wide' : ''}`), key = `vision:${key2}`, wording = M.questionText(bp(), key, V[key2]);
+          box.dataset.vision = key2;
+          const control = area(vision, key2, HINT[key2], { label: wording });
+          const head = el('div', 'origin-q-head');
+          head.append(renamable(el('span', 'origin-q-label', wording), { key, value: wording, fallback: V[key2], label: 'question', max: 500, onSave: value => setQuestion(key, value) }),
+            itemMenu(`Options for the question “${wording}”`, key, [
+              ['Move up', () => restructure(() => M.moveVisionField(bp(), key2, -1)), { disabled: index === 0 }],
+              ['Move down', () => restructure(() => M.moveVisionField(bp(), key2, 1)), { disabled: index === shown.length - 1 }],
+              ['Remove question', () => restructure(() => M.removeVisionField(bp(), key2), { undo: `Question “${wording}” removed${vision[key2].trim() ? ' with its answer' : ''}.` }), { danger: true }]]));
+          box.append(head, control);
           box.addEventListener('click', event => { if (event.target === box) control.focus(); });
-          return box;
-        };
-        const V = M.VISION_QUESTIONS;
-        grid.append(question('summary', V.summary, 'A web app that…', true), question('problem', V.problem, 'What is broken or missing today'),
-          question('goal', V.goal, 'What changes once it exists'), question('users', V.users, 'One group per line'), question('useCases', V.useCases, 'One use case per line'),
-          question('inScope', V.inScope, 'One item per line'), question('outOfScope', V.outOfScope, 'One item per line — agents get this as a guardrail'),
-          question('successCriteria', V.successCriteria, 'Observable outcomes, one per line'), question('constraints', V.constraints, 'Budget, deadlines, platforms, compliance…'));
-        return [grid];
+          grid.append(box);
+        });
+        const hidden = M.VISION_SHOWN.filter(key => !shown.includes(key)), nodes = [grid];
+        if (!shown.length) nodes.unshift(el('p', 'origin-empty-note', 'Every built-in question was removed. Add one back below, or ask your own.'));
+        if (hidden.length) nodes.push(restorePicker('Add a question back…', hidden.map(key => [key, V[key]]), key => restructure(() => M.restoreVisionField(bp(), key))));
+        return nodes;
       },
       requirements: () => [quickAdd('Add a requirement — e.g. “People can sign in with email”', value => add('requirements', BLANK.requirements(value), { keyed: true })),
         list('requirements', bp().requirements, item => {
@@ -1214,9 +1607,16 @@ window.PromptboardOrigin = (() => {
     };
     for (const id of Object.keys(M.AREAS)) SECTIONS[id] = () => areaSection(id);
 
+    /** Brings back a built-in field that was removed: it returns empty, at the end. */
+    function restorePicker(label, options, onPick) {
+      const pick = el('select', 'origin-quick-select origin-restore'); pick.setAttribute('aria-label', label);
+      pick.append(Object.assign(el('option', '', label), { value: '' }), ...options.map(([value, text]) => Object.assign(el('option', '', text), { value })));
+      pick.addEventListener('change', () => { if (pick.value) onPick(pick.value); });
+      return pick;
+    }
     // Planning topics: one question per topic, answered in place.
     function areaSection(id) {
-      const blueprint = bp(), topics = M.AREAS[id], items = blueprint.areas.filter(item => item.section === id);
+      const blueprint = bp(), topics = M.topicsOf(blueprint, id), items = blueprint.areas.filter(item => item.section === id);
       const answered = new Set(items.filter(item => item.title.trim()).map(item => item.area));
       const nodes = [];
       if (blueprint.sections[id]?.notApplicable) nodes.push(el('p', 'origin-callout', 'Marked as not needed. Anything already written is kept.'));
@@ -1224,11 +1624,15 @@ window.PromptboardOrigin = (() => {
         id === 'security' ? ' topics answered. This shows which security decisions exist — not how secure the project is.' : ' topics answered. Skip what does not apply.');
       nodes.push(progress);
       const topicList = el('ul', 'origin-topics');
-      for (const [area2, builtin] of topics) {
+      topics.forEach(([area2, builtin], index) => {
         const row = el('li', 'origin-topic'); row.dataset.area = area2;
-        const key = `topic:${id}:${area2}`, label = topicName(id, area2);
+        const key = `topic:${id}:${area2}`, label = topicName(id, area2), filled = items.some(item => item.area === area2);
         const name = el('span', 'origin-topic-label'); const dot = el('span', 'origin-dot'); dot.dataset.state = answered.has(area2) ? 'defined' : 'empty'; dot.setAttribute('aria-hidden', 'true');
-        name.append(dot, renamable(el('span', '', label), { key, value: label, fallback: builtin, label: `${label} topic`, max: 500, onSave: value => setQuestion(key, value) }));
+        name.append(dot, renamable(el('span', '', label), { key, value: label, fallback: builtin, label: `${label} topic`, max: 500, onSave: value => setQuestion(key, value) }),
+          itemMenu(`Options for the topic ${label}`, key, [
+            ['Move up', () => restructure(() => M.moveTopic(bp(), id, area2, -1)), { disabled: index === 0 }],
+            ['Move down', () => restructure(() => M.moveTopic(bp(), id, area2, 1)), { disabled: index === topics.length - 1 }],
+            ['Remove topic', () => restructure(() => M.removeTopic(bp(), id, area2), { undo: `Topic “${label}” removed${filled ? ' with its answers' : ''}.` }), { danger: true }]]));
         const answers = el('div', 'origin-answers');
         const own = items.filter(item => item.area === area2);
         for (const item of own.length ? own : [null]) answers.append(answerRow(id, area2, label, item, dot));
@@ -1238,8 +1642,10 @@ window.PromptboardOrigin = (() => {
         }
         row.append(name, answers);
         topicList.append(row);
-      }
+      });
       nodes.push(topicList);
+      const hidden = M.AREAS[id].filter(([area2]) => !topics.some(([shown]) => shown === area2));
+      if (hidden.length) nodes.push(restorePicker('Add a topic back…', hidden, area2 => restructure(() => M.restoreTopic(bp(), id, area2))));
       return nodes;
     }
     function answerRow(id, area2, label, item, dot) {
@@ -1269,12 +1675,10 @@ window.PromptboardOrigin = (() => {
 
     // ---- The project's own sections and questions ----
     function addSection(phaseId) {
-      if (bp().customSections.length >= M.LIMITS.customSections) { app.announce(`A project can have at most ${M.LIMITS.customSections} sections of its own.`); return; }
-      const entry = { id: newId(), origin: 'human', phase: phaseId, title: 'New section', description: '', notApplicable: false };
-      bp().customSections.push(entry); views.map = null;
-      section = entry.id; setPref(SECTION_KEY, section); open = null; renderDrawer();
-      changed({ structure: true });
-      app.closeSidebar();
+      const id = newId();
+      const result = restructure(() => { const added = M.addPage(bp(), { phase: phaseId, id, title: 'New section' }); if (added.ok) { section = id; setPref(SECTION_KEY, id); open = null; } return added; });
+      if (!result?.ok) return;
+      renderDrawer(); app.closeSidebar();
       main.querySelector('[data-edit="title"]')?.click();
     }
     function customSection(id) {
@@ -1283,24 +1687,9 @@ window.PromptboardOrigin = (() => {
       const about = el('div', 'origin-q wide'), control = area(entry, 'description', 'What belongs in this section', { max: 2000, label: 'What this section is about' });
       about.append(el('span', 'origin-q-label', 'What is this section about?'), control);
       about.addEventListener('click', event => { if (event.target === about) control.focus(); });
-      const remove = button('Delete section', () => deleteSection(entry, remove), 'origin-link origin-delete origin-section-delete');
+      const remove = button('Delete section', () => removeSectionFlow(id), 'origin-link origin-delete origin-section-delete');
       nodes.push(about, ...questionsBlock(id), ...blocksBlock(id), remove);
       return nodes;
-    }
-    function deleteSection(entry, control) {
-      const blueprint = bp(), asked = blueprint.questions.filter(question => question.sectionId === entry.id), blocks = blueprint.blocks.filter(block => block.sectionId === entry.id);
-      const written = entry.description.trim() || asked.some(question => blueprint.answers[question.id]?.trim()) || blocks.some(M.blockStarted);
-      if (written && control.dataset.confirm !== 'true') { control.dataset.confirm = 'true'; control.textContent = 'Delete the section and what you wrote in it?'; control.classList.add('danger'); return; }
-      removeEntity('customSections', entry.id); // Also unlinks it from tasks that include it.
-      blueprint.questions = blueprint.questions.filter(question => question.sectionId !== entry.id);
-      for (const question of asked) delete blueprint.answers[question.id];
-      for (const block of blocks) removeEntity('blocks', block.id); // Also unlinks them from tasks that include them.
-      delete blueprint.layout.map.nodes[entry.id];
-      blueprint.layout.map.links = blueprint.layout.map.links.filter(link => link.from !== entry.id && link.to !== entry.id);
-      section = 'overview'; setPref(SECTION_KEY, section);
-      app.announce('Section deleted.');
-      changed({ structure: true });
-      main.querySelector('h2')?.focus({ preventScroll: true });
     }
     // Your own questions, answered in place. An answer belongs to its question, so rewording keeps it.
     function questionsBlock(id) {
@@ -1329,6 +1718,20 @@ window.PromptboardOrigin = (() => {
       const head = el('div', 'origin-q-head');
       head.append(renamable(el('span', 'origin-q-label', question.text), { key: `question:${question.id}`, value: question.text, fallback: '', label: 'question', max: 500,
         onSave: value => { if (!value) return; question.text = value; changed({ structure: true, drawer: question.scope === 'component' }); } }), remove);
+      if (question.scope === 'section') {
+        // A section's own question moves, is copied or becomes a notes block; drag its handle to reorder.
+        const own = bp().questions.filter(entry => entry.scope === 'section' && entry.sectionId === question.sectionId), at = own.indexOf(question);
+        const grip = dragHandle('Drag to move the question');
+        head.prepend(grip);
+        head.append(itemMenu(`Options for the question “${question.text}”`, `question:${question.id}`, [
+          ['Move up', () => restructure(() => M.moveQuestion(bp(), question.id, { step: -1 })), { disabled: at === 0 }],
+          ['Move down', () => restructure(() => M.moveQuestion(bp(), question.id, { step: 1 })), { disabled: at === own.length - 1 }],
+          ['Move to section…', () => openMoveTo('question', question.id, question.sectionId)],
+          ['Duplicate', () => restructure(() => M.duplicateQuestion(bp(), question.id, newId), { announce: 'Question copied with its answer.' })],
+          ['Turn into notes', () => restructure(() => M.questionToNotes(bp(), question.id, newId), { announce: 'The question is now a notes block with its answer.' })]]));
+        dragSource(box, 'question', question.id, { handle: grip });
+        dropTarget(box, ['question'], (drag, after) => restructure(() => place(bp().questions, drag.id, question.id, after)));
+      }
       box.append(head, control);
       box.addEventListener('click', event => { if (event.target === box) control.focus(); });
       return box;
@@ -1405,8 +1808,23 @@ window.PromptboardOrigin = (() => {
       const tools = el('div', 'origin-block-tools');
       const move = (step, name, path) => { const control = button('', () => moveBlock(block, step), 'origin-icon origin-small', name); control.setAttribute('aria-label', `${name}: ${label} block`); control.dataset.move = String(step); control.disabled = !own[index + step]; control.append(icon(path, 14)); return control; };
       const remove = button('Delete', () => removeBlock(block, remove), 'origin-link origin-block-remove'); remove.setAttribute('aria-label', `Delete the ${label} block`);
-      tools.append(move(-1, 'Move up', ICON.up), move(1, 'Move down', ICON.down), remove);
-      head.append(kind, title, ...(block.origin === 'ai' ? [chip('AI suggestion', 'accent')] : []), tools);
+      // An empty block can change its type; a notes block can become a question with its text.
+      const types = M.blockWorked(block) ? [] : M.BLOCK_TYPES.filter(([type]) => type !== block.type);
+      const options = itemMenu(`Options for the ${label} block`, `block:${block.id}`, [
+        ['Move to section…', () => openMoveTo('block', block.id, block.sectionId)],
+        ['Duplicate', () => restructure(() => M.duplicateBlock(bp(), block.id, newId), { announce: 'Block copied with its content.' })],
+        ...(block.type === 'notes' ? [['Turn into a question', () => restructure(() => M.notesToQuestion(bp(), block.id, newId), { announce: 'The notes are now a question with its answer.' })]] : []),
+        ...types.map(([type, name]) => [`Change to ${name}`, () => restructure(() => {
+          const result = M.changeBlockType(bp(), block.id, type);
+          if (result.ok && type === 'qa') block.entries.push({ id: newId(), question: '', answer: '' });
+          if (result.ok && type === 'table') block.columns.push({ id: newId(), name: '' }, { id: newId(), name: '' });
+          return result;
+        }, { announce: `Now a ${name} block.` })])]);
+      const grip = dragHandle(`Drag to move the ${label} block`);
+      tools.append(move(-1, 'Move up', ICON.up), move(1, 'Move down', ICON.down), options, remove);
+      head.append(grip, kind, title, ...(block.origin === 'ai' ? [chip('AI suggestion', 'accent')] : []), tools);
+      dragSource(card, 'block', block.id, { handle: grip });
+      dropTarget(card, ['block'], (drag, after) => restructure(() => place(bp().blocks, drag.id, block.id, after)));
       card.append(head, BLOCK_BODY[block.type](block));
       return card;
     }
@@ -1419,7 +1837,7 @@ window.PromptboardOrigin = (() => {
     }
     // A block with something written in it is deleted only after a second, explicit click.
     function removeBlock(block, control) {
-      if (M.blockStarted(block) && control.dataset.confirm !== 'true') { control.dataset.confirm = 'true'; control.textContent = 'Delete with its content?'; control.classList.add('danger'); return; }
+      if (M.blockWorked(block) && control.dataset.confirm !== 'true') { control.dataset.confirm = 'true'; control.textContent = 'Delete with its content?'; control.classList.add('danger'); return; }
       removeEntity('blocks', block.id); // Also unlinks it from tasks that include it.
       if (flowStep?.block === block.id) flowStep = null;
       if (flowConnect?.block === block.id) flowConnect = null;
@@ -1876,7 +2294,7 @@ window.PromptboardOrigin = (() => {
 
     // ---- Overview: the blueprint as a mind map ----
     function leaves(id) {
-      const blueprint = bp(), own = blueprint.blocks.filter(block => block.sectionId === id && M.blockStarted(block))
+      const blueprint = bp(), own = blueprint.blocks.filter(block => block.sectionId === id && M.blockWorked(block))
         .map(block => ({ label: `${M.BLOCK_TYPES.find(([type]) => type === block.type)[1]}: ${block.title.trim() || 'Untitled'}`, target: { collection: 'blocks', id: block.id } }));
       return [...builtinLeaves(id), ...own];
     }
@@ -1971,10 +2389,9 @@ window.PromptboardOrigin = (() => {
       for (const word of words) { if (!lines.length || `${lines.at(-1)} ${word}`.length > 38) lines.push(word); else lines[lines.length - 1] += ` ${word}`; if (lines.length > 3) break; }
       if (lines.length > 3) { lines.length = 3; lines[2] = `${lines[2].slice(0, 36)}…`; }
       const centerH = 64 + Math.max(lines.length, 1) * 20;
-      // Built-in places: branches stacked on both sides. Custom sections join the shorter side. A moved
-      // node keeps its own place; new sections take a built-in place without moving anything else.
-      const left = [...MAP_LEFT], right = [...MAP_RIGHT];
-      for (const entry of blueprint.customSections) (left.length <= right.length ? left : right).push(entry.id);
+      // Branches stacked on both sides, in the project's own order: the first half of its sections on the left,
+      // the rest on the right. A moved node keeps its own place.
+      const pages = phases().flatMap(phase => phase.sections), left = pages.slice(0, Math.ceil(pages.length / 2)), right = pages.slice(left.length);
       const blocks = [], defaults = { center: { x: 0, y: 0 } };
       for (const [side, ids] of [[-1, left], [1, right]]) {
         const list = ids.map(id => { const all = leaves(id), shown = all.slice(0, MAX); return { id, shown, extra: all.length - shown.length, rows: Math.max(1, shown.length + (all.length > MAX ? 1 : 0)) }; });
@@ -2063,7 +2480,7 @@ window.PromptboardOrigin = (() => {
       const bounds = { x1: center.x - CENTER_W / 2, x2: center.x + CENTER_W / 2, y1: center.y - centerH / 2, y2: center.y + centerH / 2 };
       const grow = (x1, y1, x2, y2) => { bounds.x1 = Math.min(bounds.x1, x1); bounds.x2 = Math.max(bounds.x2, x2); bounds.y1 = Math.min(bounds.y1, y1); bounds.y2 = Math.max(bounds.y2, y2); };
       for (const block of blocks) {
-        const p = pos(block.id), side = sideOf(block.id), phase = phaseOf(block.id).id, state = states[block.id];
+        const p = pos(block.id), side = sideOf(block.id), phase = toneOf(block.id), state = states[block.id];
         const outer = p.x + side * SECTION_W / 2, top = p.y - block.rows * LEAF_H / 2;
         const path = make('path', { d: linkPath(block.id), class: `origin-map-link phase-${phase}${state === 'empty' || state === 'na' ? ' faint' : ''}` }, links);
         centerLinks.set(block.id, path);
@@ -2096,12 +2513,17 @@ window.PromptboardOrigin = (() => {
       make('rect', { width: CENTER_W, height: centerH, rx: 20 }, centerNode);
       const name = make('text', { x: CENTER_W / 2, y: 38, 'text-anchor': 'middle', class: 'origin-map-title' }, centerNode); name.textContent = clip(project()?.name || 'Project', 30);
       lines.forEach((line, index) => { const text = make('text', { x: CENTER_W / 2, y: 64 + index * 20, 'text-anchor': 'middle', class: 'origin-map-summary' }, centerNode); text.textContent = line; });
-      if (!lines.length) { const text = make('text', { x: CENTER_W / 2, y: 64, 'text-anchor': 'middle', class: 'origin-map-summary faint' }, centerNode); text.textContent = 'Click to describe the idea'; }
+      // The idea is written on the Vision section; without one, the center shows the project's description only.
+      const describable = M.hasPage(blueprint, 'vision');
+      if (!lines.length && describable) { const text = make('text', { x: CENTER_W / 2, y: 64, 'text-anchor': 'middle', class: 'origin-map-summary faint' }, centerNode); text.textContent = 'Click to describe the idea'; }
       // The name includes the text shown on the node, so voice control can activate it by what it says.
-      movable(centerNode, 'center', `${[clip(project()?.name || 'Project', 30), ...(lines.length ? lines : ['Click to describe the idea'])].join(' ')}. Open ${sectionName('vision')}`, () => openSection('vision'));
+      movable(centerNode, 'center', describable ? `${[clip(project()?.name || 'Project', 30), ...(lines.length ? lines : ['Click to describe the idea'])].join(' ')}. Open ${sectionName('vision')}` : [clip(project()?.name || 'Project', 30), ...lines].join(' '),
+        () => { if (describable) openSection('vision'); });
       drawDecor();
       // The whole map fits by default; zoom and pan are kept until Fit.
-      const pad = 44, fitBox = { x: bounds.x1 - pad, y: bounds.y1 - pad, w: bounds.x2 - bounds.x1 + 2 * pad, h: bounds.y2 - bounds.y1 + 2 * pad };
+      // A map with few branches keeps a readable size instead of zooming its center up.
+      const pad = 44, fitW = Math.max(bounds.x2 - bounds.x1 + 2 * pad, 820), fitH = Math.max(bounds.y2 - bounds.y1 + 2 * pad, 400);
+      const fitBox = { x: (bounds.x1 + bounds.x2 - fitW) / 2, y: (bounds.y1 + bounds.y2 - fitH) / 2, w: fitW, h: fitH };
       if (!layout.height) svg.style.setProperty('--map-ratio', String(fitBox.w / fitBox.h));
 
       const tools = el('div', 'origin-map-tools');

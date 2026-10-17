@@ -1486,6 +1486,37 @@ button.timeline-task:hover { text-decoration: underline; }
 .origin-nav-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .origin-nav-count { min-width: 20px; padding: 0 6px; border-radius: 999px; color: var(--subtle); font-size: 11px; font-variant-numeric: tabular-nums; text-align: center; }
 .origin-nav-empty { margin: 8px 10px; color: var(--subtle); font-size: 12.5px; }
+/* The project's own structure: ⋯ menus and drag handles appear on hover or focus; drop marks show where it lands. */
+.origin-nav-entry { position: relative; display: flex; align-items: center; border-radius: 9px; }
+.origin-nav-entry > .origin-nav-item { flex: 1; min-width: 0; }
+.origin-item-menu > .origin-menu-toggle { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 7px; color: var(--subtle); opacity: 0; transition: opacity .12s; }
+.origin-nav-entry:hover .origin-menu-toggle, .origin-nav-entry:focus-within .origin-menu-toggle, .origin-phase-label:hover .origin-menu-toggle, .origin-phase-label:focus-within .origin-menu-toggle,
+.origin-q:hover .origin-menu-toggle, .origin-q:focus-within .origin-menu-toggle, .origin-topic:hover .origin-menu-toggle, .origin-topic:focus-within .origin-menu-toggle, .origin-block-tools .origin-menu-toggle, .origin-item-menu[open] > .origin-menu-toggle { opacity: 1; }
+.origin-item-menu > .origin-menu-toggle:hover { background: var(--og-glass-2); color: var(--ink); }
+.origin-item-menu .origin-menu-list { left: auto; right: 0; z-index: 30; letter-spacing: 0; text-transform: none; font-weight: 450; }
+.origin-menu-item:disabled { opacity: .4; cursor: default; }
+.origin-phase-label .origin-phase-add { margin-left: auto; }
+.origin-phase-label .origin-item-menu { flex: none; }
+.origin-drag-handle { display: inline-grid; place-items: center; flex: none; width: 14px; color: var(--subtle); cursor: grab; opacity: 0; transition: opacity .12s; }
+.origin-phase-label:hover .origin-drag-handle, .origin-q:hover .origin-drag-handle, .origin-block:hover .origin-drag-handle { opacity: .8; }
+.origin-phase-label { margin-left: 0; }
+.origin-nav-entry[draggable="true"] { cursor: grab; }
+.dragging { opacity: .45; }
+.drop-before { box-shadow: 0 -2px 0 0 var(--phase, var(--og-define)); }
+.drop-after { box-shadow: 0 2px 0 0 var(--phase, var(--og-define)); }
+.origin-phase.drop-into { border-radius: 10px; background: color-mix(in srgb, var(--phase) 9%, transparent); }
+.origin-nav-none { padding: 4px 10px 4px 30px; color: var(--subtle); font-size: 12px; }
+.origin-add-category { justify-self: start; display: inline-flex; align-items: center; gap: 6px; margin: 0 10px; color: var(--subtle); font-size: 12.5px; }
+.origin-add-category:hover { color: var(--ink); }
+.origin-nav-start { display: grid; gap: 8px; justify-items: start; }
+.origin-nav-start .origin-use-default { margin: 0 10px; font-size: 12.5px; }
+.origin-undo { display: flex; align-items: center; gap: 12px; }
+.origin-undo > span { flex: 1; }
+.origin-restore { justify-self: start; width: auto; max-width: 100%; margin-top: 12px; }
+.origin-radio:has(small) { align-items: flex-start; }
+.origin-radio:has(small) input { flex: none; margin-top: 3px; }
+.origin-radio > span:has(small) { display: grid; gap: 2px; }
+.origin-topic-label .origin-item-menu { margin-left: auto; }
 
 /* Status dots: one shape language for sections, rows and steps. */
 .origin-dot { flex: none; width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid var(--line-strong); }
@@ -1713,7 +1744,7 @@ button.timeline-task:hover { text-decoration: underline; }
 .origin-editable { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; }
 .origin-edit { flex: none; width: 26px; height: 26px; border-radius: 7px; opacity: 0; transition: opacity .12s; }
 .origin-editable:hover .origin-edit, .origin-edit:focus-visible, .origin-q:hover .origin-edit, .origin-topic:hover .origin-edit, .origin-field:hover .origin-edit { opacity: 1; }
-@media (hover: none) { .origin-edit, .origin-phase-add, .origin-q-remove { opacity: .6; } }
+@media (hover: none) { .origin-edit, .origin-phase-add, .origin-q-remove, .origin-item-menu > .origin-menu-toggle { opacity: .6; } }
 .origin-inline-input { width: min(100%, 460px); min-width: 0; padding: 4px 9px; border: 1px solid color-mix(in srgb, var(--phase, var(--og-define)) 55%, transparent); border-radius: 9px; background: var(--og-glass-2); color: var(--ink); font: inherit; outline: none; box-shadow: 0 0 0 4px color-mix(in srgb, var(--phase, var(--og-define)) 11%, transparent); }
 .origin-section-text { flex: 1 1 280px; min-width: 0; }
 .origin-section-text > .origin-editable { display: flex; }
@@ -1890,7 +1921,7 @@ button.timeline-task:hover { text-decoration: underline; }
 .origin-drawer-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px 12px 22px; border-top: 1px solid var(--line); }
 .origin-field { display: grid; gap: 7px; min-width: 0; }
 .origin-field-label { color: var(--muted); font-size: 12px; font-weight: 600; }
-:is(.origin-drawer, .origin-modal) :is(input:not([type="checkbox"]), textarea, select):not(.origin-drawer-title):not(.origin-link-add):not(.origin-mini-input) { width: 100%; min-height: 40px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--og-glass-2); color: var(--ink); font-size: 14px; line-height: 1.5; transition: border-color .12s, box-shadow .12s; }
+:is(.origin-drawer, .origin-modal) :is(input:not([type="checkbox"]):not([type="radio"]), textarea, select):not(.origin-drawer-title):not(.origin-link-add):not(.origin-mini-input) { width: 100%; min-height: 40px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--og-glass-2); color: var(--ink); font-size: 14px; line-height: 1.5; transition: border-color .12s, box-shadow .12s; }
 :is(.origin-drawer, .origin-modal) textarea { resize: none; overflow: hidden; }
 :is(.origin-drawer, .origin-modal) select:not(.origin-link-add) { appearance: none; padding-right: 32px; background: var(--og-glass-2) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%238b8b95' stroke-width='1.7'%3E%3Cpath d='m6 8 4 4 4-4'/%3E%3C/svg%3E") no-repeat right 10px center / 16px; }
 :is(.origin-drawer, .origin-modal) select option { background: var(--surface); color: var(--text); }
@@ -1928,6 +1959,31 @@ dialog.origin-modal::backdrop { background: rgb(4 4 8 / .55); backdrop-filter: b
 .origin-modal-form { display: grid; gap: 14px; }
 .origin-modal-form textarea { min-height: 96px; }
 .origin-modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 8px; }
+/* The blueprint library in New project: cards on the left, what the project gets on the right. */
+dialog.origin-modal.wide { width: min(980px, calc(100vw - 32px)); max-width: none; }
+.origin-blueprints { display: grid; gap: 10px; min-width: 0; }
+.origin-blueprint-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.origin-blueprint-chip { height: 28px; padding: 0 11px; border: 1px solid var(--line); border-radius: 999px; background: none; color: var(--muted); font-size: 12.5px; }
+.origin-blueprint-chip[aria-pressed="true"] { border-color: color-mix(in srgb, var(--og-define) 55%, transparent); background: color-mix(in srgb, var(--og-define) 14%, transparent); color: var(--ink); }
+.origin-blueprint-layout { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 12px; min-height: 0; }
+.origin-blueprint-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); align-content: start; gap: 8px; max-height: 340px; overflow: auto; padding: 2px; }
+.origin-blueprint-card { display: grid; align-content: start; gap: 4px; min-height: 92px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--og-glass); color: var(--text); text-align: left; }
+.origin-blueprint-card strong { color: var(--ink); font-size: 13px; }
+.origin-blueprint-card span { color: var(--muted); font-size: 12px; line-height: 1.35; }
+.origin-blueprint-card small { color: var(--subtle); font-size: 11px; }
+.origin-blueprint-card:hover { border-color: var(--line-strong); }
+.origin-blueprint-card[aria-checked="true"] { border-color: color-mix(in srgb, var(--og-define) 65%, transparent); background: color-mix(in srgb, var(--og-define) 10%, var(--og-glass)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--og-define) 14%, transparent); }
+.origin-blueprint-preview { max-height: 340px; overflow: auto; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--og-glass); font-size: 12.5px; }
+.origin-blueprint-preview h3 { margin: 0 0 4px; font-size: 15px; }
+.origin-blueprint-preview > p { margin: 0 0 10px; color: var(--muted); }
+.origin-blueprint-tree { display: grid; gap: 8px; margin: 0 0 10px; padding: 0; list-style: none; }
+.origin-blueprint-tree > li > strong { color: var(--ink); font-size: 12px; letter-spacing: .04em; text-transform: uppercase; }
+.origin-blueprint-tree ul { margin: 4px 0 0; padding-left: 14px; color: var(--text); }
+.origin-blueprint-tree summary { cursor: pointer; }
+.origin-blueprint-questions { color: var(--muted); }
+.origin-blueprint-questions li.block { font-style: italic; }
+.origin-add-blueprint-sections { display: grid; gap: 6px; max-height: 320px; overflow: auto; }
+@media (max-width: 720px) { .origin-blueprint-layout { grid-template-columns: 1fr; } .origin-blueprint-cards, .origin-blueprint-preview { max-height: 240px; } }
 .origin-handoff-list { margin: 0 0 16px; padding-left: 22px; color: var(--text); font-size: 13.5px; line-height: 1.5; }
 .origin-handoff-list li { margin-bottom: 8px; }
 .origin-handoff-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
