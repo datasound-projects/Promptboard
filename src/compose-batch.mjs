@@ -160,6 +160,7 @@ function stateOf(item, origin, card) {
 function failureOf(error, closing) {
   if (closing) return { code: 'INTERRUPTED', message: 'The app stopped while this task was running. Run it again.' };
   if (error?.name === 'TimeoutError') return { code: 'TIMEOUT', message: FAILURE_MESSAGES.TIMEOUT };
+  if (error?.code === 'BATCH_WRITE_FAILED') return { code: error.code, message: error.message }; // The disk, not the CLI.
   if (typeof error?.code === 'string' && Object.hasOwn(FAILURE_MESSAGES, error.code)) return { code: error.code, message: FAILURE_MESSAGES[error.code] };
   // Validation and intent errors carry fixed, user-facing text. CLI output is never shown.
   if (error?.status === 400 || error?.statusCode === 400 || error?.status === 422) return { code: error.code || 'INVALID_INPUT', message: String(error.message).slice(0, 400) };
@@ -187,7 +188,8 @@ export class ComposeBatches {
     Object.assign(this, { dir: join(dataDir, BATCH_DIR), origin, board, generate, call, track, timeoutMs, authBusy });
   }
 
-  activeCount() { return this.#active.size; }
+  /** Running and queued tasks: a sign-in change must not start while any of them would still call a CLI. */
+  activeCount() { return this.#active.size + this.#queue.length; }
 
   // ---- Persistence: one meta file per batch, one file per task; all changes in one queue ----
   #path(batchId, itemId) { return itemId ? join(this.dir, escapeId(batchId), 'items', `${escapeId(itemId)}.json`) : join(this.dir, escapeId(batchId), 'batch.json'); }
@@ -456,8 +458,10 @@ export class ComposeBatches {
       // Run all: tasks without a prompt and tasks whose generation failed; a failed check or split keeps its prompt.
       const ids = all ? batch.meta.order.filter(itemId => { const item = batch.items.get(itemId); return item && (!item.versions.length || item.error?.kind === 'generate'); }) : (Array.isArray(itemIds) ? [...new Set(itemIds)] : []);
       if (!ids.length) return { queued: 0, skipped: [] };
+      for (const itemId of ids) this.#item(batch, itemId); // An unknown task refuses the whole request before any is queued.
       let queued = 0; const skipped = [];
-      for (const itemId of ids) {
+      // A save that fails part-way still starts what was queued before it.
+      try { for (const itemId of ids) {
         const item = this.#item(batch, itemId), skip = reason => skipped.push({ id: item.id, key: item.key, reason });
         if (item.run) { skip('Already running.'); continue; }
         if (cards.has(item.id)) { skip('Already on Kanban.'); continue; }
@@ -484,8 +488,7 @@ export class ComposeBatches {
         await this.#saveItem(batch, item);
         this.#queue.push({ batchId: batch.meta.id, itemId: item.id, runId: item.run.id, kind, settings, controller: new AbortController(), stage: '' });
         queued++;
-      }
-      this.#pump();
+      } } finally { this.#pump(); }
       return { queued, skipped };
     });
   }
@@ -531,7 +534,7 @@ export class ComposeBatches {
     this.#active.set(job.runId, job);
     const signal = AbortSignal.any([job.controller.signal, AbortSignal.timeout(this.timeoutMs)]);
     const work = (async () => {
-      const marked = await this.#apply(job, item => { item.run = { ...item.run, state: 'running', startedAt: Date.now() }; }).catch(() => false);
+      const marked = await this.#apply(job, item => { item.run = { ...item.run, state: 'running', startedAt: Date.now() }; }).catch(error => { this.#release(job, failureOf(error, false)); return false; });
       if (!marked) return;
       try {
         const snapshot = structuredClone(this.#cache.get(job.batchId).items.get(job.itemId)); // This run's own copy; nothing it reads is shared.
@@ -541,7 +544,7 @@ export class ComposeBatches {
         await this.#apply(job, item => { if (job.cancelled) item.run = null; else outcome(item); });
       } catch (error) {
         const failure = job.cancelled ? null : failureOf(error, this.#closing);
-        await this.#apply(job, item => { item.run = null; item.error = failure && { ...failure, kind: job.kind, at: Date.now() }; }).catch(() => {});
+        await this.#apply(job, item => { item.run = null; item.error = failure && { ...failure, kind: job.kind, at: Date.now() }; }).catch(() => this.#release(job, failure));
         if (failure && STOP_CODES.has(failure.code)) await this.#stopQueued(job.batchId, failure).catch(() => {});
       }
     })();
@@ -558,6 +561,15 @@ export class ComposeBatches {
       await this.#saveItem(batch, item);
       return true;
     });
+  }
+
+  /**
+   * The task of a run whose end could not be saved (disk full, permissions) is freed in this app's memory, so it
+   * does not show as running forever and can run again. Its file still names the run: a restart reports it as interrupted.
+   */
+  #release(job, failure) {
+    const batch = this.#cache.get(job.batchId), stored = batch?.items.get(job.itemId);
+    if (stored?.run?.id === job.runId) batch.items.set(job.itemId, { ...stored, run: null, error: failure && { ...failure, kind: job.kind, at: Date.now() } });
   }
 
   /** After an account-level failure every queued call would fail the same way: put them back, do not spend more usage. */

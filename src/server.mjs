@@ -347,7 +347,7 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
     // A just-cancelled generation may still be stopping its CLI. Wait briefly for it.
     if (busy?.controller.signal.aborted) await Promise.race([busy.done, new Promise(resolve => setTimeout(resolve, 5000).unref())]);
     // Changing sign-in under a running agent session would break it.
-    if (kind === 'auth' && board.executor?.activeCount?.() > 0) throw Object.assign(new ProviderError('Agent sessions are running. Stop them before you change sign-in.', 'RUNS_ACTIVE'), { status: 409 });
+    if (kind === 'auth' && (board.executor?.pendingCount?.() ?? board.executor?.activeCount?.()) > 0) throw Object.assign(new ProviderError('Agent sessions are running. Stop them before you change sign-in.', 'RUNS_ACTIVE'), { status: 409 });
     if (kind === 'auth' && batches.activeCount() > 0) throw Object.assign(new ProviderError('Compose Batch is running. Wait for it or cancel it before you change sign-in.', 'RUNS_ACTIVE'), { status: 409 });
     if (busy) {
       throw Object.assign(new ProviderError(busy.kind === 'auth' ? 'A sign-in change is in progress. Finish or cancel it first.' : 'A prompt is already in progress. Wait or cancel that prompt.', busy.kind === 'auth' ? 'AUTH_IN_PROGRESS' : 'BUSY'), { status: 409 });
@@ -357,7 +357,7 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
     busy = { kind, provider, stage: 'starting', startedAt: Date.now(), controller: new AbortController(), done };
     const job = busy;
     return { job, release: () => {
-      const free = () => { if (busy === job) busy = null; release(); };
+      const free = () => { if (busy === job) busy = null; release(); if (job.kind === 'auth') board.executor?.wake?.(); };
       if (!job.controller.signal.aborted || closing) { free(); return; }
       // The UI can finish cancelling before provider pipes have closed. Keep the
       // slot until tracked cleanup settles; a broken injected adapter is bounded.
@@ -387,6 +387,7 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
   // Compose Batch has its own bounded pool beside the one-job slot: each task is one tracked Compose run.
   const batches = new ComposeBatches({ dataDir, origin, board, track, call: input => track(runner(input)), authBusy: () => busy?.kind === 'auth', ...(batchTimeoutMs ? { timeoutMs: batchTimeoutMs } : {}),
     generate: (request, options) => generate(request, { runner: call => track(runner(call)), catalogReader: provider => getCatalog(provider, { maxAgeMs: Infinity }), ...options }) });
+  if (board.executor) board.executor.authBusy = () => busy?.kind === 'auth'; // Kanban runs wait while sign-in changes.
   const baseRoutes = new BaseRoutes({ board, runner, claim, track, catalog: getCatalog, send, jsonBody, ...(mcpTester ? { mcpTester } : {}), imageGenerator });
   let composeContext;
   const getCompose = () => composeContext ??= import('./compose-context.mjs').then(({ ComposeContext }) => new ComposeContext(composeMcp ? { mcp: composeMcp } : {}));

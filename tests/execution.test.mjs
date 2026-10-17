@@ -891,3 +891,16 @@ test('run endpoints need the token, bound input, need confirmation to stop, and 
   await fetch(app.url + '/api/board', { headers: { 'x-ste-token': token } });
   assert.equal((await app.board.view()).runs.length, before);
 });
+
+test('a run requested while a CLI sign-in changes waits and starts when the sign-in ends', { skip }, async t => {
+  const w = await world(t), card = await w.task('During sign-in', 'Keep this agent alive');
+  let signingIn = true;
+  w.supervisor.authBusy = () => signingIn;
+  const run = await w.board.requestRun(card.id, { stage: 'executing', consent: true });
+  await new Promise(resolve => setTimeout(resolve, 300));
+  assert.equal((await w.reports()).length, 0, 'no agent started under the sign-in');
+  assert.equal(w.supervisor.pendingCount(), 1, 'the waiting run keeps a sign-in from starting');
+  signingIn = false; w.supervisor.wake();
+  await until(async () => (await w.run(run.id)).turnComplete, 'started after the sign-in');
+  await w.supervisor.cancel(run.id);
+});

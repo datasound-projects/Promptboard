@@ -452,3 +452,17 @@ test('the queue shows what each task asks and when its run started; Cancel all s
   batch = await settle(call, record.id);
   assert.deepEqual(states(batch), { 'IMP-001': 'generated', 'IMP-002': 'pending', 'IMP-003': 'pending', 'IMP-004': 'pending' });
 });
+
+test('a run naming a task that is not in the batch queues nothing, so no task waits without a worker', async t => {
+  const runner = engineer();
+  const { app, call } = await setup(t, runner);
+  const { record } = await project(app, 3);
+  await call('', { originId: record.id, expectedRevision: record.revision, itemIds: ['t1', 't2', 't3'], defaults: { provider: 'codex' } });
+  const refused = await call(`/${record.id}/run`, { itemIds: ['t2', 'nope'] });
+  assert.equal(refused.status, 404);
+  assert.deepEqual(states((await call(`/${record.id}`)).data.batch), { 'IMP-001': 'pending', 'IMP-002': 'pending', 'IMP-003': 'pending' });
+  assert.equal(runner.calls.length, 0);
+  await call(`/${record.id}/run`, { itemIds: ['t2'] });
+  const batch = await settle(call, record.id);
+  assert.notEqual(states(batch)['IMP-002'], 'pending', 'the task runs when asked again');
+});
