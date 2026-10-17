@@ -109,6 +109,7 @@ export async function streamResearch({ provider, model = '', effort = '', prompt
     };
     const abort = () => stop(fail('Research was stopped.', 'ABORTED'));
     signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) abort(); // Stopped while the CLI was being looked up: the listener came too late to hear it.
     const line = text => {
       if (!text.trim()) return;
       let event; try { event = JSON.parse(text); } catch { return; }
