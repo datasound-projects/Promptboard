@@ -12,13 +12,15 @@ const skip = !(await findChrome());
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } }).trim();
 
 test('when every card is done, Kanban shows how to run the project; the menu copies the path and opens the folder', { skip, timeout: 120000 }, async t => {
-  const root = await realpath(await mkdtemp(join(tmpdir(), 'pb-run-ui-'))); t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'pb-run-ui-')));
   git(root, 'init', '-q', '-b', 'trunk'); git(root, 'config', 'user.email', 't@e'); git(root, 'config', 'user.name', 'T');
   await writeFile(join(root, 'package.json'), JSON.stringify({ scripts: { dev: 'vite' }, dependencies: { vite: '7' } }));
   await writeFile(join(root, 'README.md'), '# Shop\n\n## Getting started\n\nOpen http://localhost:5173 after starting it.\n');
   git(root, 'add', '.'); git(root, 'commit', '-q', '-m', 'init');
   const opened = [];
   const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [], projectOpener: async (project, target) => { opened.push(target); return { opened: target }; } });
+  // Removed after the app has closed: on Windows a folder the app still watches cannot be deleted.
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const project = await app.board.createProject({ name: 'Shop' });
   await app.board.linkRepository(project.id, { path: root, expectedRevision: 1 });
   await app.board.setTargetBranch(project.id, { branch: 'trunk', expectedRevision: 2 });

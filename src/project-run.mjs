@@ -5,7 +5,7 @@
  * opening the folder, a terminal or index.html happens only on request, with the path the project already has.
  */
 import { spawn } from 'node:child_process';
-import { relative, join } from 'node:path';
+import { relative, posix, win32 } from 'node:path';
 import { git } from './git.mjs';
 
 const MAX_FILE = 256 * 1024;
@@ -84,9 +84,9 @@ export async function runInfo(project) {
 }
 
 const OPENERS = {
-  darwin: { folder: path => ['open', [path]], terminal: path => ['open', ['-a', 'Terminal', path]], index: path => ['open', [join(path, 'index.html')]] },
-  win32: { folder: path => ['explorer.exe', [path]], index: path => ['explorer.exe', [join(path, 'index.html')]] },
-  linux: { folder: path => ['xdg-open', [path]], index: path => ['xdg-open', [join(path, 'index.html')]] },
+  darwin: { folder: path => ['open', [path]], terminal: path => ['open', ['-a', 'Terminal', path]], index: path => ['open', [posix.join(path, 'index.html')]] },
+  win32: { folder: path => ['explorer.exe', [path]], index: path => ['explorer.exe', [win32.join(path, 'index.html')]] },
+  linux: { folder: path => ['xdg-open', [path]], index: path => ['xdg-open', [posix.join(path, 'index.html')]] },
 };
 /** What this computer can open: the folder everywhere, a terminal on macOS, index.html for static sites. */
 export const openTargets = (platform = process.platform) => Object.keys(OPENERS[platform] || {});

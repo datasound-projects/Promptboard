@@ -53,6 +53,8 @@ test('opening uses the project’s own folder: Finder or a Terminal on macOS, Ex
   await openProject(project, 'folder', { platform: 'win32', launch });
   await openProject(project, 'index', { platform: 'linux', launch });
   assert.deepEqual(calls, [['open', ['/work/app/web'], false], ['open', ['-a', 'Terminal', '/work/app/web'], false], ['explorer.exe', ['/work/app/web'], false], ['xdg-open', ['/work/app/web/index.html'], false]]);
+  await openProject({ repository: { root: 'C:\\work\\app' } }, 'index', { platform: 'win32', launch });
+  assert.deepEqual(calls.at(-1), ['explorer.exe', ['C:\\work\\app\\index.html'], false], 'paths join the way the computer opening them writes them');
   await assert.rejects(openProject(project, 'terminal', { platform: 'win32', launch }), { code: 'OPEN_UNSUPPORTED' });
   await assert.rejects(openProject({ repository: null }, 'folder', { platform: 'darwin', launch }), { code: 'REPOSITORY_REQUIRED' });
 });
