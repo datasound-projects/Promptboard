@@ -23,6 +23,7 @@ function applyDockHeight() {
   const height = dock.state === 'collapsed' ? barHeight + promptHeight + 1 : Math.max(Math.min(limit, barHeight + promptHeight + 80), Math.max(160, Math.min(limit, dock.height)));
   $('#dock').style.height = dock.state === 'max' ? '' : `${height}px`;
   view.style.setProperty('--dock-height', `${dock.state === 'max' ? dock.height : height}px`);
+  document.documentElement.style.setProperty('--dock-height', `${dock.state === 'max' ? dock.height : height}px`); // For the minimized file chips.
   $('#dock-divider').setAttribute('aria-valuenow', String(height));
   $('#dock-divider').setAttribute('aria-valuemax', String(limit));
   fitBoardHeight(true);

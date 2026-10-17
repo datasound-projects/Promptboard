@@ -778,6 +778,8 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
 .file-token-number { color: light-dark(#a35e17, #e8ba79); }
 .file-token-comment { color: var(--subtle); }
 .file-viewer-tray { position: fixed; z-index: 30; bottom: 18px; right: 18px; display: flex; gap: 6px; max-width: calc(100vw - 36px); flex-wrap: wrap; justify-content: flex-end; pointer-events: none; }
+/* Above the agent dock while Kanban shows it, so the chips never cover its buttons. */
+body:has(#kanban-view:not([hidden]) #dock:not([hidden]):not([data-state="max"])) .file-viewer-tray { bottom: calc(var(--dock-height, 44px) + 12px); }
 .file-viewer-chip { display: flex; min-width: 0; max-width: 260px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface); box-shadow: var(--shadow); pointer-events: auto; }
 .file-viewer-chip .file-button { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
 .file-viewer-chip .file-button:last-child { flex-shrink: 0; }
@@ -2443,3 +2445,11 @@ button.origin-context-badge { cursor: pointer; }
 .batch-eta { margin: 4px 0 0; color: var(--muted); font-size: 12.5px; }
 .batch-eta:empty { display: none; }
 .batch-run-mode { height: 34px; }
+
+/* Touch screens (phones, tablets): controls are at least 44 px, the size a fingertip hits reliably. Mouse sizes stay. */
+@media (pointer: coarse) {
+  .help-pill, #refresh-models, .origin-link, .origin-small-button, .kanban-open, .column-agent, .dock-actions button, #origin-research-add-source { min-height: 44px; }
+  .origin-icon, .origin-icon.origin-small, .origin-map-resize { width: 44px; height: 44px; }
+  .autopilot-up, .autopilot-down { min-width: 44px; min-height: 44px; }
+  #origin-research-input { min-height: 44px; }
+}
