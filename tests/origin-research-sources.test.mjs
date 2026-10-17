@@ -119,3 +119,38 @@ test('sources the person has not trusted are refused: untrusted or disabled Base
   assert.equal((await api(sources, 'POST', { source: { type: 'mcp', config: { type: 'mcp', name: 'Local', transport: 'stdio', command: 'node', args: ['server.js'] } } })).status, 400, 'a local program without permission');
   assert.equal((await api(`/api/origin/research/${project.id}/chats/${chat}`)).data.chat.sources.length, 0);
 });
+
+test('a Base MCP server added to a chat stays linked to Base, so revoking its trust there stops the chat from starting it', async t => {
+  const started = [];
+  const composeMcp = { retrieve: async (config, queries) => { started.push(config.command); return queries.length ? [{ source: 'Local docs', locator: 'search', text: 'Queues keep messages.' }] : { tools: ['search'] }; } };
+  const prompts = [];
+  const app = await startTestServer(t, { port: 0, executor: null, composeMcp, researchRunner: async call => { prompts.push(call.prompt); return { text: 'Noted.', session: call.session?.id || 'thread-1' }; } });
+  const token = (await (await fetch(`${app.url}/api/session`)).json()).token;
+  const api = async (path, method = 'GET', body) => { const response = await fetch(`${app.url}${path}`, { method, headers: { 'X-STE-Token': token, ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) }); return { status: response.status, data: await response.json().catch(() => ({})) }; };
+  const project = (await api('/api/origin/projects', 'POST', { name: 'Shop' })).data.project;
+  const chat = (await api(`/api/origin/research/${project.id}/chats`, 'POST', { settings: { provider: 'claude' } })).data.chat.id;
+  const created = await app.board.base.create({ kind: 'mcp', name: 'Local docs', trust: 'trusted', configuration: { transport: 'stdio', command: 'node', args: ['x.js'] } }, { expectedBaseRevision: (await app.board.base.list()).revision });
+  const id = created.id ?? created.resource?.id;
+  const added = await api(`/api/origin/research/${project.id}/chats/${chat}/sources`, 'POST', { source: { type: 'mcp', resourceId: id } });
+  assert.equal(added.status, 200, JSON.stringify(added.data));
+  assert.equal(added.data.source.resourceId, id);
+  const resource = (await app.board.base.list()).resources.find(entry => entry.id === id);
+  await app.board.base.update(id, { trust: 'revoked' }, { expectedRevision: resource.revision, expectedBaseRevision: (await app.board.base.list()).revision });
+  started.length = 0;
+  await fetch(`${app.url}/api/origin/research/${project.id}/chats/${chat}/run`, { method: 'POST', headers: { 'X-STE-Token': token, 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'How do queues work?', settings: { provider: 'claude' } }) }).then(r => r.text());
+  assert.deepEqual(started, [], 'the revoked server was not started');
+  assert.ok(prompts.length === 1 && !prompts[0].includes('Queues keep messages'));
+});
+
+test('an MCP server added from Base is used only while Base keeps it enabled and trusted', async () => {
+  let trust = 'trusted';
+  const base = { list: async () => ({ resources: [{ id: 'srv', kind: 'mcp', enabled: true, trust }] }) };
+  const started = [];
+  const mcp = { retrieve: async config => { started.push(config.command); return [{ source: 'Local docs', locator: 'search', text: 'Queues keep messages until acknowledged.' }]; } };
+  const source = { ...sourceOf({ type: 'mcp', config: { type: 'mcp', name: 'Local docs', transport: 'stdio', command: 'node', args: ['server.js'], allowStart: true } }), tools: ['search'], resourceId: 'srv' };
+  assert.equal((await gatherSources([source], 'queues', { mcp, base })).evidence.length, 1);
+  trust = 'untrusted';
+  const { evidence, warnings } = await gatherSources([source], 'queues', { mcp, base });
+  assert.deepEqual([evidence.length, started.length], [0, 1], 'not started once Base revoked its trust');
+  assert.match(warnings[0], /no longer enabled and trusted in Base/);
+});

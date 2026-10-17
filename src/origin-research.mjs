@@ -493,14 +493,18 @@ export async function researchRoute({ research, origin, runner, claim, track, so
       const tools = await services?.();
       let input = (await body()).source;
       // A Base MCP server is used only while it is enabled and trusted; its connection is mapped to Compose's form.
+      let fromBase = null;
       if (input?.type === 'mcp' && typeof input.resourceId === 'string') {
         const resource = (await tools.base.list()).resources.find(entry => entry.id === input.resourceId);
+        fromBase = resource?.id;
         if (!resource || resource.kind !== 'mcp' || !resource.enabled || resource.trust !== 'trusted') throw new ResearchError('Choose an enabled, trusted Base MCP server.', 'INVALID_SOURCE');
         const config = resource.configuration || {}, refs = map => (map && Object.keys(map).length ? { ...map } : undefined);
         input = { type: 'mcp', config: config.transport === 'streamable-http' ? { type: 'mcp', name: resource.name.slice(0, 80), transport: 'streamable-http', endpoint: config.endpoint, ...(refs(config.headers) ? { headers: refs(config.headers) } : {}) }
           : { type: 'mcp', name: resource.name.slice(0, 80), transport: 'stdio', command: config.command, args: config.args || [], ...(refs(config.env) ? { env: refs(config.env) } : {}), allowStart: true } };
       }
       const source = sourceOf(input);
+      // Kept with a Base server, so revoking its trust or disabling it in Base stops the chat from starting it.
+      if (fromBase) source.resourceId = fromBase;
       const current = await research.read(originId, chat);
       if (current.sources.length >= SOURCE_LIMIT) throw new ResearchError(`A chat can have at most ${SOURCE_LIMIT} sources. Remove one first.`, 'LIMIT', 409);
       if (source.type === 'document') { try { if (!tools.documents.get(source.documentId)) throw new Error(); } catch { throw new ResearchError('This document is no longer loaded. Attach it again.', 'INVALID_SOURCE'); } }

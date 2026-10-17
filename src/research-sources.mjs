@@ -56,7 +56,7 @@ export async function gatherSources(sources, query, { documents, mcp, base, sign
   const candidates = [], warnings = [];
   const enabled = (sources || []).filter(source => source.enabled);
   if (!enabled.length) return { evidence: [], warnings };
-  const library = base && enabled.some(source => source.type === 'base') ? (await base.list()).resources : [];
+  const library = base && enabled.some(source => source.type === 'base' || source.resourceId) ? (await base.list()).resources : [];
   for (const source of enabled) {
     signal?.throwIfAborted();
     try {
@@ -82,6 +82,11 @@ export async function gatherSources(sources, query, { documents, mcp, base, sign
           for (const part of searchSources(texts, query, { budgetChars: 5000 }).selected) candidates.push({ sourceType: 'wiki', source: `${source.name} · ${part.name}`, locator: `section ${part.section}`, query, text: part.text, score: part.score + 1 });
         }
       } else if (source.type === 'mcp') {
+        if (source.resourceId) {
+          // Added from Base: used only while Base still has it enabled and trusted.
+          const resource = library.find(entry => entry.id === source.resourceId);
+          if (!resource || resource.kind !== 'mcp' || !resource.enabled || resource.trust !== 'trusted') { warnings.push(`${source.name}: this MCP server is no longer enabled and trusted in Base, so it was not used.`); continue; }
+        }
         if (!safeExternalQuery(query)) { warnings.push(`${source.name}: the question contains text that is never sent to external sources (paths, URLs, code or contact details), so it was not asked.`); continue; }
         const found = await mcp.retrieve(source.config, [{ query: query.slice(0, 300), libraryHint: source.library || '', questionId: 'q' }], { signal });
         if (found.warning) warnings.push(`${source.name}: ${found.warning}`);
