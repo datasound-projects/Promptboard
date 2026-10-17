@@ -166,7 +166,9 @@ test('projects keep separate boards; names are validated; deletion needs confirm
   [...entry('Beta two').querySelectorAll('.workspace-menu button')].find(button => button.textContent === 'Keep').click(); await ctx.idle();
   assert.equal(entry('Beta two').querySelector('.workspace-menu'), null);
   entry('Beta two').querySelector('.workspace-menu-toggle').click(); await ctx.idle();
-  assert.deepEqual([...entry('Beta two').querySelectorAll('.workspace-menu button')].map(button => button.textContent), ['Rename', 'Delete…']);
+  // A project linked to a folder also offers its path, its folder and how to run it.
+  const opener = process.platform === 'darwin' ? 'Finder' : process.platform === 'win32' ? 'Explorer' : 'file manager';
+  assert.deepEqual([...entry('Beta two').querySelectorAll('.workspace-menu button')].map(button => button.textContent), ['Rename', 'Copy path', `Open in ${opener}`, 'How to run…', 'Delete…']);
   entry('Beta two').querySelector('.workspace-menu-toggle').click(); await ctx.idle();
   await menu('Beta two', 'Rename');
   entry('Beta two').querySelector('.workspace-rename input').value = 'Beta';

@@ -315,11 +315,12 @@ export async function remoteRoute(remote, req, res, pathname, { jsonBody, send }
 
 /**
  * What needs someone at the computer: remote access itself, CLI and GitHub sign-in (they open a browser or terminal
- * there) and native dialogs. Everything else is allowed: a paired device has the same control as the computer.
+ * there), native dialogs and opening a project folder or terminal there. Everything else is allowed: a paired device has the same control as the computer.
  */
 function localOnly(method, path) {
   if (method === 'GET' || method === 'HEAD') return /^\/api\/remote(\/|$)/.test(path);
-  return /^\/api\/remote(\/|$)/.test(path) || /^\/api\/auth\/(login|logout|cancel)$/.test(path) || /^\/api\/github\/login(\/cancel)?$/.test(path) || path === '/api/folder/choose';
+  return /^\/api\/remote(\/|$)/.test(path) || /^\/api\/auth\/(login|logout|cancel)$/.test(path) || /^\/api\/github\/login(\/cancel)?$/.test(path) || path === '/api/folder/choose'
+    || /^\/api\/projects\/[^/]+\/open$/.test(path); // Opens a window on the computer's screen.
 }
 /** This computer's private addresses, offered as listening addresses for Twingate. */
 function localAddresses() {

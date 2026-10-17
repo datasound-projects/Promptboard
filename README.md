@@ -115,6 +115,7 @@ Each card gets its own Git branch and worktree. When a card enters a column, a f
 - **Safe merges.** Squash or fast-forward, only if the target hasn't moved. Otherwise the work is tested again. Conflicts go to a resolver agent, then review and tests again. Nothing is pushed unless you open a pull request.
 - **Your rules.** Per board or column: CLI and model, ask or autonomous, read-only or workspace access, manual or automatic completion.
 - **Live terminals.** Watch every agent and type into it. Pause and resume keep its session.
+- **Run the result.** When every card is done, the board shows where the project is and the commands to start it, with Open in Finder and Open in Terminal. The project ⋯ menu copies its path any time.
 - **Coordinator.** A read-only overview of progress, running agents and blockers. Ask it questions; answers cite their sources.
 - **GitHub.** Sign in with the GitHub CLI, search your personal and organization repositories, and clone one (or connect a clone you already have). Fetch and fast-forward only; Promptboard never sees a token. See [GitHub](docs/github.md).
 - **Also:** custom columns with their own instructions, column actions (script, webhook, notification), a file browser, a timeline, labels and priorities, and board backups.
