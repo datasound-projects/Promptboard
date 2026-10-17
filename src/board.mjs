@@ -733,7 +733,7 @@ export class Board {
     if (binding !== undefined) entity[target.columnId ? 'binding' : 'baseBinding'] = normalizeBinding(binding);
     if (profileId !== undefined) {
       if (task) throw new BoardError('Task overrides select resources, not another provider hierarchy.', 'BASE_TARGET_INVALID');
-      if (profileId && !state.base.resources.some(resource => resource.id === profileId && resource.kind === 'profile')) throw new BoardError('Choose an existing agent profile.', 'BASE_PROFILE_INVALID');
+      if (profileId && !state.base.resources.some(resource => resource.id === profileId && ['profile', 'agentProfile'].includes(resource.kind))) throw new BoardError('Choose an existing agent or agent profile.', 'BASE_PROFILE_INVALID');
       entity[target.columnId ? 'profileId' : 'agentProfileId'] = profileId || null;
     }
     const columnId = target.columnId || task?.column || 'executing';
@@ -2378,7 +2378,7 @@ export class Board {
       const resourceKinds = new Map([...(await this.state()).base.resources, ...preparedBase.resources].map(resource => [resource.id, resource.kind]));
       for (const scope of [parsed.baseGlobal, ...parsed.projects]) {
         const profiles = [scope.agentProfileId, ...Object.values(scope.baseColumns || {}).map(column => column.profileId)].filter(Boolean);
-        if (profiles.some(profileId => resourceKinds.get(profileId) !== 'profile')) throw new BoardError('An imported agent profile reference points to another resource type.', 'INVALID_BACKUP');
+        if (profiles.some(profileId => !['profile', 'agentProfile'].includes(resourceKinds.get(profileId)))) throw new BoardError('An imported agent profile reference points to another resource type.', 'INVALID_BACKUP');
       }
     }
     return this.store.update(state => {

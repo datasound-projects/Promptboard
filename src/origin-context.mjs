@@ -798,9 +798,12 @@ export async function useInKanban({ board, originId, input, contexts, saved }) {
   let scope;
   const state = await board.state();
   if (target.scope === 'profile') {
-    const profile = state.base.resources.find(resource => resource.id === target.profileId && resource.kind === 'profile');
-    if (!profile) throw new OriginError('Choose an existing agent profile.', 'NOT_FOUND', 404);
-    scope = { kind: 'profile', name: `Agent profile “${profile.name}”`, profile, binding: (await board.base.readRevision(profile.revisionRef)).configuration?.binding };
+    const profile = state.base.resources.find(resource => resource.id === target.profileId && ['profile', 'agentProfile'].includes(resource.kind));
+    if (!profile) throw new OriginError('Choose an existing agent or agent profile.', 'NOT_FOUND', 404);
+    const definition = (await board.base.readRevision(profile.revisionRef)).configuration;
+    // An agent profile equips resources directly; it is extended the same way as an agent's binding.
+    scope = { kind: 'profile', name: `${profile.kind === 'agentProfile' ? 'Agent profile' : 'Agent'} “${profile.name}”`, profile,
+      binding: profile.kind === 'agentProfile' ? { mode: 'extend', include: definition?.resources || [], exclude: [] } : definition?.binding };
   } else {
     if (!record.kanbanProjectId) throw new OriginError('Connect this Origin project to a Kanban project first.', 'NOT_LINKED', 409);
     const wanted = target.scope === 'task' ? { scope: 'task', projectId: record.kanbanProjectId, taskId: target.taskId } : target.scope === 'column' ? { scope: 'column', projectId: record.kanbanProjectId, columnId: target.columnId } : null;
@@ -825,7 +828,8 @@ export async function useInKanban({ board, originId, input, contexts, saved }) {
   if (binding) {
     if (scope.kind === 'profile') {
       const definition = await board.base.readRevision(scope.profile.revisionRef);
-      await board.base.update(scope.profile.id, { configuration: { ...definition.configuration, binding } }, { expectedRevision: scope.profile.revision });
+      const configuration = scope.profile.kind === 'agentProfile' ? { ...definition.configuration, resources: binding.include } : { ...definition.configuration, binding };
+      await board.base.update(scope.profile.id, { configuration }, { expectedRevision: scope.profile.revision });
     } else await board.base.apply({ expectedBaseRevision: (await board.state()).base.revision, changes: [{ target: scope.target, binding, expectedRevision: scope.revision }] });
   }
   return { plan, resource: { id: resource.id, name: resource.name }, copy: { id: savedCopy.id, name: savedCopy.name }, assigned: Boolean(binding) };

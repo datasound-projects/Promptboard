@@ -7,6 +7,9 @@ import { captureSources, fetchDocument, searchSources } from './base-context.mjs
 import { CONTEXT7_PRESET, testMcp } from './base-mcp.mjs';
 import { WikiJobs } from './base-wiki.mjs';
 import { AvatarJobs, imageAvailability } from './base-avatar.mjs';
+import { MARKDOWN_TEMPLATES, deployToRepository, markdownConvention, markdownFrontmatter, readRepositoryFile, scanRepository } from './base-markdown.mjs';
+import { mcpResourceFrom, parseMcpConfig, readMcpSource } from './base-mcp-import.mjs';
+const digest = text => createHash('sha256').update(text).digest('hex');
 
 const fail = (message, code = 'BASE_INVALID_INPUT', status = 400) => { throw new BaseError(message, code, status); };
 
@@ -93,7 +96,46 @@ export class BaseRoutes {
       const body = await this.body(req);
       return this.send(res, 200, { source: await this.bounded(res, signal => fetchDocument(body.url, { signal })) });
     }
-    const match = pathname.match(/^\/api\/base\/resources\/([A-Za-z0-9_-]{1,100})(?:\/(test|refresh|search|revisions|avatar)(?:\/([0-9]+))?)?$/);
+    // ---- Custom Markdown files: starting points, and the instruction files a project's repository already has ----
+    if (method === 'GET' && pathname === '/api/base/markdown/templates') return this.send(res, 200, { templates: MARKDOWN_TEMPLATES.map(template => ({ ...template, convention: markdownConvention(template.fileName) })) });
+    if (method === 'POST' && (pathname === '/api/base/markdown/scan' || pathname === '/api/base/markdown/import')) {
+      const body = await this.body(req), project = (await board.state()).projects.find(item => item.id === body.projectId);
+      const root = project?.repository?.root;
+      if (!root) fail('Choose a project linked to a folder.', 'REPOSITORY_REQUIRED', 409);
+      const found = await scanRepository(root), library = await board.base.list();
+      const existing = await Promise.all(library.resources.filter(resource => resource.kind === 'markdown').map(async resource => ({ resource, detail: await board.base.detail(resource.id).catch(() => null) })));
+      const known = path => existing.find(item => item.detail?.configuration.fileName === path && item.detail.content.body);
+      if (pathname.endsWith('/scan')) return this.send(res, 200, { project: { id: project.id, name: project.name }, files: found.map(file => ({ ...file, inBase: Boolean(known(file.path)) })) });
+      if (!Array.isArray(body.paths) || !body.paths.length || body.paths.length > 100) fail('Choose up to 100 files to import.');
+      const imported = [], skipped = [];
+      for (const path of body.paths) {
+        // Only what the scan finds can be read: a path from the page never reaches the filesystem otherwise.
+        if (typeof path !== 'string' || !found.some(file => file.path === path)) { skipped.push({ path, reason: 'Not an instruction file found in this repository.' }); continue; }
+        const text = await readRepositoryFile(root, path);
+        if (markdownConvention(path).id === 'skill') { imported.push(await board.base.importSkill({ markdown: text, tags: ['imported'] })); continue; }
+        const duplicate = known(path);
+        if (duplicate && digest(duplicate.detail.content.body) === digest(text)) { skipped.push({ path, reason: `Already in Base as “${duplicate.resource.name}”.` }); continue; }
+        imported.push(await board.base.create({ kind: 'markdown', name: path, description: `Imported from ${project.name} (${path}). Review it before trusting it: it instructs agents.`, enabled: false, trust: 'untrusted', tags: ['imported'],
+          configuration: { fileName: path, activation: { mode: 'always' } }, content: { body: text } }));
+      }
+      return this.changed(res, { imported: imported.map(resource => ({ id: resource.id, name: resource.name, kind: resource.kind })), skipped });
+    }
+    // ---- MCP servers from an existing configuration (pasted, or Claude Desktop's own file on this computer) ----
+    if (method === 'POST' && (pathname === '/api/base/mcp/import/preview' || pathname === '/api/base/mcp/import')) {
+      const body = await this.body(req);
+      const source = body.source ? await readMcpSource(body.source) : { path: null, text: typeof body.json === 'string' ? body.json : fail('Paste a configuration or choose Claude Desktop.') };
+      if (source.text.length > 1_000_000) fail('The configuration is larger than 1 MB.');
+      const library = await board.base.list(), existing = await Promise.all(library.resources.filter(resource => resource.kind === 'mcp').map(resource => board.base.detail(resource.id).catch(() => null)));
+      const parsed = parseMcpConfig(source.text, { existing: existing.filter(Boolean) });
+      if (pathname.endsWith('/preview')) return this.send(res, 200, { source: source.path ? 'Claude Desktop' : 'pasted configuration', path: source.path, ...parsed });
+      const wanted = new Set(Array.isArray(body.names) ? body.names : []), created = [];
+      for (const server of parsed.servers.filter(item => wanted.has(item.name))) {
+        if (!server.importable) fail(`“${server.name}” cannot be imported: ${server.duplicateOf ? `it is already in Base as “${server.duplicateOf.name}”.` : server.issues.join(' ')}`);
+        created.push(await board.base.create(mcpResourceFrom(server, source.path ? 'Claude Desktop' : 'a pasted configuration')));
+      }
+      return this.changed(res, { imported: created.map(resource => ({ id: resource.id, name: resource.name })) });
+    }
+    const match = pathname.match(/^\/api\/base\/resources\/([A-Za-z0-9_-]{1,100})(?:\/(test|refresh|search|revisions|avatar|deploy|override)(?:\/([0-9]+))?)?$/);
     if (match) {
       const [, id, action, revision] = match;
       if (method === 'GET' && action === 'avatar') {
@@ -101,7 +143,29 @@ export class BaseRoutes {
         if (resource.kind !== 'profile' || !resource.content.avatar) fail('This profile has no saved avatar.', 'BASE_NOT_FOUND', 404);
         return this.send(res, 200, { image: resource.content.avatar });
       }
-      if (method === 'GET' && (!action || action === 'revisions')) return this.send(res, 200, { resource: await board.base.detail(id, { revision }) });
+      if (method === 'GET' && (!action || action === 'revisions')) {
+        const resource = await board.base.detail(id, { revision });
+        // A Markdown file shows its convention and frontmatter problems next to its text.
+        if (resource.kind === 'markdown') resource.markdown = { convention: markdownConvention(resource.configuration.fileName), ...markdownFrontmatter(resource.content.body || '', resource.configuration.fileName), chars: (resource.content.body || '').length, estimatedTokens: Math.ceil((resource.content.body || '').length / 4) };
+        return this.send(res, 200, { resource });
+      }
+      if (method === 'POST' && action === 'override') {
+        // A project's own version of a shared file: the shared file stays as it is for every other project.
+        const body = await this.body(req), shared = await board.base.detail(id), state = await board.state();
+        if (shared.kind !== 'markdown' || shared.configuration.override) fail('Only a shared Markdown file gets project versions.');
+        const project = state.projects.find(item => item.id === body.projectId);
+        if (!project) fail('Choose a project.');
+        return this.changed(res, { resource: await board.base.create({ kind: 'markdown', name: `${shared.name} · ${project.name}`, description: `${project.name}’s version of “${shared.name}”.`, tags: shared.tags,
+          configuration: { ...shared.configuration, override: { of: shared.id, projectId: project.id } }, content: { body: shared.content.body } }) });
+      }
+      if (method === 'POST' && action === 'deploy') {
+        // Put the file at its place in a project's repository, so a CLI that reads it natively finds it there.
+        const body = await this.body(req), resource = await board.base.detail(id), project = (await board.state()).projects.find(item => item.id === body.projectId);
+        if (resource.kind !== 'markdown') fail('Only Markdown files are written into repositories.');
+        if (!project?.repository?.root) fail('Choose a project linked to a folder.', 'REPOSITORY_REQUIRED', 409);
+        if (body.confirm === true && resource.trust !== 'trusted') fail('Trust this file before writing it into a repository.', 'BASE_TRUST_REQUIRED', 409);
+        return this.send(res, 200, { deploy: await deployToRepository(project.repository.path || project.repository.root, resource.configuration.fileName, resource.content.body || '', { confirm: body.confirm === true, expectedHash: body.expectedHash ?? null, hash: digest }) });
+      }
       if (method === 'PATCH' && !action) {
         const body = await this.body(req);
         return this.changed(res, { resource: await board.base.update(id, body.resource || body, body) });

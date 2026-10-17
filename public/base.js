@@ -3,8 +3,13 @@
 // A deliberate boundary: this file never reads app.js globals. The application supplies
 // its authenticated API and existing agent controls when it creates this view.
 window.PromptboardBase = (() => {
-  const KINDS = { profile: 'Agent profile', pack: 'Resource pack', mcp: 'MCP server', skill: 'Skill', knowledge: 'Knowledge / Wiki', context: 'Context source', tool: 'Tool' };
-  const CATEGORIES = [['', 'All'], ['agent', 'Agents'], ['pack', 'Packs'], ['mcp', 'MCPs'], ['skill', 'Skills'], ['knowledge', 'Knowledge'], ['context', 'Context'], ['tool', 'Tools']];
+  // An Agent (`profile`) is one agent definition; an Agent profile composes agents and resources into a deployable setup.
+  const KINDS = { profile: 'Agent', agentProfile: 'Agent profile', pack: 'Resource pack', mcp: 'MCP server', skill: 'Skill', knowledge: 'Knowledge / Wiki', context: 'Context source', tool: 'Tool', markdown: 'Custom MD file' };
+  const CATEGORIES = [['', 'All'], ['agent', 'Agents'], ['agentProfile', 'Agent Profiles'], ['pack', 'Packs'], ['mcp', 'MCPs'], ['skill', 'Skills'], ['knowledge', 'Knowledge'], ['context', 'Context'], ['tool', 'Tools'], ['markdown', 'Custom MD Files']];
+  const AGENT_KINDS = ['profile', 'agentProfile'];
+  // One small mark per type, the same everywhere a resource is listed.
+  const ICONS = { profile: '◉', agentProfile: '◎', pack: '▦', mcp: '⇄', skill: '✦', knowledge: '❖', context: '⌗', tool: '⚒', markdown: '¶' };
+  const PROVIDERS = [['claude', 'Claude Code'], ['codex', 'Codex'], ['gemini', 'Gemini CLI'], ['agy', 'Antigravity']];
   const INHERIT = { mode: 'inherit', include: [], exclude: [] };
   const el = (tag, text, className = '') => { const node = document.createElement(tag); if (text !== undefined) node.textContent = text; if (className) node.className = className; return node; };
   const p = text => el('p', text, 'note');
@@ -82,9 +87,14 @@ window.PromptboardBase = (() => {
       }
       parent.append(value.slice(at));
     };
+    let list = null;
     for (const line of String(text || '').split('\n')) {
-      if (line.startsWith('```')) { if (fence) { output.append(fence); fence = null; } else fence = el('pre'); continue; }
+      if (line.startsWith('```')) { list = null; if (fence) { output.append(fence); fence = null; } else fence = el('pre'); continue; }
       if (fence) { fence.append(`${line}\n`); continue; }
+      // List items join one list until a line that is not one.
+      const bullet = /^\s*(?:[-*]|\d+\.)\s+(.+)$/.exec(line);
+      if (bullet) { if (!list) { list = el(/^\s*\d/.test(line) ? 'ol' : 'ul'); output.append(list); } const item = el('li'); inline(item, bullet[1]); list.append(item); continue; }
+      list = null;
       const heading = /^(#{1,4})\s+(.+)$/.exec(line);
       const node = el(heading ? `h${Math.min(heading[1].length + 1, 5)}` : 'p');
       inline(node, heading ? heading[2] : line); output.append(node);
@@ -204,16 +214,12 @@ window.PromptboardBase = (() => {
       $('#base-detail').hidden = !showEditor;
       $('.base-layout').classList.toggle('base-browse', !showEditor);
       $('#base-list').classList.toggle('base-list-mode', viewState.viewMode === 'list');
-      $('.base-list-panel').setAttribute('aria-busy', String(resultLoading));
-      $('#base-list').replaceChildren(...(resultLoading || loadError ? [] : list.map(item => {
-        if (item.kind === 'profile') return agentCard(item);
-        const row = el('li'); const open = button('', () => openResource(item.id), 'base-resource'); open.dataset.resourceId = item.id;
-        if (chosen === item.id) open.setAttribute('aria-current', 'true');
-        open.append(el('strong', item.name), el('span', item.description || KINDS[item.kind], 'base-resource-description'), el('small', metadata(item)));
-        row.append(open); return row;
-      })));
-      const empty = $('#base-empty'); empty.hidden = !resultLoading && !loadError && list.length > 0; empty.replaceChildren();
-      if (resultLoading) empty.append(p(`Loading ${category ? categoryLabel().toLowerCase() : 'resources'}…`));
+      // Before the library has arrived nothing is "empty" yet: it is still loading.
+      const waiting = resultLoading || (state.revision < 0 && !loadError);
+      $('.base-list-panel').setAttribute('aria-busy', String(waiting));
+      $('#base-list').replaceChildren(...(waiting || loadError ? [] : list.map(item => (item.kind === 'profile' ? agentCard(item) : resourceRow(item)))));
+      const empty = $('#base-empty'); empty.hidden = !waiting && !loadError && list.length > 0; empty.replaceChildren();
+      if (waiting) empty.append(p(`Loading ${category ? categoryLabel().toLowerCase() : 'resources'}…`));
       else if (loadError) {
         const failure = el('p', `Could not load ${category ? categoryLabel().toLowerCase() : 'resources'}. ${loadError}`, 'inline-error'); failure.setAttribute('role', 'alert');
         empty.append(failure, button('Retry', () => load(true).catch(() => {})));
@@ -228,13 +234,93 @@ window.PromptboardBase = (() => {
         item.querySelector('.base-category-count').textContent = String(state.resources.filter(resource => !item.dataset.kind || typeOf(resource) === item.dataset.kind).length);
       }
     }
+    /** What a resource's state is, in a few words: connection for MCP servers, activation for Markdown, otherwise availability. */
+    function statusOf(item) {
+      if (!item.enabled) return { text: 'Switched off', tone: 'off' };
+      if (item.trust === 'revoked') return { text: 'Trust revoked', tone: 'error' };
+      if (item.kind === 'mcp') {
+        const test = item.connectionTest;
+        if (item.trust !== 'trusted') return { text: 'Review and trust to validate', tone: 'warn' };
+        if (!test) return { text: 'Ready to validate', tone: 'warn' };
+        // A stored result always describes the current server definition: changing the definition removes it.
+        const count = test.tools?.length || 0;
+        if (test.status === 'connected') return { text: `Connected · ${count} tool${count === 1 ? '' : 's'}${item.configuration?.disabledTools?.length ? `, ${item.configuration.disabledTools.length} off` : ''}`, tone: 'ok' };
+        return { text: test.code === 'BASE_AUTH_REQUIRED' ? 'Authentication required' : 'Error — see details', tone: 'error' };
+      }
+      if (item.trust !== 'trusted') return { text: 'Untrusted — review before use', tone: 'warn' };
+      if (item.kind === 'markdown') {
+        const mode = item.configuration?.activation?.mode || 'always';
+        return { text: `${item.configuration?.override ? 'Project version · ' : ''}${item.configuration?.fileName || ''} · ${{ always: 'Always active', projects: 'Some projects', stages: 'Some stages', providers: 'Some CLIs', manual: 'On demand' }[mode]}`, tone: 'ok' };
+      }
+      if (item.kind === 'agentProfile') {
+        const agents = item.configuration?.agents || [], primary = agents.find(agent => agent.role === 'primary');
+        return primary ? { text: `${nameOf(primary.resourceId)} + ${agents.length - 1} supporting · ${(item.configuration?.resources || []).length} resources`, tone: 'ok' } : { text: 'Choose a primary agent', tone: 'warn' };
+      }
+      return { text: 'Available', tone: 'ok' };
+    }
+    const kindIcon = kind => { const mark = el('span', ICONS[kind] || '•', `base-kind-icon kind-${kind}`); mark.setAttribute('aria-hidden', 'true'); return mark; };
+    /** A compact row: icon, name and status; a switch for global availability; ⓘ for details; ⋯ for the rest. */
+    function resourceRow(item) {
+      const row = el('li', undefined, 'base-row'); row.dataset.state = item.enabled ? 'on' : 'off';
+      const open = button('', () => openResource(item.id), 'base-resource'); open.dataset.resourceId = item.id;
+      if (chosen === item.id) open.setAttribute('aria-current', 'true');
+      const state2 = statusOf(item), line = el('small', state2.text, `base-status tone-${state2.tone}`);
+      const text = el('span', undefined, 'base-row-text'); text.append(el('strong', item.name), el('span', item.description || KINDS[item.kind], 'base-resource-description'), line);
+      open.append(kindIcon(item.kind), text);
+      const toggle = Object.assign(el('input'), { type: 'checkbox', checked: Boolean(item.enabled) }); toggle.setAttribute('role', 'switch'); toggle.className = 'base-switch';
+      toggle.setAttribute('aria-label', `${item.name}: ${item.enabled ? 'on' : 'off'} for every assignment`); toggle.title = 'On or off everywhere it is assigned. Switching off keeps its configuration.';
+      toggle.addEventListener('change', () => switchResource(item, toggle.checked, toggle));
+      const info = button('ⓘ', () => openInfo(item), 'base-info'); info.setAttribute('aria-label', `Details for ${item.name}`); info.title = 'Details, compatibility and where it is used';
+      row.append(open, toggle, info, rowMenu(item));
+      return row;
+    }
+    async function switchResource(item, on, control) {
+      control.disabled = true;
+      try {
+        const send = () => request(`/api/base/resources/${encodeURIComponent(item.id)}`, { method: 'PATCH', body: { enabled: on, expectedRevision: resource(item.id)?.revision ?? item.revision, expectedBaseRevision: state.revision } });
+        await send().catch(async failure => { if (failure.code !== 'BASE_REVISION_CONFLICT') throw failure; await load(true); return send(); });
+        await load(); status(`${item.name} switched ${on ? 'on' : 'off'}. It stays in Base with its configuration; ${on ? 'future runs can use it' : 'future runs leave it out everywhere'}.`);
+      } catch (failure) { control.checked = !on; error(failure.message); } finally { control.disabled = false; }
+    }
+    function rowMenu(item) {
+      const menu = el('details', undefined, 'origin-menu base-more base-row-menu'), list = el('div', undefined, 'origin-menu-list');
+      const entry = (text, run, className = 'origin-menu-item') => button(text, () => { menu.open = false; run(); }, className);
+      list.append(entry('Open', () => openResource(item.id)), entry('Apply to…', () => openApply(item)));
+      if (item.kind === 'markdown' && !item.configuration?.override) list.append(entry('Project version…', () => openOverride(item)));
+      if (item.kind === 'markdown') list.append(entry('Write to a repository…', () => openDeploy(item)));
+      list.append(entry('Export…', () => openExport(item.id)), entry('Delete…', () => openDelete(item), 'origin-menu-item danger'));
+      const summary = el('summary', '⋯', 'base-row-more'); summary.setAttribute('aria-label', `More for ${item.name}`);
+      menu.append(summary, list); return menu;
+    }
+    /** ⓘ: what it is, its state, which CLIs can use it, where it is used. Technical records stay in the editor's Advanced. */
+    function openInfo(item) {
+      const box = el('div', undefined, 'base-info-panel'), state2 = statusOf(item);
+      box.append(el('p', `${KINDS[item.kind]} · ${state2.text} · ${item.trust === 'trusted' ? 'trusted' : item.trust === 'revoked' ? 'trust revoked' : 'untrusted'} · revision ${item.revision}`));
+      if (item.description) box.append(p(item.description));
+      const compatibility = el('ul', undefined, 'base-compatibility');
+      for (const [provider, label] of PROVIDERS) {
+        const known = item.compatibility?.[provider]; if (!known) continue;
+        const issue = known.execution?.issue;
+        compatibility.append(el('li', `${label}: ${issue || (known.execution?.delivery === 'unavailable' ? 'not available' : `supported (${known.execution?.delivery})`)}${known.notLiveVerified ? ' · simulated checks only' : ''}`));
+      }
+      if (compatibility.children.length) box.append(el('h3', 'CLI compatibility'), compatibility);
+      if (item.kind === 'mcp' && item.connectionTest?.tools?.length) {
+        const tools = el('ul'); for (const tool of item.connectionTest.tools) tools.append(el('li', `${tool.name}${(item.configuration?.disabledTools || []).includes(tool.name) ? ' · off' : ''}${tool.description ? ` — ${tool.description}` : ''}`));
+        box.append(el('h3', `Tools (${item.connectionTest.tools.length})`), tools);
+      }
+      const used = item.usedBy || [];
+      const where = el('ul'); for (const use of used) where.append(el('li', use.name || targetKey(use.target)));
+      box.append(el('h3', `Used by (${used.length})`), used.length ? where : p('Not assigned anywhere yet.'));
+      box.append(actions(button('Open', () => { closeDialog(); openResource(item.id); }), button('Close', closeDialog)));
+      openDialog(item.name, [box]);
+    }
     function profileResources(item, seen = new Set()) {
       if (seen.has(item.id)) return []; seen.add(item.id);
       const selected = new Map();
-      const refs = [...(item.dependencies || []), ...(item.kind === 'pack' ? item.configuration?.resources || [] : item.configuration?.binding?.include || [])];
+      const refs = [...(item.dependencies || []), ...(item.kind === 'pack' ? item.configuration?.resources || [] : item.kind === 'agentProfile' ? [...(item.configuration?.agents || []), ...(item.configuration?.resources || [])].filter(ref => ref.enabled !== false) : item.configuration?.binding?.include || [])];
       for (const ref of refs) {
         const target = resource(ref.resourceId); selected.set(ref.resourceId, target || { id: ref.resourceId, name: ref.resourceId, kind: 'unavailable' });
-        if (target && ['pack', 'profile'].includes(target.kind)) for (const child of profileResources(target, new Set(seen))) selected.set(child.id, child);
+        if (target && ['pack', 'profile', 'agentProfile'].includes(target.kind)) for (const child of profileResources(target, new Set(seen))) selected.set(child.id, child);
       }
       for (const id of item.configuration?.binding?.exclude || []) selected.delete(id);
       return [...selected.values()];
@@ -265,7 +351,7 @@ window.PromptboardBase = (() => {
     function createResource() {
       if (!leave()) return;
       if (categoryKind()) kindSelect.value = categoryKind();
-      editResource({ kind: kindSelect.value, name: '', enabled: true, trust: ['mcp', 'tool'].includes(kindSelect.value) ? 'untrusted' : 'trusted', dependencies: [], configuration: {}, content: {} });
+      editResource({ kind: kindSelect.value, name: '', enabled: true, trust: ['mcp', 'tool'].includes(kindSelect.value) ? 'untrusted' : 'trusted', dependencies: [], configuration: kindSelect.value === 'markdown' ? { fileName: 'AGENTS.md', activation: { mode: 'always' } } : {}, content: {} });
     }
     for (const [kind, label] of CATEGORIES) {
       const node = button('', () => {
@@ -321,7 +407,8 @@ window.PromptboardBase = (() => {
     // Less frequent actions wait under More, so the row stays Create.
     const more = el('details', undefined, 'origin-menu base-more'), moreList = el('div', undefined, 'origin-menu-list');
     const item = (text, run) => button(text, () => { more.open = false; run(); }, 'origin-menu-item');
-    moreList.append(item('Import…', openImport), item('Export…', () => openExport()), item('Context7 preset', createContext7));
+    moreList.append(item('Import MCP servers…', openMcpImport), item('Markdown file from a template…', openMarkdownTemplates), item('Import Markdown from a repository…', openMarkdownImport),
+      item('Import…', openImport), item('Export…', () => openExport()), item('Context7 preset', createContext7));
     more.append(el('summary', 'More', 'secondary-button'), moreList);
     $('#base-actions').append(kindSelect, button('Create', createResource), more, restoreGlobals);
 
@@ -343,7 +430,7 @@ window.PromptboardBase = (() => {
       for (const [id, required] of value) if (!candidates.some(item => item.id === id)) {
         // A known resource only filtered out here keeps its name. An agent profile here (saved by an older version) starts
         // unchecked, so saving drops it: it belongs in the target's agent profile instead.
-        const known = resource(id), stray = known?.kind === 'profile';
+        const known = resource(id), stray = AGENT_KINDS.includes(known?.kind);
         const row = check(known ? `${known.name} · ${KINDS[known.kind]} · ${stray ? 'choose it as the agent profile instead' : 'not available here'}` : `Unavailable reference: ${id}`, !stray);
         row.control.dataset.resource = id; row.control.dataset.missingRequired = String(required); box.append(row.label);
       }
@@ -354,7 +441,7 @@ window.PromptboardBase = (() => {
     function bindingFields(binding = INHERIT, { excludeId, allowProfiles = true } = {}) {
       const box = el('div', undefined, 'base-binding-fields');
       const mode = select([['inherit', 'Inherit upstream resources'], ['extend', 'Extend — add and exclude'], ['replace', 'Replace — only this selection']], binding.mode || 'inherit'); mode.dataset.baseMode = 'true';
-      const kinds = Object.keys(KINDS).filter(kind => allowProfiles || kind !== 'profile');
+      const kinds = Object.keys(KINDS).filter(kind => kind !== 'agentProfile' && (allowProfiles || kind !== 'profile'));
       const includes = referenceFields(binding.include || [], { excludeId, kinds, label: 'Include resources' });
       const excludes = referenceFields(binding.exclude || [], { excludeId, kinds, label: 'Exclude resources', exclusions: true });
       const selection = el('div'); selection.append(group('Include', includes), details('Exclude inherited resources', excludes));
@@ -403,7 +490,7 @@ window.PromptboardBase = (() => {
         const form = el('form');
         form.append(p(entry.label || 'Configuration scope'), p('Saved selections configure future accepted runs. They do not reconfigure a running CLI session.'), fields);
         const canProfile = ['global', 'project', 'column'].includes(target.scope);
-        const profile = select([['', 'No agent profile'], ...state.resources.filter(item => item.kind === 'profile').map(item => [item.id, item.name])], entry.profileId || ''); profile.dataset.baseProfile = 'true';
+        const profile = select([['', 'No agent profile'], ...state.resources.filter(item => AGENT_KINDS.includes(item.kind)).map(item => [item.id, `${item.name} · ${KINDS[item.kind]}`])], entry.profileId || ''); profile.dataset.baseProfile = 'true';
         if (canProfile) form.append(field('Reusable agent profile', profile), p('Choosing a profile is an explicit agent configuration change: its provider, model, effort, instructions, and resources become defaults at this scope. Explicit agent settings at this same scope take priority.'));
         if (inactive || entry.columnActive === false) form.append(p('This column has no active agent. Saving resources does not enable it.'));
         const fail = inlineError(form);
@@ -481,13 +568,18 @@ window.PromptboardBase = (() => {
         event.preventDefault(); if (!name.value.trim()) { name.focus(); fail('Give this resource a name.'); return; }
         fail(''); save.disabled = true;
         try {
+          // A save made before the library arrived waits for it, so it is checked against the real Base revision.
+          if (state.revision < 0) await load();
           const values = config.read();
           const { skillImport, ...resourceValues } = values;
           // The Base revision as it is now: Apply to… and root approvals from this page raise it while the editor is open;
           // the resource's own revision and the server's graph checks still guard the save.
           const body = skillImport ? { markdown: skillImport.markdown, files: skillImport.files, name: name.value.trim(), description: description.value, tags: tags.value.split(',').map(value => value.trim()).filter(Boolean), expectedBaseRevision: state.revision }
             : { kind: item.kind, name: name.value.trim(), description: description.value, tags: tags.value.split(',').map(value => value.trim()).filter(Boolean), enabled: enabled.control.checked, trust: trust.value, dependencies: dependencies.read(), ...resourceValues, expectedBaseRevision: state.revision, ...(item.id ? { expectedRevision: item.revision } : {}) };
-          const data = await request(skillImport ? '/api/base/skills/import' : item.id ? `/api/base/resources/${encodeURIComponent(item.id)}` : '/api/base/resources', { method: item.id && !skillImport ? 'PATCH' : 'POST', body });
+          const send = () => request(skillImport ? '/api/base/skills/import' : item.id ? `/api/base/resources/${encodeURIComponent(item.id)}` : '/api/base/resources', { method: item.id && !skillImport ? 'PATCH' : 'POST', body: { ...body, expectedBaseRevision: state.revision } });
+          // Base changed elsewhere (another window, an import): read it again and save once more. The resource's own
+          // revision and the server's checks still refuse a real conflict.
+          const data = await send().catch(async failure => { if (failure.code !== 'BASE_REVISION_CONFLICT') throw failure; await load(true); return send(); });
           const savedId = data.resource?.id || data.id || item.id;
           await load(); if (savedId && editorVersion === requestVersion) await openResource(savedId, true);
           status('Saved. No assignments changed.'); context.announce?.('Base resource saved.');
@@ -573,11 +665,22 @@ window.PromptboardBase = (() => {
         const http = group('HTTP server', field('Endpoint', endpoint), headers);
         const update = () => { stdio.hidden = transport.value !== 'stdio'; http.hidden = transport.value === 'stdio'; }; transport.addEventListener('change', update); update();
         form.append(field('Transport', transport), stdio, http, auth.label, field('Authentication requirements', authDescription), p('MCP is available only where the agent adapter can safely deliver it. On legacy staged boards, Planning and Code Review do not receive Base MCP servers; every column of a pipeline board can. A connection test starts the configured server or contacts its endpoint; trust and an explicit action are required.'));
+        // Discovered tools, each on or off for the whole server; an assignment can switch more off for itself.
+        const tools = item.connectionTest?.tools || [], off = new Set(config.disabledTools || []), toolList = el('div', undefined, 'base-tool-list');
+        for (const tool of tools) {
+          const row = check('', !off.has(tool.name)); row.control.dataset.tool = tool.name; row.control.setAttribute('role', 'switch');
+          row.label.append(el('strong', tool.name), ...(tool.readOnly ? [el('span', 'read-only', 'base-tag')] : []), ...(tool.destructive ? [el('span', 'can change or delete', 'base-tag warn')] : []),
+            ...(tool.description ? [el('span', tool.description, 'base-resource-description')] : []), ...(tool.inputs?.length ? [el('small', `needs: ${tool.inputs.join(', ')}`)] : []));
+          toolList.append(row.label);
+        }
+        form.append(group(`Tools${tools.length ? ` (${tools.length})` : ''}`, tools.length ? toolList : p('Test the connection to discover this server’s tools. The test lists tools, resources and prompts; it never calls a tool.'),
+          p('A tool switched off here is withheld from every agent that uses this server: Claude Code disallows it, Codex and Gemini CLI exclude it.')));
         if (item.id) form.append(button('Test connection and discover tools', () => form.savedAction(
           () => request(`/api/base/resources/${encodeURIComponent(item.id)}/test`, { method: 'POST', body: { expectedRevision: item.revision }, timeoutMs: 30000 }),
           data => { const result = el('div'); result.append(p('Connection test completed. This does not prove authenticated agent compatibility.'), el('pre', JSON.stringify(data.connection || data.result || data, null, 2), 'base-code')); return result; }
         )));
-        return { read: () => ({ configuration: { ...config, transport: transport.value, ...(transport.value === 'stdio' ? { command: command.value.trim(), args: lineValues(args.value), env: env.read() } : { endpoint: endpoint.value.trim(), headers: headers.read() }), auth: { required: auth.control.checked, description: authDescription.value } }, content }) };
+        const disabledTools = () => tools.length ? [...toolList.querySelectorAll('[data-tool]')].filter(node => !node.checked).map(node => node.dataset.tool) : [...off];
+        return { read: () => ({ configuration: { ...config, transport: transport.value, ...(transport.value === 'stdio' ? { command: command.value.trim(), args: lineValues(args.value), env: env.read() } : { endpoint: endpoint.value.trim(), headers: headers.read() }), auth: { required: auth.control.checked, description: authDescription.value }, disabledTools: disabledTools() }, content }) };
       }
       if (item.kind === 'knowledge') return knowledgeEditor(item, form);
       if (item.kind === 'context') {
@@ -651,14 +754,243 @@ window.PromptboardBase = (() => {
         return { read: () => { const nextContent = { ...content }; if (image) nextContent.avatar = image; else delete nextContent.avatar;
           return { configuration: { ...config, avatar: portrait, agent: { ...(context.readAgentFields(agent) || {}), instructions: instructions.value }, binding: binding.read() }, content: nextContent }; } };
       }
+      if (item.kind === 'agentProfile') return agentProfileEditor(item, form);
+      if (item.kind === 'markdown') return markdownEditor(item, form);
       if (item.kind === 'pack') {
-        const refs = referenceFields(config.resources || [], { excludeId: item.id, kinds: Object.keys(KINDS).filter(kind => !['pack', 'profile'].includes(kind)) });
+        const refs = referenceFields(config.resources || [], { excludeId: item.id, kinds: Object.keys(KINDS).filter(kind => !['pack', ...AGENT_KINDS].includes(kind)) });
         form.append(group('Pack contents', refs), p('Packs contain resources by reference. Nested packs and agent profiles are not allowed. Attaching this pack never changes provider settings.'));
         return { read: () => ({ configuration: { ...config, resources: refs.read() }, content }) };
       }
       return { read: () => ({ configuration: config, content }) };
     }
 
+    // ---- Agent profile builder: agents on one side, equipped resources on the other, each with its own switch ----
+    function agentProfileEditor(item, form) {
+      const config = item.configuration;
+      const agents = clone(config.agents || []), resources = clone(config.resources || []);
+      const instructions = area(config.instructions || '', 4000); instructions.rows = 3;
+      const agentBox = el('div', undefined, 'base-profile-agents'), resourceBox = el('div', undefined, 'base-profile-resources'), inventory = el('div', undefined, 'base-inventory');
+      const agentOptions = () => state.resources.filter(entry => entry.kind === 'profile');
+      const renderAgents = () => {
+        agentBox.replaceChildren();
+        const primary = agents.find(agent => agent.role === 'primary');
+        const choose = select([['', agentOptions().length ? 'Choose the primary agent' : 'Create an agent first'], ...agentOptions().map(entry => [entry.id, entry.name])], primary?.resourceId || ''); choose.id = 'base-profile-primary';
+        choose.addEventListener('change', () => {
+          const existing = agents.findIndex(agent => agent.resourceId === choose.value);
+          for (const agent of agents) if (agent.role === 'primary') agent.role = 'supporting';
+          if (existing >= 0) agents[existing].role = 'primary'; else if (choose.value) agents.unshift({ resourceId: choose.value, role: 'primary', responsibility: '' });
+          renderAgents(); renderInventory(); form.dispatchEvent(new Event('input'));
+        });
+        agentBox.append(field('Primary agent', choose, 'It runs the task: its provider, model and instructions apply.'));
+        for (const agent of agents.filter(entry => entry.role === 'supporting')) {
+          const row = el('div', undefined, 'base-profile-row');
+          const on = Object.assign(el('input'), { type: 'checkbox', checked: agent.enabled !== false }); on.setAttribute('role', 'switch'); on.setAttribute('aria-label', `${nameOf(agent.resourceId)} in this profile`);
+          on.addEventListener('change', () => { agent.enabled = on.checked ? undefined : false; renderInventory(); });
+          const duty = input(agent.responsibility || '', 500); duty.placeholder = 'Responsibility in this team'; duty.setAttribute('aria-label', `Responsibility of ${nameOf(agent.resourceId)}`);
+          duty.addEventListener('input', () => { agent.responsibility = duty.value; });
+          row.append(kindIcon('profile'), el('strong', nameOf(agent.resourceId)), duty, on, button('Remove', () => { agents.splice(agents.indexOf(agent), 1); renderAgents(); renderInventory(); }, 'text-button'));
+          agentBox.append(row);
+        }
+        agentBox.append(button('Add supporting agents…', () => openLibraryPicker({ title: 'Add supporting agents', kinds: ['profile'], attached: new Set(agents.map(agent => agent.resourceId)),
+          onApply: ids => { for (const id of ids) agents.push({ resourceId: id, role: agents.some(agent => agent.role === 'primary') ? 'supporting' : 'primary', responsibility: '' }); renderAgents(); renderInventory(); form.dispatchEvent(new Event('input')); } }), 'text-button'));
+      };
+      const renderResources = () => {
+        resourceBox.replaceChildren();
+        if (!resources.length) resourceBox.append(p('Nothing equipped yet. Add MCP servers, skills, knowledge, context, tools, Markdown files or packs from your Base library.'));
+        for (const ref of resources) {
+          const target = resource(ref.resourceId), row = el('div', undefined, 'base-profile-row');
+          const on = Object.assign(el('input'), { type: 'checkbox', checked: ref.enabled !== false }); on.setAttribute('role', 'switch'); on.setAttribute('aria-label', `${nameOf(ref.resourceId)} in this profile`);
+          on.title = 'Switched off here only: other profiles and assignments keep it.';
+          on.addEventListener('change', () => { if (on.checked) delete ref.enabled; else ref.enabled = false; renderInventory(); });
+          const required = check('Required', ref.required !== false); required.control.addEventListener('change', () => { ref.required = required.control.checked; });
+          row.append(kindIcon(target?.kind), el('strong', target?.name || `Missing: ${ref.resourceId}`), el('small', target ? statusOf(target).text : 'Deleted from Base', 'base-status'), required.label, on,
+            button('Edit in Base', () => openResource(ref.resourceId), 'text-button'), button('Remove', () => { resources.splice(resources.indexOf(ref), 1); renderResources(); renderInventory(); }, 'text-button'));
+          // An MCP server's tools can be switched off for this profile only.
+          if (target?.kind === 'mcp' && target.connectionTest?.tools?.length) {
+            const off = new Set(ref.disabledTools || []), tools = details(`Tools in this profile (${target.connectionTest.tools.length - target.connectionTest.tools.filter(tool => off.has(tool.name) || (target.configuration?.disabledTools || []).includes(tool.name)).length} on)`);
+            for (const tool of target.connectionTest.tools) {
+              const serverOff = (target.configuration?.disabledTools || []).includes(tool.name), box = check(`${tool.name}${serverOff ? ' · off for the whole server' : ''}`, !off.has(tool.name) && !serverOff);
+              box.control.disabled = serverOff;
+              box.control.addEventListener('change', () => { const list = new Set(ref.disabledTools || []); if (box.control.checked) list.delete(tool.name); else list.add(tool.name); ref.disabledTools = [...list]; if (!ref.disabledTools.length) delete ref.disabledTools; });
+              tools.append(box.label);
+            }
+            row.append(tools);
+          }
+          resourceBox.append(row);
+        }
+        resourceBox.append(button('Add from Base…', () => openLibraryPicker({ title: 'Equip from Base', kinds: Object.keys(KINDS).filter(kind => !AGENT_KINDS.includes(kind)), attached: new Set(resources.map(ref => ref.resourceId)),
+          onApply: ids => { for (const id of ids) resources.push({ resourceId: id, required: true }); renderResources(); renderInventory(); form.dispatchEvent(new Event('input')); } }), 'secondary-button'));
+      };
+      // What would actually run, per CLI: assigned is not the same as executable.
+      const renderInventory = () => {
+        inventory.replaceChildren();
+        const primary = resource(agents.find(agent => agent.role === 'primary' && agent.enabled !== false)?.resourceId);
+        const supporting = agents.filter(agent => agent.role === 'supporting' && agent.enabled !== false);
+        const active = resources.filter(ref => ref.enabled !== false).map(ref => resource(ref.resourceId)).filter(Boolean);
+        const provider = primary?.configuration?.agent?.provider;
+        inventory.append(p(primary ? `Runs as ${primary.name}${provider ? ` on ${PROVIDERS.find(([id]) => id === provider)?.[1] || provider}` : ' with the provider chosen where it is assigned'}.` : 'No primary agent: this profile cannot run yet.'));
+        const issues = [];
+        if (supporting.length && provider && provider !== 'claude') issues.push(`Supporting agents run as native subagents only with Claude Code; with ${provider} they are kept but not started.`);
+        for (const target of active) {
+          if (!target.enabled) issues.push(`${target.name} is switched off in Base, so no run uses it.`);
+          else if (target.trust !== 'trusted') issues.push(`${target.name} is untrusted. Review and trust it before runs can use it.`);
+          if (target.kind === 'mcp' && target.trust === 'trusted' && target.connectionTest?.status !== 'connected') issues.push(`${target.name} has not connected in a test yet.`);
+          const issue = provider && target.compatibility?.[provider]?.execution?.issue; if (issue) issues.push(`${target.name}: ${issue}`);
+        }
+        const noun = kind => KINDS[kind].replace(/^[A-Z](?=[a-z])/, letter => letter.toLowerCase()); // "MCP server" keeps its capitals.
+        const counts = Object.entries(active.reduce((map, target) => ({ ...map, [target.kind]: (map[target.kind] || 0) + 1 }), {})).map(([kind, count]) => `${count} ${noun(kind)}${count === 1 ? '' : 's'}`);
+        inventory.append(p(`${supporting.length} supporting agent${supporting.length === 1 ? '' : 's'} · ${counts.join(' · ') || 'no resources'} on.`));
+        if (issues.length) { const list = el('ul', undefined, 'base-inventory-issues'); for (const issue of issues) list.append(el('li', issue)); inventory.append(list); }
+        else if (primary) inventory.append(p('Everything switched on can be delivered.'));
+      };
+      renderAgents(); renderResources(); renderInventory();
+      form.append(group('Agents', agentBox), group('Equipped resources', resourceBox), group('What runs', inventory), field('Profile instructions', instructions, 'Added after the primary agent’s own instructions.'),
+        p('Resources are references to Base, never copies: editing one in Base changes it for every profile that uses it. A switch here affects this profile only. Use Apply to… to make it the agent profile of projects or columns.'));
+      return { read: () => ({ configuration: { agents: agents.map(agent => ({ resourceId: agent.resourceId, role: agent.role, responsibility: agent.responsibility || '', ...(agent.enabled === false ? { enabled: false } : {}) })), resources, instructions: instructions.value }, content: item.content }) };
+    }
+    // ---- Custom Markdown files: write with a live preview, choose when it is active, version it per project ----
+    function markdownEditor(item, form) {
+      const config = item.configuration, info = item.markdown;
+      const fileName = input(config.fileName || 'AGENTS.md', 200); fileName.id = 'base-markdown-file';
+      const names = el('datalist'); names.id = 'base-markdown-names';
+      for (const name of ['AGENTS.md', 'CLAUDE.md', 'GEMINI.md', 'SOUL.md', 'IDENTITY.md', 'MEMORY.md', 'USER.md', 'ARCHITECTURE.md', 'RESEARCH.md', 'DECISIONS.md', 'WORKFLOW.md', '.github/copilot-instructions.md', '.cursor/rules/project.mdc']) names.append(option(name, name));
+      fileName.setAttribute('list', names.id);
+      const body = area(item.content.body || '', 262144); body.id = 'base-markdown-body'; body.rows = 16; body.classList.add('base-markdown-source');
+      const preview = el('div', undefined, 'base-markdown-preview'), size = el('small', '', 'base-markdown-size');
+      const refresh = () => { preview.replaceChildren(markdown(body.value.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, ''))); size.textContent = `${body.value.length.toLocaleString()} characters · about ${Math.ceil(body.value.length / 4).toLocaleString()} tokens when sent`; };
+      body.addEventListener('input', refresh); refresh();
+      const split = el('div', undefined, 'base-markdown-split'); split.append(field('Markdown', body), preview);
+      // When it is sent.
+      const activation = config.activation || { mode: 'always' };
+      const mode = select([['always', 'Always active'], ['projects', 'Only in some projects'], ['stages', 'Only in some stages'], ['providers', 'Only for some CLIs'], ['manual', 'On demand (attach it to a task)']], activation.mode || 'always'); mode.id = 'base-markdown-mode';
+      const projects = state.targets.filter(entry => entry.target.scope === 'project'), projectBox = el('div', undefined, 'base-check-list');
+      for (const entry of projects) { const row = check(entry.label, (activation.projectIds || []).includes(entry.target.projectId)); row.control.dataset.project = entry.target.projectId; projectBox.append(row.label); }
+      const columns = [...new Set(state.targets.filter(entry => entry.target.scope === 'column').map(entry => entry.target.columnId))], stageBox = el('div', undefined, 'base-check-list');
+      for (const column of columns) { const row = check(column.replaceAll('_', ' '), (activation.stages || []).includes(column)); row.control.dataset.stage = column; stageBox.append(row.label); }
+      const providerBox = el('div', undefined, 'base-check-list');
+      for (const [id, label] of PROVIDERS) { const row = check(label, (activation.providers || []).includes(id)); row.control.dataset.provider = id; providerBox.append(row.label); }
+      const showFilters = () => { projectBox.hidden = mode.value !== 'projects'; stageBox.hidden = mode.value !== 'stages'; providerBox.hidden = mode.value !== 'providers'; };
+      mode.addEventListener('change', showFilters); showFilters();
+      if (!projects.length) projectBox.append(p('No projects yet.'));
+      form.append(names, field('File name', fileName, 'AGENTS.md, CLAUDE.md, GEMINI.md, SOUL.md… or any .md of your own. SKILL.md belongs in Skills.'));
+      if (info) {
+        const native = Object.entries(info.convention.native || {});
+        form.append(p(`${info.convention.label}. ${info.convention.note}`), p(native.length ? `Read by itself from a repository: ${native.map(([provider, how]) => `${PROVIDERS.find(([id]) => id === provider)?.[1] || provider} (${how})`).join('; ')}. Attached here, Promptboard sends it in the prompt for every CLI.` : 'No CLI that Promptboard runs reads this file by itself; attached here, Promptboard sends it in the prompt.'));
+        for (const issue of info.issues || []) form.append(el('p', issue, 'inline-error'));
+      }
+      if (config.override) form.append(p(`This is ${projects.find(entry => entry.target.projectId === config.override.projectId)?.label || 'a removed project'}’s version of “${nameOf(config.override.of)}”. There it replaces the shared file; every other project keeps the shared one.`));
+      form.append(split, size, group('When it is sent', mode, projectBox, stageBox, providerBox, p('Inactive files stay attached and cost nothing. On demand files are sent only for tasks they are attached to.')));
+      if (item.id) form.append(actions(...(config.override ? [] : [button('Project version…', () => openOverride(item), 'text-button')]), button('Write to a repository…', () => openDeploy(item), 'text-button')));
+      return { read: () => ({ configuration: { fileName: fileName.value.trim(), activation: { mode: mode.value, projectIds: [...projectBox.querySelectorAll('[data-project]:checked')].map(node => node.dataset.project), stages: [...stageBox.querySelectorAll('[data-stage]:checked')].map(node => node.dataset.stage), providers: [...providerBox.querySelectorAll('[data-provider]:checked')].map(node => node.dataset.provider) }, ...(config.override ? { override: config.override } : {}) }, content: { ...item.content, body: body.value } }) };
+    }
+    /** Add from Base: search the library, filter by type, select several, apply. Already attached ones are shown, not offered twice. */
+    function openLibraryPicker({ title, kinds, attached = new Set(), onApply }) {
+      const box = el('div', undefined, 'base-library-picker');
+      const search = input('', 200); search.type = 'search'; search.placeholder = 'Search your Base library'; search.setAttribute('aria-label', 'Search your Base library');
+      const kind = select([['', 'All types'], ...kinds.map(id => [id, KINDS[id]])], ''); kind.setAttribute('aria-label', 'Type');
+      const list = el('div', undefined, 'base-picker-list'), chosen = new Set();
+      const render = () => {
+        const query = search.value.trim().toLowerCase();
+        const shown = state.resources.filter(entry => kinds.includes(entry.kind) && (!kind.value || entry.kind === kind.value) && (!query || `${entry.name} ${entry.description || ''} ${(entry.tags || []).join(' ')}`.toLowerCase().includes(query)));
+        list.replaceChildren(...shown.map(entry => {
+          const row = check('', attached.has(entry.id) || chosen.has(entry.id)); row.control.disabled = attached.has(entry.id); row.control.dataset.pick = entry.id;
+          row.control.addEventListener('change', () => { if (row.control.checked) chosen.add(entry.id); else chosen.delete(entry.id); });
+          row.label.append(kindIcon(entry.kind), el('strong', entry.name), el('small', attached.has(entry.id) ? 'Already added' : statusOf(entry).text, 'base-status'));
+          return row.label;
+        }));
+        if (!shown.length) list.append(p(state.resources.some(entry => kinds.includes(entry.kind)) ? 'Nothing matches.' : 'Nothing in Base yet. Create or import resources first.'));
+      };
+      search.addEventListener('input', render); kind.addEventListener('change', render); render();
+      box.append(actions(search, kind), list, actions(button('Cancel', closeDialog), button('Add selected', () => { closeDialog(); onApply([...chosen]); }, 'dialog-done')));
+      openDialog(title, [box]); search.focus();
+    }
+    function projectChoice(label = 'Project') {
+      const choose = select(state.targets.filter(entry => entry.target.scope === 'project').map(entry => [entry.target.projectId, entry.label]), ''); choose.setAttribute('aria-label', label);
+      return choose;
+    }
+    async function openOverride(item) {
+      const choose = projectChoice(), box = el('div'), fail = inlineError(box);
+      box.append(p(`A project gets its own copy of “${item.name}” to change. There it replaces the shared file; every other project keeps using the shared one.`), field('Project', choose),
+        actions(button('Cancel', closeDialog), busyButton('Create project version', async () => {
+          try { const data = await request(`/api/base/resources/${encodeURIComponent(item.id)}/override`, { method: 'POST', body: { projectId: choose.value } }); closeDialog(); await load(); await openResource(data.resource.id, true); status('Project version created. The shared file is unchanged.'); }
+          catch (failure) { fail(failure); }
+        }, 'dialog-done')));
+      openDialog('Project version', [box]);
+    }
+    /** Write a file into a project's repository, where a CLI that reads it natively finds it. Preview first; replace only what was previewed. */
+    async function openDeploy(item) {
+      const choose = projectChoice(), box = el('div'), result = el('div'), fail = inlineError(box);
+      let preview = null;
+      const write = busyButton('Write file', async () => {
+        try { const data = await request(`/api/base/resources/${encodeURIComponent(item.id)}/deploy`, { method: 'POST', body: { projectId: choose.value, confirm: true, expectedHash: preview?.currentHash ?? null } }); closeDialog(); status(data.deploy.written ? `${data.deploy.path} written. Commit it so task worktrees get it too.` : `${data.deploy.path} already matches.`); }
+        catch (failure) { fail(failure); }
+      }, 'dialog-done'); write.disabled = true;
+      const check2 = busyButton('Preview', async () => {
+        fail(''); write.disabled = true;
+        try {
+          preview = (await request(`/api/base/resources/${encodeURIComponent(item.id)}/deploy`, { method: 'POST', body: { projectId: choose.value } })).deploy;
+          result.replaceChildren(p(preview.same ? `${preview.path} already has exactly this text. Nothing to write.` : preview.exists ? `${preview.path} exists (${preview.currentChars.toLocaleString()} characters) and will be replaced by this file (${preview.newChars.toLocaleString()} characters).` : `${preview.path} will be created (${preview.newChars.toLocaleString()} characters).`));
+          write.disabled = preview.same || item.trust !== 'trusted';
+          if (item.trust !== 'trusted') result.append(el('p', 'Trust this file before writing it into a repository.', 'inline-error'));
+        } catch (failure) { fail(failure); }
+      });
+      box.append(p(`Puts ${item.configuration?.fileName} into the project folder. Nothing is written until you confirm, and an existing file is replaced only if it still matches the preview.`), field('Project', choose), actions(check2), result, actions(button('Cancel', closeDialog), write));
+      openDialog('Write to a repository', [box]);
+    }
+    async function openMarkdownTemplates() {
+      const box = el('div', undefined, 'base-template-list'), fail = inlineError(box);
+      try {
+        const { templates } = await request('/api/base/markdown/templates');
+        box.append(p('Every template is plain, editable Markdown. Or start empty with Create.'));
+        for (const template of templates) box.append(button(`${template.name} — ${template.description}`, () => { closeDialog(); if (!leave()) return; editResource({ kind: 'markdown', name: template.name, enabled: true, trust: 'trusted', dependencies: [], configuration: { fileName: template.fileName, activation: { mode: 'always' } }, content: { body: template.body } }); }, 'base-template'));
+      } catch (failure) { fail(failure); }
+      openDialog('Markdown file from a template', [box]);
+    }
+    async function openMarkdownImport() {
+      const choose = projectChoice(), box = el('div'), list = el('div', undefined, 'base-check-list'), fail = inlineError(box);
+      const scan = busyButton('Find files', async () => {
+        fail(''); list.replaceChildren();
+        try {
+          const data = await request('/api/base/markdown/scan', { method: 'POST', body: { projectId: choose.value } });
+          for (const file of data.files) { const row = check(`${file.path}${file.convention === 'skill' ? ' · imported as a skill' : ''}${file.inBase ? ' · already in Base' : ''}`, !file.inBase); row.control.dataset.path = file.path; list.append(row.label); }
+          if (!data.files.length) list.append(p('No known instruction files were found (AGENTS.md, CLAUDE.md, GEMINI.md, Copilot and Cursor rules, OpenClaw files, skills).'));
+        } catch (failure) { fail(failure); }
+      });
+      box.append(p('Reads the project’s folder, never changes it. Imported files start switched off and untrusted: they instruct agents, so review them first.'), field('Project', choose), actions(scan), list,
+        actions(button('Cancel', closeDialog), busyButton('Import selected', async () => {
+          try { const data = await request('/api/base/markdown/import', { method: 'POST', body: { projectId: choose.value, paths: [...list.querySelectorAll('[data-path]:checked')].map(node => node.dataset.path) } }); closeDialog(); await load(); status(`Imported ${data.imported.length}${data.skipped.length ? `; ${data.skipped.length} skipped (${data.skipped.map(entry => entry.reason).join(' ')})` : ''}. Review and trust them before use.`); }
+          catch (failure) { fail(failure); }
+        }, 'dialog-done')));
+      openDialog('Import Markdown from a repository', [box]);
+    }
+    /** MCP servers from Claude Desktop or a pasted configuration: preview what would be added and what needs attention. */
+    async function openMcpImport() {
+      const box = el('div'), text = area('', 1000000), list = el('div', undefined, 'base-check-list'), fail = inlineError(box);
+      text.rows = 6; text.placeholder = '{ "mcpServers": { … } } from claude_desktop_config.json, .mcp.json, TRAE, Gemini CLI or VS Code';
+      let last = null;
+      const show = data => {
+        last = data; list.replaceChildren();
+        for (const server of data.servers) {
+          const row = check('', server.importable); row.control.dataset.server = server.name; row.control.disabled = !server.importable;
+          row.label.append(kindIcon('mcp'), el('strong', server.name), el('small', server.transport === 'stdio' ? `${server.command} ${server.args.join(' ')}` : server.endpoint || '', 'base-status'));
+          const notes = [...server.issues, ...(server.duplicateOf ? [`Already in Base as “${server.duplicateOf.name}”.`] : []), ...[...(server.env || []), ...(server.headers || [])].map(entry => entry.note).filter(Boolean)];
+          for (const note of notes) row.label.append(el('span', note, 'base-resource-description'));
+          list.append(row.label);
+        }
+        if (!data.servers.length) list.append(p('No servers in this configuration.'));
+      };
+      const preview = body => request('/api/base/mcp/import/preview', { method: 'POST', body }).then(show).catch(fail);
+      box.append(p('Servers are added switched off and untrusted. A command runs only after you trust the server and test it. Secret values are never copied: set them as environment variables where Promptboard runs.'),
+        actions(busyButton('Read Claude Desktop’s configuration', () => preview({ source: 'claude-desktop' }))), field('Or paste a configuration', text), actions(busyButton('Preview', () => preview({ json: text.value }))), list,
+        actions(button('Cancel', closeDialog), busyButton('Import selected', async () => {
+          try {
+            const names = [...list.querySelectorAll('[data-server]:checked')].map(node => node.dataset.server);
+            const data = await request('/api/base/mcp/import', { method: 'POST', body: { ...(last?.path ? { source: 'claude-desktop' } : { json: text.value }), names } });
+            closeDialog(); await load(); status(`Imported ${data.imported.length} MCP server${data.imported.length === 1 ? '' : 's'}, switched off and untrusted. Review each command, trust it, then test it.`);
+          } catch (failure) { fail(failure); }
+        }, 'dialog-done')));
+      openDialog('Import MCP servers', [box]);
+    }
     function knowledgeEditor(item, form) {
       const content = item.content;
       const pages = clone(content.pages || []), sources = clone(content.sources || []);
@@ -783,7 +1115,7 @@ window.PromptboardBase = (() => {
       try {
         await context.refreshBoard?.(); await load();
         // A profile becomes the agent profile of a global, project or column target (its provider and model apply there).
-        const profile = item.kind === 'profile';
+        const profile = AGENT_KINDS.includes(item.kind);
         // Global, project and column targets; a single card keeps its own Base path in its details.
         const targets = state.targets.filter(entry => ['global', 'project', 'column'].includes(entry.target.scope));
         const form = el('form'), list = el('div', undefined, 'base-apply-targets'), preview = el('div');

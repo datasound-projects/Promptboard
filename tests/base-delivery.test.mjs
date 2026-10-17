@@ -207,7 +207,7 @@ test('Source capture uses workspace path, checks approved roots and symlinks, an
 test('MCP explicit discovery initializes real stdio protocol, is trust gated, bounded and cancellable', async () => {
   const server = fileURLToPath(new URL('./fixtures/base-mcp-server.mjs', import.meta.url));
   const def = resource('mcp', 'mcp', { transport: 'stdio', command: process.execPath, args: [server] });
-  const result = await testMcp(def); assert.equal(result.status, 'connected'); assert.deepEqual(result.tools, [{ name: 'read_document' }]); assert.equal(result.resources[0].name, 'Guide');
+  const result = await testMcp(def); assert.equal(result.status, 'connected'); assert.deepEqual(result.tools, [{ name: 'read_document', description: 'untrusted description' }], 'shown to the person as text, never sent to an agent'); assert.equal(result.resources[0].name, 'Guide');
   await assert.rejects(testMcp({ ...def, trust: 'untrusted' }), { code: 'BASE_UNTRUSTED' });
   await assert.rejects(testMcp({ ...def, configuration: { ...def.configuration, args: [server, 'hang'] } }, { timeoutMs: 100 }), { code: 'ABORTED' });
   await assert.rejects(testMcp({ ...def, configuration: { ...def.configuration, args: [server, 'flood'] } }, { timeoutMs: 3000 }), error => ['ABORTED', 'BASE_MCP_FAILED'].includes(error.code));
