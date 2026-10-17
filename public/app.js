@@ -5552,6 +5552,8 @@ window.addEventListener('pagehide', () => browserNotifications?.stop());
 window.addEventListener('pageshow', event => { if (event.persisted) browserNotifications?.resume(); });
 window.addEventListener('storage', event => {
   if ((event.key === 'promptboard:browser-notifications' && event.newValue !== '1') || event.key === null) browserNotifications?.disable();
+  // Another tab saved Compose History: take its list, so this tab's next save does not drop those prompts.
+  if (event.key === HISTORY_KEY) { history = readHistory(); renderHistory(); }
 });
 function renderSettings() {
   renderNotificationSettings();
@@ -5761,7 +5763,7 @@ originView = window.PromptboardOrigin?.create({ api, announce, closeSidebar: () 
   uploadApi: (path, file, { signal } = {}) => fetch(path, { method: 'POST', cache: 'no-store', signal, headers: { 'X-STE-Token': token, 'Content-Type': file.type || (/\.pdf$/i.test(file.name) ? 'application/pdf' : 'text/plain') }, body: file }) }) || null;
 // Shared projects: optional saved prompts beside History, with links back to Origin and Kanban.
 projectsView = window.PromptboardProjects?.create({ api, announce, getResult: () => currentResult, running: () => running,
-  settingsOf: entry => ({ provider: entry.provider, model: entry.model, effort: entry.effort, language: entry.language, quality: entry.quality, task: entry.task, detail: entry.detail }),
+  settingsOf: entry => ({ provider: entry.provider, model: entry.model, effort: entry.effort, language: entry.language, quality: entry.quality, task: entry.task, detail: entry.detail, options: entry.options, terminology: entry.terminology }),
   verificationOf: entry => snapshotSource(entry).verification,
   removeHistory: id => { history = history.filter(item => item.id !== id); if (currentId === id) currentId = null; persistHistory(); renderHistory(); },
   openInCompose, openOrigin, refreshBoard: () => loadBoard(),

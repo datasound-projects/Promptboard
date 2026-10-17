@@ -237,3 +237,12 @@ test('board import and browser migration keep the one-name rule across Origin', 
   assert.equal((await call('/api/board/migrate', 'POST', { board: { version: 1, projects: [{ id: 'browser', name: 'SHOP', cards: [] }] } })).status, 200);
   assert.deepEqual((await app.board.state()).projects.map(project => project.name), ['shop (2)', 'SHOP (3)']);
 });
+
+test('a saved prompt keeps the Compose options and terminology it was made with', async t => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'pb-prompts-')); t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const prompts = new PromptStore(dataDir);
+  const settings = { provider: 'codex', model: 'gpt-5.5', options: { acceptanceChecks: true, planFirst: false, 'bad key': true, edgeCases: 'yes' }, terminology: 'Order = a paid cart' };
+  const { prompt } = await prompts.create('p1', ['p1'], { title: 'Checkout', prompt: 'Build checkout.', settings });
+  const saved = prompt.revisions?.at(-1)?.settings ?? prompt.settings;
+  assert.deepEqual([saved.options, saved.terminology], [{ acceptanceChecks: true, planFirst: false }, 'Order = a paid cart']);
+});
