@@ -90,7 +90,7 @@ test('a paired device reaches the app through the remote listener; everything el
   assert.equal((await remote('/api/board', { headers: { ...jar, 'X-STE-Token': session.token, 'Sec-Fetch-Site': 'cross-site' } })).status, 403);
   // What stays on the computer: remote access itself, CLI and GitHub sign-in, native dialogs, starting local programs.
   const authed = { ...jar, 'X-STE-Token': session.token };
-  for (const [path, method] of [['/api/remote', 'GET'], ['/api/remote/settings', 'POST'], ['/api/remote/pairing', 'POST'], ['/api/auth/login', 'POST'], ['/api/github/login', 'POST'], ['/api/folder/choose', 'POST'], ['/api/projects/p1/open', 'POST']]) {
+  for (const [path, method] of [['/api/remote', 'GET'], ['/api/remote/settings', 'POST'], ['/api/remote/pairing', 'POST'], ['/api/auth/login', 'POST'], ['/api/github/login', 'POST'], ['/api/folder/choose', 'POST'], ['/api/projects/p1/open', 'POST'], ['/api/editors', 'GET'], ['/api/editors', 'PUT']]) {
     const refused = await remote(path, { method, headers: authed, ...(method === 'POST' ? { body: {} } : {}) });
     assert.deepEqual([refused.status, refused.json?.code], [403, 'REMOTE_LOCAL_ONLY'], path);
   }

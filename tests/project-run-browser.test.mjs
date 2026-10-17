@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { findChrome, launch } from './helpers/browser.mjs';
@@ -17,8 +17,11 @@ test('when every card is done, Kanban shows how to run the project; the menu cop
   await writeFile(join(root, 'package.json'), JSON.stringify({ scripts: { dev: 'vite' }, dependencies: { vite: '7' } }));
   await writeFile(join(root, 'README.md'), '# Shop\n\n## Getting started\n\nOpen http://localhost:5173 after starting it.\n');
   git(root, 'add', '.'); git(root, 'commit', '-q', '-m', 'init');
-  const opened = [];
-  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [], projectOpener: async (project, target) => { opened.push(target); return { opened: target }; } });
+  const opened = [], editorCalls = [];
+  await mkdir(join(root, '.apps', 'Zed.app'), { recursive: true });
+  // Editors found in a folder of the test's own and started through a recorder: no editor opens on this computer.
+  const editorOptions = { platform: 'darwin', env: {}, home: root, appDirs: [join(root, '.apps')], exec: async (command, args) => { editorCalls.push(args.at(-1)); return { ok: true, stdout: '' }; } };
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [], editorOptions, projectOpener: async (project, target) => { opened.push(target); return { opened: target }; } });
   // Removed after the app has closed: on Windows a folder the app still watches cannot be deleted.
   t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const project = await app.board.createProject({ name: 'Shop' });
@@ -54,7 +57,33 @@ test('when every card is done, Kanban shows how to run the project; the menu cop
   // The project menu: copy the path, open the folder, and show how to run it any time.
   await ev(`document.querySelector('.workspace-menu-toggle').click();`);
   await wait(`!!document.querySelector('.workspace-menu [role="menuitem"]')`, 'menu');
-  assert.deepEqual(await ev(`return [...document.querySelectorAll('.workspace-menu [role="menuitem"]')].map(b => b.textContent)`), ['Rename', 'Copy path', `Open in ${opener}`, 'How to run…', 'Delete…']);
+  assert.deepEqual(await ev(`return [...document.querySelectorAll('.workspace-menu [role="menuitem"]')].map(b => b.textContent)`), ['Rename', 'Copy path', `Open in ${opener}`, 'Open in IDE…', 'How to run…', 'Delete…']);
+  // Open in IDE: the editors found on the computer; the one chosen is offered directly next time.
+  await ev(`[...document.querySelectorAll('.workspace-menu [role="menuitem"]')].find(b => b.textContent === 'Open in IDE…').click();`);
+  await wait(`[...document.querySelectorAll('.workspace-menu .workspace-editor')].map(b => b.textContent).join() === 'ZZed'`, 'editor list');
+  await ev(`document.querySelector('.workspace-menu .workspace-editor').click();`);
+  await wait(`/Zed opened Shop/.test(document.querySelector('#announcement').textContent)`, 'opened in Zed');
+  assert.deepEqual(editorCalls, [root]);
+  await ev(`document.querySelector('.workspace-menu-toggle').click();`);
+  await wait(`[...document.querySelectorAll('.workspace-menu [role="menuitem"]')].some(b => b.textContent === 'Open in Zed')`, 'the last editor is offered directly');
+  assert.ok((await ev(`return [...document.querySelectorAll('.workspace-menu [role="menuitem"]')].map(b => b.textContent)`)).includes('Open in another IDE…'));
+  // A task's worktree opens in the same editor from its card.
+  await ev(`document.querySelector('.workspace-menu-toggle').click();`);
+  const tree = join(root, '.trees', 'catalog');
+  await writeFile(join(root, '.git', 'info', 'exclude'), '.trees/\n'); git(root, 'worktree', 'add', '-q', '-b', 'pb/catalog', tree);
+  const taskId = (await app.board.view()).projects[0].tasks[0].id;
+  await app.board.store.update(state => { const task = state.projects[0].tasks.find(item => item.id === taskId); task.workspace = { status: 'ready', branch: 'pb/catalog', path: tree, repositoryRoot: root, targetBranch: 'trunk' }; task.revision++; });
+  await browser.reload();
+  await wait(`!!document.querySelector('[data-id="${taskId}"] .kanban-more-toggle')`, 'card');
+  await ev(`document.querySelector('[data-id="${taskId}"] .kanban-more-toggle').click();`);
+  await wait(`!!document.querySelector('[data-id="${taskId}"] .kanban-details')`, 'card menu');
+  await ev(`document.querySelector('[data-id="${taskId}"] .kanban-details').click();`);
+  await wait(`document.querySelector('#task-dialog .task-open-editor')?.textContent === 'Open worktree in Zed'`, 'worktree button in the task');
+  await ev(`document.querySelector('#task-dialog .task-open-editor').click();`);
+  await wait(`/Zed opened the task’s worktree/.test(document.querySelector('#announcement').textContent)`, 'worktree opened');
+  assert.deepEqual(editorCalls, [root, tree]);
+  await ev(`document.querySelector('#task-dialog').close(); document.querySelector('.workspace-menu-toggle').click();`);
+  await wait(`[...document.querySelectorAll('.workspace-menu [role="menuitem"]')].some(b => b.textContent === 'How to run…')`, 'menu again');
   await ev(`[...document.querySelectorAll('.workspace-menu [role="menuitem"]')].find(b => b.textContent === 'How to run…').click();`);
   await wait(`!document.querySelector('#project-run').hidden && /run Shop|How to run Shop/.test(document.querySelector('#project-run h3').textContent)`, 'shown on request');
   assert.deepEqual(browser.consoleMessages.filter(line => line.startsWith('EXCEPTION')), []);
