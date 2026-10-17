@@ -702,3 +702,13 @@ test('Origin task routes refuse hostile input, unsafe identifiers and oversized 
   assert.equal((await post('handoff', { expectedRevision: record.revision, itemIds: ['a'] })).status, 200);
   assert.equal((await app.board.view()).projects[0].tasks[0].title, 'IMP-001 <img src=x onerror=alert(1)>');
 });
+
+test('a blueprint this version cannot read is left out of the project list instead of hiding every project', async t => {
+  const dir = await temp(t), store = new OriginStore(dir);
+  const kept = await store.create({ name: 'Kept' }), newer = await store.create({ name: 'Newer' });
+  const path = join(dir, 'origin', blueprintFileName(newer.id)), text = JSON.stringify({ schema: 'promptboard.origin', version: 99, originId: newer.id, project: { name: 'Newer' }, revision: 3, blueprint: {} });
+  await writeFile(path, text);
+  assert.deepEqual((await store.list()).map(record => record.id), [kept.id]);
+  assert.deepEqual(store.unreadable, [newer.id]);
+  assert.equal(await readFile(path, 'utf8'), text, 'the file is not changed');
+});

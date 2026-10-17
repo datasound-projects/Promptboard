@@ -168,3 +168,19 @@ test('a whole suggestion written inside "target" is read as one', () => {
   assert.equal(dropped, 0);
   assert.deepEqual([proposals[0].target, proposals[0].value, proposals[0].ref], [{ kind: 'add', collection: 'components' }, { name: 'Date reader', type: 'library' }, 'xyzxyzxy.n4']);
 });
+
+test('an edited choice or link is checked like a suggested one, and a full collection refuses the new record: the blueprint stays savable', () => {
+  const bp = blueprint();
+  let n = 0; const newId = () => `n${++n}`;
+  const status = { target: { kind: 'record', collection: 'technologies', id: 't1', field: 'status' }, original: 'candidate', value: 'chosen' };
+  assert.throws(() => M.applyResearchSuggestion(bp, status, { newId, value: 'nonsense' }), /not a valid status/);
+  assert.equal(bp.technologies[0].status, 'candidate', 'nothing changed');
+  const url = { target: { kind: 'record', collection: 'sources', id: 's1', field: 'url' }, original: 'https://example.com', value: 'https://example.org' };
+  assert.throws(() => M.applyResearchSuggestion(bp, url, { newId, value: 'javascript:alert(1)' }), /http\(s\) address/);
+  assert.ok(M.applyResearchSuggestion(bp, url, { newId }).ok);
+  while (bp.components.length < M.LIMITS.components) bp.components.push({ ...bp.components[0], id: `c${bp.components.length + 1}`, name: `C${bp.components.length + 1}` });
+  const result = M.applyResearchSuggestion(bp, { target: { kind: 'add', collection: 'components' }, value: { name: 'One more', type: 'api' } }, { newId });
+  assert.match(result.error, /at most 200 components/);
+  assert.equal(bp.components.length, M.LIMITS.components);
+  assert.doesNotThrow(() => M.normalizeBlueprint(bp));
+});

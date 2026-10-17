@@ -223,7 +223,8 @@ window.PromptboardOrigin = (() => {
     }
     async function flush() {
       if (!record?.exists || saveState === 'gone') return true;
-      if (saveTimer || changeCount !== savedCount) return save();
+      // Changes that arrive while saving (a running Apply all) are saved too before anyone moves on.
+      if (saveTimer || changeCount !== savedCount) return (await save()) && flush();
       if (saving) return saving;
       return saveState !== 'error' && saveState !== 'conflict';
     }
@@ -264,6 +265,7 @@ window.PromptboardOrigin = (() => {
       const { response, data } = await app.api('/api/origin/projects', { timeoutMs: 30000 }).catch(() => ({ response: { ok: false }, data: {} }));
       if (!response.ok) { showError(typeof data.error === 'string' ? data.error : 'Origin projects could not be loaded. Board, Compose and Base data are unaffected.'); return false; }
       projects = Array.isArray(data.projects) ? data.projects : [];
+      if (data.unreadable > 0) showNotice(`${plural(data.unreadable, 'Origin project was', 'Origin projects were')} left out: ${data.unreadable === 1 ? 'its file was' : 'their files were'} saved by a newer Promptboard version or cannot be read. The files were not changed.`);
       return true;
     }
     async function show() {
@@ -774,6 +776,8 @@ window.PromptboardOrigin = (() => {
       return form;
     }
     function add(collection, entry, { keyed = false, edit = false } = {}) {
+      // One over the limit and the blueprint could not be saved any more.
+      if (bp()[collection].length >= M.LIMITS[collection]) { app.announce(`A project can have at most ${M.LIMITS[collection]} ${NOUN[collection].toLowerCase()} records.`); return null; }
       const item = { id: newId(), origin: 'human', ...entry };
       if (keyed) item.key = M.nextKey(bp(), collection);
       bp()[collection].push(item);
@@ -789,7 +793,8 @@ window.PromptboardOrigin = (() => {
      */
     function applyResearch(proposal, { force = false, value = proposal.value, refs = new Map() } = {}) {
       if (!record?.exists) return { error: 'Open the project before applying suggestions.' };
-      const result = M.applyResearchSuggestion(bp(), proposal, { value, force, newId, refs });
+      let result;
+      try { result = M.applyResearchSuggestion(bp(), proposal, { value, force, newId, refs }); } catch (error) { return { error: error.message }; } // An edited value that is not valid.
       if (result.ok) changed({ structure: true, drawer: true });
       return result;
     }
@@ -1073,6 +1078,7 @@ window.PromptboardOrigin = (() => {
         pick.append(Object.assign(el('option', '', '＋ Connect to…'), { value: '' }), ...others.map(component => Object.assign(el('option', '', component.name || 'Unnamed component'), { value: component.id })));
         pick.addEventListener('change', () => {
           if (!pick.value) return;
+          if (bp().connections.length >= M.LIMITS.connections) { app.announce(`A project can have at most ${M.LIMITS.connections} connections.`); return; }
           const connection = { id: newId(), origin: 'human', from: item.id, to: pick.value, label: 'calls', protocol: '', notes: '' };
           bp().connections.push(connection);
           changed({ structure: true, drawer: true });
@@ -2804,6 +2810,7 @@ window.PromptboardOrigin = (() => {
         let previous = null;
         for (const pick of chosen) {
           const item = newTask(pick.title.trim(), { ...links, description: pick.prompt, dependsOn: chainBox.checked && previous ? [previous.id] : [] });
+          if (!item) break;
           previous = item;
         }
         dialog().close();

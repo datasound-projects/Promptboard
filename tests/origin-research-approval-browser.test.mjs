@@ -140,3 +140,32 @@ test('Apply, Reject and Preview keep the chat where you are reading, and keep fo
     assert.equal(await ev(`return ${card(n)}.contains(document.activeElement);`), true, `${action}: focus stays on the card`);
   }
 });
+
+test('Apply all stops when another project opens: nothing lands in that project, what was applied is saved, the rest stays pending', { skip: !chrome, timeout: 180000 }, async t => {
+  const names = ['Alpha cache', 'Beta queue', 'Gamma search', 'Delta mail'];
+  const batch = { suggestions: names.map(name => ({ title: name, target: { kind: 'add', collection: 'technologies' }, value: { name, purpose: 'Test', status: 'candidate' } })) };
+  const researchRunner = async call => ({ text: `Options.\n\n\`\`\`origin-suggestions\n${J(batch)}\n\`\`\``, session: call.session?.id || 'thread-1' });
+  const { ev, wait, call, originId } = await researchPage(t, { server: { researchRunner } });
+  const other = (await call('/api/origin/projects', 'POST', { name: 'Other' })).project.id;
+  await ev(`location.hash = '#/kanban';`); await wait(`!document.querySelector('#origin-view') || document.querySelector('#origin-view').hidden`, 'left Origin');
+  await ev(`location.hash = '#/origin';`); await wait(`[...document.querySelectorAll('#origin-project option')].some(o => o.value === ${J(other)})`, 'both projects listed');
+  await ev(`document.querySelector('#origin-research-open').click();`);
+  await wait(`document.querySelector('#origin-research-send') && !document.querySelector('#origin-research-send').disabled`, 'ready');
+  await ev(`const i = document.querySelector('#origin-research-input'); i.value = 'Which services?'; i.dispatchEvent(new Event('input', { bubbles: true })); i.closest('form').requestSubmit();`);
+  await wait(`document.querySelector('#origin-research-apply-all')?.textContent === 'Apply all (4)'`, 'Apply all offered');
+  // The first decision is held until the other project is open, so the switch lands in the middle of the batch.
+  await ev(`const f = window.fetch; window.__held = []; window.fetch = (url, options) => options?.method === 'PATCH' && /proposals/.test(url) ? new Promise(r => window.__held.push(r)).then(() => f(url, options)) : f(url, options);`);
+  await ev(`document.querySelector('#origin-research-apply-all').click();`);
+  await wait(`window.__held.length === 1`, 'first decision on its way');
+  await ev(`const s = document.querySelector('#origin-project'); s.value = ${J(other)}; s.dispatchEvent(new Event('change'));`);
+  await wait(`document.querySelector('#origin-project').value === ${J(other)} && document.querySelector('#origin-view').dataset.save === 'saved' && document.querySelector('#origin-main').textContent.length > 0`, 'Other open');
+  await ev(`window.__held.shift()();`);
+  await new Promise(resolve => setTimeout(resolve, 1500));
+  assert.equal(await ev(`return window.__held.length`), 0, 'no further decision was sent');
+  const tech = async id => (await call(`/api/origin/projects/${id}`)).blueprint.technologies.map(entry => entry.name);
+  assert.deepEqual((await tech(other)).filter(name => names.includes(name)), [], 'nothing from the other project’s chat');
+  assert.deepEqual((await tech(originId)).filter(name => names.includes(name)), ['Alpha cache'], 'the suggestion applied before the switch is saved');
+  const [{ id: chatId }] = (await call(`/api/origin/research/${originId}/chats`)).chats;
+  const { chat } = await call(`/api/origin/research/${originId}/chats/${chatId}`);
+  assert.deepEqual(chat.proposals.map(entry => entry.status), ['applied', 'pending', 'pending', 'pending']);
+});
