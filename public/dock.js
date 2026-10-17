@@ -490,11 +490,16 @@ function startDividerDrag(event) {
   $('#dock-copy').addEventListener('click', copySelection);
   $('#dock-divider').addEventListener('pointerdown', startDividerDrag);
   if (typeof ResizeObserver === 'function') {
+    let controlsFrame = 0; // On the next frame, so resizing the dock never loops inside the observer.
     const controls = new ResizeObserver(() => {
-      applyDockHeight();
-      const session = dock.sessions.get(dock.selected);
-      session?.tab.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
-      fitSession(session);
+      if (controlsFrame) return;
+      controlsFrame = requestAnimationFrame(() => {
+        controlsFrame = 0;
+        applyDockHeight();
+        const session = dock.sessions.get(dock.selected);
+        session?.tab.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+        fitSession(session);
+      });
     });
     controls.observe($('#dock .dock-bar'));
     controls.observe($('#dock-tabs'));

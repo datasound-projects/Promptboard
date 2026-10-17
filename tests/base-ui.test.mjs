@@ -274,7 +274,7 @@ const categoryResources = () => categoryCases.slice(1).flatMap(([type], index) =
 test('exactly eight categories filter stored types locally with shared AND filters, sort, view and canonical counts', async t => {
   const { $, win, view, calls, clickText, change } = setup(t, { resources: categoryResources() });
   await view.show();
-  assert.deepEqual([...$('#base-categories').children].map(node => node.getAttribute('aria-label')), categoryCases.map(([, name]) => name));
+  assert.deepEqual([...$('#base-categories').children].map(node => node.firstElementChild.textContent), categoryCases.map(([, name]) => name));
   assert.equal($('#base-categories [aria-pressed="true"]').dataset.kind, '');
   assert.equal($('#base-list').children.length, 14);
   for (const [type, label] of categoryCases) {

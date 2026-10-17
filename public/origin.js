@@ -2097,7 +2097,8 @@ window.PromptboardOrigin = (() => {
       const name = make('text', { x: CENTER_W / 2, y: 38, 'text-anchor': 'middle', class: 'origin-map-title' }, centerNode); name.textContent = clip(project()?.name || 'Project', 30);
       lines.forEach((line, index) => { const text = make('text', { x: CENTER_W / 2, y: 64 + index * 20, 'text-anchor': 'middle', class: 'origin-map-summary' }, centerNode); text.textContent = line; });
       if (!lines.length) { const text = make('text', { x: CENTER_W / 2, y: 64, 'text-anchor': 'middle', class: 'origin-map-summary faint' }, centerNode); text.textContent = 'Click to describe the idea'; }
-      movable(centerNode, 'center', `${project()?.name || 'Project'}. Open ${sectionName('vision')}`, () => openSection('vision'));
+      // The name includes the text shown on the node, so voice control can activate it by what it says.
+      movable(centerNode, 'center', `${[clip(project()?.name || 'Project', 30), ...(lines.length ? lines : ['Click to describe the idea'])].join(' ')}. Open ${sectionName('vision')}`, () => openSection('vision'));
       drawDecor();
       // The whole map fits by default; zoom and pan are kept until Fit.
       const pad = 44, fitBox = { x: bounds.x1 - pad, y: bounds.y1 - pad, w: bounds.x2 - bounds.x1 + 2 * pad, h: bounds.y2 - bounds.y1 + 2 * pad };

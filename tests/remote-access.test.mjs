@@ -240,3 +240,17 @@ test('Tailscale off uses the port Promptboard is served on; a shared host name i
   access.tailscale = null;
   assert.ok((await access.status()).warnings.some(line => /sign-in to it as well/.test(line)));
 });
+
+test('Tailscale Serve not enabled for the tailnet: the refusal carries Tailscale’s own link and nothing is changed', async t => {
+  const cli = { run: async args => {
+    if (args[0] === 'status') return JSON.stringify({ BackendState: 'Running', Self: { DNSName: 'mac.tail1234.ts.net.' }, CertDomains: [] });
+    if (args.join(' ') === 'serve status --json') return '{}';
+    // As the real CLI does: it prints the link and waits until Serve is enabled (here: it is stopped by the timeout).
+    throw Object.assign(new Error('timed out'), { stdout: 'Serve is not enabled on your tailnet.\nTo enable, visit:\n\n         https://login.tailscale.com/f/serve?node=abc123\n', stderr: '' });
+  } };
+  assert.equal((await tailscaleState(4319, cli)).https, false);
+  const dataDir = await mkdtemp(join(tmpdir(), 'pb-remote-enable-')); t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const access = await new RemoteAccess({ dataDir, localPort: 1, handle: () => {}, cli }).load(); t.after(() => access.close());
+  access.settings = { ...access.settings, method: 'tailscale', port: 4319 };
+  await assert.rejects(access.setServe(true), error => error.code === 'REMOTE_TAILSCALE_NOT_ENABLED' && error.link === 'https://login.tailscale.com/f/serve?node=abc123');
+});

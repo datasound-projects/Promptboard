@@ -1739,7 +1739,8 @@ function renderColumn(column, tasks) {
     const settings = currentProject()?.effectiveWorkflow?.[column.id];
     const agent = detailButton(`Agent: ${agentText(settings)}`, () => openWorkflowDialog(column.id), 'column-agent');
     agent.id = `column-agent-${column.id}`;
-    agent.setAttribute('aria-label', `Choose provider and model for ${column.title}`);
+    // The visible text starts the name (voice control users say what they see).
+    agent.setAttribute('aria-label', `Agent: ${agentText(settings)}. Choose provider and model for ${column.title}`);
     agent.title = `${agentText(settings)} · ${settings?.agentSource || 'default'} setting`;
     header.append(agent);
   }
@@ -5746,17 +5747,18 @@ function renderProjectGitHub(project) {
 window.PromptboardGitHub = { render: () => { renderGitHub(); if (!github.status && !github.busy) checkGitHub(); } };
 
 // ---- Remote access (a paired phone through Tailscale or Twingate). Managed only on this computer. ----
-const remoteAccess = { status: null, pairing: null, busy: false, message: '', draft: null };
+const remoteAccess = { status: null, pairing: null, busy: false, message: '', link: '', draft: null };
 const REMOTE_METHODS = [['local', 'Local only (default)'], ['tailscale', 'Tailscale (recommended)'], ['twingate', 'Twingate']];
 async function remoteCall(method, path, body) {
   const { response, data } = await api(path, { method, body, timeoutMs: 40000 });
-  if (!response.ok) throw new Error(typeof data.error === 'string' ? data.error : 'Remote access could not be changed.');
+  // Tailscale's own link (for example to enable Serve for the tailnet) is shown beside the message.
+  if (!response.ok) throw Object.assign(new Error(typeof data.error === 'string' ? data.error : 'Remote access could not be changed.'), { link: typeof data.link === 'string' && /^https:\/\/login\.tailscale\.com\//.test(data.link) ? data.link : '' });
   if (data.remote) remoteAccess.status = data.remote;
   return data;
 }
 async function remoteAction(work) {
-  remoteAccess.busy = true; remoteAccess.message = ''; renderRemoteAccess();
-  try { await work(); } catch (error) { remoteAccess.message = error.message; }
+  remoteAccess.busy = true; remoteAccess.message = ''; remoteAccess.link = ''; renderRemoteAccess();
+  try { await work(); } catch (error) { remoteAccess.message = error.message; remoteAccess.link = error.link || ''; }
   finally { remoteAccess.busy = false; renderRemoteAccess(); }
 }
 function renderRemoteAccess() {
@@ -5810,6 +5812,7 @@ function renderRemoteAccess() {
     const ts = st.tailscale || {};
     if (!ts.installed || !ts.running || (!ts.httpsPort && !ts.serving)) nodes.push(paragraph(ts.message || 'Tailscale is not connected.', 'inline-error'));
     else {
+      if (!ts.https && !ts.serving) nodes.push(paragraph('HTTPS certificates are not enabled for your tailnet yet. Turn on Tailscale Serve to get Tailscale’s link that enables them.', 'note'));
       const row = detailActions();
       if (!ts.serving) row.append(detailButton('Turn on Tailscale Serve…', () => confirmStep(row, `Run “${ts.command}” on this computer? It makes Promptboard reachable inside your tailnet only (never Funnel). Devices still need pairing.`, 'Turn on', () => remoteAction(() => remoteCall('POST', '/api/remote/serve', { on: true, confirm: true })))));
       else row.append(detailButton('Turn off Tailscale Serve…', () => confirmStep(row, `Run “${ts.offCommand}” on this computer?`, 'Turn off', () => remoteAction(() => remoteCall('POST', '/api/remote/serve', { on: false, confirm: true })))));
@@ -5846,6 +5849,7 @@ function renderRemoteAccess() {
     nodes.push(paragraph('Paired devices', 'field-label'), list, detailActions(detailButton('Revoke all devices', () => remoteAction(() => remoteCall('DELETE', '/api/remote/sessions/all')), 'text-button')));
   }
   if (remoteAccess.message) nodes.push(paragraph(remoteAccess.message, 'inline-error'));
+  if (remoteAccess.link) nodes.push(detailActions(externalLink(remoteAccess.link, 'Open Tailscale to enable it')));
   box.replaceChildren(legend, ...nodes);
   for (const button of box.querySelectorAll('button')) button.disabled ||= remoteAccess.busy;
 }
@@ -5963,7 +5967,9 @@ try { if (localStorage.getItem(SETTINGS_KEY) === 'collapsed') setSettingsCollaps
 try { setProjectCollapsed(localStorage.getItem(PROJECT_PANEL_KEY) !== 'expanded', false); } catch { setProjectCollapsed(true, false); }
 window.addEventListener('resize', fitBoardHeight);
 if (typeof ResizeObserver === 'function') {
-  const observer = new ResizeObserver(fitBoardHeight);
+  // Resized on the next frame: resizing inside the callback would loop (WebKit reports it as a page error).
+  let fitFrame = 0;
+  const observer = new ResizeObserver(() => { if (!fitFrame) fitFrame = requestAnimationFrame(() => { fitFrame = 0; fitBoardHeight(); }); });
   // Some browsers expose a resized dock's new geometry only after the layout commits.
   for (const id of ['project-context', 'project-body', 'autopilot-bar', 'coordinator', 'dock', 'kanban-columns']) observer.observe($(`#${id}`));
 }

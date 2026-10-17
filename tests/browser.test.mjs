@@ -80,7 +80,7 @@ test('Base saved-resource actions, sidebar categories, agent cards and avatar dr
     assert.equal(await browser.layout(`return document.documentElement.scrollWidth <= innerWidth && document.querySelector('#base-detail').getBoundingClientRect().right <= innerWidth;`), true);
   }
   await click('Back to library');
-  assert.deepEqual(await browser.eval(`return [...document.querySelectorAll('#base-categories button')].map(node => node.getAttribute('aria-label'));`), ['All', 'Agents', 'Packs', 'MCPs', 'Skills', 'Knowledge', 'Context', 'Tools']);
+  assert.deepEqual(await browser.eval(`return [...document.querySelectorAll('#base-categories button')].map(node => node.firstElementChild.textContent);`), ['All', 'Agents', 'Packs', 'MCPs', 'Skills', 'Knowledge', 'Context', 'Tools']);
   await browser.eval(`window.baseFetches = 0; const originalFetch = window.fetch; window.fetch = (...args) => { if (args[0] === '/api/base') window.baseFetches++; return originalFetch(...args); };`);
   for (const type of ['', 'agent', 'pack', 'mcp', 'skill', 'knowledge', 'context', 'tool']) {
     await browser.eval(`document.querySelector('#base-categories [data-kind="${type}"]').click();`);
