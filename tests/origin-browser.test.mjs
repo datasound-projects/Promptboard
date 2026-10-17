@@ -463,8 +463,16 @@ test('Origin rewords phases, sections and questions in place, and keeps custom s
   await section(file.customSections[0].id);
   assert.equal(await ev(`return document.querySelectorAll('#origin-main [data-question]').length;`), 0);
   await press('Delete section', '#origin-main');
-  await press('Delete the section and what you wrote in it?', '#origin-main');
-  await wait(`document.querySelectorAll('.origin-nav-item').length === 15 && document.querySelector('#origin-section-heading')?.textContent === 'Overview'`, 'section deleted');
+  await wait(`document.querySelector('#origin-remove-dialog')?.open`, 'deleting asks first');
+  assert.match(await ev(`return document.querySelector('#origin-remove-dialog').textContent;`), /Accessibility[\s\S]*a description/);
+  await ev(`document.querySelector('#origin-remove-dialog-submit').click();`);
+  await wait(`document.querySelectorAll('.origin-nav-item').length === 15 && document.querySelector('#origin-section-heading')?.textContent === 'Overview' && !document.querySelector('#origin-undo').hidden`, 'section deleted, with an undo');
+  // Undo brings it back with its description; deleting again keeps it deleted.
+  await ev(`document.querySelector('#origin-undo .origin-undo-button').click();`);
+  await wait(`document.querySelectorAll('.origin-nav-item').length === 16 && document.querySelector('#origin-section-heading')?.textContent === 'Accessibility' && document.querySelector('#origin-main textarea').value === 'WCAG AA for every screen'`, 'undone');
+  await press('Delete section', '#origin-main');
+  await ev(`document.querySelector('#origin-remove-dialog-submit').click();`);
+  await wait(`document.querySelectorAll('.origin-nav-item').length === 15`, 'deleted again');
   await saved();
   file = (await blueprintFile(app, created.id)).blueprint;
   assert.deepEqual([file.customSections, file.labels.sections, Object.keys(file.answers)], [[], {}, []]);

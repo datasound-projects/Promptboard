@@ -206,7 +206,7 @@ export class OriginStore {
    * A shared project can pass its existing Kanban ID as `id` (with `kanbanProjectId`), so the project
    * keeps one ID in Origin and Kanban.
    */
-  create({ name, description: text = '', id, kanbanProjectId = null } = {}) {
+  create({ name, description: text = '', id, kanbanProjectId = null, start } = {}) {
     let meta;
     try {
       meta = { name: projectName(name), description: description(text) };
@@ -219,8 +219,8 @@ export class OriginStore {
       if (all.some(other => other.name.toLocaleLowerCase() === meta.name.toLocaleLowerCase())) throw new OriginError('A project with this name already exists. Choose it from the project list.', 'NAME_TAKEN', 409);
       if (id !== undefined && (all.some(other => other.id === id) || await readFile(join(this.dir, blueprintFileName(id))).then(() => true, () => false))) throw new OriginError('An Origin project with this ID already exists.', 'ID_TAKEN', 409);
       if (kanbanProjectId && all.some(other => linksTo(other, kanbanProjectId))) throw new OriginError('That Kanban project is already linked to another Origin project.', 'ALREADY_LINKED', 409);
-      const blueprint = Model.emptyBlueprint();
-      if (meta.description) { blueprint.idea = meta.description; blueprint.vision.summary = meta.description; }
+      const blueprint = start ? Model.normalizeBlueprint(start).blueprint : Model.emptyBlueprint();
+      if (meta.description) { blueprint.idea = meta.description; if (Model.hasPage(blueprint, 'vision')) blueprint.vision.summary = meta.description; }
       const now = Date.now(), record = { id: id ?? randomUUID(), ...meta, kanbanProjectId, revision: 1, createdAt: now, updatedAt: now, blueprint };
       await this.#atomic(join(this.dir, blueprintFileName(record.id)), this.#file(record), 'The Origin project could not be created. Check free disk space and folder permissions.');
       this.recoveries.delete(record.id); // A damaged project with this ID stays in its set-aside file.
@@ -322,6 +322,33 @@ export class OriginStore {
         if (JSON.stringify(next) !== JSON.stringify(item.handoff)) { item.handoff = next; changed = true; }
       }
       return changed ? this.#save(record, { blueprint }) : record;
+    });
+  }
+
+  /**
+   * Reset the structure. 'default' adds the built-in categories and pages back and removes nothing; 'blank' removes
+   * every category and page with what is on them (Overview stays). The project as it was is kept first, in
+   * origin/resets/, so a reset can always be undone by hand.
+   */
+  reset(originId, { expectedRevision, mode } = {}) {
+    try {
+      validId(originId); expected(expectedRevision);
+      if (!['default', 'blank'].includes(mode)) throw new OriginError('Choose how to reset the structure: the default categories, or blank.', 'INVALID_INPUT');
+    } catch (error) { return Promise.reject(error); }
+    return this.#serial(async () => {
+      const record = await this.#require(originId);
+      if (record.revision !== expectedRevision) throw new OriginError('This blueprint changed in another window. Reload it before resetting.', 'ORIGIN_REVISION_CONFLICT', 409);
+      const blueprint = structuredClone(record.blueprint);
+      if (mode === 'default') Model.restoreDefaultStructure(blueprint);
+      else for (const phase of Model.phaseList(blueprint)) Model.removeCategory(blueprint, phase.id);
+      const dir = join(this.dir, 'resets'), kept = `${blueprintFileName(originId).slice(0, -5)}.before-reset-${Date.now()}.json`;
+      try {
+        await mkdir(dir, { recursive: true, mode: 0o700 });
+        const handle = await open(join(dir, kept), 'wx', 0o600);
+        try { await handle.writeFile(`${JSON.stringify(this.#file(record), null, 1)}\n`); await handle.sync(); } finally { await handle.close(); }
+      } catch { throw new OriginError('The project could not be copied before the reset, so nothing was changed. Check free disk space and folder permissions.', 'ORIGIN_WRITE_FAILED', 500); }
+      const saved = await this.#save(record, { blueprint: Model.normalizeBlueprint(blueprint).blueprint });
+      return { ...saved, kept: join('origin', 'resets', kept) };
     });
   }
 
@@ -505,6 +532,18 @@ const nameInUse = () => new OriginError('A project with this name already exists
  * the linked Kanban project through Kanban's own deletion checks. `prompts` (the saved project prompts)
  * lets a delete that keeps a board with another ID hand that board the prompts saved under this ID.
  */
+/** What a new project starts with: the default structure, a blank one, or another project's structure and questions (never its content). */
+async function startBlueprint(origin, start) {
+  if (start === undefined || start === 'default') return undefined;
+  if (start === 'blank') return Model.emptyBlueprint({ blank: true });
+  if (start && typeof start === 'object' && !Array.isArray(start) && typeof start.from === 'string') {
+    const source = await origin.read(start.from);
+    if (!source || source.damaged) throw new OriginError('The project to copy the structure from no longer exists. Choose another one.', 'NOT_FOUND', 404);
+    return Model.structureTemplate(source.blueprint, randomUUID);
+  }
+  throw new OriginError('Choose how the project starts: the default structure, blank, or the structure of another project.', 'INVALID_INPUT');
+}
+
 export async function originRoute({ origin, contexts, research, board, prompts, req, res, pathname, jsonBody, send }) {
   const kanban = async () => (await board.state()).projects, services = { origin, board };
   const named = value => (typeof value === 'string' ? value.trim() : '');
@@ -521,18 +560,19 @@ export async function originRoute({ origin, contexts, research, board, prompts, 
     // name that no Origin project uses is this project's board: the Origin project takes its ID and links to it.
     const match = named(input.name) ? await nameTaken(services, named(input.name)) : null;
     if (match?.origin) throw nameInUse();
+    const start = await startBlueprint(origin, input.start);
     if (match) {
-      const adopted = await origin.create({ name: input.name, description: input.description, id: match.kanban.id, kanbanProjectId: match.kanban.id });
+      const adopted = await origin.create({ name: input.name, description: input.description, id: match.kanban.id, kanbanProjectId: match.kanban.id, start });
       return send(res, 200, { project: view(adopted, await kanban()), blueprint: adopted.blueprint, joinedKanban: true });
     }
-    const created = await origin.create({ name: input.name, description: input.description });
+    const created = await origin.create({ name: input.name, description: input.description, start });
     if (input.createKanban !== true) return send(res, 200, { project: view(created, await kanban()), blueprint: created.blueprint });
     let linked;
     try { linked = (await createBoardFor(services, created)).record; }
     catch (error) { return send(res, 200, { project: view(created, await kanban()), blueprint: created.blueprint, kanbanError: kanbanFailure(error) }); }
     return send(res, 200, { project: view(linked, await kanban()), blueprint: linked.blueprint });
   }
-  const match = pathname.match(/^\/api\/origin\/projects\/([A-Za-z0-9_-]{1,100})(?:\/(link|delete|context|handoff|context-status|update-context))?$/);
+  const match = pathname.match(/^\/api\/origin\/projects\/([A-Za-z0-9_-]{1,100})(?:\/(link|delete|context|handoff|context-status|update-context|reset))?$/);
   if (!match) return send(res, 404, { error: 'This Origin route does not exist.' });
   const [, originId, action] = match;
   if (!action && req.method === 'GET') {
@@ -552,6 +592,11 @@ export async function originRoute({ origin, contexts, research, board, prompts, 
     if (named(input.name) && await nameTaken(services, named(input.name), originId)) throw nameInUse();
     const saved = await origin.update(originId, { expectedRevision: input.expectedRevision, name: input.name, description: input.description });
     return send(res, 200, { project: view(saved, await kanban()), revision: saved.revision });
+  }
+  if (action === 'reset' && req.method === 'POST') {
+    const input = await body();
+    const saved = await origin.reset(originId, { expectedRevision: input.expectedRevision, mode: input.mode });
+    return send(res, 200, { project: view(saved, await kanban()), revision: saved.revision, blueprint: saved.blueprint, kept: saved.kept });
   }
   if (action === 'link' && req.method === 'POST') {
     const input = await body();

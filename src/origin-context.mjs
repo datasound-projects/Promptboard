@@ -342,7 +342,7 @@ function exporter(record) {
   parts.push('<a id="ctx-section-overview"></a>', '## Overview', '', '- **Section ID:** `overview`',
     `- **Guiding question:** ${inline(Model.questionText(bp, 'section:overview', Model.QUESTIONS.overview), 'section overview question')}`,
     `- **State:** ${Model.SECTION_STATE[states.overview]?.[1] || 'Not started'}`, '', ...SECTION.overview(), '');
-  if (!Model.phaseList(bp).length) parts.push('_This project has no categories or pages yet._', '');
+  if (!Model.phaseList(bp).length) parts.push('_This project has no categories or sections yet._', '');
   Model.phaseList(bp).forEach((phase, index) => {
     toc.push(`- [${index + 1}. ${inline(phase.label, `phase ${phase.id} label`)}](#ctx-phase-${phase.id})`);
     parts.push(`<a id="ctx-phase-${phase.id}"></a>`, `## ${index + 1}. ${inline(phase.label, `phase ${phase.id} label`)}`, '');

@@ -2,7 +2,12 @@
 // and removes; blank and template starts; and research that follows the structure.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import '../public/origin-model.js';
+import { OriginStore } from '../src/origin.mjs';
+import { startTestServer } from './helpers/test-server.mjs';
 
 const M = globalThis.PromptboardOriginModel;
 const ids = () => { let n = 0; return () => `n${++n}`; };
@@ -26,8 +31,8 @@ test('a blank project has no categories or pages, nothing to resolve, and resear
   assert.deepEqual([M.issues(blank), M.readiness(blank).rows], [[], []]);
   assert.deepEqual(M.researchTargets(blank).map(option => option.value.kind), ['project']);
   const guide = M.researchGuide(blank);
-  assert.match(guide, /no pages yet/); assert.doesNotMatch(guide, /New records|topic answer|New block/);
-  assert.throws(() => M.validateResearchSuggestion(blank, { target: { kind: 'add', collection: 'technologies' }, value: { name: 'Postgres' } }), /no Technology page/);
+  assert.match(guide, /no sections yet/); assert.doesNotMatch(guide, /New records|topic answer|New block/);
+  assert.throws(() => M.validateResearchSuggestion(blank, { target: { kind: 'add', collection: 'technologies' }, value: { name: 'Postgres' } }), /no Technology section/);
   assert.throws(() => M.validateResearchSuggestion(blank, { target: { kind: 'vision', field: 'goal' }, value: 'Cook more' }), /does not exist/);
 });
 
@@ -82,7 +87,7 @@ test('pages are added (own or built-in), renamed, moved between categories, copi
   // Added back from "Add page": empty, in the category chosen.
   M.addPage(saved, { phase: 'operate', kind: 'technology', index: 1 });
   assert.deepEqual(M.phaseList(saved)[2].sections.slice(0, 3), ['security', 'technology', 'testing']);
-  assert.match(M.duplicatePage(saved, 'technology', newId).error, /built-in page exists once/);
+  assert.match(M.duplicatePage(saved, 'technology', newId).error, /built-in section exists once/);
   assert.match(M.removePage(saved, 'overview').error, /cannot be removed/);
 });
 
@@ -109,7 +114,7 @@ test('fields: topics and vision questions are hidden, restored and ordered; own 
   assert.deepEqual(bp.questions.map(question => question.id), ['q2', 'q1']);
   M.moveQuestion(bp, 'q1', { section: 'security' });
   assert.equal(bp.questions.find(question => question.id === 'q1').sectionId, 'security');
-  assert.match(M.moveQuestion(bp, 'q1', { section: 'removed-page' }).error, /page of this project/);
+  assert.match(M.moveQuestion(bp, 'q1', { section: 'removed-page' }).error, /section of this project/);
   const copy = M.duplicateQuestion(bp, 'q1', newId);
   assert.equal(bp.answers[copy.id], 'Five users');
   const notes = M.questionToNotes(bp, 'q1', newId);
@@ -148,7 +153,7 @@ test('research follows the structure: renamed and new pages are offered, removed
   const tech = M.validateResearchSuggestion(bp, { target: { kind: 'add', collection: 'technologies' }, value: { name: 'Stripe', category: 'cloud' } });
   const toPricing = M.validateResearchSuggestion(bp, { target: { kind: 'answer', questionId: 'qp' }, value: '$12 a month' });
   M.removePage(bp, 'technology'); M.removePage(bp, 'pricing');
-  assert.deepEqual(M.applyResearchSuggestion(bp, tech, { newId: ids() }), { conflict: 'The page for this suggestion was removed from the project.', missing: true });
+  assert.deepEqual(M.applyResearchSuggestion(bp, tech, { newId: ids() }), { conflict: 'The section for this suggestion was removed from the project.', missing: true });
   assert.equal(M.applyResearchSuggestion(bp, toPricing).missing, true);
   assert.equal(bp.technologies.length, 0);
   assert.doesNotMatch(M.researchGuide(bp), /technologies/i, 'the guide no longer offers a removed page');
@@ -172,4 +177,44 @@ test('a template copies another project’s structure, questions and empty block
   M.restoreDefaultStructure(made);
   assert.equal(M.hasPage(made, 'ai'), true);
   assert.deepEqual(M.phaseList(made).at(-1).sections, [page]);
+});
+
+test('a new project starts from the default structure, blank, or another project’s structure without its content', async t => {
+  const app = await startTestServer(t, { port: 0, executor: null });
+  const token = (await (await fetch(`${app.url}/api/session`)).json()).token;
+  const call = (path, method = 'GET', body) => fetch(`${app.url}${path}`, { method, headers: { 'X-STE-Token': token, ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) })
+    .then(async response => ({ status: response.status, json: await response.json() }));
+  const plain = (await call('/api/origin/projects', 'POST', { name: 'Plain', description: 'A shop' })).json;
+  assert.equal(M.phaseList(plain.blueprint).length, 5);
+  assert.equal(plain.blueprint.vision.summary, 'A shop');
+  const blank = (await call('/api/origin/projects', 'POST', { name: 'Blank', description: 'Recipes', start: 'blank' })).json;
+  assert.deepEqual([M.phaseList(blank.blueprint), blank.blueprint.idea, blank.blueprint.vision.summary], [[], 'Recipes', ''], 'a blank project keeps its idea; it has no Vision section to fill');
+  const source = M.normalizeBlueprint(plain.blueprint).blueprint;
+  M.addCategory(source, { id: 'biz', title: 'Business' }); M.addPage(source, { phase: 'biz', id: 'pricing', title: 'Pricing' });
+  source.questions.push({ id: 'qp', origin: 'human', scope: 'section', sectionId: 'pricing', text: 'What does it cost?' }); source.answers.qp = '9 EUR';
+  await call(`/api/origin/projects/${plain.project.id}`, 'PUT', { expectedRevision: plain.project.revision, blueprint: source });
+  const copied = (await call('/api/origin/projects', 'POST', { name: 'Copied', start: { from: plain.project.id } })).json.blueprint;
+  assert.deepEqual(M.phaseList(copied).at(-1).label, 'Business');
+  assert.deepEqual([copied.questions.map(question => question.text), copied.answers], [['What does it cost?'], {}]);
+  assert.equal((await call('/api/origin/projects', 'POST', { name: 'Odd', start: 'mine' })).status, 400);
+  assert.equal((await call('/api/origin/projects', 'POST', { name: 'Gone', start: { from: 'nope' } })).status, 404);
+  assert.equal((await call('/api/origin/projects')).json.projects.some(project => ['Odd', 'Gone'].includes(project.name)), false, 'a refused start creates nothing');
+});
+
+test('resetting the structure keeps a copy of the project first; blank removes every category and section, default removes nothing', async t => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'pb-origin-reset-')); t.after(() => rm(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+  const store = new OriginStore(dataDir);
+  const created = await store.create({ name: 'Atlas', description: 'Trips' });
+  const blueprint = structuredClone(created.blueprint);
+  blueprint.requirements.push({ id: 'r1', origin: 'human', key: 'REQ-001', title: 'Plan a trip', description: '', type: 'functional', priority: 'must', status: 'draft', acceptanceCriteria: '', componentIds: [], sourceIds: [] });
+  const written = await store.write(created.id, { expectedRevision: created.revision, blueprint });
+  await assert.rejects(store.reset(created.id, { expectedRevision: created.revision, mode: 'blank' }), { code: 'ORIGIN_REVISION_CONFLICT' });
+  await assert.rejects(store.reset(created.id, { expectedRevision: written.revision, mode: 'everything' }), { code: 'INVALID_INPUT' });
+  const reset = await store.reset(created.id, { expectedRevision: written.revision, mode: 'blank' });
+  assert.deepEqual([M.phaseList(reset.blueprint), reset.blueprint.requirements, reset.blueprint.idea], [[], [], 'Trips']);
+  const kept = JSON.parse(await readFile(join(dataDir, reset.kept), 'utf8'));
+  assert.equal(kept.blueprint.requirements[0].title, 'Plan a trip', 'the copy holds the project as it was');
+  const back = await store.reset(created.id, { expectedRevision: reset.revision, mode: 'default' });
+  assert.equal(M.phaseList(back.blueprint).length, 5);
+  assert.equal(back.blueprint.requirements.length, 0, 'restoring the default structure brings the sections back, empty');
 });
