@@ -10,6 +10,7 @@
  * ID is kept), records that in migration.json, and leaves the version 1 files unchanged for rollback.
  */
 import '../public/origin-model.js';
+import '../public/origin-templates.js';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, open, readdir, readFile, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -19,6 +20,8 @@ import { createBoardFor, nameTaken } from './projects.mjs';
 
 const Model = globalThis.PromptboardOriginModel;
 export const ORIGIN_DIR = 'origin';
+const BLUEPRINTS_FILE = 'blueprints.json';
+const Templates = globalThis.PromptboardOriginTemplates;
 const BODY_LIMIT = 4 * 1024 * 1024;
 const MIGRATION_FILE = 'migration.json';
 const PROJECT_LIMIT = 200;
@@ -206,10 +209,11 @@ export class OriginStore {
    * A shared project can pass its existing Kanban ID as `id` (with `kanbanProjectId`), so the project
    * keeps one ID in Origin and Kanban.
    */
-  create({ name, description: text = '', id, kanbanProjectId = null, start } = {}) {
+  create({ name, description: text = '', id, kanbanProjectId = null, start, preferences = '' } = {}) {
     let meta;
     try {
       meta = { name: projectName(name), description: description(text) };
+      if (typeof preferences !== 'string' || preferences.length > 2000 || preferences.includes('\0')) throw new OriginError('Technology preferences can have at most 2,000 characters.', 'INVALID_INPUT');
       if (id !== undefined) validId(id); if (kanbanProjectId !== null) validId(kanbanProjectId, 'Choose a valid Kanban project.');
     } catch (error) { return Promise.reject(error); }
     return this.#serial(async () => {
@@ -221,6 +225,11 @@ export class OriginStore {
       if (kanbanProjectId && all.some(other => linksTo(other, kanbanProjectId))) throw new OriginError('That Kanban project is already linked to another Origin project.', 'ALREADY_LINKED', 409);
       const blueprint = start ? Model.normalizeBlueprint(start).blueprint : Model.emptyBlueprint();
       if (meta.description) { blueprint.idea = meta.description; if (Model.hasPage(blueprint, 'vision')) blueprint.vision.summary = meta.description; }
+      // Preferences are the person's own constraints, kept where research reads them; they choose nothing by themselves.
+      if (preferences.trim()) {
+        const line = `Technology preferences: ${preferences.trim()}`;
+        if (Model.visionFields(blueprint).includes('constraints')) blueprint.vision.constraints = line; else blueprint.idea = [blueprint.idea, line].filter(Boolean).join('\n\n');
+      }
       const now = Date.now(), record = { id: id ?? randomUUID(), ...meta, kanbanProjectId, revision: 1, createdAt: now, updatedAt: now, blueprint };
       await this.#atomic(join(this.dir, blueprintFileName(record.id)), this.#file(record), 'The Origin project could not be created. Check free disk space and folder permissions.');
       this.recoveries.delete(record.id); // A damaged project with this ID stays in its set-aside file.
@@ -322,6 +331,41 @@ export class OriginStore {
         if (JSON.stringify(next) !== JSON.stringify(item.handoff)) { item.handoff = next; changed = true; }
       }
       return changed ? this.#save(record, { blueprint }) : record;
+    });
+  }
+
+  // ---- Personal blueprints: a project's structure saved for new projects (no answers, no entries) ----
+  async #blueprints() {
+    try { const data = JSON.parse(await readFile(join(this.dir, BLUEPRINTS_FILE), 'utf8')); return Array.isArray(data.blueprints) ? data.blueprints : []; }
+    catch (error) { if (error.code === 'ENOENT') return []; throw new OriginError('Your saved blueprints could not be read. The file was not changed.', 'ORIGIN_READ_FAILED', 500); }
+  }
+  #summary(entry) {
+    const phases = Model.phaseList(entry.blueprint);
+    return { id: entry.id, name: entry.name, description: entry.description, createdAt: entry.createdAt, categories: phases.map(phase => ({ title: phase.label, sections: phase.sections.map(section => Model.sectionTitle(entry.blueprint, section)) })) };
+  }
+  listBlueprints() { return this.#serial(async () => (await this.#blueprints()).map(entry => this.#summary(entry))); }
+  readBlueprint(id) { return this.#serial(async () => (await this.#blueprints()).find(entry => entry.id === id) || null); }
+  /** Save a project's structure, questions and empty blocks as a personal blueprint. Later edits of the project do not change it. */
+  saveBlueprint(originId, { name, description: about = '' } = {}) {
+    let meta;
+    try { validId(originId); meta = { name: projectName(name), description: description(about).slice(0, 500) }; } catch (error) { return Promise.reject(error); }
+    return this.#serial(async () => {
+      const record = await this.#require(originId), all = await this.#blueprints();
+      if (all.length >= 50) throw new OriginError('You can keep at most 50 blueprints. Delete one you no longer use.', 'LIMIT', 409);
+      if (all.some(entry => entry.name.toLocaleLowerCase() === meta.name.toLocaleLowerCase())) throw new OriginError('A blueprint with this name already exists. Choose another name.', 'NAME_TAKEN', 409);
+      const blueprint = Model.structureTemplate(record.blueprint, randomUUID);
+      const entry = { id: randomUUID(), ...meta, createdAt: Date.now(), blueprint };
+      await this.#atomic(join(this.dir, BLUEPRINTS_FILE), { version: 1, blueprints: [...all, entry] }, 'The blueprint could not be saved. Check free disk space and folder permissions.');
+      return this.#summary(entry);
+    });
+  }
+  deleteBlueprint(id) {
+    try { validId(id, 'Choose a saved blueprint.'); } catch (error) { return Promise.reject(error); }
+    return this.#serial(async () => {
+      const all = await this.#blueprints();
+      if (!all.some(entry => entry.id === id)) throw new OriginError('This blueprint no longer exists.', 'NOT_FOUND', 404);
+      await this.#atomic(join(this.dir, BLUEPRINTS_FILE), { version: 1, blueprints: all.filter(entry => entry.id !== id) }, 'The blueprint could not be deleted. Check folder permissions.');
+      return { deleted: id };
     });
   }
 
@@ -536,12 +580,22 @@ const nameInUse = () => new OriginError('A project with this name already exists
 async function startBlueprint(origin, start) {
   if (start === undefined || start === 'default') return undefined;
   if (start === 'blank') return Model.emptyBlueprint({ blank: true });
+  if (start && typeof start === 'object' && !Array.isArray(start) && typeof start.template === 'string') {
+    const template = Templates.get(start.template);
+    if (!template) throw new OriginError('This blueprint is not in the library. Choose another one.', 'NOT_FOUND', 404);
+    return Model.blueprintFromTemplate(template, { modules: Templates.MODULES, newId: randomUUID });
+  }
+  if (start && typeof start === 'object' && !Array.isArray(start) && typeof start.saved === 'string') {
+    const saved = await origin.readBlueprint(start.saved);
+    if (!saved) throw new OriginError('This saved blueprint no longer exists. Choose another one.', 'NOT_FOUND', 404);
+    return Model.structureTemplate(saved.blueprint, randomUUID);
+  }
   if (start && typeof start === 'object' && !Array.isArray(start) && typeof start.from === 'string') {
     const source = await origin.read(start.from);
     if (!source || source.damaged) throw new OriginError('The project to copy the structure from no longer exists. Choose another one.', 'NOT_FOUND', 404);
     return Model.structureTemplate(source.blueprint, randomUUID);
   }
-  throw new OriginError('Choose how the project starts: the default structure, blank, or the structure of another project.', 'INVALID_INPUT');
+  throw new OriginError('Choose how the project starts: a blueprint from the library, the general structure, blank, a saved blueprint or another project’s structure.', 'INVALID_INPUT');
 }
 
 export async function originRoute({ origin, contexts, research, board, prompts, req, res, pathname, jsonBody, send }) {
@@ -562,17 +616,21 @@ export async function originRoute({ origin, contexts, research, board, prompts, 
     if (match?.origin) throw nameInUse();
     const start = await startBlueprint(origin, input.start);
     if (match) {
-      const adopted = await origin.create({ name: input.name, description: input.description, id: match.kanban.id, kanbanProjectId: match.kanban.id, start });
+      const adopted = await origin.create({ name: input.name, description: input.description, id: match.kanban.id, kanbanProjectId: match.kanban.id, start, preferences: input.preferences });
       return send(res, 200, { project: view(adopted, await kanban()), blueprint: adopted.blueprint, joinedKanban: true });
     }
-    const created = await origin.create({ name: input.name, description: input.description, start });
+    const created = await origin.create({ name: input.name, description: input.description, start, preferences: input.preferences });
     if (input.createKanban !== true) return send(res, 200, { project: view(created, await kanban()), blueprint: created.blueprint });
     let linked;
     try { linked = (await createBoardFor(services, created)).record; }
     catch (error) { return send(res, 200, { project: view(created, await kanban()), blueprint: created.blueprint, kanbanError: kanbanFailure(error) }); }
     return send(res, 200, { project: view(linked, await kanban()), blueprint: linked.blueprint });
   }
-  const match = pathname.match(/^\/api\/origin\/projects\/([A-Za-z0-9_-]{1,100})(?:\/(link|delete|context|handoff|context-status|update-context|reset))?$/);
+  // Saved blueprints: list (with their structure for the preview) and delete; saving is done from a project.
+  if (pathname === '/api/origin/blueprints' && req.method === 'GET') return send(res, 200, { blueprints: await origin.listBlueprints() });
+  const savedMatch = pathname.match(/^\/api\/origin\/blueprints\/([A-Za-z0-9_-]{1,100})$/);
+  if (savedMatch && req.method === 'DELETE') return send(res, 200, await origin.deleteBlueprint(savedMatch[1]));
+  const match = pathname.match(/^\/api\/origin\/projects\/([A-Za-z0-9_-]{1,100})(?:\/(link|delete|context|handoff|context-status|update-context|reset|save-blueprint))?$/);
   if (!match) return send(res, 404, { error: 'This Origin route does not exist.' });
   const [, originId, action] = match;
   if (!action && req.method === 'GET') {
@@ -592,6 +650,10 @@ export async function originRoute({ origin, contexts, research, board, prompts, 
     if (named(input.name) && await nameTaken(services, named(input.name), originId)) throw nameInUse();
     const saved = await origin.update(originId, { expectedRevision: input.expectedRevision, name: input.name, description: input.description });
     return send(res, 200, { project: view(saved, await kanban()), revision: saved.revision });
+  }
+  if (action === 'save-blueprint' && req.method === 'POST') {
+    const input = await body();
+    return send(res, 200, { blueprint: await origin.saveBlueprint(originId, { name: input.name, description: input.description }) });
   }
   if (action === 'reset' && req.method === 'POST') {
     const input = await body();

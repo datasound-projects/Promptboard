@@ -1952,6 +1952,31 @@ dialog.origin-modal::backdrop { background: rgb(4 4 8 / .55); backdrop-filter: b
 .origin-modal-form { display: grid; gap: 14px; }
 .origin-modal-form textarea { min-height: 96px; }
 .origin-modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 8px; }
+/* The blueprint library in New project: cards on the left, what the project gets on the right. */
+dialog.origin-modal.wide { width: min(980px, calc(100vw - 32px)); max-width: none; }
+.origin-blueprints { display: grid; gap: 10px; min-width: 0; }
+.origin-blueprint-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.origin-blueprint-chip { height: 28px; padding: 0 11px; border: 1px solid var(--line); border-radius: 999px; background: none; color: var(--muted); font-size: 12.5px; }
+.origin-blueprint-chip[aria-pressed="true"] { border-color: color-mix(in srgb, var(--og-define) 55%, transparent); background: color-mix(in srgb, var(--og-define) 14%, transparent); color: var(--ink); }
+.origin-blueprint-layout { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 12px; min-height: 0; }
+.origin-blueprint-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); align-content: start; gap: 8px; max-height: 340px; overflow: auto; padding: 2px; }
+.origin-blueprint-card { display: grid; align-content: start; gap: 4px; min-height: 92px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--og-glass); color: var(--text); text-align: left; }
+.origin-blueprint-card strong { color: var(--ink); font-size: 13px; }
+.origin-blueprint-card span { color: var(--muted); font-size: 12px; line-height: 1.35; }
+.origin-blueprint-card small { color: var(--subtle); font-size: 11px; }
+.origin-blueprint-card:hover { border-color: var(--line-strong); }
+.origin-blueprint-card[aria-checked="true"] { border-color: color-mix(in srgb, var(--og-define) 65%, transparent); background: color-mix(in srgb, var(--og-define) 10%, var(--og-glass)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--og-define) 14%, transparent); }
+.origin-blueprint-preview { max-height: 340px; overflow: auto; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--og-glass); font-size: 12.5px; }
+.origin-blueprint-preview h3 { margin: 0 0 4px; font-size: 15px; }
+.origin-blueprint-preview > p { margin: 0 0 10px; color: var(--muted); }
+.origin-blueprint-tree { display: grid; gap: 8px; margin: 0 0 10px; padding: 0; list-style: none; }
+.origin-blueprint-tree > li > strong { color: var(--ink); font-size: 12px; letter-spacing: .04em; text-transform: uppercase; }
+.origin-blueprint-tree ul { margin: 4px 0 0; padding-left: 14px; color: var(--text); }
+.origin-blueprint-tree summary { cursor: pointer; }
+.origin-blueprint-questions { color: var(--muted); }
+.origin-blueprint-questions li.block { font-style: italic; }
+.origin-add-blueprint-sections { display: grid; gap: 6px; max-height: 320px; overflow: auto; }
+@media (max-width: 720px) { .origin-blueprint-layout { grid-template-columns: 1fr; } .origin-blueprint-cards, .origin-blueprint-preview { max-height: 240px; } }
 .origin-handoff-list { margin: 0 0 16px; padding-left: 22px; color: var(--text); font-size: 13.5px; line-height: 1.5; }
 .origin-handoff-list li { margin-bottom: 8px; }
 .origin-handoff-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

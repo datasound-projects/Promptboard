@@ -45,7 +45,7 @@ test('Origin structure: default and blank starts, every level customized, all de
   // 1. From the default blueprint.
   await browser.goto(`${app.url}/#/origin`);
   await wait(`document.querySelector('#origin-first-project')`, 'start screen');
-  assert.equal(await ev(`return document.querySelector('input[name="origin-first-start"]:checked').value;`), 'default');
+  assert.equal(await ev(`return document.querySelector('#origin-first-start .origin-blueprint-card[aria-checked="true"]').dataset.kind;`), 'default');
   await ev(`document.querySelector('#origin-first-project').value = 'Atlas'; document.querySelector('#origin-idea').value = 'A travel planner'; document.querySelector('#origin-first-kanban').checked = false;
     document.querySelector('#origin-start').closest('form').requestSubmit();`);
   await wait(`document.querySelectorAll('.origin-nav-item').length === 15 && document.querySelector('.origin-map')`, 'default structure');
@@ -133,7 +133,7 @@ test('Origin structure: default and blank starts, every level customized, all de
   await ev(`document.querySelector('#origin-new-project').click();`);
   await wait(`document.querySelector('#origin-new-dialog')?.open`, 'new project dialog');
   await ev(`document.querySelector('#origin-new-name').value = 'Recipes'; document.querySelector('#origin-new-kanban').checked = false;
-    const blank = document.querySelector('input[name="origin-new-start"][value="blank"]'); blank.checked = true; blank.dispatchEvent(new Event('change', { bubbles: true }));
+    document.querySelector('#origin-new-start .origin-blueprint-card[data-kind="blank"]').click();
     document.querySelector('#origin-new-dialog-submit').click();`);
   await wait(`document.querySelector('#origin-project').selectedOptions[0]?.textContent === 'Recipes' && document.querySelectorAll('.origin-nav-item').length === 1 && document.querySelector('.origin-nav-start')`, 'blank: only the Overview and an empty state');
   await ev(`document.querySelector('#origin-add-category').click();`);

@@ -279,6 +279,14 @@ globalThis.PromptboardOriginModel = (() => {
     const visionList = Array.isArray(visionIn) ? visionIn.filter((key, index) => VISION_SHOWN.includes(key) && visionIn.indexOf(key) === index) : null;
     if (visionIn !== undefined && visionIn !== null && (!visionList || visionList.length !== visionIn.length)) fix();
     blueprint.structure = { phases: structurePhases, sections: placed, topics, vision: visionList };
+    // The blueprint template the project started from (its name and research topics only; the structure is the project's own).
+    if (source.template !== undefined && source.template !== null) {
+      const from = obj(source.template), research = Array.isArray(from.research) ? from.research : [];
+      if (research.length > 20 || !Array.isArray(from.research) && from.research !== undefined) fix();
+      blueprint.template = { id: str(from.id, 100), name: str(from.name, 120), version: Number.isSafeInteger(from.version) && from.version > 0 ? from.version : (fix(), 1),
+        research: research.slice(0, 20).filter(topic => typeof topic === 'string' || (fix(), false)).map(topic => str(topic, 300)) };
+      if (!blueprint.template.id) { fix(); delete blueprint.template; }
+    }
     blueprint.questions = collection('questions', v => {
       const scope = v.scope === 'component' ? 'component' : v.scope === 'section' ? 'section' : (fix(), 'section');
       const sectionId = scope === 'section' && typeof v.sectionId === 'string' && sectionIds.has(v.sectionId) ? v.sectionId : '';
@@ -321,7 +329,8 @@ globalThis.PromptboardOriginModel = (() => {
     };
     blueprint.blocks = collection('blocks', v => {
       const type = BLOCK_TYPES.some(([id]) => id === v.type) ? v.type : (fix(), 'notes');
-      const own = { sectionId: typeof v.sectionId === 'string' && sectionIds.has(v.sectionId) && v.sectionId !== 'overview' ? v.sectionId : '', type, title: str(v.title, 120) };
+      const own = { sectionId: typeof v.sectionId === 'string' && sectionIds.has(v.sectionId) && v.sectionId !== 'overview' ? v.sectionId : '', type, title: str(v.title, 120),
+        ...(typeof v.starter === 'string' && /^[0-9a-f]{8}$/.test(v.starter) ? { starter: v.starter } : {}) };
       if (type === 'notes') return { ...own, text: str(v.text) };
       if (type === 'qa') return { ...own, entries: parts(v.entries, BLOCK_PARTS.entries, e => ({ question: str(e.question, 500), answer: str(e.answer) })) };
       if (type === 'checklist') return { ...own, checks: parts(v.checks, BLOCK_PARTS.checks, e => ({ text: str(e.text, 1000), done: e.done === true })) };
@@ -445,6 +454,16 @@ globalThis.PromptboardOriginModel = (() => {
   const blockStarted = block => ({ notes: () => hasText(block.text), qa: () => block.entries.some(entry => hasText(entry.answer)), checklist: () => block.checks.some(entry => hasText(entry.text)),
     table: () => block.rows.some(row => Object.values(row.cells).some(hasText)), flow: () => block.nodes.length > 0 })[block.type]();
   const blockComplete = block => blockStarted(block) && (block.type !== 'qa' || block.entries.every(entry => hasText(entry.answer)));
+  /** The written content of a block, as a short hash: a template's starter block keeps the hash of what it came with. */
+  function blockFingerprint(block) {
+    const texts = [block.type, block.title, block.text, ...(block.entries || []).flatMap(entry => [entry.question, entry.answer]), ...(block.checks || []).flatMap(entry => [entry.text, entry.done ? '1' : '0']),
+      ...(block.columns || []).map(column => column.name), ...(block.rows || []).flatMap(row => Object.values(row.cells || {})), ...(block.nodes || []).flatMap(node => [node.label, node.notes]), ...(block.edges || []).map(edge => edge.label)];
+    let hash = 0x811c9dc5;
+    for (const char of JSON.stringify(texts)) { hash ^= char.charCodeAt(0); hash = Math.imul(hash, 0x01000193) >>> 0; }
+    return hash.toString(16).padStart(8, '0');
+  }
+  /** Worked on: has content, and is not a template's starter block left exactly as it came. */
+  const blockWorked = block => blockStarted(block) && !(block.starter && block.starter === blockFingerprint(block));
   /**
    * A block as plain lines: `ids` adds the stable tags research agents write to ([entry …], [row …], [node …]).
    * Used for task context, research context and the Overview, so every reader sees the same content.
@@ -817,7 +836,7 @@ globalThis.PromptboardOriginModel = (() => {
     for (const section of Object.keys(AREAS)) content[section] = blueprint.areas.filter(item => item.section === section).length;
     // Your own answered questions and filled blocks are content of the built-in section they belong to.
     for (const question of blueprint.questions) if (question.scope === 'section' && content[question.sectionId] !== undefined && hasText(blueprint.answers[question.id])) content[question.sectionId] = Number(content[question.sectionId]) + 1;
-    for (const block of blueprint.blocks) if (content[block.sectionId] !== undefined && blockStarted(block)) content[block.sectionId] = Number(content[block.sectionId]) + 1;
+    for (const block of blueprint.blocks) if (content[block.sectionId] !== undefined && blockWorked(block)) content[block.sectionId] = Number(content[block.sectionId]) + 1;
     const complete = {
       vision: ['problem', 'goal', 'users', 'inScope'].every(key => hasText(blueprint.vision[key])),
       requirements: blueprint.requirements.every(item => lines(item.acceptanceCriteria).length > 0), architecture: blueprint.components.every(item => hasText(item.purpose)),
@@ -830,7 +849,7 @@ globalThis.PromptboardOriginModel = (() => {
     for (const custom of blueprint.customSections) {
       const asked = blueprint.questions.filter(question => question.scope === 'section' && question.sectionId === custom.id);
       const answered = asked.filter(question => hasText(blueprint.answers[question.id])).length, own = blueprint.blocks.filter(block => block.sectionId === custom.id);
-      states[custom.id] = custom.notApplicable ? 'na' : !hasText(custom.description) && !answered && !own.some(blockStarted) ? 'empty'
+      states[custom.id] = custom.notApplicable ? 'na' : !hasText(custom.description) && !answered && !own.some(blockWorked) ? 'empty'
         : answered === asked.length && own.every(blockComplete) ? 'defined' : 'progress';
     }
     for (const { id } of SECTIONS.filter(section => hasPage(blueprint, section.id))) {
@@ -1030,7 +1049,7 @@ globalThis.PromptboardOriginModel = (() => {
     const notNeeded = blueprint.sections[id]?.notApplicable || custom?.notApplicable;
     out.push(`[section ${id}] ${sectionTitle(blueprint, id)}${notNeeded ? ' — marked as not needed for this project' : ''}`);
     if (custom && hasText(custom.description)) out.push(`  description: ${clip(custom.description, 1500)}`);
-    if (!custom && QUESTIONS[id]) out.push(`  guiding question: ${questionText(blueprint, `section:${id}`, QUESTIONS[id])}`);
+    if (custom ? blueprint.questionText[`section:${id}`] : QUESTIONS[id]) out.push(`  guiding question: ${questionText(blueprint, `section:${id}`, QUESTIONS[id] || '')}`);
     if (id === 'vision') for (const key of visionFields(blueprint).filter(key => !brief || hasText(blueprint.vision[key]))) out.push(`  [vision ${key}] ${questionText(blueprint, `vision:${key}`, VISION_QUESTIONS[key])} → ${hasText(blueprint.vision[key]) ? clip(blueprint.vision[key], brief ? 300 : 2000) : '(no answer yet)'}`);
     for (const collection of SECTION_RECORDS[id] || []) {
       const entries = blueprint[collection];
@@ -1073,7 +1092,7 @@ globalThis.PromptboardOriginModel = (() => {
    */
   function researchContext(blueprint, scope = { kind: 'project' }, { projectName = '', limit = 24000 } = {}) {
     const vision = blueprint.vision, blocks = [], push = (title, body, optional = true) => { if (hasText(body)) blocks.push({ title, body: body.trim(), optional }); };
-    push('Project', [`${projectName || 'Unnamed project'}`, hasText(blueprint.idea) && `Idea: ${clip(blueprint.idea, 2000)}`,
+    push('Project', [`${projectName || 'Unnamed project'}`, blueprint.template && `Project type: ${blueprint.template.name} (it started from this Origin blueprint; the sections listed are the project’s own and may differ from it)`, hasText(blueprint.idea) && `Idea: ${clip(blueprint.idea, 2000)}`,
       ...['summary', 'problem', 'goal', 'users', 'successCriteria'].filter(key => hasText(vision[key])).map(key => `${questionText(blueprint, `vision:${key}`, VISION_QUESTIONS[key])} ${clip(vision[key], 1200)}`)].filter(Boolean).join('\n'), false);
     push('In scope', vision.inScope, false); push('Out of scope', vision.outOfScope, false); push('Constraints (keep them)', vision.constraints, false);
     let label2 = 'the whole project';
@@ -1211,7 +1230,9 @@ globalThis.PromptboardOriginModel = (() => {
       // Only what the project's pages hold: a removed page's records, topics and fields are never suggested.
       ...(SUGGEST_ADD.some(collection => PAGE_OF[collection] && hasPage(blueprint, PAGE_OF[collection])) ? [`New records: ${SUGGEST_ADD.filter(collection => PAGE_OF[collection] && hasPage(blueprint, PAGE_OF[collection])).map(addFormat).join('. ')}.`] : []),
       ...(Object.keys(AREAS).some(section => hasPage(blueprint, section)) ? ['A topic answer: {"kind":"add","collection":"areas"} with "section", "area" (the topic id), "title" (one line) and "description" (the details).'] : []),
-      ...(sectionIds.length ? [`New block in any section: ${NEW_BLOCK}.`] : [])];
+      ...(sectionIds.length ? [`New block in any section: ${NEW_BLOCK}.`] : []),
+      // The project type's usual research questions, for the sections that are still there.
+      ...(blueprint.template?.research?.length && sectionIds.length ? [`Typical research for a ${blueprint.template.name}: ${blueprint.template.research.join('; ')}. Cover what applies and is not answered yet, in the sections above.`] : [])];
     }
     return [`# Where to write (${where})`, 'Put each finding into the place it belongs to in the selected part, as listed here. Fill every empty field, unanswered topic, unanswered question and empty block that your research can answer, and improve weak ones. Write the full content into the fields: do not leave the details only in your answer text.',
       'Add records of other sections only when a finding belongs there (for example a decision between options, a risk or a source). Suggest tasks (items) only when the selected part is the task plan or the person asks for tasks.',
@@ -1855,6 +1876,7 @@ globalThis.PromptboardOriginModel = (() => {
     blueprint.customSections.push(copy);
     for (const question of asked) { const next = { ...question, id: newId(), sectionId: copy.id }; blueprint.questions.push(next); if (blueprint.answers[question.id]) blueprint.answers[next.id] = blueprint.answers[question.id]; }
     for (const block of blocks) blueprint.blocks.push({ ...structuredClone(block), id: newId(), sectionId: copy.id });
+    if (blueprint.questionText[`section:${id}`]) blueprint.questionText[`section:${copy.id}`] = blueprint.questionText[`section:${id}`];
     structure.sections.splice(structure.sections.findIndex(entry => entry.id === id) + 1, 0, { id: copy.id, phase: custom.phase });
     return { ok: true, id: copy.id };
   }
@@ -1975,7 +1997,7 @@ globalThis.PromptboardOriginModel = (() => {
     const block = blueprint.blocks.find(entry => entry.id === blockId);
     if (!block) return { error: 'This block no longer exists.' };
     if (!BLOCK_TYPES.some(([id]) => id === type)) return { error: 'Choose a block type.' };
-    if (blockStarted(block)) return { error: 'Only an empty block changes its type. A notes block can turn into a question.' };
+    if (blockWorked(block)) return { error: 'Only an empty block changes its type. A notes block can turn into a question.' };
     const fresh = RECORD_DEFAULTS.blocks(block.title, block.sectionId, type);
     for (const key of Object.keys(block)) if (!['id', 'origin'].includes(key)) delete block[key];
     Object.assign(block, fresh);
@@ -1989,6 +2011,59 @@ globalThis.PromptboardOriginModel = (() => {
     structure.topics = {}; blueprint.structure.vision = null;
     return { ok: true };
   }
+  // ---- Blueprint templates (public/origin-templates.js). A project gets its own copy; templates are never read again. ----
+  const templateRefKey = (ref, modules) => (typeof ref === 'string' ? modules[ref]?.section || ref : ref.key);
+  /** One template section into a category: a built-in section (once per project) or a section of the project's own. */
+  function addTemplateSection(blueprint, ref, phase, { template, modules, newId }) {
+    const module = typeof ref === 'string' ? modules[ref] : null;
+    if (typeof ref === 'string' && !module) return { skipped: 'unknown' };
+    const own = module ? (module.section ? null : module) : ref;
+    let pageId;
+    if (own) {
+      if (blueprint.customSections.some(entry => entry.title.trim().toLowerCase() === own.title.trim().toLowerCase())) return { skipped: 'exists' };
+      pageId = newId();
+      if (addPage(blueprint, { phase, id: pageId, title: own.title }).error) return { skipped: 'limit' };
+      // The template's explanation is the section's guiding text, like a built-in section's question: the section
+      // stays "not started" until the person writes in it.
+      if (own.description) blueprint.questionText[`section:${pageId}`] = fit(own.description, 500);
+    } else {
+      if (hasPage(blueprint, module.section)) return { skipped: 'exists' };
+      if (addPage(blueprint, { phase, kind: module.section }).error) return { skipped: 'limit' };
+      pageId = module.section;
+      if (module.title && module.title !== sectionLabel(pageId)) blueprint.labels.sections[pageId] = fit(module.title, 60);
+      if (template?.topics?.[pageId] && AREAS[pageId]) editableStructure(blueprint).topics[pageId] = template.topics[pageId].filter(area => AREAS[pageId].some(([id]) => id === area));
+    }
+    const extra = own ? {} : { questions: template?.questions?.[pageId] || [], blocks: template?.blocks?.[pageId] || [] };
+    for (const text of [...(own || module).questions || [], ...extra.questions || []]) if (blueprint.questions.length < LIMITS.questions) blueprint.questions.push({ id: newId(), origin: 'human', scope: 'section', sectionId: pageId, text: fit(text, 500) });
+    for (const block of [...(own || module).blocks || [], ...extra.blocks || []]) if (blueprint.blocks.length < LIMITS.blocks) {
+      const made = { ...makeBlock({ ...block, section: pageId }, newId), origin: 'human' };
+      blueprint.blocks.push({ ...made, starter: blockFingerprint(made) });
+    }
+    return { id: pageId };
+  }
+  /** A new project's blueprint from a template: its categories, sections, questions, starter blocks and research topics. */
+  function blueprintFromTemplate(template, { modules, newId }) {
+    const blueprint = emptyBlueprint({ blank: true });
+    for (const category of template.categories) {
+      const phase = newId();
+      addCategory(blueprint, { id: phase, title: category.title });
+      for (const ref of category.sections) addTemplateSection(blueprint, ref, phase, { template, modules, newId });
+    }
+    blueprint.template = { id: template.id, version: template.version, name: template.name, research: (template.research || []).slice(0, 20) };
+    return normalizeBlueprint(blueprint).blueprint;
+  }
+  /** Chosen sections of a template into an existing project's category. Sections already there are skipped, never replaced. */
+  function addTemplateSections(blueprint, template, keys, phase, { modules, newId }) {
+    if (!editableStructure(blueprint).phases.some(entry => entry.id === phase)) return { error: 'Choose a category for the sections.' };
+    const wanted = new Set(keys), added = [], skipped = [];
+    for (const ref of template.categories.flatMap(category => category.sections)) {
+      const key = templateRefKey(ref, modules);
+      if (!wanted.has(key)) continue;
+      const result = addTemplateSection(blueprint, ref, phase, { template, modules, newId });
+      (result.id ? added : skipped).push(result.id || key);
+    }
+    return { ok: true, added, skipped };
+  }
   /**
    * Another project's structure as a starting point: its categories, pages of its own with their descriptions,
    * questions (no answers) and empty blocks of the same kinds (table columns kept), its names and wording. No records.
@@ -2000,22 +2075,26 @@ globalThis.PromptboardOriginModel = (() => {
     const phaseMap = new Map(from.structure.phases.map(phase => [phase.id, isBuiltinPhase(phase.id) ? phase.id : newId()]));
     blueprint.structure = { phases: from.structure.phases.map(phase => ({ id: phaseMap.get(phase.id), title: phase.title })),
       sections: from.structure.sections.map(entry => ({ id: map.get(entry.id) || entry.id, phase: phaseMap.get(entry.phase) })), topics: structuredClone(from.structure.topics), vision: from.structure.vision && [...from.structure.vision] };
-    blueprint.labels = structuredClone(from.labels); blueprint.questionText = structuredClone(from.questionText);
+    blueprint.labels = structuredClone(from.labels);
+    blueprint.questionText = Object.fromEntries(Object.entries(from.questionText).map(([key, text]) => { const [kind, section] = key.split(':'); return [kind === 'section' && map.has(section) ? `section:${map.get(section)}` : key, text]; }));
     blueprint.customSections = from.customSections.map(custom => ({ ...custom, id: map.get(custom.id), phase: phaseMap.get(custom.phase) }));
     blueprint.questions = from.questions.filter(question => question.scope === 'component' || map.has(question.sectionId) || isBuiltinPage(question.sectionId))
       .map(question => ({ ...question, id: newId(), sectionId: question.scope === 'section' ? map.get(question.sectionId) || question.sectionId : '' }));
-    blueprint.blocks = from.blocks.map(block => ({ ...RECORD_DEFAULTS.blocks(block.title, map.get(block.sectionId) || block.sectionId, block.type), id: newId(), origin: 'human',
-      ...(block.type === 'table' ? { columns: block.columns.map(column => ({ ...column })) } : {}) }));
+    blueprint.blocks = from.blocks.map(block => {
+      const copy = { ...RECORD_DEFAULTS.blocks(block.title, map.get(block.sectionId) || block.sectionId, block.type), id: newId(), origin: 'human', ...(block.type === 'table' ? { columns: block.columns.map(column => ({ ...column })) } : {}) };
+      return { ...copy, starter: blockFingerprint(copy) }; // A copied structure starts as not worked on.
+    });
+    if (from.template) blueprint.template = { ...from.template, research: [...from.template.research] };
     return normalizeBlueprint(blueprint).blueprint;
   }
 
   return { HOME, STRUCTURE_LIMITS, PAGE_OF, VISION_SHOWN, defaultStructure, blankStructure, structureOf, pageIds, hasPage, topicsOf, hasTopic, visionFields, pageOfRecord,
     PAGE_RECORDS, addCategory, renameCategory, moveCategory, addPage, renamePage, movePage, pageContent, removePage, removeCategory, duplicatePage, duplicateCategory,
-    researchGone, moveTopic, removeTopic, restoreTopic, moveVisionField, removeVisionField, restoreVisionField, moveQuestion, duplicateQuestion, questionToNotes, notesToQuestion,
+    researchGone, blueprintFromTemplate, addTemplateSections, templateRefKey, moveTopic, removeTopic, restoreTopic, moveVisionField, removeVisionField, restoreVisionField, moveQuestion, duplicateQuestion, questionToNotes, notesToQuestion,
     moveBlockTo, duplicateBlock, changeBlockType, restoreDefaultStructure, structureTemplate,
     SCHEMA, VERSION, ID, PHASES, SECTIONS, ENUMS, AREAS, VISION, LIMITS, CONTEXT_COLLECTIONS, QUESTIONS, VISION_QUESTIONS, COMPONENT_FIELDS, SECTION_STATE, VERIFICATION_LABELS,
     label, sectionLabel, sectionTitle, phaseTitle, phaseList, questionText, lines, emptyBlueprint, nextKey, normalizeBlueprint, verification, isStarted, itemName, issues, readiness, sectionStates,
     composeSpec, orderItems, taskHome, taskContext, taskBody, suggestionBrief, researchTargets, researchContext, researchRecord, RESEARCH_FIELDS,
     SUGGEST_FIELDS, SUGGEST_ADD, LINKS, RECORD_DEFAULTS, researchTargetKey, researchTargetValue, researchTargetLabel, researchName, researchRef, validateResearchSuggestion, applyResearchSuggestion, resolveResearchLinks,
-    BLOCK_TYPES, BLOCK_PARTS, blockLines, blockStarted, blockComplete, researchBlock, researchGuide, researchApplyOrder, researchRefKind, researchBlockPreview };
+    BLOCK_TYPES, BLOCK_PARTS, blockLines, blockStarted, blockWorked, blockFingerprint, blockComplete, researchBlock, researchGuide, researchApplyOrder, researchRefKind, researchBlockPreview };
 })();

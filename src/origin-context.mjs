@@ -48,7 +48,7 @@ export const FIELDS = {
 };
 // `sequence` only reserves the next display key; it is application bookkeeping, not design content.
 // `structure` is the sidebar itself: the export follows it (categories, their pages, shown topics and vision fields).
-export const TOP_FIELDS = ['idea', 'vision', 'sections', 'labels', 'answers', 'questionText', 'layout', 'sequence', 'structure', ...Object.keys(FIELDS)];
+export const TOP_FIELDS = ['idea', 'vision', 'sections', 'labels', 'answers', 'questionText', 'layout', 'sequence', 'structure', 'template', ...Object.keys(FIELDS)];
 
 const NOT_PROVIDED = '_Not provided._';
 // Lines that would change the document's own structure (fences, headings, setext underlines, raw HTML)
@@ -341,7 +341,7 @@ function exporter(record) {
   toc.push('- [Overview](#ctx-section-overview)');
   parts.push('<a id="ctx-section-overview"></a>', '## Overview', '', '- **Section ID:** `overview`',
     `- **Guiding question:** ${inline(Model.questionText(bp, 'section:overview', Model.QUESTIONS.overview), 'section overview question')}`,
-    `- **State:** ${Model.SECTION_STATE[states.overview]?.[1] || 'Not started'}`, '', ...SECTION.overview(), '');
+    `- **State:** ${Model.SECTION_STATE[states.overview]?.[1] || 'Not started'}`, ...(bp.template ? [`- **Project type:** ${inline(bp.template.name, 'blueprint name')} (started from this Origin blueprint; the sections below are the project’s own)`] : []), '', ...SECTION.overview(), '');
   if (!Model.phaseList(bp).length) parts.push('_This project has no categories or sections yet._', '');
   Model.phaseList(bp).forEach((phase, index) => {
     toc.push(`- [${index + 1}. ${inline(phase.label, `phase ${phase.id} label`)}](#ctx-phase-${phase.id})`);
@@ -354,6 +354,7 @@ function exporter(record) {
       const facts = [`- **Section ID:** \`${id}\`${!custom && sectionTitle(id) !== builtin ? ` (built-in section “${builtin}”)` : ''}`];
       if (!custom) facts.push(`- **Guiding question:** ${inline(Model.questionText(bp, `section:${id}`, Model.QUESTIONS[id]), `section ${id} question`)}`);
       else facts.push(`- **Kind:** your own section in ${inline(Model.phaseTitle(bp, custom.phase), 'phase label')}`);
+      if (custom && bp.questionText[`section:${id}`]) facts.push(`- **Guiding question:** ${inline(bp.questionText[`section:${id}`], `section ${id} question`)}`);
       facts.push(`- **State:** ${notApplicable ? 'Not applicable — marked as not needed. Anything written here is kept below.' : Model.SECTION_STATE[states[id]]?.[1] || 'Not started'}`);
       parts.push(...facts, '');
       if (custom) {

@@ -93,7 +93,7 @@ window.PromptboardOrigin = (() => {
     const menuSummary = el('summary', 'origin-icon'); menuSummary.setAttribute('aria-label', 'Project options'); menuSummary.title = 'Project options'; menuSummary.append(icon(ICON.dots));
     const menuList = el('div', 'origin-menu-list');
     menuList.append(button('Rename…', () => { menu.open = false; openRename(); }, 'origin-menu-item'), button('Connect to Kanban…', () => { menu.open = false; openConnect(); }, 'origin-menu-item'),
-      button('Reset structure…', () => { menu.open = false; openReset(); }, 'origin-menu-item'), button('Delete from Origin…', () => { menu.open = false; openDelete(); }, 'origin-menu-item danger'));
+      button('Save structure as blueprint…', () => { menu.open = false; openSaveBlueprint(); }, 'origin-menu-item'), button('Reset structure…', () => { menu.open = false; openReset(); }, 'origin-menu-item'), button('Delete from Origin…', () => { menu.open = false; openDelete(); }, 'origin-menu-item danger'));
     menu.append(menuSummary, menuList);
     const linkChip = button('', () => { const linked = project(); if (linked?.kanban?.exists) app.openKanban(linked.kanbanProjectId); else openConnect(); }, 'origin-link-pill');
     linkChip.id = 'origin-kanban-link';
@@ -337,7 +337,7 @@ window.PromptboardOrigin = (() => {
         architecture: blueprint.components.length, technology: blueprint.technologies.length, dependencies: blueprint.dependencies.length,
         research: blueprint.sources.length + blueprint.assumptions.length + blueprint.risks.length, decisions: blueprint.decisions.length, plan: blueprint.items.length };
       // Your own answered questions count in built-in sections too.
-      const own = blueprint.questions.filter(question => question.sectionId === id && blueprint.answers[question.id]?.trim()).length + blueprint.blocks.filter(block => block.sectionId === id && M.blockStarted(block)).length;
+      const own = blueprint.questions.filter(question => question.sectionId === id && blueprint.answers[question.id]?.trim()).length + blueprint.blocks.filter(block => block.sectionId === id && M.blockWorked(block)).length;
       if (counts[id] !== undefined) return counts[id] + own;
       if (M.AREAS[id]) return blueprint.areas.filter(item => item.section === id).length + own;
       return own;
@@ -390,6 +390,7 @@ window.PromptboardOrigin = (() => {
       const options = itemMenu(`Options for the category ${phase.label}`, `phase:${phase.id}`, [
         ['Rename', () => navigator.querySelector(`[data-edit="${CSS.escape(`phase:${phase.id}`)}"]`)?.click()],
         ['Add a section', () => addSection(phase.id)],
+        ['Add sections from a blueprint…', () => openAddFromBlueprint(phase)],
         ...missing.map(entry => [`Add back: ${M.sectionLabel(entry.id)}`, () => addBuiltin(phase.id, entry.id)]),
         ['Move up', () => restructure(() => M.moveCategory(bp(), phase.id, index - 1)), { disabled: index === 0 }],
         ['Move down', () => restructure(() => M.moveCategory(bp(), phase.id, index + 1)), { disabled: index === all.length - 1 }],
@@ -662,6 +663,11 @@ window.PromptboardOrigin = (() => {
       const rename = section === 'overview' ? heading : renamable(heading, { key: 'title', value: sectionName(section), fallback: custom ? 'New section' : builtin, label: 'section name', max: custom ? 80 : 60,
         onSave: value => restructure(() => M.renamePage(bp(), section, value)) });
       text.append(el('p', 'origin-eyebrow', phase ? `${phase.number} · ${phase.label}` : 'Home'), rename);
+      if (custom && bp().questionText[`section:${section}`]) {
+        // A section from a blueprint keeps the template's explanation as its guiding text; clearing it removes it.
+        const key = `section:${section}`, wording = bp().questionText[key];
+        text.append(renamable(el('p', 'origin-question', wording), { key, value: wording, fallback: '', label: 'guiding text', max: 500, onSave: value => setQuestion(key, value) }));
+      }
       if (!custom) {
         const key = `section:${section}`, wording = M.questionText(bp(), key, QUESTION[section]);
         text.append(section === 'overview' ? el('p', 'origin-question', wording) : renamable(el('p', 'origin-question', wording), { key, value: wording, fallback: QUESTION[section], label: 'guiding question', max: 500,
@@ -732,7 +738,7 @@ window.PromptboardOrigin = (() => {
       const name = el('input'); name.id = 'origin-first-project'; name.maxLength = 80; name.autocomplete = 'off'; name.placeholder = 'Project name'; name.setAttribute('aria-label', 'Project name');
       const idea = el('textarea', 'origin-idea'); idea.id = 'origin-idea'; idea.rows = 4; idea.maxLength = 20000; idea.placeholder = 'A web app that helps small teams…';
       idea.setAttribute('aria-label', 'What do you want to build?');
-      const kanban = kanbanOption('origin-first-kanban'), begin = startOption('origin-first-start');
+      const kanban = kanbanOption('origin-first-kanban'), begin = blueprintPicker('origin-first-start', { others: [] });
       const error = el('p', 'origin-inline-error'); error.hidden = true; error.setAttribute('role', 'alert');
       const start = el('button', 'origin-primary', 'Start blueprint'); start.type = 'submit'; start.id = 'origin-start'; start.append(icon(ICON.arrow, 16));
       const actions = el('div', 'origin-hero-actions'); actions.append(start, el('span', 'origin-hint', '⌘/Ctrl + Enter'));
@@ -742,7 +748,7 @@ window.PromptboardOrigin = (() => {
         error.hidden = true;
         if (!name.value.trim()) { error.textContent = 'Give the project a name first.'; error.hidden = false; name.focus(); return; }
         start.disabled = true;
-        try { await createProject(name.value, idea.value, kanban.input.checked, begin.value()); }
+        try { await createProject(name.value, idea.value, kanban.input.checked, begin.value(), begin.preferences()); }
         catch (failure) { error.textContent = failure.message; error.hidden = false; }
         finally { start.disabled = false; }
       });
@@ -762,26 +768,98 @@ window.PromptboardOrigin = (() => {
       box.append(input, text);
       return { box, input };
     }
-    /** How a new project starts: the default categories, blank, or another project's structure (never its content). */
-    function startOption(id) {
-      const box = el('div', 'origin-field'); box.setAttribute('role', 'group');
-      const title = el('span', 'origin-field-label', 'Start with'); title.id = `${id}-label`; box.setAttribute('aria-labelledby', title.id);
-      const choice = (value, text, hint) => { const label = el('label', 'origin-radio'); const radio = el('input'); radio.type = 'radio'; radio.name = id; radio.value = value; radio.checked = value === 'default';
-        const words = el('span'); words.append(el('strong', '', text), el('small', 'origin-hint', hint)); label.append(radio, words); return { label, radio }; };
-      const others = projects;
-      const options = [choice('default', 'The default categories', 'Define, Design, Operate, Decide and Build with their sections. Rename, move or delete any of them later.'),
-        choice('blank', 'Blank', 'Only the Overview. Add your own categories and sections.')];
-      const copy = others.length ? choice('copy', 'The structure of another project', 'Its categories, sections, questions and empty blocks. None of its answers or entries.') : null;
+    // ---- The blueprint library: how a new project starts ----
+    const TEMPLATES = globalThis.PromptboardOriginTemplates;
+    /** What a choice gives a project, as categories → sections → questions, for the preview. */
+    function previewOf(choice, saved) {
+      if (choice.kind === 'blank') return { name: 'Start blank', description: 'Only the Overview. Add your own categories and sections, or add sections from a blueprint later.', categories: [] };
+      if (choice.kind === 'default') {
+        const blueprint = M.emptyBlueprint();
+        return { name: 'General software project', description: 'A technology-independent plan for any project: Define, Design, Operate, Decide and Build with their sections.',
+          categories: M.phaseList(blueprint).map(phase => ({ title: phase.label, sections: phase.sections.map(id => ({ title: M.sectionLabel(id), questions: [] })) })) };
+      }
+      if (choice.kind === 'saved') { const entry = saved.find(item => item.id === choice.id); return entry && { name: entry.name, description: entry.description || 'Your saved blueprint.', categories: entry.categories.map(category => ({ title: category.title, sections: category.sections.map(title => ({ title, questions: [] })) })) }; }
+      if (choice.kind === 'from') return { name: 'Another project’s structure', description: 'Its categories, sections, questions and empty blocks. None of its answers or entries.', categories: [] };
+      const template = TEMPLATES.get(choice.id);
+      return { name: template.name, description: template.description, research: template.research,
+        categories: template.categories.map(category => ({ title: category.title, sections: category.sections.map(ref => {
+          const module = typeof ref === 'string' ? TEMPLATES.MODULES[ref] : null, own = module ? (module.section ? null : module) : ref;
+          return { title: (own || module).title, questions: [...(own || module).questions || [], ...(own ? [] : template.questions?.[module.section] || [])], blocks: [...(own || module).blocks || [], ...(own ? [] : template.blocks?.[module.section] || [])].map(block => block.title) };
+        }) })) };
+    }
+    /**
+     * Start with: Blank, the general structure, one of the library's blueprints, a blueprint you saved, or another
+     * project's structure. Cards are searchable and filtered by category; the preview shows what the project gets.
+     */
+    function blueprintPicker(id, { others = projects } = {}) {
+      const box = el('div', 'origin-blueprints'); box.id = id;
+      let choice = { kind: 'default' }, category = '', saved = [];
+      const search = el('input', 'origin-blueprint-search'); search.type = 'search'; search.id = `${id}-search`; search.placeholder = 'Search blueprints'; search.setAttribute('aria-label', 'Search blueprints');
+      const chips = el('div', 'origin-blueprint-chips'); chips.setAttribute('role', 'group'); chips.setAttribute('aria-label', 'Blueprint categories');
+      const cards = el('div', 'origin-blueprint-cards'); cards.setAttribute('role', 'radiogroup'); cards.setAttribute('aria-label', 'Blueprints');
+      const preview = el('div', 'origin-blueprint-preview'); preview.setAttribute('aria-live', 'polite');
       const from = el('select'); from.id = `${id}-from`; from.setAttribute('aria-label', 'Project to copy the structure from');
       from.append(...others.map(item => Object.assign(el('option', '', item.name), { value: item.id })));
-      if (copy) { options.push(copy); from.disabled = true; }
-      for (const option of options) option.radio.addEventListener('change', () => { from.disabled = !copy?.radio.checked; });
-      box.append(title, ...options.map(option => option.label), ...(copy ? [from] : []));
-      const value = () => { const picked = options.find(option => option.radio.checked)?.radio.value || 'default'; return picked === 'copy' ? { from: from.value } : picked; };
-      return { box, value };
+      const preferences = el('textarea'); preferences.id = `${id}-preferences`; preferences.rows = 2; preferences.maxLength = 2000; preferences.placeholder = 'Technology preferences (optional), for example “TypeScript, PostgreSQL, deploy on our Kubernetes”';
+      preferences.setAttribute('aria-label', 'Technology preferences (optional)');
+      const options = () => [
+        { kind: 'blank', name: 'Start blank', summary: 'Only the Overview: build your own structure.', category: 'start' },
+        { kind: 'default', name: 'General software project', summary: 'Define, Design, Operate, Decide and Build: works for any project.', category: 'start' },
+        ...TEMPLATES.TEMPLATES.map(template => ({ kind: 'template', id: template.id, name: template.name, summary: template.summary, category: template.category, sections: TEMPLATES.templateSections(template).length,
+          words: [template.description, ...TEMPLATES.templateSections(template).map(entry => entry.title)].join(' ') })),
+        ...saved.map(entry => ({ kind: 'saved', id: entry.id, name: entry.name, summary: entry.description || 'Your saved blueprint.', category: 'saved' })),
+        ...(others.length ? [{ kind: 'from', name: 'Another project’s structure', summary: 'Copy the categories and questions of a project you have.', category: 'start' }] : []),
+      ];
+      const same = (a, b) => a.kind === b.kind && (a.id || '') === (b.id || '');
+      const renderChips = () => {
+        const list = [['', 'All'], ...TEMPLATES.CATEGORIES, ...(saved.length ? [['saved', 'Saved']] : [])];
+        chips.replaceChildren(...list.map(([value, label]) => { const chip = button(label, () => { category = value; renderChips(); renderCards(); }, 'origin-blueprint-chip'); chip.setAttribute('aria-pressed', String(category === value)); chip.dataset.category = value; return chip; }));
+      };
+      const renderCards = () => {
+        const query = search.value.trim().toLowerCase();
+        const shown = options().filter(option => (!category || option.category === category) && (!query || `${option.name} ${option.summary} ${option.words || ''}`.toLowerCase().includes(query)));
+        cards.replaceChildren(...shown.map(option => {
+          const card = el('button', 'origin-blueprint-card'); card.type = 'button'; card.setAttribute('role', 'radio'); card.setAttribute('aria-checked', String(same(option, choice)));
+          card.dataset.kind = option.kind; if (option.id) card.dataset.id = option.id;
+          card.append(el('strong', '', option.name), el('span', '', option.summary), ...(option.sections ? [el('small', '', plural(option.sections, 'section'))] : []));
+          card.addEventListener('click', () => { choice = { kind: option.kind, ...(option.id ? { id: option.id } : {}) }; renderCards(); renderPreview(); });
+          return card;
+        }));
+        if (!shown.length) cards.append(el('p', 'origin-empty-note', 'No blueprint matches. Try another word or category.'));
+      };
+      const renderPreview = () => {
+        const shown = previewOf(choice, saved);
+        if (!shown) { preview.replaceChildren(); return; }
+        const tree = el('ol', 'origin-blueprint-tree');
+        for (const group of shown.categories) {
+          const item = el('li'); item.append(el('strong', '', group.title));
+          const sections = el('ul');
+          for (const section of group.sections) {
+            const row = el('li');
+            if (section.questions?.length || section.blocks?.length) {
+              const more = el('details'); more.append(el('summary', '', section.title));
+              const inner = el('ul', 'origin-blueprint-questions'); inner.append(...section.questions.map(text => el('li', '', text)), ...(section.blocks || []).map(text => el('li', 'block', text)));
+              more.append(inner); row.append(more);
+            } else row.textContent = section.title;
+            sections.append(row);
+          }
+          item.append(sections); tree.append(item);
+        }
+        preview.replaceChildren(el('h3', '', shown.name), el('p', '', shown.description), ...(choice.kind === 'from' ? [from] : []), ...(shown.categories.length ? [tree] : []),
+          ...(shown.research?.length ? [el('p', 'origin-hint', `Research starts with: ${shown.research.slice(0, 3).join('; ')}…`)] : []),
+          el('p', 'origin-hint', 'Every category, section and question stays yours to rename, move or delete.'));
+      };
+      search.addEventListener('input', renderCards);
+      const layout = el('div', 'origin-blueprint-layout'); layout.append(cards, preview);
+      box.append(el('span', 'origin-field-label', 'Start with'), search, chips, layout, preferences);
+      renderChips(); renderCards(); renderPreview();
+      // Saved blueprints come from the app; the library is ready at once.
+      void app.api('/api/origin/blueprints', { timeoutMs: 15000 }).then(({ response, data }) => { if (response.ok && Array.isArray(data.blueprints) && data.blueprints.length) { saved = data.blueprints; renderChips(); renderCards(); } }).catch(() => {});
+      const value = () => (choice.kind === 'template' ? { template: choice.id } : choice.kind === 'saved' ? { saved: choice.id } : choice.kind === 'from' ? { from: from.value } : choice.kind);
+      return { box, value, preferences: () => preferences.value.trim() };
     }
-    async function createProject(name, description, createKanban, start = 'default') {
-      const { response, data } = await app.api('/api/origin/projects', { method: 'POST', body: { name: name.trim(), description: description.trim(), createKanban, start }, timeoutMs: 120000 })
+    async function createProject(name, description, createKanban, start = 'default', preferences = '') {
+      const { response, data } = await app.api('/api/origin/projects', { method: 'POST', body: { name: name.trim(), description: description.trim(), createKanban, start, ...(preferences ? { preferences } : {}) }, timeoutMs: 120000 })
         .catch(() => ({ response: { ok: false }, data: {} }));
       if (!response.ok || !data.project) throw new Error(typeof data.error === 'string' ? data.error : 'The project could not be created. Nothing was changed.');
       projects = [...projects.filter(item => item.id !== data.project.id), data.project];
@@ -827,15 +905,58 @@ window.PromptboardOrigin = (() => {
     }
     function openNewProject() {
       const name = el('input'); name.id = 'origin-new-name'; name.maxLength = 80; name.autocomplete = 'off'; name.placeholder = 'Project name';
-      const idea = el('textarea'); idea.id = 'origin-new-idea'; idea.rows = 4; idea.maxLength = 20000; idea.placeholder = 'What do you want to build? (optional)';
-      const kanban = kanbanOption('origin-new-kanban'), begin = startOption('origin-new-start');
+      const idea = el('textarea'); idea.id = 'origin-new-idea'; idea.rows = 2; idea.maxLength = 20000; idea.placeholder = 'What do you want to build? (optional)';
+      const kanban = kanbanOption('origin-new-kanban'), begin = blueprintPicker('origin-new-start');
       modal('origin-new-dialog', { title: 'New project', lead: 'Name it and describe the idea. You shape the design step by step; no agent starts.',
         body: [dialogForm('origin-new-dialog', [field('Name', name), field('Description', idea), begin.box, kanban.box], 'Create project', async () => {
           if (!name.value.trim()) { name.focus(); throw new Error('Give the project a name.'); }
           const problem = await unsaved(); if (problem) throw new Error(problem);
-          await createProject(name.value, idea.value, kanban.input.checked, begin.value());
-        })] });
+          await createProject(name.value, idea.value, kanban.input.checked, begin.value(), begin.preferences());
+        })] }).classList.add('wide');
       name.focus();
+    }
+    /** The project's structure, questions and empty blocks as a blueprint for new projects. Nothing written is copied. */
+    function openSaveBlueprint() {
+      const current = project(); if (!current || !record?.exists) return;
+      const name = el('input'); name.id = 'origin-save-blueprint-name'; name.maxLength = 80; name.value = `${current.name} blueprint`;
+      const about = el('textarea'); about.id = 'origin-save-blueprint-description'; about.rows = 2; about.maxLength = 500; about.placeholder = 'What kind of project is it for? (optional)';
+      modal('origin-save-blueprint-dialog', { title: 'Save structure as blueprint', lead: 'New projects can start from it. It keeps the categories, sections, questions and empty blocks — none of the answers or entries — and later changes to this project do not change it.',
+        body: [dialogForm('origin-save-blueprint-dialog', [field('Name', name), field('Description', about)], 'Save blueprint', async () => {
+          if (!(await flush())) throw new Error('This blueprint has unsaved changes. Save or reload it first.');
+          const data = await call(`/api/origin/projects/${encodeURIComponent(current.id)}/save-blueprint`, { name: name.value, description: about.value }, 'The blueprint could not be saved.');
+          app.announce(`Saved the blueprint “${data.blueprint.name}”. Choose it under Saved when you create a project.`);
+        })] });
+      name.select();
+    }
+    /** Sections of a library blueprint added to a category; sections the project already has are skipped, never replaced. */
+    function openAddFromBlueprint(phase) {
+      const pick = el('select'); pick.id = 'origin-add-blueprint';
+      for (const [value, label] of TEMPLATES.CATEGORIES) {
+        const group = el('optgroup'); group.label = label;
+        group.append(...TEMPLATES.TEMPLATES.filter(template => template.category === value).map(template => Object.assign(el('option', '', template.name), { value: template.id })));
+        pick.append(group);
+      }
+      if (bp().template && TEMPLATES.get(bp().template.id)) pick.value = bp().template.id;
+      const list = el('div', 'origin-add-blueprint-sections'); list.setAttribute('role', 'group'); list.setAttribute('aria-label', 'Sections to add');
+      const render = () => {
+        const template = TEMPLATES.get(pick.value);
+        list.replaceChildren(...TEMPLATES.templateSections(template).map(entry => {
+          const present = entry.own ? bp().customSections.some(item => item.title.trim().toLowerCase() === entry.title.trim().toLowerCase()) : M.hasPage(bp(), entry.key);
+          const label = el('label', 'origin-check-row'); const box = el('input'); box.type = 'checkbox'; box.value = entry.key; box.disabled = present;
+          const words = el('span'); words.append(el('strong', '', entry.title), el('small', 'origin-hint', present ? 'Already in the project' : entry.category));
+          label.append(box, words); return label;
+        }));
+      };
+      pick.addEventListener('change', render); render();
+      modal('origin-add-blueprint-dialog', { title: `Add sections to “${phase.label}”`, lead: 'Choose a blueprint and the sections you want. They arrive with their questions and starter blocks; nothing already in the project is replaced.',
+        body: [dialogForm('origin-add-blueprint-dialog', [field('Blueprint', pick), list], 'Add sections', async () => {
+          const keys = [...list.querySelectorAll('input:checked')].map(input => input.value);
+          if (!keys.length) throw new Error('Choose at least one section.');
+          const result = restructure(() => M.addTemplateSections(bp(), TEMPLATES.get(pick.value), keys, phase.id, { modules: TEMPLATES.MODULES, newId }));
+          if (result?.error) throw new Error(result.error);
+          app.announce(`${plural(result.added.length, 'section')} added${result.skipped.length ? `; ${plural(result.skipped.length, 'section')} already there` : ''}.`);
+        })] }).classList.add('wide');
+      pick.focus();
     }
     function openRename() {
       const current = project(); if (!current) return;
@@ -1688,7 +1809,7 @@ window.PromptboardOrigin = (() => {
       const move = (step, name, path) => { const control = button('', () => moveBlock(block, step), 'origin-icon origin-small', name); control.setAttribute('aria-label', `${name}: ${label} block`); control.dataset.move = String(step); control.disabled = !own[index + step]; control.append(icon(path, 14)); return control; };
       const remove = button('Delete', () => removeBlock(block, remove), 'origin-link origin-block-remove'); remove.setAttribute('aria-label', `Delete the ${label} block`);
       // An empty block can change its type; a notes block can become a question with its text.
-      const types = M.blockStarted(block) ? [] : M.BLOCK_TYPES.filter(([type]) => type !== block.type);
+      const types = M.blockWorked(block) ? [] : M.BLOCK_TYPES.filter(([type]) => type !== block.type);
       const options = itemMenu(`Options for the ${label} block`, `block:${block.id}`, [
         ['Move to section…', () => openMoveTo('block', block.id, block.sectionId)],
         ['Duplicate', () => restructure(() => M.duplicateBlock(bp(), block.id, newId), { announce: 'Block copied with its content.' })],
@@ -1716,7 +1837,7 @@ window.PromptboardOrigin = (() => {
     }
     // A block with something written in it is deleted only after a second, explicit click.
     function removeBlock(block, control) {
-      if (M.blockStarted(block) && control.dataset.confirm !== 'true') { control.dataset.confirm = 'true'; control.textContent = 'Delete with its content?'; control.classList.add('danger'); return; }
+      if (M.blockWorked(block) && control.dataset.confirm !== 'true') { control.dataset.confirm = 'true'; control.textContent = 'Delete with its content?'; control.classList.add('danger'); return; }
       removeEntity('blocks', block.id); // Also unlinks it from tasks that include it.
       if (flowStep?.block === block.id) flowStep = null;
       if (flowConnect?.block === block.id) flowConnect = null;
@@ -2173,7 +2294,7 @@ window.PromptboardOrigin = (() => {
 
     // ---- Overview: the blueprint as a mind map ----
     function leaves(id) {
-      const blueprint = bp(), own = blueprint.blocks.filter(block => block.sectionId === id && M.blockStarted(block))
+      const blueprint = bp(), own = blueprint.blocks.filter(block => block.sectionId === id && M.blockWorked(block))
         .map(block => ({ label: `${M.BLOCK_TYPES.find(([type]) => type === block.type)[1]}: ${block.title.trim() || 'Untitled'}`, target: { collection: 'blocks', id: block.id } }));
       return [...builtinLeaves(id), ...own];
     }

@@ -5,10 +5,25 @@ Origin is the planning layer before Compose and Kanban. It stores a structured *
 ## Projects
 
 - An **Origin project** has its own stable ID, a name, an optional description and an optional link to one Kanban project. It does not need a Kanban project.
-- **New project** asks for a name, an optional description, how to **Start with** — **The default categories** (Define, Design, Operate, Decide, Build with their sections), **Blank** (only the Overview), or **The structure of another project** (its categories, sections, questions and empty blocks, never its answers or entries) — and one option: **Also create a Kanban project and Git repository** (on by default, as before). With it on, the Kanban project is created through Kanban's normal project and repository service and linked. With it off, nothing is created on the board, no repository folder and no Git repository.
+- **New project** asks for a name, an optional description, what to **Start with** (see the blueprint library below), optional **technology preferences** (kept as the Vision's constraints, so research respects them; they choose nothing by themselves) and one option: **Also create a Kanban project and Git repository** (on by default, as before). With it on, the Kanban project is created through Kanban's normal project and repository service and linked. With it off, nothing is created on the board, no repository folder and no Git repository.
 - If creating the Kanban project fails (for example its name is already used), the Origin project is kept and the page says why. **Connect to Kanban** (project menu or the link pill in the header) links an existing Kanban project or creates a new one. The destination is shown before anything is linked; projects are never linked because their names match. One Kanban project belongs to at most one Origin project.
 - Origin's project selection is its own; it does not follow the project selected in Kanban.
 - **Delete from Origin** (project menu) removes the Origin project after one confirmation. Its linked Kanban project and tasks stay. Removing the Kanban project too is a separate checkbox; it uses Kanban's own deletion checks, so running work or task worktrees block it and nothing is removed. Repository folders and worktrees are never deleted. A deleted project cannot be recreated by a stale save from another window.
+
+## Blueprint library
+
+**Start with** offers searchable cards, filtered by category (Web, Applications, AI, Data, Infrastructure, Developer Tools, Saved), with a preview of each choice's categories, sections and questions:
+
+- **Start blank** (only the Overview) and **General software project** (Define, Design, Operate, Decide, Build: technology-independent, the default).
+- **20 blueprints:** Frontend Web Application / PWA, Full-Stack SaaS Platform, Backend API / Service, Microservices & Event-Driven Architecture, Mobile Application, Desktop Application, CLI & Developer Tool, Open-Source Library / SDK, Browser Extension, E-commerce / Marketplace, Real-Time / Collaborative Application, Analytics Dashboard / Internal Tool, Data Engineering / ETL-ELT Platform, Streaming Data Processing System, Machine Learning / MLOps Platform, LLM / RAG Application, Agentic AI / Multi-Agent / MCP System, Cloud Infrastructure / Platform Engineering, IoT / Edge Computing System, Game / Interactive Simulation.
+- **Saved** blueprints (your own) and **Another project's structure**.
+
+Each blueprint has its own categories and specialised sections with guiding text and questions (for example Training & Experiment Tracking, Evaluation & Validation Gates and Model Registry & Serving for MLOps; Packaging, Signing & Auto-Update for desktop apps), combined with the shared planning modules that fit it: Objectives & Scope, Requirements & User Stories, Quality Attributes, Architecture & Design, Technology Choices, Components & Dependencies, Data Models & Storage, APIs & Integrations, Security, Privacy & Permissions, Testing & Quality Assurance, CI/CD, Deployment & Infrastructure, Monitoring & Reliability, Architecture Decisions, Risks, Assumptions & Open Questions, and Milestones & Tasks. Built-in topic sections show only the topics that apply. Starter blocks hold what to consider — building blocks, budgets and scenario tables, flow skeletons such as a C4 system context or a training pipeline, suggested phases — and stay "not started" until you change them. Blueprints ask questions and suggest what to consider; they never choose a technology or make a decision, and nothing is filled in for you.
+
+- **Your own copy.** A project gets an independent copy of the blueprint (`public/origin-templates.js`, a versioned, data-only registry). Later versions of a blueprint never change a project; every category, section, question and block can be renamed, moved or deleted like any other.
+- **Mix.** A category's ⋯ menu has **Add sections from a blueprint…**: pick a blueprint and the sections you want; they arrive with their questions and starter blocks. Sections the project already has are shown as such and never replaced.
+- **Save.** The project menu's **Save structure as blueprint…** keeps the categories, sections, questions and empty blocks — none of the answers or entries — under a name of your own (up to 50, in `origin/blueprints.json`). It appears under **Saved**; later edits of the project do not change it.
+- **Research** knows the project type (`blueprint.template`: the blueprint's name and its usual research topics) and works on the project's own current structure: it suggests the blueprint's typical research only for sections that still exist, and never brings back what was deleted.
 
 ## Research
 
@@ -41,7 +56,7 @@ Rolling back to a release from before tasks, handoff and change review: copy the
 
 ```text
 OriginFile   { schema: "promptboard.origin", version: 2, originId, project: { name, description, kanbanProjectId }, revision, createdAt, updatedAt, blueprint }
-Blueprint    { idea, vision, structure, sections, sequence, labels, customSections[], questions[], answers, questionText, layers[],
+Blueprint    { idea, vision, structure, template?, sections, sequence, labels, customSections[], questions[], answers, questionText, layers[],
                requirements[], components[], connections[], technologies[], dependencies[], decisions[], assumptions[], sources[],
                risks[], areas[], milestones[], items[], blocks[], layout }
 ```
@@ -50,6 +65,7 @@ Every record has a stable `id` (`[A-Za-z0-9_-]{1,100}`) and an `origin`: `human`
 
 | Entity | Fields |
 | --- | --- |
+| Template (`template`) | Optional: `{ id, version, name, research[] }` — the blueprint the project started from and its usual research topics (up to 20). Only research reads it; the structure is the project's own. |
 | Structure (`structure`) | `phases[{ id, title }]` (the categories in order; a built-in category's name lives in `labels.phases`, `title` is used for the project's own), `sections[{ id, phase }]` (the sections in order, each once, in a category that exists; built-in IDs or the IDs of `customSections`), `topics: { <section>: [area IDs] }` (shown topics of a topic section, in order; missing means all), `vision: [field keys] or null` (shown Vision questions, in order). The Overview is the home page and is never in a category. A blueprint without `structure` (saved before it existed) reads as the default structure, unchanged. At most 30 categories. |
 | Vision (`vision`) | summary, problem, goal, users, useCases, inScope, outOfScope, successCriteria, constraints, architectureSummary |
 | Blueprint section (`sections`) | per optional section (Data, AI / Agents, Deployment, Observability): `notApplicable` |
