@@ -165,7 +165,9 @@ export class ResearchStore {
       const value = await this.#read(originId, chatId(chat));
       await change(value);
       value.messages = value.messages.slice(-LIMITS.messages);
-      value.proposals = value.proposals.slice(-LIMITS.proposals);
+      // Over the cap, decided suggestions go first (oldest first); open ones only when nothing else is left.
+      let excess = value.proposals.length - LIMITS.proposals;
+      value.proposals = value.proposals.filter(proposal => { if (excess > 0 && !['pending', 'conflict'].includes(proposal.status)) { excess--; return false; } return true; }).slice(-LIMITS.proposals);
       value.updatedAt = Date.now();
       return this.#write(value);
     });
