@@ -5678,16 +5678,28 @@ function renderProjectGitHub(project) {
     const sync = gh.sync ? `${SYNC_TEXT[gh.sync.sync] || 'Unknown'}${gh.sync.behind ? ` ${gh.sync.behind}` : ''}${gh.sync.sync === 'ahead' ? ` ${gh.sync.ahead}` : ''}` : 'Not fetched yet';
     section.append(paragraph(`GitHub: ${gh.nameWithOwner}${gh.private ? ' (private)' : ' (public)'} · Target: ${project.targetBranch?.name || 'not set'} · Remote: ${gh.remote} · Sync: ${sync}${gh.lastFetchAt ? ` · Fetched ${timeAgo(gh.lastFetchAt)}` : ''}`, 'github-repo'));
     if (gh.sync?.message) section.append(paragraph(gh.sync.message, 'note'));
-    section.append(paragraph(`Managed clone: ${gh.clonePath}`, 'note'));
+    section.append(paragraph(`${gh.managed === false ? 'Folder' : 'Managed clone'}: ${gh.clonePath}`, 'note'));
     const row = detailActions(
       detailButton('Fetch', () => githubAction(() => githubCall('POST', `/api/projects/${encodeURIComponent(project.id)}/github-fetch`, {}))),
       ...(gh.sync?.sync === 'behind' ? [detailButton(`Update ${project.targetBranch?.name}…`, () => confirmStep(row, `Fast-forward ${project.targetBranch?.name} to origin? Only a fast-forward is allowed; nothing is merged, reset, or discarded.`, 'Update', () => githubAction(() => githubCall('POST', `/api/projects/${encodeURIComponent(project.id)}/github-update`, { confirm: true }))))] : []),
       externalLink(gh.url, 'Open on GitHub'),
-      detailButton('Disconnect…', () => confirmStep(row, 'Disconnect this project from GitHub? The managed clone, its worktrees, and all local work stay. The GitHub CLI stays signed in.', 'Disconnect', () => githubAction(() => githubCall('DELETE', `/api/projects/${encodeURIComponent(project.id)}/github?expectedRevision=${project.revision}`)))));
+      detailButton('Disconnect…', () => confirmStep(row, `Disconnect this project from GitHub? The ${gh.managed === false ? 'folder' : 'managed clone'}, its worktrees, and all local work stay. The GitHub CLI stays signed in.`, 'Disconnect', () => githubAction(() => githubCall('DELETE', `/api/projects/${encodeURIComponent(project.id)}/github?expectedRevision=${project.revision}`)))));
     section.append(row);
     return section;
   }
   if (github.status?.state !== 'connected') { section.append(paragraph('Connect GitHub first to use a GitHub repository. Local folders work without GitHub.', 'note')); return section; }
+  // A linked folder that is already a GitHub clone is connected as it is: nothing is cloned or changed.
+  const remoteKey = `${project.id}:${project.repository?.root || ''}`;
+  if (project.repository && github.remote?.key !== remoteKey) {
+    github.remote = { key: remoteKey, repository: '' };
+    githubCall('GET', `/api/projects/${encodeURIComponent(project.id)}/github-remote`).then(data => { if (github.remote?.key === remoteKey) { github.remote.repository = data.repository || ''; renderGitHub(); } }, () => {});
+  }
+  if (project.repository && github.remote?.key === remoteKey && github.remote.repository) {
+    section.append(paragraph(`The linked folder is a clone of ${github.remote.repository}.`, 'note'), detailActions(detailButton('Connect this folder', () => githubAction(async () => {
+      await githubCall('POST', `/api/projects/${encodeURIComponent(project.id)}/github`, { existing: true, expectedRevision: project.revision });
+      announce(`${project.name} is connected to ${github.remote.repository}. Its folder was not changed.`);
+    }), 'secondary-button')));
+  }
   const label = document.createElement('label'); label.className = 'field-label'; label.textContent = 'Search your repositories';
   const search = document.createElement('input'); search.type = 'search'; search.id = 'github-search'; search.maxLength = 100; search.placeholder = 'owner/name'; search.autocomplete = 'off';
   search.value = github.query || '';
@@ -5708,10 +5720,17 @@ function renderProjectGitHub(project) {
     const branch = document.createElement('input'); branch.id = 'github-branch'; branch.maxLength = 255; branch.value = github.branch || '';
     branch.addEventListener('input', () => { github.branch = branch.value.trim(); });
     branchLabel.append(branch);
-    section.append(branchLabel, paragraph(`Promptboard clones ${github.chosen.nameWithOwner} into its data folder and links that clone to this project. Agents work in task worktrees of the clone. ${project.repository ? 'This replaces the current repository link.' : ''}`, 'note'),
+    // Where the clone goes: Promptboard's data folder unless the person names a folder of their own.
+    const placeLabel = document.createElement('label'); placeLabel.className = 'field-label'; placeLabel.textContent = 'Clone into a folder of my own (optional)';
+    const place = document.createElement('input'); place.id = 'github-parent'; place.maxLength = 4096; place.placeholder = 'Promptboard’s data folder'; place.value = github.parent || '';
+    place.addEventListener('input', () => { github.parent = place.value.trim(); });
+    placeLabel.append(place);
+    const choose = detailButton('Choose folder…', () => githubAction(async () => { const path = await pickFolder(); if (path) github.parent = path; else if (path === undefined) github.message = 'No folder picker here. Type the folder path.'; }), 'secondary-button');
+    const name = github.chosen.nameWithOwner.split('/')[1];
+    section.append(branchLabel, placeLabel, detailActions(choose), paragraph(`Promptboard clones ${github.chosen.nameWithOwner} ${github.parent ? `into ${github.parent.replace(/[\\/]+$/, '')}/${name}` : 'into its data folder'} and links that clone to this project. Agents work in task worktrees of the clone. ${project.repository ? 'This replaces the current repository link.' : ''}`, 'note'),
       detailActions(detailButton('Connect repository', () => githubAction(async () => {
-        await githubCall('POST', `/api/projects/${encodeURIComponent(project.id)}/github`, { repository: github.chosen.nameWithOwner, branch: github.branch || '', expectedRevision: project.revision });
-        github.chosen = null; github.results = []; github.query = '';
+        await githubCall('POST', `/api/projects/${encodeURIComponent(project.id)}/github`, { repository: github.chosen.nameWithOwner, branch: github.branch || '', expectedRevision: project.revision, ...(github.parent ? { parent: github.parent } : {}) });
+        github.chosen = null; github.results = []; github.query = ''; github.parent = '';
         announce('The GitHub repository is connected.');
       }), 'danger')));
   }

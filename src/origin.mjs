@@ -493,7 +493,7 @@ function view(record, kanban) {
   const linked = record.kanbanProjectId ? kanban.find(project => project.id === record.kanbanProjectId) : null;
   return { id: record.id, name: record.name, description: record.description, kanbanProjectId: record.kanbanProjectId, revision: record.revision,
     createdAt: record.createdAt, updatedAt: record.updatedAt,
-    kanban: record.kanbanProjectId ? (linked ? { exists: true, name: linked.name, revision: linked.revision } : { exists: false }) : null };
+    kanban: record.kanbanProjectId ? (linked ? { exists: true, name: linked.name, revision: linked.revision, github: linked.github?.nameWithOwner || '' } : { exists: false }) : null };
 }
 
 const kanbanFailure = error => ({ message: error.message || 'The Kanban project could not be created.', code: error.code || 'KANBAN_FAILED' });

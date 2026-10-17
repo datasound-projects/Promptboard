@@ -173,6 +173,8 @@ test('GitHub in Settings: status, repository search, connect a managed clone, fe
   assert.deepEqual(Array.from($('#set-github-group').querySelectorAll('.github-result'), b => b.textContent), ['acme/app · private · main']);
   $('#set-github-group .github-result').click();
   assert.equal($('#github-branch').value, 'main');
+  assert.equal($('#github-parent').value, '', 'the data folder unless a folder of my own is named');
+  assert.match($('#set-github-group').textContent, /clones acme\/app into its data folder/);
   byText($('#set-github-group'), 'Connect repository').click();
   await until(() => /GitHub: acme\/app \(private\) · Target: main · Remote: origin · Sync: Not fetched yet/.test($('#set-github-group').textContent), 'connected repository');
   const project = (await serverBoard(ctx)).projects[0];
@@ -183,6 +185,15 @@ test('GitHub in Settings: status, repository search, connect a managed clone, fe
   byText($('#set-github-group'), 'Disconnect').click();
   await until(() => $('#github-search'), 'disconnected');
   assert.equal((await serverBoard(ctx)).projects[0].github, null);
+  // The clone stays linked, so it is offered as it is: connecting it again clones nothing.
+  await until(() => byText($('#set-github-group'), 'Connect this folder'), 'linked clone offered');
+  assert.match($('#set-github-group').textContent, /The linked folder is a clone of acme\/app/);
+  byText($('#set-github-group'), 'Connect this folder').click();
+  await until(() => /GitHub: acme\/app \(private\)/.test($('#set-github-group').textContent), 'connected as it is');
+  assert.equal((await gh.log()).filter(args => args[0] === 'repo' && args[1] === 'clone').length, 1);
+  byText($('#set-github-group'), 'Disconnect…').click();
+  byText($('#set-github-group'), 'Disconnect').click();
+  await until(() => $('#github-search'), 'disconnected again');
   assert.ok(!(await gh.log()).some(args => args.includes('logout')));
   // Signed out: the sign-in button appears. Without a terminal library here, it explains the terminal command.
   await gh.setMode('none');

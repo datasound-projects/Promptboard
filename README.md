@@ -116,6 +116,7 @@ Each card gets its own Git branch and worktree. When a card enters a column, a f
 - **Your rules.** Per board or column: CLI and model, ask or autonomous, read-only or workspace access, manual or automatic completion.
 - **Live terminals.** Watch every agent and type into it. Pause and resume keep its session.
 - **Coordinator.** A read-only overview of progress, running agents and blockers. Ask it questions; answers cite their sources.
+- **GitHub.** Sign in with the GitHub CLI, search your personal and organization repositories, and clone one (or connect a clone you already have). Fetch and fast-forward only; Promptboard never sees a token. See [GitHub](docs/github.md).
 - **Also:** custom columns with their own instructions, column actions (script, webhook, notification), a file browser, a timeline, labels and priorities, and board backups.
 
 <p align="center">
@@ -171,7 +172,7 @@ Agents run through each CLI's own sign-in and plan. Promptboard has no account o
 
 ## Docs
 
-- [Kanban execution](docs/kanban-execution.md): stages, rework, merge and error codes
+- [Kanban execution](docs/kanban-execution.md): stages, rework, merge and error codes · [GitHub](docs/github.md)
 - [Origin](docs/origin.md) · [Research](docs/origin-research.md) · [Project Context](docs/origin-project-context.md) · [Shared projects](docs/shared-projects.md) · [Coordinator](docs/coordinator.md)
 - [Compose context](docs/compose-context.md) · [Prompt checks](docs/verification.md)
 - [Base delivery](docs/base-delivery.md) · [CLI adapters](docs/cli-adapters.md) · [Session persistence](docs/session-persistence.md)

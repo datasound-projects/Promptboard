@@ -198,6 +198,7 @@ async function boardRoute(board, req, res, pathname, searchParams, origin) {
     if (method === 'GET' && action === 'timeline') return send(res, 200, { events: await board.timeline(id) });
     if (method === 'POST' && action === 'timeline') return send(res, 200, { note: await board.addTimelineNote(id, await body()) });
     if (method === 'POST' && action === 'github') return view({ project: await board.connectGitHub(id, await body()) });
+    if (method === 'GET' && action === 'github-remote') return view({ repository: await board.githubRemote(id) });
     if (method === 'DELETE' && action === 'github') return view({ project: await board.disconnectGitHub(id, { expectedRevision: expected() }) });
     if (method === 'POST' && action === 'github-fetch') return view({ project: await board.fetchGitHub(id) });
     if (method === 'POST' && action === 'github-update') return view({ project: await board.updateTargetFromGitHub(id, await body()) });

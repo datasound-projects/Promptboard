@@ -18,7 +18,7 @@ import { branchExists, commitExists, git, GitError, ignoredFiles, initRepository
 import { ADAPTERS, resolveConfig, validateResumeId } from './agents.mjs';
 import { validateEffort } from './providers.mjs';
 import { Delivery } from './delivery.mjs';
-import { ensureClone, fastForward, fetchAndCompare, viewRepository } from './github.mjs';
+import { clonePath, ensureClone, fastForward, fetchAndCompare, originRepository, viewRepository } from './github.mjs';
 import { externalIssueSource } from './external-source.mjs';
 import { buildTimeline } from './timeline.mjs';
 import { Base, normalizeBinding, listTargets, remapBaseScopes } from './base.mjs';
@@ -950,26 +950,52 @@ export class Board {
   // ---- GitHub (managed clone) ----
 
   /**
-   * Connect a GitHub repository: clone it once into the data folder, link that clone as this
-   * project's repository, and select the target branch. Credentials stay with the GitHub CLI.
+   * Connect a GitHub repository. By default it is cloned once into the data folder; `parent` clones it into a folder
+   * the person chose instead; `existing` uses the folder this project already links when its origin is on GitHub
+   * (nothing is cloned or changed). The clone is linked as this project's repository and the target branch selected.
+   * Credentials stay with the GitHub CLI.
    */
-  async connectGitHub(id, { repository, branch = '', expectedRevision }) {
+  async connectGitHub(id, { repository, branch = '', expectedRevision, existing = false, parent = '' }) {
     const project = this.#project(await this.state(), id);
     checkRevision(project, expectedRevision, 'This project');
+    if (existing === true) {
+      if (!project.repository) throw conflict('Link this project to a local folder first.', 'REPOSITORY_REQUIRED');
+      const name = await originRepository(project.repository.root);
+      if (!name) throw conflict('This folder has no GitHub remote named origin. Add one in Git, or connect a repository from the list.', 'NO_GITHUB_REMOTE');
+      const repo = await viewRepository(name);
+      let current = project;
+      if (branch && current.targetBranch?.name !== branch) current = await this.setTargetBranch(id, { branch, expectedRevision: current.revision });
+      return this.#saveGitHub(id, repo, project.repository.root, project.repository.root === clonePath(this.dataDir, repo.nameWithOwner));
+    }
     if (project.tasks.some(task => task.workspace)) throw conflict('Tasks in this project have worktrees in the current repository. Remove them before you change the repository.', 'WORKSPACES_EXIST');
     const repo = await viewRepository(typeof repository === 'string' ? repository.trim() : '');
-    const clone = await this.#locked(`clone:${repo.nameWithOwner.toLowerCase()}`, () => ensureClone(this.dataDir, repo));
+    let path;
+    if (parent) {
+      // A folder the person chose: the clone becomes <folder>/<name>; an existing folder there is used only if it is that clone.
+      const info = typeof parent === 'string' && isAbsolute(parent) ? await stat(parent).catch(() => null) : null;
+      if (!info?.isDirectory()) throw new BoardError('Choose an existing folder for the clone.', 'INVALID_FOLDER');
+      path = join(await realpath(parent), repo.nameWithOwner.split('/')[1]);
+    }
+    const clone = await this.#locked(`clone:${(path || repo.nameWithOwner).toLowerCase()}`, () => ensureClone(this.dataDir, repo, path ? { path } : {}));
     const target = branch || repo.defaultBranch;
     const linked = await this.linkRepository(id, { path: clone.path, expectedRevision });
     if (target && linked.project.targetBranch?.name !== target) await this.setTargetBranch(id, { branch: target, expectedRevision: linked.project.revision });
+    return this.#saveGitHub(id, repo, clone.path, !path);
+  }
+  #saveGitHub(id, repo, clonePath, managed) {
     return this.store.update(state => {
       const current = this.#project(state, id);
       const [owner, name] = repo.nameWithOwner.split('/');
       current.github = { owner, name, nameWithOwner: repo.nameWithOwner, url: repo.url, private: repo.private, defaultBranch: repo.defaultBranch,
-        clonePath: clone.path, remote: 'origin', connectedAt: Date.now(), lastFetchAt: null, sync: null };
+        clonePath, managed, remote: 'origin', connectedAt: Date.now(), lastFetchAt: null, sync: null };
       current.revision++;
       return current;
     });
+  }
+  /** The GitHub repository the linked folder's origin points to ('' when none). */
+  async githubRemote(id) {
+    const project = this.#project(await this.state(), id);
+    return project.repository ? originRepository(project.repository.root) : '';
   }
 
   /** Forget the GitHub link. The clone, its repository link, and all local work stay. gh stays signed in. */

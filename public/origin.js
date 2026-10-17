@@ -312,7 +312,7 @@ window.PromptboardOrigin = (() => {
       if (!current) return;
       const linked = current.kanban;
       linkChip.replaceChildren(el('span', `origin-link-dot${linked?.exists ? ' on' : ''}`), el('span', '', linked?.exists ? `Kanban · ${linked.name}` : linked ? 'Kanban project removed' : 'Not on Kanban'));
-      linkChip.title = linked?.exists ? 'Open this project on Kanban' : 'Connect this project to Kanban';
+      linkChip.title = linked?.exists ? `Open this project on Kanban${linked.github ? ` · GitHub ${linked.github}` : ''}` : 'Connect this project to Kanban';
       linkChip.dataset.state = linked?.exists ? 'linked' : linked ? 'missing' : 'none';
     }
     function renderDerived() {

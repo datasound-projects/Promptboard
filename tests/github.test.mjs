@@ -7,7 +7,7 @@ import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promi
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Board } from '../src/board.mjs';
-import { clonePath, GitHubLogin, githubStatus, listRepositories } from '../src/github.mjs';
+import { clonePath, GitHubLogin, githubRepositoryOf, githubStatus, listRepositories } from '../src/github.mjs';
 import { startServer } from '../src/server.mjs';
 import { fakeGh } from './fixtures/fake-gh.mjs';
 
@@ -157,4 +157,47 @@ test('GitHub routes need the session token and never return a token', { skip }, 
   assert.match((await login.json()).error, /gh auth login --web/);
   const all = JSON.stringify([status, repos]);
   assert.doesNotMatch(all, /gho_|ghp_|token/i);
+});
+
+test('GitHub remotes are recognized in HTTPS and SSH form; anything else is not GitHub', () => {
+  for (const url of ['https://github.com/acme/app.git', 'https://github.com/acme/app', 'git@github.com:acme/app.git', 'ssh://git@github.com/acme/app.git', 'https://user@github.com/acme/app.git']) assert.equal(githubRepositoryOf(url), 'acme/app', url);
+  for (const url of ['https://gitlab.com/acme/app.git', 'https://github.com.evil.example/acme/app', '/srv/git/app.git', 'https://github.com/acme', '', 'https://github.com/acme/app/extra']) assert.equal(githubRepositoryOf(url), '', url);
+});
+
+test('connect a linked folder that is already a clone (nothing cloned or changed), or clone into a folder the person chose', { skip, timeout: 60000 }, async t => {
+  const gh = await fakeGh(t);
+  const dataDir = await temp(t, 'pb-gh-data-'), mine = await temp(t, 'pb-gh-mine-');
+  const board = new Board({ dataDir });
+  // An existing clone of the user's own: linked as a local folder, then connected as it is.
+  const own = join(mine, 'own-app');
+  git(mine, 'clone', '-q', gh.bare, own);
+  git(own, 'remote', 'set-url', 'origin', 'git@github.com:acme/app.git');
+  git(own, 'config', `url.${gh.bare}.insteadOf`, 'git@github.com:acme/app.git');
+  const first = await board.createProject({ name: 'Own' });
+  const linked = await board.linkRepository(first.id, { path: own, expectedRevision: first.revision });
+  const withBranch = await board.setTargetBranch(first.id, { branch: 'main', expectedRevision: linked.project.revision });
+  assert.equal(await board.githubRemote(first.id), 'acme/app');
+  const before = git(own, 'config', '--list', '--local');
+  const connected = await board.connectGitHub(first.id, { existing: true, expectedRevision: withBranch.revision });
+  assert.deepEqual([connected.github.nameWithOwner, connected.github.clonePath, connected.github.managed, connected.repository.root], ['acme/app', own, false, own]);
+  assert.equal(git(own, 'config', '--list', '--local'), before, 'the folder’s Git config is not changed');
+  assert.equal((await board.fetchGitHub(first.id)).github.sync.sync, 'up_to_date');
+  assert.equal((await gh.log()).filter(args => args[0] === 'repo' && args[1] === 'clone').length, 0, 'nothing is cloned');
+  // A folder with a remote that is not on GitHub is refused.
+  const plain = join(mine, 'plain'); git(mine, 'init', '-q', plain); git(plain, 'remote', 'add', 'origin', 'https://gitlab.com/acme/app.git');
+  git(plain, '-c', 'user.email=t@e', '-c', 'user.name=T', 'commit', '-q', '--allow-empty', '-m', 'x');
+  const second = await board.createProject({ name: 'Plain' });
+  const plainLinked = await board.linkRepository(second.id, { path: plain, expectedRevision: second.revision });
+  assert.equal(await board.githubRemote(second.id), '');
+  await assert.rejects(board.connectGitHub(second.id, { existing: true, expectedRevision: plainLinked.project.revision }), { code: 'NO_GITHUB_REMOTE' });
+  // Clone into a chosen folder: <folder>/<name>, linked like the managed clone.
+  const third = await board.createProject({ name: 'Chosen' });
+  await assert.rejects(board.connectGitHub(third.id, { repository: 'acme/app', parent: 'relative/path', expectedRevision: third.revision }), { code: 'INVALID_FOLDER' });
+  const chosen = await board.connectGitHub(third.id, { repository: 'acme/app', parent: mine, expectedRevision: third.revision });
+  assert.deepEqual([chosen.repository.root, chosen.github.managed, chosen.targetBranch.name], [join(mine, 'app'), false, 'main']);
+  assert.match(git(join(mine, 'app'), 'config', '--get-all', 'credential.https://github.com.helper'), /!gh auth git-credential/);
+  // A plain folder inside a clone is never taken for that clone.
+  const fourth = await board.createProject({ name: 'Nested' });
+  execFileSync('mkdir', ['-p', join(own, 'nested', 'app')]);
+  await assert.rejects(board.connectGitHub(fourth.id, { repository: 'acme/app', parent: join(own, 'nested'), expectedRevision: fourth.revision }), { code: 'CLONE_CONFLICT' });
 });
