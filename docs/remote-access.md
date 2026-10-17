@@ -91,5 +91,9 @@ In Safari, **Share → Add to Home Screen** opens Promptboard full screen. It is
   proxy-header refusal on the local app, local-only routes, revocation (including open streams), restart, and the
   Tailscale CLI commands (a fake CLI).
 - A real browser (Chrome with an iPhone-sized touch screen) pairing and using the app through the remote listener.
-- Not verified by these tests: a real tailnet, a real Twingate network, Safari/WebKit, or a physical iPhone. Check those
-  with your own devices before you rely on them.
+- WebKit, Safari's engine (Playwright, iPhone 15 profile): pairing, the board, every page fitting the screen, the
+  HttpOnly SameSite=Strict cookie, reload, Settings on the phone, and revocation.
+- The real Tailscale CLI on a Mac: status, the Serve command Promptboard runs, and a tailnet where Serve and HTTPS are
+  not enabled yet (Settings shows Tailscale's enable link; nothing is changed).
+- Not verified: Serve on a tailnet with HTTPS enabled, a real Twingate network, or a physical iPhone. Check those with
+  your own devices before you rely on them.
