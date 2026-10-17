@@ -8,11 +8,21 @@
  */
 import { execFile, spawn } from 'node:child_process';
 import { gh } from './github.mjs';
-import { createWriteStream } from 'node:fs';
+import { createWriteStream, existsSync } from 'node:fs';
 import { access, constants, mkdir, readFile } from 'node:fs/promises';
-import { delimiter, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { git, ignoredFiles, lines, listWorktrees } from './git.mjs';
 import { killPidGroup, trackPid, untrackPid } from './providers.mjs';
+
+/**
+ * Windows starts npm and npx through .cmd files, which need a shell; the app never uses one. They run as Node's own
+ * npm-cli.js / npx-cli.js instead (installed next to node). Other commands are started as written.
+ */
+export function startArgv(argv, { platform = process.platform, execPath = process.execPath, exists = existsSync } = {}) {
+  const name = platform === 'win32' && /^(npm|npx)(\.cmd)?$/i.exec(argv[0] || '')?.[1]?.toLowerCase();
+  const cli = name && join(dirname(execPath), 'node_modules', 'npm', 'bin', `${name}-cli.js`);
+  return cli && exists(cli) ? [execPath, cli, ...argv.slice(1)] : argv;
+}
 
 const OUTPUT_TAIL = 20 * 1024;
 const OUTPUT_FILE = 5 * 1024 * 1024;
@@ -313,7 +323,8 @@ export class Delivery {
       let tail = '', written = 0, timedOut = false, settled = false;
       const done = result => { if (settled) return; settled = true; log.end(); resolve({ label: command.label, argv: command.argv, cwd, durationMs: Date.now() - started, tail: tail.slice(-OUTPUT_TAIL), ...result }); };
       let child;
-      try { child = spawn(command.argv[0], command.argv.slice(1), { cwd, shell: false, windowsHide: true, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, CI: '1' } }); }
+      const argv = startArgv(command.argv);
+      try { child = spawn(argv[0], argv.slice(1), { cwd, shell: false, windowsHide: true, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, CI: '1' } }); }
       catch { done({ status: 'error', exitCode: null, reason: 'The command could not start.' }); return; }
       if (child.pid) { trackPid(child.pid); running.pids.add(child.pid); }
       const collect = chunk => {

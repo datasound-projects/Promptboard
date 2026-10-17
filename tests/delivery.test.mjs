@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Board } from '../src/board.mjs';
 import { Supervisor } from '../src/supervisor.mjs';
-import { Delivery, parseCommand, parseFindings } from '../src/delivery.mjs';
+import { Delivery, parseCommand, parseFindings, startArgv } from '../src/delivery.mjs';
 import { resolveConfig } from '../src/agents.mjs';
 
 const skip = process.platform === 'win32';
@@ -630,4 +630,14 @@ test('removing a worktree never deletes files Git ignores without a yes; an unfi
   await w.board.store.update(state => { const card = state.projects[0].tasks.find(item => item.id === other.id); card.workspace = { ...card.workspace, status: 'creating' }; card.revision++; });
   assert.equal((await w.board.ensureTaskWorktree(other.id)).path, made.path);
   assert.equal((await w.current(other.id)).workspace.status, 'ready');
+});
+
+test('on Windows, npm and npx test commands start through Node without a shell; other commands start as written', () => {
+  const win = { platform: 'win32', execPath: 'C:/node/node.exe', exists: () => true };
+  const [node, cli, ...rest] = startArgv(['npm', 'test', '--', '--grep', 'a & b'], win);
+  assert.deepEqual([node, cli.replace(/\\/g, '/'), rest], ['C:/node/node.exe', 'C:/node/node_modules/npm/bin/npm-cli.js', ['test', '--', '--grep', 'a & b']]);
+  assert.match(startArgv(['NPX.cmd', 'vitest'], win)[1], /npx-cli\.js$/);
+  assert.deepEqual(startArgv(['pytest', '-q'], win), ['pytest', '-q']);
+  assert.deepEqual(startArgv(['npm', 'test'], { ...win, exists: () => false }), ['npm', 'test'], 'no bundled npm: started as written');
+  assert.deepEqual(startArgv(['npm', 'test'], { ...win, platform: 'darwin' }), ['npm', 'test']);
 });
