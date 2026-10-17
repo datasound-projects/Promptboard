@@ -3022,6 +3022,11 @@ function taskLocation(card, project) {
   const ws = card.workspace;
   const completedBranch = card.completion?.kind === 'merged' ? card.completion.targetBranch : '';
   facts.append(locationFact('Repository', ws?.repositoryRoot || project?.repository?.root), locationFact('Target branch', completedBranch || ws?.targetBranch || project?.targetBranch?.name));
+  if (ws?.path && project && !remoteSession) {
+    // The task's own folder in the last editor used; Open in IDE in the project menu offers the others.
+    void loadEditors();
+    facts.append(detailButton(worktreeButtonLabel(), () => { const preferred = preferredEditor(); if (preferred) openInEditor(project, preferred.id, card.id); else setWorkspaceMenu({ id: project.id, mode: 'editors', taskId: card.id }); }, 'task-open-editor'));
+  }
   if (ws) facts.append(locationFact('Task branch', ws.branch), locationFact('Worktree', ws.path), locationFact('Base commit', ws.baseCommit), paragraph(completedBranch ? `Changes were merged into ${completedBranch}. The task worktree is still available here.` : 'The agent edits files in this worktree. They reach the target branch after a merge.', 'note'));
   else facts.append(paragraph(completedBranch ? `Changes were merged into ${completedBranch}. The task worktree has been removed; the task branch is kept in history.` : 'No worktree yet. The first Planning or Executing run creates a task branch and a separate folder.', 'note'));
   if (!ws && card.retainedBranches?.length) facts.append(locationFact('Retained task branch', card.retainedBranches.at(-1).branch));
@@ -3683,7 +3688,7 @@ function pollTests(taskId) {
 // Kanban sidebar: one entry per project, each with its own board. Selecting one only changes
 // which board is shown; runs belong to the server and continue in every project.
 // Each entry has a ⋯ menu: rename (inline) and delete (inline confirm). Repository and workflow live in Project settings.
-let workspaceMenu = null; // { id, mode: 'menu' | 'rename' | 'delete', draft, error }
+let workspaceMenu = null; // { id, mode: 'menu' | 'rename' | 'delete' | 'editors' | 'editor-add', draft, error, taskId }
 function setWorkspaceMenu(value) { workspaceMenu = value; renderWorkspace(currentProject()); }
 async function renameFromSidebar(project, name) {
   const error = projectNameError(name.trim(), project.id);
@@ -3711,6 +3716,10 @@ function workspaceMenuFor(project, card) {
     box.append(form);
     if (workspaceMenu.error) box.append(paragraph(workspaceMenu.error, 'kanban-error'));
     setTimeout(() => { if (!document.activeElement || document.activeElement === document.body || document.activeElement.closest?.('.workspace-menu-toggle, .workspace-menu, .workspace-rename')) input.focus(); });
+  } else if (mode === 'editors') {
+    editorMenu(project, box);
+  } else if (mode === 'editor-add') {
+    editorForm(project, box);
   } else if (mode === 'delete') {
     box.append(paragraph(`Delete “${project.name}” and its ${plural(project.tasks.length, 'card')}? This cannot be undone. Export a backup first if you want to keep them.`),
       detailActions(detailButton('Delete project', () => { setWorkspaceMenu(null); deleteProject(project); }, 'danger'), detailButton('Keep', () => setWorkspaceMenu(null))));
@@ -3723,7 +3732,7 @@ function workspaceMenuFor(project, card) {
       item('Rename', () => setWorkspaceMenu({ id: project.id, mode: 'rename' })),
       // Where the project lives on this computer, and how to run it.
       ...(folder ? [item('Copy path', () => { setWorkspaceMenu(null); copyText(folder, 'Path'); }),
-        ...(remoteSession ? [] : [item(`Open in ${folderOpenerName()}`, () => { setWorkspaceMenu(null); openOnComputer(project, 'folder'); })]),
+        ...(remoteSession ? [] : [item(`Open in ${folderOpenerName()}`, () => { setWorkspaceMenu(null); openOnComputer(project, 'folder'); }), ...editorItems(project, item)]),
         item('How to run…', () => { setWorkspaceMenu(null); showRunPanel(project); })] : []),
       item('Delete…', () => setWorkspaceMenu({ id: project.id, mode: 'delete' }), 'workspace-delete'));
   }
@@ -4447,6 +4456,102 @@ async function autopilotCall(action, extra = {}) {
   if (!project) return false;
   try { await boardCall('POST', `/api/projects/${encodeURIComponent(project.id)}/autopilot`, { action, ...extra }); return true; }
   catch (error) { showBoardError(error); return false; }
+}
+
+// ---- Code editors on the computer that runs Promptboard: found where they install, or added by hand ----
+const editorState = { loaded: false, loading: null, editors: [], preferred: null, platform: '', custom: [], error: '' };
+function loadEditors({ force = false } = {}) {
+  if (remoteSession) return Promise.resolve(editorState);
+  if (editorState.loading) return editorState.loading;
+  if (editorState.loaded && !force) return Promise.resolve(editorState);
+  editorState.loading = (async () => {
+    const { response, data } = await api('/api/editors').catch(() => ({ response: { ok: false }, data: {} }));
+    if (response.ok) Object.assign(editorState, { editors: Array.isArray(data.editors) ? data.editors : [], preferred: data.preferred || null, platform: data.platform || '', custom: Array.isArray(data.custom) ? data.custom : [], error: '' });
+    else editorState.error = typeof data.error === 'string' ? data.error : 'The editors on this computer could not be listed.';
+    editorState.loaded = true; editorState.loading = null;
+    renderWorkspace(currentProject()); renderBoard(); labelWorktreeButtons();
+    return editorState;
+  })();
+  return editorState.loading;
+}
+const preferredEditor = () => editorState.editors.find(editor => editor.id === editorState.preferred) || null;
+const worktreeButtonLabel = () => (preferredEditor() ? `Open worktree in ${preferredEditor().name}` : 'Open worktree in IDE…');
+/** Task buttons drawn before the editors were listed (an open task dialog) name the editor once it is known. */
+function labelWorktreeButtons() { for (const button of document.querySelectorAll('.task-open-editor')) button.textContent = worktreeButtonLabel(); }
+/** A small mark with the editor's initials: recognisable without anyone's logo. */
+function editorBadge(editor) {
+  const badge = document.createElement('span'); badge.className = 'editor-badge'; badge.setAttribute('aria-hidden', 'true');
+  badge.textContent = editor.name.split(/\s+/).filter(word => /^[A-Za-z]/.test(word)).slice(0, 2).map(word => word[0]).join('').toUpperCase() || '?';
+  badge.style.setProperty('--editor-hue', String([...editor.id].reduce((sum, letter) => sum + letter.charCodeAt(0), 0) * 47 % 360));
+  return badge;
+}
+function editorItems(project, item) {
+  void loadEditors();
+  const preferred = preferredEditor();
+  return [...(preferred ? [item(`Open in ${preferred.name}`, () => openInEditor(project, preferred.id))] : []),
+    item(preferred ? 'Open in another IDE…' : 'Open in IDE…', () => setWorkspaceMenu({ id: project.id, mode: 'editors' }))];
+}
+async function openInEditor(project, editorId, taskId = '') {
+  setWorkspaceMenu(null);
+  try {
+    const result = await boardCall('POST', `/api/projects/${encodeURIComponent(project.id)}/open`, { target: 'editor', editor: editorId, ...(taskId ? { taskId } : {}) });
+    editorState.preferred = result.opened || editorId;
+    announce(`${result.name || 'The editor'} opened ${taskId ? 'the task’s worktree' : project.name}.`);
+    renderBoard(); labelWorktreeButtons();
+  } catch (error) { announce(error.message); setBoardWarning(error.message); }
+}
+/** Open in IDE: the editors found on this computer; the folder is the project's, or a task's worktree. */
+function editorMenu(project, box) {
+  box.setAttribute('role', 'menu'); box.setAttribute('aria-label', `Open ${project.name} in an editor`);
+  void loadEditors();
+  const worktrees = project.tasks.filter(task => task.workspace?.path);
+  let folder = null;
+  if (worktrees.length) {
+    folder = document.createElement('select'); folder.className = 'workspace-editor-folder'; folder.setAttribute('aria-label', 'Folder to open');
+    folder.append(new Option(`Project folder (${projectFolder(project).split(/[\\/]/).filter(Boolean).at(-1) || 'repository'})`, ''), ...worktrees.map(task => new Option(`Task worktree: ${task.title} · ${task.workspace.branch || ''}`, task.id)));
+    folder.value = worktrees.some(task => task.id === workspaceMenu.taskId) ? workspaceMenu.taskId : '';
+    folder.addEventListener('change', () => { workspaceMenu.taskId = folder.value; });
+    box.append(folder);
+  }
+  if (!editorState.loaded) box.append(paragraph('Looking for editors on this computer…'));
+  else if (editorState.error) box.append(paragraph(editorState.error, 'kanban-error'));
+  else if (!editorState.editors.length) box.append(paragraph('No code editor was found on this computer. Add yours with the path of its program.'));
+  for (const editor of editorState.editors) {
+    const button = detailButton('', () => openInEditor(project, editor.id, folder?.value || ''), 'workspace-editor');
+    button.setAttribute('role', 'menuitem');
+    button.append(editorBadge(editor), document.createTextNode(editor.name));
+    if (editor.id === editorState.preferred) { const mark = document.createElement('span'); mark.className = 'workspace-editor-last'; mark.textContent = 'Last used'; button.append(mark); }
+    box.append(button);
+  }
+  const more = (label, action) => { const button = detailButton(label, action); button.setAttribute('role', 'menuitem'); return button; };
+  box.append(more(editorState.custom.length ? 'Your editors…' : 'Add an editor…', () => setWorkspaceMenu({ id: project.id, mode: 'editor-add' })), more('Back', () => setWorkspaceMenu({ id: project.id, mode: 'menu' })));
+}
+/** An editor Promptboard does not find: its name and the full path of its program, kept on this computer. */
+function editorForm(project, box) {
+  const save = async custom => {
+    const { response, data } = await api('/api/editors', { method: 'PUT', body: { custom } }).catch(() => ({ response: { ok: false }, data: {} }));
+    if (!response.ok) { setWorkspaceMenu({ ...workspaceMenu, error: typeof data.error === 'string' ? data.error : 'The editor could not be saved.' }); return false; }
+    await loadEditors({ force: true });
+    return true;
+  };
+  for (const editor of editorState.custom) {
+    const row = document.createElement('div'); row.className = 'workspace-editor-custom';
+    row.append(paragraph(`${editor.name} · ${editor.command}`), detailButton('Remove', async () => { if (await save(editorState.custom.filter(item => item.id !== editor.id))) setWorkspaceMenu({ id: project.id, mode: 'editor-add' }); }));
+    box.append(row);
+  }
+  const form = document.createElement('form'); form.className = 'workspace-rename workspace-editor-form';
+  const name = document.createElement('input'); name.type = 'text'; name.maxLength = 60; name.placeholder = 'Name, for example Nova'; name.setAttribute('aria-label', 'Editor name');
+  const command = document.createElement('input'); command.type = 'text'; command.maxLength = 1024; command.setAttribute('aria-label', 'Full path of the editor’s program');
+  command.placeholder = editorState.platform === 'darwin' ? '/Applications/Nova.app' : editorState.platform === 'win32' ? 'C:\\Program Files\\Editor\\editor.exe' : '/usr/bin/editor';
+  const submit = document.createElement('button'); submit.type = 'submit'; submit.textContent = 'Add editor';
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    if (await save([...editorState.custom, { name: name.value, command: command.value }])) { announce(`${name.value.trim()} added.`); setWorkspaceMenu({ id: project.id, mode: 'editors' }); }
+  });
+  form.append(name, command, detailActions(submit, detailButton('Back', () => setWorkspaceMenu({ id: project.id, mode: 'editors' }))));
+  box.append(paragraph('It opens the folder as its argument, without a shell. Paths stay on this computer.'), form);
+  if (workspaceMenu.error) box.append(paragraph(workspaceMenu.error, 'kanban-error'));
+  setTimeout(() => { if (!box.contains(document.activeElement)) name.focus(); });
 }
 
 // ---- Where the project lives and how to run it (finished projects, or "How to run…" in the project menu) ----

@@ -25,6 +25,7 @@ import { Autopilot } from './autopilot.mjs';
 import { GitHubError, GitHubLogin, githubStatus, listRepositories } from './github.mjs';
 import { RemoteAccess, remoteRoute } from './remote-access.mjs';
 import { openProject, openTargets, runInfo } from './project-run.mjs';
+import { editorList, editorPreferences, openInEditor } from './editors.mjs';
 import { BaseRoutes } from './base-http.mjs';
 import { BaseError } from './base.mjs';
 import { BaseDeliveryError } from './base-resolver.mjs';
@@ -204,8 +205,12 @@ async function boardRoute(board, req, res, pathname, searchParams, origin) {
     // How to run the project, and opening its folder, a terminal there or its index.html on this computer.
     if (method === 'GET' && action === 'run-info') return send(res, 200, { run: { ...await runInfo(await storedProject(board, id)), open: openTargets() } });
     if (method === 'POST' && action === 'open') {
-      const { target } = await body();
-      try { return send(res, 200, await board.projectOpener(await storedProject(board, id), typeof target === 'string' ? target : '')); }
+      const { target, editor, taskId } = await body();
+      try {
+        // An editor opens the project's folder or one of its task's worktrees, both read from the stored project.
+        if (target === 'editor') return send(res, 200, await board.editorOpener(await storedProject(board, id), { editor: typeof editor === 'string' ? editor : '', taskId: typeof taskId === 'string' ? taskId : '' }));
+        return send(res, 200, await board.projectOpener(await storedProject(board, id), typeof target === 'string' ? target : ''));
+      }
       catch (error) { throw new BoardError(error.message, error.code || 'OPEN_FAILED', error.status || 500); }
     }
     if (method === 'DELETE' && action === 'github') return view({ project: await board.disconnectGitHub(id, { expectedRevision: expected() }) });
@@ -322,7 +327,7 @@ function streamRun(supervisor, req, res, runId, after) {
   req.on('close', () => { clearInterval(ping); unsubscribe(); });
 }
 
-export async function startServer({ batchTimeoutMs, port = 4318, runner = runProvider, detector = detectProviders, catalogReader = discoverModels, authAdapter = auth, dataDir = defaultDataDir(), projectsDir, executor = 'auto', folderPicker = chooseFolder, projectOpener = openProject, githubPty = loadPty, usageReader, mcpTester, imageGenerator, composeMcp, researchRunner = streamResearch } = {}) {
+export async function startServer({ batchTimeoutMs, port = 4318, runner = runProvider, detector = detectProviders, catalogReader = discoverModels, authAdapter = auth, dataDir = defaultDataDir(), projectsDir, executor = 'auto', folderPicker = chooseFolder, projectOpener = openProject, editorOptions = {}, githubPty = loadPty, usageReader, mcpTester, imageGenerator, composeMcp, researchRunner = streamResearch } = {}) {
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('The port must be 0–65535.');
   // One app per data folder; the board itself loads lazily, so starting never reads or writes board files.
   const lock = await lockDataDir(dataDir);
@@ -332,6 +337,9 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
   board.executor = executor === 'auto' ? new Supervisor({ board, dataDir }) : executor;
   board.folderPicker = folderPicker;
   board.projectOpener = projectOpener; // Opens a project's folder, a terminal or index.html (tests pass a fake).
+  // Code editors on this computer: found where they install, or added by hand; the last one used is remembered.
+  const editors = editorPreferences(dataDir);
+  board.editorOpener = (project, choice) => openInEditor(project, choice, { preferences: editors, ...editorOptions });
   board.githubLogin = new GitHubLogin({ ptyLoader: githubPty });
   // Autopilot runs only for projects where the user started it; otherwise each tick does nothing.
   const autopilot = new Autopilot(board);
@@ -436,6 +444,15 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
     if (isApi && req.headers['x-ste-token'] !== token) return send(res, 403, { error: 'Reload this page before you try again.' });
     if (pathname.startsWith('/api/remote') && remote) return send(res, 403, { error: 'Remote access is managed on the computer that runs Promptboard.', code: 'REMOTE_LOCAL_ONLY' });
     if (pathname.startsWith('/api/remote')) return remoteAccess ? remoteRoute(remoteAccess, req, res, pathname, { jsonBody, send }) : send(res, 503, { error: 'The app is starting. Try again.' }); // Local only: the remote listener refuses these.
+    if (pathname === '/api/editors') {
+      // Editors start on the computer that runs Promptboard, so a paired phone neither lists nor changes them.
+      if (remote) return send(res, 403, { error: 'Editors open on the computer that runs Promptboard. Use Copy path on this device.', code: 'REMOTE_LOCAL_ONLY' });
+      try {
+        if (req.method === 'PUT') { const input = await jsonBody(req); await editors.update(input && typeof input === 'object' ? input : {}, editorOptions); }
+        else if (req.method !== 'GET') return send(res, 404, { error: 'Not found.' });
+        return send(res, 200, await editorList(editors, editorOptions));
+      } catch (error) { return sendFailure(res, error, 'The editors could not be saved.', { status: 500, code: 'EDITORS_FAILED' }); }
+    }
     if (req.method === 'GET' && pathname === '/api/session') return send(res, 200, { token, platform: process.platform, ...(remote ? { remote: { name: remote.name } } : {}), capabilities: { pipelineTitleOnly: true, pipelineBulkRestore: true, pipelineDeferredMessages: true, taskPriority: true, taskLabels: true } });
     if (/^\/api\/notifications(?:\/|$)/.test(pathname)) {
       try { return await notificationRoute(notifications, req, res, pathname, { jsonBody, send }); }

@@ -794,6 +794,13 @@ body:has(#kanban-view:not([hidden]) #dock:not([hidden]):not([data-state="max"]))
 .workspace-menu > .workspace-delete { color: var(--danger, #c0392b); }
 .workspace-menu > p { margin: 4px 6px 8px; font-size: 12.5px; color: var(--text); }
 .workspace-menu .detail-actions { padding: 0 4px 4px; }
+.workspace-menu > .workspace-editor { display: flex; align-items: center; gap: 9px; }
+.editor-badge { display: inline-grid; place-items: center; flex: none; width: 20px; height: 20px; border-radius: 5px; background: hsl(var(--editor-hue, 220) 45% 42%); color: #fff; font-size: 9.5px; font-weight: 700; letter-spacing: .02em; }
+.workspace-editor-last { margin-left: auto; color: var(--muted); font-size: 11px; }
+.workspace-editor-folder { margin: 2px 4px 6px; min-width: 0; }
+.workspace-editor-custom { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 4px; }
+.workspace-editor-custom p { margin: 0; overflow-wrap: anywhere; font-size: 12px; }
+.workspace-editor-form { display: grid; gap: 6px; }
 .workspace-rename { display: flex; flex-direction: column; gap: 8px; padding: 4px; }
 .workspace-rename input { width: 100%; padding: 7px 9px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--surface); color: var(--ink); font-size: 13px; }
 .workspace-rename .detail-actions { padding: 0; }
