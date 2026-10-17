@@ -39,6 +39,27 @@ test('Kanban model selection keeps CLI default while discovery is pending and ig
   assert.equal($('#project-agent-fields [data-field="model-custom"]').value, '', 'Switching provider clears its custom model.');
 });
 
+test('a terminal whose app restarted stops retrying and asks for a reload', { skip: process.platform === 'win32' }, async t => {
+  const ctx = await linkedKanban(t);
+  const { $, win } = ctx;
+  await link(ctx);
+  win.Terminal = undefined;
+  const task = await ctx.app.board.createTask({ projectId: ctx.project.id, title: 'Live run', prompt: 'Fix it.' });
+  const now = Date.now();
+  await ctx.app.board.store.update(state => state.runs.push({ id: 'live-run', taskId: task.id, projectId: ctx.project.id, stage: 'executing', status: 'running', createdAt: now, updatedAt: now,
+    config: { provider: 'codex', model: 'codex-one' }, branch: 'promptboard/live', workspacePath: '/tmp/live-worktree', artifactsDir: 'runs/live-run' }));
+  // What a page sees after the app restarted with a new session token.
+  let streams = 0;
+  const pass = win.fetch;
+  win.fetch = (url, options) => (/\/stream\?/.test(url) ? (streams++, Promise.resolve(new Response(JSON.stringify({ error: 'Reload this page before you try again.' }), { status: 403 }))) : pass(url, options));
+  await win.__pbTest.loadBoard(); await ctx.idle();
+  cardItem(ctx, 'Live run').querySelector('.kanban-terminal').click(); await ctx.idle();
+  await until(() => /Reload this page/.test($('#dock-connection').textContent), 'reload asked for');
+  await new Promise(resolve => setTimeout(resolve, 2500));
+  assert.equal(streams, 1, 'no retry every second');
+  win.fetch = pass;
+});
+
 test('ended agent output is available after a restart and remains readable without terminal graphics', { skip: process.platform === 'win32' }, async t => {
   const ctx = await linkedKanban(t);
   const { $, win } = ctx;

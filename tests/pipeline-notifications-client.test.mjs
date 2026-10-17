@@ -116,3 +116,15 @@ test('stopping after a server failure tells Settings, so Reconnect is offered ag
   f.client.connect();
   assert.equal(seen.length, 1); assert.match(seen[0].status, /permission/);
 });
+
+test('resume keeps a live connection and the alerts it shows; after a disconnect it connects again', async t => {
+  const f = fixture(t, { stored: true, permission: 'granted' });
+  f.client.resume(); await until(() => f.client.connected);
+  f.send('alert-kept'); f.displays[0].show();
+  f.client.resume(); // e.g. "Check again" in setup help reloads the CLI status.
+  assert.equal(f.calls.filter(call => !call.path.endsWith('/ack')).length, 1, 'no second connection');
+  assert.equal(f.displays[0].closed, false, 'the shown alert stays');
+  f.client.stop();
+  f.client.resume(); await until(() => f.client.connected);
+  assert.equal(f.calls.filter(call => !call.path.endsWith('/ack')).length, 2);
+});
