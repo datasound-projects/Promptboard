@@ -125,6 +125,19 @@ test('a task-column picker opts out with empty Replace and never changes provide
   assert.equal('provider' in applied.changes[0], false); assert.equal('profileId' in applied.changes[0], false);
 });
 
+test('a resource can be switched off for one assignment only; the switch is saved with that assignment', async t => {
+  const { $, win, view, calls, change, submit } = setup(t);
+  await view.openPicker(taskColumn);
+  change($('[data-base-mode]'), 'extend');
+  const include = $('.base-binding-fields .settings-group');
+  include.querySelector(`[data-resource="${skill.id}"]`).checked = true; include.querySelector(`[data-resource="${skill.id}"]`).dispatchEvent(new win.Event('change', { bubbles: true }));
+  const on = include.querySelector(`[data-on="${skill.id}"]`);
+  assert.equal(on.disabled, false); on.checked = false;
+  submit($('#base-dialog-content form'));
+  await until(() => calls.some(call => call.path === '/api/base/apply'), 'apply');
+  assert.deepEqual(calls.find(call => call.path === '/api/base/apply').body.changes[0].binding.include, [{ resourceId: skill.id, required: true, enabled: false }]);
+});
+
 test('bulk application previews targets and sends one atomic revision-checked assignment request', async t => {
   const { $, view, calls, clickText, win } = setup(t);
   await view.show(); await view.openResource(skill.id); clickText('Apply to…');

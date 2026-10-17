@@ -9,7 +9,7 @@ import { serial, writeAtomic } from './durable.mjs';
 import { redactLocal } from './compose-local.mjs';
 import { FAILURE_MESSAGES } from './providers.mjs';
 import { chatPrompt, swarmPrompt } from './research-prompts.mjs';
-import { SOURCE_LIMIT, citationsOf, gatherSources, sourceOf, sourcesBlock } from './research-sources.mjs';
+import { SOURCE_LIMIT, baseMcpConfig, citationsOf, gatherSources, sourceOf, sourcesBlock } from './research-sources.mjs';
 
 const Model = globalThis.PromptboardOriginModel;
 export const RESEARCH_DIR = 'research';
@@ -501,9 +501,7 @@ export async function researchRoute({ research, origin, runner, claim, track, so
         const resource = (await tools.base.list()).resources.find(entry => entry.id === input.resourceId);
         fromBase = resource?.id;
         if (!resource || resource.kind !== 'mcp' || !resource.enabled || resource.trust !== 'trusted') throw new ResearchError('Choose an enabled, trusted Base MCP server.', 'INVALID_SOURCE');
-        const config = resource.configuration || {}, refs = map => (map && Object.keys(map).length ? { ...map } : undefined);
-        input = { type: 'mcp', config: config.transport === 'streamable-http' ? { type: 'mcp', name: resource.name.slice(0, 80), transport: 'streamable-http', endpoint: config.endpoint, ...(refs(config.headers) ? { headers: refs(config.headers) } : {}) }
-          : { type: 'mcp', name: resource.name.slice(0, 80), transport: 'stdio', command: config.command, args: config.args || [], ...(refs(config.env) ? { env: refs(config.env) } : {}), allowStart: true } };
+        input = { type: 'mcp', config: baseMcpConfig(resource) };
       }
       const source = sourceOf(input);
       // Kept with a Base server, so revoking its trust or disabling it in Base stops the chat from starting it.

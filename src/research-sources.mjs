@@ -10,6 +10,13 @@ import { redactLocal } from './compose-local.mjs';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i, ID = /^[A-Za-z0-9_-]{1,100}$/;
 export const SOURCE_LIMIT = 12;
+/** A Base MCP server in Compose's MCP form. Read from Base each time, so an edit in Base reaches every chat that uses it. */
+export function baseMcpConfig(resource) {
+  const config = resource.configuration || {}, refs = map => (map && Object.keys(map).length ? { ...map } : undefined);
+  return config.transport === 'streamable-http'
+    ? { type: 'mcp', name: resource.name.slice(0, 80), transport: 'streamable-http', endpoint: config.endpoint, ...(refs(config.headers) ? { headers: refs(config.headers) } : {}) }
+    : { type: 'mcp', name: resource.name.slice(0, 80), transport: 'stdio', command: config.command, args: config.args || [], ...(refs(config.env) ? { env: refs(config.env) } : {}), allowStart: true };
+}
 const BASE_KINDS = ['knowledge', 'context', 'skill'];
 class SourceError extends Error { constructor(message) { super(message); this.code = 'INVALID_SOURCE'; this.status = 400; } }
 const invalid = message => new SourceError(message);
@@ -88,7 +95,9 @@ export async function gatherSources(sources, query, { documents, mcp, base, sign
           if (!resource || resource.kind !== 'mcp' || !resource.enabled || resource.trust !== 'trusted') { warnings.push(`${source.name}: this MCP server is no longer enabled and trusted in Base, so it was not used.`); continue; }
         }
         if (!safeExternalQuery(query)) { warnings.push(`${source.name}: the question contains text that is never sent to external sources (paths, URLs, code or contact details), so it was not asked.`); continue; }
-        const found = await mcp.retrieve(source.config, [{ query: query.slice(0, 300), libraryHint: source.library || '', questionId: 'q' }], { signal });
+        // A server added from Base uses its current Base definition, not the one copied when it was added.
+        const config = source.resourceId ? validateMcp(baseMcpConfig(library.find(entry => entry.id === source.resourceId))) : source.config;
+        const found = await mcp.retrieve(config, [{ query: query.slice(0, 300), libraryHint: source.library || '', questionId: 'q' }], { signal });
         if (found.warning) warnings.push(`${source.name}: ${found.warning}`);
         for (const item of found) {
           const rows = search(buildIndex(chunkPages([{ page: 1, text: item.text }])), query, 3);

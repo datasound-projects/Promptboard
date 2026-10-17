@@ -412,9 +412,11 @@ window.PromptboardBase = (() => {
     more.append(el('summary', 'More', 'secondary-button'), moreList);
     $('#base-actions').append(kindSelect, button('Create', createResource), more, restoreGlobals);
 
-    function referenceFields(selected = [], { excludeId, kinds, label = 'Resources', exclusions = false } = {}) {
+    function referenceFields(selected = [], { excludeId, kinds, label = 'Resources', exclusions = false, switches = false } = {}) {
       const box = el('div', undefined, 'base-references'); box.setAttribute('role', 'group'); box.setAttribute('aria-label', label);
       const value = new Map(selected.map(item => [typeof item === 'string' ? item : item.resourceId, typeof item === 'string' ? true : item.required !== false]));
+      // Per-assignment extras kept as they are: the on/off switch and an MCP server's switched-off tools.
+      const extras = new Map(selected.filter(item => typeof item === 'object').map(item => [item.resourceId, { enabled: item.enabled, disabledTools: item.disabledTools }]));
       const candidates = state.resources.filter(item => item.id !== excludeId && (!kinds || kinds.includes(item.kind)));
       for (const item of candidates) {
         const line = el('div', undefined, 'base-reference-row');
@@ -423,6 +425,12 @@ window.PromptboardBase = (() => {
         if (!exclusions) {
           const required = check('Required', value.get(item.id) !== false); required.control.dataset.required = item.id; required.control.disabled = !chosen.control.checked;
           chosen.control.addEventListener('change', () => { required.control.disabled = !chosen.control.checked; }); line.append(required.label);
+          if (switches) {
+            // Switched off here only: the assignment stays, every other one keeps the resource.
+            const on = Object.assign(el('input'), { type: 'checkbox', checked: extras.get(item.id)?.enabled !== false }); on.setAttribute('role', 'switch'); on.className = 'base-switch'; on.dataset.on = item.id;
+            on.setAttribute('aria-label', `${item.name} on here`); on.title = 'On or off for this assignment only'; on.disabled = !chosen.control.checked;
+            chosen.control.addEventListener('change', () => { on.disabled = !chosen.control.checked; }); line.append(on);
+          }
         }
         box.append(line);
       }
@@ -435,14 +443,19 @@ window.PromptboardBase = (() => {
         row.control.dataset.resource = id; row.control.dataset.missingRequired = String(required); box.append(row.label);
       }
       if (!box.children.length) box.append(p('No resources yet. Create them in Base first.'));
-      box.read = () => [...box.querySelectorAll('[data-resource]:checked')].map(node => exclusions ? node.dataset.resource : ({ resourceId: node.dataset.resource, required: box.querySelector(`[data-required="${node.dataset.resource}"]`)?.checked ?? node.dataset.missingRequired !== 'false' }));
+      box.read = () => [...box.querySelectorAll('[data-resource]:checked')].map(node => {
+        if (exclusions) return node.dataset.resource;
+        const id = node.dataset.resource, on = box.querySelector(`[data-on="${id}"]`), kept = extras.get(id) || {};
+        const enabled = on ? on.checked : kept.enabled !== false;
+        return { resourceId: id, required: box.querySelector(`[data-required="${id}"]`)?.checked ?? node.dataset.missingRequired !== 'false', ...(enabled ? {} : { enabled: false }), ...(kept.disabledTools?.length ? { disabledTools: kept.disabledTools } : {}) };
+      });
       return box;
     }
     function bindingFields(binding = INHERIT, { excludeId, allowProfiles = true } = {}) {
       const box = el('div', undefined, 'base-binding-fields');
       const mode = select([['inherit', 'Inherit upstream resources'], ['extend', 'Extend — add and exclude'], ['replace', 'Replace — only this selection']], binding.mode || 'inherit'); mode.dataset.baseMode = 'true';
       const kinds = Object.keys(KINDS).filter(kind => kind !== 'agentProfile' && (allowProfiles || kind !== 'profile'));
-      const includes = referenceFields(binding.include || [], { excludeId, kinds, label: 'Include resources' });
+      const includes = referenceFields(binding.include || [], { excludeId, kinds, label: 'Include resources', switches: true });
       const excludes = referenceFields(binding.exclude || [], { excludeId, kinds, label: 'Exclude resources', exclusions: true });
       const selection = el('div'); selection.append(group('Include', includes), details('Exclude inherited resources', excludes));
       const update = () => { selection.hidden = mode.value === 'inherit'; };
@@ -728,7 +741,7 @@ window.PromptboardBase = (() => {
         const instructions = area(config.agent?.instructions || '', 4000);
         // A profile adds what it includes; where it is a target's agent, it can also ignore the resources inherited there.
         const saved = config.binding || INHERIT;
-        const includes = referenceFields(saved.include || [], { excludeId: item.id, label: 'Include resources' });
+        const includes = referenceFields(saved.include || [], { excludeId: item.id, label: 'Include resources', switches: true });
         const only = check('Use only these (ignore inherited resources where this profile is assigned)', saved.mode === 'replace');
         const binding = el('div', undefined, 'base-binding-fields'); binding.append(group('Include', includes), only.label);
         binding.read = () => ({ mode: only.control.checked ? 'replace' : 'extend', include: includes.read(), exclude: only.control.checked ? [] : saved.exclude || [] });
@@ -757,7 +770,7 @@ window.PromptboardBase = (() => {
       if (item.kind === 'agentProfile') return agentProfileEditor(item, form);
       if (item.kind === 'markdown') return markdownEditor(item, form);
       if (item.kind === 'pack') {
-        const refs = referenceFields(config.resources || [], { excludeId: item.id, kinds: Object.keys(KINDS).filter(kind => !['pack', ...AGENT_KINDS].includes(kind)) });
+        const refs = referenceFields(config.resources || [], { excludeId: item.id, kinds: Object.keys(KINDS).filter(kind => !['pack', ...AGENT_KINDS].includes(kind)), switches: true });
         form.append(group('Pack contents', refs), p('Packs contain resources by reference. Nested packs and agent profiles are not allowed. Attaching this pack never changes provider settings.'));
         return { read: () => ({ configuration: { ...config, resources: refs.read() }, content }) };
       }
