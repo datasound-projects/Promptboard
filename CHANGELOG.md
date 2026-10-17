@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Remote access with the real Tailscale CLI: when Serve is not enabled for your tailnet, Settings now shows Tailscale's own enable link within 15 seconds and says when HTTPS certificates are missing (before: a vague error after 30 seconds).
+- Fix (Research): a link to a record whose suggestion is applied later is completed even after a page reload.
+- Accessibility: Base category tabs, Kanban column agent buttons and Origin's map center have names that include their visible text (axe-core WCAG 2.1 A/AA scan of Compose, Origin, Kanban, Base and Settings).
+- Fix (Safari/WebKit): Kanban no longer reports a ResizeObserver loop as a page error.
+- Dependencies: jsdom 30.1.2 (tests only; it asks for Node ^22.22.2 or ^24.15.0), @modelcontextprotocol/client 2.3.1, pdfjs-dist 6.4.299, actions/setup-node 7.1.0.
+
 - **Remote access from an iPhone.** Settings → Remote access turns on a second, paired-only listener for Tailscale Serve (recommended; the HTTPS address is the one Tailscale reports, and Serve changes need your confirmation) or a Twingate Resource (loopback or a private address, optional HTTPS certificate). A phone pairs once with a one-time code and gets an HttpOnly, SameSite=Strict session that can be revoked at any time, ending its open streams. Funnel requests, other host names, cross-origin requests and proxied requests to the local app are refused. A paired device has the same control as the computer; only remote access itself, sign-ins and folder pickers need someone there. Research runs started from a phone keep going when it locks. Off by default. See docs/remote-access.md.
 - **GitHub.** Connect a clone you already have (its folder and Git config are not changed), or clone a repository into a folder you choose instead of the data folder. The Coordinator knows each project's repository and sync state. See docs/github.md.
 - **Touch screens.** Controls are at least 44 px on touch screens (mouse layouts unchanged); no page scrolls sideways on a phone; minimized files no longer cover the agent dock's buttons.
