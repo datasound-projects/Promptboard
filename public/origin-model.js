@@ -88,20 +88,52 @@ globalThis.PromptboardOriginModel = (() => {
     const custom = blueprint?.customSections?.find(section => section.id === id);
     return blueprint?.labels?.sections?.[id] || (custom ? custom.title.trim() || 'Untitled section' : sectionLabel(id));
   };
-  const phaseTitle = (blueprint, id) => blueprint?.labels?.phases?.[id] || PHASES.find(phase => phase.id === id)?.label || id;
-  /** The sidebar for one project: its phase names, built-in sections first, then its own sections. */
-  const phaseList = blueprint => PHASES.map(phase => ({ id: phase.id, label: phaseTitle(blueprint, phase.id),
-    sections: [...phase.sections, ...(blueprint?.customSections || []).filter(section => section.phase === phase.id).map(section => section.id)] }));
+  const phaseTitle = (blueprint, id) => blueprint?.labels?.phases?.[id] || blueprint?.structure?.phases?.find(phase => phase.id === id)?.title
+    || PHASES.find(phase => phase.id === id)?.label || 'Untitled category';
+
+  // ---- The project's own structure: its categories (phases), their pages (sections) and which built-in topics and
+  // vision fields a page shows, in the person's order. The persisted structure is the single source of truth for the
+  // sidebar, the map, readiness, the context export and research. The Overview is the project's home, above it.
+  const HOME = 'overview';
+  const STRUCTURE_LIMITS = { phases: 30 };
+  // The page where a collection's records live: removing the page removes them, and research cannot add them while it is gone.
+  const PAGE_OF = { requirements: 'requirements', components: 'architecture', connections: 'architecture', layers: 'architecture', technologies: 'technology',
+    dependencies: 'dependencies', decisions: 'decisions', assumptions: 'research', sources: 'research', risks: 'research', milestones: 'plan', items: 'plan' };
+  const pageOfRecord = (collection, value) => (collection === 'areas' ? value?.section : collection === 'blocks' ? value?.sectionId : PAGE_OF[collection] || '');
+  /** The default blueprint's structure: the built-in categories and pages, with the project's own pages in their categories. */
+  function defaultStructure(customSections = []) {
+    return { phases: PHASES.map(phase => ({ id: phase.id, title: '' })),
+      sections: PHASES.flatMap(phase => [...phase.sections.filter(id => id !== HOME), ...customSections.filter(entry => entry.phase === phase.id).map(entry => entry.id)].map(id => ({ id, phase: phase.id }))),
+      topics: {}, vision: null };
+  }
+  const blankStructure = () => ({ phases: [], sections: [], topics: {}, vision: null });
+  const structureOf = blueprint => blueprint?.structure || defaultStructure(blueprint?.customSections);
+  const pageIds = blueprint => structureOf(blueprint).sections.map(entry => entry.id);
+  /** Whether a page is part of this project (the Overview always is). */
+  const hasPage = (blueprint, id) => id === HOME || pageIds(blueprint).includes(id);
+  /** The built-in topics a page shows, in the project's order. */
+  const topicsOf = (blueprint, section) => {
+    const all = AREAS[section] || [], order = structureOf(blueprint).topics?.[section];
+    return Array.isArray(order) ? order.map(id => all.find(([area]) => area === id)).filter(Boolean) : all;
+  };
+  const hasTopic = (blueprint, section, area) => hasPage(blueprint, section) && topicsOf(blueprint, section).some(([id]) => id === area);
+  /** The vision questions the Vision page shows, in the project's order. */
+  const VISION_SHOWN = VISION.filter(key => key !== 'architectureSummary');
+  const visionFields = blueprint => (hasPage(blueprint, 'vision') ? structureOf(blueprint).vision || VISION_SHOWN : []);
+  /** The sidebar for one project: its categories in order, each with its pages in order (the Overview is not one of them). */
+  const phaseList = blueprint => { const structure = structureOf(blueprint);
+    return structure.phases.map(phase => ({ id: phase.id, label: phaseTitle(blueprint, phase.id), sections: structure.sections.filter(entry => entry.phase === phase.id).map(entry => entry.id) })); };
   /** A guiding question in the project's own words, or the built-in wording. */
   const questionText = (blueprint, key, fallback) => blueprint?.questionText?.[key] || fallback;
   const formatKey = (prefix, number) => `${prefix}-${String(number).padStart(3, '0')}`;
   const keyNumber = (key, prefix) => { const match = typeof key === 'string' ? key.match(new RegExp(`^${prefix}-(\\d{1,6})$`)) : null; return match ? Number(match[1]) : 0; };
   const lines = text => String(text || '').split(/\r?\n/).map(line => line.replace(/^\s*(?:[-*•]|\d+[.)])\s*/, '').trim()).filter(Boolean);
 
-  function emptyBlueprint() {
+  /** A new blueprint: the default structure, or `blank` for an empty sidebar the person builds from scratch. */
+  function emptyBlueprint({ blank = false } = {}) {
     return { idea: '', vision: Object.fromEntries(VISION.map(key => [key, ''])), sections: {}, sequence: { requirements: 0, decisions: 0, items: 0 },
       labels: { phases: {}, sections: {} }, answers: {}, questionText: {}, layout: { map: { width: null, height: null, nodes: {}, links: [] } },
-      ...Object.fromEntries(Object.keys(LIMITS).map(name => [name, []])) };
+      ...Object.fromEntries(Object.keys(LIMITS).map(name => [name, []])), structure: blank ? blankStructure() : defaultStructure() };
   }
 
   /** Reserve the next stable display key (REQ-001, ADR-001, IMP-001). Keys are never reused. */
@@ -185,15 +217,61 @@ globalThis.PromptboardOriginModel = (() => {
     // Per-project wording: renamed phases and sections, custom sections and their questions. Behaviour
     // always follows the stable built-in IDs, never the editable labels.
     const builtinIds = new Set(SECTIONS.map(section => section.id)), phaseIds = PHASES.map(phase => phase.id);
+    // The structure's categories first: a page can belong to any of them. A blueprint without a structure (saved before
+    // structures existed) gets the default blueprint's, which is what it showed; that is not a repair.
+    const structureIn = isObject(source.structure) ? source.structure : null;
+    let structurePhases = PHASES.map(phase => ({ id: phase.id, title: '' }));
+    if (structureIn) {
+      const list = Array.isArray(structureIn.phases) ? structureIn.phases : (fix(), []);
+      if (list.length > STRUCTURE_LIMITS.phases) throw new OriginModelError(`A blueprint can have at most ${STRUCTURE_LIMITS.phases} categories.`);
+      const seen = new Set();
+      structurePhases = list.map(obj).filter(entry => { const valid = typeof entry.id === 'string' && ID.test(entry.id) && !seen.has(entry.id); if (valid) seen.add(entry.id); else fix(); return valid; })
+        .map(entry => ({ id: entry.id, title: phaseIds.includes(entry.id) ? '' : str(entry.title, 60).trim() }));
+    }
+    const categoryIds = new Set(structurePhases.map(phase => phase.id));
     const labels = obj(source.labels), labelPhases = obj(labels.phases), labelSections = obj(labels.sections);
     blueprint.labels = { phases: {}, sections: {} };
     for (const id of phaseIds) { const value = str(labelPhases[id], 60).trim(); if (value) blueprint.labels.phases[id] = value; }
     for (const id of builtinIds) { const value = str(labelSections[id], 60).trim(); if (value) blueprint.labels.sections[id] = value; }
     for (const key of [...Object.keys(labelPhases), ...Object.keys(labelSections)]) if (!phaseIds.includes(key) && !builtinIds.has(key)) fix();
-    blueprint.customSections = collection('customSections', v => ({ phase: phaseIds.includes(v.phase) ? v.phase : (fix(), 'define'), title: str(v.title, 80),
+    blueprint.customSections = collection('customSections', v => ({ phase: categoryIds.has(v.phase) || phaseIds.includes(v.phase) ? v.phase : (fix(), structurePhases[0]?.id || 'define'), title: str(v.title, 80),
       description: str(v.description, 2000), notApplicable: v.notApplicable === true }))
       .filter(entry => { if (!builtinIds.has(entry.id)) return true; fix(); return false; });
     const sectionIds = new Set([...builtinIds, ...blueprint.customSections.map(entry => entry.id)]);
+    // The structure's pages: built-in pages and the project's own, each once, in a category that exists.
+    let placed;
+    if (structureIn) {
+      const list = Array.isArray(structureIn.sections) ? structureIn.sections : (fix(), []), seen = new Set();
+      placed = [];
+      for (const raw of list.slice(0, SECTIONS.length + LIMITS.customSections)) {
+        const entry = obj(raw), id = entry.id;
+        if (typeof id !== 'string' || id === HOME || !sectionIds.has(id) || seen.has(id)) { fix(); continue; }
+        const phase = categoryIds.has(entry.phase) ? entry.phase : structurePhases[0]?.id;
+        if (phase !== entry.phase) fix();
+        if (!phase) continue;
+        seen.add(id); placed.push({ id, phase });
+      }
+      if (list.length > SECTIONS.length + LIMITS.customSections) fix();
+    } else placed = defaultStructure(blueprint.customSections).sections.filter(entry => categoryIds.has(entry.phase));
+    // A page of the project's own that the structure does not list is kept (its content is never dropped silently).
+    for (const custom of blueprint.customSections) {
+      if (placed.some(entry => entry.id === custom.id)) continue;
+      fix();
+      if (!structurePhases.length) structurePhases.push({ id: 'pages', title: 'Pages' }), categoryIds.add('pages');
+      placed.push({ id: custom.id, phase: categoryIds.has(custom.phase) ? custom.phase : structurePhases[0].id });
+    }
+    for (const custom of blueprint.customSections) custom.phase = placed.find(entry => entry.id === custom.id).phase;
+    const topicsIn = structureIn ? obj(structureIn.topics) : {}, topics = {};
+    for (const [section, order] of Object.entries(topicsIn)) {
+      if (!AREAS[section] || !Array.isArray(order)) { fix(); continue; }
+      const list = order.filter((id, index) => AREAS[section].some(([area]) => area === id) && order.indexOf(id) === index);
+      if (list.length !== order.length) fix();
+      topics[section] = list;
+    }
+    const visionIn = structureIn?.vision;
+    const visionList = Array.isArray(visionIn) ? visionIn.filter((key, index) => VISION_SHOWN.includes(key) && visionIn.indexOf(key) === index) : null;
+    if (visionIn !== undefined && visionIn !== null && (!visionList || visionList.length !== visionIn.length)) fix();
+    blueprint.structure = { phases: structurePhases, sections: placed, topics, vision: visionList };
     blueprint.questions = collection('questions', v => {
       const scope = v.scope === 'component' ? 'component' : v.scope === 'section' ? 'section' : (fix(), 'section');
       const sectionId = scope === 'section' && typeof v.sectionId === 'string' && sectionIds.has(v.sectionId) ? v.sectionId : '';
@@ -611,8 +689,8 @@ globalThis.PromptboardOriginModel = (() => {
     const sources = byId(blueprint.sources);
     const target = (collection, id) => ({ section: COLLECTION_SECTION[collection], collection, id });
     if (!isStarted(blueprint)) return found;
-    if (!blueprint.requirements.length) add('requirements-empty', 'missing', 'No requirements are defined yet.', { section: 'requirements' }, { action: 'Add the first requirement.' });
-    if (!blueprint.components.length) add('components-empty', 'missing', 'No architecture components are defined yet.', { section: 'architecture' }, { action: 'Add the main components.' });
+    if (!blueprint.requirements.length && hasPage(blueprint, 'requirements')) add('requirements-empty', 'missing', 'No requirements are defined yet.', { section: 'requirements' }, { action: 'Add the first requirement.' });
+    if (!blueprint.components.length && hasPage(blueprint, 'architecture')) add('components-empty', 'missing', 'No architecture components are defined yet.', { section: 'architecture' }, { action: 'Add the main components.' });
     for (const requirement of blueprint.requirements) {
       const name = itemName(blueprint, 'requirements', requirement.id);
       if (requirement.status === 'needs_decision') add('requirement-decision', 'unresolved', `${name} needs a decision.`, target('requirements', requirement.id));
@@ -688,7 +766,8 @@ globalThis.PromptboardOriginModel = (() => {
     for (const item of blueprint.items) for (const lost of item.lostLinks || []) add('task-link-missing', 'missing', `${itemName(blueprint, 'items', item.id)} lost its link to the removed component “${lost.name}”.`, target('items', item.id), { blocking: false, action: 'Relink it to a component or dismiss the note.' });
     for (const risk of blueprint.risks) if (risk.status === 'open') found.push({ id: `risk:${risk.id}`, rule: 'recorded', kind: risk.kind, origin: risk.origin, title: risk.title || 'Untitled risk',
       detail: risk.description, action: risk.mitigation, blocking: risk.kind !== 'risk' && risk.origin === 'human', severity: risk.severity, target: target('risks', risk.id) });
-    return found;
+    // Only pages that are part of this project: a removed page asks for nothing.
+    return found.filter(issue => !issue.target?.section || hasPage(blueprint, issue.target.section));
   }
 
   /** Transparent completion indicators. Every value is a count of stored records; no scores. */
@@ -708,7 +787,7 @@ globalThis.PromptboardOriginModel = (() => {
       { id: 'sources', label: 'Sources', value: `${count(blueprint.sources, item => item.verification !== 'verified')} not verified`, section: 'research' },
       { id: 'testing', label: 'Testing', value: `${plural(testingAreas.size, 'area')} defined`, section: 'testing' },
       { id: 'plan', label: 'Tasks', value: blueprint.items.length ? `${plural(blueprint.items.length, 'task')} · ${handed} in Kanban` : 'none yet', section: 'plan' },
-    ];
+    ].filter(row => hasPage(blueprint, row.section)); // Rows only for pages the project has.
     const blocking = found.filter(issue => issue.blocking);
     if (!isStarted(blueprint)) return { state: 'not_started', label: 'Not started', reasons: ['Describe the project to start its blueprint.'], rows, blocking };
     if (blocking.length) {
@@ -747,7 +826,7 @@ globalThis.PromptboardOriginModel = (() => {
       states[custom.id] = custom.notApplicable ? 'na' : !hasText(custom.description) && !answered && !own.some(blockStarted) ? 'empty'
         : answered === asked.length && own.every(blockComplete) ? 'defined' : 'progress';
     }
-    for (const { id } of SECTIONS) {
+    for (const { id } of SECTIONS.filter(section => hasPage(blueprint, section.id))) {
       const related = found.filter(issue => issue.target?.section === id && id !== 'overview');
       if (id === 'overview') states[id] = { not_started: 'empty', attention: 'attention', decompose: 'defined', ready: 'defined' }[ready.state];
       else if (blueprint.sections[id]?.notApplicable) states[id] = 'na';
@@ -908,11 +987,11 @@ globalThis.PromptboardOriginModel = (() => {
       const open = (collection === 'decisions' && entry.status === 'proposed') || entry.status === 'needs_decision' || (collection === 'assumptions' && entry.status === 'open');
       options.push({ value: { kind: 'record', collection, id: entry.id }, label: `${clip(recordTitle(blueprint, collection, entry), 80)}${open ? ' (open)' : ''}`, group });
     }
-    for (const key of VISION) options.push({ value: { kind: 'question', key: `vision:${key}` }, label: clip(questionText(blueprint, `vision:${key}`, VISION_QUESTIONS[key]), 90), group: 'Questions' });
+    for (const key of visionFields(blueprint)) options.push({ value: { kind: 'question', key: `vision:${key}` }, label: clip(questionText(blueprint, `vision:${key}`, VISION_QUESTIONS[key]), 90), group: 'Questions' });
     for (const question of blueprint.questions.filter(entry => entry.scope === 'section')) options.push({ value: { kind: 'question', key: `question:${question.id}` }, label: `${sectionTitle(blueprint, question.sectionId)}: ${clip(question.text, 80)}`, group: 'Questions' });
-    for (const [section, topics] of Object.entries(AREAS)) {
-      if (blueprint.sections[section]?.notApplicable) continue;
-      for (const [area, name] of topics) options.push({ value: { kind: 'question', key: `topic:${section}:${area}` }, label: `${sectionTitle(blueprint, section)}: ${clip(questionText(blueprint, `topic:${section}:${area}`, name), 70)}`, group: 'Questions' });
+    for (const section of Object.keys(AREAS)) {
+      if (blueprint.sections[section]?.notApplicable || !hasPage(blueprint, section)) continue;
+      for (const [area, name] of topicsOf(blueprint, section)) options.push({ value: { kind: 'question', key: `topic:${section}:${area}` }, label: `${sectionTitle(blueprint, section)}: ${clip(questionText(blueprint, `topic:${section}:${area}`, name), 70)}`, group: 'Questions' });
     }
     for (const component of blueprint.components.slice(0, 50)) for (const question of blueprint.questions.filter(entry => entry.scope === 'component')) {
       options.push({ value: { kind: 'question', key: `component:${component.id}:${question.id}` }, label: `${clip(component.name || 'Unnamed component', 40)}: ${clip(question.text, 60)}`, group: 'Questions' });
@@ -945,7 +1024,7 @@ globalThis.PromptboardOriginModel = (() => {
     out.push(`[section ${id}] ${sectionTitle(blueprint, id)}${notNeeded ? ' — marked as not needed for this project' : ''}`);
     if (custom && hasText(custom.description)) out.push(`  description: ${clip(custom.description, 1500)}`);
     if (!custom && QUESTIONS[id]) out.push(`  guiding question: ${questionText(blueprint, `section:${id}`, QUESTIONS[id])}`);
-    if (id === 'vision') for (const key of VISION.filter(key => !brief || hasText(blueprint.vision[key]))) out.push(`  [vision ${key}] ${questionText(blueprint, `vision:${key}`, VISION_QUESTIONS[key])} → ${hasText(blueprint.vision[key]) ? clip(blueprint.vision[key], brief ? 300 : 2000) : '(no answer yet)'}`);
+    if (id === 'vision') for (const key of visionFields(blueprint).filter(key => !brief || hasText(blueprint.vision[key]))) out.push(`  [vision ${key}] ${questionText(blueprint, `vision:${key}`, VISION_QUESTIONS[key])} → ${hasText(blueprint.vision[key]) ? clip(blueprint.vision[key], brief ? 300 : 2000) : '(no answer yet)'}`);
     for (const collection of SECTION_RECORDS[id] || []) {
       const entries = blueprint[collection];
       if (brief) { if (entries.length) out.push(`  ${collection} (${entries.length}): ${entries.slice(0, 30).map(entry => `${clip(recordTitle(blueprint, collection, entry), 60)} [${entry.id}]`).join('; ')}`); }
@@ -957,7 +1036,7 @@ globalThis.PromptboardOriginModel = (() => {
     }
     if (AREAS[id]) {
       const open = [];
-      for (const [area, name] of AREAS[id]) {
+      for (const [area, name] of topicsOf(blueprint, id)) {
         const answers = blueprint.areas.filter(entry => entry.section === id && entry.area === area);
         const topic = questionText(blueprint, `topic:${id}:${area}`, name);
         if (!answers.length) { open.push(`${topic} [${id}:${area}]`); continue; }
@@ -1021,7 +1100,7 @@ globalThis.PromptboardOriginModel = (() => {
       const [kind, a, b] = scope.key.split(':');
       let focus = '';
       if (kind === 'vision' && VISION.includes(a)) { label2 = `the question “${questionText(blueprint, scope.key, VISION_QUESTIONS[a])}”`; focus = `[vision ${a}] ${questionText(blueprint, scope.key, VISION_QUESTIONS[a])} → ${hasText(vision[a]) ? vision[a] : '(no answer yet)'}`; }
-      else if (kind === 'topic' && AREAS[a]?.some(([area]) => area === b)) {
+      else if (kind === 'topic' && hasTopic(blueprint, a, b)) {
         const name = questionText(blueprint, scope.key, label(a, b));
         label2 = `the topic “${name}” in ${sectionTitle(blueprint, a)}`;
         const answers = blueprint.areas.filter(entry => entry.section === a && entry.area === b);
@@ -1075,12 +1154,12 @@ globalThis.PromptboardOriginModel = (() => {
   /** The writable places of one section: its built-in content, its topics, its own questions and its blocks. */
   function sectionGuide(blueprint, id) {
     const custom = blueprint.customSections.find(entry => entry.id === id), out = [];
-    if (id === 'vision') out.push(`Answer each question of this section with {"kind":"vision","field":"<field>"}: ${VISION.map(key => `${key} (${clip(questionText(blueprint, `vision:${key}`, VISION_QUESTIONS[key]), 60)})`).join('; ')}.`);
+    if (id === 'vision') out.push(`Answer each question of this section with {"kind":"vision","field":"<field>"}: ${visionFields(blueprint).map(key => `${key} (${clip(questionText(blueprint, `vision:${key}`, VISION_QUESTIONS[key]), 60)})`).join('; ')}.`);
     for (const collection of GUIDE_RECORDS[id] || []) out.push(`Add a new ${addFormat(collection)}; ${changeFormat(collection)} for a [${collection} <id>] line.`);
     if (id === 'architecture') out.push('Link components to their layer (layerId) and technologies (technologyIds). Name each connection with a label and a protocol.');
     if (AREAS[id]) {
       out.push(`Answer the topics of this section. A new answer: {"kind":"add","collection":"areas"} with "section":"${id}", "area":"<topic id>", "title" (the answer in one line), "description" (the details), and links componentIds, requirementIds, technologyIds. Improve an answer with {"kind":"record","collection":"areas","id":"<id>","field":"title" or "description"}.`);
-      out.push(`Topics (topic id: name): ${AREAS[id].map(([area, name]) => `${area}: ${clip(questionText(blueprint, `topic:${id}:${area}`, name), 60)}`).join('; ')}.`);
+      out.push(`Topics (topic id: name): ${topicsOf(blueprint, id).map(([area, name]) => `${area}: ${clip(questionText(blueprint, `topic:${id}:${area}`, name), 60)}`).join('; ')}.`);
     }
     if (custom) out.push(`Describe the section with {"kind":"section","section":"${id}","field":"description"}.`);
     const asked = blueprint.questions.filter(entry => entry.scope === 'section' && entry.sectionId === id);
@@ -1121,8 +1200,11 @@ globalThis.PromptboardOriginModel = (() => {
         const own = [AREAS[id] && `topic answers (areas, section "${id}")`, id === 'vision' && 'the vision fields', blueprint.customSections.some(entry => entry.id === id) && 'its description',
           blueprint.questions.some(entry => entry.scope === 'section' && entry.sectionId === id) && 'its questions', blueprint.blocks.some(entry => entry.sectionId === id) && 'its blocks'].filter(Boolean);
         return `- ${place(id)}: ${[...records.map(noun => `${noun} records`), ...own].join(', ') || 'blocks'}`;
-      }), `New records: ${SUGGEST_ADD.filter(collection => !['areas', 'blocks'].includes(collection)).map(addFormat).join('. ')}.`,
-      'A topic answer: {"kind":"add","collection":"areas"} with "section", "area" (the topic id), "title" (one line) and "description" (the details).', `New block in any section: ${NEW_BLOCK}.`];
+      }), ...(sectionIds.length ? [] : ['This project has no pages yet: answer in the chat and suggest nothing.']),
+      // Only what the project's pages hold: a removed page's records, topics and fields are never suggested.
+      ...(SUGGEST_ADD.some(collection => PAGE_OF[collection] && hasPage(blueprint, PAGE_OF[collection])) ? [`New records: ${SUGGEST_ADD.filter(collection => PAGE_OF[collection] && hasPage(blueprint, PAGE_OF[collection])).map(addFormat).join('. ')}.`] : []),
+      ...(Object.keys(AREAS).some(section => hasPage(blueprint, section)) ? ['A topic answer: {"kind":"add","collection":"areas"} with "section", "area" (the topic id), "title" (one line) and "description" (the details).'] : []),
+      ...(sectionIds.length ? [`New block in any section: ${NEW_BLOCK}.`] : [])];
     }
     return [`# Where to write (${where})`, 'Put each finding into the place it belongs to in the selected part, as listed here. Fill every empty field, unanswered topic, unanswered question and empty block that your research can answer, and improve weak ones. Write the full content into the fields: do not leave the details only in your answer text.',
       'Add records of other sections only when a finding belongs there (for example a decision between options, a risk or a source). Suggest tasks (items) only when the selected part is the task plan or the person asks for tasks.',
@@ -1238,8 +1320,8 @@ globalThis.PromptboardOriginModel = (() => {
     return ids.includes(given) ? given : ids.find(id => [sectionTitle(blueprint, id), sectionLabel(id)].some(name => sameWords(name, given))) || '';
   };
   const areaFor = (blueprint, section, given) => {
-    if (typeof given !== 'string' || !AREAS[section]) return '';
-    return AREAS[section].find(([id, name]) => id === given || [id, name, questionText(blueprint, `topic:${section}:${id}`, name)].some(word => sameWords(word, given)))?.[0] || '';
+    if (typeof given !== 'string' || !AREAS[section] || !hasPage(blueprint, section)) return '';
+    return topicsOf(blueprint, section).find(([id, name]) => id === given || [id, name, questionText(blueprint, `topic:${section}:${id}`, name)].some(word => sameWords(word, given)))?.[0] || '';
   };
   const BLOCK_WORDS = { qa: ['qa', 'qanda', 'questions', 'question', 'questionsandanswers', 'faq'], table: ['table', 'grid', 'matrix'], checklist: ['checklist', 'checks', 'list', 'todo', 'todos'],
     flow: ['flow', 'flowchart', 'diagram', 'graph', 'process', 'map', 'mindmap', 'pipeline'], notes: ['notes', 'note', 'text', 'markdown', 'summary'] };
@@ -1355,14 +1437,14 @@ globalThis.PromptboardOriginModel = (() => {
   /** The current value of a target, '' when empty, or undefined when the target no longer exists. */
   function researchTargetValue(blueprint, target) {
     if (target.kind === 'idea') return blueprint.idea || '';
-    if (target.kind === 'vision') return VISION.includes(target.field) ? blueprint.vision[target.field] || '' : undefined;
-    if (target.kind === 'record') { const entry = blueprint[target.collection]?.find(item => item.id === target.id); return entry ? entry[target.field] ?? (SINGLE_LINKS.has(target.field) ? '' : LINKS[target.collection]?.[target.field] ? [] : '') : undefined; }
+    if (target.kind === 'vision') return visionFields(blueprint).includes(target.field) ? blueprint.vision[target.field] || '' : undefined;
+    if (target.kind === 'record') { const found = blueprint[target.collection]?.find(item => item.id === target.id), entry = found && hasPage(blueprint, pageOfRecord(target.collection, found) || HOME) ? found : null; return entry ? entry[target.field] ?? (SINGLE_LINKS.has(target.field) ? '' : LINKS[target.collection]?.[target.field] ? [] : '') : undefined; }
     if (target.kind === 'answer') return blueprint.questions.some(item => item.id === target.questionId && item.scope === 'section') ? blueprint.answers[target.questionId] || '' : undefined;
     if (target.kind === 'componentAnswer') {
       const component = blueprint.components.find(item => item.id === target.componentId);
       return component && blueprint.questions.some(item => item.id === target.questionId && item.scope === 'component') ? component.answers?.[target.questionId] || '' : undefined;
     }
-    if (target.kind === 'topic') return AREAS[target.section]?.some(([area]) => area === target.area) ? blueprint.areas.find(item => item.section === target.section && item.area === target.area)?.title || '' : undefined;
+    if (target.kind === 'topic') return hasTopic(blueprint, target.section, target.area) ? blueprint.areas.find(item => item.section === target.section && item.area === target.area)?.title || '' : undefined;
     if (target.kind === 'section') { const custom = blueprint.customSections.find(item => item.id === target.section); return custom && target.field === 'description' ? custom.description || '' : undefined; }
     if (target.kind === 'block') return blockSlot(blueprint, target)?.get();
     if (target.kind === 'blockAdd') return blueprint.blocks.some(item => item.id === target.block) ? null : undefined;
@@ -1379,6 +1461,7 @@ globalThis.PromptboardOriginModel = (() => {
     const target = proposal.target, pending = [];
     const current = researchTargetValue(blueprint, target);
     if (current === undefined) return { conflict: 'The part this suggestion changes no longer exists.', missing: true };
+    if (target.kind === 'add' && PAGE_OF[target.collection] && !hasPage(blueprint, PAGE_OF[target.collection])) return { conflict: 'The page for this suggestion was removed from the project.', missing: true };
     // Resolve one link value: @references through `refs`, IDs only while their record still exists.
     const resolve = (collection, field, given, recordId) => {
       const to = LINKS[collection][field], exists = id => blueprint[to].some(entry => entry.id === id);
@@ -1584,6 +1667,8 @@ globalThis.PromptboardOriginModel = (() => {
       }
     } else if (source.kind === 'add') {
       if (!SUGGEST_ADD.includes(source.collection)) reject(`New records can be: ${SUGGEST_ADD.join(', ')}.`);
+      // Records live on their page: a project without that page (removed, or never added) takes none.
+      if (!hasPage(blueprint, PAGE_OF[source.collection])) reject(`This project has no ${sectionLabel(PAGE_OF[source.collection])} page, so it takes no new ${RESEARCH_NOUN[source.collection] || source.collection} records.`);
       if (!raw.value || typeof raw.value !== 'object' || Array.isArray(raw.value)) reject('A new record needs its fields.');
       target = { kind: 'add', collection: source.collection };
       value = {};
