@@ -225,7 +225,8 @@ test('Base pages join back to the exact file and follow section anchors outside 
   const pages = contextPages(markdown);
   assert.equal(pages.map(page => page.markdown).join(''), markdown);
   assert.deepEqual(pages.slice(0, 3).map(page => [page.id, page.title]), [['header', 'Project Context: Notes'], ['s-overview', 'Overview'], ['s-vision', 'Vision & Scope']]);
-  assert.match(pages[1].markdown, /^<a id="ctx-phase-define"><\/a>\n## 1\. «phase-label»/, 'a phase heading travels with its first section');
+  assert.match(pages[1].markdown, /^<a id="ctx-section-overview"><\/a>\n## Overview/, 'the Overview comes first, above the categories');
+  assert.match(pages[2].markdown, /^<a id="ctx-phase-define"><\/a>\n## 1\. «phase-label»/, 'a phase heading travels with its first section');
   assert.ok(pages.some(page => page.id === 'report') && pages.at(-1).id === 'layout');
   const edited = 'Intro\n```\n<a id="ctx-section-fake"></a>\n```\n' + 'x'.repeat(10) + '\n' + ('y'.repeat(1000) + '\n').repeat(600);
   const parts = contextPages(edited);

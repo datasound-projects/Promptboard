@@ -47,7 +47,8 @@ export const FIELDS = {
   blocks: ['sectionId', 'type', 'title', 'text', 'entries', 'checks', 'columns', 'rows', 'nodes', 'edges'],
 };
 // `sequence` only reserves the next display key; it is application bookkeeping, not design content.
-export const TOP_FIELDS = ['idea', 'vision', 'sections', 'labels', 'answers', 'questionText', 'layout', 'sequence', ...Object.keys(FIELDS)];
+// `structure` is the sidebar itself: the export follows it (categories, their pages, shown topics and vision fields).
+export const TOP_FIELDS = ['idea', 'vision', 'sections', 'labels', 'answers', 'questionText', 'layout', 'sequence', 'structure', ...Object.keys(FIELDS)];
 
 const NOT_PROVIDED = '_Not provided._';
 // Lines that would change the document's own structure (fences, headings, setext underlines, raw HTML)
@@ -172,7 +173,9 @@ function exporter(record) {
       return out;
     },
     vision() {
-      return Model.VISION.filter(key => key !== 'architectureSummary' || bp.vision[key].trim()).map(key => {
+      // The vision questions the page shows, in its order; text kept in a field the page no longer shows is still exported.
+      const shown = Model.visionFields(bp), hidden = Model.VISION.filter(key => !shown.includes(key) && bp.vision[key].trim());
+      return [...shown, ...hidden].map(key => {
         const list = ['users', 'useCases', 'inScope', 'outOfScope', 'successCriteria'].includes(key);
         const text = list ? listOf(bp.vision[key], `vision ${key}`) : block(bp.vision[key], `vision ${key}`);
         return `**${inline(Model.questionText(bp, `vision:${key}`, Model.VISION_QUESTIONS[key]), `vision ${key} wording`)}** (\`vision.${key}\`)\n\n${text || NOT_PROVIDED}\n`;
@@ -318,7 +321,7 @@ function exporter(record) {
   const AREA_STATE = { draft: 'In progress', defined: 'Defined', needs_decision: 'Needs decision', assumption: 'Based on an assumption' };
   for (const id of Object.keys(Model.AREAS)) SECTION[id] = () => {
     const out = [], unanswered = [];
-    for (const [topic, builtin] of Model.AREAS[id]) {
+    for (const [topic, builtin] of Model.topicsOf(bp, id)) {
       const rows = bp.areas.filter(item => item.section === id && item.area === topic);
       const name = `${inline(Model.questionText(bp, `topic:${id}:${topic}`, builtin), `topic ${id} ${topic} wording`)} (\`${topic}\`)`;
       if (!rows.length) { unanswered.push(name); continue; }
@@ -334,6 +337,12 @@ function exporter(record) {
 
   // ---- Assemble in sidebar order ----
   const toc = [], parts = [];
+  // The Overview is the project's home, above its categories.
+  toc.push('- [Overview](#ctx-section-overview)');
+  parts.push('<a id="ctx-section-overview"></a>', '## Overview', '', '- **Section ID:** `overview`',
+    `- **Guiding question:** ${inline(Model.questionText(bp, 'section:overview', Model.QUESTIONS.overview), 'section overview question')}`,
+    `- **State:** ${Model.SECTION_STATE[states.overview]?.[1] || 'Not started'}`, '', ...SECTION.overview(), '');
+  if (!Model.phaseList(bp).length) parts.push('_This project has no categories or pages yet._', '');
   Model.phaseList(bp).forEach((phase, index) => {
     toc.push(`- [${index + 1}. ${inline(phase.label, `phase ${phase.id} label`)}](#ctx-phase-${phase.id})`);
     parts.push(`<a id="ctx-phase-${phase.id}"></a>`, `## ${index + 1}. ${inline(phase.label, `phase ${phase.id} label`)}`, '');

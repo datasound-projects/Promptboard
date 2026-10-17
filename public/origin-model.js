@@ -107,7 +107,15 @@ globalThis.PromptboardOriginModel = (() => {
       topics: {}, vision: null };
   }
   const blankStructure = () => ({ phases: [], sections: [], topics: {}, vision: null });
-  const structureOf = blueprint => blueprint?.structure || defaultStructure(blueprint?.customSections);
+  /** The structure, with every page of the project's own in it (one not listed yet sits last in its category). */
+  const structureOf = blueprint => {
+    const structure = blueprint?.structure;
+    if (!structure) return defaultStructure(blueprint?.customSections);
+    const missing = (blueprint.customSections || []).filter(custom => !structure.sections.some(entry => entry.id === custom.id));
+    if (!missing.length) return structure;
+    const phases = structure.phases.length ? structure.phases : [{ id: 'pages', title: 'Pages' }];
+    return { ...structure, phases, sections: [...structure.sections, ...missing.map(custom => ({ id: custom.id, phase: phases.some(phase => phase.id === custom.phase) ? custom.phase : phases[0].id }))] };
+  };
   const pageIds = blueprint => structureOf(blueprint).sections.map(entry => entry.id);
   /** Whether a page is part of this project (the Overview always is). */
   const hasPage = (blueprint, id) => id === HOME || pageIds(blueprint).includes(id);
@@ -255,8 +263,7 @@ globalThis.PromptboardOriginModel = (() => {
     } else placed = defaultStructure(blueprint.customSections).sections.filter(entry => categoryIds.has(entry.phase));
     // A page of the project's own that the structure does not list is kept (its content is never dropped silently).
     for (const custom of blueprint.customSections) {
-      if (placed.some(entry => entry.id === custom.id)) continue;
-      fix();
+      if (placed.some(entry => entry.id === custom.id)) continue; // Completing the structure is not a repair the person needs to hear about.
       if (!structurePhases.length) structurePhases.push({ id: 'pages', title: 'Pages' }), categoryIds.add('pages');
       placed.push({ id: custom.id, phase: categoryIds.has(custom.phase) ? custom.phase : structurePhases[0].id });
     }
@@ -573,7 +580,7 @@ globalThis.PromptboardOriginModel = (() => {
     // Dependencies with their verification state, tests, milestone, planning answers.
     for (const dependency of dependencies) { use('dependencies', dependency); cite(dependency); }
     push('Dependencies', bullets(dependencies.map(entry => `${entry.name}${entry.version ? ` ${entry.version}` : ''} (${label('dependencyType', entry.type)}) — ${VERIFICATION_LABELS[verification(entry, blueprint.sources)].toLowerCase()}`)));
-    const areas = blueprint.areas.filter(area => !notNeeded(area.section) && hasText(area.title)
+    const areas = blueprint.areas.filter(area => !notNeeded(area.section) && hasTopic(blueprint, area.section, area.area) && hasText(area.title)
       && (area.componentIds.some(id => componentIds.has(id)) || area.requirementIds.some(id => requirementIds.has(id)) || explicit('areas').has(area.id)));
     for (const area of areas) use('areas', area, `${sectionLabel(area.section)} · ${label(area.section, area.area)}`);
     const tests = areas.filter(area => area.section === 'testing'), plans = areas.filter(area => area.section !== 'testing');
@@ -1716,7 +1723,289 @@ globalThis.PromptboardOriginModel = (() => {
       evidence: (Array.isArray(raw.evidence) ? raw.evidence : []).filter(item => typeof item === 'string' && item.trim()).slice(0, 10).map(item => clip(item, 500)) };
   }
 
-  return { SCHEMA, VERSION, ID, PHASES, SECTIONS, ENUMS, AREAS, VISION, LIMITS, CONTEXT_COLLECTIONS, QUESTIONS, VISION_QUESTIONS, COMPONENT_FIELDS, SECTION_STATE, VERIFICATION_LABELS,
+
+  // ---- Changing the structure. Pure edits of a blueprint in place, shared by the page and its tests. `newId` makes
+  // fresh IDs. Each returns { ok } or { error }; removing returns what it removed. After a removal the caller runs
+  // normalizeBlueprint, which also drops links that pointed at what was removed.
+  const PAGE_RECORDS = { requirements: ['requirements'], architecture: ['components', 'connections', 'layers'], technology: ['technologies'], dependencies: ['dependencies'],
+    decisions: ['decisions'], research: ['assumptions', 'sources', 'risks'], plan: ['milestones', 'items'] };
+  const isBuiltinPhase = id => PHASES.some(phase => phase.id === id);
+  const isBuiltinPage = id => id !== HOME && SECTIONS.some(section => section.id === id);
+  /** The stored structure, written into the blueprint first if it has none yet. */
+  function editableStructure(blueprint) {
+    blueprint.structure = { ...structureOf(blueprint) };
+    blueprint.structure.phases = blueprint.structure.phases.map(phase => ({ ...phase }));
+    blueprint.structure.sections = blueprint.structure.sections.map(entry => ({ ...entry }));
+    blueprint.structure.topics = { ...(blueprint.structure.topics || {}) };
+    return blueprint.structure;
+  }
+  const moveTo = (list, item, index) => { list.splice(list.indexOf(item), 1); list.splice(Math.max(0, Math.min(index, list.length)), 0, item); };
+  function addCategory(blueprint, { id, title = 'New category', index } = {}) {
+    const structure = editableStructure(blueprint);
+    if (structure.phases.length >= STRUCTURE_LIMITS.phases) return { error: `A project can have at most ${STRUCTURE_LIMITS.phases} categories.` };
+    if (!ID.test(id || '') || structure.phases.some(phase => phase.id === id)) return { error: 'The category needs a new ID.' };
+    structure.phases.splice(index ?? structure.phases.length, 0, { id, title: String(title).trim().slice(0, 60) || 'New category' });
+    return { ok: true, id };
+  }
+  function renameCategory(blueprint, id, title) {
+    const structure = editableStructure(blueprint), phase = structure.phases.find(entry => entry.id === id), value = String(title || '').trim().slice(0, 60);
+    if (!phase) return { error: 'This category no longer exists.' };
+    if (isBuiltinPhase(id)) { if (value && value !== PHASES.find(entry => entry.id === id).label) blueprint.labels.phases[id] = value; else delete blueprint.labels.phases[id]; }
+    else phase.title = value || 'Untitled category';
+    return { ok: true };
+  }
+  function moveCategory(blueprint, id, index) {
+    const structure = editableStructure(blueprint), phase = structure.phases.find(entry => entry.id === id);
+    if (!phase) return { error: 'This category no longer exists.' };
+    moveTo(structure.phases, phase, index);
+    return { ok: true };
+  }
+  /** A page in a category: `kind` is "custom" (a page of the project's own) or a built-in page's ID. */
+  function addPage(blueprint, { phase, kind = 'custom', id, title = 'New page', index } = {}) {
+    const structure = editableStructure(blueprint);
+    if (!structure.phases.some(entry => entry.id === phase)) return { error: 'Choose a category for the page.' };
+    let pageId = kind;
+    if (kind === 'custom') {
+      if (blueprint.customSections.length >= LIMITS.customSections) return { error: `A project can have at most ${LIMITS.customSections} pages of its own.` };
+      if (!ID.test(id || '') || isBuiltinPage(id) || id === HOME || blueprint.customSections.some(entry => entry.id === id)) return { error: 'The page needs a new ID.' };
+      blueprint.customSections.push({ id, origin: 'human', phase, title: String(title).trim().slice(0, 80) || 'New page', description: '', notApplicable: false });
+      pageId = id;
+    } else if (!isBuiltinPage(kind)) return { error: 'This kind of page does not exist.' };
+    else if (structure.sections.some(entry => entry.id === kind)) return { error: 'This page is already part of the project.' };
+    const inPhase = structure.sections.filter(entry => entry.phase === phase), at = Math.max(0, Math.min(index ?? inPhase.length, inPhase.length));
+    const entry = { id: pageId, phase };
+    structure.sections.splice(at < inPhase.length ? structure.sections.indexOf(inPhase[at]) : inPhase.length ? structure.sections.indexOf(inPhase.at(-1)) + 1 : structure.sections.length, 0, entry);
+    return { ok: true, id: pageId };
+  }
+  function renamePage(blueprint, id, title) {
+    const custom = blueprint.customSections.find(entry => entry.id === id), value = String(title || '').trim();
+    if (custom) { custom.title = value.slice(0, 80) || 'New page'; return { ok: true }; }
+    if (!isBuiltinPage(id)) return { error: 'This page no longer exists.' };
+    if (value && value !== sectionLabel(id)) blueprint.labels.sections[id] = value.slice(0, 60); else delete blueprint.labels.sections[id];
+    return { ok: true };
+  }
+  /** Move a page to `index` among the pages of `phase` (its own category when not given). */
+  function movePage(blueprint, id, { phase, index } = {}) {
+    const structure = editableStructure(blueprint), entry = structure.sections.find(item => item.id === id);
+    if (!entry) return { error: 'This page no longer exists.' };
+    const target = phase ?? entry.phase;
+    if (!structure.phases.some(item => item.id === target)) return { error: 'This category no longer exists.' };
+    structure.sections.splice(structure.sections.indexOf(entry), 1);
+    entry.phase = target;
+    const custom = blueprint.customSections.find(item => item.id === id); if (custom) custom.phase = target;
+    const others = structure.sections.filter(item => item.phase === target), at = Math.max(0, Math.min(index ?? others.length, others.length));
+    structure.sections.splice(at < others.length ? structure.sections.indexOf(others[at]) : others.length ? structure.sections.indexOf(others.at(-1)) + 1 : structure.sections.length, 0, entry);
+    return { ok: true };
+  }
+  /** What a page holds, for a removal's confirmation. */
+  function pageContent(blueprint, id) {
+    const records = (PAGE_RECORDS[id] || []).reduce((sum, collection) => sum + blueprint[collection].length, 0) + blueprint.areas.filter(entry => entry.section === id).length
+      + (id === 'vision' ? VISION.filter(key => hasText(blueprint.vision[key])).length : 0);
+    const questions = blueprint.questions.filter(entry => entry.scope === 'section' && entry.sectionId === id);
+    const answers = questions.filter(entry => hasText(blueprint.answers[entry.id])).length, blocks = blueprint.blocks.filter(entry => entry.sectionId === id).length;
+    const custom = blueprint.customSections.find(entry => entry.id === id);
+    return { records, questions: questions.length, answers, blocks, description: hasText(custom?.description), total: records + questions.length + blocks + (hasText(custom?.description) ? 1 : 0) };
+  }
+  /** Remove a page and everything on it: its records, topic answers, questions with their answers, blocks and map node. */
+  function removePage(blueprint, id) {
+    const structure = editableStructure(blueprint);
+    if (id === HOME || !structure.sections.some(entry => entry.id === id)) return { error: 'This page cannot be removed.' };
+    const removed = pageContent(blueprint, id);
+    structure.sections = structure.sections.filter(entry => entry.id !== id);
+    for (const collection of PAGE_RECORDS[id] || []) blueprint[collection] = [];
+    blueprint.areas = blueprint.areas.filter(entry => entry.section !== id);
+    if (id === 'vision') { for (const key of VISION) blueprint.vision[key] = ''; structure.vision = null; }
+    const asked = blueprint.questions.filter(entry => entry.scope === 'section' && entry.sectionId === id);
+    for (const question of asked) delete blueprint.answers[question.id];
+    blueprint.questions = blueprint.questions.filter(entry => !asked.includes(entry));
+    blueprint.blocks = blueprint.blocks.filter(entry => entry.sectionId !== id);
+    blueprint.customSections = blueprint.customSections.filter(entry => entry.id !== id);
+    delete blueprint.labels.sections[id]; delete blueprint.sections[id]; delete structure.topics[id];
+    for (const key of Object.keys(blueprint.questionText)) if (key === `section:${id}` || key.startsWith(`topic:${id}:`) || (id === 'vision' && key.startsWith('vision:'))) delete blueprint.questionText[key];
+    delete blueprint.layout.map.nodes[id];
+    blueprint.layout.map.links = blueprint.layout.map.links.filter(link => link.from !== id && link.to !== id);
+    return { ok: true, removed };
+  }
+  function removeCategory(blueprint, id) {
+    const structure = editableStructure(blueprint);
+    if (!structure.phases.some(entry => entry.id === id)) return { error: 'This category no longer exists.' };
+    const pages = structure.sections.filter(entry => entry.phase === id).map(entry => entry.id);
+    for (const page of pages) removePage(blueprint, page);
+    blueprint.structure.phases = blueprint.structure.phases.filter(entry => entry.id !== id);
+    delete blueprint.labels.phases[id];
+    return { ok: true, pages: pages.length };
+  }
+  /** A copy of a page of the project's own, with its description, questions and answers, and blocks, after the original. */
+  function duplicatePage(blueprint, id, newId) {
+    const custom = blueprint.customSections.find(entry => entry.id === id);
+    if (!custom) return { error: 'Only pages of your own can be copied; a built-in page exists once.' };
+    if (blueprint.customSections.length >= LIMITS.customSections) return { error: `A project can have at most ${LIMITS.customSections} pages of its own.` };
+    const asked = blueprint.questions.filter(entry => entry.scope === 'section' && entry.sectionId === id), blocks = blueprint.blocks.filter(entry => entry.sectionId === id);
+    if (blueprint.questions.length + asked.length > LIMITS.questions || blueprint.blocks.length + blocks.length > LIMITS.blocks) return { error: 'The copy would pass the limit for questions or blocks.' };
+    const structure = editableStructure(blueprint); // Before the copy exists, so it is placed once, after the original.
+    const copy = { ...custom, id: newId(), origin: 'human', title: `${custom.title.trim() || 'Untitled page'} (copy)`.slice(0, 80) };
+    blueprint.customSections.push(copy);
+    for (const question of asked) { const next = { ...question, id: newId(), sectionId: copy.id }; blueprint.questions.push(next); if (blueprint.answers[question.id]) blueprint.answers[next.id] = blueprint.answers[question.id]; }
+    for (const block of blocks) blueprint.blocks.push({ ...structuredClone(block), id: newId(), sectionId: copy.id });
+    structure.sections.splice(structure.sections.findIndex(entry => entry.id === id) + 1, 0, { id: copy.id, phase: custom.phase });
+    return { ok: true, id: copy.id };
+  }
+  /** A copy of a category after the original, with copies of its pages of the project's own (built-in pages exist once). */
+  function duplicateCategory(blueprint, id, newId) {
+    const structure = editableStructure(blueprint), phase = structure.phases.find(entry => entry.id === id);
+    if (!phase) return { error: 'This category no longer exists.' };
+    const added = addCategory(blueprint, { id: newId(), title: `${phaseTitle(blueprint, id)} (copy)`, index: structure.phases.indexOf(phase) + 1 });
+    if (added.error) return added;
+    const pages = blueprint.structure.sections.filter(entry => entry.phase === id).map(entry => entry.id);
+    let copied = 0;
+    for (const page of pages.filter(item => blueprint.customSections.some(entry => entry.id === item))) {
+      const copy = duplicatePage(blueprint, page, newId);
+      if (copy.ok) { movePage(blueprint, copy.id, { phase: added.id }); renamePage(blueprint, copy.id, blueprint.customSections.find(entry => entry.id === page).title); copied++; }
+    }
+    return { ok: true, id: added.id, copied, skipped: pages.length - copied };
+  }
+  // Topics of a built-in topic page, and the Vision page's questions: shown, hidden and ordered per project.
+  function moveTopic(blueprint, section, area, step) {
+    const structure = editableStructure(blueprint), order = topicsOf(blueprint, section).map(([id]) => id), at = order.indexOf(area);
+    if (at < 0 || !order[at + step]) return { error: 'This topic cannot move further.' };
+    [order[at], order[at + step]] = [order[at + step], order[at]];
+    structure.topics[section] = order;
+    return { ok: true };
+  }
+  function removeTopic(blueprint, section, area) {
+    const structure = editableStructure(blueprint), order = topicsOf(blueprint, section).map(([id]) => id);
+    if (!order.includes(area)) return { error: 'This topic is not on the page.' };
+    const removed = blueprint.areas.filter(entry => entry.section === section && entry.area === area).length;
+    structure.topics[section] = order.filter(id => id !== area);
+    blueprint.areas = blueprint.areas.filter(entry => !(entry.section === section && entry.area === area));
+    delete blueprint.questionText[`topic:${section}:${area}`];
+    return { ok: true, removed };
+  }
+  function restoreTopic(blueprint, section, area) {
+    const structure = editableStructure(blueprint), order = topicsOf(blueprint, section).map(([id]) => id);
+    if (!AREAS[section]?.some(([id]) => id === area) || order.includes(area)) return { error: 'This topic is already on the page.' };
+    structure.topics[section] = [...order, area];
+    return { ok: true };
+  }
+  function moveVisionField(blueprint, key, step) {
+    const structure = editableStructure(blueprint), order = [...visionFields(blueprint)], at = order.indexOf(key);
+    if (at < 0 || !order[at + step]) return { error: 'This question cannot move further.' };
+    [order[at], order[at + step]] = [order[at + step], order[at]];
+    structure.vision = order;
+    return { ok: true };
+  }
+  function removeVisionField(blueprint, key) {
+    const structure = editableStructure(blueprint), order = visionFields(blueprint);
+    if (!order.includes(key)) return { error: 'This question is not on the page.' };
+    structure.vision = order.filter(item => item !== key);
+    blueprint.vision[key] = ''; delete blueprint.questionText[`vision:${key}`];
+    return { ok: true };
+  }
+  function restoreVisionField(blueprint, key) {
+    const structure = editableStructure(blueprint), order = visionFields(blueprint);
+    if (!VISION_SHOWN.includes(key) || order.includes(key)) return { error: 'This question is already on the page.' };
+    structure.vision = [...order, key];
+    return { ok: true };
+  }
+  // Fields of a page: its own questions and blocks. They move between pages, are copied, and a question and a notes
+  // block turn into each other with their text.
+  const pageExists = (blueprint, id) => id !== HOME && hasPage(blueprint, id);
+  function moveQuestion(blueprint, questionId, { section, step } = {}) {
+    const list = blueprint.questions, question = list.find(entry => entry.id === questionId && entry.scope === 'section');
+    if (!question) return { error: 'This question no longer exists.' };
+    if (section !== undefined) { if (!pageExists(blueprint, section)) return { error: 'Choose a page of this project.' }; moveTo(list, question, list.length); question.sectionId = section; return { ok: true }; }
+    const own = list.filter(entry => entry.scope === 'section' && entry.sectionId === question.sectionId), other = own[own.indexOf(question) + step];
+    if (!other) return { error: 'This question cannot move further.' };
+    const a = list.indexOf(question), b = list.indexOf(other); [list[a], list[b]] = [list[b], list[a]];
+    return { ok: true };
+  }
+  function duplicateQuestion(blueprint, questionId, newId) {
+    const question = blueprint.questions.find(entry => entry.id === questionId && entry.scope === 'section');
+    if (!question) return { error: 'This question no longer exists.' };
+    if (blueprint.questions.length >= LIMITS.questions) return { error: `A project can have at most ${LIMITS.questions} questions of its own.` };
+    const copy = { ...question, id: newId(), text: `${question.text} (copy)`.slice(0, 500) };
+    blueprint.questions.splice(blueprint.questions.indexOf(question) + 1, 0, copy);
+    if (blueprint.answers[question.id]) blueprint.answers[copy.id] = blueprint.answers[question.id];
+    return { ok: true, id: copy.id };
+  }
+  function questionToNotes(blueprint, questionId, newId) {
+    const question = blueprint.questions.find(entry => entry.id === questionId && entry.scope === 'section');
+    if (!question) return { error: 'This question no longer exists.' };
+    if (blueprint.blocks.length >= LIMITS.blocks) return { error: `A project can have at most ${LIMITS.blocks} blocks.` };
+    const block = { id: newId(), origin: 'human', sectionId: question.sectionId, type: 'notes', title: fit(question.text, 120), text: blueprint.answers[question.id] || '' };
+    blueprint.blocks.push(block);
+    delete blueprint.answers[question.id]; blueprint.questions = blueprint.questions.filter(entry => entry !== question);
+    return { ok: true, id: block.id };
+  }
+  function notesToQuestion(blueprint, blockId, newId) {
+    const block = blueprint.blocks.find(entry => entry.id === blockId && entry.type === 'notes');
+    if (!block) return { error: 'Only a notes block turns into a question.' };
+    if (blueprint.questions.length >= LIMITS.questions) return { error: `A project can have at most ${LIMITS.questions} questions of its own.` };
+    const question = { id: newId(), origin: 'human', scope: 'section', sectionId: block.sectionId, text: fit(block.title.trim() || 'Notes', 500) };
+    blueprint.questions.push(question);
+    if (hasText(block.text)) blueprint.answers[question.id] = block.text;
+    blueprint.blocks = blueprint.blocks.filter(entry => entry !== block);
+    return { ok: true, id: question.id };
+  }
+  function moveBlockTo(blueprint, blockId, section) {
+    const block = blueprint.blocks.find(entry => entry.id === blockId);
+    if (!block) return { error: 'This block no longer exists.' };
+    if (!pageExists(blueprint, section)) return { error: 'Choose a page of this project.' };
+    moveTo(blueprint.blocks, block, blueprint.blocks.length); block.sectionId = section;
+    return { ok: true };
+  }
+  function duplicateBlock(blueprint, blockId, newId) {
+    const block = blueprint.blocks.find(entry => entry.id === blockId);
+    if (!block) return { error: 'This block no longer exists.' };
+    if (blueprint.blocks.length >= LIMITS.blocks) return { error: `A project can have at most ${LIMITS.blocks} blocks.` };
+    const copy = { ...structuredClone(block), id: newId(), origin: 'human', title: fit(`${block.title.trim() || blockType(block.type)[1]} (copy)`, 120) };
+    blueprint.blocks.splice(blueprint.blocks.indexOf(block) + 1, 0, copy);
+    return { ok: true, id: copy.id };
+  }
+  /** A different block type: only while the block is empty, so nothing written is reshaped or lost. */
+  function changeBlockType(blueprint, blockId, type) {
+    const block = blueprint.blocks.find(entry => entry.id === blockId);
+    if (!block) return { error: 'This block no longer exists.' };
+    if (!BLOCK_TYPES.some(([id]) => id === type)) return { error: 'Choose a block type.' };
+    if (blockStarted(block)) return { error: 'Only an empty block changes its type. A notes block can turn into a question.' };
+    const fresh = RECORD_DEFAULTS.blocks(block.title, block.sectionId, type);
+    for (const key of Object.keys(block)) if (!['id', 'origin'].includes(key)) delete block[key];
+    Object.assign(block, fresh);
+    return { ok: true };
+  }
+  /** The default blueprint's categories and pages back, without removing anything the project added. */
+  function restoreDefaultStructure(blueprint) {
+    const structure = editableStructure(blueprint), fallback = defaultStructure();
+    for (const [index, phase] of fallback.phases.entries()) if (!structure.phases.some(entry => entry.id === phase.id)) structure.phases.splice(Math.min(index, structure.phases.length), 0, { ...phase });
+    for (const entry of fallback.sections) if (!structure.sections.some(item => item.id === entry.id)) addPage(blueprint, { phase: entry.phase, kind: entry.id });
+    structure.topics = {}; blueprint.structure.vision = null;
+    return { ok: true };
+  }
+  /**
+   * Another project's structure as a starting point: its categories, pages of its own with their descriptions,
+   * questions (no answers) and empty blocks of the same kinds (table columns kept), its names and wording. No records.
+   */
+  function structureTemplate(source, newId) {
+    const blueprint = emptyBlueprint(), map = new Map();
+    const from = normalizeBlueprint(source).blueprint;
+    for (const custom of from.customSections) map.set(custom.id, newId());
+    const phaseMap = new Map(from.structure.phases.map(phase => [phase.id, isBuiltinPhase(phase.id) ? phase.id : newId()]));
+    blueprint.structure = { phases: from.structure.phases.map(phase => ({ id: phaseMap.get(phase.id), title: phase.title })),
+      sections: from.structure.sections.map(entry => ({ id: map.get(entry.id) || entry.id, phase: phaseMap.get(entry.phase) })), topics: structuredClone(from.structure.topics), vision: from.structure.vision && [...from.structure.vision] };
+    blueprint.labels = structuredClone(from.labels); blueprint.questionText = structuredClone(from.questionText);
+    blueprint.customSections = from.customSections.map(custom => ({ ...custom, id: map.get(custom.id), phase: phaseMap.get(custom.phase) }));
+    blueprint.questions = from.questions.filter(question => question.scope === 'component' || map.has(question.sectionId) || isBuiltinPage(question.sectionId))
+      .map(question => ({ ...question, id: newId(), sectionId: question.scope === 'section' ? map.get(question.sectionId) || question.sectionId : '' }));
+    blueprint.blocks = from.blocks.map(block => ({ ...RECORD_DEFAULTS.blocks(block.title, map.get(block.sectionId) || block.sectionId, block.type), id: newId(), origin: 'human',
+      ...(block.type === 'table' ? { columns: block.columns.map(column => ({ ...column })) } : {}) }));
+    return normalizeBlueprint(blueprint).blueprint;
+  }
+
+  return { HOME, STRUCTURE_LIMITS, PAGE_OF, VISION_SHOWN, defaultStructure, blankStructure, structureOf, pageIds, hasPage, topicsOf, hasTopic, visionFields, pageOfRecord,
+    PAGE_RECORDS, addCategory, renameCategory, moveCategory, addPage, renamePage, movePage, pageContent, removePage, removeCategory, duplicatePage, duplicateCategory,
+    moveTopic, removeTopic, restoreTopic, moveVisionField, removeVisionField, restoreVisionField, moveQuestion, duplicateQuestion, questionToNotes, notesToQuestion,
+    moveBlockTo, duplicateBlock, changeBlockType, restoreDefaultStructure, structureTemplate,
+    SCHEMA, VERSION, ID, PHASES, SECTIONS, ENUMS, AREAS, VISION, LIMITS, CONTEXT_COLLECTIONS, QUESTIONS, VISION_QUESTIONS, COMPONENT_FIELDS, SECTION_STATE, VERIFICATION_LABELS,
     label, sectionLabel, sectionTitle, phaseTitle, phaseList, questionText, lines, emptyBlueprint, nextKey, normalizeBlueprint, verification, isStarted, itemName, issues, readiness, sectionStates,
     composeSpec, orderItems, taskHome, taskContext, taskBody, suggestionBrief, researchTargets, researchContext, researchRecord, RESEARCH_FIELDS,
     SUGGEST_FIELDS, SUGGEST_ADD, LINKS, RECORD_DEFAULTS, researchTargetKey, researchTargetValue, researchTargetLabel, researchName, researchRef, validateResearchSuggestion, applyResearchSuggestion, resolveResearchLinks,
