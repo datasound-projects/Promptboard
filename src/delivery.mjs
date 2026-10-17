@@ -11,7 +11,7 @@ import { gh } from './github.mjs';
 import { createWriteStream } from 'node:fs';
 import { access, constants, mkdir, readFile } from 'node:fs/promises';
 import { delimiter, join } from 'node:path';
-import { git, lines, listWorktrees } from './git.mjs';
+import { git, ignoredFiles, lines, listWorktrees } from './git.mjs';
 import { killPidGroup, trackPid, untrackPid } from './providers.mjs';
 
 const OUTPUT_TAIL = 20 * 1024;
@@ -144,9 +144,10 @@ export class Delivery {
     let branch = '';
     try { branch = lines(await git(['symbolic-ref', '--quiet', '--short', 'HEAD'], { cwd: ws.path }))[0] || ''; } catch {}
     const status = lines(await git(['status', '--porcelain', '--untracked-files=all'], { cwd: ws.path }));
+    const ignored = await ignoredFiles(ws.path); // Shown before anything removes the worktree with them.
     const targetCommit = await this.#rev(ws.path, `refs/heads/${target}`);
     const ahead = Number(lines(await git(['rev-list', '--count', `${targetCommit}..${head}`], { cwd: ws.path }))[0] || 0);
-    return { taskCommit: head, branch, branchOk: branch === ws.branch, clean: status.length === 0, changes: status.slice(0, 200), targetBranch: target, targetCommit, ahead, promptRevision: task.contentRevision ?? 1, ...(await this.#mergeState(ws.path)) };
+    return { taskCommit: head, branch, branchOk: branch === ws.branch, clean: status.length === 0, changes: status.slice(0, 200), ignored: ignored.slice(0, 50), targetBranch: target, targetCommit, ahead, promptRevision: task.contentRevision ?? 1, ...(await this.#mergeState(ws.path)) };
   }
 
   /** A merge in progress in the worktree (MERGE_HEAD), its unmerged files, and those that still have conflict markers. */
@@ -378,7 +379,7 @@ export class Delivery {
    *   commit (the task's checkpoint commits stay on its branch). Made with plumbing in the repository, so no
    *   checkout is switched; the target then fast-forwards to it.
    */
-  async merge(taskId, { confirm, taskCommit, targetCommit, trigger = 'user', squash } = {}) {
+  async merge(taskId, { confirm, taskCommit, targetCommit, trigger = 'user', squash, owner = null } = {}) {
     if (confirm !== true) throw fail('Confirm the merge first.', 'CONFIRMATION_REQUIRED', 400);
     const { project, task, ws, target } = await this.#context(taskId, { working: true });
     // Column pipelines squash by default (Kanban settings → merge method); legacy boards fast-forward.
@@ -390,6 +391,8 @@ export class Delivery {
       if (!preview.eligible) throw fail(preview.problems.join(' '), 'MERGE_NOT_ELIGIBLE');
       const branchTip = await this.#rev(ws.path, `refs/heads/${ws.branch}`);
       if (branchTip !== taskCommit) throw fail('The task branch does not point at the previewed commit.', 'MERGE_STALE');
+      // The card must be able to complete before the target branch moves (no active run, no other automations).
+      await this.board.checkCompletable(taskId, { owner });
       let merged = taskCommit;
       if (squash) {
         const tree = lines(await git(['rev-parse', '--verify', `${taskCommit}^{tree}`], { cwd: ws.repositoryRoot }))[0];
@@ -416,7 +419,7 @@ export class Delivery {
       }
       const result = await this.#rev(ws.repositoryRoot, `refs/heads/${target}`);
       if (result !== merged) throw fail(`The merge could not be verified: ${target} is at ${result.slice(0, 12)}.`, 'MERGE_UNVERIFIED', 500);
-      const done = await this.board.completeTask(taskId, { kind: 'merged', details: { targetBranch: target, previousTarget: targetCommit, mergedCommit: result, taskCommit, method, squash, commits: preview.commits.length, trigger } });
+      const done = await this.board.completeTask(taskId, { owner, kind: 'merged', details: { targetBranch: target, previousTarget: targetCommit, mergedCommit: result, taskCommit, method, squash, commits: preview.commits.length, trigger } });
       // The work is on the target branch now. Remove the clean task worktree; the task branch stays.
       return (await this.board.removeTaskWorktree(taskId).catch(() => null)) || done;
     });

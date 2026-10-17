@@ -240,7 +240,7 @@ async function boardRoute(board, req, res, pathname, searchParams, origin) {
     if (method === 'GET' && action === 'automations') return send(res, 200, { moves: await board.automationRuns(id) });
     if (method === 'POST' && action === 'cancel-automations') return view({ task: await board.cancelAutomationMove(id, await body()) });
     if (method === 'POST' && action === 'merge-now') { await body(); return view(await board.mergeNow(id)); }
-    if (method === 'POST' && action === 'start-over') { const { expectedRevision, reason, startExecuting, confirm } = await body(); return view(await board.startOver(id, { expectedRevision, reason, startExecuting: startExecuting === true, confirm: confirm === true })); }
+    if (method === 'POST' && action === 'start-over') { const { expectedRevision, reason, startExecuting, confirm, deleteIgnored } = await body(); return view(await board.startOver(id, { expectedRevision, reason, startExecuting: startExecuting === true, confirm: confirm === true, deleteIgnored: deleteIgnored === true })); }
     if (method === 'POST' && action === 'restart-sessions') { const { expectedRevision } = await body(); return view({ task: await board.restartTaskSessions(id, { expectedRevision }) }); }
     if (method === 'POST' && action === 'restore-worktree') { await body(); await board.restoreTaskWorktree(id); return view({ task: (await board.state()).projects.flatMap(project => project.tasks).find(task => task.id === id) }); }
     if (method === 'POST' && action === 'complete-stage') { const { runId } = await body(); return view(await board.completeStage(id, { runId })); }
@@ -249,7 +249,7 @@ async function boardRoute(board, req, res, pathname, searchParams, origin) {
     if (method === 'POST' && action === 'prerequisites') return view({ task: await board.clearPrerequisite(id, await body()) });
     if (method === 'POST' && action === 'runs') return view({ run: await board.requestRun(id, await body()) });
     if (method === 'POST' && action === 'resume') return view({ run: await board.resumeTask(id, await body(128 * 1024)) });
-    if (method === 'DELETE' && action === 'worktree') return view({ task: await board.removeTaskWorktree(id) });
+    if (method === 'DELETE' && action === 'worktree') return view({ task: await board.removeTaskWorktree(id, { deleteIgnored: searchParams.get('deleteIgnored') === '1' }) });
     // Review, testing, merge, and completion (PB-04). Every change needs an explicit confirm flag.
     const delivery = board.delivery;
     if (method === 'GET' && action === 'revision') return send(res, 200, { revision: await delivery.revision(id) });

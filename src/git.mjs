@@ -158,3 +158,9 @@ export async function listWorktrees(root) {
   }
   return Promise.all(entries.map(async entry => ({ ...entry, path: await realpath(entry.path).catch(() => entry.path) })));
 }
+
+/** Files and folders Git ignores in a worktree (matching mode lists an ignored folder once, such as node_modules/). */
+export async function ignoredFiles(cwd) {
+  const out = await git(['status', '--porcelain', '--ignored=matching', '--untracked-files=normal'], { cwd }).catch(() => '');
+  return out.split('\n').filter(line => line.startsWith('!! ')).map(line => line.slice(3).replace(/^"|"$/g, '')).slice(0, 500);
+}

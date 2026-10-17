@@ -3442,7 +3442,7 @@ async function deliveryAction(card, method, action, body, message) {
 function startOverSection(card, section, rev) {
   const target = currentProject()?.targetBranch?.name || 'the target branch';
   const pr = card.evidence?.pullRequest;
-  const box = section('Start over', paragraph(`Not happy with this attempt? Start the same task again from a fresh branch of ${target}. Nothing is deleted.`));
+  const box = section('Start over', paragraph(`Not happy with this attempt? Start the same task again from a fresh branch of ${target}. Your work stays on its branch.`));
   const open = () => {
     const reason = document.createElement('textarea'); reason.id = 'start-over-reason'; reason.maxLength = 4000; reason.rows = 3; reason.placeholder = 'Why? (optional: the next run gets this)';
     const now = document.createElement('label'); now.className = 'check-row';
@@ -3453,13 +3453,14 @@ function startOverSection(card, section, rev) {
       `The branch ${card.workspace.branch} stays exactly as it is (${plural(rev.ahead, 'commit')}). It is not deleted, reset, or pushed.`,
       ...(rev.clean ? [] : [`${plural(rev.changes.length, 'uncommitted change')} will be committed to that branch first, so nothing is lost.`]),
       'The task worktree folder is removed. Review and test results move to the card’s history.',
+      ...(rev.ignored?.length ? [`Files Git ignores in that folder are deleted with it: ${rev.ignored.slice(0, 6).join(', ')}${rev.ignored.length > 6 ? ` and ${rev.ignored.length - 6} more` : ''}. Move what you need first.`] : []),
       `The card goes to To Do. Its next run starts a new branch from the current ${target}.`,
       ...(pr?.url && pr.state === 'OPEN' ? [`Pull request #${pr.number ?? ''} stays open on GitHub. Close it there if you no longer want it.`] : []),
     ]) { const li = document.createElement('li'); li.textContent = line; facts.append(li); }
     const go = detailButton('Start over', async () => {
       go.disabled = true;
       try {
-        const result = await boardCall('POST', `/api/tasks/${encodeURIComponent(card.id)}/start-over`, { expectedRevision: card.revision, reason: reason.value.trim(), startExecuting: startNow.checked }, 180000);
+        const result = await boardCall('POST', `/api/tasks/${encodeURIComponent(card.id)}/start-over`, { expectedRevision: card.revision, reason: reason.value.trim(), startExecuting: startNow.checked, deleteIgnored: Boolean(rev.ignored?.length) }, 180000);
         $('#task-dialog').close();
         announce(result.run ? `Started “${card.title}” over. Executing started on a fresh branch; the old attempt is kept on ${result.attempt.branch}.` : `Started “${card.title}” over. It is in To Do; the old attempt is kept on ${result.attempt.branch}.`);
         if (result.run) showStartedRun(result.run.id);
@@ -3640,7 +3641,10 @@ async function renderDelivery(card, container, section, pre) {
   if (card.workspace?.status === 'ready' && card.column !== 'done') nodes.push(startOverSection(card, section, rev));
   if (card.column === 'done') {
     const box = section('Worktree', paragraph(`The worktree at ${card.workspace.path} is no longer needed. Removing it keeps the branch ${card.workspace.branch}. A worktree with uncommitted changes is never removed.`));
-    box.append(detailActions(detailButton('Remove worktree…', () => confirmStep(box, 'Remove this task worktree? The branch stays.', 'Remove worktree', () => deliveryAction(card, 'DELETE', 'worktree', undefined, 'Worktree removed; the branch was kept.')))));
+    // Files Git ignores (.env, build output) go with the folder: they are named before the second click.
+    const ignored = rev?.ignored || [], names = `${ignored.slice(0, 6).join(', ')}${ignored.length > 6 ? ` and ${ignored.length - 6} more` : ''}`;
+    box.append(detailActions(detailButton('Remove worktree…', () => confirmStep(box, ignored.length ? `Remove this task worktree? The branch stays. These files Git ignores are deleted with it: ${names}.` : 'Remove this task worktree? The branch stays.',
+      ignored.length ? 'Remove worktree and these files' : 'Remove worktree', () => deliveryAction(card, 'DELETE', `worktree${ignored.length ? '?deleteIgnored=1' : ''}`, undefined, 'Worktree removed; the branch was kept.')))));
     nodes.push(box);
   }
   container.replaceChildren(...nodes);
