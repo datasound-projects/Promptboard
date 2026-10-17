@@ -59,6 +59,8 @@ test('Workspace inspection in real Chrome: import, nested tree, multiple viewers
   assert.equal(await browser.eval('return document.querySelector("[data-file-path=src]").getAttribute("aria-expanded");'), 'true');
   await browser.eval('document.querySelector("[aria-label=\\"Minimize file viewer\\"]").click();');
   assert.equal(await browser.eval('return document.querySelector("#workspace-file-viewer").open;'), false);
+  // The minimized file's chip sits above the agent dock, never over its buttons.
+  assert.equal(await browser.layout('const tray = document.querySelector(".file-viewer-tray").getBoundingClientRect(), dock = document.querySelector("#dock").getBoundingClientRect(); return tray.height > 0 && tray.bottom <= dock.top + 1;'), true);
   await browser.eval('document.querySelector("[data-file-path=\\"readme.md\\"]").click();');
   await browser.until('document.querySelector(".file-code").textContent.includes("Imported project")', 'second file');
   assert.equal(await browser.eval('return window.INJECTED || false;'), false);
