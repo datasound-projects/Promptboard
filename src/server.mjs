@@ -54,6 +54,7 @@ const assets = new Map([
   ['/notifications.js', ['notifications.js', 'text/javascript; charset=utf-8']],
   ['/workspace-files.js', ['workspace-files.js', 'text/javascript; charset=utf-8']],
   ['/origin-model.js', ['origin-model.js', 'text/javascript; charset=utf-8']],
+  ['/origin-templates.js', ['origin-templates.js', 'text/javascript; charset=utf-8']],
   ['/origin.js', ['origin.js', 'text/javascript; charset=utf-8']],
   ['/markdown-view.js', ['markdown-view.js', 'text/javascript; charset=utf-8']],
   ['/origin-context.js', ['origin-context.js', 'text/javascript; charset=utf-8']],

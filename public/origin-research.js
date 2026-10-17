@@ -173,6 +173,7 @@ window.PromptboardOriginResearch = (() => {
       if (!isOpen) return;
       drawer.dataset.mode = 'research'; view.dataset.drawer = 'open'; drawer.hidden = false;
       const focusId = drawer.contains(document.activeElement) ? document.activeElement.id : '';
+      const caret = focusId === 'origin-research-input' ? [document.activeElement.selectionStart, document.activeElement.selectionEnd] : null;
       // A redraw of the same chat (Apply, Reject, Preview…) keeps the reading position and the card in focus.
       const view2 = `${panel}:${chat?.id || ''}`, previous = drawer.querySelector('#origin-research-body'), scroll = shown === view2 && previous ? previous.scrollTop : 0;
       const card = drawer.contains(document.activeElement) ? document.activeElement.closest('.origin-research-proposal')?.dataset.id : '';
@@ -194,7 +195,7 @@ window.PromptboardOriginResearch = (() => {
       drawer.replaceChildren(...nodes);
       shown = view2;
       if (scroll) body.scrollTop = scroll;
-      if (focusId) drawer.querySelector(`#${CSS.escape(focusId)}`)?.focus({ preventScroll: true });
+      if (focusId) { const node = drawer.querySelector(`#${CSS.escape(focusId)}`); node?.focus({ preventScroll: true }); if (caret) node?.setSelectionRange(...caret); }
       else if (card) { const next = drawer.querySelector(`.origin-research-proposal[data-id="${CSS.escape(card)}"]`); (next?.querySelector(':is(button, input, textarea)') || next)?.focus({ preventScroll: true }); }
     }
     function renderTools() {
@@ -380,7 +381,7 @@ window.PromptboardOriginResearch = (() => {
       const state = cards.get(proposal.id) || {}, blueprint = host.blueprint();
       const card = el('article', 'origin-research-proposal'); card.dataset.status = proposal.status; card.dataset.id = proposal.id; card.tabIndex = -1; // Keeps focus here once it has no buttons left.
       const head = el('div', 'origin-research-proposal-head');
-      if (['pending', 'conflict'].includes(proposal.status)) {
+      if (['pending', 'conflict'].includes(proposal.status) && !(blueprint && M().researchGone(blueprint, proposal))) {
         const pick = el('input'); pick.type = 'checkbox'; pick.checked = selected.has(proposal.id); pick.setAttribute('aria-label', `Select “${proposal.title}”`);
         pick.addEventListener('change', () => { if (pick.checked) selected.add(proposal.id); else selected.delete(proposal.id); render(); });
         head.append(pick);
@@ -389,6 +390,16 @@ window.PromptboardOriginResearch = (() => {
       if (STATUS[proposal.status]) head.append(el('span', `origin-research-badge is-${proposal.status}`, STATUS[proposal.status]));
       if (proposal.disagree) head.append(el('span', 'origin-research-badge is-disagree', 'Agents disagree'));
       card.append(head, el('p', 'origin-research-target', blueprint ? M().researchTargetLabel(blueprint, proposal.target, proposal.value) : ''));
+      // Its page, topic or record was removed since the research ran: it cannot land, and nothing brings the part back.
+      const gone = blueprint && ['pending', 'conflict'].includes(proposal.status) ? M().researchGone(blueprint, proposal) : '';
+      if (gone) {
+        card.dataset.gone = 'true';
+        const note = el('p', 'origin-inline-error', `${gone} This suggestion can no longer be applied.`); note.setAttribute('role', 'alert');
+        const actions = el('div', 'origin-research-proposal-actions');
+        actions.append(button('Dismiss', () => void decide(proposal, 'rejected'), 'origin-link origin-research-reject'));
+        card.append(note, actions);
+        return card;
+      }
       const from = [proposal.agent?.label, ...(proposal.alsoFrom || [])].filter(Boolean);
       if (from.length) card.append(el('p', 'origin-research-from', `From ${from.join(', ')}`));
       if (proposal.why) card.append(el('p', 'origin-research-why', proposal.why));
@@ -714,7 +725,9 @@ window.PromptboardOriginResearch = (() => {
       if (settings.mode === 'swarm' && !settings.targets.length) { error = 'Add at least one part for the swarm to research.'; render(); return; }
       const id = projectId;
       error = '';
-      if (!(await ensureChat()) || id !== projectId) return;
+      // Research reads the saved blueprint, so a page added or removed a moment ago is saved first.
+      if (host.saveNow && !(await host.saveNow())) { error = 'The blueprint has changes that are not saved yet. Research reads the saved blueprint, so save it first.'; render(); return; }
+      if (id !== projectId || !(await ensureChat()) || id !== projectId) return;
       const run = running = { controller: new AbortController(), agents: new Map(), chatId: chat.id, projectId: id };
       drafts.delete(id); panel = 'chat'; render(); renderButton(); followEnd(true);
       let response;
@@ -800,7 +813,16 @@ window.PromptboardOriginResearch = (() => {
       }
     }
 
-    return { button: headerButton, reset, close, minimize, yieldDrawer, isOpen: () => isOpen, isMinimized: () => minimized };
+    /** The project's categories or pages changed: what can be researched and which suggestions still fit follow at once. */
+    function structureChanged() {
+      const live = new Set(scopeOptions().map(option => scopeKey(option.value)));
+      settings.targets = settings.targets.filter(target => live.has(scopeKey(target)));
+      if (!live.has(scopeKey(settings.scope))) settings.scope = { kind: 'project' };
+      const blueprint = host.blueprint();
+      if (blueprint) for (const id of [...selected]) { const proposal = chat?.proposals?.find(entry => entry.id === id); if (!proposal || M().researchGone(blueprint, proposal)) selected.delete(id); }
+      render();
+    }
+    return { button: headerButton, reset, close, minimize, yieldDrawer, structureChanged, isOpen: () => isOpen, isMinimized: () => minimized };
   }
 
   return { create };
