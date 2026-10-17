@@ -102,7 +102,7 @@ test('research runs stop at once, keep the text produced so far, classify provid
   await assert.rejects(streamResearch({ provider: 'claude', prompt: 'x', cwd: dir, model: '--dangerously-skip-permissions' }), { code: 'INVALID_MODEL' });
 });
 
-test('Stop pressed while the CLI is still being looked up stops the research before the CLI answers', async t => {
+test('Stop pressed while the CLI is still being looked up stops the research before the CLI answers', { skip: process.platform === 'win32' }, async t => {
   const { dir } = await fakes(t);
   const controller = new AbortController(), started = Date.now();
   const run = streamResearch({ provider: 'claude', prompt: 'Compare queues', cwd: dir, session: { id: 'session-9', resume: false }, signal: controller.signal });

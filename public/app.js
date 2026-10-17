@@ -5770,7 +5770,11 @@ function renderRemoteAccess() {
     box.replaceChildren(legend, ...nodes); return;
   }
   const st = remoteAccess.status;
-  if (!st) { box.replaceChildren(legend, paragraph('Reading remote access…', 'note')); return; }
+  if (!st) {
+    // A failed first read says why and offers another try, instead of "Reading…" forever.
+    box.replaceChildren(legend, ...(remoteAccess.message && !remoteAccess.busy ? [paragraph(remoteAccess.message, 'inline-error'), detailActions(detailButton('Try again', loadRemoteAccess, 'secondary-button'))] : [paragraph('Reading remote access…', 'note')]));
+    return;
+  }
   const draft = remoteAccess.draft ||= { method: st.method, port: st.port, bind: st.bind, host: st.host, cert: '', key: '' };
   const field = (label, control) => { const wrap = document.createElement('label'); wrap.className = 'field-label'; wrap.append(label, control); return wrap; };
   const input = (id, key, placeholder = '') => { const node = document.createElement('input'); node.id = id; node.value = draft[key] ?? ''; node.placeholder = placeholder; node.addEventListener('input', () => { draft[key] = node.value.trim(); }); return node; };

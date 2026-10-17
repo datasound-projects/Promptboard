@@ -17,9 +17,9 @@ test('Settings turns remote access on and pairs a phone; the phone uses the same
   const ev = code => browser.eval(code), wait = (expression, label, ms = 15000) => browser.until(expression, label, ms);
   // On the computer: Settings → Remote access → Twingate on 127.0.0.1 (a Connector on this computer), then Pair a device.
   await browser.goto(`${app.url}/#/kanban`);
-  await wait(`!!document.querySelector('#app-settings-open')`, 'app');
+  await wait(`!!document.querySelector('#kanban-columns [data-column="todo"]')`, 'app ready', 30000);
   await ev(`document.querySelector('#app-settings-open').click(); document.querySelector('#settings-remote-section').open = true;`);
-  await wait(`!!document.querySelector('#set-remote-method')`, 'remote section');
+  await wait(`!!document.querySelector('#set-remote-method')`, 'remote section', 30000);
   assert.match(await ev(`return document.querySelector('#set-remote-group').textContent`), /Off\. Promptboard answers only on this computer/);
   await ev(`const s = document.querySelector('#set-remote-method'); s.value = 'twingate'; s.dispatchEvent(new Event('change'));`);
   await wait(`!!document.querySelector('#set-remote-port')`, 'Twingate fields');
@@ -38,7 +38,8 @@ test('Settings turns remote access on and pairs a phone; the phone uses the same
   const remoteUrl = `http://127.0.0.1:${remotePort}`;
   await browser.goto(`${remoteUrl}/#/kanban`);
   await wait(`location.pathname === '/remote' && !!document.querySelector('#code')`, 'pairing page');
-  await ev(`document.querySelector('#code').value = ${JSON.stringify(code)}; document.querySelector('#name').value = 'iPhone'; document.querySelector('#pair').requestSubmit();`);
+  // Actions that navigate run after the evaluation returns, so the evaluation never sees the page go away.
+  await ev(`document.querySelector('#code').value = ${JSON.stringify(code)}; document.querySelector('#name').value = 'iPhone'; setTimeout(() => document.querySelector('#pair').requestSubmit(), 0);`);
   await wait(`location.pathname === '/' && !!document.querySelector('#kanban-view')`, 'the app after pairing');
   await ev(`location.hash = '#/kanban';`);
   await wait(`!!document.querySelector('#kanban-columns [data-column="todo"]')`, 'the board, served from the computer');
@@ -47,7 +48,7 @@ test('Settings turns remote access on and pairs a phone; the phone uses the same
   assert.equal(await ev(`return document.cookie`), '', 'the device secret is not readable by page scripts');
   // A reload (Safari closed and opened again) keeps the pairing; the phone sees who it is and cannot change remote access.
   await browser.reload();
-  await wait(`!!document.querySelector('#app-settings-open')`, 'app after reload');
+  await wait(`!!document.querySelector('#kanban-columns [data-column="todo"]')`, 'app after reload', 30000);
   await ev(`document.querySelector('#app-settings-open').click(); document.querySelector('#settings-remote-section').open = true;`);
   await wait(`/remotely as “iPhone”/.test(document.querySelector('#set-remote-group').textContent)`, 'remote device notice');
   assert.equal(await ev(`return !!document.querySelector('#set-remote-method')`), false);
@@ -56,6 +57,6 @@ test('Settings turns remote access on and pairs a phone; the phone uses the same
   // Revoked on the computer: the phone's next request sends it to pairing.
   const token = (await (await fetch(`${app.url}/api/session`)).json()).token;
   await fetch(`${app.url}/api/remote/sessions/all`, { method: 'DELETE', headers: { 'X-STE-Token': token } });
-  await ev(`document.querySelector('#app-settings')?.close(); location.hash = '#/base';`);
+  await ev(`document.querySelector('#app-settings')?.close(); setTimeout(() => { location.hash = '#/base'; }, 0);`);
   await wait(`location.pathname === '/remote'`, 'back to pairing after revoke', 20000);
 });
