@@ -169,3 +169,35 @@ test('Apply all stops when another project opens: nothing lands in that project,
   const { chat } = await call(`/api/origin/research/${originId}/chats/${chatId}`);
   assert.deepEqual(chat.proposals.map(entry => entry.status), ['applied', 'pending', 'pending', 'pending']);
 });
+
+test('a link to a record that is applied after a reload is still completed', { skip: !chrome, timeout: 180000 }, async t => {
+  const batch = { suggestions: [
+    { ref: 't2', title: 'Order endpoints', target: { kind: 'add', collection: 'items' }, value: { title: 'Order endpoints', acceptanceCriteria: 'POST /orders works', dependsOn: ['@t1'] } },
+    { ref: 't1', title: 'Orders schema', target: { kind: 'add', collection: 'items' }, value: { title: 'Orders schema', acceptanceCriteria: 'The table exists' } },
+  ] };
+  const researchRunner = async call => ({ text: `Plan.\n\n\`\`\`origin-suggestions\n${J(batch)}\n\`\`\``, session: call.session?.id || 'thread-1' });
+  const { browser, ev, wait, call, originId } = await researchPage(t, { server: { researchRunner } });
+  const card = title => `[...document.querySelectorAll('.origin-research-proposal')].find(c => c.querySelector('strong').textContent === ${J(title)})`;
+  await ev(`document.querySelector('#origin-research-open').click();`);
+  await wait(`document.querySelector('#origin-research-send') && !document.querySelector('#origin-research-send').disabled`, 'ready');
+  await ev(`const i = document.querySelector('#origin-research-input'); i.value = 'Plan the orders'; i.dispatchEvent(new Event('input', { bubbles: true })); i.closest('form').requestSubmit();`);
+  await wait(`document.querySelectorAll('.origin-research-proposal').length === 2`, 'two suggestions');
+  // The task that depends on the other is applied first: its link has to wait.
+  await ev(`[...${card('Order endpoints')}.querySelectorAll('button')].find(b => b.textContent === 'Apply').click();`);
+  await wait(`${card('Order endpoints')}.dataset.status === 'applied' && document.querySelector('#origin-view').dataset.save === 'saved'`, 'first applied');
+  // Reload, reopen the chat, apply the other task: the waiting link is completed.
+  await browser.reload();
+  await wait(`document.querySelector('#origin-view').dataset.save === 'saved' && !document.querySelector('#origin-research-open').hidden`, 'reloaded');
+  await ev(`document.querySelector('#origin-research-open').click();`);
+  await wait(`document.querySelector('#origin-research-history')`, 'panel');
+  await ev(`document.querySelector('#origin-research-history').click();`);
+  await wait(`document.querySelector('.origin-research-chat-open')`, 'history');
+  await ev(`document.querySelector('.origin-research-chat-open').click();`);
+  await wait(`document.querySelectorAll('.origin-research-proposal').length === 2`, 'cards restored');
+  await ev(`[...${card('Orders schema')}.querySelectorAll('button')].find(b => b.textContent === 'Apply').click();`);
+  await wait(`${card('Orders schema')}.dataset.status === 'applied'`, 'second applied');
+  await wait(`document.querySelector('#origin-view').dataset.save === 'saved'`, 'saved');
+  const items = (await call(`/api/origin/projects/${originId}`)).blueprint.items;
+  const schema = items.find(item => item.title === 'Orders schema'), endpoints = items.find(item => item.title === 'Order endpoints');
+  assert.deepEqual(endpoints.dependsOn, [schema.id]);
+});

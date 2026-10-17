@@ -80,7 +80,9 @@ one closes the others and keeps unsaved and unsent text. On phones the panel fil
   The page applies an approved suggestion through Origin's normal edit path (autosave with its revision check), so the
   sidebar, editors, readiness, map and architecture diagram update as for a hand edit (`applyResearchSuggestion`).
   **Apply all** applies new records in dependency order (layers and technologies before components, components before
-  tasks and connections), then resolves the links to records created later. A field that changed since the research
+  tasks and connections), then resolves the links to records created later. A link to a record whose suggestion is
+  applied later (even after a reload) is completed when that record is applied; links of suggestions you edited before
+  applying are not, because the edit is not stored. A field that changed since the research
   ran is a conflict. Link lists are only added to, never removed from; a single link (layer, milestone, connection end) is
   replaced, and it is a conflict only when it changed after the research ran.
 
