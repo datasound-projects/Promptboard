@@ -30,7 +30,7 @@ including its open terminal streams. Sessions expire after 30 days.
 **A paired device has the same control as you at the computer.** It can start agents (which run commands), type into
 their terminals, change test commands and column actions, and approve steps. Pair only your own devices, and revoke any
 you no longer use. A few things need someone at the computer and are refused from a phone: changing remote access, CLI
-and GitHub sign-in (they open a browser or terminal there) and native folder pickers. GitHub, CLI and agent credentials
+and GitHub sign-in (they open a browser or terminal there), native folder pickers, and opening a project's folder, a terminal or a code editor (Open in Finder, Open in IDE): they open windows on the computer. A phone can copy the path. GitHub, CLI and agent credentials
 are never sent to the phone.
 
 ### When the phone sleeps
