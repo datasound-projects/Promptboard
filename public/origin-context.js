@@ -411,7 +411,7 @@ window.PromptboardOriginContext = (() => {
       const project = host.project(), kanban = project?.kanbanProjectId ? app.projects().find(item => item.id === project.kanbanProjectId) : null;
       const base = await app.api('/api/base').catch(() => ({ response: { ok: false }, data: {} }));
       if (sub !== 'kanban') return;
-      const profiles = base.response.ok ? (base.data.resources || []).filter(resource => resource.kind === 'profile') : [];
+      const profiles = base.response.ok ? (base.data.resources || []).filter(resource => ['profile', 'agentProfile'].includes(resource.kind)) : [];
       const scopeField = el('label', 'origin-field'), scope = el('select'); scope.id = 'origin-context-scope';
       scopeField.append(el('span', 'origin-field-label', 'Scope'), scope);
       const options = [];
@@ -419,7 +419,7 @@ window.PromptboardOriginContext = (() => {
         for (const task of kanban.tasks) options.push([`task:${task.id}`, `Card${task.number ? ` #${task.number}` : ''}: ${task.title}`]);
         for (const column of (kanban.columns || []).filter(column => !['todo', 'done'].includes(column.role) && !['todo', 'done'].includes(column.id))) options.push([`column:${column.id}`, `Column: ${column.title || column.name || column.id}`]);
       }
-      for (const profile of profiles) options.push([`profile:${profile.id}`, `Agent profile: ${profile.name}`]);
+      for (const profile of profiles) options.push([`profile:${profile.id}`, `${profile.kind === 'agentProfile' ? 'Agent profile' : 'Agent'}: ${profile.name}`]);
       if (!options.length) { body.append(el('p', 'origin-callout', kanban ? 'This Kanban project has no cards or agent columns yet.' : 'Connect this Origin project to a Kanban project first, or create an agent profile in Base.')); return; }
       scope.append(...[['', 'Choose a card, column or agent profile…'], ...options].map(([value, label]) => Object.assign(el('option', '', label), { value })));
       const picker = sectionPicker('Choose what agents in this scope need. One run receives at most 48,000 characters from Base; larger selections are refused, not cut.');

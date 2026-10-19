@@ -129,10 +129,12 @@ Each card gets its own Git branch and worktree. When a card enters a column, a f
 **Set up what your agents use once, and reuse it everywhere.**
 
 - **One library.** Agent profiles, packs, skills, knowledge wikis, context sources, MCP servers (stdio or HTTP) and command recipes.
-- **Agent profiles.** A provider, model and instructions, plus the resources they carry. Attach other profiles as Claude Code subagents.
+- **Agents and Agent Profiles.** An agent is one definition (provider, model, instructions). An Agent Profile combines a primary agent, supporting agents with their responsibilities, and the resources they carry, equipped from the library with **Add from Base**.
+- **Custom MD files.** AGENTS.md, CLAUDE.md, GEMINI.md, SOUL.md, MEMORY.md or any Markdown of your own, with a live preview, activation rules (always, per project, stage or CLI, on demand), project versions, and an optional write into the repository after a preview.
+- **On or off at every level.** A switch on each resource, each assignment and each MCP tool. Switching off keeps the configuration.
 - **Apply to…** a project or a column. The preview shows exactly what each run will get. Saving never starts an agent.
 - **Delivered natively.** Each run receives its resources the provider's own way: MCP configuration, instructions or subagents. Run details show what each agent received.
-- **No stored secrets.** Credentials are referenced by environment variable name only. MCP tools are discovered only when you click Test.
+- **No stored secrets.** Credentials are referenced by environment variable name only. MCP tools are discovered only when you click Test. Import MCP servers from Claude Desktop or a pasted configuration, and instruction files from a repository: they start switched off and untrusted.
 
 <p align="center">
   <img src="docs/base-demo.gif" width="960" alt="Base demo: browse the library, open a skill, a wiki and an MCP server, view agent profiles, apply one to a project with a live preview, and save without starting an agent.">

@@ -213,9 +213,11 @@ export async function buildSession({ provider, stage, config, message, runDir, e
     const item = cfg.transport === 'stdio'
       ? { command: cfg.command, args: cfg.args || [], env: Object.fromEntries(Object.entries(cfg.env || {}).map(([key, value]) => [key, ref(value)])) }
       : { ...(provider === 'gemini' ? { httpUrl: cfg.endpoint } : { type: 'http', url: cfg.endpoint }), headers: Object.fromEntries(Object.entries(cfg.headers || {}).map(([key, value]) => [key, ref(value)])) };
-    if (provider === 'gemini') { item.trust = false; item.timeout = 15000; }
+    if (provider === 'gemini') { item.trust = false; item.timeout = 15000; if (server.disabledTools?.length) item.excludeTools = [...server.disabledTools]; }
     return [server.name, item];
   }));
+  // Claude Code names an MCP tool mcp__<server>__<tool>; switched-off tools are disallowed by that name.
+  const mcpDisallowed = selected.flatMap(server => (server.disabledTools || []).map(tool => `mcp__${server.name}__${tool}`));
   let args;
   if (provider === 'claude') {
     const hook = { type: 'command', command: nodePath, args: [HOOK_SCRIPT, eventsFile, 'claude'] };
@@ -231,7 +233,8 @@ export async function buildSession({ provider, stage, config, message, runDir, e
     if (readOnly) args.push('--permission-mode', 'plan', '--tools', 'Read,Grep,Glob', '--disallowedTools', 'Edit,Write,NotebookEdit,Bash,ExitPlanMode');
     else {
       args.push('--permission-mode', config.permissionMode);
-      if (stageRules) args.push('--disallowedTools', 'EnterPlanMode,ExitPlanMode');
+      const disallowed = [...(stageRules ? ['EnterPlanMode', 'ExitPlanMode'] : []), ...mcpDisallowed];
+      if (disallowed.length) args.push('--disallowedTools', disallowed.join(','));
     }
     if (!readOnly && baseDelivery?.subagents && Object.keys(baseDelivery.subagents).length) {
       const agents = JSON.stringify(baseDelivery.subagents);
@@ -261,6 +264,7 @@ export async function buildSession({ provider, stage, config, message, runDir, e
       if (Object.entries(cfg.env || {}).some(([key, value]) => key !== value)) throw new AgentError('Codex MCP environment aliases are unsupported; use matching variable names.', 'BASE_MCP_ENV_ALIAS', 409);
       for (const [key, value] of Object.entries(fields)) args.push('-c', `${prefix}.${key}=${tomlValue(value)}`);
       args.push('-c', `${prefix}.required=${server.required === true}`, '-c', `${prefix}.startup_timeout_sec=15`);
+      if (server.disabledTools?.length) args.push('-c', `${prefix}.disabled_tools=${tomlValue(server.disabledTools)}`);
     }
     inArgv = fitsArgv(args, message);
     if (inArgv && message) args.push(...(resumeId ? ['--', message] : [message]));

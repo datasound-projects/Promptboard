@@ -1,6 +1,7 @@
 /** Pure Base assignment resolution, shared by previews and run acceptance. */
 import { ADAPTERS } from './agents.mjs';
 import { strictReadOnlyColumn } from './pipeline-config.mjs';
+import { markdownActive } from './base-markdown.mjs';
 
 const refs = values => (values || []).map(value => typeof value === 'string' ? { resourceId: value, required: true } : value);
 const resourcesOf = state => new Map((state?.base?.resources || []).map(resource => [resource.id, resource]));
@@ -8,12 +9,21 @@ export class BaseDeliveryError extends Error {
   constructor(message, code = 'BASE_UNAVAILABLE', details = undefined) { super(message); this.code = code; this.status = 409; this.details = details; }
 }
 
+/** An agent profile's primary agent (switched on), or null. */
+export function primaryAgent(registry, profile) {
+  const entry = profile?.kind === 'agentProfile' ? (profile.configuration?.agents || []).find(agent => agent.role === 'primary' && agent.enabled !== false) : null;
+  return entry ? registry.get(entry.resourceId) || null : null;
+}
 /** Profile defaults stay at their configuration scope. An explicit provider replaces its tuple. */
 export function profileDefaults(state, profileId, explicit = {}) {
-  const profile = resourcesOf(state).get(profileId);
+  const registry = resourcesOf(state), profile = registry.get(profileId);
   // Show the configured tuple even after revocation; preflight blocks it instead of silently
   // switching providers. Trust is a launch decision, not a settings mutation.
-  const defaults = profile?.kind === 'profile' ? profile.configuration?.agent || {} : {};
+  // An agent profile runs as its primary agent, with the profile's instructions after the agent's own.
+  const agent = profile?.kind === 'agentProfile' ? primaryAgent(registry, profile) : profile;
+  const own = agent?.kind === 'profile' ? agent.configuration?.agent || {} : {};
+  const instructions = [own.instructions, profile?.kind === 'agentProfile' ? profile.configuration?.instructions : ''].filter(text => text?.trim()).join('\n\n');
+  const defaults = { ...own, ...(instructions ? { instructions } : {}) };
   return explicit?.provider ? { ...defaults, ...explicit, provider: explicit.provider, model: explicit.model || '', effort: explicit.effort || '', permissionMode: explicit.permissionMode || '' } : { ...defaults, ...(explicit || {}) };
 }
 
@@ -30,7 +40,8 @@ export function deliveryFor(resource, provider, columnId, capabilities = null, r
   const adapter = capabilities?.[provider] || ADAPTERS[provider];
   const supported = adapter?.capabilities?.[readOnly ? 'planning' : 'execution']?.supported;
   if (!supported) return { delivery: 'unavailable', issue: 'This provider does not support this Kanban stage.' };
-  if (['pack', 'profile'].includes(resource.kind)) return { delivery: 'configuration' };
+  if (['pack', 'profile', 'agentProfile'].includes(resource.kind)) return { delivery: 'configuration' };
+  if (resource.kind === 'markdown') return { delivery: 'instruction-file' };
   if (resource.kind === 'mcp' || (resource.kind === 'tool' && resource.configuration?.delivery === 'mcp')) {
     if (readOnly) return { delivery: 'native-mcp', issue: 'Base MCP servers are unavailable in read-only Planning and Code Review.' };
     if (provider === 'codex' && resource.kind === 'mcp' && resource.configuration?.transport === 'stdio' && Object.entries(resource.configuration.env || {}).some(([name, reference]) => name !== reference)) return { delivery: 'native-mcp', issue: 'Codex stdio MCP delivery requires matching environment-variable names; aliases are unsupported without exposing credentials in CLI arguments.' };
@@ -56,9 +67,14 @@ export function resolveBase({ state, project, task, columnId, provider, capabili
     [`task:${task?.id || ''}`, task?.baseBinding, null],
     [`task-column:${task?.id || ''}:${columnId}`, task?.baseColumns?.[columnId]?.binding, null],
   ];
+  // A project override of a shared Markdown file takes its place in that project, wherever the shared file is used.
+  const overrideOf = id => [...registry.values()].find(item => item.kind === 'markdown' && item.enabled && item.configuration?.override?.of === id && item.configuration.override.projectId === project?.id)?.id || id;
   function select(ref, origin, rank, explicit = true, stack = [], expandProfile = true) {
     if (!ref?.resourceId) return;
-    const id = ref.resourceId, resource = registry.get(id);
+    // Switched off for this assignment only: other assignments of the same resource are unaffected.
+    if (ref.enabled === false) { exclusions.push({ resourceId: ref.resourceId, origin, reason: 'disabled-here' }); return; }
+    const id = overrideOf(ref.resourceId), resource = registry.get(id);
+    if (id !== ref.resourceId) ref = { ...ref, resourceId: id, overrides: ref.resourceId };
     if (stack.includes(id)) { errors.push({ resourceId: id, code: 'BASE_CYCLE', message: 'Resource dependencies contain a cycle.' }); return; }
     const prior = selected.get(id);
     const entry = prior || { resourceId: id, required: false, origins: [], rank, explicitRank: -1 };
@@ -72,6 +88,10 @@ export function resolveBase({ state, project, task, columnId, provider, capabili
     }
     else if (entry.explicitRank <= rank) entry.required ||= ref.required === true;
     entry.rank = Math.max(entry.rank, rank);
+    if (ref.overrides) entry.overrides = ref.overrides;
+    if (ref.disabledTools?.length) entry.disabledTools = [...new Set([...(entry.disabledTools || []), ...ref.disabledTools])];
+    if (ref.responsibility) entry.responsibility = ref.responsibility;
+    if (origin.startsWith('task')) entry.explicitTask = true;
     if (resource?.kind === 'profile' && origin.includes('/profile:')) entry.nativeSubagent = true;
     selected.set(id, entry);
     // A disabled/untrusted pack is not a back door to its members. Independently
@@ -99,12 +119,29 @@ export function resolveBase({ state, project, task, columnId, provider, capabili
     for (const ref of refs(binding?.include)) select(ref, origin, rank);
     for (const id of binding?.exclude || []) removeSelection(typeof id === 'string' ? id : id.resourceId, origin);
   }
+  const pinProfile = (resource, id, origin) => profiles.push({ resourceId: id, revision: resource?.revision || 0, revisionRef: resource?.revisionRef ? { ...resource.revisionRef } : null, origin });
   for (const [rank, [origin, binding, profileId]] of layers.entries()) {
     if (profileId) {
       const profile = registry.get(profileId);
-      profiles.push({ resourceId: profileId, revision: profile?.revision || 0, revisionRef: profile?.revisionRef ? { ...profile.revisionRef } : null, origin });
-      if (!profile || profile.kind !== 'profile' || !profile.enabled || profile.trust !== 'trusted') errors.push({ resourceId: profileId, code: 'BASE_PROFILE_UNAVAILABLE', message: 'A selected agent profile is missing, disabled, or untrusted. Change the profile configuration explicitly.' });
+      pinProfile(profile, profileId, origin);
+      if (!profile || !['profile', 'agentProfile'].includes(profile.kind) || !profile.enabled || profile.trust !== 'trusted') errors.push({ resourceId: profileId, code: 'BASE_PROFILE_UNAVAILABLE', message: 'A selected agent profile is missing, disabled, or untrusted. Change the profile configuration explicitly.' });
       if (profile?.kind === 'profile') apply(profile.configuration?.binding, `${origin}/profile:${profileId}`, rank);
+      if (profile?.kind === 'agentProfile') {
+        // The primary agent runs (its tuple and own resources), the profile's resources join it, and supporting agents
+        // become native subagents where the CLI supports them.
+        const primary = primaryAgent(registry, profile), base = `${origin}/agent-profile:${profileId}`;
+        if (!primary) errors.push({ resourceId: profileId, code: 'BASE_PROFILE_NO_PRIMARY', message: 'This agent profile has no primary agent switched on. Choose its primary agent first.' });
+        else {
+          pinProfile(primary, primary.id, `${base}/primary`);
+          if (primary.kind !== 'profile' || !primary.enabled || primary.trust !== 'trusted') errors.push({ resourceId: primary.id, code: 'BASE_PROFILE_UNAVAILABLE', message: 'The agent profile’s primary agent is missing, disabled, or untrusted.' });
+          else apply(primary.configuration?.binding, `${base}/primary:${primary.id}`, rank);
+        }
+        for (const ref of refs(profile.configuration?.resources)) select(ref, base, rank);
+        for (const agent of profile.configuration?.agents || []) if (agent.role === 'supporting') {
+          if (agent.enabled === false) { exclusions.push({ resourceId: agent.resourceId, origin: base, reason: 'disabled-here' }); continue; }
+          select({ resourceId: agent.resourceId, required: false, responsibility: agent.responsibility }, `${base}/profile:${agent.resourceId}`, rank);
+        }
+      }
       select({ resourceId: profileId, required: true }, `${origin}/profile`, rank, true, [], false);
     }
     apply(binding, origin, rank);
@@ -145,6 +182,9 @@ export function resolveBase({ state, project, task, columnId, provider, capabili
       for (const source of resource.configuration?.sources || []) if (source.kind === 'external' && !state?.base?.approvedRoots?.some(root => root.id === source.rootId && root.enabled !== false)) issues.push('The external source root is not approved or its approval was revoked.');
       if (resource.kind === 'tool' && resource.configuration?.delivery === 'mcp' && !registry.get(resource.configuration.serverId)?.connectionTest?.tools?.some(tool => tool.name === resource.configuration.toolName)) issues.push('The parent MCP server has not discovered this tool. Run an explicit connection test before attaching it.');
     }
+    // A Markdown file is sent only where its activation says; elsewhere it stays attached and is simply not sent.
+    const inactive = resource?.kind === 'markdown' ? markdownActive(resource.configuration?.activation, { projectId: project?.id, columnId, provider, explicitTask: entry.explicitTask }) : '';
+    if (inactive) { entry.required = false; entry.inactive = inactive; issues.push(inactive); }
     const result = resource ? deliveryFor(resource, provider, columnId, capabilities, readOnly) : { delivery: 'unavailable' };
     if (entry.nativeSubagent) {
       result.delivery = 'native-subagent';
@@ -153,7 +193,9 @@ export function resolveBase({ state, project, task, columnId, provider, capabili
     }
     if (resource?.kind === 'knowledge' && entry.origins.every(origin => origin.startsWith('dependency:'))) result.delivery = 'dependency-definition';
     if (result.issue) issues.push(result.issue);
-    return { resourceId: entry.resourceId, revision: resource?.revision || 0, revisionRef: resource?.revisionRef ? { ...resource.revisionRef } : null, kind: resource?.kind || 'missing', name: resource?.name || entry.resourceId, required: entry.required, origins: entry.origins, delivery: result.delivery, status: issues.length ? 'omitted' : 'ready', issues };
+    const disabledTools = [...new Set([...(resource?.kind === 'mcp' ? resource.configuration?.disabledTools || [] : []), ...(entry.disabledTools || [])])];
+    return { resourceId: entry.resourceId, revision: resource?.revision || 0, revisionRef: resource?.revisionRef ? { ...resource.revisionRef } : null, kind: resource?.kind || 'missing', name: resource?.name || entry.resourceId, required: entry.required, origins: entry.origins, delivery: result.delivery, status: issues.length ? 'omitted' : 'ready', issues,
+      ...(disabledTools.length ? { disabledTools } : {}), ...(entry.overrides ? { overrides: entry.overrides } : {}), ...(entry.responsibility ? { responsibility: entry.responsibility } : {}), ...(entry.inactive ? { inactive: true } : {}) };
   });
   // A parent cannot be supplied if one of its declared dependencies was omitted.
   for (let i = 0; i <= resources.length; i++) {
@@ -165,7 +207,8 @@ export function resolveBase({ state, project, task, columnId, provider, capabili
     }
     if (!changed) break;
   }
-  for (const entry of resources) for (const message of entry.issues) (entry.required ? errors : warnings).push({ resourceId: entry.resourceId, code: 'BASE_RESOURCE_UNAVAILABLE', message });
+  // An inactive Markdown file is not a problem: it is attached and waits for its project, stage, CLI or task.
+  for (const entry of resources.filter(item => !item.inactive)) for (const message of entry.issues) (entry.required ? errors : warnings).push({ resourceId: entry.resourceId, code: 'BASE_RESOURCE_UNAVAILABLE', message });
   if (resources.some(entry => entry.status === 'ready' && entry.delivery === 'native-mcp')) warnings.push({ code: 'BASE_AMBIENT_CONFIGURATION', message: 'Base-managed MCP servers supplement the user-configured CLI tools; Base does not isolate ambient MCPs.' });
   if (ADAPTERS[provider]?.notLiveVerified && resources.length) warnings.push({ code: 'BASE_NOT_LIVE_VERIFIED', message: 'This provider adapter is covered by simulated checks, not authenticated live verification.' });
   const externalRoots = [...new Set(resources.filter(entry => entry.status === 'ready').flatMap(entry => (registry.get(entry.resourceId)?.configuration?.sources || []).filter(source => source.kind === 'external').map(source => source.rootId)))].map(id => ({ id, approvedAt: state?.base?.approvedRoots?.find(root => root.id === id)?.approvedAt || null }));

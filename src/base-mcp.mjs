@@ -63,10 +63,15 @@ export async function testMcp(definition, { signal, timeoutMs = 15000, environme
         const listed = await client[method]({ ...(cursor ? { cursor } : {}) }, { signal: combined, timeout: Math.min(timeoutMs, 30000) });
         for (const entry of listed[kind] || []) {
           if (result[kind].length >= 200) { result.partial = true; break; }
-          // Discovery names/identities only. Untrusted descriptions, schemas, or server instructions
-          // may contain secrets or injection, and are not persisted in diagnostics.
+          // Names, plus for tools a short description, its hints and required inputs: shown to the person as plain
+          // text in the tool list, redacted, never put into an agent's prompt. Schemas and server instructions are not kept.
           const identity = redact(entry.name || '').replace(/[^A-Za-z0-9_.:/-]/g, '').slice(0, 160);
-          if (identity) result[kind].push({ name: identity });
+          if (!identity) continue;
+          if (kind !== 'tools') { result[kind].push({ name: identity }); continue; }
+          const clean = value => redact(typeof value === 'string' ? value : '').replace(/[\u0000-\u001f\u007f]+/g, ' ').trim();
+          const required = Array.isArray(entry.inputSchema?.required) ? entry.inputSchema.required.filter(name => typeof name === 'string').slice(0, 20).map(name => name.replace(/[^A-Za-z0-9_.-]/g, '').slice(0, 60)).filter(Boolean) : [];
+          const description = clean(entry.description).slice(0, 300);
+          result.tools.push({ name: identity, ...(description ? { description } : {}), ...(entry.annotations?.readOnlyHint === true ? { readOnly: true } : {}), ...(entry.annotations?.destructiveHint === true ? { destructive: true } : {}), ...(required.length ? { inputs: required } : {}) });
         }
         cursor = listed.nextCursor;
         if (!cursor || result[kind].length >= 200) break;

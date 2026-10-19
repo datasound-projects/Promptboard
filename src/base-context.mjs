@@ -211,12 +211,19 @@ export async function prepareBase({ manifest, readRevision, currentResources = [
         let text = '', captures = [], omitted = [];
         if (entry.kind === 'mcp') {
           for (const ref of [...Object.values(cfg.env || {}), ...Object.values(cfg.headers || {})]) if (!process.env[ref]) throw new BaseDeliveryError('A declared MCP environment reference is unavailable.', 'BASE_AUTH_REQUIRED');
-          mcpServers.push({ name: `pb_${entry.resourceId.replace(/[^A-Za-z0-9_]/g, '_')}`, resourceId: entry.resourceId, required: entry.required, configuration: cfg });
+          // Tools switched off on the server or for this assignment are withheld by each CLI's own tool filter.
+          mcpServers.push({ name: `pb_${entry.resourceId.replace(/[^A-Za-z0-9_]/g, '_')}`, resourceId: entry.resourceId, required: entry.required, configuration: cfg, disabledTools: entry.disabledTools || [] });
         } else if (entry.kind === 'skill') {
           text = content.body || content.files?.find(file => file.path === 'SKILL.md')?.text || '';
           if (!text) throw new BaseDeliveryError('Skill instructions are empty or unavailable.', 'BASE_CONTENT_UNAVAILABLE');
           for (const file of content.files || []) if (file.path !== 'SKILL.md') text += `\n\nSupporting file ${file.path} (reference text; scripts are not executed):\n${file.text}`;
         } else if (entry.kind === 'profile') text = cfg.agent?.instructions || '';
+        else if (entry.kind === 'agentProfile') text = cfg.instructions || '';
+        else if (entry.kind === 'markdown') {
+          // Sent by Promptboard as part of the prompt, under the file's own name; not written into the repository.
+          text = content.body ? `File ${cfg.fileName}${entry.overrides ? ' (this project’s version)' : ''}:\n${content.body}` : '';
+          if (!text && entry.required) throw new BaseDeliveryError('An attached Markdown file is empty.', 'BASE_CONTENT_UNAVAILABLE');
+        }
         else if (entry.kind === 'tool') text = cfg.delivery === 'mcp' ? `MCP tool reference: ${cfg.toolName} on ${cfg.serverId}. This reference does not filter out other tools from that server.` : `Command recipe (not a registered native tool; existing shell permissions apply):\n${JSON.stringify([cfg.command, ...(cfg.args || [])])}\n${content.body || ''}`;
         else if ((entry.kind === 'knowledge' && entry.delivery !== 'dependency-definition') || entry.kind === 'context') {
           let sources = [...(content.sources || []), ...(content.pages || []).map(page => ({ id: page.id, name: page.title, text: page.markdown, provenance: { ...(page.provenance || {}), resourceId: entry.resourceId, revision: entry.revision } }))];
@@ -259,7 +266,7 @@ export async function prepareBase({ manifest, readRevision, currentResources = [
       for (const ref of [...baseDependencies(definition), ...(definition.configuration?.binding?.include || [])]) collect(ref.resourceId);
       const name = `pb_${entry.resourceId.replace(/[^A-Za-z0-9_]/g, '_')}`;
       const context = [...selected].filter(id => definitions.get(id)?.kind !== 'profile').map(id => resourceText.get(id)).filter(Boolean).join('\n\n--- Selected Base context ---\n');
-      const prompt = `You are ${definition.name}. Follow the parent task stage and its permission restrictions. Do not commit, merge, push, or change permission settings.\n\n${definition.configuration?.agent?.instructions || definition.description || 'Help with your assigned portion of the task.'}${context ? `\n\n=== BASE RESOURCE CONTEXT ===\n${context}\n=== END BASE RESOURCE CONTEXT ===` : ''}`;
+      const prompt = `You are ${definition.name}.${entry.responsibility ? ` Your responsibility in this team: ${entry.responsibility}.` : ''} Follow the parent task stage and its permission restrictions. Do not commit, merge, push, or change permission settings.\n\n${definition.configuration?.agent?.instructions || definition.description || 'Help with your assigned portion of the task.'}${context ? `\n\n=== BASE RESOURCE CONTEXT ===\n${context}\n=== END BASE RESOURCE CONTEXT ===` : ''}`;
       const native = { description: definition.description || `Reusable specialist: ${definition.name}`, prompt, model: definition.configuration?.agent?.model || 'inherit', disallowedTools: ['EnterPlanMode', 'ExitPlanMode'] };
       if (definition.configuration?.agent?.effort) native.effort = definition.configuration.agent.effort;
       const candidate = { ...subagents, [name]: native };

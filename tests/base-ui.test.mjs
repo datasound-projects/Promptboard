@@ -67,7 +67,9 @@ test('Base library creates a real instruction draft without assigning or testing
   const ctx = setup(t), { $, view, calls, clickText, change, submit } = ctx;
   await view.show();
   assert.equal($('#base-list').children.length, 2);
-  assert.match($('#base-list').textContent, /Available · trusted · r1/);
+  // The row shows its state in a few words and a switch; trust and revision are under ⓘ.
+  assert.match($('#base-list').textContent, /Available/);
+  assert.equal($('#base-list .base-switch').checked, true);
   change($('#base-new-kind'), 'skill'); clickText('Create');
   $('#base-resource-name').value = 'Exact instructions';
   $('#base-skill-body').value = 'Keep $HOME literal.\n\nOriginal trailing space. ';
@@ -121,6 +123,19 @@ test('a task-column picker opts out with empty Replace and never changes provide
   const applied = calls.find(call => call.path === '/api/base/apply').body;
   assert.deepEqual(applied, { expectedBaseRevision: 3, changes: [{ target: taskColumn, expectedRevision: 4, binding: { mode: 'replace', include: [], exclude: [] } }] });
   assert.equal('provider' in applied.changes[0], false); assert.equal('profileId' in applied.changes[0], false);
+});
+
+test('a resource can be switched off for one assignment only; the switch is saved with that assignment', async t => {
+  const { $, win, view, calls, change, submit } = setup(t);
+  await view.openPicker(taskColumn);
+  change($('[data-base-mode]'), 'extend');
+  const include = $('.base-binding-fields .settings-group');
+  include.querySelector(`[data-resource="${skill.id}"]`).checked = true; include.querySelector(`[data-resource="${skill.id}"]`).dispatchEvent(new win.Event('change', { bubbles: true }));
+  const on = include.querySelector(`[data-on="${skill.id}"]`);
+  assert.equal(on.disabled, false); on.checked = false;
+  submit($('#base-dialog-content form'));
+  await until(() => calls.some(call => call.path === '/api/base/apply'), 'apply');
+  assert.deepEqual(calls.find(call => call.path === '/api/base/apply').body.changes[0].binding.include, [{ resourceId: skill.id, required: true, enabled: false }]);
 });
 
 test('bulk application previews targets and sends one atomic revision-checked assignment request', async t => {
@@ -268,19 +283,19 @@ test('run inspection keeps configured, supplied, and observed facts separate and
 });
 
 
-const categoryCases = [['', 'All'], ['agent', 'Agents'], ['pack', 'Packs'], ['mcp', 'MCPs'], ['skill', 'Skills'], ['knowledge', 'Knowledge'], ['context', 'Context'], ['tool', 'Tools']];
-const categoryResources = () => categoryCases.slice(1).flatMap(([type], index) => [true, false].map(enabled => ({ ...skill, id: `${type}_${enabled}`, type, kind: type === 'agent' ? 'profile' : type, name: `coding ${type} ${enabled}`, enabled, updatedAt: index * 10 + (enabled ? 1 : 2), configuration: type === 'agent' ? { agent: {}, binding: { mode: 'inherit', include: [], exclude: [] } } : {} })));
+const categoryCases = [['', 'All'], ['agent', 'Agents'], ['agentProfile', 'Agent Profiles'], ['pack', 'Packs'], ['mcp', 'MCPs'], ['skill', 'Skills'], ['knowledge', 'Knowledge'], ['context', 'Context'], ['tool', 'Tools'], ['markdown', 'Custom MD Files']];
+const categoryResources = () => categoryCases.slice(1).flatMap(([type], index) => [true, false].map(enabled => ({ ...skill, id: `${type}_${enabled}`, type, kind: type === 'agent' ? 'profile' : type, name: `coding ${type} ${enabled}`, enabled, updatedAt: index * 10 + (enabled ? 1 : 2), configuration: type === 'agent' ? { agent: {}, binding: { mode: 'inherit', include: [], exclude: [] } } : type === 'agentProfile' ? { agents: [], resources: [], instructions: '' } : type === 'markdown' ? { fileName: 'AGENTS.md', activation: { mode: 'always' } } : {} })));
 
-test('exactly eight categories filter stored types locally with shared AND filters, sort, view and canonical counts', async t => {
+test('the ten categories filter stored types locally with shared AND filters, sort, view and canonical counts', async t => {
   const { $, win, view, calls, clickText, change } = setup(t, { resources: categoryResources() });
   await view.show();
   assert.deepEqual([...$('#base-categories').children].map(node => node.firstElementChild.textContent), categoryCases.map(([, name]) => name));
   assert.equal($('#base-categories [aria-pressed="true"]').dataset.kind, '');
-  assert.equal($('#base-list').children.length, 14);
+  assert.equal($('#base-list').children.length, 18);
   for (const [type, label] of categoryCases) {
     clickText(label); assert.equal($('#base-categories [aria-pressed="true"]').dataset.kind, type);
     assert.equal($('#base-categories').querySelectorAll('[aria-pressed="true"]').length, 1);
-    assert.equal($('#base-list').children.length, type ? 2 : 14);
+    assert.equal($('#base-list').children.length, type ? 2 : 18);
     if (type) assert.equal($('#base-new-kind').value, type === 'agent' ? 'profile' : type);
   }
   $('#base-search').value = 'coding'; $('#base-search').dispatchEvent(new win.Event('input'));
@@ -291,7 +306,7 @@ test('exactly eight categories filter stored types locally with shared AND filte
   assert.equal($('#base-list').children.length, 1); assert.equal($('#base-list .base-resource').dataset.resourceId, 'skill_true');
   assert.equal($('#base-list').classList.contains('base-list-mode'), true);
   assert.equal($('#base-categories [data-kind="skill"] .base-category-count').textContent, '2');
-  clickText('All'); assert.equal($('#base-list').children.length, 7);
+  clickText('All'); assert.equal($('#base-list').children.length, 9);
   await view.show(); assert.equal(calls.filter(call => call.path === '/api/base').length, 1, 'Category changes and revisiting cached Base never refetch.');
   const stored = JSON.parse(win.localStorage.getItem('promptboard.base.library-view'));
   assert.deepEqual(stored, { category: '', search: 'coding', filter: 'enabled', sort: 'name', viewMode: 'list' });
@@ -369,7 +384,7 @@ test('category counts track canonical mutations and keyboard focus alone never c
   await view.refresh(); clickText('Tools');
   assert.equal($('#base-list').children.length, 3);
   assert.equal(nav.querySelector('[data-kind="mcp"] .base-category-count').textContent, '0');
-  assert.equal(nav.querySelector('[data-kind=""] .base-category-count').textContent, '13');
+  assert.equal(nav.querySelector('[data-kind=""] .base-category-count').textContent, '17');
   assert.equal($('#base-search').value, '');
 });
 

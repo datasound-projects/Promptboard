@@ -142,13 +142,15 @@ test('a Base MCP server added to a chat stays linked to Base, so revoking its tr
   assert.ok(prompts.length === 1 && !prompts[0].includes('Queues keep messages'));
 });
 
-test('an MCP server added from Base is used only while Base keeps it enabled and trusted', async () => {
+test('an MCP server added from Base is used only while Base keeps it enabled and trusted, with its current Base definition', async () => {
   let trust = 'trusted';
-  const base = { list: async () => ({ resources: [{ id: 'srv', kind: 'mcp', enabled: true, trust }] }) };
+  // Edited in Base after the chat added it: the chat uses the edited definition, not the copy it was added with.
+  const base = { list: async () => ({ resources: [{ id: 'srv', kind: 'mcp', name: 'Local docs', enabled: true, trust, configuration: { transport: 'stdio', command: 'node', args: ['server-v2.js'], env: {} } }] }) };
   const started = [];
-  const mcp = { retrieve: async config => { started.push(config.command); return [{ source: 'Local docs', locator: 'search', text: 'Queues keep messages until acknowledged.' }]; } };
+  const mcp = { retrieve: async config => { started.push(config.command); started.args = config.args; return [{ source: 'Local docs', locator: 'search', text: 'Queues keep messages until acknowledged.' }]; } };
   const source = { ...sourceOf({ type: 'mcp', config: { type: 'mcp', name: 'Local docs', transport: 'stdio', command: 'node', args: ['server.js'], allowStart: true } }), tools: ['search'], resourceId: 'srv' };
   assert.equal((await gatherSources([source], 'queues', { mcp, base })).evidence.length, 1);
+  assert.deepEqual(started.args, ['server-v2.js']);
   trust = 'untrusted';
   const { evidence, warnings } = await gatherSources([source], 'queues', { mcp, base });
   assert.deepEqual([evidence.length, started.length], [0, 1], 'not started once Base revoked its trust');

@@ -5,8 +5,13 @@ import { dirname, isAbsolute, join, posix } from 'node:path';
 import { resolveConfig } from './agents.mjs';
 import { normalizeAvatarImage } from './base-avatar.mjs';
 import { syncDir, writeAtomic } from './durable.mjs';
+import { markdownFileName, normalizeActivation } from './base-markdown.mjs';
 
-export const BASE_KINDS = Object.freeze(['skill', 'mcp', 'knowledge', 'context', 'tool', 'profile', 'pack']);
+// `profile` is an Agent (one agent definition); `agentProfile` composes agents and resources into a deployable setup;
+// `markdown` is a Custom MD file (AGENTS.md, CLAUDE.md, SOUL.md…).
+export const BASE_KINDS = Object.freeze(['skill', 'mcp', 'knowledge', 'context', 'tool', 'profile', 'pack', 'agentProfile', 'markdown']);
+/** Kinds that configure an agent rather than being one of its resources. */
+const AGENT_KINDS = ['profile', 'agentProfile'];
 export const BASE_EXPORT_VERSION = 1;
 export const BASE_LIMITS = Object.freeze({ resources: 2000, documentChars: 256 * 1024, contentBytes: 4 * 1024 * 1024, definitionBytes: 4 * 1024 * 1024 + 512 * 1024, importBytes: 12 * 1024 * 1024, refs: 200, files: 200 });
 const ID = /^[A-Za-z0-9_-]{1,100}$/;
@@ -34,13 +39,18 @@ function argumentsList(input = []) {
   if (!Array.isArray(input) || input.length > 100) fail('At most 100 command arguments are supported.');
   return input.map(value => string(value, 4096, 'Command argument'));
 }
+/**
+ * A reference to a shared resource, never a copy: its ID, whether it is required, and — for this assignment only —
+ * whether it is switched off (`enabled: false`) and which of an MCP server's tools are switched off here.
+ */
 export function normalizeReferences(input = []) {
   if (!Array.isArray(input) || input.length > BASE_LIMITS.refs) fail('Select at most 200 resource references.');
   const refs = new Map();
   for (const value of input) {
     const entry = typeof value === 'string' ? { resourceId: value, required: true } : value;
-    if (!object(entry) || (entry.required !== undefined && typeof entry.required !== 'boolean')) fail('Resource references need an ID and a required flag.');
-    refs.set(id(entry.resourceId), { resourceId: entry.resourceId, required: entry.required !== false });
+    if (!object(entry) || (entry.required !== undefined && typeof entry.required !== 'boolean') || (entry.enabled !== undefined && typeof entry.enabled !== 'boolean')) fail('Resource references need an ID, a required flag and an optional on/off switch.');
+    const disabledTools = strings(entry.disabledTools, 500, 200, 'Switched-off tools');
+    refs.set(id(entry.resourceId), { resourceId: entry.resourceId, required: entry.required !== false, ...(entry.enabled === false ? { enabled: false } : {}), ...(disabledTools.length ? { disabledTools } : {}) });
   }
   return [...refs.values()];
 }
@@ -157,11 +167,31 @@ function configuration(kind, value = {}) {
     }
     return { agent: { ...agent, instructions: string(value.agent?.instructions, 4000, 'Profile stage instructions') }, binding: normalizeBinding(value.binding), ...(avatar ? { avatar } : {}) };
   }
+  if (kind === 'agentProfile') {
+    if (value.agents !== undefined && (!Array.isArray(value.agents) || value.agents.length > 17)) fail('An agent profile has one primary agent and at most 16 supporting agents.');
+    const seen = new Set(), agents = (value.agents || []).map(entry => {
+      if (!object(entry)) fail('Each agent in a profile needs an agent ID.');
+      const resourceId = id(entry.resourceId, 'Agent');
+      if (seen.has(resourceId)) fail('Each agent appears once in a profile.'); seen.add(resourceId);
+      if (entry.enabled !== undefined && typeof entry.enabled !== 'boolean') fail('An agent’s switch must be on or off.');
+      return { resourceId, role: entry.role === 'primary' ? 'primary' : 'supporting', responsibility: string(entry.responsibility, 500, 'Responsibility'), ...(entry.enabled === false ? { enabled: false } : {}) };
+    });
+    if (agents.length && agents.filter(entry => entry.role === 'primary').length !== 1) fail('Choose exactly one primary agent.');
+    return { agents, resources: normalizeReferences(value.resources), instructions: string(value.instructions, 4000, 'Profile instructions') };
+  }
+  if (kind === 'markdown') {
+    const override = value.override === undefined || value.override === null ? null : value.override;
+    if (override !== null && !object(override)) fail('A project override names the shared file and the project.');
+    return { fileName: markdownFileName(value.fileName), activation: normalizeActivation(value.activation),
+      ...(override ? { override: { of: id(override.of, 'Shared file'), projectId: id(override.projectId, 'Project') } } : {}) };
+  }
   if (kind === 'mcp') {
     const transport = value.transport || 'stdio';
     if (!['stdio', 'streamable-http'].includes(transport)) fail('MCP transport must be stdio or Streamable HTTP.');
     const auth = value.auth || {};
-    const common = { transport, env: envReferences(value.env, 'Environment'), headers: envReferences(value.headers, 'Headers', true), auth: { required: auth.required === true || value.authRequired === true, description: string(auth.description, 500, 'Authentication description') } };
+    const disabledTools = strings(value.disabledTools, 500, 200, 'Switched-off tools');
+    const common = { transport, env: envReferences(value.env, 'Environment'), headers: envReferences(value.headers, 'Headers', true), auth: { required: auth.required === true || value.authRequired === true, description: string(auth.description, 500, 'Authentication description') },
+      ...(disabledTools.length ? { disabledTools } : {}) };
     return transport === 'stdio' ? { ...common, command: string(value.command, 4096, 'MCP command', true), args: argumentsList(value.args) } : { ...common, endpoint: endpoint(value.endpoint, 'MCP endpoint') };
   }
   if (kind === 'tool') {
@@ -184,6 +214,8 @@ export function resourceReferences(resource) {
   const refs = [...(resource.dependencies || [])];
   if (resource.kind === 'pack') refs.push(...(resource.configuration?.resources || []));
   if (resource.kind === 'profile') refs.push(...(resource.configuration?.binding?.include || []));
+  if (resource.kind === 'agentProfile') refs.push(...(resource.configuration?.agents || []).map(agent => ({ resourceId: agent.resourceId, required: agent.role === 'primary' })), ...(resource.configuration?.resources || []));
+  if (resource.kind === 'markdown' && resource.configuration?.override) refs.push({ resourceId: resource.configuration.override.of, required: false });
   if (resource.kind === 'tool' && resource.configuration?.delivery === 'mcp') refs.push({ resourceId: resource.configuration.serverId, required: true });
   if (['context', 'knowledge'].includes(resource.kind)) for (const source of resource.configuration?.sources || []) if (source.kind === 'knowledge') refs.push({ resourceId: source.resourceId, required: true });
   return refs;
@@ -199,7 +231,14 @@ export function validateResourceGraph(resources) {
     for (const ref of resourceReferences(resource)) {
       const dependency = byId.get(ref.resourceId);
       if (!dependency) throw new BaseError(`Resource “${resource.name}” refers to a missing resource.`, 'BASE_DEPENDENCY_MISSING');
-      if (resource.kind === 'pack' && ['pack', 'profile'].includes(dependency.kind)) fail('Packs cannot contain other packs or agent profiles.');
+      if (resource.kind === 'pack' && ['pack', ...AGENT_KINDS].includes(dependency.kind)) fail('Packs cannot contain other packs, agents or agent profiles.');
+      if (resource.kind === 'agentProfile') {
+        const asAgent = resource.configuration?.agents?.some(agent => agent.resourceId === ref.resourceId);
+        if (asAgent && dependency.kind !== 'profile') fail('An agent profile’s agents must be agents.');
+        if (!asAgent && resource.configuration?.resources?.some(item => item.resourceId === ref.resourceId) && AGENT_KINDS.includes(dependency.kind)) fail('Add agents to an agent profile as agents, not as resources.');
+      }
+      if (dependency.kind === 'agentProfile' && resource.kind !== 'agentProfile') fail('An agent profile is assigned to a project or column, not added to another resource.');
+      if (resource.kind === 'markdown' && resource.configuration?.override?.of === ref.resourceId && (dependency.kind !== 'markdown' || dependency.configuration?.override)) fail('A project override must point to a shared Markdown file that is not itself an override.');
       if (resource.kind === 'tool' && resource.configuration?.delivery === 'mcp' && ref.resourceId === resource.configuration.serverId && dependency.kind !== 'mcp') fail('An MCP tool must reference an MCP server.');
       if (['context', 'knowledge'].includes(resource.kind) && resource.configuration?.sources?.some(source => source.resourceId === ref.resourceId) && dependency.kind !== 'knowledge') fail('A knowledge context source must reference a knowledge collection.');
       visit(dependency);
@@ -207,6 +246,9 @@ export function validateResourceGraph(resources) {
     visiting.delete(resource.id); visited.add(resource.id);
   }
   resources.forEach(visit);
+  // One override of a shared file per project.
+  const overrides = resources.filter(resource => resource.kind === 'markdown' && resource.configuration?.override).map(resource => `${resource.configuration.override.of}:${resource.configuration.override.projectId}`);
+  if (new Set(overrides).size !== overrides.length) fail('A project already has an override of this file.');
   // Containers cannot be smuggled into a pack through an ordinary member's dependencies.
   for (const pack of resources.filter(resource => resource.kind === 'pack')) {
     const seen = new Set();
@@ -215,7 +257,7 @@ export function validateResourceGraph(resources) {
       seen.add(resource.id);
       for (const ref of resourceReferences(resource)) {
         const dependency = byId.get(ref.resourceId);
-        if (['pack', 'profile'].includes(dependency.kind)) fail('Packs cannot contain other packs or agent profiles, including through dependencies.');
+        if (['pack', ...AGENT_KINDS].includes(dependency.kind)) fail('Packs cannot contain other packs, agents or agent profiles, including through dependencies.');
         inspect(dependency);
       }
     };
@@ -291,9 +333,10 @@ function validateDiscoveredTool(resource, resources) {
 function validateSelection(state, binding, profileId, scope) {
   const resources = new Map(state.base.resources.map(resource => [resource.id, resource]));
   for (const resourceId of [...binding.include.map(ref => ref.resourceId), ...binding.exclude]) if (!resources.has(resourceId)) throw new BaseError('A selected Base resource no longer exists.', 'BASE_NOT_FOUND', 404);
-  // An agent profile is a target's profile (its provider and model apply), not a resource; only a profile nests profiles.
-  if (scope !== 'profile' && binding.include.some(ref => resources.get(ref.resourceId)?.kind === 'profile')) fail('Choose an agent profile as the agent profile of a global, project or column target, not as one of its resources.');
-  if (profileId && resources.get(profileId)?.kind !== 'profile') fail('Choose an existing agent profile.');
+  // An agent or agent profile is a target's profile (its provider and model apply), not a resource; only an agent nests agents.
+  if (scope !== 'profile' && binding.include.some(ref => AGENT_KINDS.includes(resources.get(ref.resourceId)?.kind))) fail('Choose an agent or agent profile as the agent profile of a global, project or column target, not as one of its resources.');
+  if (binding.include.some(ref => resources.get(ref.resourceId)?.kind === 'agentProfile')) fail('An agent profile is assigned to a project or column, not added to an agent.');
+  if (profileId && !AGENT_KINDS.includes(resources.get(profileId)?.kind)) fail('Choose an existing agent or agent profile.');
 }
 function targetEntity(state, target, create = false) {
   if (!object(target)) fail('Choose an existing configuration target.');
@@ -361,10 +404,15 @@ export class Base {
     const previous = state.base.resources.find(resource => resource.id === resourceId);
     if (!previous) throw new BaseError('This Base resource no longer exists.', 'BASE_NOT_FOUND', 404);
     if (expectedRevision !== previous.revision) throw new BaseError('The resource changed. Reload before saving.', 'RESOURCE_REVISION_CONFLICT', 409);
-    const definition = normalizeResource(input, await this.readRevision(previous.revisionRef), { omitted: input.content === undefined && previous.contentStatus === 'omitted' });
+    const prior = await this.readRevision(previous.revisionRef);
+    const definition = normalizeResource(input, prior, { omitted: input.content === undefined && previous.contentStatus === 'omitted' });
     validateDiscoveredTool(definition, state.base.resources);
     // Connection results describe one definition only; edits cannot claim an older definition was tested.
-    if (input.configuration !== undefined || input.content !== undefined) delete definition.connectionTest;
+    // A connection result describes one server definition: it goes when the definition changes. Saving the same
+    // definition (a new name, or tools switched on or off) keeps it — the server itself is unchanged.
+    const sameServer = JSON.stringify({ ...definition.configuration, disabledTools: undefined }) === JSON.stringify({ ...prior.configuration, disabledTools: undefined })
+      && JSON.stringify(definition.content) === JSON.stringify(prior.content);
+    if (!sameServer) delete definition.connectionTest;
     validateResourceGraph(state.base.resources.map(resource => resource.id === resourceId ? definition : resource));
     const resource = await this.#writeDefinition(definition, previous);
     return this.store.update(draft => {
@@ -420,7 +468,8 @@ export class Base {
     if (previous.revision !== expectedRevision) throw new BaseError('The MCP definition changed during the test.', 'RESOURCE_REVISION_CONFLICT', 409);
     const definition = await this.readRevision(previous.revisionRef);
     const clean = { status: result.status === 'connected' ? 'connected' : 'failed', checkedAt: Date.now(), testedRevision: previous.revision + 1,
-      code: string(result.code, 80, 'Connection result'), tools: (result.tools || []).slice(0, 500).map(tool => ({ name: string(tool.name, 200, 'Tool name', true), description: string(tool.description, 2000, 'Tool description') })),
+      code: string(result.code, 80, 'Connection result'), tools: (result.tools || []).slice(0, 500).map(tool => ({ name: string(tool.name, 200, 'Tool name', true), description: string(tool.description, 2000, 'Tool description'),
+        ...(tool.readOnly === true ? { readOnly: true } : {}), ...(tool.destructive === true ? { destructive: true } : {}), ...(Array.isArray(tool.inputs) && tool.inputs.length ? { inputs: strings(tool.inputs, 20, 60, 'Tool inputs') } : {}) })),
       resources: integer(Array.isArray(result.resources) ? result.resources.length : result.resources, 0, 0, 10000, 'Discovered resource count'),
       prompts: integer(Array.isArray(result.prompts) ? result.prompts.length : result.prompts, 0, 0, 10000, 'Discovered prompt count'),
       durationMs: integer(result.durationMs === undefined ? undefined : Math.round(result.durationMs), 0, 0, 120000, 'Connection test duration'), partial: result.partial === true,
@@ -447,6 +496,12 @@ export class Base {
       definition.dependencies = definition.dependencies.filter(item => item.resourceId !== resourceId);
       if (definition.kind === 'pack') definition.configuration.resources = definition.configuration.resources.filter(item => item.resourceId !== resourceId);
       if (definition.kind === 'profile') definition.configuration.binding = without(definition.configuration.binding);
+      if (definition.kind === 'agentProfile') {
+        definition.configuration.agents = definition.configuration.agents.filter(item => item.resourceId !== resourceId);
+        definition.configuration.resources = definition.configuration.resources.filter(item => item.resourceId !== resourceId);
+        // Without its primary agent a profile keeps its supporting agents and needs a new primary before it runs.
+      }
+      if (definition.kind === 'markdown' && definition.configuration.override?.of === resourceId) delete definition.configuration.override; // The override becomes a file of its own.
       if (['context', 'knowledge'].includes(definition.kind) && definition.configuration.sources) definition.configuration.sources = definition.configuration.sources.filter(item => item.resourceId !== resourceId);
       definition.revision++; definition.updatedAt = Date.now();
       replacements.set(definition.id, await this.#writeDefinition(definition, previous));
@@ -510,6 +565,12 @@ export class Base {
       definition.dependencies = definition.dependencies.map(ref => ({ ...ref, resourceId: lookup(ref.resourceId) }));
       if (definition.kind === 'pack') definition.configuration.resources = definition.configuration.resources.map(ref => ({ ...ref, resourceId: lookup(ref.resourceId) }));
       if (definition.kind === 'profile') definition.configuration.binding = remapBinding(definition.configuration.binding, remap);
+      if (definition.kind === 'agentProfile') {
+        definition.configuration.agents = definition.configuration.agents.map(agent => ({ ...agent, resourceId: lookup(agent.resourceId) }));
+        definition.configuration.resources = definition.configuration.resources.map(ref => ({ ...ref, resourceId: lookup(ref.resourceId) }));
+      }
+      // A project ID belongs to the installation it came from: an imported override becomes a file of its own.
+      if (definition.kind === 'markdown') delete definition.configuration.override;
       if (definition.kind === 'tool' && definition.configuration.delivery === 'mcp') definition.configuration.serverId = lookup(definition.configuration.serverId);
       if (['context', 'knowledge'].includes(definition.kind) && definition.configuration.sources) definition.configuration.sources = definition.configuration.sources.map(source => {
         if (source.kind === 'knowledge') return { ...source, resourceId: lookup(source.resourceId) };
