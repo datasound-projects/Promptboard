@@ -158,3 +158,22 @@ test('On a phone the Research header keeps every tool on screen with a long CLI 
   assert.ok(box.close <= box.drawer - 4, `Close ends at ${box.close}, the panel at ${box.drawer}`);
   assert.equal(box.width, 30, 'the tools keep their size; the CLI name is shortened instead');
 });
+
+test('Enter while the installed CLIs are still being checked sends the question once they are known', { skip: !chrome, timeout: 120000 }, async t => {
+  // A first open checks the CLIs; Send stays off meanwhile, but Enter submits the form directly.
+  let hold = null, asked;
+  const checking = new Promise(resolve => { asked = resolve; }), detected = [{ id: 'claude', available: true, version: '2.1.296' }];
+  const researchRunner = async call => ({ text: 'Use PostgreSQL.', session: call.session?.id || 'thread-1' });
+  const { browser, ev, wait } = await researchPage(t, { server: { researchRunner, detector: async () => { if (hold) { asked(); await hold; } return detected; } } });
+  let release; hold = new Promise(resolve => { release = resolve; });
+  t.after(() => release());
+  await ev(`document.querySelector('#origin-research-open').click();`);
+  await checking;
+  await wait(`document.activeElement?.id === 'origin-research-input' && document.querySelector('#origin-research-send').disabled`, 'the CLIs are being checked');
+  await browser.type('Store data?');
+  await browser.key('Enter');
+  release();
+  await wait(`/Use PostgreSQL/.test(document.querySelector('.origin-research-message.is-assistant')?.textContent || '')`, 'the answer', 30000);
+  assert.equal(await ev(`return document.querySelector('.origin-research-message.is-user')?.textContent.includes('Store data?');`), true);
+  assert.doesNotMatch(await ev(`return document.querySelector('#origin-drawer').textContent;`), /Choose Claude Code or Codex first/);
+});
