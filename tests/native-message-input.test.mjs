@@ -453,3 +453,16 @@ test('a delivered column message leaves "finished, waiting for you" for a CLI wi
   assert.ok(updates.some(change => change.status === 'running' && change.turnComplete === false), 'The new turn is shown as working.');
   assert.equal(w.session.status, 'running');
 });
+
+test('an interrupted multi-chunk paste is closed without Enter, only on the same process while paste mode holds', async t => {
+  const message = 'a'.repeat(2500); // Three bounded writes: the opening delimiter is in the first, the closing one in the last.
+  for (const [revoke, closed] of [[w => { w.session.eventsPending = true; }, true],
+    [w => { w.session.inputEpoch++; w.session.terminalInput.manualInput('human draft'); }, true],
+    [w => { w.session.terminalInput.observeOutput('\x1b[?2004l'); }, false],
+    [w => { w.session.proc = { write() { assert.fail('Replacement process cannot receive input.'); } }; }, false]]) {
+    const w = await fixture(t); w.onWrite = () => { if (w.writes.length === 1) revoke(w); };
+    assert.equal((await w.call({ message })).status, 'unconfirmed');
+    assert.deepEqual(w.writes.slice(1), closed ? ['\x1b[201~'] : []);
+    assert.ok(!w.writes.includes('\r')); assert.equal(w.session.messageInputUncertain, true);
+  }
+});
