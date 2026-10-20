@@ -107,7 +107,7 @@ export class RemoteAccess {
   constructor({ dataDir, localPort, handle, cli = tailscaleCli, now = () => Date.now() }) {
     this.path = join(dataDir, FILE); this.localPort = localPort; this.handle = handle; this.cli = cli; this.now = now;
     this.settings = { ...DEFAULTS }; this.sessions = []; this.pairing = null; this.failures = []; this.server = null; this.error = '';
-    this.queue = serial(); this.tailscale = null;
+    this.queue = serial(); this.tailscale = null; this.lookup = null;
     this.changes = serial(); this.closed = false; // Listener changes run one at a time; none after shutdown.
     this.open = new Map(); // Session ID → its open responses (live streams), ended when the session is revoked.
   }
@@ -144,7 +144,9 @@ export class RemoteAccess {
     } catch { this.error = 'The certificate or key file could not be read.'; throw new RemoteError(this.error, 'REMOTE_TLS'); }
     server.on('request', (req, res) => this.serve(req, res).catch(() => { if (res.headersSent) res.destroy(); else reply(res, 500, { error: 'The request failed. Nothing was changed.' }); }));
     server.requestTimeout = 30_000; server.headersTimeout = 15_000; server.keepAliveTimeout = 5_000;
-    await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, bind, () => { server.off('error', reject); resolve(); }); })
+    // Once listening, a server error (for example EMFILE on accept) is shown in Settings; unhandled, it would stop the whole app.
+    const failed = error => { if (this.server === server) this.error = `The remote listener reported an error${/^[A-Z]+$/.test(error?.code || '') ? ` (${error.code})` : ''}. If the phone cannot connect, turn remote access off and on again.`; };
+    await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, bind, () => { server.off('error', reject); server.on('error', failed); resolve(); }); })
       .catch(error => { this.error = error.code === 'EADDRINUSE' ? `Port ${port} is already in use. Choose another remote port.` : error.code === 'EADDRNOTAVAIL' ? `${bind} is not an address of this computer.` : 'The remote listener could not start.'; throw new RemoteError(this.error, 'REMOTE_LISTEN', 409); });
     if (this.closed) { server.close(); return; }
     this.server = server; this.error = '';
@@ -203,7 +205,12 @@ export class RemoteAccess {
   // ---- What the Settings page shows ----
   async status({ refresh = false } = {}) {
     const { method, port, bind, host, cert, key } = this.settings, now = this.now();
-    if (method === 'tailscale' && (refresh || !this.tailscale || this.now() - this.tailscale.at > 15000)) this.tailscale = { at: this.now(), state: await tailscaleState(port, this.cli) };
+    if (method === 'tailscale' && (refresh || !this.tailscale || this.now() - this.tailscale.at > 15000)) {
+      // Requests that arrive together share one lookup; a refresh (after a Serve change) always reads again.
+      if (refresh || this.lookup?.port !== port) this.lookup = { port, state: tailscaleState(port, this.cli) };
+      const lookup = this.lookup;
+      try { this.tailscale = { at: this.now(), state: await lookup.state }; } finally { if (this.lookup === lookup) this.lookup = null; }
+    }
     const tailscale = method === 'tailscale' ? this.tailscale.state : null;
     const url = method === 'tailscale' ? tailscale?.url || '' : method === 'twingate' && (host || bind !== '127.0.0.1') ? `${cert ? 'https' : 'http'}://${host || bind}:${port}` : '';
     const warnings = [];

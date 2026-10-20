@@ -4,6 +4,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { createServer } from 'node:net';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -351,6 +353,39 @@ test('Settings: saving another Twingate field keeps the HTTPS certificate, and a
   click('Revoke all devices'); await ctx.idle({ requireComplete: true });
   await until(() => !$('#set-remote-group .remote-sessions'), 'devices revoked');
   assert.equal($('#set-remote-code'), null);
+});
+
+test('a server error on the live remote listener is shown in Settings and stops nothing: the app keeps running', async t => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'pb-remote-error-')); t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const port = await freePort();
+  await writeFile(join(dataDir, 'remote-access.json'), JSON.stringify({ schema: 'promptboard.remote-access', version: 1, settings: { method: 'twingate', port, bind: '127.0.0.1', host: '', cert: '', key: '' }, sessions: [] }));
+  // Its own process, so an unhandled 'error' would end it the way it ends the real app (with every running agent).
+  const script = `
+    const { RemoteAccess } = await import(${JSON.stringify(new URL('../src/remote-access.mjs', import.meta.url).href)});
+    let access; const listen = RemoteAccess.prototype.listen; RemoteAccess.prototype.listen = function () { access = this; return listen.call(this); };
+    const { startServer } = await import(${JSON.stringify(new URL('../src/server.mjs', import.meta.url).href)});
+    const app = await startServer({ port: 0, dataDir: ${JSON.stringify(dataDir)}, projectsDir: ${JSON.stringify(join(dataDir, 'projects'))}, executor: null });
+    setImmediate(() => access.server.emit('error', Object.assign(new Error('accept failed'), { code: 'EMFILE' })));
+    await new Promise(resolve => setTimeout(resolve, 200));
+    const token = (await (await fetch(app.url + '/api/session')).json()).token;
+    const { remote } = await (await fetch(app.url + '/api/remote', { headers: { 'X-STE-Token': token } })).json();
+    const page = await fetch('http://127.0.0.1:${port}/remote');
+    console.log(JSON.stringify({ error: remote.error, listening: remote.listening, page: page.status }));
+    await app.close(); process.exit(0);`;
+  const { stdout } = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', script], { timeout: 60000 });
+  assert.deepEqual(JSON.parse(stdout.trim().split('\n').at(-1)), { error: 'The remote listener reported an error (EMFILE). If the phone cannot connect, turn remote access off and on again.', listening: true, page: 200 });
+});
+
+test('requests that arrive together share one Tailscale status lookup; a refresh reads again', async t => {
+  let calls = 0;
+  const cli = { run: async args => { if (args[0] !== 'status') return '{}'; calls++; await new Promise(resolve => setTimeout(resolve, 50)); return JSON.stringify({ BackendState: 'Running', Self: { DNSName: 'mac.tail1234.ts.net.' } }); } };
+  const dataDir = await mkdtemp(join(tmpdir(), 'pb-remote-lookup-')); t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const access = await new RemoteAccess({ dataDir, localPort: 1, handle: () => {}, cli }).load(); t.after(() => access.close());
+  access.settings = { ...access.settings, method: 'tailscale', port: 4319 };
+  const states = await Promise.all([access.status(), access.status(), access.status()]);
+  assert.deepEqual([calls, states.map(state => state.tailscale.name)], [1, ['mac.tail1234.ts.net', 'mac.tail1234.ts.net', 'mac.tail1234.ts.net']]);
+  await access.status({ refresh: true });
+  assert.equal(calls, 2);
 });
 
 test('Tailscale Serve not enabled for the tailnet: the refusal carries Tailscale’s own link and nothing is changed', async t => {
