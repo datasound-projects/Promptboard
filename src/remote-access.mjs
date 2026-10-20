@@ -11,7 +11,7 @@ import https from 'node:https';
 import { isIP } from 'node:net';
 import { networkInterfaces } from 'node:os';
 import { join } from 'node:path';
-import { readWithBackup, serial, writeAtomic } from './durable.mjs';
+import { readWithBackup, serial, setAside, writeAtomic } from './durable.mjs';
 import { commandOnPath } from './providers.mjs';
 
 export const REMOTE_METHODS = ['local', 'tailscale', 'twingate'];
@@ -112,7 +112,8 @@ export class RemoteAccess {
     this.open = new Map(); // Session ID → its open responses (live streams), ended when the session is revoked.
   }
   async load() {
-    const stored = await readWithBackup([this.path, `${this.path}.bak`], bytes => { try { const value = JSON.parse(bytes); return value?.schema === SCHEMA ? value : undefined; } catch { return undefined; } }).catch(() => null);
+    const damaged = [], stored = await readWithBackup([this.path, `${this.path}.bak`], (bytes, file) => { try { const value = JSON.parse(bytes); if (value?.schema === SCHEMA) return value; } catch {} damaged.push(file); }).catch(() => null);
+    await setAside(damaged).catch(() => {});
     try { this.settings = remoteSettings(stored?.settings || {}, { localPort: this.localPort }); } catch { this.settings = { ...DEFAULTS }; }
     const now = this.now();
     this.sessions = (Array.isArray(stored?.sessions) ? stored.sessions : []).filter(row => typeof row?.hash === 'string' && /^[a-f0-9]{64}$/.test(row.hash) && row.expiresAt > now).slice(-REMOTE_LIMITS.sessions);

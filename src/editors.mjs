@@ -8,7 +8,7 @@ import { access, readdir, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, delimiter, isAbsolute, join, win32 } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { readWithBackup, serial, writeAtomic } from './durable.mjs';
+import { readWithBackup, serial, setAside, writeAtomic } from './durable.mjs';
 
 const fail = (message, code, status = 400) => Object.assign(new Error(message), { code, status });
 // Built-in editors: macOS app names, Windows programs (under %LOCALAPPDATA% or %ProgramFiles%) and PATH commands.
@@ -99,7 +99,8 @@ export function editorPreferences(dataDir) {
   const path = join(dataDir, FILE), queue = serial();
   // A damaged file falls back to its backup; one that cannot be read is an error, never "no editors" for the next save to keep.
   const read = async () => {
-    const data = await readWithBackup([path, `${path}.bak`], bytes => { try { const value = JSON.parse(bytes); return value && typeof value === 'object' ? value : undefined; } catch { return undefined; } }) || {};
+    const damaged = [], data = await readWithBackup([path, `${path}.bak`], (bytes, file) => { try { const value = JSON.parse(bytes); if (value && typeof value === 'object') return value; } catch {} damaged.push(file); }) || {};
+    await setAside(damaged);
     return { preferred: typeof data.preferred === 'string' ? data.preferred : null, custom: Array.isArray(data.custom) ? data.custom.filter(item => item && typeof item.id === 'string' && typeof item.command === 'string').slice(0, LIMITS.custom) : [] };
   };
   const write = next => writeAtomic(path, `${JSON.stringify({ version: 1, ...next }, null, 1)}\n`);

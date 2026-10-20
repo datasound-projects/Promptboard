@@ -71,7 +71,7 @@ Nothing starts: no agent, automation or worktree. Tasks that already have a card
 
 ## Storage and API
 
-Batches live in `<data>/compose-batches/<origin-id>/`: `batch.json` and one file per task under `items/`, written atomically with a backup. Removing a batch leaves Origin and Kanban as they are.
+Batches live in `<data>/compose-batches/<origin-id>/`: `batch.json` and one file per task under `items/`, written atomically with a backup. A damaged file is kept aside as `….corrupt-…` and its backup is used. Removing a batch leaves Origin and Kanban as they are.
 
 `/api/compose/batches` — list (GET), add Origin tasks (POST). `/:id` — queue (GET; `since`, `origin` and `instance` answer `unchanged`), remove (DELETE). `/:id/settings`, `/run` (`all`, `itemIds`, `kind`: generate, review or split), `/cancel`, `/approve` (`items` or `passing`), `/export` — POST. `/:id/items/:itemId` — one task (GET), change it (PATCH: `overrides`, `prompt` + `baseVersionId`, `rejected`, `child`), remove (DELETE); `/split` (POST `accept`).
 

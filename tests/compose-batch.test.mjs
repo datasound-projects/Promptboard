@@ -222,6 +222,22 @@ test('cancel stops running work; a late answer is ignored; a restart never re-ru
   assert.equal(second.calls.length, 0);
 });
 
+test('a damaged batch or task file is set aside when its backup loads, so the next save keeps the good backup', async t => {
+  const { app, call } = await setup(t, engineer());
+  const { record } = await project(app, 1);
+  await call('', { originId: record.id, expectedRevision: record.revision, itemIds: ['t1'] });
+  await call(`/${record.id}/items/t1`, { overrides: { quality: 'fast' } }, 'PATCH');
+  await call(`/${record.id}/settings`, { concurrency: 2 });
+  const dataDir = app.board.store.dir, folder = join(dataDir, 'compose-batches', record.id), files = [join(folder, 'batch.json'), join(folder, 'items', 't1.json')];
+  for (const file of files) await writeFile(file, '{"damaged":');
+  const { ComposeBatches } = await import('../src/compose-batch.mjs');
+  const restarted = new ComposeBatches({ dataDir, origin: new OriginStore(dataDir), board: app.board, generate: async () => { throw new Error('must not run'); }, call: engineer() });
+  assert.deepEqual((await restarted.view(record.id)).items.map(item => item.key), ['IMP-001'], 'The backups load.');
+  for (const file of files) assert.equal((await readdir(join(file, '..'))).filter(name => name.startsWith(`${file.split('/').at(-1)}.corrupt-`)).length, 1, `${file} is kept aside`);
+  await restarted.update(record.id, 't1', { overrides: { quality: 'reviewed' } }); await restarted.configure(record.id, { concurrency: 3 });
+  for (const file of files) assert.ok(JSON.parse(await readFile(`${file}.bak`, 'utf8')).id, `${file}.bak is still a good copy`);
+});
+
 test('approval: exact version only, never past blocking findings, bulk only for clean tasks, and edits need approval again', async t => {
   const runner = engineer({ rewrite: (text, request) => (request.request.includes('MARK2') ? text.replace('`src/f2.js`', 'the file') : text) });
   const { app, call } = await setup(t, runner);

@@ -7,7 +7,7 @@ import http from 'node:http';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createServer } from 'node:net';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { privateAddress, remoteSettings, RemoteAccess, tailscaleState } from '../src/remote-access.mjs';
@@ -291,6 +291,17 @@ test('every route from a paired phone: the local-only ones are refused, every ot
     if (path.startsWith('/api/') && path !== '/api/session') assert.deepEqual([reached.status, reached.json?.error], [403, 'Reload this page before you try again.'], row);
     else assert.equal(reached.status, 200, row);
   }
+});
+
+test('a damaged settings file is set aside when its backup loads, so the next save keeps the good backup', async t => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'pb-remote-damaged-')); t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const path = join(dataDir, 'remote-access.json'), good = { schema: 'promptboard.remote-access', version: 1, settings: { method: 'local' }, sessions: [{ hash: 'a'.repeat(64), name: 'iPhone', createdAt: 1, expiresAt: Date.now() + 86400000 }] };
+  await writeFile(`${path}.bak`, JSON.stringify(good)); await writeFile(path, '{"schema":');
+  const access = await new RemoteAccess({ dataDir, localPort: 1, handle: () => {} }).load(); t.after(() => access.close());
+  assert.equal((await access.status()).sessions.length, 1, 'The backup loads.');
+  assert.equal((await readdir(dataDir)).filter(name => name.startsWith('remote-access.json.corrupt-')).length, 1);
+  await access.revoke('all');
+  assert.equal(JSON.parse(await readFile(`${path}.bak`, 'utf8')).sessions.length, 1, 'The backup is still the good copy.');
 });
 
 test('Revoke all also voids an unused code, turning off clears a listener error, expired devices leave the list, a stored wildcard address is never used, and a new port closes the old one', async t => {

@@ -11,7 +11,7 @@ import { mkdir, readdir, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import '../public/origin-model.js';
 import { buildContext, escapeId, loopFrom } from './origin.mjs';
-import { readWithBackup, serial, writeAtomic } from './durable.mjs';
+import { readWithBackup, serial, setAside, writeAtomic } from './durable.mjs';
 import { redactLocal } from './compose-local.mjs';
 import { CONTEXT_CHARS } from './compose-grounding.mjs';
 import { COMPOSE_PROMPT_CHARS } from './compose-limits.mjs';
@@ -204,12 +204,18 @@ export class ComposeBatches {
     if (!this.#loading.has(batchId)) this.#loading.set(batchId, this.#read(batchId).finally(() => this.#loading.delete(batchId)));
     return this.#loading.get(batchId);
   }
+  /** A file, or its backup when the file is damaged; a damaged one is set aside. */
+  async #readFile(path) {
+    const damaged = [], value = await readWithBackup([path, `${path}.bak`], (bytes, file) => { const value = parseObject(bytes); if (value === undefined) damaged.push(file); return value; });
+    await setAside(damaged);
+    return value;
+  }
   async #read(batchId) {
-    const meta = await readWithBackup([this.#path(batchId), `${this.#path(batchId)}.bak`], parseObject);
+    const meta = await this.#readFile(this.#path(batchId));
     if (!meta) return null;
     const items = new Map();
     for (const itemId of meta.order) {
-      const item = await readWithBackup([this.#path(batchId, itemId), `${this.#path(batchId, itemId)}.bak`], parseObject);
+      const item = await this.#readFile(this.#path(batchId, itemId));
       if (!item) continue;
       // Runs live only in this process. A run saved by an earlier process stopped with it: never restart it on its own.
       if (item.run) {
