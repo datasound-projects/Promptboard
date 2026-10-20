@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { Base, normalizeReferences } from '../src/base.mjs';
 import { Store } from '../src/store.mjs';
 import { resolveBase, profileDefaults } from '../src/base-resolver.mjs';
@@ -101,8 +101,8 @@ test('a switched-off MCP tool whose name has a dot is disallowed under the name 
   const prepared = await prepareBase({ manifest, currentResources: registry.base.resources, readRevision: async () => structuredClone(docs), runDir: dir });
   const args = (await buildSession({ provider: 'claude', stage: 'executing', config: resolveConfig('executing', { provider: 'claude' }), message: 'task', runDir: dir, eventsFile: 'events', sessionId: 's', baseDelivery: prepared })).args;
   assert.match(args[args.indexOf('--disallowedTools') + 1], /(?:^|,)mcp__pb_docs__docs_delete(?:,|$)/, 'Claude Code replaces the dot with _ in the tool name');
-  // The per-run MCP configuration is temporary: the run's cleanup removes it.
-  assert.equal(args[args.indexOf('--mcp-config') + 1], join(dir, 'base-claude-mcp.json')); await readFile(join(dir, 'base-claude-mcp.json'));
+  // The per-run MCP configuration is temporary: the run's cleanup removes it. (resolve: on Windows the run path keeps a forward slash.)
+  assert.equal(resolve(args[args.indexOf('--mcp-config') + 1]), join(dir, 'base-claude-mcp.json')); await readFile(join(dir, 'base-claude-mcp.json'));
   await prepared.cleanup(); await assert.rejects(readFile(join(dir, 'base-claude-mcp.json')), { code: 'ENOENT' });
 });
 
