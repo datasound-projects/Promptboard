@@ -155,7 +155,8 @@ export class BaseRoutes {
         if (shared.kind !== 'markdown' || shared.configuration.override) fail('Only a shared Markdown file gets project versions.');
         const project = state.projects.find(item => item.id === body.projectId);
         if (!project) fail('Choose a project.');
-        return this.changed(res, { resource: await board.base.create({ kind: 'markdown', name: `${shared.name} · ${project.name}`, description: `${project.name}’s version of “${shared.name}”.`, tags: shared.tags,
+        // A copy of the shared text keeps its trust: an imported file still waits for review in the project's version.
+        return this.changed(res, { resource: await board.base.create({ kind: 'markdown', name: `${shared.name} · ${project.name}`, description: `${project.name}’s version of “${shared.name}”.`, tags: shared.tags, trust: shared.trust,
           configuration: { ...shared.configuration, override: { of: shared.id, projectId: project.id } }, content: { body: shared.content.body } }) });
       }
       if (method === 'POST' && action === 'deploy') {

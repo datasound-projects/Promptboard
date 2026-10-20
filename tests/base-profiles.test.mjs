@@ -197,6 +197,7 @@ test('Base routes: import a repository’s files and an MCP configuration, deplo
   assert.equal((await call(`/api/base/resources/${listed.id}/deploy`, 'POST', { projectId: project.id, confirm: true })).json.code, 'BASE_TRUST_REQUIRED', 'untrusted files are never written into repositories');
   const version = (await call(`/api/base/resources/${listed.id}/override`, 'POST', { projectId: project.id })).json.resource;
   assert.deepEqual(version.configuration.override, { of: listed.id, projectId: project.id });
+  assert.equal(version.trust, 'untrusted', 'a project version of an imported file still waits for review');
   assert.equal((await call(`/api/base/resources/${listed.id}/override`, 'POST', { projectId: project.id })).status, 400, 'one version per project');
   // MCP: preview, then import only the importable server, switched off and untrusted.
   const json = JSON.stringify({ mcpServers: { files: { command: 'node', args: ['server.js'], env: { ROOT: '/tmp' } }, bad: { command: 'x', args: ['--token=abc123def456'] } } });
