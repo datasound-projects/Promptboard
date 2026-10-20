@@ -3,13 +3,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { appendFile, chmod, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Board } from '../src/board.mjs';
 import { Supervisor } from '../src/supervisor.mjs';
-import { addClaudeRecord, addCodexRecord, claudeTranscript, newUsage, usageSummary } from '../src/usage.mjs';
+import { addClaudeRecord, addCodexRecord, claudeTranscript, newUsage, readNewLines, usageSummary } from '../src/usage.mjs';
 
 const skip = process.platform === 'win32';
 const fake = fileURLToPath(new URL('./fixtures/fake-agent.cjs', import.meta.url));
@@ -39,6 +39,23 @@ test('Codex records: totals, context window, rate limit, and model come from tok
   const empty = newUsage('codex-rollout');
   addCodexRecord(empty, { type: 'event_msg', payload: { type: 'token_count', info: null } });
   assert.equal(usageSummary(empty).inputTokens, 0, 'No numbers are invented when the CLI reports none.');
+});
+
+test('new lines: a partial last line waits, a record too large to read is passed, replaced and deleted files restart', async t => {
+  const dir = await temp(t, 'pb-usage-lines-'), path = join(dir, 'session.jsonl'), tail = { path, offset: 0 };
+  await writeFile(path, `${JSON.stringify({ n: 1 })}\n{"n":`);
+  assert.deepEqual(await readNewLines(tail), [{ n: 1 }]);
+  await appendFile(path, '2}\n');
+  assert.deepEqual(await readNewLines(tail), [{ n: 2 }]);
+  await appendFile(path, `{"big":"${'x'.repeat(17 * 1024 * 1024)}"}\n${JSON.stringify({ n: 3 })}\n`);
+  const later = [];
+  for (let read = 0; read < 3 && !later.length; read++) later.push(...await readNewLines(tail));
+  assert.deepEqual(later, [{ n: 3 }], 'Records after an oversized one are still read.');
+  assert.equal(tail.skipped, true);
+  await writeFile(path, `${JSON.stringify({ n: 4 })}\n`);
+  assert.deepEqual(await readNewLines(tail), [{ n: 4 }], 'A shorter replacement file is read from its start.');
+  await rm(path);
+  assert.deepEqual(await readNewLines(tail), []);
 });
 
 test('live runs record real usage for Claude and Codex, and none for Gemini', { skip, timeout: 60000 }, async t => {

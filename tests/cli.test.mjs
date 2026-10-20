@@ -101,3 +101,22 @@ process.stdin.on('end', () => process.stdout.write(JSON.stringify({ type: 'item.
     assert.equal(JSON.parse(reviewed.stdout).verification.review.status, 'unavailable');
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+test('--doctor names each CLI version and the executable that runs, and says what is missing', { skip: process.platform === 'win32' }, async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'ste-doctor-test-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await writeFile(join(dir, 'codex'), `#!${process.execPath}\nprocess.stdout.write('codex-cli 9.9.9\\n');\n`);
+  await writeFile(join(dir, 'claude'), `#!${process.execPath}\nprocess.exit(3);\n`);
+  await chmod(join(dir, 'codex'), 0o700); await chmod(join(dir, 'claude'), 0o700);
+  const output = await new Promise((resolve, reject) => {
+    const cli = spawn(process.execPath, ['bin/ste.mjs', '--doctor'], { cwd: fileURLToPath(new URL('../', import.meta.url)), env: { ...process.env, PATH: dir }, stdio: ['ignore', 'pipe', 'inherit'] });
+    let text = ''; cli.stdout.setEncoding('utf8'); cli.stdout.on('data', chunk => { text += chunk; });
+    cli.once('error', reject); cli.once('close', code => code === 0 ? resolve(text) : reject(new Error(`exit ${code}`)));
+  });
+  assert.deepEqual(output.trim().split('\n').sort(), [
+    'Antigravity CLI: Install this CLI and add it to PATH.',
+    `Claude Code: The CLI version check failed. Check its installation. · ${join(dir, 'claude')}`,
+    `Codex CLI: codex-cli 9.9.9 · ${join(dir, 'codex')}`,
+    'Gemini CLI: Install this CLI and add it to PATH.',
+  ]);
+});

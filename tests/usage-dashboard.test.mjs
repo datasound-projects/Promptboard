@@ -102,3 +102,43 @@ test('incremental Codex collection preserves totals and models across chunks wit
   const next = sessionMetrics('codex',[event(100),context('two'),event(160)],0,first);
   assert.deepEqual(next.rows.map(r=>[r.model,r.input]),[['one',100],['two',60]]);
 });
+
+test('Codex rollout limits are read, and daily totals use local calendar days across a DST change', async t => {
+  const [limit] = sessionMetrics('codex', [{ timestamp: stamp, payload: { type: 'token_count', info: null, rate_limits: { limit_id: 'codex', primary: { used_percent: 25, window_minutes: 300, resets_at: 1791000000 }, secondary: null, credits: { has_credits: false } } } }], 0).limits.windows;
+  assert.deepEqual(limit, { label: 'primary', usedPercent: 25, remainingPercent: 75, resetsAt: new Date(1791000000 * 1000).toISOString(), windowMinutes: 300 });
+  const zone = process.env.TZ; process.env.TZ = 'America/New_York';
+  t.after(() => { if (zone === undefined) delete process.env.TZ; else process.env.TZ = zone; });
+  const dir = await temp(t), root = join(dir,'claude'); await mkdir(root);
+  // 23:00 on 8 March 2026 in New York, the day clocks moved forward, is 03:00 UTC on 9 March.
+  await writeFile(join(root,'late.jsonl'), JSON.stringify({ ...claude('late','opus',10), timestamp: '2026-03-09T03:00:00Z' })+'\n');
+  const service = new UsageDashboard({dataDir:dir,roots:{claude:[root]},now:()=>Date.parse('2026-03-09T04:30:00Z'),limitReader:async()=>({status:'unavailable',windows:[]})}); t.after(()=>service.close());
+  const { daily } = (await service.get()).providers[1];
+  assert.equal(new Set(daily.map(d => d.day)).size, 30);
+  assert.equal(daily[0].day, '2026-02-08');
+  assert.deepEqual(daily.slice(-2), [{ day: '2026-03-08', tokens: 19 }, { day: '2026-03-09', tokens: 0 }]);
+});
+
+test('a forked Codex rollout that repeats its parent session_meta counts as its own session', async t => {
+  const dir = await temp(t), root = join(dir,'codex'); await mkdir(root);
+  const meta = id => ({ type: 'session_meta', payload: { id } });
+  const tokens = input => ({ timestamp: stamp, payload: { type: 'token_count', info: { total_token_usage: { input_tokens: input, cached_input_tokens: 0, output_tokens: 1 } } } });
+  await writeFile(join(root,'rollout-a-parent.jsonl'), [meta('parent'), tokens(100)].map(JSON.stringify).join('\n')+'\n');
+  await writeFile(join(root,'rollout-b-child.jsonl'), [meta('child'), meta('parent'), tokens(40)].map(JSON.stringify).join('\n')+'\n');
+  const service = new UsageDashboard({dataDir:dir,roots:{codex:[root]},now:()=>Date.parse(stamp)+1000,limitReader:async()=>({status:'unavailable',windows:[]})}); t.after(()=>service.close());
+  const codex = (await service.get()).providers[0];
+  assert.equal(codex.inputTokens, 140); assert.equal(codex.sessions, 2);
+});
+
+test('one refresh reads a whole long session; history left at the time limit is labelled as still reading', async t => {
+  const dir = await temp(t), root = join(dir,'claude'); await mkdir(root);
+  // More than one 16 MiB read of other records comes before the counted message.
+  const filler = JSON.stringify({ type: 'user', message: { content: 'x'.repeat(1000) } }) + '\n';
+  await writeFile(join(root,'long.jsonl'), filler.repeat(17 * 1024) + JSON.stringify(claude('one','opus',10)) + '\n');
+  const open = options => { const service = new UsageDashboard({dataDir:dir,roots:{claude:[root]},now:()=>Date.parse(stamp)+1000,limitReader:async()=>({status:'unavailable',windows:[]}),...options}); t.after(()=>service.close()); return service; };
+  const read = (await open().get()).providers[1];
+  assert.deepEqual([read.reading, read.partial, read.inputTokens], [false, false, 10], 'The first refresh already counts the whole file.');
+  const late = open({ readBudgetMs: 0 }), waiting = (await late.get()).providers[1];
+  assert.deepEqual([waiting.reading, waiting.partial, waiting.inputTokens], [true, false, 0]);
+  late.readBudgetMs = 30000;
+  assert.equal((await late.refresh()).providers[1].inputTokens, 10);
+});

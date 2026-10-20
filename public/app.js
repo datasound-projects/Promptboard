@@ -382,6 +382,11 @@ async function loadProviders() {
     }
     updateProviderState();
     loadAuth(authInfo?.provider || $('#provider').value);
+    // A sign-in still waiting in the CLI (for example, after a reload) shows its page and Cancel again; otherwise it blocks every CLI job.
+    api('/api/status', { timeoutMs: 5000 }).then(({ data }) => {
+      if (data.auth?.state !== 'waiting' || authBusy) return;
+      loadAuth(data.auth.provider); followSignIn(data.auth);
+    }, () => {});
     loadBoard();
     if (currentPage() === 'base') baseView?.show();
     if (currentPage() === 'origin') originView?.show();
@@ -417,7 +422,7 @@ function updateEffort(preferred = '') {
   const model = chosenModel();
   const selected = catalog?.models?.find(item => item.id === (model || catalog.defaultModel));
   const unverified = model && !selected;
-  const choices = selected?.efforts || (unverified ? ({ codex: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'], claude: ['low', 'medium', 'high', 'xhigh', 'max'], agy: ['low', 'medium', 'high', 'xhigh', 'max'], gemini: [] }[provider] || []) : []);
+  const choices = selected?.efforts || (unverified ? effortsFor(provider) : []);
   const defaultEffort = model ? selected?.defaultEffort : catalog?.defaultEffort;
   $('#effort').replaceChildren(option('', defaultEffort ? `CLI default (${defaultEffort})` : 'CLI default (not reported)'));
   for (const level of choices) $('#effort').append(option(level, level === 'xhigh' ? 'Extra high (xhigh)' : level[0].toUpperCase() + level.slice(1)));
@@ -1166,40 +1171,41 @@ async function signIn(method) {
   }
   setAuthBusy(true);
   showAuthDetail(paragraph('Starting the sign-in flow in your CLI…'));
-  let finished = false;
-  try {
-    const { response, data } = await api('/api/auth/login', { method: 'POST', body: { provider, method }, timeoutMs: 30000 });
-    let operation = data.operation;
-    if (!response.ok || !operation) {
-      finished = true;
-      showAuthDetail(paragraph(operation?.code === 'UNSUPPORTED' ? 'This CLI does not support sign-in from this app.' : failureMessage(data, 'The CLI could not start sign-in. Try the terminal command instead.'), 'kanban-error'),
-        ...(caps.loginCommand ? [codeBlock(method === 'device' ? caps.deviceCommand || caps.loginCommand : caps.loginCommand)] : []));
-      await afterAuthChange();
-      return;
-    }
-    const cancel = detailButton('Cancel sign-in', () => api('/api/auth/cancel', { method: 'POST', body: {} }).catch(() => {}));
-    if (operation.userCode && operation.verificationUrl) {
-      showAuthDetail(paragraph('Open this page, sign in, and enter the one-time code. Keep this code private.'),
-        externalLink(operation.verificationUrl, 'Open the device sign-in page ↗'), codeBlock(operation.userCode, 'auth-code'), detailActions(cancel));
-    } else if (operation.authUrl) {
-      showAuthDetail(paragraph('Open the sign-in page in your browser and complete sign-in. This panel updates when your CLI confirms it.'),
-        externalLink(operation.authUrl, 'Open the sign-in page ↗'), detailActions(cancel));
-    }
-    // Poll the public operation state. The CLI owns the credentials.
-    const id = operation.id;
-    while (['waiting', 'starting'].includes(operation?.state)) {
-      await new Promise(resolve => setTimeout(resolve, 1500));
-      try { ({ data: { auth: operation } } = await api('/api/status', { timeoutMs: 5000 })); } catch { continue; }
-      if (operation?.id !== id) operation = { state: 'failed' };
-    }
-    finished = true;
-    const state = operation?.state;
-    showAuthDetail(paragraph(state === 'succeeded' ? `${name} confirmed the sign-in.` : state === 'cancelled' ? 'Sign-in was cancelled. Your previous sign-in state is unchanged.'
-      : operation?.code === 'TIMEOUT' ? 'Sign-in timed out. Try again.' : 'Sign-in did not complete. Try again, or use the terminal command.', state === 'succeeded' || state === 'cancelled' ? '' : 'kanban-error'));
-    await afterAuthChange(state === 'succeeded' ? 'Signed in. Model list refreshed.' : '');
-  } catch {
-    if (!finished) { showAuthDetail(paragraph('The local server did not respond. Check that the app is still running.', 'kanban-error')); await afterAuthChange(); }
+  let response, data;
+  try { ({ response, data } = await api('/api/auth/login', { method: 'POST', body: { provider, method }, timeoutMs: 30000 })); }
+  catch { showAuthDetail(paragraph('The local server did not respond. Check that the app is still running.', 'kanban-error')); await afterAuthChange(); return; }
+  if (!response.ok || !data.operation) {
+    showAuthDetail(paragraph(data.operation?.code === 'UNSUPPORTED' ? 'This CLI does not support sign-in from this app.' : failureMessage(data, 'The CLI could not start sign-in. Try the terminal command instead.'), 'kanban-error'),
+      ...(caps.loginCommand ? [codeBlock(method === 'device' ? caps.deviceCommand || caps.loginCommand : caps.loginCommand)] : []));
+    await afterAuthChange();
+    return;
   }
+  await followSignIn(data.operation);
+}
+
+/** Show the CLI's sign-in page or device code with Cancel, until the CLI reports the result. Also used for a sign-in still running after a reload. */
+async function followSignIn(operation) {
+  const name = providerInfo[operation.provider]?.name || 'This CLI';
+  setAuthBusy(true);
+  const cancel = detailButton('Cancel sign-in', () => api('/api/auth/cancel', { method: 'POST', body: {} }).catch(() => {}));
+  if (operation.userCode && operation.verificationUrl) {
+    showAuthDetail(paragraph('Open this page, sign in, and enter the one-time code. Keep this code private.'),
+      externalLink(operation.verificationUrl, 'Open the device sign-in page ↗'), codeBlock(operation.userCode, 'auth-code'), detailActions(cancel));
+  } else if (operation.authUrl) {
+    showAuthDetail(paragraph('Open the sign-in page in your browser and complete sign-in. This panel updates when your CLI confirms it.'),
+      externalLink(operation.authUrl, 'Open the sign-in page ↗'), detailActions(cancel));
+  }
+  // Poll the public operation state. The CLI owns the credentials.
+  const id = operation.id;
+  while (['waiting', 'starting'].includes(operation?.state)) {
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    try { ({ data: { auth: operation } } = await api('/api/status', { timeoutMs: 5000 })); } catch { continue; }
+    if (operation?.id !== id) operation = { state: 'failed' };
+  }
+  const state = operation?.state;
+  showAuthDetail(paragraph(state === 'succeeded' ? `${name} confirmed the sign-in.` : state === 'cancelled' ? 'Sign-in was cancelled. Your previous sign-in state is unchanged.'
+    : operation?.code === 'TIMEOUT' ? 'Sign-in timed out. Try again.' : 'Sign-in did not complete. Try again, or use the terminal command.', state === 'succeeded' || state === 'cancelled' ? '' : 'kanban-error'));
+  await afterAuthChange(state === 'succeeded' ? 'Signed in. Model list refreshed.' : '');
 }
 
 function signOut() {
@@ -2925,7 +2931,8 @@ function chosenModelFrom(select, custom) { return select.value === '__custom__' 
 
 function fillSelect(select, values, labels = {}) { select.replaceChildren(...values.map(value => option(value, labels[value] ?? (value || 'CLI default')))); }
 
-const EFFORTS = { codex: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'], claude: ['low', 'medium', 'high', 'xhigh', 'max'], gemini: [] };
+// Every level each CLI accepts (validateEffort on the server), offered until a model's own list arrives.
+const EFFORTS = { codex: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'], claude: ['low', 'medium', 'high', 'xhigh', 'max'], agy: ['low', 'medium', 'high', 'xhigh', 'max'], gemini: [] };
 function effortsFor(provider) { return EFFORTS[provider] || []; }
 
 /**
@@ -6259,7 +6266,8 @@ function renderUsage(data) {
     summary.append(paragraph(provider.sessions ? `${tokens(total)} tokens` : 'No local token data', 'usage-total'), paragraph(`${provider.sessions} sessions`, 'usage-muted'), paragraph(provider.costUSD === null ? 'Cost not reported' : `$${provider.costUSD.toFixed(2)} reported estimate`, 'usage-muted'));
     section.append(summary);
     if (provider.sessions) section.append(usageChart(provider.daily));
-    if (provider.partial) section.append(paragraph('Some older session files were too large or unreadable, so totals may be a little low.', 'usage-muted'));
+    if (provider.reading) section.append(paragraph('Still reading older sessions on this computer. Totals grow with the next update.', 'usage-muted'));
+    else if (provider.partial) section.append(paragraph('Some older session files were too large or unreadable, so totals may be a little low.', 'usage-muted'));
     const details = document.createElement('details'); details.dataset.provider = provider.id; details.open = open.has(provider.id);
     const toggle = document.createElement('summary'); toggle.textContent = 'Models and tools'; details.append(toggle);
     if (provider.models.length) {

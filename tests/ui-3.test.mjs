@@ -786,6 +786,13 @@ test('Usage dashboard shows limits, model/tool totals, charts, minute refresh, e
   assert.equal(reads, before);
 });
 
+test('Usage says when older sessions are still being read instead of calling the totals a little low', async t => {
+  const ctx = await setup(t, { usageReader: { get: async () => ({ updatedAt: Date.now(), providers: [{ id: 'claude', name: 'Claude Code', sessions: 1, inputTokens: 10, cachedTokens: 0, outputTokens: 1, costUSD: null, costNote: 'Not reported', limits: { status: 'unavailable', windows: [] }, models: [], tools: [], daily: [], partial: false, reading: true }] }) } });
+  ctx.$('#usage-open').click(); await ctx.idle();
+  assert.match(ctx.$('#usage-providers').textContent, /Still reading older sessions/);
+  assert.doesNotMatch(ctx.$('#usage-providers').textContent, /a little low/);
+});
+
 test('Base is the fourth global page, preserves Compose and project state, and supports direct links and browser history', async t => {
   const ctx = await setup(t, { hash: '#/base' }); const { $, win } = ctx;
   await ctx.idle();
@@ -973,4 +980,55 @@ test('external links from the server open only plain http(s) addresses', async t
   await until(() => /ABCD-1234/.test($('#set-github-group').textContent), 'one-time code');
   const link = [...$('#set-github-group').querySelectorAll('a')].find(node => node.textContent === 'Open github.com/login/device');
   assert.equal(link.hasAttribute('href'), false, 'a javascript: address is not a link');
+});
+
+test('an unknown stored theme is ignored: the page and Settings both use the dark default', async t => {
+  const ctx = await setup(t, { prefs: { 'ste-prompt-engineer.theme': 'blue' } });
+  assert.equal(ctx.win.document.documentElement.dataset.theme, 'dark');
+  ctx.$('#app-settings-open').click(); await ctx.idle();
+  assert.equal(ctx.$('#set-theme').value, 'dark');
+});
+
+test('a saved default agent effort that the CLI accepts survives opening and saving Settings', async t => {
+  const codex = { ...catalogs.codex, models: catalogs.codex.models.map(model => model.id === 'codex-one' ? { ...model, efforts: [...model.efforts, 'max'] } : model) };
+  const ctx = await setup(t, { catalogReader: async provider => ({ provider, ...(provider === 'codex' ? codex : catalogs[provider]) }) });
+  await ctx.app.board.setSettings({ defaultAgent: { provider: 'codex', effort: 'max' } });
+  await ctx.win.__pbTest.loadBoard();
+  ctx.$('#app-settings-open').click(); await ctx.idle();
+  assert.equal(ctx.$('#set-agent-effort').value, 'max');
+  ctx.$('#set-agent-save').click(); await ctx.idle();
+  assert.deepEqual((await serverBoard(ctx)).settings.defaultAgent, { provider: 'codex', model: '', effort: 'max' });
+});
+
+test('raising "Agents at the same time" starts queued agents at once', { skip: process.platform === 'win32' }, async t => {
+  const ctx = await linkedKanban(t);
+  let wakes = 0;
+  ctx.executor.wake = () => { wakes++; };
+  ctx.$('#app-settings-open').click(); await ctx.idle();
+  ctx.choose('#set-max-runs', '3'); await ctx.idle();
+  assert.equal((await serverBoard(ctx)).settings.maxConcurrentRuns, 3);
+  assert.equal(wakes, 1, 'The supervisor re-checks its queue with the new limit.');
+  ctx.$('#set-agent-save').click(); await ctx.idle();
+  assert.equal(wakes, 1, 'Saving only the default agent starts nothing.');
+});
+
+test('a sign-in still waiting in the CLI after a reload shows its page and Cancel again', async t => {
+  const authAdapter = fakeAuth({ login: async (provider, { signal, onUpdate }) => {
+    authAdapter.log.push(['login', provider]); onUpdate({ authUrl: 'https://auth.example/resume' });
+    await new Promise((_, reject) => signal.addEventListener('abort', () => reject(Object.assign(new Error('Cancelled.'), { code: 'ABORTED' })), { once: true }));
+  } });
+  const ctx = await setup(t, { authAdapter });
+  const { $, win } = ctx;
+  // An earlier page started the sign-in, then reloaded: this page loads its CLIs again.
+  const started = await win.fetch('/api/auth/login', { method: 'POST', headers: { 'X-STE-Token': win.__pbTest.token, 'Content-Type': 'application/json' }, body: JSON.stringify({ provider: 'codex' }) });
+  assert.equal(started.status, 202);
+  $('#setup-help').click();
+  [...$('#dialog-content').querySelectorAll('button')].find(button => button.textContent === 'Check again').click();
+  await until(() => $('#auth-detail a')?.href === 'https://auth.example/resume', 'the waiting sign-in is shown again');
+  assert.equal($('#connection-provider').value, 'codex');
+  assert.equal($('#generate-button').disabled, true, 'Nothing else starts a CLI while it waits.');
+  [...$('#auth-detail').querySelectorAll('button')].find(button => button.textContent === 'Cancel sign-in').click();
+  await until(() => /Sign-in was cancelled/.test($('#auth-detail').textContent), 'cancelled', 10000);
+  await until(() => !$('#generate-button').disabled, 'Compose is free again');
+  assert.deepEqual(authAdapter.log.filter(row => row[0] === 'login'), [['login', 'codex']], 'Resuming never starts a second sign-in.');
 });
