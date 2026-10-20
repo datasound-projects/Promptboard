@@ -339,10 +339,13 @@ test('a Base registry change during readiness waiting ends the captured queue wi
 });
 
 test('state reads remain bounded after accepted readiness handoff and cannot revive a timed-out queue', async t => {
-  const w = await fixture(t), held = Promise.withResolvers();
+  const w = await fixture(t), held = Promise.withResolvers(), reading = Promise.withResolvers();
   w.supervisor.nativeMessageReadiness = async () => 'ready';
+  // Budgets run on mock timers: the durable handoff may take any time on a slow disk; only the held read's budget expires.
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   assert.equal((await w.scheduler.schedule(w.request(), { timeoutMs: 150, waitForReadiness: true })).scheduled, true);
-  w.board.state = () => held.promise;
+  w.board.state = () => { reading.resolve(); return held.promise; };
+  await reading.promise; t.mock.timers.tick(150);
   assert.equal((await w.scheduler.wait(w.key, w.request().actionId)).status, 'timed_out');
   assert.equal((await w.receipt()).status, 'timed_out'); assert.deepEqual(w.writes, []);
   held.resolve(structuredClone(w.state)); await new Promise(resolve => setImmediate(resolve)); assert.deepEqual(w.writes, []);
