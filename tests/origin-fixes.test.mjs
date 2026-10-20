@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import '../public/origin-model.js';
+import { OriginStore, buildContext } from '../src/origin.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
 
 const M = globalThis.PromptboardOriginModel;
@@ -41,6 +42,32 @@ test('a card link restored from the card keeps what it was sent with', async t =
   res = await api(`/api/origin/projects/${id}/handoff`, { expectedRevision: res.data.revision, itemIds: ['i1'] });
   assert.equal(res.data.results[0].status, 'existing');
   assert.deepEqual([res.data.blueprint.items[0].handoff.snapshotId, res.data.blueprint.items[0].handoff.hash], [card.originSource.snapshotId, card.originSource.hash]);
+});
+
+test('Update context never replaces a split part or an edited card unseen, also when the Origin link has no snapshot', async t => {
+  const { app, api } = await server(t);
+  const kanban = await app.board.createProject({ name: 'Shop', workflowMode: 'pipeline' }), store = new OriginStore(app.board.store.dir);
+  let res = await api('/api/origin/projects', { name: 'Shop design' });
+  const id = res.data.project.id;
+  res = await api(`/api/origin/projects/${id}/link`, { expectedRevision: res.data.project.revision, kanbanProjectId: kanban.id });
+  const bp = M.emptyBlueprint(); bp.items.push({ id: 'i1', key: 'IMP-001', title: 'Schema', acceptanceCriteria: 'Tables exist' }, { id: 'i2', key: 'IMP-002', title: 'API', acceptanceCriteria: 'It answers' }); bp.sequence = { requirements: 0, items: 2 };
+  res = await api(`/api/origin/projects/${id}`, { expectedRevision: res.data.revision, blueprint: bp }, 'PUT');
+  // IMP-001 was split in Compose Batch: its card is part 1. IMP-002 was sent from Origin, then edited in Kanban.
+  const part = await store.snapshot(id, { ...buildContext(await store.read(id), 'i1'), instruction: 'Part one', body: 'Part one', compose: { batchId: id, itemId: 'i1', childId: '1', versionId: 'v1', promptHash: 'h' } }, res.data.revision);
+  const [split] = await app.board.createOriginTasks(kanban.id, { originProjectId: id, tasks: [{ originTaskId: 'i1-s1', key: 'IMP-001.1', title: 'IMP-001.1 Tables', prompt: 'Part one', snapshotId: part.id, hash: part.hash }] });
+  res = await api(`/api/origin/projects/${id}/handoff`, { expectedRevision: res.data.revision, itemIds: ['i2'] });
+  const card = (await app.board.state()).projects[0].tasks.find(task => task.originSource.originTaskId === 'i2');
+  await app.board.updateTask(card.id, { prompt: `${card.prompt}\nMy own note.`, expectedRevision: card.revision });
+  // Both links were restored without a snapshot (as a resend that finds the card does), and the design changes.
+  const lost = res.data.blueprint; lost.vision.constraints = 'EU hosting only';
+  lost.items[0].handoff = { projectId: kanban.id, taskId: split.taskId, at: Date.now(), snapshotId: '', hash: '', keptHash: '' }; lost.items[1].handoff.snapshotId = '';
+  res = await api(`/api/origin/projects/${id}`, { expectedRevision: res.data.revision, blueprint: lost }, 'PUT');
+  const status = (await api(`/api/origin/projects/${id}/context-status`, { expectedRevision: res.data.revision })).data.tasks;
+  assert.deepEqual(status.map(task => [task.key, task.status, task.splitPart, task.edited]), [['IMP-001', 'changed', true, true], ['IMP-002', 'changed', false, true]]);
+  const update = (task, extra = {}) => api(`/api/origin/projects/${id}/update-context`, { expectedRevision: res.data.revision, itemId: task.itemId, expectedHash: task.hash, expectedCardRevision: task.cardRevision, ...extra });
+  assert.equal((await update(status[0], { replaceEdited: true })).data.code, 'SPLIT_PART');
+  assert.equal((await update(status[1])).data.code, 'CARD_EDITED');
+  assert.deepEqual((await app.board.state()).projects[0].tasks.map(task => task.prompt.endsWith('My own note.') || task.prompt === 'Part one'), [true, true], 'neither card changed');
 });
 
 test('Delete from Origin moves the project\'s research chats aside, so a project made later under its ID starts without them', async t => {
