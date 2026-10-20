@@ -312,6 +312,27 @@ test('damaged Origin files are contained and newer files are never overwritten',
   assert.equal(await readFile(otherPath, 'utf8'), newer);
 });
 
+test('saved blueprints: a damaged file falls back to its backup and is set aside; a newer file is never overwritten', async t => {
+  const dir = await temp(t), store = new OriginStore(dir), created = await store.create({ name: 'Shape' });
+  const path = join(dir, 'origin', 'blueprints.json'), aside = async () => (await readdir(join(dir, 'origin'))).filter(name => name.startsWith('blueprints.corrupt-')).sort();
+  await store.saveBlueprint(created.id, { name: 'First' }); await store.saveBlueprint(created.id, { name: 'Second' });
+  await writeFile(path, '{"version":1,"blueprints":[');
+  assert.deepEqual((await store.listBlueprints()).map(entry => entry.name), ['First']);
+  assert.equal(await readFile(join(dir, 'origin', (await aside())[0]), 'utf8'), '{"version":1,"blueprints":[');
+  await store.saveBlueprint(created.id, { name: 'Third' });
+  assert.deepEqual((await store.listBlueprints()).map(entry => entry.name), ['First', 'Third']);
+  // No good copy: one clear error, both files kept aside, and new blueprints can be saved again.
+  await writeFile(path, ''); await writeFile(`${path}.bak`, '{"blueprints":7}');
+  await assert.rejects(store.listBlueprints(), { code: 'ORIGIN_DAMAGED' });
+  assert.equal((await aside()).length, 3);
+  assert.deepEqual(await store.listBlueprints(), []);
+  await store.saveBlueprint(created.id, { name: 'Fresh' });
+  const newer = JSON.stringify({ version: 2, blueprints: [] });
+  await writeFile(path, newer);
+  await assert.rejects(store.saveBlueprint(created.id, { name: 'Lost?' }), { code: 'ORIGIN_VERSION_UNSUPPORTED' });
+  assert.equal(await readFile(path, 'utf8'), newer);
+});
+
 test('a damaged project without a good copy stays reported as damaged after a listing set it aside', async t => {
   const dir = await temp(t), store = new OriginStore(dir);
   const created = await store.create({ name: 'Fragile' });

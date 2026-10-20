@@ -15,7 +15,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, open, readdir, readFile, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { redactLocal } from './compose-local.mjs';
-import { serial, writeAtomic } from './durable.mjs';
+import { readWithBackup, serial, writeAtomic } from './durable.mjs';
 import { createBoardFor, nameTaken } from './projects.mjs';
 
 const Model = globalThis.PromptboardOriginModel;
@@ -336,8 +336,20 @@ export class OriginStore {
 
   // ---- Personal blueprints: a project's structure saved for new projects (no answers, no entries) ----
   async #blueprints() {
-    try { const data = JSON.parse(await readFile(join(this.dir, BLUEPRINTS_FILE), 'utf8')); return Array.isArray(data.blueprints) ? data.blueprints : []; }
-    catch (error) { if (error.code === 'ENOENT') return []; throw new OriginError('Your saved blueprints could not be read. The file was not changed.', 'ORIGIN_READ_FAILED', 500); }
+    const path = join(this.dir, BLUEPRINTS_FILE), damaged = [];
+    let found;
+    try {
+      found = await readWithBackup([path, `${path}.bak`], (bytes, file) => {
+        let data; try { data = JSON.parse(bytes); } catch {}
+        if (data?.version > 1) throw new OriginError('Your saved blueprints were saved by a newer Promptboard version. Update the app; the file was not changed.', 'ORIGIN_VERSION_UNSUPPORTED', 409);
+        if (Array.isArray(data?.blueprints)) return data.blueprints;
+        damaged.push(file);
+      });
+    } catch (error) { if (error instanceof OriginError) throw error; throw new OriginError('Your saved blueprints could not be read. The file was not changed.', 'ORIGIN_READ_FAILED', 500); }
+    // A damaged file is kept aside, so the next save never replaces the only copy.
+    for (const file of damaged) await rename(file, join(this.dir, `blueprints.corrupt-${Date.now()}-${randomBytes(4).toString('hex')}${file === path ? '' : '.bak'}.json`));
+    if (!found && damaged.length) throw new OriginError('Your saved blueprints were damaged and no good copy was found. They were kept in the app data folder; blueprints you save now start a new list.', 'ORIGIN_DAMAGED', 500);
+    return found || [];
   }
   #summary(entry) {
     const phases = Model.phaseList(entry.blueprint);
