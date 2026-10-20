@@ -98,6 +98,33 @@ test('an unreadable state file or backup is refused, not quarantined or replaced
   assert.deepEqual((await new Store(dir).read()).projects.map(project => project.id), ['p1', 'p2']);
 });
 
+test('recovery keeps every copy: the restored backup outlives the next save, and a damaged backup is set aside too', async t => {
+  const dir = await temp(t, 'pb-store-');
+  const store = new Store(dir), project = id => ({ id, labels: [], labelRevision: 0, tasks: [] });
+  await store.update(state => { state.projects.push(project('p1')); });
+  await store.update(state => { state.projects.push(project('p2')); });
+  const good = await readFile(join(dir, 'state.json.bak'), 'utf8');
+  await writeFile(join(dir, 'state.json'), '{"schema":');
+  const restored = new Store(dir);
+  assert.deepEqual((await restored.read()).projects.map(item => item.id), ['p1']);
+  await restored.update(state => { state.projects.push(project('p3')); });
+  assert.equal(await readFile(join(dir, 'state.json.bak'), 'utf8'), good, 'the copy the board came from is still the backup');
+  const corrupt = async () => Promise.all((await readdir(dir)).filter(name => name.startsWith('state.corrupt-')).sort().map(name => readFile(join(dir, name), 'utf8')));
+  // Both files damaged: each is set aside, the board starts empty and says so, and no save removes either one.
+  await writeFile(join(dir, 'state.json'), '{'); await writeFile(join(dir, 'state.json.bak'), '[');
+  const empty = new Store(dir);
+  assert.deepEqual((await empty.read()).projects, []);
+  assert.equal(empty.recovery.restoredFromBackup, false); assert.ok(empty.recovery.quarantined);
+  await empty.update(() => {}); await empty.update(() => {});
+  assert.deepEqual((await corrupt()).filter(text => ['{', '['].includes(text)).sort(), ['[', '{']);
+  // A missing file with a damaged backup is reported the same way instead of starting empty without a word.
+  await rm(join(dir, 'state.json')); await writeFile(join(dir, 'state.json.bak'), 'x');
+  const missing = new Store(dir);
+  assert.deepEqual((await missing.read()).projects, []);
+  assert.equal(missing.recovery?.restoredFromBackup, false); assert.ok(missing.recovery.quarantined);
+  assert.ok((await corrupt()).includes('x'));
+});
+
 test('repository validation explains each invalid case and accepts linked worktrees', { skip: process.platform === 'win32' }, async t => {
   const root = await repo(t);
   const outside = await temp(t, 'pb-plain-');

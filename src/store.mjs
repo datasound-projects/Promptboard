@@ -191,7 +191,7 @@ export class Store {
       await mkdir(this.dir, { recursive: true, mode: 0o700 });
       // Temporary files from an interrupted write are never valid state.
       for (const name of await readdir(this.dir)) if (name.startsWith(`${STATE_FILE}.tmp-`)) await rm(join(this.dir, name), { force: true });
-      let state, source = this.path, corrupt = false;
+      let state, source = this.path, corrupt = false, backupCorrupt = false;
       try { state = await this.#readFile(this.path); }
       catch (error) {
         if (['STATE_VERSION_UNSUPPORTED', 'STATE_READ_FAILED'].includes(error.code)) throw error;
@@ -200,12 +200,14 @@ export class Store {
         catch (backupError) {
           // A newer backup is evidence of a newer installation, and an unreadable one is not damage either.
           if (['STATE_VERSION_UNSUPPORTED', 'STATE_READ_FAILED'].includes(backupError.code)) throw backupError;
+          backupCorrupt = backupError.code !== 'ENOENT';
           state = emptyState();
         }
-        if (corrupt) {
-          const quarantined = `state.corrupt-${Date.now()}-${randomBytes(4).toString('hex')}.json`;
-          await rename(this.path, join(this.dir, quarantined));
-          this.recovery = { restoredFromBackup: source !== this.path, quarantined };
+        // A damaged backup is set aside as well: the next saves would otherwise replace it.
+        const quarantine = async (path, suffix = '') => { const name = `state.corrupt-${Date.now()}-${randomBytes(4).toString('hex')}${suffix}.json`; await rename(path, join(this.dir, name)); return name; };
+        const keptBackup = backupCorrupt ? await quarantine(`${this.path}.bak`, '.bak') : null;
+        if (corrupt || keptBackup) {
+          this.recovery = { restoredFromBackup: source !== this.path, quarantined: corrupt ? await quarantine(this.path) : keptBackup };
         } else if (source !== this.path) {
           this.recovery = { restoredFromBackup: true, quarantined: null };
         }
