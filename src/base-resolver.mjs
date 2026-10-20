@@ -127,14 +127,14 @@ export function resolveBase({ state, project, task, columnId, provider, capabili
       if (!profile || !['profile', 'agentProfile'].includes(profile.kind) || !profile.enabled || profile.trust !== 'trusted') errors.push({ resourceId: profileId, code: 'BASE_PROFILE_UNAVAILABLE', message: 'A selected agent profile is missing, disabled, or untrusted. Change the profile configuration explicitly.' });
       if (profile?.kind === 'profile') apply(profile.configuration?.binding, `${origin}/profile:${profileId}`, rank);
       if (profile?.kind === 'agentProfile') {
-        // The primary agent runs (its tuple and own resources), the profile's resources join it, and supporting agents
-        // become native subagents where the CLI supports them.
+        // The primary agent runs (its tuple, instructions and own resources, as when it is assigned directly), the profile's
+        // resources join it, and supporting agents become native subagents where the CLI supports them.
         const primary = primaryAgent(registry, profile), base = `${origin}/agent-profile:${profileId}`;
         if (!primary) errors.push({ resourceId: profileId, code: 'BASE_PROFILE_NO_PRIMARY', message: 'This agent profile has no primary agent switched on. Choose its primary agent first.' });
         else {
           pinProfile(primary, primary.id, `${base}/primary`);
           if (primary.kind !== 'profile' || !primary.enabled || primary.trust !== 'trusted') errors.push({ resourceId: primary.id, code: 'BASE_PROFILE_UNAVAILABLE', message: 'The agent profile’s primary agent is missing, disabled, or untrusted.' });
-          else apply(primary.configuration?.binding, `${base}/primary:${primary.id}`, rank);
+          else { apply(primary.configuration?.binding, `${base}/profile:${primary.id}`, rank); select({ resourceId: primary.id, required: true }, `${base}/primary`, rank, true, [], false); }
         }
         for (const ref of refs(profile.configuration?.resources)) select(ref, base, rank);
         for (const agent of profile.configuration?.agents || []) if (agent.role === 'supporting') {

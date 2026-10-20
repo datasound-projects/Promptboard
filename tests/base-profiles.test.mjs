@@ -94,6 +94,27 @@ test('switched-off MCP tools are withheld by each CLI; Markdown is delivered as 
   }
 });
 
+test('a switched-off MCP tool whose name has a dot is disallowed under the name Claude Code gives it', async t => {
+  const dir = await temp(t), docs = resource('docs', 'mcp', { transport: 'stdio', command: 'docs-mcp', args: [], env: {}, headers: {}, disabledTools: ['docs.delete'] });
+  const registry = state(docs), manifest = resolveBase({ state: registry, project: { id: 'p', baseBinding: { mode: 'extend', include: [{ resourceId: 'docs', required: true }], exclude: [] } }, task: {}, columnId: 'executing', provider: 'claude' });
+  const prepared = await prepareBase({ manifest, currentResources: registry.base.resources, readRevision: async () => structuredClone(docs), runDir: dir });
+  const args = (await buildSession({ provider: 'claude', stage: 'executing', config: resolveConfig('executing', { provider: 'claude' }), message: 'task', runDir: dir, eventsFile: 'events', sessionId: 's', baseDelivery: prepared })).args;
+  assert.match(args[args.indexOf('--disallowedTools') + 1], /(?:^|,)mcp__pb_docs__docs_delete(?:,|$)/, 'Claude Code replaces the dot with _ in the tool name');
+});
+
+test('an agent profile delivers its primary agent’s own instructions, and the primary’s nested agents stay subagents', async t => {
+  const helper = resource('helper', 'profile', { agent: { instructions: 'Help with tests.' }, binding: { mode: 'inherit', include: [], exclude: [] } });
+  const lead = resource('lead', 'profile', { agent: { provider: 'claude', instructions: 'LEAD OWN INSTRUCTIONS' }, binding: { mode: 'extend', include: [{ resourceId: 'helper', required: false }], exclude: [] } });
+  const team = resource('team', 'agentProfile', { instructions: 'PROFILE INSTRUCTIONS', agents: [{ resourceId: 'lead', role: 'primary', responsibility: '' }], resources: [] });
+  const registry = state(helper, lead, team), definitions = new Map(registry.base.resources.map(entry => [entry.id, entry]));
+  const manifest = resolveBase({ state: registry, project: { id: 'p', agentProfileId: 'team' }, task: {}, columnId: 'executing', provider: 'claude' });
+  assert.deepEqual(manifest.errors, []);
+  assert.equal(manifest.resources.find(entry => entry.resourceId === 'helper').delivery, 'native-subagent', 'as when the agent is assigned directly');
+  const prepared = await prepareBase({ manifest, currentResources: registry.base.resources, readRevision: async ref => structuredClone(definitions.get(ref.id)), runDir: await temp(t) });
+  assert.match(prepared.sections, /LEAD OWN INSTRUCTIONS[\s\S]*PROFILE INSTRUCTIONS/, 'the agent’s instructions, then the profile’s');
+  assert.deepEqual(Object.keys(prepared.subagents), ['pb_helper']);
+});
+
 test('Markdown names, conventions, frontmatter and activation are checked', () => {
   assert.equal(markdownFileName('.github/instructions/api.instructions.md'), '.github/instructions/api.instructions.md');
   for (const bad of ['/etc/AGENTS.md', '../AGENTS.md', 'notes.txt', 'SKILL.md', 'node_modules/AGENTS.md', 'rules.mdc']) assert.throws(() => markdownFileName(bad), undefined, bad);
