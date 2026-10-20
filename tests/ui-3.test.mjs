@@ -162,6 +162,28 @@ test('a double click or a repeated Enter sends a card action or a Column Manager
   } finally { win.fetch = pass; }
 });
 
+test('How to run: “Add a card” sends one card on a double click and shows a refusal in the panel', { skip: process.platform === 'win32' }, async t => {
+  const ctx = await linkedKanban(t);
+  const { $, win } = ctx;
+  $('.workspace-menu-toggle').click();
+  [...win.document.querySelectorAll('.workspace-menu [role="menuitem"]')].find(button => button.textContent === 'How to run…').click();
+  const add = () => [...$('#project-run').querySelectorAll('button')].find(button => button.textContent.startsWith('Add a card'));
+  await until(add, 'no start command found');
+  const pass = win.fetch, posts = [];
+  let refuse = false;
+  win.fetch = (url, options = {}) => {
+    if (url === '/api/tasks' && options.method === 'POST') { posts.push(url); if (refuse) return Promise.resolve(Response.json({ error: 'A project can have at most 500 cards.', code: 'LIMIT' }, { status: 409 })); }
+    return pass(url, options);
+  };
+  try {
+    add().click(); add().click(); await ctx.idle({ requireComplete: true });
+    assert.equal(posts.length, 1);
+    assert.equal((await serverTasks(ctx)).filter(task => task.title === 'Write down how to run the project').length, 1);
+    refuse = true; add().click(); await ctx.idle({ requireComplete: true });
+    assert.match($('#project-run').textContent, /A project can have at most 500 cards\./);
+  } finally { win.fetch = pass; }
+});
+
 test('a GitHub status that arrives after the page is gone draws nothing and throws nothing', { skip: process.platform === 'win32' }, async t => {
   const ctx = await linkedKanban(t);
   const { $, win } = ctx;

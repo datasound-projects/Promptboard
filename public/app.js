@@ -4682,12 +4682,14 @@ function renderRunPanel(project, hide = false) {
   panel.className = `project-run${finished ? ' finished' : ''}`;
   panel.hidden = false;
 }
-async function addRunCard(project) {
-  try {
-    await boardCall('POST', '/api/tasks', { projectId: project.id, title: 'Write down how to run the project',
-      prompt: 'Find out how to install and start this project. Add the exact commands to README.md under a "Run" heading, and check that they work from a fresh checkout.' });
-    announce('Card added to To Do. Nothing runs until you start it.'); renderBoard();
-  } catch (error) { announce(error.message); }
+function addRunCard(project) {
+  return once(`run-card:${project.id}`, async () => {
+    try {
+      await boardCall('POST', '/api/tasks', { projectId: project.id, title: 'Write down how to run the project',
+        prompt: 'Find out how to install and start this project. Add the exact commands to README.md under a "Run" heading, and check that they work from a fresh checkout.' });
+      announce('Card added to To Do. Nothing runs until you start it.'); renderBoard();
+    } catch (error) { announce(error.message); runPanel.message = error.message; renderRunPanel(currentProject()); }
+  });
 }
 
 function renderAutopilotBar(project) {
