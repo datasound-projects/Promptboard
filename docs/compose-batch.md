@@ -21,7 +21,7 @@ Regenerating always uses the task as Origin has it now.
 
 ## Settings
 
-Three levels: your **Compose** settings → **batch settings** → **task settings**. Each level names only what it changes; everything else is inherited, and the page shows where each value comes from. A level that chooses another CLI resets the model and effort it does not set. Settings: CLI, model, effort, checks (Reviewed or Fast), detail, task type, language, the four prompt aids, whether the Origin context is given to the prompt writer, and extra instructions (task instructions replace batch instructions). The effective settings are stored with every version.
+Three levels: your **Compose** settings → **batch settings** → **task settings**. Each level names only what it changes; everything else is inherited, and the page shows where each value comes from. A level that chooses another CLI resets the model and effort it does not set. Settings: CLI, model, effort, checks (Reviewed or Fast), detail, task type, language, the four prompt aids, whether the Origin context is given to the prompt writer, and extra instructions (task instructions replace batch instructions). The effective settings are fixed when a task is queued and stored with the version it produces: a change applies to tasks queued after it, not to tasks already queued or running. A change of *Parallel runs* applies at once.
 
 Compose's context sources (project folder, documents, MCP) are not used in Batch.
 
