@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Board, prerequisiteMet, projectColumns } from '../src/board.mjs';
+import { Board, normalizeSource, prerequisiteMet, projectColumns } from '../src/board.mjs';
 import { resolveConfig } from '../src/agents.mjs';
 
 const project = { workflowMode: 'pipeline', pipeline: { columns: [{ id: 'todo', role: 'todo' }, { id: 'finished', role: 'done' }] } };
@@ -38,6 +38,20 @@ test('the page applies the board’s prerequisite rule to the same cards, on pip
     assert.equal(prerequisiteMet(board, entry), met, label);
     assert.equal(page({ ...board, columns: projectColumns(board) }, entry), met, `page: ${label || JSON.stringify(extra)}`);
   }
+});
+
+test('the page normalizes a card source as the board does; only the board keeps a saved prompt link', async () => {
+  // public/app.js keeps its own copy for Compose results; it runs here with its own helpers on the same inputs.
+  const source = (await readFile(new URL('../public/app.js', import.meta.url), 'utf8')).replaceAll('\r\n', '\n'), line = start => source.slice(source.indexOf(start), source.indexOf('\n', source.indexOf(start)));
+  const body = source.slice(source.indexOf('function normalizeSource(source) {'), source.indexOf('\n}\n', source.indexOf('function normalizeSource(source) {')) + 2);
+  const page = new Function(`${line('const MAX_PROMPT_BYTES = ')}\n${line('const KNOWN_PROVIDERS = ')}\n${line('function safeText(')}\n${body}\nreturn normalizeSource;`)();
+  const long = 'x'.repeat(300), link = { projectId: 'p1', promptId: 'q1', promptRevision: 2 };
+  for (const input of [null, undefined, 'text', 7, {}, { historyId: long, provider: 'claude', model: long, effort: long, reportedModels: ['a', 3, long, ...Array(30).fill('m')], language: 'pl', quality: 'fast', verification: 'checks-passed', generatedAt: 5 },
+    { provider: 'other', language: 'fr', quality: 'slow', verification: 'passed', generatedAt: Infinity, reportedModels: 'a' }, { generatedAt: '5', historyId: 3 }, { ...link }, { ...link, promptRevision: 0 }]) {
+    const { projectId, promptId, promptRevision, ...shared } = normalizeSource(input) || {};
+    assert.deepEqual(page(input), normalizeSource(input) && shared, JSON.stringify(input));
+  }
+  assert.deepEqual(Object.keys(normalizeSource(link)).slice(-3), ['projectId', 'promptId', 'promptRevision']);
 });
 
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } }).trim();

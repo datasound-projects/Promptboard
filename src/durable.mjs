@@ -60,6 +60,14 @@ export async function readWithBackup(paths, parse) {
   }
 }
 
+/**
+ * Set damaged files (those `parse` refused in `readWithBackup`) aside as `<file>.corrupt-<time>-<random>`, so
+ * the next save never makes one the backup in place of the only good copy. A file already gone is skipped.
+ */
+export async function setAside(files) {
+  for (const file of files) await rename(file, `${file}.corrupt-${Date.now()}-${randomBytes(4).toString('hex')}`).catch(error => { if (error.code !== 'ENOENT') throw error; });
+}
+
 /** A queue: each `run(work)` starts after the previous one settles, whatever its outcome. */
 export function serial() {
   let queue = Promise.resolve();

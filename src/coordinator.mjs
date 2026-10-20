@@ -15,12 +15,12 @@
  */
 import '../public/origin-model.js';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { buildTimeline } from './timeline.mjs';
 import { COLUMNS, prerequisiteMet } from './board.mjs';
-import { readWithBackup, serial, writeAtomic } from './durable.mjs';
+import { readWithBackup, serial, setAside, writeAtomic } from './durable.mjs';
 import { escapeId } from './origin.mjs';
 import { listProjects } from './projects.mjs';
 import { makeTempDir, removeTempDir } from './providers.mjs';
@@ -32,6 +32,9 @@ const RECONCILE_MS = 5000; // ponytail: at most one Git read per project every 5
 const LIVE = ['queued', 'running', 'waiting_for_input'];
 const ID = /^[A-Za-z0-9_-]{1,100}$/, POSITIONAL = /^(?:move|restart|done):[A-Za-z0-9_-]+:\d{1,3}$/;
 const sha = text => createHash('sha256').update(text).digest('hex');
+// Local folders in event details, run reasons and agent excerpts ("fast-forward in /Users/me/app") keep only their last name.
+const LOCAL_PATH = /(^|[\s(“"'`])(?:(?:\/[^\s/"'`()”]+){2,}\/?|[A-Za-z]:\\[^\s"'`()”]*)/g;
+const noPaths = text => String(text || '').replace(LOCAL_PATH, (match, lead) => `${lead}…/${match.slice(lead.length).split(/[\\/]/).filter(Boolean).pop() || ''}`);
 const clip = (text, max) => { const value = String(text ?? '').replace(/\s+/g, ' ').trim(); return value.length > max ? `${value.slice(0, max - 1)}…` : value; };
 // A reason quoted inside a sentence that ends with its own period.
 const clause = (text, max) => clip(text, max).replace(/[.\s]+$/, '');
@@ -62,7 +65,7 @@ export class Coordinator {
       if (!((data.createdAt ?? data.messages?.[0]?.at) < project.createdAt)) return data;
     });
     // A damaged file is kept aside (as the board's state is), so the next saves never overwrite the only copy.
-    for (const file of damaged) await rename(file, `${file}.corrupt-${Date.now()}-${randomUUID().slice(0, 8)}`);
+    await setAside(damaged);
     return loaded ?? fresh;
   }
   async #save(data, kind = 'index') {
@@ -177,7 +180,7 @@ export class Coordinator {
       const task = event.task ? byId.get(event.task) : null;
       if (event.commit && event.kind === 'commit') refs.set(`commit:${event.commit.slice(0, 7)}`, { ref: `commit:${event.commit.slice(0, 7)}`, kind: 'commit', commit: event.commit, taskId: event.task });
       const own = event.kind === 'commit' ? `[commit:${event.commit.slice(0, 7)}] ` : event.run ? `[${runRef(runs.find(run => run.id === event.run) || { id: event.run, taskId: event.task })}] ` : '';
-      return `- ${new Date(event.at).toISOString()} ${own}${task ? `[${taskRef(task)}] ` : ''}${event.kind}: ${event.title}${event.status ? ` (${event.status})` : ''}${event.detail ? ` — ${event.detail}` : ''}`;
+      return `- ${new Date(event.at).toISOString()} ${own}${task ? `[${taskRef(task)}] ` : ''}${event.kind}: ${noPaths(event.title)}${event.status ? ` (${event.status})` : ''}${event.detail ? ` — ${noPaths(event.detail)}` : ''}`;
     };
     const factLine = task => {
       const facts = index.tasks[task.id] || taskFacts(task, columns, runs);
@@ -190,7 +193,7 @@ export class Coordinator {
     lines.push(`Repository: ${gh ? `GitHub ${gh.nameWithOwner}${gh.private ? ' (private)' : ''}, ${sync}` : project.repository ? 'a local folder (not on GitHub)' : 'not linked'} · target branch ${project.targetBranch?.name || 'not set'}.`);
     const first = (list, line) => (list.length ? [...list.slice(0, LIMITS.list).map(line), ...(list.length > LIMITS.list ? [`- and ${list.length - LIMITS.list} more`] : [])] : ['- none']);
     lines.push('Active agents:', ...first(over.agents, agent => `- [${runRef(runs.find(run => run.id === agent.runId))}] on [${taskRef(byId.get(agent.taskId))}] in ${agent.column}: ${agent.status}${agent.needsYou ? ' (waiting for the user)' : ''}`));
-    lines.push('Blockers:', ...first(over.blockers, blocker => `- ${blocker.taskId ? `[${taskRef(byId.get(blocker.taskId))}] ` : ''}${blocker.text}`));
+    lines.push('Blockers:', ...first(over.blockers, blocker => `- ${blocker.taskId ? `[${taskRef(byId.get(blocker.taskId))}] ` : ''}${noPaths(blocker.text)}`));
     const taskEvents = taskId => index.events.filter(event => event.task === taskId);
     const detail = async task => {
       // The card is the authoritative task text; read it only when the question is about this card.
@@ -198,9 +201,9 @@ export class Coordinator {
       lines.push(`Events of [${taskRef(task)}]:`, ...taskEvents(task.id).slice(-40).map(eventLine));
       const finished = runs.filter(run => run.taskId === task.id).slice(-3);
       for (const run of finished) {
-        lines.push(`- [${runRef(run)}] ${run.stage} run ${run.status}${run.reason ? `: ${clip(run.reason, 200)}` : ''}${run.errorCode ? ` (${run.errorCode})` : ''} · ${run.config?.provider || ''} · turns ${run.turns ?? 0}`);
+        lines.push(`- [${runRef(run)}] ${run.stage} run ${run.status}${run.reason ? `: ${clip(noPaths(run.reason), 200)}` : ''}${run.errorCode ? ` (${run.errorCode})` : ''} · ${run.config?.provider || ''} · turns ${run.turns ?? 0}`);
         const message = run.artifactsDir ? await readFile(join(this.board.dataDir, run.artifactsDir, 'last-message.md'), 'utf8').catch(() => '') : '';
-        if (message) lines.push(`  Last agent message (excerpt): ${clip(message, LIMITS.lastMessage)}`);
+        if (message) lines.push(`  Last agent message (excerpt): ${clip(noPaths(message), LIMITS.lastMessage)}`);
       }
     };
     if (scope.kind === 'task') { const task = byId.get(scope.id) || fail('Choose a card of this project.', 'NOT_FOUND', 404); lines.push('Question scope: one card.'); await detail(task); }

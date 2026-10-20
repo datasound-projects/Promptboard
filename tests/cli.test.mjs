@@ -35,6 +35,13 @@ test('app-only and terminal-only options are refused in the other mode instead o
   assert.equal(gui.stderr.trim(), '--json does not apply with --gui.');
 });
 
+test('--port takes a decimal whole number only, never hex, exponent or signed forms', { timeout: 20000 }, async t => {
+  for (const port of ['0x0', '0e0', '+0', '0.0', ' 0']) {
+    const result = await ste(t, ['--gui', '--no-open', '--port', port]);
+    assert.deepEqual([result.code, result.stderr.trim()], [1, 'The port must be 0–65535.'], JSON.stringify(port));
+  }
+});
+
 test('help names the Node.js floor from package.json and every task type the Compose page offers', async t => {
   const { code, stdout } = await ste(t, ['--help']);
   assert.equal(code, 0);

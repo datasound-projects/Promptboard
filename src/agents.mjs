@@ -228,7 +228,7 @@ export async function buildSession({ provider, stage, config, message, runDir, e
     if (selected.length) { mcpConfig = `${runDir}/base-claude-mcp.json`; await writeFile(mcpConfig, JSON.stringify({ mcpServers: jsonServers }), { mode: 0o600 }); }
     args = [resumeId ? '--resume' : '--session-id', resumeId || sessionId, '--settings', JSON.stringify({ hooks, statusLine: { type: 'command', command: [nodePath, fileURLToPath(new URL('./usage-status.mjs', import.meta.url)), `${runDir}/usage-status.json`].map(shQuote).join(' ') } })];
     // Writing stages keep user-configured CLI MCPs/plugins; Base adds per-run servers.
-    // Legacy read-only stages retain their explicit restriction to no MCPs.
+    // Read-only stages (legacy Planning/Code Review and the stage engine's typed ones) keep their explicit restriction to no MCPs.
     if (readOnly) args.push('--strict-mcp-config');
     if (readOnly || selected.length) args.push('--mcp-config', mcpConfig);
     if (readOnly) args.push('--permission-mode', 'plan', '--tools', 'Read,Grep,Glob', '--disallowedTools', 'Edit,Write,NotebookEdit,Bash,ExitPlanMode');

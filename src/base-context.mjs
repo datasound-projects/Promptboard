@@ -4,7 +4,7 @@ import { lookup } from 'node:dns/promises';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { isIP } from 'node:net';
-import { readFile, readdir, realpath, stat, mkdir, writeFile, rm, open } from 'node:fs/promises';
+import { readdir, realpath, stat, mkdir, writeFile, rm, open } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { resolve, relative, isAbsolute, extname, join } from 'node:path';
 import { BaseDeliveryError, assertBaseReady, checkBaseRevocations, baseDependencies } from './base-resolver.mjs';

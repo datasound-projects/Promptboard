@@ -10,6 +10,7 @@ Origin, Compose and Kanban can share one project. Every connection is optional: 
   - Creating a board whose name matches an Origin project without a board makes that project's board.
   - Creating a project, renaming an Origin project or naming a new board with a name another project uses is refused (`NAME_TAKEN`). A project may take its own board's name.
   - Choosing a name in Compose selects the existing project, also when two windows ask for the same new name at once.
+- A new or changed name has 1 to 80 characters and no control characters (such as NUL, a tab or a line break) on every page; names saved before this rule keep loading, and backups import as before.
 - A board with an Origin project's ID belongs to that project, even without a stored link; another Origin project cannot link to it (`ALREADY_LINKED`).
 - Links made before this change, with different IDs on each side, keep working: the project is listed once and is reachable by either ID. Deleting the Origin side of such a link keeps the board as a project, and the board takes over the saved prompts.
 - Deleting a board in Kanban never removes the project's Origin side or its saved prompts. When a project has neither left, its saved prompts stay in the prompts folder and return if a Kanban backup restores the board.
@@ -22,7 +23,7 @@ Origin, Compose and Kanban can share one project. Every connection is optional: 
   - **Projects** lists the shared projects and their saved prompts.
 - **Save to project** (under **More** on a result, or the ⇢ button on a History entry) saves the prompt with its request, settings and checks into a project you choose or create. On a History entry you can also **Move** it, which removes it from History after saving.
 - Saving never creates a Kanban card or a board.
-- Saved prompts are stored on this computer in `<data folder>/prompts/prompts-<project id>.json` (atomic writes, previous copy kept as `.bak`). They are separate from History and from the board, and they are not part of the Kanban backup.
+- Saved prompts are stored on this computer in `<data folder>/prompts/prompts-<project id>.json` (capital letters and `_` in the ID escaped as in Origin file names) (atomic writes, previous copy kept as `.bak`). They are separate from History and from the board, and they are not part of the Kanban backup.
 - Each saved prompt keeps every revision (up to 100). Saving identical text again adds nothing. Saving the same History result twice in one project returns the existing prompt.
 
 ## The link bar in Compose

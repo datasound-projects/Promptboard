@@ -84,7 +84,7 @@ Planning and Code Review columns are always read-only. Promptboard translates th
 | Autonomous, full | `bypassPermissions` | `danger-full-access`, `never` | `yolo` without sandbox |
 
 **Folder trust.** Claude Code and Codex ask whether to trust each new folder, and every task worktree is a new folder.
-By default the run waits for you. With **Trust Promptboard task worktrees automatically**, Promptboard answers only
+By default the run waits for you. With **CLI folder-trust question** set to **Answer yes for the card’s own workspace** (in the board's execution settings), Promptboard answers only
 that question, only when the rendered screen is positively identified as the CLI's folder-trust menu (Claude Code:
 "Accessing workspace … Yes, I trust this folder"; Codex: "Folder access … Trust this folder? … Trust and continue"),
 only when the folder it names is exactly this card's worktree, and only once the screen has settled. Any other startup
@@ -100,10 +100,10 @@ Codex from asking to write Git metadata outside its sandbox.
 
 A typed stage completes only after the CLI reported a finished turn, nothing is outstanding (tools, permission or
 question prompts, unconfirmed input) and the stage's own check passes. Process exit or a quiet terminal never counts.
-- **Manual:** the card waits; **Complete stage** (or dragging the card on) completes it.
+- **Manual:** the card waits; **Complete stage** (**Accept plan**, **Record review** or **Complete testing** in those columns), or dragging the card on, completes it.
 - **Automatic:** Promptboard completes it as soon as those conditions hold, also when you move cards yourself.
 
-The outcome is shown on the card and in **Stage and reset** in the task details, with the findings and the stage history.
+The outcome is shown on the card and in **Stage result** in the task details, with the findings and the stage history.
 
 ## Autopilot
 

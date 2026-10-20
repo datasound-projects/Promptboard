@@ -1,4 +1,4 @@
-/** Pure configuration for the forthcoming column lifecycle. Reading it never starts work. */
+/** Pure configuration for column pipelines. Reading it never starts work. */
 import { randomUUID } from 'node:crypto';
 
 export class PipelineConfigError extends Error {

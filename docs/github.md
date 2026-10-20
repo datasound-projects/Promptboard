@@ -25,7 +25,7 @@ With the project selected on Kanban, open **Settings → GitHub**:
 
 - **Search your repositories.** Lists what the signed-in account can read: your own, collaborations and
   organization repositories, public and private. Pick one and its default branch becomes the target branch.
-  - By default it is cloned once into Promptboard's data folder (`clones/<owner>/<name>`).
+  - By default it is cloned once into Promptboard's data folder (`clones/<owner>/<name>`, both in lowercase).
   - **Clone into a folder of my own** clones it into `<chosen folder>/<name>` instead.
   - A folder that already exists there is used only if it is a clone of that repository; anything else is refused
     and left unchanged.
@@ -38,7 +38,7 @@ link; the clone or folder, its worktrees and all local work stay.
 
 ## Staying in sync
 
-- **Fetch** fetches `origin` and reports the target branch as up to date, behind, ahead, or diverged.
+- **Fetch** fetches `origin` and reports the target branch as Up to date, Behind, Ahead, or Needs attention (for example when both sides have new commits).
 - **Update <branch>…** fast-forwards the local target branch after you confirm. Anything that is not a fast-forward is
   refused, as are uncommitted changes on that branch.
 - Merges still go through Kanban's reviewed, tested Merge step. Nothing is pushed unless you open a pull request.

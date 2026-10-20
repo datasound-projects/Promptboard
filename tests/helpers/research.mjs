@@ -15,7 +15,9 @@ export async function researchPage(t, { runner = async () => { throw new Error('
     authAdapter: { installed: async () => true, status: async () => ({ state: 'signed-in' }) }, runner: async call => { calls.push(call); return runner(call); },
     catalogReader: async provider => ({ provider, models: [{ id: provider === 'claude' ? 'sonnet' : 'gpt-5.5', name: provider === 'claude' ? 'Sonnet' : 'GPT-5.5', efforts: ['low', 'high'] }] }), ...server });
   const token = (await (await fetch(`${app.url}/api/session`)).json()).token;
-  const call = (path, method = 'GET', body) => fetch(`${app.url}${path}`, { method, headers: { 'X-STE-Token': token, ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: J(body) } : {}) }).then(response => response.json());
+  const send = (path, method, body) => fetch(`${app.url}${path}`, { method, headers: { 'X-STE-Token': token, ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: J(body) } : {}) });
+  // A reused keep-alive socket the server closed while idle fails before any reply; a GET is sent once more.
+  const call = (path, method = 'GET', body) => send(path, method, body).catch(error => { if (method !== 'GET' || error?.cause?.code !== 'UND_ERR_SOCKET') throw error; return send(path, method, body); }).then(response => response.json());
   const created = await call('/api/origin/projects', 'POST', { name: 'Shop' });
   const blueprint = M.emptyBlueprint();
   blueprint.idea = 'An online shop for handmade goods';

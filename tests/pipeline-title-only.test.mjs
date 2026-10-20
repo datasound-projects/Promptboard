@@ -57,8 +57,7 @@ test('authenticated task authoring accepts a pipeline title without a body and s
   const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] }), project = await app.board.createProject({ name: 'API pipeline' }), pipeline = customPipelineConfig();
   for (const column of pipeline.columns) column.strategy.autoSpawn = false;
   await app.board.setPipeline(project.id, { pipeline, expectedRevision: project.revision, confirm: true });
-  const { token, capabilities } = await (await fetch(`${app.url}/api/session`)).json();
-  assert.equal(capabilities.pipelineTitleOnly, true);
+  const { token } = await (await fetch(`${app.url}/api/session`)).json();
   const post = (body, supplied = token) => fetch(`${app.url}/api/tasks`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-STE-Token': supplied, Origin: app.url }, body: JSON.stringify(body) });
   assert.equal((await post({ projectId: project.id, title: 'Unauthorized' }, 'wrong')).status, 403);
   const response = await post({ projectId: project.id, title: 'Only title' }); assert.equal(response.status, 200); const value = await response.json();
