@@ -102,18 +102,20 @@ function legacyGemini(bytes, nativeId) {
 }
 
 function scan(provider, nativeId, records, expected, priorIds) {
+  // CLIs trim the text they submit (Claude Code records "text" for a pasted "text\n"). Only that exact trim also matches.
+  const trimmed = expected.trim(), same = text => typeof text === 'string' && (text === expected || Boolean(trimmed) && text === trimmed);
   let matched = false, accepted = false;
   const candidates = new Set(), newIds = new Set();
   for (const record of records) {
     if (provider === 'claude') {
       if (record.sessionId !== nativeId || record.isSidechain === true || record.isMeta === true) continue;
-      if (record.type === 'queue-operation' && record.operation === 'enqueue' && record.content === expected) accepted = true;
+      if (record.type === 'queue-operation' && record.operation === 'enqueue' && same(record.content)) accepted = true;
       if (record.type === 'queue-operation' && record.operation === 'remove') accepted = false;
-      if (record.type === 'user' && record.message?.role === 'user' && textParts(record.message.content, 'text') === expected) matched = true;
+      if (record.type === 'user' && record.message?.role === 'user' && same(textParts(record.message.content, 'text'))) matched = true;
     } else if (provider === 'codex') {
       if (record.type === 'response_item' && record.payload?.type === 'message' && record.payload.role === 'user'
-        && textParts(record.payload.content, 'input_text') === expected) matched = true;
-      if (record.type === 'event_msg' && record.payload?.type === 'user_message' && record.payload.message === expected) matched = true;
+        && same(textParts(record.payload.content, 'input_text'))) matched = true;
+      if (record.type === 'event_msg' && record.payload?.type === 'user_message' && same(record.payload.message)) matched = true;
     } else {
       if (identifier(record.id) && !priorIds.has(record.id)) {
         if (newIds.has(record.id)) fail('record_invalid');
@@ -128,7 +130,7 @@ function scan(provider, nativeId, records, expected, priorIds) {
         if (!Array.isArray(updates) || updates.some(update => !object(update))) fail('record_invalid');
         if (updates.some(update => candidates.has(update.id) && update.content !== undefined)) fail('history_rewritten');
       }
-      if (record.type === 'user' && identifier(record.id) && !priorIds.has(record.id) && textParts(record.content, 'gemini') === expected) {
+      if (record.type === 'user' && identifier(record.id) && !priorIds.has(record.id) && same(textParts(record.content, 'gemini'))) {
         candidates.add(record.id); matched = true;
       }
     }
