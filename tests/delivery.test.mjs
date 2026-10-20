@@ -5,12 +5,13 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Board } from '../src/board.mjs';
 import { Supervisor } from '../src/supervisor.mjs';
 import { Delivery, parseCommand, parseFindings, startArgv } from '../src/delivery.mjs';
 import { resolveConfig } from '../src/agents.mjs';
+import { commandOnPath } from '../src/providers.mjs';
 
 const skip = process.platform === 'win32';
 const fake = fileURLToPath(new URL('./fixtures/fake-agent.cjs', import.meta.url));
@@ -665,6 +666,49 @@ test('a target that moves during the merge is TARGET_CHANGED; the Merge button p
   await until(async () => { await w.board.advanceFlows(); return (await w.current(task.id)).column === 'done'; }, 'merged after the rerun tests');
   assert.equal((await w.current(task.id)).completion.kind, 'merged');
   git(w.root, 'merge-base', '--is-ancestor', git(w.root, 'rev-parse', ':/Upstream'), 'trunk'); // The commit made meanwhile is kept.
+});
+
+test('a file written while the worktree is removed is never deleted: removal never forces', { skip, timeout: 60000 }, async t => {
+  const w = await world(t);
+  await writeFile(join(w.root, '.gitignore'), '.env\n'); git(w.root, 'add', '.gitignore'); git(w.root, 'commit', '-q', '-m', 'ignore env');
+  const task = await w.task('Late file', 'x');
+  const path = await w.workspace(task.id);
+  await writeFile(join(path, '.env'), 'SECRET=1\n');
+  // Between Promptboard's checks and Git's removal, another program writes into the worktree.
+  const real = await commandOnPath('git'), shim = await temp(t, 'pb-del-shim-'), before = process.env.PATH;
+  await writeFile(join(shim, 'git'), `#!/bin/sh\nif [ "$1" = worktree ] && [ "$2" = remove ]; then eval last=\\\${$#}; echo late > "$last/late.txt"; fi\nexec '${real}' "$@"\n`, { mode: 0o755 });
+  process.env.PATH = `${shim}${delimiter}${before}`;
+  try { await assert.rejects(w.board.removeTaskWorktree(task.id, { deleteIgnored: true }), { code: 'WORKTREE_REMOVE_FAILED' }); } finally { process.env.PATH = before; }
+  assert.equal(await readFile(join(path, 'late.txt'), 'utf8'), 'late\n');
+  assert.equal((await w.current(task.id)).workspace.path, path, 'the card keeps its worktree');
+});
+
+test('a removal Git finishes only halfway forgets the worktree and keeps the branch; the leftover folder is never reused', { skip: skip || process.getuid?.() === 0, timeout: 60000 }, async t => {
+  const w = await world(t);
+  await mkdir(join(w.root, 'locked')); await writeFile(join(w.root, 'locked', 'file.txt'), 'x\n'); git(w.root, 'add', '.'); git(w.root, 'commit', '-q', '-m', 'locked');
+  const task = await w.task('Half removed', 'x');
+  const ws = (await w.current(task.id)).workspace, locked = join(ws.path, 'locked');
+  // A file Git cannot delete (on Windows, one another program holds open): Git unregisters the worktree anyway.
+  await chmod(locked, 0o555);
+  try {
+    const removed = await w.board.removeTaskWorktree(task.id);
+    assert.equal(removed.workspace, null);
+    assert.ok(removed.retainedBranches.some(item => item.branch === ws.branch));
+    assert.ok(!git(w.root, 'worktree', 'list').includes(ws.path));
+    assert.ok(git(w.root, 'branch', '--list', ws.branch).includes(ws.branch));
+    await assert.rejects(w.board.ensureTaskWorktree(task.id), { code: 'WORKTREE_PATH_EXISTS' });
+  } finally { await chmod(locked, 0o755); }
+});
+
+test('a card whose worktree folder was deleted by hand can still be deleted; Git forgets the folder and the branch stays', { skip, timeout: 60000 }, async t => {
+  const w = await world(t);
+  const task = await w.task('Folder gone', 'x');
+  const ws = (await w.current(task.id)).workspace;
+  await rm(ws.path, { recursive: true, force: true });
+  await w.board.deleteTask(task.id, { expectedRevision: (await w.current(task.id)).revision });
+  assert.equal(await w.current(task.id), undefined);
+  assert.ok(!git(w.root, 'worktree', 'list', '--porcelain').includes(ws.path));
+  assert.ok(git(w.root, 'branch', '--list', ws.branch).includes(ws.branch));
 });
 
 test('a worktree Git cannot create says why', { skip: skip || process.getuid?.() === 0, timeout: 60000 }, async t => {

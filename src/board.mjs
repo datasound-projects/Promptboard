@@ -2600,9 +2600,19 @@ export class Board {
       const root = await realpath(this.worktreeRoot).catch(() => this.worktreeRoot);
       if (!inside(root, workspace.path) || workspace.path === root) throw new BoardError('This worktree is not in Promptboard\'s folder, so it is not removed.', 'WORKTREE_NOT_OWNED', 409);
       const registered = await this.#registered(workspace.repositoryRoot, workspace.path);
-      // A worktree whose creation never finished and left no folder: only the record is cleared.
-      if (!registered && workspace.status !== 'ready' && !(await access(workspace.path).then(() => true, () => false))) {
-        return this.store.update(draft => { const { task: current } = this.#task(draft, taskId); current.workspace = null; current.revision++; return current; });
+      const forget = () => this.store.update(draft => {
+        const { task: current } = this.#task(draft, taskId);
+        // A creation that never finished may have made no branch to keep.
+        if (registered || workspace.status === 'ready') current.retainedBranches = [...current.retainedBranches, { branch: workspace.branch, removedAt: Date.now() }];
+        current.workspace = null;
+        current.revision++;
+        return current;
+      });
+      // No folder, so nothing on disk to delete (an unfinished creation, a folder deleted by hand, or a removal the app
+      // stopped during). Git's record of it is dropped: `git worktree prune` removes only records whose folder is gone.
+      if (!(await access(workspace.path).then(() => true, () => false))) {
+        if (registered) await git(['worktree', 'prune'], { cwd: workspace.repositoryRoot });
+        return forget();
       }
       if (!registered || registered.branch !== workspace.branch) throw new BoardError('Git does not list this worktree for the task branch, so nothing was removed.', 'WORKTREE_NOT_OWNED', 409);
       const status = await git(['status', '--porcelain', '--untracked-files=all'], { cwd: workspace.path });
@@ -2610,14 +2620,15 @@ export class Board {
       // Git deletes the files it ignores (.env, local databases, build output) with the worktree: never without a yes.
       const ignored = await ignoredFiles(workspace.path);
       if (ignored.length && !deleteIgnored) throw Object.assign(new BoardError(`The task worktree holds files Git ignores, which removing it would delete: ${ignored.slice(0, 8).join(', ')}${ignored.length > 8 ? ` and ${ignored.length - 8} more` : ''}. Move what you need out of ${workspace.path}, or confirm deleting them.`, 'WORKTREE_IGNORED_FILES', 409), { files: ignored.slice(0, 50) });
-      await git(['worktree', 'remove', ...(ignored.length ? ['--force'] : []), workspace.path], { cwd: workspace.repositoryRoot });
-      return this.store.update(draft => {
-        const { task: current } = this.#task(draft, taskId);
-        current.retainedBranches = [...current.retainedBranches, { branch: workspace.branch, removedAt: Date.now() }];
-        current.workspace = null;
-        current.revision++;
-        return current;
+      // Never --force: Git removes a worktree that holds only ignored files without it, and checks again that nothing
+      // changed, so a file written after the checks above is never deleted.
+      await git(['worktree', 'remove', workspace.path], { cwd: workspace.repositoryRoot, timeoutMs: 120000 }).catch(async error => {
+        if (await this.#registered(workspace.repositoryRoot, workspace.path)) throw new BoardError(`Git did not remove the task worktree (${error.message}). Its files are kept; check ${workspace.path}, then try again.`, 'WORKTREE_REMOVE_FAILED', 409);
+        // Git unregisters the worktree even when it cannot delete every file (on Windows, one another program holds open:
+        // EBUSY). Finish its deletion with backoff; a folder that still remains blocks a new worktree there, with a reason.
+        await rm(workspace.path, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
       });
+      return forget();
     });
   }
 
