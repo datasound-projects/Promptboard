@@ -153,3 +153,32 @@ test('Swarm in the panel: pick parts, watch one live agent per part, stop one, r
   assert.deepEqual(await ev(`return [...document.querySelectorAll('.origin-research-message.is-agent .origin-research-agent')].map(n => n.textContent).sort();`),
     ['Agent · Security', 'Agent · Testing', 'Agent · Checkout API'].sort());
 });
+
+test('A run shows only in its own chat, and a second Send while the first is starting starts nothing more', { skip: !chrome, timeout: 180000 }, async t => {
+  let held; const holding = new Promise(resolve => { held = resolve; });
+  const researchRunner = call => new Promise((resolve, reject) => {
+    call.onEvent({ type: 'delta', text: 'Held findings' }); held();
+    call.signal.addEventListener('abort', () => reject(Object.assign(new Error('stopped'), { code: 'ABORTED', partial: 'Held findings' })), { once: true });
+  });
+  const { ev, wait, call, originId } = await researchPage(t, { server: { researchRunner } });
+  const click = selector => ev(`document.querySelector(${J(selector)}).click();`);
+  await click('#origin-research-open');
+  await wait(`document.querySelector('#origin-research-send') && !document.querySelector('#origin-research-send').disabled`, 'ready to send');
+  // Enter pressed twice in a row: the second Send comes while the first one is still saving and creating the chat.
+  await ev(`const i = document.querySelector('#origin-research-input'); i.value = 'Which queue?'; i.dispatchEvent(new Event('input', { bubbles: true })); i.closest('form').requestSubmit(); i.closest('form').requestSubmit();`);
+  await holding;
+  await wait(`document.querySelector('.is-live .origin-research-text')?.textContent === 'Held findings' && document.querySelector('#origin-research-send').getAttribute('aria-label') === 'Stop'`, 'one run, shown live');
+  assert.equal(await ev(`return document.querySelector('#origin-drawer .origin-inline-error')?.textContent || '';`), '', 'no second run was refused');
+  assert.equal((await call(`/api/origin/research/${originId}/chats`)).chats.length, 1, 'one chat');
+  // A new chat while the first one researches: the other chat's live answer is not shown in it.
+  await click('#origin-research-new');
+  await wait(`document.querySelectorAll('.origin-research-message').length === 0 && document.querySelector('.origin-research-hint')`, 'an empty chat');
+  assert.equal(await ev(`return document.querySelectorAll('.is-live').length;`), 0, 'no live answer from the other chat');
+  await click('#origin-research-send');
+  await wait(`document.querySelector('#origin-research-send').getAttribute('aria-label') === 'Send'`, 'stopped');
+  assert.equal(await ev(`return document.querySelectorAll('.origin-research-message').length;`), 0, 'the new chat stays empty');
+  await click('#origin-research-history');
+  await wait(`document.querySelector('.origin-research-chat-open')`, 'history');
+  await click('.origin-research-chat-open');
+  await wait(`[...document.querySelectorAll('.origin-research-message.is-assistant')].some(m => m.textContent.includes('Held findings') && m.textContent.includes('Stopped'))`, 'the answer is in its own chat');
+});

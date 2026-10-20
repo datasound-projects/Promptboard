@@ -116,3 +116,29 @@ test('Research and project switching: a run stops and keeps its partial answer; 
   assert.deepEqual(stored.messages.map(message => [message.role, message.text, message.status || '']), [['user', 'Long research', ''], ['assistant', 'Early notes', 'stopped']]);
   assert.deepEqual(browser.consoleMessages.filter(line => line.startsWith('EXCEPTION')), []);
 });
+
+test('Undo of a removed section brings back the research scope and the swarm parts it took', { skip: !chrome, timeout: 180000 }, async t => {
+  const { ev, wait } = await researchPage(t);
+  const click = selector => ev(`document.querySelector(${J(selector)}).click();`);
+  const pricing = J({ kind: 'section', id: 'pricing' });
+  const chips = () => ev(`return [...document.querySelectorAll('.origin-research-targets .origin-research-chip-toggle')].map(n => n.textContent);`);
+  await click('#origin-research-open');
+  await wait(`document.querySelector('#origin-research-scope')`, 'panel');
+  await ev(`const s = document.querySelector('#origin-research-scope'); s.value = ${J(pricing)}; s.dispatchEvent(new Event('change', { bubbles: true }));`);
+  await click('#origin-research-mode-swarm');
+  await wait(`document.querySelector('#origin-research-scope').getAttribute('aria-label') === 'Add a part to research'`, 'swarm picker');
+  for (const label of ['Decide › Pricing model', 'Operate › Security']) await ev(`const s = document.querySelector('#origin-research-scope'); s.value = [...s.options].find(o => o.textContent === ${J(label)}).value; s.dispatchEvent(new Event('change', { bubbles: true }));`);
+  await wait(`document.querySelectorAll('.origin-research-targets .origin-research-chip').length === 2`, 'two parts');
+  // Delete the section from the sidebar (it has a description, so Origin asks first), then take it back.
+  await ev(`const m = document.querySelector('[data-nav="menu:section:pricing"]').closest('details'); m.open = true; [...m.querySelectorAll('.origin-menu-item')].find(b => b.textContent === 'Delete section…').click();`);
+  await wait(`document.querySelector('#origin-remove-dialog')?.open`, 'asks first');
+  await click('#origin-remove-dialog-submit');
+  await wait(`!document.querySelector('.origin-nav-item[data-section="pricing"]') && document.querySelectorAll('.origin-research-targets .origin-research-chip').length === 1`, 'the part went with the section');
+  assert.deepEqual(await chips(), ['Operate › Security']);
+  await click('#origin-undo .origin-undo-button');
+  await wait(`document.querySelector('.origin-nav-item[data-section="pricing"]') && document.querySelectorAll('.origin-research-targets .origin-research-chip').length === 2`, 'undo brings the part back');
+  assert.deepEqual(await chips(), ['Decide › Pricing model', 'Operate › Security']);
+  await click('#origin-research-mode-chat');
+  await wait(`document.querySelector('#origin-research-scope').getAttribute('aria-label') === 'What to research'`, 'chat mode');
+  assert.equal(await ev(`return document.querySelector('#origin-research-scope').value;`), pricing, 'and the scope');
+});
