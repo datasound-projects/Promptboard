@@ -4,8 +4,9 @@
   const KEY = 'promptboard:browser-notifications', ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/;
   const validId = value => typeof value === 'string' && ID.test(value);
   class BrowserNotifications {
-    constructor({ token, onChange = () => {}, onOpen = () => {} }) {
-      this.token = token; this.onChange = onChange; this.onOpen = onOpen;
+    // fetch sends the session token (the page's tokenFetch, which also recovers it after an app restart).
+    constructor({ token, fetch, onChange = () => {}, onOpen = () => {} }) {
+      this.token = token; this.fetch = fetch; this.onChange = onChange; this.onOpen = onOpen;
       this.clientId = `browser_${window.crypto?.randomUUID?.() || `${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`}`; this.lease = null; this.controller = null;
       this.owned = new Map(); this.seen = new Set(); this.busy = false; this.connected = false;
       this.enabled = false; try { this.enabled = localStorage.getItem(KEY) === '1'; } catch {}
@@ -48,8 +49,8 @@
       entry.acknowledged = true;
       // No retry: a lost response must not imply a fresh display grant.
       const control = new AbortController(), timer = setTimeout(() => control.abort(), 5000);
-      fetch('/api/notifications/ack', { method: 'POST', cache: 'no-store', signal: control.signal,
-        headers: { 'Content-Type': 'application/json', 'X-STE-Token': this.token() },
+      this.fetch('/api/notifications/ack', { method: 'POST', cache: 'no-store', signal: control.signal,
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ clientId: this.clientId, lease: entry.lease, id: entry.id, receipt: entry.receipt, status }) })
         .catch(() => {}).finally(() => clearTimeout(timer));
     }
@@ -95,8 +96,8 @@
     async read(controller) {
       const opening = setTimeout(() => controller.abort(), 10000);
       let response;
-      try { response = await fetch('/api/notifications/connect', { method: 'POST', cache: 'no-store', signal: controller.signal,
-        headers: { 'Content-Type': 'application/json', 'X-STE-Token': this.token() },
+      try { response = await this.fetch('/api/notifications/connect', { method: 'POST', cache: 'no-store', signal: controller.signal,
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ clientId: this.clientId, permission: 'granted', consent: true }) }); }
       finally { clearTimeout(opening); }
       if (!response.ok || !response.body) throw new Error('Receiver unavailable.');

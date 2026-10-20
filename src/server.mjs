@@ -444,7 +444,8 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
     try { requestUrl = new URL(req.url, 'http://127.0.0.1'); } catch { return send(res, 400, { error: 'This request address is not valid.', code: 'INVALID_URL' }); }
     const pathname = requestUrl.pathname;
     const isApi = pathname.startsWith('/api/') && pathname !== '/api/session';
-    if (isApi && req.headers['x-ste-token'] !== token) return send(res, 403, { error: 'Reload this page before you try again.' });
+    // A restarted app has a new token: the page reads /api/session again and resends once (nothing has run yet).
+    if (isApi && req.headers['x-ste-token'] !== token) return send(res, 403, { error: 'Reload this page before you try again.', code: 'SESSION_EXPIRED' });
     if (pathname.startsWith('/api/remote') && remote) return send(res, 403, { error: 'Remote access is managed on the computer that runs Promptboard.', code: 'REMOTE_LOCAL_ONLY' });
     if (pathname.startsWith('/api/remote')) return remoteAccess ? remoteRoute(remoteAccess, req, res, pathname, { jsonBody, send }) : send(res, 503, { error: 'The app is starting. Try again.' }); // Local only: the remote listener refuses these.
     if (pathname === '/api/editors') {

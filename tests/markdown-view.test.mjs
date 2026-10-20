@@ -39,3 +39,20 @@ test('a fence with code on its own line (as agents write it) is a paragraph, nev
   assert.ok(Date.now() - started < 1000);
   assert.deepEqual([...preview.querySelectorAll('p')].map(node => node.textContent), ['Run', 'npm testthen deploy', '~~~js const a = xnext']);
 });
+
+test('long runs of spaces, backticks, tildes, ** and arrow padding render in linear time, with the output unchanged', t => {
+  const dom = new JSDOM('', { runScripts: 'outside-only' }), win = dom.window;
+  t.after(() => win.close());
+  win.eval(domSource); win.eval(source);
+  const render = text => { const div = win.document.createElement('div'); div.append(win.PromptboardMarkdown.render(text)); return div.innerHTML; };
+  // Each took seconds (spaces, **) to minutes (backtick or tilde runs) with the earlier backtracking expressions.
+  const slow = ['a | b\n' + ' '.repeat(100000) + 'x', '# a' + ' '.repeat(100000) + 'b', 'x' + '`'.repeat(100000) + 'x', '**a '.repeat(25000),
+    '```' + ' '.repeat(100000) + '`', '~'.repeat(100000) + '`', '```mermaid\nflowchart LR\nA -->' + ' '.repeat(100000) + 'B x\n```'];
+  for (const text of slow) { const started = Date.now(); render(text); assert.ok(Date.now() - started < 1500, `slow: ${JSON.stringify(text.slice(0, 12))}`); }
+  // A code span opened by n backticks closes at the first later run of exactly n, else n-1 of them open it.
+  assert.equal(render('``a` and ```b`` c` · **bold *em* x** · **x · *y* · ``x`'), '<p><code>a` and ```b</code> c<code> · **bold *em* x** · **x · *y* · ``x</code></p>');
+  assert.equal(render('**x* and **bold *em* x** · *a_b* · **c'), '<p><strong>x* and **bold <em>em</em> x</strong> · *a_b* · **c</p>');
+  assert.equal(render('*** x and **x *y* z'), '<p><em>*</em> x and **x <em>y</em> z</p>', 'an unclosed ** is tried as *, then as text');
+  assert.equal(render('## Title ##   \n~~~js x\ncode\n~~~\n| a | b |\n|  ---  |  :---:  |\n| 1 | 2 |'),
+    '<h3 class="md-heading">Title</h3><pre class="md-code" data-language="js"><code>code</code></pre><div class="md-table"><table><thead><tr><th>a</th><th>b</th></tr></thead><tbody><tr><td>1</td><td>2</td></tr></tbody></table></div>');
+});

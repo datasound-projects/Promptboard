@@ -284,6 +284,15 @@ test('terminal dock in a real browser: start, render, type, collapse, resize, se
     try { for (const replay of [true, false]) { handleItem(s, { data: '\\x1b[6n', replay }); await new Promise(resolve => s.term.write('', resolve)); } }
     finally { window.sendInput = original; }
     return sent.map(data => /^\\x1b\\[\\d+;\\d+R$/.test(data));`), [true]);
+  // A CLI that tracks the mouse without SGR (X10, ?1000h) gets a real click as a report: xterm sends it as a binary event.
+  const screen = await browser.eval(`const s = window.promptboardDock.sessions.get(${JSON.stringify(firstRun)}); window.__mouse = []; window.__sendInput = window.sendInput;
+    window.sendInput = (_session, data) => window.__mouse.push(data);
+    await new Promise(resolve => s.term.write('\\x1b[?1000h', resolve));
+    const box = s.panel.querySelector('.xterm-screen').getBoundingClientRect(); return { x: box.left + 30, y: box.top + 20 };`);
+  await browser.click(screen.x, screen.y);
+  await browser.until(`window.__mouse.length >= 1`, 'X10 mouse report sent');
+  assert.match(await browser.eval(`const s = window.promptboardDock.sessions.get(${JSON.stringify(firstRun)}); window.sendInput = window.__sendInput;
+    await new Promise(resolve => s.term.write('\\x1b[?1000l', resolve)); return window.__mouse[0];`), /^\x1b\[M [\x21-\x7f]{2}$/);
 
   // Collapse keeps the agent alive; restore refits and the output continues.
   await browser.eval(`document.querySelector('#dock-toggle').click();`);

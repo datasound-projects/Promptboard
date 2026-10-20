@@ -10,25 +10,52 @@ window.PromptboardMarkdown = (() => {
   const { el, clip } = window.PromptboardDom;
   const safeHref = href => /^https?:\/\/[^\s]+$/i.test(href) || /^#[A-Za-z0-9_-]{1,140}$/.test(href);
 
-  /** Inline spans: code, links, bold, italic and backslash escapes. Everything else is text. */
+  const EM = /(\*|_)(?=\S)([^*_\n]*?\S)\1(?![A-Za-z0-9])/y;
+  const firstAfter = (list = [], min) => { let low = 0, high = list.length; while (low < high) { const mid = (low + high) >> 1; if (list[mid] < min) low = mid + 1; else high = mid; } return list[low]; };
+  /**
+   * Inline spans: code, links, bold, italic and backslash escapes. Everything else is text. Code spans and bold close
+   * through indexes of the text's backtick runs and closing ** / __ (as lazy regular expressions they backtracked for
+   * seconds on a long backtick run or many unclosed **). A code span opened by n backticks closes at the first later
+   * run of exactly n; failing that, n-1 of them open it, and so on.
+   */
   function inline(text, parent) {
-    const pattern = /(\\[\\`*_[\]<>|#()!-])|(`+)([\s\S]*?[^`])\2(?!`)|\[([^\]\n]{1,500})\]\(([^()\s]{1,4000}|<[^<>\n]{1,4000}>)\)|(\*\*|__)(?=\S)([\s\S]*?\S)\6|(\*|_)(?=\S)([^*_\n]*?\S)\8(?![A-Za-z0-9])/g;
-    let last = 0;
-    for (const match of text.matchAll(pattern)) {
-      if (match.index > last) parent.append(text.slice(last, match.index));
-      if (match[1]) parent.append(match[1].slice(1));
-      else if (match[2]) parent.append(el('code', '', match[3].replace(/^ (.*) $/, '$1')));
-      else if (match[4]) {
-        const href = match[5].replace(/^<|>$/g, '');
+    const pattern = /(\\[\\`*_[\]<>|#()!-])|(`+)|\[([^\]\n]{1,500})\]\(([^()\s]{1,4000}|<[^<>\n]{1,4000}>)\)|(\*\*|__)(?=\S)|(\*|_)(?=\S)([^*_\n]*?\S)\6(?![A-Za-z0-9])/g;
+    let last = 0, found = null;
+    const indexes = () => found ??= (() => {
+      const runs = new Map(), closers = { '**': [], __: [] };
+      for (const run of text.matchAll(/`+/g)) (runs.get(run[0].length) || runs.set(run[0].length, []).get(run[0].length)).push(run.index);
+      for (const mark of ['**', '__']) for (let at = text.indexOf(mark, 1); at > 0; at = text.indexOf(mark, at + 1)) if (/\S/.test(text[at - 1])) closers[mark].push(at);
+      return { runs, closers };
+    })();
+    for (let match; (match = pattern.exec(text));) {
+      const at = match.index;
+      let end = pattern.lastIndex, node;
+      if (match[1]) node = match[1].slice(1);
+      else if (match[2]) {
+        let size = match[2].length, close;
+        while (size && (close = firstAfter(indexes().runs.get(size), at + 1)) === undefined) size--;
+        if (!size) continue; // No code span starts anywhere in the rest of this run.
+        node = el('code', '', text.slice(at + size, close).replace(/^ (.*) $/, '$1')); end = close + size;
+      } else if (match[3]) {
+        const href = match[4].replace(/^<|>$/g, '');
         if (safeHref(href)) {
           // In-document anchors live under ctx-, so a hand-typed id can never shadow an id of the app.
-          const link = el('a'); link.href = /^#(?!ctx-)/.test(href) ? `#ctx-${href.slice(1)}` : href;
-          if (!href.startsWith('#')) { link.target = '_blank'; link.rel = 'noopener noreferrer'; }
-          inline(match[4], link); parent.append(link);
-        } else parent.append(`${match[4]} (${href})`);
-      } else if (match[6]) { const strong = el('strong'); inline(match[7], strong); parent.append(strong); }
-      else if (match[8]) { const em = el('em'); inline(match[9], em); parent.append(em); }
-      last = match.index + match[0].length;
+          node = el('a'); node.href = /^#(?!ctx-)/.test(href) ? `#ctx-${href.slice(1)}` : href;
+          if (!href.startsWith('#')) { node.target = '_blank'; node.rel = 'noopener noreferrer'; }
+          inline(match[3], node);
+        } else node = `${match[3]} (${href})`;
+      } else if (match[5]) {
+        const close = firstAfter(indexes().closers[match[5]], at + 3);
+        if (close !== undefined) { node = el('strong'); inline(text.slice(at + 2, close), node); end = close + 2; }
+        else {
+          EM.lastIndex = at; const em = EM.exec(text);
+          if (!em) { pattern.lastIndex = at + 1; continue; }
+          end = at + em[0].length; node = el('em'); inline(em[2], node);
+        }
+      } else { node = el('em'); inline(match[7], node); }
+      if (at > last) parent.append(text.slice(last, at));
+      parent.append(node);
+      last = pattern.lastIndex = end;
     }
     if (last < text.length) parent.append(text.slice(last));
   }
@@ -42,14 +69,14 @@ window.PromptboardMarkdown = (() => {
   function render(markdown, options = {}, nesting = 0) {
     const out = document.createDocumentFragment(), source = String(markdown).replace(/\r\n?/g, '\n').split('\n');
     let index = 0, pendingId = null;
-    const heading = (level, text) => { const node = el(`h${Math.min(6, level + 1)}`, 'md-heading'); inline(text.replace(/\s+#+\s*$/, ''), node); if (pendingId) { node.id = pendingId; pendingId = null; } return node; };
+    const heading = (level, text) => { const node = el(`h${Math.min(6, level + 1)}`, 'md-heading'); inline(text.replace(/(?<!\s)\s+#+\s*$/, ''), node); if (pendingId) { node.id = pendingId; pendingId = null; } return node; };
     const listItem = /^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$/;
     while (index < source.length) {
       const line = source[index];
       if (!line.trim()) { index++; continue; }
       const anchor = line.match(ANCHOR);
       if (anchor) { pendingId = anchor[1].startsWith('ctx-') ? anchor[1] : `ctx-${anchor[1]}`; index++; continue; }
-      const fence = line.match(/^ {0,3}(`{3,}|~{3,})\s*([^`\s]*)[^`]*$/);
+      const fence = line.match(/^ {0,3}(`{3,}(?!`)|~{3,}(?!~))(?![^`]*`)\s*([^`\s]*)[^`]*$/);
       if (fence) {
         const body = []; index++;
         while (index < source.length) {
@@ -66,7 +93,7 @@ window.PromptboardMarkdown = (() => {
       const atx = line.match(/^ {0,3}(#{1,6})\s+(.*)$/);
       if (atx) { out.append(heading(atx[1].length, atx[2])); index++; continue; }
       if (/^ {0,3}([-*_])(?:\s*\1){2,}\s*$/.test(line)) { out.append(el('hr')); index++; continue; }
-      if (line.includes('|') && index + 1 < source.length && /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/.test(source[index + 1])) {
+      if (line.includes('|') && index + 1 < source.length && /^\s*(?:\|\s*)?:?-{3,}:?(?:\s*\|\s*:?-{3,}:?)*\s*(?:\|\s*)?$/.test(source[index + 1])) {
         const wrap = el('div', 'md-table'), table = el('table'), head = el('thead'), headRow = el('tr');
         for (const cell of cells(line)) { const th = el('th'); inline(cell, th); headRow.append(th); }
         head.append(headRow); table.append(head);
@@ -128,7 +155,7 @@ window.PromptboardMarkdown = (() => {
       if ((match = line.match(new RegExp(`^subgraph\\s+(${id})(?:\\[${label}\\])?$`)))) { const group = { id: match[1], label: decode(match[2] ?? match[1]), members: [] }; groups.push(group); stack.push(group); return; }
       if (line === 'end') { if (!stack.pop()) throw new DiagramError(number, '“end” has no open subgraph.'); return; }
       if ((match = line.match(new RegExp(`^(${id})(?:\\[${label}\\])?$`)))) { const entry = node(match[1], match[2]); if (stack.length && !stack.at(-1).members.includes(entry.id)) { entry.group = stack.at(-1).id; stack.at(-1).members.push(entry.id); } return; }
-      if ((match = line.match(new RegExp(`^(${id})(?:\\[${label}\\])?\\s*(-->|-\\.->|==>)\\s*(?:\\|${label}\\||\\|([^|"\\n]{0,600})\\|)?\\s*(${id})(?:\\[${label}\\])?$`)))) {
+      if ((match = line.match(new RegExp(`^(${id})(?:\\[${label}\\])?\\s*(-->|-\\.->|==>)\\s*(?:(?:\\|${label}\\||\\|([^|"\\n]{0,600})\\|)\\s*)?(${id})(?:\\[${label}\\])?$`)))) {
         node(match[1], match[2]); node(match[6], match[7]);
         edges.push({ from: match[1], to: match[6], label: decode(match[4] ?? match[5] ?? ''), dashed: match[3] === '-.->' });
         return;

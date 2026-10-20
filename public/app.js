@@ -356,18 +356,38 @@ function updateProviderState() {
     : `${providerInfo[$('#provider').value]?.name || 'This CLI'} is not available. Open “Connect a CLI” for setup.`;
 }
 
-async function loadProviders() {
-  try {
-    // The session token comes first: every other API route, including the CLI check, requires it.
-    const sessionResponse = await fetch('/api/session', { cache: 'no-store' });
-    if (sessionResponse.status === 401) { location.replace('/remote'); return; } // A remote device that must pair again.
-    if (!sessionResponse.ok) throw new Error('The local server could not report its status.');
-    const session = await sessionResponse.json();
+// The session token comes first: every other API route, including the CLI check, requires it.
+// One read at a time: requests that find the token expired all wait for the same answer. False: a phone pairs again.
+let sessionRead = null;
+function readSession() {
+  return sessionRead ??= (async () => {
+    const response = await fetch('/api/session', { cache: 'no-store' });
+    if (response.status === 401) { location.replace('/remote'); return false; } // A remote device that must pair again.
+    if (!response.ok) throw new Error('The local server could not report its status.');
+    const session = await response.json();
     token = safeText(session.token, 1000);
     remoteSession = session.remote && typeof session.remote.name === 'string' ? { name: safeText(session.remote.name, 60) } : null; // A paired phone.
     serverPlatform = safeText(session.platform, 20);
     if (!token) throw new Error('The local server did not return a session token.');
-    const providerResponse = await fetch('/api/providers', { cache: 'no-store', headers: { 'x-ste-token': token } });
+    return true;
+  })().finally(() => { sessionRead = null; });
+}
+// Every request with the token goes through here. A restarted app has a new token: its refusal (403 SESSION_EXPIRED)
+// reads the session again and sends the request once more. Safe: the server checks the token before any work.
+// A request still running when the page is closed never settles, so no late answer draws on a gone document.
+const settled = () => document ? undefined : new Promise(() => {});
+async function tokenFetch(path, init = {}) {
+  const sent = token, send = () => fetch(path, { ...init, headers: { ...init.headers, 'X-STE-Token': token } }).finally(settled);
+  const response = await send();
+  if (response.status !== 403 || (await response.clone().json().catch(() => null))?.code !== 'SESSION_EXPIRED') return response;
+  if (token === sent && !await readSession()) return response;
+  return send();
+}
+
+async function loadProviders() {
+  try {
+    if (!await readSession()) return;
+    const providerResponse = await tokenFetch('/api/providers', { cache: 'no-store' });
     if (!providerResponse.ok) throw new Error('The local server could not report its status.');
     const status = await providerResponse.json();
     providers = Array.isArray(status.providers) ? status.providers.filter((item) => item && KNOWN_PROVIDERS.includes(item.id)) : [];
@@ -542,8 +562,8 @@ async function api(path, { method = 'GET', body, timeoutMs = 20000, signal, comp
   signal?.addEventListener('abort', forward, { once: true });
   if (signal?.aborted) forward();
   try {
-    const response = await fetch(path, { method, cache: 'no-store', signal: controller.signal,
-      headers: { 'X-STE-Token': token, ...(requestId || cancellation ? { 'X-STE-Compose-Id': requestId || cancellation.id } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+    const response = await tokenFetch(path, { method, cache: 'no-store', signal: controller.signal,
+      headers: { ...(requestId || cancellation ? { 'X-STE-Compose-Id': requestId || cancellation.id } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
     let data = {};
     try { data = await response.json(); } catch {}
     // A paired phone whose device was revoked or expired pairs again; nothing else on the page can work meanwhile.
@@ -833,8 +853,8 @@ async function generate(event) {
     $('#verification-status').hidden = true;
     $('#verification-report').hidden = true;
     announce('Your CLI is engineering the prompt.');
-    const response = await fetch('/api/generate', {
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-STE-Token': token, 'X-STE-Compose-Id': cancellation.id },
+    const response = await tokenFetch('/api/generate', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-STE-Compose-Id': cancellation.id },
       body: JSON.stringify(request), signal: ownController.signal,
     }).catch(error => { throw offline(error); });
     let data;
@@ -874,7 +894,6 @@ async function generate(event) {
       $('#generation-error').textContent = error.message || 'Generation failed. Your input is kept. Please try again.';
       $('#generation-error').hidden = false;
       if (failureCode === 'AUTH_REQUIRED') loadAuth();
-      if (!failureCode && /token|session|403/i.test(error.message || '')) await loadProviders();
     }
   } finally {
     cancellation.dispose();
@@ -996,7 +1015,7 @@ async function uploadContextDocument() {
   const own = new AbortController(); const cancellation = composeCancellation(own); controller = own; setRunning(true); startProgress(); contextError();
   const timer = setTimeout(() => own.abort(), 65000);
   try {
-    const response = await fetch(`/api/compose/sources/document?${params}`, { method: 'POST', headers: { 'X-STE-Token': token, 'X-STE-Compose-Id': cancellation.id, 'Content-Type': file.type || (/\.pdf$/i.test(file.name) ? 'application/pdf' : 'text/plain') }, body: file, signal: own.signal });
+    const response = await tokenFetch(`/api/compose/sources/document?${params}`, { method: 'POST', headers: { 'X-STE-Compose-Id': cancellation.id, 'Content-Type': file.type || (/\.pdf$/i.test(file.name) ? 'application/pdf' : 'text/plain') }, body: file, signal: own.signal });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'Document preparation failed.');
     const doc = data.document;
@@ -1418,7 +1437,7 @@ async function attachComposeContext({ name, text, label }) {
   if (contextState.sources.length >= 8) return 'Compose already has eight sources. Remove one there first.';
   const own = new AbortController(); const cancellation = composeCancellation(own); controller = own; setRunning(true); startProgress(); contextError();
   try {
-    const response = await fetch(`/api/compose/sources/document?${new URLSearchParams({ name })}`, { method: 'POST', headers: { 'X-STE-Token': token, 'X-STE-Compose-Id': cancellation.id, 'Content-Type': 'text/markdown' }, body: text, signal: own.signal });
+    const response = await tokenFetch(`/api/compose/sources/document?${new URLSearchParams({ name })}`, { method: 'POST', headers: { 'X-STE-Compose-Id': cancellation.id, 'Content-Type': 'text/markdown' }, body: text, signal: own.signal });
     const data = await response.json();
     if (!response.ok) return data.error || 'The document could not be attached to Compose.';
     addContextSource({ type: 'document', id: data.document.id }, label);
@@ -1534,7 +1553,7 @@ function acceptBoard(next) { if (!board || !Number.isInteger(next?.revision) || 
 
 async function loadBoard({ ifChanged = false } = {}) {
   if (!token) return;
-  const previousRevision = board?.revision;
+  const previousRevision = board?.revision, previousInstance = board?.instance;
   boardLoading ??= (async () => {
     try {
       // A background poll names the board it holds; the server answers { unchanged: true } instead of resending it.
@@ -1551,7 +1570,7 @@ async function loadBoard({ ifChanged = false } = {}) {
       await migrateBrowserBoard();
     } catch (error) {
       showLoadWarning(`The board could not be loaded. ${error.message}`);
-    } finally { boardLoading = null; if (!ifChanged || board?.revision !== previousRevision) renderBoard(); }
+    } finally { boardLoading = null; if (!ifChanged || board?.revision !== previousRevision || board?.instance !== previousInstance) renderBoard(); }
   })();
   return boardLoading;
 }
@@ -2060,11 +2079,13 @@ function renderDoneCard(card, draggable = true) {
 
 function labelledButton(button, label) { button.setAttribute('aria-label', label); return button; }
 /** Done → To Do. A new cycle; earlier completions, commits, reviews, tests, and runs are kept. */
-async function reopenCard(card) {
-  try { await boardCall('POST', `/api/tasks/${encodeURIComponent(card.id)}/reopen`, { expectedRevision: card.revision }); }
-  catch (error) { showBoardError(error); return; }
-  if ($('#done-dialog').open) $('#done-dialog').close();
-  announce(`Reopened “${card.title}” in To Do. Its history is kept.`);
+function reopenCard(card) {
+  return once(`reopen:${card.id}`, async () => {
+    try { await boardCall('POST', `/api/tasks/${encodeURIComponent(card.id)}/reopen`, { expectedRevision: card.revision }); }
+    catch (error) { showBoardError(error); return; }
+    if ($('#done-dialog').open) $('#done-dialog').close();
+    announce(`Reopened “${card.title}” in To Do. Its history is kept.`);
+  });
 }
 
 function makeDraggable(item, card) {
@@ -2344,12 +2365,14 @@ async function copyCard(card, button) {
   }
 }
 
-async function duplicateCard(id) {
-  try {
-    const { task } = await boardCall('POST', `/api/tasks/${encodeURIComponent(id)}/duplicate`, {});
-    announce(`Duplicated “${findTask(id)?.title || task.title}” into To Do.`);
-    cardElement(task.id)?.querySelector('.kanban-open').focus();
-  } catch (error) { showBoardError(error); }
+function duplicateCard(id) {
+  return once(`duplicate:${id}`, async () => {
+    try {
+      const { task } = await boardCall('POST', `/api/tasks/${encodeURIComponent(id)}/duplicate`, {});
+      announce(`Duplicated “${findTask(id)?.title || task.title}” into To Do.`);
+      cardElement(task.id)?.querySelector('.kanban-open').focus();
+    } catch (error) { showBoardError(error); }
+  });
 }
 
 function confirmCardDelete(item, card, focus = true) {
@@ -3089,15 +3112,23 @@ for (const [button, panel] of [['project-agent-toggle', 'project-agent-panel'], 
 
 
 /** Start the card's stage agent now (the card is already in that stage). No dialog: the click is the instruction. */
-async function startStage(card, stage) {
-  try {
-    const { run } = await boardCall('POST', `/api/tasks/${encodeURIComponent(card.id)}/runs`, { stage, consent: true }, 180000);
-    announce(`${stageVerb(stage)} for “${card.title}”.`);
-    showStartedRun(run.id);
-  } catch (error) { showBoardError(error); }
+function startStage(card, stage) {
+  return once(`start:${card.id}`, async () => {
+    try {
+      const { run } = await boardCall('POST', `/api/tasks/${encodeURIComponent(card.id)}/runs`, { stage, consent: true }, 180000);
+      announce(`${stageVerb(stage)} for “${card.title}”.`);
+      showStartedRun(run.id);
+    } catch (error) { showBoardError(error); }
+  });
 }
 
 const sessionActions = new Set();
+/** One request per card action at a time: a second click while it runs (a double click) sends nothing. */
+async function once(key, work) {
+  if (sessionActions.has(key)) return;
+  sessionActions.add(key);
+  try { return await work(); } finally { sessionActions.delete(key); }
+}
 async function pauseAgent(run) {
   if (sessionActions.has(run.taskId)) return;
   sessionActions.add(run.taskId);
@@ -3114,26 +3145,32 @@ async function resumeAgent(card) {
   } catch (error) { showBoardError(error); }
   finally { sessionActions.delete(card.id); }
 }
-async function runTestsCard(card) {
-  try { await boardCall('POST', `/api/tasks/${encodeURIComponent(card.id)}/tests`, { confirm: true }); announce(`Tests started for “${card.title}”.`); pollTests(card.id); }
-  catch (error) { showBoardError(error); }
+function runTestsCard(card) {
+  return once(`tests:${card.id}`, async () => {
+    try { await boardCall('POST', `/api/tasks/${encodeURIComponent(card.id)}/tests`, { confirm: true }); announce(`Tests started for “${card.title}”.`); pollTests(card.id); }
+    catch (error) { showBoardError(error); }
+  });
 }
 /** One click merges a verified card (the server brings in a moved target first). */
-async function mergeCard(card) {
-  try {
-    const result = await boardCall('POST', `/api/tasks/${encodeURIComponent(card.id)}/merge-now`, {}, 300000);
-    announce(result.merged ? `Merged “${card.title}” into ${result.task?.completion?.targetBranch || 'the target branch'}. The card is Done.` : `“${card.title}”: ${result.merge?.message || 'the merge is being prepared.'}`);
-  } catch (error) { showBoardError(error); }
+function mergeCard(card) {
+  return once(`merge:${card.id}`, async () => {
+    try {
+      const result = await boardCall('POST', `/api/tasks/${encodeURIComponent(card.id)}/merge-now`, {}, 300000);
+      announce(result.merged ? `Merged “${card.title}” into ${result.task?.completion?.targetBranch || 'the target branch'}. The card is Done.` : `“${card.title}”: ${result.merge?.message || 'the merge is being prepared.'}`);
+    } catch (error) { showBoardError(error); }
+  });
 }
 /** One click pushes the task branch (never forced) and opens or updates its pull request. */
-async function pullRequestCard(card) {
+function pullRequestCard(card) {
   const review = card.evidence?.review, tests = card.evidence?.tests;
   const body = [card.prompt.slice(0, 4000), '', '---', `Code review: ${review ? `${review.status}${review.verdict ? ` (${review.verdict.replaceAll('_', ' ')})` : ''} for ${short(review.taskCommit)}` : 'none'}`,
     `Tests: ${tests ? `${tests.status} (${(tests.results || []).length} commands) for ${short(tests.taskCommit)}` : 'none'}`, '', 'Opened by Promptboard.'].join('\n');
-  try {
-    const { task } = await boardCall('POST', `/api/tasks/${encodeURIComponent(card.id)}/pull-request`, { confirm: true, title: card.title, body }, 300000);
-    announce(`Pull request ${task.evidence?.pullRequest?.number ? `#${task.evidence.pullRequest.number} ` : ''}is open for “${card.title}”. The card moves to Done when it is merged.`);
-  } catch (error) { showBoardError(error); }
+  return once(`pull-request:${card.id}`, async () => {
+    try {
+      const { task } = await boardCall('POST', `/api/tasks/${encodeURIComponent(card.id)}/pull-request`, { confirm: true, title: card.title, body }, 300000);
+      announce(`Pull request ${task.evidence?.pullRequest?.number ? `#${task.evidence.pullRequest.number} ` : ''}is open for “${card.title}”. The card moves to Done when it is merged.`);
+    } catch (error) { showBoardError(error); }
+  });
 }
 
 async function confirmRun(run) {
@@ -3560,8 +3597,8 @@ async function renderDelivery(card, container, section, pre) {
     commit.disabled = rev.unresolved.length > 0;
     box.append(detailActions(commit));
     revision.append(paragraph('Review and testing need a committed revision. Check the changes first:'), diff, label, box);
-    api(`/api/tasks/${encodeURIComponent(card.id)}/uncommitted`, { timeoutMs: 20000 }).then(({ data }) => {
-      diff.textContent = `${(data.changes || []).join('\n')}\n\n${data.diff || ''}${data.truncated ? '\n[The diff is longer; the rest is in the worktree.]' : ''}`;
+    api(`/api/tasks/${encodeURIComponent(card.id)}/uncommitted`, { timeoutMs: 20000 }).then(({ response, data }) => {
+      diff.textContent = !response.ok ? data.error || 'The changes could not be read.' : `${(data.changes || []).join('\n')}\n\n${data.diff || ''}${data.truncated ? '\n[The diff is longer; the rest is in the worktree.]' : ''}`;
     }).catch(() => { diff.textContent = 'The changes could not be read.'; });
   }
   nodes.push(revision);
@@ -4654,12 +4691,14 @@ function renderRunPanel(project, hide = false) {
   panel.className = `project-run${finished ? ' finished' : ''}`;
   panel.hidden = false;
 }
-async function addRunCard(project) {
-  try {
-    await boardCall('POST', '/api/tasks', { projectId: project.id, title: 'Write down how to run the project',
-      prompt: 'Find out how to install and start this project. Add the exact commands to README.md under a "Run" heading, and check that they work from a fresh checkout.' });
-    announce('Card added to To Do. Nothing runs until you start it.'); renderBoard();
-  } catch (error) { announce(error.message); }
+function addRunCard(project) {
+  return once(`run-card:${project.id}`, async () => {
+    try {
+      await boardCall('POST', '/api/tasks', { projectId: project.id, title: 'Write down how to run the project',
+        prompt: 'Find out how to install and start this project. Add the exact commands to README.md under a "Run" heading, and check that they work from a fresh checkout.' });
+      announce('Card added to To Do. Nothing runs until you start it.'); renderBoard();
+    } catch (error) { announce(error.message); runPanel.message = error.message; renderRunPanel(currentProject()); }
+  });
 }
 
 function renderAutopilotBar(project) {
@@ -5450,9 +5489,12 @@ function addColumn() {
 }
 async function saveColumns(event) {
   event.preventDefault();
-  if (!event.currentTarget.checkValidity()) { event.currentTarget.reportValidity(); return; }
+  const form = event.currentTarget, save = form.querySelector('[type="submit"]');
+  if (save.disabled) return; // A save is in flight: Enter or a second click must not send the same change again.
+  if (!form.checkValidity()) { form.reportValidity(); return; }
   const project = board?.projects.find(item => item.id === columnsDraft.project);
   if (!project) return;
+  save.disabled = true; form.setAttribute('aria-busy', 'true');
   const columns = columnsDraft.list.map(entry => entry.custom ? entry : { id: entry.id, ...(entry.title && entry.title !== builtinTitle(entry.id) ? { title: entry.title } : {}), ...(entry.color && entry.color !== BUILTIN_DEFAULT_COLORS[entry.id] ? { color: entry.color } : {}), ...(entry.hidden ? { hidden: true } : {}) });
   try {
     if (!columnsDraft.pipeline) await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/columns`, { columns, expectedRevision: project.revision });
@@ -5469,6 +5511,7 @@ async function saveColumns(event) {
       if (lines.join('\n') !== testCommandsText(fresh())) await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/tests`, { commands: lines.map(command => ({ command })), expectedRevision: fresh().revision });
     }
   } catch (error) { $('#columns-error').textContent = error.message; $('#columns-error').hidden = false; return; }
+  finally { save.disabled = false; form.setAttribute('aria-busy', 'false'); }
   $('#columns-dialog').close();
   announce('Columns saved.');
 }
@@ -5769,7 +5812,7 @@ function saveServerSettings(change) {
   settingsSaveQueue = settingsSaveQueue.then(save, save);
   return settingsSaveQueue;
 }
-const browserNotifications = window.PromptboardNotifications ? new window.PromptboardNotifications({ token: () => token, onChange: renderNotificationSettings,
+const browserNotifications = window.PromptboardNotifications ? new window.PromptboardNotifications({ token: () => token, fetch: tokenFetch, onChange: renderNotificationSettings,
   onOpen: async ({ projectId, taskId }) => {
     await loadBoard();
     const project = board?.projects.find(item => item.id === projectId);
@@ -6000,7 +6043,7 @@ function renderRemoteAccess() {
   // On the phone itself: who this device is, and how to leave. Remote access is never changed from a remote device.
   if (remoteSession) {
     nodes.push(paragraph(`You are using Promptboard remotely as “${remoteSession.name}”, with the same control as at the computer. Agents, CLIs and Git run there: closing Safari or locking the phone stops nothing.`, 'note'),
-      detailActions(detailButton('Sign out this device', async () => { await fetch('/api/remote/logout', { method: 'POST', headers: { 'X-STE-Token': token } }).catch(() => {}); location.replace('/remote'); }, 'secondary-button')));
+      detailActions(detailButton('Sign out this device', async () => { await tokenFetch('/api/remote/logout', { method: 'POST' }).catch(() => {}); location.replace('/remote'); }, 'secondary-button')));
     box.replaceChildren(legend, ...nodes); return;
   }
   const st = remoteAccess.status;
@@ -6127,9 +6170,9 @@ originView = window.PromptboardOrigin?.create({ api, announce, closeSidebar: () 
   openKanban: (projectId, taskId) => { if (projectId) setSelectedProject(projectId); location.hash = '#/kanban'; if (taskId) setTimeout(() => void openTaskDetails(taskId), 0); },
   openPrompt: (projectId, promptId) => projectsView?.openPrompt(projectId, promptId),
   // Research streams NDJSON events: the raw response is read as it arrives. The token stays in a header.
-  streamApi: (path, body, { signal } = {}) => fetch(path, { method: 'POST', cache: 'no-store', signal, headers: { 'X-STE-Token': token, 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+  streamApi: (path, body, { signal } = {}) => tokenFetch(path, { method: 'POST', cache: 'no-store', signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
   // Research documents use Compose's own upload and extraction route.
-  uploadApi: (path, file, { signal } = {}) => fetch(path, { method: 'POST', cache: 'no-store', signal, headers: { 'X-STE-Token': token, 'Content-Type': file.type || (/\.pdf$/i.test(file.name) ? 'application/pdf' : 'text/plain') }, body: file }) }) || null;
+  uploadApi: (path, file, { signal } = {}) => tokenFetch(path, { method: 'POST', cache: 'no-store', signal, headers: { 'Content-Type': file.type || (/\.pdf$/i.test(file.name) ? 'application/pdf' : 'text/plain') }, body: file }) }) || null;
 // Shared projects: optional saved prompts beside History, with links back to Origin and Kanban.
 projectsView = window.PromptboardProjects?.create({ api, announce, getResult: () => currentResult, running: () => running,
   settingsOf: entry => ({ provider: entry.provider, model: entry.model, effort: entry.effort, language: entry.language, quality: entry.quality, task: entry.task, detail: entry.detail, options: entry.options, terminology: entry.terminology }),
