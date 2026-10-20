@@ -1446,7 +1446,7 @@ const SELECTED_PROJECT_KEY = 'promptboard.kanban.project';
 // This window's project, read once: another window's choice must never retarget this window's clicks.
 let selectedProject = null; try { selectedProject = localStorage.getItem(SELECTED_PROJECT_KEY); } catch {}
 function setSelectedProject(id) { selectedProject = id; savePref(SELECTED_PROJECT_KEY, id); }
-const IMPORT_LIMIT_BYTES = 20 * 1024 * 1024;
+const IMPORT_LIMIT_BYTES = 48 * 1024 * 1024; // What a restore accepts (BOARD_BODY_LIMIT in src/server.mjs); the export stays 1 MB below.
 let board = null; // The server's board view.
 let boardLoading = null;
 let repositoryPipelineWatch = { key: null, result: null, loading: null, checkedAt: 0 };
@@ -3933,7 +3933,8 @@ async function exportBoard() {
     if (!response.ok) throw new Error(data.error || 'The board could not be exported.');
     backup = data;
   } catch (error) { showBoardError(error); return; }
-  downloadFile(`${JSON.stringify(backup, null, 2)}\n`, 'application/json;charset=utf-8', `promptboard-backup-${new Date().toISOString().slice(0, 10)}.json`);
+  // The server's bytes as they are: their size is the one the export checked against the restore limit.
+  downloadFile(`${JSON.stringify(backup)}\n`, 'application/json;charset=utf-8', `promptboard-backup-${new Date().toISOString().slice(0, 10)}.json`);
   announce(`Board backup exported: ${boardCounts(backup.projects)}.`);
 }
 
@@ -3947,7 +3948,7 @@ async function importBoard() {
     announce(`Import failed. Your board is unchanged. ${message}`);
   };
   let data;
-  if (file.size > IMPORT_LIMIT_BYTES) { failed('The file is larger than 20 MB.'); return; }
+  if (file.size > IMPORT_LIMIT_BYTES) { failed('The file is larger than the 48 MB a restore accepts.'); return; }
   try { data = JSON.parse(await file.text()); } catch { failed('The file is not valid JSON.'); return; }
   if (!['kanban-backup', 'promptboard-backup'].includes(data?.kind)) { failed('The file is not a Promptboard or Kanban backup.'); return; }
   const counts = boardCounts(Array.isArray(data.projects) ? data.projects : [], data.kind === 'kanban-backup' ? 'cards' : 'tasks');
