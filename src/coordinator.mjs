@@ -15,7 +15,7 @@
  */
 import '../public/origin-model.js';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rename, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gunzipSync, gzipSync } from 'node:zlib';
@@ -27,7 +27,7 @@ import { listProjects } from './projects.mjs';
 
 const Model = globalThis.PromptboardOriginModel;
 const SCHEMA = 'promptboard.coordinator', CHAT_SCHEMA = 'promptboard.coordinator-chat', VERSION = 1;
-const LIMITS = { events: 3000, snapshots: 200, messages: 200, cache: 50, question: 2000, cardText: 4000, lastMessage: 1500, detail: 300 };
+const LIMITS = { events: 3000, snapshots: 200, messages: 200, cache: 50, question: 2000, cardText: 4000, lastMessage: 1500, detail: 300, answer: 20000, list: 40 };
 const RECONCILE_MS = 5000; // ponytail: at most one Git read per project every 5 s while the board changes; raise if boards get huge.
 const LIVE = ['queued', 'running', 'waiting_for_input'];
 const ID = /^[A-Za-z0-9_-]{1,100}$/;
@@ -55,11 +55,15 @@ export class Coordinator {
     const path = this.#path(projectId, kind), { project } = await this.#project(projectId);
     const fresh = kind === 'chat' ? { schema: CHAT_SCHEMA, version: VERSION, projectId, createdAt: Date.now(), messages: [], cache: [] }
       : { schema: SCHEMA, version: VERSION, projectId, enabled: true, createdAt: Date.now(), updatedAt: null, boardRevision: null, tasks: {}, events: [], snapshots: [] };
-    return await readWithBackup([path, `${path}.bak`], bytes => {
-      let data; try { data = JSON.parse(gunzipSync(bytes).toString('utf8')); } catch { return; }
+    const damaged = [], loaded = await readWithBackup([path, `${path}.bak`], (bytes, file) => {
+      let data; try { data = JSON.parse(gunzipSync(bytes).toString('utf8')); } catch { damaged.push(file); return; }
       if (data?.schema === fresh.schema && data.version > VERSION) throw new CoordinatorError('This Coordinator data was saved by a newer Promptboard version. Update the app; nothing was changed.', 'COORDINATOR_VERSION_UNSUPPORTED', 409);
-      if (data?.schema === fresh.schema && data.version === VERSION && data.projectId === projectId && !((data.createdAt ?? data.messages?.[0]?.at) < project.createdAt)) return data;
-    }) ?? fresh;
+      if (data?.schema !== fresh.schema || data.version !== VERSION || data.projectId !== projectId) { damaged.push(file); return; }
+      if (!((data.createdAt ?? data.messages?.[0]?.at) < project.createdAt)) return data;
+    });
+    // A damaged file is kept aside (as the board's state is), so the next saves never overwrite the only copy.
+    for (const file of damaged) await rename(file, `${file}.corrupt-${Date.now()}-${randomUUID().slice(0, 8)}`);
+    return loaded ?? fresh;
   }
   async #save(data, kind = 'index') {
     await mkdir(this.dir, { recursive: true, mode: 0o700 });
@@ -81,21 +85,25 @@ export class Coordinator {
       const last = this.checked.get(projectId);
       if (!force && last && last.revision === state.revision && Date.now() - last.at < RECONCILE_MS * 12) return { index, added: 0, updated: 0 };
       if (!force && last && Date.now() - last.at < RECONCILE_MS) return { index, added: 0, updated: 0 };
-      const columns = columnsOf(project), known = new Map(index.events.map(event => [event.id, event]));
-      let added = 0, updated = 0;
+      const columns = columnsOf(project), before = new Map(index.events.map(event => [event.id, JSON.stringify(event)])), known = new Map(index.events.map(event => [event.id, event]));
       for (const event of await buildTimeline(project, runs)) {
-        const compact = { id: event.id, at: event.at, kind: event.kind, task: event.taskId || null, stage: event.stage || '', title: clip(event.title, 200), status: event.status || '', detail: clip(event.detail, LIMITS.detail),
-          ...(event.runId ? { run: event.runId } : {}), ...(event.commit ? { commit: event.commit } : {}), ...(event.pr?.url ? { pr: event.pr.url } : {}), ...(event.endAt ? { endAt: event.endAt } : {}) };
-        const before = known.get(compact.id);
-        if (!before) { known.set(compact.id, compact); added++; }
-        else if (JSON.stringify(before) !== JSON.stringify(compact)) { known.set(compact.id, compact); updated++; }
+        known.set(event.id, { id: event.id, at: event.at, kind: event.kind, task: event.taskId || null, stage: event.stage || '', title: clip(event.title, 200), status: event.status || '', detail: clip(event.detail, LIMITS.detail),
+          ...(event.runId ? { run: event.runId } : {}), ...(event.commit ? { commit: event.commit } : {}), ...(event.pr?.url ? { pr: event.pr.url } : {}), ...(event.endAt ? { endAt: event.endAt } : {}) });
       }
-      index.events = [...known.values()].sort((a, b) => a.at - b.at || a.id.localeCompare(b.id)).slice(-LIMITS.events);
+      // Deleted cards and notes leave with their events; only the newest events are kept.
+      const taskIds = new Set(project.tasks.map(task => task.id)), notes = new Set((project.timelineNotes || []).map(note => `note:${note.id}`));
+      index.events = [...known.values()].filter(event => (event.kind === 'note' ? notes.has(event.id) : !event.task || taskIds.has(event.task)))
+        .sort((a, b) => a.at - b.at || a.id.localeCompare(b.id)).slice(-LIMITS.events);
+      let added = 0, updated = 0;
+      for (const event of index.events) { const old = before.get(event.id); if (old === undefined) added++; else if (old !== JSON.stringify(event)) updated++; }
+      const removed = before.size - (index.events.length - added);
       const tasks = Object.fromEntries(project.tasks.map(task => [task.id, taskFacts(task, columns, runs)]));
       const changed = Object.keys(tasks).filter(id => JSON.stringify(tasks[id]) !== JSON.stringify(index.tasks[id])).length + Object.keys(index.tasks).filter(id => !tasks[id]).length;
-      index.tasks = tasks; index.boardRevision = state.revision; index.updatedAt = Date.now();
-      if (added || updated || changed) index.snapshots = [...index.snapshots, { at: Date.now(), boardRevision: state.revision, added, updated, tasksChanged: changed }].slice(-LIMITS.snapshots);
       this.checked.set(projectId, { revision: state.revision, at: Date.now() });
+      // The same board leaves the file byte for byte as it is.
+      if (!added && !updated && !removed && !changed && index.boardRevision === state.revision) return { index, added, updated };
+      if (added || updated || removed || changed) index.snapshots = [...index.snapshots, { at: Date.now(), boardRevision: state.revision, added, updated, ...(removed ? { removed } : {}), tasksChanged: changed }].slice(-LIMITS.snapshots);
+      index.tasks = tasks; index.boardRevision = state.revision; index.updatedAt = Date.now();
       await this.#save(index);
       return { index, added, updated };
     });
@@ -142,7 +150,7 @@ export class Coordinator {
       if (cached) answer = cached.answer;
       else {
         const cwd = await mkdtemp(join(tmpdir(), 'pb-coordinator-'));
-        try { answer = (await runner({ provider: input.provider, model: input.model || '', effort: input.effort || '', prompt: promptFor(question, scope, evidence.text), cwd, signal, timeoutMs: 180000 })).text.trim(); }
+        try { answer = (await runner({ provider: input.provider, model: input.model || '', effort: input.effort || '', prompt: promptFor(question, scope, evidence.text), cwd, signal, timeoutMs: 180000 })).text.trim().slice(0, LIMITS.answer); }
         finally { await rm(cwd, { recursive: true, force: true }).catch(() => {}); }
       }
       const refs = [...new Set([...answer.matchAll(/\[((?:T\d+|run:[A-Za-z0-9-]{4,}|commit:[0-9a-f]{7,40}))\]/g)].map(match => match[1]))].filter(ref => evidence.refs.has(ref)).map(ref => evidence.refs.get(ref));
@@ -178,8 +186,9 @@ export class Coordinator {
     // Names only, never local paths: this text can reach a cloud-backed CLI.
     const gh = project.github, sync = gh?.sync?.sync ? gh.sync.sync.replace(/_/g, ' ') : 'not fetched yet';
     lines.push(`Repository: ${gh ? `GitHub ${gh.nameWithOwner}${gh.private ? ' (private)' : ''}, ${sync}` : project.repository ? 'a local folder (not on GitHub)' : 'not linked'} · target branch ${project.targetBranch?.name || 'not set'}.`);
-    lines.push('Active agents:', ...(over.agents.length ? over.agents.map(agent => `- [${runRef(runs.find(run => run.id === agent.runId))}] on [${taskRef(byId.get(agent.taskId))}] in ${agent.column}: ${agent.status}${agent.needsYou ? ' (waiting for the user)' : ''}`) : ['- none']));
-    lines.push('Blockers:', ...(over.blockers.length ? over.blockers.map(blocker => `- ${blocker.taskId ? `[${taskRef(byId.get(blocker.taskId))}] ` : ''}${blocker.text}`) : ['- none']));
+    const first = (list, line) => (list.length ? [...list.slice(0, LIMITS.list).map(line), ...(list.length > LIMITS.list ? [`- and ${list.length - LIMITS.list} more`] : [])] : ['- none']);
+    lines.push('Active agents:', ...first(over.agents, agent => `- [${runRef(runs.find(run => run.id === agent.runId))}] on [${taskRef(byId.get(agent.taskId))}] in ${agent.column}: ${agent.status}${agent.needsYou ? ' (waiting for the user)' : ''}`));
+    lines.push('Blockers:', ...first(over.blockers, blocker => `- ${blocker.taskId ? `[${taskRef(byId.get(blocker.taskId))}] ` : ''}${blocker.text}`));
     const taskEvents = taskId => index.events.filter(event => event.task === taskId);
     const detail = async task => {
       // The card is the authoritative task text; read it only when the question is about this card.
