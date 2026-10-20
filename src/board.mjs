@@ -2555,14 +2555,15 @@ export class Board {
         });
         try {
           await git(['worktree', 'add', '-b', branch, path, baseCommit], { cwd: repository.root, config: [`core.hooksPath=${this.hooksDir}`, 'core.fsmonitor=false'], timeoutMs: 120000 });
-        } catch {
+        } catch (error) {
           const leftovers = await access(path).then(() => true, () => false) || await branchExists(repository.root, branch);
           await this.store.update(draft => {
             const { task: current } = this.#task(draft, taskId);
             current.workspace = leftovers ? { ...current.workspace, status: 'failed' } : null;
             current.revision++;
           });
-          throw new BoardError('Git could not create the task worktree. Run git worktree list in the repository to check it.', 'WORKTREE_FAILED', 502);
+          // Git's reason (for example "Filename too long" for a deep path on Windows) says what to fix.
+          throw new BoardError(`Git could not create the task worktree (${error.message}). Run git worktree list in the repository to check it.`, 'WORKTREE_FAILED', 502);
         }
         return this.store.update(draft => {
           const { task: current } = this.#task(draft, taskId);

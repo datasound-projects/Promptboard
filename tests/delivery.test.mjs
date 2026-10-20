@@ -632,6 +632,47 @@ test('removing a worktree never deletes files Git ignores without a yes; an unfi
   assert.equal((await w.current(other.id)).workspace.status, 'ready');
 });
 
+test('conflict markers in a file with a non-ASCII name are found, so they are never committed as resolved', { skip, timeout: 60000 }, async t => {
+  const w = await world(t), name = 'résumé notes.txt';
+  await writeFile(join(w.root, name), 'base\n'); git(w.root, 'add', '.'); git(w.root, 'commit', '-q', '-m', 'notes');
+  const task = await w.task('Unicode conflict', 'x');
+  await writeFile(join(await w.workspace(task.id), name), 'task\n');
+  await w.delivery.commit(task.id, { message: 'task notes', confirm: true });
+  await writeFile(join(w.root, name), 'target\n'); git(w.root, 'commit', '-qam', 'target notes');
+  await w.delivery.prepareMergeRun(task.id);
+  const rev = await w.delivery.revision(task.id);
+  assert.deepEqual([rev.merging, rev.conflicts, rev.unresolved], [true, [name], [name]]);
+  await assert.rejects(w.delivery.commit(task.id, { message: 'merge', confirm: true }), { code: 'CONFLICT_MARKERS' });
+});
+
+test('a worktree Git cannot create says why', { skip: skip || process.getuid?.() === 0, timeout: 60000 }, async t => {
+  const w = await world(t);
+  const first = await w.task('First', 'x');
+  const folder = join((await w.current(first.id)).workspace.path, '..');
+  const second = await w.board.createTask({ projectId: w.project.id, title: 'Second', prompt: 'x' });
+  await chmod(folder, 0o555);
+  try { await assert.rejects(w.board.ensureTaskWorktree(second.id), error => error.code === 'WORKTREE_FAILED' && /git worktree failed: .*Permission denied/i.test(error.message)); }
+  finally { await chmod(folder, 0o755); }
+});
+
+test('a commit hook or a merge hook that refuses says why; the task branch stays as it was', { skip, timeout: 60000 }, async t => {
+  const w = await world(t);
+  const hooks = join(w.root, '.git', 'hooks');
+  git(w.root, 'config', 'core.hooksPath', hooks);
+  const task = await w.task('Hooked', 'x');
+  const ws = await w.workspace(task.id);
+  await writeFile(join(hooks, 'pre-commit'), '#!/bin/sh\necho "lint: missing semicolon in feature.js" >&2\nexit 1\n', { mode: 0o755 });
+  await writeFile(join(ws, 'feature.js'), 'x\n');
+  await assert.rejects(w.delivery.commit(task.id, { message: 'feature', confirm: true }), error => error.code === 'COMMIT_FAILED' && /lint: missing semicolon in feature\.js/.test(error.message));
+  await rm(join(hooks, 'pre-commit'));
+  await w.delivery.commit(task.id, { message: 'feature', confirm: true });
+  await writeFile(join(hooks, 'pre-merge-commit'), '#!/bin/sh\necho "policy: merges need a ticket" >&2\nexit 1\n', { mode: 0o755 });
+  await writeFile(join(w.root, 'upstream.txt'), 'u\n'); git(w.root, 'add', '.'); git(w.root, 'commit', '-q', '-m', 'Upstream');
+  const head = git(ws, 'rev-parse', 'HEAD');
+  await assert.rejects(w.delivery.updateBranch(task.id, { confirm: true }), error => error.code === 'MERGE_FAILED' && /policy: merges need a ticket/.test(error.message));
+  assert.deepEqual([git(ws, 'rev-parse', 'HEAD'), git(ws, 'status', '--porcelain')], [head, '']);
+});
+
 test('on Windows, npm and npx test commands start through Node without a shell; other commands start as written', () => {
   const win = { platform: 'win32', execPath: 'C:/node/node.exe', exists: () => true };
   const [node, cli, ...rest] = startArgv(['npm', 'test', '--', '--grep', 'a & b'], win);
