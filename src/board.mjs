@@ -1854,11 +1854,18 @@ export class Board {
     return this.store.update(state => {
       const run = state.runs.find(item => item.id === runId);
       if (!run?.transition) return null;
-      const { task } = this.#task(state, run.taskId);
+      const { project, task } = this.#task(state, run.taskId);
       if (task.column !== run.stage || task.lastTransition?.id !== run.transition.id) return null;
+      // A column removed since the move keeps the card where it is, with its failed run.
+      if (!projectColumns(project).some(column => column.id === run.transition.from)) return null;
       task.transitions = [...task.transitions, { at: Date.now(), from: run.stage, to: run.transition.from, by: 'system', reason: clip(`The ${title(run.stage)} agent could not start: ${run.reason || run.errorCode || 'unknown error'}`, 300) }].slice(-TRANSITION_LOG_LIMIT);
       task.column = run.transition.from;
       task.lastTransition = { ...task.lastTransition, reverted: true };
+      // Back in Done: the completion the move archived (#place) is the card's completion again, so its code still counts as unmerged.
+      if (project.workflowMode === 'pipeline' && project.pipeline.columns.find(column => column.id === task.column)?.role === 'done') {
+        if (!task.completion && task.previousCompletions?.length) { task.completion = task.previousCompletions.at(-1); task.previousCompletions = task.previousCompletions.slice(0, -1); }
+        task.archivedAt = Date.now();
+      }
       task.revision++;
       return task;
     });
@@ -2228,6 +2235,8 @@ export class Board {
   #place(state, id, { from, column, index, transitionId = null, by = 'user', reason = '', runId = null }) {
     const { project, task } = this.#task(state, id);
     if (task.column !== from) throw conflict(`The card moved to ${title(task.column)} meanwhile. Reload the board.`, 'REVISION_CONFLICT');
+    // Checked again at the write: a column removed or hidden while the move was prepared would hide the card with no way out.
+    if (task.column !== column && !projectColumns(project).some(entry => entry.id === column)) throw conflict('The board’s columns changed meanwhile. Reload the board.', 'REVISION_CONFLICT');
     if (project.workflowMode !== 'pipeline' && task.column !== column && this.#activeRun(state, id)) throw conflict('This card has an active run. Wait for it to finish or cancel it first.', 'RUN_ACTIVE');
     const others = project.tasks.filter(item => item !== task);
     const inColumn = others.filter(item => item.column === column);
