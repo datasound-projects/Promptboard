@@ -70,6 +70,28 @@ test('Update context never replaces a split part or an edited card unseen, also 
   assert.deepEqual((await app.board.state()).projects[0].tasks.map(task => task.prompt.endsWith('My own note.') || task.prompt === 'Part one'), [true, true], 'neither card changed');
 });
 
+test('a task split in Compose Batch whose Origin link was lost is never sent again as one whole card', async t => {
+  const { app, api } = await server(t);
+  const kanban = await app.board.createProject({ name: 'Shop', workflowMode: 'pipeline' });
+  let res = await api('/api/origin/projects', { name: 'Shop design' });
+  const id = res.data.project.id;
+  res = await api(`/api/origin/projects/${id}/link`, { expectedRevision: res.data.project.revision, kanbanProjectId: kanban.id });
+  const bp = M.emptyBlueprint(); bp.items.push({ id: 'i1', key: 'IMP-001', title: 'Schema', acceptanceCriteria: 'Tables exist' }, { id: 'i2', key: 'IMP-002', title: 'API', acceptanceCriteria: 'It answers', dependsOn: ['i1'] }); bp.sequence = { requirements: 0, items: 2 };
+  res = await api(`/api/origin/projects/${id}`, { expectedRevision: res.data.revision, blueprint: bp }, 'PUT');
+  // IMP-001 reached Kanban as two parts from Compose Batch, but Origin never recorded the link to them.
+  const parts = await app.board.createOriginTasks(kanban.id, { originProjectId: id, tasks: [1, 2].map(n => ({ originTaskId: `i1-s${n}`, key: `IMP-001.${n}`, title: `IMP-001.${n} Part`, prompt: `Part ${n}` })) });
+  res = await api(`/api/origin/projects/${id}/handoff`, { expectedRevision: res.data.revision, itemIds: ['i2'], includePrerequisites: true });
+  assert.equal(res.status, 200, JSON.stringify(res.data));
+  assert.deepEqual(res.data.results.map(result => [result.key, result.status]), [['IMP-002', 'created']], 'IMP-001 already has its cards');
+  res = await api(`/api/origin/projects/${id}/handoff`, { expectedRevision: res.data.revision, itemIds: ['i1'] });
+  assert.deepEqual([res.data.results[0].status, res.data.results[0].taskId], ['existing', parts[1].taskId]);
+  assert.equal(res.data.blueprint.items[0].handoff.taskId, parts[1].taskId, 'the link is restored to the last part');
+  const tasks = (await app.board.state()).projects[0].tasks;
+  assert.deepEqual(tasks.map(task => task.originSource.originTaskId), ['i1-s1', 'i1-s2', 'i2'], 'no whole card next to the parts');
+  assert.deepEqual(tasks[2].dependsOn, [parts[1].taskId], 'the next task waits for the last part');
+  assert.equal(M.splitCard(tasks, id, 'i1', itemId => itemId === 'i1-s1').id, parts[1].taskId, 'a part ID that is a task of its own is not a part');
+});
+
 test('Delete from Origin moves the project\'s research chats aside, so a project made later under its ID starts without them', async t => {
   const { app, api } = await server(t, { researchRunner: async call => ({ text: 'Findings.', session: call.session?.id }) });
   const project = (await api('/api/origin/projects', { name: 'Shop' })).data.project;

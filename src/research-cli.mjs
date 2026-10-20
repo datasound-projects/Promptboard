@@ -134,8 +134,8 @@ export async function streamResearch({ provider, model = '', effort = '', prompt
       if (code !== 0 || state.error || !text) {
         const known = classifyProviderFailure(provider, { stdout, stderr, exitCode: code });
         const error = known || fail(code === 0 && !state.error ? 'The CLI did not return an answer. Check its version and try again.' : 'The CLI failed for an unrecognized reason. Run the CLI in your terminal to see its diagnostics.', code === 0 && !state.error ? 'INVALID_OUTPUT' : 'CLI_FAILED');
-        // A resumed session that ends before any text could not be continued (for example, it was removed).
-        if (session?.resume && !state.streamed.trim()) error.resumeFailed = true;
+        // A resumed session that ends before any text, for no known provider reason, could not be continued (for example, it was removed).
+        if (session?.resume && !known && !state.streamed.trim()) error.resumeFailed = true;
         finish(error); return;
       }
       finish(null, { text: text.slice(0, MAX_TEXT), session: state.session, durationMs: Date.now() - started });

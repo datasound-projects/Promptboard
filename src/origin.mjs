@@ -474,7 +474,7 @@ async function handoff({ origin, board, originId, input }) {
   if (!wanted.length || wanted.length > 100 || wanted.some(id => !items.has(id))) throw new OriginError('Choose 1 to 100 tasks that still exist. Reload the project.', 'INVALID_INPUT');
   const cards = new Map(destination.tasks.map(task => [task.id, task]));
   const cardOf = item => destination.tasks.find(task => task.originSource?.originProjectId === originId && task.originSource.originTaskId === item.id)
-    || (item.handoff?.projectId === destination.id ? cards.get(item.handoff.taskId) : null) || null;
+    || (item.handoff?.projectId === destination.id ? cards.get(item.handoff.taskId) : null) || Model.splitCard(destination.tasks, originId, item.id, id => items.has(id));
   const loop = loopFrom(items, wanted);
   if (loop) throw new OriginError(`These tasks wait for each other: ${loop.join(' → ')}. Remove one prerequisite first.`, 'PLAN_CYCLE', 409);
   const selection = new Set(wanted), missingNow = () => [...new Set([...selection].flatMap(id => items.get(id).dependsOn).filter(id => !selection.has(id) && !cardOf(items.get(id))))];

@@ -103,9 +103,7 @@ export class ResearchStore {
   #folder(originId) { return join(this.dir, escapeId(id(originId, 'project'))); }
   /** “Delete from Origin”: running research of the project stops; its chats move to origin/deleted/, as Project Context does. */
   async archive(originId) {
-    const own = () => [...activeRuns].filter(([key]) => key.startsWith(`${originId}/`));
-    for (const [, control] of own()) control.stopAll();
-    for (let wait = 0; own().length && wait < 100; wait++) await new Promise(resolve => setTimeout(resolve, 50)); // A stopped run saves what it produced first.
+    await stopRuns(key => key.startsWith(`${originId}/`));
     return this.#serial(originId, async () => {
       const folder = this.#folder(originId);
       try { await stat(folder); } catch { return false; }
@@ -172,7 +170,9 @@ export class ResearchStore {
       return this.#write(value);
     });
   }
-  remove(originId, chat) {
+  /** Delete one chat. Research running in it stops first, so no CLI keeps working for a chat that is gone. */
+  async remove(originId, chat) {
+    await stopRuns(key => key === `${originId}/${chatId(chat)}`);
     return this.#serial(originId, async () => {
       await this.#read(originId, chatId(chat));
       await rm(this.#file(originId, chat), { force: true });
@@ -301,33 +301,34 @@ export async function runChat({ research, origin, originId, chat, settings, ques
   // A follow-up sends the context and the places to write again when either changed (also for a chat from before them).
   const context = researchContext(record, settings.scope), guide = Model.researchGuide(record.blueprint, settings.scope), contextHash = sha(`${JSON.stringify(settings.scope)}\n${context.text}\n${guide}`);
   const native = saved.native?.provider === settings.provider && saved.native.sessionId ? saved.native : null;
-  // Attached sources: passages relevant to this question only, as cited data.
-  const found = await gatherSources(saved.sources, `${question} ${context.label}`.trim(), { ...services, signal });
-  const block = sourcesBlock(found.evidence);
   const mode = settings.mode, lastMode = [...saved.messages].reverse().find(message => message.role === 'assistant')?.mode;
-  const fresh = () => chatPrompt({ question, context: context.text, guide, history: boundedHistory(saved.messages), web: settings.web, scopeLabel: context.label, sources: block, mode });
-  const prompt = native ? chatPrompt({ question, context: native.contextHash === contextHash ? null : context.text, guide, followUp: true, scopeLabel: context.label, sources: block, mode, modeChanged: lastMode !== mode }) : fresh();
   const asked = { id: randomUUID(), role: 'user', text: question || { decision: 'Compare the options for this part.', audit: 'Audit this part of the blueprint.' }[mode], at: Date.now(), mode, scope: settings.scope };
   await research.update(originId, chat, value => { value.messages.push(asked); value.settings = settings; if (!value.title) value.title = titleFrom(question); });
   emit({ type: 'message', message: asked });
   emit({ type: 'start', mode, agents: [{ id: 'main', label: '' }] });
   if (context.missing) emit({ type: 'activity', agent: 'main', kind: 'note', label: 'The selected part no longer exists. The whole project is used.' });
-  for (const warning of found.warnings) emit({ type: 'activity', agent: 'main', kind: 'note', label: warning });
-  if (found.evidence.length) emit({ type: 'activity', agent: 'main', kind: 'sources', label: `${found.evidence.length} passages from attached sources` });
   const workspace = await research.workspace(originId), started = Date.now();
   const onEvent = event => emit({ ...event, agent: 'main' });
   const call = (input, session) => runner({ provider: settings.provider, model: settings.model, effort: settings.effort, web: settings.web, tools: settings.skills ? ['Skill'] : [], cwd: workspace, signal, onEvent, prompt: input, session });
   const newSession = () => (settings.provider === 'claude' ? { id: randomUUID(), resume: false } : null);
-  let result, failure;
-  try { result = await call(prompt, native ? { id: native.sessionId, resume: true } : newSession()); }
-  catch (error) {
+  let result, failure, found = { evidence: [], warnings: [] }, block = '';
+  const fresh = () => chatPrompt({ question, context: context.text, guide, history: boundedHistory(saved.messages), web: settings.web, scopeLabel: context.label, sources: block, mode });
+  try {
+    // Attached sources: passages relevant to this question only, as cited data. A stop while they are read is a stop.
+    found = await gatherSources(saved.sources, `${question} ${context.label}`.trim(), { ...services, signal });
+    block = sourcesBlock(found.evidence);
+    for (const warning of found.warnings) onEvent({ type: 'activity', kind: 'note', label: warning });
+    if (found.evidence.length) onEvent({ type: 'activity', kind: 'sources', label: `${found.evidence.length} passages from attached sources` });
+    result = await call(native ? chatPrompt({ question, context: native.contextHash === contextHash ? null : context.text, guide, followUp: true, scopeLabel: context.label, sources: block, mode, modeChanged: lastMode !== mode }) : fresh(),
+      native ? { id: native.sessionId, resume: true } : newSession());
+  } catch (error) {
     failure = error;
     if (error.resumeFailed && !signal?.aborted) {
       onEvent({ type: 'activity', kind: 'note', label: 'The earlier CLI session could not continue. A new session starts with this chat’s history.' });
       try { result = await call(fresh(), newSession()); failure = null; } catch (again) { failure = again; }
     }
   }
-  const stopped = failure?.code === 'ABORTED', answerId = randomUUID();
+  const stopped = failure?.code === 'ABORTED' || Boolean(failure && signal?.aborted), answerId = randomUUID();
   const extracted = extractSuggestions(result?.text ?? failure?.partial ?? '');
   const { proposals, dropped } = result ? proposalsFor(record, extracted.raw, { messageId: answerId }) : { proposals: [], dropped: 0 };
   const warnings = [...found.warnings, ...(dropped ? [`${dropped} suggestion${dropped === 1 ? ' was' : 's were'} left out because ${dropped === 1 ? 'it' : 'they'} did not match this blueprint.`] : []),
@@ -349,6 +350,12 @@ export async function runChat({ research, origin, originId, chat, settings, ques
 
 // Runs in progress, per chat: a way to stop one swarm agent while the others continue.
 const activeRuns = new Map();
+/** Stop the runs whose `<project>/<chat>` key matches; a stopped run saves what it produced first (waits up to 5 s). */
+async function stopRuns(match) {
+  const own = () => [...activeRuns].filter(([key]) => match(key));
+  for (const [, control] of own()) control.stopAll();
+  for (let wait = 0; own().length && wait < 100; wait++) await new Promise(resolve => setTimeout(resolve, 50));
+}
 
 /**
  * Swarm: one independent agent per selected part, at most SWARM_CONCURRENCY at the same time. Each agent gets only its
@@ -399,11 +406,14 @@ export async function runSwarm({ research, origin, originId, chat, settings, que
     emit({ type: 'agent', agent: agent.id, status: agent.status, ...(message.error ? { error: message.error } : {}) });
     emit({ type: 'message', message });
   };
+  let broken = null;
   try {
-    // A bounded pool: each worker takes the next queued agent.
+    // A bounded pool: each worker takes the next queued agent. A result that cannot be stored stops the others, and
+    // the run ends only once every agent has, so no CLI outlives the job slot.
     const queue = [...agents];
-    await Promise.all(Array.from({ length: Math.min(SWARM_CONCURRENCY, agents.length) }, async () => { for (let agent = queue.shift(); agent; agent = queue.shift()) await work(agent); }));
+    await Promise.all(Array.from({ length: Math.min(SWARM_CONCURRENCY, agents.length) }, async () => { for (let agent = queue.shift(); agent; agent = queue.shift()) await work(agent).catch(error => { broken ??= error; stopAll(); }); }));
   } finally { control.stop = () => false; signal?.removeEventListener('abort', stopAll); }
+  if (broken) throw broken;
   // The combined result: built from the finished work only, with no extra model call.
   const done = agents.filter(agent => agent.status === 'done').length, mark = { done: '✓', failed: '✗', stopped: '■' };
   const summary = { id: randomUUID(), role: 'assistant', at: Date.now(), mode: 'swarm', provider: settings.provider, model: settings.model, status: 'done', summary: true,

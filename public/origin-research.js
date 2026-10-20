@@ -49,7 +49,9 @@ window.PromptboardOriginResearch = (() => {
     let running = null;
     const drafts = new Map(); // Unsent text per project survives closing the panel and switching projects.
     const saveSettings = () => setPref(SETTINGS_KEY, JSON.stringify({ provider: settings.provider, model: settings.model, effort: settings.effort, mode: settings.mode, skills: settings.skills }));
-    let sourceBusy = false, baseLibrary = null, sourceForm = 'document', mcpKind = 'context7';
+    let sourceBusy = false, baseLibrary = null, sourceForm = 'document', mcpKind = 'context7', starting = false;
+    // What the last structure change took from the scope and the swarm parts, until they change otherwise: an Undo brings it back.
+    let kept = null;
     // Review state of suggestion cards (preview, edit draft, conflict text, selection); the decision itself is stored with the chat.
     const cards = new Map(), selected = new Set();
     let applying = false;
@@ -102,7 +104,7 @@ window.PromptboardOriginResearch = (() => {
       if (id === projectId) return;
       if (isOpen || minimized) { keepDraft(); isOpen = false; minimized = false; hide(); }
       if (running) { running.switched = true; running.controller.abort(); } // A run belongs to its project; its partial answer is kept.
-      projectId = id; chats = null; chat = null; chatsQuery = ''; panel = 'chat'; error = ''; confirmDelete = null;
+      projectId = id; chats = null; chat = null; chatsQuery = ''; panel = 'chat'; error = ''; confirmDelete = null; kept = null;
       settings.scope = { kind: 'project' }; settings.web = false; settings.targets = []; // Swarm targets name this project's records.
       renderButton();
     }
@@ -279,7 +281,7 @@ window.PromptboardOriginResearch = (() => {
         log.append(messageView(message));
         for (const proposal of (chat?.proposals || []).filter(entry => entry.messageId === message.id)) log.append(proposalCard(proposal));
       }
-      if (running) for (const agent of running.agents.values()) log.append(liveView(agent));
+      if (running && running.chatId === chat?.id) for (const agent of running.agents.values()) log.append(liveView(agent)); // A run shows only in its own chat.
       const pending = [...selected].filter(id => chat?.proposals?.some(entry => entry.id === id && ['pending', 'conflict'].includes(entry.status)));
       const open = (chat?.proposals || []).filter(entry => entry.status === 'pending');
       if (!pending.length && open.length > 1 && !running) {
@@ -452,7 +454,12 @@ window.PromptboardOriginResearch = (() => {
       const id = chat.id;
       const { response, data } = await api(`/chats/${id}/proposals/${proposal.id}`, { method: 'PATCH', body: { status, ...extra } });
       if (chat?.id !== id) return; // Another chat or project was opened meanwhile; this one keeps its saved state.
-      if (response.ok) chat = { ...chat, proposals: data.proposals }; else error = data.error || 'The suggestion state could not be saved.';
+      if (response.ok) chat = { ...chat, proposals: data.proposals };
+      else {
+        error = data.error || 'The suggestion state could not be saved.';
+        // The blueprint already has it: shown as applied all the same, so it is never applied a second time.
+        if (status === 'applied') chat = { ...chat, proposals: chat.proposals.map(entry => (entry.id === proposal.id ? { ...entry, status, edited: extra.edited, createdId: extra.createdId } : entry)) };
+      }
       if (status !== 'conflict') { cards.delete(proposal.id); selected.delete(proposal.id); }
       render();
     }
@@ -723,11 +730,14 @@ window.PromptboardOriginResearch = (() => {
       if (!settings.provider) { error = 'Choose Claude Code or Codex first.'; render(); return; }
       if (!question && settings.mode === 'chat') return;
       if (settings.mode === 'swarm' && !settings.targets.length) { error = 'Add at least one part for the swarm to research.'; render(); return; }
+      if (starting) return; // A second Send while the first is still starting would start a second run.
       const id = projectId;
-      error = '';
-      // Research reads the saved blueprint, so a page added or removed a moment ago is saved first.
-      if (host.saveNow && !(await host.saveNow())) { error = 'The blueprint has changes that are not saved yet. Research reads the saved blueprint, so save it first.'; render(); return; }
-      if (id !== projectId || !(await ensureChat()) || id !== projectId) return;
+      error = ''; starting = true;
+      try {
+        // Research reads the saved blueprint, so a page added or removed a moment ago is saved first.
+        if (host.saveNow && !(await host.saveNow())) { error = 'The blueprint has changes that are not saved yet. Research reads the saved blueprint, so save it first.'; render(); return; }
+        if (id !== projectId || !(await ensureChat()) || id !== projectId) return;
+      } finally { starting = false; }
       const run = running = { controller: new AbortController(), agents: new Map(), chatId: chat.id, projectId: id };
       drafts.delete(id); panel = 'chat'; render(); renderButton(); followEnd(true);
       let response;
@@ -816,8 +826,11 @@ window.PromptboardOriginResearch = (() => {
     /** The project's categories or pages changed: what can be researched and which suggestions still fit follow at once. */
     function structureChanged() {
       const live = new Set(scopeOptions().map(option => scopeKey(option.value)));
-      settings.targets = settings.targets.filter(target => live.has(scopeKey(target)));
-      if (!live.has(scopeKey(settings.scope))) settings.scope = { kind: 'project' };
+      const wanted = kept?.left === scopeKey([settings.scope, settings.targets]) ? kept : { scope: settings.scope, targets: settings.targets };
+      settings.targets = wanted.targets.filter(target => live.has(scopeKey(target)));
+      settings.scope = live.has(scopeKey(wanted.scope)) ? wanted.scope : { kind: 'project' };
+      const left = scopeKey([settings.scope, settings.targets]);
+      kept = left === scopeKey([wanted.scope, wanted.targets]) ? null : { scope: wanted.scope, targets: wanted.targets, left };
       const blueprint = host.blueprint();
       if (blueprint) for (const id of [...selected]) { const proposal = chat?.proposals?.find(entry => entry.id === id); if (!proposal || M().researchGone(blueprint, proposal)) selected.delete(id); }
       render();
