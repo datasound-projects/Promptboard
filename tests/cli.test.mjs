@@ -5,6 +5,7 @@ import { access, chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promise
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { VERSION } from '../src/version.mjs';
 
 const repo = fileURLToPath(new URL('../', import.meta.url));
 const text = path => readFile(join(repo, path), 'utf8');
@@ -42,6 +43,18 @@ test('help names the Node.js floor from package.json and every task type the Com
   const page = (await text('public/index.html')).match(/<select id="task"[^>]*>(.*?)<\/select>/s)[1];
   const start = stdout.indexOf('--task TYPE'), listed = stdout.slice(start + 11, stdout.indexOf('\n  --', start)).split(/[\s,()]+/);
   for (const [, task] of page.matchAll(/value="([^"]+)"/g)) assert.ok(listed.includes(task), `--help lists --task ${task}`);
+});
+
+test('release metadata agrees: one version, and a licence notice for every runtime package at its installed version', async () => {
+  const pkg = JSON.parse(await text('package.json')), lock = JSON.parse(await text('package-lock.json'));
+  assert.deepEqual([VERSION, lock.version, lock.packages[''].version, (await text('public/index.html')).match(/<span>v(\d+\.\d+\.\d+)<\/span>/)[1]],
+    Array(4).fill(pkg.version));
+  const notices = await text('THIRD_PARTY_NOTICES.md');
+  for (const [path, entry] of Object.entries(lock.packages)) {
+    if (!path || entry.dev) continue;
+    const name = path.slice(path.lastIndexOf('node_modules/') + 'node_modules/'.length);
+    assert.ok(notices.includes(`${name} ${entry.version} (${entry.license})`), `THIRD_PARTY_NOTICES.md lists ${name} ${entry.version} (${entry.license})`);
+  }
 });
 
 test('the release job has the CI time budget and every workflow action is pinned by commit SHA', async () => {
