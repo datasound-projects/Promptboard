@@ -1598,6 +1598,7 @@ button.timeline-task:hover { text-decoration: underline; }
 :is([data-save="error"], [data-save="conflict"]) .origin-save-dot { background: var(--error); }
 @keyframes origin-pulse { 50% { opacity: .25; } }
 .origin-banner { margin: 16px 32px 0; padding: 10px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--og-glass); font-size: 13px; }
+#origin-view > #app-error { margin: 16px 32px 0; }
 .origin-banner.origin-error, .origin-inline-error { color: var(--error); }
 .origin-inline-error { margin: 0; font-size: 12.5px; }
 .origin-main { max-width: 920px; margin: 0 auto; padding: 36px 40px 40px; transition: padding .2s ease; }
@@ -2086,7 +2087,7 @@ dialog.origin-modal.wide { width: min(980px, calc(100vw - 32px)); max-width: non
   .origin-research-label { display: none; }
   .origin-research-open { width: 34px; padding: 0; }
   .origin-main { padding: 26px 16px 32px; }
-  .origin-banner { margin: 12px 16px 0; }
+  .origin-banner, #origin-view > #app-error { margin: 12px 16px 0; }
   .origin-section-head h2 { font-size: 25px; }
   .origin-q-grid, .origin-topic { grid-template-columns: minmax(0, 1fr); }
   .origin-topic-label { min-height: 30px; }
