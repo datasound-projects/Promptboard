@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { EventEmitter } from 'node:events';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
-import { buildCommand, detectProviders, killPidGroup, parseProviderOutput, runProvider } from '../src/providers.mjs';
+import { buildCommand, classifyProviderFailure, detectProviders, killPidGroup, parseProviderOutput, runProvider } from '../src/providers.mjs';
 
 test('CLI commands narrow permissions and keep model values separate', () => {
   const codex = buildCommand({ provider: 'codex', model: 'custom/model-v1' });
@@ -26,6 +26,15 @@ test('CLI commands narrow permissions and keep model values separate', () => {
   for (const result of [codex, claude, gemini]) {
     assert.ok(!result.args.some(x => /dangerously|bypassPermissions|yolo|auto_edit/.test(x)));
   }
+});
+
+test('every Claude Code error type gets its own failure code; only the unspecific ones stay unrecognized', () => {
+  // The error types Claude Code 2.1.304 reports in assistant messages and StopFailure hooks (the supervisor maps them alike).
+  const types = ['authentication_failed', 'oauth_org_not_allowed', 'account_on_hold', 'verification_required', 'billing_error', 'rate_limit', 'overloaded',
+    'invalid_request', 'model_not_found', 'server_error', 'unknown', 'max_output_tokens', 'cloud_credential_error'];
+  const code = error => classifyProviderFailure('claude', { stdout: JSON.stringify({ type: 'assistant', error, message: { content: [] } }) })?.code ?? null;
+  assert.deepEqual(types.filter(type => !code(type)), ['invalid_request', 'unknown', 'max_output_tokens']);
+  assert.equal(code('verification_required'), 'ACCOUNT_UNAVAILABLE', 'Organization verification is an account problem, not a CLI failure.');
 });
 
 test('rejects arbitrary programs, flags, and invalid models', () => {

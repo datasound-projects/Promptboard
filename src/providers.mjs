@@ -341,7 +341,7 @@ const firstJson = text => { const trimmed = text.trim(); try { return JSON.parse
 
 // Claude error types (result and StopFailure hook) -> failure codes.
 export const CLAUDE_ERRORS = Object.freeze({ authentication_failed: 'AUTH_REQUIRED', cloud_credential_error: 'AUTH_REQUIRED', oauth_org_not_allowed: 'POLICY_DENIED',
-  account_on_hold: 'ACCOUNT_UNAVAILABLE', billing_error: 'ACCOUNT_UNAVAILABLE', rate_limit: 'RATE_LIMITED', overloaded: 'PROVIDER_UNAVAILABLE',
+  account_on_hold: 'ACCOUNT_UNAVAILABLE', verification_required: 'ACCOUNT_UNAVAILABLE', billing_error: 'ACCOUNT_UNAVAILABLE', rate_limit: 'RATE_LIMITED', overloaded: 'PROVIDER_UNAVAILABLE',
   server_error: 'PROVIDER_UNAVAILABLE', model_not_found: 'MODEL_UNAVAILABLE' });
 const GEMINI_ERRORS = { TerminalQuotaError: 'QUOTA_EXHAUSTED', RetryableQuotaError: 'RATE_LIMITED', FatalAuthenticationError: 'AUTH_REQUIRED',
   UnauthorizedError: 'AUTH_REQUIRED', ForbiddenError: 'POLICY_DENIED', ModelNotFoundError: 'MODEL_UNAVAILABLE', FatalSandboxError: 'POLICY_DENIED', FetchError: 'NETWORK_ERROR' };
