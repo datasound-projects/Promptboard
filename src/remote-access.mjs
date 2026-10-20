@@ -315,7 +315,10 @@ export async function remoteRoute(remote, req, res, pathname, { jsonBody, send }
 
 /**
  * What needs someone at the computer: remote access itself, CLI and GitHub sign-in (they open a browser or terminal
- * there), native dialogs and opening a project folder or terminal there. Everything else is allowed: a paired device has the same control as the computer.
+ * there), native dialogs, opening a project folder, terminal or editor there, and Base imports (Claude Desktop's own
+ * configuration, a repository scan). Everything else is allowed: a paired device has the same control as the computer,
+ * so Compose's MCP test and local folder sources stay allowed, like agents, test commands and Base MCP tests.
+ * tests/remote-access.test.mjs walks every route against this list.
  */
 function localOnly(method, path) {
   if (method === 'GET' || method === 'HEAD') return /^\/api\/remote(\/|$)/.test(path) || path === '/api/editors';
