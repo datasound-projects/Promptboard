@@ -52,7 +52,7 @@ Generation repairs at most once (Reviewed mode), as in Single. There is no autom
 - **Approve passing** approves only tasks with no findings at all. Fast mode has no model review, so its prompts are approved one by one.
 - **Edit** saves a new version; its exact values are checked again. If the last review found problems, the edit must be checked again (**Check again**, one review call) before approval.
 - Regenerating, editing or checking again removes the approval until you approve again.
-- **Reject** keeps a task out of Kanban; **Restore** brings it back. **Versions** keeps the last 12 versions with their settings.
+- **Reject** keeps a task out of Kanban; **Restore** brings it back. **Remove from batch** (click twice) takes a task and its prompts out of the batch, for example a task deleted in Origin; Origin and Kanban stay as they are. **Versions** keeps the last 12 versions with their settings.
 
 ## Split
 
