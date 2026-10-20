@@ -36,6 +36,7 @@ export class BatchError extends Error {
 const conflict = (message, code = 'BATCH_CONFLICT') => new BatchError(message, code, 409);
 const id = (value, message = 'Choose a valid task.') => { if (typeof value !== 'string' || !Model.ID.test(value)) throw new BatchError(message); return value; };
 const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+const parseObject = bytes => { try { const value = JSON.parse(bytes); return plain(value) ? value : undefined; } catch { return undefined; } };
 
 // ---- Settings: Compose defaults → this batch → this task ----
 
@@ -204,12 +205,11 @@ export class ComposeBatches {
     return this.#loading.get(batchId);
   }
   async #read(batchId) {
-    const parse = bytes => { try { const value = JSON.parse(bytes); return plain(value) ? value : undefined; } catch { return undefined; } };
-    const meta = await readWithBackup([this.#path(batchId), `${this.#path(batchId)}.bak`], parse);
+    const meta = await readWithBackup([this.#path(batchId), `${this.#path(batchId)}.bak`], parseObject);
     if (!meta) return null;
     const items = new Map();
     for (const itemId of meta.order) {
-      const item = await readWithBackup([this.#path(batchId, itemId), `${this.#path(batchId, itemId)}.bak`], parse);
+      const item = await readWithBackup([this.#path(batchId, itemId), `${this.#path(batchId, itemId)}.bak`], parseObject);
       if (!item) continue;
       // Runs live only in this process. A run saved by an earlier process stopped with it: never restart it on its own.
       if (item.run) {
@@ -324,7 +324,8 @@ export class ComposeBatches {
     try { names = await readdir(this.dir); } catch {}
     const out = [];
     for (const name of names) {
-      const meta = await readWithBackup([join(this.dir, name, 'batch.json')], bytes => { try { return JSON.parse(bytes); } catch { return undefined; } }).catch(() => null);
+      // The same files and backup a batch loads from, so a batch that opens is also listed.
+      const meta = await readWithBackup([join(this.dir, name, 'batch.json'), join(this.dir, name, 'batch.json.bak')], parseObject).catch(() => null);
       if (meta?.id) out.push({ id: meta.id, name: meta.name, count: meta.order.length, updatedAt: meta.updatedAt });
     }
     return out.sort((a, b) => b.updatedAt - a.updatedAt);
