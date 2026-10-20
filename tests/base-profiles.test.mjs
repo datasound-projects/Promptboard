@@ -7,7 +7,8 @@ import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { normalizeReferences } from '../src/base.mjs';
+import { Base, normalizeReferences } from '../src/base.mjs';
+import { Store } from '../src/store.mjs';
 import { resolveBase, profileDefaults } from '../src/base-resolver.mjs';
 import { prepareBase } from '../src/base-context.mjs';
 import { buildSession, resolveConfig } from '../src/agents.mjs';
@@ -141,6 +142,21 @@ test('MCP configurations import without copying secrets; duplicates and credenti
   assert.deepEqual([by('leaky').importable, by('old').importable, by('again').importable, by('again').duplicateOf.name], [false, false, false, 'Existing']);
   const created = mcpResourceFrom(by('github'), 'Claude Desktop');
   assert.deepEqual([created.enabled, created.trust, created.configuration.env], [false, 'untrusted', { GITHUB_PERSONAL_ACCESS_TOKEN: 'GITHUB_PERSONAL_ACCESS_TOKEN' }]);
+});
+
+test('a credential typed into an MCP or recipe argument is refused as in imports; saved ones and long folder paths keep working', async t => {
+  const dir = await temp(t), store = new Store(dir), base = new Base({ store });
+  const server = args => ({ kind: 'mcp', name: 'Docs', configuration: { transport: 'stdio', command: 'docs-mcp', args } });
+  await assert.rejects(base.create(server(['--api-key=sk-abcdefghijklmnop'])), /looks like a credential/);
+  await assert.rejects(base.create({ kind: 'tool', name: 'Deploy', configuration: { command: 'deploy', args: ['--token=abc123def456'] } }), /looks like a credential/);
+  const folder = '/Users/someone/Documents/research-notes/archive-2026';
+  assert.equal(parseMcpConfig(JSON.stringify({ mcpServers: { notes: { command: 'notes-mcp', args: [folder] } } }), { environment: {} }).servers[0].importable, true, 'an absolute folder path is not a token');
+  const saved = await base.create(server([folder]));
+  // A server saved with such an argument before this check (here through a Promptboard export) can still be edited.
+  const legacy = (await base.import({ kind: 'promptboard-base', version: 1, resources: [{ id: 'old', ...server(['--api-key=sk-abcdefghijklmnop']) }] })).resources[0];
+  const renamed = await base.update(legacy.id, { name: 'Docs (old)' }, { expectedRevision: legacy.revision });
+  assert.deepEqual([renamed.name, (await base.detail(legacy.id)).configuration.args], ['Docs (old)', ['--api-key=sk-abcdefghijklmnop']]);
+  await assert.rejects(base.update(saved.id, { configuration: { ...server([folder, '--secret=hunter2']).configuration } }, { expectedRevision: saved.revision }), /looks like a credential/);
 });
 
 test('repository instruction files are found read-only, imported once, and written back only after a matching preview', async t => {

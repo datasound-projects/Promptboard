@@ -11,8 +11,10 @@ import { join } from 'node:path';
 
 const ENV = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
 const REFERENCE = /^\$\{([A-Za-z_][A-Za-z0-9_]{0,127})(?::-[^}]*)?\}$|^\$([A-Za-z_][A-Za-z0-9_]{0,127})$/;
-// Typical credential shapes in arguments: long tokens, known prefixes, or key=value with a secret-sounding key.
-const SECRET_ARG = /(?:^|[=:])(?:sk-|ghp_|gho_|github_pat_|xox[abp]-|AKIA|AIza)[A-Za-z0-9_-]{8,}|(?:token|secret|password|api[-_]?key|authorization)=\S+|^[A-Za-z0-9+/_-]{40,}={0,2}$/i;
+// Credential shapes in arguments: known token prefixes, or key=value with a secret-sounding key. A pasted configuration
+// was never reviewed, so its import also refuses any long bare token (not an absolute path); a typed argument may be a hash.
+export const CREDENTIAL_ARG = /(?:^|[=:])(?:sk-|ghp_|gho_|github_pat_|xox[abp]-|AKIA|AIza)[A-Za-z0-9_-]{8,}|(?:token|secret|password|api[-_]?key|authorization)=\S+/i;
+const SECRET_ARG = new RegExp(`${CREDENTIAL_ARG.source}|^(?!/)[A-Za-z0-9+/_-]{40,}={0,2}$`, 'i');
 const envName = (...parts) => parts.join('_').toUpperCase().replace(/[^A-Z0-9_]+/g, '_').replace(/^(\d)/, '_$1').slice(0, 120);
 
 /** Where Claude Desktop keeps its configuration on this computer (documented for macOS and Windows). */
