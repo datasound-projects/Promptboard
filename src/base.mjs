@@ -12,6 +12,8 @@ import { markdownFileName, normalizeActivation } from './base-markdown.mjs';
 export const BASE_KINDS = Object.freeze(['skill', 'mcp', 'knowledge', 'context', 'tool', 'profile', 'pack', 'agentProfile', 'markdown']);
 /** Kinds that configure an agent rather than being one of its resources. */
 const AGENT_KINDS = ['profile', 'agentProfile'];
+/** Kinds whose document text is exported only with “Include document bodies”; without it they import as omitted. */
+const DOCUMENT_KINDS = ['skill', 'knowledge', 'markdown'];
 export const BASE_EXPORT_VERSION = 1;
 export const BASE_LIMITS = Object.freeze({ resources: 2000, documentChars: 256 * 1024, contentBytes: 4 * 1024 * 1024, definitionBytes: 4 * 1024 * 1024 + 512 * 1024, importBytes: 12 * 1024 * 1024, refs: 200, files: 200 });
 const ID = /^[A-Za-z0-9_-]{1,100}$/;
@@ -547,7 +549,7 @@ export class Base {
     for (const resourceId of selected) {
       const resource = byId.get(resourceId), { revisionRef, revisions, connectionTest, ...metadata } = resource;
       if (!includeContent && metadata.kind === 'profile' && metadata.configuration.avatar) metadata.configuration = { ...metadata.configuration, avatar: { ...metadata.configuration.avatar, contentStatus: 'omitted' } };
-      resources.push({ ...metadata, ...(includeContent ? { content: (await this.readRevision(revisionRef)).content } : {}), contentStatus: includeContent || !['skill', 'knowledge'].includes(resource.kind) ? resource.contentStatus : 'omitted' });
+      resources.push({ ...metadata, ...(includeContent ? { content: (await this.readRevision(revisionRef)).content } : {}), contentStatus: includeContent || !DOCUMENT_KINDS.includes(resource.kind) ? resource.contentStatus : 'omitted' });
     }
     const bundle = { kind: 'promptboard-base', version: BASE_EXPORT_VERSION, exportedAt: new Date().toISOString(), includesContent: includeContent, resources };
     if (Buffer.byteLength(JSON.stringify(bundle)) > BASE_LIMITS.importBytes) fail('The selected export exceeds 12 MiB. Export smaller packs.');
@@ -562,8 +564,8 @@ export class Base {
     if (new Set(Object.values(remap)).size !== ids.length || Object.values(remap).some(value => ids.includes(value))) fail('Imports require fresh unique IDs; existing resources are never overwritten.');
     const lookup = resourceId => { if (!Object.hasOwn(remap, resourceId)) fail('The import is missing a referenced dependency.'); return remap[resourceId]; };
     const warnings = [], resources = bundle.resources.map(input => {
-      const omitted = ['skill', 'knowledge'].includes(input.kind) && (input.contentStatus === 'omitted' || !input.content);
-      if (omitted && ['skill', 'knowledge'].includes(input.kind)) warnings.push(`“${input.name}” has no exported document content. Add content before enabling it.`);
+      const omitted = DOCUMENT_KINDS.includes(input.kind) && (input.contentStatus === 'omitted' || !input.content);
+      if (omitted) warnings.push(`“${input.name}” has no exported document content. Add content before enabling it.`);
       const definition = normalizeResource({ ...input, id: remap[input.id], content: input.content || {} }, undefined, { imported: true, omitted });
       definition.dependencies = definition.dependencies.map(ref => ({ ...ref, resourceId: lookup(ref.resourceId) }));
       if (definition.kind === 'pack') definition.configuration.resources = definition.configuration.resources.map(ref => ({ ...ref, resourceId: lookup(ref.resourceId) }));
