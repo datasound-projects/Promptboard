@@ -135,7 +135,7 @@ one closes the others and keeps unsaved and unsent text. On phones the panel fil
 
 ```text
 Chat      { schema: "promptboard.origin-research", version: 1, id, originId, title, createdAt, updatedAt,
-            settings: { provider, model, effort, mode, web, scope }, native: { provider, sessionId } | null,
+            settings: { provider, model, effort, mode, web, skills, scope, targets? }, native: { provider, sessionId, contextHash } | null,
             sources: Source[], messages: Message[], proposals: Proposal[] }
 Message   { id, role: "user" | "assistant" | "agent", text, at, mode, agent?: { id, label, target },
             status: "done" | "stopped" | "failed", error?: { code, message }, citations?: Citation[], provider, model }
@@ -160,7 +160,7 @@ not needed work without code changes.
 ### Streaming events (NDJSON, server → page)
 
 ```text
-{ type: "start", runId, mode, agents: [{ id, label }] }
+{ type: "start", mode, agents: [{ id, label, status? }] }
 { type: "delta", agent, text }                     text as the CLI produces it
 { type: "activity", agent, kind, label }           web search, page fetch, tool use
 { type: "agent", agent, status, error? }           running | done | failed | stopped
@@ -173,11 +173,14 @@ not needed work without code changes.
 ### Source
 
 ```text
-{ id, type: "document" | "base" | "mcp", name, enabled, ref }
+{ id, type: "document", name, enabled, addedAt, documentId, from?, to? }
+{ id, type: "excerpt", name, enabled, addedAt, text }
+{ id, type: "base", name, enabled, addedAt, resourceId }
+{ id, type: "mcp", name, enabled, addedAt, config, library?, tools, resourceId? }
 ```
 
-`ref` holds an identifier only: a Compose document ID, a Base resource ID, or an MCP connection without secrets.
-Document text is never copied into the chat.
+A source holds identifiers only: a Compose document ID, a Base resource ID, or an MCP connection whose credentials are
+environment variable names. Document text is never copied into the chat; an excerpt keeps the text you pasted.
 
 ### Proposal (suggestion)
 
