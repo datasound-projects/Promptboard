@@ -13,7 +13,7 @@ const taskColumn = { scope: 'task-column', projectId: 'project_a', taskId: 'task
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(fn, label) { for (let n = 0; n < 100; n++) { if (fn()) return; await wait(10); } assert.fail(`Timed out: ${label}`); }
 
-function setup(t, { resources = [skill, pack], respond, savedView } = {}) {
+function setup(t, { resources = [skill, pack], respond, savedView, remote = false } = {}) {
   const dom = new JSDOM(html, { url: 'http://127.0.0.1:4318/#/base', runScripts: 'outside-only' });
   const win = dom.window;
   win.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
@@ -55,7 +55,7 @@ function setup(t, { resources = [skill, pack], respond, savedView } = {}) {
     if (path.startsWith('/api/runs/')) return response({ manifest: { resources: [{ resourceId: skill.id, name: skill.name, revision: 1, required: true, delivery: 'instruction' }], supplied: [{ resourceId: skill.id, delivery: 'instruction', hash: 'abc123', capturedAt: '2026-10-02T00:00:00Z' }], observed: [] } });
     return response({});
   };
-  const view = win.PromptboardBase.create({ api, announce: value => announcements.push(value), ensureBoard: async () => {}, refreshBoard: async () => {},
+  const view = win.PromptboardBase.create({ api, announce: value => announcements.push(value), ensureBoard: async () => {}, refreshBoard: async () => {}, remote: () => remote,
     agentFields: () => { const node = win.document.createElement('div'); node.textContent = 'Existing provider controls'; return node; }, readAgentFields: () => ({ provider: 'claude', model: 'fixture' }) });
   const clickText = (text, root = win.document) => { const node = [...root.querySelectorAll('button')].find(node => node.textContent === text || node.getAttribute('aria-label') === text || node.firstElementChild?.textContent === text); assert.ok(node, `button ${text}`); node.click(); return node; };
   const change = (node, value) => { node.value = value; node.dispatchEvent(new win.Event('change', { bubbles: true })); };
@@ -446,4 +446,17 @@ test('Base exports download the server’s compact bytes, and an indented earlie
   Object.defineProperty(input, 'files', { value: [new File([indented], 'promptboard-base.json')], configurable: true }); input.dispatchEvent(new win.Event('change'));
   await until(() => calls.some(call => call.path === '/api/base/import/preview'), 'indented export previewed');
   assert.deepEqual(calls.find(call => call.path === '/api/base/import/preview').body.data, exported);
+});
+
+test('on a paired phone the Base page does not offer the imports that read this computer’s files, and says where they are done', async t => {
+  for (const remote of [false, true]) {
+    const { $, view } = setup(t, { remote });
+    await view.show();
+    const menu = $('#base-actions .base-more'); menu.open = true; menu.dispatchEvent(new menu.ownerDocument.defaultView.Event('toggle'));
+    const shown = [...menu.querySelectorAll('.origin-menu-item')].filter(node => !node.hidden).map(node => node.textContent);
+    assert.equal(shown.includes('Import MCP servers…'), !remote); assert.equal(shown.includes('Import Markdown from a repository…'), !remote);
+    assert.ok(shown.includes('Import…') && shown.includes('Markdown file from a template…'), 'the other actions stay');
+    const note = [...menu.querySelectorAll('.note')].find(node => /done at the computer/.test(node.textContent));
+    assert.equal(note.hidden, !remote);
+  }
 });

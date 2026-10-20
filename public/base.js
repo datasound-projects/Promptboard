@@ -410,8 +410,12 @@ window.PromptboardBase = (() => {
     // Less frequent actions wait under More, so the row stays Create.
     const more = el('details', undefined, 'origin-menu base-more'), moreList = el('div', undefined, 'origin-menu-list');
     const item = (text, run) => button(text, () => { more.open = false; run(); }, 'origin-menu-item');
-    moreList.append(item('Import MCP servers…', openMcpImport), item('Markdown file from a template…', openMarkdownTemplates), item('Import Markdown from a repository…', openMarkdownImport),
-      item('Import…', openImport), item('Export…', () => openExport()), item('Context7 preset', createContext7));
+    // Reading Claude Desktop's configuration or a project folder happens at the computer: a paired phone is refused them.
+    const localOnly = [item('Import MCP servers…', openMcpImport), item('Import Markdown from a repository…', openMarkdownImport)], atComputer = p('Importing MCP servers or repository files is done at the computer that runs Promptboard.');
+    moreList.append(localOnly[0], item('Markdown file from a template…', openMarkdownTemplates), localOnly[1],
+      item('Import…', openImport), item('Export…', () => openExport()), item('Context7 preset', createContext7), atComputer);
+    const placeLocalOnly = () => { const remote = Boolean(context.remote?.()); for (const node of localOnly) node.hidden = remote; atComputer.hidden = !remote; };
+    more.addEventListener('toggle', placeLocalOnly); placeLocalOnly();
     more.append(el('summary', 'More', 'secondary-button'), moreList);
     $('#base-actions').append(kindSelect, button('Create', createResource), more, restoreGlobals);
 
