@@ -11,7 +11,7 @@ window.PromptboardProjects = (() => {
 
   function create(host) {
     const { api, announce } = host;
-    let projects = [], open = pref('promptboard.compose.project', ''), promptsFor = new Map(), loading = null, link = null, barBusy = false, barMessage = '', barAction = null, naming = false;
+    let projects = [], open = pref('promptboard.compose.project', ''), promptsFor = new Map(), loading = null, queued = null, link = null, barBusy = false, barMessage = '', barAction = null, naming = false;
     const call = async (path, options = {}) => {
       const { response, data } = await api(path, { timeoutMs: 120000, ...options }).catch(() => ({ response: { ok: false, status: 0 }, data: { error: 'The app did not answer. Nothing was changed.' } }));
       return { ok: response.ok, status: response.status, data };
@@ -33,14 +33,16 @@ window.PromptboardProjects = (() => {
     projectsTab.addEventListener('click', () => showTab('projects'));
     for (const tab of [historyTab, projectsTab]) tab.addEventListener('keydown', event => { if (['ArrowLeft', 'ArrowRight'].includes(event.key)) { event.preventDefault(); showTab(tab === historyTab ? 'projects' : 'history', true); } });
 
-    async function refresh() {
-      loading ??= (async () => {
+    // A refresh asked for while a list is loading (say, after creating a project) gets a list read after that change:
+    // one follow-up read, shared by every caller that asked meanwhile.
+    function refresh() {
+      if (loading) return queued ??= loading.catch(() => {}).then(() => { queued = null; return refresh(); });
+      return loading = (async () => {
         const { ok, data } = await call('/api/shared-projects');
         if (ok) projects = data.projects;
         if (open && projects.some(project => project.id === open)) await loadPrompts(open);
         renderProjects();
       })().finally(() => { loading = null; });
-      return loading;
     }
     async function loadPrompts(id) {
       const { ok, data } = await call(`/api/shared-projects/${encodeURIComponent(id)}/prompts`);
