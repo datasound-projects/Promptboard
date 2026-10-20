@@ -44,7 +44,8 @@ export const FIELDS = {
   layers: ['name', 'description', 'technologyIds', 'constraints'],
   customSections: ['phase', 'title', 'description', 'notApplicable'],
   questions: ['scope', 'sectionId', 'text'],
-  blocks: ['sectionId', 'type', 'title', 'text', 'entries', 'checks', 'columns', 'rows', 'nodes', 'edges'],
+  // `starter` only marks a template's block as untouched; it is bookkeeping, not design content.
+  blocks: ['sectionId', 'type', 'title', 'starter', 'text', 'entries', 'checks', 'columns', 'rows', 'nodes', 'edges'],
 };
 // `sequence` only reserves the next display key; it is application bookkeeping, not design content.
 // `structure` is the sidebar itself: the export follows it (categories, their pages, shown topics and vision fields).
@@ -77,12 +78,13 @@ function exporter(record) {
   };
   const inline = (value, where, fallback = '') => { const text = escapeInline(clean(value, where).replace(/\s+/g, ' ').trim()); return text || fallback; };
   const block = (value, where) => {
-    const text = clean(value, where).replace(/^\s*\n/, '').replace(/\s+$/, '');
+    // trimEnd, not /\s+$/: that regex rescans a long run of spaces from each of its positions.
+    const text = clean(value, where).replace(/^\s*\n/, '').trimEnd();
     if (!text.trim()) return '';
     return UNSAFE.test(text) ? fence(text) : text;
   };
   const listOf = (value, where) => {
-    const text = clean(value, where).replace(/\s+$/, '');
+    const text = clean(value, where).trimEnd();
     if (!text.trim()) return '';
     if (UNSAFE.test(text)) return fence(text);
     return text.split('\n').filter(line => line.trim()).map(line => `- ${line.replace(/^\s*(?:[-*•]|\d+[.)])\s+/, '').trim()}`).join('\n');

@@ -196,6 +196,7 @@ test('a chat’s history state: red while suggestions wait, orange when the late
 test('Create Context exports every block: tables as tables, flows as Mermaid, with no unsupported values', () => {
   const bp = blueprint();
   bp.blocks[1].nodes[0].x = 10; bp.blocks[1].nodes[0].y = 20;
+  bp.blocks[3].starter = M.blockFingerprint(bp.blocks[3]); // A template's starter mark is bookkeeping, not an unsupported value.
   const { markdown, unsupported } = exportProjectContext({ id: 'p1', name: 'RAG', description: '', kanbanProjectId: null, revision: 2, blueprint: bp });
   assert.deepEqual(unsupported, []);
   assert.match(markdown, /#### Table: Collections\n\n- \*\*Block ID:\*\* `tbl`/);

@@ -136,6 +136,20 @@ test('a document above the size limit fails visibly instead of being cut', () =>
   assert.equal(DOCUMENT_BYTES, 8 * 1024 * 1024);
 });
 
+test('1 MB of pasted text with long runs of spaces or colons exports in bounded time, secrets still redacted', async () => {
+  const { redactLocal } = await import('../src/compose-local.mjs');
+  const bp = Model.emptyBlueprint(), run = (head, fill) => `${head}${fill.repeat(19990 - head.length)}x`;
+  for (let index = 0; index < 50; index++) bp.requirements.push({ id: `r${index}`, title: `R${index}`, description: run(index % 2 ? 'password' : 'postgres://', index % 2 ? ' ' : ':'), acceptanceCriteria: 'token = sk-live-1' });
+  let started = Date.now();
+  const { markdown, redactions } = exportProjectContext(record(bp));
+  assert.ok(Date.now() - started < 3000, `export took ${Date.now() - started} ms`);
+  assert.ok(markdown.length > 1_000_000 && !markdown.includes('sk-live-1') && redactions.length === 50);
+  started = Date.now();
+  for (const text of [`token${' '.repeat(1 << 20)}x`, `a://${':'.repeat(1 << 20)}`, `secret '${' '.repeat(1 << 20)}`]) redactLocal(text);
+  assert.ok(Date.now() - started < 3000, `redaction of 3 MB took ${Date.now() - started} ms`);
+  assert.equal(redactLocal('password "  : hunter2 and redis://user:pw@host'), 'password "  : [redacted] and redis://[redacted]@host');
+});
+
 test('the store keeps the baseline, edits, candidates and older versions separately and atomically', async t => {
   const dir = await temp(t), store = new ContextStore(dir), source = record(full());
   const created = await store.create('proj1', source);

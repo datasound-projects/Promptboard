@@ -1580,12 +1580,12 @@ button.timeline-task:hover { text-decoration: underline; }
 
 /* Page frame */
 .workspace.origin-workspace { display: block; padding: 0 0 64px; min-height: calc(100dvh - var(--topbar)); }
-.origin-header { position: sticky; top: var(--topbar); z-index: 12; display: flex; align-items: center; justify-content: space-between; gap: 12px 20px; min-height: 60px; padding: 10px 32px; border-bottom: 1px solid var(--divider); background: color-mix(in srgb, var(--bg) 62%, transparent); backdrop-filter: blur(16px) saturate(1.2); }
+.origin-header { position: sticky; top: var(--topbar); z-index: 12; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 20px; min-height: 60px; padding: 10px 32px; border-bottom: 1px solid var(--divider); background: color-mix(in srgb, var(--bg) 62%, transparent); backdrop-filter: blur(16px) saturate(1.2); }
 .origin-project { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .origin-project-select { max-width: min(340px, 50vw); height: 36px; padding: 0 30px 0 10px; border: 1px solid transparent; border-radius: 10px; background: transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%238b8b95' stroke-width='1.7'%3E%3Cpath d='m6 8 4 4 4-4'/%3E%3C/svg%3E") no-repeat right 8px center / 16px; color: var(--ink); font-size: 16px; font-weight: 650; letter-spacing: -.01em; text-overflow: ellipsis; appearance: none; cursor: pointer; }
 .origin-project-select:hover { background-color: var(--og-glass-2); border-color: var(--line); }
 .origin-project-select option { background: var(--surface); color: var(--text); }
-.origin-header-status { display: flex; align-items: center; gap: 14px; }
+.origin-header-status { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
 .origin-pill { display: inline-flex; align-items: center; gap: 8px; height: 30px; padding: 0 12px; border: 1px solid var(--line); border-radius: 999px; background: var(--og-glass); color: var(--text); font-size: 12.5px; font-weight: 600; white-space: nowrap; }
 .origin-pill:hover { border-color: var(--line-strong); }
 .origin-pill-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--subtle); }
@@ -2081,11 +2081,10 @@ dialog.origin-modal.wide { width: min(980px, calc(100vw - 32px)); max-width: non
 @media (prefers-reduced-motion: reduce) { .origin-drawer { animation: none; } .origin-main, .origin-primary { transition: none; } }
 @media (max-width: 1100px) { .origin-panels { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 730px) {
-  .origin-header { flex-wrap: wrap; padding: 10px 16px; }
+  .origin-header { padding: 10px 16px; }
   .origin-project { flex-wrap: wrap; row-gap: 8px; }
   .origin-link-pill { max-width: 170px; }
   .origin-header-status .origin-save span:not(.origin-save-dot) { display: none; }
-  .origin-header-status { flex-wrap: wrap; row-gap: 8px; }
   .origin-research-label { display: none; }
   .origin-research-open { width: 34px; padding: 0; }
   .origin-main { padding: 26px 16px 32px; }
