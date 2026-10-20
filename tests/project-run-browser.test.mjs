@@ -82,7 +82,18 @@ test('when every card is done, Kanban shows how to run the project; the menu cop
   await ev(`document.querySelector('#task-dialog .task-open-editor').click();`);
   await wait(`/Zed opened the task’s worktree/.test(document.querySelector('#announcement').textContent)`, 'worktree opened');
   assert.deepEqual(editorCalls, [root, tree]);
-  await ev(`document.querySelector('#task-dialog').close(); document.querySelector('.workspace-menu-toggle').click();`);
+  // An editor that opened says so, also when its choice cannot be saved (here a folder takes the preferences backup's name).
+  await mkdir(join(root, '.apps', 'Cursor.app')); await mkdir(join(app.board.dataDir, 'editors.json.bak', 'taken'), { recursive: true });
+  await ev(`document.querySelector('#task-dialog').close();`); await browser.reload();
+  await wait(`!!document.querySelector('.workspace-menu-toggle')`, 'board after adding an editor');
+  await ev(`document.querySelector('.workspace-menu-toggle').click();`);
+  await wait(`[...document.querySelectorAll('.workspace-menu [role="menuitem"]')].some(b => b.textContent === 'Open in another IDE…')`, 'menu with the last editor');
+  await ev(`[...document.querySelectorAll('.workspace-menu [role="menuitem"]')].find(b => b.textContent === 'Open in another IDE…').click();`);
+  await wait(`[...document.querySelectorAll('.workspace-menu .workspace-editor')].some(b => b.textContent === 'CCursor')`, 'Cursor listed');
+  await ev(`[...document.querySelectorAll('.workspace-menu .workspace-editor')].find(b => b.textContent === 'CCursor').click();`);
+  await wait(`/Cursor opened Shop\\. Promptboard could not save this choice/.test(document.querySelector('#announcement').textContent)`, 'opened, choice not saved');
+  assert.deepEqual(editorCalls, [root, tree, root]);
+  await ev(`document.querySelector('.workspace-menu-toggle').click();`);
   await wait(`[...document.querySelectorAll('.workspace-menu [role="menuitem"]')].some(b => b.textContent === 'How to run…')`, 'menu again');
   await ev(`[...document.querySelectorAll('.workspace-menu [role="menuitem"]')].find(b => b.textContent === 'How to run…').click();`);
   await wait(`!document.querySelector('#project-run').hidden && /run Shop|How to run Shop/.test(document.querySelector('#project-run h3').textContent)`, 'shown on request');

@@ -8,7 +8,7 @@ import { access, readdir, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, delimiter, isAbsolute, join, win32 } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { writeAtomic } from './durable.mjs';
+import { readWithBackup, serial, writeAtomic } from './durable.mjs';
 
 const fail = (message, code, status = 400) => Object.assign(new Error(message), { code, status });
 // Built-in editors: macOS app names, Windows programs (under %LOCALAPPDATA% or %ProgramFiles%) and PATH commands.
@@ -96,20 +96,17 @@ async function customEditor(input, platform, previous) {
   return { id: typeof input.id === 'string' && previous.some(item => item.id === input.id) ? input.id : `custom-${randomUUID()}`, name, command, args };
 }
 export function editorPreferences(dataDir) {
-  const path = join(dataDir, FILE);
-  let queue = Promise.resolve();
+  const path = join(dataDir, FILE), queue = serial();
+  // A damaged file falls back to its backup; one that cannot be read is an error, never "no editors" for the next save to keep.
   const read = async () => {
-    try {
-      const data = JSON.parse(await readFile(path, 'utf8'));
-      return { preferred: typeof data.preferred === 'string' ? data.preferred : null, custom: Array.isArray(data.custom) ? data.custom.filter(item => item && typeof item.id === 'string' && typeof item.command === 'string').slice(0, LIMITS.custom) : [] };
-    } catch { return { preferred: null, custom: [] }; }
+    const data = await readWithBackup([path, `${path}.bak`], bytes => { try { const value = JSON.parse(bytes); return value && typeof value === 'object' ? value : undefined; } catch { return undefined; } }) || {};
+    return { preferred: typeof data.preferred === 'string' ? data.preferred : null, custom: Array.isArray(data.custom) ? data.custom.filter(item => item && typeof item.id === 'string' && typeof item.command === 'string').slice(0, LIMITS.custom) : [] };
   };
   const write = next => writeAtomic(path, `${JSON.stringify({ version: 1, ...next }, null, 1)}\n`);
-  const serial = run => { const next = queue.then(run, run); queue = next.catch(() => {}); return next; };
   return {
     read,
     /** Replace the editors added by hand and/or the preferred editor. */
-    update: ({ preferred, custom } = {}, { platform = process.platform } = {}) => serial(async () => {
+    update: ({ preferred, custom } = {}, { platform = process.platform } = {}) => queue(async () => {
       const current = await read();
       const next = { ...current };
       if (custom !== undefined) {
@@ -121,7 +118,7 @@ export function editorPreferences(dataDir) {
       await write(next);
       return next;
     }),
-    remember: preferred => serial(async () => { const current = await read(); if (current.preferred !== preferred) await write({ ...current, preferred }); }),
+    remember: preferred => queue(async () => { const current = await read(); if (current.preferred !== preferred) await write({ ...current, preferred }); }),
   };
 }
 
@@ -189,6 +186,7 @@ export async function openInEditor(project, { editor: id, taskId } = {}, { prefe
       child.once('spawn', () => { child.unref(); resolve(); });
     });
   }
-  await preferences.remember(editor.id);
-  return { opened: editor.id, name: editor.name, folder: basename(folder), worktree: Boolean(taskId) };
+  // The editor is open: a choice that cannot be saved (a read-only data folder) is reported, not a failed open.
+  const remembered = await preferences.remember(editor.id).then(() => true, () => false);
+  return { opened: editor.id, name: editor.name, folder: basename(folder), worktree: Boolean(taskId), remembered };
 }

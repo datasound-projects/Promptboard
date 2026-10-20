@@ -34,8 +34,10 @@ export async function gh(args, { cwd, timeoutMs = 120000, maxBuffer = 8 * 1024 *
   });
 }
 
-const authProblem = stderr => /auth login|not logged in|bad credentials|401|authentication/i.test(stderr || '');
-const networkProblem = stderr => /could not resolve host|no such host|dial tcp|network is unreachable|timed? ?out|connection refused/i.test(stderr || '');
+// Phrases with a space only: gh repeats the repository name in its errors, and a name ("acme/timeout") has no spaces.
+const authProblem = stderr => /auth login|not logged in|bad credentials|HTTP 401|requires authentication|authentication (?:failed|required)/i.test(stderr || '');
+const networkProblem = stderr => /could not resolve host|no such host|dial tcp|network is unreachable|timed out|i\/o timeout|handshake timeout|deadline exceeded|connection refused/i.test(stderr || '');
+const rateLimited = stderr => /rate limit|HTTP 429/i.test(stderr || '');
 
 /** { installed, state: 'connected' | 'not_connected' | 'needs_attention', user, message }. */
 export async function githubStatus() {
@@ -46,7 +48,8 @@ export async function githubStatus() {
     const login = typeof user?.login === 'string' && LOGIN.test(user.login) ? user.login : '';
     return { installed: true, state: login ? 'connected' : 'needs_attention', user: login, message: login ? '' : 'GitHub returned no user name.' };
   } catch (error) {
-    // Not signed in at all is "not connected"; an expired sign-in or no network needs attention.
+    // Not signed in at all is "not connected"; an expired sign-in, no network or a rate limit needs attention.
+    if (rateLimited(error.stderr)) return { installed: true, state: 'needs_attention', user: '', message: 'GitHub’s rate limit for this account was reached. Wait a few minutes, then check again.' };
     const signedIn = await gh(['auth', 'status', '--hostname', 'github.com'], { timeoutMs: 15000 }).then(() => true, () => false);
     if (!signedIn) return { installed: true, state: 'not_connected', user: '', message: 'The GitHub CLI is not signed in.' };
     return { installed: true, state: 'needs_attention', user: '', message: networkProblem(error.stderr) ? 'GitHub could not be reached. Check your network, then check again.' : authProblem(error.stderr) ? 'The GitHub sign-in expired or was revoked. Connect GitHub again.' : 'GitHub did not answer. Check again later.' };
@@ -131,6 +134,7 @@ export async function viewRepository(name) {
 
 function ghFailure(error, fallback) {
   if (error.missing) return fail('Install the GitHub CLI (gh) to use GitHub.', 'GH_MISSING');
+  if (rateLimited(error.stderr)) return fail('GitHub’s rate limit for this account was reached. Wait a few minutes, then try again. Your local work is safe.', 'GH_RATE_LIMITED');
   if (authProblem(error.stderr)) return fail('The GitHub CLI is not signed in, or its sign-in expired. Connect GitHub in Settings.', 'GH_AUTH');
   if (networkProblem(error.stderr)) return fail('GitHub could not be reached. Check your network, then try again. Your local work is safe.', 'GH_NETWORK');
   return fail(fallback, 'GH_FAILED');

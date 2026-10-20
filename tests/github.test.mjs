@@ -90,6 +90,18 @@ test('connect: managed clone in the data folder, linked, target branch set; fetc
   assert.ok(!(await gh.log()).some(args => args.includes('logout')), 'Disconnecting never signs gh out.');
 });
 
+test('a rate limit is reported as one, and a repository name that reads like an error is still "not found"', { skip }, async t => {
+  const gh = await fakeGh(t);
+  const board = new Board({ dataDir: await temp(t, 'pb-gh-data-') });
+  const project = await board.createProject({ name: 'App' });
+  // gh repeats the name it could not find.
+  for (const name of ['acme/authentication', 'acme/api-401', 'acme/timeout']) await assert.rejects(board.connectGitHub(project.id, { repository: name, expectedRevision: 1 }), { code: 'GH_FAILED' }, name);
+  await gh.setMode('ratelimited');
+  await assert.rejects(listRepositories(), { code: 'GH_RATE_LIMITED', message: /rate limit/ });
+  await assert.rejects(board.connectGitHub(project.id, { repository: 'acme/app', expectedRevision: 1 }), { code: 'GH_RATE_LIMITED' });
+  assert.deepEqual(await githubStatus(), { installed: true, state: 'needs_attention', user: '', message: 'GitHub’s rate limit for this account was reached. Wait a few minutes, then check again.' });
+});
+
 test('a folder that is not a clone of the repository is never reused or changed', { skip }, async t => {
   await fakeGh(t);
   const dataDir = await temp(t, 'pb-gh-data-');

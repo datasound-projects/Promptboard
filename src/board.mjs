@@ -20,6 +20,7 @@ import { validateEffort } from './providers.mjs';
 import { Delivery } from './delivery.mjs';
 import { clonePath, ensureClone, fastForward, fetchAndCompare, originRepository, viewRepository } from './github.mjs';
 import { externalIssueSource } from './external-source.mjs';
+import { nameKey } from './projects.mjs';
 import { buildTimeline } from './timeline.mjs';
 import { Base, normalizeBinding, listTargets, remapBaseScopes } from './base.mjs';
 import { checkBaseRevocations, deliveryFor, profileDefaults, resolveBase } from './base-resolver.mjs';
@@ -377,8 +378,8 @@ export function normalizeRoute(route, finish = 'merge') {
  * uses gets “Name (2)”, “Name (3)”, …. `originProjects` are Origin records ({ id, name, kanbanProjectId }).
  */
 function freeName(incoming, originProjects, boardNames) {
-  const taken = name => boardNames.some(used => used.toLowerCase() === name.toLowerCase())
-    || originProjects.some(record => record.id !== incoming.id && record.kanbanProjectId !== incoming.id && record.name.trim().toLowerCase() === name.toLowerCase());
+  const taken = name => boardNames.some(used => nameKey(used) === nameKey(name))
+    || originProjects.some(record => record.id !== incoming.id && record.kanbanProjectId !== incoming.id && nameKey(record.name) === nameKey(name));
   let name = incoming.name;
   for (let n = 2; taken(name); n++) name = `${incoming.name.slice(0, 74)} (${n})`;
   return name;
@@ -780,7 +781,7 @@ export class Board {
     return projects.some(project => project.tasks.some(task => task.workspace || this.#activeRun(state, task.id)));
   }
   #nameError(state, name, exceptId) {
-    if (state.projects.some(project => project.id !== exceptId && project.name.toLowerCase() === name.toLowerCase())) throw conflict('A project with this name already exists.', 'NAME_TAKEN');
+    if (state.projects.some(project => project.id !== exceptId && nameKey(project.name) === nameKey(name))) throw conflict('A project with this name already exists.', 'NAME_TAKEN');
   }
 
   /** Everything createProject refuses. createProjectWithRepository checks it before any Git command runs. */
@@ -820,12 +821,13 @@ export class Board {
     if (folder === 'new') {
       await mkdir(this.projectsDir, { recursive: true });
       const base = clean.normalize('NFC').replace(/[\\/:*?"<>|\u0000-\u001f]+/g, '-').replace(/^[.\s-]+|[.\s]+$/g, '').slice(0, 80) || 'project';
+      const root = await realpath(this.projectsDir);
+      // mkdir itself is the check, so two projects created at once never share a folder.
       for (let n = 1; ; n++) {
         if (n > 100) throw new BoardError('Could not find a free folder name for this project.', 'FOLDER_UNAVAILABLE', 409);
-        path = join(await realpath(this.projectsDir), n === 1 ? base : `${base} ${n}`);
-        if (!(await access(path).then(() => true, () => false))) break;
+        path = join(root, n === 1 ? base : `${base} ${n}`);
+        if (await mkdir(path).then(() => true, error => { if (error.code !== 'EEXIST') throw error; return false; })) break;
       }
-      await mkdir(path);
       created = true;
     } else {
       if (typeof folder !== 'string' || !isAbsolute(folder.trim())) throw new BoardError('Choose the absolute path of the project folder.', 'INVALID_PATH');
