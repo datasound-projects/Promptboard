@@ -1,14 +1,14 @@
 import { spawn } from 'node:child_process';
 import { constants, rmSync } from 'node:fs';
-import { access, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { delimiter, isAbsolute, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 const PROVIDERS = Object.freeze({
-  codex: { name: 'Codex CLI', packageEntry: ['@openai', 'codex', 'bin', 'codex.js'] },
-  claude: { name: 'Claude Code', packageEntry: ['@anthropic-ai', 'claude-code', 'cli.js'] },
-  agy: { name: 'Antigravity CLI', packageEntry: [] },
-  gemini: { name: 'Gemini CLI', packageEntry: ['@google', 'gemini-cli', 'dist', 'index.js'] },
+  codex: { name: 'Codex CLI', npmPackage: ['@openai', 'codex'] },
+  claude: { name: 'Claude Code', npmPackage: ['@anthropic-ai', 'claude-code'] },
+  agy: { name: 'Antigravity CLI', npmPackage: [] },
+  gemini: { name: 'Gemini CLI', npmPackage: ['@google', 'gemini-cli'] },
 });
 const MAX_INPUT = 2 * 1024 * 1024;
 const MAX_STDOUT = 2 * 1024 * 1024;
@@ -109,13 +109,22 @@ export async function resolveExecutable(provider) {
   for (const dir of (process.env.PATH || '').split(delimiter).filter(isAbsolute)) {
     const path = join(dir, provider + (process.platform === 'win32' ? '.exe' : ''));
     if (await isExecutable(path)) return { command: path, prefix: [] };
-    if (process.platform === 'win32' && PROVIDERS[provider].packageEntry.length) {
-      // npm .cmd files need a shell. Use the known package's JS entry instead.
-      const entry = join(dir, 'node_modules', ...PROVIDERS[provider].packageEntry);
-      if (await isExecutable(entry)) return { command: process.execPath, prefix: [entry] };
+    if (process.platform === 'win32' && PROVIDERS[provider].npmPackage.length) {
+      // npm .cmd files need a shell. Run what the .cmd runs: the entry the package's own `bin` names
+      // (Claude Code now ships an .exe, Gemini a bundle; both changed paths across releases).
+      const found = await npmEntry(join(dir, 'node_modules', ...PROVIDERS[provider].npmPackage), provider);
+      if (found) return found;
     }
   }
   return null;
+}
+async function npmEntry(root, name) {
+  let relative;
+  try { relative = JSON.parse(await readFile(join(root, 'package.json'), 'utf8')).bin?.[name]; } catch { return null; }
+  if (typeof relative !== 'string' || isAbsolute(relative) || relative.split(/[\\/]/).includes('..')) return null;
+  const entry = join(root, relative);
+  if (!(await isExecutable(entry))) return null;
+  return /\.exe$/i.test(entry) ? { command: entry, prefix: [] } : /\.[cm]?js$/i.test(entry) ? { command: process.execPath, prefix: [entry] } : null;
 }
 
 export function stopProcess(child, signal = 'SIGTERM') {
@@ -268,19 +277,20 @@ export function execute({ command, args, cwd, input = '', signal, timeoutMs, max
 // Some CLIs take seconds to print their version when the machine is busy. A slow check of an executable that
 // already answered keeps its last result instead of making an installed CLI disappear.
 const versionsFound = new Map();
-export async function detectProviders({ timeoutMs = 15000 } = {}) {
+// `paths` (for --doctor) adds the executable that runs, which tells several installs apart. The page never gets it.
+export async function detectProviders({ timeoutMs = 15000, paths = false } = {}) {
   return Promise.all(Object.entries(PROVIDERS).map(async ([id, definition]) => {
     const resolved = await resolveExecutable(id);
     if (!resolved) return { id, name: definition.name, available: false, reason: 'Install this CLI and add it to PATH.' };
-    const executable = JSON.stringify([resolved.command, ...resolved.prefix]);
+    const executable = JSON.stringify([resolved.command, ...resolved.prefix]), where = paths ? { path: resolved.prefix[0] || resolved.command } : {};
     try {
       const result = await execute({ command: resolved.command, args: [...resolved.prefix, '--version'], timeoutMs, maxStdout: 8192, maxStderr: 8192 });
       const found = { id, name: definition.name, available: true, version: result.stdout.trim().slice(0, 160) || 'Installed' };
       versionsFound.set(executable, found);
-      return found;
+      return { ...found, ...where };
     } catch (error) {
-      if (error?.code === 'TIMEOUT' && versionsFound.has(executable)) return versionsFound.get(executable);
-      return { id, name: definition.name, available: false, reason: error?.code === 'TIMEOUT' ? 'The CLI version check timed out. Check its installation.' : 'The CLI version check failed. Check its installation.' };
+      if (error?.code === 'TIMEOUT' && versionsFound.has(executable)) return { ...versionsFound.get(executable), ...where };
+      return { id, name: definition.name, available: false, ...where, reason: error?.code === 'TIMEOUT' ? 'The CLI version check timed out. Check its installation.' : 'The CLI version check failed. Check its installation.' };
     }
   }));
 }

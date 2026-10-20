@@ -55,7 +55,7 @@ async function main() {
   if (options.help) return console.log(help);
   if (options.version) return console.log(VERSION);
   if (options.doctor) {
-    for (const item of await detectProviders()) console.log(`${item.name}: ${item.available ? item.version || 'installed' : item.reason || 'not installed'}`);
+    for (const item of await detectProviders({ paths: true })) console.log(`${item.name}: ${item.available ? item.version || 'installed' : item.reason || 'not installed'}${item.path ? ` · ${item.path}` : ''}`);
     return;
   }
   if (options.gui || (args.length === 0 && process.stdin.isTTY)) {

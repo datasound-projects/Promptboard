@@ -1,12 +1,12 @@
 import { realpath as resolveRealPath } from 'node:fs/promises';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { EventEmitter } from 'node:events';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
-import { buildCommand, detectProviders, killPidGroup, parseProviderOutput, runProvider } from '../src/providers.mjs';
+import { buildCommand, detectProviders, killPidGroup, parseProviderOutput, resolveExecutable, runProvider } from '../src/providers.mjs';
 
 test('CLI commands narrow permissions and keep model values separate', () => {
   const codex = buildCommand({ provider: 'codex', model: 'custom/model-v1' });
@@ -289,4 +289,30 @@ test('a slow version check keeps a CLI that already answered; a first check that
     if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath;
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test('Windows npm installs run the entry each package names in its bin field, as its .cmd shim does', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'ste-provider-npm-')), oldPath = process.env.PATH, platform = Object.getOwnPropertyDescriptor(process, 'platform');
+  t.after(async () => { Object.defineProperty(process, 'platform', platform); if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath; await rm(dir, { recursive: true, force: true }); });
+  // Current package layouts: Claude Code ships a native .exe, Gemini a bundle, Codex a JS launcher.
+  const install = async (scope, name, bin, entry) => {
+    const root = join(dir, 'node_modules', scope, name);
+    await mkdir(join(root, entry, '..'), { recursive: true });
+    await writeFile(join(root, 'package.json'), JSON.stringify({ name: `${scope}/${name}`, bin: { [bin]: entry } }));
+    await writeFile(join(root, entry), '');
+    await writeFile(join(dir, `${bin}.cmd`), '@ECHO off');
+    return join(root, entry);
+  };
+  const claude = await install('@anthropic-ai', 'claude-code', 'claude', 'bin/claude.exe');
+  const gemini = await install('@google', 'gemini-cli', 'gemini', 'bundle/gemini.js');
+  const codex = await install('@openai', 'codex', 'codex', 'bin/codex.js');
+  process.env.PATH = dir;
+  Object.defineProperty(process, 'platform', { ...platform, value: 'win32' });
+  assert.deepEqual(await resolveExecutable('claude'), { command: claude, prefix: [] });
+  assert.deepEqual(await resolveExecutable('gemini'), { command: process.execPath, prefix: [gemini] });
+  assert.deepEqual(await resolveExecutable('codex'), { command: process.execPath, prefix: [codex] });
+  // A bin entry that leaves its package is never run.
+  await writeFile(join(dir, 'node_modules', '@openai', 'codex', 'package.json'), JSON.stringify({ bin: { codex: '../../../evil.js' } }));
+  await writeFile(join(dir, 'evil.js'), '');
+  assert.equal(await resolveExecutable('codex'), null);
 });
