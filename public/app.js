@@ -356,18 +356,36 @@ function updateProviderState() {
     : `${providerInfo[$('#provider').value]?.name || 'This CLI'} is not available. Open “Connect a CLI” for setup.`;
 }
 
-async function loadProviders() {
-  try {
-    // The session token comes first: every other API route, including the CLI check, requires it.
-    const sessionResponse = await fetch('/api/session', { cache: 'no-store' });
-    if (sessionResponse.status === 401) { location.replace('/remote'); return; } // A remote device that must pair again.
-    if (!sessionResponse.ok) throw new Error('The local server could not report its status.');
-    const session = await sessionResponse.json();
+// The session token comes first: every other API route, including the CLI check, requires it.
+// One read at a time: requests that find the token expired all wait for the same answer. False: a phone pairs again.
+let sessionRead = null;
+function readSession() {
+  return sessionRead ??= (async () => {
+    const response = await fetch('/api/session', { cache: 'no-store' });
+    if (response.status === 401) { location.replace('/remote'); return false; } // A remote device that must pair again.
+    if (!response.ok) throw new Error('The local server could not report its status.');
+    const session = await response.json();
     token = safeText(session.token, 1000);
     remoteSession = session.remote && typeof session.remote.name === 'string' ? { name: safeText(session.remote.name, 60) } : null; // A paired phone.
     serverPlatform = safeText(session.platform, 20);
     if (!token) throw new Error('The local server did not return a session token.');
-    const providerResponse = await fetch('/api/providers', { cache: 'no-store', headers: { 'x-ste-token': token } });
+    return true;
+  })().finally(() => { sessionRead = null; });
+}
+// Every request with the token goes through here. A restarted app has a new token: its refusal (403 SESSION_EXPIRED)
+// reads the session again and sends the request once more. Safe: the server checks the token before any work.
+async function tokenFetch(path, init = {}) {
+  const sent = token, send = () => fetch(path, { ...init, headers: { ...init.headers, 'X-STE-Token': token } });
+  const response = await send();
+  if (response.status !== 403 || (await response.clone().json().catch(() => null))?.code !== 'SESSION_EXPIRED') return response;
+  if (token === sent && !await readSession()) return response;
+  return send();
+}
+
+async function loadProviders() {
+  try {
+    if (!await readSession()) return;
+    const providerResponse = await tokenFetch('/api/providers', { cache: 'no-store' });
     if (!providerResponse.ok) throw new Error('The local server could not report its status.');
     const status = await providerResponse.json();
     providers = Array.isArray(status.providers) ? status.providers.filter((item) => item && KNOWN_PROVIDERS.includes(item.id)) : [];
@@ -537,8 +555,8 @@ async function api(path, { method = 'GET', body, timeoutMs = 20000, signal, comp
   signal?.addEventListener('abort', forward, { once: true });
   if (signal?.aborted) forward();
   try {
-    const response = await fetch(path, { method, cache: 'no-store', signal: controller.signal,
-      headers: { 'X-STE-Token': token, ...(requestId || cancellation ? { 'X-STE-Compose-Id': requestId || cancellation.id } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+    const response = await tokenFetch(path, { method, cache: 'no-store', signal: controller.signal,
+      headers: { ...(requestId || cancellation ? { 'X-STE-Compose-Id': requestId || cancellation.id } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
     let data = {};
     try { data = await response.json(); } catch {}
     // A paired phone whose device was revoked or expired pairs again; nothing else on the page can work meanwhile.
@@ -828,8 +846,8 @@ async function generate(event) {
     $('#verification-status').hidden = true;
     $('#verification-report').hidden = true;
     announce('Your CLI is engineering the prompt.');
-    const response = await fetch('/api/generate', {
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-STE-Token': token, 'X-STE-Compose-Id': cancellation.id },
+    const response = await tokenFetch('/api/generate', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-STE-Compose-Id': cancellation.id },
       body: JSON.stringify(request), signal: ownController.signal,
     }).catch(error => { throw offline(error); });
     let data;
@@ -869,7 +887,6 @@ async function generate(event) {
       $('#generation-error').textContent = error.message || 'Generation failed. Your input is kept. Please try again.';
       $('#generation-error').hidden = false;
       if (failureCode === 'AUTH_REQUIRED') loadAuth();
-      if (!failureCode && /token|session|403/i.test(error.message || '')) await loadProviders();
     }
   } finally {
     cancellation.dispose();
@@ -991,7 +1008,7 @@ async function uploadContextDocument() {
   const own = new AbortController(); const cancellation = composeCancellation(own); controller = own; setRunning(true); startProgress(); contextError();
   const timer = setTimeout(() => own.abort(), 65000);
   try {
-    const response = await fetch(`/api/compose/sources/document?${params}`, { method: 'POST', headers: { 'X-STE-Token': token, 'X-STE-Compose-Id': cancellation.id, 'Content-Type': file.type || (/\.pdf$/i.test(file.name) ? 'application/pdf' : 'text/plain') }, body: file, signal: own.signal });
+    const response = await tokenFetch(`/api/compose/sources/document?${params}`, { method: 'POST', headers: { 'X-STE-Compose-Id': cancellation.id, 'Content-Type': file.type || (/\.pdf$/i.test(file.name) ? 'application/pdf' : 'text/plain') }, body: file, signal: own.signal });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'Document preparation failed.');
     const doc = data.document;
@@ -1412,7 +1429,7 @@ async function attachComposeContext({ name, text, label }) {
   if (contextState.sources.length >= 8) return 'Compose already has eight sources. Remove one there first.';
   const own = new AbortController(); const cancellation = composeCancellation(own); controller = own; setRunning(true); startProgress(); contextError();
   try {
-    const response = await fetch(`/api/compose/sources/document?${new URLSearchParams({ name })}`, { method: 'POST', headers: { 'X-STE-Token': token, 'X-STE-Compose-Id': cancellation.id, 'Content-Type': 'text/markdown' }, body: text, signal: own.signal });
+    const response = await tokenFetch(`/api/compose/sources/document?${new URLSearchParams({ name })}`, { method: 'POST', headers: { 'X-STE-Compose-Id': cancellation.id, 'Content-Type': 'text/markdown' }, body: text, signal: own.signal });
     const data = await response.json();
     if (!response.ok) return data.error || 'The document could not be attached to Compose.';
     addContextSource({ type: 'document', id: data.document.id }, label);
@@ -1528,7 +1545,7 @@ function acceptBoard(next) { if (!board || !Number.isInteger(next?.revision) || 
 
 async function loadBoard({ ifChanged = false } = {}) {
   if (!token) return;
-  const previousRevision = board?.revision;
+  const previousRevision = board?.revision, previousInstance = board?.instance;
   boardLoading ??= (async () => {
     try {
       // A background poll names the board it holds; the server answers { unchanged: true } instead of resending it.
@@ -1545,7 +1562,7 @@ async function loadBoard({ ifChanged = false } = {}) {
       await migrateBrowserBoard();
     } catch (error) {
       showLoadWarning(`The board could not be loaded. ${error.message}`);
-    } finally { boardLoading = null; if (!ifChanged || board?.revision !== previousRevision) renderBoard(); }
+    } finally { boardLoading = null; if (!ifChanged || board?.revision !== previousRevision || board?.instance !== previousInstance) renderBoard(); }
   })();
   return boardLoading;
 }
@@ -5762,7 +5779,7 @@ function saveServerSettings(change) {
   settingsSaveQueue = settingsSaveQueue.then(save, save);
   return settingsSaveQueue;
 }
-const browserNotifications = window.PromptboardNotifications ? new window.PromptboardNotifications({ token: () => token, onChange: renderNotificationSettings,
+const browserNotifications = window.PromptboardNotifications ? new window.PromptboardNotifications({ token: () => token, fetch: tokenFetch, onChange: renderNotificationSettings,
   onOpen: async ({ projectId, taskId }) => {
     await loadBoard();
     const project = board?.projects.find(item => item.id === projectId);
@@ -5993,7 +6010,7 @@ function renderRemoteAccess() {
   // On the phone itself: who this device is, and how to leave. Remote access is never changed from a remote device.
   if (remoteSession) {
     nodes.push(paragraph(`You are using Promptboard remotely as “${remoteSession.name}”, with the same control as at the computer. Agents, CLIs and Git run there: closing Safari or locking the phone stops nothing.`, 'note'),
-      detailActions(detailButton('Sign out this device', async () => { await fetch('/api/remote/logout', { method: 'POST', headers: { 'X-STE-Token': token } }).catch(() => {}); location.replace('/remote'); }, 'secondary-button')));
+      detailActions(detailButton('Sign out this device', async () => { await tokenFetch('/api/remote/logout', { method: 'POST' }).catch(() => {}); location.replace('/remote'); }, 'secondary-button')));
     box.replaceChildren(legend, ...nodes); return;
   }
   const st = remoteAccess.status;
@@ -6120,9 +6137,9 @@ originView = window.PromptboardOrigin?.create({ api, announce, closeSidebar: () 
   openKanban: (projectId, taskId) => { if (projectId) setSelectedProject(projectId); location.hash = '#/kanban'; if (taskId) setTimeout(() => void openTaskDetails(taskId), 0); },
   openPrompt: (projectId, promptId) => projectsView?.openPrompt(projectId, promptId),
   // Research streams NDJSON events: the raw response is read as it arrives. The token stays in a header.
-  streamApi: (path, body, { signal } = {}) => fetch(path, { method: 'POST', cache: 'no-store', signal, headers: { 'X-STE-Token': token, 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+  streamApi: (path, body, { signal } = {}) => tokenFetch(path, { method: 'POST', cache: 'no-store', signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
   // Research documents use Compose's own upload and extraction route.
-  uploadApi: (path, file, { signal } = {}) => fetch(path, { method: 'POST', cache: 'no-store', signal, headers: { 'X-STE-Token': token, 'Content-Type': file.type || (/\.pdf$/i.test(file.name) ? 'application/pdf' : 'text/plain') }, body: file }) }) || null;
+  uploadApi: (path, file, { signal } = {}) => tokenFetch(path, { method: 'POST', cache: 'no-store', signal, headers: { 'Content-Type': file.type || (/\.pdf$/i.test(file.name) ? 'application/pdf' : 'text/plain') }, body: file }) }) || null;
 // Shared projects: optional saved prompts beside History, with links back to Origin and Kanban.
 projectsView = window.PromptboardProjects?.create({ api, announce, getResult: () => currentResult, running: () => running,
   settingsOf: entry => ({ provider: entry.provider, model: entry.model, effort: entry.effort, language: entry.language, quality: entry.quality, task: entry.task, detail: entry.detail, options: entry.options, terminology: entry.terminology }),

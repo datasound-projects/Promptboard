@@ -39,7 +39,7 @@ test('Kanban model selection keeps CLI default while discovery is pending and ig
   assert.equal($('#project-agent-fields [data-field="model-custom"]').value, '', 'Switching provider clears its custom model.');
 });
 
-test('a terminal whose app restarted stops retrying and asks for a reload', { skip: process.platform === 'win32' }, async t => {
+test('a terminal whose stream is refused (not an expired session) stops retrying and asks for a reload', { skip: process.platform === 'win32' }, async t => {
   const ctx = await linkedKanban(t);
   const { $, win } = ctx;
   await link(ctx);
@@ -48,7 +48,7 @@ test('a terminal whose app restarted stops retrying and asks for a reload', { sk
   const now = Date.now();
   await ctx.app.board.store.update(state => state.runs.push({ id: 'live-run', taskId: task.id, projectId: ctx.project.id, stage: 'executing', status: 'running', createdAt: now, updatedAt: now,
     config: { provider: 'codex', model: 'codex-one' }, branch: 'promptboard/live', workspacePath: '/tmp/live-worktree', artifactsDir: 'runs/live-run' }));
-  // What a page sees after the app restarted with a new session token.
+  // A refusal the session read cannot fix (no SESSION_EXPIRED code): no retry loop.
   let streams = 0;
   const pass = win.fetch;
   win.fetch = (url, options) => (/\/stream\?/.test(url) ? (streams++, Promise.resolve(new Response(JSON.stringify({ error: 'Reload this page before you try again.' }), { status: 403 }))) : pass(url, options));
@@ -58,6 +58,67 @@ test('a terminal whose app restarted stops retrying and asks for a reload', { sk
   await new Promise(resolve => setTimeout(resolve, 2500));
   assert.equal(streams, 1, 'no retry every second');
   win.fetch = pass;
+});
+
+test('after a real app restart (new token and instance) the board poll, a card save and the run stream keep working without a reload', { skip: process.platform === 'win32' }, async t => {
+  const ctx = await agentFixture(t);
+  const { $, win } = ctx;
+  const port = Number(new URL(ctx.app.url).port), subscribed = [], seen = [];
+  ctx.executor.subscribe = (runId, _after, sink) => { subscribed.push(runId); sink.write({ ping: true }); return () => {}; };
+  const pass = win.fetch;
+  win.fetch = async (url, options = {}) => { const response = await pass(url, options); seen.push({ url: String(url), method: options.method || 'GET', status: response.status }); return response; };
+  // Only one path talks to the server at each restart, so each one must recover the token by itself.
+  for (const session of [...win.promptboardDock.sessions.values()]) session.tab.querySelector('.tab-close').click();
+  let app = ctx.app;
+  const restart = async () => {
+    await app.close(); seen.length = 0;
+    app = await startServer({ port, dataDir: ctx.dataDir, executor: ctx.executor, authAdapter: ctx.authAdapter, detector: async () => [], catalogReader: async provider => ({ provider, models: [] }) });
+    ctx.executor.board = app.board;
+  };
+  const refused = path => seen.filter(row => row.url.startsWith(path) && row.status === 403).length;
+  const sessionReads = () => seen.filter(row => row.url === '/api/session').length;
+  const serverToken = async () => (await (await fetch(`${app.url}/api/session`)).json()).token;
+  try {
+    const before = win.__pbTest.token;
+    await restart();
+    await app.board.createTask({ projectId: ctx.flow.id, title: 'Made after restart', prompt: 'Shown by the next poll.' });
+    await win.__pbTest.loadBoard({ ifChanged: true }); await ctx.idle();
+    assert.equal(refused('/api/board?since='), 1, 'the poll was refused once with the old token');
+    assert.equal(sessionReads(), 1);
+    assert.notEqual(win.__pbTest.token, before); assert.equal(win.__pbTest.token, await serverToken());
+    assert.equal($('#kanban-load-warning').hidden, true, $('#kanban-load-warning').textContent);
+    assert.ok(cardItem(ctx, 'Made after restart'), 'the new instance gives a full board');
+
+    await restart();
+    await newCard(ctx, 'Saved after restart', 'Works.');
+    assert.equal(seen.filter(row => row.url === '/api/tasks' && row.method === 'POST').map(row => row.status).join(), '403,200');
+    assert.equal(sessionReads(), 1);
+    assert.ok((await app.board.view()).projects.find(project => project.id === ctx.flow.id).tasks.some(task => task.title === 'Saved after restart'));
+    assert.ok(cardItem(ctx, 'Saved after restart'));
+
+    const now = Date.now();
+    await app.board.store.update(state => state.runs.push({ id: 'run-live', taskId: ctx.tasks.a, projectId: ctx.flow.id, stage: 'executing', status: 'running', createdAt: now, updatedAt: now,
+      config: { provider: 'claude', model: 'opus' }, branch: 'promptboard/live', workspacePath: '/tmp/wt-live', artifactsDir: 'runs/run-live' }));
+    await win.__pbTest.loadBoard(); await ctx.idle();
+    const session = win.promptboardDock.sessions.get('run-live');
+    await until(() => session.connection === 'connected', 'stream connected');
+    subscribed.length = 0;
+    await restart();
+    await until(() => subscribed.includes('run-live') && session.connection === 'connected', 'stream reconnected with the new token');
+    assert.equal(refused('/api/runs/run-live/stream'), 1);
+    assert.equal(sessionReads(), 1);
+  } finally { win.fetch = pass; await app.close(); }
+});
+
+test('a 403 that is not the expired-session refusal is shown and never resent or answered with a session read', { skip: process.platform === 'win32' }, async t => {
+  const ctx = await linkedKanban(t);
+  const { $, win } = ctx;
+  const pass = win.fetch, seen = [];
+  win.fetch = (url, options) => { seen.push(String(url)); return String(url).startsWith('/api/board') ? Promise.resolve(Response.json({ error: 'This origin is not allowed.' }, { status: 403 })) : pass(url, options); };
+  try { await win.__pbTest.loadBoard(); await ctx.idle(); } finally { win.fetch = pass; }
+  assert.equal(seen.filter(url => url.startsWith('/api/board')).length, 1);
+  assert.equal(seen.filter(url => url === '/api/session').length, 0);
+  assert.match($('#kanban-load-warning').textContent, /This origin is not allowed/);
 });
 
 test('ended agent output is available after a restart and remains readable without terminal graphics', { skip: process.platform === 'win32' }, async t => {

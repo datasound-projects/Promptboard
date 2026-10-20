@@ -2,7 +2,7 @@
 // Terminal dock (PB-03). Agent sessions are owned by the server; this page only shows them.
 // Terminal output is untrusted data. It is written to xterm, or to a <pre> through
 // textContent, and never parsed as HTML. Links are never opened automatically.
-// Uses helpers from app.js: $, api, token, announce, savePref, board, currentProject.
+// Uses helpers from app.js: $, api, tokenFetch, announce, savePref, board, currentProject.
 
 const DOCK_HEIGHT_KEY = 'promptboard.dock.height';
 const DOCK_STATE_KEY = 'promptboard.dock.state';
@@ -176,9 +176,9 @@ async function streamSession(session) {
     renderDockConnection(session);
     try {
       // fetch keeps the session token in a header; it never appears in a URL.
-      const response = await fetch(`/api/runs/${encodeURIComponent(session.runId)}/stream?after=${session.lastSeq}`, { cache: 'no-store', headers: { 'X-STE-Token': token }, signal: controller.signal });
+      const response = await tokenFetch(`/api/runs/${encodeURIComponent(session.runId)}/stream?after=${session.lastSeq}`, { cache: 'no-store', signal: controller.signal });
       if (response.status === 404) { await replayRecordedOutput(session); markEnded(session); return; }
-      // The app restarted: this page's session is no longer valid, and retrying every second cannot fix that.
+      // A restart's new token was already read once (tokenFetch); a refusal now cannot be fixed by retrying every second.
       if (response.status === 403 || response.status === 401) { session.connection = 'stale'; renderDockConnection(session); return; }
       if (!response.ok || !response.body) throw new Error('stream');
       session.connection = 'connected';
