@@ -1,6 +1,6 @@
 /** Private journal/transport bridge. Board still owns session selection and scheduling. */
 import { createHash } from 'node:crypto';
-import { nativeMessageText, savedWithin, sameScope as same, SCOPE_FIELDS, untilAborted } from './native-message-common.mjs';
+import { nativeMessageText, savedWithin, sameScope as same, SCOPE_FIELDS, TARGET_CHANGED, untilAborted } from './native-message-common.mjs';
 import { ownsMove } from './pipeline-journal.mjs';
 
 const id = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(value);
@@ -31,14 +31,14 @@ export class NativeMessageDispatch {
     const bounded = callback => untilAborted(combined, callback);
     const previous = this.tails.get(queueId) || Promise.resolve();
     job.promise = (async () => {
-      let ownsGrant = false, knownQueue = false, nativeStarted = false, confirmedSaved = false, publicationAttempted = false;
+      let ownsGrant = false, knownQueue = false, nativeStarted = false, confirmedSaved = false, publicationAttempted = false, refused = null;
       try {
         const move = await bounded(() => this.journal.read(key)), action = move?.actions.find(row => row.id === actionId);
         if (!ownsMove(move) || action?.status !== 'scheduled' || action.delivery?.status !== 'queued' || !same(action.delivery, scope))
           return result('unavailable', 'The exact queued delivery is unavailable. No input was supplied.');
         knownQueue = true;
         if ((await bounded(() => previous))?.blocked || this.blockedQueues.has(queueId)) throw new Error('prior outcome');
-        if (await bounded(preflight) !== true) throw new Error('preflight');
+        if (await bounded(preflight) !== true) { refused = TARGET_CHANGED; throw new Error('preflight'); }
         const grant = await bounded(() => this.journal.startMessageDelivery(key, actionId));
         if (grant?.accepted !== true || !same(grant.delivery, scope)) {
           job.blocked = true;
@@ -48,7 +48,8 @@ export class NativeMessageDispatch {
         job.native = this.supervisor.sendNativeMessage(scope.runId, { dispatchId: actionId, message, mode: scope.mode,
           signal: combined, timeoutMs: Math.max(1, remaining()),
           grant: async actual => {
-            if (combined.aborted || actual?.dispatchId !== actionId || !same(actual, scope) || nativeStarted || await bounded(preflight) !== true) return false;
+            if (combined.aborted || actual?.dispatchId !== actionId || nativeStarted) return false;
+            if (!same(actual, scope) || await bounded(preflight) !== true) { refused = TARGET_CHANGED; return false; }
             const current = await bounded(() => this.journal.read(key)), saved = current?.actions.find(row => row.id === actionId)?.delivery;
             if (!ownsMove(current) || saved?.status !== 'dispatching' || !same(saved, scope) || combined.aborted) return false;
             nativeStarted = true; return true;
@@ -67,13 +68,13 @@ export class NativeMessageDispatch {
         if (publicationAttempted) { job.blocked = true; return result('unconfirmed', 'The native outcome acknowledgement was lost. No input will be retried.', true); }
         const status = ['cancelled', 'timed_out', 'unconfirmed'].includes(delivered?.status) ? delivered.status : 'failed';
         publicationAttempted = true;
-        if (await savedWithin(() => this.journal.finishMessageDelivery(key, actionId, { status, reason: 'Native delivery was not confirmed. No input will be retried.' })) !== true) throw new Error('save');
+        if (await savedWithin(() => this.journal.finishMessageDelivery(key, actionId, { status, ...(refused || { reason: 'Native delivery was not confirmed. No input will be retried.' }) })) !== true) throw new Error('save');
         return result(status, 'Native delivery was not confirmed. No input will be retried.');
       } catch {
         const status = combined.aborted ? combined.reason?.name === 'TimeoutError' ? 'timed_out' : 'cancelled' : 'unconfirmed';
         if (!publicationAttempted && knownQueue && await savedWithin(() => ownsGrant
           ? this.journal.finishMessageDelivery(key, actionId, { status, reason: 'Native input stopped without confirmation. No input will be retried.' })
-          : this.journal.finishQueuedMessageDelivery(key, actionId, { status, reason: 'Queued input stopped before dispatch. No input was supplied.' })))
+          : this.journal.finishQueuedMessageDelivery(key, actionId, { status, ...(refused || { reason: 'Queued input stopped before dispatch. No input was supplied.' }) })))
           return result(status, 'Native delivery stopped without confirmation. No input will be retried.');
         job.blocked = true;
         return result(status, ownsGrant ? 'Owned delivery stopped without an acknowledged outcome. No input will be retried.'

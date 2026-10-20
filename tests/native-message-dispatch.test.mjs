@@ -103,3 +103,19 @@ test('preflight rejection and shutdown finish known queued input without acquiri
   assert.equal((await w.delivery(request)).status, 'unconfirmed'); assert.equal((await w.delivery(request)).dispatchStartedAt, undefined);
   await w.dispatcher.shutdown(); assert.equal((await w.dispatcher.deliver(await w.schedule('closed'), checked)).status, 'unavailable'); assert.deepEqual(w.calls, []);
 });
+
+test('a target that changed before dispatch or before the native grant is refused with a clear code and no input', async t => {
+  const w = await fixture(t), before = await w.schedule('before'), atGrant = await w.schedule('at-grant');
+  assert.equal((await w.dispatcher.deliver(before, { preflight: async () => false })).confirmed, false);
+  let checks = 0;
+  w.handle(async request => {
+    assert.equal(await request.grant({ dispatchId: request.dispatchId, ...atGrant.scope }), false);
+    return { status: 'unconfirmed', confirmed: false };
+  });
+  assert.equal((await w.dispatcher.deliver(atGrant, { preflight: async () => ++checks === 1 })).confirmed, false);
+  for (const request of [before, atGrant]) {
+    const receipt = await w.delivery(request);
+    assert.equal(receipt.outcome.errorCode, 'MESSAGE_TARGET_CHANGED'); assert.equal(receipt.submittedAt, undefined);
+  }
+  assert.equal((await w.delivery(before)).dispatchStartedAt, undefined); assert.deepEqual(w.calls, []);
+});

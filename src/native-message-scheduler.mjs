@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { NativeMessageDispatch } from './native-message-dispatch.mjs';
 import { captureNativeMessageTarget } from './native-message-target.mjs';
-import { nativeMessageText, savedWithin, sameScope as same, untilAborted } from './native-message-common.mjs';
+import { nativeMessageText, savedWithin, sameScope as same, TARGET_CHANGED, untilAborted } from './native-message-common.mjs';
 import { ownsMove } from './pipeline-journal.mjs';
 
 const id = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(value);
@@ -43,12 +43,11 @@ export class NativeMessageScheduler {
       return untilAborted(combined, callback).finally(() => clearTimeout(readTimer));
     };
     const stopped = () => combined.aborted ? combined.reason?.name === 'TimeoutError' ? 'timed_out' : 'cancelled' : 'unconfirmed';
-    const finishQueue = async () => {
+    const finishQueue = async (refusal = { reason: 'Scheduled delivery stopped before input. No input was supplied.' }) => {
       if (!job.saveAttempted) return outcome(stopped());
       if (!job.knownQueue) { job.blocked = true; return outcome(stopped(), true); }
       // A cancelled delivery still has a small, bounded durable cleanup budget.
-      const saved = await savedWithin(() => this.journal.finishQueuedMessageDelivery(key, actionId,
-        { status: stopped(), reason: 'Scheduled delivery stopped before input. No input was supplied.' }));
+      const saved = await savedWithin(() => this.journal.finishQueuedMessageDelivery(key, actionId, { status: stopped(), ...refusal }));
       job.blocked = saved !== true;
       return outcome(stopped(), job.blocked);
     };
@@ -92,7 +91,7 @@ export class NativeMessageScheduler {
         if (this.blockedRuns.has(runId)) return await finishQueue();
         for (;;) {
           const state = await bounded(() => this.board.state(), waitForReadiness ? timeoutMs : null);
-          if (!job.target.matches(state)) return await finishQueue();
+          if (!job.target.matches(state)) return await finishQueue(TARGET_CHANGED);
           if (state.runs.find(row => row.id === runId).status !== 'queued') {
             if (!waitForReadiness) break;
             const ready = await bounded(() => this.supervisor.nativeMessageReadiness(runId), timeoutMs);
