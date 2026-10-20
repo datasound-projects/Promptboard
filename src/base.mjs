@@ -1,6 +1,6 @@
 /** Local Base registry. The caller injects Board's Store; this module never opens state.json. */
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, realpath, stat } from 'node:fs/promises';
+import { mkdir, readFile, realpath, rm, rmdir, stat } from 'node:fs/promises';
 import { dirname, isAbsolute, join, posix } from 'node:path';
 import { resolveConfig } from './agents.mjs';
 import { normalizeAvatarImage } from './base-avatar.mjs';
@@ -395,6 +395,28 @@ export class Base {
     const { content, ...metadata } = immutable;
     return { ...metadata, revisionRef: ref, revisions: [...(previous?.revisions || []), ref] };
   }
+  /**
+   * Revision files are written before the registry names them. When that change is not published, the files it wrote
+   * are removed — never one the registry or a run names, and none after a state write failure, which may have reached the disk.
+   */
+  async #discard(refs, error) {
+    if (!refs.length || error?.code === 'STATE_WRITE_FAILED') return;
+    try {
+      const state = await this.store.read(), key = ref => `${ref.id}/${ref.revision}-${ref.hash}`, named = new Set();
+      for (const resource of state.base.resources) for (const ref of resource.revisions || [resource.revisionRef]) if (ref) named.add(key(ref));
+      for (const run of state.runs) for (const entry of [...(run.baseManifest?.resources || []), ...(run.baseManifest?.profiles || [])]) if (entry?.revisionRef) named.add(key(entry.revisionRef));
+      for (const ref of refs.filter(item => !named.has(key(item)))) {
+        const dir = join(this.dir, 'revisions', ref.id);
+        await rm(join(dir, `${ref.revision}-${ref.hash}.json`), { force: true }); await rmdir(dir).catch(() => {}); // Only an empty folder goes.
+      }
+    } catch { /* The change itself already failed; an unreferenced file is harmless. */ }
+  }
+  async #publish(refs, change) {
+    try { return await this.store.update(change); }
+    catch (error) { await this.#discard(refs, error); throw error; }
+  }
+  /** For a caller that publishes a prepared import itself (a board backup): call when that publish failed. */
+  discardPreparedImport(prepared, error) { return this.#discard(prepared.resources.map(resource => resource.revisionRef), error); }
   async create(input, { expectedBaseRevision } = {}) {
     const state = await this.store.read(); expected(state.base, expectedBaseRevision);
     if (state.base.resources.length >= BASE_LIMITS.resources) fail('The Base library has reached its resource limit.');
@@ -402,7 +424,7 @@ export class Base {
     validateDiscoveredTool(definition, state.base.resources);
     validateResourceGraph([...state.base.resources, definition]);
     const resource = await this.#writeDefinition(definition);
-    return this.store.update(draft => { expected(draft.base, expectedBaseRevision); validateResourceGraph([...draft.base.resources, resource]); draft.base.resources.push(resource); draft.base.revision++; return resource; });
+    return this.#publish([resource.revisionRef], draft => { expected(draft.base, expectedBaseRevision); validateResourceGraph([...draft.base.resources, resource]); draft.base.resources.push(resource); draft.base.revision++; return resource; });
   }
   async update(resourceId, input, { expectedRevision, expectedBaseRevision } = {}) {
     const state = await this.store.read(); expected(state.base, expectedBaseRevision);
@@ -420,7 +442,7 @@ export class Base {
     if (!sameServer) delete definition.connectionTest;
     validateResourceGraph(state.base.resources.map(resource => resource.id === resourceId ? definition : resource));
     const resource = await this.#writeDefinition(definition, previous);
-    return this.store.update(draft => {
+    return this.#publish([resource.revisionRef], draft => {
       expected(draft.base, expectedBaseRevision);
       if (draft.base.resources.find(item => item.id === resourceId)?.revision !== expectedRevision) throw new BaseError('The resource changed. Reload before saving.', 'RESOURCE_REVISION_CONFLICT', 409);
       const updated = draft.base.resources.map(item => item.id === resourceId ? resource : item); validateResourceGraph(updated);
@@ -480,7 +502,7 @@ export class Base {
       durationMs: integer(result.durationMs === undefined ? undefined : Math.round(result.durationMs), 0, 0, 120000, 'Connection test duration'), partial: result.partial === true,
       ...(result.server ? { server: { name: string(result.server.name, 200, 'Server name'), version: string(result.server.version, 100, 'Server version') } } : {}) };
     const metadata = await this.#writeDefinition({ ...definition, revision: previous.revision + 1, updatedAt: Date.now(), connectionTest: clean }, previous);
-    return this.store.update(draft => { if (draft.base.resources.find(resource => resource.id === resourceId)?.revision !== expectedRevision) throw new BaseError('The MCP definition changed during the test.', 'RESOURCE_REVISION_CONFLICT', 409);
+    return this.#publish([metadata.revisionRef], draft => { if (draft.base.resources.find(resource => resource.id === resourceId)?.revision !== expectedRevision) throw new BaseError('The MCP definition changed during the test.', 'RESOURCE_REVISION_CONFLICT', 409);
       draft.base.resources = draft.base.resources.map(resource => resource.id === resourceId ? metadata : resource); draft.base.revision++; return metadata; });
   }
 
@@ -495,7 +517,8 @@ export class Base {
     if (blocking.length && !detach) throw new BaseError('Detach this resource from its dependencies and assignments before deleting it.', 'BASE_RESOURCE_IN_USE', 409, { usedBy: references });
     const replacements = new Map();
     const without = binding => ({ ...binding, include: (binding.include || []).filter(ref => ref.resourceId !== resourceId), exclude: (binding.exclude || []).filter(value => value !== resourceId) });
-    for (const ref of blocking.filter(item => item.kind === 'resource')) {
+    const written = () => [...replacements.values()].map(item => item.revisionRef);
+    try { for (const ref of blocking.filter(item => item.kind === 'resource')) {
       const previous = snapshot.base.resources.find(item => item.id === ref.id), definition = await this.readRevision(previous.revisionRef);
       if (definition.kind === 'tool' && definition.configuration.delivery === 'mcp' && definition.configuration.serverId === resourceId) throw new BaseError('Delete the discovered MCP tool references before deleting their server.', 'BASE_RESOURCE_IN_USE', 409, { usedBy: references });
       definition.dependencies = definition.dependencies.filter(item => item.resourceId !== resourceId);
@@ -510,8 +533,8 @@ export class Base {
       if (['context', 'knowledge'].includes(definition.kind) && definition.configuration.sources) definition.configuration.sources = definition.configuration.sources.filter(item => item.resourceId !== resourceId);
       definition.revision++; definition.updatedAt = Date.now();
       replacements.set(definition.id, await this.#writeDefinition(definition, previous));
-    }
-    return this.store.update(state => {
+    } } catch (error) { await this.#discard(written(), error); throw error; }
+    return this.#publish(written(), state => {
       // Async revision writes must not detach changes made since the deletion preview.
       expected(state.base, snapshot.base.revision);
       if (usedBy(state, resourceId).some(ref => ref.kind === 'run' && !ref.historical)) throw new BaseError('Stop active runs before deleting their resources.', 'BASE_RESOURCE_IN_USE', 409);
@@ -597,10 +620,13 @@ export class Base {
   async prepareImport(bundle, { remap, expectedBaseRevision, reuseIdentical = false } = {}) {
     const state = await this.store.read(); expected(state.base, expectedBaseRevision);
     let prepared = this.#validateImport(bundle, remap);
+    const existing = new Set(state.base.resources.map(resource => resource.id));
+    if (prepared.resources.some(resource => existing.has(resource.id))) fail('Imports require fresh unique IDs; existing resources are never overwritten.');
     if (reuseIdentical) prepared = await this.#reuseIdentical(prepared, state.base.resources);
     if (state.base.resources.length + prepared.resources.length > BASE_LIMITS.resources) fail('The imported library would exceed 2,000 resources.');
     const resources = [];
-    for (const definition of prepared.resources) resources.push(await this.#writeDefinition(definition));
+    try { for (const definition of prepared.resources) resources.push(await this.#writeDefinition(definition)); }
+    catch (error) { await this.#discard(resources.map(resource => resource.revisionRef), error); throw error; }
     return { ...prepared, resources, expectedBaseRevision: state.base.revision };
   }
   /**
@@ -636,7 +662,7 @@ export class Base {
   }
   async import(bundle, options = {}) {
     const prepared = await this.prepareImport(bundle, options);
-    return this.store.update(state => this.publishPreparedImport(state, prepared));
+    return this.#publish(prepared.resources.map(resource => resource.revisionRef), state => this.publishPreparedImport(state, prepared));
   }
 
   /** Only parse SKILL.md here; importing it never executes scripts or follows file references. */
