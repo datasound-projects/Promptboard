@@ -28,7 +28,7 @@ let token = '';
 let remoteSession = null; // Set when this page is a paired remote device.
 let serverPlatform = ''; // The computer's platform (darwin, win32, linux): names Finder, Explorer or the file manager.
 let providers = [];
-let history = readHistory();
+let promptHistory = readHistory();
 let currentId = null;
 let currentResult = null;
 let controller = null;
@@ -129,11 +129,11 @@ function announce(message) { $('#announcement').textContent = message; }
 let droppedFromHistory = 0;
 function persistHistory() {
   droppedFromHistory = 0;
-  for (let keep = history.length; keep >= Math.min(1, history.length); keep = keep > 20 ? Math.floor(keep * 0.9) : keep - 1) {
+  for (let keep = promptHistory.length; keep >= Math.min(1, promptHistory.length); keep = keep > 20 ? Math.floor(keep * 0.9) : keep - 1) {
     try {
-      localStorage.setItem(HISTORY_KEY, JSON.stringify(history.slice(0, keep)));
-      droppedFromHistory = history.length - keep;
-      history = history.slice(0, keep);
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(promptHistory.slice(0, keep)));
+      droppedFromHistory = promptHistory.length - keep;
+      promptHistory = promptHistory.slice(0, keep);
       $('#storage-warning').hidden = true;
       return true;
     } catch (error) {
@@ -146,9 +146,9 @@ function persistHistory() {
 
 function renderHistory() {
   const query = $('#history-search').value.trim().toLowerCase();
-  const filtered = history.filter((entry) => !query || `${entry.input} ${entry.prompt}`.toLowerCase().includes(query));
+  const filtered = promptHistory.filter((entry) => !query || `${entry.input} ${entry.prompt}`.toLowerCase().includes(query));
   $('#history-list').replaceChildren();
-  $('#history-count').textContent = String(history.length).padStart(2, '0');
+  $('#history-count').textContent = String(promptHistory.length).padStart(2, '0');
   $('#history-empty').hidden = filtered.length > 0;
   $('#history-empty p').textContent = query ? 'No matching prompts.' : 'No saved prompts.';
   $('#history-empty small').textContent = query ? 'Try another word or clear the search.' : 'Your finished prompts will appear here.';
@@ -176,7 +176,7 @@ function renderHistory() {
     remove.setAttribute('aria-label', `Delete prompt: ${entry.input.slice(0, 80)}`);
     remove.disabled = running;
     remove.addEventListener('click', () => {
-      history = history.filter((item) => item.id !== entry.id);
+      promptHistory = promptHistory.filter((item) => item.id !== entry.id);
       if (currentId === entry.id) currentId = null;
       const saved = persistHistory();
       renderHistory();
@@ -881,7 +881,7 @@ async function generate(event) {
     delete entry.grounding; // Keep raw source excerpts and answers out of browser storage.
     generated = true;
     currentId = entry.id;
-    history = [entry, ...history].slice(0, HISTORY_LIMIT);
+    promptHistory = [entry, ...promptHistory].slice(0, HISTORY_LIMIT);
     const saved = persistHistory();
     showResult(entry);
     const resultMessage = entry.verification?.status === 'checks-passed' ? 'Checks complete. Review the prompt before use.' : 'Draft returned. Review the prompt and its check report before use.';
@@ -4337,7 +4337,7 @@ $('#prompt-edit-save').addEventListener('click', () => {
   }
   const changed = typed !== currentResult.prompt.replace(/\r\n?/g, '\n');
   const result = changed ? { ...currentResult, prompt: typed, verification: null, lint: { wordCount: typed.trim().split(/\s+/).length, warnings: [{ message: 'This edited prompt has not been checked by the engine.' }] } } : currentResult;
-  history = history.map(entry => entry.id === result.id ? result : entry);
+  promptHistory = promptHistory.map(entry => entry.id === result.id ? result : entry);
   const saved = persistHistory();
   showResult(result);
   renderHistory();
@@ -5850,7 +5850,7 @@ window.addEventListener('pageshow', event => { if (event.persisted) browserNotif
 window.addEventListener('storage', event => {
   if ((event.key === 'promptboard:browser-notifications' && event.newValue !== '1') || event.key === null) browserNotifications?.disable();
   // Another tab saved Compose History: take its list, so this tab's next save does not drop those prompts.
-  if (event.key === HISTORY_KEY) { history = readHistory(); renderHistory(); }
+  if (event.key === HISTORY_KEY) { promptHistory = readHistory(); renderHistory(); }
 });
 function renderSettings() {
   renderNotificationSettings();
@@ -6192,7 +6192,7 @@ originView = window.PromptboardOrigin?.create({ api, announce, closeSidebar: () 
 projectsView = window.PromptboardProjects?.create({ api, announce, getResult: () => currentResult, running: () => running,
   settingsOf: entry => ({ provider: entry.provider, model: entry.model, effort: entry.effort, language: entry.language, quality: entry.quality, task: entry.task, detail: entry.detail, options: entry.options, terminology: entry.terminology }),
   verificationOf: entry => snapshotSource(entry).verification,
-  removeHistory: id => { history = history.filter(item => item.id !== id); if (currentId === id) currentId = null; persistHistory(); renderHistory(); },
+  removeHistory: id => { promptHistory = promptHistory.filter(item => item.id !== id); if (currentId === id) currentId = null; persistHistory(); renderHistory(); },
   openInCompose, openOrigin, refreshBoard: () => loadBoard(),
   card: id => (board?.projects || []).flatMap(project => project.tasks).find(task => task.id === id) || null,
   openKanban: (projectId, taskId) => { if (projectId) setSelectedProject(projectId); location.hash = '#/kanban'; if (taskId) setTimeout(() => void openTaskDetails(taskId), 0); } }) || null;

@@ -18,6 +18,7 @@ test('top-bar connections work across pages, themes and narrow screens without c
   const click = async selector => {
     const p = await browser.eval(`const n=document.querySelector(${JSON.stringify(selector)}); n.scrollIntoView({block:'center'}); await new Promise(requestAnimationFrame); const r=n.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2};`); await browser.click(p.x, p.y);
   };
+  assert.equal(await browser.eval('return history === window.history;'), true, 'No page script hides window.history behind a global of its own.');
   await browser.eval(`document.querySelector('#prompt-input').value='Keep this exact task.';`);
   assert.equal(await browser.eval(`return document.querySelector('#prompt-form').contains(document.querySelector('#auth-login'));`), false);
   assert.equal(await browser.eval(`return document.querySelector('#help-dialog').contains(document.querySelector('#auth-login'));`), true);
