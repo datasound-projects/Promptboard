@@ -12,16 +12,22 @@ export async function syncDir(dir) {
   try { const handle = await open(dir, 'r'); try { await handle.sync(); } finally { await handle.close(); } } catch {}
 }
 
+const temporary = path => `${path}.tmp-${process.pid}-${randomBytes(4).toString('hex')}`;
+
 /**
  * Keep `path` as `${path}.bak`. A hard link costs nothing at any file size, and the rename that follows
  * replaces only the name `path`, so the backup keeps the previous bytes. Where links are not possible
- * (some file systems, Windows quirks) the file is copied as before. A missing `path` has no backup.
+ * (some file systems, Windows quirks) the file is copied as before. The new backup is made under a
+ * temporary name and renamed over the old one, so a crash never leaves no backup; a missing `path`
+ * (a damaged file set aside) leaves the existing backup, then the only good copy, as it is.
  */
 async function keepBackup(path) {
-  const bak = `${path}.bak`;
-  try { await rm(bak, { force: true }); await link(path, bak); return; }
-  catch (error) { if (error.code === 'ENOENT') return; }
-  try { await copyFile(path, bak); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  const next = temporary(path);
+  try {
+    try { await link(path, next); } catch (error) { if (error.code === 'ENOENT') return; await copyFile(path, next); }
+    await rename(next, `${path}.bak`);
+  } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  finally { await rm(next, { force: true }).catch(() => {}); } // Left when the backup already was this file.
 }
 
 /**
@@ -30,7 +36,7 @@ async function keepBackup(path) {
  * is thrown; the old file is unchanged.
  */
 export async function writeAtomic(path, bytes, { backup = true } = {}) {
-  const tmp = `${path}.tmp-${process.pid}-${randomBytes(4).toString('hex')}`;
+  const tmp = temporary(path);
   try {
     const handle = await open(tmp, 'wx', 0o600);
     try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); }
