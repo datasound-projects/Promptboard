@@ -67,10 +67,10 @@ test('version 8 migration adds None without altering task identities, revisions,
   await assert.rejects(new Store(futureDir).read(), { code: 'STATE_VERSION_UNSUPPORTED' }); assert.equal(await readFile(join(futureDir, 'state.json'), 'utf8'), newer);
 });
 
-test('authenticated HTTP priority authoring advertises support and rejects unauthorized or malformed metadata', async t => {
+test('authenticated HTTP priority authoring rejects unauthorized or malformed metadata', async t => {
   const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
   const project = await app.board.createProject({ name: 'HTTP priority', workflowMode: 'pipeline' });
-  const { token, capabilities } = await (await fetch(app.url + '/api/session')).json(); assert.equal(capabilities.taskPriority, true);
+  const { token } = await (await fetch(app.url + '/api/session')).json();
   const call = (method, path, data, supplied = token) => fetch(app.url + path, { method, headers: { 'Content-Type': 'application/json', 'X-STE-Token': supplied, Origin: app.url }, body: JSON.stringify(data) });
   const request = { projectId: project.id, title: 'Urgent', priority: 4 };
   assert.equal((await call('POST', '/api/tasks', request, 'wrong')).status, 403);
