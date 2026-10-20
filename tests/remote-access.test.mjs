@@ -5,11 +5,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { createServer } from 'node:net';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { privateAddress, remoteSettings, RemoteAccess, tailscaleState } from '../src/remote-access.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
+import { setup, until } from './helpers/ui-harness.mjs';
 
 const freePort = () => new Promise(resolve => { const probe = createServer().listen(0, '127.0.0.1', () => { const { port } = probe.address(); probe.close(() => resolve(port)); }); });
 /** One HTTP request with any headers (fetch cannot set Host). Resolves { status, headers, body, json }. */
@@ -288,6 +289,68 @@ test('every route from a paired phone: the local-only ones are refused, every ot
     if (path.startsWith('/api/') && path !== '/api/session') assert.deepEqual([reached.status, reached.json?.error], [403, 'Reload this page before you try again.'], row);
     else assert.equal(reached.status, 200, row);
   }
+});
+
+test('Revoke all also voids an unused code, turning off clears a listener error, expired devices leave the list, a stored wildcard address is never used, and a new port closes the old one', async t => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'pb-remote-state-')); t.after(() => rm(dataDir, { recursive: true, force: true }));
+  let now = Date.now();
+  const make = () => new RemoteAccess({ dataDir, localPort: 1, handle: (req, res) => { res.writeHead(200); res.end('app'); }, now: () => now }).load();
+  let access = await make(); t.after(() => access.close());
+  const first = await freePort();
+  await access.configure({ method: 'twingate', port: first, bind: '127.0.0.1' });
+  // A code shown before Revoke all (perhaps seen by someone else) does not pair a device afterwards.
+  await access.pair(access.newPairing().code);
+  const { code } = access.newPairing();
+  await access.revoke('all');
+  await assert.rejects(access.pair(code), { code: 'REMOTE_NO_PAIRING' });
+  assert.equal((await access.status()).pairing, null);
+  // An expired device leaves the list when it loses access.
+  await access.pair(access.newPairing().code);
+  assert.equal((await access.status()).sessions.length, 1);
+  now += 31 * 86400000;
+  assert.deepEqual((await access.status()).sessions, []);
+  // Another port: the old listener is closed, the new one answers.
+  const second = await freePort();
+  assert.equal((await access.configure({ method: 'twingate', port: second, bind: '127.0.0.1' })).listening, true);
+  await assert.rejects(request(first, '/remote'));
+  assert.equal((await request(second, '/remote')).status, 200);
+  // A busy port is reported; turning remote access off does not keep showing that error.
+  const busy = http.createServer().listen(first, '127.0.0.1'); await new Promise(resolve => busy.once('listening', resolve)); t.after(() => new Promise(resolve => busy.close(resolve)));
+  assert.match((await access.configure({ method: 'twingate', port: first, bind: '127.0.0.1' })).error, new RegExp(`Port ${first} is already in use`));
+  assert.deepEqual([(await access.configure({ method: 'local' })).error, access.server], ['', null]);
+  // A settings file edited to listen on every interface is never used: remote access stays off.
+  await access.close();
+  await writeFile(join(dataDir, 'remote-access.json'), JSON.stringify({ schema: 'promptboard.remote-access', version: 1, settings: { method: 'twingate', port: second, bind: '0.0.0.0', host: '', cert: '', key: '' }, sessions: [] }));
+  access = await make();
+  assert.deepEqual([access.settings.method, access.settings.bind, access.server], ['local', '127.0.0.1', null]);
+});
+
+test('Settings: saving another Twingate field keeps the HTTPS certificate, and a code that no longer works is not shown', async t => {
+  const ctx = await setup(t);
+  const { $, win } = ctx;
+  const local = (path, method = 'GET', body) => fetch(`${ctx.app.url}${path}`, { method, headers: { 'X-STE-Token': win.__pbTest.token, ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) }).then(r => r.json());
+  const port = await freePort();
+  // Paths to files that do not exist: the settings are saved, the HTTPS listener reports that it cannot start.
+  await local('/api/remote/settings', 'POST', { method: 'twingate', port, bind: '127.0.0.1', host: 'promptboard.internal', cert: '/missing/cert.pem', key: '/missing/key.pem' });
+  $('#app-settings-open').click(); await ctx.idle();
+  await until(() => $('#set-remote-cert'), 'Twingate fields');
+  assert.deepEqual([$('#set-remote-cert').value, $('#set-remote-key').value], ['/missing/cert.pem', '/missing/key.pem']);
+  const type = (id, value) => { $(id).value = value; $(id).dispatchEvent(new win.Event('input')); };
+  const click = label => [...$('#set-remote-group').querySelectorAll('button')].find(button => button.textContent === label).click();
+  type('#set-remote-host', 'pb.internal'); click('Save'); await ctx.idle({ requireComplete: true });
+  const { remote } = await local('/api/remote');
+  assert.deepEqual([remote.host, remote.cert, remote.key], ['pb.internal', '/missing/cert.pem', '/missing/key.pem'], 'HTTPS is kept');
+  // Cleared on purpose: plain HTTP, and the listener starts.
+  type('#set-remote-cert', ''); type('#set-remote-key', ''); click('Save'); await ctx.idle({ requireComplete: true });
+  await until(() => /listening on 127\.0\.0\.1/.test($('#set-remote-group').textContent), 'listening');
+  const { pairing } = await local('/api/remote/pairing', 'POST', {});
+  assert.equal((await request(port, '/api/remote/pair', { method: 'POST', body: { code: pairing.code } })).status, 200);
+  // A code on screen, then Revoke all: the code no longer pairs, so it is not shown any more.
+  click('Pair a device'); await ctx.idle({ requireComplete: true });
+  await until(() => $('#set-remote-code'), 'code shown');
+  click('Revoke all devices'); await ctx.idle({ requireComplete: true });
+  await until(() => !$('#set-remote-group .remote-sessions'), 'devices revoked');
+  assert.equal($('#set-remote-code'), null);
 });
 
 test('Tailscale Serve not enabled for the tailnet: the refusal carries Tailscale’s own link and nothing is changed', async t => {

@@ -6001,7 +6001,7 @@ function renderRemoteAccess() {
     box.replaceChildren(legend, ...(remoteAccess.message && !remoteAccess.busy ? [paragraph(remoteAccess.message, 'inline-error'), detailActions(detailButton('Try again', loadRemoteAccess, 'secondary-button'))] : [paragraph('Reading remote access…', 'note')]));
     return;
   }
-  const draft = remoteAccess.draft ||= { method: st.method, port: st.port, bind: st.bind, host: st.host, cert: '', key: '' };
+  const draft = remoteAccess.draft ||= { method: st.method, port: st.port, bind: st.bind, host: st.host, cert: st.cert || '', key: st.key || '' };
   const field = (label, control) => { const wrap = document.createElement('label'); wrap.className = 'field-label'; wrap.append(label, control); return wrap; };
   const input = (id, key, placeholder = '') => { const node = document.createElement('input'); node.id = id; node.value = draft[key] ?? ''; node.placeholder = placeholder; node.addEventListener('input', () => { draft[key] = node.value.trim(); }); return node; };
   const method = document.createElement('select'); method.id = 'set-remote-method';
@@ -6055,7 +6055,8 @@ function renderRemoteAccess() {
     }, 'secondary-button')));
   }
   if (st.method !== 'local' && st.listening) {
-    if (remoteAccess.pairing && remoteAccess.pairing.expiresAt > Date.now()) {
+    // Shown only while the computer still holds this code: a used, replaced or revoked code is not offered.
+    if (remoteAccess.pairing && remoteAccess.pairing.expiresAt > Date.now() && st.pairing?.expiresAt === remoteAccess.pairing.expiresAt) {
       const code = document.createElement('code'); code.className = 'github-code'; code.id = 'set-remote-code'; code.textContent = remoteAccess.pairing.code;
       const p = document.createElement('p'); p.className = 'note';
       p.append('On the phone, open the private address and enter ', code, ` within ${Math.max(1, Math.round((remoteAccess.pairing.expiresAt - Date.now()) / 60000))} minutes. It works once.`);

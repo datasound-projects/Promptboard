@@ -150,7 +150,7 @@ export class RemoteAccess {
     this.server = server; this.error = '';
   }
   async close() {
-    const server = this.server; this.server = null;
+    const server = this.server; this.server = null; this.error = ''; // An earlier start failure is not shown once nothing should listen.
     if (!server) return;
     await new Promise(resolve => { server.close(() => resolve()); server.closeAllConnections?.(); });
   }
@@ -192,6 +192,7 @@ export class RemoteAccess {
   }
   async revoke(id) {
     const before = this.sessions.length, gone = this.sessions.filter(row => id === 'all' || row.id === id);
+    if (id === 'all') this.pairing = null; // A code shown earlier does not pair a device after Revoke all either.
     this.sessions = this.sessions.filter(row => !gone.includes(row));
     // Its live streams end at once: a revoked device sees nothing more.
     for (const row of gone) { for (const res of this.open.get(row.id) || []) res.destroy(); this.open.delete(row.id); }
@@ -201,7 +202,7 @@ export class RemoteAccess {
 
   // ---- What the Settings page shows ----
   async status({ refresh = false } = {}) {
-    const { method, port, bind, host, cert } = this.settings;
+    const { method, port, bind, host, cert, key } = this.settings, now = this.now();
     if (method === 'tailscale' && (refresh || !this.tailscale || this.now() - this.tailscale.at > 15000)) this.tailscale = { at: this.now(), state: await tailscaleState(port, this.cli) };
     const tailscale = method === 'tailscale' ? this.tailscale.state : null;
     const url = method === 'tailscale' ? tailscale?.url || '' : method === 'twingate' && (host || bind !== '127.0.0.1') ? `${cert ? 'https' : 'http'}://${host || bind}:${port}` : '';
@@ -210,9 +211,10 @@ export class RemoteAccess {
     if (method === 'twingate' && !cert) warnings.push('Without a certificate, the last hop from the Connector to this computer is unencrypted on your network. Add a certificate and key for HTTPS.');
     if (tailscale?.shared) warnings.push('Another Tailscale Serve service uses this same address on a different port. Browsers send Promptboard’s device sign-in to it as well; keep it only if you trust that service.');
     if (tailscale?.funnel) warnings.push('Tailscale Funnel is on for this address: it is reachable from the public internet. Promptboard refuses those requests; turn Funnel off.');
-    return { method, port, bind, host, tls: Boolean(cert), listening: Boolean(this.server), error: this.error, url, tailscale, warnings, addresses: localAddresses(),
-      pairing: this.pairing && this.pairing.expiresAt > this.now() ? { expiresAt: this.pairing.expiresAt } : null,
-      sessions: this.sessions.map(publicSession) };
+    // The certificate paths come back (this route is local only), so saving another field keeps HTTPS.
+    return { method, port, bind, host, tls: Boolean(cert), cert, key, listening: Boolean(this.server), error: this.error, url, tailscale, warnings, addresses: localAddresses(),
+      pairing: this.pairing && this.pairing.expiresAt > now ? { expiresAt: this.pairing.expiresAt } : null,
+      sessions: this.sessions.filter(row => row.expiresAt > now).map(publicSession) }; // An expired device has no access and is not listed.
   }
   async setServe(on) {
     if (this.settings.method !== 'tailscale') throw invalid('Choose Tailscale first.');
