@@ -39,15 +39,15 @@ const PREPARATION_STOPPED = Object.freeze({
   TimeoutError: { code: 'PREPARATION_TIMEOUT', reason: 'Preparing the agent session took too long, so the agent was not started. Try again.' },
   AbortError: { code: 'PREPARATION_ABORTED', reason: 'Preparing the agent session was stopped before the agent started.' },
 });
-// xterm answers queries and focus changes with no keystroke: CPR, DA1/DA2, DSR, DECRPM, window
-// and OSC colour reports, DECRQSS. Only modified F3 (ESC[1;<m>R) shares a shape with a CPR.
 // One navigation or choice key, as a person answers a CLI's selection dialog.
 const DIALOG_KEY = /^(?:\r|\n|\t|\x1b|\x1b\[Z|\x1b[[O][A-D]|[0-9]|[ynp])$/i;
 // Codex titles its terminal "[ ! ] Action Required | …" (blinking with "[ . ]") while it waits for an answer.
 const TERMINAL_TITLE = /\x1b\][02];([^\x07\x1b]*)(?:\x07|\x1b\\)/g, CODEX_ASKS = /^\[ [.!] \] Action Required\b/;
-// Mouse reports from a CLI that tracks the mouse (SGR, urxvt and X10 encodings): a click, wheel or motion types nothing.
-const MOUSE_REPORTS = /^(?:\x1b\[<\d+;\d+;\d+[Mm]|\x1b\[\d+;\d+;\d+M|\x1b\[M[\x20-\xff]{3})+$/;
-const TERMINAL_REPORTS = /^(?:\x1b\[(?:[?>]?[\d;]*c|\d*n|\??\d+;\d+R|[\d;]+t|\??\d+;\d+\$y|[IO])|\x1b\][\d;]+;[^\x07\x1b]*(?:\x07|\x1b\\)|\x1bP[^\x1b]*\x1b\\)+$/;
+// xterm answers queries and focus changes with no keystroke: CPR, DA1/DA2, DSR, DECRPM, window and OSC colour
+// reports, DECRQSS. Only modified F3 (ESC[1;<m>R) shares a shape with a CPR. Mouse reports from a CLI that tracks
+// the mouse (SGR, urxvt and X10 encodings): a click, wheel or motion types nothing. The dock batches input, so one
+// write can mix both kinds (a click on a focus-tracking CLI sends focus-in and the press together).
+const AUTOMATIC_REPORTS = /^(?:\x1b\[(?:[?>]?[\d;]*c|\d*n|\??\d+;\d+R|[\d;]+t|\??\d+;\d+\$y|[IO]|<\d+;\d+;\d+[Mm]|\d+;\d+;\d+M|M[\x20-\xff]{3})|\x1b\][\d;]+;[^\x07\x1b]*(?:\x07|\x1b\\)|\x1bP[^\x1b]*\x1b\\)+$/;
 
 /** Load node-pty once. On macOS its prebuilt helper can lose the execute bit on install. */
 export async function loadPty(requireFrom = import.meta.url) {
@@ -677,7 +677,7 @@ export class Supervisor {
     const session = this.#session(runId);
     if (session.suspending) throw new AgentError('The agent is being paused. Wait for it to exit before resuming.', 'SESSION_SUSPENDING', 409);
     // A terminal or mouse report is not typing. Drop it during a native paste so it cannot land inside the message.
-    if (TERMINAL_REPORTS.test(data) || MOUSE_REPORTS.test(data)) { if (!session.messageInputPending) session.proc.write(data); return; }
+    if (AUTOMATIC_REPORTS.test(data)) { if (!session.messageInputPending) session.proc.write(data); return; }
     if (data) {
       // A key that answers the CLI's own permission or question dialog starts no draft, so queued
       // column messages stay deliverable. Free text, or input outside such a dialog, is a human draft.
