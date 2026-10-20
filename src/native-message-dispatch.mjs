@@ -9,6 +9,8 @@ const result = (status, reason, blocked = false) => ({ status, confirmed: status
 export class NativeMessageDispatch {
   constructor({ journal, supervisor }) {
     if (!journal || typeof supervisor?.sendNativeMessage !== 'function') throw new TypeError('Use an owned journal and native Supervisor.');
+    // A woken process still owns its lapsed lease until it renews; the journal's write check agrees.
+    this.owns = typeof journal.owns === 'function' ? move => journal.owns(move) : ownsMove;
     this.journal = journal; this.supervisor = supervisor; this.jobs = new Map(); this.tails = new Map(); this.blockedQueues = new Set(); this.stopping = false;
   }
 
@@ -34,7 +36,7 @@ export class NativeMessageDispatch {
       let ownsGrant = false, knownQueue = false, nativeStarted = false, confirmedSaved = false, publicationAttempted = false, refused = null;
       try {
         const move = await bounded(() => this.journal.read(key)), action = move?.actions.find(row => row.id === actionId);
-        if (!ownsMove(move) || action?.status !== 'scheduled' || action.delivery?.status !== 'queued' || !same(action.delivery, scope))
+        if (!this.owns(move) || action?.status !== 'scheduled' || action.delivery?.status !== 'queued' || !same(action.delivery, scope))
           return result('unavailable', 'The exact queued delivery is unavailable. No input was supplied.');
         knownQueue = true;
         if ((await bounded(() => previous))?.blocked || this.blockedQueues.has(queueId)) throw new Error('prior outcome');
@@ -51,7 +53,7 @@ export class NativeMessageDispatch {
             if (combined.aborted || actual?.dispatchId !== actionId || nativeStarted) return false;
             if (!same(actual, scope) || await bounded(preflight) !== true) { refused = TARGET_CHANGED; return false; }
             const current = await bounded(() => this.journal.read(key)), saved = current?.actions.find(row => row.id === actionId)?.delivery;
-            if (!ownsMove(current) || saved?.status !== 'dispatching' || !same(saved, scope) || combined.aborted) return false;
+            if (!this.owns(current) || saved?.status !== 'dispatching' || !same(saved, scope) || combined.aborted) return false;
             nativeStarted = true; return true;
           },
           submitted: () => nativeStarted && !combined.aborted ? this.journal.markMessageSubmitted(key, actionId) : false,

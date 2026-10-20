@@ -119,3 +119,11 @@ test('a target that changed before dispatch or before the native grant is refuse
   }
   assert.equal((await w.delivery(before)).dispatchStartedAt, undefined); assert.deepEqual(w.calls, []);
 });
+
+test('after a sleep past its lease, this process still delivers its own queued message instead of orphaning it as queued', async t => {
+  const w = await fixture(t), request = await w.schedule('slept');
+  // The renewal timer has not fired yet after waking; the journal's own write check still accepts this held lease.
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() }); t.mock.timers.setTime(Date.now() + 120000);
+  assert.equal((await w.dispatcher.deliver(request, checked)).confirmed, true);
+  assert.equal((await w.delivery(request)).status, 'confirmed'); assert.deepEqual(w.calls, [request.message]);
+});

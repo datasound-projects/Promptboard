@@ -208,6 +208,9 @@ export class PipelineJournal {
       && this.#leases.get(folderName(move))?.leaseId === move.leaseId;
   }
 
+  /** The read-side twin of the write check: this process owns the move, including its own held lease past expiry. */
+  owns(move) { return ownsMove(move) || this.#holds(move); }
+
   // One renewal per unfinished move this process owns, through the same compare-and-swap write.
   #track(move) {
     const name = folderName(move), held = this.#leases.get(name);

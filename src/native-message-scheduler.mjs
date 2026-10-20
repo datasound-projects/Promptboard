@@ -14,6 +14,7 @@ const outcome = (status, blocked = false) => ({ status, confirmed: false, reason
 export class NativeMessageScheduler {
   constructor({ board, journal, supervisor }) {
     if (typeof board?.state !== 'function' || !journal) throw new TypeError('Use an owned Board and message journal.');
+    this.owns = typeof journal.owns === 'function' ? move => journal.owns(move) : ownsMove;
     this.board = board; this.journal = journal; this.supervisor = supervisor; this.dispatch = new NativeMessageDispatch({ journal, supervisor });
     this.jobs = new Map(); this.completed = new Map(); this.tails = new Map(); this.blockedRuns = new Set(); this.stopping = false;
   }
@@ -64,7 +65,7 @@ export class NativeMessageScheduler {
           return target.matches(current) && currentProject.revision === expectedProjectRevision && currentTask.revision === expectedTaskRevision;
         };
         const column = project.pipeline.columns.find(row => row.id === task.column), row = column.automations?.onEnter?.find(row => row.id === action?.rowId);
-        if (!ownsMove(move) || move.phase !== 'enter' || move.lifecycle.status !== 'succeeded' || move.to.id !== task.column
+        if (!this.owns(move) || move.phase !== 'enter' || move.lifecycle.status !== 'succeeded' || move.to.id !== task.column
           || action?.status !== 'running' || action.type !== 'send_message' || action.trigger !== 'enter'
           || !row?.enabled || row.type !== 'send_message' || row.mode !== mode || action.configHash !== hash(JSON.stringify(row))) return { scheduled: false };
         job.target = target; job.scope = { provider: target.provider, sessionId: target.sessionId, runId, mode, messageHash: hash(message) };
@@ -75,7 +76,7 @@ export class NativeMessageScheduler {
         if (saved?.accepted !== true || saved.delivery?.status !== 'queued' || !same(saved.delivery, job.scope)) return { scheduled: false };
         job.knownQueue = true;
         const recorded = await bounded(() => this.journal.read(key)), receipt = recorded?.actions.find(row => row.id === actionId);
-        if (!ownsMove(recorded) || receipt?.status !== 'scheduled' || receipt.delivery?.status !== 'queued'
+        if (!this.owns(recorded) || receipt?.status !== 'scheduled' || receipt.delivery?.status !== 'queued'
           || !same(receipt.delivery, job.scope) || !preparingMatches(await bounded(() => this.board.state()))) return { scheduled: false };
         combined.throwIfAborted();
         if (waitForReadiness) { clearTimeout(timer); timer = null; }
