@@ -323,3 +323,30 @@ test('the shell fits phones and tablets: a wrapping top bar, the drawer above Or
   assert.equal(await ev(`const node = document.querySelector('.history-restore strong'); return node.scrollWidth > node.clientWidth && node.title === node.textContent;`), true);
   noExceptions(browser);
 });
+
+test('text stays readable in both themes: accent colours, badges, error text and the danger button meet 4.5:1', { skip: !chrome, timeout: 120000 }, async t => {
+  const { app, browser, ev, wait } = await setup(t);
+  await browser.goto(`${app.url}/#/`);
+  await wait(`token`, 'session');
+  // Samples of each rule in its usual surroundings, measured against the backgrounds behind them.
+  const samples = `${['define', 'design', 'operate', 'decide', 'build'].map(phase => `<div class="phase-${phase}"><span class="origin-phase-number">03</span><p class="origin-eyebrow">Phase</p>
+      <ul class="origin-list"><li><span class="origin-chip accent">Chip</span></li></ul><button class="origin-nav-item" aria-current="page"><span class="origin-nav-count">4</span></button></div>`).join('')}
+    <ul class="origin-list"><li><span class="origin-chip ok">Ready</span><span class="origin-chip warn">Open</span></li></ul>
+    <div class="origin-next"><span class="origin-next-label">Next</span></div>
+    <div class="card"><span class="origin-research-badge is-applied">Applied</span><span class="origin-research-badge is-conflict">Conflict</span><p class="execution-warning">Warning</p></div>
+    <div class="workspace-menu"><button class="workspace-delete">Delete project</button></div>
+    <div class="file-viewer"><p class="file-error">Not saved</p><p class="file-close-confirm">Unsaved changes</p></div>
+    <div class="base-row"><span class="base-tag warn">Needs review</span></div>
+    <button class="origin-primary danger">Delete</button><span class="timeline-order">1</span><span class="autopilot-tag now">Now</span>`;
+  const low = theme => ev(`document.documentElement.dataset.theme = ${JSON.stringify(theme)};
+    let box = document.querySelector('#contrast-samples'); if (!box) { box = document.createElement('section'); box.id = 'contrast-samples'; box.innerHTML = ${JSON.stringify(samples)}; document.querySelector('#prompt-view').append(box); }
+    await new Promise(requestAnimationFrame);
+    const parse = c => { let m = c.match(/rgba?\\(([^)]+)\\)/); if (m) { const p = m[1].split(/[\\s,/]+/).filter(Boolean).map(Number); return [p[0], p[1], p[2], p[3] ?? 1]; } m = c.match(/color\\(srgb ([^)]+)\\)/); const p = m[1].split(/[\\s/]+/).filter(Boolean).map(Number); return [p[0] * 255, p[1] * 255, p[2] * 255, p[3] ?? 1]; };
+    const over = (top, under) => top.map((v, i) => i === 3 ? 1 : v * top[3] + under[i] * (1 - top[3]));
+    const lum = c => c.slice(0, 3).reduce((sum, v, i) => { v /= 255; return sum + [0.2126, 0.7152, 0.0722][i] * (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4); }, 0);
+    const back = node => { const layers = []; for (let x = node; x; x = x.parentElement) { const c = parse(getComputedStyle(x).backgroundColor); if (c[3] > 0) { layers.push(c); if (c[3] >= 1) break; } } return layers.reverse().reduce((under, c) => over(c, under), parse(getComputedStyle(document.body).backgroundColor)); };
+    return [...box.querySelectorAll('span, p, button')].filter(node => node.textContent.trim() && !node.querySelector('span')).map(node => { const bg = back(node), fg = over(parse(getComputedStyle(node).color), bg), [a, b] = [lum(fg), lum(bg)];
+      return [node.className + (node.closest('[class^="phase-"]') ? ' in ' + node.closest('[class^="phase-"]').className : ''), Math.round((Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05) * 100) / 100]; }).filter(([, ratio]) => ratio < 4.5);`);
+  assert.deepEqual(await low('light'), [], 'light theme');
+  assert.deepEqual(await low('dark'), [], 'dark theme');
+});
