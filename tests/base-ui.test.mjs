@@ -460,3 +460,29 @@ test('on a paired phone the Base page does not offer the imports that read this 
     assert.equal(note.hidden, !remote);
   }
 });
+
+test('a write that meets a Base change from another window reloads the library and is sent once more, never left stuck', async t => {
+  const context = { ...skill, id: 'res_context', kind: 'context', name: 'Docs', configuration: { sources: [] }, content: {} };
+  const conflict = { response: { ok: false }, data: { code: 'BASE_REVISION_CONFLICT', error: 'Base changed. Reload and review your changes.' } };
+  const { $, view, calls, clickText, submit, state } = setup(t, { resources: [skill, context], respond: (request, server) => {
+    if (!['/api/base/roots', '/api/base/apply'].includes(request.path)) return null;
+    if (request.body.expectedBaseRevision !== server.revision) return conflict;
+    server.revision++; if (request.path === '/api/base/roots') server.approvedRoots = [{ id: 'root', path: request.body.path }];
+    return { response: { ok: true }, data: structuredClone(server) };
+  } });
+  await view.show();
+  // Another window changes Base after this page loaded it.
+  state.revision++;
+  await view.openResource(context.id); clickText('Manage external roots…');
+  $('#base-dialog-content input[type="text"]').value = '/srv/docs'; $('#base-dialog-content input[type="checkbox"]').checked = true;
+  submit($('#base-dialog-content form'));
+  await until(() => !$('#base-dialog').open, 'root approved after one retry');
+  assert.deepEqual(calls.filter(call => call.path === '/api/base/roots').map(call => call.body.expectedBaseRevision), [3, 4]);
+  assert.match($('#base-status').textContent, /Root approved/);
+  // The same for an assignment saved from the picker while another window changed Base.
+  view.openPicker(target); await until(() => $('#base-dialog-content form'), 'picker open');
+  state.revision++;
+  submit($('#base-dialog-content form'));
+  await until(() => !$('#base-dialog').open, 'assignment saved after one retry');
+  assert.deepEqual(calls.filter(call => call.path === '/api/base/apply').map(call => call.body.expectedBaseRevision), [5, 6]);
+});

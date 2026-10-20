@@ -149,9 +149,16 @@ window.PromptboardBase = (() => {
     };
     async function request(path, options) {
       const { response, data } = await context.api(path, options);
-      if (!response.ok) throw Object.assign(new Error(data.error || 'Base could not complete this request.'), { code: data.code, data });
+      if (!response.ok) {
+        // Base changed elsewhere (another window, an import): read it again, so the next attempt is checked against it.
+        if (data.code === 'BASE_REVISION_CONFLICT') await load(true).catch(() => {});
+        throw Object.assign(new Error(data.error || 'Base could not complete this request.'), { code: data.code, data });
+      }
       accept(data); return data;
     }
+    // A write sent with the page's Base revision is sent once more after that reload. Resource and target revisions,
+    // and the server's checks, still refuse a real conflict, so nothing changed elsewhere is overwritten.
+    const retried = send => send().catch(failure => { if (failure.code !== 'BASE_REVISION_CONFLICT') throw failure; return send(); });
     async function load(force = false) {
       if (loading && !force) return loading;
       const version = ++loadVersion;
@@ -281,7 +288,7 @@ window.PromptboardBase = (() => {
       control.disabled = true;
       try {
         const send = () => request(`/api/base/resources/${encodeURIComponent(item.id)}`, { method: 'PATCH', body: { enabled: on, expectedRevision: resource(item.id)?.revision ?? item.revision, expectedBaseRevision: state.revision } });
-        await send().catch(async failure => { if (failure.code !== 'BASE_REVISION_CONFLICT') throw failure; await load(true); return send(); });
+        await retried(send);
         await load(); status(`${item.name} switched ${on ? 'on' : 'off'}. It stays in Base with its configuration; ${on ? 'future runs can use it' : 'future runs leave it out everywhere'}.`);
       } catch (failure) { control.checked = !on; error(failure.message); } finally { control.disabled = false; }
     }
@@ -402,7 +409,7 @@ window.PromptboardBase = (() => {
       const box = el('div'); box.append(p('This backup contains global Base selections. Restoring them applies to future runs in every project that inherits them. Imported executable resources remain inactive and untrusted until reviewed.'), el('pre', JSON.stringify(pending, null, 2), 'base-code'));
       const fail = inlineError(box);
       box.append(actions(button('Cancel', closeDialog), busyButton('Restore global selections', async () => {
-        try { await request('/api/base/restore-global', { method: 'POST', body: { confirm: true, expectedBaseRevision: state.revision } }); await context.refreshBoard?.(); await load(); closeDialog(); status('Restored global Base selections. No runs started.'); }
+        try { await retried(() => request('/api/base/restore-global', { method: 'POST', body: { confirm: true, expectedBaseRevision: state.revision } })); await context.refreshBoard?.(); await load(); closeDialog(); status('Restored global Base selections. No runs started.'); }
         catch (error) { fail(error); }
       })));
       openDialog('Restore global selections', [box]);
@@ -502,7 +509,6 @@ window.PromptboardBase = (() => {
       openDialog('Base resources', [p('Loading assignments…')]);
       try {
         await load();
-        const expectedBaseRevision = state.revision;
         const entry = state.targets.find(item => targetKey(item.target) === targetKey(target));
         if (!entry) throw new Error('This configuration target no longer exists. Reload the board.');
         const fields = bindingFields(entry.binding || INHERIT, { allowProfiles: false });
@@ -528,7 +534,7 @@ window.PromptboardBase = (() => {
         form.addEventListener('submit', async event => {
           event.preventDefault(); save.disabled = true; fail('');
           try {
-            await request('/api/base/apply', { method: 'POST', body: { expectedBaseRevision, changes: [{ target, binding: fields.read(), ...(canProfile ? { profileId: profile.value || null } : {}), expectedRevision: entry.revision }] } });
+            await retried(() => request('/api/base/apply', { method: 'POST', body: { expectedBaseRevision: state.revision, changes: [{ target, binding: fields.read(), ...(canProfile ? { profileId: profile.value || null } : {}), expectedRevision: entry.revision }] } }));
             await context.refreshBoard?.(); await load(); closeDialog(); context.announce?.('Base resources saved for future runs.');
           } catch (error) { fail(error); } finally { save.disabled = false; }
         });
@@ -597,9 +603,7 @@ window.PromptboardBase = (() => {
           const body = skillImport ? { markdown: skillImport.markdown, files: skillImport.files, name: name.value.trim(), description: description.value, tags: tags.value.split(',').map(value => value.trim()).filter(Boolean), expectedBaseRevision: state.revision }
             : { kind: item.kind, name: name.value.trim(), description: description.value, tags: tags.value.split(',').map(value => value.trim()).filter(Boolean), enabled: enabled.control.checked, trust: trust.value, dependencies: dependencies.read(), ...resourceValues, expectedBaseRevision: state.revision, ...(item.id ? { expectedRevision: item.revision } : {}) };
           const send = () => request(skillImport ? '/api/base/skills/import' : item.id ? `/api/base/resources/${encodeURIComponent(item.id)}` : '/api/base/resources', { method: item.id && !skillImport ? 'PATCH' : 'POST', body: { ...body, expectedBaseRevision: state.revision } });
-          // Base changed elsewhere (another window, an import): read it again and save once more. The resource's own
-          // revision and the server's checks still refuse a real conflict.
-          const data = await send().catch(async failure => { if (failure.code !== 'BASE_REVISION_CONFLICT') throw failure; await load(true); return send(); });
+          const data = await retried(send);
           const savedId = data.resource?.id || data.id || item.id;
           await load(); if (savedId && editorVersion === requestVersion) await openResource(savedId, true);
           status('Saved. No assignments changed.'); context.announce?.('Base resource saved.');
@@ -1097,7 +1101,7 @@ window.PromptboardBase = (() => {
           // Restoring saves that version's definition as a new revision; every revision stays in the history.
           ...(Number(selected.value) !== item.revision ? [busyButton('Restore this version', async () => {
             try {
-              await request(`/api/base/resources/${encodeURIComponent(item.id)}`, { method: 'PATCH', body: { configuration: saved.configuration, content: saved.content, expectedRevision: item.revision, expectedBaseRevision: state.revision } });
+              await retried(() => request(`/api/base/resources/${encodeURIComponent(item.id)}`, { method: 'PATCH', body: { configuration: saved.configuration, content: saved.content, expectedRevision: item.revision, expectedBaseRevision: state.revision } }));
               await load(); await openResource(item.id, true); status(`Restored revision ${selected.value} as a new revision. The history keeps every version.`);
             } catch (error) { output.append(el('p', error.message, 'inline-error')); }
           })] : [])); }
@@ -1122,7 +1126,7 @@ window.PromptboardBase = (() => {
         const roots = el('div');
         for (const root of state.approvedRoots) {
           const row = el('div'); row.append(p(root.path || root.id), busyButton('Revoke root approval', async () => {
-            try { await request(`/api/base/roots/${encodeURIComponent(root.id)}`, { method: 'DELETE', body: { expectedBaseRevision: state.revision } }); row.remove(); await load(); context.announce?.('External root approval revoked for future launches.'); }
+            try { await retried(() => request(`/api/base/roots/${encodeURIComponent(root.id)}`, { method: 'DELETE', body: { expectedBaseRevision: state.revision } })); row.remove(); await load(); context.announce?.('External root approval revoked for future launches.'); }
             catch (error) { fail(error); }
           }, 'text-button')); roots.append(row);
         }
@@ -1131,7 +1135,7 @@ window.PromptboardBase = (() => {
       form.addEventListener('submit', async event => {
         event.preventDefault(); if (!confirmation.control.checked) { fail('Confirm read access for this root.'); return; } save.disabled = true;
         try {
-          await request('/api/base/roots', { method: 'POST', body: { path: path.value, confirm: true, expectedBaseRevision: state.revision } }); await load(); closeDialog();
+          await retried(() => request('/api/base/roots', { method: 'POST', body: { path: path.value, confirm: true, expectedBaseRevision: state.revision } })); await load(); closeDialog();
           // An open context editor offers the new root at once; its unsaved draft stays.
           for (const pick of document.querySelectorAll('select.base-root-select')) for (const root of state.approvedRoots || []) if (![...pick.options].some(option => option.value === root.id)) pick.append(new Option(root.path || root.name || root.id, root.id));
           status('Root approved. Choose it for a source.');
