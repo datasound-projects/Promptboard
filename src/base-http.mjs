@@ -24,7 +24,8 @@ export class BaseRoutes {
   close() { this.wiki.close(); this.avatars.close(); for (const controller of this.operations) controller.abort(); }
 
   async body(req) {
-    const body = await this.jsonBody(req, BASE_LIMITS.importBytes);
+    // An import carries a whole export (up to BASE_LIMITS.importBytes) inside its request; 1 MiB is left for the wrapper and ID remap.
+    const body = await this.jsonBody(req, BASE_LIMITS.importBytes + 1024 * 1024);
     if (!body || typeof body !== 'object' || Array.isArray(body)) fail('Send a JSON object.');
     return body;
   }

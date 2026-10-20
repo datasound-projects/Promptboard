@@ -431,3 +431,19 @@ test('import previews and imports only the latest chosen file; a late reply for 
   const sent = calls.find(call => call.path === '/api/base/import').body;
   assert.deepEqual([sent.data.name, sent.remap.from], ['B', 'B']);
 });
+
+test('Base exports download the server’s compact bytes, and an indented earlier export within the limit still imports', async t => {
+  const exported = { kind: 'promptboard-base', version: 1, resources: [{ id: 'a', kind: 'skill', name: 'A' }] };
+  const { $, win, view, calls, clickText } = setup(t, { respond: request => request.path === '/api/base/export' ? { response: { ok: true }, data: exported } : request.path === '/api/base/import/preview' ? { response: { ok: true }, data: { remap: { a: 'b' }, warnings: [], resources: [] } } : null });
+  const downloads = []; win.PromptboardDom.download = (name, text) => downloads.push(text);
+  await view.show();
+  clickText('Export…'); $('#base-dialog-content [data-resource]').click(); clickText('Download Base export');
+  await until(() => downloads.length, 'export downloaded');
+  assert.equal(downloads[0], JSON.stringify(exported), 'the bytes the server measured against the 12 MiB limit');
+  clickText('Import…');
+  // Earlier versions saved exports indented: above 12 MiB on disk, well within the limit once compact.
+  const input = $('#base-import-file'), indented = `${JSON.stringify(exported, null, 2)}${' '.repeat(13 * 1024 * 1024)}`;
+  Object.defineProperty(input, 'files', { value: [new File([indented], 'promptboard-base.json')], configurable: true }); input.dispatchEvent(new win.Event('change'));
+  await until(() => calls.some(call => call.path === '/api/base/import/preview'), 'indented export previewed');
+  assert.deepEqual(calls.find(call => call.path === '/api/base/import/preview').body.data, exported);
+});

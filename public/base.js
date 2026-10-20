@@ -11,6 +11,8 @@ window.PromptboardBase = (() => {
   const ICONS = { profile: '◉', agentProfile: '◎', pack: '▦', mcp: '⇄', skill: '✦', knowledge: '❖', context: '⌗', tool: '⚒', markdown: '¶' };
   const PROVIDERS = [['claude', 'Claude Code'], ['codex', 'Codex'], ['gemini', 'Gemini CLI'], ['agy', 'Antigravity']];
   const INHERIT = { mode: 'inherit', include: [], exclude: [] };
+  // What an import accepts (BASE_LIMITS.importBytes), measured compact as the export measures it: earlier exports were saved indented.
+  const IMPORT_BYTES = 12 * 1024 * 1024;
   const el = (tag, text, className = '') => { const node = document.createElement(tag); if (text !== undefined) node.textContent = text; if (className) node.className = className; return node; };
   const p = text => el('p', text, 'note');
   const button = (text, handler, className = 'secondary-button') => { const node = el('button', text, className); node.type = 'button'; node.addEventListener('click', handler); return node; };
@@ -197,7 +199,8 @@ window.PromptboardBase = (() => {
     function busyButton(label, action, className = 'secondary-button') {
       const node = button(label, async () => { node.disabled = true; try { await action(); } finally { node.disabled = false; } }, className); return node;
     }
-    const download = (name, data) => window.PromptboardDom.download(name, JSON.stringify(data, null, 2), 'application/json');
+    // The server's compact bytes: their size is the one the export checked against the import limit.
+    const download = (name, data) => window.PromptboardDom.download(name, JSON.stringify(data), 'application/json');
     function metadata(item) {
       const trust = item.trust || 'untrusted';
       return `${KINDS[item.kind] || item.kind} · ${item.enabled ? 'Available' : 'Disabled'} · ${trust} · r${item.revision}`;
@@ -1221,7 +1224,7 @@ window.PromptboardBase = (() => {
       file.addEventListener('change', async () => {
         const mine = ++ticket;
         apply.disabled = true; previewed = false; imported = null; remap = null; content.replaceChildren(); fail('');
-        try { const selected = file.files?.[0]; if (!selected) return; if (selected.size > 12 * 1024 * 1024) throw new Error('Import exceeds 12 MiB.'); const parsed = JSON.parse(await selected.text()); if (mine !== ticket) return; const data = await request('/api/base/import/preview', { method: 'POST', body: { data: parsed } }); if (mine !== ticket) return; imported = parsed; remap = data.remap || data.preview?.remap; expectedBaseRevision = data.expectedBaseRevision ?? state.revision; content.replaceChildren(el('pre', JSON.stringify(data.preview || data, null, 2), 'base-code')); previewed = true; apply.disabled = false; }
+        try { const selected = file.files?.[0]; if (!selected) return; if (selected.size > 4 * IMPORT_BYTES) throw new Error('Import exceeds 12 MiB.'); const parsed = JSON.parse(await selected.text()); if (mine !== ticket) return; if (new Blob([JSON.stringify(parsed)]).size > IMPORT_BYTES) throw new Error('Import exceeds 12 MiB.'); const data = await request('/api/base/import/preview', { method: 'POST', body: { data: parsed } }); if (mine !== ticket) return; imported = parsed; remap = data.remap || data.preview?.remap; expectedBaseRevision = data.expectedBaseRevision ?? state.revision; content.replaceChildren(el('pre', JSON.stringify(data.preview || data, null, 2), 'base-code')); previewed = true; apply.disabled = false; }
         catch (error) { if (mine === ticket) fail(error); }
       });
       box.append(actions(button('Cancel', closeDialog), apply)); openDialog('Import Base', [box]);
