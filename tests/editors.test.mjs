@@ -6,7 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { chmod, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { detectEditors, editorLaunch, editorList, editorPreferences, openInEditor } from '../src/editors.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
 
@@ -55,7 +55,7 @@ test('opening uses the stored project folder or a task’s worktree, reports a m
   await mkdir(tree); await writeFile(join(tree, '.git'), 'gitdir: elsewhere');
   const project = { repository: { root: repo, path: repo }, tasks: [{ id: 't1', workspace: { path: tree } }, { id: 't2', workspace: null }] };
   const options = { preferences, platform: 'darwin', env: {}, home: dir, appDirs: [join(dir, 'apps')], exec: async (command, args) => { calls.push([command, ...args]); return { ok: true, stdout: '' }; } };
-  assert.deepEqual(await openInEditor(project, { editor: 'zed' }, options), { opened: 'zed', name: 'Zed', folder: 'repo', worktree: false });
+  assert.deepEqual(await openInEditor(project, { editor: 'zed' }, options), { opened: 'zed', name: 'Zed', folder: 'repo', worktree: false, remembered: true });
   await openInEditor(project, { editor: 'zed', taskId: 't1' }, options);
   assert.deepEqual(calls, [['open', '-a', join(dir, 'apps', 'Zed.app'), repo], ['open', '-a', join(dir, 'apps', 'Zed.app'), tree]]);
   assert.equal((await preferences.read()).preferred, 'zed');
@@ -64,6 +64,27 @@ test('opening uses the stored project folder or a task’s worktree, reports a m
   await assert.rejects(openInEditor({ repository: { root: join(dir, 'gone') }, tasks: [] }, { editor: 'zed' }, options), { code: 'FOLDER_MISSING' });
   await assert.rejects(openInEditor({ repository: null, tasks: [] }, { editor: 'zed' }, options), { code: 'REPOSITORY_REQUIRED' });
   await assert.rejects(openInEditor(project, { editor: 'zed' }, { ...options, exec: async () => ({ ok: false, stdout: '' }) }), { code: 'OPEN_FAILED' }, 'a failing open -a is reported');
+});
+
+test('an editor that opened is reported as opened when its choice cannot be saved; a damaged preferences file falls back to its backup', async t => {
+  const dir = await temp(t), preferences = editorPreferences(dir), calls = [];
+  await mkdir(join(dir, 'apps', 'Zed.app'), { recursive: true }); await mkdir(join(dir, 'apps', 'Cursor.app'));
+  const project = { repository: { root: dir }, tasks: [] }, options = { preferences, platform: 'darwin', env: {}, home: dir, appDirs: [join(dir, 'apps')], exec: async (command, args) => { calls.push(args.at(-1)); return { ok: true, stdout: '' }; } };
+  assert.equal((await openInEditor(project, { editor: 'zed' }, options)).remembered, true);
+  // The backup's name is taken by a folder, so the next save fails (as in a read-only data folder).
+  await mkdir(join(dir, 'editors.json.bak', 'taken'), { recursive: true });
+  assert.deepEqual(await openInEditor(project, { editor: 'cursor' }, options), { opened: 'cursor', name: 'Cursor', folder: basename(dir), worktree: false, remembered: false });
+  assert.deepEqual([calls.length, (await preferences.read()).preferred], [2, 'zed']);
+  // A damaged file is not "no editors": the backup is read, and the next save keeps the editors added by hand.
+  await rm(join(dir, 'editors.json.bak'), { recursive: true });
+  const nova = process.platform === 'win32' ? null : await program(join(dir, 'nova'));
+  if (!nova) return;
+  await preferences.update({ custom: [{ name: 'Nova', command: nova }] }, { platform: 'linux' });
+  await preferences.update({ preferred: 'zed' });
+  await writeFile(join(dir, 'editors.json'), '{"version":1,"custom":[{"id":');
+  assert.deepEqual((await preferences.read()).custom.map(item => item.name), ['Nova']);
+  await preferences.remember('cursor');
+  assert.deepEqual((await preferences.read()).custom.map(item => item.name), ['Nova']);
 });
 
 test('an editor added by hand is a full path to a program; scripts that need a shell are refused', async t => {

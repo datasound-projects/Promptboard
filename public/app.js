@@ -4497,7 +4497,7 @@ async function openInEditor(project, editorId, taskId = '') {
   try {
     const result = await boardCall('POST', `/api/projects/${encodeURIComponent(project.id)}/open`, { target: 'editor', editor: editorId, ...(taskId ? { taskId } : {}) });
     editorState.preferred = result.opened || editorId;
-    announce(`${result.name || 'The editor'} opened ${taskId ? 'the task’s worktree' : project.name}.`);
+    announce(`${result.name || 'The editor'} opened ${taskId ? 'the task’s worktree' : project.name}.${result.remembered === false ? ' Promptboard could not save this choice for next time.' : ''}`);
     renderBoard(); labelWorktreeButtons();
   } catch (error) { announce(error.message); setBoardWarning(error.message); }
 }
