@@ -414,7 +414,10 @@ test('a backup the export accepts imports again through the page, above the form
   // About 22 MB of prompts: well under the 47 MB the export allows.
   for (let i = 0; i < 11; i++) await ctx.app.board.createTask({ projectId: project.id, title: `Large ${i}`, prompt: String(i % 10).repeat(2 * 1024 * 1024 - 8) });
   await ctx.win.__pbTest.loadBoard();
+  const before = ctx.blobs.length;
   await click(ctx, ctx.$('#export-board'));
+  // The 22 MB export is fetched and saved after the click returns.
+  await until(() => ctx.blobs.length > before, 'board export saved', 30000);
   const file = await ctx.blobs.at(-1).text();
   assert.ok(file.length > 20 * 1024 * 1024);
   assert.equal(file, `${JSON.stringify(JSON.parse(file))}\n`, 'the file is the export itself, so its size is the size the export checked');
