@@ -315,7 +315,13 @@ window.PromptboardBatch = (() => {
       const path = `/${enc()}`, id = item.id;
       if (running) { bar.append(button('Cancel', () => act(`${path}/cancel`, { itemIds: [id] }, 'Cancelled.', { where: 'item' }), 'secondary-button')); return bar; }
       if (sent) { bar.append(button(item.card ? `Open Kanban #${item.card.number}` : 'Open Kanban', () => app.openKanban(batch.kanban?.id, item.card?.id), 'secondary-button')); return bar; }
-      if (item.rejected) { bar.append(button('Restore', () => act(`${path}/items/${id}`, { rejected: false }, 'Restored.', { method: 'PATCH', where: 'item' }), 'secondary-button')); return bar; }
+      // Out of the batch, with a second click to confirm. Origin and Kanban are not changed.
+      const remove = button('Remove from batch', () => {
+        if (remove.dataset.confirm !== 'true') { remove.dataset.confirm = 'true'; remove.textContent = 'Remove this task and its prompts?'; remove.classList.add('danger'); return; }
+        void act(`${path}/items/${encodeURIComponent(id)}`, undefined, `${item.key} removed from the batch. Origin is unchanged.`, { method: 'DELETE' });
+      }, 'text-button', 'Take this task and its prompts out of the batch. Origin and Kanban stay as they are.');
+      remove.id = 'batch-remove';
+      if (item.rejected) { bar.append(button('Restore', () => act(`${path}/items/${id}`, { rejected: false }, 'Restored.', { method: 'PATCH', where: 'item' }), 'secondary-button'), remove); return bar; }
       const generate = button(version ? 'Regenerate' : 'Generate', () => {
         if ((item.approved || item.split?.state === 'accepted') && generate.dataset.confirm !== 'true') {
           generate.dataset.confirm = 'true'; generate.textContent = item.split ? 'Regenerate and drop the split?' : 'Regenerate and remove the approval?'; generate.classList.add('danger'); return;
@@ -344,7 +350,7 @@ window.PromptboardBatch = (() => {
         split.disabled = blocked;
         bar.append(split);
       }
-      bar.append(button('Reject', () => act(`${path}/items/${id}`, { rejected: true }, 'Rejected. It stays here and never goes to Kanban.', { method: 'PATCH', where: 'item' }), 'text-button', 'Keep this task out of Kanban'));
+      bar.append(button('Reject', () => act(`${path}/items/${id}`, { rejected: true }, 'Rejected. It stays here and never goes to Kanban.', { method: 'PATCH', where: 'item' }), 'text-button', 'Keep this task out of Kanban'), remove);
       return bar;
     }
     function findings() {

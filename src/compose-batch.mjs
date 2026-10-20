@@ -36,6 +36,7 @@ export class BatchError extends Error {
 const conflict = (message, code = 'BATCH_CONFLICT') => new BatchError(message, code, 409);
 const id = (value, message = 'Choose a valid task.') => { if (typeof value !== 'string' || !Model.ID.test(value)) throw new BatchError(message); return value; };
 const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+const parseObject = bytes => { try { const value = JSON.parse(bytes); return plain(value) ? value : undefined; } catch { return undefined; } };
 
 // ---- Settings: Compose defaults → this batch → this task ----
 
@@ -204,12 +205,11 @@ export class ComposeBatches {
     return this.#loading.get(batchId);
   }
   async #read(batchId) {
-    const parse = bytes => { try { const value = JSON.parse(bytes); return plain(value) ? value : undefined; } catch { return undefined; } };
-    const meta = await readWithBackup([this.#path(batchId), `${this.#path(batchId)}.bak`], parse);
+    const meta = await readWithBackup([this.#path(batchId), `${this.#path(batchId)}.bak`], parseObject);
     if (!meta) return null;
     const items = new Map();
     for (const itemId of meta.order) {
-      const item = await readWithBackup([this.#path(batchId, itemId), `${this.#path(batchId, itemId)}.bak`], parse);
+      const item = await readWithBackup([this.#path(batchId, itemId), `${this.#path(batchId, itemId)}.bak`], parseObject);
       if (!item) continue;
       // Runs live only in this process. A run saved by an earlier process stopped with it: never restart it on its own.
       if (item.run) {
@@ -324,7 +324,8 @@ export class ComposeBatches {
     try { names = await readdir(this.dir); } catch {}
     const out = [];
     for (const name of names) {
-      const meta = await readWithBackup([join(this.dir, name, 'batch.json')], bytes => { try { return JSON.parse(bytes); } catch { return undefined; } }).catch(() => null);
+      // The same files and backup a batch loads from, so a batch that opens is also listed.
+      const meta = await readWithBackup([join(this.dir, name, 'batch.json'), join(this.dir, name, 'batch.json.bak')], parseObject).catch(() => null);
       if (meta?.id) out.push({ id: meta.id, name: meta.name, count: meta.order.length, updatedAt: meta.updatedAt });
     }
     return out.sort((a, b) => b.updatedAt - a.updatedAt);
@@ -507,7 +508,8 @@ export class ComposeBatches {
       for (const job of this.#queue.filter(match)) {
         this.#queue.splice(this.#queue.indexOf(job), 1);
         const item = structuredClone(batch.items.get(job.itemId));
-        if (item?.run?.id === job.runId) { item.run = null; await this.#saveItem(batch, item); }
+        // The job has left the queue: a save the disk refuses still frees the task in memory, so it never waits without a worker.
+        if (item?.run?.id === job.runId) { item.run = null; await this.#saveItem(batch, item).catch(() => this.#release(job, null)); }
         cancelled++;
       }
       return { cancelled };
@@ -571,7 +573,9 @@ export class ComposeBatches {
    */
   #release(job, failure) {
     const batch = this.#cache.get(job.batchId), stored = batch?.items.get(job.itemId);
-    if (stored?.run?.id === job.runId) batch.items.set(job.itemId, { ...stored, run: null, error: failure && { ...failure, kind: job.kind, at: Date.now() } });
+    if (stored?.run?.id !== job.runId) return;
+    batch.items.set(job.itemId, { ...stored, run: null, error: failure && { ...failure, kind: job.kind, at: Date.now() } });
+    batch.meta = { ...batch.meta, revision: batch.meta.revision + 1, updatedAt: Date.now() }; // A polling page sees the change.
   }
 
   /** After an account-level failure every queued call would fail the same way: put them back, do not spend more usage. */

@@ -155,3 +155,33 @@ test('a model saved in Batch settings keeps the CLI it was chosen for', { skip, 
   const { batch } = await call(`/${record.id}`);
   assert.deepEqual([batch.settings.provider, batch.settings.model], ['codex', 'gpt-5.5']);
 });
+
+test('a task deleted in Origin can be removed from the batch, as its finding asks', { skip, timeout: 120000 }, async t => {
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [{ id: 'codex', available: true }], authAdapter: { installed: async () => true, status: async () => ({ state: 'signed-in' }) }, runner });
+  const store = new OriginStore(app.board.store.dir);
+  let record = await store.create({ name: 'Shop' });
+  const blueprint = Model.emptyBlueprint();
+  for (const [id, key, title] of [['i1', 'IMP-001', 'Set up'], ['i2', 'IMP-002', 'Catalog']]) blueprint.items.push({ id, key, title, description: `${title} the shop.`, acceptanceCriteria: 'npm test runs', dependsOn: [] });
+  record = await store.write(record.id, { expectedRevision: record.revision, blueprint });
+  const token = (await (await fetch(`${app.url}/api/session`)).json()).token;
+  const call = (path, body, method = body ? 'POST' : 'GET') => fetch(`${app.url}/api/compose/batches${path}`, { method, headers: { 'X-STE-Token': token, ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) }).then(r => r.json());
+  await call('', { originId: record.id, expectedRevision: record.revision, itemIds: ['i1', 'i2'], defaults: { provider: 'codex' } });
+  record = await store.write(record.id, { expectedRevision: record.revision, blueprint: { ...blueprint, items: blueprint.items.filter(item => item.id !== 'i2') } });
+  const browser = await launch(); if (!browser) { t.skip('Chrome did not start.'); return; } t.after(() => browser.close());
+  await browser.resize(390, 844);
+  const ev = expression => browser.eval(expression), until = (expression, label, ms = 30000) => browser.until(expression, label, ms);
+  await browser.goto(`${app.url}/#/`);
+  await until(`!!document.querySelector('#compose-mode-batch')`, 'Compose');
+  await ev(`document.querySelector('#compose-mode-batch').click();`);
+  await until(`document.querySelectorAll('.batch-row').length === 2`, 'batch shown');
+  await ev(`[...document.querySelectorAll('.batch-row-main')].find(node => node.textContent.includes('IMP-002')).click();`);
+  await until(`/no longer exists in Origin/.test(document.querySelector('.batch-findings')?.textContent || '') && !!document.querySelector('#batch-remove')`, 'finding and Remove');
+  assert.equal(await browser.layout(`return document.querySelector('.batch-inspector-actions').scrollWidth <= document.querySelector('.batch-inspector-actions').clientWidth + 1;`), true, 'the actions fit a phone');
+  await ev(`document.querySelector('#batch-remove').click();`);
+  await until(`document.querySelector('#batch-remove')?.textContent === 'Remove this task and its prompts?'`, 'asks to confirm');
+  assert.equal(await browser.layout(`const view = document.querySelector('#batch-view'); return view.scrollWidth <= view.clientWidth + 1;`), true, 'nothing wider than the phone');
+  assert.equal((await call(`/${record.id}`)).batch.items.length, 2, 'the first click removes nothing');
+  await ev(`document.querySelector('#batch-remove').click();`);
+  await until(`document.querySelectorAll('.batch-row').length === 1 && /IMP-002 removed from the batch/.test(document.body.textContent)`, 'removed');
+  assert.deepEqual((await call(`/${record.id}`)).batch.items.map(item => item.key), ['IMP-001']);
+});

@@ -43,7 +43,9 @@ export class ComposeLocal {
       signal?.throwIfAborted();
       if (depth > 8 || entries >= 1500) { truncated = true; return; }
       const children = [];
-      for await (const child of await opendir(dir)) { children.push(child); if (children.length >= 1500 - entries) { truncated = true; break; } }
+      // A subfolder this app may not read (a database volume, another user's files) is left out, not the whole folder.
+      let listing; try { listing = await opendir(dir); } catch (error) { if (!depth) throw error; truncated = true; return; }
+      for await (const child of listing) { children.push(child); if (children.length >= 1500 - entries) { truncated = true; break; } }
       children.sort((a, b) => a.name.localeCompare(b.name));
       for (const child of children) {
         signal?.throwIfAborted();

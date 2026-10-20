@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readdir, readFile } from 'node:fs/promises';
+import { chmod, readdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import '../public/origin-model.js';
 import { OriginStore } from '../src/origin.mjs';
@@ -465,4 +465,35 @@ test('a run naming a task that is not in the batch queues nothing, so no task wa
   await call(`/${record.id}/run`, { itemIds: ['t2'] });
   const batch = await settle(call, record.id);
   assert.notEqual(states(batch)['IMP-002'], 'pending', 'the task runs when asked again');
+});
+
+test('tasks whose cancel cannot be saved are still freed and shown, so none stays queued or running without a worker', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, async t => {
+  const runner = engineer({ hold: text => /MARK1\b/.test(text) });
+  const { app, call } = await setup(t, runner);
+  const { record } = await project(app, 2);
+  await call('', { originId: record.id, expectedRevision: record.revision, itemIds: ['t1', 't2'] });
+  await call(`/${record.id}/settings`, { concurrency: 1 });
+  await call(`/${record.id}/run`, { all: true });
+  const seen = await settle(call, record.id, view => states(view)['IMP-001'] === 'running' && states(view)['IMP-002'] === 'queued');
+  const items = join(app.board.store.dir, 'compose-batches', record.id, 'items');
+  await chmod(items, 0o555); // The disk refuses every save.
+  try {
+    assert.equal((await call(`/${record.id}/cancel`, {})).data.cancelled, 2);
+    await settle(call, record.id, view => Object.values(states(view)).every(state => state === 'pending'));
+    // A page that polls with the revision it last saw learns that the tasks were freed.
+    const poll = await call(`/${record.id}?since=${seen.revision}&origin=${seen.originRevision}&instance=${seen.instance}`);
+    assert.notEqual(poll.data.unchanged, true);
+  } finally { await chmod(items, 0o755); }
+  assert.equal((await call(`/${record.id}/run`, { itemIds: ['t2'] })).data.queued, 1, 'the task can run again');
+  assert.notEqual(states(await settle(call, record.id))['IMP-002'], 'pending');
+});
+
+test('a batch whose batch.json is damaged is still listed from its backup, as it still loads', async t => {
+  const { app, call } = await setup(t, engineer());
+  const { record } = await project(app, 1);
+  await call('', { originId: record.id, expectedRevision: record.revision, itemIds: ['t1'] });
+  await call(`/${record.id}/settings`, { concurrency: 2 }); // A second save keeps a backup of the first.
+  await writeFile(join(app.board.store.dir, 'compose-batches', record.id, 'batch.json'), '{"id":');
+  assert.deepEqual((await call('')).data.batches.map(entry => entry.id), [record.id]);
+  assert.equal((await call(`/${record.id}`)).data.batch.items.length, 1);
 });
