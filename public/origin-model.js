@@ -1274,6 +1274,8 @@ globalThis.PromptboardOriginModel = (() => {
     areas: { componentIds: 'components', requirementIds: 'requirements', technologyIds: 'technologies' },
   };
   const SINGLE_LINKS = new Set(['layerId', 'milestoneId', 'from', 'to']);
+  // A field's entry in LINKS or SUGGEST_FIELDS, never one every object has (constructor, toString, __proto__): names come from agents.
+  const ownRule = (table, collection, field) => (Object.hasOwn(table, collection) && Object.hasOwn(table[collection], field) ? table[collection][field] : undefined);
   const REF = /^@[A-Za-z0-9_.-]{1,60}$/;
 
   // ---- Origin Research suggestions: validated against the blueprint by stable IDs, applied only by the person ----
@@ -1315,7 +1317,7 @@ globalThis.PromptboardOriginModel = (() => {
    * IDs; for a new record (`lenient`) an unknown enum value is left out, so the record keeps Origin's default.
    */
   function suggestionValue(collection, field, value, { lenient = false } = {}) {
-    const rule = SUGGEST_FIELDS[collection]?.[field];
+    const rule = ownRule(SUGGEST_FIELDS, collection, field);
     if (rule === undefined) reject(`${collection}.${field} cannot be suggested.`);
     if (typeof value !== 'string') reject('A suggested value must be text.');
     const text = value.trim();
@@ -1332,7 +1334,7 @@ globalThis.PromptboardOriginModel = (() => {
    * batch (`refs` maps a reference to its collection). Many-links are lists; layerId, milestoneId, from and to hold one.
    */
   function linkValue(blueprint, collection, field, value, refs) {
-    const to = LINKS[collection]?.[field];
+    const to = ownRule(LINKS, collection, field);
     if (!to) reject(`${collection}.${field} is not a relationship.`);
     const valid = id => (typeof id === 'string' && (REF.test(id) ? refs.get(id.slice(1)) === to : blueprint[to].some(entry => entry.id === id)));
     if (SINGLE_LINKS.has(field) && Array.isArray(value) && value.length === 1) value = value[0]; // A list of one is read as the one link.
@@ -1573,8 +1575,8 @@ globalThis.PromptboardOriginModel = (() => {
       if (collection === 'areas' && !areaFor(blueprint, proposal.value?.section, proposal.value?.area)) return { conflict: 'This topic is not part of the blueprint any more.', missing: true };
       const id = newId(), entry = { id, origin: 'ai', ...RECORD_DEFAULTS[collection](collection === 'connections' ? undefined : String(fields[nameField(collection)] || '').trim(), proposal.value?.section, proposal.value?.area) };
       for (const [field, given] of Object.entries(fields)) {
-        if (LINKS[collection]?.[field] !== undefined) entry[field] = resolve(collection, field, given, id);
-        else if (SUGGEST_FIELDS[collection]?.[field] !== undefined && typeof given === 'string') entry[field] = suggestionValue(collection, field, given);
+        if (ownRule(LINKS, collection, field) !== undefined) entry[field] = resolve(collection, field, given, id);
+        else if (ownRule(SUGGEST_FIELDS, collection, field) !== undefined && typeof given === 'string') entry[field] = suggestionValue(collection, field, given);
       }
       if (collection === 'connections') {
         if (!entry.from || !entry.to) return { conflict: 'Apply the two components of this connection first.' };
@@ -1592,7 +1594,7 @@ globalThis.PromptboardOriginModel = (() => {
       return { ok: true, created: { collection, id }, pending };
     }
     const same = (a, b) => JSON.stringify(a ?? '') === JSON.stringify(b ?? '') || (typeof a === 'string' && typeof b === 'string' && a.trim() === b.trim());
-    if (target.kind === 'record' && LINKS[target.collection]?.[target.field] !== undefined) {
+    if (target.kind === 'record' && ownRule(LINKS, target.collection, target.field) !== undefined) {
       const entry = blueprint[target.collection].find(item => item.id === target.id);
       if (SINGLE_LINKS.has(target.field)) {
         if (!force && !same(current, proposal.original)) return { conflict: 'This link changed after the research ran.', current };
@@ -1603,7 +1605,7 @@ globalThis.PromptboardOriginModel = (() => {
     if (!force && !same(current, proposal.original)) return { conflict: 'This field changed after the research ran.', current };
     let text = typeof value === 'string' ? value : String(value ?? '');
     // An edited choice or link is checked like a suggested one (it throws when it is not valid).
-    if (target.kind === 'record' && SUGGEST_FIELDS[target.collection]?.[target.field] !== undefined) text = suggestionValue(target.collection, target.field, text);
+    if (target.kind === 'record' && ownRule(SUGGEST_FIELDS, target.collection, target.field) !== undefined) text = suggestionValue(target.collection, target.field, text);
     if (target.kind === 'idea') blueprint.idea = text;
     else if (target.kind === 'vision') blueprint.vision[target.field] = text;
     else if (target.kind === 'record') blueprint[target.collection].find(item => item.id === target.id)[target.field] = text;
@@ -1713,8 +1715,8 @@ globalThis.PromptboardOriginModel = (() => {
       target = { kind: 'add', collection: source.collection };
       value = {};
       for (const [field, given] of Object.entries(raw.value)) {
-        if (LINKS[source.collection]?.[field] !== undefined) { if (given !== undefined && given !== null && !(Array.isArray(given) && !given.length) && given !== '') value[field] = linkValue(blueprint, source.collection, field, given, refs); }
-        else if (SUGGEST_FIELDS[source.collection][field] !== undefined && typeof given === 'string' && given.trim()) { const checked = suggestionValue(source.collection, field, given, { lenient: true }); if (checked !== undefined) value[field] = checked; }
+        if (ownRule(LINKS, source.collection, field) !== undefined) { if (given !== undefined && given !== null && !(Array.isArray(given) && !given.length) && given !== '') value[field] = linkValue(blueprint, source.collection, field, given, refs); }
+        else if (ownRule(SUGGEST_FIELDS, source.collection, field) !== undefined && typeof given === 'string' && given.trim()) { const checked = suggestionValue(source.collection, field, given, { lenient: true }); if (checked !== undefined) value[field] = checked; }
       }
       if (source.collection === 'connections') { if (!value.from || !value.to || value.from === value.to) reject('A new connection needs two different components: from and to.'); }
       else if (!hasText(value[nameField(source.collection)])) reject(`A new ${RESEARCH_NOUN[source.collection] || source.collection} needs a ${nameField(source.collection)}.`);
@@ -1743,7 +1745,7 @@ globalThis.PromptboardOriginModel = (() => {
       } else reject('Unknown suggestion target.');
       if (researchTargetValue(blueprint, target) === undefined) reject('The suggested target does not exist in this blueprint.');
       const textValue = max => (typeof raw.value === 'string' && raw.value.trim() ? (raw.value.trim().length > max ? clip(raw.value.trim(), max - 1) : raw.value.trim()) : reject('A suggested value must be text.'));
-      if (target.kind !== 'blockAdd') value = target.kind === 'record' && LINKS[target.collection]?.[target.field] !== undefined ? linkValue(blueprint, target.collection, target.field, raw.value, refs)
+      if (target.kind !== 'blockAdd') value = target.kind === 'record' && ownRule(LINKS, target.collection, target.field) !== undefined ? linkValue(blueprint, target.collection, target.field, raw.value, refs)
         : target.kind === 'record' ? suggestionValue(target.collection, target.field, raw.value)
         : target.kind === 'block' ? textValue(blockSlot(blueprint, target).max)
         : textValue(target.kind === 'section' ? 2000 : TEXT);
