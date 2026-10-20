@@ -381,7 +381,11 @@ async function loadProviders() {
       if (firstAvailable) $('#provider').value = firstAvailable.id;
     }
     updateProviderState();
-    loadAuth(authInfo?.provider || $('#provider').value);
+    // A sign-in still waiting in the CLI (for example, after a reload) shows its page and Cancel again; otherwise it blocks every CLI job.
+    api('/api/status', { timeoutMs: 5000 }).then(({ data }) => data.auth?.state === 'waiting' ? data.auth : null, () => null).then(operation => {
+      loadAuth(operation?.provider || authInfo?.provider || $('#provider').value);
+      if (operation && !authBusy) followSignIn(operation);
+    });
     loadBoard();
     if (currentPage() === 'base') baseView?.show();
     if (currentPage() === 'origin') originView?.show();
@@ -1166,40 +1170,41 @@ async function signIn(method) {
   }
   setAuthBusy(true);
   showAuthDetail(paragraph('Starting the sign-in flow in your CLI…'));
-  let finished = false;
-  try {
-    const { response, data } = await api('/api/auth/login', { method: 'POST', body: { provider, method }, timeoutMs: 30000 });
-    let operation = data.operation;
-    if (!response.ok || !operation) {
-      finished = true;
-      showAuthDetail(paragraph(operation?.code === 'UNSUPPORTED' ? 'This CLI does not support sign-in from this app.' : failureMessage(data, 'The CLI could not start sign-in. Try the terminal command instead.'), 'kanban-error'),
-        ...(caps.loginCommand ? [codeBlock(method === 'device' ? caps.deviceCommand || caps.loginCommand : caps.loginCommand)] : []));
-      await afterAuthChange();
-      return;
-    }
-    const cancel = detailButton('Cancel sign-in', () => api('/api/auth/cancel', { method: 'POST', body: {} }).catch(() => {}));
-    if (operation.userCode && operation.verificationUrl) {
-      showAuthDetail(paragraph('Open this page, sign in, and enter the one-time code. Keep this code private.'),
-        externalLink(operation.verificationUrl, 'Open the device sign-in page ↗'), codeBlock(operation.userCode, 'auth-code'), detailActions(cancel));
-    } else if (operation.authUrl) {
-      showAuthDetail(paragraph('Open the sign-in page in your browser and complete sign-in. This panel updates when your CLI confirms it.'),
-        externalLink(operation.authUrl, 'Open the sign-in page ↗'), detailActions(cancel));
-    }
-    // Poll the public operation state. The CLI owns the credentials.
-    const id = operation.id;
-    while (['waiting', 'starting'].includes(operation?.state)) {
-      await new Promise(resolve => setTimeout(resolve, 1500));
-      try { ({ data: { auth: operation } } = await api('/api/status', { timeoutMs: 5000 })); } catch { continue; }
-      if (operation?.id !== id) operation = { state: 'failed' };
-    }
-    finished = true;
-    const state = operation?.state;
-    showAuthDetail(paragraph(state === 'succeeded' ? `${name} confirmed the sign-in.` : state === 'cancelled' ? 'Sign-in was cancelled. Your previous sign-in state is unchanged.'
-      : operation?.code === 'TIMEOUT' ? 'Sign-in timed out. Try again.' : 'Sign-in did not complete. Try again, or use the terminal command.', state === 'succeeded' || state === 'cancelled' ? '' : 'kanban-error'));
-    await afterAuthChange(state === 'succeeded' ? 'Signed in. Model list refreshed.' : '');
-  } catch {
-    if (!finished) { showAuthDetail(paragraph('The local server did not respond. Check that the app is still running.', 'kanban-error')); await afterAuthChange(); }
+  let response, data;
+  try { ({ response, data } = await api('/api/auth/login', { method: 'POST', body: { provider, method }, timeoutMs: 30000 })); }
+  catch { showAuthDetail(paragraph('The local server did not respond. Check that the app is still running.', 'kanban-error')); await afterAuthChange(); return; }
+  if (!response.ok || !data.operation) {
+    showAuthDetail(paragraph(data.operation?.code === 'UNSUPPORTED' ? 'This CLI does not support sign-in from this app.' : failureMessage(data, 'The CLI could not start sign-in. Try the terminal command instead.'), 'kanban-error'),
+      ...(caps.loginCommand ? [codeBlock(method === 'device' ? caps.deviceCommand || caps.loginCommand : caps.loginCommand)] : []));
+    await afterAuthChange();
+    return;
   }
+  await followSignIn(data.operation);
+}
+
+/** Show the CLI's sign-in page or device code with Cancel, until the CLI reports the result. Also used for a sign-in still running after a reload. */
+async function followSignIn(operation) {
+  const name = providerInfo[operation.provider]?.name || 'This CLI';
+  setAuthBusy(true);
+  const cancel = detailButton('Cancel sign-in', () => api('/api/auth/cancel', { method: 'POST', body: {} }).catch(() => {}));
+  if (operation.userCode && operation.verificationUrl) {
+    showAuthDetail(paragraph('Open this page, sign in, and enter the one-time code. Keep this code private.'),
+      externalLink(operation.verificationUrl, 'Open the device sign-in page ↗'), codeBlock(operation.userCode, 'auth-code'), detailActions(cancel));
+  } else if (operation.authUrl) {
+    showAuthDetail(paragraph('Open the sign-in page in your browser and complete sign-in. This panel updates when your CLI confirms it.'),
+      externalLink(operation.authUrl, 'Open the sign-in page ↗'), detailActions(cancel));
+  }
+  // Poll the public operation state. The CLI owns the credentials.
+  const id = operation.id;
+  while (['waiting', 'starting'].includes(operation?.state)) {
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    try { ({ data: { auth: operation } } = await api('/api/status', { timeoutMs: 5000 })); } catch { continue; }
+    if (operation?.id !== id) operation = { state: 'failed' };
+  }
+  const state = operation?.state;
+  showAuthDetail(paragraph(state === 'succeeded' ? `${name} confirmed the sign-in.` : state === 'cancelled' ? 'Sign-in was cancelled. Your previous sign-in state is unchanged.'
+    : operation?.code === 'TIMEOUT' ? 'Sign-in timed out. Try again.' : 'Sign-in did not complete. Try again, or use the terminal command.', state === 'succeeded' || state === 'cancelled' ? '' : 'kanban-error'));
+  await afterAuthChange(state === 'succeeded' ? 'Signed in. Model list refreshed.' : '');
 }
 
 function signOut() {

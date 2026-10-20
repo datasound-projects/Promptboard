@@ -1004,3 +1004,24 @@ test('raising "Agents at the same time" starts queued agents at once', { skip: p
   ctx.$('#set-agent-save').click(); await ctx.idle();
   assert.equal(wakes, 1, 'Saving only the default agent starts nothing.');
 });
+
+test('a sign-in still waiting in the CLI after a reload shows its page and Cancel again', async t => {
+  const authAdapter = fakeAuth({ login: async (provider, { signal, onUpdate }) => {
+    authAdapter.log.push(['login', provider]); onUpdate({ authUrl: 'https://auth.example/resume' });
+    await new Promise((_, reject) => signal.addEventListener('abort', () => reject(Object.assign(new Error('Cancelled.'), { code: 'ABORTED' })), { once: true }));
+  } });
+  const ctx = await setup(t, { authAdapter });
+  const { $, win } = ctx;
+  // An earlier page started the sign-in, then reloaded: this page loads its CLIs again.
+  const started = await win.fetch('/api/auth/login', { method: 'POST', headers: { 'X-STE-Token': win.__pbTest.token, 'Content-Type': 'application/json' }, body: JSON.stringify({ provider: 'codex' }) });
+  assert.equal(started.status, 202);
+  $('#setup-help').click();
+  [...$('#dialog-content').querySelectorAll('button')].find(button => button.textContent === 'Check again').click();
+  await until(() => $('#auth-detail a')?.href === 'https://auth.example/resume', 'the waiting sign-in is shown again');
+  assert.equal($('#connection-provider').value, 'codex');
+  assert.equal($('#generate-button').disabled, true, 'Nothing else starts a CLI while it waits.');
+  [...$('#auth-detail').querySelectorAll('button')].find(button => button.textContent === 'Cancel sign-in').click();
+  await until(() => /Sign-in was cancelled/.test($('#auth-detail').textContent), 'cancelled', 10000);
+  await until(() => !$('#generate-button').disabled, 'Compose is free again');
+  assert.deepEqual(authAdapter.log.filter(row => row[0] === 'login'), [['login', 'codex']], 'Resuming never starts a second sign-in.');
+});
