@@ -2008,7 +2008,7 @@ globalThis.PromptboardOriginModel = (() => {
     const structure = editableStructure(blueprint), fallback = defaultStructure();
     for (const [index, phase] of fallback.phases.entries()) if (!structure.phases.some(entry => entry.id === phase.id)) structure.phases.splice(Math.min(index, structure.phases.length), 0, { ...phase });
     for (const entry of fallback.sections) if (!structure.sections.some(item => item.id === entry.id)) addPage(blueprint, { phase: entry.phase, kind: entry.id });
-    structure.topics = {}; blueprint.structure.vision = null;
+    blueprint.structure.topics = {}; blueprint.structure.vision = null; // addPage made a new copy of the structure.
     return { ok: true };
   }
   // ---- Blueprint templates (public/origin-templates.js). A project gets its own copy; templates are never read again. ----
