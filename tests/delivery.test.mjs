@@ -700,14 +700,21 @@ test('a removal Git finishes only halfway forgets the worktree and keeps the bra
   } finally { await chmod(locked, 0o755); }
 });
 
-test('a card whose worktree folder was deleted by hand can still be deleted; Git forgets the folder and the branch stays', { skip, timeout: 60000 }, async t => {
+test('a worktree folder deleted by hand: Restore and removal drop only that worktree\'s record, never the person\'s other worktrees', { skip, timeout: 60000 }, async t => {
   const w = await world(t);
   const task = await w.task('Folder gone', 'x');
   const ws = (await w.current(task.id)).workspace;
+  // The person's own worktree, outside Promptboard, whose folder is missing too (for example on an unplugged disk).
+  const theirs = join(await temp(t, 'pb-del-theirs-'), 'theirs');
+  git(w.root, 'worktree', 'add', '-q', '-b', 'theirs', theirs); await rm(theirs, { recursive: true, force: true });
+  const listed = path => git(w.root, 'worktree', 'list', '--porcelain').split('\n').includes(`worktree ${path}`);
+  await rm(ws.path, { recursive: true, force: true });
+  assert.equal((await w.board.restoreTaskWorktree(task.id)).path, ws.path);
+  assert.deepEqual([listed(ws.path), listed(theirs)], [true, true], 'restored, and their record is untouched');
   await rm(ws.path, { recursive: true, force: true });
   await w.board.deleteTask(task.id, { expectedRevision: (await w.current(task.id)).revision });
   assert.equal(await w.current(task.id), undefined);
-  assert.ok(!git(w.root, 'worktree', 'list', '--porcelain').includes(ws.path));
+  assert.deepEqual([listed(ws.path), listed(theirs)], [false, true], 'only the card\'s own record is gone');
   assert.ok(git(w.root, 'branch', '--list', ws.branch).includes(ws.branch));
 });
 

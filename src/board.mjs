@@ -2498,8 +2498,9 @@ export class Board {
     if (exists) throw conflict(`The folder ${ws.path} exists, but Git does not list it as a worktree. Check it with git worktree list; Promptboard does not change it.`, 'WORKTREE_MISSING');
     if (!(await branchExists(repository.root, ws.branch))) throw conflict(`The task worktree and its branch ${ws.branch} were deleted, so the task's commits cannot be found. Restore the branch (git branch ${ws.branch} <commit>) or remove the task.`, 'WORKTREE_BRANCH_MISSING');
     if (!recover) throw conflict(`The task worktree folder ${ws.path} was deleted. Its branch ${ws.branch} still has every commit; uncommitted files are gone. Choose Restore worktree on the card to recreate it from the branch.`, 'WORKTREE_MISSING');
-    // `git worktree prune` removes only Git's records of worktree folders that no longer exist.
-    await git(['worktree', 'prune'], { cwd: repository.root });
+    // Git's record of the deleted folder goes first, for this worktree only: never `git worktree prune`, which also drops
+    // the records of the person's other worktrees whose folders are missing (for example on a disk that is not plugged in).
+    if (found) await git(['worktree', 'remove', ws.path], { cwd: repository.root }).catch(() => {});
     await git(['worktree', 'add', ws.path, ws.branch], { cwd: repository.root, config: [`core.hooksPath=${this.hooksDir}`, 'core.fsmonitor=false'], timeoutMs: 120000 })
       .catch(() => { throw conflict(`The task worktree folder was deleted and Git could not recreate it from ${ws.branch}. Run git worktree list in the repository.`, 'WORKTREE_MISSING'); });
     return this.store.update(draft => {
@@ -2609,9 +2610,11 @@ export class Board {
         return current;
       });
       // No folder, so nothing on disk to delete (an unfinished creation, a folder deleted by hand, or a removal the app
-      // stopped during). Git's record of it is dropped: `git worktree prune` removes only records whose folder is gone.
+      // stopped during). Git's record of this worktree only goes too (`git worktree remove` without --force; never prune,
+      // which also drops the person's other worktrees whose folders are missing). Should Git refuse (a locked worktree),
+      // its stale record stays until Git's own expiry (gc.worktreePruneExpire); the card forgets it either way.
       if (!(await access(workspace.path).then(() => true, () => false))) {
-        if (registered) await git(['worktree', 'prune'], { cwd: workspace.repositoryRoot });
+        if (registered) await git(['worktree', 'remove', workspace.path], { cwd: workspace.repositoryRoot }).catch(() => {});
         return forget();
       }
       if (!registered || registered.branch !== workspace.branch) throw new BoardError('Git does not list this worktree for the task branch, so nothing was removed.', 'WORKTREE_NOT_OWNED', 409);
