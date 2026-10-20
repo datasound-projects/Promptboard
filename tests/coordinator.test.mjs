@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
-import { gunzipSync } from 'node:zlib';
+import { gunzipSync, gzipSync } from 'node:zlib';
 import { Board } from '../src/board.mjs';
 import { Coordinator, coordinatorRoute } from '../src/coordinator.mjs';
 import { OriginStore } from '../src/origin.mjs';
@@ -201,6 +201,24 @@ test('the index holds what the board still has: deleted cards and notes leave it
   assert.equal(stored.events.length, 3000);
   assert.deepEqual(await coordinator.reconcile(project.id, { force: true }).then(({ added, updated }) => [added, updated]), [0, 0]);
   assert.ok(full.equals(await readFile(file(dataDir, project.id))), 'no new snapshot for an unchanged board');
+});
+
+test('moves keep their identity past the board’s 100-move history; positional IDs saved by earlier versions are replaced, not doubled', async t => {
+  const { dataDir, board, project, card, coordinator } = await world(t);
+  const moves = n => Array.from({ length: n }, (_, i) => ({ at: 1_700_000_000_000 + i * 1000, from: i % 2 ? 'planning' : 'todo', to: i % 2 ? 'todo' : 'planning', by: 'user' }));
+  const setMoves = list => board.store.update(draft => { draft.projects.find(item => item.id === project.id).tasks.find(task => task.id === card.id).transitions = list; });
+  const moved = async () => (await index(dataDir, project.id)).events.filter(event => event.task === card.id && event.kind === 'moved');
+  await setMoves(moves(100)); await coordinator.reconcile(project.id, { force: true });
+  // An index from an earlier version keyed these moves by their place in the history: move:<card>:<n>.
+  const old = await index(dataDir, project.id); let n = 0;
+  for (const event of old.events) if (event.task === card.id && event.kind === 'moved') event.id = `move:${card.id}:${n++}`;
+  await writeFile(file(dataDir, project.id), gzipSync(JSON.stringify(old)));
+  await coordinator.reconcile(project.id, { force: true });
+  assert.deepEqual([(await moved()).length, (await moved()).filter(event => /:\d{1,3}$/.test(event.id)).length], [100, 0], 'replaced under stable IDs, never kept twice');
+  // Five more moves: the board keeps its newest 100, the index all 105, each once with its own time.
+  await setMoves(moves(105).slice(-100)); await coordinator.reconcile(project.id, { force: true });
+  const all = await moved();
+  assert.deepEqual([all.length, new Set(all.map(event => event.at)).size, new Set(all.map(event => event.id)).size], [105, 105, 105]);
 });
 
 test('a damaged index or chat is kept aside, never overwritten by the next saves', async t => {

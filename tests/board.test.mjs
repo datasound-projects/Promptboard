@@ -718,6 +718,15 @@ test('deleting a card or project removes its finished runs, sessions and run fol
   for (const id of ['r-gone', 'r-kept', 'r-else', 'orphan-old', 'orphan-new']) { await mkdir(folder(id), { recursive: true }); await writeFile(join(folder(id), 'output.log'), id); }
   const hourAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
   await utimes(folder('orphan-old'), hourAgo, hourAgo);
+  // Finished automation journals of a card that is deleted, and of one that stays.
+  const journals = {};
+  for (const task of [gone, kept]) {
+    const key = { projectId: project.id, taskId: task.id, transitionId: `move-${task.title.toLowerCase()}` }, known = new Set(await readdir(join(dataDir, 'automations')).catch(() => []));
+    await board.automationJournal.beginMove({ ...key, taskRevision: 1, projectRevision: 1, from: { id: 'todo', name: 'To Do' }, to: { id: 'planning', name: 'Planning' } });
+    await board.automationJournal.cancelMove(key);
+    journals[task.id] = join(dataDir, 'automations', (await readdir(join(dataDir, 'automations'))).find(name => !known.has(name)));
+    await utimes(journals[task.id], hourAgo, hourAgo);
+  }
 
   await board.deleteTask(gone.id, { expectedRevision: gone.revision });
   let state = await board.state();
@@ -731,6 +740,9 @@ test('deleting a card or project removes its finished runs, sessions and run fol
   await fresh.state();
   assert.deepEqual(await fresh.runFolderSweep, { removed: 1 });
   assert.deepEqual(await Promise.all(['orphan-old', 'orphan-new', 'r-kept', 'r-else'].map(id => exists(folder(id)))), [false, true, true, true]);
+  assert.equal(await fresh.journalSweep, 1, 'the deleted card’s automation journal goes too');
+  assert.deepEqual([await exists(journals[gone.id]), await exists(journals[kept.id])], [false, true]);
+  assert.equal((await fresh.automationJournal.read({ projectId: project.id, taskId: kept.id, transitionId: 'move-kept' })).status, 'cancelled');
 
   await fresh.deleteProject(project.id, { expectedRevision: (await fresh.state()).projects[0].revision });
   state = await fresh.state();

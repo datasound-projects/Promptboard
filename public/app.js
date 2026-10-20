@@ -1962,9 +1962,10 @@ function appendTaskExternalSource(parent, card) {
 }
 // Prerequisite cards (set by an Origin handoff) must reach Done before this card starts.
 const cardDone = (project, card) => { const column = projectColumnsOf(project).find(entry => entry.id === card?.column); return Boolean(card) && (column?.role === 'done' || (!column?.role && card.column === 'done')); };
-// The board's rule (prerequisiteMet in src/board.mjs): in Done with its code on the target branch, or no code to merge.
-const unmergedDone = card => Boolean(card?.workspace) && (card.completion?.kind === 'unmerged' || (card.completion?.kind === 'pull_request' && !card.completion.mergedAt));
-const prerequisiteMet = (project, card) => cardDone(project, card) && (!card.completion || !unmergedDone(card));
+// The board's rule (prerequisiteMet in src/board.mjs), case for case: in Done with its code on the target branch (merged, a merged
+// pull request, no changes), with no completion record, or never on a task branch. A removed worktree does not merge the code.
+const unmergedDone = card => { const { kind, mergedAt, branch } = card?.completion || {}; return Boolean(card?.completion) && !(kind === 'pull_request' ? mergedAt : ['merged', 'no_changes'].includes(kind) || (!card.workspace && !branch)); };
+const prerequisiteMet = (project, card) => cardDone(project, card) && !unmergedDone(card);
 function pendingPrerequisites(card, project) {
   return (Array.isArray(card.dependsOn) ? card.dependsOn : []).filter(id => !prerequisiteMet(project, project?.tasks.find(task => task.id === id)));
 }
@@ -4608,7 +4609,7 @@ function renderRunPanel(project, hide = false) {
   else if (info.error) nodes.push(paragraph(info.error, 'inline-error'));
   else {
     nodes.push(paragraph(info.target ? `The finished code is on ${info.target}, in ${info.path}.` : `The project is in ${info.path}.`));
-    const unmerged = project.tasks.filter(task => cardDone(project, task) && task.completion && !['merged', 'no_changes'].includes(task.completion.kind) && !task.completion.mergedAt).length;
+    const unmerged = project.tasks.filter(task => cardDone(project, task) && unmergedDone(task)).length;
     if (unmerged) nodes.push(paragraph(`${unmerged} ${unmerged === 1 ? 'card was' : 'cards were'} completed without merging; ${unmerged === 1 ? 'its' : 'their'} changes are not on ${info.target || 'the target branch'}.`, 'note'));
     const steps = document.createElement('ol'); steps.className = 'project-run-commands';
     steps.append(row('Go to the folder', `cd "${info.path.replace(/"/g, '\\"')}"`));

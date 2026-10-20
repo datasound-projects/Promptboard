@@ -661,7 +661,16 @@ export class Board {
     try { await this.recoveryPromise; }
     catch (error) { this.recoveryPromise = null; throw error; }
     this.runFolderSweep ??= this.#sweepRunFolders().catch(() => ({ removed: 0 }));
+    this.journalSweep ??= this.#sweepJournals().catch(() => 0);
     return this.store.read();
+  }
+
+  /** Once per start, like run folders: remove the automation journals of deleted cards (a deleted card has no move left to run). */
+  async #sweepJournals() {
+    const cards = new Set((await this.store.read()).projects.flatMap(project => project.tasks.map(task => task.id)));
+    const removed = await this.automationJournal.prune(id => cards.has(id));
+    if (removed) console.info(`Promptboard removed ${removed} automation journal(s) of cards no longer on the board.`);
+    return removed;
   }
 
   /** Delete the artifact folders (logs, prompts, plans) of runs that were removed from the board. */
@@ -1854,11 +1863,18 @@ export class Board {
     return this.store.update(state => {
       const run = state.runs.find(item => item.id === runId);
       if (!run?.transition) return null;
-      const { task } = this.#task(state, run.taskId);
+      const { project, task } = this.#task(state, run.taskId);
       if (task.column !== run.stage || task.lastTransition?.id !== run.transition.id) return null;
+      // A column removed since the move keeps the card where it is, with its failed run.
+      if (!projectColumns(project).some(column => column.id === run.transition.from)) return null;
       task.transitions = [...task.transitions, { at: Date.now(), from: run.stage, to: run.transition.from, by: 'system', reason: clip(`The ${title(run.stage)} agent could not start: ${run.reason || run.errorCode || 'unknown error'}`, 300) }].slice(-TRANSITION_LOG_LIMIT);
       task.column = run.transition.from;
       task.lastTransition = { ...task.lastTransition, reverted: true };
+      // Back in Done: the completion the move archived (#place) is the card's completion again, so its code still counts as unmerged.
+      if (project.workflowMode === 'pipeline' && project.pipeline.columns.find(column => column.id === task.column)?.role === 'done') {
+        if (!task.completion && task.previousCompletions?.length) { task.completion = task.previousCompletions.at(-1); task.previousCompletions = task.previousCompletions.slice(0, -1); }
+        task.archivedAt = Date.now();
+      }
       task.revision++;
       return task;
     });
@@ -2228,6 +2244,8 @@ export class Board {
   #place(state, id, { from, column, index, transitionId = null, by = 'user', reason = '', runId = null }) {
     const { project, task } = this.#task(state, id);
     if (task.column !== from) throw conflict(`The card moved to ${title(task.column)} meanwhile. Reload the board.`, 'REVISION_CONFLICT');
+    // Checked again at the write: a column removed or hidden while the move was prepared would hide the card with no way out.
+    if (task.column !== column && !projectColumns(project).some(entry => entry.id === column)) throw conflict('The board’s columns changed meanwhile. Reload the board.', 'REVISION_CONFLICT');
     if (project.workflowMode !== 'pipeline' && task.column !== column && this.#activeRun(state, id)) throw conflict('This card has an active run. Wait for it to finish or cancel it first.', 'RUN_ACTIVE');
     const others = project.tasks.filter(item => item !== task);
     const inColumn = others.filter(item => item.column === column);
@@ -3033,9 +3051,21 @@ export class Board {
     return this.#locked(`run:${taskId}`, async () => {
       const task = this.#task(await this.state(), taskId).task, job = this.automationMoves.get(taskId);
       await this.messageScheduler?.waitTask(taskId);
-      for (const pending of task.pendingAutomationMessages || []) await this.#publishAutomationMove(pending);
+      // A journal that is gone or corrupt, with nothing of this process working on the card, names no work to stop and
+      // none to replay: the card is released instead of staying blocked for good.
+      const lost = async key => !job && !this.automations.jobs.has(JSON.stringify([key.projectId, taskId]))
+        && !(await this.automationJournal.read(key).catch(error => { if (error.code === 'JOURNAL_CORRUPT') return null; throw error; }));
+      const released = [];
+      for (const pending of task.pendingAutomationMessages || []) if (await lost(pending)) released.push(pending.transitionId); else await this.#publishAutomationMove(pending);
       const key = job?.key || (task.automationMove && { projectId: task.automationMove.projectId, taskId, transitionId: task.automationMove.transitionId });
-      if (!key) return task;
+      if (key && await lost(key)) released.push(key.transitionId);
+      if (released.length) await this.store.update(state => {
+        const current = this.#task(state, taskId).task;
+        current.pendingAutomationMessages = (current.pendingAutomationMessages || []).filter(row => !released.includes(row.transitionId));
+        if (released.includes(current.automationMove?.transitionId) && !['completed', 'failed', 'cancelled', 'interrupted'].includes(current.automationMove.status)) Object.assign(current.automationMove, { status: 'interrupted', phase: 'complete', updatedAt: Date.now(),
+          errorCode: 'AUTOMATION_JOURNAL_MISSING', reason: 'The move journal is missing or unreadable. Nothing was replayed; Stop automations released the card.' });
+      });
+      if (!key || released.includes(key.transitionId)) return this.#taskNow(taskId);
       const group = this.automations.jobs.get(JSON.stringify([key.projectId, taskId]));
       if (group) this.automations.cancel(key);
       for (const id of group?.started || []) await this.automations.actions.stop?.(id);

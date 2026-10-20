@@ -30,7 +30,7 @@ const SCHEMA = 'promptboard.coordinator', CHAT_SCHEMA = 'promptboard.coordinator
 const LIMITS = { events: 3000, snapshots: 200, messages: 200, cache: 50, question: 2000, cardText: 4000, lastMessage: 1500, detail: 300, answer: 20000, list: 40 };
 const RECONCILE_MS = 5000; // ponytail: at most one Git read per project every 5 s while the board changes; raise if boards get huge.
 const LIVE = ['queued', 'running', 'waiting_for_input'];
-const ID = /^[A-Za-z0-9_-]{1,100}$/;
+const ID = /^[A-Za-z0-9_-]{1,100}$/, POSITIONAL = /^(?:move|restart|done):[A-Za-z0-9_-]+:\d{1,3}$/;
 const sha = text => createHash('sha256').update(text).digest('hex');
 const clip = (text, max) => { const value = String(text ?? '').replace(/\s+/g, ' ').trim(); return value.length > max ? `${value.slice(0, max - 1)}…` : value; };
 // A reason quoted inside a sentence that ends with its own period.
@@ -85,7 +85,9 @@ export class Coordinator {
       const last = this.checked.get(projectId);
       if (!force && last && last.revision === state.revision && Date.now() - last.at < RECONCILE_MS * 12) return { index, added: 0, updated: 0 };
       if (!force && last && Date.now() - last.at < RECONCILE_MS) return { index, added: 0, updated: 0 };
-      const columns = columnsOf(project), before = new Map(index.events.map(event => [event.id, JSON.stringify(event)])), known = new Map(index.events.map(event => [event.id, event]));
+      // Earlier versions keyed moves, restarts and completions by their place in the card's bounded history (move:<card>:<n>),
+      // which shifts once the oldest entries drop out; the timeline below adds them again under stable IDs.
+      const columns = columnsOf(project), before = new Map(index.events.map(event => [event.id, JSON.stringify(event)])), known = new Map(index.events.filter(event => !POSITIONAL.test(event.id)).map(event => [event.id, event]));
       for (const event of await buildTimeline(project, runs)) {
         known.set(event.id, { id: event.id, at: event.at, kind: event.kind, task: event.taskId || null, stage: event.stage || '', title: clip(event.title, 200), status: event.status || '', detail: clip(event.detail, LIMITS.detail),
           ...(event.runId ? { run: event.runId } : {}), ...(event.commit ? { commit: event.commit } : {}), ...(event.pr?.url ? { pr: event.pr.url } : {}), ...(event.endAt ? { endAt: event.endAt } : {}) });

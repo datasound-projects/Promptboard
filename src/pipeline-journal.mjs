@@ -1,6 +1,6 @@
 /** Durable move intent. This module never executes or automatically retries an action. */
 import { createHash, randomUUID } from 'node:crypto';
-import { link, mkdir, open, readdir, rm } from 'node:fs/promises';
+import { link, mkdir, open, readdir, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { normalizePipelineAutomations } from './pipeline-config.mjs';
 
@@ -477,4 +477,25 @@ export class PipelineJournal {
 
   /** Moves whose recovery last found another live owner; retry them with recoverInterrupted(). */
   pendingRecoveries() { return [...this.#waiting.values()]; }
+
+  /**
+   * Remove the journals of cards that no longer exist (`exists(taskId)` is false). A journal written to in the last
+   * `minAgeMs` is kept, so a live move (it renews every 20 seconds) is never touched. Bounded per call.
+   */
+  async prune(exists, { limit = 500, minAgeMs = 60 * 60 * 1000 } = {}) {
+    let removed = 0;
+    for (const entry of await readdir(this.dir, { withFileTypes: true }).catch(() => [])) {
+      if (removed >= limit) break;
+      const folder = join(this.dir, entry.name);
+      if (!entry.isDirectory() || !/^[a-f0-9]{64}$/.test(entry.name) || Date.now() - ((await stat(folder).catch(() => null))?.mtimeMs ?? Date.now()) < minAgeMs) continue;
+      try {
+        // The newest revision names the card; a folder that does not match its own identity is not ours to remove.
+        const names = (await readdir(folder)).filter(name => /^\d{8}\.json$/.test(name)).sort();
+        const move = names.length && await readJson(join(folder, names.at(-1)));
+        if (!move || exists(move.taskId) || folderName(move) !== entry.name) continue;
+      } catch { continue; }
+      await rm(folder, { recursive: true, force: true }); removed++;
+    }
+    return removed;
+  }
 }
