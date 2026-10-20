@@ -15,12 +15,12 @@
  */
 import '../public/origin-model.js';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { buildTimeline } from './timeline.mjs';
 import { COLUMNS, prerequisiteMet } from './board.mjs';
-import { readWithBackup, serial, writeAtomic } from './durable.mjs';
+import { readWithBackup, serial, setAside, writeAtomic } from './durable.mjs';
 import { escapeId } from './origin.mjs';
 import { listProjects } from './projects.mjs';
 import { makeTempDir, removeTempDir } from './providers.mjs';
@@ -62,7 +62,7 @@ export class Coordinator {
       if (!((data.createdAt ?? data.messages?.[0]?.at) < project.createdAt)) return data;
     });
     // A damaged file is kept aside (as the board's state is), so the next saves never overwrite the only copy.
-    for (const file of damaged) await rename(file, `${file}.corrupt-${Date.now()}-${randomUUID().slice(0, 8)}`);
+    await setAside(damaged);
     return loaded ?? fresh;
   }
   async #save(data, kind = 'index') {

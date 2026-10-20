@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
 import { startServer, generate } from '../src/server.mjs';
+import { COMPOSE_INPUT_CHARS } from '../src/compose-limits.mjs';
 import { buildPrompt, validateRequest } from '../src/engine.mjs';
 import { detectProviders, killOwnedProcesses, removeOwnedTempDirsSync } from '../src/providers.mjs';
 import { defaultProjectsDir } from '../src/store.mjs';
@@ -69,7 +70,8 @@ async function main() {
   const misplaced = Object.keys(options).find(key => key !== 'gui' && (key === 'port' || key === 'no-open') !== gui);
   if (misplaced) throw new Error(gui ? `--${misplaced} does not apply with --gui.` : `Use --${misplaced} with --gui.`);
   if (gui) {
-    const port = options.port === undefined ? 4318 : Number(options.port);
+    // Decimal digits only: Number() would also take 0x10, 1e3, +80 or 80.0.
+    const port = options.port === undefined ? 4318 : /^[0-9]{1,5}$/.test(options.port) ? Number(options.port) : NaN;
     let app;
     try {
       // New projects get their own Git repository in a stable, user-visible folder.
@@ -111,7 +113,7 @@ async function main() {
   let input = '';
   for await (const chunk of process.stdin) {
     input += chunk.toString();
-    if (input.length > 100_000) throw new Error('Use at most 100,000 characters.');
+    if (input.length > COMPOSE_INPUT_CHARS) throw new Error(`Use at most ${COMPOSE_INPUT_CHARS.toLocaleString('en-US')} characters.`);
   }
   const request = validateRequest({ input, provider: options.provider || 'codex', model: options.model || '',
     effort: options.effort || '', language: options.language || 'en', quality: options.quality || 'reviewed',

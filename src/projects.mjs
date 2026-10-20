@@ -24,6 +24,15 @@ const fail = (message, code = 'INVALID_INPUT', status = 400) => { throw new Orig
 /** A name as people read it, for every one-name check: case, Unicode form (composed é or e + accent, full-width letters), invisible characters and runs of spaces make no other name. */
 export const nameKey = name => name.normalize('NFKC').replace(/\p{Cf}/gu, '').replace(/\s+/g, ' ').trim().toLowerCase();
 const sameName = (a, b) => nameKey(a) === nameKey(b);
+/**
+ * The one rule for a project name someone enters in Origin, Kanban or Compose: 1 to 80 characters after
+ * trimming, with no NUL or other control character. '' when it fails. Stored names are never checked
+ * again, so older names keep loading.
+ */
+export function enteredName(value) {
+  const name = typeof value === 'string' ? value.trim() : '';
+  return name.length <= 80 && !/\p{Cc}/u.test(name) ? name : '';
+}
 const PROVIDERS = ['codex', 'claude', 'gemini', 'agy'];
 
 // ---- The project list ----
@@ -56,8 +65,8 @@ export async function nameTaken(services, name, exceptId = null) {
 
 /** Compose (or any page) asks for a project by name: an existing one of that name is selected, never duplicated. */
 export async function ensureProject(services, { name }) {
-  const clean = typeof name === 'string' ? name.trim() : '';
-  if (!clean || clean.length > 80 || clean.includes('\0')) fail('A project name needs 1 to 80 characters.');
+  const clean = enteredName(name);
+  if (!clean) fail('A project name needs 1 to 80 characters and no control characters.');
   const existing = await nameTaken(services, clean);
   if (existing) return { project: existing, existing: true };
   try { return { project: await findProject(services, (await services.origin.create({ name: clean })).id), existing: false }; }

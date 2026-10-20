@@ -6,7 +6,7 @@
  * Never: force, reset, stash, clean, rebase, or resolve conflicts automatically. The only push is
  * the confirmed "Open pull request" action, which pushes the task branch without --force.
  */
-import { execFile, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { gh } from './github.mjs';
 import { createWriteStream, existsSync } from 'node:fs';
 import { access, constants, mkdir, readFile } from 'node:fs/promises';

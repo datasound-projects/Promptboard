@@ -457,7 +457,7 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
         return send(res, 200, await editorList(editors, editorOptions));
       } catch (error) { return sendFailure(res, error, 'The editors could not be saved.', { status: 500, code: 'EDITORS_FAILED' }); }
     }
-    if (req.method === 'GET' && pathname === '/api/session') return send(res, 200, { token, platform: process.platform, ...(remote ? { remote: { name: remote.name } } : {}), capabilities: { pipelineTitleOnly: true, pipelineBulkRestore: true, pipelineDeferredMessages: true, taskPriority: true, taskLabels: true } });
+    if (req.method === 'GET' && pathname === '/api/session') return send(res, 200, { token, platform: process.platform, ...(remote ? { remote: { name: remote.name } } : {}) });
     if (/^\/api\/notifications(?:\/|$)/.test(pathname)) {
       try { return await notificationRoute(notifications, req, res, pathname, { jsonBody, send }); }
       catch (error) {

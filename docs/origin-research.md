@@ -51,7 +51,8 @@ one closes the others and keeps unsaved and unsent text. On phones the panel fil
   the chat's recent history. Swarm agents leave no session behind.
 - **One job at a time.** A research run uses the app's shared job slot, so it never overlaps Compose, the Coordinator,
   file proposals or a sign-in change. Closing the request (Stop, leaving, switching project) stops the CLI at once and
-  keeps the text it produced.
+  keeps the text it produced. From a paired phone, a lost connection does not stop the research; it is saved with
+  the chat.
 - **Sources** are retrieved by the app, per question: Compose's document index and retrieval, Base `searchSources` and
   Compose's read-only MCP lookup (the server must expose one annotated read-only query tool, or be Context7). Only
   passages relevant to each agent's question are sent, bounded and cited. Text that looks like paths, URLs, code or
@@ -126,7 +127,7 @@ one closes the others and keeps unsaved and unsent text. On phones the panel fil
 | --- | --- | --- |
 | Panel | `public/origin-research.js` | The right-side panel in Origin: chat, modes, scope, sources, history and suggestion cards. |
 | Context | `public/origin-model.js` (`researchContext`, `researchTargets`) | Builds bounded, read-only context for one scope from stable IDs. Shared by the page and the server. |
-| Service | `src/origin-research.mjs` | Chat storage, validation, prompts, the streaming CLI adapter, the swarm pool and suggestion parsing. |
+| Service | `src/origin-research.mjs` (prompts in `src/research-prompts.mjs`, the streaming CLI adapter in `src/research-cli.mjs`, sources in `src/research-sources.mjs`) | Chat storage, validation, the swarm pool and suggestion parsing. |
 | Routes | `src/server.mjs` → `researchRoute` | `/api/origin/research/...`, NDJSON streaming, cancellation and the shared job slot. |
 
 ## Interfaces
@@ -167,7 +168,7 @@ not needed work without code changes.
 { type: "message", message }                       the stored message for one agent or the chat reply
 { type: "proposals", proposals }                   validated suggestions
 { type: "error", code, message }
-{ type: "done", chat }                             the chat summary after storage
+{ type: "done", chat }                             the stored chat after the run
 ```
 
 ### Source
@@ -186,7 +187,7 @@ environment variable names. Document text is never copied into the chat; an exce
 
 ```text
 Proposal  { id, messageId, op: "set" | "add", target, value, original, baseRevision, title, why,
-            evidence: Citation[], status: "pending" | "applied" | "rejected" | "conflict", updatedAt }
+            evidence: string[], status: "pending" | "applied" | "rejected" | "conflict", updatedAt }
 target    { kind: "vision", field } | { kind: "idea" }
           | { kind: "record", collection, id, field }
           | { kind: "answer", questionId } | { kind: "componentAnswer", componentId, questionId }
@@ -200,4 +201,5 @@ target    { kind: "vision", field } | { kind: "idea" }
 ```
 
 `original` is the value at `baseRevision`. Before a suggestion is applied, the page compares it with the current
-value. A difference is shown as a conflict and nothing is overwritten.
+value. A difference is shown as a conflict; nothing is overwritten unless you choose **Replace anyway** (**Keep mine**
+rejects the suggestion).

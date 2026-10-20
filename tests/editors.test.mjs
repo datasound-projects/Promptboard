@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { chmod, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { detectEditors, editorLaunch, editorList, editorPreferences, openInEditor } from '../src/editors.mjs';
@@ -83,8 +83,11 @@ test('an editor that opened is reported as opened when its choice cannot be save
   await preferences.update({ preferred: 'zed' });
   await writeFile(join(dir, 'editors.json'), '{"version":1,"custom":[{"id":');
   assert.deepEqual((await preferences.read()).custom.map(item => item.name), ['Nova']);
+  // The damaged file is set aside, so the next save keeps the good backup instead of making the damaged file the backup.
+  assert.equal((await readdir(dir)).filter(name => name.startsWith('editors.json.corrupt-')).length, 1);
   await preferences.remember('cursor');
   assert.deepEqual((await preferences.read()).custom.map(item => item.name), ['Nova']);
+  assert.deepEqual(JSON.parse(await readFile(join(dir, 'editors.json.bak'), 'utf8')).custom.map(item => item.name), ['Nova']);
 });
 
 test('an editor added by hand is a full path to a program; scripts that need a shell are refused', async t => {

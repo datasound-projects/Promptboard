@@ -116,10 +116,10 @@ Removed dead or duplicate code and controls: the duplicate project picker and it
 
 - Board agent runs are verified on macOS (live and CI) and Linux (CI with simulated CLIs). They are not verified on Windows.
 - Gemini CLI board runs are not verified live (see above). Antigravity is prompt-only.
-- CLIs ask their own startup questions (folder trust, hook review). Promptboard never pre-trusts folders; the user answers in the terminal.
+- CLIs ask their own startup questions (folder trust, hook review). Promptboard never pre-trusts folders; the user answers in the terminal. (Since this report, an opt-in setting can answer the folder-trust menu for the card's own worktree.)
 - The browser console shows CSP reports when a terminal opens: xterm tries to add inline styles before the WebGL renderer takes over. The CSP blocks them by design; rendering is unaffected.
 - Without a GPU (for example headless CI), WebGL runs in software and the page can pause briefly while a terminal is created or floods.
-- If Promptboard is started from inside a Claude Code session, Claude runs inherit that session's environment marker and show "Transcript saving is off". Start Promptboard from a normal terminal.
+- If Promptboard is started from inside a Claude Code session, Claude runs inherit that session's environment marker and show "Transcript saving is off". Start Promptboard from a normal terminal. (Fixed since this report: every CLI Promptboard starts gets an environment without the enclosing session's markers.)
 
 ## Owner actions
 

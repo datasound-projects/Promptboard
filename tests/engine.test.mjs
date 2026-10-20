@@ -155,6 +155,12 @@ test('linter flags prose but excludes fenced code, inline literals, URLs and ind
   assert.ok(!('score' in result));
 });
 
+test('linter skips the same fenced code that verification protects, also a fence indented in a list', () => {
+  // verification.mjs treats this list-indented fence as code; the linter must not review it as prose.
+  const input = ['1.  Add this setting:', '    ```yaml', 'retries: 3 # very important etc.', '    ```', '2.  Run the tests.'].join('\n');
+  assert.deepEqual(lintPrompt(input).warnings.filter(w => w.rule === 'vague-wording'), []);
+});
+
 test('linter distinguishes instruction and descriptive length limits', () => {
   const instruction = 'Check ' + Array(20).fill('item').join(' ') + '.';
   const description = 'The ' + Array(25).fill('item').join(' ') + '.';

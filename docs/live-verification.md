@@ -1,7 +1,6 @@
 # Live provider verification log
 
-Real CLI runs, recorded separately from the simulated (fake-CLI) test suite. Each checkpoint names its smoke script and uses an installed, signed-in CLI in its own disposable repository. Nothing here ran against a user repository.
-
+Real CLI runs, recorded separately from the simulated (fake-CLI) test suite. Each checkpoint names its smoke script and uses an installed, signed-in CLI in its own disposable repository. Nothing here ran against a user repository. Entries are newest first.
 
 ## 20 October 2026 — agent runs repair: typed Executing column, Base MCP tool switched off
 

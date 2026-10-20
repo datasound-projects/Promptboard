@@ -2,7 +2,7 @@
 
 Promptboard stores logical conversation metadata separately from a CLI process run. A session records the provider, captured native conversation ID, agent configuration, worktree and branch, process-run IDs, and artifact directories. Run history retains its original stage, outcome, exact task prompt file, Base manifest, and terminal output.
 
-The current stage workflow still starts a separate conversation for each stage; confirming a stage ends its process. Pause and Resume now let you stop and continue the current stage's conversation. Live continuity across configurable columns is a subsequent step in the [Kanban parity plan](kanban-parity-plan.md).
+The legacy stage workflow and typed stage columns start a separate conversation for each stage; confirming a stage ends its process. Pause and Resume let you stop and continue the current stage's conversation. Custom columns on [pipeline boards](pipeline-lifecycle.md) continue one conversation across compatible columns.
 
 Pause saves user intent before stopping the owned CLI process, preserving its worktree, output, Base manifest, and captured native ID. A queued or preparing run can also be paused without launching it; a run without a native ID needs a fresh start. Pausing an Autopilot task pauses Autopilot too. Pause does not approve a plan or confirm a stage.
 
@@ -14,7 +14,7 @@ Adapters use [Claude `--resume`](https://code.claude.com/docs/en/cli-reference),
 
 State version 4 introduced the session registry. Version 5 adds explicit legacy/pipeline workflow modes; the current state version is 14. Versions 2–13 migrate explicitly, once, with the exact original file retained as `state.pre-migration-v<version>-*.json` in the data directory. Migration preserves task prompt bytes, workspaces, branches, Base definitions and assignments, and unknown fields. Existing stage runs from versions 2–3 become separate sessions; version 4 and later sessions are retained unchanged. Portable backups use version 12 (versions 1–11 still import) and exclude machine-specific runs and sessions.
 
-On restart, active runs become interrupted and their sessions become orphaned. If a user pause was saved before the app stopped, recovery retains that suspended intent. Concurrent board requests wait for the same recovery write. Recovery never starts agents or repeats automations. Older Promptboard versions refuse newer state data instead of overwriting it. Opt-in [pipeline boards](pipeline-lifecycle.md) additionally preserve compatible live conversations across columns and native context through Done/restoration; legacy resume retains the same-stage rules below.
+On restart, active runs become interrupted and their sessions become orphaned. If a user pause was saved before the app stopped, recovery retains that suspended intent. Concurrent board requests wait for the same recovery write. Recovery never starts agents or repeats automations. Older Promptboard versions refuse newer state data instead of overwriting it. Opt-in [pipeline boards](pipeline-lifecycle.md) additionally preserve compatible live conversations across columns and native context through Done/restoration; legacy resume retains the same-stage rules above.
 
 Run and session acceptance happen in the same atomic Store write. Native IDs and lifecycle updates are persisted together. A failed write leaves both registries unchanged. Session metadata contains references to run artifacts; it does not duplicate the prompt, Base content, or full transcript into board snapshots.
 

@@ -20,7 +20,7 @@ test('avatar generation is explicit, protected, draft-only and persists outside 
   let calls = 0;
   const w = await world(t, { imageGenerator: async () => { calls++; return png; } });
   const profile = await w.board.base.create({ kind: 'profile', name: 'Engineer', configuration: { agent: { provider: 'claude' } } });
-  assert.equal(calls, 0); assert.equal((await fetch(w.url + '/api/base/avatar/service')).status, 403);
+  assert.equal(calls, 0); assert.equal((await fetch(w.url + '/api/base/avatar/generate', { method: 'POST' })).status, 403);
   const result = await w.request('/api/base/avatar/generate', { resourceId: profile.id, expectedRevision: profile.revision, prompt: 'Illustrated purple scientist', operationId: 'avatar-fixture-operation' });
   assert.equal(result.status, 200, JSON.stringify(result.data)); assert.equal(calls, 1); assert.equal((await w.board.base.detail(profile.id)).revision, 1);
   const saved = await w.board.base.update(profile.id, { configuration: { ...profile.configuration, avatar: result.data.avatar }, content: { avatar: result.data.image } }, { expectedRevision: 1 });

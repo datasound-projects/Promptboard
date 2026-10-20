@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 const problem = (message, code = 'BASE_AVATAR_INVALID', status = 400) => Object.assign(new Error(message), { code, status });
 export const imageModel = () => process.env.PROMPTBOARD_IMAGE_MODEL || 'gpt-image-2.5-flare';
 const keyName = () => process.env.PROMPTBOARD_IMAGE_API_KEY_ENV || 'OPENAI_API_KEY';
-export function imageAvailability() { const name = keyName(), valid = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(name); return { provider: 'OpenAI Images', model: imageModel(), keyEnvironment: valid ? name : 'Invalid environment reference', available: valid && Boolean(process.env[name]) }; }
+function imageAvailability() { const name = keyName(), valid = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(name); return { provider: 'OpenAI Images', model: imageModel(), keyEnvironment: valid ? name : 'Invalid environment reference', available: valid && Boolean(process.env[name]) }; }
 export function normalizeAvatarImage(value) {
   if (!value || !['image/png', 'image/jpeg'].includes(value.mime) || typeof value.data !== 'string' || value.data.length > 3_000_000 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value.data)) throw problem('Avatar must be a bounded PNG or JPEG image.');
   const bytes = Buffer.from(value.data, 'base64');

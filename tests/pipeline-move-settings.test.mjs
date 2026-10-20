@@ -32,7 +32,7 @@ for (const actions of [false, true]) test(`an optional public settings revision 
 
 test('the authenticated move route enforces the settings revision rather than discarding it; older-style moves stay compatible', async t => {
   const { app, projectId, taskId } = await setup(t, false), project = (await app.board.state()).projects.find(p=>p.id===projectId), task = project.tasks[0];
-  const session = await (await fetch(`${app.url}/api/session`)).json(); assert.equal(session.capabilities.pipelineBulkRestore, true);
+  const session = await (await fetch(`${app.url}/api/session`)).json();
   const post = body => fetch(`${app.url}/api/tasks/${taskId}/move`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-STE-Token': session.token, Origin: app.url }, body: JSON.stringify(body) });
   const before = structuredClone(await app.board.state());
   const response = await post({ column: 'executing', expectedRevision: task.revision, expectedProjectRevision: project.revision-1, transitionId: 'http-stale' });

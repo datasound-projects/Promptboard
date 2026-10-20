@@ -15,12 +15,4 @@ For every task: use isolated branches from current main; preserve unrelated comm
 
 ## Current checkpoint
 
-Task 1 draft PR: [#92](https://github.com/datasound-projects/Promptboard/pull/92).
-
-Task 1 recovery branch: `feat/backlog-source-sync-recovery`, based on main `fea77a7803152aad9fa49ab1179a1617cc95720d`. Persistent isolated worktree: `.claude/worktrees/backlog-source-sync-recovery` under the original checkout (already ignored by Git). The original checkout remains on `docs/readme-original-mascot`, HEAD `157e7a45638b179687d0fa5882b90ba5f22e0677`. Prior milestone PR #90 is merged. Tasks 2–8 have not started.
-
-An interrupted session removed the earlier `/private/tmp` worktree and logs before a commit/push. Its completed checks cannot certify this recovered tree. The implementation and regressions have been recovered; repeat all gates on this tree. Keep validation logs in the ignored worktree `.claude/validation` folder, rather than using temporary storage as the sole handoff.
-
-Design: bounded machine-local preview cache outside portable state. Explicit incremental reads merge known metadata in labeled snapshot positions; unseen identities invalidate positions and refresh page 1. Advance the cursor only after complete bounded reads and durable cache publication. Fresh selected imports remain atomic and inert. No background synchronization or automatic task edits.
-
-Recovered checkpoint: default-shell Node 26 cache/adapter/import tests (supplemental only): 34 passed, 0 failed/cancelled/skipped. Browser, broader Node 22/24, final full suite and exact-head CI are still required. The native smoke fixture also waits for a confirmed transport callback inside its existing deadline; a delayed-acknowledgement regression preserves all production safety guards.
+Task 1 shipped as [#92](https://github.com/datasound-projects/Promptboard/pull/92) and was removed with the Backlog in state version 13, as was the import contract task 3 would have extended; no source cache remains in the code. Tasks 2 and 4–8 are pending.

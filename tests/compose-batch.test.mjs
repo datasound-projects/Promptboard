@@ -95,6 +95,10 @@ test('integrity: exact literals, confirmed review findings and edits gate approv
   assert.deepEqual([result.status, result.findings], ['pass', []]);
   const trace = traceRequirements(input, good, review);
   assert.deepEqual(trace.map(row => [row.id, row.kind, row.section, row.check !== '']), [['S1', 'task', 'Goal', false], ['S2', 'task', 'Goal', false], ['S3', 'done-when', 'Acceptance checks', true], ['S4', 'done-when', 'Acceptance checks', true]]);
+  // A fence closes only with its own character, as verification reads it: a ``` line and a # line inside ~~~ are code.
+  const fenced = '# Goal\nImplement IMP-001 Login: add `POST /login` with a 30 s timeout.\n~~~\n```\n# Not a heading\n~~~\n\n# Acceptance checks\n- A user can sign in with email.\n- Wrong passwords return 401.';
+  assert.deepEqual(traceRequirements(input, fenced, review).map(row => row.section), ['Goal', 'Goal', 'Acceptance checks', 'Acceptance checks']);
+  assert.deepEqual(traceRequirements(input, '# Goal\n~~~\n```\n# Acceptance checks\n- A user can sign in with email.\n~~~', review).map(row => row.check), ['', '', '', '']);
   // A dropped literal and a dropped check are found without a model.
   result = assessPrompt({ source, prompt: '# Goal\nAdd a login endpoint.\n\n# Acceptance checks\n- A user can sign in with email.', verification: { review: { ...review, status: 'skipped' } } });
   assert.equal(result.status, 'blocked');
@@ -218,6 +222,22 @@ test('cancel stops running work; a late answer is ignored; a restart never re-ru
   assert.equal(second.calls.length, 0);
 });
 
+test('a damaged batch or task file is set aside when its backup loads, so the next save keeps the good backup', async t => {
+  const { app, call } = await setup(t, engineer());
+  const { record } = await project(app, 1);
+  await call('', { originId: record.id, expectedRevision: record.revision, itemIds: ['t1'] });
+  await call(`/${record.id}/items/t1`, { overrides: { quality: 'fast' } }, 'PATCH');
+  await call(`/${record.id}/settings`, { concurrency: 2 });
+  const dataDir = app.board.store.dir, folder = join(dataDir, 'compose-batches', record.id), files = [join(folder, 'batch.json'), join(folder, 'items', 't1.json')];
+  for (const file of files) await writeFile(file, '{"damaged":');
+  const { ComposeBatches } = await import('../src/compose-batch.mjs');
+  const restarted = new ComposeBatches({ dataDir, origin: new OriginStore(dataDir), board: app.board, generate: async () => { throw new Error('must not run'); }, call: engineer() });
+  assert.deepEqual((await restarted.view(record.id)).items.map(item => item.key), ['IMP-001'], 'The backups load.');
+  for (const file of files) assert.equal((await readdir(join(file, '..'))).filter(name => name.startsWith(`${file.split('/').at(-1)}.corrupt-`)).length, 1, `${file} is kept aside`);
+  await restarted.update(record.id, 't1', { overrides: { quality: 'reviewed' } }); await restarted.configure(record.id, { concurrency: 3 });
+  for (const file of files) assert.ok(JSON.parse(await readFile(`${file}.bak`, 'utf8')).id, `${file}.bak is still a good copy`);
+});
+
 test('approval: exact version only, never past blocking findings, bulk only for clean tasks, and edits need approval again', async t => {
   const runner = engineer({ rewrite: (text, request) => (request.request.includes('MARK2') ? text.replace('`src/f2.js`', 'the file') : text) });
   const { app, call } = await setup(t, runner);
@@ -313,6 +333,29 @@ test('Kanban receives only approved prompts, prerequisites first, once, with lin
   assert.deepEqual(origin.data.results.map(row => row.status), ['existing', 'existing', 'existing', 'existing']);
   assert.equal((await app.board.view()).projects[0].tasks.length, 5);
   assert.equal((await call(`/${record.id}/run`, { itemIds: ['t1'] })).data.skipped[0].reason, 'Already on Kanban.');
+});
+
+test('a split prerequisite whose Origin link was lost still has its cards: later work waits for its last part, as in Origin', async t => {
+  const { app, call } = await setup(t, engineer());
+  const { store, record } = await project(app, 2, { dependsOn: i => (i === 2 ? ['t1'] : []) });
+  await call('', { originId: record.id, expectedRevision: record.revision, itemIds: ['t1', 't2'] });
+  await call(`/${record.id}/run`, { all: true });
+  await settle(call, record.id);
+  await call(`/${record.id}/run`, { itemIds: ['t1'], kind: 'split' });
+  await settle(call, record.id);
+  const item = (await call(`/${record.id}/items/t1`)).data.item;
+  await call(`/${record.id}/items/t1/split`, { accept: true });
+  for (const child of item.split.children) await call(`/${record.id}/approve`, { items: [{ itemId: 't1', childId: child.id }] });
+  assert.equal((await call(`/${record.id}/export`, { itemIds: ['t1'] })).status, 200);
+  // Origin no longer records the card (an older handoff, a restored blueprint); the parts are still on the board.
+  const saved = await store.read(record.id);
+  saved.blueprint.items.find(entry => entry.id === 't1').handoff = null;
+  await store.write(record.id, { expectedRevision: saved.revision, blueprint: saved.blueprint });
+  await call(`/${record.id}/approve`, { passing: true });
+  const response = await call(`/${record.id}/export`, { itemIds: ['t2'] });
+  assert.equal(response.status, 200, JSON.stringify(response.data));
+  const byKey = Object.fromEntries((await app.board.view()).projects[0].tasks.map(card => [card.originSource.key, card]));
+  assert.deepEqual([Object.keys(byKey).length, byKey['IMP-002'].dependsOn], [3, [byKey['IMP-001.2'].id]]);
 });
 
 test('large batches: 120 tasks share eight workers without lost updates, duplicate runs or leaks', async t => {
