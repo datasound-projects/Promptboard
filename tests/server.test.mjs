@@ -283,3 +283,17 @@ test('opening a project folder reports the opener’s own refusals, never the te
   const [status, body] = await open();
   assert.equal(status, 500); assert.equal(body.code, 'BOARD_FAILED'); assert.doesNotMatch(JSON.stringify(body), /EACCES|\/Users\/private/);
 });
+
+test('Reset task over HTTP needs a literal confirm: true; a truthy string never resets a workspace', async t => {
+  const app = await startTestServer(t, { port: 0, executor: null, detector });
+  const { token } = await fetch(app.url + '/api/session').then(r => r.json());
+  const project = await app.board.createProject({ name: 'Reset route', workflowMode: 'pipeline' });
+  const card = await app.board.createTask({ projectId: project.id, title: 'Keep me', prompt: 'x' });
+  const before = await app.board.state();
+  for (const confirm of ['true', 1, undefined]) {
+    const response = await fetch(`${app.url}/api/tasks/${card.id}/start-over`, { method: 'POST', headers: { 'x-ste-token': token, 'content-type': 'application/json' },
+      body: JSON.stringify({ expectedRevision: card.revision, confirm, deleteIgnored: true }) });
+    assert.equal(response.status, 400); assert.equal((await response.json()).code, 'CONFIRMATION_REQUIRED', `confirm ${JSON.stringify(confirm)}`);
+  }
+  assert.deepEqual(await app.board.state(), before);
+});
