@@ -233,3 +233,22 @@ test('explicit library type maps Agents to existing profiles and preserves legac
   assert.equal((await base.list()).resources[0].type, 'agent', 'Legacy stored kind remains the explicit source of type.');
   assert.equal((await base.readRevision(profile.revisionRef)).type, 'agent');
 });
+
+test('the library lists where each resource is used in one pass over runs and targets, with the same uses as usedBy', async t => {
+  const { store, base } = await setup(t), first = await base.create(skill('First')), second = await base.create({ ...skill('Second'), dependencies: [{ resourceId: first.id, required: true }] });
+  await targets(store);
+  await store.update(state => {
+    state.projects[0].baseBinding = { mode: 'extend', include: [{ resourceId: first.id, required: true }], exclude: [second.id] };
+    state.settings.pendingBaseImport = { baseBinding: binding(second) };
+    for (let i = 0; i < 30; i++) state.runs.push({ id: `run${i}`, stage: 'executing', status: i ? 'completed' : 'running', baseManifest: { resources: [{ resourceId: i % 2 ? first.id : second.id }], profiles: [] } });
+  });
+  const state = await store.read(), runs = state.runs; let passes = 0;
+  // Counts every walk over the runs: one per library listing, however many resources there are.
+  Object.defineProperty(state, 'runs', { configurable: true, get: () => { passes++; return runs; } });
+  t.after(() => Object.defineProperty(state, 'runs', { configurable: true, writable: true, value: runs }));
+  const listed = await base.list();
+  assert.equal(passes, 1);
+  for (const resource of listed.resources) assert.deepEqual(resource.usedBy, usedBy(state, resource.id));
+  assert.deepEqual(listed.resources.find(resource => resource.id === first.id).usedBy.map(use => use.kind), ['resource', 'assignment', ...Array(15).fill('run')]);
+  assert.deepEqual(listed.resources.find(resource => resource.id === second.id).usedBy.map(use => use.kind), ['assignment', 'pending-assignment', ...Array(15).fill('run')]);
+});

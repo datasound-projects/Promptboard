@@ -310,20 +310,23 @@ export function listTargets(state) {
   }
   return scopes.map(({ entity, ...scope }) => ({ ...scope, binding: scope.binding || { mode: 'inherit', include: [], exclude: [] }, profileId: scope.profileId || null, baseRevision: entity?.baseRevision || 0 }));
 }
-export function usedBy(state, resourceId) {
-  const uses = [];
-  for (const resource of state.base.resources) if (resource.id !== resourceId && (resourceReferences(resource).some(ref => ref.resourceId === resourceId) || resource.configuration?.binding?.exclude?.includes(resourceId))) uses.push({ kind: 'resource', id: resource.id, name: resource.name });
-  for (const scope of listTargets(state)) if (scope.profileId === resourceId || scope.binding.include?.some(ref => ref.resourceId === resourceId) || scope.binding.exclude?.includes(resourceId)) uses.push({ kind: 'assignment', target: scope.target, name: scope.name });
+/** Where every resource is used, in one pass over the state: resource ID → uses, each place listed once per resource. */
+export function usageIndex(state) {
+  const index = new Map(), add = (ids, use, except) => { for (const id of new Set(ids)) if (id && id !== except) { if (!index.has(id)) index.set(id, []); index.get(id).push({ ...use }); } };
+  const bindingIds = binding => [...(binding?.include || []).map(ref => ref.resourceId), ...(binding?.exclude || [])];
+  for (const resource of state.base.resources) add([...resourceReferences(resource).map(ref => ref.resourceId), ...(resource.configuration?.binding?.exclude || [])], { kind: 'resource', id: resource.id, name: resource.name }, resource.id);
+  for (const scope of listTargets(state)) add([scope.profileId, ...bindingIds(scope.binding)], { kind: 'assignment', target: scope.target, name: scope.name });
   const pendingUse = (scope, name, target) => {
     if (!scope) return;
-    const bindings = [scope.baseBinding, ...Object.values(scope.baseColumns || {}).map(entry => entry.binding)];
-    if (scope.agentProfileId === resourceId || Object.values(scope.baseColumns || {}).some(entry => entry.profileId === resourceId) || bindings.some(binding => binding?.include?.some(ref => ref.resourceId === resourceId) || binding?.exclude?.includes(resourceId))) uses.push({ kind: 'pending-assignment', target, name });
+    const columns = Object.values(scope.baseColumns || {});
+    add([scope.agentProfileId, ...columns.map(entry => entry.profileId), ...[scope.baseBinding, ...columns.map(entry => entry.binding)].flatMap(bindingIds)], { kind: 'pending-assignment', target, name });
   };
   pendingUse(state.settings.pendingBaseImport, 'Imported global settings (awaiting confirmation)', { scope: 'global' });
   for (const project of state.projects) pendingUse(project.pendingImport, `${project.name} imported settings (awaiting confirmation)`, { scope: 'project', projectId: project.id });
-  for (const run of state.runs) if ([...(run.baseManifest?.resources || run.baseManifest?.configured || run.baseSnapshot?.resources || []), ...(run.baseManifest?.profiles || [])].some(ref => (ref.resourceId || ref.id) === resourceId)) uses.push({ kind: 'run', id: run.id, name: `${run.stage} run`, historical: !active(run) });
-  return uses;
+  for (const run of state.runs) add([...(run.baseManifest?.resources || run.baseManifest?.configured || run.baseSnapshot?.resources || []), ...(run.baseManifest?.profiles || [])].map(ref => ref.resourceId || ref.id), { kind: 'run', id: run.id, name: `${run.stage} run`, historical: !active(run) });
+  return index;
 }
+export const usedBy = (state, resourceId) => usageIndex(state).get(resourceId) || [];
 function expected(base, revision) { if (revision !== undefined && base.revision !== revision) throw new BaseError('Base changed. Reload and review your changes.', 'BASE_REVISION_CONFLICT', 409); }
 function validateDiscoveredTool(resource, resources) {
   if (resource.kind !== 'tool' || resource.configuration.delivery !== 'mcp') return;
@@ -358,7 +361,7 @@ function targetEntity(state, target, create = false) {
 
 export class Base {
   constructor({ store }) { if (!store?.update || !store?.read) throw new TypeError('Base requires the existing Board Store.'); this.store = store; this.dir = join(store.dir, 'base'); }
-  async list() { const state = await this.store.read(); return { revision: state.base.revision, resources: state.base.resources.map(resource => ({ ...resource, type: resource.kind === 'profile' ? 'agent' : resource.kind, usedBy: usedBy(state, resource.id) })), approvedRoots: state.base.approvedRoots }; }
+  async list() { const state = await this.store.read(), uses = usageIndex(state); return { revision: state.base.revision, resources: state.base.resources.map(resource => ({ ...resource, type: resource.kind === 'profile' ? 'agent' : resource.kind, usedBy: uses.get(resource.id) || [] })), approvedRoots: state.base.approvedRoots }; }
   async detail(resourceId, { revision } = {}) {
     const state = await this.store.read(), current = state.base.resources.find(resource => resource.id === resourceId);
     if (!current) throw new BaseError('This Base resource no longer exists.', 'BASE_NOT_FOUND', 404);
