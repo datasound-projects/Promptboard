@@ -170,10 +170,17 @@ export function removeOwnedTempDirsSync() {
   ownedDirs.clear();
 }
 
+// What an enclosing agent session (Promptboard started from inside Claude Code, Codex or Gemini CLI) sets for its own
+// children: its session identity and the credential of its message socket. Every CLI Promptboard starts is a session of
+// its own, so it never inherits them (Claude Code withholds the same identity variables from sessions it launches).
+const ENCLOSING_SESSION = /^(?:CLAUDECODE|CLAUDE_PID|CLAUDE_EFFORT|CLAUDE_CODE_(?:ENTRYPOINT|EXECPATH|SESSION_ID|CHILD_SESSION|SESSION_ATTENDED|MESSAGING_SOCKET|MESSAGING_TOKEN|BRIDGE_SESSION_ID|HOST_WORKTREE|HOST_WORKTREE_FENCE)|CODEX_THREAD_ID|GEMINI_CLI)$/;
+/** The environment of a CLI process: the app's own, without an enclosing agent session's, plus `extra`. */
+export const cliEnv = (extra = {}) => ({ ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !ENCLOSING_SESSION.test(name))), ...extra });
+
 /** Spawn a tracked CLI process in its own process group (POSIX). */
 export function spawnOwned(command, args, { cwd, env = {} } = {}) {
   return trackChild(spawn(command, args, { cwd, shell: false, windowsHide: true, detached: process.platform !== 'win32',
-    stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...env, NO_COLOR: '1', FORCE_COLOR: '0' } }));
+    stdio: ['pipe', 'pipe', 'pipe'], env: cliEnv({ ...env, NO_COLOR: '1', FORCE_COLOR: '0' }) }));
 }
 
 /**

@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { EventEmitter } from 'node:events';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
-import { buildCommand, classifyProviderFailure, detectProviders, killPidGroup, parseProviderOutput, runProvider } from '../src/providers.mjs';
+import { buildCommand, classifyProviderFailure, detectProviders, execute, killPidGroup, parseProviderOutput, runProvider } from '../src/providers.mjs';
 
 test('CLI commands narrow permissions and keep model values separate', () => {
   const codex = buildCommand({ provider: 'codex', model: 'custom/model-v1' });
@@ -26,6 +26,20 @@ test('CLI commands narrow permissions and keep model values separate', () => {
   for (const result of [codex, claude, gemini]) {
     assert.ok(!result.args.some(x => /dangerously|bypassPermissions|yolo|auto_edit/.test(x)));
   }
+});
+
+test('a CLI never inherits the session identity or message credential of an agent session that started Promptboard', async t => {
+  // As set for the commands of a Claude Code (or Codex, Gemini CLI) session in which `npm start` ran.
+  const enclosing = { CLAUDECODE: '1', CLAUDE_CODE_ENTRYPOINT: 'cli', CLAUDE_CODE_SESSION_ID: 'parent', CLAUDE_CODE_CHILD_SESSION: '1', CLAUDE_CODE_SESSION_ATTENDED: '1',
+    CLAUDE_CODE_MESSAGING_SOCKET: '/tmp/parent.sock', CLAUDE_CODE_MESSAGING_TOKEN: 'PARENT-SECRET', CLAUDE_PID: '1', CLAUDE_EFFORT: 'xhigh', CODEX_THREAD_ID: 'parent-thread', GEMINI_CLI: '1' };
+  const kept = { CLAUDE_CODE_USE_BEDROCK: '1', CLAUDE_CONFIG_DIR: '/tmp/claude-config', PROMPTBOARD_ENV_PROBE: 'kept' };
+  const saved = Object.fromEntries(Object.keys({ ...enclosing, ...kept }).map(name => [name, process.env[name]]));
+  t.after(() => { for (const [name, value] of Object.entries(saved)) if (value === undefined) delete process.env[name]; else process.env[name] = value; });
+  Object.assign(process.env, enclosing, kept);
+  const { stdout } = await execute({ command: process.execPath, args: ['-e', 'process.stdout.write(JSON.stringify(process.env))'], timeoutMs: 20000 });
+  const env = JSON.parse(stdout);
+  assert.deepEqual(Object.keys(enclosing).filter(name => name in env), []);
+  for (const [name, value] of Object.entries(kept)) assert.equal(env[name], value, `${name} is the user's own configuration`);
 });
 
 test('every Claude Code error type gets its own failure code; only the unspecific ones stay unrecognized', () => {

@@ -856,11 +856,11 @@ test('a CLI that exits while its start is being saved leaves no event poll runni
   assert.equal(session.poll, undefined, 'The exit owns the outcome; no event poll is armed after it.');
 });
 
-test('shutdown ends a terminal stream for good: a process that exits later writes nothing more to it', async t => {
+/** One run through the real launch path with a controlled PTY (its fake PID ignores signals) and an in-memory board. */
+async function fakeLaunch(t) {
   const dataDir = await temp(t, 'pb-data-');
-  let proc;
-  // The fake PID ignores signals, so the process outlives the shutdown grace period and exits afterwards.
-  const pty = { spawn() { proc = { pid: 2147483000, onData() {}, onExit(cb) { this.exit = cb; }, write() {}, resize() {} }; return proc; } };
+  const spawned = {};
+  const pty = { spawn(command, args, options) { Object.assign(spawned, { command, args, options }); spawned.proc = { pid: 2147483000, onData() {}, onExit(cb) { this.exit = cb; }, write() {}, resize() {} }; return spawned.proc; } };
   const run = { id: 'r1', status: 'queued', taskId: 't1', artifactsDir: 'runs/r1', stage: 'executing', workspacePath: dataDir,
     config: { provider: 'claude', permissionMode: 'acceptEdits' }, baseManifest: { resources: [] } };
   const board = { state: async () => ({ settings: { maxConcurrentRuns: 1 }, base: { resources: [], approvedRoots: [] }, sessions: [] }),
@@ -870,13 +870,27 @@ test('shutdown ends a terminal stream for good: a process that exits later write
     basePreparer: async () => ({ sections: '', manifest: { resources: [] }, cleanup: async () => {} }) });
   await supervisor.start({ run, task: { prompt: 'Do it.' } });
   const session = await until(() => supervisor.sessions.get('r1')?.poll && supervisor.sessions.get('r1'), 'session running');
-  t.after(() => { clearInterval(session.poll); clearInterval(session.usagePoll); clearTimeout(session.lingerTimer); clearTimeout(session.watchdog); });
-  const seen = [];
+  t.after(async () => { if (session.proc) { spawned.proc.exit({ exitCode: 0 }); await session.exited; } clearTimeout(session.lingerTimer); clearTimeout(session.watchdog); });
+  return { supervisor, run, session, spawned };
+}
+
+test('shutdown ends a terminal stream for good: a process that exits later writes nothing more to it', async t => {
+  const { supervisor, run, session, spawned } = await fakeLaunch(t), seen = [];
   supervisor.subscribe('r1', 0, { write: () => { seen.push('write'); return true; }, onDrain() {}, end: () => seen.push('end') });
-  await supervisor.shutdown(50);
+  await supervisor.shutdown(50); // The process outlives the grace period and exits afterwards.
   assert.equal(run.status, 'interrupted'); assert.equal(seen.at(-1), 'end');
-  proc.exit({ exitCode: null, signal: 9 }); await session.exited;
+  spawned.proc.exit({ exitCode: null, signal: 9 }); await session.exited;
   assert.deepEqual(seen.slice(seen.indexOf('end')), ['end'], 'An HTTP response written after end() raises an uncaught error.');
+});
+
+test('an agent terminal never inherits the session identity or message credential of an agent session that started Promptboard', async t => {
+  const names = ['CLAUDECODE', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_CODE_CHILD_SESSION', 'CLAUDE_CODE_MESSAGING_TOKEN', 'CODEX_THREAD_ID', 'PROMPTBOARD_ENV_PROBE'];
+  const saved = Object.fromEntries(names.map(name => [name, process.env[name]]));
+  t.after(() => { for (const [name, value] of Object.entries(saved)) if (value === undefined) delete process.env[name]; else process.env[name] = value; });
+  Object.assign(process.env, { CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'parent', CLAUDE_CODE_CHILD_SESSION: '1', CLAUDE_CODE_MESSAGING_TOKEN: 'PARENT-SECRET', CODEX_THREAD_ID: 'parent-thread', PROMPTBOARD_ENV_PROBE: 'kept' });
+  const { env } = (await fakeLaunch(t)).spawned.options;
+  assert.deepEqual(names.filter(name => name in env), ['PROMPTBOARD_ENV_PROBE']);
+  assert.equal(env.PROMPTBOARD_RUN, '1'); assert.equal(env.TERM, 'xterm-256color');
 });
 
 test('run endpoints need the token, bound input, need confirmation to stop, and stream NDJSON', { skip }, async t => {

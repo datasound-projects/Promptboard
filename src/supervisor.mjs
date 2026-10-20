@@ -12,7 +12,7 @@ import { constants, createWriteStream } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { ADAPTERS, AgentError, buildSession, composeMessage, interpretEvent, resolveConfig } from './agents.mjs';
-import { CLAUDE_ERRORS, FAILURE_MESSAGES, killPidGroup, resolveExecutable, trackPid, untrackPid } from './providers.mjs';
+import { CLAUDE_ERRORS, cliEnv, FAILURE_MESSAGES, killPidGroup, resolveExecutable, trackPid, untrackPid } from './providers.mjs';
 import { addClaudeRecord, addCodexRecord, claudeTranscript, findCodexRollout, newUsage, readNewLines, usageSummary } from './usage.mjs';
 import { prepareBase } from './base-context.mjs';
 import { BaseDeliveryError, checkBaseRevocations } from './base-resolver.mjs';
@@ -259,7 +259,7 @@ export class Supervisor {
     let proc;
     try {
       proc = pty.spawn(executable.command, [...executable.prefix, ...built.args], {
-        name: 'xterm-256color', cols: 120, rows: 32, cwd: run.workspacePath, env: { ...process.env, ...built.env },
+        name: 'xterm-256color', cols: 120, rows: 32, cwd: run.workspacePath, env: cliEnv(built.env),
       });
     } catch (error) { log.destroy(); throw error; }
     trackPid(proc.pid);
