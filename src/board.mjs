@@ -812,12 +812,13 @@ export class Board {
     if (folder === 'new') {
       await mkdir(this.projectsDir, { recursive: true });
       const base = clean.normalize('NFC').replace(/[\\/:*?"<>|\u0000-\u001f]+/g, '-').replace(/^[.\s-]+|[.\s]+$/g, '').slice(0, 80) || 'project';
+      const root = await realpath(this.projectsDir);
+      // mkdir itself is the check, so two projects created at once never share a folder.
       for (let n = 1; ; n++) {
         if (n > 100) throw new BoardError('Could not find a free folder name for this project.', 'FOLDER_UNAVAILABLE', 409);
-        path = join(await realpath(this.projectsDir), n === 1 ? base : `${base} ${n}`);
-        if (!(await access(path).then(() => true, () => false))) break;
+        path = join(root, n === 1 ? base : `${base} ${n}`);
+        if (await mkdir(path).then(() => true, error => { if (error.code !== 'EEXIST') throw error; return false; })) break;
       }
-      await mkdir(path);
       created = true;
     } else {
       if (typeof folder !== 'string' || !isAbsolute(folder.trim())) throw new BoardError('Choose the absolute path of the project folder.', 'INVALID_PATH');

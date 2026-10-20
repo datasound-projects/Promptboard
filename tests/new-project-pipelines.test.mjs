@@ -51,3 +51,11 @@ test('invalid new-project modes are rejected before folder creation and cannot p
     assert.equal(result.data.code,'INVALID_INPUT'); assert.deepEqual(await readdir(projectsDir),[]); assert.deepEqual((await app.board.state()).projects,[]);
   }
 });
+
+test('two projects created at once whose names make the same folder name each get their own folder', async t=>{
+  const {app,projectsDir,call}=await world(t);
+  const results=await Promise.all(['A/B','A:B'].map(name=>call('POST','/api/projects',{name})));
+  assert.deepEqual(results.map(result=>result.status),[200,200],JSON.stringify(results.map(result=>result.data)));
+  assert.deepEqual((await readdir(projectsDir)).sort(),['A-B','A-B 2']);
+  assert.deepEqual(new Set((await app.board.state()).projects.map(project=>project.repository.root)).size,2);
+});
