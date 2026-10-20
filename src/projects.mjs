@@ -21,7 +21,9 @@ const ID = /^[A-Za-z0-9_-]{1,100}$/;
 const SCHEMA = 'promptboard.project-prompts';
 export const PROMPT_LIMITS = { prompts: 500, revisions: 100, promptBytes: 2 * 1024 * 1024, input: 100000, title: 120, links: 100, fileBytes: 64 * 1024 * 1024 };
 const fail = (message, code = 'INVALID_INPUT', status = 400) => { throw new OriginError(message, code, status); };
-const sameName = (a, b) => a.trim().toLocaleLowerCase() === b.trim().toLocaleLowerCase();
+/** A name as people read it, for every one-name check: case, Unicode form (composed é or e + accent, full-width letters), invisible characters and runs of spaces make no other name. */
+export const nameKey = name => name.normalize('NFKC').replace(/\p{Cf}/gu, '').replace(/\s+/g, ' ').trim().toLowerCase();
+const sameName = (a, b) => nameKey(a) === nameKey(b);
 const PROVIDERS = ['codex', 'claude', 'gemini', 'agy'];
 
 // ---- The project list ----

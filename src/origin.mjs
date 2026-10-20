@@ -16,7 +16,7 @@ import { mkdir, open, readdir, readFile, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { redactLocal } from './compose-local.mjs';
 import { readWithBackup, serial, writeAtomic } from './durable.mjs';
-import { createBoardFor, nameTaken } from './projects.mjs';
+import { createBoardFor, nameKey, nameTaken } from './projects.mjs';
 
 const Model = globalThis.PromptboardOriginModel;
 export const ORIGIN_DIR = 'origin';
@@ -224,7 +224,7 @@ export class OriginStore {
       const all = await this.#list();
       if (all.length >= PROJECT_LIMIT) throw new OriginError(`Origin can hold at most ${PROJECT_LIMIT} projects.`, 'LIMIT', 409);
       // Checked here, in the write queue, so two windows creating the same name at once get one project.
-      if (all.some(other => other.name.toLocaleLowerCase() === meta.name.toLocaleLowerCase())) throw new OriginError('A project with this name already exists. Choose it from the project list.', 'NAME_TAKEN', 409);
+      if (all.some(other => nameKey(other.name) === nameKey(meta.name))) throw new OriginError('A project with this name already exists. Choose it from the project list.', 'NAME_TAKEN', 409);
       if (id !== undefined && (all.some(other => other.id === id) || await readFile(join(this.dir, blueprintFileName(id))).then(() => true, () => false))) throw new OriginError('An Origin project with this ID already exists.', 'ID_TAKEN', 409);
       if (kanbanProjectId && all.some(other => linksTo(other, kanbanProjectId))) throw new OriginError('That Kanban project is already linked to another Origin project.', 'ALREADY_LINKED', 409);
       const blueprint = start ? Model.normalizeBlueprint(start).blueprint : Model.emptyBlueprint();
