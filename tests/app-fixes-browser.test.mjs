@@ -270,3 +270,56 @@ test('the terminal dock divider resizes by touch, and a cancelled pointer ends t
   assert.equal(await height(), dragged, 'no resize after the pointer was cancelled');
   noExceptions(browser);
 });
+
+test('the shell fits phones and tablets: a wrapping top bar, the drawer above Origin\'s panel, a wrapping Origin header, whole focus rings and full-name tooltips', { skip: !chrome, timeout: 180000 }, async t => {
+  const long = 'A remarkably long project name that keeps going well past the sidebar width';
+  const { app, browser, ev, wait } = await setup(t, { seed: `localStorage.setItem('ste-prompt-engineer.history.v1', JSON.stringify([{ id: 'h1', input: ${JSON.stringify(`Refactor ${long}`)}, prompt: 'P', createdAt: Date.now(), provider: 'claude' }]))` });
+  await browser.goto(`${app.url}/#/kanban`);
+  await wait(`token`, 'session');
+  assert.equal(await ev(`return (await fetch('/api/origin/projects', { method: 'POST', headers: { 'X-STE-Token': token, 'Content-Type': 'application/json' }, body: JSON.stringify({ name: ${JSON.stringify(long)}, description: '', createKanban: true }) })).ok;`), true);
+  const page = async (hash, name) => { await ev(`location.hash = ${JSON.stringify(hash)};`); await wait(`document.documentElement.dataset.page === ${JSON.stringify(name)} && token`, name); };
+  // One row needs about 394 px: narrower, every page wraps the links below 44 px controls, so nothing scrolls sideways.
+  for (const width of [320, 375, 400, 414]) {
+    await browser.resize(width, 800);
+    for (const [hash, name] of [['#/origin', 'origin'], ['#/', 'compose'], ['#/kanban', 'kanban'], ['#/base', 'base']]) {
+      await page(hash, name);
+      const wide = width > 400;
+      assert.equal(await browser.layout(`const root = document.documentElement, bar = [...document.querySelectorAll('.topbar :is(.icon-button, .help-pill), .page-nav a')];
+        return root.scrollWidth <= root.clientWidth && bar.every(node => node.getBoundingClientRect().right <= root.clientWidth)
+          && bar.filter(node => !node.matches('a')).every(node => ${wide} || (node.getBoundingClientRect().width === 44 && node.getBoundingClientRect().height === 44));`), true, `${name} at ${width} px`);
+    }
+  }
+  // A tablet: the long Origin project name and its Kanban chip wrap instead of widening the page.
+  await browser.resize(1024, 800);
+  await page('#/origin', 'origin');
+  await wait(`document.querySelector('#origin-new-project') && !document.querySelector('#origin-kanban-link').hidden`, 'Origin header');
+  assert.equal(await browser.layout(`const root = document.documentElement; return root.scrollWidth <= root.clientWidth && document.querySelector('#origin-new-project').getBoundingClientRect().right <= root.clientWidth;`), true);
+  // A phone with Origin's panel open: the opened drawer lies above it and can be used.
+  await browser.resize(390, 800);
+  await wait(`!document.querySelector('#origin-research-open').hidden`, 'Research button');
+  await ev(`document.querySelector('#origin-research-open').click();`);
+  await wait(`!document.querySelector('#origin-drawer').hidden`, 'Research panel');
+  await ev(`document.querySelector('#menu-toggle').click();`);
+  assert.equal(await browser.layout(`const side = document.querySelector('#sidebar'), r = side.getBoundingClientRect(); return side.classList.contains('open') && side.contains(document.elementFromPoint(r.left + r.width / 2, r.top + 100)) && document.elementFromPoint(r.right + 20, r.top + 200)?.id === 'sidebar-scrim';`), true);
+  await ev(`document.querySelector('#sidebar-scrim').click();`);
+  // The project row's focus ring is not cut off by the sidebar's scrolling panel.
+  await browser.resize(1280, 800);
+  await page('#/kanban', 'kanban');
+  await wait(`document.querySelector('#workspace-list .workspace-item')`, 'project row');
+  await ev(`document.querySelector('#workspace-open').focus();`);
+  await browser.key('Tab', 'Tab', 9);
+  assert.equal(await ev(`const node = document.activeElement, r = node.getBoundingClientRect(), ring = parseFloat(getComputedStyle(node).outlineWidth) + parseFloat(getComputedStyle(node).outlineOffset);
+    if (!node.matches('.workspace-item') || !(ring > 0)) return 'no ring on ' + node.className;
+    for (let box = node.parentElement; box; box = box.parentElement) { if (getComputedStyle(box).overflowX === 'visible') continue; const b = box.getBoundingClientRect();
+      if (r.left - ring < b.left || r.right + ring > b.right) return 'cut by ' + (box.id || box.className); }
+    return 'whole';`), 'whole');
+  // A name cut off with an ellipsis shows in full on hover; a title the page set is kept.
+  const hover = async selector => { const at = await ev(`const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return { x: r.left + 10, y: r.top + r.height / 2 };`); await browser.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: at.x, y: at.y }); };
+  await hover('#workspace-list .workspace-name');
+  assert.deepEqual(await ev(`const name = document.querySelector('#workspace-list .workspace-name'); return [name.hasAttribute('title'), name.closest('button').title.split('\\n')[0]];`), [false, long]);
+  await page('#/', 'compose');
+  await wait(`document.querySelector('.history-restore strong')`, 'History');
+  await hover('.history-restore strong');
+  assert.equal(await ev(`const node = document.querySelector('.history-restore strong'); return node.scrollWidth > node.clientWidth && node.title === node.textContent;`), true);
+  noExceptions(browser);
+});

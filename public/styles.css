@@ -506,6 +506,8 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
   .sidebar.open { transform: none; visibility: visible; transition: transform .2s ease; box-shadow: 0 10px 40px rgb(0 0 0 / .25); }
   .sidebar { background: color-mix(in srgb, var(--surface) 95%, transparent); }
   .topbar { gap: 8px; padding: 0 12px 0 8px; }
+  /* The drawer and its scrim cover every floating panel (Origin's drawer, Coordinator, file chips); both start below the top bar. */
+  .sidebar-scrim { z-index: 61; } .sidebar { z-index: 62; }
   .brand { display: none; } /* Without a logo mark, hide the whole link rather than leave it empty. */
   .page-nav { margin-left: 0; padding-left: 8px; }
   .select-grid, .choice-row, .check-grid { grid-template-columns: 1fr; }
@@ -537,11 +539,6 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
   .kanban-dialog-actions > button { flex: 1; }
   .output-empty { flex-direction: column; text-align: center; }
   dialog { padding: 24px 20px; }
-}
-@media (max-width: 400px) {
-  .brand { display: none; }
-  .topbar { gap: 6px; padding: 0 8px 0 6px; }
-  .page-nav { padding-left: 0; border-left: 0; }
 }
 @media (prefers-reduced-motion: reduce) {
   /* No transitions at all: a tiny duration still honours delays (the phone drawer's visibility) and leaves its contents hidden. */
@@ -1318,7 +1315,7 @@ button.timeline-task:hover { text-decoration: underline; }
 .settings-section .agent-refresh-models { justify-self: start; }
 
 /* Quiet project navigation: compact rows, restrained selection, details on hover. */
-#workspace-panel { overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; }
+#workspace-panel { margin: 0 -6px; padding: 0 6px; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; } /* The padding keeps focus rings inside the clip. */
 #workspace-panel .workspace-list { flex: 0 0 auto; }
 #workspace-panel > :is(.new-prompt, .workspace-open) { justify-content: flex-start; min-height: 32px; margin-bottom: 4px; padding: 6px 10px; border: 0; border-radius: 5px; background: transparent; color: var(--muted); font-size: 13px; box-shadow: none; }
 #workspace-panel > :is(.new-prompt, .workspace-open):hover { background: var(--surface); color: var(--ink); }
@@ -1367,7 +1364,14 @@ button.timeline-task:hover { text-decoration: underline; }
   .topbar-actions { gap: 2px; }
   .topbar .icon-button { width: 30px; min-width: 30px; }
   .topbar .help-pill { width: 26px; }
-  .page-nav { gap: 2px; padding-left: 2px; }
+  .page-nav { padding-left: 2px; }
+}
+/* One row needs about 394 px. Narrower, the page links get a row of their own and the controls are 44 px. */
+@media (max-width: 400px) {
+  :root { --topbar: 104px; }
+  .topbar { flex-wrap: wrap; gap: 0 4px; padding: 4px 8px; }
+  .topbar .page-nav { order: 3; flex-basis: 100%; justify-content: center; padding: 0; margin: 0; border-left: 0; }
+  .topbar :is(.icon-button, .help-pill) { width: 44px; min-width: 44px; height: 44px; }
 }
 
 /* Optional Compose context uses the existing progressive disclosure and theme tokens. */
@@ -1505,11 +1509,6 @@ button.timeline-task:hover { text-decoration: underline; }
   #prompt-view .output-tools .output-actions { left: 0; right: auto; }
   #prompt-view .select-grid { grid-template-columns: 1fr; }
   #prompt-view .compose-settings-category > summary { padding-left: 14px; padding-right: 14px; }
-  /* Keep every navigation and account control reachable on the smallest Compose screens. */
-  :root:has(#prompt-view:not([hidden])) { --topbar: 104px; }
-  body:has(#prompt-view:not([hidden])) .topbar { flex-wrap: wrap; gap: 0 4px; padding: 4px 8px; }
-  body:has(#prompt-view:not([hidden])) .topbar .page-nav { order: 3; flex-basis: 100%; justify-content: center; padding: 0; margin: 0; }
-  body:has(#prompt-view:not([hidden])) .topbar :is(.icon-button, .help-pill) { width: 44px; min-width: 44px; height: 44px; }
 }
 
 .archive-task-heading { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; }
@@ -1581,7 +1580,7 @@ button.timeline-task:hover { text-decoration: underline; }
 /* Page frame */
 .workspace.origin-workspace { display: block; padding: 0 0 64px; min-height: calc(100dvh - var(--topbar)); }
 .origin-header { position: sticky; top: var(--topbar); z-index: 12; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 20px; min-height: 60px; padding: 10px 32px; border-bottom: 1px solid var(--divider); background: color-mix(in srgb, var(--bg) 62%, transparent); backdrop-filter: blur(16px) saturate(1.2); }
-.origin-project { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.origin-project { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; min-width: 0; } /* A long name and the Kanban chip wrap instead of widening the page. */
 .origin-project-select { max-width: min(340px, 50vw); height: 36px; padding: 0 30px 0 10px; border: 1px solid transparent; border-radius: 10px; background: transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%238b8b95' stroke-width='1.7'%3E%3Cpath d='m6 8 4 4 4-4'/%3E%3C/svg%3E") no-repeat right 8px center / 16px; color: var(--ink); font-size: 16px; font-weight: 650; letter-spacing: -.01em; text-overflow: ellipsis; appearance: none; cursor: pointer; }
 .origin-project-select:hover { background-color: var(--og-glass-2); border-color: var(--line); }
 .origin-project-select option { background: var(--surface); color: var(--text); }
@@ -2082,7 +2081,6 @@ dialog.origin-modal.wide { width: min(980px, calc(100vw - 32px)); max-width: non
 @media (max-width: 1100px) { .origin-panels { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 730px) {
   .origin-header { padding: 10px 16px; }
-  .origin-project { flex-wrap: wrap; row-gap: 8px; }
   .origin-link-pill { max-width: 170px; }
   .origin-header-status .origin-save span:not(.origin-save-dot) { display: none; }
   .origin-research-label { display: none; }
@@ -2585,6 +2583,6 @@ button.origin-context-badge { cursor: pointer; }
   .autopilot-up, .autopilot-down { min-width: 44px; min-height: 44px; }
   #origin-research-input { min-height: 44px; }
   .icon-button, .page-nav a, .secondary-button, .copy-button, #kanban-view #card-new, .text-button, .detail-actions button, .view-switch button, .dock-tab, .kanban-card .kanban-more-toggle, .origin-primary, .origin-ghost, .origin-pill, .origin-link-pill, .origin-blueprint-chip, .origin-menu-item, select, input:not([type="checkbox"], [type="radio"], [type="range"], [role="switch"]) { min-height: 44px; }
-  /* The top bar keeps its icon widths: at 390 px it has no room for four 44 px icons beside the page links. */
+  /* Top bar icons keep their widths: one row from 401 px has no room for four 44 px icons beside the page links (400 px and narrower wraps). */
   .icon-button:not(.topbar *), .text-button, .kanban-card .kanban-more-toggle, .origin-ghost, .origin-link, .origin-blueprint-chip { min-width: 44px; }
 }

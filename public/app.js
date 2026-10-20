@@ -269,7 +269,7 @@ function toggleSidebar() {
   if (isMobile()) {
     const open = !$('#sidebar').classList.contains('open');
     setSidebar(open);
-    if (open) (location.hash === '#/kanban' ? $('#workspace-new') : location.hash === '#/origin' ? $('#origin-nav button') || $('#sidebar') : $('#new-prompt')).focus();
+    if (open) $('#sidebar .sidebar-panel:not([hidden]) :is(button, a[href], input, select):not(:disabled), #sidebar .sidebar-bottom button')?.focus(); // The first control of this page's panel.
     return;
   }
   setSidebarCollapsed(!sidebarCollapsed());
@@ -4061,6 +4061,16 @@ async function addToKanban(event) {
 window.addEventListener('hashchange', showPage);
 // The skip link must not change the hash, which selects the page.
 $('#skip-link').addEventListener('click', event => { event.preventDefault(); ($({ base: '#base-view', kanban: '#kanban-view', origin: '#origin-view' }[currentPage()] || '#prompt-input')).focus(); });
+// A name cut off with an ellipsis shows in full as a tooltip, on every page. A title set by the page wins.
+document.addEventListener('pointerover', ({ target }) => {
+  if (!(target instanceof Element) || target.closest('[title]:not([data-full-text])')) return;
+  for (let node = target; node && node !== document.body; node = node.parentElement) {
+    if (getComputedStyle(node).textOverflow !== 'ellipsis' || node.matches('select, input, textarea')) continue;
+    if (node.scrollWidth > node.clientWidth) { node.title = node.textContent.trim(); node.dataset.fullText = ''; }
+    else if ('fullText' in node.dataset) { node.removeAttribute('title'); delete node.dataset.fullText; }
+    return;
+  }
+});
 $('#kanban-button').addEventListener('click', openAddToKanban);
 $('#project-save-button').addEventListener('click', () => projectsView?.openSave(currentResult));
 

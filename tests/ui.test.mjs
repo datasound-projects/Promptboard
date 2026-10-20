@@ -722,3 +722,17 @@ test('the skip link focuses the visible page and never changes the page', async 
   assert.equal(win.document.activeElement, $('#prompt-input'));
   assert.equal(win.location.hash, '#/');
 });
+
+test('on a phone the drawer moves focus to the first control of the page it shows', async t => {
+  const { $, win } = await setup(t, { hash: '#/base' });
+  Object.defineProperty(win, 'innerWidth', { value: 375, configurable: true });
+  await until(() => $('#base-categories button'), 'Base categories');
+  for (const [hash, page, first] of [['#/base', 'base', '#base-categories button'], ['#/kanban', 'kanban', '#workspace-new'], ['#/', 'compose', '#new-prompt']]) {
+    win.location.hash = hash;
+    await until(() => win.document.documentElement.dataset.page === page && !$(first).disabled, `${page} page`);
+    $('#menu-toggle').click();
+    assert.equal(win.document.activeElement, $(first), `${page}: focus moves into the drawer, not ${win.document.activeElement.id || win.document.activeElement.className}`);
+    win.document.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    assert.equal(win.document.activeElement, $('#menu-toggle'));
+  }
+});
