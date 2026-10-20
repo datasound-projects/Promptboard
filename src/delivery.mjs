@@ -413,20 +413,21 @@ export class Delivery {
         merged = lines(await git(['commit-tree', tree, '-p', targetCommit, '-m', message], { cwd: ws.repositoryRoot, timeoutMs: 60000 })
           .catch(error => { throw /tell me who you are|user\.email|user\.name/i.test(error.stderr || '') ? fail('Git has no author identity for this repository. Set user.name and user.email with git config yourself; Promptboard does not change Git configuration.', 'IDENTITY_REQUIRED') : fail('Git could not create the squash commit. Nothing was changed.', 'MERGE_FAILED'); }))[0];
       }
+      // Either way a refusal changed nothing; a target that moved meanwhile is TARGET_CHANGED, so the merge is prepared again.
+      const refused = async message => {
+        const now = await this.#rev(ws.repositoryRoot, `refs/heads/${target}`).catch(() => null);
+        return now && now !== targetCommit ? fail(`${target} moved during the merge. Nothing was changed; the merge is prepared again on the new target.`, 'TARGET_CHANGED') : fail(message, 'MERGE_FAILED');
+      };
       let method;
       if (preview.targetCheckout) {
         // Fast-forward the checkout that has the target branch; never switch branches anywhere.
         await git(['merge', '--ff-only', '--no-edit', merged], { cwd: preview.targetCheckout.path, timeoutMs: 120000 })
-          .catch(() => { throw fail('Git refused the fast-forward in the target checkout. Nothing was changed.', 'MERGE_FAILED'); });
+          .catch(async error => { throw await refused(`Git refused the fast-forward in the target checkout (${error.message}). Nothing was changed.`); });
         method = `${squash ? 'squash commit, ' : ''}fast-forward in ${preview.targetCheckout.path}`;
       } else {
-        // Not checked out anywhere: move the ref only if it still has the previewed value.
-        // Compare-and-swap: the ref moves only if it still has the previewed value.
+        // Not checked out anywhere. Compare-and-swap: the ref moves only if it still has the previewed value.
         await git(['update-ref', '-m', `promptboard: ${squash ? 'squash-merge' : 'fast-forward'} ${target} to task ${taskId}`, `refs/heads/${target}`, merged, targetCommit], { cwd: ws.repositoryRoot })
-          .catch(async () => {
-            const now = await this.#rev(ws.repositoryRoot, `refs/heads/${target}`).catch(() => null);
-            throw now && now !== targetCommit ? fail(`${target} moved during the merge. Nothing was changed; the merge is prepared again on the new target.`, 'TARGET_CHANGED') : fail('Git refused to update the target branch. Nothing was changed.', 'MERGE_FAILED');
-          });
+          .catch(async () => { throw await refused('Git refused to update the target branch. Nothing was changed.'); });
         method = `${squash ? 'squash commit, ' : ''}fast-forward of the branch reference`;
       }
       const result = await this.#rev(ws.repositoryRoot, `refs/heads/${target}`);

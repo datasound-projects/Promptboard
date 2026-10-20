@@ -1563,7 +1563,11 @@ export class Board {
       if (this.#activeRun(await this.state(), id)) throw conflict('An agent is still working on this card.', 'RUN_ACTIVE');
       const preview = await this.delivery.mergePreview(id);
       const squash = project.workflowMode === 'pipeline' && (project.execution?.mergeMethod ?? 'squash') === 'squash';
-      if (preview.eligible) return { task: await this.delivery.merge(id, { confirm: true, taskCommit: preview.taskCommit, targetCommit: preview.targetCommit, trigger: 'user', squash }), merged: true };
+      // A target that moved after the preview (TARGET_CHANGED, nothing changed) is prepared again below, as its message says.
+      if (preview.eligible) {
+        try { return { task: await this.delivery.merge(id, { confirm: true, taskCommit: preview.taskCommit, targetCommit: preview.targetCommit, trigger: 'user', squash }), merged: true }; }
+        catch (error) { if (error.code !== 'TARGET_CHANGED') throw error; }
+      }
       const merge = await this.#prepareMerge(id, { auto: true });
       if (merge.state === 'blocked') throw conflict(merge.message, 'MERGE_NOT_READY');
       return { task: merge.task || await this.#taskNow(id), merged: merge.state === 'merged', merge };

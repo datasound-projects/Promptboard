@@ -645,6 +645,28 @@ test('conflict markers in a file with a non-ASCII name are found, so they are ne
   await assert.rejects(w.delivery.commit(task.id, { message: 'merge', confirm: true }), { code: 'CONFLICT_MARKERS' });
 });
 
+test('a target that moves during the merge is TARGET_CHANGED; the Merge button prepares the merge again and keeps the new commit', { skip, timeout: 120000 }, async t => {
+  const w = await world(t);
+  await w.delivery.setTestCommands(w.project.id, { commands: [{ command: `${process.execPath} -e "process.exit(0)"` }], expectedRevision: (await w.board.view()).projects[0].revision });
+  const task = await w.task('Moving target', 'x');
+  await writeFile(join(await w.workspace(task.id), 'moving.txt'), 'x\n');
+  await w.delivery.commit(task.id, { message: 'moving', confirm: true });
+  await w.move(task.id, 'code_review'); await w.review(task.id); await w.move(task.id, 'testing'); await w.tests(task.id); await w.move(task.id, 'merge');
+  // Someone commits on trunk in its checkout after Promptboard's last check, right before the fast-forward.
+  const check = w.board.checkCompletable.bind(w.board), merge = w.delivery.merge.bind(w.delivery), codes = [];
+  let moved = false;
+  w.board.checkCompletable = async (...args) => {
+    if (!moved) { moved = true; await writeFile(join(w.root, 'upstream.txt'), 'u\n'); git(w.root, 'add', '.'); git(w.root, 'commit', '-q', '-m', 'Upstream'); }
+    return check(...args);
+  };
+  w.delivery.merge = (...args) => merge(...args).catch(error => { codes.push(error.code); throw error; });
+  const clicked = await w.board.mergeNow(task.id);
+  assert.deepEqual([codes, clicked.merged, clicked.merge.state], [['TARGET_CHANGED'], false, 'testing'], 'brought in the moved target and tests again');
+  await until(async () => { await w.board.advanceFlows(); return (await w.current(task.id)).column === 'done'; }, 'merged after the rerun tests');
+  assert.equal((await w.current(task.id)).completion.kind, 'merged');
+  git(w.root, 'merge-base', '--is-ancestor', git(w.root, 'rev-parse', ':/Upstream'), 'trunk'); // The commit made meanwhile is kept.
+});
+
 test('a worktree Git cannot create says why', { skip: skip || process.getuid?.() === 0, timeout: 60000 }, async t => {
   const w = await world(t);
   const first = await w.task('First', 'x');
