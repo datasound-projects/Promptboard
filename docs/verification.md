@@ -20,7 +20,7 @@ The requested provider, model, and effort are retained across calls. CLI default
 
 ## What the checks can establish
 
-- Recognizable fenced code, inline code, double-quoted text, URLs, and file paths are extracted and compared. For explicitly delimited source text, a complete quoted or code span with identical contents must remain; an extended command does not count. Internal whitespace is preserved, except CRLF is normalized to LF. Fence delimiter lines are excluded. Bare paths and URLs use token-boundary checks.
+- Recognizable fenced code, inline code, double-quoted text, URLs, and file paths are extracted and compared. For explicitly delimited source text, a complete quoted or code span with identical contents must remain; an extended command does not count. Internal whitespace is preserved, except CRLF is normalized to LF. Fence delimiter lines are excluded. A fenced block may move into or out of a list: as in Markdown, the indentation of its fence is not part of the code. Bare paths and URLs use token-boundary checks.
 - Extraction is deliberately limited. Bare identifiers, numbers, commands without delimiters, paths with spaces, and other natural-language constraints are not exhaustively recognized. Put critical exact text in backticks or double quotes.
 - A literal's presence does not prove its meaning is preserved. For example, copying a number while reversing a condition can pass a string check.
 - Prose checks estimate sentence length, paragraph length, contractions, and vague wording. They do not implement all STE word-counting rules, grammar, dictionary senses, or technical-term approval.

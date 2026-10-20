@@ -68,7 +68,7 @@ function recognizedFilename(text) {
  * requirements need explicit delimiters or human/model review.
  */
 export function extractProtectedLiterals(input) {
-  return extractFromNormalized(sourceText(input));
+  return extractFromNormalized(sourceText(input)).map(({ kind, text }) => ({ kind, text }));
 }
 
 function extractFromNormalized(source) {
@@ -77,18 +77,19 @@ function extractFromNormalized(source) {
   const spans = [];
   let fencePrefix;
 
-  function add(kind, text, start, end) {
+  function add(kind, text, start, end, content = text) {
     for (let index = start; index < end; index++) {
       occupied[index] = 1;
       if (masked[index] !== '\n') masked[index] = ' ';
     }
-    if (text.trim()) spans.push({ kind, text, start });
+    if (text.trim()) spans.push({ kind, text, start, content });
   }
   function intersects(start, end) {
     return fencePrefix[end] !== fencePrefix[start];
   }
 
-  // Fence parsing is line based so a longer closing fence and Unicode bodies work.
+  // Fence parsing is line based so a longer closing fence and Unicode bodies work. A fence in a list is
+  // indented; as in Markdown, up to that many spaces of each line belong to the list, not to the code.
   const lines = source.split('\n');
   const offsets = [];
   let offset = 0;
@@ -97,19 +98,20 @@ function extractFromNormalized(source) {
     offset += line.length + 1;
   }
   for (let index = 0; index < lines.length; index++) {
-    const opening = lines[index].match(/^ {0,3}(`{3,}|~{3,})(.*)$/u);
-    if (!opening || (opening[1][0] === '`' && opening[2].includes('`'))) continue;
+    const opening = lines[index].match(/^( *)(`{3,}|~{3,})(.*)$/u);
+    if (!opening || (opening[2][0] === '`' && opening[3].includes('`'))) continue;
+    const indent = opening[1].length;
     let closing = index + 1;
     for (; closing < lines.length; closing++) {
-      const candidate = lines[closing].match(/^ {0,3}(`+|~+)[ \t]*$/u);
-      if (candidate && candidate[1][0] === opening[1][0] && candidate[1].length >= opening[1].length) break;
+      const candidate = lines[closing].match(/^( *)(`+|~+)[ \t]*$/u);
+      if (candidate && candidate[1].length <= Math.max(3, indent) && candidate[2][0] === opening[2][0] && candidate[2].length >= opening[2].length) break;
     }
     const bodyStart = offsets[index] + lines[index].length + 1;
     const bodyEnd = closing < lines.length ? offsets[closing] : source.length;
     let body = source.slice(bodyStart, bodyEnd);
     if (closing < lines.length && body.endsWith('\n')) body = body.slice(0, -1);
     const spanEnd = closing < lines.length ? offsets[closing] + lines[closing].length : source.length;
-    add('fenced-code', body, offsets[index], spanEnd);
+    add('fenced-code', body, offsets[index], spanEnd, indent ? body.replace(new RegExp(`^ {0,${indent}}`, 'gmu'), '') : body);
     index = closing;
   }
 
@@ -187,10 +189,10 @@ function extractFromNormalized(source) {
   }
 
   const unique = new Map();
-  for (const { kind, text } of spans.sort((a, b) => a.start - b.start)) {
+  for (const { kind, text, content } of spans.sort((a, b) => a.start - b.start)) {
     const previous = unique.get(text);
     if (!previous || (DELIMITED_KINDS.has(kind) && !DELIMITED_KINDS.has(previous.kind))) {
-      unique.set(text, { kind, text });
+      unique.set(text, { kind, text, content });
     }
   }
   return [...unique.values()];
@@ -225,17 +227,18 @@ function hasExactLiteral(output, literal) {
  * command extended inside the same code span is not the unchanged original.
  */
 export function verifyPrompt(input, output, language = 'en') {
-  const literals = extractProtectedLiterals(input);
+  const literals = extractFromNormalized(sourceText(input));
   const isText = typeof output === 'string';
   const withinBounds = isText && output.length <= MAX_OUTPUT;
   const nonempty = isText && output.trim().length > 0;
   const noNull = isText && !output.includes('\0');
   const validOutput = withinBounds && nonempty && noNull;
   const normalized = validOutput ? output.replace(/\r\n/g, '\n') : '';
+  // A code block may move into or out of a list: its text with or without the list's indentation counts.
   const outputDelimited = new Set(validOutput ? extractFromNormalized(normalized)
-    .filter(literal => DELIMITED_KINDS.has(literal.kind)).map(literal => literal.text) : []);
+    .filter(literal => DELIMITED_KINDS.has(literal.kind)).flatMap(literal => [literal.text, literal.content]) : []);
   const missing = validOutput ? literals.filter(literal => DELIMITED_KINDS.has(literal.kind)
-    ? !outputDelimited.has(literal.text) : !hasExactLiteral(normalized, literal)) : literals;
+    ? !outputDelimited.has(literal.text) && !outputDelimited.has(literal.content) : !hasExactLiteral(normalized, literal)) : literals;
   const issues = [];
   if (!isText || !nonempty) issues.push({ rule: 'output-content', message: 'The model must return a nonempty text prompt.' });
   if (isText && !withinBounds) issues.push({ rule: 'output-size', message: `The model output must contain at most ${MAX_OUTPUT.toLocaleString('en-US')} characters.` });

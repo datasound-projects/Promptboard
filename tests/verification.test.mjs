@@ -203,3 +203,14 @@ test('worst-shape bounded source inputs finish without pathological delimiter ba
   for (const input of cases) extractProtectedLiterals(input.slice(0, 100_000));
   assert.ok(performance.now() - started < 5_000, '100k source parsing must stay bounded');
 });
+
+test('a code block keeps its contents when it moves into or out of a list', () => {
+  const top = 'Run the tests:\n```sh\nnpm test -- --watch\n```\nThen deploy.';
+  const listed = '1. Run the tests:\n   ```sh\n   npm test -- --watch\n   ```\n2. Deploy.';
+  const nested = '- Steps\n  - Run the tests:\n    ```sh\n    npm test -- --watch\n    ```\n';
+  for (const [source, output] of [[top, listed], [listed, top], [top, nested], [nested, top], [listed, nested]]) assert.equal(verifyPrompt(source, output).status, 'pass', `${source} → ${output}`);
+  assert.deepEqual(extractProtectedLiterals(nested), [{ kind: 'fenced-code', text: '    npm test -- --watch' }]);
+  // Changed code, or changed indentation inside the code, still fails.
+  assert.equal(verifyPrompt(top, listed.replace('--watch', '--watchAll')).status, 'issues');
+  assert.equal(verifyPrompt('```py\ndef f():\n    return 1\n```', '1. Code:\n   ```py\n   def f():\n     return 1\n   ```').status, 'issues');
+});
