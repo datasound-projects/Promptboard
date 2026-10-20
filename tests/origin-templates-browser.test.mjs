@@ -134,7 +134,7 @@ test('saved blueprints that cannot be read are reported in the library instead o
   await writeFile(join(app.board.store.dir, 'origin', 'blueprints.json'), '{"version":1,"blueprints":[');
   const browser = await launch({ width: 1440, height: 1000 }); assert.ok(browser); t.after(() => browser.close());
   await browser.goto(`${app.url}/#/origin`);
-  await browser.until(`document.querySelector('#origin-first-start [role=alert]:not([hidden])')`, 'the library says what happened', 15000);
+  await browser.until(`document.querySelector('#origin-first-start [role=alert]')`, 'the library says what happened', 15000);
   assert.match(await browser.eval(`return document.querySelector('#origin-first-start [role=alert]').textContent;`), /saved blueprints were damaged/);
   assert.ok(await browser.eval(`return document.querySelectorAll('#origin-first-start .origin-blueprint-card').length > 2;`), 'the library still works');
 });

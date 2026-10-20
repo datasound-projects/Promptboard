@@ -852,13 +852,12 @@ window.PromptboardOrigin = (() => {
       };
       search.addEventListener('input', renderCards);
       const layout = el('div', 'origin-blueprint-layout'); layout.append(cards, preview);
-      // Saved blueprints that cannot be read (a damaged file is reported once, then set aside) are named here.
-      const savedError = el('p', 'origin-inline-error'); savedError.hidden = true; savedError.setAttribute('role', 'alert');
-      box.append(el('span', 'origin-field-label', 'Start with'), savedError, search, chips, layout, preferences);
+      box.append(el('span', 'origin-field-label', 'Start with'), search, chips, layout, preferences);
       renderChips(); renderCards(); renderPreview();
-      // Saved blueprints come from the app; the library is ready at once.
+      // Saved blueprints come from the app; the library is ready at once. Saved blueprints that cannot be read (a damaged
+      // file is reported once, then set aside) are named above the search.
       void app.api('/api/origin/blueprints', { timeoutMs: 15000 }).catch(() => ({ response: { ok: false }, data: {} })).then(({ response, data }) => {
-        if (!response.ok) { savedError.textContent = typeof data.error === 'string' ? data.error : 'Your saved blueprints could not be read. The library is still here.'; savedError.hidden = false; return; }
+        if (!response.ok) { const note = el('p', 'origin-inline-error', typeof data.error === 'string' ? data.error : 'Your saved blueprints could not be read. The library is still here.'); note.setAttribute('role', 'alert'); search.before(note); return; }
         if (Array.isArray(data.blueprints) && data.blueprints.length) { saved = data.blueprints; renderChips(); renderCards(); }
       });
       const value = () => (choice.kind === 'template' ? { template: choice.id } : choice.kind === 'saved' ? { saved: choice.id } : choice.kind === 'from' ? { from: from.value } : choice.kind);
