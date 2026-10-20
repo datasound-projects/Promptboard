@@ -385,7 +385,9 @@ export class Autopilot {
     }
     const preview = await delivery.mergePreview(task.id);
     if (preview.eligible) {
-      await delivery.merge(task.id, { confirm: true, taskCommit: preview.taskCommit, targetCommit: preview.targetCommit, trigger: 'automation' });
+      try { await delivery.merge(task.id, { confirm: true, taskCommit: preview.taskCommit, targetCommit: preview.targetCommit, trigger: 'automation' }); }
+      // The target moved after the preview and nothing changed: the next step previews again and brings the new target in.
+      catch (error) { if (error.code === 'TARGET_CHANGED') return; throw error; }
       return this.finish(projectId, task, `merged into ${preview.targetBranch} (fast-forward).`);
     }
     if (!preview.fastForward && !preview.merging) {

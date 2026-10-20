@@ -6,7 +6,7 @@
  */
 import { spawn } from 'node:child_process';
 import { relative, posix, win32 } from 'node:path';
-import { git } from './git.mjs';
+import { git, headBranch } from './git.mjs';
 
 const MAX_FILE = 256 * 1024;
 const run = (label, command) => ({ label, command });
@@ -14,11 +14,12 @@ const run = (label, command) => ({ label, command });
 /** A file of the project folder as the target branch has it ('' when missing or too large). */
 async function reader(root, folder, target) {
   const prefix = relative(root, folder).split(/[\\/]+/).filter(Boolean).join('/');
-  const listing = target ? await git(['ls-tree', '--name-only', `${target}:${prefix}`], { cwd: root }).catch(() => '') : '';
+  const branch = `refs/heads/${target}`; // A bare name would read a tag of the same name instead (Git prefers tags).
+  const listing = target ? await git(['ls-tree', '--name-only', `${branch}:${prefix}`], { cwd: root }).catch(() => '') : '';
   const names = new Set(listing.split('\n').filter(Boolean));
   const read = async name => {
     if (target && !names.has(name)) return '';
-    const text = await git(['show', `${target}:${prefix ? `${prefix}/` : ''}${name}`], { cwd: root }).catch(() => '');
+    const text = await git(['show', `${branch}:${prefix ? `${prefix}/` : ''}${name}`], { cwd: root }).catch(() => '');
     return text.length > MAX_FILE ? '' : text;
   };
   return { names, read };
@@ -74,7 +75,7 @@ export async function runInfo(project) {
   if (!repository) return { linked: false };
   const root = repository.root, folder = repository.path || root, target = project.targetBranch?.name || '';
   const files = await reader(root, folder, target);
-  const folderBranch = (await git(['symbolic-ref', '--quiet', '--short', 'HEAD'], { cwd: folder }).catch(() => '')).trim();
+  const folderBranch = await headBranch(folder);
   const readme = ['README.md', 'readme.md', 'README.markdown', 'README'].find(name => files.names.has(name));
   return {
     linked: true, path: folder, target, folderBranch, onTarget: Boolean(target) && folderBranch === target,

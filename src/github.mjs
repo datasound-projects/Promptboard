@@ -9,7 +9,7 @@
 import { execFile } from 'node:child_process';
 import { mkdir, realpath, stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import { git } from './git.mjs';
+import { git, headBranch } from './git.mjs';
 import { commandOnPath, forgetCommand, trackPid, untrackPid } from './providers.mjs';
 
 export class GitHubError extends Error {
@@ -204,7 +204,7 @@ export async function compare(path, branch) {
 export async function fastForward(path, branch) {
   const state = await compare(path, branch);
   if (state.sync !== 'behind') throw fail(state.sync === 'up_to_date' ? `${branch} is already up to date.` : state.message || `${branch} is not only behind origin, so it cannot be fast-forwarded.`, 'NOT_FAST_FORWARD');
-  const current = await git(['symbolic-ref', '--quiet', '--short', 'HEAD'], { cwd: path }).then(out => out.trim(), () => '');
+  const current = await headBranch(path);
   if (current === branch) {
     const dirty = (await git(['status', '--porcelain'], { cwd: path })).trim();
     if (dirty) throw fail(`The clone has uncommitted changes on ${branch}. Promptboard does not discard them.`, 'UNCOMMITTED_CHANGES');

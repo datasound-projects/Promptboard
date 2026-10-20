@@ -36,11 +36,14 @@ test('files are read from the target branch, so a folder on another branch still
   git(root, 'branch', 'old');
   await writeFile(join(root, 'package.json'), JSON.stringify({ scripts: { start: 'node app.js' } })); git(root, 'add', '.'); git(root, 'commit', '-q', '-m', 'app');
   git(root, 'switch', '-q', 'old');
+  git(root, 'tag', 'trunk', 'old'); // A tag named like the target branch, on the commit without package.json.
   const info = await runInfo({ repository: { root, path: root }, targetBranch: { name: 'trunk' } });
   assert.deepEqual([info.path, info.target, info.folderBranch, info.onTarget], [root, 'trunk', 'old', false]);
   assert.deepEqual(info.commands.map(entry => entry.command), ['npm start']);
   assert.deepEqual(info.readme, { heading: 'Run', text: 'npm start' });
   assert.equal(info.staticSite, false);
+  git(root, 'switch', '-q', 'trunk');
+  assert.deepEqual(await runInfo({ repository: { root, path: root }, targetBranch: { name: 'trunk' } }).then(next => [next.folderBranch, next.onTarget]), ['trunk', true]);
   assert.deepEqual(await runInfo({ repository: null }), { linked: false });
 });
 
