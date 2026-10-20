@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chmod, readdir, readFile, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import '../public/origin-model.js';
 import { OriginStore } from '../src/origin.mjs';
 import { REVIEW_CRITERIA } from '../src/pipeline.mjs';
@@ -233,7 +233,7 @@ test('a damaged batch or task file is set aside when its backup loads, so the ne
   const { ComposeBatches } = await import('../src/compose-batch.mjs');
   const restarted = new ComposeBatches({ dataDir, origin: new OriginStore(dataDir), board: app.board, generate: async () => { throw new Error('must not run'); }, call: engineer() });
   assert.deepEqual((await restarted.view(record.id)).items.map(item => item.key), ['IMP-001'], 'The backups load.');
-  for (const file of files) assert.equal((await readdir(join(file, '..'))).filter(name => name.startsWith(`${file.split('/').at(-1)}.corrupt-`)).length, 1, `${file} is kept aside`);
+  for (const file of files) assert.equal((await readdir(join(file, '..'))).filter(name => name.startsWith(`${basename(file)}.corrupt-`)).length, 1, `${file} is kept aside`);
   await restarted.update(record.id, 't1', { overrides: { quality: 'reviewed' } }); await restarted.configure(record.id, { concurrency: 3 });
   for (const file of files) assert.ok(JSON.parse(await readFile(`${file}.bak`, 'utf8')).id, `${file}.bak is still a good copy`);
 });

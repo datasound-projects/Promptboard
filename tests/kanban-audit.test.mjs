@@ -42,7 +42,7 @@ test('the page applies the board’s prerequisite rule to the same cards, on pip
 
 test('the page normalizes a card source as the board does; only the board keeps a saved prompt link', async () => {
   // public/app.js keeps its own copy for Compose results; it runs here with its own helpers on the same inputs.
-  const source = await readFile(new URL('../public/app.js', import.meta.url), 'utf8'), line = start => source.slice(source.indexOf(start), source.indexOf('\n', source.indexOf(start)));
+  const source = (await readFile(new URL('../public/app.js', import.meta.url), 'utf8')).replaceAll('\r\n', '\n'), line = start => source.slice(source.indexOf(start), source.indexOf('\n', source.indexOf(start)));
   const body = source.slice(source.indexOf('function normalizeSource(source) {'), source.indexOf('\n}\n', source.indexOf('function normalizeSource(source) {')) + 2);
   const page = new Function(`${line('const MAX_PROMPT_BYTES = ')}\n${line('const KNOWN_PROVIDERS = ')}\n${line('function safeText(')}\n${body}\nreturn normalizeSource;`)();
   const long = 'x'.repeat(300), link = { projectId: 'p1', promptId: 'q1', promptRevision: 2 };
