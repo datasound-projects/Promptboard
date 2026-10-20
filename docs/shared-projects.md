@@ -12,6 +12,7 @@ Origin, Compose and Kanban can share one project. Every connection is optional: 
   - Choosing a name in Compose selects the existing project, also when two windows ask for the same new name at once.
 - A board with an Origin project's ID belongs to that project, even without a stored link; another Origin project cannot link to it (`ALREADY_LINKED`).
 - Links made before this change, with different IDs on each side, keep working: the project is listed once and is reachable by either ID. Deleting the Origin side of such a link keeps the board as a project, and the board takes over the saved prompts.
+- Deleting a board in Kanban never removes the project's Origin side or its saved prompts. When a project has neither left, its saved prompts stay in the prompts folder and return if a Kanban backup restores the board.
 - There is no separate project registry. The list (`GET /api/shared-projects`) is derived from Origin projects and Kanban boards, so names are never copied.
 
 ## Compose: History and Projects
