@@ -312,10 +312,40 @@ test('damaged Origin files are contained and newer files are never overwritten',
   assert.equal(await readFile(otherPath, 'utf8'), newer);
 });
 
+test('saved blueprints: a damaged file falls back to its backup and is set aside; a newer file is never overwritten', async t => {
+  const dir = await temp(t), store = new OriginStore(dir), created = await store.create({ name: 'Shape' });
+  const path = join(dir, 'origin', 'blueprints.json'), aside = async () => (await readdir(join(dir, 'origin'))).filter(name => name.startsWith('blueprints.corrupt-')).sort();
+  await store.saveBlueprint(created.id, { name: 'First' }); await store.saveBlueprint(created.id, { name: 'Second' });
+  await writeFile(path, '{"version":1,"blueprints":[');
+  assert.deepEqual((await store.listBlueprints()).map(entry => entry.name), ['First']);
+  assert.equal(await readFile(join(dir, 'origin', (await aside())[0]), 'utf8'), '{"version":1,"blueprints":[');
+  await store.saveBlueprint(created.id, { name: 'Third' });
+  assert.deepEqual((await store.listBlueprints()).map(entry => entry.name), ['First', 'Third']);
+  // No good copy: one clear error, both files kept aside, and new blueprints can be saved again.
+  await writeFile(path, ''); await writeFile(`${path}.bak`, '{"blueprints":7}');
+  await assert.rejects(store.listBlueprints(), { code: 'ORIGIN_DAMAGED' });
+  assert.equal((await aside()).length, 3);
+  assert.deepEqual(await store.listBlueprints(), []);
+  await store.saveBlueprint(created.id, { name: 'Fresh' });
+  const newer = JSON.stringify({ version: 2, blueprints: [] });
+  await writeFile(path, newer);
+  await assert.rejects(store.saveBlueprint(created.id, { name: 'Lost?' }), { code: 'ORIGIN_VERSION_UNSUPPORTED' });
+  assert.equal(await readFile(path, 'utf8'), newer);
+});
+
+test('changes to one Origin file made at the same moment all survive', async t => {
+  const dir = await temp(t), store = new OriginStore(dir), created = await store.create({ name: 'Busy' });
+  // Each save reads, changes and replaces the same files; the one queue keeps every change.
+  await Promise.all([...['A', 'B', 'C', 'D', 'E'].map(name => store.saveBlueprint(created.id, { name })), store.write(created.id, { expectedRevision: 1, blueprint: { idea: 'Kept' } })]);
+  assert.deepEqual((await store.listBlueprints()).map(entry => entry.name).sort(), ['A', 'B', 'C', 'D', 'E']);
+  assert.equal((await store.read(created.id)).blueprint.idea, 'Kept');
+});
+
 test('a damaged project without a good copy stays reported as damaged after a listing set it aside', async t => {
   const dir = await temp(t), store = new OriginStore(dir);
   const created = await store.create({ name: 'Fragile' });
   await writeFile(join(dir, 'origin', blueprintFileName(created.id)), '{ broken');
+  await writeFile(join(dir, 'origin', `${blueprintFileName(created.id)}.bak`), '{ broken backup');
   assert.deepEqual(await store.list(), [], 'not listed');
   for (const report of [false, true, true]) {
     const read = await store.read(created.id, { report });
@@ -324,8 +354,12 @@ test('a damaged project without a good copy stays reported as damaged after a li
   const page = originRoute({ origin: store, board: { state: async () => ({ projects: [] }) }, req: { method: 'GET' }, res: {}, pathname: `/api/origin/projects/${created.id}`, jsonBody: async () => ({}), send: () => {} });
   await assert.rejects(page, { code: 'ORIGIN_DAMAGED' });
   // Reusing the ID starts a new project; the damaged file stays where it was set aside.
-  await store.create({ name: 'Fragile again', id: created.id });
+  const again = await store.create({ name: 'Fragile again', id: created.id });
   assert.equal((await store.read(created.id)).damaged, undefined);
+  // The damaged backup was set aside too, so saves of the new project never replace it.
+  await store.write(created.id, { expectedRevision: again.revision, blueprint: { idea: 'One' } }); await store.write(created.id, { expectedRevision: again.revision + 1, blueprint: { idea: 'Two' } });
+  const kept = await Promise.all((await readdir(join(dir, 'origin'))).filter(name => name.includes('.corrupt-')).map(name => readFile(join(dir, 'origin', name), 'utf8')));
+  assert.deepEqual(kept.sort(), ['{ broken', '{ broken backup']);
 });
 
 test('a failed Origin write reports an error and keeps the previous file', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, async t => {

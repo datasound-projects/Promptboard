@@ -229,6 +229,12 @@ test('damaged saved-prompt files are kept aside, never overwritten by the next s
   assert.ok((await Promise.all(kept.map(name => readFile(join(prompts.dir, name), 'utf8')))).some(text => text.includes('One body')));
 });
 
+test('prompts saved to one project at the same moment all survive', async t => {
+  const { prompts } = await local(t);
+  await Promise.all(Array.from({ length: 8 }, (_, i) => prompts.create('p1', ['p1'], { title: `T${i}`, prompt: `Body ${i}` })));
+  assert.deepEqual((await prompts.list(['p1'])).map(prompt => prompt.title).sort(), Array.from({ length: 8 }, (_, i) => `T${i}`));
+});
+
 test('board import and browser migration keep the one-name rule across Origin', async t => {
   const { app, call } = await client(t);
   await call('/api/origin/projects', 'POST', { name: 'Shop' });

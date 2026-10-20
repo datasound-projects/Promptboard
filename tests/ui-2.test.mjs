@@ -407,6 +407,23 @@ test('backups: export round-trips, import validates, asks before replacing, and 
   assert.deepEqual((await serverBoard(fresh)).runs, []);
 });
 
+test('a backup the export accepts imports again through the page, above the former 20 MB file limit', async t => {
+  const ctx = await setup(t);
+  await goTo(ctx, '#/kanban');
+  const project = await ctx.app.board.createProject({ name: 'Large' });
+  // About 22 MB of prompts: well under the 47 MB the export allows.
+  for (let i = 0; i < 11; i++) await ctx.app.board.createTask({ projectId: project.id, title: `Large ${i}`, prompt: String(i % 10).repeat(2 * 1024 * 1024 - 8) });
+  await ctx.win.__pbTest.loadBoard();
+  await click(ctx, ctx.$('#export-board'));
+  const file = await ctx.blobs.at(-1).text();
+  assert.ok(file.length > 20 * 1024 * 1024);
+  assert.equal(file, `${JSON.stringify(JSON.parse(file))}\n`, 'the file is the export itself, so its size is the size the export checked');
+  const fresh = await setup(t);
+  await goTo(fresh, '#/kanban');
+  await importFile(fresh, file);
+  assert.match(fresh.$('#project-detail').textContent, /Backup imported: 1 project, 11 cards/);
+});
+
 test('the browser board migrates once with exact text; unreadable data and failed saves stay visible', { skip: process.platform === 'win32' }, async t => {
   const exact = '  Spaces\r\nCRLF 🚀\n';
   const browser = { version: 1, selectedProjectId: 'b', projects: [

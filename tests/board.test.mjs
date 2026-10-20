@@ -98,6 +98,49 @@ test('an unreadable state file or backup is refused, not quarantined or replaced
   assert.deepEqual((await new Store(dir).read()).projects.map(project => project.id), ['p1', 'p2']);
 });
 
+test('recovery keeps every copy: the restored backup outlives the next save, and a damaged backup is set aside too', async t => {
+  const dir = await temp(t, 'pb-store-');
+  const store = new Store(dir), project = id => ({ id, labels: [], labelRevision: 0, tasks: [] });
+  await store.update(state => { state.projects.push(project('p1')); });
+  await store.update(state => { state.projects.push(project('p2')); });
+  const good = await readFile(join(dir, 'state.json.bak'), 'utf8');
+  await writeFile(join(dir, 'state.json'), '{"schema":');
+  const restored = new Store(dir);
+  assert.deepEqual((await restored.read()).projects.map(item => item.id), ['p1']);
+  await restored.update(state => { state.projects.push(project('p3')); });
+  assert.equal(await readFile(join(dir, 'state.json.bak'), 'utf8'), good, 'the copy the board came from is still the backup');
+  const corrupt = async () => Promise.all((await readdir(dir)).filter(name => name.startsWith('state.corrupt-')).sort().map(name => readFile(join(dir, name), 'utf8')));
+  // Both files damaged: each is set aside, the board starts empty and says so, and no save removes either one.
+  await writeFile(join(dir, 'state.json'), '{'); await writeFile(join(dir, 'state.json.bak'), '[');
+  const empty = new Store(dir);
+  assert.deepEqual((await empty.read()).projects, []);
+  assert.equal(empty.recovery.restoredFromBackup, false); assert.ok(empty.recovery.quarantined);
+  await empty.update(() => {}); await empty.update(() => {});
+  assert.deepEqual((await corrupt()).filter(text => ['{', '['].includes(text)).sort(), ['[', '{']);
+  // A missing file with a damaged backup is reported the same way instead of starting empty without a word.
+  await rm(join(dir, 'state.json')); await writeFile(join(dir, 'state.json.bak'), 'x');
+  const missing = new Store(dir);
+  assert.deepEqual((await missing.read()).projects, []);
+  assert.equal(missing.recovery?.restoredFromBackup, false); assert.ok(missing.recovery.quarantined);
+  assert.ok((await corrupt()).includes('x'));
+});
+
+test('a migration that keeps failing keeps one exact pre-migration copy, not one per retry', async t => {
+  const dir = await temp(t, 'pb-store-');
+  const original = `${JSON.stringify({ schema: 'promptboard.state', version: 13, revision: 4, settings: {}, projects: [], runs: [], sessions: [], migrations: [], base: { revision: 0, resources: [], approvedRoots: [] }, kept: 'unknown field' })}\n`;
+  await writeFile(join(dir, 'state.json'), original);
+  await mkdir(join(dir, 'state.json.bak')); // The migrated file cannot be published while its backup cannot be replaced.
+  const store = new Store(dir), copies = async () => (await readdir(dir)).filter(name => name.startsWith('state.pre-migration-v13-'));
+  // The board page asks every two seconds; each attempt used to copy the whole file again.
+  for (let attempt = 0; attempt < 3; attempt++) await assert.rejects(store.read(), { code: 'STATE_MIGRATION_FAILED' });
+  assert.equal((await copies()).length, 1);
+  await rm(join(dir, 'state.json.bak'), { recursive: true });
+  assert.equal((await store.read()).version, STATE_VERSION);
+  const [copy] = await copies();
+  assert.equal(await readFile(join(dir, copy), 'utf8'), original);
+  assert.equal(store.recovery.migrationBackup, copy);
+});
+
 test('repository validation explains each invalid case and accepts linked worktrees', { skip: process.platform === 'win32' }, async t => {
   const root = await repo(t);
   const outside = await temp(t, 'pb-plain-');
@@ -329,6 +372,8 @@ test('browser migration keeps IDs, order, exact text, sources, and flags, and is
   await assert.rejects(board.migrateBrowserBoard({ version: 1, projects: [{ id: 'x', name: 'X', cards: [{ id: 'y', title: 'T', prompt: '' }] }] }), { code: 'INVALID_BACKUP' });
   // IDs name worktree folders: a path-like ID is refused, not stored.
   for (const ids of [['../../escape', 'c9'], ['p9', '../../../tmp/owned']]) await assert.rejects(board.importBackup({ version: 1, kind: 'kanban-backup', projects: [{ id: ids[0], name: 'Esc', cards: [{ id: ids[1], title: 'T', prompt: 'P' }] }] }, { replace: true }), { code: 'INVALID_BACKUP', message: /unique ID of letters/ });
+  // A backup from a newer version is refused as such, not described as some other file.
+  await assert.rejects(board.importBackup({ application: 'Promptboard', kind: 'promptboard-backup', version: 99, projects: [] }, { replace: true }), { code: 'INVALID_BACKUP', message: /newer Promptboard version/ });
 });
 
 test('created and imported projects keep independent agent defaults and column layouts', async t => {

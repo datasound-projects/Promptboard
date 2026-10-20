@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { link, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readWithBackup, serial, writeAtomic } from '../src/durable.mjs';
@@ -17,6 +17,22 @@ test('atomic writes keep the previous file as a backup and leave no temporary fi
   await writeAtomic(join(dir, 'plain.md'), 'text', { backup: false });
   assert.deepEqual((await readdir(dir)).sort(), ['data.json', 'data.json.bak', 'plain.md']);
   await assert.rejects(writeAtomic(join(dir, 'missing', 'x.json'), 'x'), { code: 'ENOENT' });
+});
+
+test('a save never removes the backup before a newer copy replaces it', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'pb-durable-')); t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, 'data.json');
+  // As after a damaged file was set aside: the backup is the only good copy, and a crash during this save must not lose it.
+  await writeFile(`${path}.bak`, 'good');
+  await writeAtomic(path, 'next');
+  assert.deepEqual([await readFile(path, 'utf8'), await readFile(`${path}.bak`, 'utf8')], ['next', 'good']);
+  await writeAtomic(path, 'last');
+  assert.deepEqual([await readFile(path, 'utf8'), await readFile(`${path}.bak`, 'utf8')], ['last', 'next']);
+  // A backup that is still the live file (a save interrupted after linking it) is replaced without leftovers.
+  await rm(`${path}.bak`); await link(path, `${path}.bak`);
+  await writeAtomic(path, 'again');
+  assert.deepEqual([await readFile(path, 'utf8'), await readFile(`${path}.bak`, 'utf8')], ['again', 'last']);
+  assert.deepEqual((await readdir(dir)).sort(), ['data.json', 'data.json.bak']);
 });
 
 test('reads fall back to the backup only for a missing or damaged file; other read errors are thrown', async t => {
