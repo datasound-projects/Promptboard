@@ -299,6 +299,13 @@ test('Origin restores a damaged project file and refuses stale saves without tou
   await wait(`document.querySelector('#origin-view').dataset.save === 'conflict'`, 'conflict shown', 15000);
   assert.match(await ev(`return document.querySelector('#origin-error').textContent;`), /changed in another window/);
   assert.equal((await blueprintFile(app, created.id)).blueprint.idea, 'Saved elsewhere', 'The newer save was not overwritten.');
+  // Leaving Origin and coming back saves nothing over it and keeps the page responsive.
+  await ev(`location.hash = '#/kanban';`);
+  const answer = await Promise.race([ev(`await new Promise(requestAnimationFrame); return location.hash;`), new Promise(resolve => setTimeout(() => resolve('page frozen'), 5000))]);
+  assert.equal(answer, '#/kanban');
+  await ev(`location.hash = '#/origin';`);
+  await wait(`document.querySelector('#origin-view').dataset.save === 'conflict' && document.querySelector('#origin-main textarea')?.value === 'Local edit'`, 'the conflict and the local edit are still there');
+  assert.equal((await blueprintFile(app, created.id)).blueprint.idea, 'Saved elsewhere');
   await ev(`[...document.querySelectorAll('#origin-save button')].find(b => b.textContent === 'Reload saved version').click();`);
   await wait(`document.querySelector('#origin-view').dataset.save === 'saved' && document.querySelector('#origin-error').hidden`, 'reloaded saved version');
   assert.equal((await app.board.view()).projects[0].tasks[0].prompt, 'Still here.');

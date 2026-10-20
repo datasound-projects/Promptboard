@@ -174,7 +174,8 @@ window.PromptboardOrigin = (() => {
     }
     async function save({ force = false } = {}) {
       clearTimeout(saveTimer); saveTimer = null;
-      if (!record?.exists || saveState === 'gone' || saveState === 'conflict' && !force || changeCount === savedCount && !force) return true;
+      if (saveState === 'conflict' && !force) return false; // Not saved: only Reload or Keep mine resolves it.
+      if (!record?.exists || saveState === 'gone' || changeCount === savedCount && !force) return true;
       if (saving) { await saving; return changeCount === savedCount ? true : save(); }
       const target = changeCount, id = projectId;
       saveState = 'saving'; renderSave();
