@@ -786,6 +786,13 @@ test('Usage dashboard shows limits, model/tool totals, charts, minute refresh, e
   assert.equal(reads, before);
 });
 
+test('Usage says when older sessions are still being read instead of calling the totals a little low', async t => {
+  const ctx = await setup(t, { usageReader: { get: async () => ({ updatedAt: Date.now(), providers: [{ id: 'claude', name: 'Claude Code', sessions: 1, inputTokens: 10, cachedTokens: 0, outputTokens: 1, costUSD: null, costNote: 'Not reported', limits: { status: 'unavailable', windows: [] }, models: [], tools: [], daily: [], partial: false, reading: true }] }) } });
+  ctx.$('#usage-open').click(); await ctx.idle();
+  assert.match(ctx.$('#usage-providers').textContent, /Still reading older sessions/);
+  assert.doesNotMatch(ctx.$('#usage-providers').textContent, /a little low/);
+});
+
 test('Base is the fourth global page, preserves Compose and project state, and supports direct links and browser history', async t => {
   const ctx = await setup(t, { hash: '#/base' }); const { $, win } = ctx;
   await ctx.idle();

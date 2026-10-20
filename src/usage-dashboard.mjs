@@ -93,8 +93,8 @@ async function sessionFiles(root, match, budget, depth = 0) {
   return files;
 }
 export class UsageDashboard {
-  constructor({ dataDir, roots, limitReader = readCodexLimits, now = Date.now } = {}) {
-    this.dataDir = dataDir; this.now = now; this.limitReader = limitReader;
+  constructor({ dataDir, roots, limitReader = readCodexLimits, now = Date.now, readBudgetMs = 30000 } = {}) {
+    this.dataDir = dataDir; this.now = now; this.limitReader = limitReader; this.readBudgetMs = readBudgetMs;
     this.roots = roots || { claude: [join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'projects')], codex: [join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'sessions'), join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'archived_sessions')], gemini: [join(homedir(), '.gemini', 'tmp')] };
     this.cache = new Map(); this.abort = new AbortController();
   }
@@ -118,15 +118,17 @@ export class UsageDashboard {
   }
   async collect() {
     const now = this.now(), today = new Date(now), daysAgo = n => new Date(today.getFullYear(), today.getMonth(), today.getDate() - n), since = daysAgo(29).getTime();
+    // Whole files are read until this deadline (the page waits up to 60 s); a longer history continues on the next refresh.
+    const deadline = Date.now() + this.readBudgetMs;
     const native = this.limitReader({ signal: this.abort.signal }).catch(() => ({ status: 'unavailable', windows: [], note: 'Could not refresh plan limits. Check Codex sign-in.' }));
     const providers = [];
     const seenFiles = new Set();
     for (const id of IDS) {
-      const p = { id, name: names[id], models: [], daily: [], tools: [], sessions: 0, inputTokens: 0, cachedTokens: 0, outputTokens: 0, costUSD: null, costNote: 'Not reported by this CLI.', limits: { status: 'unavailable', windows: [], note: id === 'claude' ? 'Plan limits appear after a new Claude session in Promptboard reports them. Use /usage in Claude for an account check.' : id === 'gemini' ? 'Use /stats model in Gemini for current account quota.' : 'This CLI does not expose a supported usage interface.' }, partial: false };
+      const p = { id, name: names[id], models: [], daily: [], tools: [], sessions: 0, inputTokens: 0, cachedTokens: 0, outputTokens: 0, costUSD: null, costNote: 'Not reported by this CLI.', limits: { status: 'unavailable', windows: [], note: id === 'claude' ? 'Plan limits appear after a new Claude session in Promptboard reports them. Use /usage in Claude for an account check.' : id === 'gemini' ? 'Use /stats model in Gemini for current account quota.' : 'This CLI does not expose a supported usage interface.' }, partial: false, reading: false };
       const budget = { visited: 0, partial: false }, files = [];
       for (const root of this.roots[id] || []) files.push(...await sessionFiles(root, name => id === 'codex' ? /^rollout-.*\.jsonl$/.test(name) : id === 'gemini' ? /^session-.*\.jsonl?$/.test(name) : name.endsWith('.jsonl'), budget));
       const models = new Map(), days = new Map(), tools = new Map(), sessions = new Set(), messages = new Set(), calls = new Set();
-      let bytesRead = 0, fileCount = 0;
+      let fileCount = 0;
       for (const path of files) {
         const stat = await lstat(path).catch(() => null);
         if (!stat?.isFile() || stat.mtimeMs < since) continue;
@@ -134,25 +136,22 @@ export class UsageDashboard {
         seenFiles.add(path);
         let entry = this.cache.get(path);
         if (path.endsWith('.jsonl')) {
-          // Tail complete records, including large rollouts, over bounded refreshes.
+          // Tail complete records in 16 MiB reads, so memory stays bounded however long a session is.
           if (!entry || stat.size < entry.size || entry.ino !== stat.ino) entry = { tail: { path, offset: 0 }, metrics: null };
-          if (entry.tail.offset < stat.size && bytesRead < 128 * 1024 * 1024) {
-            const before = entry.tail.offset;
-            try {
-              const records = await readNewLines(entry.tail);
-              bytesRead += entry.tail.offset - before;
-              entry.metrics = sessionMetrics(id, records, stat.mtimeMs, entry.metrics);
-            } catch { p.partial = true; }
+          for (let before = -1; entry.tail.offset < stat.size && entry.tail.offset !== before && Date.now() < deadline;) {
+            before = entry.tail.offset;
+            try { entry.metrics = sessionMetrics(id, await readNewLines(entry.tail), stat.mtimeMs, entry.metrics); } catch { p.partial = true; break; }
           }
           entry.size = stat.size; entry.ino = stat.ino;
-          p.partial ||= entry.tail.offset < stat.size || Boolean(entry.tail.skipped); // An oversized record was skipped.
+          // Unread bytes are either history left for the next refresh, or an unfinished last line; a skipped record is missing.
+          if (entry.tail.offset < stat.size) { if (Date.now() >= deadline) p.reading = true; else p.partial = true; }
+          p.partial ||= Boolean(entry.tail.skipped);
           this.cache.set(path, entry);
           if (!entry.metrics) continue;
         } else {
           if (stat.size > 32 * 1024 * 1024) { p.partial = true; continue; }
           if (!entry || entry.mtime !== stat.mtimeMs || entry.size !== stat.size) {
-            if (bytesRead + stat.size > 128 * 1024 * 1024) { p.partial = true; continue; }
-            bytesRead += stat.size;
+            if (Date.now() >= deadline) { p.reading = true; continue; }
             try {
               const value = JSON.parse(await readFile(path, 'utf8'));
               const records = [{ sessionId: value.sessionId }, ...(value.messages || [])];

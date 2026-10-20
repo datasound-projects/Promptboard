@@ -128,3 +128,17 @@ test('a forked Codex rollout that repeats its parent session_meta counts as its 
   const codex = (await service.get()).providers[0];
   assert.equal(codex.inputTokens, 140); assert.equal(codex.sessions, 2);
 });
+
+test('one refresh reads a whole long session; history left at the time limit is labelled as still reading', async t => {
+  const dir = await temp(t), root = join(dir,'claude'); await mkdir(root);
+  // More than one 16 MiB read of other records comes before the counted message.
+  const filler = JSON.stringify({ type: 'user', message: { content: 'x'.repeat(1000) } }) + '\n';
+  await writeFile(join(root,'long.jsonl'), filler.repeat(17 * 1024) + JSON.stringify(claude('one','opus',10)) + '\n');
+  const open = options => { const service = new UsageDashboard({dataDir:dir,roots:{claude:[root]},now:()=>Date.parse(stamp)+1000,limitReader:async()=>({status:'unavailable',windows:[]}),...options}); t.after(()=>service.close()); return service; };
+  const read = (await open().get()).providers[1];
+  assert.deepEqual([read.reading, read.partial, read.inputTokens], [false, false, 10], 'The first refresh already counts the whole file.');
+  const late = open({ readBudgetMs: 0 }), waiting = (await late.get()).providers[1];
+  assert.deepEqual([waiting.reading, waiting.partial, waiting.inputTokens], [true, false, 0]);
+  late.readBudgetMs = 30000;
+  assert.equal((await late.refresh()).providers[1].inputTokens, 10);
+});

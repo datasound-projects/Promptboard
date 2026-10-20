@@ -6266,7 +6266,8 @@ function renderUsage(data) {
     summary.append(paragraph(provider.sessions ? `${tokens(total)} tokens` : 'No local token data', 'usage-total'), paragraph(`${provider.sessions} sessions`, 'usage-muted'), paragraph(provider.costUSD === null ? 'Cost not reported' : `$${provider.costUSD.toFixed(2)} reported estimate`, 'usage-muted'));
     section.append(summary);
     if (provider.sessions) section.append(usageChart(provider.daily));
-    if (provider.partial) section.append(paragraph('Some older session files were too large or unreadable, so totals may be a little low.', 'usage-muted'));
+    if (provider.reading) section.append(paragraph('Still reading older sessions on this computer. Totals grow with the next update.', 'usage-muted'));
+    else if (provider.partial) section.append(paragraph('Some older session files were too large or unreadable, so totals may be a little low.', 'usage-muted'));
     const details = document.createElement('details'); details.dataset.provider = provider.id; details.open = open.has(provider.id);
     const toggle = document.createElement('summary'); toggle.textContent = 'Models and tools'; details.append(toggle);
     if (provider.models.length) {
