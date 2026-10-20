@@ -129,6 +129,9 @@ function attachRenderer(session) {
       term.loadAddon(webgl);
       // xterm answers queries it parses; replies to replayed history are stale and never reach the agent.
       term.onData(data => { if (!(session.replaying && data.startsWith('\x1b'))) sendInput(session, data); });
+      // X10 mouse reports (a CLI that turns on mouse tracking without SGR) come only as binary events. Reports up to
+      // column and row 95 are plain ASCII; larger ones need raw bytes this text input cannot carry, so they are not sent.
+      term.onBinary(data => { if (!session.replaying && !/[^\x00-\x7f]/.test(data)) sendInput(session, data); });
       Object.assign(session, { term, fit, write: (data, done) => term.write(data, done) });
       return;
     } catch {
