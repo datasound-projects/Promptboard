@@ -23,7 +23,7 @@ Origin, Compose and Kanban can share one project. Every connection is optional: 
   - **Projects** lists the shared projects and their saved prompts.
 - **Save to project** (under **More** on a result, or the ⇢ button on a History entry) saves the prompt with its request, settings and checks into a project you choose or create. On a History entry you can also **Move** it, which removes it from History after saving.
 - Saving never creates a Kanban card or a board.
-- Saved prompts are stored on this computer in `<data folder>/prompts/prompts-<project id>.json` (atomic writes, previous copy kept as `.bak`). They are separate from History and from the board, and they are not part of the Kanban backup.
+- Saved prompts are stored on this computer in `<data folder>/prompts/prompts-<project id>.json` (capital letters and `_` in the ID escaped as in Origin file names) (atomic writes, previous copy kept as `.bak`). They are separate from History and from the board, and they are not part of the Kanban backup.
 - Each saved prompt keeps every revision (up to 100). Saving identical text again adds nothing. Saving the same History result twice in one project returns the existing prompt.
 
 ## The link bar in Compose

@@ -40,7 +40,7 @@ The Coordinator is a read-only observer for one project. It sits above the Kanba
   - Origin names, layers, accepted decisions and requirements only for design questions
   - at most 40 active agents and 40 blockers
 - The answer comes from one call to the CLI selected in Compose (Codex, Claude Code or Gemini; Antigravity cannot run without tools and is refused), without tools, in an empty temporary folder. The Coordinator cannot change code, cards, branches or agents.
-- Answers cite their evidence as [T12], [run:…] or [commit:…]. References that exist become links: cards open, commits copy their ID. Anything else stays text.
+- Answers cite their evidence as [T12], [run:…] or [commit:…]. References that exist become links: cards and runs open their card, commits copy their ID. Anything else stays text.
 - Asking the same question about the same evidence again uses the saved answer, without a model call.
 - Each project keeps its own chat (the last 200 messages; an answer is kept up to 20,000 characters).
 

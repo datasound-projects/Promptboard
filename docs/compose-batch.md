@@ -10,18 +10,18 @@ Each task keeps a snapshot of what Origin said when it arrived: its own words (k
 
 ## Runs
 
-- **Bounded and parallel.** Up to *Parallel runs* tasks of a batch run at once (1–8, default 3), and at most eight across all batches. The rest wait in the queue. Repeated clicks never start a second run of a task.
+- **Bounded and parallel.** Up to *Runs at once* tasks of a batch run at once (1–8, default 3), and at most eight across all batches. The rest wait in the queue. Repeated clicks never start a second run of a task.
 - **Isolated.** Each task is one Compose generation of its own: a frozen copy of its snapshot and settings, a fresh CLI process per stage in its own temporary folder, no tools and no resumed session. The request holds only that task: its own words as the request, its Origin context as evidence excerpts, your instructions as answers. Results are written only to that task's own file, and only while that run still owns the task, so a cancelled or late answer is ignored.
 - **Failures stay local.** A failed task shows *Failed* with a fixed message (never CLI output); the others continue. **Run all** retries pending and failed tasks only. A rate limit, used-up quota or sign-in problem stops the queued tasks of that batch before they spend more; running ones finish.
 - **One at a time or in parallel.** The choice beside **Run all** sets how many tasks run at once: *One at a time* (one agent works on one task) or *2–8 in parallel* (each task gets its own agent).
 - **Live progress.** The queue shows what each task asks (its first line), and each running task its stage, a progress bar, the elapsed time and the time left, estimated from the batch's finished runs (before the first one finishes, the bar only moves). The header shows about how long the queue still needs.
-- **Cancel, timeout, restart.** Cancel stops queued and running work: running agents get their stop at once (their process group ends; a CLI that does not exit within a second is killed), before any other queued change. A task stops after 20 minutes. Runs live in the app process: after a restart, a task that was running shows *interrupted* and a queued one is pending again. Nothing is re-run on its own. Sign-in changes wait until no batch work runs.
+- **Cancel, timeout, restart.** Cancel stops queued and running work: running agents get their stop at once (their process group ends; a CLI that does not exit within a second is killed), before any other queued change. A task stops after 20 minutes. Runs live in the app process: after a restart, a task that was running shows “The app stopped while this task was running. Run it again.” (a stopped generation makes it *Failed*) and a queued one is pending again. Nothing is re-run on its own. Sign-in changes wait until no batch work runs.
 
 Regenerating always uses the task as Origin has it now.
 
 ## Settings
 
-Three levels: your **Compose** settings → **batch settings** → **task settings**. Each level names only what it changes; everything else is inherited, and the page shows where each value comes from. A level that chooses another CLI resets the model and effort it does not set. Settings: CLI, model, effort, checks (Reviewed or Fast), detail, task type, language, the four prompt aids, whether the Origin context is given to the prompt writer, and extra instructions (task instructions replace batch instructions). The effective settings are fixed when a task is queued and stored with the version it produces: a change applies to tasks queued after it, not to tasks already queued or running. A change of *Parallel runs* applies at once.
+Three levels: your **Compose** settings → **batch settings** → **task settings**. Each level names only what it changes; everything else is inherited, and the page shows where each value comes from. A level that chooses another CLI resets the model and effort it does not set. Settings: CLI, model, effort, checks (Reviewed or Fast), detail, task type, language, the four prompt aids, whether the Origin context is given to the prompt writer, and extra instructions (task instructions replace batch instructions). The effective settings are fixed when a task is queued and stored with the version it produces: a change applies to tasks queued after it, not to tasks already queued or running. A change of *Runs at once* applies at once.
 
 Compose's context sources (project folder, documents, MCP) are not used in Batch.
 
@@ -50,7 +50,7 @@ Generation repairs at most once (Reviewed mode), as in Single. There is no autom
 
 - **Approve** approves exactly the current version. A task with a blocking finding cannot be approved.
 - **Approve passing** approves only tasks with no findings at all. Fast mode has no model review, so its prompts are approved one by one.
-- **Edit** saves a new version; its exact values are checked again. If the last review found problems, the edit must be checked again (**Check again**, one review call) before approval.
+- **Save edit** saves a new version; its exact values are checked again. If the last review found problems, the edit must be checked again (**Check again**, one review call) before approval.
 - Regenerating, editing or checking again removes the approval until you approve again.
 - **Reject** keeps a task out of Kanban; **Restore** brings it back. **Remove from batch** (click twice) takes a task and its prompts out of the batch, for example a task deleted in Origin; Origin and Kanban stay as they are. **Versions** keeps the last 12 versions with their settings.
 
