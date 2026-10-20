@@ -4,6 +4,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import '../public/origin-model.js';
 import '../public/origin-templates.js';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { findChrome, launch } from './helpers/browser.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
 
@@ -124,4 +126,15 @@ test('blueprint library: five project types from preview to research, edited, mi
   await saved();
   assert.match((await read('Churn model')).answers[question.id], /Version data snapshots/);
   assert.deepEqual(browser.consoleMessages.filter(line => line.startsWith('EXCEPTION')), []);
+});
+
+test('saved blueprints that cannot be read are reported in the library instead of disappearing', { skip: !chrome, timeout: 120000 }, async t => {
+  const app = await startTestServer(t, { port: 0, executor: null });
+  await mkdir(join(app.board.store.dir, 'origin'), { recursive: true });
+  await writeFile(join(app.board.store.dir, 'origin', 'blueprints.json'), '{"version":1,"blueprints":[');
+  const browser = await launch({ width: 1440, height: 1000 }); assert.ok(browser); t.after(() => browser.close());
+  await browser.goto(`${app.url}/#/origin`);
+  await browser.until(`document.querySelector('#origin-first-start [role=alert]:not([hidden])')`, 'the library says what happened', 15000);
+  assert.match(await browser.eval(`return document.querySelector('#origin-first-start [role=alert]').textContent;`), /saved blueprints were damaged/);
+  assert.ok(await browser.eval(`return document.querySelectorAll('#origin-first-start .origin-blueprint-card').length > 2;`), 'the library still works');
 });
