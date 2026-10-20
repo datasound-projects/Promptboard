@@ -285,7 +285,8 @@ Everything in this section lives in `src/delivery.mjs`. Evidence is tied to the 
 ## Known limits
 
 - A crash between saving the ownership record and `git worktree add` finishing leaves `status: "creating"`, reported as `WORKTREE_INCOMPLETE`. It is not fixed automatically; check `git worktree list`.
-- The transition history keeps the last 100 moves per task.
+- The transition history keeps the last 100 moves per task. Timeline and Coordinator events of moves, restarts and completions are identified by their own time, so they keep their identity when older entries drop out.
+- Runs and sessions are kept for as long as their card: plan approvals, sessions, review and test evidence, Base references and run folders refer to them, so nothing prunes them automatically. Deleting a card or project removes its runs, sessions and run folders; a board that keeps cards for a long time grows its state file by a few KB per run, and every save rewrites that file.
 - The locks work within one app process. Run one Promptboard instance per data folder.
 - Codex approval prompts and CLI startup prompts (folder trust, hook review) have no lifecycle event; the user answers them in the terminal.
 - Gemini CLI plan and turn events were not verified against a live account (see `docs/live-verification.md`).
@@ -293,4 +294,4 @@ Everything in this section lives in `src/delivery.mjs`. Evidence is tied to the 
 
 ### Card deletion
 
-The UI deletes cards with `DELETE /api/tasks/:id?expectedRevision=…&keepFiles=true`. This atomically removes the task and its Autopilot references, pauses a deleted current Autopilot task, and records any retained worktree location in server state. It preserves files, branches, and run logs, including dirty or missing worktrees. Active runs and stale revisions are rejected. Without `keepFiles=true`, the API retains its strict clean-worktree cleanup behavior.
+The UI deletes cards with `DELETE /api/tasks/:id?expectedRevision=…&keepFiles=true`. This atomically removes the task and its Autopilot references, pauses a deleted current Autopilot task, and records any retained worktree location in server state. It preserves files and branches, including dirty or missing worktrees. The card's finished runs, sessions and run folders are removed with it, and its automation journals at the next start. Active runs and stale revisions are rejected. Without `keepFiles=true`, the API retains its strict clean-worktree cleanup behavior.
