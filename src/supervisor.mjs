@@ -46,8 +46,9 @@ const TERMINAL_TITLE = /\x1b\][02];([^\x07\x1b]*)(?:\x07|\x1b\\)/g, CODEX_ASKS =
 // xterm answers queries and focus changes with no keystroke: CPR, DA1/DA2, DSR, DECRPM, window and OSC colour
 // reports, DECRQSS. Only modified F3 (ESC[1;<m>R) shares a shape with a CPR. Mouse reports from a CLI that tracks
 // the mouse (SGR, urxvt and X10 encodings): a click, wheel or motion types nothing. The dock batches input, so one
-// write can mix both kinds (a click on a focus-tracking CLI sends focus-in and the press together).
-const AUTOMATIC_REPORTS = /^(?:\x1b\[(?:[?>]?[\d;]*c|\d*n|\??\d+;\d+R|[\d;]+t|\??\d+;\d+\$y|[IO]|<\d+;\d+;\d+[Mm]|\d+;\d+;\d+M|M[\x20-\xff]{3})|\x1b\][\d;]+;[^\x07\x1b]*(?:\x07|\x1b\\)|\x1bP[^\x1b]*\x1b\\)+$/;
+// write can mix both kinds (a click on a focus-tracking CLI sends focus-in and the press together), or a report and a key.
+const REPORT = /\x1b\[(?:[?>]?[\d;]*c|\d*n|\??\d+;\d+R|[\d;]+t|\??\d+;\d+\$y|[IO]|<\d+;\d+;\d+[Mm]|\d+;\d+;\d+M|M[\x20-\xff]{3})|\x1b\][\d;]+;[^\x07\x1b]*(?:\x07|\x1b\\)|\x1bP[^\x1b]*\x1b\\/;
+const AUTOMATIC_REPORTS = new RegExp(`^(?:${REPORT.source})+$`), REPORTS = new RegExp(REPORT.source, 'g');
 
 /** Load node-pty once. On macOS its prebuilt helper can lose the execute bit on install. */
 export async function loadPty(requireFrom = import.meta.url) {
@@ -681,7 +682,7 @@ export class Supervisor {
     if (data) {
       // A key that answers the CLI's own permission or question dialog starts no draft, so queued
       // column messages stay deliverable. Free text, or input outside such a dialog, is a human draft.
-      if (!(DIALOG_KEY.test(data) && session.activity?.snapshot().permissionPending)) session.terminalInput?.manualInput(data);
+      if (!(DIALOG_KEY.test(data.replace(REPORTS, '')) && session.activity?.snapshot().permissionPending)) session.terminalInput?.manualInput(data);
       session.inputEpoch++; session.activity?.input();
       const initialPastePending = Boolean(session.paste);
       if (initialPastePending) {
