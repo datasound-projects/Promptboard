@@ -590,6 +590,7 @@ test('the folder picker reports only its own Cancel as cancelled; any other fail
   t.after(() => { for (const key of keys) if (saved[key] === undefined) delete process.env[key]; else process.env[key] = saved[key]; });
   const pick = (out, err, code) => { Object.assign(process.env, { PATH: bin, PB_PICKER_OUT: out, PB_PICKER_ERR: err, PB_PICKER_CODE: String(code) }); return chooseFolder(); };
   assert.deepEqual(await pick('/home/me/app/\n', '', 0), { path: '/home/me/app' });
+  assert.deepEqual(await pick('/home/me/My app \n', '', 0), { path: '/home/me/My app ' }, 'a folder name may end in spaces');
   assert.deepEqual(await pick('', mac ? 'execution error: User canceled. (-128)' : 'Gtk-Message: GtkDialog mapped without a transient parent.', 1), { cancelled: true });
   await assert.rejects(pick('', mac ? 'execution error: No user interaction allowed. (-1713)' : 'Gtk-WARNING: cannot open display: ', 1), { code: 'PICKER_UNAVAILABLE' });
   await assert.rejects(pick('', '', 255), { code: 'PICKER_UNAVAILABLE' });
