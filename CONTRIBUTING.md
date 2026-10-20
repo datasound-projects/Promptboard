@@ -1,6 +1,6 @@
 # Contributing
 
-Use Node.js 22 or later and Git.
+Use Node.js 22.13 or later and Git.
 
 ```bash
 npm ci
@@ -30,5 +30,5 @@ Do not add model or performance claims without evidence.
 ## Releasing (maintainers)
 
 1. Run the checks above, the live flow for each supported CLI, and update `RELEASE-VERIFICATION.md`.
-2. Move the **Unreleased** notes in `CHANGELOG.md` under a new `## X.Y.Z — date` heading and set the same version in `package.json` and `package-lock.json` (`npm version X.Y.Z --no-git-tag-version`).
+2. Move the **Unreleased** notes in `CHANGELOG.md` under a new `## X.Y.Z — date` heading and set the same version in `package.json` and `package-lock.json` (`npm version X.Y.Z --no-git-tag-version`) and in the sidebar footer of `public/index.html`. `tests/cli.test.mjs` fails until they agree and `THIRD_PARTY_NOTICES.md` names every runtime package at its installed version.
 3. Commit, then push a tag `vX.Y.Z`. The release workflow runs the tests and creates the GitHub release from the changelog. Nothing is published to npm.
