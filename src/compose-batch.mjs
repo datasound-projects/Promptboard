@@ -507,7 +507,8 @@ export class ComposeBatches {
       for (const job of this.#queue.filter(match)) {
         this.#queue.splice(this.#queue.indexOf(job), 1);
         const item = structuredClone(batch.items.get(job.itemId));
-        if (item?.run?.id === job.runId) { item.run = null; await this.#saveItem(batch, item); }
+        // The job has left the queue: a save the disk refuses still frees the task in memory, so it never waits without a worker.
+        if (item?.run?.id === job.runId) { item.run = null; await this.#saveItem(batch, item).catch(() => this.#release(job, null)); }
         cancelled++;
       }
       return { cancelled };
@@ -571,7 +572,9 @@ export class ComposeBatches {
    */
   #release(job, failure) {
     const batch = this.#cache.get(job.batchId), stored = batch?.items.get(job.itemId);
-    if (stored?.run?.id === job.runId) batch.items.set(job.itemId, { ...stored, run: null, error: failure && { ...failure, kind: job.kind, at: Date.now() } });
+    if (stored?.run?.id !== job.runId) return;
+    batch.items.set(job.itemId, { ...stored, run: null, error: failure && { ...failure, kind: job.kind, at: Date.now() } });
+    batch.meta = { ...batch.meta, revision: batch.meta.revision + 1, updatedAt: Date.now() }; // A polling page sees the change.
   }
 
   /** After an account-level failure every queued call would fail the same way: put them back, do not spend more usage. */
