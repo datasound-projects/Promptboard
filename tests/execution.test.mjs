@@ -851,6 +851,29 @@ test('a CLI that exits while its start is being saved leaves no event poll runni
   assert.equal(session.poll, undefined, 'The exit owns the outcome; no event poll is armed after it.');
 });
 
+test('shutdown ends a terminal stream for good: a process that exits later writes nothing more to it', async t => {
+  const dataDir = await temp(t, 'pb-data-');
+  let proc;
+  // The fake PID ignores signals, so the process outlives the shutdown grace period and exits afterwards.
+  const pty = { spawn() { proc = { pid: 2147483000, onData() {}, onExit(cb) { this.exit = cb; }, write() {}, resize() {} }; return proc; } };
+  const run = { id: 'r1', status: 'queued', taskId: 't1', artifactsDir: 'runs/r1', stage: 'executing', workspacePath: dataDir,
+    config: { provider: 'claude', permissionMode: 'acceptEdits' }, baseManifest: { resources: [] } };
+  const board = { state: async () => ({ settings: { maxConcurrentRuns: 1 }, base: { resources: [], approvedRoots: [] }, sessions: [] }),
+    run: async () => structuredClone(run), recordBaseManifest: async () => {}, base: { readRevision: async () => null },
+    updateRun: async (_id, fields) => Object.assign(run, fields) };
+  const supervisor = new Supervisor({ board, dataDir, ptyLoader: async () => ({ pty, message: '' }), resolver: async () => ({ command: 'claude', prefix: [] }),
+    basePreparer: async () => ({ sections: '', manifest: { resources: [] }, cleanup: async () => {} }) });
+  await supervisor.start({ run, task: { prompt: 'Do it.' } });
+  const session = await until(() => supervisor.sessions.get('r1')?.poll && supervisor.sessions.get('r1'), 'session running');
+  t.after(() => { clearInterval(session.poll); clearInterval(session.usagePoll); clearTimeout(session.lingerTimer); clearTimeout(session.watchdog); });
+  const seen = [];
+  supervisor.subscribe('r1', 0, { write: () => { seen.push('write'); return true; }, onDrain() {}, end: () => seen.push('end') });
+  await supervisor.shutdown(50);
+  assert.equal(run.status, 'interrupted'); assert.equal(seen.at(-1), 'end');
+  proc.exit({ exitCode: null, signal: 9 }); await session.exited;
+  assert.deepEqual(seen.slice(seen.indexOf('end')), ['end'], 'An HTTP response written after end() raises an uncaught error.');
+});
+
 test('run endpoints need the token, bound input, need confirmation to stop, and stream NDJSON', { skip }, async t => {
   const w = await world(t, { server: true });
   const app = w.app;

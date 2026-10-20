@@ -1007,7 +1007,9 @@ export class Supervisor {
     for (const session of live) if (session.proc) killPidGroup(session.proc.pid, 'SIGKILL');
     for (const session of live) {
       await this.board.updateRun(session.runId, { status: 'interrupted', reason: 'The app stopped during this run. The worktree and output are kept.', endedAt: Date.now() }).catch(() => {});
+      // An ended stream is gone for good: a late exit of this process must not write to it again.
       for (const subscriber of session.subscribers) subscriber.end();
+      session.subscribers.clear();
     }
     for (const session of this.sessions.values()) clearTimeout(session.lingerTimer);
   }
