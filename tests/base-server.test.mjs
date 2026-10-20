@@ -260,3 +260,12 @@ test('an export at the 12 MiB limit can be previewed and imported again, ID rema
   assert.equal(imported.status, 200, JSON.stringify(imported.data).slice(0, 200));
   assert.equal(imported.data.imported.resources.length, 4);
 });
+
+test('an import preview is not shaped like the library, so the Base page never shows previewed resources as its own', async t => {
+  const w = await world(t), resource = await w.create(skill);
+  const preview = await w.request('/api/base/import/preview', { data: await w.board.base.export({ ids: [resource.id], includeContent: true }) });
+  assert.equal(preview.status, 200);
+  assert.equal('revision' in preview.data, false, 'the page adopts any { revision, resources } reply as its library');
+  assert.equal(preview.data.expectedBaseRevision, (await w.board.state()).base.revision);
+  assert.notEqual(preview.data.resources[0].id, resource.id);
+});

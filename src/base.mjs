@@ -618,7 +618,8 @@ export class Base {
   async previewImport(bundle) {
     const prepared = this.#validateImport(bundle);
     const state = await this.store.read();
-    return { revision: state.base.revision, remap: prepared.remap, warnings: prepared.warnings, resources: prepared.resources.map(({ content, ...metadata }) => metadata) };
+    // Named for what it is: a { revision, resources } reply would read as the library itself on the Base page.
+    return { expectedBaseRevision: state.base.revision, remap: prepared.remap, warnings: prepared.warnings, resources: prepared.resources.map(({ content, ...metadata }) => metadata) };
   }
   /** Write content first, then let a caller publish it alongside a board backup in one Store update. */
   async prepareImport(bundle, { remap, expectedBaseRevision, reuseIdentical = false } = {}) {

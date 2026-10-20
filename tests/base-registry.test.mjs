@@ -116,7 +116,7 @@ test('Base export includes dependency closure and optional content; imports rema
   const { base } = await setup(t), resource = await base.create(skill()), pack = await base.create({ kind: 'pack', name: 'P', configuration: { resources: [{ resourceId: resource.id, required: false }] } });
   const metadataOnly = await base.export({ ids: [pack.id] }); assert.equal(metadataOnly.resources.length, 2); assert.equal(JSON.stringify(metadataOnly).includes('Preserve the public interface.'), false);
   const bundle = await base.export({ ids: [pack.id], includeContent: true }), preview = await base.previewImport(bundle);
-  const imported = await base.import(bundle, { remap: preview.remap, expectedBaseRevision: preview.revision });
+  const imported = await base.import(bundle, { remap: preview.remap, expectedBaseRevision: preview.expectedBaseRevision });
   const copy = await base.detail(imported.remap[pack.id]); assert.equal(copy.configuration.resources[0].resourceId, imported.remap[resource.id]); assert.notEqual(copy.id, pack.id);
   for (const item of imported.resources) { assert.equal(item.trust, 'untrusted'); assert.equal(item.enabled, false); }
   assert.equal((await base.detail(imported.remap[resource.id])).content.body, 'Preserve the public interface.');
