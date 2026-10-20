@@ -2,6 +2,7 @@
 
 import { validateGrounding, groundingRules } from './compose-grounding.mjs';
 import { COMPOSE_INPUT_CHARS } from './compose-limits.mjs';
+import { fencedBlocks } from './verification.mjs';
 
 const PROVIDERS = new Set(['codex', 'claude', 'gemini', 'agy']);
 const DETAILS = new Set(['super-short', 'concise', 'detailed', 'extremely-detailed']);
@@ -309,19 +310,11 @@ function maskInlineLiterals(line) {
 }
 
 function proseLines(text) {
-  let fence = null;
-  return text.split(/\r?\n/).map((line, index) => {
-    const marker = line.match(/^\s{0,3}(`{3,}|~{3,})(.*)$/);
-    if (fence) {
-      if (marker && marker[1][0] === fence.character && marker[1].length >= fence.length && !marker[2].trim()) {
-        fence = null;
-      }
-      return { line: index + 1, text: '', heading: false };
-    }
-    if (marker) {
-      fence = { character: marker[1][0], length: marker[1].length };
-      return { line: index + 1, text: '', heading: false };
-    }
+  const lines = text.split(/\r?\n/), fenced = new Set();
+  // The fences verification protects as code, so the linter never reviews them as prose.
+  for (const { open, close } of fencedBlocks(lines)) for (let index = open; index <= close; index++) fenced.add(index);
+  return lines.map((line, index) => {
+    if (fenced.has(index)) return { line: index + 1, text: '', heading: false };
     // Indented Markdown code is excluded as well as fenced code.
     if (/^(?: {4}|\t)/.test(line)) return { line: index + 1, text: '', heading: false };
     const heading = /^\s{0,3}#{1,6}\s/.test(line) || /^\s*(?:---+|===+)\s*$/.test(line);

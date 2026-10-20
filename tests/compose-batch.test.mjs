@@ -95,6 +95,10 @@ test('integrity: exact literals, confirmed review findings and edits gate approv
   assert.deepEqual([result.status, result.findings], ['pass', []]);
   const trace = traceRequirements(input, good, review);
   assert.deepEqual(trace.map(row => [row.id, row.kind, row.section, row.check !== '']), [['S1', 'task', 'Goal', false], ['S2', 'task', 'Goal', false], ['S3', 'done-when', 'Acceptance checks', true], ['S4', 'done-when', 'Acceptance checks', true]]);
+  // A fence closes only with its own character, as verification reads it: a ``` line and a # line inside ~~~ are code.
+  const fenced = '# Goal\nImplement IMP-001 Login: add `POST /login` with a 30 s timeout.\n~~~\n```\n# Not a heading\n~~~\n\n# Acceptance checks\n- A user can sign in with email.\n- Wrong passwords return 401.';
+  assert.deepEqual(traceRequirements(input, fenced, review).map(row => row.section), ['Goal', 'Goal', 'Acceptance checks', 'Acceptance checks']);
+  assert.deepEqual(traceRequirements(input, '# Goal\n~~~\n```\n# Acceptance checks\n- A user can sign in with email.\n~~~', review).map(row => row.check), ['', '', '', '']);
   // A dropped literal and a dropped check are found without a model.
   result = assessPrompt({ source, prompt: '# Goal\nAdd a login endpoint.\n\n# Acceptance checks\n- A user can sign in with email.', verification: { review: { ...review, status: 'skipped' } } });
   assert.equal(result.status, 'blocked');

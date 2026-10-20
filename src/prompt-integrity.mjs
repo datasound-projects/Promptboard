@@ -6,7 +6,7 @@
  * or info. Nothing here calls a model, the network or the file system.
  */
 import { sourceUnits } from './pipeline.mjs';
-import { verifyPrompt } from './verification.mjs';
+import { fencedBlocks, verifyPrompt } from './verification.mjs';
 
 const STOP = new Set(('the and for with that this from into when then than are was were has have not but all any can each its use '
   + 'der die das und mit für ist sind nicht ein eine einer oder auf von den dem des wenn dann als '
@@ -27,14 +27,17 @@ export function taskInput({ key, title, description = '', acceptanceCriteria = '
 
 /** Prompt lines with the Markdown section each one belongs to. */
 function promptLines(prompt) {
-  let section = 'Introduction', fence = false;
+  const lines = prompt.split(/\r?\n/), fence = new Array(lines.length).fill('');
+  // The fences verification protects as code: their lines stay in the section, a # line in one is no heading.
+  for (const { open, close } of fencedBlocks(lines)) { fence.fill('code', open + 1, close); fence[open] = fence[close] = 'marker'; }
+  let section = 'Introduction';
   const rows = [];
-  for (const raw of prompt.split(/\r?\n/)) {
-    if (/^\s{0,3}(`{3,}|~{3,})/.test(raw)) { fence = !fence; continue; }
-    const heading = !fence && raw.match(/^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/);
-    if (heading) { section = heading[1]; continue; }
+  lines.forEach((raw, index) => {
+    if (fence[index] === 'marker') return;
+    const heading = !fence[index] && raw.match(/^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/);
+    if (heading) { section = heading[1]; return; }
     if (raw.trim()) rows.push({ section, text: raw.trim(), check: CHECK_HEADING.test(section) });
-  }
+  });
   return rows;
 }
 function best(unitTokens, rows) {
