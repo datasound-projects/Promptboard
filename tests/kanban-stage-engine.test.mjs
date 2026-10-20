@@ -417,6 +417,21 @@ test('an autonomous agent stuck on an unrecognized startup menu is reported, and
   assert.equal((await w.outcome(card.id, 'succeeded')).runId, run.id, 'Answered in the terminal, the same run finishes the stage.');
 });
 
+test('an autonomous long prompt still waiting for its CLI to show readiness is reported as a startup stall too', { skip, timeout: 120000 }, async t => {
+  const w = await world(t);
+  await w.board.setExecutionPolicy(w.project.id, { policy: { interaction: 'autonomous', completion: 'automatic' }, expectedRevision: (await w.projectNow()).revision });
+  w.board.startupStallMs = 1500;
+  const card = await w.board.createTask({ projectId: w.project.id, title: 'Long prompt menu', prompt: 'Do it. HOOKS_SCREEN' });
+  const run = (await w.go(card.id, 'executing')).run;
+  await until(async () => (await w.board.run(run.id)).status === 'running' && w.supervisor.sessions.get(run.id)?.watchdog, 'agent started');
+  // What the supervisor records when a pasted prompt has had no readiness sign for 60 s (docs/initial-prompt-ownership.md),
+  // after its 10 s no-events-yet note, which is skipped here.
+  clearTimeout(w.supervisor.sessions.get(run.id).watchdog);
+  await w.board.updateRun(run.id, { lifecycle: 'initial-input-not-ready', errorCode: 'CLI_INPUT_NOT_READY', waitingReason: 'The CLI has not shown that it is ready.', turnComplete: false });
+  const stuck = await w.outcome(card.id, 'failed');
+  assert.equal(stuck.code, 'PERMISSION_REQUIRED'); assert.match(stuck.reason, /has not started its session/);
+});
+
 test('Autopilot runs a prerequisite queued lower first, and explains a queue that only waits for unfinished prerequisites', { skip, timeout: 180000 }, async t => {
   const w = await world(t);
   const base = await w.board.createTask({ projectId: w.project.id, title: 'Base', prompt: 'Base change. WRITE_FILE:base.txt TASK_KEY:base' });
