@@ -7,7 +7,8 @@ import { resolveExecutable, makeTempDir, removeTempDir } from './providers.mjs';
 import { readNewLines } from './usage.mjs';
 import { VERSION } from './version.mjs';
 
-const DAY = 86400000;
+// Days are calendar days in this computer's time zone, so a DST change never skips or repeats one.
+const dayKey = time => { const d = new Date(time); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 const IDLE_MS = 5 * 60000; // No usage request for this long stops the 60 s background refresh.
 const IDS = ['codex', 'claude', 'gemini', 'agy'];
 const names = { codex: 'Codex', claude: 'Claude Code', gemini: 'Gemini CLI', agy: 'Antigravity' };
@@ -15,11 +16,12 @@ const number = n => typeof n === 'number' && Number.isFinite(n) && n >= 0 ? n : 
 const safe = s => typeof s === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9._:/@+\[\]-]{0,149}$/.test(s) ? s : 'unknown';
 export function limitWindows(data) {
   return Object.entries(data || {}).flatMap(([label, v]) => {
-    const used = v?.usedPercent ?? v?.used_percentage;
+    // App-server camelCase, Claude status line used_percentage, Codex rollout used_percent / window_minutes.
+    const used = v?.usedPercent ?? v?.used_percentage ?? v?.used_percent;
     if (typeof used !== 'number' || !Number.isFinite(used) || used < 0) return [];
     const resetValue = v.resetsAt ?? v.resets_at;
     const reset = typeof resetValue === 'string' ? Date.parse(resetValue) / 1000 : resetValue;
-    return [{ label: safe(label), usedPercent: used, remainingPercent: Math.max(0, 100 - used), resetsAt: typeof reset === 'number' && reset > 0 && reset < 8640000000000 ? new Date(reset * 1000).toISOString() : null, windowMinutes: number(v.windowDurationMins) || null }];
+    return [{ label: safe(label), usedPercent: used, remainingPercent: Math.max(0, 100 - used), resetsAt: typeof reset === 'number' && reset > 0 && reset < 8640000000000 ? new Date(reset * 1000).toISOString() : null, windowMinutes: number(v.windowDurationMins ?? v.window_minutes) || null }];
   });
 }
 export async function readCodexLimits({ signal } = {}) {
@@ -54,7 +56,8 @@ export function sessionMetrics(provider, records, fallbackTime, seed = null) {
       for (const block of Array.isArray(m.content) ? m.content : []) if (block?.type === 'tool_use') putTool(block.id, block.name, when(r));
     } else if (provider === 'codex') {
       const p = r.payload;
-      if (r.type === 'session_meta') sessionId = safe(p?.id);
+      // A forked or spawned session's rollout repeats its parent's session_meta after its own: the first is this file's.
+      if (r.type === 'session_meta' && !sessionId) sessionId = safe(p?.id);
       if (r.type === 'turn_context') model = safe(p?.model);
       if (r.type === 'response_item' && ['function_call', 'custom_tool_call'].includes(p?.type)) putTool(p.call_id, p.name, when(r));
       if (p?.type !== 'token_count') continue;
@@ -114,7 +117,7 @@ export class UsageDashboard {
     return this.pending;
   }
   async collect() {
-    const now = this.now(), since = Date.parse(new Date(now - 29 * DAY).toISOString().slice(0, 10));
+    const now = this.now(), today = new Date(now), daysAgo = n => new Date(today.getFullYear(), today.getMonth(), today.getDate() - n), since = daysAgo(29).getTime();
     const native = this.limitReader({ signal: this.abort.signal }).catch(() => ({ status: 'unavailable', windows: [], note: 'Could not refresh plan limits. Check Codex sign-in.' }));
     const providers = [];
     const seenFiles = new Set();
@@ -139,12 +142,10 @@ export class UsageDashboard {
               const records = await readNewLines(entry.tail);
               bytesRead += entry.tail.offset - before;
               entry.metrics = sessionMetrics(id, records, stat.mtimeMs, entry.metrics);
-              // An individual oversized record cannot be buffered; skip its chunk and label coverage.
-              if (entry.tail.offset === before && stat.size - before >= 16 * 1024 * 1024) { entry.tail.offset += 16 * 1024 * 1024; entry.incomplete = true; bytesRead += 16 * 1024 * 1024; }
             } catch { p.partial = true; }
           }
           entry.size = stat.size; entry.ino = stat.ino;
-          p.partial ||= entry.tail.offset < stat.size || Boolean(entry.incomplete);
+          p.partial ||= entry.tail.offset < stat.size || Boolean(entry.tail.skipped); // An oversized record was skipped.
           this.cache.set(path, entry);
           if (!entry.metrics) continue;
         } else {
@@ -170,12 +171,12 @@ export class UsageDashboard {
           const m = models.get(r.model) || { model: r.model, inputTokens: 0, cachedTokens: 0, outputTokens: 0 };
           for (const [key, source] of [['inputTokens', 'input'], ['cachedTokens', 'cached'], ['outputTokens', 'output']]) { m[key] += r[source]; p[key] += r[source]; }
           models.set(r.model, m);
-          const day = new Date(r.at).toISOString().slice(0, 10); days.set(day, (days.get(day) || 0) + r.input + r.cached + r.output);
+          const day = dayKey(r.at); days.set(day, (days.get(day) || 0) + r.input + r.cached + r.output);
         }
         for (const tool of metrics.tools) if (tool.at >= since && tool.at <= now && !calls.has(key(tool.id))) { calls.add(key(tool.id)); tools.set(tool.name, (tools.get(tool.name) || 0) + 1); }
       }
       p.sessions = sessions.size; p.models = [...models.values()]; p.tools = [...tools].map(([name, count]) => ({ name, count })).sort((a,b) => b.count-a.count);
-      p.daily = Array.from({ length: 30 }, (_, i) => { const day = new Date(now - (29-i)*DAY).toISOString().slice(0,10); return { day, tokens: days.get(day) || 0 }; });
+      p.daily = Array.from({ length: 30 }, (_, i) => { const day = dayKey(daysAgo(29 - i)); return { day, tokens: days.get(day) || 0 }; });
       p.partial ||= budget.partial;
       providers.push(p);
     }
