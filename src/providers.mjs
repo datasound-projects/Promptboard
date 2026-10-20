@@ -335,7 +335,8 @@ const resetTime = value => {
   const date = new Date(value < 1e12 ? value * 1000 : value);
   return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
 };
-const safeLines = text => { try { return jsonLines(text); } catch { return text.split(/\r?\n/).flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } }); } };
+// Event objects only: a line such as `null` or `42` is no event, and reading one must never throw.
+const safeLines = text => text.split(/\r?\n/).flatMap(line => { try { const event = JSON.parse(line); return event && typeof event === 'object' ? [event] : []; } catch { return []; } });
 const firstJson = text => { const trimmed = text.trim(); try { return JSON.parse(trimmed); } catch {} const at = trimmed.indexOf('{'); try { return at >= 0 ? JSON.parse(trimmed.slice(at)) : undefined; } catch { return undefined; } };
 
 // Claude error types (result and StopFailure hook) -> failure codes.
