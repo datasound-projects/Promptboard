@@ -121,6 +121,95 @@ test('a 403 that is not the expired-session refusal is shown and never resent or
   assert.match($('#kanban-load-warning').textContent, /This origin is not allowed/);
 });
 
+test('a board poll keeps an open card dialog as typed, with focus and selection; an unchanged poll renders nothing', { skip: process.platform === 'win32' }, async t => {
+  const ctx = await linkedKanban(t);
+  const { $, win } = ctx;
+  await newCard(ctx, 'Edited', 'Old text.');
+  cardItem(ctx, 'Edited').querySelector('.kanban-open').click();
+  const prompt = $('#card-prompt');
+  prompt.value = 'Typed while the board polls'; prompt.focus(); prompt.setSelectionRange(2, 7);
+  const shown = $('#kanban-columns').firstElementChild;
+  await win.__pbTest.loadBoard({ ifChanged: true }); await ctx.idle();
+  assert.equal($('#kanban-columns').firstElementChild, shown, 'an unchanged board is not drawn again');
+  await ctx.app.board.createTask({ projectId: ctx.project.id, title: 'Made elsewhere', prompt: 'From another window.' });
+  await win.__pbTest.loadBoard({ ifChanged: true }); await ctx.idle();
+  assert.ok(cardItem(ctx, 'Made elsewhere'), 'a changed board is drawn');
+  assert.equal($('#card-dialog').open, true);
+  assert.equal(prompt.value, 'Typed while the board polls');
+  assert.equal(win.document.activeElement, prompt);
+  assert.deepEqual([prompt.selectionStart, prompt.selectionEnd], [2, 7]);
+  submitForm(ctx, '#card-form'); await ctx.idle({ requireComplete: true });
+  assert.equal((await serverTasks(ctx)).find(task => task.title === 'Edited').prompt, 'Typed while the board polls');
+});
+
+test('a double click or a repeated Enter sends a card action or a Column Manager save once, and Save shows it is busy', { skip: process.platform === 'win32' }, async t => {
+  const ctx = await linkedKanban(t);
+  const { $, win } = ctx;
+  await newCard(ctx, 'Original', 'Copy me.');
+  const pass = win.fetch, sent = [];
+  win.fetch = (url, options = {}) => { if (options.method && options.method !== 'GET') sent.push(`${options.method} ${url}`); return pass(url, options); };
+  try {
+    const duplicate = cardItem(ctx, 'Original').querySelector('.kanban-duplicate');
+    duplicate.click(); duplicate.click(); await ctx.idle({ requireComplete: true });
+    assert.equal((await serverTasks(ctx)).filter(task => task.title === 'Original (copy)').length, 1);
+    $('#columns-open').click();
+    submitForm(ctx, '#columns-form');
+    assert.equal($('#columns-form [type="submit"]').disabled, true); assert.equal($('#columns-form').getAttribute('aria-busy'), 'true');
+    submitForm(ctx, '#columns-form'); await ctx.idle({ requireComplete: true });
+    assert.equal(sent.filter(row => /\/columns$/.test(row)).length, 1);
+    assert.equal($('#columns-dialog').open, false);
+    assert.equal($('#columns-form [type="submit"]').disabled, false);
+  } finally { win.fetch = pass; }
+});
+
+test('a GitHub status that arrives after the page is gone draws nothing and throws nothing', { skip: process.platform === 'win32' }, async t => {
+  const ctx = await linkedKanban(t);
+  const { $, win } = ctx;
+  let answer; const held = new Promise(resolve => { answer = resolve; });
+  const pass = win.fetch;
+  win.fetch = (url, options) => (String(url) === '/api/github/status' ? held : pass(url, options));
+  const failures = [], record = error => failures.push(error);
+  process.on('unhandledRejection', record); process.on('uncaughtException', record);
+  t.after(() => { process.off('unhandledRejection', record); process.off('uncaughtException', record); });
+  $('#app-settings-open').click(); await ctx.idle();
+  win.close();
+  answer(Response.json({ github: { installed: true, state: 'connected', user: 'octo' }, login: null }));
+  await new Promise(resolve => setTimeout(resolve, 200));
+  assert.deepEqual(failures.map(error => String(error)), []);
+});
+
+test('task details show why the uncommitted changes could not be read', { skip: process.platform === 'win32' }, async t => {
+  const ctx = await linkedKanban(t);
+  const { $, win } = ctx;
+  await link(ctx);
+  const created = await ctx.app.board.createTask({ projectId: ctx.project.id, title: 'Diff', prompt: 'Add a file.' });
+  const task = await ctx.app.board.moveTask(created.id, { column: 'executing', expectedRevision: 1 });
+  await writeFile(join((await ctx.app.board.ensureTaskWorktree(task.id)).path, 'new.txt'), 'new\n');
+  await win.__pbTest.loadBoard(); await ctx.idle();
+  const pass = win.fetch;
+  win.fetch = (url, options) => (/\/uncommitted$/.test(url) ? Promise.resolve(Response.json({ error: 'The task worktree is busy. Try again.' }, { status: 409 })) : pass(url, options));
+  try {
+    cardItem(ctx, 'Diff').querySelector('.kanban-details').click();
+    await until(() => /The task worktree is busy\. Try again\./.test($('#task-details').textContent), 'visible diff error');
+  } finally { win.fetch = pass; }
+});
+
+test('X10 mouse reports from the terminal reach the agent; reports that need raw bytes are not sent', { skip: process.platform === 'win32' }, async t => {
+  const ctx = await agentFixture(t);
+  const { win } = ctx;
+  const inputs = [];
+  ctx.executor.input = (runId, data) => inputs.push([runId, data]);
+  let term;
+  win.Terminal = class { constructor() { term = this; this.options = {}; this.cols = 80; this.rows = 24; } loadAddon() {} open() {} onData(fn) { this.data = fn; } onBinary(fn) { this.binary = fn; } write(_data, done) { done?.(); } dispose() {} focus() {} reset() {} getSelection() { return ''; } };
+  win.WebglAddon = { WebglAddon: class { onContextLoss() {} } };
+  win.promptboardDock.sessions.get('run-a').tab.querySelector('.tab-close').click();
+  win.PromptboardDock.open('run-a'); await ctx.idle();
+  assert.equal(typeof term?.binary, 'function', 'the terminal reports binary input');
+  term.binary('\x1b[M !!'); await until(() => inputs.length === 1, 'mouse report delivered');
+  term.binary(`\x1b[M ${String.fromCharCode(200)}!`); await new Promise(resolve => setTimeout(resolve, 100)); await ctx.idle();
+  assert.deepEqual(inputs, [['run-a', '\x1b[M !!']]);
+});
+
 test('ended agent output is available after a restart and remains readable without terminal graphics', { skip: process.platform === 'win32' }, async t => {
   const ctx = await linkedKanban(t);
   const { $, win } = ctx;

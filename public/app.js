@@ -1,6 +1,6 @@
 'use strict';
 
-const $ = (selector) => document.querySelector(selector);
+const $ = (selector) => document?.querySelector(selector); // No document: a late response after the page was closed.
 const HISTORY_KEY = 'ste-prompt-engineer.history.v1';
 const THEME_KEY = 'ste-prompt-engineer.theme'; // Also read by prefs.js before first paint.
 const SIDEBAR_KEY = 'ste-prompt-engineer.sidebar';
@@ -2071,11 +2071,13 @@ function renderDoneCard(card, draggable = true) {
 
 function labelledButton(button, label) { button.setAttribute('aria-label', label); return button; }
 /** Done → To Do. A new cycle; earlier completions, commits, reviews, tests, and runs are kept. */
-async function reopenCard(card) {
-  try { await boardCall('POST', `/api/tasks/${encodeURIComponent(card.id)}/reopen`, { expectedRevision: card.revision }); }
-  catch (error) { showBoardError(error); return; }
-  if ($('#done-dialog').open) $('#done-dialog').close();
-  announce(`Reopened “${card.title}” in To Do. Its history is kept.`);
+function reopenCard(card) {
+  return once(`reopen:${card.id}`, async () => {
+    try { await boardCall('POST', `/api/tasks/${encodeURIComponent(card.id)}/reopen`, { expectedRevision: card.revision }); }
+    catch (error) { showBoardError(error); return; }
+    if ($('#done-dialog').open) $('#done-dialog').close();
+    announce(`Reopened “${card.title}” in To Do. Its history is kept.`);
+  });
 }
 
 function makeDraggable(item, card) {
@@ -2355,12 +2357,14 @@ async function copyCard(card, button) {
   }
 }
 
-async function duplicateCard(id) {
-  try {
-    const { task } = await boardCall('POST', `/api/tasks/${encodeURIComponent(id)}/duplicate`, {});
-    announce(`Duplicated “${findTask(id)?.title || task.title}” into To Do.`);
-    cardElement(task.id)?.querySelector('.kanban-open').focus();
-  } catch (error) { showBoardError(error); }
+function duplicateCard(id) {
+  return once(`duplicate:${id}`, async () => {
+    try {
+      const { task } = await boardCall('POST', `/api/tasks/${encodeURIComponent(id)}/duplicate`, {});
+      announce(`Duplicated “${findTask(id)?.title || task.title}” into To Do.`);
+      cardElement(task.id)?.querySelector('.kanban-open').focus();
+    } catch (error) { showBoardError(error); }
+  });
 }
 
 function confirmCardDelete(item, card, focus = true) {
@@ -3099,15 +3103,23 @@ for (const [button, panel] of [['project-agent-toggle', 'project-agent-panel'], 
 
 
 /** Start the card's stage agent now (the card is already in that stage). No dialog: the click is the instruction. */
-async function startStage(card, stage) {
-  try {
-    const { run } = await boardCall('POST', `/api/tasks/${encodeURIComponent(card.id)}/runs`, { stage, consent: true }, 180000);
-    announce(`${stageVerb(stage)} for “${card.title}”.`);
-    showStartedRun(run.id);
-  } catch (error) { showBoardError(error); }
+function startStage(card, stage) {
+  return once(`start:${card.id}`, async () => {
+    try {
+      const { run } = await boardCall('POST', `/api/tasks/${encodeURIComponent(card.id)}/runs`, { stage, consent: true }, 180000);
+      announce(`${stageVerb(stage)} for “${card.title}”.`);
+      showStartedRun(run.id);
+    } catch (error) { showBoardError(error); }
+  });
 }
 
 const sessionActions = new Set();
+/** One request per card action at a time: a second click while it runs (a double click) sends nothing. */
+async function once(key, work) {
+  if (sessionActions.has(key)) return;
+  sessionActions.add(key);
+  try { return await work(); } finally { sessionActions.delete(key); }
+}
 async function pauseAgent(run) {
   if (sessionActions.has(run.taskId)) return;
   sessionActions.add(run.taskId);
@@ -3124,26 +3136,32 @@ async function resumeAgent(card) {
   } catch (error) { showBoardError(error); }
   finally { sessionActions.delete(card.id); }
 }
-async function runTestsCard(card) {
-  try { await boardCall('POST', `/api/tasks/${encodeURIComponent(card.id)}/tests`, { confirm: true }); announce(`Tests started for “${card.title}”.`); pollTests(card.id); }
-  catch (error) { showBoardError(error); }
+function runTestsCard(card) {
+  return once(`tests:${card.id}`, async () => {
+    try { await boardCall('POST', `/api/tasks/${encodeURIComponent(card.id)}/tests`, { confirm: true }); announce(`Tests started for “${card.title}”.`); pollTests(card.id); }
+    catch (error) { showBoardError(error); }
+  });
 }
 /** One click merges a verified card (the server brings in a moved target first). */
-async function mergeCard(card) {
-  try {
-    const result = await boardCall('POST', `/api/tasks/${encodeURIComponent(card.id)}/merge-now`, {}, 300000);
-    announce(result.merged ? `Merged “${card.title}” into ${result.task?.completion?.targetBranch || 'the target branch'}. The card is Done.` : `“${card.title}”: ${result.merge?.message || 'the merge is being prepared.'}`);
-  } catch (error) { showBoardError(error); }
+function mergeCard(card) {
+  return once(`merge:${card.id}`, async () => {
+    try {
+      const result = await boardCall('POST', `/api/tasks/${encodeURIComponent(card.id)}/merge-now`, {}, 300000);
+      announce(result.merged ? `Merged “${card.title}” into ${result.task?.completion?.targetBranch || 'the target branch'}. The card is Done.` : `“${card.title}”: ${result.merge?.message || 'the merge is being prepared.'}`);
+    } catch (error) { showBoardError(error); }
+  });
 }
 /** One click pushes the task branch (never forced) and opens or updates its pull request. */
-async function pullRequestCard(card) {
+function pullRequestCard(card) {
   const review = card.evidence?.review, tests = card.evidence?.tests;
   const body = [card.prompt.slice(0, 4000), '', '---', `Code review: ${review ? `${review.status}${review.verdict ? ` (${review.verdict.replaceAll('_', ' ')})` : ''} for ${short(review.taskCommit)}` : 'none'}`,
     `Tests: ${tests ? `${tests.status} (${(tests.results || []).length} commands) for ${short(tests.taskCommit)}` : 'none'}`, '', 'Opened by Promptboard.'].join('\n');
-  try {
-    const { task } = await boardCall('POST', `/api/tasks/${encodeURIComponent(card.id)}/pull-request`, { confirm: true, title: card.title, body }, 300000);
-    announce(`Pull request ${task.evidence?.pullRequest?.number ? `#${task.evidence.pullRequest.number} ` : ''}is open for “${card.title}”. The card moves to Done when it is merged.`);
-  } catch (error) { showBoardError(error); }
+  return once(`pull-request:${card.id}`, async () => {
+    try {
+      const { task } = await boardCall('POST', `/api/tasks/${encodeURIComponent(card.id)}/pull-request`, { confirm: true, title: card.title, body }, 300000);
+      announce(`Pull request ${task.evidence?.pullRequest?.number ? `#${task.evidence.pullRequest.number} ` : ''}is open for “${card.title}”. The card moves to Done when it is merged.`);
+    } catch (error) { showBoardError(error); }
+  });
 }
 
 async function confirmRun(run) {
@@ -3570,8 +3588,8 @@ async function renderDelivery(card, container, section, pre) {
     commit.disabled = rev.unresolved.length > 0;
     box.append(detailActions(commit));
     revision.append(paragraph('Review and testing need a committed revision. Check the changes first:'), diff, label, box);
-    api(`/api/tasks/${encodeURIComponent(card.id)}/uncommitted`, { timeoutMs: 20000 }).then(({ data }) => {
-      diff.textContent = `${(data.changes || []).join('\n')}\n\n${data.diff || ''}${data.truncated ? '\n[The diff is longer; the rest is in the worktree.]' : ''}`;
+    api(`/api/tasks/${encodeURIComponent(card.id)}/uncommitted`, { timeoutMs: 20000 }).then(({ response, data }) => {
+      diff.textContent = !response.ok ? data.error || 'The changes could not be read.' : `${(data.changes || []).join('\n')}\n\n${data.diff || ''}${data.truncated ? '\n[The diff is longer; the rest is in the worktree.]' : ''}`;
     }).catch(() => { diff.textContent = 'The changes could not be read.'; });
   }
   nodes.push(revision);
@@ -5460,9 +5478,12 @@ function addColumn() {
 }
 async function saveColumns(event) {
   event.preventDefault();
-  if (!event.currentTarget.checkValidity()) { event.currentTarget.reportValidity(); return; }
+  const form = event.currentTarget, save = form.querySelector('[type="submit"]');
+  if (save.disabled) return; // A save is in flight: Enter or a second click must not send the same change again.
+  if (!form.checkValidity()) { form.reportValidity(); return; }
   const project = board?.projects.find(item => item.id === columnsDraft.project);
   if (!project) return;
+  save.disabled = true; form.setAttribute('aria-busy', 'true');
   const columns = columnsDraft.list.map(entry => entry.custom ? entry : { id: entry.id, ...(entry.title && entry.title !== builtinTitle(entry.id) ? { title: entry.title } : {}), ...(entry.color && entry.color !== BUILTIN_DEFAULT_COLORS[entry.id] ? { color: entry.color } : {}), ...(entry.hidden ? { hidden: true } : {}) });
   try {
     if (!columnsDraft.pipeline) await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/columns`, { columns, expectedRevision: project.revision });
@@ -5479,6 +5500,7 @@ async function saveColumns(event) {
       if (lines.join('\n') !== testCommandsText(fresh())) await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/tests`, { commands: lines.map(command => ({ command })), expectedRevision: fresh().revision });
     }
   } catch (error) { $('#columns-error').textContent = error.message; $('#columns-error').hidden = false; return; }
+  finally { save.disabled = false; form.setAttribute('aria-busy', 'false'); }
   $('#columns-dialog').close();
   announce('Columns saved.');
 }
@@ -5891,6 +5913,7 @@ function pollLogin() {
 }
 function renderGitHub() {
   const box = $('#set-github-group');
+  if (!box) return; // A status that arrives after the page is gone (a closed window) has nothing to draw.
   const legend = box.querySelector('legend');
   const nodes = [];
   const st = github.status;
