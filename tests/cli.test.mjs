@@ -44,6 +44,14 @@ test('help names the Node.js floor from package.json and every task type the Com
   for (const [, task] of page.matchAll(/value="([^"]+)"/g)) assert.ok(listed.includes(task), `--help lists --task ${task}`);
 });
 
+test('the release job has the CI time budget and every workflow action is pinned by commit SHA', async () => {
+  const ci = await text('.github/workflows/ci.yml'), release = await text('.github/workflows/release.yml');
+  const minutes = yaml => Number(yaml.match(/timeout-minutes: (\d+)/)[1]);
+  // The release job runs the same full `npm test` as a CI job (about 15 minutes on ubuntu-latest in October 2026).
+  assert.ok(minutes(release) >= minutes(ci), `release timeout ${minutes(release)} < CI timeout ${minutes(ci)}`);
+  for (const [, ref] of `${ci}\n${release}`.matchAll(/uses: (\S+)/g)) assert.match(ref, /^[\w.-]+\/[\w.-]+@[0-9a-f]{40}$/);
+});
+
 test('headless SIGTERM stops the provider and removes its temporary working folder', {
   skip: process.platform === 'win32', timeout: 6000,
 }, async () => {
