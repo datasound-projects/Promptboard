@@ -974,3 +974,33 @@ test('external links from the server open only plain http(s) addresses', async t
   const link = [...$('#set-github-group').querySelectorAll('a')].find(node => node.textContent === 'Open github.com/login/device');
   assert.equal(link.hasAttribute('href'), false, 'a javascript: address is not a link');
 });
+
+test('an unknown stored theme is ignored: the page and Settings both use the dark default', async t => {
+  const ctx = await setup(t, { prefs: { 'ste-prompt-engineer.theme': 'blue' } });
+  assert.equal(ctx.win.document.documentElement.dataset.theme, 'dark');
+  ctx.$('#app-settings-open').click(); await ctx.idle();
+  assert.equal(ctx.$('#set-theme').value, 'dark');
+});
+
+test('a saved default agent effort that the CLI accepts survives opening and saving Settings', async t => {
+  const codex = { ...catalogs.codex, models: catalogs.codex.models.map(model => model.id === 'codex-one' ? { ...model, efforts: [...model.efforts, 'max'] } : model) };
+  const ctx = await setup(t, { catalogReader: async provider => ({ provider, ...(provider === 'codex' ? codex : catalogs[provider]) }) });
+  await ctx.app.board.setSettings({ defaultAgent: { provider: 'codex', effort: 'max' } });
+  await ctx.win.__pbTest.loadBoard();
+  ctx.$('#app-settings-open').click(); await ctx.idle();
+  assert.equal(ctx.$('#set-agent-effort').value, 'max');
+  ctx.$('#set-agent-save').click(); await ctx.idle();
+  assert.deepEqual((await serverBoard(ctx)).settings.defaultAgent, { provider: 'codex', model: '', effort: 'max' });
+});
+
+test('raising "Agents at the same time" starts queued agents at once', { skip: process.platform === 'win32' }, async t => {
+  const ctx = await linkedKanban(t);
+  let wakes = 0;
+  ctx.executor.wake = () => { wakes++; };
+  ctx.$('#app-settings-open').click(); await ctx.idle();
+  ctx.choose('#set-max-runs', '3'); await ctx.idle();
+  assert.equal((await serverBoard(ctx)).settings.maxConcurrentRuns, 3);
+  assert.equal(wakes, 1, 'The supervisor re-checks its queue with the new limit.');
+  ctx.$('#set-agent-save').click(); await ctx.idle();
+  assert.equal(wakes, 1, 'Saving only the default agent starts nothing.');
+});

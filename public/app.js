@@ -417,7 +417,7 @@ function updateEffort(preferred = '') {
   const model = chosenModel();
   const selected = catalog?.models?.find(item => item.id === (model || catalog.defaultModel));
   const unverified = model && !selected;
-  const choices = selected?.efforts || (unverified ? ({ codex: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'], claude: ['low', 'medium', 'high', 'xhigh', 'max'], agy: ['low', 'medium', 'high', 'xhigh', 'max'], gemini: [] }[provider] || []) : []);
+  const choices = selected?.efforts || (unverified ? effortsFor(provider) : []);
   const defaultEffort = model ? selected?.defaultEffort : catalog?.defaultEffort;
   $('#effort').replaceChildren(option('', defaultEffort ? `CLI default (${defaultEffort})` : 'CLI default (not reported)'));
   for (const level of choices) $('#effort').append(option(level, level === 'xhigh' ? 'Extra high (xhigh)' : level[0].toUpperCase() + level.slice(1)));
@@ -2925,7 +2925,8 @@ function chosenModelFrom(select, custom) { return select.value === '__custom__' 
 
 function fillSelect(select, values, labels = {}) { select.replaceChildren(...values.map(value => option(value, labels[value] ?? (value || 'CLI default')))); }
 
-const EFFORTS = { codex: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'], claude: ['low', 'medium', 'high', 'xhigh', 'max'], gemini: [] };
+// Every level each CLI accepts (validateEffort on the server), offered until a model's own list arrives.
+const EFFORTS = { codex: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'], claude: ['low', 'medium', 'high', 'xhigh', 'max'], agy: ['low', 'medium', 'high', 'xhigh', 'max'], gemini: [] };
 function effortsFor(provider) { return EFFORTS[provider] || []; }
 
 /**

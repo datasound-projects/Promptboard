@@ -3710,7 +3710,10 @@ export class Board {
     }
     // The same validation as a stage setting: an agent provider, a safe model ID, and an effort it accepts.
     if (defaultAgent !== undefined) change.defaultAgent = normalizeAgent(defaultAgent);
-    return this.store.update(state => { state.settings = { ...state.settings, ...change }; return state.settings; });
+    const settings = await this.store.update(state => { state.settings = { ...state.settings, ...change }; return state.settings; });
+    // A higher limit starts queued agents now, not only when a running one ends.
+    if (change.maxConcurrentRuns) this.executor?.wake?.();
+    return settings;
   }
 
   async run(runId) {
