@@ -78,12 +78,13 @@ function exporter(record) {
   };
   const inline = (value, where, fallback = '') => { const text = escapeInline(clean(value, where).replace(/\s+/g, ' ').trim()); return text || fallback; };
   const block = (value, where) => {
-    const text = clean(value, where).replace(/^\s*\n/, '').replace(/\s+$/, '');
+    // trimEnd, not /\s+$/: that regex rescans a long run of spaces from each of its positions.
+    const text = clean(value, where).replace(/^\s*\n/, '').trimEnd();
     if (!text.trim()) return '';
     return UNSAFE.test(text) ? fence(text) : text;
   };
   const listOf = (value, where) => {
-    const text = clean(value, where).replace(/\s+$/, '');
+    const text = clean(value, where).trimEnd();
     if (!text.trim()) return '';
     if (UNSAFE.test(text)) return fence(text);
     return text.split('\n').filter(line => line.trim()).map(line => `- ${line.replace(/^\s*(?:[-*•]|\d+[.)])\s+/, '').trim()}`).join('\n');
