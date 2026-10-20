@@ -71,8 +71,9 @@ test('pipeline completed table sorts archive dates, filters literal titles and s
   assert.deepEqual(await app.board.state(), before, 'Opening, sorting and filtering must change no task, session or run.');
   await browser.eval(`const input=document.getElementById('archive-filter');input.value='Middle';input.dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('[data-archive-action="details"]').focus();`);
   // An already-running refresh can legitimately hold the previous board revision.
-  // Capture that case explicitly; awaiting its coalesced promise is not a new read.
-  await browser.eval(`window.__archiveFetch=window.fetch;window.__archiveHoldNext=true;window.fetch=async (...args)=>{
+  // Capture that case explicitly with a new read: a 2 s poll still in flight would
+  // coalesce loadBoard() into its own request, so wait for it to settle first.
+  await browser.eval(`while(boardLoading)await boardLoading.catch(()=>{});window.__archiveFetch=window.fetch;window.__archiveHoldNext=true;window.fetch=async (...args)=>{
     const response=await window.__archiveFetch(...args);
     if(window.__archiveHoldNext&&String(args[0]).endsWith('/api/board')){
       window.__archiveHoldNext=false;window.__archiveHeld=true;await new Promise(resolve=>window.__archiveRelease=resolve);
