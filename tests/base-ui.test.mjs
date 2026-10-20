@@ -492,7 +492,10 @@ test('a switch toggled from the keyboard keeps focus while the library is drawn 
   await view.show();
   const toggle = () => $(`#base-list [data-resource-id="${skill.id}"]`).closest('li').querySelector('.base-switch');
   toggle().focus(); toggle().checked = false; toggle().dispatchEvent(new win.Event('change'));
+  // Chrome drops focus from the switch as soon as it is disabled while its change is saved.
+  assert.equal(toggle().disabled, true); toggle().disabled = false; toggle().blur(); toggle().disabled = true; assert.equal(win.document.activeElement, win.document.body);
   await until(() => /switched off/.test($('#base-status').textContent) && $('.base-list-panel').getAttribute('aria-busy') === 'false', 'switched off');
+  assert.equal(win.document.activeElement, toggle(), 'focus comes back after the save');
   await view.refresh(true);
   assert.equal(win.document.activeElement, toggle(), 'the same resource’s switch, drawn again, has focus');
   assert.equal(toggle().checked, false);

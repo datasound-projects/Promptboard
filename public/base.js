@@ -216,7 +216,7 @@ window.PromptboardBase = (() => {
       // The list is drawn again after every change and reload: keyboard focus stays on the same control (switch, ⓘ, ⋯)
       // of the same resource, also across the Loading state in between, unless focus has moved elsewhere meanwhile.
       const listNode = $('#base-list'), active = document.activeElement;
-      if (listNode.contains(active)) focusKey = { id: active.closest('li')?.querySelector('[data-resource-id]')?.dataset.resourceId, control: active.classList[0] };
+      if (listNode.contains(active)) keepFocus(active);
       else if (active && active !== document.body) focusKey = null;
       const query = $('#base-search').value.trim().toLocaleLowerCase();
       const kind = categoryKind();
@@ -292,7 +292,10 @@ window.PromptboardBase = (() => {
       row.append(open, toggle, info, rowMenu(item));
       return row;
     }
+    // Which control of which resource has focus, to give it back after the list is drawn again.
+    const keepFocus = node => { const id = node.closest('li')?.querySelector('[data-resource-id]')?.dataset.resourceId; focusKey = id ? { id, control: node.classList[0] } : null; };
     async function switchResource(item, on, control) {
+      if (document.activeElement === control) keepFocus(control); // Disabling the focused switch below drops its focus.
       control.disabled = true;
       try {
         const send = () => request(`/api/base/resources/${encodeURIComponent(item.id)}`, { method: 'PATCH', body: { enabled: on, expectedRevision: resource(item.id)?.revision ?? item.revision, expectedBaseRevision: state.revision } });
