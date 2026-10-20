@@ -359,6 +359,18 @@ test('Use in Kanban counts the source line each excerpt gets in the run, so an a
   assert.equal(prepared.manifest.supplied.find(entry => entry.resourceId === used.resource.id).chars, page.markdown.length + excerptOverhead(page.title, page.markdown) - 2);
 });
 
+test('a damaged document falls back to its backup and is set aside, so the next save keeps a good backup', async t => {
+  const dir = await temp(t), store = new ContextStore(dir), first = await store.create('proj1', record(full())), folder = join(dir, 'origin', 'context', 'proj1');
+  await store.saveText('proj1', { expectedRevision: 1, text: `${first.text}\nEdited.\n` });
+  const good = await readFile(join(folder, 'document.json.bak'), 'utf8'), broken = '{"schema":"promptboard.origin-context", broken';
+  await writeFile(join(folder, 'document.json'), broken);
+  assert.equal((await store.read('proj1')).meta.revision, 1);
+  const [aside] = (await readdir(folder)).filter(name => name.startsWith('document.corrupt-'));
+  assert.equal(await readFile(join(folder, aside), 'utf8'), broken);
+  await store.saveText('proj1', { expectedRevision: 1, text: `${first.text}\nAgain.\n` });
+  assert.equal(await readFile(join(folder, 'document.json.bak'), 'utf8'), good, 'the damaged file never becomes the backup');
+});
+
 test('a damaged document without a good copy is reported, and creating again keeps the damaged files', async t => {
   const dir = await temp(t), store = new ContextStore(dir), source = record(full());
   const first = await store.create('proj1', source), folder = join(dir, 'origin', 'context', 'proj1');
