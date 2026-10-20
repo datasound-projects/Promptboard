@@ -486,3 +486,17 @@ test('a write that meets a Base change from another window reloads the library a
   await until(() => !$('#base-dialog').open, 'assignment saved after one retry');
   assert.deepEqual(calls.filter(call => call.path === '/api/base/apply').map(call => call.body.expectedBaseRevision), [5, 6]);
 });
+
+test('a switch toggled from the keyboard keeps focus while the library is drawn again', async t => {
+  const { $, win, view } = setup(t);
+  await view.show();
+  const toggle = () => $(`#base-list [data-resource-id="${skill.id}"]`).closest('li').querySelector('.base-switch');
+  toggle().focus(); toggle().checked = false; toggle().dispatchEvent(new win.Event('change'));
+  await until(() => /switched off/.test($('#base-status').textContent) && $('.base-list-panel').getAttribute('aria-busy') === 'false', 'switched off');
+  await view.refresh(true);
+  assert.equal(win.document.activeElement, toggle(), 'the same resource’s switch, drawn again, has focus');
+  assert.equal(toggle().checked, false);
+  // Focus moved elsewhere in the meantime is never taken back.
+  $('#base-search').focus(); await view.refresh(true);
+  assert.equal(win.document.activeElement, $('#base-search'));
+});

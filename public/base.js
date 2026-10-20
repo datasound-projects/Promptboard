@@ -121,7 +121,7 @@ window.PromptboardBase = (() => {
       if (['grid', 'list'].includes(saved.viewMode)) viewState.viewMode = saved.viewMode;
     } catch { /* Invalid or unavailable browser preferences use the library defaults. */ }
     let category = viewState.category, chosen = null, editingKind = null, loading = null, requestVersion = 0;
-    let loadVersion = 0, loadError = '', resultLoading = false, libraryScroll = 0;
+    let loadVersion = 0, loadError = '', resultLoading = false, libraryScroll = 0, focusKey = null;
     const typeOf = item => item.type || (item.kind === 'profile' ? 'agent' : item.kind);
     const categoryKind = () => category === 'agent' ? 'profile' : category;
     function persistView() {
@@ -213,6 +213,11 @@ window.PromptboardBase = (() => {
       return `${KINDS[item.kind] || item.kind} · ${item.enabled ? 'Available' : 'Disabled'} · ${trust} · r${item.revision}`;
     }
     function renderList() {
+      // The list is drawn again after every change and reload: keyboard focus stays on the same control (switch, ⓘ, ⋯)
+      // of the same resource, also across the Loading state in between, unless focus has moved elsewhere meanwhile.
+      const listNode = $('#base-list'), active = document.activeElement;
+      if (listNode.contains(active)) focusKey = { id: active.closest('li')?.querySelector('[data-resource-id]')?.dataset.resourceId, control: active.classList[0] };
+      else if (active && active !== document.body) focusKey = null;
       const query = $('#base-search').value.trim().toLocaleLowerCase();
       const kind = categoryKind();
       const list = state.resources.filter(item => (!category || typeOf(item) === category)
@@ -228,6 +233,9 @@ window.PromptboardBase = (() => {
       const waiting = resultLoading || (state.revision < 0 && !loadError);
       $('.base-list-panel').setAttribute('aria-busy', String(waiting));
       $('#base-list').replaceChildren(...(waiting || loadError ? [] : list.map(item => (item.kind === 'profile' ? agentCard(item) : resourceRow(item)))));
+      const row = focusKey?.control && [...listNode.querySelectorAll('[data-resource-id]')].find(node => node.dataset.resourceId === focusKey.id)?.closest('li');
+      const again = row?.querySelector(`.${focusKey.control}`);
+      if (again && (!document.activeElement || document.activeElement === document.body)) { again.focus(); focusKey = null; }
       const empty = $('#base-empty'); empty.hidden = !waiting && !loadError && list.length > 0; empty.replaceChildren();
       if (waiting) empty.append(p(`Loading ${category ? categoryLabel().toLowerCase() : 'resources'}…`));
       else if (loadError) {
