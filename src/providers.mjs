@@ -122,7 +122,7 @@ export function stopProcess(child, signal = 'SIGTERM') {
   try {
     if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, signal);
     else child.kill(signal);
-  } catch (error) { if (error.code !== 'ESRCH') { try { child.kill(signal); } catch {} } }
+  } catch { try { child.kill(signal); } catch {} } // Also a child in this app's group (not detached), such as the folder picker.
 }
 
 // Only processes and folders created by this app are tracked, so shutdown never

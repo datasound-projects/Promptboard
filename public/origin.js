@@ -174,7 +174,8 @@ window.PromptboardOrigin = (() => {
     }
     async function save({ force = false } = {}) {
       clearTimeout(saveTimer); saveTimer = null;
-      if (!record?.exists || saveState === 'gone' || saveState === 'conflict' && !force || changeCount === savedCount && !force) return true;
+      if (saveState === 'conflict' && !force) return false; // Not saved: only Reload or Keep mine resolves it.
+      if (!record?.exists || saveState === 'gone' || changeCount === savedCount && !force) return true;
       if (saving) { await saving; return changeCount === savedCount ? true : save(); }
       const target = changeCount, id = projectId;
       saveState = 'saving'; renderSave();
@@ -1034,7 +1035,7 @@ window.PromptboardOrigin = (() => {
           record.blueprint = data.blueprint; saveRevision(data.revision, data.project); views.map = null; open = null;
           render(); researchPanel.structureChanged();
           // Undo saves the copy taken just before as a normal change.
-          if (blank.radio.checked) showUndo('The structure was reset to blank.', before, from);
+          if (blank.radio.checked) showUndo('The structure was reset to blank.', before, from); else hideUndo();
           showNotice(`The structure was reset. The project as it was is kept in the app data folder as ${data.kept}.`);
           app.announce(blank.radio.checked ? 'Started over blank.' : 'The default categories and sections are back.');
         }, { danger: false })] });
@@ -2825,7 +2826,7 @@ window.PromptboardOrigin = (() => {
         if (!response.ok) { message.textContent = typeof data.error === 'string' ? data.error : 'The card could not be updated.'; message.hidden = false; update.disabled = false; contextStatus.revision = -1; void refreshContextStatus(); return; }
         const saved = data.blueprint.items.find(entry => entry.id === item.id);
         if (saved) item.handoff = saved.handoff;
-        record.revision = data.revision;
+        record.revision = data.revision; hideUndo();
         await app.ensureBoard();
         app.announce(`Kanban #${status.cardNumber} now has the current context. It stays in To Do; nothing started.`);
         contextStatus.revision = -1; void refreshContextStatus();
@@ -3317,7 +3318,7 @@ window.PromptboardOrigin = (() => {
         // Only handoff links changed on the server; they are merged into this window's copy.
         const saved = new Map(outcome.data.blueprint.items.map(item => [item.id, item]));
         for (const item of bp().items) if (saved.has(item.id)) item.handoff = saved.get(item.id).handoff;
-        record.revision = outcome.data.revision;
+        record.revision = outcome.data.revision; hideUndo(); // An Undo from before would drop these card links.
         await app.ensureBoard();
         const sent = outcome.data.results, failed = sent.filter(result => result.status === 'failed');
         planSelection = new Set([...planSelection].filter(id => failed.some(result => result.itemId === id)));

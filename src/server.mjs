@@ -212,7 +212,8 @@ async function boardRoute(board, req, res, pathname, searchParams, origin) {
         if (target === 'editor') return send(res, 200, await board.editorOpener(await storedProject(board, id), { editor: typeof editor === 'string' ? editor : '', taskId: typeof taskId === 'string' ? taskId : '' }));
         return send(res, 200, await board.projectOpener(await storedProject(board, id), typeof target === 'string' ? target : ''));
       }
-      catch (error) { throw new BoardError(error.message, error.code || 'OPEN_FAILED', error.status || 500); }
+      // The openers' own refusals carry a status and a fixed message; any other failure stays the generic one.
+      catch (error) { throw error.status ? new BoardError(error.message, error.code || 'OPEN_FAILED', error.status) : error; }
     }
     if (method === 'DELETE' && action === 'github') return view({ project: await board.disconnectGitHub(id, { expectedRevision: expected() }) });
     if (method === 'POST' && action === 'github-fetch') return view({ project: await board.fetchGitHub(id) });

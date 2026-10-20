@@ -40,7 +40,7 @@ Report problems privately through GitHub: **Security → Report a vulnerability*
 
 **Autopilot is opt-in per project.** Starting it needs an explicit acknowledgment, because it then confirms finished agent turns, commits, accepts reviews with no issues, and merges (through the same gate as a manual merge) or pushes the task branch for a pull request without asking each time. It advances only when an agent has finished its turn, never while an agent waits for permission, and it pauses on anything unexpected.
 
-**Processes are owned.** Stopping a run, or Promptboard itself, stops only the process groups it started.
+**Processes are owned.** Stopping a run, or Promptboard itself, stops only the processes it started: agent and CLI process groups, test commands, MCP servers and a folder picker that is still open.
 
 **Credentials stay with the CLI.** Promptboard never reads, copies, or logs CLI credential files, and does not copy them into worktrees.
 

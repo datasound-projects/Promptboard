@@ -15,7 +15,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, open, readdir, readFile, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { redactLocal } from './compose-local.mjs';
-import { serial, writeAtomic } from './durable.mjs';
+import { readWithBackup, serial, writeAtomic } from './durable.mjs';
 import { createBoardFor, nameTaken } from './projects.mjs';
 
 const Model = globalThis.PromptboardOriginModel;
@@ -142,7 +142,11 @@ export class OriginStore {
       if (!damaged(error)) throw error.code === 'ORIGIN_VERSION_UNSUPPORTED' ? error : new OriginError('The Origin project could not be read. Check folder permissions.', 'ORIGIN_READ_FAILED', 500);
       let result = null;
       try { result = await this.#parse(`${path}.bak`, originId); }
-      catch (backupError) { if (backupError.code === 'ORIGIN_VERSION_UNSUPPORTED') throw backupError; }
+      catch (backupError) {
+        if (backupError.code === 'ORIGIN_VERSION_UNSUPPORTED') throw backupError;
+        // A damaged backup is kept aside too; saves under this ID would otherwise replace it.
+        if (damaged(backupError)) await rename(`${path}.bak`, join(this.dir, `${name.slice(0, -5)}.corrupt-${Date.now()}-${randomBytes(4).toString('hex')}.bak.json`));
+      }
       const quarantined = `${name.slice(0, -5)}.corrupt-${Date.now()}-${randomBytes(4).toString('hex')}.json`;
       await rename(path, join(this.dir, quarantined));
       if (result) {
@@ -336,8 +340,20 @@ export class OriginStore {
 
   // ---- Personal blueprints: a project's structure saved for new projects (no answers, no entries) ----
   async #blueprints() {
-    try { const data = JSON.parse(await readFile(join(this.dir, BLUEPRINTS_FILE), 'utf8')); return Array.isArray(data.blueprints) ? data.blueprints : []; }
-    catch (error) { if (error.code === 'ENOENT') return []; throw new OriginError('Your saved blueprints could not be read. The file was not changed.', 'ORIGIN_READ_FAILED', 500); }
+    const path = join(this.dir, BLUEPRINTS_FILE), damaged = [];
+    let found;
+    try {
+      found = await readWithBackup([path, `${path}.bak`], (bytes, file) => {
+        let data; try { data = JSON.parse(bytes); } catch {}
+        if (data?.version > 1) throw new OriginError('Your saved blueprints were saved by a newer Promptboard version. Update the app; the file was not changed.', 'ORIGIN_VERSION_UNSUPPORTED', 409);
+        if (Array.isArray(data?.blueprints)) return data.blueprints;
+        damaged.push(file);
+      });
+    } catch (error) { if (error instanceof OriginError) throw error; throw new OriginError('Your saved blueprints could not be read. The file was not changed.', 'ORIGIN_READ_FAILED', 500); }
+    // A damaged file is kept aside, so the next save never replaces the only copy.
+    for (const file of damaged) await rename(file, join(this.dir, `blueprints.corrupt-${Date.now()}-${randomBytes(4).toString('hex')}${file === path ? '' : '.bak'}.json`));
+    if (!found && damaged.length) throw new OriginError('Your saved blueprints were damaged and no good copy was found. They were kept in the app data folder; blueprints you save now start a new list.', 'ORIGIN_DAMAGED', 500);
+    return found || [];
   }
   #summary(entry) {
     const phases = Model.phaseList(entry.blueprint);
@@ -505,6 +521,9 @@ async function handoff({ origin, board, originId, input }) {
 
 /** What a card was sent with: the saved body, or (for older snapshots) the same body rebuilt from the snapshot. */
 const sentBody = (snapshot, record, itemId) => (!snapshot ? null : snapshot.body ?? Model.taskBody({ ...snapshot, itemId }, { projectName: record.name }));
+// The card names its own snapshot too, so a link restored without one (a resend from Compose Batch) still knows a
+// split part or an approved prompt.
+const sentSnapshot = (origin, originId, item, card) => origin.readSnapshot(originId, item.handoff.snapshotId || card.originSource?.snapshotId);
 const todoOf = project => (project.workflowMode === 'pipeline' ? project.pipeline.columns.find(column => column.role === 'todo')?.id : 'todo');
 
 /**
@@ -519,13 +538,14 @@ async function contextStatus({ origin, board, originId, input }) {
   for (const item of record.blueprint.items.filter(entry => entry.handoff)) {
     const destination = projects.find(project => project.id === item.handoff.projectId), card = destination?.tasks.find(task => task.id === item.handoff.taskId);
     if (!card) { tasks.push({ itemId: item.id, key: item.key, status: 'card-removed' }); continue; }
-    const built = buildContext(record, item.id), snapshot = await origin.readSnapshot(originId, item.handoff.snapshotId);
+    const built = buildContext(record, item.id), snapshot = await sentSnapshot(origin, originId, item, card);
     const sent = item.handoff.hash || card.originSource?.hash || '', body = sentBody(snapshot, record, item.id);
     const before = new Set((snapshot?.included || []).map(entry => entry.name)), after = new Set(built.included.map(entry => entry.name));
     tasks.push({ itemId: item.id, key: item.key, status: !sent ? 'unknown' : built.hash === sent ? 'current' : built.hash === item.handoff.keptHash ? 'kept' : 'changed',
       hash: built.hash, sentHash: sent, cardId: card.id, cardNumber: card.number, cardRevision: card.revision, idle: card.column === todoOf(destination),
       // A prompt approved in Compose Batch counts as edited: Update context replaces it only after a confirmation, and never on a split part.
-      edited: (body !== null && card.prompt !== body) || Boolean(snapshot?.compose), engineered: Boolean(snapshot?.compose), splitPart: Boolean(snapshot?.compose?.childId),
+      // A card whose sent text is not on record counts as edited too, so it is never replaced unseen.
+      edited: body === null || card.prompt !== body || Boolean(snapshot?.compose), engineered: Boolean(snapshot?.compose), splitPart: Boolean(snapshot?.compose?.childId),
       added: [...after].filter(name => !before.has(name)), removed: snapshot ? [...before].filter(name => !after.has(name)) : [],
       sent: snapshot ? `${snapshot.instruction}\n\n${snapshot.context}` : '', now: built.tooLarge ? '' : `${built.instruction}\n\n${built.context}`, error: built.error || '' });
   }
@@ -549,10 +569,10 @@ async function updateContext({ origin, board, originId, input }) {
   if (built.tooLarge) throw new OriginError(built.error, 'CONTEXT_TOO_LARGE', 409);
   if (built.hash !== input.expectedHash) throw new OriginError('The design changed again. Review the new context first.', 'CONTEXT_CHANGED_AGAIN', 409);
   if (card.revision !== input.expectedCardRevision) throw new OriginError('The card changed in Kanban. Review it again.', 'REVISION_CONFLICT', 409);
-  const sentSnapshot = await origin.readSnapshot(originId, item.handoff.snapshotId), body = sentBody(sentSnapshot, record, item.id);
-  if (sentSnapshot?.compose?.childId) throw new OriginError('This card is one part of a task split in Compose Batch. Regenerate the task there instead.', 'SPLIT_PART', 409);
-  if (sentSnapshot?.compose && input.replaceEdited !== true) throw new OriginError('The card has a prompt approved in Compose Batch. Compare both, then confirm to replace it with the task and its context.', 'CARD_ENGINEERED', 409);
-  if (body !== null && card.prompt !== body && input.replaceEdited !== true) throw new OriginError('The card’s prompt was edited in Kanban. Compare both, then confirm to replace it.', 'CARD_EDITED', 409);
+  const sent = await sentSnapshot(origin, originId, item, card), body = sentBody(sent, record, item.id);
+  if (sent?.compose?.childId) throw new OriginError('This card is one part of a task split in Compose Batch. Regenerate the task there instead.', 'SPLIT_PART', 409);
+  if (sent?.compose && input.replaceEdited !== true) throw new OriginError('The card has a prompt approved in Compose Batch. Compare both, then confirm to replace it with the task and its context.', 'CARD_ENGINEERED', 409);
+  if ((body === null || card.prompt !== body) && input.replaceEdited !== true) throw new OriginError('The card’s prompt was edited in Kanban. Compare both, then confirm to replace it.', 'CARD_EDITED', 409);
   const snapshot = await origin.snapshot(originId, built, record.revision);
   const task = await board.refreshOriginTask(card.id, { prompt: built.body, snapshotId: snapshot.id, hash: snapshot.hash, expectedRevision: card.revision });
   const saved = await origin.recordHandoff(originId, [{ itemId: item.id, projectId: destination.id, taskId: card.id, snapshotId: snapshot.id, hash: snapshot.hash }]);

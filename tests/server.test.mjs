@@ -267,3 +267,19 @@ test('repository board review and apply enforce authentication, local origin, re
   assert.equal((await post({ ...reviewed, confirm: true })).status, 200); assert.deepEqual((await app.board.state()).runs, []);
   assert.equal((await post({ ...reviewed, confirm: true })).status, 409);
 });
+
+test('opening a project folder reports the opener’s own refusals, never the text of an unexpected failure', async t => {
+  let failure;
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [], projectOpener: async () => { throw failure; } });
+  const { token } = await fetch(app.url + '/api/session').then(response => response.json());
+  const project = await app.board.createProject({ name: 'Opened' });
+  const open = () => fetch(`${app.url}/api/projects/${project.id}/open`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-ste-token': token }, body: '{"target":"folder"}' }).then(async response => [response.status, await response.json()]);
+  failure = Object.assign(new Error('Link this project to a folder first.'), { code: 'REPOSITORY_REQUIRED', status: 409 });
+  assert.deepEqual(await open(), [409, { error: 'Link this project to a folder first.', code: 'REPOSITORY_REQUIRED' }]);
+  failure = Object.assign(new Error('The folder could not be opened.'), { code: 'OPEN_FAILED', status: 500 });
+  assert.deepEqual(await open(), [500, { error: 'The folder could not be opened.', code: 'OPEN_FAILED' }]);
+  // For example the editor preference file in a read-only data folder: its path stays out of the page.
+  failure = Object.assign(new Error("EACCES: permission denied, open '/Users/private/Library/Application Support/Promptboard/editors.json'"), { code: 'EACCES', errno: -13 });
+  const [status, body] = await open();
+  assert.equal(status, 500); assert.equal(body.code, 'BOARD_FAILED'); assert.doesNotMatch(JSON.stringify(body), /EACCES|\/Users\/private/);
+});

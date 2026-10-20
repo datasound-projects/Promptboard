@@ -20,11 +20,12 @@ export function validateLocal(source) {
 }
 export function redactLocal(text) {
   return text.replace(/-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/g, '[private key omitted]')
-    // A quoted value is redacted whole, spaces included.
-    .replace(/((?:api[_-]?key|secret|password|token|authorization|access[_-]?key)\s*["']?\s*[:=]\s*)(?:"[^"\n]*"|'[^'\n]*'|(?:(?:Bearer|Basic)\s+)?[^\s,;"'\n]+)/gi, '$1[redacted]')
+    // A quoted value is redacted whole, spaces included. One way to split the separator (\s*(?:["']\s*)? rather than
+    // \s*["']?\s*), so a long run of spaces after a keyword is scanned once, not once per split.
+    .replace(/((?:api[_-]?key|secret|password|token|authorization|access[_-]?key)\s*(?:["']\s*)?[:=]\s*)(?:"[^"\n]*"|'[^'\n]*'|(?:(?:Bearer|Basic)\s+)?[^\s,;"'\n]+)/gi, '$1[redacted]')
     // Credentials in any URL scheme (postgres://user:pw@, redis://:pw@).
-    // The scheme starts a word and is short, so long text is scanned once (no quadratic backtracking).
-    .replace(/(?<![a-z0-9+.-])([a-z][a-z0-9+.-]{0,31}:\/\/)[^\s/@]*:[^\s/@]+@/gi, '$1[redacted]@');
+    // The scheme starts a word and is short, and the user name ends at its first ":", so long text is scanned once (no quadratic backtracking).
+    .replace(/(?<![a-z0-9+.-])([a-z][a-z0-9+.-]{0,31}:\/\/)[^\s/@:]*:[^\s/@]+@/gi, '$1[redacted]@');
 }
 const inside = (root, path) => { const rel = relative(root, path); return rel !== '..' && !/^\.\.[\\/]/.test(rel) && !isAbsolute(rel); };
 export class ComposeLocal {
@@ -42,7 +43,9 @@ export class ComposeLocal {
       signal?.throwIfAborted();
       if (depth > 8 || entries >= 1500) { truncated = true; return; }
       const children = [];
-      for await (const child of await opendir(dir)) { children.push(child); if (children.length >= 1500 - entries) { truncated = true; break; } }
+      // A subfolder this app may not read (a database volume, another user's files) is left out, not the whole folder.
+      let listing; try { listing = await opendir(dir); } catch (error) { if (!depth) throw error; truncated = true; return; }
+      for await (const child of listing) { children.push(child); if (children.length >= 1500 - entries) { truncated = true; break; } }
       children.sort((a, b) => a.name.localeCompare(b.name));
       for (const child of children) {
         signal?.throwIfAborted();

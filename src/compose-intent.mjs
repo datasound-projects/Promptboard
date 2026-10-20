@@ -4,13 +4,15 @@ export const NO_TASK = {
   de: 'Keine ausführbare Aufgabe erkannt. Beschreibe ein Ziel, zum Beispiel „erstelle…“, „analysiere…“, „implementiere…“ oder „erkläre…“.',
   pl: 'Nie wykryto konkretnego zadania. Podaj cel lub polecenie, na przykład „zbuduj…”, „przeanalizuj…”, „zaimplementuj…” lub „wyjaśnij…”.',
 };
+const segmenter = new Intl.Segmenter(undefined, { granularity: 'word' });
 export function obviouslyNonActionable(input) {
   const text = input.trim();
   const words = text.match(/[\p{L}\p{N}]+/gu) || [];
   if (!words.length || /^([\p{L}\p{N}])\1{4,}$/u.test(text)) return true;
   if (/^(hi|hello|hey|lol|haha|test|testing|asdf|qwerty|cześć|witaj|hallo|servus)[!.\s]*$/i.test(text)) return true;
-  // Single words contain no objective/object relationship. Do not choose one for the user.
-  return words.length === 1 && !(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Thai}]/u.test(text) && text.length > 4);
+  // Single words contain no objective/object relationship. Do not choose one for the user. Scripts written
+  // without spaces (修复错误: fix the error) are split into words by the platform's word segmenter.
+  return words.length === 1 && !(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Thai}]/u.test(text) && [...segmenter.segment(text)].filter(part => part.isWordLike).length > 1);
 }
 export function assertActionable(input, language = 'en') {
   if (obviouslyNonActionable(input)) throw Object.assign(new TypeError(NO_TASK[language] || NO_TASK.en), { status: 422, code: 'NON_ACTIONABLE_INPUT' });

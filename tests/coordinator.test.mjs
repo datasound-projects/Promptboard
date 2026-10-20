@@ -1,13 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdir, mkdtemp, readdir, readFile, rm, stat } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { Board } from '../src/board.mjs';
 import { Coordinator, coordinatorRoute } from '../src/coordinator.mjs';
 import { OriginStore } from '../src/origin.mjs';
+import { commandOnPath } from '../src/providers.mjs';
 
 async function temp(t) { const dir = await mkdtemp(join(tmpdir(), 'pb-coordinator-test-')); t.after(() => rm(dir, { recursive: true, force: true })); return dir; }
 const SECRET_SPEC = 'Exact engineered card specification that must never be copied into the index.';
@@ -61,6 +63,7 @@ test('turned off, it records nothing; turned on, it reconciles missed changes wi
   assert.equal(on.enabled, true);
   const moved = (await index(dataDir, project.id)).events.find(event => event.task === second.id && event.kind === 'moved');
   assert.ok(moved, 'the missed move is reconciled'); assert.ok(moved.at >= missedAt && moved.at <= Date.now());
+  assert.equal(moved.at, (await board.state()).projects.find(item => item.id === project.id).tasks.find(task => task.id === second.id).transitions.at(-1).at, 'with its original time');
   assert.ok((await index(dataDir, project.id)).tasks[card.id], 'earlier knowledge kept');
   assert.equal(calls.length, 0);
 });
@@ -76,6 +79,11 @@ test('chat is read-only, scoped, cached and isolated per project', async t => {
   assert.equal(calls[0].prompt.includes('Blog'), false, 'another project never leaks in');
   assert.deepEqual(answer.refs.map(ref => ref.ref).sort(), [`T${card.number}`, 'run:run-bbbb'].sort(), 'only references that exist in the evidence become links');
   assert.equal(answer.refs.find(ref => ref.kind === 'task').taskId, card.id);
+  // One call in an empty temporary folder, removed afterwards, also when the call fails.
+  assert.match(calls[0].cwd, /pb-coordinator-/); await assert.rejects(stat(calls[0].cwd), { code: 'ENOENT' });
+  let failedIn = '';
+  await assert.rejects(coordinator.ask(project.id, { question: 'Fails?', provider: 'codex' }, { runner: async call => { failedIn = call.cwd; assert.deepEqual(await readdir(call.cwd), []); throw new Error('quota'); } }), /quota/);
+  await assert.rejects(stat(failedIn), { code: 'ENOENT' });
   // The same question on the same evidence is answered from the cache.
   const cached = await coordinator.ask(project.id, { question: 'what happened to checkout?', scope: { kind: 'task', id: card.id }, provider: 'codex' }, { runner });
   assert.equal(cached.cached, true); assert.equal(calls.length, 1);
@@ -135,4 +143,90 @@ test('a deleted card, an unknown project, another board’s design and a reused 
   const fresh = await coordinator.view(project.id);
   assert.equal(fresh.chat.length, 0); assert.equal(fresh.recent.some(event => event.task === card.id), false);
   assert.ok(fresh.knowledge.since >= reborn.createdAt);
+});
+
+test('closed or off, it starts no timer, reads no Git and calls no model; the same board gives byte-identical knowledge', { skip: process.platform === 'win32' }, async t => {
+  // Spies: a `git` on PATH that logs every call, the global timers, and the runner.
+  const real = await commandOnPath('git'), shim = await temp(t), log = join(shim, 'calls.log');
+  await writeFile(join(shim, 'git'), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\nexec '${real}' "$@"\n`, { mode: 0o755 });
+  const path = process.env.PATH; process.env.PATH = `${shim}${delimiter}${path}`; t.after(() => { process.env.PATH = path; });
+  const gitReads = async () => (await readFile(log, 'utf8').catch(() => '')).split('\n').filter(line => line.startsWith('log --no-merges')).length;
+  const root = await realpath(await temp(t)), sh = (...args) => execFileSync(real, args, { cwd: root, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } }).trim();
+  sh('init', '-q', '-b', 'trunk'); sh('config', 'user.email', 't@e'); sh('config', 'user.name', 'T');
+  await writeFile(join(root, 'a.txt'), '1\n'); sh('add', '.'); sh('commit', '-q', '-m', 'init');
+  const before = sh('rev-parse', 'HEAD'); await writeFile(join(root, 'a.txt'), '2\n'); sh('commit', '-q', '-am', 'Add the parser'); const after = sh('rev-parse', 'HEAD');
+  const dataDir = await temp(t), board = new Board({ dataDir }), calls = [], runner = async call => { calls.push(call); return { text: 'Done.' }; };
+  const project = await board.createProject({ name: 'Shop' });
+  await board.linkRepository(project.id, { path: root, expectedRevision: 1 });
+  const task = await board.createTask({ projectId: project.id, title: 'Parser', prompt: 'Build it.' });
+  await board.moveTask(task.id, { column: 'executing', expectedRevision: 1 });
+  await board.completeTask(task.id, { kind: 'merged', details: { targetBranch: 'trunk', previousTarget: before, mergedCommit: after, method: 'fast-forward', commits: 1, trigger: 'user' } });
+  const coordinator = new Coordinator({ dataDir, board });
+  assert.equal(await gitReads(), 0, 'never viewed: nothing is read');
+  await coordinator.view(project.id);
+  assert.equal(await gitReads(), 1, 'viewing reads the task commits once');
+  assert.ok((await index(dataDir, project.id)).events.some(event => event.kind === 'commit' && event.commit === after));
+  const bytes = await readFile(file(dataDir, project.id));
+  await coordinator.view(project.id); await coordinator.reconcile(project.id, { force: true });
+  assert.equal(await gitReads(), 2, 'a view within 5 s reads nothing; a forced update reads again');
+  assert.ok(bytes.equals(await readFile(file(dataDir, project.id))), 'the same board gives byte-identical knowledge');
+  await coordinator.setEnabled(project.id, false);
+  const reads = await gitReads(), timers = [], saved = { setTimeout, setInterval, setImmediate };
+  for (const name of Object.keys(saved)) globalThis[name] = (...args) => { timers.push(name); return saved[name](...args); };
+  try {
+    for (let n = 0; n < 3; n++) await coordinator.view(project.id);
+    await assert.rejects(coordinator.ask(project.id, { question: 'Status?', provider: 'codex' }, { runner }), { code: 'COORDINATOR_OFF' });
+  } finally { Object.assign(globalThis, saved); }
+  assert.deepEqual([await gitReads() - reads, timers, calls.length], [0, [], 0], 'off: no Git read, no timer, no model call');
+});
+
+test('the index holds what the board still has: deleted cards and notes leave it, and a full index stays unchanged', async t => {
+  const { dataDir, board, project, card, second, calls, runner, coordinator } = await world(t);
+  const note = await board.addTimelineNote(project.id, { title: 'Private plan', text: 'Ship on Friday.', at: Date.now() });
+  await coordinator.view(project.id);
+  assert.ok((await index(dataDir, project.id)).events.some(event => event.id === `note:${note.id}`));
+  await board.deleteTimelineNote(project.id, note.id);
+  await board.deleteTask(second.id, { expectedRevision: second.revision });
+  await coordinator.reconcile(project.id, { force: true });
+  const kept = await index(dataDir, project.id);
+  assert.equal(kept.events.some(event => event.id === `note:${note.id}` || event.task === second.id), false, 'a deleted note or card is not kept');
+  assert.ok(kept.events.some(event => event.task === card.id));
+  assert.equal((await coordinator.view(project.id)).recent.some(event => event.task === second.id), false);
+  await coordinator.ask(project.id, { question: 'Any plans?', provider: 'codex' }, { runner });
+  assert.equal(calls.at(-1).prompt.includes('Private plan'), false, 'a deleted note never reaches the model');
+  // More events than the index keeps: the oldest stay out, and an unchanged board changes nothing.
+  await board.store.update(draft => { for (let n = 0; n < 3100; n++) draft.runs.push({ id: `run-${String(n).padStart(6, '0')}`, taskId: card.id, projectId: project.id, stage: 'executing', status: 'succeeded', createdAt: n + 1, startedAt: n + 1, endedAt: n + 2, config: { provider: 'codex' } }); });
+  await coordinator.reconcile(project.id, { force: true });
+  const full = await readFile(file(dataDir, project.id)), stored = await index(dataDir, project.id);
+  assert.equal(stored.events.length, 3000);
+  assert.deepEqual(await coordinator.reconcile(project.id, { force: true }).then(({ added, updated }) => [added, updated]), [0, 0]);
+  assert.ok(full.equals(await readFile(file(dataDir, project.id))), 'no new snapshot for an unchanged board');
+});
+
+test('a damaged index or chat is kept aside, never overwritten by the next saves', async t => {
+  const { dataDir, project, runner, coordinator } = await world(t);
+  const chat = file(dataDir, project.id).replace(/\.json\.gz$/, '.chat.json.gz');
+  await mkdir(join(dataDir, 'coordinator'), { recursive: true });
+  await writeFile(file(dataDir, project.id), 'not gzip'); await writeFile(chat, 'damaged chat');
+  assert.equal((await coordinator.view(project.id)).enabled, true, 'the knowledge is rebuilt from the board');
+  for (const question of ['First?', 'Second?']) await coordinator.ask(project.id, { question, provider: 'codex' }, { runner });
+  const names = await readdir(join(dataDir, 'coordinator')), kept = await Promise.all(names.filter(name => name.includes('.corrupt-')).map(name => readFile(join(dataDir, 'coordinator', name), 'utf8')));
+  assert.deepEqual(kept.sort(), ['damaged chat', 'not gzip']);
+  assert.equal((await coordinator.view(project.id)).chat.length, 4);
+});
+
+test('evidence and answers are bounded', async t => {
+  const { board, project, calls, coordinator } = await world(t);
+  await board.store.update(draft => {
+    const target = draft.projects.find(item => item.id === project.id);
+    for (let n = 0; n < 60; n++) {
+      const id = `bulk-${n}`;
+      target.tasks.push({ ...target.tasks[0], id, number: 100 + n, title: `Bulk ${n}`, prompt: '', evidence: { tests: { id: `t${n}`, status: 'failed', endedAt: Date.now() } } });
+    }
+  });
+  const long = `${'Line [T1].\n'.repeat(4000)}`;
+  const result = await coordinator.ask(project.id, { question: 'What is blocked?', provider: 'codex' }, { runner: async call => { calls.push(call); return { text: long }; } });
+  assert.ok(calls[0].prompt.split('\n').filter(line => line.includes('The tests failed.')).length <= 40, 'at most 40 blockers');
+  assert.ok(result.answer.length <= 20000 && result.answer.includes('\n'), 'the stored answer is clipped, its lines kept');
+  assert.equal((await coordinator.view(project.id)).chat.at(-1).text, result.answer);
 });

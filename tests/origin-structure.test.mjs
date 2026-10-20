@@ -218,3 +218,13 @@ test('resetting the structure keeps a copy of the project first; blank removes e
   assert.equal(M.phaseList(back.blueprint).length, 5);
   assert.equal(back.blueprint.requirements.length, 0, 'restoring the default structure brings the sections back, empty');
 });
+
+test('restoring the default brings back removed topics and vision questions, also when sections come back with them', () => {
+  const bp = M.emptyBlueprint();
+  M.removeTopic(bp, 'security', 'secrets'); M.removeVisionField(bp, 'constraints'); M.removePage(bp, 'testing');
+  M.restoreDefaultStructure(bp);
+  const restored = M.normalizeBlueprint(bp).blueprint;
+  assert.equal(M.hasPage(restored, 'testing'), true);
+  assert.deepEqual(M.topicsOf(restored, 'security'), M.AREAS.security, 'the removed topic is back, in the built-in order');
+  assert.deepEqual(M.visionFields(restored), M.VISION_SHOWN);
+});

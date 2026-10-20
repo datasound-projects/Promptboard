@@ -198,6 +198,21 @@ for (const [signal, phase] of [['SIGINT', 'generation'], ['SIGTERM', 'model disc
   });
 }
 
+test('stopping the app closes a folder picker that is still open', { skip: !['darwin', 'linux'].includes(process.platform), timeout: 20000 }, async t => {
+  const { dir } = await fixture(t);
+  // Stand-ins for osascript and zenity: they record their process ID, then wait like an open dialog.
+  for (const name of ['osascript', 'zenity']) await writeFile(join(dir, name), `#!/bin/sh\necho $$ > "${join(dir, 'picker.pid')}"\nexec /bin/sleep 600\n`, { mode: 0o755 });
+  const app = await startApp(t, dir, await freePort());
+  const picked = fetch(app.url + '/api/folder/choose', { method: 'POST', headers: { 'x-ste-token': app.token } }).catch(() => {});
+  let pid;
+  await waitFor(async () => (pid = Number(await readFile(join(dir, 'picker.pid'), 'utf8').catch(() => ''))) > 0, 'picker open', 5000);
+  t.after(() => { try { process.kill(pid, 'SIGKILL'); } catch {} });
+  app.child.kill('SIGTERM');
+  assert.equal((await app.exited).code, 0, app.output());
+  await picked;
+  await waitFor(() => { try { process.kill(pid, 0); return false; } catch (error) { return error.code === 'ESRCH'; } }, 'the picker stops with the app', 3000);
+});
+
 test('a port held by another process is reported and that process is left alone', { skip: process.platform === 'win32', timeout: 10000 }, async t => {
   const dataDir = await mkdtemp(join(tmpdir(), 'pb-port-fixture-'));
   t.after(() => rm(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));

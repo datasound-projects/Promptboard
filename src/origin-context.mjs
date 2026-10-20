@@ -44,7 +44,8 @@ export const FIELDS = {
   layers: ['name', 'description', 'technologyIds', 'constraints'],
   customSections: ['phase', 'title', 'description', 'notApplicable'],
   questions: ['scope', 'sectionId', 'text'],
-  blocks: ['sectionId', 'type', 'title', 'text', 'entries', 'checks', 'columns', 'rows', 'nodes', 'edges'],
+  // `starter` only marks a template's block as untouched; it is bookkeeping, not design content.
+  blocks: ['sectionId', 'type', 'title', 'starter', 'text', 'entries', 'checks', 'columns', 'rows', 'nodes', 'edges'],
 };
 // `sequence` only reserves the next display key; it is application bookkeeping, not design content.
 // `structure` is the sidebar itself: the export follows it (categories, their pages, shown topics and vision fields).
@@ -77,12 +78,13 @@ function exporter(record) {
   };
   const inline = (value, where, fallback = '') => { const text = escapeInline(clean(value, where).replace(/\s+/g, ' ').trim()); return text || fallback; };
   const block = (value, where) => {
-    const text = clean(value, where).replace(/^\s*\n/, '').replace(/\s+$/, '');
+    // trimEnd, not /\s+$/: that regex rescans a long run of spaces from each of its positions.
+    const text = clean(value, where).replace(/^\s*\n/, '').trimEnd();
     if (!text.trim()) return '';
     return UNSAFE.test(text) ? fence(text) : text;
   };
   const listOf = (value, where) => {
-    const text = clean(value, where).replace(/\s+$/, '');
+    const text = clean(value, where).trimEnd();
     if (!text.trim()) return '';
     if (UNSAFE.test(text)) return fence(text);
     return text.split('\n').filter(line => line.trim()).map(line => `- ${line.replace(/^\s*(?:[-*•]|\d+[.)])\s+/, '').trim()}`).join('\n');
@@ -443,13 +445,16 @@ export class ContextStore {
   }
   /** The metadata, or its previous good copy when it is damaged. No file at all means no document; a damaged one without a good copy is reported. */
   async #meta(folder) {
-    let found = false;
-    const meta = await readWithBackup([join(folder, META), join(folder, `${META}.bak`)], bytes => {
+    let found = false, damaged = false;
+    const meta = await readWithBackup([join(folder, META), join(folder, `${META}.bak`)], (bytes, path) => {
       found = true;
-      let meta; try { meta = JSON.parse(bytes); } catch { return; }
+      let meta; try { meta = JSON.parse(bytes); } catch {}
       if (meta?.schema === SCHEMA && meta.version > 1) throw new OriginError('This Project Context was saved by a newer Promptboard version. Update the app; the file was not changed.', 'CONTEXT_VERSION_UNSUPPORTED', 409);
       if (meta?.schema === SCHEMA && meta.version === 1 && Array.isArray(meta.versions) && meta.versions.some(version => version.id === meta.activeVersionId)) return meta;
+      damaged ||= path === join(folder, META);
     });
+    // A damaged file beside a good backup is kept aside; the next save would otherwise make it the backup.
+    if (meta && damaged) await rename(join(folder, META), join(folder, `document.corrupt-${Date.now()}-${randomUUID().slice(0, 8)}.json`));
     if (meta || !found) return meta ?? null;
     throw new OriginError('The Project Context file is damaged and no good copy was found. Create Context starts a new document and keeps the damaged files in the app data folder.', 'CONTEXT_DAMAGED', 500);
   }

@@ -299,6 +299,17 @@ test('Origin restores a damaged project file and refuses stale saves without tou
   await wait(`document.querySelector('#origin-view').dataset.save === 'conflict'`, 'conflict shown', 15000);
   assert.match(await ev(`return document.querySelector('#origin-error').textContent;`), /changed in another window/);
   assert.equal((await blueprintFile(app, created.id)).blueprint.idea, 'Saved elsewhere', 'The newer save was not overwritten.');
+  // The longer save state wraps the header instead of drawing its controls over each other.
+  await browser.resize(1280, 900);
+  assert.equal(await browser.layout(`const boxes = ['#origin-kanban-link', '#origin-new-project', '#origin-context-open', '#origin-readiness', '#origin-save'].map(s => document.querySelector(s).getBoundingClientRect()).filter(b => b.width);
+    return boxes.length === 5 && boxes.every((a, i) => boxes.every((b, j) => i === j || a.right <= b.left + 1 || b.right <= a.left + 1 || a.bottom <= b.top + 1 || b.bottom <= a.top + 1));`), true);
+  // Leaving Origin and coming back saves nothing over it and keeps the page responsive.
+  await ev(`location.hash = '#/kanban';`);
+  const answer = await Promise.race([ev(`await new Promise(requestAnimationFrame); return location.hash;`), new Promise(resolve => setTimeout(() => resolve('page frozen'), 5000))]);
+  assert.equal(answer, '#/kanban');
+  await ev(`location.hash = '#/origin';`);
+  await wait(`document.querySelector('#origin-view').dataset.save === 'conflict' && document.querySelector('#origin-main textarea')?.value === 'Local edit'`, 'the conflict and the local edit are still there');
+  assert.equal((await blueprintFile(app, created.id)).blueprint.idea, 'Saved elsewhere');
   await ev(`[...document.querySelectorAll('#origin-save button')].find(b => b.textContent === 'Reload saved version').click();`);
   await wait(`document.querySelector('#origin-view').dataset.save === 'saved' && document.querySelector('#origin-error').hidden`, 'reloaded saved version');
   assert.equal((await app.board.view()).projects[0].tasks[0].prompt, 'Still here.');
@@ -736,6 +747,10 @@ test('Origin Send to Kanban asks before including prerequisites, never duplicate
   const check = key => ev(`[...document.querySelectorAll('#origin-main .origin-row')].find(r => r.textContent.includes(${J(key)})).querySelector('.origin-check').click();`);
   await browser.goto(`${app.url}/#/origin`);
   await wait(`document.querySelector('.origin-map')`, 'map');
+  // A removal offers Undo; sending to Kanban afterwards ends it, so it can never take the new card links back.
+  await section('vision');
+  await ev(`const m = document.querySelector('[data-nav="menu:vision:goal"]').closest('details'); m.open = true; [...m.querySelectorAll('.origin-menu-item')].find(b => b.textContent === 'Remove question').click();`);
+  await wait(`!document.querySelector('#origin-undo').hidden`, 'undo offered');
   await section('plan');
   await check('IMP-002');
   await ev(`document.querySelector('#origin-kanban-handoff').click();`);
@@ -747,6 +762,7 @@ test('Origin Send to Kanban asks before including prerequisites, never duplicate
   await ev(`document.querySelector('#origin-handoff-confirm').click();`);
   await wait(`!document.querySelector('#origin-handoff-dialog .origin-handoff-results').hidden`, 'results', 15000);
   assert.deepEqual(await ev(`return [...document.querySelectorAll('#origin-handoff-dialog .origin-handoff-result')].map(node => node.textContent);`), ['IMP-001 → Kanban #1', 'IMP-002 → Kanban #2']);
+  assert.equal(await ev(`return document.querySelector('#origin-undo').hidden;`), true, 'no Undo from before the cards were made');
   await ev(`[...document.querySelectorAll('#origin-handoff-dialog button')].find(b => b.textContent === 'Done').click();`);
   await wait(`!document.querySelector('#origin-handoff-dialog').open && /Kanban #2 · /.test(document.querySelector('#origin-main').textContent)`, 'rows show the cards');
   // Sending the same tasks again returns the existing cards.
