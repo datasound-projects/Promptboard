@@ -6090,7 +6090,7 @@ $('#autopilot-save').addEventListener('click', () => saveAutopilot(false));
 $('#autopilot-form').addEventListener('submit', event => { event.preventDefault(); saveAutopilot(true); });
 
 // Base owns its own metadata/content requests, with only these explicit application seams.
-baseView = window.PromptboardBase?.create({ api, announce, ensureBoard: loadBoard, refreshBoard: loadBoard, agentFields, readAgentFields, closeSidebar: () => setSidebar(false),
+baseView = window.PromptboardBase?.create({ api, announce, ensureBoard: loadBoard, refreshBoard: loadBoard, agentFields, readAgentFields, closeSidebar: () => setSidebar(false), remote: () => Boolean(remoteSession),
   acceptBoard: next => { acceptBoard(next); renderBoard(); } }) || null;
 window.PromptboardBaseView = baseView;
 // Origin owns its blueprint requests. It reaches Compose and Kanban only through these explicit seams,

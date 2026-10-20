@@ -116,7 +116,7 @@ test('Base export includes dependency closure and optional content; imports rema
   const { base } = await setup(t), resource = await base.create(skill()), pack = await base.create({ kind: 'pack', name: 'P', configuration: { resources: [{ resourceId: resource.id, required: false }] } });
   const metadataOnly = await base.export({ ids: [pack.id] }); assert.equal(metadataOnly.resources.length, 2); assert.equal(JSON.stringify(metadataOnly).includes('Preserve the public interface.'), false);
   const bundle = await base.export({ ids: [pack.id], includeContent: true }), preview = await base.previewImport(bundle);
-  const imported = await base.import(bundle, { remap: preview.remap, expectedBaseRevision: preview.revision });
+  const imported = await base.import(bundle, { remap: preview.remap, expectedBaseRevision: preview.expectedBaseRevision });
   const copy = await base.detail(imported.remap[pack.id]); assert.equal(copy.configuration.resources[0].resourceId, imported.remap[resource.id]); assert.notEqual(copy.id, pack.id);
   for (const item of imported.resources) { assert.equal(item.trust, 'untrusted'); assert.equal(item.enabled, false); }
   assert.equal((await base.detail(imported.remap[resource.id])).content.body, 'Preserve the public interface.');
@@ -232,4 +232,38 @@ test('explicit library type maps Agents to existing profiles and preserves legac
   await store.update(state => { delete state.base.resources[0].type; });
   assert.equal((await base.list()).resources[0].type, 'agent', 'Legacy stored kind remains the explicit source of type.');
   assert.equal((await base.readRevision(profile.revisionRef)).type, 'agent');
+});
+
+test('the library lists where each resource is used in one pass over runs and targets, with the same uses as usedBy', async t => {
+  const { store, base } = await setup(t), first = await base.create(skill('First')), second = await base.create({ ...skill('Second'), dependencies: [{ resourceId: first.id, required: true }] });
+  await targets(store);
+  await store.update(state => {
+    state.projects[0].baseBinding = { mode: 'extend', include: [{ resourceId: first.id, required: true }], exclude: [second.id] };
+    state.settings.pendingBaseImport = { baseBinding: binding(second) };
+    for (let i = 0; i < 30; i++) state.runs.push({ id: `run${i}`, stage: 'executing', status: i ? 'completed' : 'running', baseManifest: { resources: [{ resourceId: i % 2 ? first.id : second.id }], profiles: [] } });
+  });
+  const state = await store.read(), runs = state.runs; let passes = 0;
+  // Counts every walk over the runs: one per library listing, however many resources there are.
+  Object.defineProperty(state, 'runs', { configurable: true, get: () => { passes++; return runs; } });
+  t.after(() => Object.defineProperty(state, 'runs', { configurable: true, writable: true, value: runs }));
+  const listed = await base.list();
+  assert.equal(passes, 1);
+  for (const resource of listed.resources) assert.deepEqual(resource.usedBy, usedBy(state, resource.id));
+  assert.deepEqual(listed.resources.find(resource => resource.id === first.id).usedBy.map(use => use.kind), ['resource', 'assignment', ...Array(15).fill('run')]);
+  assert.deepEqual(listed.resources.find(resource => resource.id === second.id).usedBy.map(use => use.kind), ['assignment', 'pending-assignment', ...Array(15).fill('run')]);
+});
+
+test('a Custom MD file exported without document bodies imports as omitted, never as an empty file that looks ready', async t => {
+  const { base } = await setup(t), file = await base.create({ kind: 'markdown', name: 'SOUL.md', configuration: { fileName: 'SOUL.md' }, content: { body: '# Soul\nPRIVATE PRINCIPLES' } });
+  const bundle = await base.export({ ids: [file.id] });
+  assert.equal(JSON.stringify(bundle).includes('PRIVATE PRINCIPLES'), false);
+  assert.equal(bundle.resources[0].contentStatus, 'omitted');
+  const imported = await base.import(bundle);
+  assert.match(imported.warnings.join(' '), /“SOUL\.md” has no exported document content/);
+  assert.equal((await base.detail(imported.remap[file.id])).contentStatus, 'omitted');
+  // An export made before this fix carried no content and said "available": it imports as omitted too.
+  const older = await base.import({ ...bundle, resources: bundle.resources.map(resource => ({ ...resource, contentStatus: 'available' })) });
+  assert.equal((await base.detail(older.remap[file.id])).contentStatus, 'omitted');
+  const full = await base.import(await base.export({ ids: [file.id], includeContent: true }));
+  assert.deepEqual([(await base.detail(full.remap[file.id])).contentStatus, (await base.detail(full.remap[file.id])).content.body], ['available', '# Soul\nPRIVATE PRINCIPLES']);
 });

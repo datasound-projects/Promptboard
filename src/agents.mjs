@@ -43,7 +43,7 @@ export const ADAPTERS = Object.freeze({
       planning: { supported: true, how: 'Native plan permission mode, with built-in tools limited to Read, Grep, and Glob, and no MCP servers. File changes and plan exit are not available in this session.' },
       execution: { supported: true, how: 'Permission mode acceptEdits (default) or default (ask for every change). File edits are limited to the task worktree.' },
       interactiveInput: true,
-      base: { instruction: true, context: true, subagents: true, mcp: ['stdio', 'streamable-http', 'tool-reference'], isolation: 'strict per-run MCP configuration' },
+      base: { instruction: true, context: true, subagents: true, mcp: ['stdio', 'streamable-http', 'tool-reference'], isolation: 'per-run MCP configuration added to the CLI’s own; strict (no MCP servers) in read-only stages' },
       completionEvents: 'Claude Code hooks (SessionStart, UserPromptSubmit, PermissionRequest, Notification, Stop, StopFailure), passed with --settings in exec form.',
       waitingEvents: true,
       cancellation: true,
@@ -78,7 +78,7 @@ export const ADAPTERS = Object.freeze({
       planning: { supported: true, how: 'Native plan approval mode (experimental in Gemini CLI 0.30; enabled for the planning session only) plus a Promptboard policy that denies file-writing tools, shell commands, plan exit, and MCP tools, so the session cannot start implementation.' },
       execution: { supported: true, how: 'Approval mode auto_edit (default) or default (ask for every tool).' },
       interactiveInput: true,
-      base: { instruction: true, context: true, mcp: ['stdio', 'streamable-http', 'tool-reference'], isolation: 'per-run MCP server allowlist; administrator settings preserved' },
+      base: { instruction: true, context: true, mcp: ['stdio', 'streamable-http', 'tool-reference'], isolation: 'per-run MCP servers merged into the system settings; administrator settings preserved' },
       completionEvents: 'Gemini CLI hooks (SessionStart, BeforeAgent, AfterAgent, Notification) from a merged system settings file.',
       waitingEvents: true,
       cancellation: true,
@@ -216,8 +216,9 @@ export async function buildSession({ provider, stage, config, message, runDir, e
     if (provider === 'gemini') { item.trust = false; item.timeout = 15000; if (server.disabledTools?.length) item.excludeTools = [...server.disabledTools]; }
     return [server.name, item];
   }));
-  // Claude Code names an MCP tool mcp__<server>__<tool>; switched-off tools are disallowed by that name.
-  const mcpDisallowed = selected.flatMap(server => (server.disabledTools || []).map(tool => `mcp__${server.name}__${tool}`));
+  // Claude Code names an MCP tool mcp__<server>__<tool>, each part with characters other than letters, digits, _ and -
+  // replaced by _ (a tool named docs.search is mcp__<server>__docs_search); switched-off tools are disallowed by that name.
+  const mcpDisallowed = selected.flatMap(server => (server.disabledTools || []).map(tool => `mcp__${server.name}__${tool.replace(/[^A-Za-z0-9_-]/g, '_')}`));
   let args;
   if (provider === 'claude') {
     const hook = { type: 'command', command: nodePath, args: [HOOK_SCRIPT, eventsFile, 'claude'] };

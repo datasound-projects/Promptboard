@@ -7,7 +7,8 @@ import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { normalizeReferences } from '../src/base.mjs';
+import { Base, normalizeReferences } from '../src/base.mjs';
+import { Store } from '../src/store.mjs';
 import { resolveBase, profileDefaults } from '../src/base-resolver.mjs';
 import { prepareBase } from '../src/base-context.mjs';
 import { buildSession, resolveConfig } from '../src/agents.mjs';
@@ -94,6 +95,30 @@ test('switched-off MCP tools are withheld by each CLI; Markdown is delivered as 
   }
 });
 
+test('a switched-off MCP tool whose name has a dot is disallowed under the name Claude Code gives it', async t => {
+  const dir = await temp(t), docs = resource('docs', 'mcp', { transport: 'stdio', command: 'docs-mcp', args: [], env: {}, headers: {}, disabledTools: ['docs.delete'] });
+  const registry = state(docs), manifest = resolveBase({ state: registry, project: { id: 'p', baseBinding: { mode: 'extend', include: [{ resourceId: 'docs', required: true }], exclude: [] } }, task: {}, columnId: 'executing', provider: 'claude' });
+  const prepared = await prepareBase({ manifest, currentResources: registry.base.resources, readRevision: async () => structuredClone(docs), runDir: dir });
+  const args = (await buildSession({ provider: 'claude', stage: 'executing', config: resolveConfig('executing', { provider: 'claude' }), message: 'task', runDir: dir, eventsFile: 'events', sessionId: 's', baseDelivery: prepared })).args;
+  assert.match(args[args.indexOf('--disallowedTools') + 1], /(?:^|,)mcp__pb_docs__docs_delete(?:,|$)/, 'Claude Code replaces the dot with _ in the tool name');
+  // The per-run MCP configuration is temporary: the run's cleanup removes it.
+  assert.equal(args[args.indexOf('--mcp-config') + 1], join(dir, 'base-claude-mcp.json')); await readFile(join(dir, 'base-claude-mcp.json'));
+  await prepared.cleanup(); await assert.rejects(readFile(join(dir, 'base-claude-mcp.json')), { code: 'ENOENT' });
+});
+
+test('an agent profile delivers its primary agent’s own instructions, and the primary’s nested agents stay subagents', async t => {
+  const helper = resource('helper', 'profile', { agent: { instructions: 'Help with tests.' }, binding: { mode: 'inherit', include: [], exclude: [] } });
+  const lead = resource('lead', 'profile', { agent: { provider: 'claude', instructions: 'LEAD OWN INSTRUCTIONS' }, binding: { mode: 'extend', include: [{ resourceId: 'helper', required: false }], exclude: [] } });
+  const team = resource('team', 'agentProfile', { instructions: 'PROFILE INSTRUCTIONS', agents: [{ resourceId: 'lead', role: 'primary', responsibility: '' }], resources: [] });
+  const registry = state(helper, lead, team), definitions = new Map(registry.base.resources.map(entry => [entry.id, entry]));
+  const manifest = resolveBase({ state: registry, project: { id: 'p', agentProfileId: 'team' }, task: {}, columnId: 'executing', provider: 'claude' });
+  assert.deepEqual(manifest.errors, []);
+  assert.equal(manifest.resources.find(entry => entry.resourceId === 'helper').delivery, 'native-subagent', 'as when the agent is assigned directly');
+  const prepared = await prepareBase({ manifest, currentResources: registry.base.resources, readRevision: async ref => structuredClone(definitions.get(ref.id)), runDir: await temp(t) });
+  assert.match(prepared.sections, /LEAD OWN INSTRUCTIONS[\s\S]*PROFILE INSTRUCTIONS/, 'the agent’s instructions, then the profile’s');
+  assert.deepEqual(Object.keys(prepared.subagents), ['pb_helper']);
+});
+
 test('Markdown names, conventions, frontmatter and activation are checked', () => {
   assert.equal(markdownFileName('.github/instructions/api.instructions.md'), '.github/instructions/api.instructions.md');
   for (const bad of ['/etc/AGENTS.md', '../AGENTS.md', 'notes.txt', 'SKILL.md', 'node_modules/AGENTS.md', 'rules.mdc']) assert.throws(() => markdownFileName(bad), undefined, bad);
@@ -120,6 +145,21 @@ test('MCP configurations import without copying secrets; duplicates and credenti
   assert.deepEqual([by('leaky').importable, by('old').importable, by('again').importable, by('again').duplicateOf.name], [false, false, false, 'Existing']);
   const created = mcpResourceFrom(by('github'), 'Claude Desktop');
   assert.deepEqual([created.enabled, created.trust, created.configuration.env], [false, 'untrusted', { GITHUB_PERSONAL_ACCESS_TOKEN: 'GITHUB_PERSONAL_ACCESS_TOKEN' }]);
+});
+
+test('a credential typed into an MCP or recipe argument is refused as in imports; saved ones and long folder paths keep working', async t => {
+  const dir = await temp(t), store = new Store(dir), base = new Base({ store });
+  const server = args => ({ kind: 'mcp', name: 'Docs', configuration: { transport: 'stdio', command: 'docs-mcp', args } });
+  await assert.rejects(base.create(server(['--api-key=sk-abcdefghijklmnop'])), /looks like a credential/);
+  await assert.rejects(base.create({ kind: 'tool', name: 'Deploy', configuration: { command: 'deploy', args: ['--token=abc123def456'] } }), /looks like a credential/);
+  const folder = '/Users/someone/Documents/research-notes/archive-2026';
+  assert.equal(parseMcpConfig(JSON.stringify({ mcpServers: { notes: { command: 'notes-mcp', args: [folder] } } }), { environment: {} }).servers[0].importable, true, 'an absolute folder path is not a token');
+  const saved = await base.create(server([folder]));
+  // A server saved with such an argument before this check (here through a Promptboard export) can still be edited.
+  const legacy = (await base.import({ kind: 'promptboard-base', version: 1, resources: [{ id: 'old', ...server(['--api-key=sk-abcdefghijklmnop']) }] })).resources[0];
+  const renamed = await base.update(legacy.id, { name: 'Docs (old)' }, { expectedRevision: legacy.revision });
+  assert.deepEqual([renamed.name, (await base.detail(legacy.id)).configuration.args], ['Docs (old)', ['--api-key=sk-abcdefghijklmnop']]);
+  await assert.rejects(base.update(saved.id, { configuration: { ...server([folder, '--secret=hunter2']).configuration } }, { expectedRevision: saved.revision }), /looks like a credential/);
 });
 
 test('repository instruction files are found read-only, imported once, and written back only after a matching preview', async t => {
@@ -160,6 +200,7 @@ test('Base routes: import a repository’s files and an MCP configuration, deplo
   assert.equal((await call(`/api/base/resources/${listed.id}/deploy`, 'POST', { projectId: project.id, confirm: true })).json.code, 'BASE_TRUST_REQUIRED', 'untrusted files are never written into repositories');
   const version = (await call(`/api/base/resources/${listed.id}/override`, 'POST', { projectId: project.id })).json.resource;
   assert.deepEqual(version.configuration.override, { of: listed.id, projectId: project.id });
+  assert.equal(version.trust, 'untrusted', 'a project version of an imported file still waits for review');
   assert.equal((await call(`/api/base/resources/${listed.id}/override`, 'POST', { projectId: project.id })).status, 400, 'one version per project');
   // MCP: preview, then import only the importable server, switched off and untrusted.
   const json = JSON.stringify({ mcpServers: { files: { command: 'node', args: ['server.js'], env: { ROOT: '/tmp' } }, bad: { command: 'x', args: ['--token=abc123def456'] } } });

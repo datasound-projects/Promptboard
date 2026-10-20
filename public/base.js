@@ -11,6 +11,8 @@ window.PromptboardBase = (() => {
   const ICONS = { profile: '◉', agentProfile: '◎', pack: '▦', mcp: '⇄', skill: '✦', knowledge: '❖', context: '⌗', tool: '⚒', markdown: '¶' };
   const PROVIDERS = [['claude', 'Claude Code'], ['codex', 'Codex'], ['gemini', 'Gemini CLI'], ['agy', 'Antigravity']];
   const INHERIT = { mode: 'inherit', include: [], exclude: [] };
+  // What an import accepts (BASE_LIMITS.importBytes), measured compact as the export measures it: earlier exports were saved indented.
+  const IMPORT_BYTES = 12 * 1024 * 1024;
   const el = (tag, text, className = '') => { const node = document.createElement(tag); if (text !== undefined) node.textContent = text; if (className) node.className = className; return node; };
   const p = text => el('p', text, 'note');
   const button = (text, handler, className = 'secondary-button') => { const node = el('button', text, className); node.type = 'button'; node.addEventListener('click', handler); return node; };
@@ -119,7 +121,7 @@ window.PromptboardBase = (() => {
       if (['grid', 'list'].includes(saved.viewMode)) viewState.viewMode = saved.viewMode;
     } catch { /* Invalid or unavailable browser preferences use the library defaults. */ }
     let category = viewState.category, chosen = null, editingKind = null, loading = null, requestVersion = 0;
-    let loadVersion = 0, loadError = '', resultLoading = false, libraryScroll = 0;
+    let loadVersion = 0, loadError = '', resultLoading = false, libraryScroll = 0, focusKey = null;
     const typeOf = item => item.type || (item.kind === 'profile' ? 'agent' : item.kind);
     const categoryKind = () => category === 'agent' ? 'profile' : category;
     function persistView() {
@@ -147,9 +149,16 @@ window.PromptboardBase = (() => {
     };
     async function request(path, options) {
       const { response, data } = await context.api(path, options);
-      if (!response.ok) throw Object.assign(new Error(data.error || 'Base could not complete this request.'), { code: data.code, data });
+      if (!response.ok) {
+        // Base changed elsewhere (another window, an import): read it again, so the next attempt is checked against it.
+        if (data.code === 'BASE_REVISION_CONFLICT') await load(true).catch(() => {});
+        throw Object.assign(new Error(data.error || 'Base could not complete this request.'), { code: data.code, data });
+      }
       accept(data); return data;
     }
+    // A write sent with the page's Base revision is sent once more after that reload. Resource and target revisions,
+    // and the server's checks, still refuse a real conflict, so nothing changed elsewhere is overwritten.
+    const retried = send => send().catch(failure => { if (failure.code !== 'BASE_REVISION_CONFLICT') throw failure; return send(); });
     async function load(force = false) {
       if (loading && !force) return loading;
       const version = ++loadVersion;
@@ -197,12 +206,18 @@ window.PromptboardBase = (() => {
     function busyButton(label, action, className = 'secondary-button') {
       const node = button(label, async () => { node.disabled = true; try { await action(); } finally { node.disabled = false; } }, className); return node;
     }
-    const download = (name, data) => window.PromptboardDom.download(name, JSON.stringify(data, null, 2), 'application/json');
+    // The server's compact bytes: their size is the one the export checked against the import limit.
+    const download = (name, data) => window.PromptboardDom.download(name, JSON.stringify(data), 'application/json');
     function metadata(item) {
       const trust = item.trust || 'untrusted';
       return `${KINDS[item.kind] || item.kind} · ${item.enabled ? 'Available' : 'Disabled'} · ${trust} · r${item.revision}`;
     }
     function renderList() {
+      // The list is drawn again after every change and reload: keyboard focus stays on the same control (switch, ⓘ, ⋯)
+      // of the same resource, also across the Loading state in between, unless focus has moved elsewhere meanwhile.
+      const listNode = $('#base-list'), active = document.activeElement;
+      if (listNode.contains(active)) keepFocus(active);
+      else if (active && active !== document.body) focusKey = null;
       const query = $('#base-search').value.trim().toLocaleLowerCase();
       const kind = categoryKind();
       const list = state.resources.filter(item => (!category || typeOf(item) === category)
@@ -218,6 +233,9 @@ window.PromptboardBase = (() => {
       const waiting = resultLoading || (state.revision < 0 && !loadError);
       $('.base-list-panel').setAttribute('aria-busy', String(waiting));
       $('#base-list').replaceChildren(...(waiting || loadError ? [] : list.map(item => (item.kind === 'profile' ? agentCard(item) : resourceRow(item)))));
+      const row = focusKey?.control && [...listNode.querySelectorAll('[data-resource-id]')].find(node => node.dataset.resourceId === focusKey.id)?.closest('li');
+      const again = row?.querySelector(`.${focusKey.control}`);
+      if (again && (!document.activeElement || document.activeElement === document.body)) { again.focus(); focusKey = null; }
       const empty = $('#base-empty'); empty.hidden = !waiting && !loadError && list.length > 0; empty.replaceChildren();
       if (waiting) empty.append(p(`Loading ${category ? categoryLabel().toLowerCase() : 'resources'}…`));
       else if (loadError) {
@@ -274,11 +292,14 @@ window.PromptboardBase = (() => {
       row.append(open, toggle, info, rowMenu(item));
       return row;
     }
+    // Which control of which resource has focus, to give it back after the list is drawn again.
+    const keepFocus = node => { const id = node.closest('li')?.querySelector('[data-resource-id]')?.dataset.resourceId; focusKey = id ? { id, control: node.classList[0] } : null; };
     async function switchResource(item, on, control) {
+      if (document.activeElement === control) keepFocus(control); // Disabling the focused switch below drops its focus.
       control.disabled = true;
       try {
         const send = () => request(`/api/base/resources/${encodeURIComponent(item.id)}`, { method: 'PATCH', body: { enabled: on, expectedRevision: resource(item.id)?.revision ?? item.revision, expectedBaseRevision: state.revision } });
-        await send().catch(async failure => { if (failure.code !== 'BASE_REVISION_CONFLICT') throw failure; await load(true); return send(); });
+        await retried(send);
         await load(); status(`${item.name} switched ${on ? 'on' : 'off'}. It stays in Base with its configuration; ${on ? 'future runs can use it' : 'future runs leave it out everywhere'}.`);
       } catch (failure) { control.checked = !on; error(failure.message); } finally { control.disabled = false; }
     }
@@ -399,7 +420,7 @@ window.PromptboardBase = (() => {
       const box = el('div'); box.append(p('This backup contains global Base selections. Restoring them applies to future runs in every project that inherits them. Imported executable resources remain inactive and untrusted until reviewed.'), el('pre', JSON.stringify(pending, null, 2), 'base-code'));
       const fail = inlineError(box);
       box.append(actions(button('Cancel', closeDialog), busyButton('Restore global selections', async () => {
-        try { await request('/api/base/restore-global', { method: 'POST', body: { confirm: true, expectedBaseRevision: state.revision } }); await context.refreshBoard?.(); await load(); closeDialog(); status('Restored global Base selections. No runs started.'); }
+        try { await retried(() => request('/api/base/restore-global', { method: 'POST', body: { confirm: true, expectedBaseRevision: state.revision } })); await context.refreshBoard?.(); await load(); closeDialog(); status('Restored global Base selections. No runs started.'); }
         catch (error) { fail(error); }
       })));
       openDialog('Restore global selections', [box]);
@@ -407,8 +428,12 @@ window.PromptboardBase = (() => {
     // Less frequent actions wait under More, so the row stays Create.
     const more = el('details', undefined, 'origin-menu base-more'), moreList = el('div', undefined, 'origin-menu-list');
     const item = (text, run) => button(text, () => { more.open = false; run(); }, 'origin-menu-item');
-    moreList.append(item('Import MCP servers…', openMcpImport), item('Markdown file from a template…', openMarkdownTemplates), item('Import Markdown from a repository…', openMarkdownImport),
-      item('Import…', openImport), item('Export…', () => openExport()), item('Context7 preset', createContext7));
+    // Reading Claude Desktop's configuration or a project folder happens at the computer: a paired phone is refused them.
+    const localOnly = [item('Import MCP servers…', openMcpImport), item('Import Markdown from a repository…', openMarkdownImport)], atComputer = p('Importing MCP servers or repository files is done at the computer that runs Promptboard.');
+    moreList.append(localOnly[0], item('Markdown file from a template…', openMarkdownTemplates), localOnly[1],
+      item('Import…', openImport), item('Export…', () => openExport()), item('Context7 preset', createContext7), atComputer);
+    const placeLocalOnly = () => { const remote = Boolean(context.remote?.()); for (const node of localOnly) node.hidden = remote; atComputer.hidden = !remote; };
+    more.addEventListener('toggle', placeLocalOnly); placeLocalOnly();
     more.append(el('summary', 'More', 'secondary-button'), moreList);
     $('#base-actions').append(kindSelect, button('Create', createResource), more, restoreGlobals);
 
@@ -495,7 +520,6 @@ window.PromptboardBase = (() => {
       openDialog('Base resources', [p('Loading assignments…')]);
       try {
         await load();
-        const expectedBaseRevision = state.revision;
         const entry = state.targets.find(item => targetKey(item.target) === targetKey(target));
         if (!entry) throw new Error('This configuration target no longer exists. Reload the board.');
         const fields = bindingFields(entry.binding || INHERIT, { allowProfiles: false });
@@ -521,7 +545,7 @@ window.PromptboardBase = (() => {
         form.addEventListener('submit', async event => {
           event.preventDefault(); save.disabled = true; fail('');
           try {
-            await request('/api/base/apply', { method: 'POST', body: { expectedBaseRevision, changes: [{ target, binding: fields.read(), ...(canProfile ? { profileId: profile.value || null } : {}), expectedRevision: entry.revision }] } });
+            await retried(() => request('/api/base/apply', { method: 'POST', body: { expectedBaseRevision: state.revision, changes: [{ target, binding: fields.read(), ...(canProfile ? { profileId: profile.value || null } : {}), expectedRevision: entry.revision }] } }));
             await context.refreshBoard?.(); await load(); closeDialog(); context.announce?.('Base resources saved for future runs.');
           } catch (error) { fail(error); } finally { save.disabled = false; }
         });
@@ -590,9 +614,7 @@ window.PromptboardBase = (() => {
           const body = skillImport ? { markdown: skillImport.markdown, files: skillImport.files, name: name.value.trim(), description: description.value, tags: tags.value.split(',').map(value => value.trim()).filter(Boolean), expectedBaseRevision: state.revision }
             : { kind: item.kind, name: name.value.trim(), description: description.value, tags: tags.value.split(',').map(value => value.trim()).filter(Boolean), enabled: enabled.control.checked, trust: trust.value, dependencies: dependencies.read(), ...resourceValues, expectedBaseRevision: state.revision, ...(item.id ? { expectedRevision: item.revision } : {}) };
           const send = () => request(skillImport ? '/api/base/skills/import' : item.id ? `/api/base/resources/${encodeURIComponent(item.id)}` : '/api/base/resources', { method: item.id && !skillImport ? 'PATCH' : 'POST', body: { ...body, expectedBaseRevision: state.revision } });
-          // Base changed elsewhere (another window, an import): read it again and save once more. The resource's own
-          // revision and the server's checks still refuse a real conflict.
-          const data = await send().catch(async failure => { if (failure.code !== 'BASE_REVISION_CONFLICT') throw failure; await load(true); return send(); });
+          const data = await retried(send);
           const savedId = data.resource?.id || data.id || item.id;
           await load(); if (savedId && editorVersion === requestVersion) await openResource(savedId, true);
           status('Saved. No assignments changed.'); context.announce?.('Base resource saved.');
@@ -1090,7 +1112,7 @@ window.PromptboardBase = (() => {
           // Restoring saves that version's definition as a new revision; every revision stays in the history.
           ...(Number(selected.value) !== item.revision ? [busyButton('Restore this version', async () => {
             try {
-              await request(`/api/base/resources/${encodeURIComponent(item.id)}`, { method: 'PATCH', body: { configuration: saved.configuration, content: saved.content, expectedRevision: item.revision, expectedBaseRevision: state.revision } });
+              await retried(() => request(`/api/base/resources/${encodeURIComponent(item.id)}`, { method: 'PATCH', body: { configuration: saved.configuration, content: saved.content, expectedRevision: item.revision, expectedBaseRevision: state.revision } }));
               await load(); await openResource(item.id, true); status(`Restored revision ${selected.value} as a new revision. The history keeps every version.`);
             } catch (error) { output.append(el('p', error.message, 'inline-error')); }
           })] : [])); }
@@ -1115,7 +1137,7 @@ window.PromptboardBase = (() => {
         const roots = el('div');
         for (const root of state.approvedRoots) {
           const row = el('div'); row.append(p(root.path || root.id), busyButton('Revoke root approval', async () => {
-            try { await request(`/api/base/roots/${encodeURIComponent(root.id)}`, { method: 'DELETE', body: { expectedBaseRevision: state.revision } }); row.remove(); await load(); context.announce?.('External root approval revoked for future launches.'); }
+            try { await retried(() => request(`/api/base/roots/${encodeURIComponent(root.id)}`, { method: 'DELETE', body: { expectedBaseRevision: state.revision } })); row.remove(); await load(); context.announce?.('External root approval revoked for future launches.'); }
             catch (error) { fail(error); }
           }, 'text-button')); roots.append(row);
         }
@@ -1124,7 +1146,7 @@ window.PromptboardBase = (() => {
       form.addEventListener('submit', async event => {
         event.preventDefault(); if (!confirmation.control.checked) { fail('Confirm read access for this root.'); return; } save.disabled = true;
         try {
-          await request('/api/base/roots', { method: 'POST', body: { path: path.value, confirm: true, expectedBaseRevision: state.revision } }); await load(); closeDialog();
+          await retried(() => request('/api/base/roots', { method: 'POST', body: { path: path.value, confirm: true, expectedBaseRevision: state.revision } })); await load(); closeDialog();
           // An open context editor offers the new root at once; its unsaved draft stays.
           for (const pick of document.querySelectorAll('select.base-root-select')) for (const root of state.approvedRoots || []) if (![...pick.options].some(option => option.value === root.id)) pick.append(new Option(root.path || root.name || root.id, root.id));
           status('Root approved. Choose it for a source.');
@@ -1221,7 +1243,7 @@ window.PromptboardBase = (() => {
       file.addEventListener('change', async () => {
         const mine = ++ticket;
         apply.disabled = true; previewed = false; imported = null; remap = null; content.replaceChildren(); fail('');
-        try { const selected = file.files?.[0]; if (!selected) return; if (selected.size > 12 * 1024 * 1024) throw new Error('Import exceeds 12 MiB.'); const parsed = JSON.parse(await selected.text()); if (mine !== ticket) return; const data = await request('/api/base/import/preview', { method: 'POST', body: { data: parsed } }); if (mine !== ticket) return; imported = parsed; remap = data.remap || data.preview?.remap; expectedBaseRevision = data.expectedBaseRevision ?? state.revision; content.replaceChildren(el('pre', JSON.stringify(data.preview || data, null, 2), 'base-code')); previewed = true; apply.disabled = false; }
+        try { const selected = file.files?.[0]; if (!selected) return; if (selected.size > 4 * IMPORT_BYTES) throw new Error('Import exceeds 12 MiB.'); const parsed = JSON.parse(await selected.text()); if (mine !== ticket) return; if (new Blob([JSON.stringify(parsed)]).size > IMPORT_BYTES) throw new Error('Import exceeds 12 MiB.'); const data = await request('/api/base/import/preview', { method: 'POST', body: { data: parsed } }); if (mine !== ticket) return; imported = parsed; remap = data.remap || data.preview?.remap; expectedBaseRevision = data.expectedBaseRevision ?? state.revision; content.replaceChildren(el('pre', JSON.stringify(data.preview || data, null, 2), 'base-code')); previewed = true; apply.disabled = false; }
         catch (error) { if (mine === ticket) fail(error); }
       });
       box.append(actions(button('Cancel', closeDialog), apply)); openDialog('Import Base', [box]);

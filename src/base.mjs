@@ -1,17 +1,20 @@
 /** Local Base registry. The caller injects Board's Store; this module never opens state.json. */
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, realpath, stat } from 'node:fs/promises';
+import { mkdir, readFile, realpath, rm, rmdir, stat } from 'node:fs/promises';
 import { dirname, isAbsolute, join, posix } from 'node:path';
 import { resolveConfig } from './agents.mjs';
 import { normalizeAvatarImage } from './base-avatar.mjs';
 import { syncDir, writeAtomic } from './durable.mjs';
 import { markdownFileName, normalizeActivation } from './base-markdown.mjs';
+import { CREDENTIAL_ARG } from './base-mcp-import.mjs';
 
 // `profile` is an Agent (one agent definition); `agentProfile` composes agents and resources into a deployable setup;
 // `markdown` is a Custom MD file (AGENTS.md, CLAUDE.md, SOUL.md…).
 export const BASE_KINDS = Object.freeze(['skill', 'mcp', 'knowledge', 'context', 'tool', 'profile', 'pack', 'agentProfile', 'markdown']);
 /** Kinds that configure an agent rather than being one of its resources. */
 const AGENT_KINDS = ['profile', 'agentProfile'];
+/** Kinds whose document text is exported only with “Include document bodies”; without it they import as omitted. */
+const DOCUMENT_KINDS = ['skill', 'knowledge', 'markdown'];
 export const BASE_EXPORT_VERSION = 1;
 export const BASE_LIMITS = Object.freeze({ resources: 2000, documentChars: 256 * 1024, contentBytes: 4 * 1024 * 1024, definitionBytes: 4 * 1024 * 1024 + 512 * 1024, importBytes: 12 * 1024 * 1024, refs: 200, files: 200 });
 const ID = /^[A-Za-z0-9_-]{1,100}$/;
@@ -275,6 +278,9 @@ function normalizeResource(input, previous, { imported = false, omitted = false 
   if (previous && previous.kind !== kind) fail('A resource type cannot change. Create a new resource instead.');
   const content = normalizeContent(input.content ?? previous?.content);
   const config = configuration(kind, input.configuration ?? previous?.configuration);
+  // A credential typed into an argument would be saved, exported and visible in process lists: refused as in MCP
+  // configuration imports. Arguments saved before this check, and Promptboard's own exports, keep loading.
+  if (!imported && ['mcp', 'tool'].includes(kind) && config.args?.some(arg => CREDENTIAL_ARG.test(arg) && !previous?.configuration?.args?.includes(arg))) fail('An argument looks like a credential. Keep credentials in environment variables; an MCP server references them under Environment.');
   if (kind === 'profile' && config.avatar && config.avatar.contentStatus !== 'omitted' && !omitted && content.avatar?.contentHash !== config.avatar.contentHash) fail('Avatar content does not match this profile’s saved face.');
   if (kind === 'skill' && !omitted && !content.body.trim() && !content.files.some(file => file.path === config.entrypoint && file.text.trim())) fail('An instruction skill needs instructions or a SKILL.md file.');
   const trust = imported ? 'untrusted' : input.trust ?? previous?.trust ?? (['mcp', 'tool'].includes(kind) ? 'untrusted' : 'trusted');
@@ -310,20 +316,23 @@ export function listTargets(state) {
   }
   return scopes.map(({ entity, ...scope }) => ({ ...scope, binding: scope.binding || { mode: 'inherit', include: [], exclude: [] }, profileId: scope.profileId || null, baseRevision: entity?.baseRevision || 0 }));
 }
-export function usedBy(state, resourceId) {
-  const uses = [];
-  for (const resource of state.base.resources) if (resource.id !== resourceId && (resourceReferences(resource).some(ref => ref.resourceId === resourceId) || resource.configuration?.binding?.exclude?.includes(resourceId))) uses.push({ kind: 'resource', id: resource.id, name: resource.name });
-  for (const scope of listTargets(state)) if (scope.profileId === resourceId || scope.binding.include?.some(ref => ref.resourceId === resourceId) || scope.binding.exclude?.includes(resourceId)) uses.push({ kind: 'assignment', target: scope.target, name: scope.name });
+/** Where every resource is used, in one pass over the state: resource ID → uses, each place listed once per resource. */
+export function usageIndex(state) {
+  const index = new Map(), add = (ids, use, except) => { for (const id of new Set(ids)) if (id && id !== except) { if (!index.has(id)) index.set(id, []); index.get(id).push({ ...use }); } };
+  const bindingIds = binding => [...(binding?.include || []).map(ref => ref.resourceId), ...(binding?.exclude || [])];
+  for (const resource of state.base.resources) add([...resourceReferences(resource).map(ref => ref.resourceId), ...(resource.configuration?.binding?.exclude || [])], { kind: 'resource', id: resource.id, name: resource.name }, resource.id);
+  for (const scope of listTargets(state)) add([scope.profileId, ...bindingIds(scope.binding)], { kind: 'assignment', target: scope.target, name: scope.name });
   const pendingUse = (scope, name, target) => {
     if (!scope) return;
-    const bindings = [scope.baseBinding, ...Object.values(scope.baseColumns || {}).map(entry => entry.binding)];
-    if (scope.agentProfileId === resourceId || Object.values(scope.baseColumns || {}).some(entry => entry.profileId === resourceId) || bindings.some(binding => binding?.include?.some(ref => ref.resourceId === resourceId) || binding?.exclude?.includes(resourceId))) uses.push({ kind: 'pending-assignment', target, name });
+    const columns = Object.values(scope.baseColumns || {});
+    add([scope.agentProfileId, ...columns.map(entry => entry.profileId), ...[scope.baseBinding, ...columns.map(entry => entry.binding)].flatMap(bindingIds)], { kind: 'pending-assignment', target, name });
   };
   pendingUse(state.settings.pendingBaseImport, 'Imported global settings (awaiting confirmation)', { scope: 'global' });
   for (const project of state.projects) pendingUse(project.pendingImport, `${project.name} imported settings (awaiting confirmation)`, { scope: 'project', projectId: project.id });
-  for (const run of state.runs) if ([...(run.baseManifest?.resources || run.baseManifest?.configured || run.baseSnapshot?.resources || []), ...(run.baseManifest?.profiles || [])].some(ref => (ref.resourceId || ref.id) === resourceId)) uses.push({ kind: 'run', id: run.id, name: `${run.stage} run`, historical: !active(run) });
-  return uses;
+  for (const run of state.runs) add([...(run.baseManifest?.resources || run.baseManifest?.configured || run.baseSnapshot?.resources || []), ...(run.baseManifest?.profiles || [])].map(ref => ref.resourceId || ref.id), { kind: 'run', id: run.id, name: `${run.stage} run`, historical: !active(run) });
+  return index;
 }
+export const usedBy = (state, resourceId) => usageIndex(state).get(resourceId) || [];
 function expected(base, revision) { if (revision !== undefined && base.revision !== revision) throw new BaseError('Base changed. Reload and review your changes.', 'BASE_REVISION_CONFLICT', 409); }
 function validateDiscoveredTool(resource, resources) {
   if (resource.kind !== 'tool' || resource.configuration.delivery !== 'mcp') return;
@@ -358,7 +367,7 @@ function targetEntity(state, target, create = false) {
 
 export class Base {
   constructor({ store }) { if (!store?.update || !store?.read) throw new TypeError('Base requires the existing Board Store.'); this.store = store; this.dir = join(store.dir, 'base'); }
-  async list() { const state = await this.store.read(); return { revision: state.base.revision, resources: state.base.resources.map(resource => ({ ...resource, type: resource.kind === 'profile' ? 'agent' : resource.kind, usedBy: usedBy(state, resource.id) })), approvedRoots: state.base.approvedRoots }; }
+  async list() { const state = await this.store.read(), uses = usageIndex(state); return { revision: state.base.revision, resources: state.base.resources.map(resource => ({ ...resource, type: resource.kind === 'profile' ? 'agent' : resource.kind, usedBy: uses.get(resource.id) || [] })), approvedRoots: state.base.approvedRoots }; }
   async detail(resourceId, { revision } = {}) {
     const state = await this.store.read(), current = state.base.resources.find(resource => resource.id === resourceId);
     if (!current) throw new BaseError('This Base resource no longer exists.', 'BASE_NOT_FOUND', 404);
@@ -390,6 +399,28 @@ export class Base {
     const { content, ...metadata } = immutable;
     return { ...metadata, revisionRef: ref, revisions: [...(previous?.revisions || []), ref] };
   }
+  /**
+   * Revision files are written before the registry names them. When that change is not published, the files it wrote
+   * are removed — never one the registry or a run names, and none after a state write failure, which may have reached the disk.
+   */
+  async #discard(refs, error) {
+    if (!refs.length || error?.code === 'STATE_WRITE_FAILED') return;
+    try {
+      const state = await this.store.read(), key = ref => `${ref.id}/${ref.revision}-${ref.hash}`, named = new Set();
+      for (const resource of state.base.resources) for (const ref of resource.revisions || [resource.revisionRef]) if (ref) named.add(key(ref));
+      for (const run of state.runs) for (const entry of [...(run.baseManifest?.resources || []), ...(run.baseManifest?.profiles || [])]) if (entry?.revisionRef) named.add(key(entry.revisionRef));
+      for (const ref of refs.filter(item => !named.has(key(item)))) {
+        const dir = join(this.dir, 'revisions', ref.id);
+        await rm(join(dir, `${ref.revision}-${ref.hash}.json`), { force: true }); await rmdir(dir).catch(() => {}); // Only an empty folder goes.
+      }
+    } catch { /* The change itself already failed; an unreferenced file is harmless. */ }
+  }
+  async #publish(refs, change) {
+    try { return await this.store.update(change); }
+    catch (error) { await this.#discard(refs, error); throw error; }
+  }
+  /** For a caller that publishes a prepared import itself (a board backup): call when that publish failed. */
+  discardPreparedImport(prepared, error) { return this.#discard(prepared.resources.map(resource => resource.revisionRef), error); }
   async create(input, { expectedBaseRevision } = {}) {
     const state = await this.store.read(); expected(state.base, expectedBaseRevision);
     if (state.base.resources.length >= BASE_LIMITS.resources) fail('The Base library has reached its resource limit.');
@@ -397,7 +428,7 @@ export class Base {
     validateDiscoveredTool(definition, state.base.resources);
     validateResourceGraph([...state.base.resources, definition]);
     const resource = await this.#writeDefinition(definition);
-    return this.store.update(draft => { expected(draft.base, expectedBaseRevision); validateResourceGraph([...draft.base.resources, resource]); draft.base.resources.push(resource); draft.base.revision++; return resource; });
+    return this.#publish([resource.revisionRef], draft => { expected(draft.base, expectedBaseRevision); validateResourceGraph([...draft.base.resources, resource]); draft.base.resources.push(resource); draft.base.revision++; return resource; });
   }
   async update(resourceId, input, { expectedRevision, expectedBaseRevision } = {}) {
     const state = await this.store.read(); expected(state.base, expectedBaseRevision);
@@ -415,7 +446,7 @@ export class Base {
     if (!sameServer) delete definition.connectionTest;
     validateResourceGraph(state.base.resources.map(resource => resource.id === resourceId ? definition : resource));
     const resource = await this.#writeDefinition(definition, previous);
-    return this.store.update(draft => {
+    return this.#publish([resource.revisionRef], draft => {
       expected(draft.base, expectedBaseRevision);
       if (draft.base.resources.find(item => item.id === resourceId)?.revision !== expectedRevision) throw new BaseError('The resource changed. Reload before saving.', 'RESOURCE_REVISION_CONFLICT', 409);
       const updated = draft.base.resources.map(item => item.id === resourceId ? resource : item); validateResourceGraph(updated);
@@ -475,7 +506,7 @@ export class Base {
       durationMs: integer(result.durationMs === undefined ? undefined : Math.round(result.durationMs), 0, 0, 120000, 'Connection test duration'), partial: result.partial === true,
       ...(result.server ? { server: { name: string(result.server.name, 200, 'Server name'), version: string(result.server.version, 100, 'Server version') } } : {}) };
     const metadata = await this.#writeDefinition({ ...definition, revision: previous.revision + 1, updatedAt: Date.now(), connectionTest: clean }, previous);
-    return this.store.update(draft => { if (draft.base.resources.find(resource => resource.id === resourceId)?.revision !== expectedRevision) throw new BaseError('The MCP definition changed during the test.', 'RESOURCE_REVISION_CONFLICT', 409);
+    return this.#publish([metadata.revisionRef], draft => { if (draft.base.resources.find(resource => resource.id === resourceId)?.revision !== expectedRevision) throw new BaseError('The MCP definition changed during the test.', 'RESOURCE_REVISION_CONFLICT', 409);
       draft.base.resources = draft.base.resources.map(resource => resource.id === resourceId ? metadata : resource); draft.base.revision++; return metadata; });
   }
 
@@ -490,7 +521,8 @@ export class Base {
     if (blocking.length && !detach) throw new BaseError('Detach this resource from its dependencies and assignments before deleting it.', 'BASE_RESOURCE_IN_USE', 409, { usedBy: references });
     const replacements = new Map();
     const without = binding => ({ ...binding, include: (binding.include || []).filter(ref => ref.resourceId !== resourceId), exclude: (binding.exclude || []).filter(value => value !== resourceId) });
-    for (const ref of blocking.filter(item => item.kind === 'resource')) {
+    const written = () => [...replacements.values()].map(item => item.revisionRef);
+    try { for (const ref of blocking.filter(item => item.kind === 'resource')) {
       const previous = snapshot.base.resources.find(item => item.id === ref.id), definition = await this.readRevision(previous.revisionRef);
       if (definition.kind === 'tool' && definition.configuration.delivery === 'mcp' && definition.configuration.serverId === resourceId) throw new BaseError('Delete the discovered MCP tool references before deleting their server.', 'BASE_RESOURCE_IN_USE', 409, { usedBy: references });
       definition.dependencies = definition.dependencies.filter(item => item.resourceId !== resourceId);
@@ -505,8 +537,8 @@ export class Base {
       if (['context', 'knowledge'].includes(definition.kind) && definition.configuration.sources) definition.configuration.sources = definition.configuration.sources.filter(item => item.resourceId !== resourceId);
       definition.revision++; definition.updatedAt = Date.now();
       replacements.set(definition.id, await this.#writeDefinition(definition, previous));
-    }
-    return this.store.update(state => {
+    } } catch (error) { await this.#discard(written(), error); throw error; }
+    return this.#publish(written(), state => {
       // Async revision writes must not detach changes made since the deletion preview.
       expected(state.base, snapshot.base.revision);
       if (usedBy(state, resourceId).some(ref => ref.kind === 'run' && !ref.historical)) throw new BaseError('Stop active runs before deleting their resources.', 'BASE_RESOURCE_IN_USE', 409);
@@ -544,7 +576,7 @@ export class Base {
     for (const resourceId of selected) {
       const resource = byId.get(resourceId), { revisionRef, revisions, connectionTest, ...metadata } = resource;
       if (!includeContent && metadata.kind === 'profile' && metadata.configuration.avatar) metadata.configuration = { ...metadata.configuration, avatar: { ...metadata.configuration.avatar, contentStatus: 'omitted' } };
-      resources.push({ ...metadata, ...(includeContent ? { content: (await this.readRevision(revisionRef)).content } : {}), contentStatus: includeContent || !['skill', 'knowledge'].includes(resource.kind) ? resource.contentStatus : 'omitted' });
+      resources.push({ ...metadata, ...(includeContent ? { content: (await this.readRevision(revisionRef)).content } : {}), contentStatus: includeContent || !DOCUMENT_KINDS.includes(resource.kind) ? resource.contentStatus : 'omitted' });
     }
     const bundle = { kind: 'promptboard-base', version: BASE_EXPORT_VERSION, exportedAt: new Date().toISOString(), includesContent: includeContent, resources };
     if (Buffer.byteLength(JSON.stringify(bundle)) > BASE_LIMITS.importBytes) fail('The selected export exceeds 12 MiB. Export smaller packs.');
@@ -559,8 +591,8 @@ export class Base {
     if (new Set(Object.values(remap)).size !== ids.length || Object.values(remap).some(value => ids.includes(value))) fail('Imports require fresh unique IDs; existing resources are never overwritten.');
     const lookup = resourceId => { if (!Object.hasOwn(remap, resourceId)) fail('The import is missing a referenced dependency.'); return remap[resourceId]; };
     const warnings = [], resources = bundle.resources.map(input => {
-      const omitted = ['skill', 'knowledge'].includes(input.kind) && (input.contentStatus === 'omitted' || !input.content);
-      if (omitted && ['skill', 'knowledge'].includes(input.kind)) warnings.push(`“${input.name}” has no exported document content. Add content before enabling it.`);
+      const omitted = DOCUMENT_KINDS.includes(input.kind) && (input.contentStatus === 'omitted' || !input.content);
+      if (omitted) warnings.push(`“${input.name}” has no exported document content. Add content before enabling it.`);
       const definition = normalizeResource({ ...input, id: remap[input.id], content: input.content || {} }, undefined, { imported: true, omitted });
       definition.dependencies = definition.dependencies.map(ref => ({ ...ref, resourceId: lookup(ref.resourceId) }));
       if (definition.kind === 'pack') definition.configuration.resources = definition.configuration.resources.map(ref => ({ ...ref, resourceId: lookup(ref.resourceId) }));
@@ -586,16 +618,20 @@ export class Base {
   async previewImport(bundle) {
     const prepared = this.#validateImport(bundle);
     const state = await this.store.read();
-    return { revision: state.base.revision, remap: prepared.remap, warnings: prepared.warnings, resources: prepared.resources.map(({ content, ...metadata }) => metadata) };
+    // Named for what it is: a { revision, resources } reply would read as the library itself on the Base page.
+    return { expectedBaseRevision: state.base.revision, remap: prepared.remap, warnings: prepared.warnings, resources: prepared.resources.map(({ content, ...metadata }) => metadata) };
   }
   /** Write content first, then let a caller publish it alongside a board backup in one Store update. */
   async prepareImport(bundle, { remap, expectedBaseRevision, reuseIdentical = false } = {}) {
     const state = await this.store.read(); expected(state.base, expectedBaseRevision);
     let prepared = this.#validateImport(bundle, remap);
+    const existing = new Set(state.base.resources.map(resource => resource.id));
+    if (prepared.resources.some(resource => existing.has(resource.id))) fail('Imports require fresh unique IDs; existing resources are never overwritten.');
     if (reuseIdentical) prepared = await this.#reuseIdentical(prepared, state.base.resources);
     if (state.base.resources.length + prepared.resources.length > BASE_LIMITS.resources) fail('The imported library would exceed 2,000 resources.');
     const resources = [];
-    for (const definition of prepared.resources) resources.push(await this.#writeDefinition(definition));
+    try { for (const definition of prepared.resources) resources.push(await this.#writeDefinition(definition)); }
+    catch (error) { await this.#discard(resources.map(resource => resource.revisionRef), error); throw error; }
     return { ...prepared, resources, expectedBaseRevision: state.base.revision };
   }
   /**
@@ -631,7 +667,7 @@ export class Base {
   }
   async import(bundle, options = {}) {
     const prepared = await this.prepareImport(bundle, options);
-    return this.store.update(state => this.publishPreparedImport(state, prepared));
+    return this.#publish(prepared.resources.map(resource => resource.revisionRef), state => this.publishPreparedImport(state, prepared));
   }
 
   /** Only parse SKILL.md here; importing it never executes scripts or follows file references. */

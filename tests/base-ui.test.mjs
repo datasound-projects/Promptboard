@@ -13,7 +13,7 @@ const taskColumn = { scope: 'task-column', projectId: 'project_a', taskId: 'task
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(fn, label) { for (let n = 0; n < 100; n++) { if (fn()) return; await wait(10); } assert.fail(`Timed out: ${label}`); }
 
-function setup(t, { resources = [skill, pack], respond, savedView } = {}) {
+function setup(t, { resources = [skill, pack], respond, savedView, remote = false } = {}) {
   const dom = new JSDOM(html, { url: 'http://127.0.0.1:4318/#/base', runScripts: 'outside-only' });
   const win = dom.window;
   win.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
@@ -55,7 +55,7 @@ function setup(t, { resources = [skill, pack], respond, savedView } = {}) {
     if (path.startsWith('/api/runs/')) return response({ manifest: { resources: [{ resourceId: skill.id, name: skill.name, revision: 1, required: true, delivery: 'instruction' }], supplied: [{ resourceId: skill.id, delivery: 'instruction', hash: 'abc123', capturedAt: '2026-10-02T00:00:00Z' }], observed: [] } });
     return response({});
   };
-  const view = win.PromptboardBase.create({ api, announce: value => announcements.push(value), ensureBoard: async () => {}, refreshBoard: async () => {},
+  const view = win.PromptboardBase.create({ api, announce: value => announcements.push(value), ensureBoard: async () => {}, refreshBoard: async () => {}, remote: () => remote,
     agentFields: () => { const node = win.document.createElement('div'); node.textContent = 'Existing provider controls'; return node; }, readAgentFields: () => ({ provider: 'claude', model: 'fixture' }) });
   const clickText = (text, root = win.document) => { const node = [...root.querySelectorAll('button')].find(node => node.textContent === text || node.getAttribute('aria-label') === text || node.firstElementChild?.textContent === text); assert.ok(node, `button ${text}`); node.click(); return node; };
   const change = (node, value) => { node.value = value; node.dispatchEvent(new win.Event('change', { bubbles: true })); };
@@ -430,4 +430,76 @@ test('import previews and imports only the latest chosen file; a late reply for 
   await until(() => calls.some(call => call.path === '/api/base/import'), 'import sent');
   const sent = calls.find(call => call.path === '/api/base/import').body;
   assert.deepEqual([sent.data.name, sent.remap.from], ['B', 'B']);
+});
+
+test('Base exports download the server’s compact bytes, and an indented earlier export within the limit still imports', async t => {
+  const exported = { kind: 'promptboard-base', version: 1, resources: [{ id: 'a', kind: 'skill', name: 'A' }] };
+  const { $, win, view, calls, clickText } = setup(t, { respond: request => request.path === '/api/base/export' ? { response: { ok: true }, data: exported } : request.path === '/api/base/import/preview' ? { response: { ok: true }, data: { remap: { a: 'b' }, warnings: [], resources: [] } } : null });
+  const downloads = []; win.PromptboardDom.download = (name, text) => downloads.push(text);
+  await view.show();
+  clickText('Export…'); $('#base-dialog-content [data-resource]').click(); clickText('Download Base export');
+  await until(() => downloads.length, 'export downloaded');
+  assert.equal(downloads[0], JSON.stringify(exported), 'the bytes the server measured against the 12 MiB limit');
+  clickText('Import…');
+  // Earlier versions saved exports indented: above 12 MiB on disk, well within the limit once compact.
+  const input = $('#base-import-file'), indented = `${JSON.stringify(exported, null, 2)}${' '.repeat(13 * 1024 * 1024)}`;
+  Object.defineProperty(input, 'files', { value: [new File([indented], 'promptboard-base.json')], configurable: true }); input.dispatchEvent(new win.Event('change'));
+  await until(() => calls.some(call => call.path === '/api/base/import/preview'), 'indented export previewed');
+  assert.deepEqual(calls.find(call => call.path === '/api/base/import/preview').body.data, exported);
+});
+
+test('on a paired phone the Base page does not offer the imports that read this computer’s files, and says where they are done', async t => {
+  for (const remote of [false, true]) {
+    const { $, view } = setup(t, { remote });
+    await view.show();
+    const menu = $('#base-actions .base-more'); menu.open = true; menu.dispatchEvent(new menu.ownerDocument.defaultView.Event('toggle'));
+    const shown = [...menu.querySelectorAll('.origin-menu-item')].filter(node => !node.hidden).map(node => node.textContent);
+    assert.equal(shown.includes('Import MCP servers…'), !remote); assert.equal(shown.includes('Import Markdown from a repository…'), !remote);
+    assert.ok(shown.includes('Import…') && shown.includes('Markdown file from a template…'), 'the other actions stay');
+    const note = [...menu.querySelectorAll('.note')].find(node => /done at the computer/.test(node.textContent));
+    assert.equal(note.hidden, !remote);
+  }
+});
+
+test('a write that meets a Base change from another window reloads the library and is sent once more, never left stuck', async t => {
+  const context = { ...skill, id: 'res_context', kind: 'context', name: 'Docs', configuration: { sources: [] }, content: {} };
+  const conflict = { response: { ok: false }, data: { code: 'BASE_REVISION_CONFLICT', error: 'Base changed. Reload and review your changes.' } };
+  const { $, view, calls, clickText, submit, state } = setup(t, { resources: [skill, context], respond: (request, server) => {
+    if (!['/api/base/roots', '/api/base/apply'].includes(request.path)) return null;
+    if (request.body.expectedBaseRevision !== server.revision) return conflict;
+    server.revision++; if (request.path === '/api/base/roots') server.approvedRoots = [{ id: 'root', path: request.body.path }];
+    return { response: { ok: true }, data: structuredClone(server) };
+  } });
+  await view.show();
+  // Another window changes Base after this page loaded it.
+  state.revision++;
+  await view.openResource(context.id); clickText('Manage external roots…');
+  $('#base-dialog-content input[type="text"]').value = '/srv/docs'; $('#base-dialog-content input[type="checkbox"]').checked = true;
+  submit($('#base-dialog-content form'));
+  await until(() => !$('#base-dialog').open, 'root approved after one retry');
+  assert.deepEqual(calls.filter(call => call.path === '/api/base/roots').map(call => call.body.expectedBaseRevision), [3, 4]);
+  assert.match($('#base-status').textContent, /Root approved/);
+  // The same for an assignment saved from the picker while another window changed Base.
+  view.openPicker(target); await until(() => $('#base-dialog-content form'), 'picker open');
+  state.revision++;
+  submit($('#base-dialog-content form'));
+  await until(() => !$('#base-dialog').open, 'assignment saved after one retry');
+  assert.deepEqual(calls.filter(call => call.path === '/api/base/apply').map(call => call.body.expectedBaseRevision), [5, 6]);
+});
+
+test('a switch toggled from the keyboard keeps focus while the library is drawn again', async t => {
+  const { $, win, view } = setup(t);
+  await view.show();
+  const toggle = () => $(`#base-list [data-resource-id="${skill.id}"]`).closest('li').querySelector('.base-switch');
+  toggle().focus(); toggle().checked = false; toggle().dispatchEvent(new win.Event('change'));
+  // Chrome drops focus from the switch as soon as it is disabled while its change is saved.
+  assert.equal(toggle().disabled, true); toggle().disabled = false; toggle().blur(); toggle().disabled = true; assert.equal(win.document.activeElement, win.document.body);
+  await until(() => /switched off/.test($('#base-status').textContent) && $('.base-list-panel').getAttribute('aria-busy') === 'false', 'switched off');
+  assert.equal(win.document.activeElement, toggle(), 'focus comes back after the save');
+  await view.refresh(true);
+  assert.equal(win.document.activeElement, toggle(), 'the same resource’s switch, drawn again, has focus');
+  assert.equal(toggle().checked, false);
+  // Focus moved elsewhere in the meantime is never taken back.
+  $('#base-search').focus(); await view.refresh(true);
+  assert.equal(win.document.activeElement, $('#base-search'));
 });

@@ -24,7 +24,8 @@ export class BaseRoutes {
   close() { this.wiki.close(); this.avatars.close(); for (const controller of this.operations) controller.abort(); }
 
   async body(req) {
-    const body = await this.jsonBody(req, BASE_LIMITS.importBytes);
+    // An import carries a whole export (up to BASE_LIMITS.importBytes) inside its request; 1 MiB is left for the wrapper and ID remap.
+    const body = await this.jsonBody(req, BASE_LIMITS.importBytes + 1024 * 1024);
     if (!body || typeof body !== 'object' || Array.isArray(body)) fail('Send a JSON object.');
     return body;
   }
@@ -155,7 +156,8 @@ export class BaseRoutes {
         if (shared.kind !== 'markdown' || shared.configuration.override) fail('Only a shared Markdown file gets project versions.');
         const project = state.projects.find(item => item.id === body.projectId);
         if (!project) fail('Choose a project.');
-        return this.changed(res, { resource: await board.base.create({ kind: 'markdown', name: `${shared.name} · ${project.name}`, description: `${project.name}’s version of “${shared.name}”.`, tags: shared.tags,
+        // A copy of the shared text keeps its trust: an imported file still waits for review in the project's version.
+        return this.changed(res, { resource: await board.base.create({ kind: 'markdown', name: `${shared.name} · ${project.name}`, description: `${project.name}’s version of “${shared.name}”.`, tags: shared.tags, trust: shared.trust,
           configuration: { ...shared.configuration, override: { of: shared.id, projectId: project.id } }, content: { body: shared.content.body } }) });
       }
       if (method === 'POST' && action === 'deploy') {

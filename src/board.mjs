@@ -2389,6 +2389,12 @@ export class Board {
     // Refuse before Base writes revision files for the import; the update checks again.
     this.#importRefusal(await this.state(), replace);
     const preparedBase = parsed.base ? await this.base.prepareImport(parsed.base, { reuseIdentical: true }) : null;
+    // A backup that is not restored leaves none of the Base revision files written for it.
+    try { return await this.#restoreBackup(data, parsed, preparedBase, replace, originProjects); }
+    catch (error) { if (preparedBase) await this.base.discardPreparedImport(preparedBase, error); throw error; }
+  }
+
+  async #restoreBackup(data, parsed, preparedBase, replace, originProjects) {
     if (data.version >= 3 && !preparedBase) throw new BoardError('This backup is missing its Base resource library.', 'INVALID_BACKUP');
     if (preparedBase) {
       for (const incoming of parsed.projects) {
