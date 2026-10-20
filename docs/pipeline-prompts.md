@@ -1,6 +1,6 @@
 # Pipeline prompt and template foundation
 
-`src/pipeline-templates.mjs` supplies pure rendering for the [opt-in column lifecycle](pipeline-lifecycle.md) and [automation execution](pipeline-runtime-automations.md). Pipeline first-spawn rendering and script/webhook execution are integrated; legacy stage prompts remain unchanged. Native column-message scheduling remains pending.
+`src/pipeline-templates.mjs` supplies pure rendering for the [opt-in column lifecycle](pipeline-lifecycle.md) and [automation execution](pipeline-runtime-automations.md). Pipeline first-spawn rendering and script/webhook execution are integrated; legacy stage prompts remain unchanged. Deferred enter-message scheduling is integrated; immediate and exit messages remain pending.
 
 The default first-spawn template is `{{task_xml}}{{attachments}}`. It renders the title and exact task prompt as an XML envelope, followed by already resolved attachment paths. XML syntax is escaped; the stored Composer/split-task text is unchanged. Description whitespace, Markdown hard breaks, code indentation, trailing spaces, and CRLF line endings survive in the envelope body without added indentation. Empty descriptions are omitted. No stage instructions, column names, review/test directives, or invented context are added.
 
