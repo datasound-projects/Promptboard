@@ -317,21 +317,17 @@ test('unavailable or malformed native readiness ends the queued intent without t
 });
 
 test('FIFO readiness waits outlive the input budget and cancelling a later message preserves the earlier owner', async t => {
-  // Budgets and polling run on mock timers: real durable journal writes may take any time on slow CI disks,
-  // and the readiness wait outlives the budget on the mock clock.
-  const w = await fixture(t, { count: 2 }); let ready = false, readySeen = false;
-  w.supervisor.nativeMessageReadiness = async () => { readySeen ||= ready; return ready ? 'ready' : 'waiting'; };
-  t.mock.timers.enable({ apis: ['setTimeout'] });
-  const advance = async () => { t.mock.timers.tick(50); await new Promise(resolve => setImmediate(resolve)); };
+  // The budget leaves room for real durable journal writes on slow CI disks; the wait still outlives it.
+  const w = await fixture(t, { count: 2 }); let ready = false;
+  w.supervisor.nativeMessageReadiness = async () => ready ? 'ready' : 'waiting';
   assert.equal((await w.scheduler.schedule(w.request(0), { timeoutMs: 1000, waitForReadiness: true })).scheduled, true);
   await w.journal.startAction(w.key, w.move.actions[1].id);
   assert.equal((await w.scheduler.schedule(w.request(1), { timeoutMs: 1000, waitForReadiness: true })).scheduled, true);
-  for (let i = 0; i < 26; i++) await advance();
+  await new Promise(resolve => setTimeout(resolve, 1300));
   assert.equal((await w.receipt(0)).status, 'queued'); assert.equal((await w.receipt(1)).status, 'queued'); assert.deepEqual(w.writes, []);
   assert.equal(w.scheduler.cancel(w.key, w.move.actions[1].id), true);
   assert.equal((await w.scheduler.wait(w.key, w.move.actions[1].id)).status, 'cancelled');
   assert.equal((await w.receipt(0)).status, 'queued'); ready = true;
-  while (!readySeen) await advance();
   assert.equal((await w.scheduler.wait(w.key, w.move.actions[0].id)).confirmed, true);
   assert.deepEqual(w.writes, [w.request(0).message]);
 });
@@ -353,7 +349,9 @@ test('state reads remain bounded after accepted readiness handoff and cannot rev
   t.mock.timers.enable({ apis: ['setTimeout'] });
   assert.equal((await w.scheduler.schedule(w.request(), { timeoutMs: 150, waitForReadiness: true })).scheduled, true);
   w.board.state = () => { reading.resolve(); return held.promise; };
-  await reading.promise; t.mock.timers.tick(150);
+  await reading.promise; t.mock.timers.tick(149);
+  await new Promise(resolve => setImmediate(resolve)); assert.equal((await w.receipt()).status, 'queued');
+  t.mock.timers.tick(1);
   assert.equal((await w.scheduler.wait(w.key, w.request().actionId)).status, 'timed_out');
   assert.equal((await w.receipt()).status, 'timed_out'); assert.deepEqual(w.writes, []);
   held.resolve(structuredClone(w.state)); await new Promise(resolve => setImmediate(resolve)); assert.deepEqual(w.writes, []);
