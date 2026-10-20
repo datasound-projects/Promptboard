@@ -445,7 +445,6 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
 .kanban-form-actions { display: flex; gap: 8px; }
 .kanban-detail { margin: 0 20px 18px; }
 .kanban-count { color: var(--subtle); font: 12px var(--mono); }
-.kanban-empty-link { display: inline-block; margin-top: 8px; color: var(--ink); font-size: 13px; text-underline-offset: 3px; }
 .kanban-cards { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 14px; list-style: none; background: var(--surface-2); }
 .kanban-cards:empty { display: none; }
 /* Seven fixed stages side by side; the row scrolls sideways on narrow screens. */
@@ -531,7 +530,6 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
   .help-pill #cli-status-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
 }
 @media (max-width: 480px) {
-  .page-nav a { padding: 7px 8px; }
   .intro-description { font-size: 13px; }
   .action-row { display: flex; }
   .generate-button { flex: 1; justify-content: space-between; }
@@ -610,7 +608,6 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
 .run-badge.failed { color: var(--error); border-color: var(--error); }
 .run-badge.failed::before { background: var(--error); }
 .kanban-error, .run-failed { color: var(--error); }
-@keyframes pb-pulse { 50% { opacity: .25; } }
 .kanban-run button { padding: 3px 8px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--surface); color: var(--ink); font-size: 12px; }
 .kanban-run button.primary { background: var(--primary); color: var(--on-primary); border-color: var(--primary); }
 
@@ -781,10 +778,9 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
 .workspace-files { margin: 0 6px 6px 12px; min-width: 0; }
 .workspace-files:has(> .workspace-files-body[hidden]) { margin: 0; }
 .workspace-files-body { overflow-x: auto; }
-.file-tree-toggle, .file-tree-row, .file-tree-more { display: block; width: 100%; padding: 5px 7px; border: 0; border-radius: 5px; background: none; color: var(--muted); text-align: left; font: 12px/1.5 var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.file-tree-toggle { font: 12px/1.5 var(--sans); }
+.file-tree-row, .file-tree-more { display: block; width: 100%; padding: 5px 7px; border: 0; border-radius: 5px; background: none; color: var(--muted); text-align: left; font: 12px/1.5 var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-tree-row { min-width: 120px; }
-.file-tree-row:hover:not(:disabled), .file-tree-row.selected, .file-tree-toggle:hover, .file-tree-more:hover { background: var(--surface); color: var(--ink); }
+.file-tree-row:hover:not(:disabled), .file-tree-row.selected, .file-tree-more:hover { background: var(--surface); color: var(--ink); }
 .file-tree-row:disabled { opacity: .5; cursor: default; }
 .file-tree-list { list-style: none; padding: 0; margin: 2px 0; min-width: 120px; }
 .file-tree-list .file-tree-list { margin-left: 10px; border-left: 1px solid var(--line); padding-left: 4px; }
@@ -961,12 +957,7 @@ body:has(#kanban-view:not([hidden]) #dock:not([hidden]):not([data-state="max"]))
 .dock-location .location-fact { font-size: 11px; }
 .dock-connection { grid-row: 2; margin: 0; padding: 3px 12px; color: var(--muted); font-size: 11px; }
 .project-context { padding: 10px 14px; margin-bottom: 10px; box-shadow: none; }
-.project-context-heading, .project-agent-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.project-context-heading { flex-wrap: wrap; gap: 6px 14px; }
-.project-context-heading h2 { margin: 0; font-size: 15px; }
-.project-identity, .project-context-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; min-width: 0; }
-.project-identity { flex: 1 1 180px; }
-.context-target { font: 11px var(--mono); color: var(--subtle); overflow-wrap: anywhere; }
+.project-agent-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .context-agent { max-width: 360px; padding: 5px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-2); font-size: 12px; text-align: left; overflow-wrap: anywhere; }
 .project-context .collapse-toggle { width: auto; height: auto; }
 .kanban-projects.collapsed:has(#project-detail[hidden]) { display: none; }
@@ -978,7 +969,6 @@ body:has(#kanban-view:not([hidden]) #dock:not([hidden]):not([data-state="max"]))
 .kanban-card { box-shadow: none; }
 .kanban-card .kanban-actions { border-top: 0; padding-top: 2px; }
 .kanban-card .run-activity { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
-.kanban-card .flow-blocked { display: block; } /* Never truncate an actionable blocker. */
 .kanban-card .run-agent { font-size: 11px; color: var(--subtle); }
 .kanban-card .kanban-more .kanban-move { padding: 3px 6px; }
 .project-context .select-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, .7fr); gap: 6px 12px; margin-top: 8px; }
@@ -1009,8 +999,6 @@ body:has(#kanban-view:not([hidden]) #dock:not([hidden]):not([data-state="max"]))
 .settings-panel-note { margin: 5px 0 12px; font-size: 11.5px; line-height: 1.45; }
 #project-settings .card { border: 0; padding: 0; margin: 0; background: transparent; box-shadow: none; }
 #project-settings .project-context { padding: 10px 0 12px; border-top: 1px solid var(--line); }
-#project-settings .project-context-heading { display: grid; gap: 7px; }
-#project-settings .project-context-actions { justify-content: space-between; gap: 6px; }
 #project-settings .context-agent { flex: 1 1 auto; min-width: 0; max-width: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
 #project-settings .kanban-toolbar, #project-settings .select-grid { grid-template-columns: minmax(0, 1fr); padding: 0; gap: 0; }
 #project-settings .toolbar-cell { padding: 11px 0; border-top: 1px solid var(--line); }
@@ -1078,7 +1066,6 @@ body:has(#kanban-view:not([hidden]) #dock:not([hidden]):not([data-state="max"]))
   #kanban-view { padding: 12px 12px calc(var(--dock-height) + 12px); }
   .dock-details { max-height: 96px; }
   .project-agent-actions { align-items: flex-start; }
-  .project-context-actions { flex: 1 1 100%; }
   .context-agent { flex: 1 1 150px; min-width: 0; max-width: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .kanban-board > .card-heading { padding: 10px 12px; }
   .board-actions { flex: 1 1 100%; }
