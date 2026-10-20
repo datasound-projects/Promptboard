@@ -11,11 +11,11 @@ The Coordinator is a read-only observer for one project. It sits above the Kanba
   - **Hide overview** folds the four overview columns away so the chat has more room. The summary line stays.
   - **Detach into a window** turns the panel into a window over the Kanban page, with the chat open. Drag its top bar to move it; drag its bottom-right corner to make it wider, narrower, taller or shorter. **Attach above the board** puts it back.
   - **Minimize** turns it into a small box with a one-line summary. Drag the box anywhere; click it to open the Coordinator again where it was.
-  - Position, size and choices are remembered in this browser. Phones always show the attached panel.
+  - Position, size and choices are remembered in this browser. Phones always show the attached panel; while you chat on a phone, the overview folds away and the summary line stays.
 
 ## Project knowledge
 
-- Two compact files per project in `<data folder>/coordinator/`: the knowledge index `<project id>.json.gz` and the chat `<project id>.chat.json.gz` (gzip-compressed JSON, replaced atomically, each with its previous copy as `.bak`). In file names, capital letters and `_` in the ID are written as `_` plus the lowercase letter (`_` becomes `__`), so IDs that differ only in case never share a file. A board that reuses a deleted board's ID starts with empty knowledge and chat. The index holds references and small facts:
+- Two compact files per project in `<data folder>/coordinator/`: the knowledge index `<project id>.json.gz` and the chat `<project id>.chat.json.gz` (gzip-compressed JSON, replaced atomically, each with its previous copy as `.bak`). In file names, capital letters and `_` in the ID are written as `_` plus the lowercase letter (`_` becomes `__`), so IDs that differ only in case never share a file. A board that reuses a deleted board's ID starts with empty knowledge and chat. A damaged file is kept aside as `….corrupt-…` and never overwritten; the knowledge is then rebuilt from the board. The index holds references and small facts:
   - card number, title and column
   - state of its agent
   - branch
@@ -24,8 +24,8 @@ The Coordinator is a read-only observer for one project. It sits above the Kanba
   - links to the saved prompt revision or Origin task it came from
   - the project's timeline events: moves, runs, reviews, tests, pull requests, completions, commits and notes
 - Card prompts, Compose history, agent transcripts and logs are not copied. They stay in their own records and are read only when a question needs them.
-- Events keep their original IDs and times. The same event is stored once and updated in place, for example a run that finished. Each update that changes something adds a small snapshot record with the board revision.
-- Updates are deterministic and happen only when the panel is shown or a question is asked. There are no timers, no background work and no model calls.
+- Events keep their original IDs and times. The same event is stored once and updated in place, for example a run that finished. Events of a deleted card or note are removed with it. The newest 3000 events are kept. Each update that changes something adds a small snapshot record with the board revision; an update that finds nothing new leaves the file unchanged.
+- Updates are deterministic and happen only when the panel is shown on the Kanban page or a question is asked, at most every 5 seconds. There are no timers, no background work and no model calls.
 - While the Coordinator is off, nothing is recorded. Turning it on reconciles what happened meanwhile from the board's own history, with the original times. The knowledge survives restarts.
 
 ## Asking
@@ -38,10 +38,11 @@ The Coordinator is a read-only observer for one project. It sits above the Kanba
   - for a branch: its cards, commits, reviews and tests
   - for the project: the cards your question names or matches, and recent activity
   - Origin names, layers, accepted decisions and requirements only for design questions
+  - at most 40 active agents and 40 blockers
 - The answer comes from one call to the CLI selected in Compose (Codex, Claude Code or Gemini; Antigravity cannot run without tools and is refused), without tools, in an empty temporary folder. The Coordinator cannot change code, cards, branches or agents.
 - Answers cite their evidence as [T12], [run:…] or [commit:…]. References that exist become links: cards open, commits copy their ID. Anything else stays text.
 - Asking the same question about the same evidence again uses the saved answer, without a model call.
-- Each project keeps its own chat (the last 200 messages).
+- Each project keeps its own chat (the last 200 messages; an answer is kept up to 20,000 characters).
 
 ## Not included yet
 

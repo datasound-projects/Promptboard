@@ -78,3 +78,33 @@ test('Coordinator panel: one-click open and close next to Autopilot, remembered 
   await wait(`document.querySelector('#coordinator').hidden`, 'closed on a phone');
   assert.deepEqual(browser.consoleMessages.filter(line => line.startsWith('EXCEPTION')), []);
 });
+
+test('Coordinator panel: nothing is read while the Kanban page is not shown, and Enter sends a question', { skip: !chrome, timeout: 180000 }, async t => {
+  const calls = [];
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [{ id: 'codex', available: true }], authAdapter: { installed: async () => true, status: async () => ({ state: 'signed-in' }) },
+    runner: async call => { calls.push(call); return { text: 'Checkout is waiting in To Do [T1].' }; } });
+  const shop = await app.board.createProject({ name: 'Shop', workflowMode: 'pipeline' });
+  await app.board.createTask({ projectId: shop.id, title: 'Checkout flow', prompt: 'Build checkout.' });
+  const browser = await launch({ width: 1280, height: 900 }); assert.ok(browser); t.after(() => browser.close());
+  // The panel was left open on this project. Every Coordinator request is recorded with the page it was sent from.
+  await browser.send('Page.addScriptToEvaluateOnNewDocument', { source: `localStorage.setItem('promptboard.kanban.project', ${JSON.stringify(shop.id)}); localStorage.setItem(${JSON.stringify(`promptboard.coordinator.${shop.id}`)}, 'open');
+    window.coordinatorRequests = []; const realFetch = window.fetch; window.fetch = (url, ...rest) => { if (String(url).includes('/api/coordinator')) window.coordinatorRequests.push(location.hash); return realFetch(url, ...rest); };` });
+  const ev = code => browser.eval(code), wait = (expression, label) => browser.until(expression, label, 15000);
+  await browser.goto(`${app.url}/#/`);
+  await wait(`document.querySelector('#board-count').textContent === '01'`, 'board rendered behind Compose');
+  await ev(`location.hash = '#/kanban';`);
+  await wait(`/0\\/1 done/.test(document.querySelector('.coordinator-status')?.textContent || '')`, 'read when Kanban is shown');
+  assert.deepEqual(await ev(`return window.coordinatorRequests;`), ['#/kanban'], 'no read from the Compose page');
+  await ev(`document.querySelector('#coordinator-ask').click();`);
+  await wait(`document.activeElement?.id === 'coordinator-question'`, 'chat focused');
+  await browser.type('Status?');
+  await browser.key('Enter');
+  await wait(`document.querySelectorAll('.coordinator-message.is-coordinator').length === 1 && document.querySelector('#coordinator-question').value === ''`, 'Enter sent the question');
+  assert.equal(calls.length, 1);
+  // On a phone the chat keeps room for its messages: the overview folds away while chatting, the summary line stays.
+  await browser.resize(390, 700);
+  await browser.layout(`const log = document.querySelector('.coordinator-messages').getBoundingClientRect(), form = document.querySelector('.coordinator-form').getBoundingClientRect(), panel = document.querySelector('#coordinator').getBoundingClientRect();
+    return log.height >= 80 && form.bottom <= panel.bottom && /0\\/1 done/.test(document.querySelector('.coordinator-status').textContent);`)
+    .catch(async error => { throw new Error(`${error.message}: ${JSON.stringify(await ev(`return ['.coordinator-bar', '.coordinator-grid', '.coordinator-chat-head', '.coordinator-messages', '.coordinator-form'].map(s => Math.round(document.querySelector(s)?.getBoundingClientRect().height ?? -1));`))}`); });
+  assert.deepEqual(browser.consoleMessages.filter(line => line.startsWith('EXCEPTION')), []);
+});
