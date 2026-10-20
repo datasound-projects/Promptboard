@@ -107,7 +107,7 @@ export class RemoteAccess {
   constructor({ dataDir, localPort, handle, cli = tailscaleCli, now = () => Date.now() }) {
     this.path = join(dataDir, FILE); this.localPort = localPort; this.handle = handle; this.cli = cli; this.now = now;
     this.settings = { ...DEFAULTS }; this.sessions = []; this.pairing = null; this.failures = []; this.server = null; this.error = '';
-    this.queue = serial(); this.tailscale = null;
+    this.queue = serial(); this.tailscale = null; this.lookup = null;
     this.changes = serial(); this.closed = false; // Listener changes run one at a time; none after shutdown.
     this.open = new Map(); // Session ID → its open responses (live streams), ended when the session is revoked.
   }
@@ -144,13 +144,15 @@ export class RemoteAccess {
     } catch { this.error = 'The certificate or key file could not be read.'; throw new RemoteError(this.error, 'REMOTE_TLS'); }
     server.on('request', (req, res) => this.serve(req, res).catch(() => { if (res.headersSent) res.destroy(); else reply(res, 500, { error: 'The request failed. Nothing was changed.' }); }));
     server.requestTimeout = 30_000; server.headersTimeout = 15_000; server.keepAliveTimeout = 5_000;
-    await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, bind, () => { server.off('error', reject); resolve(); }); })
+    // Once listening, a server error (for example EMFILE on accept) is shown in Settings; unhandled, it would stop the whole app.
+    const failed = error => { if (this.server === server) this.error = `The remote listener reported an error${/^[A-Z]+$/.test(error?.code || '') ? ` (${error.code})` : ''}. If the phone cannot connect, turn remote access off and on again.`; };
+    await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, bind, () => { server.off('error', reject); server.on('error', failed); resolve(); }); })
       .catch(error => { this.error = error.code === 'EADDRINUSE' ? `Port ${port} is already in use. Choose another remote port.` : error.code === 'EADDRNOTAVAIL' ? `${bind} is not an address of this computer.` : 'The remote listener could not start.'; throw new RemoteError(this.error, 'REMOTE_LISTEN', 409); });
     if (this.closed) { server.close(); return; }
     this.server = server; this.error = '';
   }
   async close() {
-    const server = this.server; this.server = null;
+    const server = this.server; this.server = null; this.error = ''; // An earlier start failure is not shown once nothing should listen.
     if (!server) return;
     await new Promise(resolve => { server.close(() => resolve()); server.closeAllConnections?.(); });
   }
@@ -192,6 +194,7 @@ export class RemoteAccess {
   }
   async revoke(id) {
     const before = this.sessions.length, gone = this.sessions.filter(row => id === 'all' || row.id === id);
+    if (id === 'all') this.pairing = null; // A code shown earlier does not pair a device after Revoke all either.
     this.sessions = this.sessions.filter(row => !gone.includes(row));
     // Its live streams end at once: a revoked device sees nothing more.
     for (const row of gone) { for (const res of this.open.get(row.id) || []) res.destroy(); this.open.delete(row.id); }
@@ -201,8 +204,13 @@ export class RemoteAccess {
 
   // ---- What the Settings page shows ----
   async status({ refresh = false } = {}) {
-    const { method, port, bind, host, cert } = this.settings;
-    if (method === 'tailscale' && (refresh || !this.tailscale || this.now() - this.tailscale.at > 15000)) this.tailscale = { at: this.now(), state: await tailscaleState(port, this.cli) };
+    const { method, port, bind, host, cert, key } = this.settings, now = this.now();
+    if (method === 'tailscale' && (refresh || !this.tailscale || this.now() - this.tailscale.at > 15000)) {
+      // Requests that arrive together share one lookup; a refresh (after a Serve change) always reads again.
+      if (refresh || this.lookup?.port !== port) this.lookup = { port, state: tailscaleState(port, this.cli) };
+      const lookup = this.lookup;
+      try { this.tailscale = { at: this.now(), state: await lookup.state }; } finally { if (this.lookup === lookup) this.lookup = null; }
+    }
     const tailscale = method === 'tailscale' ? this.tailscale.state : null;
     const url = method === 'tailscale' ? tailscale?.url || '' : method === 'twingate' && (host || bind !== '127.0.0.1') ? `${cert ? 'https' : 'http'}://${host || bind}:${port}` : '';
     const warnings = [];
@@ -210,9 +218,10 @@ export class RemoteAccess {
     if (method === 'twingate' && !cert) warnings.push('Without a certificate, the last hop from the Connector to this computer is unencrypted on your network. Add a certificate and key for HTTPS.');
     if (tailscale?.shared) warnings.push('Another Tailscale Serve service uses this same address on a different port. Browsers send Promptboard’s device sign-in to it as well; keep it only if you trust that service.');
     if (tailscale?.funnel) warnings.push('Tailscale Funnel is on for this address: it is reachable from the public internet. Promptboard refuses those requests; turn Funnel off.');
-    return { method, port, bind, host, tls: Boolean(cert), listening: Boolean(this.server), error: this.error, url, tailscale, warnings, addresses: localAddresses(),
-      pairing: this.pairing && this.pairing.expiresAt > this.now() ? { expiresAt: this.pairing.expiresAt } : null,
-      sessions: this.sessions.map(publicSession) };
+    // The certificate paths come back (this route is local only), so saving another field keeps HTTPS.
+    return { method, port, bind, host, tls: Boolean(cert), cert, key, listening: Boolean(this.server), error: this.error, url, tailscale, warnings, addresses: localAddresses(),
+      pairing: this.pairing && this.pairing.expiresAt > now ? { expiresAt: this.pairing.expiresAt } : null,
+      sessions: this.sessions.filter(row => row.expiresAt > now).map(publicSession) }; // An expired device has no access and is not listed.
   }
   async setServe(on) {
     if (this.settings.method !== 'tailscale') throw invalid('Choose Tailscale first.');
@@ -315,7 +324,10 @@ export async function remoteRoute(remote, req, res, pathname, { jsonBody, send }
 
 /**
  * What needs someone at the computer: remote access itself, CLI and GitHub sign-in (they open a browser or terminal
- * there), native dialogs and opening a project folder or terminal there. Everything else is allowed: a paired device has the same control as the computer.
+ * there), native dialogs, opening a project folder, terminal or editor there, and Base imports (Claude Desktop's own
+ * configuration, a repository scan). Everything else is allowed: a paired device has the same control as the computer,
+ * so Compose's MCP test and local folder sources stay allowed, like agents, test commands and Base MCP tests.
+ * tests/remote-access.test.mjs walks every route against this list.
  */
 function localOnly(method, path) {
   if (method === 'GET' || method === 'HEAD') return /^\/api\/remote(\/|$)/.test(path) || path === '/api/editors';

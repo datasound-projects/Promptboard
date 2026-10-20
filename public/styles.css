@@ -2584,4 +2584,7 @@ button.origin-context-badge { cursor: pointer; }
   .origin-icon, .origin-icon.origin-small, .origin-map-resize { width: 44px; height: 44px; }
   .autopilot-up, .autopilot-down { min-width: 44px; min-height: 44px; }
   #origin-research-input { min-height: 44px; }
+  .icon-button, .page-nav a, .secondary-button, .copy-button, #kanban-view #card-new, .text-button, .detail-actions button, .view-switch button, .dock-tab, .kanban-card .kanban-more-toggle, .origin-primary, .origin-ghost, .origin-pill, .origin-link-pill, .origin-blueprint-chip, .origin-menu-item, select, input:not([type="checkbox"], [type="radio"], [type="range"], [role="switch"]) { min-height: 44px; }
+  /* The top bar keeps its icon widths: at 390 px it has no room for four 44 px icons beside the page links. */
+  .icon-button:not(.topbar *), .text-button, .kanban-card .kanban-more-toggle, .origin-ghost, .origin-link, .origin-blueprint-chip { min-width: 44px; }
 }

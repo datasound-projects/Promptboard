@@ -25,13 +25,23 @@ must come from a **paired device**:
    Content-Security-Policy and every approval gate.
 
 Paired devices are listed in Settings with when they were paired and last seen. **Revoke** ends a device at once,
-including its open terminal streams. Sessions expire after 30 days.
+including its open terminal streams. **Revoke all devices** also voids a pairing code that was shown but not used yet.
+Sessions expire after 30 days; an expired device leaves the list.
 
 **A paired device has the same control as you at the computer.** It can start agents (which run commands), type into
 their terminals, change test commands and column actions, and approve steps. Pair only your own devices, and revoke any
 you no longer use. A few things need someone at the computer and are refused from a phone: changing remote access, CLI
-and GitHub sign-in (they open a browser or terminal there), native folder pickers, and opening a project's folder, a terminal or a code editor (Open in Finder, Open in IDE): they open windows on the computer. A phone can copy the path. GitHub, CLI and agent credentials
-are never sent to the phone.
+and GitHub sign-in (they open a browser or terminal there), native folder pickers, opening a project's folder, a terminal
+or a code editor (Open in Finder, Open in IDE, and the list of editors): they open windows on the computer. A phone can
+copy the path. Base imports are refused too: *Import MCP servers…* reads Claude Desktop's own configuration on the
+computer, and *Import Markdown from a repository…* scans a repository there. GitHub, CLI and agent credentials are never
+sent to the phone.
+
+Everything else works from a phone because it runs on the computer exactly as it would from there, with the same
+checks. That includes Compose's context sources: a local project folder (read-only, secret files skipped) and an MCP
+connection test, which starts the configured local MCP program. They are not refused, for the same reason agents, test
+commands and Base MCP connection tests are not: a paired device can already run programs and read project folders
+through them, so refusing one more path would change nothing but the phone's usefulness.
 
 ### When the phone sleeps
 
@@ -88,9 +98,12 @@ In Safari, **Share → Add to Home Screen** opens Promptboard full screen. It is
 ## What was verified
 
 - Automated tests with simulated networks: the remote listener, pairing and rate limits, cookies, host and origin checks,
-  proxy-header refusal on the local app, local-only routes, revocation (including open streams), restart, and the
-  Tailscale CLI commands (a fake CLI).
-- A real browser (Chrome with an iPhone-sized touch screen) pairing and using the app through the remote listener.
+  proxy-header refusal on the local app, revocation (including open streams), restart, and the Tailscale CLI commands
+  (a fake CLI). A route-table test sends every route the app serves from a paired device: the local-only ones are
+  refused, every other one reaches the app, and a new route fails the test until it is classified.
+- A real browser (Chrome with an iPhone-sized touch screen) pairing and using the app through the remote listener. On a
+  touch screen every control is at least 44 px tall, and 44 px wide outside the top bar (at 390 px the top bar has no
+  room for four 44 px icons beside the page links).
 - WebKit, Safari's engine (Playwright, iPhone 15 profile): pairing, the board, every page fitting the screen, the
   HttpOnly SameSite=Strict cookie, reload, Settings on the phone, and revocation.
 - The real Tailscale CLI on a Mac: status, the Serve command Promptboard runs, and a tailnet where Serve and HTTPS are
