@@ -142,7 +142,11 @@ export class OriginStore {
       if (!damaged(error)) throw error.code === 'ORIGIN_VERSION_UNSUPPORTED' ? error : new OriginError('The Origin project could not be read. Check folder permissions.', 'ORIGIN_READ_FAILED', 500);
       let result = null;
       try { result = await this.#parse(`${path}.bak`, originId); }
-      catch (backupError) { if (backupError.code === 'ORIGIN_VERSION_UNSUPPORTED') throw backupError; }
+      catch (backupError) {
+        if (backupError.code === 'ORIGIN_VERSION_UNSUPPORTED') throw backupError;
+        // A damaged backup is kept aside too; saves under this ID would otherwise replace it.
+        if (damaged(backupError)) await rename(`${path}.bak`, join(this.dir, `${name.slice(0, -5)}.corrupt-${Date.now()}-${randomBytes(4).toString('hex')}.bak.json`));
+      }
       const quarantined = `${name.slice(0, -5)}.corrupt-${Date.now()}-${randomBytes(4).toString('hex')}.json`;
       await rename(path, join(this.dir, quarantined));
       if (result) {

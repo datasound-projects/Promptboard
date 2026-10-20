@@ -337,6 +337,7 @@ test('a damaged project without a good copy stays reported as damaged after a li
   const dir = await temp(t), store = new OriginStore(dir);
   const created = await store.create({ name: 'Fragile' });
   await writeFile(join(dir, 'origin', blueprintFileName(created.id)), '{ broken');
+  await writeFile(join(dir, 'origin', `${blueprintFileName(created.id)}.bak`), '{ broken backup');
   assert.deepEqual(await store.list(), [], 'not listed');
   for (const report of [false, true, true]) {
     const read = await store.read(created.id, { report });
@@ -345,8 +346,12 @@ test('a damaged project without a good copy stays reported as damaged after a li
   const page = originRoute({ origin: store, board: { state: async () => ({ projects: [] }) }, req: { method: 'GET' }, res: {}, pathname: `/api/origin/projects/${created.id}`, jsonBody: async () => ({}), send: () => {} });
   await assert.rejects(page, { code: 'ORIGIN_DAMAGED' });
   // Reusing the ID starts a new project; the damaged file stays where it was set aside.
-  await store.create({ name: 'Fragile again', id: created.id });
+  const again = await store.create({ name: 'Fragile again', id: created.id });
   assert.equal((await store.read(created.id)).damaged, undefined);
+  // The damaged backup was set aside too, so saves of the new project never replace it.
+  await store.write(created.id, { expectedRevision: again.revision, blueprint: { idea: 'One' } }); await store.write(created.id, { expectedRevision: again.revision + 1, blueprint: { idea: 'Two' } });
+  const kept = await Promise.all((await readdir(join(dir, 'origin'))).filter(name => name.includes('.corrupt-')).map(name => readFile(join(dir, 'origin', name), 'utf8')));
+  assert.deepEqual(kept.sort(), ['{ broken', '{ broken backup']);
 });
 
 test('a failed Origin write reports an error and keeps the previous file', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, async t => {
