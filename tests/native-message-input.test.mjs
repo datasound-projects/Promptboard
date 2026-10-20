@@ -385,7 +385,6 @@ test('readiness cannot waive human draft, uncertain input, termination or proces
     w => { w.session.activity.uncertain = true; },
     w => { w.session.activity.ended = true; },
     w => { w.session.cancelled = true; },
-    w => { w.session.proc = null; },
     w => { w.supervisor.stopping = true; },
   ]) {
     const w = await fixture(t); w.supervisor = new Supervisor({ dataDir: w.dir, board: {} });
@@ -464,5 +463,14 @@ test('an interrupted multi-chunk paste is closed without Enter, only on the same
     assert.equal((await w.call({ message })).status, 'unconfirmed');
     assert.deepEqual(w.writes.slice(1), closed ? ['\x1b[201~'] : []);
     assert.ok(!w.writes.includes('\r')); assert.equal(w.session.messageInputUncertain, true);
+  }
+});
+
+test('readiness reports an exited or failed process as ended, so a queued message names its ended session', async t => {
+  for (const change of [w => { w.session.proc = null; }, w => { w.session.exiting = true; }, w => { w.session.failure = { code: 'AUTH_REQUIRED' }; }]) {
+    const w = await fixture(t); w.supervisor = new Supervisor({ dataDir: w.dir, board: {} });
+    w.supervisor.sessions.set(w.run.id, w.session); change(w);
+    assert.equal(w.supervisor.nativeMessageReadiness(w.run.id), 'ended');
+    assert.equal(w.session.inputEpoch, 0); assert.deepEqual(w.writes, []);
   }
 });

@@ -96,7 +96,7 @@ export class NativeMessageScheduler {
             if (!waitForReadiness) break;
             const ready = await bounded(() => this.supervisor.nativeMessageReadiness(runId), timeoutMs);
             if (ready === 'ready') break;
-            if (ready !== 'waiting') return await finishQueue();
+            if (ready !== 'waiting') return await finishQueue(ready === 'ended' ? TARGET_CHANGED : undefined);
           }
           await delay(50, undefined, { signal: combined });
         }

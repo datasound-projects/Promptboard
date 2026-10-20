@@ -700,6 +700,8 @@ export class Supervisor {
   /** Private cached observation: no input, hook processing, grant or session selection. */
   nativeMessageReadiness(runId) {
     const session = this.sessions.get(runId), proc = session?.proc;
+    // The process ended without Stop or Pause (exit, failure, confirmed stage): a queued message names its ended session.
+    if (session?.pipeline && !session.cancelled && !session.suspending && (!proc || session.exiting || session.failure || session.launchFailed || session.confirmed)) return 'ended';
     if (!session?.pipeline || !this.#ownsInitialProcess(session, proc)) return 'unavailable';
     if (this.#nativeMessageOwners.has(session)) return 'waiting';
     return nativeMessageInputReadiness(session, () => this.#ownsInitialProcess(session, proc));
