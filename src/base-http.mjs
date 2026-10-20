@@ -6,7 +6,7 @@ import { BaseError, BASE_LIMITS, normalizeContent } from './base.mjs';
 import { captureSources, fetchDocument, searchSources } from './base-context.mjs';
 import { CONTEXT7_PRESET, testMcp } from './base-mcp.mjs';
 import { WikiJobs } from './base-wiki.mjs';
-import { AvatarJobs, imageAvailability } from './base-avatar.mjs';
+import { AvatarJobs } from './base-avatar.mjs';
 import { MARKDOWN_TEMPLATES, deployToRepository, markdownConvention, markdownFrontmatter, readRepositoryFile, scanRepository } from './base-markdown.mjs';
 import { mcpResourceFrom, parseMcpConfig, readMcpSource } from './base-mcp-import.mjs';
 const digest = text => createHash('sha256').update(text).digest('hex');
@@ -45,7 +45,6 @@ export class BaseRoutes {
     const { board } = this, method = req.method;
     if (method === 'GET' && pathname === '/api/base') return this.send(res, 200, await board.baseView());
     if (method === 'GET' && pathname === '/api/base/presets') return this.send(res, 200, { presets: [CONTEXT7_PRESET] });
-    if (method === 'GET' && pathname === '/api/base/avatar/service') return this.send(res, 200, imageAvailability());
     if (method === 'POST' && pathname === '/api/base/avatar/cancel') return this.send(res, 200, this.avatars.cancel((await this.body(req)).operationId));
     if (method === 'POST' && pathname === '/api/base/avatar/generate') {
       const body = await this.body(req), controller = new AbortController();
