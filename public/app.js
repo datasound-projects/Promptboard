@@ -1,6 +1,6 @@
 'use strict';
 
-const $ = (selector) => document?.querySelector(selector); // No document: a late response after the page was closed.
+const $ = (selector) => document.querySelector(selector);
 const HISTORY_KEY = 'ste-prompt-engineer.history.v1';
 const THEME_KEY = 'ste-prompt-engineer.theme'; // Also read by prefs.js before first paint.
 const SIDEBAR_KEY = 'ste-prompt-engineer.sidebar';
@@ -374,8 +374,10 @@ function readSession() {
 }
 // Every request with the token goes through here. A restarted app has a new token: its refusal (403 SESSION_EXPIRED)
 // reads the session again and sends the request once more. Safe: the server checks the token before any work.
+// A request still running when the page is closed never settles, so no late answer draws on a gone document.
+const settled = () => document ? undefined : new Promise(() => {});
 async function tokenFetch(path, init = {}) {
-  const sent = token, send = () => fetch(path, { ...init, headers: { ...init.headers, 'X-STE-Token': token } });
+  const sent = token, send = () => fetch(path, { ...init, headers: { ...init.headers, 'X-STE-Token': token } }).finally(settled);
   const response = await send();
   if (response.status !== 403 || (await response.clone().json().catch(() => null))?.code !== 'SESSION_EXPIRED') return response;
   if (token === sent && !await readSession()) return response;
@@ -5915,7 +5917,6 @@ function pollLogin() {
 }
 function renderGitHub() {
   const box = $('#set-github-group');
-  if (!box) return; // A status that arrives after the page is gone (a closed window) has nothing to draw.
   const legend = box.querySelector('legend');
   const nodes = [];
   const st = github.status;
