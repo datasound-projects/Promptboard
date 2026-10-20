@@ -736,6 +736,10 @@ test('Origin Send to Kanban asks before including prerequisites, never duplicate
   const check = key => ev(`[...document.querySelectorAll('#origin-main .origin-row')].find(r => r.textContent.includes(${J(key)})).querySelector('.origin-check').click();`);
   await browser.goto(`${app.url}/#/origin`);
   await wait(`document.querySelector('.origin-map')`, 'map');
+  // A removal offers Undo; sending to Kanban afterwards ends it, so it can never take the new card links back.
+  await section('vision');
+  await ev(`const m = document.querySelector('[data-nav="menu:vision:goal"]').closest('details'); m.open = true; [...m.querySelectorAll('.origin-menu-item')].find(b => b.textContent === 'Remove question').click();`);
+  await wait(`!document.querySelector('#origin-undo').hidden`, 'undo offered');
   await section('plan');
   await check('IMP-002');
   await ev(`document.querySelector('#origin-kanban-handoff').click();`);
@@ -747,6 +751,7 @@ test('Origin Send to Kanban asks before including prerequisites, never duplicate
   await ev(`document.querySelector('#origin-handoff-confirm').click();`);
   await wait(`!document.querySelector('#origin-handoff-dialog .origin-handoff-results').hidden`, 'results', 15000);
   assert.deepEqual(await ev(`return [...document.querySelectorAll('#origin-handoff-dialog .origin-handoff-result')].map(node => node.textContent);`), ['IMP-001 → Kanban #1', 'IMP-002 → Kanban #2']);
+  assert.equal(await ev(`return document.querySelector('#origin-undo').hidden;`), true, 'no Undo from before the cards were made');
   await ev(`[...document.querySelectorAll('#origin-handoff-dialog button')].find(b => b.textContent === 'Done').click();`);
   await wait(`!document.querySelector('#origin-handoff-dialog').open && /Kanban #2 · /.test(document.querySelector('#origin-main').textContent)`, 'rows show the cards');
   // Sending the same tasks again returns the existing cards.
