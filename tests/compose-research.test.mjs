@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, symlink, rm } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, writeFile, symlink, rm } from 'node:fs/promises';
 import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 import { ComposeContext } from '../src/compose-context.mjs';
@@ -19,6 +19,9 @@ const docs = () => ({ retrieve: async (source, queries) => queries.map(q => ({ s
 test('intent guard rejects topics and noise without rejecting actionable short sentences', () => {
   for (const value of ['dog', 'QuestDB', 'haha', '!!!!', 'aaaaaaa']) assert.equal(obviouslyNonActionable(value), true);
   for (const value of ['Create a website about dogs.', 'List files in a directory.', 'Napraw błąd uwierzytelniania.', 'Erkläre Docker.']) assert.equal(obviouslyNonActionable(value), false);
+  // Scripts without spaces: a short verb and object is a task, one word is a topic.
+  for (const value of ['修复错误', '添加按钮', '写测试', 'バグ修正', 'แก้ไขบั๊ก', '修复登录错误']) assert.equal(obviouslyNonActionable(value), false, value);
+  for (const value of ['狗', '你好', 'ログイン']) assert.equal(obviouslyNonActionable(value), true, value);
 });
 
 test('research plans enforce actionability, complexity, per-level limits and strict JSON', () => {
@@ -107,6 +110,20 @@ test('local folders expose bounded relevant code, manifest and Skills data; excl
   assert.ok(result.evidence.some(e => e.locator.startsWith('package.json'))); assert.ok(result.evidence.every(e => e.sourceType === 'repository'));
   for (const path of ['/', homedir(), 'relative/project']) assert.throws(() => validateLocal(source(path)));
   const aborted = new AbortController(); aborted.abort(); await assert.rejects(local.index(source(root), { signal: aborted.signal }));
+});
+
+test('a folder the app cannot read (such as a database volume) is skipped, not the whole project', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, async t => {
+  const root = await folder(t);
+  await mkdir(join(root, 'pgdata')); await writeFile(join(root, 'pgdata', 'PG_VERSION'), '16');
+  await writeFile(join(root, 'package.json'), '{"dependencies":{"express":"4"}}');
+  await chmod(join(root, 'pgdata'), 0o000);
+  try {
+    const result = await new ComposeLocal().retrieve(source(root), [{ query: 'existing project framework dependencies', questionId: 'r1' }]);
+    assert.ok(result.evidence.some(e => e.locator.startsWith('package.json')));
+    assert.equal(result.truncated, true);
+    await chmod(root, 0o000);
+    await assert.rejects(new ComposeLocal().index(source(root)), { code: 'EACCES' }); // The chosen folder itself must be readable.
+  } finally { await chmod(root, 0o755); await chmod(join(root, 'pgdata'), 0o755); }
 });
 
 test('existing repositories are inspected before documentation and refine the actual framework', async t => {
