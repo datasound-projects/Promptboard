@@ -3262,7 +3262,7 @@ window.PromptboardOrigin = (() => {
       const tasks = app.projects().find(entry => entry.id === destination)?.tasks || [];
       const items = new Map(blueprint.items.map(item => [item.id, item]));
       const cardOf = item => tasks.find(task => task.originSource?.originProjectId === projectId && task.originSource.originTaskId === item.id)
-        || (item.handoff?.projectId === destination ? tasks.find(task => task.id === item.handoff.taskId) : null) || null;
+        || (item.handoff?.projectId === destination ? tasks.find(task => task.id === item.handoff.taskId) : null) || M.splitCard(tasks, projectId, item.id, id => items.has(id));
       const { response, data } = await app.api(`/api/origin/projects/${encodeURIComponent(projectId)}/context`, { method: 'POST', body: { expectedRevision: record.revision, itemIds: selection }, timeoutMs: 30000 })
         .catch(() => ({ response: { ok: false }, data: { error: 'The app did not answer. Nothing was sent.' } }));
       if (!response.ok) { showError(typeof data.error === 'string' ? data.error : 'The tasks could not be prepared. Nothing was sent.'); return; }

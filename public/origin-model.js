@@ -977,6 +977,19 @@ globalThis.PromptboardOriginModel = (() => {
     for (const item of sorted) place(item);
     return result;
   }
+  /**
+   * The card of a task that Compose Batch split into parts (<task ID>-s1, -s2, … with this project's Origin identity):
+   * its last part, which later tasks wait for. `isItem` says which IDs are tasks of their own, so they are never parts.
+   */
+  function splitCard(tasks, originId, itemId, isItem = () => false) {
+    const prefix = `${itemId.slice(0, 90)}-s`;
+    let last = null, number = 0;
+    for (const task of tasks) {
+      const own = task.originSource?.originProjectId === originId ? task.originSource.originTaskId : '', part = own.startsWith(prefix) && /^[1-9][0-9]{0,3}$/.test(own.slice(prefix.length)) ? Number(own.slice(prefix.length)) : 0;
+      if (part > number && !isItem(own)) { last = task; number = part; }
+    }
+    return last;
+  }
 
 
 
@@ -2100,7 +2113,7 @@ globalThis.PromptboardOriginModel = (() => {
     moveBlockTo, duplicateBlock, changeBlockType, restoreDefaultStructure, structureTemplate,
     SCHEMA, VERSION, ID, PHASES, SECTIONS, ENUMS, AREAS, VISION, LIMITS, CONTEXT_COLLECTIONS, QUESTIONS, VISION_QUESTIONS, COMPONENT_FIELDS, SECTION_STATE, VERIFICATION_LABELS,
     label, sectionLabel, sectionTitle, phaseTitle, phaseList, questionText, lines, emptyBlueprint, nextKey, normalizeBlueprint, verification, isStarted, itemName, issues, readiness, sectionStates,
-    composeSpec, orderItems, taskHome, taskContext, taskBody, suggestionBrief, researchTargets, researchContext, researchRecord, RESEARCH_FIELDS,
+    composeSpec, orderItems, splitCard, taskHome, taskContext, taskBody, suggestionBrief, researchTargets, researchContext, researchRecord, RESEARCH_FIELDS,
     SUGGEST_FIELDS, SUGGEST_ADD, LINKS, RECORD_DEFAULTS, researchTargetKey, researchTargetValue, researchTargetLabel, researchName, researchRef, validateResearchSuggestion, applyResearchSuggestion, resolveResearchLinks,
     BLOCK_TYPES, BLOCK_PARTS, blockLines, blockStarted, blockWorked, blockFingerprint, blockComplete, researchBlock, researchGuide, researchApplyOrder, researchRefKind, researchBlockPreview };
 })();
