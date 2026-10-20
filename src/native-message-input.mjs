@@ -48,7 +48,7 @@ export async function sendOwnedNativeMessage({ session, run, owns, readEvents, g
     return outcome('unavailable', 'This process cannot grant another native input attempt.');
   custody.active = true; custody.ids.add(dispatchId);
   const started = performance.now(), proc = session.proc, nativeId = session.nativeSessionId;
-  let expectedEpoch = session.inputEpoch, reader, ticket, touched = false, queueAccepted = false;
+  let expectedEpoch = session.inputEpoch, reader, ticket, touched = false, queueAccepted = false, pasteOpen = false;
   const expired = () => performance.now() - started >= timeoutMs;
   const owner = () => {
     try { return Boolean(owns() && session.proc === proc && session.nativeSessionId === nativeId && session.inputEpoch === expectedEpoch); }
@@ -101,7 +101,7 @@ export async function sendOwnedNativeMessage({ session, run, owns, readEvents, g
       await events(); const stopped = abort(); if (stopped) return stopped;
       if (!pasteOwned())
         return outcome('unconfirmed', 'Native input changed during paste. Check the terminal before submitting.');
-      write(chunk);
+      write(chunk); pasteOpen = !chunk.endsWith('\x1b[201~');
       await new Promise(resolve => setImmediate(resolve));
     }
     // Separate paste from Enter so the TUI can commit its input state. Output
@@ -141,6 +141,8 @@ export async function sendOwnedNativeMessage({ session, run, owns, readEvents, g
     return abort() || outcome('unconfirmed', 'Native message input was not confirmed. Check the terminal; no input will be retried.');
   } finally {
     reader?.close();
+    // Close an interrupted paste (never with Enter) so the CLI is not left inside it. Never on a replaced process or after paste mode ended.
+    if (pasteOpen && session.proc === proc && session.terminalInput?.snapshot().bracketedPaste === true) try { session.inputEpoch++; proc.write('\x1b[201~'); } catch {}
     if (touched && !proved) {
       session.messageInputUncertain = true;
       if (session.activity) session.activity.uncertain = true;

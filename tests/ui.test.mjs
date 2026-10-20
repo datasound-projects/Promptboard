@@ -722,3 +722,46 @@ test('the skip link focuses the visible page and never changes the page', async 
   assert.equal(win.document.activeElement, $('#prompt-input'));
   assert.equal(win.location.hash, '#/');
 });
+
+test('a failed first load says so on the visible page, and an uncaught error is shown instead of a silent page', async () => {
+  // No app answers: every request fails, as when the server stopped after the page was served.
+  const win = new JSDOM(await readFile(new URL('../public/index.html', import.meta.url), 'utf8'), { url: 'http://127.0.0.1:9/#/origin', runScripts: 'outside-only' }).window;
+  try {
+    win.fetch = async () => { throw new TypeError('Failed to fetch'); };
+    win.scrollTo = () => {}; win.HTMLElement.prototype.scrollIntoView = () => {};
+    for (const file of ['prefs.js', 'dom.js', 'base.js']) win.eval(await readFile(new URL(`../public/${file}`, import.meta.url), 'utf8'));
+    win.eval(`${await readFile(new URL('../public/app.js', import.meta.url), 'utf8')}\n${await readFile(new URL('../public/dock.js', import.meta.url), 'utf8')}`);
+    const $ = selector => win.document.querySelector(selector);
+    await until(() => !$('#app-error').hidden, 'load failure message');
+    assert.equal($('#app-error').parentElement, $('#origin-view'), 'Origin, otherwise empty, says why.');
+    assert.equal($('#app-error').textContent, 'Could not reach the local server. Restart the app, then reload this page.');
+    win.location.hash = '#/kanban';
+    await until(() => $('#app-error').parentElement === $('#kanban-view'), 'the message follows the visible page');
+    $('#app-error').hidden = true;
+    win.dispatchEvent(new win.ErrorEvent('error', { error: new win.Error('Boom') }));
+    assert.equal($('#app-error').hidden, false);
+    assert.equal($('#app-error').textContent, 'Something went wrong on this page. Reload it to continue. (Boom)');
+    $('#app-error').hidden = true;
+    const cancelled = new win.Event('unhandledrejection'); cancelled.reason = new win.DOMException('Stopped.', 'AbortError');
+    win.dispatchEvent(cancelled);
+    win.dispatchEvent(new win.ErrorEvent('error', { message: 'ResizeObserver loop completed with undelivered notifications.' }));
+    assert.equal($('#app-error').hidden, true, 'A cancelled request or a browser notice without an error is not a failure.');
+    // Chrome's autofill sends keydown events without a key; the shortcut handler ignores them.
+    win.document.dispatchEvent(new win.Event('keydown', { bubbles: true }));
+    assert.equal($('#app-error').hidden, true);
+  } finally { win.close(); }
+});
+
+test('on a phone the drawer moves focus to the first control of the page it shows', async t => {
+  const { $, win } = await setup(t, { hash: '#/base' });
+  Object.defineProperty(win, 'innerWidth', { value: 375, configurable: true });
+  await until(() => $('#base-categories button'), 'Base categories');
+  for (const [hash, page, first] of [['#/base', 'base', '#base-categories button'], ['#/kanban', 'kanban', '#workspace-new'], ['#/', 'compose', '#new-prompt']]) {
+    win.location.hash = hash;
+    await until(() => win.document.documentElement.dataset.page === page && !$(first).disabled, `${page} page`);
+    $('#menu-toggle').click();
+    assert.equal(win.document.activeElement, $(first), `${page}: focus moves into the drawer, not ${win.document.activeElement.id || win.document.activeElement.className}`);
+    win.document.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    assert.equal(win.document.activeElement, $('#menu-toggle'));
+  }
+});

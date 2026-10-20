@@ -14,6 +14,15 @@ repository, is registered with Git and is on the task branch. Anything else stop
 worktree folder is never recreated silently: **Restore worktree** in the task details recreates it from the branch
 (every commit is there; uncommitted files are gone).
 
+A worktree is removed (after its merge, or when you delete the card or remove it) only when it is clean, and never with
+`--force`: Git checks again as it removes it, so a file written in the meantime stops the removal (`WORKTREE_REMOVE_FAILED`)
+instead of being deleted. The branch always stays. A worktree folder you deleted by hand is simply forgotten, and on
+**Restore worktree** or removal only that worktree's Git record is removed (`git worktree remove`, no `--force`).
+Promptboard never runs `git worktree prune`, so the records of your other worktrees are never touched; if Git refuses (a
+locked worktree), its stale record stays until Git's own expiry (`gc.worktreePruneExpire`). When Git
+cannot delete every file (on Windows, one that another program still holds open), Promptboard finishes the deletion with
+retries; a folder that still remains is never reused (`WORKTREE_PATH_EXISTS`).
+
 ## Column types
 
 Each active pipeline column has a type; its name is only a label.

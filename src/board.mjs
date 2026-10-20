@@ -1563,7 +1563,11 @@ export class Board {
       if (this.#activeRun(await this.state(), id)) throw conflict('An agent is still working on this card.', 'RUN_ACTIVE');
       const preview = await this.delivery.mergePreview(id);
       const squash = project.workflowMode === 'pipeline' && (project.execution?.mergeMethod ?? 'squash') === 'squash';
-      if (preview.eligible) return { task: await this.delivery.merge(id, { confirm: true, taskCommit: preview.taskCommit, targetCommit: preview.targetCommit, trigger: 'user', squash }), merged: true };
+      // A target that moved after the preview (TARGET_CHANGED, nothing changed) is prepared again below, as its message says.
+      if (preview.eligible) {
+        try { return { task: await this.delivery.merge(id, { confirm: true, taskCommit: preview.taskCommit, targetCommit: preview.targetCommit, trigger: 'user', squash }), merged: true }; }
+        catch (error) { if (error.code !== 'TARGET_CHANGED') throw error; }
+      }
       const merge = await this.#prepareMerge(id, { auto: true });
       if (merge.state === 'blocked') throw conflict(merge.message, 'MERGE_NOT_READY');
       return { task: merge.task || await this.#taskNow(id), merged: merge.state === 'merged', merge };
@@ -2494,8 +2498,9 @@ export class Board {
     if (exists) throw conflict(`The folder ${ws.path} exists, but Git does not list it as a worktree. Check it with git worktree list; Promptboard does not change it.`, 'WORKTREE_MISSING');
     if (!(await branchExists(repository.root, ws.branch))) throw conflict(`The task worktree and its branch ${ws.branch} were deleted, so the task's commits cannot be found. Restore the branch (git branch ${ws.branch} <commit>) or remove the task.`, 'WORKTREE_BRANCH_MISSING');
     if (!recover) throw conflict(`The task worktree folder ${ws.path} was deleted. Its branch ${ws.branch} still has every commit; uncommitted files are gone. Choose Restore worktree on the card to recreate it from the branch.`, 'WORKTREE_MISSING');
-    // `git worktree prune` removes only Git's records of worktree folders that no longer exist.
-    await git(['worktree', 'prune'], { cwd: repository.root });
+    // Git's record of the deleted folder goes first, for this worktree only: never `git worktree prune`, which also drops
+    // the records of the person's other worktrees whose folders are missing (for example on a disk that is not plugged in).
+    if (found) await git(['worktree', 'remove', ws.path], { cwd: repository.root }).catch(() => {});
     await git(['worktree', 'add', ws.path, ws.branch], { cwd: repository.root, config: [`core.hooksPath=${this.hooksDir}`, 'core.fsmonitor=false'], timeoutMs: 120000 })
       .catch(() => { throw conflict(`The task worktree folder was deleted and Git could not recreate it from ${ws.branch}. Run git worktree list in the repository.`, 'WORKTREE_MISSING'); });
     return this.store.update(draft => {
@@ -2555,14 +2560,15 @@ export class Board {
         });
         try {
           await git(['worktree', 'add', '-b', branch, path, baseCommit], { cwd: repository.root, config: [`core.hooksPath=${this.hooksDir}`, 'core.fsmonitor=false'], timeoutMs: 120000 });
-        } catch {
+        } catch (error) {
           const leftovers = await access(path).then(() => true, () => false) || await branchExists(repository.root, branch);
           await this.store.update(draft => {
             const { task: current } = this.#task(draft, taskId);
             current.workspace = leftovers ? { ...current.workspace, status: 'failed' } : null;
             current.revision++;
           });
-          throw new BoardError('Git could not create the task worktree. Run git worktree list in the repository to check it.', 'WORKTREE_FAILED', 502);
+          // Git's reason (for example "Filename too long" for a deep path on Windows) says what to fix.
+          throw new BoardError(`Git could not create the task worktree (${error.message}). Run git worktree list in the repository to check it.`, 'WORKTREE_FAILED', 502);
         }
         return this.store.update(draft => {
           const { task: current } = this.#task(draft, taskId);
@@ -2595,9 +2601,21 @@ export class Board {
       const root = await realpath(this.worktreeRoot).catch(() => this.worktreeRoot);
       if (!inside(root, workspace.path) || workspace.path === root) throw new BoardError('This worktree is not in Promptboard\'s folder, so it is not removed.', 'WORKTREE_NOT_OWNED', 409);
       const registered = await this.#registered(workspace.repositoryRoot, workspace.path);
-      // A worktree whose creation never finished and left no folder: only the record is cleared.
-      if (!registered && workspace.status !== 'ready' && !(await access(workspace.path).then(() => true, () => false))) {
-        return this.store.update(draft => { const { task: current } = this.#task(draft, taskId); current.workspace = null; current.revision++; return current; });
+      const forget = () => this.store.update(draft => {
+        const { task: current } = this.#task(draft, taskId);
+        // A creation that never finished may have made no branch to keep.
+        if (registered || workspace.status === 'ready') current.retainedBranches = [...current.retainedBranches, { branch: workspace.branch, removedAt: Date.now() }];
+        current.workspace = null;
+        current.revision++;
+        return current;
+      });
+      // No folder, so nothing on disk to delete (an unfinished creation, a folder deleted by hand, or a removal the app
+      // stopped during). Git's record of this worktree only goes too (`git worktree remove` without --force; never prune,
+      // which also drops the person's other worktrees whose folders are missing). Should Git refuse (a locked worktree),
+      // its stale record stays until Git's own expiry (gc.worktreePruneExpire); the card forgets it either way.
+      if (!(await access(workspace.path).then(() => true, () => false))) {
+        if (registered) await git(['worktree', 'remove', workspace.path], { cwd: workspace.repositoryRoot }).catch(() => {});
+        return forget();
       }
       if (!registered || registered.branch !== workspace.branch) throw new BoardError('Git does not list this worktree for the task branch, so nothing was removed.', 'WORKTREE_NOT_OWNED', 409);
       const status = await git(['status', '--porcelain', '--untracked-files=all'], { cwd: workspace.path });
@@ -2605,14 +2623,15 @@ export class Board {
       // Git deletes the files it ignores (.env, local databases, build output) with the worktree: never without a yes.
       const ignored = await ignoredFiles(workspace.path);
       if (ignored.length && !deleteIgnored) throw Object.assign(new BoardError(`The task worktree holds files Git ignores, which removing it would delete: ${ignored.slice(0, 8).join(', ')}${ignored.length > 8 ? ` and ${ignored.length - 8} more` : ''}. Move what you need out of ${workspace.path}, or confirm deleting them.`, 'WORKTREE_IGNORED_FILES', 409), { files: ignored.slice(0, 50) });
-      await git(['worktree', 'remove', ...(ignored.length ? ['--force'] : []), workspace.path], { cwd: workspace.repositoryRoot });
-      return this.store.update(draft => {
-        const { task: current } = this.#task(draft, taskId);
-        current.retainedBranches = [...current.retainedBranches, { branch: workspace.branch, removedAt: Date.now() }];
-        current.workspace = null;
-        current.revision++;
-        return current;
+      // Never --force: Git removes a worktree that holds only ignored files without it, and checks again that nothing
+      // changed, so a file written after the checks above is never deleted.
+      await git(['worktree', 'remove', workspace.path], { cwd: workspace.repositoryRoot, timeoutMs: 120000 }).catch(async error => {
+        if (await this.#registered(workspace.repositoryRoot, workspace.path)) throw new BoardError(`Git did not remove the task worktree (${error.message}). Its files are kept; check ${workspace.path}, then try again.`, 'WORKTREE_REMOVE_FAILED', 409);
+        // Git unregisters the worktree even when it cannot delete every file (on Windows, one another program holds open:
+        // EBUSY). Finish its deletion with backoff; a folder that still remains blocks a new worktree there, with a reason.
+        await rm(workspace.path, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
       });
+      return forget();
     });
   }
 

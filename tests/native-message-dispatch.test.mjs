@@ -103,3 +103,27 @@ test('preflight rejection and shutdown finish known queued input without acquiri
   assert.equal((await w.delivery(request)).status, 'unconfirmed'); assert.equal((await w.delivery(request)).dispatchStartedAt, undefined);
   await w.dispatcher.shutdown(); assert.equal((await w.dispatcher.deliver(await w.schedule('closed'), checked)).status, 'unavailable'); assert.deepEqual(w.calls, []);
 });
+
+test('a target that changed before dispatch or before the native grant is refused with a clear code and no input', async t => {
+  const w = await fixture(t), before = await w.schedule('before'), atGrant = await w.schedule('at-grant');
+  assert.equal((await w.dispatcher.deliver(before, { preflight: async () => false })).confirmed, false);
+  let checks = 0;
+  w.handle(async request => {
+    assert.equal(await request.grant({ dispatchId: request.dispatchId, ...atGrant.scope }), false);
+    return { status: 'unconfirmed', confirmed: false };
+  });
+  assert.equal((await w.dispatcher.deliver(atGrant, { preflight: async () => ++checks === 1 })).confirmed, false);
+  for (const request of [before, atGrant]) {
+    const receipt = await w.delivery(request);
+    assert.equal(receipt.outcome.errorCode, 'MESSAGE_TARGET_CHANGED'); assert.equal(receipt.submittedAt, undefined);
+  }
+  assert.equal((await w.delivery(before)).dispatchStartedAt, undefined); assert.deepEqual(w.calls, []);
+});
+
+test('after a sleep past its lease, this process still delivers its own queued message instead of orphaning it as queued', async t => {
+  const w = await fixture(t), request = await w.schedule('slept');
+  // The renewal timer has not fired yet after waking; the journal's own write check still accepts this held lease.
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() }); t.mock.timers.setTime(Date.now() + 120000);
+  assert.equal((await w.dispatcher.deliver(request, checked)).confirmed, true);
+  assert.equal((await w.delivery(request)).status, 'confirmed'); assert.deepEqual(w.calls, [request.message]);
+});

@@ -11,7 +11,7 @@ import { gh } from './github.mjs';
 import { createWriteStream, existsSync } from 'node:fs';
 import { access, constants, mkdir, readFile } from 'node:fs/promises';
 import { delimiter, dirname, join } from 'node:path';
-import { git, ignoredFiles, lines, listWorktrees } from './git.mjs';
+import { git, headBranch, ignoredFiles, lines, listWorktrees } from './git.mjs';
 import { killPidGroup, trackPid, untrackPid } from './providers.mjs';
 
 /**
@@ -151,8 +151,7 @@ export class Delivery {
   async revision(taskId) {
     const { task, ws, target } = await this.#context(taskId);
     const head = await this.#rev(ws.path, 'HEAD');
-    let branch = '';
-    try { branch = lines(await git(['symbolic-ref', '--quiet', '--short', 'HEAD'], { cwd: ws.path }))[0] || ''; } catch {}
+    const branch = await headBranch(ws.path);
     const status = lines(await git(['status', '--porcelain', '--untracked-files=all'], { cwd: ws.path }));
     const ignored = await ignoredFiles(ws.path); // Shown before anything removes the worktree with them.
     const targetCommit = await this.#rev(ws.path, `refs/heads/${target}`);
@@ -165,10 +164,12 @@ export class Delivery {
     let merging = false;
     try { await git(['rev-parse', '-q', '--verify', 'MERGE_HEAD'], { cwd }); merging = true; } catch {}
     if (!merging) return { merging: false, conflicts: [], unresolved: [] };
-    const conflicts = lines(await git(['diff', '--name-only', '--diff-filter=U'], { cwd }).catch(() => ''));
+    // -z: real names. Without it Git quotes non-ASCII names, the file is not found, and its markers would be committed.
+    const names = async args => (await git(['diff', '--name-only', '-z', ...args], { cwd }).catch(() => '')).split('\0').filter(Boolean);
+    const conflicts = await names(['--diff-filter=U']);
     // An agent (or a person) may already have staged a file, so Git no longer lists it as
     // conflicted. Check every file the merge changes, not only the unmerged ones.
-    const changed = lines(await git(['diff', '--name-only', 'HEAD'], { cwd }).catch(() => ''));
+    const changed = await names(['HEAD']);
     const unresolved = [];
     for (const file of [...new Set([...conflicts, ...changed])].slice(0, 500)) {
       const text = await readFile(join(cwd, file), 'utf8').catch(() => null);
@@ -211,7 +212,7 @@ export class Delivery {
       try { await git(['commit', '--no-edit', '-m', message.trim()], { cwd: ws.path, timeoutMs: 120000 }); }
       catch (error) {
         if (/tell me who you are|user\.email|user\.name/i.test(error.stderr || '')) throw fail('Git has no author identity for this repository. Set user.name and user.email with git config yourself; Promptboard does not change Git configuration.', 'IDENTITY_REQUIRED');
-        throw fail('Git could not create the commit (a commit hook may have rejected it). Run git commit in the task worktree to see why.', 'COMMIT_FAILED');
+        throw fail(`Git could not create the commit (${error.message}). A commit hook may have rejected it: run git commit in the task worktree to see its whole output.`, 'COMMIT_FAILED');
       }
       return this.revision(taskId);
     });
@@ -412,20 +413,21 @@ export class Delivery {
         merged = lines(await git(['commit-tree', tree, '-p', targetCommit, '-m', message], { cwd: ws.repositoryRoot, timeoutMs: 60000 })
           .catch(error => { throw /tell me who you are|user\.email|user\.name/i.test(error.stderr || '') ? fail('Git has no author identity for this repository. Set user.name and user.email with git config yourself; Promptboard does not change Git configuration.', 'IDENTITY_REQUIRED') : fail('Git could not create the squash commit. Nothing was changed.', 'MERGE_FAILED'); }))[0];
       }
+      // Either way a refusal changed nothing; a target that moved meanwhile is TARGET_CHANGED, so the merge is prepared again.
+      const refused = async message => {
+        const now = await this.#rev(ws.repositoryRoot, `refs/heads/${target}`).catch(() => null);
+        return now && now !== targetCommit ? fail(`${target} moved during the merge. Nothing was changed; the merge is prepared again on the new target.`, 'TARGET_CHANGED') : fail(message, 'MERGE_FAILED');
+      };
       let method;
       if (preview.targetCheckout) {
         // Fast-forward the checkout that has the target branch; never switch branches anywhere.
         await git(['merge', '--ff-only', '--no-edit', merged], { cwd: preview.targetCheckout.path, timeoutMs: 120000 })
-          .catch(() => { throw fail('Git refused the fast-forward in the target checkout. Nothing was changed.', 'MERGE_FAILED'); });
+          .catch(async error => { throw await refused(`Git refused the fast-forward in the target checkout (${error.message}). Nothing was changed.`); });
         method = `${squash ? 'squash commit, ' : ''}fast-forward in ${preview.targetCheckout.path}`;
       } else {
-        // Not checked out anywhere: move the ref only if it still has the previewed value.
-        // Compare-and-swap: the ref moves only if it still has the previewed value.
+        // Not checked out anywhere. Compare-and-swap: the ref moves only if it still has the previewed value.
         await git(['update-ref', '-m', `promptboard: ${squash ? 'squash-merge' : 'fast-forward'} ${target} to task ${taskId}`, `refs/heads/${target}`, merged, targetCommit], { cwd: ws.repositoryRoot })
-          .catch(async () => {
-            const now = await this.#rev(ws.repositoryRoot, `refs/heads/${target}`).catch(() => null);
-            throw now && now !== targetCommit ? fail(`${target} moved during the merge. Nothing was changed; the merge is prepared again on the new target.`, 'TARGET_CHANGED') : fail('Git refused to update the target branch. Nothing was changed.', 'MERGE_FAILED');
-          });
+          .catch(async () => { throw await refused('Git refused to update the target branch. Nothing was changed.'); });
         method = `${squash ? 'squash commit, ' : ''}fast-forward of the branch reference`;
       }
       const result = await this.#rev(ws.repositoryRoot, `refs/heads/${target}`);
@@ -445,11 +447,11 @@ export class Delivery {
       if (!rev.branchOk) throw fail('The task worktree is not on its task branch.', 'BRANCH_MISMATCH');
       if (!rev.clean) throw fail('Commit the task changes before updating the branch.', 'UNCOMMITTED_CHANGES');
       try { await git(['merge', '--no-edit', '--no-ff', rev.targetCommit], { cwd: ws.path, timeoutMs: 120000 }); }
-      catch {
+      catch (error) {
         let conflicts = [];
-        try { conflicts = lines(await git(['diff', '--name-only', '--diff-filter=U'], { cwd: ws.path })); } catch {}
+        try { conflicts = (await git(['diff', '--name-only', '-z', '--diff-filter=U'], { cwd: ws.path })).split('\0').filter(Boolean); } catch {}
         await git(['merge', '--abort'], { cwd: ws.path }).catch(() => {});
-        if (!conflicts.length) throw fail('Git could not merge the target branch (a missing Git identity or a hook can cause this). The task branch is unchanged. Run git merge in the task worktree to see why.', 'MERGE_FAILED');
+        if (!conflicts.length) throw fail(`Git could not merge the target branch (${error.message}; a missing Git identity or a hook can cause this). The task branch is unchanged. Run git merge in the task worktree to see the whole output.`, 'MERGE_FAILED');
         throw fail(`The update has conflicts in ${conflicts.slice(0, 10).join(', ')}. The merge was aborted and the task branch is unchanged. Start the merge agent to resolve them, resolve them in the worktree yourself, or send the task back to Executing.`, 'MERGE_CONFLICT');
       }
       return this.revision(taskId);

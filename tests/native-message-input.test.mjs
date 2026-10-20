@@ -328,7 +328,8 @@ test('a hook arriving during receipt read is drained before durable confirmation
     if (result.status === 'confirmed') { proofs++; w.session.eventsPending = true; }
     return result;
   };
-  const result = await w.call({ readEvents: async () => {
+  // The send spends a fixed 1 s between paste and Enter plus history reads; a 3 s budget expired on loaded CI runners.
+  const result = await w.call({ timeoutMs: 30000, readEvents: async () => {
     if (w.session.eventsPending && ++pendingReads === 2) w.session.eventsPending = false;
   }, confirmDelivery: async () => { assert.equal(w.session.eventsPending, false); return true; } });
   assert.equal(result.status, 'confirmed'); assert.equal(pendingReads, 2); assert.equal(proofs, 1);
@@ -385,7 +386,6 @@ test('readiness cannot waive human draft, uncertain input, termination or proces
     w => { w.session.activity.uncertain = true; },
     w => { w.session.activity.ended = true; },
     w => { w.session.cancelled = true; },
-    w => { w.session.proc = null; },
     w => { w.supervisor.stopping = true; },
   ]) {
     const w = await fixture(t); w.supervisor = new Supervisor({ dataDir: w.dir, board: {} });
@@ -452,4 +452,26 @@ test('a delivered column message leaves "finished, waiting for you" for a CLI wi
   assert.equal((await supervisor.sendNativeMessage(w.run.id, w.request)).status, 'confirmed');
   assert.ok(updates.some(change => change.status === 'running' && change.turnComplete === false), 'The new turn is shown as working.');
   assert.equal(w.session.status, 'running');
+});
+
+test('an interrupted multi-chunk paste is closed without Enter, only on the same process while paste mode holds', async t => {
+  const message = 'a'.repeat(2500); // Three bounded writes: the opening delimiter is in the first, the closing one in the last.
+  for (const [revoke, closed] of [[w => { w.session.eventsPending = true; }, true],
+    [w => { w.session.inputEpoch++; w.session.terminalInput.manualInput('human draft'); }, true],
+    [w => { w.session.terminalInput.observeOutput('\x1b[?2004l'); }, false],
+    [w => { w.session.proc = { write() { assert.fail('Replacement process cannot receive input.'); } }; }, false]]) {
+    const w = await fixture(t); w.onWrite = () => { if (w.writes.length === 1) revoke(w); };
+    assert.equal((await w.call({ message })).status, 'unconfirmed');
+    assert.deepEqual(w.writes.slice(1), closed ? ['\x1b[201~'] : []);
+    assert.ok(!w.writes.includes('\r')); assert.equal(w.session.messageInputUncertain, true);
+  }
+});
+
+test('readiness reports an exited or failed process as ended, so a queued message names its ended session', async t => {
+  for (const change of [w => { w.session.proc = null; }, w => { w.session.exiting = true; }, w => { w.session.failure = { code: 'AUTH_REQUIRED' }; }]) {
+    const w = await fixture(t); w.supervisor = new Supervisor({ dataDir: w.dir, board: {} });
+    w.supervisor.sessions.set(w.run.id, w.session); change(w);
+    assert.equal(w.supervisor.nativeMessageReadiness(w.run.id), 'ended');
+    assert.equal(w.session.inputEpoch, 0); assert.deepEqual(w.writes, []);
+  }
 });

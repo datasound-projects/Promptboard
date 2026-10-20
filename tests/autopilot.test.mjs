@@ -170,3 +170,14 @@ test('resume follows a stage agent that is still running instead of starting a s
   assert.equal(ap.status, 'running', ap.reason); assert.equal(ap.current.step, 'running'); assert.equal(ap.current.runId, run.id);
   assert.deepEqual(starts, [run.id], 'no second run');
 });
+
+test('a target that moves during the merge is prepared again on the next step, not a pause; other merge failures still pause', async () => {
+  const writes = [], failure = code => Object.assign(new Error(`failed (${code})`), { code });
+  let error = failure('TARGET_CHANGED');
+  const board = { delivery: { mergePreview: async () => ({ eligible: true, taskCommit: 'a', targetCommit: 'b', targetBranch: 'trunk', problems: [] }), merge: async () => { throw error; } }, updateAutopilot: async (...args) => writes.push(args) };
+  const autopilot = new Autopilot(board), merge = () => autopilot.merge('p', { targetBranch: { name: 'trunk' } }, { id: 't', title: 'Card' }, { step: 'start', attempts: 0 }, ['executing', 'code_review', 'testing', 'merge'], { finish: 'merge', maxRework: 2 });
+  await merge();
+  assert.deepEqual(writes, [], 'neither finished nor paused');
+  error = failure('MERGE_FAILED');
+  await assert.rejects(merge(), { code: 'MERGE_FAILED' }); // tick() pauses with the reason.
+});

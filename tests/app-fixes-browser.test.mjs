@@ -270,3 +270,83 @@ test('the terminal dock divider resizes by touch, and a cancelled pointer ends t
   assert.equal(await height(), dragged, 'no resize after the pointer was cancelled');
   noExceptions(browser);
 });
+
+test('the shell fits phones and tablets: a wrapping top bar, the drawer above Origin\'s panel, a wrapping Origin header, whole focus rings and full-name tooltips', { skip: !chrome, timeout: 180000 }, async t => {
+  const long = 'A remarkably long project name that keeps going well past the sidebar width';
+  const { app, browser, ev, wait } = await setup(t, { seed: `localStorage.setItem('ste-prompt-engineer.history.v1', JSON.stringify([{ id: 'h1', input: ${JSON.stringify(`Refactor ${long}`)}, prompt: 'P', createdAt: Date.now(), provider: 'claude' }]))` });
+  await browser.goto(`${app.url}/#/kanban`);
+  await wait(`token`, 'session');
+  assert.equal(await ev(`return (await fetch('/api/origin/projects', { method: 'POST', headers: { 'X-STE-Token': token, 'Content-Type': 'application/json' }, body: JSON.stringify({ name: ${JSON.stringify(long)}, description: '', createKanban: true }) })).ok;`), true);
+  const page = async (hash, name) => { await ev(`location.hash = ${JSON.stringify(hash)};`); await wait(`document.documentElement.dataset.page === ${JSON.stringify(name)} && token`, name); };
+  // One row needs about 394 px: narrower, every page wraps the links below 44 px controls, so nothing scrolls sideways.
+  for (const width of [320, 375, 400, 414]) {
+    await browser.resize(width, 800);
+    for (const [hash, name] of [['#/origin', 'origin'], ['#/', 'compose'], ['#/kanban', 'kanban'], ['#/base', 'base']]) {
+      await page(hash, name);
+      const wide = width > 400;
+      assert.equal(await browser.layout(`const root = document.documentElement, bar = [...document.querySelectorAll('.topbar :is(.icon-button, .help-pill), .page-nav a')];
+        return root.scrollWidth <= root.clientWidth && bar.every(node => node.getBoundingClientRect().right <= root.clientWidth)
+          && bar.filter(node => !node.matches('a')).every(node => ${wide} || (node.getBoundingClientRect().width === 44 && node.getBoundingClientRect().height === 44));`), true, `${name} at ${width} px`);
+    }
+  }
+  // A tablet: the long Origin project name and its Kanban chip wrap instead of widening the page.
+  await browser.resize(1024, 800);
+  await page('#/origin', 'origin');
+  await wait(`document.querySelector('#origin-new-project') && !document.querySelector('#origin-kanban-link').hidden`, 'Origin header');
+  assert.equal(await browser.layout(`const root = document.documentElement; return root.scrollWidth <= root.clientWidth && document.querySelector('#origin-new-project').getBoundingClientRect().right <= root.clientWidth;`), true);
+  // A phone with Origin's panel open: the opened drawer lies above it and can be used.
+  await browser.resize(390, 800);
+  await wait(`!document.querySelector('#origin-research-open').hidden`, 'Research button');
+  await ev(`document.querySelector('#origin-research-open').click();`);
+  await wait(`!document.querySelector('#origin-drawer').hidden`, 'Research panel');
+  await ev(`document.querySelector('#menu-toggle').click();`);
+  assert.equal(await browser.layout(`const side = document.querySelector('#sidebar'), r = side.getBoundingClientRect(); return side.classList.contains('open') && side.contains(document.elementFromPoint(r.left + r.width / 2, r.top + 100)) && document.elementFromPoint(r.right + 20, r.top + 200)?.id === 'sidebar-scrim';`), true);
+  await ev(`document.querySelector('#sidebar-scrim').click();`);
+  // The project row's focus ring is not cut off by the sidebar's scrolling panel.
+  await browser.resize(1280, 800);
+  await page('#/kanban', 'kanban');
+  await wait(`document.querySelector('#workspace-list .workspace-item')`, 'project row');
+  await ev(`document.querySelector('#workspace-open').focus();`);
+  await browser.key('Tab', 'Tab', 9);
+  assert.equal(await ev(`const node = document.activeElement, r = node.getBoundingClientRect(), ring = parseFloat(getComputedStyle(node).outlineWidth) + parseFloat(getComputedStyle(node).outlineOffset);
+    if (!node.matches('.workspace-item') || !(ring > 0)) return 'no ring on ' + node.className;
+    for (let box = node.parentElement; box; box = box.parentElement) { if (getComputedStyle(box).overflowX === 'visible') continue; const b = box.getBoundingClientRect();
+      if (r.left - ring < b.left || r.right + ring > b.right) return 'cut by ' + (box.id || box.className); }
+    return 'whole';`), 'whole');
+  // A name cut off with an ellipsis shows in full on hover; a title the page set is kept.
+  const hover = async selector => { const at = await ev(`const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return { x: r.left + 10, y: r.top + r.height / 2 };`); await browser.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: at.x, y: at.y }); };
+  await hover('#workspace-list .workspace-name');
+  assert.deepEqual(await ev(`const name = document.querySelector('#workspace-list .workspace-name'); return [name.hasAttribute('title'), name.closest('button').title.split('\\n')[0]];`), [false, long]);
+  await page('#/', 'compose');
+  await wait(`document.querySelector('.history-restore strong')`, 'History');
+  await hover('.history-restore strong');
+  assert.equal(await ev(`const node = document.querySelector('.history-restore strong'); return node.scrollWidth > node.clientWidth && node.title === node.textContent;`), true);
+  noExceptions(browser);
+});
+
+test('text stays readable in both themes: accent colours, badges, error text and the danger button meet 4.5:1', { skip: !chrome, timeout: 120000 }, async t => {
+  const { app, browser, ev, wait } = await setup(t);
+  await browser.goto(`${app.url}/#/`);
+  await wait(`token`, 'session');
+  // Samples of each rule in its usual surroundings, measured against the backgrounds behind them.
+  const samples = `${['define', 'design', 'operate', 'decide', 'build'].map(phase => `<div class="phase-${phase}"><span class="origin-phase-number">03</span><p class="origin-eyebrow">Phase</p>
+      <ul class="origin-list"><li><span class="origin-chip accent">Chip</span></li></ul><button class="origin-nav-item" aria-current="page"><span class="origin-nav-count">4</span></button></div>`).join('')}
+    <ul class="origin-list"><li><span class="origin-chip ok">Ready</span><span class="origin-chip warn">Open</span></li></ul>
+    <div class="origin-next"><span class="origin-next-label">Next</span></div>
+    <div class="card"><span class="origin-research-badge is-applied">Applied</span><span class="origin-research-badge is-conflict">Conflict</span><p class="execution-warning">Warning</p></div>
+    <div class="workspace-menu"><button class="workspace-delete">Delete project</button></div>
+    <div class="file-viewer"><p class="file-error">Not saved</p><p class="file-close-confirm">Unsaved changes</p></div>
+    <div class="base-row"><span class="base-tag warn">Needs review</span></div>
+    <button class="origin-primary danger">Delete</button><span class="timeline-order">1</span><span class="autopilot-tag now">Now</span>`;
+  const low = theme => ev(`document.documentElement.dataset.theme = ${JSON.stringify(theme)};
+    let box = document.querySelector('#contrast-samples'); if (!box) { box = document.createElement('section'); box.id = 'contrast-samples'; box.innerHTML = ${JSON.stringify(samples)}; document.querySelector('#prompt-view').append(box); }
+    await new Promise(requestAnimationFrame);
+    const parse = c => { let m = c.match(/rgba?\\(([^)]+)\\)/); if (m) { const p = m[1].split(/[\\s,/]+/).filter(Boolean).map(Number); return [p[0], p[1], p[2], p[3] ?? 1]; } m = c.match(/color\\(srgb ([^)]+)\\)/); const p = m[1].split(/[\\s/]+/).filter(Boolean).map(Number); return [p[0] * 255, p[1] * 255, p[2] * 255, p[3] ?? 1]; };
+    const over = (top, under) => top.map((v, i) => i === 3 ? 1 : v * top[3] + under[i] * (1 - top[3]));
+    const lum = c => c.slice(0, 3).reduce((sum, v, i) => { v /= 255; return sum + [0.2126, 0.7152, 0.0722][i] * (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4); }, 0);
+    const back = node => { const layers = []; for (let x = node; x; x = x.parentElement) { const c = parse(getComputedStyle(x).backgroundColor); if (c[3] > 0) { layers.push(c); if (c[3] >= 1) break; } } return layers.reverse().reduce((under, c) => over(c, under), parse(getComputedStyle(document.body).backgroundColor)); };
+    return [...box.querySelectorAll('span, p, button')].filter(node => node.textContent.trim() && !node.querySelector('span')).map(node => { const bg = back(node), fg = over(parse(getComputedStyle(node).color), bg), [a, b] = [lum(fg), lum(bg)];
+      return [node.className + (node.closest('[class^="phase-"]') ? ' in ' + node.closest('[class^="phase-"]').className : ''), Math.round((Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05) * 100) / 100]; }).filter(([, ratio]) => ratio < 4.5);`);
+  assert.deepEqual(await low('light'), [], 'light theme');
+  assert.deepEqual(await low('dark'), [], 'dark theme');
+});

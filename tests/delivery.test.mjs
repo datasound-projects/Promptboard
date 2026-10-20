@@ -5,12 +5,13 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Board } from '../src/board.mjs';
 import { Supervisor } from '../src/supervisor.mjs';
 import { Delivery, parseCommand, parseFindings, startArgv } from '../src/delivery.mjs';
 import { resolveConfig } from '../src/agents.mjs';
+import { commandOnPath } from '../src/providers.mjs';
 
 const skip = process.platform === 'win32';
 const fake = fileURLToPath(new URL('./fixtures/fake-agent.cjs', import.meta.url));
@@ -630,6 +631,119 @@ test('removing a worktree never deletes files Git ignores without a yes; an unfi
   await w.board.store.update(state => { const card = state.projects[0].tasks.find(item => item.id === other.id); card.workspace = { ...card.workspace, status: 'creating' }; card.revision++; });
   assert.equal((await w.board.ensureTaskWorktree(other.id)).path, made.path);
   assert.equal((await w.current(other.id)).workspace.status, 'ready');
+});
+
+test('conflict markers in a file with a non-ASCII name are found, so they are never committed as resolved', { skip, timeout: 60000 }, async t => {
+  const w = await world(t), name = 'résumé notes.txt';
+  await writeFile(join(w.root, name), 'base\n'); git(w.root, 'add', '.'); git(w.root, 'commit', '-q', '-m', 'notes');
+  const task = await w.task('Unicode conflict', 'x');
+  await writeFile(join(await w.workspace(task.id), name), 'task\n');
+  await w.delivery.commit(task.id, { message: 'task notes', confirm: true });
+  await writeFile(join(w.root, name), 'target\n'); git(w.root, 'commit', '-qam', 'target notes');
+  await w.delivery.prepareMergeRun(task.id);
+  const rev = await w.delivery.revision(task.id);
+  assert.deepEqual([rev.merging, rev.conflicts, rev.unresolved], [true, [name], [name]]);
+  await assert.rejects(w.delivery.commit(task.id, { message: 'merge', confirm: true }), { code: 'CONFLICT_MARKERS' });
+});
+
+test('a target that moves during the merge is TARGET_CHANGED; the Merge button prepares the merge again and keeps the new commit', { skip, timeout: 120000 }, async t => {
+  const w = await world(t);
+  await w.delivery.setTestCommands(w.project.id, { commands: [{ command: `${process.execPath} -e "process.exit(0)"` }], expectedRevision: (await w.board.view()).projects[0].revision });
+  const task = await w.task('Moving target', 'x');
+  await writeFile(join(await w.workspace(task.id), 'moving.txt'), 'x\n');
+  await w.delivery.commit(task.id, { message: 'moving', confirm: true });
+  await w.move(task.id, 'code_review'); await w.review(task.id); await w.move(task.id, 'testing'); await w.tests(task.id); await w.move(task.id, 'merge');
+  // Someone commits on trunk in its checkout after Promptboard's last check, right before the fast-forward.
+  const check = w.board.checkCompletable.bind(w.board), merge = w.delivery.merge.bind(w.delivery), codes = [];
+  let moved = false;
+  w.board.checkCompletable = async (...args) => {
+    if (!moved) { moved = true; await writeFile(join(w.root, 'upstream.txt'), 'u\n'); git(w.root, 'add', '.'); git(w.root, 'commit', '-q', '-m', 'Upstream'); }
+    return check(...args);
+  };
+  w.delivery.merge = (...args) => merge(...args).catch(error => { codes.push(error.code); throw error; });
+  const clicked = await w.board.mergeNow(task.id);
+  assert.deepEqual([codes, clicked.merged, clicked.merge.state], [['TARGET_CHANGED'], false, 'testing'], 'brought in the moved target and tests again');
+  await until(async () => { await w.board.advanceFlows(); return (await w.current(task.id)).column === 'done'; }, 'merged after the rerun tests');
+  assert.equal((await w.current(task.id)).completion.kind, 'merged');
+  git(w.root, 'merge-base', '--is-ancestor', git(w.root, 'rev-parse', ':/Upstream'), 'trunk'); // The commit made meanwhile is kept.
+});
+
+test('a file written while the worktree is removed is never deleted: removal never forces', { skip, timeout: 60000 }, async t => {
+  const w = await world(t);
+  await writeFile(join(w.root, '.gitignore'), '.env\n'); git(w.root, 'add', '.gitignore'); git(w.root, 'commit', '-q', '-m', 'ignore env');
+  const task = await w.task('Late file', 'x');
+  const path = await w.workspace(task.id);
+  await writeFile(join(path, '.env'), 'SECRET=1\n');
+  // Between Promptboard's checks and Git's removal, another program writes into the worktree.
+  const real = await commandOnPath('git'), shim = await temp(t, 'pb-del-shim-'), before = process.env.PATH;
+  await writeFile(join(shim, 'git'), `#!/bin/sh\nif [ "$1" = worktree ] && [ "$2" = remove ]; then eval last=\\\${$#}; echo late > "$last/late.txt"; fi\nexec '${real}' "$@"\n`, { mode: 0o755 });
+  process.env.PATH = `${shim}${delimiter}${before}`;
+  try { await assert.rejects(w.board.removeTaskWorktree(task.id, { deleteIgnored: true }), { code: 'WORKTREE_REMOVE_FAILED' }); } finally { process.env.PATH = before; }
+  assert.equal(await readFile(join(path, 'late.txt'), 'utf8'), 'late\n');
+  assert.equal((await w.current(task.id)).workspace.path, path, 'the card keeps its worktree');
+});
+
+test('a removal Git finishes only halfway forgets the worktree and keeps the branch; the leftover folder is never reused', { skip: skip || process.getuid?.() === 0, timeout: 60000 }, async t => {
+  const w = await world(t);
+  await mkdir(join(w.root, 'locked')); await writeFile(join(w.root, 'locked', 'file.txt'), 'x\n'); git(w.root, 'add', '.'); git(w.root, 'commit', '-q', '-m', 'locked');
+  const task = await w.task('Half removed', 'x');
+  const ws = (await w.current(task.id)).workspace, locked = join(ws.path, 'locked');
+  // A file Git cannot delete (on Windows, one another program holds open): Git unregisters the worktree anyway.
+  await chmod(locked, 0o555);
+  try {
+    const removed = await w.board.removeTaskWorktree(task.id);
+    assert.equal(removed.workspace, null);
+    assert.ok(removed.retainedBranches.some(item => item.branch === ws.branch));
+    assert.ok(!git(w.root, 'worktree', 'list').includes(ws.path));
+    assert.ok(git(w.root, 'branch', '--list', ws.branch).includes(ws.branch));
+    await assert.rejects(w.board.ensureTaskWorktree(task.id), { code: 'WORKTREE_PATH_EXISTS' });
+  } finally { await chmod(locked, 0o755); }
+});
+
+test('a worktree folder deleted by hand: Restore and removal drop only that worktree\'s record, never the person\'s other worktrees', { skip, timeout: 60000 }, async t => {
+  const w = await world(t);
+  const task = await w.task('Folder gone', 'x');
+  const ws = (await w.current(task.id)).workspace;
+  // The person's own worktree, outside Promptboard, whose folder is missing too (for example on an unplugged disk).
+  const theirs = join(await temp(t, 'pb-del-theirs-'), 'theirs');
+  git(w.root, 'worktree', 'add', '-q', '-b', 'theirs', theirs); await rm(theirs, { recursive: true, force: true });
+  const listed = path => git(w.root, 'worktree', 'list', '--porcelain').split('\n').includes(`worktree ${path}`);
+  await rm(ws.path, { recursive: true, force: true });
+  assert.equal((await w.board.restoreTaskWorktree(task.id)).path, ws.path);
+  assert.deepEqual([listed(ws.path), listed(theirs)], [true, true], 'restored, and their record is untouched');
+  await rm(ws.path, { recursive: true, force: true });
+  await w.board.deleteTask(task.id, { expectedRevision: (await w.current(task.id)).revision });
+  assert.equal(await w.current(task.id), undefined);
+  assert.deepEqual([listed(ws.path), listed(theirs)], [false, true], 'only the card\'s own record is gone');
+  assert.ok(git(w.root, 'branch', '--list', ws.branch).includes(ws.branch));
+});
+
+test('a worktree Git cannot create says why', { skip: skip || process.getuid?.() === 0, timeout: 60000 }, async t => {
+  const w = await world(t);
+  const first = await w.task('First', 'x');
+  const folder = join((await w.current(first.id)).workspace.path, '..');
+  const second = await w.board.createTask({ projectId: w.project.id, title: 'Second', prompt: 'x' });
+  await chmod(folder, 0o555);
+  try { await assert.rejects(w.board.ensureTaskWorktree(second.id), error => error.code === 'WORKTREE_FAILED' && /git worktree failed: .*Permission denied/i.test(error.message)); }
+  finally { await chmod(folder, 0o755); }
+});
+
+test('a commit hook or a merge hook that refuses says why; the task branch stays as it was', { skip, timeout: 60000 }, async t => {
+  const w = await world(t);
+  const hooks = join(w.root, '.git', 'hooks');
+  git(w.root, 'config', 'core.hooksPath', hooks);
+  const task = await w.task('Hooked', 'x');
+  const ws = await w.workspace(task.id);
+  await writeFile(join(hooks, 'pre-commit'), '#!/bin/sh\necho "lint: missing semicolon in feature.js" >&2\nexit 1\n', { mode: 0o755 });
+  await writeFile(join(ws, 'feature.js'), 'x\n');
+  await assert.rejects(w.delivery.commit(task.id, { message: 'feature', confirm: true }), error => error.code === 'COMMIT_FAILED' && /lint: missing semicolon in feature\.js/.test(error.message));
+  await rm(join(hooks, 'pre-commit'));
+  await w.delivery.commit(task.id, { message: 'feature', confirm: true });
+  await writeFile(join(hooks, 'pre-merge-commit'), '#!/bin/sh\necho "policy: merges need a ticket" >&2\nexit 1\n', { mode: 0o755 });
+  await writeFile(join(w.root, 'upstream.txt'), 'u\n'); git(w.root, 'add', '.'); git(w.root, 'commit', '-q', '-m', 'Upstream');
+  const head = git(ws, 'rev-parse', 'HEAD');
+  await assert.rejects(w.delivery.updateBranch(task.id, { confirm: true }), error => error.code === 'MERGE_FAILED' && /policy: merges need a ticket/.test(error.message));
+  assert.deepEqual([git(ws, 'rev-parse', 'HEAD'), git(ws, 'status', '--porcelain')], [head, '']);
 });
 
 test('on Windows, npm and npx test commands start through Node without a shell; other commands start as written', () => {

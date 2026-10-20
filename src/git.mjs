@@ -5,8 +5,9 @@
  * `initRepository` (init plus one empty commit) runs only on the user's explicit confirmation.
  */
 import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { mkdir, realpath, stat } from 'node:fs/promises';
-import { isAbsolute } from 'node:path';
+import { isAbsolute, normalize } from 'node:path';
 import { commandOnPath, forgetCommand } from './providers.mjs';
 
 export class GitError extends Error {
@@ -45,16 +46,26 @@ export async function git(args, { cwd, config = [], timeoutMs = 20000 } = {}) {
     execFile(command, [...config.flatMap(item => ['-c', item]), ...args], { cwd, env: gitEnv(), shell: false, windowsHide: true, timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 },
       (error, stdout, stderr) => {
         if (!error) { resolve(stdout); return; }
-        if (error.code === 'ENOENT') forgetCommand('git');
+        // A folder that is gone fails the start with ENOENT as well; that is not a missing Git.
+        const gone = error.code === 'ENOENT' && Boolean(cwd) && !existsSync(cwd);
+        if (error.code === 'ENOENT' && !gone) forgetCommand('git');
         // Say which command failed and why: a bare "git failed" reached Autopilot's pause reason and helped nobody.
-        const detail = String(stderr || '').split('\n').map(line => line.trim()).find(Boolean)?.slice(0, 300) || '';
-        const why = error.killed ? `it did not finish within ${timeoutMs < 1000 ? `${timeoutMs} ms` : `${Math.round(timeoutMs / 1000)} s`} (the computer may be overloaded)` : detail || `exit code ${error.code}`;
-        reject(Object.assign(new Error(`git ${args[0]} failed: ${why}`), { code: error.code === 'ENOENT' ? 'GIT_MISSING' : error.killed ? 'GIT_TIMEOUT' : 'GIT_FAILED', exitCode: error.code, stderr: String(stderr) }));
+        // Git's own error line, not a notice printed before it (such as "Preparing worktree").
+        const said = String(stderr || '').split('\n').map(line => line.trim()).filter(Boolean);
+        const detail = (said.find(line => /^(fatal|error):/.test(line)) || said[0])?.slice(0, 300) || '';
+        const why = gone ? `the folder ${cwd} does not exist` : error.killed ? `it did not finish within ${timeoutMs < 1000 ? `${timeoutMs} ms` : `${Math.round(timeoutMs / 1000)} s`} (the computer may be overloaded)` : detail || `exit code ${error.code}`;
+        reject(Object.assign(new Error(`git ${args[0]} failed: ${why}`), { code: gone ? 'PATH_NOT_FOUND' : error.code === 'ENOENT' ? 'GIT_MISSING' : error.killed ? 'GIT_TIMEOUT' : 'GIT_FAILED', exitCode: error.code, stderr: String(stderr) }));
       });
   });
 }
 
 export const lines = text => text.split('\n').map(line => line.trimEnd()).filter(Boolean);
+
+/**
+ * The branch checked out in `cwd` ('' when detached or unreadable). The full ref is read: a short name comes back
+ * as "heads/main" when a tag is also called main.
+ */
+export const headBranch = cwd => git(['symbolic-ref', '--quiet', 'HEAD'], { cwd }).then(out => out.trim().replace(/^refs\/heads\//, ''), () => '');
 
 /** Recheck an already linked checkout's identity, without branch/HEAD discovery. */
 export async function repositoryIdentity(input) {
@@ -64,7 +75,7 @@ export async function repositoryIdentity(input) {
     if (paths.length !== 2 || paths.some(path => !isAbsolute(path) || path.includes('\0'))) throw fail('GIT_FAILED');
     const [root, commonDir] = await Promise.all(paths.map(path => realpath(path)));
     return { root, commonDir };
-  } catch (error) { throw fail(error.code === 'GIT_MISSING' ? 'GIT_MISSING' : 'GIT_FAILED'); }
+  } catch (error) { throw fail(['GIT_MISSING', 'PATH_NOT_FOUND'].includes(error.code) ? error.code : 'GIT_FAILED'); }
 }
 
 /**
@@ -91,8 +102,7 @@ export async function validateRepository(input) {
   let hasHead = true;
   try { await git(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], { cwd: root }); } catch { hasHead = false; }
   if (!hasHead && !branches.length) throw fail('NO_COMMITS');
-  let currentBranch = null;
-  try { currentBranch = lines(await git(['symbolic-ref', '--quiet', '--short', 'HEAD'], { cwd: root }))[0] || null; } catch {}
+  const currentBranch = await headBranch(root) || null;
   return { root, commonDir, gitDir, linkedWorktree: gitDir !== commonDir, currentBranch, branches };
 }
 
@@ -135,7 +145,8 @@ export async function initRepository(input, { fallbackIdentity = false } = {}) {
 
 export async function listBranches(root) {
   try {
-    return lines(await git(['for-each-ref', '--format=%(refname:short)%09%(objectname)', 'refs/heads'], { cwd: root }))
+    // lstrip, not short: a short name is "heads/x" when a tag is also called x.
+    return lines(await git(['for-each-ref', '--format=%(refname:lstrip=2)%09%(objectname)', 'refs/heads'], { cwd: root }))
       .map(line => { const [name, commit] = line.split('\t'); return { name, commit }; });
   } catch { throw fail('GIT_FAILED'); }
 }
@@ -156,11 +167,13 @@ export async function listWorktrees(root) {
     if (line.startsWith('worktree ')) { current = { path: line.slice(9), branch: null }; entries.push(current); }
     else if (line.startsWith('branch ') && current) current.branch = line.slice(7).replace(/^refs\/heads\//, '');
   }
-  return Promise.all(entries.map(async entry => ({ ...entry, path: await realpath(entry.path).catch(() => entry.path) })));
+  // A missing folder keeps Git's spelling, normalized (Git writes C:/x on Windows, Node C:\x).
+  return Promise.all(entries.map(async entry => ({ ...entry, path: await realpath(entry.path).catch(() => normalize(entry.path)) })));
 }
 
 /** Files and folders Git ignores in a worktree (matching mode lists an ignored folder once, such as node_modules/). */
 export async function ignoredFiles(cwd) {
-  const out = await git(['status', '--porcelain', '--ignored=matching', '--untracked-files=normal'], { cwd }).catch(() => '');
-  return out.split('\n').filter(line => line.startsWith('!! ')).map(line => line.slice(3).replace(/^"|"$/g, '')).slice(0, 500);
+  // -z: names as they are (without it Git quotes and escapes non-ASCII names).
+  const out = await git(['status', '--porcelain', '-z', '--ignored=matching', '--untracked-files=normal'], { cwd }).catch(() => '');
+  return out.split('\0').filter(line => line.startsWith('!! ')).map(line => line.slice(3)).slice(0, 500);
 }

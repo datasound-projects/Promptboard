@@ -10,6 +10,8 @@ npm test
 
 The suite first runs non-browser test files two at a time, then runs files using `tests/helpers/browser.mjs` one at a time. This keeps Chrome fixtures separate from competing Git, PTY and JSDOM work; it does not disable tests or extend their timeouts. The runner uses the same Node executable and propagates failures from either phase.
 
+A test Chrome ends with the process that launched it, also after an uncaught error, `process.exit` or SIGINT, SIGTERM or SIGHUP. A process killed with SIGKILL cannot stop it, so the next `launch()` stops helper Chromes whose owner process is gone and removes their `pb-chrome-<pid>-` profiles (macOS and Linux). `PB_CPU_THROTTLE=6 npm test` slows every test page like a busy CI runner, to find timing assumptions.
+
 1. Make one change with one clear purpose. Match the style of the surrounding code: plain ES modules, no framework, no build step.
 2. Add or update a test that fails without your change. Tests use simulated CLIs (`tests/fixtures/fake-agent.cjs`) and disposable Git repositories. Never point a test at a real repository.
 3. Update the README, `docs/`, and `CHANGELOG.md` (under **Unreleased**) when behaviour changes.

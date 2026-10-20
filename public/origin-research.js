@@ -142,8 +142,9 @@ window.PromptboardOriginResearch = (() => {
     window.addEventListener('resize', () => { if (isOpen) applyWidth(); });
 
     // ---- CLIs and models ----
-    async function loadProviders() {
-      if (providers) return;
+    // One check for the page: Enter pressed while it runs (Send is still off) waits for the same answer.
+    let providersRead = null;
+    const loadProviders = () => providersRead ??= (async () => {
       const { response, data } = await app.api('/api/providers', { timeoutMs: 30000 }).catch(() => ({ response: { ok: false }, data: {} }));
       providers = response.ok && Array.isArray(data.providers) ? data.providers.filter(item => PROVIDERS[item.id] && item.available) : [];
       if (!providers.some(item => item.id === settings.provider)) {
@@ -153,7 +154,7 @@ window.PromptboardOriginResearch = (() => {
         settings.model = ''; settings.effort = '';
       }
       if (settings.provider) await loadModels(settings.provider);
-    }
+    })();
     async function loadModels(provider) {
       if (models.has(provider)) return;
       const { response, data } = await app.api(`/api/models?provider=${encodeURIComponent(provider)}`, { timeoutMs: 60000 }).catch(() => ({ response: { ok: false }, data: {} }));
@@ -727,12 +728,13 @@ window.PromptboardOriginResearch = (() => {
     const nearEnd = () => { const body = drawer.querySelector('#origin-research-body'); return !body || body.scrollHeight - body.scrollTop - body.clientHeight < 80; };
     const followEnd = stick => { if (stick) { const body = drawer.querySelector('#origin-research-body'); if (body) body.scrollTop = body.scrollHeight; } };
     async function submit(value) {
-      const question = value.trim();
+      const question = value.trim(), id = projectId;
+      await loadProviders();
+      if (id !== projectId) return;
       if (!settings.provider) { error = 'Choose Claude Code or Codex first.'; render(); return; }
       if (!question && settings.mode === 'chat') return;
       if (settings.mode === 'swarm' && !settings.targets.length) { error = 'Add at least one part for the swarm to research.'; render(); return; }
       if (starting) return; // A second Send while the first is still starting would start a second run.
-      const id = projectId;
       error = ''; starting = true;
       try {
         // Research reads the saved blueprint, so a page added or removed a moment ago is saved first.

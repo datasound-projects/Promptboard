@@ -30,7 +30,8 @@ async function setup(t) {
   const exact = '  Composer 雪\r\n{{title}}  ', task = await app.board.createTask({ projectId: project.id, title: 'Engineered task', prompt: exact,
     source: { provider: 'codex', quality: 'reviewed', verification: 'checks-passed' } });
   const browser = await launch(); assert.ok(browser); t.after(() => browser.close());
-  t.after(() => { for (const error of browser.consoleMessages.filter(line => line.startsWith('EXCEPTION'))) t.diagnostic(error.slice(0, 1500)); });
+  // Windows CI once ran origin.js without origin-model.js (reading 'QUESTIONS' of undefined); a failed script load says why.
+  t.after(() => { for (const error of browser.consoleMessages.filter(line => line.startsWith('EXCEPTION') || line.startsWith('Failed to load resource'))) t.diagnostic(error.slice(0, 1500)); });
   await browser.send('Page.bringToFront');
   return { app, project, task, exact, browser, keys: await keyboard(browser), current: async () => (await app.board.state()).projects[0] };
 }
