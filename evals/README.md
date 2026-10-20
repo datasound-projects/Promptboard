@@ -1,7 +1,7 @@
 # Evaluate a change
 
 This is a small regression corpus, not proof that a model produces reliable prompts.
-The 12 authored cases cover all seven tasks, three languages, and four detail settings.
+The 12 authored cases cover seven core task types, three languages, and four detail settings.
 They include exact literals, code, paths, numbers, negations, conflicting requirements,
 requested renames, hostile test data, and attempts to pass a check while changing meaning.
 
