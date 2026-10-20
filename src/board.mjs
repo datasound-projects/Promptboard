@@ -3042,9 +3042,21 @@ export class Board {
     return this.#locked(`run:${taskId}`, async () => {
       const task = this.#task(await this.state(), taskId).task, job = this.automationMoves.get(taskId);
       await this.messageScheduler?.waitTask(taskId);
-      for (const pending of task.pendingAutomationMessages || []) await this.#publishAutomationMove(pending);
+      // A journal that is gone or corrupt, with nothing of this process working on the card, names no work to stop and
+      // none to replay: the card is released instead of staying blocked for good.
+      const lost = async key => !job && !this.automations.jobs.has(JSON.stringify([key.projectId, taskId]))
+        && !(await this.automationJournal.read(key).catch(error => { if (error.code === 'JOURNAL_CORRUPT') return null; throw error; }));
+      const released = [];
+      for (const pending of task.pendingAutomationMessages || []) if (await lost(pending)) released.push(pending.transitionId); else await this.#publishAutomationMove(pending);
       const key = job?.key || (task.automationMove && { projectId: task.automationMove.projectId, taskId, transitionId: task.automationMove.transitionId });
-      if (!key) return task;
+      if (key && await lost(key)) released.push(key.transitionId);
+      if (released.length) await this.store.update(state => {
+        const current = this.#task(state, taskId).task;
+        current.pendingAutomationMessages = (current.pendingAutomationMessages || []).filter(row => !released.includes(row.transitionId));
+        if (released.includes(current.automationMove?.transitionId) && !['completed', 'failed', 'cancelled', 'interrupted'].includes(current.automationMove.status)) Object.assign(current.automationMove, { status: 'interrupted', phase: 'complete', updatedAt: Date.now(),
+          errorCode: 'AUTOMATION_JOURNAL_MISSING', reason: 'The move journal is missing or unreadable. Nothing was replayed; Stop automations released the card.' });
+      });
+      if (!key || released.includes(key.transitionId)) return this.#taskNow(taskId);
       const group = this.automations.jobs.get(JSON.stringify([key.projectId, taskId]));
       if (group) this.automations.cancel(key);
       for (const id of group?.started || []) await this.automations.actions.stop?.(id);
