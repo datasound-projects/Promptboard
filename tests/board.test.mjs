@@ -372,6 +372,8 @@ test('browser migration keeps IDs, order, exact text, sources, and flags, and is
   await assert.rejects(board.migrateBrowserBoard({ version: 1, projects: [{ id: 'x', name: 'X', cards: [{ id: 'y', title: 'T', prompt: '' }] }] }), { code: 'INVALID_BACKUP' });
   // IDs name worktree folders: a path-like ID is refused, not stored.
   for (const ids of [['../../escape', 'c9'], ['p9', '../../../tmp/owned']]) await assert.rejects(board.importBackup({ version: 1, kind: 'kanban-backup', projects: [{ id: ids[0], name: 'Esc', cards: [{ id: ids[1], title: 'T', prompt: 'P' }] }] }, { replace: true }), { code: 'INVALID_BACKUP', message: /unique ID of letters/ });
+  // A backup from a newer version is refused as such, not described as some other file.
+  await assert.rejects(board.importBackup({ application: 'Promptboard', kind: 'promptboard-backup', version: 99, projects: [] }, { replace: true }), { code: 'INVALID_BACKUP', message: /newer Promptboard version/ });
 });
 
 test('created and imported projects keep independent agent defaults and column layouts', async t => {

@@ -251,6 +251,7 @@ function parseBackupData(data) {
   const v1 = data?.version === 1 && (data.kind === undefined || data.kind === 'kanban-backup');
   const v2 = Number.isInteger(data?.version) && data.version >= 2 && data.version <= BACKUP_VERSION && data.kind === 'promptboard-backup';
   const v3 = v2 && data.version >= 3;
+  if (data?.kind === 'promptboard-backup' && data.version > BACKUP_VERSION) throw new BoardError('This backup was made by a newer Promptboard version. Update the app to restore it; nothing was changed.', 'INVALID_BACKUP');
   if (!data || typeof data !== 'object' || (!v1 && !v2) || !Array.isArray(data.projects)) throw new BoardError('The data is not a Promptboard or version 1 Kanban board.', 'INVALID_BACKUP');
   if (data.projects.length > PROJECT_LIMIT) throw new BoardError(`A board can have at most ${PROJECT_LIMIT} projects.`, 'INVALID_BACKUP');
   const ids = new Set();
