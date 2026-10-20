@@ -248,11 +248,15 @@ export function verifyPrompt(input, output, language = 'en') {
   const noNull = isText && !output.includes('\0');
   const validOutput = withinBounds && nonempty && noNull;
   const normalized = validOutput ? output.replace(/\r\n/g, '\n') : '';
+  const outputLiterals = validOutput ? extractFromNormalized(normalized).filter(literal => DELIMITED_KINDS.has(literal.kind)) : [];
   // A code block may move into or out of a list: its text with or without the list's indentation counts.
-  const outputDelimited = new Set(validOutput ? extractFromNormalized(normalized)
-    .filter(literal => DELIMITED_KINDS.has(literal.kind)).flatMap(literal => [literal.text, literal.content]) : []);
+  const outputDelimited = new Set(outputLiterals.flatMap(literal => [literal.text, literal.content]));
+  // A quoted literal kept with its own quotes inside code (`"abc" -> "cba"`) is preserved, as it is in plain text;
+  // a code literal is never unquoted.
+  const quotedInCode = new Set(outputLiterals.filter(literal => literal.kind !== 'quoted-text')
+    .flatMap(literal => extractFromNormalized(literal.content).filter(inner => inner.kind === 'quoted-text').map(inner => inner.text)));
   const missing = validOutput ? literals.filter(literal => DELIMITED_KINDS.has(literal.kind)
-    ? !outputDelimited.has(literal.text) && !outputDelimited.has(literal.content) : !hasExactLiteral(normalized, literal)) : literals;
+    ? !outputDelimited.has(literal.text) && !outputDelimited.has(literal.content) && !(literal.kind === 'quoted-text' && quotedInCode.has(literal.text)) : !hasExactLiteral(normalized, literal)) : literals;
   const issues = [];
   if (!isText || !nonempty) issues.push({ rule: 'output-content', message: 'The model must return a nonempty text prompt.' });
   if (isText && !withinBounds) issues.push({ rule: 'output-size', message: `The model output must contain at most ${MAX_OUTPUT.toLocaleString('en-US')} characters.` });

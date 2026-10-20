@@ -141,6 +141,18 @@ test('a literal substring inside a changed delimited span is not preservation', 
   assert.equal(verifyPrompt('Run `npm test`.', 'The source command is `npm test`. Do not substitute `npm test -- --updateSnapshot`.').status, 'pass');
 });
 
+test('a quoted literal kept with its quotes inside inline code is preserved; code is never unquoted', () => {
+  // As Codex wrote it in a live Compose Batch run: every case was blocked although each value was kept exactly.
+  const source = 'Cover these cases: "hello" -> "Hello" and "a" -> "A".';
+  const result = verifyPrompt(source, 'Cover these cases: `"hello"` -> `"Hello"`, and `"a"` -> `"A"`.');
+  assert.equal(result.status, 'pass');
+  assert.equal(result.matchedCount, 4);
+  assert.equal(verifyPrompt('Reverse ("abc" -> "cba", "" -> "").', 'Preserve these cases exactly: `"abc" -> "cba"` and `"" -> ""`.').status, 'pass');
+  assert.equal(verifyPrompt('Keep „Datei fehlt“ and "Say \\"hi\\"".', 'Keep `„Datei fehlt“` and:\n```js\nsay("Say \\"hi\\"");\n```', 'de').status, 'pass');
+  assert.equal(verifyPrompt('Keep "no".', 'Keep `"none"`.').status, 'issues');
+  assert.equal(verifyPrompt('Run `npm test`.', 'Run `"npm test"`.').status, 'issues');
+});
+
 test('a later complete occurrence counts even after an earlier changed token', () => {
   assert.equal(verifyPrompt('Change src/main.ts.', 'Compare src/main.tsx against the original src/main.ts.').status, 'pass');
   assert.equal(verifyPrompt('Read https://example.test/a.', 'Do not use https://example.test/abc. Use https://example.test/a.').status, 'pass');
