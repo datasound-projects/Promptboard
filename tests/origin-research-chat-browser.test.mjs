@@ -41,6 +41,8 @@ test('Research chat streams the answer, stops on request, resumes the CLI sessio
   await wait(`!document.querySelector('.is-live') && document.querySelector('.origin-research-message.is-assistant h3')?.textContent === 'Payment' && document.querySelector('.origin-research-message.is-assistant strong')?.textContent === 'Stripe'`, 'final answer as Markdown')
     .catch(async error => { throw new Error(`${error.message}: ${await ev(`return document.querySelector('#origin-research-log')?.innerHTML.slice(0, 1500) + ' ERROR=' + (document.querySelector('#origin-drawer .origin-inline-error')?.textContent || '');`)}`); });
   assert.match(await ev(`return document.querySelector('.origin-research-message.is-assistant .origin-research-meta').textContent;`), /Codex|Claude Code/);
+  // Inside the Markdown view its code blocks and wide tables scroll in their own box.
+  assert.equal(await ev(`return getComputedStyle(document.querySelector('.origin-research-message.is-assistant .md-view h3')).fontSize;`), '17px');
   assert.equal(runs[0].web, false, 'web search was off');
 
   // A follow-up resumes the CLI session with only the question.
