@@ -102,8 +102,9 @@ In Safari, **Share → Add to Home Screen** opens Promptboard full screen. It is
   (a fake CLI). A route-table test sends every route the app serves from a paired device: the local-only ones are
   refused, every other one reaches the app, and a new route fails the test until it is classified.
 - A real browser (Chrome with an iPhone-sized touch screen) pairing and using the app through the remote listener. On a
-  touch screen every control is at least 44 px tall, and 44 px wide outside the top bar (at 390 px the top bar has no
-  room for four 44 px icons beside the page links).
+  touch screen every control is at least 44 px tall and 44 px wide. The top bar is the one exception above 400 px:
+  one row there has no room for four 44 px icons beside the page links, so its icons are narrower. At 400 px and
+  narrower the page links take their own row and the top-bar controls are 44 px too.
 - WebKit, Safari's engine (Playwright, iPhone 15 profile): pairing, the board, every page fitting the screen, the
   HttpOnly SameSite=Strict cookie, reload, Settings on the phone, and revocation.
 - The real Tailscale CLI on a Mac: status, the Serve command Promptboard runs, and a tailnet where Serve and HTTPS are

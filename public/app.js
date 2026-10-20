@@ -1,6 +1,10 @@
 'use strict';
 
 const $ = (selector) => document.querySelector(selector);
+// A failure never leaves a silent page: the reason shows at the top of the visible page, startup errors included.
+function showAppError(message) { $('#app-error').textContent = message; $('#app-error').hidden = !message; }
+window.addEventListener('error', event => { if (event.error instanceof Error) showAppError(`Something went wrong on this page. Reload it to continue. (${event.error.message})`); });
+window.addEventListener('unhandledrejection', event => { if (event.reason instanceof Error && event.reason.name !== 'AbortError') showAppError(`Something went wrong on this page. Reload it to continue. (${event.reason.message})`); });
 const HISTORY_KEY = 'ste-prompt-engineer.history.v1';
 const THEME_KEY = 'ste-prompt-engineer.theme'; // Also read by prefs.js before first paint.
 const SIDEBAR_KEY = 'ste-prompt-engineer.sidebar';
@@ -269,7 +273,7 @@ function toggleSidebar() {
   if (isMobile()) {
     const open = !$('#sidebar').classList.contains('open');
     setSidebar(open);
-    if (open) (location.hash === '#/kanban' ? $('#workspace-new') : location.hash === '#/origin' ? $('#origin-nav button') || $('#sidebar') : $('#new-prompt')).focus();
+    if (open) $('#sidebar .sidebar-panel:not([hidden]) :is(button, a[href], input, select):not(:disabled), #sidebar .sidebar-bottom button')?.focus(); // The first control of this page's panel.
     return;
   }
   setSidebarCollapsed(!sidebarCollapsed());
@@ -418,7 +422,7 @@ async function loadProviders() {
     $('#cli-status-label').textContent = 'Server unavailable';
     $('#provider-note').textContent = 'Could not reach the local server. Restart the app, then reload this page.';
     $('#generate-button').disabled = true;
-    announce(error.message);
+    showAppError($('#provider-note').textContent);
   }
 }
 
@@ -1370,6 +1374,7 @@ function showPage() {
   $('#base-view').hidden = !base;
   if ($('#origin-view')) $('#origin-view').hidden = !origin;
   document.documentElement.dataset.page = page;
+  ({ compose: $('#prompt-view'), kanban: $('#kanban-view'), base: $('#base-view'), origin: $('#origin-view') })[page]?.prepend($('#app-error'));
   for (const link of document.querySelectorAll('.page-nav a')) {
     if (link.getAttribute('href') === ({ compose: '#/', kanban: '#/kanban', base: '#/base', origin: '#/origin' })[page]) link.setAttribute('aria-current', 'page');
     else link.removeAttribute('aria-current');
@@ -4061,6 +4066,16 @@ async function addToKanban(event) {
 window.addEventListener('hashchange', showPage);
 // The skip link must not change the hash, which selects the page.
 $('#skip-link').addEventListener('click', event => { event.preventDefault(); ($({ base: '#base-view', kanban: '#kanban-view', origin: '#origin-view' }[currentPage()] || '#prompt-input')).focus(); });
+// A name cut off with an ellipsis shows in full as a tooltip, on every page. A title set by the page wins.
+document.addEventListener('pointerover', ({ target }) => {
+  if (!(target instanceof Element) || target.closest('[title]:not([data-full-text])')) return;
+  for (let node = target; node && node !== document.body; node = node.parentElement) {
+    if (getComputedStyle(node).textOverflow !== 'ellipsis' || node.matches('select, input, textarea')) continue;
+    if (node.scrollWidth > node.clientWidth) { node.title = node.textContent.trim(); node.dataset.fullText = ''; }
+    else if ('fullText' in node.dataset) { node.removeAttribute('title'); delete node.dataset.fullText; }
+    return;
+  }
+});
 $('#kanban-button').addEventListener('click', openAddToKanban);
 $('#project-save-button').addEventListener('click', () => projectsView?.openSave(currentResult));
 
@@ -4444,7 +4459,7 @@ function downloadFile(content, type, filename) {
 }
 document.addEventListener('keydown', (event) => {
   const isEditing = /^(INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName) || event.target.isContentEditable;
-  if (event.key.toLowerCase() === 'n' && currentPage() === 'compose' && !isEditing && !event.metaKey && !event.ctrlKey && !event.altKey && !document.querySelector('dialog[open]')) {
+  if (event.key?.toLowerCase() === 'n' && currentPage() === 'compose' && !isEditing && !event.metaKey && !event.ctrlKey && !event.altKey && !document.querySelector('dialog[open]')) {
     event.preventDefault();
     newPrompt();
   }
