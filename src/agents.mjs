@@ -268,7 +268,9 @@ export async function buildSession({ provider, stage, config, message, runDir, e
       if (server.disabledTools?.length) args.push('-c', `${prefix}.disabled_tools=${tomlValue(server.disabledTools)}`);
     }
     inArgv = fitsArgv(args, message);
-    if (inArgv && message) args.push(...(resumeId ? ['--', message] : [message]));
+    // After the option terminator: a prompt starting with "-" is otherwise a flag, and one equal to a subcommand
+    // name (such as "exec" or "login") runs that subcommand.
+    if (inArgv && message) args.push('--', message);
   } else if (provider === 'gemini') {
     env.GEMINI_CLI_SYSTEM_SETTINGS_PATH = await geminiSystemSettings(runDir, [nodePath, HOOK_SCRIPT, eventsFile, 'gemini'].map(shQuote).join(' '), { plan, pipeline, mcpServers: selected.length ? jsonServers : null });
     args = readOnly ? ['--extensions', 'none', '--allowed-mcp-server-names', ''] : [];

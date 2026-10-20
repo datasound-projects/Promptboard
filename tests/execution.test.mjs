@@ -61,7 +61,12 @@ test('session arguments: planning is read-only per provider; execution never byp
     // The task text may mention anything; it is one argument and never parsed as a flag.
     assert.ok(!args.filter(arg => arg !== message && !arg.startsWith('Decode the JSON')).some(arg => /dangerously|bypassPermissions|yolo|danger-full-access/.test(arg)), provider);
   }
-  assert.deepEqual((await build('codex', 'executing')).args.slice(-5, -1), ['--sandbox', 'workspace-write', '--ask-for-approval', 'on-request']);
+  assert.deepEqual((await build('codex', 'executing')).args.slice(-6), ['--sandbox', 'workspace-write', '--ask-for-approval', 'on-request', '--', message]);
+  // A fresh Codex prompt that looks like a flag or a subcommand name stays the prompt.
+  for (const text of ['--dangerously-bypass-approvals-and-sandbox', 'login']) {
+    const { args } = await buildSession({ provider: 'codex', stage: 'executing', config: resolveConfig('executing', { provider: 'codex' }), message: text, runDir, eventsFile: 'e', sessionId: 's' });
+    assert.deepEqual(args.slice(-2), ['--', text], text);
+  }
   // Only Planning plans: writing stages cannot switch Claude Code into plan mode and are told to start their own work.
   for (const stage of ['executing', 'testing', 'merge']) {
     const { args } = await build('claude', stage);
