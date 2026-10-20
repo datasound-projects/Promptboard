@@ -170,10 +170,17 @@ export function removeOwnedTempDirsSync() {
   ownedDirs.clear();
 }
 
+// What an enclosing agent session (Promptboard started from inside Claude Code, Codex or Gemini CLI) sets for its own
+// children: its session identity and the credential of its message socket. Every CLI Promptboard starts is a session of
+// its own, so it never inherits them (Claude Code withholds the same identity variables from sessions it launches).
+const ENCLOSING_SESSION = /^(?:CLAUDECODE|CLAUDE_PID|CLAUDE_EFFORT|CLAUDE_CODE_(?:ENTRYPOINT|EXECPATH|SESSION_ID|CHILD_SESSION|SESSION_ATTENDED|MESSAGING_SOCKET|MESSAGING_TOKEN|BRIDGE_SESSION_ID|HOST_WORKTREE|HOST_WORKTREE_FENCE)|CODEX_THREAD_ID|GEMINI_CLI)$/;
+/** The environment of a CLI process: the app's own, without an enclosing agent session's, plus `extra`. */
+export const cliEnv = (extra = {}) => ({ ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !ENCLOSING_SESSION.test(name))), ...extra });
+
 /** Spawn a tracked CLI process in its own process group (POSIX). */
 export function spawnOwned(command, args, { cwd, env = {} } = {}) {
   return trackChild(spawn(command, args, { cwd, shell: false, windowsHide: true, detached: process.platform !== 'win32',
-    stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...env, NO_COLOR: '1', FORCE_COLOR: '0' } }));
+    stdio: ['pipe', 'pipe', 'pipe'], env: cliEnv({ ...env, NO_COLOR: '1', FORCE_COLOR: '0' }) }));
 }
 
 /**
@@ -341,7 +348,7 @@ const firstJson = text => { const trimmed = text.trim(); try { return JSON.parse
 
 // Claude error types (result and StopFailure hook) -> failure codes.
 export const CLAUDE_ERRORS = Object.freeze({ authentication_failed: 'AUTH_REQUIRED', cloud_credential_error: 'AUTH_REQUIRED', oauth_org_not_allowed: 'POLICY_DENIED',
-  account_on_hold: 'ACCOUNT_UNAVAILABLE', billing_error: 'ACCOUNT_UNAVAILABLE', rate_limit: 'RATE_LIMITED', overloaded: 'PROVIDER_UNAVAILABLE',
+  account_on_hold: 'ACCOUNT_UNAVAILABLE', verification_required: 'ACCOUNT_UNAVAILABLE', billing_error: 'ACCOUNT_UNAVAILABLE', rate_limit: 'RATE_LIMITED', overloaded: 'PROVIDER_UNAVAILABLE',
   server_error: 'PROVIDER_UNAVAILABLE', model_not_found: 'MODEL_UNAVAILABLE' });
 const GEMINI_ERRORS = { TerminalQuotaError: 'QUOTA_EXHAUSTED', RetryableQuotaError: 'RATE_LIMITED', FatalAuthenticationError: 'AUTH_REQUIRED',
   UnauthorizedError: 'AUTH_REQUIRED', ForbiddenError: 'POLICY_DENIED', ModelNotFoundError: 'MODEL_UNAVAILABLE', FatalSandboxError: 'POLICY_DENIED', FetchError: 'NETWORK_ERROR' };

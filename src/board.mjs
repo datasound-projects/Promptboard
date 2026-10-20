@@ -166,8 +166,8 @@ export function columnStage(project, columnId) {
 /** The stage a run works on: the stage engine records it next to the pipeline column ID. */
 export const runStage = run => run?.stageKind || run?.stage;
 // Stage-engine outcomes. `next` tells Autopilot (and the board view) what follows; nothing moves by itself.
-// A run in one of these has not shown a sign of its session yet (src/supervisor.mjs sets them before the first event).
-const STARTUP_LIFECYCLES = new Set(['waiting-for-first-event', 'no-events-yet', 'workspace-trusted']);
+// A run in one of these has not shown a sign of its session yet (src/supervisor.mjs sets them before the first event, or when a long prompt still waits for one).
+const STARTUP_LIFECYCLES = new Set(['waiting-for-first-event', 'no-events-yet', 'workspace-trusted', 'initial-input-not-ready']);
 const OUTCOME_STATUSES = new Set(['working', 'verifying', 'succeeded', 'changes_required', 'failed']);
 const time = value => Number.isFinite(value) ? value : Date.now();
 

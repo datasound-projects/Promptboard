@@ -3,6 +3,14 @@
 Real CLI runs, recorded separately from the simulated (fake-CLI) test suite. Each checkpoint names its smoke script and uses an installed, signed-in CLI in its own disposable repository. Nothing here ran against a user repository.
 
 
+## 20 October 2026 — agent runs repair: typed Executing column, Base MCP tool switched off
+
+Two short runs on an isolated instance (`PROMPTBOARD_DATA_DIR` and `PROMPTBOARD_PROJECTS_DIR` in fresh temporary folders, `node bin/ste.mjs --gui --no-open --port 4504`), driven through the HTTP API on macOS arm64 with Node.js 24.14.1, in a disposable one-commit repository. The board was a column pipeline with an autonomous, workspace-write policy and Workspace trust on; one Base stdio MCP server (two tools, `notes.read` and `notes.delete`) was attached to the project with `notes.delete` switched off. The instance was started from inside a Claude Code session on purpose.
+
+- **Claude Code 2.1.304, model `haiku`:** argv `claude --session-id <uuid> --settings <hooks + status line> --mcp-config <run>/base-claude-mcp.json --permission-mode auto --disallowedTools EnterPlanMode,ExitPlanMode,mcp__pb_<id>__notes_delete --model haiku -- <message>`. Promptboard answered the folder-trust menu itself; the turn finished in 10 s and the agent listed only `mcp__pb_<id>__notes_read`.
+- **Codex CLI 0.160.0, CLI default model, effort `low`:** argv `codex -c notify=[…] --no-alt-screen --sandbox workspace-write --ask-for-approval never -c check_for_update_on_startup=false --disable daemon_auto_start -c model_reasoning_effort="low" -c mcp_servers.pb_<id>.… -c mcp_servers.pb_<id>.disabled_tools=["notes.delete"] -- <message>`: a fresh session now takes its prompt after `--`. The turn finished in 25 s and created exactly `hello.txt`. Only argv delivery of the switched-off tool was checked for Codex, not which tools it listed.
+- **Both:** neither agent's environment held the launching session's `CLAUDECODE`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_CHILD_SESSION` or `CLAUDE_CODE_MESSAGING_TOKEN` (`ps eww`). After Stop no CLI or MCP process was left, `base-claude-mcp.json` was removed, and every run file was mode 0600.
+
 ## 14 October 2026 — five Origin tasks, task scope (typed columns)
 
 `node scripts/live-kanban.mjs --scenario portal --tasks 5 --plan claude --exec claude --review claude --test claude --claude-model haiku` on macOS arm64, Node.js 24.14.1 and Claude Code 2.1.299 (Haiku), in a disposable repository and data folder. Five Origin-style cards in a prerequisite chain (foundation, storage, authentication, request handlers, text UI); every card carries the whole project's design, and each may change only its own file and `checks.json`.

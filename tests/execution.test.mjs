@@ -61,7 +61,12 @@ test('session arguments: planning is read-only per provider; execution never byp
     // The task text may mention anything; it is one argument and never parsed as a flag.
     assert.ok(!args.filter(arg => arg !== message && !arg.startsWith('Decode the JSON')).some(arg => /dangerously|bypassPermissions|yolo|danger-full-access/.test(arg)), provider);
   }
-  assert.deepEqual((await build('codex', 'executing')).args.slice(-5, -1), ['--sandbox', 'workspace-write', '--ask-for-approval', 'on-request']);
+  assert.deepEqual((await build('codex', 'executing')).args.slice(-6), ['--sandbox', 'workspace-write', '--ask-for-approval', 'on-request', '--', message]);
+  // A fresh Codex prompt that looks like a flag or a subcommand name stays the prompt.
+  for (const text of ['--dangerously-bypass-approvals-and-sandbox', 'login']) {
+    const { args } = await buildSession({ provider: 'codex', stage: 'executing', config: resolveConfig('executing', { provider: 'codex' }), message: text, runDir, eventsFile: 'e', sessionId: 's' });
+    assert.deepEqual(args.slice(-2), ['--', text], text);
+  }
   // Only Planning plans: writing stages cannot switch Claude Code into plan mode and are told to start their own work.
   for (const stage of ['executing', 'testing', 'merge']) {
     const { args } = await build('claude', stage);
@@ -849,6 +854,43 @@ test('a CLI that exits while its start is being saved leaves no event poll runni
   const session = supervisor.sessions.get('r1');
   t.after(() => { clearInterval(session.poll); clearInterval(session.usagePoll); clearTimeout(session.lingerTimer); });
   assert.equal(session.poll, undefined, 'The exit owns the outcome; no event poll is armed after it.');
+});
+
+/** One run through the real launch path with a controlled PTY (its fake PID ignores signals) and an in-memory board. */
+async function fakeLaunch(t) {
+  const dataDir = await temp(t, 'pb-data-');
+  const spawned = {};
+  const pty = { spawn(command, args, options) { Object.assign(spawned, { command, args, options }); spawned.proc = { pid: 2147483000, onData() {}, onExit(cb) { this.exit = cb; }, write() {}, resize() {} }; return spawned.proc; } };
+  const run = { id: 'r1', status: 'queued', taskId: 't1', artifactsDir: 'runs/r1', stage: 'executing', workspacePath: dataDir,
+    config: { provider: 'claude', permissionMode: 'acceptEdits' }, baseManifest: { resources: [] } };
+  const board = { state: async () => ({ settings: { maxConcurrentRuns: 1 }, base: { resources: [], approvedRoots: [] }, sessions: [] }),
+    run: async () => structuredClone(run), recordBaseManifest: async () => {}, base: { readRevision: async () => null },
+    updateRun: async (_id, fields) => Object.assign(run, fields) };
+  const supervisor = new Supervisor({ board, dataDir, ptyLoader: async () => ({ pty, message: '' }), resolver: async () => ({ command: 'claude', prefix: [] }),
+    basePreparer: async () => ({ sections: '', manifest: { resources: [] }, cleanup: async () => {} }) });
+  await supervisor.start({ run, task: { prompt: 'Do it.' } });
+  const session = await until(() => supervisor.sessions.get('r1')?.poll && supervisor.sessions.get('r1'), 'session running');
+  t.after(async () => { if (session.proc) { spawned.proc.exit({ exitCode: 0 }); await session.exited; } clearTimeout(session.lingerTimer); clearTimeout(session.watchdog); });
+  return { supervisor, run, session, spawned };
+}
+
+test('shutdown ends a terminal stream for good: a process that exits later writes nothing more to it', async t => {
+  const { supervisor, run, session, spawned } = await fakeLaunch(t), seen = [];
+  supervisor.subscribe('r1', 0, { write: () => { seen.push('write'); return true; }, onDrain() {}, end: () => seen.push('end') });
+  await supervisor.shutdown(50); // The process outlives the grace period and exits afterwards.
+  assert.equal(run.status, 'interrupted'); assert.equal(seen.at(-1), 'end');
+  spawned.proc.exit({ exitCode: null, signal: 9 }); await session.exited;
+  assert.deepEqual(seen.slice(seen.indexOf('end')), ['end'], 'An HTTP response written after end() raises an uncaught error.');
+});
+
+test('an agent terminal never inherits the session identity or message credential of an agent session that started Promptboard', async t => {
+  const names = ['CLAUDECODE', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_CODE_CHILD_SESSION', 'CLAUDE_CODE_MESSAGING_TOKEN', 'CODEX_THREAD_ID', 'PROMPTBOARD_ENV_PROBE'];
+  const saved = Object.fromEntries(names.map(name => [name, process.env[name]]));
+  t.after(() => { for (const [name, value] of Object.entries(saved)) if (value === undefined) delete process.env[name]; else process.env[name] = value; });
+  Object.assign(process.env, { CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'parent', CLAUDE_CODE_CHILD_SESSION: '1', CLAUDE_CODE_MESSAGING_TOKEN: 'PARENT-SECRET', CODEX_THREAD_ID: 'parent-thread', PROMPTBOARD_ENV_PROBE: 'kept' });
+  const { env } = (await fakeLaunch(t)).spawned.options;
+  assert.deepEqual(names.filter(name => name in env), ['PROMPTBOARD_ENV_PROBE']);
+  assert.equal(env.PROMPTBOARD_RUN, '1'); assert.equal(env.TERM, 'xterm-256color');
 });
 
 test('run endpoints need the token, bound input, need confirmation to stop, and stream NDJSON', { skip }, async t => {

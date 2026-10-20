@@ -17,7 +17,7 @@ function kill(signal) {
 function stop() {
   if (stopping) return;
   stopping = true; child.stdin?.end(); kill('SIGTERM');
-  escalation = setTimeout(() => { kill('SIGKILL'); process.exit(0); }, 500);
+  escalation = setTimeout(() => { kill('SIGKILL'); process.exit(); }, 500); // Keeps exitCode 1 after a spawn error.
 }
 child.on('error', () => { stop(); process.exitCode = 1; });
 child.on('exit', () => { if (!stopping) stop(); });

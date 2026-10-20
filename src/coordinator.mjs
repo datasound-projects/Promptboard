@@ -15,8 +15,7 @@
  */
 import '../public/origin-model.js';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rename, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, readFile, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { buildTimeline } from './timeline.mjs';
@@ -24,6 +23,7 @@ import { COLUMNS, prerequisiteMet } from './board.mjs';
 import { readWithBackup, serial, writeAtomic } from './durable.mjs';
 import { escapeId } from './origin.mjs';
 import { listProjects } from './projects.mjs';
+import { makeTempDir, removeTempDir } from './providers.mjs';
 
 const Model = globalThis.PromptboardOriginModel;
 const SCHEMA = 'promptboard.coordinator', CHAT_SCHEMA = 'promptboard.coordinator-chat', VERSION = 1;
@@ -151,9 +151,9 @@ export class Coordinator {
       let answer, cachedAnswer = Boolean(cached);
       if (cached) answer = cached.answer;
       else {
-        const cwd = await mkdtemp(join(tmpdir(), 'pb-coordinator-'));
+        const cwd = await makeTempDir('pb-coordinator-');
         try { answer = (await runner({ provider: input.provider, model: input.model || '', effort: input.effort || '', prompt: promptFor(question, scope, evidence.text), cwd, signal, timeoutMs: 180000 })).text.trim().slice(0, LIMITS.answer); }
-        finally { await rm(cwd, { recursive: true, force: true }).catch(() => {}); }
+        finally { await removeTempDir(cwd).catch(() => {}); }
       }
       const refs = [...new Set([...answer.matchAll(/\[((?:T\d+|run:[A-Za-z0-9-]{4,}|commit:[0-9a-f]{7,40}))\]/g)].map(match => match[1]))].filter(ref => evidence.refs.has(ref)).map(ref => evidence.refs.get(ref));
       const now = Date.now();

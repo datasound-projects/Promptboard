@@ -321,7 +321,8 @@ function streamRun(supervisor, req, res, runId, after) {
   const ping = setInterval(() => res.write('{"ping":true}\n'), 15000);
   const finish = () => { clearInterval(ping); if (!res.writableEnded) res.end(); };
   const unsubscribe = supervisor.subscribe(runId, after, {
-    write: item => res.write(`${JSON.stringify(item)}\n`),
+    // A write after end() raises an uncaught 'error' on the response; an ended stream takes nothing more.
+    write: item => res.writableEnded || res.write(`${JSON.stringify(item)}\n`),
     onDrain: resume => res.once('drain', resume),
     end: finish,
   });
