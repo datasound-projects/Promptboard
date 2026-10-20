@@ -333,6 +333,14 @@ test('saved blueprints: a damaged file falls back to its backup and is set aside
   assert.equal(await readFile(path, 'utf8'), newer);
 });
 
+test('changes to one Origin file made at the same moment all survive', async t => {
+  const dir = await temp(t), store = new OriginStore(dir), created = await store.create({ name: 'Busy' });
+  // Each save reads, changes and replaces the same files; the one queue keeps every change.
+  await Promise.all([...['A', 'B', 'C', 'D', 'E'].map(name => store.saveBlueprint(created.id, { name })), store.write(created.id, { expectedRevision: 1, blueprint: { idea: 'Kept' } })]);
+  assert.deepEqual((await store.listBlueprints()).map(entry => entry.name).sort(), ['A', 'B', 'C', 'D', 'E']);
+  assert.equal((await store.read(created.id)).blueprint.idea, 'Kept');
+});
+
 test('a damaged project without a good copy stays reported as damaged after a listing set it aside', async t => {
   const dir = await temp(t), store = new OriginStore(dir);
   const created = await store.create({ name: 'Fragile' });
