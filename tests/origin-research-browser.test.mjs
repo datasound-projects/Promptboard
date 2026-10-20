@@ -142,3 +142,19 @@ test('Undo of a removed section brings back the research scope and the swarm par
   await wait(`document.querySelector('#origin-research-scope').getAttribute('aria-label') === 'What to research'`, 'chat mode');
   assert.equal(await ev(`return document.querySelector('#origin-research-scope').value;`), pricing, 'and the scope');
 });
+
+test('On a phone the Research header keeps every tool on screen with a long CLI and model name', { skip: !chrome, timeout: 120000 }, async t => {
+  const { ev, wait } = await researchPage(t, { width: 390, height: 844 });
+  const click = selector => ev(`document.querySelector(${J(selector)}).click();`);
+  await click('#origin-research-open');
+  await wait(`document.querySelector('#origin-research-cli')?.textContent !== 'CLI…'`, 'CLIs read');
+  await click('#origin-research-cli');
+  await wait(`document.querySelector('#origin-research-provider')`, 'settings');
+  await ev(`const p = document.querySelector('#origin-research-provider'); p.value = 'claude'; p.dispatchEvent(new Event('change', { bubbles: true }));`);
+  await wait(`[...document.querySelectorAll('#origin-research-model option')].some(o => o.value === 'sonnet')`, 'models');
+  await ev(`const m = document.querySelector('#origin-research-model'); m.value = 'sonnet'; m.dispatchEvent(new Event('change', { bubbles: true }));`);
+  await wait(`document.querySelector('#origin-research-cli').textContent === 'Claude Code · sonnet'`, 'a long CLI label');
+  const box = await ev(`const r = s => document.querySelector(s).getBoundingClientRect(); return { drawer: r('#origin-drawer').right, close: r('#origin-research-close').right, width: r('#origin-research-close').width };`);
+  assert.ok(box.close <= box.drawer - 4, `Close ends at ${box.close}, the panel at ${box.drawer}`);
+  assert.equal(box.width, 30, 'the tools keep their size; the CLI name is shortened instead');
+});
