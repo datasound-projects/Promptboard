@@ -1694,7 +1694,7 @@ function renderBoard() {
   renderAutopilotBar(project);
   renderRunPanel(project, timelineView);
   if (timelineView) { $('#autopilot-bar').hidden = true; refreshTimeline(project); }
-  coordinatorView?.sync(project, board?.revision, !timelineView);
+  coordinatorView?.sync(project, board?.revision, !timelineView && currentPage() === 'kanban'); // Read only while it can be seen.
   updateBoardScroll();
   window.PromptboardDock?.sync();
   const verifying = tasks.find(task => task.evidence?.tests?.status === 'running');

@@ -133,6 +133,8 @@ window.PromptboardCoordinator = (() => {
           ...(readError ? [`Not refreshed: ${readError}`] : [])]
           .map((text, index) => el('span', index >= 2 ? 'coordinator-alert' : '', text)));
       }
+      // An error outside the open chat (the On/Off switch) is said here; the chat says its own.
+      if (message && data && (off || !chatOpen)) status.append(el('span', 'coordinator-alert', message));
       const controls = el('div', 'coordinator-controls');
       if (!off) {
         const ask = button('Ask Coordinator', () => openChat(), 'secondary-button coordinator-ask'); ask.id = 'coordinator-ask';
@@ -145,8 +147,8 @@ window.PromptboardCoordinator = (() => {
         try {
           const next = await call('', { method: 'PATCH', body: { enabled: box.checked } });
           if (id !== projectId) return;
-          data = next; chatNode = null; host.announce(box.checked ? 'Coordinator is on. Missed changes were added from the board.' : 'Coordinator is off. Its project knowledge is kept.');
-        } catch (error) { if (id !== projectId) return; message = error.message; }
+          data = next; message = ''; chatNode = null; host.announce(box.checked ? 'Coordinator is on. Missed changes were added from the board.' : 'Coordinator is off. Its project knowledge is kept.');
+        } catch (error) { if (id !== projectId) return; message = error.message; chatNode = null; }
         render(); document.getElementById('coordinator-enabled')?.focus();
       });
       onOff.append(box, el('span', '', off ? 'Off' : 'On'));
@@ -244,7 +246,7 @@ window.PromptboardCoordinator = (() => {
       target.hidden = scope.kind === 'project' || !choices.length;
       if (scope.id && choices.some(([value]) => value === scope.id)) target.value = scope.id; else if (choices[0]) scope = { kind: scope.kind, id: choices[0][0] };
       target.addEventListener('change', () => { scope = { kind: scope.kind, id: target.value }; });
-      const close = button('', () => { chatOpen = false; chatNode = null; render(); document.getElementById('coordinator-ask')?.focus(); }, 'coordinator-close', 'Close chat');
+      const close = button('', () => { chatOpen = false; chatNode = null; message = ''; render(); document.getElementById('coordinator-ask')?.focus(); }, 'coordinator-close', 'Close chat');
       close.append(svg('M6 6l12 12M18 6 6 18'));
       head.append(kinds, target, close);
       if (scope.kind !== 'project' && !choices.length) head.append(el('span', 'coordinator-none', { task: 'No cards yet', agent: 'No agent runs yet', branch: 'No branches yet' }[scope.kind]));
@@ -308,7 +310,8 @@ window.PromptboardCoordinator = (() => {
     // One click opens or closes the panel; opening reads the board's latest state.
     function setOpen(open) { setPref(key(), open ? 'open' : 'closed'); if (open) void refresh(); render(); }
     toggle.addEventListener('click', () => { if (projectId) setOpen(!isOpen()); });
-    return { sync, askAbout: next => { if (!isOpen()) setOpen(true); openChat(next); } };
+    // Asking from a card always shows the chat, also when the Coordinator was minimized.
+    return { sync, askAbout: next => { if (layout.mini) { layout.mini = false; saveLayout(); } if (!isOpen()) setOpen(true); openChat(next); } };
   }
 
   return { create };

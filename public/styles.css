@@ -2434,6 +2434,7 @@ button.origin-context-badge { cursor: pointer; }
 .coordinator-mini-status { color: var(--muted); font-size: 11.5px; }
 .coordinator-mini-status.is-alert { color: var(--og-decide, #db2777); font-weight: 600; }
 @media (max-width: 730px) {
+  .coordinator:has(.coordinator-chat) .coordinator-grid { display: none; } /* Phones have no Hide overview: chatting folds it, the summary line stays. */
   .coordinator-message { max-width: 92%; }
   .coordinator-target { flex: 1 1 100%; order: 3; max-width: none; }
 }

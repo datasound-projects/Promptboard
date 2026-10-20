@@ -15,13 +15,14 @@ function setup(t) {
   const errors = [];
   win.addEventListener('error', event => errors.push(event.error));
   t.after(() => win.close());
-  const asks = [], reads = new Map();
+  const asks = [], reads = new Map(), calls = [];
   const api = (path, options = {}) => {
     const id = decodeURIComponent(path.split('/')[3]);
+    calls.push({ path, method: options.method || 'GET' });
     if (path.endsWith('/ask')) return new Promise(resolve => asks.push({ id, question: options.body.question, answer: chat => resolve({ response: { ok: true }, data: { chat } }) }));
     // A function answers the read itself, for held or failing reads.
     const read = reads.get(id);
-    return Promise.resolve(typeof read === 'function' ? read() : { response: { ok: true }, data: read || overview() });
+    return Promise.resolve(typeof read === 'function' ? read(options) : { response: { ok: true }, data: read || overview() });
   };
   const projects = { a: { id: 'a', tasks: [{ id: 'ta', number: 1, title: 'One', workspace: { branch: 'feature/a' } }] }, b: { id: 'b', tasks: [] } };
   let current = projects.a;
@@ -29,7 +30,7 @@ function setup(t) {
   const view = win.PromptboardCoordinator.create({ api, announce: () => {}, project: () => current, runs: () => [], openTask: () => {}, copy: () => {}, composeSettings: () => ({ provider: 'codex' }) });
   const show = (id, revision = 1) => { current = projects[id]; view.sync(current, revision); };
   const type = text => { const area = $('#coordinator-question'); area.value = text; area.dispatchEvent(new win.Event('input', { bubbles: true })); return area; };
-  return { win, $, view, show, asks, reads, errors, type };
+  return { win, $, view, show, asks, reads, errors, type, calls };
 }
 
 test('a Coordinator answer stays with the project it was asked in, and the other project never looks busy', async t => {
@@ -120,4 +121,54 @@ test('minimizing a Coordinator that is Off shows it as Off and keeps every later
   view.sync({ id: 'a', tasks: [] }, 2, true);
   await tick();
   assert.deepEqual(errors, []);
+});
+
+test('closed, the panel reads nothing and starts no timer; open, it reads only when the board changed', async t => {
+  const { win, $, show, calls } = setup(t);
+  const timers = [];
+  for (const name of ['setTimeout', 'setInterval', 'requestAnimationFrame']) { const real = win[name]; win[name] = (...args) => { timers.push(name); return real?.apply(win, args); }; }
+  for (let revision = 1; revision <= 20; revision++) show('a', revision);
+  await tick();
+  assert.deepEqual([calls.length, timers], [0, []], 'closed: no read and no timer, however often the board renders');
+  $('#coordinator-toggle').click();
+  await until(() => $('.coordinator-grid'), 'open');
+  for (let n = 0; n < 5; n++) show('a', 20);
+  await tick();
+  assert.equal(calls.length, 1, 'open: one read, none while the board is unchanged');
+  show('a', 21);
+  await until(() => calls.length === 2, 'a board change is read');
+  $('#coordinator-toggle').click();
+  for (let revision = 22; revision < 30; revision++) show('a', revision);
+  await tick();
+  assert.deepEqual([calls.length, timers], [2, []], 'closed again: nothing more');
+});
+
+test('a failed On/Off switch says why, in the bar or in the open chat, and stays as it was', async t => {
+  const { win, $, show, view, reads } = setup(t);
+  let failures = 0;
+  reads.set('a', options => (options.method === 'PATCH' ? { response: { ok: false }, data: { error: ++failures === 1 ? 'The disk is full.' : 'Still full.' } } : { response: { ok: true }, data: overview() }));
+  win.localStorage.setItem('promptboard.coordinator.a', 'open');
+  show('a');
+  await until(() => $('.coordinator-grid'), 'open');
+  const flip = () => { const box = $('#coordinator-enabled'); box.checked = !box.checked; box.dispatchEvent(new win.Event('change')); };
+  flip();
+  await until(() => failures === 1 && /The disk is full\./.test($('.coordinator-status').textContent), 'error in the bar');
+  assert.equal($('#coordinator-enabled').checked, true, 'still on');
+  view.askAbout(null);
+  await until(() => $('#coordinator-question'), 'chat open');
+  flip();
+  await until(() => /Still full\./.test($('.coordinator-chat .inline-error')?.textContent || ''), 'error in the open chat');
+  assert.doesNotMatch($('.coordinator-status').textContent, /full/, 'said once');
+});
+
+test('asking about a card while the Coordinator is minimized opens its chat on that card', async t => {
+  const { win, $, show, view } = setup(t);
+  win.localStorage.setItem('promptboard.coordinator.a', 'open');
+  show('a');
+  await until(() => $('#coordinator-minimize'), 'open');
+  $('#coordinator-minimize').click();
+  await until(() => $('#coordinator-mini'), 'minimized');
+  view.askAbout({ kind: 'task', id: 'ta' });
+  await until(() => $('#coordinator-question'), 'chat shown');
+  assert.deepEqual([$('#coordinator-mini'), $('#coordinator-target').value, win.document.activeElement.id], [null, 'ta', 'coordinator-question']);
 });
