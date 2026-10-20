@@ -9,7 +9,7 @@ import { gunzipSync, gzipSync } from 'node:zlib';
 import { Board } from '../src/board.mjs';
 import { Coordinator, coordinatorRoute } from '../src/coordinator.mjs';
 import { OriginStore } from '../src/origin.mjs';
-import { commandOnPath } from '../src/providers.mjs';
+import { commandOnPath, removeOwnedTempDirsSync } from '../src/providers.mjs';
 
 async function temp(t) { const dir = await mkdtemp(join(tmpdir(), 'pb-coordinator-test-')); t.after(() => rm(dir, { recursive: true, force: true })); return dir; }
 const SECRET_SPEC = 'Exact engineered card specification that must never be copied into the index.';
@@ -82,7 +82,12 @@ test('chat is read-only, scoped, cached and isolated per project', async t => {
   // One call in an empty temporary folder, removed afterwards, also when the call fails.
   assert.match(calls[0].cwd, /pb-coordinator-/); await assert.rejects(stat(calls[0].cwd), { code: 'ENOENT' });
   let failedIn = '';
-  await assert.rejects(coordinator.ask(project.id, { question: 'Fails?', provider: 'codex' }, { runner: async call => { failedIn = call.cwd; assert.deepEqual(await readdir(call.cwd), []); throw new Error('quota'); } }), /quota/);
+  await assert.rejects(coordinator.ask(project.id, { question: 'Fails?', provider: 'codex' }, { runner: async call => {
+    failedIn = call.cwd; assert.deepEqual(await readdir(call.cwd), []);
+    // A forced exit (a second Ctrl+C) removes the app's own temporary folders; this is one of them.
+    removeOwnedTempDirsSync(); await assert.rejects(stat(call.cwd), { code: 'ENOENT' });
+    throw new Error('quota');
+  } }), /quota/);
   await assert.rejects(stat(failedIn), { code: 'ENOENT' });
   // The same question on the same evidence is answered from the cache.
   const cached = await coordinator.ask(project.id, { question: 'what happened to checkout?', scope: { kind: 'task', id: card.id }, provider: 'codex' }, { runner });
