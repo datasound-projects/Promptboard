@@ -96,3 +96,19 @@ test('creating from a template, saving a structure as a personal blueprint and s
   assert.deepEqual((await call(`/api/origin/blueprints/${saved.id}`, 'DELETE')).json, { deleted: saved.id });
   assert.equal((await call('/api/origin/projects', 'POST', { name: 'Gone', start: { saved: saved.id } })).status, 404);
 });
+
+test('a starter flow is worked on once an arrow moves, and older starters still read as untouched', () => {
+  const bp = make('rag'), flow = bp.blocks.find(block => block.type === 'flow');
+  assert.equal(M.blockWorked(flow), false, 'untouched template content');
+  // An arrow removed and another drawn, with the same (empty) label: the flow now says something else.
+  const [first] = flow.edges, free = flow.nodes.find(node => node.id !== first.from && !flow.edges.some(edge => edge.from === first.from && edge.to === node.id));
+  flow.edges = [...flow.edges.filter(edge => edge !== first), { id: 'moved', from: first.from, to: free.id, label: first.label }];
+  assert.equal(M.blockWorked(flow), true, 'a rewired flow is the person’s own work');
+  assert.equal(M.changeBlockType(bp, flow.id, 'notes').error, 'Only an empty block changes its type. A notes block can turn into a question.');
+  // A starter saved by the previous version (arrow labels only) still marks its untouched flow.
+  const older = make('rag').blocks.find(block => block.type === 'flow');
+  older.starter = M.blockFingerprint(older, { legacy: true });
+  assert.equal(M.blockWorked(older), false);
+  older.nodes[0].label = 'Edited';
+  assert.equal(M.blockWorked(older), true);
+});

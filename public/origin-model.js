@@ -455,15 +455,19 @@ globalThis.PromptboardOriginModel = (() => {
     table: () => block.rows.some(row => Object.values(row.cells).some(hasText)), flow: () => block.nodes.length > 0 })[block.type]();
   const blockComplete = block => blockStarted(block) && (block.type !== 'qa' || block.entries.every(entry => hasText(entry.answer)));
   /** The written content of a block, as a short hash: a template's starter block keeps the hash of what it came with. */
-  function blockFingerprint(block) {
+  function blockFingerprint(block, { legacy = false } = {}) {
     const texts = [block.type, block.title, block.text, ...(block.entries || []).flatMap(entry => [entry.question, entry.answer]), ...(block.checks || []).flatMap(entry => [entry.text, entry.done ? '1' : '0']),
-      ...(block.columns || []).map(column => column.name), ...(block.rows || []).flatMap(row => Object.values(row.cells || {})), ...(block.nodes || []).flatMap(node => [node.label, node.notes]), ...(block.edges || []).map(edge => edge.label)];
+      ...(block.columns || []).map(column => column.name), ...(block.rows || []).flatMap(row => Object.values(row.cells || {})), ...(block.nodes || []).flatMap(node => [node.label, node.notes]),
+      ...(block.edges || []).flatMap(edge => (legacy ? [edge.label] : [edge.label, edge.from, edge.to]))];
     let hash = 0x811c9dc5;
     for (const char of JSON.stringify(texts)) { hash ^= char.charCodeAt(0); hash = Math.imul(hash, 0x01000193) >>> 0; }
     return hash.toString(16).padStart(8, '0');
   }
-  /** Worked on: has content, and is not a template's starter block left exactly as it came. */
-  const blockWorked = block => blockStarted(block) && !(block.starter && block.starter === blockFingerprint(block));
+  /**
+   * Worked on: has content, and is not a template's starter block left exactly as it came. An arrow counts by its ends;
+   * a starter saved before that (arrow labels only) still marks its untouched block.
+   */
+  const blockWorked = block => blockStarted(block) && !(block.starter && [blockFingerprint(block), blockFingerprint(block, { legacy: true })].includes(block.starter));
   /**
    * A block as plain lines: `ids` adds the stable tags research agents write to ([entry …], [row …], [node …]).
    * Used for task context, research context and the Overview, so every reader sees the same content.
