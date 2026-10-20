@@ -7,7 +7,7 @@
  *        → (app restart) → Code Review again → Testing → Merge (one click) → Done. No confirmation dialogs.
  */
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Board } from '../src/board.mjs';
@@ -18,9 +18,10 @@ const provider = arg('provider', 'claude'), model = arg('model', ''), timeoutMs 
 const log = (...parts) => console.error(`[live] ${parts.join(' ')}`);
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
 
-const base = await mkdtemp(join(tmpdir(), 'pb-live-transitions-'));
+// The real path, as in the other live scripts: macOS reaches tmpdir() through /var -> /private/var, and CLIs report real paths.
+const base = await realpath(await mkdtemp(join(tmpdir(), 'pb-live-transitions-')));
 const root = join(base, 'repo'), dataDir = join(base, 'data');
-execFileSync('mkdir', ['-p', root]);
+await mkdir(root);
 git(root, 'init', '-q', '-b', 'trunk'); git(root, 'config', 'user.email', 'live@example.invalid'); git(root, 'config', 'user.name', 'Live Test');
 await writeFile(join(root, 'notes.txt'), 'alpha\n'); git(root, 'add', '.'); git(root, 'commit', '-q', '-m', 'Add notes');
 

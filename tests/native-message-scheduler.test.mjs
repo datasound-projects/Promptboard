@@ -253,16 +253,20 @@ test('lost queued-outcome acknowledgement blocks later scheduling instead of rel
 });
 
 
-test('long queued startup and busy readiness waits preserve the later native delivery budget', { timeout: 10000 }, async t => {
+test('long queued startup and busy readiness waits preserve the later native delivery budget', { timeout: 30000 }, async t => {
   const w = await fixture(t, { queued: true }); let ready = false, readinessReads = 0, deliveredBudget = 0, readyAt = 0, deliveredAt = 0;
   w.supervisor.nativeMessageReadiness = async () => { readinessReads++; if (ready) readyAt = performance.now(); return ready ? 'ready' : 'waiting'; };
   w.handler(async (runId, request) => { deliveredAt = performance.now(); deliveredBudget = request.timeoutMs; return w.deliver(runId, request); });
+  // Budgets and polling run on mock timers, so the durable handoff and dispatch may take any time on a slow disk:
+  // 500 ms of queue and busy readiness pass on the mock clock only, longer than the 300 ms budget.
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const advance = async () => { t.mock.timers.tick(50); await new Promise(resolve => setImmediate(resolve)); };
   assert.equal((await w.scheduler.schedule(w.request(), { timeoutMs: 300, waitForReadiness: true })).scheduled, true);
-  await new Promise(resolve => setTimeout(resolve, 500));
+  for (let i = 0; i < 10; i++) await advance();
   assert.equal((await w.receipt()).status, 'queued'); assert.deepEqual(w.writes, []); assert.equal(readinessReads, 0);
-  w.activate(); for (const end = Date.now() + 5000; !readinessReads && Date.now() < end;) await new Promise(resolve => setTimeout(resolve, 10));
-  assert.ok(readinessReads > 0); assert.equal((await w.receipt()).status, 'queued'); assert.deepEqual(w.writes, []);
-  ready = true;
+  w.activate(); while (readinessReads < 10) await advance();
+  assert.equal((await w.receipt()).status, 'queued'); assert.deepEqual(w.writes, []);
+  ready = true; while (!readyAt) await advance();
   assert.equal((await w.scheduler.wait(w.key, w.request().actionId)).confirmed, true);
   assert.ok(readyAt > 0 && deliveredAt >= readyAt);
   assert.ok(deliveredBudget > 0 && deliveredBudget <= 300, 'Native delivery stays within its bounded attempt.');
@@ -339,10 +343,15 @@ test('a Base registry change during readiness waiting ends the captured queue wi
 });
 
 test('state reads remain bounded after accepted readiness handoff and cannot revive a timed-out queue', async t => {
-  const w = await fixture(t), held = Promise.withResolvers();
+  const w = await fixture(t), held = Promise.withResolvers(), reading = Promise.withResolvers();
   w.supervisor.nativeMessageReadiness = async () => 'ready';
+  // Budgets run on mock timers: the durable handoff may take any time on a slow disk; only the held read's budget expires.
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   assert.equal((await w.scheduler.schedule(w.request(), { timeoutMs: 150, waitForReadiness: true })).scheduled, true);
-  w.board.state = () => held.promise;
+  w.board.state = () => { reading.resolve(); return held.promise; };
+  await reading.promise; t.mock.timers.tick(149);
+  await new Promise(resolve => setImmediate(resolve)); assert.equal((await w.receipt()).status, 'queued');
+  t.mock.timers.tick(1);
   assert.equal((await w.scheduler.wait(w.key, w.request().actionId)).status, 'timed_out');
   assert.equal((await w.receipt()).status, 'timed_out'); assert.deepEqual(w.writes, []);
   held.resolve(structuredClone(w.state)); await new Promise(resolve => setImmediate(resolve)); assert.deepEqual(w.writes, []);

@@ -328,7 +328,8 @@ test('a hook arriving during receipt read is drained before durable confirmation
     if (result.status === 'confirmed') { proofs++; w.session.eventsPending = true; }
     return result;
   };
-  const result = await w.call({ readEvents: async () => {
+  // The send spends a fixed 1 s between paste and Enter plus history reads; a 3 s budget expired on loaded CI runners.
+  const result = await w.call({ timeoutMs: 30000, readEvents: async () => {
     if (w.session.eventsPending && ++pendingReads === 2) w.session.eventsPending = false;
   }, confirmDelivery: async () => { assert.equal(w.session.eventsPending, false); return true; } });
   assert.equal(result.status, 'confirmed'); assert.equal(pendingReads, 2); assert.equal(proofs, 1);
