@@ -229,6 +229,23 @@ test('a name spelled with another Unicode form, case, spacing or invisible chara
   for (const name of ['my\u00a0app', 'My  App', 'M\u200by App']) await assert.rejects(board.createProject({ name }), { code: 'NAME_TAKEN' }, JSON.stringify(name));
 });
 
+test('a new or changed project name has no NUL or other control character on any path; names stored before still load', async t => {
+  const { app, call } = await client(t);
+  for (const name of ['a\u0000b', 'a\nb', 'tab\there', 'bell\u0007']) {
+    for (const path of ['/api/projects', '/api/origin/projects', '/api/shared-projects']) assert.equal((await call(path, 'POST', { name })).data.code, 'INVALID_INPUT', `${path} ${JSON.stringify(name)}`);
+  }
+  const kept = await app.board.createProject({ name: 'Kept' });
+  assert.equal((await call(`/api/projects/${kept.id}`, 'PATCH', { name: 'Kept\u0001', expectedRevision: kept.revision })).data.code, 'INVALID_INPUT');
+  const { board, origin } = await local(t), record = await origin.create({ name: 'Plan' });
+  await assert.rejects(origin.update(record.id, { expectedRevision: record.revision, name: 'Pl\ran' }), { code: 'INVALID_INPUT' });
+  // Older names are not checked again: an Origin file and a board backup with a tab in a name still load.
+  const made = await origin.create({ name: 'Old' }), file = join(origin.dir, (await readdir(origin.dir)).find(name => name.startsWith('blueprint-') && name.endsWith('.json') && name.includes(made.id.toLowerCase().slice(0, 6))));
+  const data = JSON.parse(await readFile(file, 'utf8')); data.project.name = 'Old\tname'; await writeFile(file, JSON.stringify(data));
+  assert.equal((await new OriginStore(board.dataDir).read(made.id)).name, 'Old\tname');
+  await board.importBackup({ version: 1, kind: 'kanban-backup', projects: [{ id: 'tabbed', name: 'Tab\tbed', cards: [] }] });
+  assert.deepEqual((await new Board({ dataDir: board.dataDir }).state()).projects.map(project => project.name), ['Tab\tbed']);
+});
+
 test('renaming a board in Kanban keeps the one-name rule across Origin', async t => {
   const { app, call } = await client(t);
   await call('/api/origin/projects', 'POST', { name: 'Plan only' });

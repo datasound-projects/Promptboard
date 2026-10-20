@@ -16,7 +16,7 @@ import { mkdir, open, readdir, readFile, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { redactLocal } from './compose-local.mjs';
 import { readWithBackup, serial, writeAtomic } from './durable.mjs';
-import { createBoardFor, nameKey, nameTaken } from './projects.mjs';
+import { createBoardFor, enteredName, nameKey, nameTaken } from './projects.mjs';
 
 const Model = globalThis.PromptboardOriginModel;
 export const ORIGIN_DIR = 'origin';
@@ -43,9 +43,10 @@ export function originFileName(projectId) { return `project-${escapeId(validId(p
 export function blueprintFileName(originId) { return `blueprint-${escapeId(validId(originId))}.json`; }
 
 const time = value => (Number.isSafeInteger(value) && value > 0 ? value : null);
-function projectName(value) {
-  const name = typeof value === 'string' ? value.trim() : '';
-  if (!name || name.length > 80 || name.includes('\0')) throw new OriginError('A project name needs 1 to 80 characters.', 'INVALID_INPUT');
+/** A name someone enters follows the shared rule; a `stored` one only needs to be readable text, so older files keep loading. */
+function projectName(value, stored = false) {
+  const name = stored ? (typeof value === 'string' ? value.trim() : '') : enteredName(value);
+  if (!name || name.length > 80 || name.includes('\0')) throw new OriginError('A project name needs 1 to 80 characters and no control characters.', 'INVALID_INPUT');
   return name;
 }
 function description(value) {
@@ -126,7 +127,7 @@ export class OriginStore {
     }
     if (data.version !== Model.VERSION || !Number.isSafeInteger(data.revision) || data.revision < 1) throw new Error('Unsupported Origin file.');
     const project = data.project && typeof data.project === 'object' ? data.project : {};
-    const meta = { name: projectName(project.name), description: description(project.description),
+    const meta = { name: projectName(project.name, true), description: description(project.description),
       kanbanProjectId: typeof project.kanbanProjectId === 'string' && Model.ID.test(project.kanbanProjectId) ? project.kanbanProjectId : null };
     const { blueprint, repairs } = Model.normalizeBlueprint(data.blueprint);
     return { id: originId, ...meta, revision: data.revision, createdAt: time(data.createdAt), updatedAt: time(data.updatedAt), blueprint, repairs };

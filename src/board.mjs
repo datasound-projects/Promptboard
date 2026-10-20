@@ -20,7 +20,7 @@ import { validateEffort } from './providers.mjs';
 import { Delivery } from './delivery.mjs';
 import { clonePath, ensureClone, fastForward, fetchAndCompare, originRepository, viewRepository } from './github.mjs';
 import { externalIssueSource } from './external-source.mjs';
-import { nameKey } from './projects.mjs';
+import { enteredName, nameKey } from './projects.mjs';
 import { buildTimeline } from './timeline.mjs';
 import { Base, normalizeBinding, listTargets, remapBaseScopes } from './base.mjs';
 import { checkBaseRevocations, deliveryFor, profileDefaults, resolveBase } from './base-resolver.mjs';
@@ -76,6 +76,11 @@ function text(value, max, label) {
   const result = typeof value === 'string' ? value.trim() : '';
   if (!result || result.length > max) throw new BoardError(`${label} needs 1 to ${max} characters.`, 'INVALID_INPUT');
   return result;
+}
+function projectName(value) {
+  const name = enteredName(value);
+  if (!name) throw new BoardError('Project name needs 1 to 80 characters and no control characters.', 'INVALID_INPUT');
+  return name;
 }
 function promptText(value, label, allowBlank = false) {
   // The prompt is kept exactly as given, including whitespace and line endings.
@@ -797,7 +802,7 @@ export class Board {
 
   /** `id` (optional) lets a shared project keep one ID across Origin and Kanban; it must be unused. */
   async createProject({ name, workflowMode = 'legacy', id }) {
-    const clean = text(name, 80, 'Project name');
+    const clean = projectName(name);
     return this.store.update(state => {
       this.#newProjectError(state, { name: clean, workflowMode, id });
       const project = newProject({ ...(id === undefined ? {} : { id }), name: clean });
@@ -814,7 +819,7 @@ export class Board {
    * (its files are never added). Then the project is linked to it.
    */
   async createProjectWithRepository({ name, folder, workflowMode = 'legacy', id }) {
-    const clean = text(name, 80, 'Project name');
+    const clean = projectName(name);
     // Refuse before any folder or Git change; createProject checks again inside its update.
     this.#newProjectError(await this.state(), { name: clean, workflowMode, id });
     let path, created = false;
@@ -855,7 +860,7 @@ export class Board {
   }
 
   async renameProject(id, { name, expectedRevision }) {
-    const clean = text(name, 80, 'Project name');
+    const clean = projectName(name);
     return this.store.update(state => {
       const project = this.#project(state, id);
       checkRevision(project, expectedRevision, 'This project');
