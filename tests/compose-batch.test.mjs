@@ -335,6 +335,29 @@ test('Kanban receives only approved prompts, prerequisites first, once, with lin
   assert.equal((await call(`/${record.id}/run`, { itemIds: ['t1'] })).data.skipped[0].reason, 'Already on Kanban.');
 });
 
+test('a split prerequisite whose Origin link was lost still has its cards: later work waits for its last part, as in Origin', async t => {
+  const { app, call } = await setup(t, engineer());
+  const { store, record } = await project(app, 2, { dependsOn: i => (i === 2 ? ['t1'] : []) });
+  await call('', { originId: record.id, expectedRevision: record.revision, itemIds: ['t1', 't2'] });
+  await call(`/${record.id}/run`, { all: true });
+  await settle(call, record.id);
+  await call(`/${record.id}/run`, { itemIds: ['t1'], kind: 'split' });
+  await settle(call, record.id);
+  const item = (await call(`/${record.id}/items/t1`)).data.item;
+  await call(`/${record.id}/items/t1/split`, { accept: true });
+  for (const child of item.split.children) await call(`/${record.id}/approve`, { items: [{ itemId: 't1', childId: child.id }] });
+  assert.equal((await call(`/${record.id}/export`, { itemIds: ['t1'] })).status, 200);
+  // Origin no longer records the card (an older handoff, a restored blueprint); the parts are still on the board.
+  const saved = await store.read(record.id);
+  saved.blueprint.items.find(entry => entry.id === 't1').handoff = null;
+  await store.write(record.id, { expectedRevision: saved.revision, blueprint: saved.blueprint });
+  await call(`/${record.id}/approve`, { passing: true });
+  const response = await call(`/${record.id}/export`, { itemIds: ['t2'] });
+  assert.equal(response.status, 200, JSON.stringify(response.data));
+  const byKey = Object.fromEntries((await app.board.view()).projects[0].tasks.map(card => [card.originSource.key, card]));
+  assert.deepEqual([Object.keys(byKey).length, byKey['IMP-002'].dependsOn], [3, [byKey['IMP-001.2'].id]]);
+});
+
 test('large batches: 120 tasks share eight workers without lost updates, duplicate runs or leaks', async t => {
   const runner = engineer({ delay: 60 });
   const { app, call } = await setup(t, runner);

@@ -276,8 +276,11 @@ export class ComposeBatches {
     const destination = record?.kanbanProjectId ? (await this.board.state()).projects.find(project => project.id === record.kanbanProjectId) : null;
     const cards = new Map();
     for (const task of destination?.tasks || []) if (task.originSource?.originProjectId === batchId) cards.set(task.originSource.originTaskId, task);
+    // As Origin's own Send to Kanban: its handoff record, else (a split task whose record was lost) its last part.
+    const items = new Set(destination ? record.blueprint.items.map(item => item.id) : []);
     for (const item of destination ? record.blueprint.items : []) {
-      if (!cards.has(item.id) && item.handoff?.projectId === destination.id) { const card = destination.tasks.find(task => task.id === item.handoff.taskId); if (card) cards.set(item.id, card); }
+      const card = cards.get(item.id) || (item.handoff?.projectId === destination.id ? destination.tasks.find(task => task.id === item.handoff.taskId) : null) || Model.splitCard(destination.tasks, batchId, item.id, id => items.has(id));
+      if (card) cards.set(item.id, card);
     }
     return { destination, cards };
   }
