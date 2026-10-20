@@ -63,6 +63,7 @@ test('Settings turns remote access on and pairs a phone; the phone uses the same
   // Revoked on the computer: the phone's next request sends it to pairing.
   const token = (await (await fetch(`${app.url}/api/session`)).json()).token;
   await fetch(`${app.url}/api/remote/sessions/all`, { method: 'DELETE', headers: { 'X-STE-Token': token } });
-  await ev(`document.querySelector('#app-settings')?.close(); setTimeout(() => { location.hash = '#/base'; }, 0);`);
+  // The page's own 2 s board poll may meet the revocation first and navigate while this runs.
+  await ev(`document.querySelector('#app-settings')?.close(); setTimeout(() => { location.hash = '#/base'; }, 0);`).catch(error => assert.match(error.message, /Inspected target navigated or closed|Execution context was destroyed/));
   await wait(`location.pathname === '/remote'`, 'back to pairing after revoke', 20000);
 });
