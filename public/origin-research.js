@@ -304,7 +304,8 @@ window.PromptboardOriginResearch = (() => {
       if (message.agent?.label) item.append(el('p', 'origin-research-agent', `Agent · ${message.agent.label}`));
       if (message.summary) item.classList.add('is-summary');
       if (message.role === 'user') item.append(el('p', 'origin-research-text', message.text));
-      else item.append(window.PromptboardMarkdown.render(message.text || ''));
+      // .md-view gives code blocks and wide tables their own scroll box.
+      else { const body = el('div', 'md-view'); body.append(window.PromptboardMarkdown.render(message.text || '')); item.append(body); }
       if (message.citations?.length) {
         const list = el('ul', 'origin-research-citations'); list.setAttribute('aria-label', 'Sources');
         for (const cite of message.citations) {

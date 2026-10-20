@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:http';
 import { EventEmitter } from 'node:events';
+import { spawnSync } from 'node:child_process';
 import { resolveBase, profileDefaults, checkBaseRevocations, deliveryFor } from '../src/base-resolver.mjs';
 import { prepareBase, captureSources, searchSources, fetchDocument, isPublicAddress } from '../src/base-context.mjs';
 import { testMcp, CONTEXT7_PRESET } from '../src/base-mcp.mjs';
@@ -240,6 +241,12 @@ test('MCP discovery cleans up its own descendants and leaves another process alo
   const pid = Number(await readFile(pidFile, 'utf8'));
   assert.throws(() => process.kill(pid, 0), /ESRCH/, 'The server descendant exited with its discovery process group.');
   assert.doesNotThrow(() => process.kill(process.pid, 0), 'The application/test process remains alive.');
+});
+
+test('the MCP process bridge reports a server program that cannot start with a failing exit code', () => {
+  const bridge = fileURLToPath(new URL('../src/mcp-process.mjs', import.meta.url));
+  const result = spawnSync(process.execPath, [bridge, JSON.stringify([join(tmpdir(), 'no-such-promptboard-mcp-server')])], { input: '', timeout: 10000 });
+  assert.equal(result.status, 1);
 });
 
 test('Preparation cancellation and optional dependency failures do not supply partial dependent instructions', async t => {

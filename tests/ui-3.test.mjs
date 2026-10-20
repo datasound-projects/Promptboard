@@ -39,7 +39,7 @@ test('Kanban model selection keeps CLI default while discovery is pending and ig
   assert.equal($('#project-agent-fields [data-field="model-custom"]').value, '', 'Switching provider clears its custom model.');
 });
 
-test('a terminal whose app restarted stops retrying and asks for a reload', { skip: process.platform === 'win32' }, async t => {
+test('a terminal whose stream is refused (not an expired session) stops retrying and asks for a reload', { skip: process.platform === 'win32' }, async t => {
   const ctx = await linkedKanban(t);
   const { $, win } = ctx;
   await link(ctx);
@@ -48,7 +48,7 @@ test('a terminal whose app restarted stops retrying and asks for a reload', { sk
   const now = Date.now();
   await ctx.app.board.store.update(state => state.runs.push({ id: 'live-run', taskId: task.id, projectId: ctx.project.id, stage: 'executing', status: 'running', createdAt: now, updatedAt: now,
     config: { provider: 'codex', model: 'codex-one' }, branch: 'promptboard/live', workspacePath: '/tmp/live-worktree', artifactsDir: 'runs/live-run' }));
-  // What a page sees after the app restarted with a new session token.
+  // A refusal the session read cannot fix (no SESSION_EXPIRED code): no retry loop.
   let streams = 0;
   const pass = win.fetch;
   win.fetch = (url, options) => (/\/stream\?/.test(url) ? (streams++, Promise.resolve(new Response(JSON.stringify({ error: 'Reload this page before you try again.' }), { status: 403 }))) : pass(url, options));
@@ -58,6 +58,178 @@ test('a terminal whose app restarted stops retrying and asks for a reload', { sk
   await new Promise(resolve => setTimeout(resolve, 2500));
   assert.equal(streams, 1, 'no retry every second');
   win.fetch = pass;
+});
+
+test('after a real app restart (new token and instance) the board poll, a card save and the run stream keep working without a reload', { skip: process.platform === 'win32' }, async t => {
+  const ctx = await agentFixture(t);
+  const { $, win } = ctx;
+  const port = Number(new URL(ctx.app.url).port), subscribed = [], seen = [];
+  ctx.executor.subscribe = (runId, _after, sink) => { subscribed.push(runId); sink.write({ ping: true }); return () => {}; };
+  const pass = win.fetch;
+  win.fetch = async (url, options = {}) => { const response = await pass(url, options); seen.push({ url: String(url), method: options.method || 'GET', status: response.status }); return response; };
+  // Only one path talks to the server at each restart, so each one must recover the token by itself.
+  for (const session of [...win.promptboardDock.sessions.values()]) session.tab.querySelector('.tab-close').click();
+  let app = ctx.app;
+  const restart = async () => {
+    await app.close(); seen.length = 0;
+    app = await startServer({ port, dataDir: ctx.dataDir, executor: ctx.executor, authAdapter: ctx.authAdapter, detector: async () => [], catalogReader: async provider => ({ provider, models: [] }) });
+    ctx.executor.board = app.board;
+  };
+  const refused = path => seen.filter(row => row.url.startsWith(path) && row.status === 403).length;
+  const sessionReads = () => seen.filter(row => row.url === '/api/session').length;
+  const serverToken = async () => (await (await fetch(`${app.url}/api/session`)).json()).token;
+  try {
+    const before = win.__pbTest.token;
+    await restart();
+    await app.board.createTask({ projectId: ctx.flow.id, title: 'Made after restart', prompt: 'Shown by the next poll.' });
+    await win.__pbTest.loadBoard({ ifChanged: true }); await ctx.idle();
+    assert.equal(refused('/api/board?since='), 1, 'the poll was refused once with the old token');
+    assert.equal(sessionReads(), 1);
+    assert.notEqual(win.__pbTest.token, before); assert.equal(win.__pbTest.token, await serverToken());
+    assert.equal($('#kanban-load-warning').hidden, true, $('#kanban-load-warning').textContent);
+    assert.ok(cardItem(ctx, 'Made after restart'), 'the new instance gives a full board');
+
+    await restart();
+    await newCard(ctx, 'Saved after restart', 'Works.');
+    assert.equal(seen.filter(row => row.url === '/api/tasks' && row.method === 'POST').map(row => row.status).join(), '403,200');
+    assert.equal(sessionReads(), 1);
+    assert.ok((await app.board.view()).projects.find(project => project.id === ctx.flow.id).tasks.some(task => task.title === 'Saved after restart'));
+    assert.ok(cardItem(ctx, 'Saved after restart'));
+
+    const now = Date.now();
+    await app.board.store.update(state => state.runs.push({ id: 'run-live', taskId: ctx.tasks.a, projectId: ctx.flow.id, stage: 'executing', status: 'running', createdAt: now, updatedAt: now,
+      config: { provider: 'claude', model: 'opus' }, branch: 'promptboard/live', workspacePath: '/tmp/wt-live', artifactsDir: 'runs/run-live' }));
+    await win.__pbTest.loadBoard(); await ctx.idle();
+    const session = win.promptboardDock.sessions.get('run-live');
+    await until(() => session.connection === 'connected', 'stream connected');
+    subscribed.length = 0;
+    await restart();
+    await until(() => subscribed.includes('run-live') && session.connection === 'connected', 'stream reconnected with the new token');
+    assert.equal(refused('/api/runs/run-live/stream'), 1);
+    assert.equal(sessionReads(), 1);
+  } finally { win.fetch = pass; await app.close(); }
+});
+
+test('a 403 that is not the expired-session refusal is shown and never resent or answered with a session read', { skip: process.platform === 'win32' }, async t => {
+  const ctx = await linkedKanban(t);
+  const { $, win } = ctx;
+  const pass = win.fetch, seen = [];
+  win.fetch = (url, options) => { seen.push(String(url)); return String(url).startsWith('/api/board') ? Promise.resolve(Response.json({ error: 'This origin is not allowed.' }, { status: 403 })) : pass(url, options); };
+  try { await win.__pbTest.loadBoard(); await ctx.idle(); } finally { win.fetch = pass; }
+  assert.equal(seen.filter(url => url.startsWith('/api/board')).length, 1);
+  assert.equal(seen.filter(url => url === '/api/session').length, 0);
+  assert.match($('#kanban-load-warning').textContent, /This origin is not allowed/);
+});
+
+test('a board poll keeps an open card dialog as typed, with focus and selection; an unchanged poll renders nothing', { skip: process.platform === 'win32' }, async t => {
+  const ctx = await linkedKanban(t);
+  const { $, win } = ctx;
+  await newCard(ctx, 'Edited', 'Old text.');
+  cardItem(ctx, 'Edited').querySelector('.kanban-open').click();
+  const prompt = $('#card-prompt');
+  prompt.value = 'Typed while the board polls'; prompt.focus(); prompt.setSelectionRange(2, 7);
+  const shown = $('#kanban-columns').firstElementChild;
+  await win.__pbTest.loadBoard({ ifChanged: true }); await ctx.idle();
+  assert.equal($('#kanban-columns').firstElementChild, shown, 'an unchanged board is not drawn again');
+  await ctx.app.board.createTask({ projectId: ctx.project.id, title: 'Made elsewhere', prompt: 'From another window.' });
+  await win.__pbTest.loadBoard({ ifChanged: true }); await ctx.idle();
+  assert.ok(cardItem(ctx, 'Made elsewhere'), 'a changed board is drawn');
+  assert.equal($('#card-dialog').open, true);
+  assert.equal(prompt.value, 'Typed while the board polls');
+  assert.equal(win.document.activeElement, prompt);
+  assert.deepEqual([prompt.selectionStart, prompt.selectionEnd], [2, 7]);
+  submitForm(ctx, '#card-form'); await ctx.idle({ requireComplete: true });
+  assert.equal((await serverTasks(ctx)).find(task => task.title === 'Edited').prompt, 'Typed while the board polls');
+});
+
+test('a double click or a repeated Enter sends a card action or a Column Manager save once, and Save shows it is busy', { skip: process.platform === 'win32' }, async t => {
+  const ctx = await linkedKanban(t);
+  const { $, win } = ctx;
+  await newCard(ctx, 'Original', 'Copy me.');
+  const pass = win.fetch, sent = [];
+  win.fetch = (url, options = {}) => { if (options.method && options.method !== 'GET') sent.push(`${options.method} ${url}`); return pass(url, options); };
+  try {
+    const duplicate = cardItem(ctx, 'Original').querySelector('.kanban-duplicate');
+    duplicate.click(); duplicate.click(); await ctx.idle({ requireComplete: true });
+    assert.equal((await serverTasks(ctx)).filter(task => task.title === 'Original (copy)').length, 1);
+    $('#columns-open').click();
+    submitForm(ctx, '#columns-form');
+    assert.equal($('#columns-form [type="submit"]').disabled, true); assert.equal($('#columns-form').getAttribute('aria-busy'), 'true');
+    submitForm(ctx, '#columns-form'); await ctx.idle({ requireComplete: true });
+    assert.equal(sent.filter(row => /\/columns$/.test(row)).length, 1);
+    assert.equal($('#columns-dialog').open, false);
+    assert.equal($('#columns-form [type="submit"]').disabled, false);
+  } finally { win.fetch = pass; }
+});
+
+test('How to run: “Add a card” sends one card on a double click and shows a refusal in the panel', { skip: process.platform === 'win32' }, async t => {
+  const ctx = await linkedKanban(t);
+  const { $, win } = ctx;
+  $('.workspace-menu-toggle').click();
+  [...win.document.querySelectorAll('.workspace-menu [role="menuitem"]')].find(button => button.textContent === 'How to run…').click();
+  const add = () => [...$('#project-run').querySelectorAll('button')].find(button => button.textContent.startsWith('Add a card'));
+  await until(add, 'no start command found');
+  const pass = win.fetch, posts = [];
+  let refuse = false;
+  win.fetch = (url, options = {}) => {
+    if (url === '/api/tasks' && options.method === 'POST') { posts.push(url); if (refuse) return Promise.resolve(Response.json({ error: 'A project can have at most 500 cards.', code: 'LIMIT' }, { status: 409 })); }
+    return pass(url, options);
+  };
+  try {
+    add().click(); add().click(); await ctx.idle({ requireComplete: true });
+    assert.equal(posts.length, 1);
+    assert.equal((await serverTasks(ctx)).filter(task => task.title === 'Write down how to run the project').length, 1);
+    refuse = true; add().click(); await ctx.idle({ requireComplete: true });
+    assert.match($('#project-run').textContent, /A project can have at most 500 cards\./);
+  } finally { win.fetch = pass; }
+});
+
+test('a GitHub status that arrives after the page is gone draws nothing and throws nothing', { skip: process.platform === 'win32' }, async t => {
+  const ctx = await linkedKanban(t);
+  const { $, win } = ctx;
+  let answer; const held = new Promise(resolve => { answer = resolve; });
+  const pass = win.fetch;
+  win.fetch = (url, options) => (String(url) === '/api/github/status' ? held : pass(url, options));
+  const failures = [], record = error => failures.push(error);
+  process.on('unhandledRejection', record); process.on('uncaughtException', record);
+  t.after(() => { process.off('unhandledRejection', record); process.off('uncaughtException', record); });
+  $('#app-settings-open').click(); await ctx.idle();
+  win.close();
+  answer(Response.json({ github: { installed: true, state: 'connected', user: 'octo' }, login: null }));
+  await new Promise(resolve => setTimeout(resolve, 200));
+  assert.deepEqual(failures.map(error => String(error)), []);
+});
+
+test('task details show why the uncommitted changes could not be read', { skip: process.platform === 'win32' }, async t => {
+  const ctx = await linkedKanban(t);
+  const { $, win } = ctx;
+  await link(ctx);
+  const created = await ctx.app.board.createTask({ projectId: ctx.project.id, title: 'Diff', prompt: 'Add a file.' });
+  const task = await ctx.app.board.moveTask(created.id, { column: 'executing', expectedRevision: 1 });
+  await writeFile(join((await ctx.app.board.ensureTaskWorktree(task.id)).path, 'new.txt'), 'new\n');
+  await win.__pbTest.loadBoard(); await ctx.idle();
+  const pass = win.fetch;
+  win.fetch = (url, options) => (/\/uncommitted$/.test(url) ? Promise.resolve(Response.json({ error: 'The task worktree is busy. Try again.' }, { status: 409 })) : pass(url, options));
+  try {
+    cardItem(ctx, 'Diff').querySelector('.kanban-details').click();
+    await until(() => /The task worktree is busy\. Try again\./.test($('#task-details').textContent), 'visible diff error');
+  } finally { win.fetch = pass; }
+});
+
+test('X10 mouse reports from the terminal reach the agent; reports that need raw bytes are not sent', { skip: process.platform === 'win32' }, async t => {
+  const ctx = await agentFixture(t);
+  const { win } = ctx;
+  const inputs = [];
+  ctx.executor.input = (runId, data) => inputs.push([runId, data]);
+  let term;
+  win.Terminal = class { constructor() { term = this; this.options = {}; this.cols = 80; this.rows = 24; } loadAddon() {} open() {} onData(fn) { this.data = fn; } onBinary(fn) { this.binary = fn; } write(_data, done) { done?.(); } dispose() {} focus() {} reset() {} getSelection() { return ''; } };
+  win.WebglAddon = { WebglAddon: class { onContextLoss() {} } };
+  win.promptboardDock.sessions.get('run-a').tab.querySelector('.tab-close').click();
+  win.PromptboardDock.open('run-a'); await ctx.idle();
+  assert.equal(typeof term?.binary, 'function', 'the terminal reports binary input');
+  term.binary('\x1b[M !!'); await until(() => inputs.length === 1, 'mouse report delivered');
+  term.binary(`\x1b[M ${String.fromCharCode(200)}!`); await new Promise(resolve => setTimeout(resolve, 100)); await ctx.idle();
+  assert.deepEqual(inputs, [['run-a', '\x1b[M !!']]);
 });
 
 test('ended agent output is available after a restart and remains readable without terminal graphics', { skip: process.platform === 'win32' }, async t => {
@@ -786,6 +958,13 @@ test('Usage dashboard shows limits, model/tool totals, charts, minute refresh, e
   assert.equal(reads, before);
 });
 
+test('Usage says when older sessions are still being read instead of calling the totals a little low', async t => {
+  const ctx = await setup(t, { usageReader: { get: async () => ({ updatedAt: Date.now(), providers: [{ id: 'claude', name: 'Claude Code', sessions: 1, inputTokens: 10, cachedTokens: 0, outputTokens: 1, costUSD: null, costNote: 'Not reported', limits: { status: 'unavailable', windows: [] }, models: [], tools: [], daily: [], partial: false, reading: true }] }) } });
+  ctx.$('#usage-open').click(); await ctx.idle();
+  assert.match(ctx.$('#usage-providers').textContent, /Still reading older sessions/);
+  assert.doesNotMatch(ctx.$('#usage-providers').textContent, /a little low/);
+});
+
 test('Base is the fourth global page, preserves Compose and project state, and supports direct links and browser history', async t => {
   const ctx = await setup(t, { hash: '#/base' }); const { $, win } = ctx;
   await ctx.idle();
@@ -973,4 +1152,55 @@ test('external links from the server open only plain http(s) addresses', async t
   await until(() => /ABCD-1234/.test($('#set-github-group').textContent), 'one-time code');
   const link = [...$('#set-github-group').querySelectorAll('a')].find(node => node.textContent === 'Open github.com/login/device');
   assert.equal(link.hasAttribute('href'), false, 'a javascript: address is not a link');
+});
+
+test('an unknown stored theme is ignored: the page and Settings both use the dark default', async t => {
+  const ctx = await setup(t, { prefs: { 'ste-prompt-engineer.theme': 'blue' } });
+  assert.equal(ctx.win.document.documentElement.dataset.theme, 'dark');
+  ctx.$('#app-settings-open').click(); await ctx.idle();
+  assert.equal(ctx.$('#set-theme').value, 'dark');
+});
+
+test('a saved default agent effort that the CLI accepts survives opening and saving Settings', async t => {
+  const codex = { ...catalogs.codex, models: catalogs.codex.models.map(model => model.id === 'codex-one' ? { ...model, efforts: [...model.efforts, 'max'] } : model) };
+  const ctx = await setup(t, { catalogReader: async provider => ({ provider, ...(provider === 'codex' ? codex : catalogs[provider]) }) });
+  await ctx.app.board.setSettings({ defaultAgent: { provider: 'codex', effort: 'max' } });
+  await ctx.win.__pbTest.loadBoard();
+  ctx.$('#app-settings-open').click(); await ctx.idle();
+  assert.equal(ctx.$('#set-agent-effort').value, 'max');
+  ctx.$('#set-agent-save').click(); await ctx.idle();
+  assert.deepEqual((await serverBoard(ctx)).settings.defaultAgent, { provider: 'codex', model: '', effort: 'max' });
+});
+
+test('raising "Agents at the same time" starts queued agents at once', { skip: process.platform === 'win32' }, async t => {
+  const ctx = await linkedKanban(t);
+  let wakes = 0;
+  ctx.executor.wake = () => { wakes++; };
+  ctx.$('#app-settings-open').click(); await ctx.idle();
+  ctx.choose('#set-max-runs', '3'); await ctx.idle();
+  assert.equal((await serverBoard(ctx)).settings.maxConcurrentRuns, 3);
+  assert.equal(wakes, 1, 'The supervisor re-checks its queue with the new limit.');
+  ctx.$('#set-agent-save').click(); await ctx.idle();
+  assert.equal(wakes, 1, 'Saving only the default agent starts nothing.');
+});
+
+test('a sign-in still waiting in the CLI after a reload shows its page and Cancel again', async t => {
+  const authAdapter = fakeAuth({ login: async (provider, { signal, onUpdate }) => {
+    authAdapter.log.push(['login', provider]); onUpdate({ authUrl: 'https://auth.example/resume' });
+    await new Promise((_, reject) => signal.addEventListener('abort', () => reject(Object.assign(new Error('Cancelled.'), { code: 'ABORTED' })), { once: true }));
+  } });
+  const ctx = await setup(t, { authAdapter });
+  const { $, win } = ctx;
+  // An earlier page started the sign-in, then reloaded: this page loads its CLIs again.
+  const started = await win.fetch('/api/auth/login', { method: 'POST', headers: { 'X-STE-Token': win.__pbTest.token, 'Content-Type': 'application/json' }, body: JSON.stringify({ provider: 'codex' }) });
+  assert.equal(started.status, 202);
+  $('#setup-help').click();
+  [...$('#dialog-content').querySelectorAll('button')].find(button => button.textContent === 'Check again').click();
+  await until(() => $('#auth-detail a')?.href === 'https://auth.example/resume', 'the waiting sign-in is shown again');
+  assert.equal($('#connection-provider').value, 'codex');
+  assert.equal($('#generate-button').disabled, true, 'Nothing else starts a CLI while it waits.');
+  [...$('#auth-detail').querySelectorAll('button')].find(button => button.textContent === 'Cancel sign-in').click();
+  await until(() => /Sign-in was cancelled/.test($('#auth-detail').textContent), 'cancelled', 10000);
+  await until(() => !$('#generate-button').disabled, 'Compose is free again');
+  assert.deepEqual(authAdapter.log.filter(row => row[0] === 'login'), [['login', 'codex']], 'Resuming never starts a second sign-in.');
 });

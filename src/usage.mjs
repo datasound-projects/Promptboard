@@ -16,7 +16,7 @@ const READ_LIMIT = 16 * 1024 * 1024;
 const SAFE_MODEL = /^[A-Za-z0-9][A-Za-z0-9._:/@+\[\]-]{0,99}$/;
 const count = value => Number.isSafeInteger(value) && value >= 0 ? value : 0;
 
-/** Read complete JSON lines added since the last call. */
+/** Read complete JSON lines added since the last call. A record larger than READ_LIMIT is skipped and flagged in `tail.skipped`. */
 export async function readNewLines(tail) {
   const handle = await open(tail.path, 'r').catch(() => null);
   if (!handle) return [];
@@ -25,9 +25,10 @@ export async function readNewLines(tail) {
     if (size < tail.offset) tail.offset = 0; // Replaced file: read it again.
     if (size <= tail.offset) return [];
     const buffer = Buffer.alloc(Math.min(size - tail.offset, READ_LIMIT));
-    await handle.read(buffer, 0, buffer.length, tail.offset);
-    const end = buffer.lastIndexOf(10);
-    if (end < 0) return [];
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, tail.offset);
+    const end = buffer.subarray(0, bytesRead).lastIndexOf(10);
+    // A full buffer without a line end can never be parsed: move past it, or every later read stops here.
+    if (end < 0) { if (bytesRead === READ_LIMIT) { tail.offset += READ_LIMIT; tail.skipped = true; } return []; }
     tail.offset += end + 1;
     return buffer.subarray(0, end).toString('utf8').split('\n').flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } });
   } finally { await handle.close(); }

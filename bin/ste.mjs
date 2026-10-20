@@ -16,16 +16,21 @@ Prepare a brief:   node bin/ste.mjs --instructions < request.txt
 
 Options:
   --gui                         Open the browser app
-  --no-open                     Print the address without opening a browser
-  --port NUMBER                 Local port (default: 4318)
-  --provider codex|claude|gemini|agy  CLI to use (default: codex)
+  --no-open                     With --gui: print the address, open no browser
+  --port NUMBER                 With --gui: local port 0–65535 (default: 4318)
+  --provider codex|claude|gemini|agy
+                                CLI to use (default: codex)
   --model ID                    Use a model available through your CLI
   --effort LEVEL                Use a level supported by the selected model
-  --language en|de|pl            Output language (default: en)
+  --language en|de|pl           Output language (default: en)
   --quality reviewed|fast       Reviewed by default; fast uses one model call
-  --detail LEVEL                super-short, concise, detailed, extremely-detailed
-  --task TYPE                   build, debug, refactor, review, architecture,
-                                agent-workflow, research
+  --detail LEVEL                super-short, concise (default), detailed,
+                                extremely-detailed
+  --task TYPE                   build (default), feature, debug, refactor, review,
+                                architecture, integration, ui-ux, data, testing,
+                                security, performance, migration, dependencies,
+                                devops, automation, documentation, agent-workflow,
+                                research, unspecified
   --instructions                Print the rewrite instructions without a model call
   --json                        Print the full result and verification report as JSON
   --allow-draft                 Allow a flagged draft on stdout (exit code stays 2)
@@ -33,9 +38,10 @@ Options:
   --version                     Show the app version
   --help                        Show this help
 
-Use Node.js 22 or later. Sign in to your CLI first. Generation uses your CLI plan.
+Use Node.js 22.13 or later. Sign in to your CLI first. Generation uses your CLI plan.
 Only prompts that pass the available checks are printed by default.
-Exit 2 means review is needed. A human must still check meaning and STE use.
+Exit codes: 0 done, 1 error, 2 review needed, 130 or 143 cancelled.
+A human must still check meaning and STE use.
 `;
 
 async function main() {
@@ -55,10 +61,14 @@ async function main() {
   if (options.help) return console.log(help);
   if (options.version) return console.log(VERSION);
   if (options.doctor) {
-    for (const item of await detectProviders()) console.log(`${item.name}: ${item.available ? item.version || 'installed' : item.reason || 'not installed'}`);
+    for (const item of await detectProviders({ paths: true })) console.log(`${item.name}: ${item.available ? item.version || 'installed' : item.reason || 'not installed'}${item.path ? ` · ${item.path}` : ''}`);
     return;
   }
-  if (options.gui || (args.length === 0 && process.stdin.isTTY)) {
+  const gui = Boolean(options.gui || (args.length === 0 && process.stdin.isTTY));
+  // --port and --no-open belong to the app, every other option to terminal generation: never ignore one silently.
+  const misplaced = Object.keys(options).find(key => key !== 'gui' && (key === 'port' || key === 'no-open') !== gui);
+  if (misplaced) throw new Error(gui ? `--${misplaced} does not apply with --gui.` : `Use --${misplaced} with --gui.`);
+  if (gui) {
     const port = options.port === undefined ? 4318 : Number(options.port);
     let app;
     try {

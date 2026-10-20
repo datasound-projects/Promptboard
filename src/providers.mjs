@@ -1,14 +1,14 @@
 import { spawn } from 'node:child_process';
 import { constants, rmSync } from 'node:fs';
-import { access, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { delimiter, isAbsolute, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 const PROVIDERS = Object.freeze({
-  codex: { name: 'Codex CLI', packageEntry: ['@openai', 'codex', 'bin', 'codex.js'] },
-  claude: { name: 'Claude Code', packageEntry: ['@anthropic-ai', 'claude-code', 'cli.js'] },
-  agy: { name: 'Antigravity CLI', packageEntry: [] },
-  gemini: { name: 'Gemini CLI', packageEntry: ['@google', 'gemini-cli', 'dist', 'index.js'] },
+  codex: { name: 'Codex CLI', npmPackage: ['@openai', 'codex'] },
+  claude: { name: 'Claude Code', npmPackage: ['@anthropic-ai', 'claude-code'] },
+  agy: { name: 'Antigravity CLI', npmPackage: [] },
+  gemini: { name: 'Gemini CLI', npmPackage: ['@google', 'gemini-cli'] },
 });
 const MAX_INPUT = 2 * 1024 * 1024;
 const MAX_STDOUT = 2 * 1024 * 1024;
@@ -109,13 +109,22 @@ export async function resolveExecutable(provider) {
   for (const dir of (process.env.PATH || '').split(delimiter).filter(isAbsolute)) {
     const path = join(dir, provider + (process.platform === 'win32' ? '.exe' : ''));
     if (await isExecutable(path)) return { command: path, prefix: [] };
-    if (process.platform === 'win32' && PROVIDERS[provider].packageEntry.length) {
-      // npm .cmd files need a shell. Use the known package's JS entry instead.
-      const entry = join(dir, 'node_modules', ...PROVIDERS[provider].packageEntry);
-      if (await isExecutable(entry)) return { command: process.execPath, prefix: [entry] };
+    if (process.platform === 'win32' && PROVIDERS[provider].npmPackage.length) {
+      // npm .cmd files need a shell. Run what the .cmd runs: the entry the package's own `bin` names
+      // (Claude Code now ships an .exe, Gemini a bundle; both changed paths across releases).
+      const found = await npmEntry(join(dir, 'node_modules', ...PROVIDERS[provider].npmPackage), provider);
+      if (found) return found;
     }
   }
   return null;
+}
+async function npmEntry(root, name) {
+  let relative;
+  try { relative = JSON.parse(await readFile(join(root, 'package.json'), 'utf8')).bin?.[name]; } catch { return null; }
+  if (typeof relative !== 'string' || isAbsolute(relative) || relative.split(/[\\/]/).includes('..')) return null;
+  const entry = join(root, relative);
+  if (!(await isExecutable(entry))) return null;
+  return /\.exe$/i.test(entry) ? { command: entry, prefix: [] } : /\.[cm]?js$/i.test(entry) ? { command: process.execPath, prefix: [entry] } : null;
 }
 
 export function stopProcess(child, signal = 'SIGTERM') {
@@ -170,10 +179,17 @@ export function removeOwnedTempDirsSync() {
   ownedDirs.clear();
 }
 
+// What an enclosing agent session (Promptboard started from inside Claude Code, Codex or Gemini CLI) sets for its own
+// children: its session identity and the credential of its message socket. Every CLI Promptboard starts is a session of
+// its own, so it never inherits them (Claude Code withholds the same identity variables from sessions it launches).
+const ENCLOSING_SESSION = /^(?:CLAUDECODE|CLAUDE_PID|CLAUDE_EFFORT|CLAUDE_CODE_(?:ENTRYPOINT|EXECPATH|SESSION_ID|CHILD_SESSION|SESSION_ATTENDED|MESSAGING_SOCKET|MESSAGING_TOKEN|BRIDGE_SESSION_ID|HOST_WORKTREE|HOST_WORKTREE_FENCE)|CODEX_THREAD_ID|GEMINI_CLI)$/;
+/** The environment of a CLI process: the app's own, without an enclosing agent session's, plus `extra`. */
+export const cliEnv = (extra = {}) => ({ ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !ENCLOSING_SESSION.test(name))), ...extra });
+
 /** Spawn a tracked CLI process in its own process group (POSIX). */
 export function spawnOwned(command, args, { cwd, env = {} } = {}) {
   return trackChild(spawn(command, args, { cwd, shell: false, windowsHide: true, detached: process.platform !== 'win32',
-    stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...env, NO_COLOR: '1', FORCE_COLOR: '0' } }));
+    stdio: ['pipe', 'pipe', 'pipe'], env: cliEnv({ ...env, NO_COLOR: '1', FORCE_COLOR: '0' }) }));
 }
 
 /**
@@ -268,19 +284,20 @@ export function execute({ command, args, cwd, input = '', signal, timeoutMs, max
 // Some CLIs take seconds to print their version when the machine is busy. A slow check of an executable that
 // already answered keeps its last result instead of making an installed CLI disappear.
 const versionsFound = new Map();
-export async function detectProviders({ timeoutMs = 15000 } = {}) {
+// `paths` (for --doctor) adds the executable that runs, which tells several installs apart. The page never gets it.
+export async function detectProviders({ timeoutMs = 15000, paths = false } = {}) {
   return Promise.all(Object.entries(PROVIDERS).map(async ([id, definition]) => {
     const resolved = await resolveExecutable(id);
     if (!resolved) return { id, name: definition.name, available: false, reason: 'Install this CLI and add it to PATH.' };
-    const executable = JSON.stringify([resolved.command, ...resolved.prefix]);
+    const executable = JSON.stringify([resolved.command, ...resolved.prefix]), where = paths ? { path: resolved.prefix[0] || resolved.command } : {};
     try {
       const result = await execute({ command: resolved.command, args: [...resolved.prefix, '--version'], timeoutMs, maxStdout: 8192, maxStderr: 8192 });
       const found = { id, name: definition.name, available: true, version: result.stdout.trim().slice(0, 160) || 'Installed' };
       versionsFound.set(executable, found);
-      return found;
+      return { ...found, ...where };
     } catch (error) {
-      if (error?.code === 'TIMEOUT' && versionsFound.has(executable)) return versionsFound.get(executable);
-      return { id, name: definition.name, available: false, reason: error?.code === 'TIMEOUT' ? 'The CLI version check timed out. Check its installation.' : 'The CLI version check failed. Check its installation.' };
+      if (error?.code === 'TIMEOUT' && versionsFound.has(executable)) return { ...versionsFound.get(executable), ...where };
+      return { id, name: definition.name, available: false, ...where, reason: error?.code === 'TIMEOUT' ? 'The CLI version check timed out. Check its installation.' : 'The CLI version check failed. Check its installation.' };
     }
   }));
 }
@@ -341,7 +358,7 @@ const firstJson = text => { const trimmed = text.trim(); try { return JSON.parse
 
 // Claude error types (result and StopFailure hook) -> failure codes.
 export const CLAUDE_ERRORS = Object.freeze({ authentication_failed: 'AUTH_REQUIRED', cloud_credential_error: 'AUTH_REQUIRED', oauth_org_not_allowed: 'POLICY_DENIED',
-  account_on_hold: 'ACCOUNT_UNAVAILABLE', billing_error: 'ACCOUNT_UNAVAILABLE', rate_limit: 'RATE_LIMITED', overloaded: 'PROVIDER_UNAVAILABLE',
+  account_on_hold: 'ACCOUNT_UNAVAILABLE', verification_required: 'ACCOUNT_UNAVAILABLE', billing_error: 'ACCOUNT_UNAVAILABLE', rate_limit: 'RATE_LIMITED', overloaded: 'PROVIDER_UNAVAILABLE',
   server_error: 'PROVIDER_UNAVAILABLE', model_not_found: 'MODEL_UNAVAILABLE' });
 const GEMINI_ERRORS = { TerminalQuotaError: 'QUOTA_EXHAUSTED', RetryableQuotaError: 'RATE_LIMITED', FatalAuthenticationError: 'AUTH_REQUIRED',
   UnauthorizedError: 'AUTH_REQUIRED', ForbiddenError: 'POLICY_DENIED', ModelNotFoundError: 'MODEL_UNAVAILABLE', FatalSandboxError: 'POLICY_DENIED', FetchError: 'NETWORK_ERROR' };

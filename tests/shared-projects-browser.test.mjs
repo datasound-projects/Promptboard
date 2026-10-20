@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { JSDOM } from 'jsdom';
 import '../public/origin-model.js';
 import { findChrome, launch } from './helpers/browser.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
@@ -29,6 +30,31 @@ async function setup(t) {
   const button = (scope, text) => ev(`const b = [...document.querySelectorAll(${J(scope + ' button')})].find(b => b.textContent.trim().startsWith(${J(text)})); if (!b) throw new Error('no button ' + ${J(text)}); b.click();`);
   return { app, call, browser, ev, wait, click, value, generate, button };
 }
+
+test('a project created while a project list is loading is listed when that list arrives', async t => {
+  const dom = new JSDOM('<div id="sidebar-tab-history"></div><div id="sidebar-tab-projects"></div><div id="history-section"></div><div id="projects-section" hidden></div><div id="compose-origin"></div>', { runScripts: 'outside-only' }), win = dom.window;
+  t.after(() => win.close());
+  win.eval(await readFile(new URL('../public/dom.js', import.meta.url), 'utf8')); win.eval(await readFile(new URL('../public/projects.js', import.meta.url), 'utf8'));
+  const saved = [], lists = [];
+  const api = async (path, { method = 'GET', body } = {}) => {
+    if (method === 'POST') { saved.push({ id: 'p1', name: body.name, prompts: 0, kanban: null, origin: null }); return { response: { ok: true, status: 200 }, data: { project: saved.at(-1) } }; }
+    if (path.endsWith('/prompts')) return { response: { ok: true, status: 200 }, data: { prompts: [] } };
+    const answer = [...saved]; await new Promise(resolve => lists.push(resolve)); // The list is read now and answered later.
+    return { response: { ok: true, status: 200 }, data: { projects: answer } };
+  };
+  win.PromptboardProjects.create({ api, announce: () => {}, running: () => false, getResult: () => null });
+  const $ = selector => win.document.querySelector(selector), settle = async () => { for (let i = 0; i < 10; i++) await new Promise(resolve => setTimeout(resolve, 0)); };
+  $('#sidebar-tab-projects').click(); await settle(); lists.shift()(); await settle();
+  assert.match($('#projects-section').textContent, /No projects yet/);
+  $('#sidebar-tab-history').click(); $('#sidebar-tab-projects').click(); await settle(); // A slow list read starts.
+  [...$('#projects-section').querySelectorAll('button')].find(node => node.textContent.includes('New project')).click();
+  $('#projects-new-name').value = 'Shop';
+  $('.projects-new-form').dispatchEvent(new win.Event('submit', { cancelable: true })); await settle();
+  lists.shift()(); await settle(); // The list read before the project existed.
+  assert.equal(lists.length, 1, 'one more list is read after the change');
+  lists.shift()(); await settle();
+  assert.deepEqual([...$('#projects-section').querySelectorAll('.project-row-head strong')].map(node => node.textContent), ['Shop']);
+});
 
 test('Compose works without any project; History and Projects stay separate; prompts are saved or moved only on request', { skip: !chrome, timeout: 180000 }, async t => {
   const { app, call, browser, ev, wait, click, value, generate, button } = await setup(t);

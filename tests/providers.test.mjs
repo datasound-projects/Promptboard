@@ -1,12 +1,12 @@
 import { realpath as resolveRealPath } from 'node:fs/promises';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { EventEmitter } from 'node:events';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
-import { buildCommand, detectProviders, killPidGroup, parseProviderOutput, runProvider } from '../src/providers.mjs';
+import { buildCommand, classifyProviderFailure, detectProviders, execute, killPidGroup, parseProviderOutput, resolveExecutable, runProvider } from '../src/providers.mjs';
 
 test('CLI commands narrow permissions and keep model values separate', () => {
   const codex = buildCommand({ provider: 'codex', model: 'custom/model-v1' });
@@ -26,6 +26,29 @@ test('CLI commands narrow permissions and keep model values separate', () => {
   for (const result of [codex, claude, gemini]) {
     assert.ok(!result.args.some(x => /dangerously|bypassPermissions|yolo|auto_edit/.test(x)));
   }
+});
+
+test('a CLI never inherits the session identity or message credential of an agent session that started Promptboard', async t => {
+  // As set for the commands of a Claude Code (or Codex, Gemini CLI) session in which `npm start` ran.
+  const enclosing = { CLAUDECODE: '1', CLAUDE_CODE_ENTRYPOINT: 'cli', CLAUDE_CODE_SESSION_ID: 'parent', CLAUDE_CODE_CHILD_SESSION: '1', CLAUDE_CODE_SESSION_ATTENDED: '1',
+    CLAUDE_CODE_MESSAGING_SOCKET: '/tmp/parent.sock', CLAUDE_CODE_MESSAGING_TOKEN: 'PARENT-SECRET', CLAUDE_PID: '1', CLAUDE_EFFORT: 'xhigh', CODEX_THREAD_ID: 'parent-thread', GEMINI_CLI: '1' };
+  const kept = { CLAUDE_CODE_USE_BEDROCK: '1', CLAUDE_CONFIG_DIR: '/tmp/claude-config', PROMPTBOARD_ENV_PROBE: 'kept' };
+  const saved = Object.fromEntries(Object.keys({ ...enclosing, ...kept }).map(name => [name, process.env[name]]));
+  t.after(() => { for (const [name, value] of Object.entries(saved)) if (value === undefined) delete process.env[name]; else process.env[name] = value; });
+  Object.assign(process.env, enclosing, kept);
+  const { stdout } = await execute({ command: process.execPath, args: ['-e', 'process.stdout.write(JSON.stringify(process.env))'], timeoutMs: 20000 });
+  const env = JSON.parse(stdout);
+  assert.deepEqual(Object.keys(enclosing).filter(name => name in env), []);
+  for (const [name, value] of Object.entries(kept)) assert.equal(env[name], value, `${name} is the user's own configuration`);
+});
+
+test('every Claude Code error type gets its own failure code; only the unspecific ones stay unrecognized', () => {
+  // The error types Claude Code 2.1.304 reports in assistant messages and StopFailure hooks (the supervisor maps them alike).
+  const types = ['authentication_failed', 'oauth_org_not_allowed', 'account_on_hold', 'verification_required', 'billing_error', 'rate_limit', 'overloaded',
+    'invalid_request', 'model_not_found', 'server_error', 'unknown', 'max_output_tokens', 'cloud_credential_error'];
+  const code = error => classifyProviderFailure('claude', { stdout: JSON.stringify({ type: 'assistant', error, message: { content: [] } }) })?.code ?? null;
+  assert.deepEqual(types.filter(type => !code(type)), ['invalid_request', 'unknown', 'max_output_tokens']);
+  assert.equal(code('verification_required'), 'ACCOUNT_UNAVAILABLE', 'Organization verification is an account problem, not a CLI failure.');
 });
 
 test('rejects arbitrary programs, flags, and invalid models', () => {
@@ -289,4 +312,30 @@ test('a slow version check keeps a CLI that already answered; a first check that
     if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath;
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test('Windows npm installs run the entry each package names in its bin field, as its .cmd shim does', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'ste-provider-npm-')), oldPath = process.env.PATH, platform = Object.getOwnPropertyDescriptor(process, 'platform');
+  t.after(async () => { Object.defineProperty(process, 'platform', platform); if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath; await rm(dir, { recursive: true, force: true }); });
+  // Current package layouts: Claude Code ships a native .exe, Gemini a bundle, Codex a JS launcher.
+  const install = async (scope, name, bin, entry) => {
+    const root = join(dir, 'node_modules', scope, name);
+    await mkdir(join(root, entry, '..'), { recursive: true });
+    await writeFile(join(root, 'package.json'), JSON.stringify({ name: `${scope}/${name}`, bin: { [bin]: entry } }));
+    await writeFile(join(root, entry), '');
+    await writeFile(join(dir, `${bin}.cmd`), '@ECHO off');
+    return join(root, entry);
+  };
+  const claude = await install('@anthropic-ai', 'claude-code', 'claude', 'bin/claude.exe');
+  const gemini = await install('@google', 'gemini-cli', 'gemini', 'bundle/gemini.js');
+  const codex = await install('@openai', 'codex', 'codex', 'bin/codex.js');
+  process.env.PATH = dir;
+  Object.defineProperty(process, 'platform', { ...platform, value: 'win32' });
+  assert.deepEqual(await resolveExecutable('claude'), { command: claude, prefix: [] });
+  assert.deepEqual(await resolveExecutable('gemini'), { command: process.execPath, prefix: [gemini] });
+  assert.deepEqual(await resolveExecutable('codex'), { command: process.execPath, prefix: [codex] });
+  // A bin entry that leaves its package is never run.
+  await writeFile(join(dir, 'node_modules', '@openai', 'codex', 'package.json'), JSON.stringify({ bin: { codex: '../../../evil.js' } }));
+  await writeFile(join(dir, 'evil.js'), '');
+  assert.equal(await resolveExecutable('codex'), null);
 });

@@ -35,7 +35,8 @@ function fixture(t, { supported = true, permission = 'default', requested = 'gra
     return new Response(bodyStream, { headers: { 'Content-Type': 'application/x-ndjson' } });
   };
   win.eval(source);
-  const client = new win.PromptboardNotifications({ token: () => 'header-only-token', onOpen: ids => opened.push(ids) });
+  // The page's tokenFetch adds the token header; this stand-in does the same.
+  const client = new win.PromptboardNotifications({ token: () => 'header-only-token', fetch: (path, init) => win.fetch(path, { ...init, headers: { ...init.headers, 'X-STE-Token': 'header-only-token' } }), onOpen: ids => opened.push(ids) });
   t.after(() => { client.stop(); dom.window.close(); });
   const send = (id = 'alert-one', fields = {}) => {
     const row = { type: 'notification', lease: client.lease, receipt: `receipt-${id}`, id, taskId: 'task-one', projectId: 'project-one', title: '  Literal <img src=x>', body: 'Unicode 😀\r\n {{unknown}}', ...fields };

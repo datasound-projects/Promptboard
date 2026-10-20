@@ -166,8 +166,8 @@ export function columnStage(project, columnId) {
 /** The stage a run works on: the stage engine records it next to the pipeline column ID. */
 export const runStage = run => run?.stageKind || run?.stage;
 // Stage-engine outcomes. `next` tells Autopilot (and the board view) what follows; nothing moves by itself.
-// A run in one of these has not shown a sign of its session yet (src/supervisor.mjs sets them before the first event).
-const STARTUP_LIFECYCLES = new Set(['waiting-for-first-event', 'no-events-yet', 'workspace-trusted']);
+// A run in one of these has not shown a sign of its session yet (src/supervisor.mjs sets them before the first event, or when a long prompt still waits for one).
+const STARTUP_LIFECYCLES = new Set(['waiting-for-first-event', 'no-events-yet', 'workspace-trusted', 'initial-input-not-ready']);
 const OUTCOME_STATUSES = new Set(['working', 'verifying', 'succeeded', 'changes_required', 'failed']);
 const time = value => Number.isFinite(value) ? value : Date.now();
 
@@ -3710,7 +3710,10 @@ export class Board {
     }
     // The same validation as a stage setting: an agent provider, a safe model ID, and an effort it accepts.
     if (defaultAgent !== undefined) change.defaultAgent = normalizeAgent(defaultAgent);
-    return this.store.update(state => { state.settings = { ...state.settings, ...change }; return state.settings; });
+    const settings = await this.store.update(state => { state.settings = { ...state.settings, ...change }; return state.settings; });
+    // A higher limit starts queued agents now, not only when a running one ends.
+    if (change.maxConcurrentRuns) this.executor?.wake?.();
+    return settings;
   }
 
   async run(runId) {
