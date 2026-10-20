@@ -14,7 +14,7 @@ import { Store, draftsToCards } from './store.mjs';
 import { taskPriority } from './task-priority.mjs';
 import { taskLabels, taskLabelIds, labelRevision } from './task-labels.mjs';
 import { assignTaskNumbers, allocateTaskNumber, validateTaskNumbers } from './task-numbers.mjs';
-import { branchExists, commitExists, git, GitError, ignoredFiles, initRepository, listWorktrees, repositoryIdentity, validateRepository } from './git.mjs';
+import { branchExists, commitExists, git, ignoredFiles, initRepository, listWorktrees, repositoryIdentity, validateRepository } from './git.mjs';
 import { ADAPTERS, resolveConfig, validateResumeId } from './agents.mjs';
 import { validateEffort } from './providers.mjs';
 import { Delivery } from './delivery.mjs';

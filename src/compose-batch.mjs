@@ -7,7 +7,7 @@
  * is parallel; Kanban keeps the Origin prerequisites, so implementation order is unchanged.
  */
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readdir, readFile, rm } from 'node:fs/promises';
+import { mkdir, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import '../public/origin-model.js';
 import { buildContext, escapeId, loopFrom } from './origin.mjs';
@@ -129,7 +129,6 @@ export function requestFor(source, settings) {
 
 // ---- Status ----
 
-const reviewOf = version => version?.verification?.review;
 function versionFindings(item, version, origin) {
   const dynamic = [];
   if (origin === 'missing') dynamic.push({ severity: 'blocking', code: 'origin-missing', message: 'This task no longer exists in Origin. Remove it from the batch.' });

@@ -2824,7 +2824,6 @@ function columnKind(columnId, project = currentProject()) {
   const column = project.pipeline.columns.find(item => item.id === columnId);
   return column?.role === 'active' ? column.kind || 'custom' : null;
 }
-const STAGE_OF_KIND = { planning: 'planning', execution: 'executing', review: 'code_review', testing: 'testing', merge: 'merge' };
 /** The stage engine's recorded outcome for the card's current typed column, as one line. */
 function stageOutcomeText(card) {
   const outcome = card.stageOutcome;
