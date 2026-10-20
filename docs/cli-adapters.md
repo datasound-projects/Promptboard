@@ -57,7 +57,7 @@ The connection panel shows installation and sign-in separately. Failed model dis
 | Gemini CLI | Not reported (no documented command) | Terminal handoff: `gemini`, then "Sign in with Google" | Not available (no documented command) |
 | Antigravity | Not reported | Terminal handoff: `agy` | Terminal handoff: `/logout` inside `agy` |
 
-Claude sign-in is a terminal handoff because non-TTY behavior of `claude auth login` was not verified. Reauthentication never signs out first. Sign-out requires confirmation because it affects every tool that shares that CLI configuration. Auth endpoints require the page token, a local host/origin, and JSON. Auth changes and generation cannot overlap. A completed change clears the model cache.
+Claude sign-in is a terminal handoff because non-TTY behavior of `claude auth login` was not verified. Reauthentication never signs out first. Sign-out requires confirmation because it affects every tool that shares that CLI configuration. Auth endpoints require the page token, a local host/origin, and JSON. Auth changes and generation cannot overlap. A completed change clears the model cache. A native sign-in that is still waiting when the page reloads opens again in the CLI panel, with its sign-in link and Cancel.
 
 ## Security boundary
 
@@ -71,7 +71,9 @@ The app does not claim that every provider has identical policy semantics. It ke
 
 ## Compatibility and verification
 
-Use a current stable CLI. The adapters use documented headless commands. If an older version lacks a required flag, upgrade that CLI; the app will not remove the flag. macOS and Linux executables on an absolute PATH entry are supported. On Windows, native `.exe` installs and the standard npm package layouts are supported without executing `.cmd` through a shell. Custom wrappers and other install layouts may need a PATH fix. Windows behavior has not been tested on a Windows host.
+Use a current stable CLI. The adapters use documented headless commands. If an older version lacks a required flag, upgrade that CLI; the app will not remove the flag. macOS and Linux executables on an absolute PATH entry are supported. On Windows, native `.exe` installs and the standard npm package layouts are supported without executing `.cmd` through a shell: the app runs the entry that the package's own `bin` field names, as npm's `.cmd` shim does (a `.js` entry with Node, an `.exe` directly). Custom wrappers and other install layouts, such as pnpm or Yarn global shims, may need a PATH fix. Windows behavior has not been tested on a Windows host.
+
+The first match on PATH is used, as in a terminal. With several installs (for example nvm and Homebrew), `node bin/ste.mjs --doctor` prints each CLI's version and the executable that runs. Detection runs `--version` only when the page loads the CLI list or you choose Check again, never on a timer.
 
 On 2026-09-28, the command contracts were checked against official sources. Local Codex `--help`, `exec --help`, and `features list` were also checked. Tests use fake CLI executables and real process pipes to check input handling, result parsing, output limits, cancellation, timeouts, policy cleanup, and error paths. These checks do **not** establish live model compatibility or prompt quality. No authenticated model call was made during development.
 
@@ -142,9 +144,9 @@ const result = await runProvider({
 
 ## Usage dashboard
 
-- Codex: read-only `account/rateLimits/read` after app-server initialization ([official protocol](https://learn.chatgpt.com/docs/app-server)); never starts a thread or turn. Local rollout token totals are differenced across model changes.
+- Codex: read-only `account/rateLimits/read` after app-server initialization ([official protocol](https://learn.chatgpt.com/docs/app-server)); never starts a thread or turn. Local rollout token totals are differenced across model changes. A rollout's first `session_meta` names its session (a forked session repeats its parent's after its own). Rate limits in local rollouts (`used_percent`, `window_minutes`) are shown as last reported when the live read fails.
 - Claude: local transcript usage is deduplicated by message ID. Per-run `statusLine` receives documented cost and rate-limit fields ([official status-line schema](https://code.claude.com/docs/en/statusline)); a whitelist-only bridge records these without changing global settings. Costs are CLI estimates, not invoices.
 - Gemini: local session JSON/JSONL provides per-message tokens and tool names ([record format](https://github.com/google-gemini/gemini-cli/blob/main/packages/core/src/services/chatRecordingTypes.ts)). The interactive `/stats model` remains the source for account quota ([quota docs](https://geminicli.com/docs/resources/quota-and-pricing/)).
 - Antigravity: unsupported metrics are explicitly unavailable. No guessed token pricing or quota percentages.
 
-The server's `/api/usage` endpoint requires the usual local session token. Collection begins on opening Usage, refreshes every 60 seconds, and stops at server shutdown. Bounded scans use known session directories only and return sanitized aggregates. Manual refresh is coalesced and rate-limited to once per ten seconds.
+The server's `/api/usage` endpoint requires the usual local session token. Collection begins on opening Usage, refreshes every 60 seconds, and stops five minutes after the last request or at server shutdown. Bounded scans use known session directories only and return sanitized aggregates; a record larger than 16 MiB is skipped and the totals are marked as possibly low. Daily totals use calendar days in the time zone of the computer that runs Promptboard. Manual refresh is coalesced and rate-limited to once per ten seconds.
