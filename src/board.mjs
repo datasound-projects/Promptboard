@@ -661,7 +661,16 @@ export class Board {
     try { await this.recoveryPromise; }
     catch (error) { this.recoveryPromise = null; throw error; }
     this.runFolderSweep ??= this.#sweepRunFolders().catch(() => ({ removed: 0 }));
+    this.journalSweep ??= this.#sweepJournals().catch(() => 0);
     return this.store.read();
+  }
+
+  /** Once per start, like run folders: remove the automation journals of deleted cards (a deleted card has no move left to run). */
+  async #sweepJournals() {
+    const cards = new Set((await this.store.read()).projects.flatMap(project => project.tasks.map(task => task.id)));
+    const removed = await this.automationJournal.prune(id => cards.has(id));
+    if (removed) console.info(`Promptboard removed ${removed} automation journal(s) of cards no longer on the board.`);
+    return removed;
   }
 
   /** Delete the artifact folders (logs, prompts, plans) of runs that were removed from the board. */
