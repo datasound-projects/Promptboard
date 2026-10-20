@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 import { access, mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { closeChrome, trackChrome } from './browser-cleanup.mjs';
+import { closeChrome, sweepChromes, trackChrome } from './browser-cleanup.mjs';
 import { BrowserStartup } from './browser-startup.mjs';
 
 const CANDIDATES = {
@@ -20,9 +20,11 @@ export async function findChrome() {
   return null;
 }
 
+let swept = null;
 // A cold CI runner (mostly Windows) occasionally never finishes one Chrome start within the budget.
 // One fresh start fixes that; every other startup or connection error still fails at once.
 export async function launch(options = {}) {
+  await (swept ??= sweepChromes().catch(() => {}));
   try { return await launchOnce(options); }
   catch (error) {
     if (!String(error?.message).startsWith('Chrome startup exceeded')) throw error;
@@ -33,7 +35,7 @@ export async function launch(options = {}) {
 async function launchOnce({ width = 1280, height = 900, motion = false } = {}) {
   const binary = await findChrome();
   if (!binary || typeof WebSocket !== 'function') return null;
-  const profile = await mkdtemp(join(tmpdir(), 'pb-chrome-'));
+  const profile = await mkdtemp(join(tmpdir(), `pb-chrome-${process.pid}-`)); // The owner's PID lets a later sweep find orphans.
   const chrome = trackChrome(spawn(binary, ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check',
     '--disable-extensions', '--disable-background-networking', `--window-size=${width},${height}`, '--use-angle=swiftshader', '--enable-unsafe-swiftshader', 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] }));
   const startup = new BrowserStartup(chrome, profile);
