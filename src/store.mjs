@@ -3,8 +3,8 @@
  * Writes are serialized, atomic (temp file + fsync + rename), and keep the previous good
  * file as a backup. Logs and artifacts belong in separate folders, never in this file.
  */
-import { randomBytes } from 'node:crypto';
-import { copyFile, mkdir, open, readdir, readFile, rename, rm } from 'node:fs/promises';
+import { createHash, randomBytes } from 'node:crypto';
+import { mkdir, open, readdir, readFile, rename, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { migrateSessions } from './sessions.mjs';
@@ -215,12 +215,15 @@ export class Store {
       if (state.version < STATE_VERSION) {
         const previousVersion = state.version;
         try {
-          // Preserve the exact original, including unknown fields, before publishing anything.
-          const backup = `state.pre-migration-v${previousVersion}-${Date.now()}-${randomBytes(4).toString('hex')}.json`;
-          await copyFile(source, join(this.dir, backup));
-          // Windows FlushFileBuffers requires write access. r+ permits the flush
-          // without truncating or changing the preserved pre-migration bytes.
-          const handle = await open(join(this.dir, backup), 'r+'); try { await handle.sync(); } finally { await handle.close(); }
+          // Preserve the exact original, including unknown fields, before publishing anything. A retry of a failed
+          // migration (the board page asks every two seconds) reuses the copy of the same bytes instead of adding one.
+          const original = await readFile(source), hash = createHash('sha256').update(original).digest('hex');
+          if (this.preMigration?.hash !== hash) {
+            const name = `state.pre-migration-v${previousVersion}-${Date.now()}-${randomBytes(4).toString('hex')}.json`;
+            const handle = await open(join(this.dir, name), 'wx', 0o600); try { await handle.writeFile(original); await handle.sync(); } finally { await handle.close(); }
+            this.preMigration = { hash, name };
+          }
+          const backup = this.preMigration.name;
           const migrated = migrateState(state);
           await this.#write(migrated);
           state = migrated;

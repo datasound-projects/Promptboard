@@ -125,6 +125,22 @@ test('recovery keeps every copy: the restored backup outlives the next save, and
   assert.ok((await corrupt()).includes('x'));
 });
 
+test('a migration that keeps failing keeps one exact pre-migration copy, not one per retry', async t => {
+  const dir = await temp(t, 'pb-store-');
+  const original = `${JSON.stringify({ schema: 'promptboard.state', version: 13, revision: 4, settings: {}, projects: [], runs: [], sessions: [], migrations: [], base: { revision: 0, resources: [], approvedRoots: [] }, kept: 'unknown field' })}\n`;
+  await writeFile(join(dir, 'state.json'), original);
+  await mkdir(join(dir, 'state.json.bak')); // The migrated file cannot be published while its backup cannot be replaced.
+  const store = new Store(dir), copies = async () => (await readdir(dir)).filter(name => name.startsWith('state.pre-migration-v13-'));
+  // The board page asks every two seconds; each attempt used to copy the whole file again.
+  for (let attempt = 0; attempt < 3; attempt++) await assert.rejects(store.read(), { code: 'STATE_MIGRATION_FAILED' });
+  assert.equal((await copies()).length, 1);
+  await rm(join(dir, 'state.json.bak'), { recursive: true });
+  assert.equal((await store.read()).version, STATE_VERSION);
+  const [copy] = await copies();
+  assert.equal(await readFile(join(dir, copy), 'utf8'), original);
+  assert.equal(store.recovery.migrationBackup, copy);
+});
+
 test('repository validation explains each invalid case and accepts linked worktrees', { skip: process.platform === 'win32' }, async t => {
   const root = await repo(t);
   const outside = await temp(t, 'pb-plain-');
