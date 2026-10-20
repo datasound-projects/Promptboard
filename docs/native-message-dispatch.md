@@ -1,8 +1,8 @@
 # Journal-backed deferred delivery
 
-`NativeMessageDispatch` privately connects a version 2 queued receipt to `Supervisor.sendNativeMessage`. It is not connected to board moves or an HTTP action. Enabled message rows, provider readiness verification, fresh/resumed session activation and live column scheduling remain pending. Composer, Base, CLI flags and the existing process-start queue are unchanged.
+`NativeMessageDispatch` privately connects a version 2 queued receipt to `Supervisor.sendNativeMessage`. Board moves reach it only through the [deferred scheduler](native-message-scheduler.md); it is not an HTTP action. Fresh/resumed session activation remains pending. Composer, Base, CLI flags and the existing process-start queue are unchanged.
 
-The [private deferred scheduler](native-message-scheduler.md) now owns asynchronous enter handoff, exact configuration/target preflight and queued startup before this bridge. Board/HTTP/editor activation remains pending.
+The [private deferred scheduler](native-message-scheduler.md) now owns asynchronous enter handoff, exact configuration/target preflight and queued startup before this bridge.
 
 The disposable smoke harness uses [captured task/session/run custody](native-message-target.md) for its preflight, including configuration, Base and workspace rechecks. This remains separate from native readiness and column scheduling.
 
