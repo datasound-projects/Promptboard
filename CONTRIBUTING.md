@@ -1,6 +1,6 @@
 # Contributing
 
-Use Node.js 22 or later and Git.
+Use Node.js 22.13 or later and Git.
 
 ```bash
 npm ci

@@ -6,6 +6,44 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+const repo = fileURLToPath(new URL('../', import.meta.url));
+const text = path => readFile(join(repo, path), 'utf8');
+/** Runs the real CLI with no provider on PATH and disposable data folders. */
+async function ste(t, args, input = 'Fix `a.js`.') {
+  const dir = await mkdtemp(join(tmpdir(), 'ste-cli-args-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const child = spawn(process.execPath, ['bin/ste.mjs', ...args], { cwd: repo, stdio: ['pipe', 'pipe', 'pipe'],
+    env: { ...process.env, PATH: dir, PROMPTBOARD_DATA_DIR: join(dir, 'data'), PROMPTBOARD_PROJECTS_DIR: join(dir, 'projects') } });
+  t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); });
+  let stdout = '', stderr = '';
+  child.stdout.on('data', chunk => { stdout += chunk; });
+  child.stderr.on('data', chunk => { stderr += chunk; });
+  child.stdin.on('error', () => {}); child.stdin.end(input);
+  return new Promise((resolve, reject) => { child.once('error', reject); child.once('close', code => resolve({ code, stdout, stderr })); });
+}
+
+test('app-only and terminal-only options are refused in the other mode instead of being ignored', { timeout: 20000 }, async t => {
+  for (const option of [['--port', '4517'], ['--no-open']]) {
+    const result = await ste(t, option);
+    assert.equal(result.code, 1); assert.equal(result.stdout, '');
+    assert.equal(result.stderr.trim(), `Use ${option[0]} with --gui.`);
+  }
+  // Refused before the server starts: no port is bound and no data folder is used.
+  const gui = await ste(t, ['--gui', '--no-open', '--port', '0', '--json']);
+  assert.equal(gui.code, 1); assert.equal(gui.stdout, '');
+  assert.equal(gui.stderr.trim(), '--json does not apply with --gui.');
+});
+
+test('help names the Node.js floor from package.json and every task type the Compose page offers', async t => {
+  const { code, stdout } = await ste(t, ['--help']);
+  assert.equal(code, 0);
+  const floor = JSON.parse(await text('package.json')).engines.node.match(/(\d+\.\d+)\.0$/)[1];
+  assert.match(stdout, new RegExp(`Node\\.js ${floor.replace('.', '\\.')} or later`));
+  const page = (await text('public/index.html')).match(/<select id="task"[^>]*>(.*?)<\/select>/s)[1];
+  const start = stdout.indexOf('--task TYPE'), listed = stdout.slice(start + 11, stdout.indexOf('\n  --', start)).split(/[\s,()]+/);
+  for (const [, task] of page.matchAll(/value="([^"]+)"/g)) assert.ok(listed.includes(task), `--help lists --task ${task}`);
+});
+
 test('headless SIGTERM stops the provider and removes its temporary working folder', {
   skip: process.platform === 'win32', timeout: 6000,
 }, async () => {
