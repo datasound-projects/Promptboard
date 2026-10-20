@@ -253,3 +253,15 @@ test('evidence and answers are bounded', async t => {
   assert.ok(result.answer.length <= 20000 && result.answer.includes('\n'), 'the stored answer is clipped, its lines kept');
   assert.equal((await coordinator.view(project.id)).chat.at(-1).text, result.answer);
 });
+
+test('local folder paths in event details never reach the model; their last name does', async t => {
+  const { board, project, calls, coordinator } = await world(t);
+  await board.store.update(draft => {
+    const target = draft.projects.find(item => item.id === project.id);
+    target.tasks[0].completion = { kind: 'merged', at: Date.now(), targetBranch: 'main', commits: 1, method: 'squash commit, fast-forward in /Users/someone/Secret/app', mergedCommit: 'a'.repeat(40) };
+  });
+  await coordinator.ask(project.id, { question: 'What was merged?', provider: 'codex' }, { runner: async call => { calls.push(call); return { text: 'Merged [T1].' }; } });
+  const prompt = calls.at(-1).prompt;
+  assert.equal(prompt.includes('/Users/someone'), false, 'no absolute local path');
+  assert.match(prompt, /fast-forward in …\/app/, 'the folder name stays');
+});
