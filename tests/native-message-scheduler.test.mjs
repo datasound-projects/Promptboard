@@ -347,3 +347,23 @@ test('state reads remain bounded after accepted readiness handoff and cannot rev
   assert.equal((await w.receipt()).status, 'timed_out'); assert.deepEqual(w.writes, []);
   held.resolve(structuredClone(w.state)); await new Promise(resolve => setImmediate(resolve)); assert.deepEqual(w.writes, []);
 });
+
+test('a queued message whose session ended or was replaced is refused with a clear code and never typed into the new one', async t => {
+  for (const change of ['ended', 'replaced', 'process exited']) {
+    const w = await fixture(t, { queued: true });
+    // The readiness observer sees an exited process before the Board records the ended run.
+    if (change === 'process exited') w.supervisor.nativeMessageReadiness = async () => 'ended';
+    await w.scheduler.schedule(w.request(), change === 'process exited' ? { waitForReadiness: true } : {});
+    if (change === 'process exited') w.activate();
+    else w.run.status = 'cancelled';
+    if (change === 'replaced') {
+      w.state.runs.push({ ...structuredClone(w.run), id: 'replacement', status: 'running' });
+      Object.assign(w.state.sessions[0], { currentRunId: 'replacement', runIds: ['run', 'replacement'], status: 'running' });
+    } else if (change === 'ended') w.state.sessions[0].status = 'cancelled';
+    assert.equal((await w.scheduler.wait(w.key, w.request().actionId)).confirmed, false);
+    const receipt = await w.receipt();
+    assert.equal(receipt.status, 'unconfirmed'); assert.equal(receipt.dispatchStartedAt, undefined);
+    assert.equal(receipt.outcome.errorCode, 'MESSAGE_TARGET_CHANGED'); assert.match(receipt.outcome.reason, /No input was supplied/);
+    assert.deepEqual(w.writes, []);
+  }
+});

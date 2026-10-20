@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { TerminalInputObservation } from '../src/terminal-input-observation.mjs';
 import { Supervisor } from '../src/supervisor.mjs';
+import { SessionActivity } from '../src/session-activity.mjs';
 
 const on = '\x1b[?2004h', off = '\x1b[?2004l';
 const state = observation => observation.snapshot();
@@ -96,4 +97,25 @@ test('Supervisor marks manual input before transport failure while empty or reje
   assert.throws(() => supervisor.input('owned', ''), /PRIVATE transport/); assert.equal(state(observed).manualInputObserved, false);
   assert.throws(() => supervisor.input('owned', 'human draft'), /PRIVATE transport/); assert.equal(state(observed).manualInputObserved, true);
   assert.doesNotMatch(JSON.stringify(state(observed)), /PRIVATE|human draft/);
+});
+
+test('one input batch mixing focus and mouse reports, as a click on a focus-tracking CLI sends, is not typing', () => {
+  const supervisor = new Supervisor({ board: {}, dataDir: '/unused' }), observed = new TerminalInputObservation(), writes = [];
+  const session = { proc: { write: data => writes.push(data) }, terminalInput: observed, inputEpoch: 0 };
+  supervisor.sessions.set('owned', session);
+  const click = '\x1b[I\x1b[<0;40;12M\x1b[<0;40;12m', motion = '\x1b[<35;41;12M\x1b[12;40R\x1b[O';
+  supervisor.input('owned', click); supervisor.input('owned', motion);
+  assert.deepEqual(writes, [click, motion]); assert.equal(session.inputEpoch, 0); assert.equal(state(observed).manualInputObserved, false);
+  session.messageInputPending = true; supervisor.input('owned', click); session.messageInputPending = false;
+  assert.deepEqual(writes, [click, motion], 'Reports never land inside a native paste.');
+  supervisor.input('owned', click + 'x'); assert.equal(state(observed).manualInputObserved, true);
+});
+
+test('mouse motion batched with a key that answers a CLI dialog still starts no draft', () => {
+  const supervisor = new Supervisor({ board: {}, dataDir: '/unused' }), observed = new TerminalInputObservation(), writes = [];
+  const activity = new SessionActivity('claude'); activity.observe({ name: 'PermissionRequest', tool: 'Bash' }, Date.now());
+  supervisor.sessions.set('owned', { proc: { write: data => writes.push(data) }, terminalInput: observed, activity, inputEpoch: 0 });
+  for (const data of ['\x1b[<35;41;12M\r', '2\x1b[<35;42;12M']) supervisor.input('owned', data);
+  assert.deepEqual(writes, ['\x1b[<35;41;12M\r', '2\x1b[<35;42;12M']); assert.equal(state(observed).manualInputObserved, false);
+  supervisor.input('owned', '\x1b[<35;41;12Mok'); assert.equal(state(observed).manualInputObserved, true);
 });

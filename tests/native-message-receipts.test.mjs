@@ -223,3 +223,17 @@ test('expiry is rechecked after asynchronous reads and synchronous ownership cal
   const { ticket } = await receipts.checkpoint(ctx.path); await ctx.append(user('claude', 'Review'));
   assert.equal((await receipts.verify(ticket, 'Review')).reason, 'checkpoint_expired'); assert.equal(calls, 4);
 });
+
+test('a CLI that trims the submitted text (Claude Code records "text" for a pasted "text\\n") still confirms, without loosening other matches', async t => {
+  const sent = '  Review the change.\n';
+  for (const provider of ['claude', 'codex', 'gemini']) {
+    const ctx = await fixture(t, provider);
+    await ctx.append(user(provider, 'Review the  change.', { id: 'inner-whitespace' })); await ctx.append(user(provider, 'Review the change', { id: 'substring' }));
+    assert.equal((await ctx.receipts.verify(ctx.ticket, sent)).status, 'pending');
+    await ctx.append(user(provider, 'Review the change.', { id: 'trimmed' }));
+    assert.deepEqual(await ctx.receipts.verify(ctx.ticket, sent), { status: 'confirmed' });
+  }
+  const queued = await fixture(t, 'claude');
+  await queued.append({ type: 'queue-operation', sessionId: nativeId, operation: 'enqueue', content: 'Review the change.' });
+  assert.equal((await queued.receipts.verify(queued.ticket, sent)).status, 'accepted');
+});

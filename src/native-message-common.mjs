@@ -4,6 +4,10 @@ export const SCOPE_FIELDS = ['provider', 'sessionId', 'runId', 'mode', 'messageH
 /** One delivery scope: provider, logical session, run, mode and exact message hash. */
 export const sameScope = (left, right) => SCOPE_FIELDS.every(field => left?.[field] === right?.[field]);
 
+/** Saved outcome fields when the captured card or agent session changed (ended, replaced, edited) before any input. */
+export const TARGET_CHANGED = Object.freeze({ errorCode: 'MESSAGE_TARGET_CHANGED',
+  reason: 'The card or the agent session this message was queued for changed, ended or was replaced. No input was supplied; it is never sent to another session.' });
+
 /** Literal bounded text that a CLI cannot read as control input, a slash command or a Codex context block. */
 export const nativeMessageText = (message, provider) => typeof message === 'string' && message.isWellFormed() && Boolean(message.trim())
   && Buffer.byteLength(message) <= 65536 && !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/.test(message) && !message.trimStart().startsWith('/')
