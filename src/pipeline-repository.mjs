@@ -44,6 +44,8 @@ export async function readRepositoryPipeline(root) {
       let data;
       try { data = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, length))); }
       catch { invalid(`${name} must contain valid UTF-8 JSON.`); }
+      // `null` would otherwise read as a missing file.
+      if (!record(data)) invalid(`${name} must contain one JSON object.`);
       files.push({ name, hash: hash(bytes.subarray(0, length)), data });
       stats.set(name, after);
     } catch (error) {

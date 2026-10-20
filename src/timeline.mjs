@@ -33,10 +33,12 @@ export async function buildTimeline(project, runs) {
   const add = event => events.push({ stage: '', detail: '', status: '', agent: null, commit: null, pr: null, editable: false, ...event });
   for (const task of project.tasks) {
     const base = { taskId: task.id, taskTitle: task.title };
+    // IDs come from each record's own time, never its place in the bounded histories, whose oldest entries drop out.
+    const used = new Map(), stable = (kind, at) => { const id = `${kind}:${task.id}:${at}`, n = used.get(id) || 0; used.set(id, n + 1); return n ? `${id}.${n}` : id; };
     add({ ...base, id: `created:${task.id}`, at: task.createdAt, kind: 'created', stage: 'todo', title: 'Task created', detail: task.source ? 'From Compose' : 'Written by you' });
-    for (const [index, move] of (task.transitions || []).entries()) {
+    for (const move of task.transitions || []) {
       if (COMPLETION_KINDS.has(move.by)) continue; // completeTask records its move; the completion event below describes it.
-      add({ ...base, id: `move:${task.id}:${index}`, at: move.at, kind: 'moved', stage: move.to, title: `Moved to ${move.to}`, detail: `From ${move.from}`, from: move.from });
+      add({ ...base, id: stable('move', move.at), at: move.at, kind: 'moved', stage: move.to, title: `Moved to ${move.to}`, detail: `From ${move.from}`, from: move.from });
     }
     const evidence = task.evidence || {};
     if (evidence.review?.at) add({ ...base, id: `review:${task.id}:${evidence.review.at}`, at: evidence.review.at, kind: 'review', stage: 'code_review', title: 'Review recorded',
@@ -47,14 +49,14 @@ export async function buildTimeline(project, runs) {
       commit: SHA.test(evidence.tests.taskCommit || '') ? evidence.tests.taskCommit : null });
     if (evidence.pullRequest?.at) add({ ...base, id: `pr:${task.id}`, at: evidence.pullRequest.at, kind: 'pull_request', stage: 'merge', title: 'Pull request opened', status: String(evidence.pullRequest.state || '').toLowerCase(),
       pr: { number: evidence.pullRequest.number ?? null, url: evidence.pullRequest.url || '', state: evidence.pullRequest.state || '' }, detail: `${evidence.pullRequest.branch || ''} → ${evidence.pullRequest.base || ''}` });
-    for (const [index, attempt] of (task.previousAttempts || []).entries()) {
-      add({ ...base, id: `restart:${task.id}:${index}`, at: attempt.archivedAt, kind: 'restart', stage: 'todo', title: 'Started over',
+    for (const attempt of task.previousAttempts || []) {
+      add({ ...base, id: stable('restart', attempt.archivedAt), at: attempt.archivedAt, kind: 'restart', stage: 'todo', title: 'Started over',
         detail: [attempt.reason, `Previous attempt kept on ${attempt.branch}`].filter(Boolean).join(' · '), commit: attempt.head,
         status: attempt.pullRequest?.state === 'OPEN' ? 'pull request still open' : '', pr: attempt.pullRequest?.url ? { number: attempt.pullRequest.number, url: attempt.pullRequest.url, state: attempt.pullRequest.state } : null });
     }
-    for (const [index, completion] of [...(task.previousCompletions || []), ...(task.completion ? [task.completion] : [])].entries()) {
+    for (const completion of [...(task.previousCompletions || []), ...(task.completion ? [task.completion] : [])]) {
       const merged = completion.kind === 'merged', pr = completion.kind === 'pull_request';
-      add({ ...base, id: `done:${task.id}:${index}`, at: completion.at, kind: 'completed', stage: 'done', status: completion.kind,
+      add({ ...base, id: stable('done', completion.at), at: completion.at, kind: 'completed', stage: 'done', status: completion.kind,
         title: merged ? `Merged into ${completion.targetBranch}` : pr ? 'Pull request merged' : completion.kind === 'no_changes' ? 'Completed: no changes required' : completion.kind === 'unmerged' ? 'Completed without merging' : 'Closed',
         detail: merged ? `${completion.commits ?? '?'} commit${completion.commits === 1 ? '' : 's'}, ${completion.method || 'fast-forward'}${completion.trigger === 'automation' ? ', automatic' : ''}` : completion.summary || '',
         commit: merged && SHA.test(completion.mergedCommit || '') ? completion.mergedCommit : null,

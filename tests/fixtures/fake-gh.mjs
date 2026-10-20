@@ -7,7 +7,7 @@ import { join } from 'node:path';
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } }).trim();
 async function temp(t, prefix) { const dir = await realpath(await mkdtemp(join(tmpdir(), prefix))); t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })); return dir; }
 
-/** A fake gh. Its mode file selects: ok | none (not signed in) | expired | offline. */
+/** A fake gh. Its mode file selects: ok | none (not signed in) | expired | offline | ratelimited. */
 export async function fakeGh(t) {
   const base = await temp(t, 'pb-gh-');
   const bare = join(base, 'app.git');
@@ -31,6 +31,7 @@ if (a[0] === 'auth' && a[1] === 'status') mode === 'none' ? err('You are not log
 if (mode === 'none') err('To get started with GitHub CLI, please run:  gh auth login');
 if (mode === 'expired') err('HTTP 401: Bad credentials (https://api.github.com/user)');
 if (mode === 'offline') err('error connecting to api.github.com: dial tcp: lookup api.github.com: no such host');
+if (mode === 'ratelimited') err('HTTP 403: API rate limit exceeded for user ID 1. If you reach out to GitHub Support for help, please include the request ID C401:2F3E:401B and timestamp 2026-10-20 10:00:00 UTC. (https://api.github.com/user)');
 if (a[0] === 'api' && a[1] === 'user') out(JSON.stringify({ login: 'octo', id: 1 }));
 if (a[0] === 'api' && a[1] === '--paginate') out([{ full_name: 'acme/app', private: true, default_branch: 'main', html_url: 'https://github.com/acme/app', description: 'App' },
   { full_name: 'acme/docs', private: false, default_branch: 'trunk', html_url: 'https://github.com/acme/docs', description: '' }, { full_name: 'bad name/x' }].map(r => JSON.stringify(r)).join('\\n'));

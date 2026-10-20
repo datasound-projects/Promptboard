@@ -238,3 +238,34 @@ test('imports cannot treat prototype property names as remapped resource referen
   const copied = await w.board.base.import(exported); assert.ok(Object.hasOwn(copied.remap, '__proto__')); assert.notEqual(copied.remap.__proto__, resource.id);
   assert.equal((await w.board.base.detail(copied.remap.__proto__)).name, resource.name);
 });
+
+test('an export at the 12 MiB limit can be previewed and imported again, ID remap included', async t => {
+  const w = await world(t), limit = 12 * 1024 * 1024, source = text => ({ id: `s${Math.random().toString(36).slice(2)}`, name: 'Bulk', text });
+  for (let i = 0; i < 3; i++) await w.board.base.create({ kind: 'knowledge', name: `Bulk ${i}`, content: { sources: Array.from({ length: 15 }, () => source('x'.repeat(256000))) } });
+  const filler = await w.board.base.create({ kind: 'knowledge', name: 'Filler', content: { sources: [source('y')] } });
+  const size = async () => Buffer.byteLength(JSON.stringify(await w.board.base.export({ includeContent: true })));
+  // Grow the filler's sources until the compact export is a few bytes under the limit (first a little short, then exact).
+  let count = 0;
+  for (const reserve of [8000, 0, 0]) {
+    const detail = await w.board.base.detail(filler.id), chars = detail.content.sources.reduce((sum, item) => sum + item.text.length, 0) + limit - await size() - 4 - reserve;
+    count ||= Math.ceil(chars / 250000);
+    const texts = Array.from({ length: count }, (_, i) => 'y'.repeat(i < count - 1 ? 250000 : chars - 250000 * (count - 1)));
+    await w.board.base.update(filler.id, { content: { sources: texts.map((text, i) => ({ ...(detail.content.sources[i] || source('')), text })) } }, { expectedRevision: detail.revision });
+  }
+  const bundle = await w.board.base.export({ includeContent: true });
+  assert.ok(Buffer.byteLength(JSON.stringify(bundle)) <= limit && Buffer.byteLength(JSON.stringify(bundle)) > limit - 64);
+  const preview = await w.request('/api/base/import/preview', { data: bundle });
+  assert.equal(preview.status, 200, JSON.stringify(preview.data).slice(0, 200));
+  const imported = await w.request('/api/base/import', { data: bundle, remap: preview.data.remap, expectedBaseRevision: (await w.board.state()).base.revision, collision: 'remap' });
+  assert.equal(imported.status, 200, JSON.stringify(imported.data).slice(0, 200));
+  assert.equal(imported.data.imported.resources.length, 4);
+});
+
+test('an import preview is not shaped like the library, so the Base page never shows previewed resources as its own', async t => {
+  const w = await world(t), resource = await w.create(skill);
+  const preview = await w.request('/api/base/import/preview', { data: await w.board.base.export({ ids: [resource.id], includeContent: true }) });
+  assert.equal(preview.status, 200);
+  assert.equal('revision' in preview.data, false, 'the page adopts any { revision, resources } reply as its library');
+  assert.equal(preview.data.expectedBaseRevision, (await w.board.state()).base.revision);
+  assert.notEqual(preview.data.resources[0].id, resource.id);
+});

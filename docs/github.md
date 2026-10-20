@@ -14,7 +14,7 @@ repository-local credential helper (`gh auth git-credential`) instead.
 | --- | --- | --- |
 | Connected as @you | `gh` is signed in and GitHub answers. | Nothing. |
 | Not connected | `gh` is not signed in. | Connect GitHub. |
-| Needs attention | The sign-in expired or was revoked, or GitHub cannot be reached. | Check your network, then Connect GitHub again. Local work is not affected. |
+| Needs attention | The sign-in expired or was revoked, GitHub cannot be reached, or the account's GitHub rate limit was reached. | Check your network, then Connect GitHub again (or wait a few minutes after a rate limit). Local work is not affected. |
 | GitHub CLI not installed | `gh` is not on PATH. | Install it from cli.github.com, then Check connection. |
 
 Disconnecting a repository never signs `gh` out. To sign out everywhere, run `gh auth logout` in a terminal.

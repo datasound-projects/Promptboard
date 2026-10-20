@@ -166,3 +166,22 @@ test('removing a custom column also detaches pending imported Base settings befo
   const exported = await target.exportBackup(), restored = await board(t);
   await restored.importBackup(exported); assert.equal((await restored.state()).projects.length, 1, 'No dangling column reference makes the next backup unreadable.');
 });
+
+test('a board backup or Base import that is not published leaves none of the revision files it wrote', async t => {
+  const { source } = await fixture(t), target = await board(t), portable = await source.exportBackup({ includeBaseContent: true });
+  const revisions = async () => (await readdir(join(target.dataDir, 'base', 'revisions')).catch(() => [])).sort();
+  const realPrepare = target.base.prepareImport.bind(target.base), kept = [];
+  target.base.prepareImport = async (...args) => { const prepared = await realPrepare(...args); kept.push((await target.base.create({ kind: 'skill', name: 'Concurrent', content: { body: 'Keep this.' } })).id); return prepared; };
+  await assert.rejects(target.importBackup(portable), { code: 'BASE_REVISION_CONFLICT' });
+  assert.deepEqual(await revisions(), [...kept].sort(), 'only the published resource keeps its files');
+  await assert.rejects(target.base.import(portable.base), { code: 'BASE_REVISION_CONFLICT' });
+  assert.deepEqual(await revisions(), [...kept].sort());
+  // A supplied ID remap may not name a resource that already exists: refused before anything is written.
+  delete target.base.prepareImport;
+  const [first] = portable.base.resources;
+  await assert.rejects(target.base.import(portable.base, { remap: { [first.id]: kept[0] } }), /fresh unique IDs/);
+  assert.deepEqual(await revisions(), [...kept].sort());
+  assert.equal((await target.base.detail(kept[0])).content.body, 'Keep this.');
+  await target.importBackup(portable); assert.equal((await target.state()).projects.length, 1);
+  for (const resource of (await target.state()).base.resources) await target.base.readRevision(resource.revisionRef);
+});

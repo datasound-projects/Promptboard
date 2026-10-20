@@ -207,6 +207,28 @@ test('names are checked against projects and boards, on create and rename, and a
   assert.equal(linked.kanbanProjectId, blog.id);
 });
 
+test('a name spelled with another Unicode form, case, spacing or invisible characters is the same name on every path', async t => {
+  const { app, call } = await client(t);
+  const composed = 'D\u00e9mo', decomposed = 'De\u0301mo';
+  const demo = (await call('/api/origin/projects', 'POST', { name: composed })).data.project;
+  assert.equal((await call('/api/origin/projects', 'POST', { name: ` ${decomposed.toUpperCase()} ` })).data.code, 'NAME_TAKEN');
+  assert.deepEqual(await call('/api/shared-projects', 'POST', { name: decomposed }).then(({ data }) => [data.existing, data.project.id]), [true, demo.id], 'Compose selects the project');
+  assert.equal((await call('/api/projects', 'POST', { name: '\uff24\uff45\u0301\uff4d\uff4f' })).data.project.id, demo.id, 'Kanban gives that project its board');
+  const other = await app.board.createProject({ name: 'Other' });
+  const rename = name => call(`/api/projects/${other.id}`, 'PATCH', { name, expectedRevision: other.revision });
+  for (const name of [`${decomposed}\u200b`, 'de\u0301mo', 'D\u00c9MO']) assert.equal((await rename(name)).data.code, 'NAME_TAKEN', JSON.stringify(name));
+  assert.equal((await rename('Demo')).status, 200, 'an accent still makes another name');
+  // The stores check the same rule in their own write queues, and imports rename instead of duplicating.
+  const { board, origin } = await local(t);
+  await origin.create({ name: composed });
+  await assert.rejects(origin.create({ name: decomposed }), { code: 'NAME_TAKEN' });
+  await board.importBackup({ version: 1, kind: 'kanban-backup', projects: [{ id: 'imported', name: decomposed, cards: [] }] }, { originProjects: await origin.list() });
+  await board.migrateBrowserBoard({ version: 1, projects: [{ id: 'browser', name: 'DE\u0301MO', cards: [] }] }, { originProjects: await origin.list() });
+  assert.deepEqual((await board.state()).projects.map(project => project.name), [`${decomposed} (2)`, 'DE\u0301MO (3)']);
+  await board.createProject({ name: 'My App' });
+  for (const name of ['my\u00a0app', 'My  App', 'M\u200by App']) await assert.rejects(board.createProject({ name }), { code: 'NAME_TAKEN' }, JSON.stringify(name));
+});
+
 test('renaming a board in Kanban keeps the one-name rule across Origin', async t => {
   const { app, call } = await client(t);
   await call('/api/origin/projects', 'POST', { name: 'Plan only' });

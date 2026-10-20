@@ -156,3 +156,29 @@ test('an MCP server added from Base is used only while Base keeps it enabled and
   assert.deepEqual([evidence.length, started.length], [0, 1], 'not started once Base revoked its trust');
   assert.match(warnings[0], /no longer enabled and trusted in Base/);
 });
+
+test('Stop while the sources are read is a stop: the question is kept, the answer is marked stopped and the CLI never starts', async t => {
+  let reading;
+  const asked = new Promise(resolve => { reading = resolve; });
+  const composeMcp = { retrieve: async (config, queries, options) => {
+    if (options?.discoveryOnly) return { tools: ['search'] };
+    reading();
+    return new Promise((resolve, reject) => options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true }));
+  } };
+  const calls = [];
+  const app = await startTestServer(t, { port: 0, executor: null, composeMcp, researchRunner: async call => { calls.push(call); return { text: 'Too late.' }; } });
+  const token = (await (await fetch(`${app.url}/api/session`)).json()).token;
+  const api = async (path, method = 'GET', body) => { const response = await fetch(`${app.url}${path}`, { method, headers: { 'X-STE-Token': token, ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) }); return { status: response.status, data: await response.json().catch(() => ({})) }; };
+  const project = (await api('/api/origin/projects', 'POST', { name: 'Shop' })).data.project;
+  const settings = { provider: 'claude', mode: 'chat' }, base = `/api/origin/research/${project.id}/chats`;
+  const chat = (await api(base, 'POST', { settings })).data.chat.id;
+  assert.equal((await api(`${base}/${chat}/sources`, 'POST', { source: { type: 'mcp', config: { type: 'mcp', name: 'Slow MCP', transport: 'streamable-http', endpoint: 'https://slow.example.com/mcp' } } })).status, 200);
+  const run = fetch(`${app.url}${base}/${chat}/run`, { method: 'POST', headers: { 'X-STE-Token': token, 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'Which queue fits?', settings }) }).then(response => response.text());
+  await asked;
+  assert.equal((await api(`${base}/${chat}/stop`, 'POST')).status, 200);
+  const events = (await run).trim().split('\n').map(line => JSON.parse(line)).filter(event => !event.ping);
+  assert.ok(!events.some(event => event.type === 'error'), JSON.stringify(events.filter(event => event.type === 'error')));
+  const stored = (await api(`${base}/${chat}`)).data.chat;
+  assert.deepEqual(stored.messages.map(message => [message.role, message.text, message.status || '']), [['user', 'Which queue fits?', ''], ['assistant', '', 'stopped']]);
+  assert.equal(calls.length, 0, 'the CLI was never started');
+});

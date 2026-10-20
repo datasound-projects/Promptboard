@@ -2150,11 +2150,11 @@ button.origin-context-badge { cursor: pointer; }
 .origin-research-open svg { flex: none; color: var(--sash); }
 .origin-research-open[aria-pressed="true"] { border-color: color-mix(in srgb, var(--sash) 45%, var(--line)); color: var(--ink); }
 .origin-drawer[data-mode="research"] { width: min(500px, calc(100vw - 24px)); }
-.origin-research-head { display: grid; gap: 10px; padding: 12px 12px 12px 18px; }
+.origin-research-head { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; padding: 12px 12px 12px 18px; } /* A long option never widens the panel. */
 .origin-research-title { margin: 0; color: var(--ink); font-size: 15px; font-weight: 680; letter-spacing: -.01em; }
 .origin-research-title:focus { outline: none; }
 .origin-research-tools { display: flex; align-items: center; gap: 1px; min-width: 0; }
-.origin-research-tool { width: 30px; height: 30px; border-radius: 8px; }
+.origin-research-tool { flex: none; width: 30px; height: 30px; border-radius: 8px; } /* On a narrow panel the CLI name shortens instead. */
 .origin-research-tool:hover, .origin-research-tool[aria-pressed="true"] { background: var(--og-glass-2); color: var(--ink); }
 .origin-research-web.is-on { background: color-mix(in srgb, var(--sash) 16%, transparent); color: var(--sash); }
 .origin-research-cli { max-width: 190px; height: 28px; margin-right: 4px; padding: 0 10px; overflow: hidden; border: 1px solid var(--line); border-radius: 999px; background: var(--og-glass-2); color: var(--muted); font-size: 12px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
@@ -2584,4 +2584,7 @@ button.origin-context-badge { cursor: pointer; }
   .origin-icon, .origin-icon.origin-small, .origin-map-resize { width: 44px; height: 44px; }
   .autopilot-up, .autopilot-down { min-width: 44px; min-height: 44px; }
   #origin-research-input { min-height: 44px; }
+  .icon-button, .page-nav a, .secondary-button, .copy-button, #kanban-view #card-new, .text-button, .detail-actions button, .view-switch button, .dock-tab, .kanban-card .kanban-more-toggle, .origin-primary, .origin-ghost, .origin-pill, .origin-link-pill, .origin-blueprint-chip, .origin-menu-item, select, input:not([type="checkbox"], [type="radio"], [type="range"], [role="switch"]) { min-height: 44px; }
+  /* The top bar keeps its icon widths: at 390 px it has no room for four 44 px icons beside the page links. */
+  .icon-button:not(.topbar *), .text-button, .kanban-card .kanban-more-toggle, .origin-ghost, .origin-link, .origin-blueprint-chip { min-width: 44px; }
 }

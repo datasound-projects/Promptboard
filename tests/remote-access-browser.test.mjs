@@ -11,7 +11,8 @@ const freePort = () => new Promise(resolve => { const probe = createServer().lis
 
 test('Settings turns remote access on and pairs a phone; the phone uses the same app, stays paired, and is sent to pairing when revoked', { skip, timeout: 120000 }, async t => {
   const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [{ id: 'codex', available: true }], authAdapter: { installed: async () => true, status: async () => ({ state: 'signed-in' }) } });
-  await app.board.createProject({ name: 'Shop' });
+  const shop = await app.board.createProject({ name: 'Shop' });
+  await app.board.createTask({ projectId: shop.id, title: 'Add cart', prompt: 'Add a cart page.' });
   const remotePort = await freePort();
   const browser = await launch({ width: 1280, height: 900 }); assert.ok(browser); t.after(() => browser.close());
   const ev = code => browser.eval(code), wait = (expression, label, ms = 15000) => browser.until(expression, label, ms);
@@ -46,12 +47,17 @@ test('Settings turns remote access on and pairs a phone; the phone uses the same
   assert.deepEqual(await ev(`return (await (await fetch('/api/board', { headers: { 'X-STE-Token': token } })).json()).board.projects.map(project => project.name)`), ['Shop']);
   assert.equal(await ev(`return document.documentElement.scrollWidth <= innerWidth`), true, 'no sideways scrolling on the phone');
   assert.equal(await ev(`return document.cookie`), '', 'the device secret is not readable by page scripts');
+  // Touch targets: every visible control is at least 44 px tall, and 44 px wide outside the top bar (no room there at 390 px).
+  const small = scope => `return JSON.stringify([...document.querySelectorAll('${scope} :is(button, a[href], select, summary, input:not([type=checkbox], [type=radio], [role=switch]))')].filter(el => { const r = el.getBoundingClientRect();
+    return r.width > 1 && r.height > 1 && r.bottom > 0 && r.right > 0 && r.left < innerWidth && !el.closest('[hidden], dialog:not([open])') && (r.height < 44 || (r.width < 44 && !el.closest('.topbar'))); }).map(el => (el.id || el.className || el.tagName) + ' ' + Math.round(el.getBoundingClientRect().width) + 'x' + Math.round(el.getBoundingClientRect().height)))`;
+  await browser.layout(small('body'), '[]');
   // A reload (Safari closed and opened again) keeps the pairing; the phone sees who it is and cannot change remote access.
   await browser.reload();
   await wait(`!!document.querySelector('#kanban-columns [data-column="todo"]')`, 'app after reload', 30000);
   await ev(`document.querySelector('#app-settings-open').click(); document.querySelector('#settings-remote-section').open = true;`);
   await wait(`/remotely as “iPhone”/.test(document.querySelector('#set-remote-group').textContent)`, 'remote device notice');
   assert.equal(await ev(`return !!document.querySelector('#set-remote-method')`), false);
+  await browser.layout(small('#app-settings'), '[]');
   const exceptions = browser.consoleMessages.filter(line => line.startsWith('EXCEPTION'));
   assert.deepEqual(exceptions, []);
   // Revoked on the computer: the phone's next request sends it to pairing.

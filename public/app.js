@@ -1962,9 +1962,10 @@ function appendTaskExternalSource(parent, card) {
 }
 // Prerequisite cards (set by an Origin handoff) must reach Done before this card starts.
 const cardDone = (project, card) => { const column = projectColumnsOf(project).find(entry => entry.id === card?.column); return Boolean(card) && (column?.role === 'done' || (!column?.role && card.column === 'done')); };
-// The board's rule (prerequisiteMet in src/board.mjs): in Done with its code on the target branch, or no code to merge.
-const unmergedDone = card => Boolean(card?.workspace) && (card.completion?.kind === 'unmerged' || (card.completion?.kind === 'pull_request' && !card.completion.mergedAt));
-const prerequisiteMet = (project, card) => cardDone(project, card) && (!card.completion || !unmergedDone(card));
+// The board's rule (prerequisiteMet in src/board.mjs), case for case: in Done with its code on the target branch (merged, a merged
+// pull request, no changes), with no completion record, or never on a task branch. A removed worktree does not merge the code.
+const unmergedDone = card => { const { kind, mergedAt, branch } = card?.completion || {}; return Boolean(card?.completion) && !(kind === 'pull_request' ? mergedAt : ['merged', 'no_changes'].includes(kind) || (!card.workspace && !branch)); };
+const prerequisiteMet = (project, card) => cardDone(project, card) && !unmergedDone(card);
 function pendingPrerequisites(card, project) {
   return (Array.isArray(card.dependsOn) ? card.dependsOn : []).filter(id => !prerequisiteMet(project, project?.tasks.find(task => task.id === id)));
 }
@@ -4497,7 +4498,7 @@ async function openInEditor(project, editorId, taskId = '') {
   try {
     const result = await boardCall('POST', `/api/projects/${encodeURIComponent(project.id)}/open`, { target: 'editor', editor: editorId, ...(taskId ? { taskId } : {}) });
     editorState.preferred = result.opened || editorId;
-    announce(`${result.name || 'The editor'} opened ${taskId ? 'the task’s worktree' : project.name}.`);
+    announce(`${result.name || 'The editor'} opened ${taskId ? 'the task’s worktree' : project.name}.${result.remembered === false ? ' Promptboard could not save this choice for next time.' : ''}`);
     renderBoard(); labelWorktreeButtons();
   } catch (error) { announce(error.message); setBoardWarning(error.message); }
 }
@@ -4608,7 +4609,7 @@ function renderRunPanel(project, hide = false) {
   else if (info.error) nodes.push(paragraph(info.error, 'inline-error'));
   else {
     nodes.push(paragraph(info.target ? `The finished code is on ${info.target}, in ${info.path}.` : `The project is in ${info.path}.`));
-    const unmerged = project.tasks.filter(task => cardDone(project, task) && task.completion && !['merged', 'no_changes'].includes(task.completion.kind) && !task.completion.mergedAt).length;
+    const unmerged = project.tasks.filter(task => cardDone(project, task) && unmergedDone(task)).length;
     if (unmerged) nodes.push(paragraph(`${unmerged} ${unmerged === 1 ? 'card was' : 'cards were'} completed without merging; ${unmerged === 1 ? 'its' : 'their'} changes are not on ${info.target || 'the target branch'}.`, 'note'));
     const steps = document.createElement('ol'); steps.className = 'project-run-commands';
     steps.append(row('Go to the folder', `cd "${info.path.replace(/"/g, '\\"')}"`));
@@ -6001,7 +6002,7 @@ function renderRemoteAccess() {
     box.replaceChildren(legend, ...(remoteAccess.message && !remoteAccess.busy ? [paragraph(remoteAccess.message, 'inline-error'), detailActions(detailButton('Try again', loadRemoteAccess, 'secondary-button'))] : [paragraph('Reading remote access…', 'note')]));
     return;
   }
-  const draft = remoteAccess.draft ||= { method: st.method, port: st.port, bind: st.bind, host: st.host, cert: '', key: '' };
+  const draft = remoteAccess.draft ||= { method: st.method, port: st.port, bind: st.bind, host: st.host, cert: st.cert || '', key: st.key || '' };
   const field = (label, control) => { const wrap = document.createElement('label'); wrap.className = 'field-label'; wrap.append(label, control); return wrap; };
   const input = (id, key, placeholder = '') => { const node = document.createElement('input'); node.id = id; node.value = draft[key] ?? ''; node.placeholder = placeholder; node.addEventListener('input', () => { draft[key] = node.value.trim(); }); return node; };
   const method = document.createElement('select'); method.id = 'set-remote-method';
@@ -6055,7 +6056,8 @@ function renderRemoteAccess() {
     }, 'secondary-button')));
   }
   if (st.method !== 'local' && st.listening) {
-    if (remoteAccess.pairing && remoteAccess.pairing.expiresAt > Date.now()) {
+    // Shown only while the computer still holds this code: a used, replaced or revoked code is not offered.
+    if (remoteAccess.pairing && remoteAccess.pairing.expiresAt > Date.now() && st.pairing?.expiresAt === remoteAccess.pairing.expiresAt) {
       const code = document.createElement('code'); code.className = 'github-code'; code.id = 'set-remote-code'; code.textContent = remoteAccess.pairing.code;
       const p = document.createElement('p'); p.className = 'note';
       p.append('On the phone, open the private address and enter ', code, ` within ${Math.max(1, Math.round((remoteAccess.pairing.expiresAt - Date.now()) / 60000))} minutes. It works once.`);
@@ -6088,7 +6090,7 @@ $('#autopilot-save').addEventListener('click', () => saveAutopilot(false));
 $('#autopilot-form').addEventListener('submit', event => { event.preventDefault(); saveAutopilot(true); });
 
 // Base owns its own metadata/content requests, with only these explicit application seams.
-baseView = window.PromptboardBase?.create({ api, announce, ensureBoard: loadBoard, refreshBoard: loadBoard, agentFields, readAgentFields, closeSidebar: () => setSidebar(false),
+baseView = window.PromptboardBase?.create({ api, announce, ensureBoard: loadBoard, refreshBoard: loadBoard, agentFields, readAgentFields, closeSidebar: () => setSidebar(false), remote: () => Boolean(remoteSession),
   acceptBoard: next => { acceptBoard(next); renderBoard(); } }) || null;
 window.PromptboardBaseView = baseView;
 // Origin owns its blueprint requests. It reaches Compose and Kanban only through these explicit seams,

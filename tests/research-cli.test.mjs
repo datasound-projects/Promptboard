@@ -19,6 +19,7 @@ const value = name => args[args.indexOf(name) + 1];
 if (cli === 'claude') {
   const session = args.includes('--resume') ? value('--resume') : value('--session-id');
   if (session === 'missing-session') { process.stderr.write('No conversation found with session ID: missing-session'); process.exit(1); }
+  if (input.includes('NOT AN OBJECT')) { process.stdout.write('null\\n42\\n'); process.exit(1); }
   if (input.includes('RATE')) { out({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected', resetsAt: 1900000000 } }); out({ type: 'result', is_error: true, result: '' }); process.exit(1); }
   out({ type: 'system', subtype: 'init', session_id: session });
   if (value('--tools')?.includes('WebSearch')) out({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'WebSearch', input: { query: 'postgres license' } }] } });
@@ -109,4 +110,10 @@ test('Stop pressed while the CLI is still being looked up stops the research bef
   controller.abort(); // The run is past its first check and awaiting the CLI lookup.
   await assert.rejects(run, { code: 'ABORTED' });
   assert.ok(Date.now() - started < 3500, 'stopped, not run to the end');
+});
+
+test('an output line that is not an object ends the run with an error, and a resumed session that hits a provider limit is not taken for a lost one', { skip: process.platform === 'win32' }, async t => {
+  const { dir } = await fakes(t);
+  await assert.rejects(streamResearch({ provider: 'claude', prompt: 'NOT AN OBJECT', cwd: dir, session: { id: 'session-5', resume: false } }), { code: 'CLI_FAILED' });
+  await assert.rejects(streamResearch({ provider: 'claude', prompt: 'RATE', cwd: dir, session: { id: 'session-6', resume: true } }), error => error.code === 'RATE_LIMITED' && !error.resumeFailed);
 });

@@ -253,7 +253,8 @@ test('missing journals block only their task and cannot be bypassed by a destina
   const broken = await w.board.createTask({ projectId: w.projectId, title: 'Missing', prompt: 'Do not replay' });
   const healthy = await w.board.createTask({ projectId: w.projectId, title: 'Healthy', prompt: 'Exact body' });
   const key = { projectId: w.projectId, taskId: broken.id, transitionId: randomUUID() };
-  await w.board.store.update(state => { const card = state.projects[0].tasks.find(item => item.id === broken.id); card.automationMoves = [key]; card.automationMove = { ...key, status: 'pending', phase: 'exit' }; });
+  await w.board.store.update(state => { const card = state.projects[0].tasks.find(item => item.id === broken.id); card.automationMoves = [key]; card.automationMove = { ...key, status: 'pending', phase: 'exit' };
+    card.pendingAutomationMessages = [{ ...key, transitionId: randomUUID() }]; });
   const cold = new Board({ dataDir: w.dataDir }); t.after(() => cold.shutdownAutomations());
   const state = await cold.state(); assert.equal(state.projects[0].tasks.find(item => item.id === broken.id).automationMove.status, 'blocked');
   await assert.rejects(cold.transition(broken.id, { column: 'code_review', expectedRevision: 1 }), { code: 'AUTOMATION_MOVE_ACTIVE' });
@@ -261,6 +262,12 @@ test('missing journals block only their task and cannot be bypassed by a destina
   await cold.transition(healthy.id, { column: 'code_review', expectedRevision: 1 });
   const cards = (await cold.state()).projects[0].tasks;
   assert.equal(cards.find(item => item.id === broken.id).column, 'todo'); assert.equal(cards.find(item => item.id === healthy.id).column, 'code_review'); assert.equal(w.starts.length, 0);
+  // Without its journal nothing names work to stop or replay: Stop automations releases the card instead of leaving it blocked for good.
+  await assert.rejects(cold.deleteTask(broken.id, { expectedRevision: 1 }), { code: 'AUTOMATIONS_ACTIVE' });
+  const released = await cold.cancelAutomationMove(broken.id, { confirm: true });
+  assert.deepEqual([released.automationMove.status, released.automationMove.errorCode, released.pendingAutomationMessages], ['interrupted', 'AUTOMATION_JOURNAL_MISSING', []]);
+  await cold.transition(broken.id, { column: 'code_review', expectedRevision: released.revision });
+  assert.equal((await cold.state()).projects[0].tasks.find(item => item.id === broken.id).column, 'code_review'); assert.equal(w.starts.length, 0);
 });
 
 test('portable backups omit move grants and histories, and imported executable rows stay inert', async t => {

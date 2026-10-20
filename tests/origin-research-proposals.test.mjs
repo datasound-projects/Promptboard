@@ -184,3 +184,13 @@ test('an edited choice or link is checked like a suggested one, and a full colle
   assert.equal(bp.components.length, M.LIMITS.components);
   assert.doesNotThrow(() => M.normalizeBlueprint(bp));
 });
+
+test('names every object has (constructor, toString, __proto__) are no fields: a change to one is refused, a new record leaves it out', () => {
+  const bp = blueprint();
+  bp.assumptions.push({ id: 'a1', origin: 'human', statement: 'Users have accounts', status: 'open', reason: '', impact: '' });
+  for (const [collection, id] of [['assumptions', 'a1'], ['technologies', 't1'], ['components', 'c1']]) for (const field of ['constructor', 'toString', 'hasOwnProperty', '__proto__']) {
+    assert.throws(() => M.validateResearchSuggestion(bp, { target: { kind: 'record', collection, id, field }, value: 'x' }), /cannot be suggested/, `${collection}.${field}`);
+  }
+  const added = M.validateResearchSuggestion(bp, JSON.parse('{"target":{"kind":"add","collection":"components"},"value":{"name":"Cache","constructor":"x","toString":"y","__proto__":"z","technologyIds":["t1"]}}'));
+  assert.deepEqual(added.value, { name: 'Cache', technologyIds: ['t1'] });
+});

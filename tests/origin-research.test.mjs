@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { ResearchStore, scopeOf, settingsOf } from '../src/origin-research.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
 
@@ -272,4 +272,46 @@ test('at the suggestion cap a chat drops decided suggestions before the ones sti
   const updated = await store.update('p1', chat.id, value => { value.proposals.push(...Array.from({ length: 5 }, (_, n) => proposal(1000 + n, 'pending'))); });
   assert.equal(updated.proposals.length, 300);
   assert.equal(updated.proposals.filter(entry => entry.status === 'pending').length, 15, 'every open suggestion is kept');
+});
+
+test('deleting a chat while it researches stops its CLI first; the stream ends without an error', async t => {
+  let started, stopped = false;
+  const running = new Promise(resolve => { started = resolve; });
+  const researchRunner = call => new Promise((resolve, reject) => {
+    call.onEvent({ type: 'delta', text: 'Partial' }); started();
+    call.signal.addEventListener('abort', () => { stopped = true; reject(Object.assign(new Error('stopped'), { code: 'ABORTED', partial: 'Partial' })); }, { once: true });
+  });
+  const app = await startTestServer(t, { port: 0, executor: null, researchRunner });
+  const { token } = (await api(app, '/api/session')).data;
+  const project = (await api(app, '/api/origin/projects', { method: 'POST', token, body: { name: 'Shop' } })).data.project;
+  const settings = { provider: 'claude', mode: 'chat' }, base = `/api/origin/research/${project.id}/chats`;
+  const chat = (await api(app, base, { method: 'POST', token, body: { settings } })).data.chat.id;
+  const result = run(app, token, project.id, chat, { text: 'Research', settings });
+  await running;
+  assert.deepEqual((await api(app, `${base}/${chat}`, { method: 'DELETE', token })).data, { removed: true });
+  assert.equal(stopped, true, 'the CLI was stopped');
+  const { events } = await result;
+  assert.ok(!events.some(event => event.type === 'error'), JSON.stringify(events.at(-1)));
+  assert.equal((await api(app, `${base}/${chat}`, { token })).status, 404);
+  assert.equal((await api(app, `${base}/${chat}/stop`, { method: 'POST', token })).status, 409, 'nothing runs any more');
+});
+
+test('a swarm whose results cannot be stored stops its other agents before the job slot is free', async t => {
+  let active = 0, chat;
+  const researchRunner = async call => {
+    active++;
+    try {
+      // The first agent to finish finds its chat gone (removed outside the app), so its result cannot be stored.
+      if (call.prompt.includes('## Focus: this section\n[section security]')) { await rm(join(dirname(call.cwd), `${chat}.json`), { force: true }); return { text: 'Done first.' }; }
+      await new Promise((resolve, reject) => call.signal.addEventListener('abort', () => reject(Object.assign(new Error('stopped'), { code: 'ABORTED' })), { once: true }));
+    } finally { active--; }
+  };
+  const app = await startTestServer(t, { port: 0, executor: null, researchRunner });
+  const { token } = (await api(app, '/api/session')).data;
+  const project = (await api(app, '/api/origin/projects', { method: 'POST', token, body: { name: 'Shop' } })).data.project;
+  const settings = { provider: 'codex', mode: 'swarm', targets: ['architecture', 'security', 'testing'].map(id => ({ kind: 'section', id })) };
+  chat = (await api(app, `/api/origin/research/${project.id}/chats`, { method: 'POST', token, body: { settings } })).data.chat.id;
+  const result = await run(app, token, project.id, chat, { text: 'Find gaps', settings });
+  assert.equal(result.events.at(-1).type, 'error');
+  assert.equal(active, 0, 'no agent is still running once the run has ended');
 });

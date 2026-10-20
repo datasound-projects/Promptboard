@@ -70,4 +70,8 @@ test('a move into Done by automation is a move; a completion move is described b
   const transitions = [{ at: 5, from: 'executing', to: 'done', by: 'automation' }, { at: 6, from: 'done', to: 'todo', by: 'reopen' }, { at: 7, from: 'testing', to: 'done', by: 'unmerged' }];
   const events = await buildTimeline({ tasks: [{ id: 't1', title: 'T', createdAt: 1, transitions, completion: { kind: 'unmerged', at: 7 } }] }, []);
   assert.deepEqual(events.map(event => `${event.kind}:${event.stage}`), ['created:todo', 'moved:done', 'moved:todo', 'completed:done']);
+  // IDs come from each move's time, not its place in the bounded history; two moves in one millisecond stay two events.
+  assert.deepEqual(events.filter(event => event.kind !== 'created').map(event => event.id), ['move:t1:5', 'move:t1:6', 'done:t1:7']);
+  const same = await buildTimeline({ tasks: [{ id: 't1', title: 'T', createdAt: 1, transitions: [{ at: 5, from: 'todo', to: 'planning', by: 'user' }, { at: 5, from: 'planning', to: 'todo', by: 'system' }] }] }, []);
+  assert.deepEqual(same.filter(event => event.kind === 'moved').map(event => event.id), ['move:t1:5', 'move:t1:5.1']);
 });

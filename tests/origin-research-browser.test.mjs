@@ -116,3 +116,45 @@ test('Research and project switching: a run stops and keeps its partial answer; 
   assert.deepEqual(stored.messages.map(message => [message.role, message.text, message.status || '']), [['user', 'Long research', ''], ['assistant', 'Early notes', 'stopped']]);
   assert.deepEqual(browser.consoleMessages.filter(line => line.startsWith('EXCEPTION')), []);
 });
+
+test('Undo of a removed section brings back the research scope and the swarm parts it took', { skip: !chrome, timeout: 180000 }, async t => {
+  const { ev, wait } = await researchPage(t);
+  const click = selector => ev(`document.querySelector(${J(selector)}).click();`);
+  const pricing = J({ kind: 'section', id: 'pricing' });
+  const chips = () => ev(`return [...document.querySelectorAll('.origin-research-targets .origin-research-chip-toggle')].map(n => n.textContent);`);
+  await click('#origin-research-open');
+  await wait(`document.querySelector('#origin-research-scope')`, 'panel');
+  await ev(`const s = document.querySelector('#origin-research-scope'); s.value = ${J(pricing)}; s.dispatchEvent(new Event('change', { bubbles: true }));`);
+  await click('#origin-research-mode-swarm');
+  await wait(`document.querySelector('#origin-research-scope').getAttribute('aria-label') === 'Add a part to research'`, 'swarm picker');
+  for (const label of ['Decide › Pricing model', 'Operate › Security']) await ev(`const s = document.querySelector('#origin-research-scope'); s.value = [...s.options].find(o => o.textContent === ${J(label)}).value; s.dispatchEvent(new Event('change', { bubbles: true }));`);
+  await wait(`document.querySelectorAll('.origin-research-targets .origin-research-chip').length === 2`, 'two parts');
+  // Delete the section from the sidebar (it has a description, so Origin asks first), then take it back.
+  await ev(`const m = document.querySelector('[data-nav="menu:section:pricing"]').closest('details'); m.open = true; [...m.querySelectorAll('.origin-menu-item')].find(b => b.textContent === 'Delete section…').click();`);
+  await wait(`document.querySelector('#origin-remove-dialog')?.open`, 'asks first');
+  await click('#origin-remove-dialog-submit');
+  await wait(`!document.querySelector('.origin-nav-item[data-section="pricing"]') && document.querySelectorAll('.origin-research-targets .origin-research-chip').length === 1`, 'the part went with the section');
+  assert.deepEqual(await chips(), ['Operate › Security']);
+  await click('#origin-undo .origin-undo-button');
+  await wait(`document.querySelector('.origin-nav-item[data-section="pricing"]') && document.querySelectorAll('.origin-research-targets .origin-research-chip').length === 2`, 'undo brings the part back');
+  assert.deepEqual(await chips(), ['Decide › Pricing model', 'Operate › Security']);
+  await click('#origin-research-mode-chat');
+  await wait(`document.querySelector('#origin-research-scope').getAttribute('aria-label') === 'What to research'`, 'chat mode');
+  assert.equal(await ev(`return document.querySelector('#origin-research-scope').value;`), pricing, 'and the scope');
+});
+
+test('On a phone the Research header keeps every tool on screen with a long CLI and model name', { skip: !chrome, timeout: 120000 }, async t => {
+  const { ev, wait } = await researchPage(t, { width: 390, height: 844 });
+  const click = selector => ev(`document.querySelector(${J(selector)}).click();`);
+  await click('#origin-research-open');
+  await wait(`document.querySelector('#origin-research-cli')?.textContent !== 'CLI…'`, 'CLIs read');
+  await click('#origin-research-cli');
+  await wait(`document.querySelector('#origin-research-provider')`, 'settings');
+  await ev(`const p = document.querySelector('#origin-research-provider'); p.value = 'claude'; p.dispatchEvent(new Event('change', { bubbles: true }));`);
+  await wait(`[...document.querySelectorAll('#origin-research-model option')].some(o => o.value === 'sonnet')`, 'models');
+  await ev(`const m = document.querySelector('#origin-research-model'); m.value = 'sonnet'; m.dispatchEvent(new Event('change', { bubbles: true }));`);
+  await wait(`document.querySelector('#origin-research-cli').textContent === 'Claude Code · sonnet'`, 'a long CLI label');
+  const box = await ev(`const r = s => document.querySelector(s).getBoundingClientRect(); return { drawer: r('#origin-drawer').right, close: r('#origin-research-close').right, width: r('#origin-research-close').width };`);
+  assert.ok(box.close <= box.drawer - 4, `Close ends at ${box.close}, the panel at ${box.drawer}`);
+  assert.equal(box.width, 30, 'the tools keep their size; the CLI name is shortened instead');
+});

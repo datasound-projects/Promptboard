@@ -28,7 +28,7 @@ API key. It never starts Kanban work.
    **Reject** discards it. Select several cards and use **Apply selected**, or **Apply all**.
 
 **History** (the clock) lists this project's chats: search them, open one to continue, or delete one after
-confirmation. Each chat is marked by color: **red** while suggestions wait to be applied (or have a conflict),
+confirmation (research running in it stops first). Each chat is marked by color: **red** while suggestions wait to be applied (or have a conflict),
 **green** once applied, **grey** when there was nothing to apply, **orange** when its latest run failed or its
 suggestions could not be read. Every message, source, suggestion and its state is restored after a restart.
 
@@ -60,7 +60,7 @@ one closes the others and keeps unsaved and unsent text. On phones the panel fil
   it may write come from the sections, topics and questions that exist: a deleted section, topic or Vision question is
   never offered, its records are never suggested, and a suggestion for one is refused. A run saves pending edits first,
   so a section added a moment ago is part of it. With the panel open, adding, renaming, moving or deleting a section
-  updates its scopes at once. A suggestion whose section, topic, question or record was deleted after the research
+  updates its scopes at once, and **Undo** of a deletion brings back the scope and swarm parts it took. A suggestion whose section, topic, question or record was deleted after the research
   ran (also while it was running) is shown as no longer applicable with only **Dismiss**: nothing brings the removed
   part back. A project with no sections gets a chat answer and no suggestions.
 - **Where to write.** Each run also gets instructions built from the saved blueprint for the selected part
@@ -135,7 +135,7 @@ one closes the others and keeps unsaved and unsent text. On phones the panel fil
 
 ```text
 Chat      { schema: "promptboard.origin-research", version: 1, id, originId, title, createdAt, updatedAt,
-            settings: { provider, model, effort, mode, web, scope }, native: { provider, sessionId } | null,
+            settings: { provider, model, effort, mode, web, skills, scope, targets? }, native: { provider, sessionId, contextHash } | null,
             sources: Source[], messages: Message[], proposals: Proposal[] }
 Message   { id, role: "user" | "assistant" | "agent", text, at, mode, agent?: { id, label, target },
             status: "done" | "stopped" | "failed", error?: { code, message }, citations?: Citation[], provider, model }
@@ -160,7 +160,7 @@ not needed work without code changes.
 ### Streaming events (NDJSON, server → page)
 
 ```text
-{ type: "start", runId, mode, agents: [{ id, label }] }
+{ type: "start", mode, agents: [{ id, label, status? }] }
 { type: "delta", agent, text }                     text as the CLI produces it
 { type: "activity", agent, kind, label }           web search, page fetch, tool use
 { type: "agent", agent, status, error? }           running | done | failed | stopped
@@ -173,11 +173,14 @@ not needed work without code changes.
 ### Source
 
 ```text
-{ id, type: "document" | "base" | "mcp", name, enabled, ref }
+{ id, type: "document", name, enabled, addedAt, documentId, from?, to? }
+{ id, type: "excerpt", name, enabled, addedAt, text }
+{ id, type: "base", name, enabled, addedAt, resourceId }
+{ id, type: "mcp", name, enabled, addedAt, config, library?, tools, resourceId? }
 ```
 
-`ref` holds an identifier only: a Compose document ID, a Base resource ID, or an MCP connection without secrets.
-Document text is never copied into the chat.
+A source holds identifiers only: a Compose document ID, a Base resource ID, or an MCP connection whose credentials are
+environment variable names. Document text is never copied into the chat; an excerpt keeps the text you pasted.
 
 ### Proposal (suggestion)
 

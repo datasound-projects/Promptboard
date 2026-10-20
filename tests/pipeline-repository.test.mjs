@@ -142,6 +142,11 @@ test('repository file reads are bounded and fatal UTF-8, detect either source ch
   assert.notEqual((await readRepositoryPipeline(root)).sourceRevision, original.sourceRevision);
   await writeFile(join(root, 'promptboard.local.json'), Buffer.from([0xff])); await assert.rejects(readRepositoryPipeline(root), { code: 'INVALID_REPOSITORY_PIPELINE' });
   await writeFile(join(root, 'promptboard.local.json'), '{'); await assert.rejects(readRepositoryPipeline(root), { code: 'INVALID_REPOSITORY_PIPELINE' });
+  // JSON that is not one object is named as such; `null` must not read as a missing file.
+  for (const text of ['null', '[]', '"columns"', '1']) {
+    await writeFile(join(root, 'promptboard.local.json'), text);
+    await assert.rejects(readRepositoryPipeline(root), { code: 'INVALID_REPOSITORY_PIPELINE', message: 'promptboard.local.json must contain one JSON object.' });
+  }
   await writeFile(join(root, 'promptboard.local.json'), ' '.repeat(4 * 1024 * 1024 + 1)); await assert.rejects(readRepositoryPipeline(root), { code: 'INVALID_REPOSITORY_PIPELINE' });
   await rm(join(root, 'promptboard.local.json')); await mkdir(join(root, 'promptboard.local.json')); await assert.rejects(readRepositoryPipeline(root), { code: 'INVALID_REPOSITORY_PIPELINE' });
 });

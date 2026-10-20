@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { escapeId } from '../src/origin.mjs';
 import { findChrome } from './helpers/browser.mjs';
 import { researchPage } from './helpers/research.mjs';
 
@@ -200,4 +203,22 @@ test('a link to a record that is applied after a reload is still completed', { s
   const items = (await call(`/api/origin/projects/${originId}`)).blueprint.items;
   const schema = items.find(item => item.title === 'Orders schema'), endpoints = items.find(item => item.title === 'Order endpoints');
   assert.deepEqual(endpoints.dependsOn, [schema.id]);
+});
+
+test('a suggestion applied while its state cannot be saved is shown as applied, so it is never applied twice', { skip: !chrome, timeout: 120000 }, async t => {
+  const researchRunner = async call => ({ text: `Add a cache.\n\n\`\`\`origin-suggestions\n${J({ suggestions: [SUGGESTIONS.suggestions[1]] })}\n\`\`\``, session: call.session?.id || 'thread-1' });
+  const { app, ev, wait, call, originId } = await researchPage(t, { server: { researchRunner } });
+  const click = selector => ev(`document.querySelector(${J(selector)}).click();`);
+  await click('#origin-research-open');
+  await wait(`document.querySelector('#origin-research-send') && !document.querySelector('#origin-research-send').disabled`, 'ready');
+  await ev(`const i = document.querySelector('#origin-research-input'); i.value = 'Caching?'; i.dispatchEvent(new Event('input', { bubbles: true })); i.closest('form').requestSubmit();`);
+  await wait(`document.querySelector('.origin-research-proposal .origin-research-apply')`, 'a suggestion card');
+  // The chat's file goes away (for example, removed by hand), so the review state cannot be saved.
+  const [chat] = (await call(`/api/origin/research/${originId}/chats`)).chats;
+  await rm(join(app.board.store.dir, 'origin', 'research', escapeId(originId), `${chat.id}.json`));
+  await click('.origin-research-proposal .origin-research-apply');
+  await wait(`document.querySelector('.origin-research-proposal').dataset.status === 'applied' && document.querySelector('#origin-drawer .origin-inline-error')`, 'applied, with the error');
+  assert.equal(await ev(`return document.querySelectorAll('.origin-research-proposal .origin-research-apply').length;`), 0, 'no second Apply');
+  await wait(`document.querySelector('#origin-view').dataset.save === 'saved'`, 'saved');
+  assert.equal((await call(`/api/origin/projects/${originId}`)).blueprint.technologies.filter(entry => entry.name === 'Redis').length, 1);
 });

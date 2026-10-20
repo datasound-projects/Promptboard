@@ -4,18 +4,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { createServer } from 'node:net';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { privateAddress, remoteSettings, RemoteAccess, tailscaleState } from '../src/remote-access.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
+import { setup, until } from './helpers/ui-harness.mjs';
 
 const freePort = () => new Promise(resolve => { const probe = createServer().listen(0, '127.0.0.1', () => { const { port } = probe.address(); probe.close(() => resolve(port)); }); });
 /** One HTTP request with any headers (fetch cannot set Host). Resolves { status, headers, body, json }. */
 function request(port, path, { method = 'GET', headers = {}, body, host = `127.0.0.1:${port}` } = {}) {
   return new Promise((resolve, reject) => {
-    const req = http.request({ host: '127.0.0.1', port, path, method, headers: { Host: host, ...(body ? { 'Content-Type': 'application/json' } : {}), ...headers } }, res => {
+    // A length, as browsers send: Node drops a kept-alive socket after a refused request whose chunked body was not read.
+    const req = http.request({ host: '127.0.0.1', port, path, method, headers: { Host: host, ...(body ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(JSON.stringify(body)) } : {}), ...headers } }, res => {
       let text = ''; res.setEncoding('utf8'); res.on('data', chunk => { text += chunk; });
       res.on('end', () => { let json = null; try { json = JSON.parse(text); } catch {} resolve({ status: res.statusCode, headers: res.headers, body: text, json }); });
     });
@@ -239,6 +243,149 @@ test('Tailscale off uses the port Promptboard is served on; a shared host name i
   assert.equal((await tailscaleState(4319, cli)).shared, true);
   access.tailscale = null;
   assert.ok((await access.status()).warnings.some(line => /sign-in to it as well/.test(line)));
+});
+
+test('every route from a paired phone: the local-only ones are refused, every other one reaches the app', async t => {
+  const { local } = await app(t);
+  const remotePort = await freePort();
+  await local('/api/remote/settings', 'POST', { method: 'twingate', port: remotePort, bind: '127.0.0.1' });
+  const { pairing } = (await local('/api/remote/pairing', 'POST', {})).json;
+  const jar = { Cookie: (await request(remotePort, '/api/remote/pair', { method: 'POST', body: { code: pairing.code } })).headers['set-cookie'][0].split(';')[0] };
+  const token = (await request(remotePort, '/api/session', { headers: jar })).json.token;
+  const id = '00000000-0000-4000-8000-000000000000';
+  const LOCAL_ONLY = ['GET /api/remote', 'GET /api/remote?refresh=1', 'POST /api/remote/settings', 'POST /api/remote/pairing', 'POST /api/remote/serve', 'DELETE /api/remote/sessions/all', `DELETE /api/remote/sessions/${id}`,
+    'GET /api/editors', 'PUT /api/editors', 'POST /api/auth/login', 'POST /api/auth/cancel', 'POST /api/auth/logout', 'POST /api/github/login', 'POST /api/github/login/cancel', 'POST /api/folder/choose', 'POST /api/projects/p1/open',
+    'POST /api/base/mcp/import/preview', 'POST /api/base/mcp/import', 'POST /api/base/markdown/scan', 'POST /api/base/markdown/import'];
+  const each = (prefix, rows) => rows.map(row => { const [method, action = ''] = row.split(' '); return `${method} ${prefix}${action ? `/${action}` : ''}`; });
+  const ALLOWED = ['GET /', 'GET /app.js', 'GET /api/session', 'GET /api/providers', 'GET /api/status', 'GET /api/models', 'GET /api/usage', 'GET /api/auth', 'POST /api/notifications/connect', 'POST /api/notifications/ack',
+    'POST /api/compose/cancel', 'GET /api/compose/batches', 'POST /api/compose/prepare', 'POST /api/compose/sources/document', 'DELETE /api/compose/sources/document/d1', 'POST /api/compose/mcp/test', 'POST /api/split', 'POST /api/generate',
+    'GET /api/coordinator/p1', 'POST /api/coordinator/p1/ask', 'GET /api/shared-projects', 'GET /api/origin/projects', 'GET /api/origin/blueprints', 'GET /api/origin/projects/p1/document', 'GET /api/origin/research/p1/chats', `POST /api/origin/research/p1/chats/${id}/run`,
+    'GET /api/board', 'GET /api/board/export', 'POST /api/board/migrate', 'POST /api/board/import', 'POST /api/projects', 'POST /api/repository/validate', 'POST /api/tasks', 'PATCH /api/settings',
+    'GET /api/github/status', 'GET /api/github/login', 'GET /api/github/repos', 'PATCH /api/projects/p1/timeline/n1', 'DELETE /api/projects/p1/timeline/n1', 'POST /api/projects/p1/file-proposal',
+    ...each('/api/projects/p1', ['PUT file', 'GET files', 'GET file', 'PATCH', 'PATCH labels', 'DELETE', 'POST repository', 'POST init-repository', 'GET branches', 'PATCH autopilot', 'POST autopilot', 'PATCH columns', 'PATCH pipeline', 'PATCH execution', 'POST full-autopilot',
+      'GET repository-pipeline', 'GET repository-pipeline-status', 'POST repository-pipeline', 'PATCH workflow', 'PATCH tests', 'POST target-branch', 'GET timeline', 'POST timeline', 'POST github', 'GET github-remote', 'GET run-info', 'DELETE github', 'POST github-fetch', 'POST github-update', 'POST confirm-import']),
+    ...each('/api/runs/r1', ['GET', 'GET stream', 'GET plan', 'GET last-message', 'GET output', 'POST input', 'POST resize', 'POST cancel', 'POST confirm', 'POST pause', 'GET base', 'GET base-context', 'GET base-definition']),
+    ...each('/api/tasks/t1', ['PATCH', 'POST refine', 'POST pipeline-settings', 'DELETE', 'POST move', 'GET automations', 'POST cancel-automations', 'POST merge-now', 'POST start-over', 'POST restart-sessions', 'POST restore-worktree', 'POST complete-stage', 'POST reopen', 'POST duplicate',
+      'POST prerequisites', 'POST runs', 'POST resume', 'DELETE worktree', 'GET revision', 'GET uncommitted', 'GET merge-preview', 'POST commit', 'POST accept-review', 'POST tests', 'POST merge', 'POST update-branch', 'POST abort-merge', 'POST pull-request', 'POST pull-request-status', 'POST complete-no-changes']),
+    ...each('/api/base', ['GET', 'GET presets', 'GET avatar/service', 'POST avatar/cancel', 'POST avatar/generate', 'POST preview', 'POST apply', 'POST restore-global', 'POST skills/import', 'POST resources', 'POST import/preview', 'POST import', 'POST export', 'POST roots', 'DELETE roots/r1',
+      'POST wiki/cancel', 'POST wiki/generate', 'POST wiki/apply', 'POST source/import', 'GET markdown/templates']),
+    ...each('/api/base/resources/b1', ['GET', 'GET revisions', 'GET revisions/1', 'GET avatar', 'POST override', 'POST deploy', 'PATCH', 'DELETE', 'POST test', 'POST refresh', 'GET search'])];
+  // The table covers every route the server and Base declare: a new route must be added here, local-only or not.
+  const paths = [...LOCAL_ONLY, ...ALLOWED].map(row => row.split(' ')[1].split('?')[0]);
+  for (const file of ['server.mjs', 'base-http.mjs']) {
+    const source = await readFile(new URL(`../src/${file}`, import.meta.url), 'utf8');
+    for (const [, literal] of source.matchAll(/'(\/api\/[^'`$]*)'/g)) assert.ok(paths.some(path => path.startsWith(literal)), `${file}: ${literal} is not in the route table`);
+    const actions = [...source.matchAll(/action === '([a-z-]+)'/g)].map(match => match[1]).concat([...source.matchAll(/\[([^\]]+)\]\.includes\(action\)/g)].flatMap(match => match[1].match(/[a-z-]+/g)));
+    for (const action of actions) assert.ok(paths.some(path => path.endsWith(`/${action}`)), `${file}: the ${action} action is not in the route table`);
+  }
+  // Refused with the right token too: the refusal comes before the app.
+  for (const row of LOCAL_ONLY) {
+    const [method, path] = row.split(' ');
+    const refused = await request(remotePort, path, { method, headers: { ...jar, 'X-STE-Token': token }, ...(method === 'GET' ? {} : { body: {} }) });
+    assert.deepEqual([refused.status, refused.json?.code], [403, 'REMOTE_LOCAL_ONLY'], row);
+  }
+  // Allowed: the request passes the remote checks and reaches the app, shown by the app's own token check, so no handler runs.
+  for (const row of ALLOWED) {
+    const [method, path] = row.split(' ');
+    const reached = await request(remotePort, path, { method, headers: { ...jar, 'X-STE-Token': 'not-the-token' }, ...(method === 'GET' ? {} : { body: {} }) });
+    if (path.startsWith('/api/') && path !== '/api/session') assert.deepEqual([reached.status, reached.json?.error], [403, 'Reload this page before you try again.'], row);
+    else assert.equal(reached.status, 200, row);
+  }
+});
+
+test('Revoke all also voids an unused code, turning off clears a listener error, expired devices leave the list, a stored wildcard address is never used, and a new port closes the old one', async t => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'pb-remote-state-')); t.after(() => rm(dataDir, { recursive: true, force: true }));
+  let now = Date.now();
+  const make = () => new RemoteAccess({ dataDir, localPort: 1, handle: (req, res) => { res.writeHead(200); res.end('app'); }, now: () => now }).load();
+  let access = await make(); t.after(() => access.close());
+  const first = await freePort();
+  await access.configure({ method: 'twingate', port: first, bind: '127.0.0.1' });
+  // A code shown before Revoke all (perhaps seen by someone else) does not pair a device afterwards.
+  await access.pair(access.newPairing().code);
+  const { code } = access.newPairing();
+  await access.revoke('all');
+  await assert.rejects(access.pair(code), { code: 'REMOTE_NO_PAIRING' });
+  assert.equal((await access.status()).pairing, null);
+  // An expired device leaves the list when it loses access.
+  await access.pair(access.newPairing().code);
+  assert.equal((await access.status()).sessions.length, 1);
+  now += 31 * 86400000;
+  assert.deepEqual((await access.status()).sessions, []);
+  // Another port: the old listener is closed, the new one answers.
+  const second = await freePort();
+  assert.equal((await access.configure({ method: 'twingate', port: second, bind: '127.0.0.1' })).listening, true);
+  await assert.rejects(request(first, '/remote'));
+  assert.equal((await request(second, '/remote')).status, 200);
+  // A busy port is reported; turning remote access off does not keep showing that error.
+  const busy = http.createServer().listen(first, '127.0.0.1'); await new Promise(resolve => busy.once('listening', resolve)); t.after(() => new Promise(resolve => busy.close(resolve)));
+  assert.match((await access.configure({ method: 'twingate', port: first, bind: '127.0.0.1' })).error, new RegExp(`Port ${first} is already in use`));
+  assert.deepEqual([(await access.configure({ method: 'local' })).error, access.server], ['', null]);
+  // A settings file edited to listen on every interface is never used: remote access stays off.
+  await access.close();
+  await writeFile(join(dataDir, 'remote-access.json'), JSON.stringify({ schema: 'promptboard.remote-access', version: 1, settings: { method: 'twingate', port: second, bind: '0.0.0.0', host: '', cert: '', key: '' }, sessions: [] }));
+  access = await make();
+  assert.deepEqual([access.settings.method, access.settings.bind, access.server], ['local', '127.0.0.1', null]);
+});
+
+test('Settings: saving another Twingate field keeps the HTTPS certificate, and a code that no longer works is not shown', async t => {
+  const ctx = await setup(t);
+  const { $, win } = ctx;
+  const local = (path, method = 'GET', body) => fetch(`${ctx.app.url}${path}`, { method, headers: { 'X-STE-Token': win.__pbTest.token, ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) }).then(r => r.json());
+  const port = await freePort();
+  // Paths to files that do not exist: the settings are saved, the HTTPS listener reports that it cannot start.
+  await local('/api/remote/settings', 'POST', { method: 'twingate', port, bind: '127.0.0.1', host: 'promptboard.internal', cert: '/missing/cert.pem', key: '/missing/key.pem' });
+  $('#app-settings-open').click(); await ctx.idle();
+  await until(() => $('#set-remote-cert'), 'Twingate fields');
+  assert.deepEqual([$('#set-remote-cert').value, $('#set-remote-key').value], ['/missing/cert.pem', '/missing/key.pem']);
+  const type = (id, value) => { $(id).value = value; $(id).dispatchEvent(new win.Event('input')); };
+  const click = label => [...$('#set-remote-group').querySelectorAll('button')].find(button => button.textContent === label).click();
+  type('#set-remote-host', 'pb.internal'); click('Save'); await ctx.idle({ requireComplete: true });
+  const { remote } = await local('/api/remote');
+  assert.deepEqual([remote.host, remote.cert, remote.key], ['pb.internal', '/missing/cert.pem', '/missing/key.pem'], 'HTTPS is kept');
+  // Cleared on purpose: plain HTTP, and the listener starts.
+  type('#set-remote-cert', ''); type('#set-remote-key', ''); click('Save'); await ctx.idle({ requireComplete: true });
+  await until(() => /listening on 127\.0\.0\.1/.test($('#set-remote-group').textContent), 'listening');
+  const { pairing } = await local('/api/remote/pairing', 'POST', {});
+  assert.equal((await request(port, '/api/remote/pair', { method: 'POST', body: { code: pairing.code } })).status, 200);
+  // A code on screen, then Revoke all: the code no longer pairs, so it is not shown any more.
+  click('Pair a device'); await ctx.idle({ requireComplete: true });
+  await until(() => $('#set-remote-code'), 'code shown');
+  click('Revoke all devices'); await ctx.idle({ requireComplete: true });
+  await until(() => !$('#set-remote-group .remote-sessions'), 'devices revoked');
+  assert.equal($('#set-remote-code'), null);
+});
+
+test('a server error on the live remote listener is shown in Settings and stops nothing: the app keeps running', async t => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'pb-remote-error-')); t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const port = await freePort();
+  await writeFile(join(dataDir, 'remote-access.json'), JSON.stringify({ schema: 'promptboard.remote-access', version: 1, settings: { method: 'twingate', port, bind: '127.0.0.1', host: '', cert: '', key: '' }, sessions: [] }));
+  // Its own process, so an unhandled 'error' would end it the way it ends the real app (with every running agent).
+  const script = `
+    const { RemoteAccess } = await import(${JSON.stringify(new URL('../src/remote-access.mjs', import.meta.url).href)});
+    let access; const listen = RemoteAccess.prototype.listen; RemoteAccess.prototype.listen = function () { access = this; return listen.call(this); };
+    const { startServer } = await import(${JSON.stringify(new URL('../src/server.mjs', import.meta.url).href)});
+    const app = await startServer({ port: 0, dataDir: ${JSON.stringify(dataDir)}, projectsDir: ${JSON.stringify(join(dataDir, 'projects'))}, executor: null });
+    setImmediate(() => access.server.emit('error', Object.assign(new Error('accept failed'), { code: 'EMFILE' })));
+    await new Promise(resolve => setTimeout(resolve, 200));
+    const token = (await (await fetch(app.url + '/api/session')).json()).token;
+    const { remote } = await (await fetch(app.url + '/api/remote', { headers: { 'X-STE-Token': token } })).json();
+    const page = await fetch('http://127.0.0.1:${port}/remote');
+    console.log(JSON.stringify({ error: remote.error, listening: remote.listening, page: page.status }));
+    await app.close(); process.exit(0);`;
+  const { stdout } = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', script], { timeout: 60000 });
+  assert.deepEqual(JSON.parse(stdout.trim().split('\n').at(-1)), { error: 'The remote listener reported an error (EMFILE). If the phone cannot connect, turn remote access off and on again.', listening: true, page: 200 });
+});
+
+test('requests that arrive together share one Tailscale status lookup; a refresh reads again', async t => {
+  let calls = 0;
+  const cli = { run: async args => { if (args[0] !== 'status') return '{}'; calls++; await new Promise(resolve => setTimeout(resolve, 50)); return JSON.stringify({ BackendState: 'Running', Self: { DNSName: 'mac.tail1234.ts.net.' } }); } };
+  const dataDir = await mkdtemp(join(tmpdir(), 'pb-remote-lookup-')); t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const access = await new RemoteAccess({ dataDir, localPort: 1, handle: () => {}, cli }).load(); t.after(() => access.close());
+  access.settings = { ...access.settings, method: 'tailscale', port: 4319 };
+  const states = await Promise.all([access.status(), access.status(), access.status()]);
+  assert.deepEqual([calls, states.map(state => state.tailscale.name)], [1, ['mac.tail1234.ts.net', 'mac.tail1234.ts.net', 'mac.tail1234.ts.net']]);
+  await access.status({ refresh: true });
+  assert.equal(calls, 2);
 });
 
 test('Tailscale Serve not enabled for the tailnet: the refusal carries Tailscale’s own link and nothing is changed', async t => {
