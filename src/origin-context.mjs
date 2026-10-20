@@ -44,7 +44,8 @@ export const FIELDS = {
   layers: ['name', 'description', 'technologyIds', 'constraints'],
   customSections: ['phase', 'title', 'description', 'notApplicable'],
   questions: ['scope', 'sectionId', 'text'],
-  blocks: ['sectionId', 'type', 'title', 'text', 'entries', 'checks', 'columns', 'rows', 'nodes', 'edges'],
+  // `starter` only marks a template's block as untouched; it is bookkeeping, not design content.
+  blocks: ['sectionId', 'type', 'title', 'starter', 'text', 'entries', 'checks', 'columns', 'rows', 'nodes', 'edges'],
 };
 // `sequence` only reserves the next display key; it is application bookkeeping, not design content.
 // `structure` is the sidebar itself: the export follows it (categories, their pages, shown topics and vision fields).
