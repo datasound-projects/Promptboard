@@ -381,11 +381,12 @@ async function loadProviders() {
       if (firstAvailable) $('#provider').value = firstAvailable.id;
     }
     updateProviderState();
+    loadAuth(authInfo?.provider || $('#provider').value);
     // A sign-in still waiting in the CLI (for example, after a reload) shows its page and Cancel again; otherwise it blocks every CLI job.
-    api('/api/status', { timeoutMs: 5000 }).then(({ data }) => data.auth?.state === 'waiting' ? data.auth : null, () => null).then(operation => {
-      loadAuth(operation?.provider || authInfo?.provider || $('#provider').value);
-      if (operation && !authBusy) followSignIn(operation);
-    });
+    api('/api/status', { timeoutMs: 5000 }).then(({ data }) => {
+      if (data.auth?.state !== 'waiting' || authBusy) return;
+      loadAuth(data.auth.provider); followSignIn(data.auth);
+    }, () => {});
     loadBoard();
     if (currentPage() === 'base') baseView?.show();
     if (currentPage() === 'origin') originView?.show();
