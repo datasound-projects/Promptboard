@@ -62,7 +62,7 @@ async function launchOnce({ width = 1280, height = 900, motion = false } = {}) {
     const consoleMessages = [];
     listeners.add(message => {
       if (message.method === 'Runtime.consoleAPICalled') consoleMessages.push(message.params.args.map(arg => arg.value ?? arg.description).join(' '));
-      if (message.method === 'Log.entryAdded') consoleMessages.push(message.params.entry.text);
+      if (message.method === 'Log.entryAdded') consoleMessages.push(`${message.params.entry.text}${message.params.entry.url ? ` ${message.params.entry.url}` : ''}`);
       if (message.method === 'Runtime.exceptionThrown') consoleMessages.push(`EXCEPTION ${message.params.exceptionDetails.exception?.description || message.params.exceptionDetails.text}`);
     });
     const browser = {
