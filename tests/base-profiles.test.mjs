@@ -101,6 +101,9 @@ test('a switched-off MCP tool whose name has a dot is disallowed under the name 
   const prepared = await prepareBase({ manifest, currentResources: registry.base.resources, readRevision: async () => structuredClone(docs), runDir: dir });
   const args = (await buildSession({ provider: 'claude', stage: 'executing', config: resolveConfig('executing', { provider: 'claude' }), message: 'task', runDir: dir, eventsFile: 'events', sessionId: 's', baseDelivery: prepared })).args;
   assert.match(args[args.indexOf('--disallowedTools') + 1], /(?:^|,)mcp__pb_docs__docs_delete(?:,|$)/, 'Claude Code replaces the dot with _ in the tool name');
+  // The per-run MCP configuration is temporary: the run's cleanup removes it.
+  assert.equal(args[args.indexOf('--mcp-config') + 1], join(dir, 'base-claude-mcp.json')); await readFile(join(dir, 'base-claude-mcp.json'));
+  await prepared.cleanup(); await assert.rejects(readFile(join(dir, 'base-claude-mcp.json')), { code: 'ENOENT' });
 });
 
 test('an agent profile delivers its primary agent’s own instructions, and the primary’s nested agents stay subagents', async t => {
