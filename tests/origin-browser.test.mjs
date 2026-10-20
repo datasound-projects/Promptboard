@@ -299,6 +299,10 @@ test('Origin restores a damaged project file and refuses stale saves without tou
   await wait(`document.querySelector('#origin-view').dataset.save === 'conflict'`, 'conflict shown', 15000);
   assert.match(await ev(`return document.querySelector('#origin-error').textContent;`), /changed in another window/);
   assert.equal((await blueprintFile(app, created.id)).blueprint.idea, 'Saved elsewhere', 'The newer save was not overwritten.');
+  // The longer save state wraps the header instead of drawing its controls over each other.
+  await browser.resize(1280, 900);
+  assert.equal(await browser.layout(`const boxes = ['#origin-kanban-link', '#origin-new-project', '#origin-context-open', '#origin-readiness', '#origin-save'].map(s => document.querySelector(s).getBoundingClientRect()).filter(b => b.width);
+    return boxes.length === 5 && boxes.every((a, i) => boxes.every((b, j) => i === j || a.right <= b.left + 1 || b.right <= a.left + 1 || a.bottom <= b.top + 1 || b.bottom <= a.top + 1));`), true);
   // Leaving Origin and coming back saves nothing over it and keeps the page responsive.
   await ev(`location.hash = '#/kanban';`);
   const answer = await Promise.race([ev(`await new Promise(requestAnimationFrame); return location.hash;`), new Promise(resolve => setTimeout(() => resolve('page frozen'), 5000))]);
