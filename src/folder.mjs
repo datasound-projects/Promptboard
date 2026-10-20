@@ -5,6 +5,7 @@
  */
 import { execFile } from 'node:child_process';
 import { BoardError } from './board.mjs';
+import { trackChild } from './providers.mjs';
 
 const PROMPT = 'Choose a project folder for Promptboard';
 // Each picker with how it reports Cancel. Any other failure (no display, no GUI session) makes it unusable here.
@@ -23,12 +24,13 @@ let open = null;
 
 function run(command, args, cancelled) {
   return new Promise(resolve => {
-    execFile(command, args, { shell: false, windowsHide: false, timeout: 10 * 60 * 1000, maxBuffer: 64 * 1024 }, (error, stdout, stderr) => {
+    // Owned, so stopping Promptboard also closes a dialog that is still open.
+    trackChild(execFile(command, args, { shell: false, windowsHide: false, timeout: 10 * 60 * 1000, maxBuffer: 64 * 1024 }, (error, stdout, stderr) => {
       if (!error) resolve({ path: String(stdout).replace(/\r?\n$/, '') }); // Only the line end: a folder name can end in spaces.
       // A dialog left open until the timeout was not answered: that is a cancel too.
       else if (error.killed || cancelled(error.code, String(stderr))) resolve({ path: '' });
       else resolve({ unusable: true });
-    });
+    }));
   });
 }
 
