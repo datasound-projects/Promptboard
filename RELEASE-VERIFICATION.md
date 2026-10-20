@@ -2,6 +2,41 @@
 
 Final verification of Promptboard 0.4.0 before its first open-source release (PB-05), done on 29 September 2026. Code verified at commit `37f5020`.
 
+## Repair pass, 20 October 2026
+
+A whole-app repair pass against 20 written component checklists. They covered:
+- server and security;
+- storage and migrations;
+- the Kanban engine, agent runs, native input, Git and Autopilot, and the Kanban UI;
+- Origin, Research and Compose;
+- Base, shared projects, the Coordinator and remote access;
+- CLIs and Usage;
+- the app shell, the command line and release, and tests and CI;
+- a cleanup of duplicate code, unused code and docs.
+
+One agent worked on each component in its own worktree. Each finding was confirmed by a failing test, a reproduction or an exact code trace before it was fixed. Each fix has a regression test that fails on the old code. Merged in five waves as #134–#138.
+
+### Readiness criteria
+
+| Criterion | Result | Evidence |
+| --- | --- | --- |
+| Full suite on every wave | PASS | Waves 1 to 4: 1228–1313 non-browser tests and 96–105 browser tests, 0 failures, before each PR. Wave 5: see below. |
+| CI | PASS | Ubuntu, macOS and Windows × Node 22 and 24 on each PR. Two real Windows-only and test-only failures were fixed: a path separator in a Base test and an export race in a JSDOM test. Known macOS flakes were rerun once and are now fixed at their cause. |
+| Data survives | PASS | Every older state version v2–v13 migrates once and keeps every field. A v0.4.0 data folder and a pre-pass data folder (Origin, Base, saved prompts, Coordinator, labels, runs) both loaded unchanged on the new code: 12 API views compared by ID. Their backups imported identically. ENOSPC was tested on a real 4 MB disk image. kill -9 during 300 parallel saves lost nothing that had been acknowledged. |
+| Live end to end | PASS | On an isolated instance with real CLIs (Claude Code 2.1.304 haiku, Codex 0.160 low; 22 short runs): Origin template → Research suggestion applied → Compose Batch of 3 → approved → exported twice with no duplicates → Full Autopilot took 3 cards through Planning, Executing, Review, Testing and Merge in prerequisite order, with real squash merges and passing tests → Coordinator answer with existing references → Base Agent Profile (SOUL.md reached the agent; the switched-off MCP tool was withheld) → Open in IDE with a fake editor → the page recovered from a restart without a reload → every page at 390 and 1440 px in both themes. |
+| Security model holds | PASS | Every route was called from a paired phone and checked against the local-only list (a new test makes every new route classify itself). Agents no longer inherit Claude Code session variables. Local folder paths no longer reach the Coordinator's model. |
+
+### Known limitations
+
+- Codex failures inside its interactive session (bad model, quota, network) send no event, so the run shows as running until you look at the terminal.
+- One-shot runs (Compose, Split, file proposals, Research) have no overall timeout; Stop ends them.
+- Run and session history is not capped, because approved plans and evidence point at runs.
+- Windows agent runs, process trees and quoting are tested by simulation and CI only, not on a real Windows machine. Gemini CLI and Antigravity are not live-verified. Real Tailscale, Twingate and iPhone checks have not been done.
+- The Coordinator's project questions see the newest 15 events, so an answer can miss older merges that its index has.
+- X10 mouse reports beyond column or row 95 are dropped; Claude Code, Gemini CLI and Codex use SGR reports.
+- Look-alike letters from different alphabets (Cyrillic а, Latin a) still count as different project names.
+- pnpm and Yarn `.cmd`-only installs on Windows are not detected.
+
 ## Quality pass, 13 October 2026
 
 A second whole-app pass aimed at client demonstrations and real deployments. Five reviewers each covered one area: the
