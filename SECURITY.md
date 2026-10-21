@@ -22,7 +22,9 @@ Report problems privately through GitHub: **Security → Report a vulnerability*
 
 **Processes are owned.** Stopping a run, or Promptboard itself, stops only the processes it started: agent and CLI process groups, test commands, MCP servers and a folder picker that is still open.
 
-**Credentials stay with the CLI.** Promptboard never reads, copies, or logs CLI credential files, and does not copy them into worktrees.
+**Credentials stay with the CLI.** Promptboard never reads, copies, or logs CLI credential files, and does not copy them into worktrees. In Docker mode, Codex's own sign-in file is mounted read-only into the card's container (never copied), and Claude Code uses a token you create with `claude setup-token` and paste in Settings: it is kept in the data folder with owner-only permissions, passed to the container by variable name only, and never written to `state.json`, a backup, a log, an API reply or a command line.
+
+**Docker mode is opt-in per project.** With **Run agents in Docker** on, each card agent (Claude Code or Codex) runs in a container that mounts only the card's worktree (its `.git` pointer read-only), the repository's Git data read-only except its objects and that worktree's own Git folder, the run's folder, and Promptboard's code read-only, at the host's own paths. Planning and Code Review get the worktree and Git data read-only, enforced by the container. Codex's own sandbox cannot start inside a container (bubblewrap needs user namespaces that Docker blocks), so there Codex runs with `--sandbox danger-full-access` and the container is the boundary; Promptboard never loosens the container's security profile and never uses `--dangerously-*` flags. Every run first checks Docker, the image, the sign-in and that the folders are really shared; any failure ends the start, never with a fallback to the host. Stop, Pause and shutdown remove the container, and startup removes containers a crash left behind. Docker mode does not isolate the network (the CLIs need their APIs), files in the worktree that later run on this computer, the writable Git objects, or the sign-in the agent runs with. See [Docker sandbox](docs/docker-sandbox.md).
 
 **No shell interpolation of user text.** CLIs, Git, and your test commands start through `execFile`/`spawn` without a shell. Task text is passed as one argument or pasted into the terminal, never interpolated into a command. Kanban provider executables and flags remain adapter-controlled. A Base stdio MCP definition is an explicit exception for the program and argument list: it is user-configured, must be trusted, and can execute only through an explicit connection test or an authorized agent run. A command recipe is instruction text for the existing CLI, not a separate tool executor.
 
@@ -81,14 +83,14 @@ Report problems privately through GitHub: **Security → Report a vulnerability*
 - An agent in Executing can run any command its CLI allows in the task worktree, with your user's permissions. Review what it asks to do.
 - Worktrees are created with Git hooks disabled. Commits you confirm run your repository's normal Git hooks, like any commit you make yourself; a squash merge is built with `git commit-tree`, which runs no commit hooks. The agent's own commands and your test commands also run normally.
 - These controls do not protect against other software that already runs as your user.
-- Prompt boundaries and read-only modes are enforced by each CLI, not by an operating-system sandbox. A CLI bug can weaken them.
+- Prompt boundaries and read-only modes are enforced by each CLI, not by an operating-system sandbox, unless the project runs its agents in Docker; then the container also limits what the agent can reach. A CLI bug can weaken the CLI's own limits.
 - Prompt text, run output, plans, Base documents, and supplied context are stored unencrypted in the data folder and may be sent to your provider through its CLI. **Do not put API keys, tokens, passwords, or private code you cannot share with your provider into prompts, tasks, or resource documents.** Resource and board exports include document bodies only when requested; review them before sharing. Imports remap resource IDs and external-root references rather than reusing local access grants.
 
 ## Changes that need extra review
 
 - CLI flags, permission modes, hook or notify handling, and executable lookup.
 - Git worktree, commit, merge, and cleanup code.
-- Process start, stop, time limits, and output limits.
+- Process start, stop, time limits, and output limits; Docker mode mounts and container cleanup (src/sandbox.mjs).
 - HTTP binding, token and origin checks, static routes, and the content security policy.
 - Anything that renders agent output (it must stay text, never HTML).
 - Base trust/revocation, immutable revisions, MCP configuration and discovery, source containment and network fetching, import remapping, and wiki job coordination.

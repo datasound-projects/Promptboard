@@ -148,6 +148,7 @@ Each card gets its own Git branch and worktree. When a card enters a column, a f
 - **Usage**: tokens, tool calls and cost estimates from your CLIs' local records.
 - **Settings**: theme, start page, default agents, how many agents run at once, terminal and notifications.
 - **Remote access (iPhone)**: open Promptboard in Safari on your phone through Tailscale or Twingate after pairing it once. Everything keeps running on the computer. See [Remote access](docs/remote-access.md).
+- **Docker sandbox**: run a project's card agents (Claude Code, Codex) in a container that sees only the card's workspace. See [Docker sandbox](docs/docker-sandbox.md).
 - **Command line**: `node bin/ste.mjs --provider claude < request.txt` writes a prompt without the app. Run `--help` for all options.
 
 ## Supported CLIs
