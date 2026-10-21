@@ -404,7 +404,8 @@ test('a backup carries approved lessons and settings, never suggestions or jobs,
 
 test('failed test output and local paths reach the model masked, also where the kept end of the output starts inside a secret', { timeout: 60000 }, async t => {
   const w = await world(t);
-  const card = await w.board.createTask({ projectId: w.project.id, title: 'Payments', prompt: 'Run it with --cwd=/Users/alice/private/shop, then open file:///Users/alice/private/shop/index.html.' });
+  const card = await w.board.createTask({ projectId: w.project.id, title: 'Payments', prompt: 'Run it with --cwd=/Users/alice/private/shop, then open file:///Users/alice/private/shop/index.html. '
+    + 'Bad credentials for ghp_abcdefghijklmnopqrstuvwxyz0123456789, key sk-live-1234567890abcdef1234, run with --token xoxb-1234-5678-abcdefgh. Add a --password flag; see task-1234567890abcdefgh.' });
   const secret = 'sk-live-0123456789abcdefSECRET';
   // Only the last 600 characters are kept: they start inside the keyword, after "STRIPE_AP".
   const tail = `${'x'.repeat(2000)} STRIPE_API_KEY=${secret} ${'y'.repeat(600 - secret.length - 7)}`;
@@ -417,6 +418,9 @@ test('failed test output and local paths reach the model masked, also where the 
   assert.equal(prompt.includes(secret), false, 'the secret never reaches the model');
   assert.doesNotMatch(prompt, /alice/);
   assert.match(prompt, /--cwd=…\/shop, then open file:\/\/…\/index\.html\./);
+  // Bare tokens with a known prefix and a flag's value are masked; plain words after a flag and other words stay.
+  assert.doesNotMatch(prompt, /ghp_abc|sk-live-123|xoxb-1234/);
+  assert.match(prompt, /Add a --password flag; see task-1234567890abcdefgh\./);
 });
 
 test('the model also sees the owner’s newest rejected lessons, so it does not reword them, and they keep their room when the card’s facts are long', { timeout: 60000 }, async t => {
