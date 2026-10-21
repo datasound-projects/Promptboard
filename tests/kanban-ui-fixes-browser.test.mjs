@@ -158,3 +158,20 @@ test('an open page takes the board of a restarted app whose board was restored f
   assert.deepEqual(await browser.eval(`return [...document.querySelectorAll('.kanban-card .kanban-open')].map(node => node.textContent);`), ['Kept']);
   assert.match(await browser.eval(`return document.querySelector('#kanban-load-warning').textContent;`), /last good copy was restored/);
 });
+
+test('Escape in a dialog opened from the phone drawer closes only that dialog and returns focus to its opener', { skip: !chrome, timeout: 90000 }, async t => {
+  const { app, browser } = await open(t, {}, { width: 390, height: 844 });
+  await linked(app, 'Drawer');
+  await browser.goto(`${app.url}/#/kanban`); await browser.until(`document.querySelector('#workspace-count').textContent === '01'`, 'board');
+  await browser.eval(`document.querySelector('#menu-toggle').click();`);
+  await browser.until(`getComputedStyle(document.querySelector('#sidebar')).visibility === 'visible'`, 'drawer open');
+  await browser.eval(`if (document.querySelector('#project-settings').hidden) document.querySelector('#project-toggle').click();
+    document.querySelector('#workflow-open').scrollIntoView({ block: 'center' }); document.querySelector('#workflow-open').focus();`);
+  await enter(browser); await browser.until(`document.querySelector('#workflow-dialog').open`, 'dialog');
+  await escape(browser);
+  await browser.until(`!document.querySelector('#workflow-dialog').open`, 'dialog closed');
+  assert.deepEqual(await browser.layout(`return JSON.stringify({ drawer: document.querySelector('#sidebar').classList.contains('open'), focus: document.activeElement.id });`, JSON.stringify({ drawer: true, focus: 'workflow-open' })), JSON.stringify({ drawer: true, focus: 'workflow-open' }));
+  // Escape outside a dialog still closes the drawer.
+  await escape(browser);
+  assert.equal(await browser.layout(`return !document.querySelector('#sidebar').classList.contains('open') && document.activeElement.id === 'menu-toggle';`), true);
+});

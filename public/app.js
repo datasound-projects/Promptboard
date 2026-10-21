@@ -4482,7 +4482,8 @@ document.addEventListener('keydown', (event) => {
     event.preventDefault();
     newPrompt();
   }
-  if (event.key === 'Escape' && $('#sidebar').classList.contains('open')) { setSidebar(false); $('#menu-toggle').focus(); }
+  // An Escape that closes a dialog opened from the drawer leaves the drawer open.
+  if (event.key === 'Escape' && $('#sidebar').classList.contains('open') && !document.querySelector('dialog[open]')) { setSidebar(false); $('#menu-toggle').focus(); }
   if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && isEditing && $('#prompt-form').contains(event.target) && !running && !$('#generate-button').disabled) {
     event.preventDefault();
     $('#prompt-form').requestSubmit();
