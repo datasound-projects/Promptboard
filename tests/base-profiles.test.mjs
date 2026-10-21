@@ -164,10 +164,14 @@ test('a credential typed into an MCP or recipe argument is refused as in imports
 
 test('a password in a URL, an authorization header and a secret flag’s value are credentials; references, URLs, ports and paths are not', async t => {
   const refused = [['postgresql://admin:S3cretPass@db.internal:5432/app'], ['redis://:S3cretPass@cache:6379'], ['--header', 'Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcDEF123'],
-    ['--header=X-API-Key: abc123def456'], ['--api-key', 'BSAk3j4h5g6f7d8s'], ['--client-secret', 'hunter2hunter2']];
+    ['--header=X-API-Key: abc123def456'], ['--api-key', 'BSAk3j4h5g6f7d8s'], ['--client-secret', 'hunter2hunter2'], ['--header', 'Authorization:Bearer abc123'],
+    ['mongodb+srv://user:pass@cluster0.mongodb.net'], ['mcp-remote', 'https://mcp.example.com/sse?key=abc123'], ['https://mcp.example.com/sse?region=eu&token=abc123']];
   const accepted = [['postgresql://admin:${DB_PASSWORD}@db.internal:5432/app'], ['postgres://localhost:5432/app', 'ssh://git@github.com/acme/shop.git'], ['--header', 'Authorization: Bearer ${API_TOKEN}'],
     ['--header', 'Authorization:${AUTH_HEADER}'], ['--api-key', '$BRAVE_API_KEY'], ['--api-key', '${BRAVE_API_KEY}'], ['--token', '--verbose'], ['--token-file', '/run/secrets/token'],
-    ['https://mcp.example.com/mcp', '--port', '8080'], ['/Users/someone/notes', './data', 'C:\\Users\\someone\\notes', 'file:///Users/someone/notes']];
+    ['https://mcp.example.com/mcp', '--port', '8080'], ['/Users/someone/notes', './data', 'C:\\Users\\someone\\notes', 'file:///Users/someone/notes'],
+    // Switches and words that only sound like secrets, a reference after "=", Docker's -e NAME, and a URL query without a credential.
+    ['--no-password', 'mydb'], ['--require-token', 'server.js'], ['--permissions', 'token:read'], ['--log', 'secret: none'], ['--token=$TOKEN', '--api-key=${API_KEY}'],
+    ['run', '-i', '--rm', '-e', 'GITHUB_PERSONAL_ACCESS_TOKEN', 'ghcr.io/github/github-mcp-server'], ['--header', 'Authorization: Bearer $TOKEN'], ['https://mcp.example.com/sse?region=eu&key=name']];
   const importable = args => parseMcpConfig(JSON.stringify({ mcpServers: { s: { command: 'npx', args } } }), { environment: {} }).servers[0].importable;
   for (const args of refused) assert.equal(importable(args), false, args.join(' '));
   for (const args of accepted) assert.equal(importable(args), true, args.join(' '));
