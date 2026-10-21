@@ -90,7 +90,7 @@ function promptText(value, label, allowBlank = false) {
   if (typeof value !== 'string' || (!allowBlank && !value.trim()) || value.length > MAX_PROMPT) throw new BoardError(`${label} needs ${allowBlank ? 'a text prompt of at most' : 'a prompt of 1 to'} ${MAX_PROMPT.toLocaleString('en-US')} characters.`, 'INVALID_INPUT');
   return value;
 }
-const clip = (value, max) => typeof value === 'string' ? value.slice(0, max) : '';
+const clip = (value, max) => typeof value === 'string' ? value.slice(0, max).replace(/[\uD800-\uDBFF]$/, '') : ''; // Never half an emoji.
 /** Earlier rework rounds of the task, so a fix that undoes an earlier one is noticed (the last entry is the current round). */
 function earlierRounds(history = []) {
   if (history.length < 2) return '';
@@ -401,7 +401,7 @@ function freeName(incoming, originProjects, boardNames) {
   const taken = name => boardNames.some(used => nameKey(used) === nameKey(name))
     || originProjects.some(record => record.id !== incoming.id && record.kanbanProjectId !== incoming.id && nameKey(record.name) === nameKey(name));
   let name = incoming.name;
-  for (let n = 2; taken(name); n++) name = `${incoming.name.slice(0, 74)} (${n})`;
+  for (let n = 2; taken(name); n++) name = `${clip(incoming.name, 74)} (${n})`;
   return name;
 }
 /**
@@ -2300,7 +2300,7 @@ export class Board {
       const { project, task } = this.#task(state, id);
       if (project.tasks.length >= TASK_LIMIT) throw new BoardError(`A project can have at most ${TASK_LIMIT} cards.`, 'LIMIT');
       // A copy is a new card: it keeps its prerequisites but not the Origin identity of the original.
-      const copy = newTask({ title: `${task.title.slice(0, 113)} (copy)`, prompt: task.prompt, source: structuredClone(task.source), checksOutdated: task.checksOutdated, priority: task.priority, labelIds: task.labelIds, ...(task.dependsOn?.length ? { dependsOn: task.dependsOn } : {}), ...(task.externalSource === undefined ? {} : { externalSource: structuredClone(task.externalSource) }) });
+      const copy = newTask({ title: `${clip(task.title, 113)} (copy)`, prompt: task.prompt, source: structuredClone(task.source), checksOutdated: task.checksOutdated, priority: task.priority, labelIds: task.labelIds, ...(task.dependsOn?.length ? { dependsOn: task.dependsOn } : {}), ...(task.externalSource === undefined ? {} : { externalSource: structuredClone(task.externalSource) }) });
       if (project.workflowMode === 'pipeline') copy.column = project.pipeline.columns.find(column => column.role === 'todo').id;
       if (project.workflowMode === 'pipeline' && (task.profileId || task.agentOverride)) Object.assign(copy, normalizePipelineTaskSelection(project.pipeline, { profileId: task.profileId, agentOverride: task.agentOverride }));
       if (task.baseBinding) copy.baseBinding = structuredClone(task.baseBinding);

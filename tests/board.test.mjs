@@ -540,6 +540,15 @@ test('replacing the board by import waits until column automations stop, as dele
   assert.deepEqual((await board.state()).projects, []);
 });
 
+test('a name or title shortened for its suffix never ends in half an emoji', async t => {
+  const board = new Board({ dataDir: await temp(t, 'pb-emoji-') }), name = `${'x'.repeat(73)}😀`;
+  const project = await board.createProject({ name });
+  await board.migrateBrowserBoard({ version: 1, projects: [{ id: 'browser1', name, cards: [{ id: 'c1', title: 'T', prompt: 'P' }] }] });
+  assert.equal((await board.state()).projects.find(item => item.id === 'browser1').name, `${'x'.repeat(73)} (2)`);
+  const card = await board.createTask({ projectId: project.id, title: `${'x'.repeat(112)}😀`, prompt: 'P' });
+  assert.equal((await board.duplicateTask(card.id)).title, `${'x'.repeat(112)} (copy)`);
+});
+
 test('board HTTP routes need the page token, resolve paths on the server, and never start agents', { skip: process.platform === 'win32' }, async t => {
   const dataDir = await temp(t, 'pb-data-');
   const root = await repo(t);
