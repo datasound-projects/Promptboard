@@ -409,20 +409,21 @@ export class Lessons {
   }
   async #run({ projectId, job: queued }, slot) {
     slot.stage = 'lessons';
-    let started;
-    // A failed save stops the worker (the job stays queued); a job decided meanwhile is skipped.
-    await this.#change(projectId, data => {
-      started = data.jobs.find(item => item.id === queued.id && item.status === 'queued');
-      if (!started) return false;
-      Object.assign(started, { status: 'running', updatedAt: Date.now() });
-      return 'job';
-    });
-    if (!started) return;
-    this.current = { projectId, trigger: started.trigger, controller: slot.controller };
-    let outcome;
-    try { outcome = await this.#suggest(projectId, started, slot.controller.signal); }
-    catch (error) { outcome = !slot.controller.signal.aborted ? { reason: reasonOf(error) } : slot.controller.signal.reason === 'off' ? { off: true } : { again: true }; }
-    finally { this.current = null; }
+    let started, outcome;
+    // From the claim on, a shutdown or the switch can stop this run (close() and setSettings abort `current`).
+    this.current = { projectId, trigger: queued.trigger, controller: slot.controller };
+    try {
+      // A failed save stops the worker (the job stays queued); a job decided meanwhile is skipped.
+      await this.#change(projectId, data => {
+        started = data.jobs.find(item => item.id === queued.id && item.status === 'queued');
+        if (!started) return false;
+        Object.assign(started, { status: 'running', updatedAt: Date.now() });
+        return 'job';
+      });
+      if (!started) return;
+      try { outcome = await this.#suggest(projectId, started, slot.controller.signal); }
+      catch (error) { outcome = !slot.controller.signal.aborted ? { reason: reasonOf(error) } : slot.controller.signal.reason === 'off' ? { off: true } : { again: true }; }
+    } finally { this.current = null; }
     await this.#change(projectId, data => {
       const job = data.jobs.find(item => item.id === started.id);
       if (!job) return false;
@@ -443,24 +444,32 @@ export class Lessons {
     }).catch(() => {});
     if (outcome.again) { this.#later(); return 'wait'; }
   }
+  /** One run. A stop at any point before the CLI starts ends it there: no CLI starts, whatever the runner does with a stopped signal. */
   async #suggest(projectId, job, signal) {
+    signal.throwIfAborted();
     const { state, project } = await this.#project(projectId);
     const task = project.tasks.find(item => item.id === job.taskId) || fail('This card was deleted.', 'NOT_FOUND', 404);
     const data = await this.#serial(() => this.#load(projectId));
     const call = choiceFor(data.settings, task, state.runs);
+    signal.throwIfAborted();
     const prompt = promptFor(await evidenceFor(project, task, data.lessons));
+    signal.throwIfAborted();
     const cwd = await makeTempDir('pb-lessons-');
     let text;
-    try { text = (await this.runner({ ...call, prompt, cwd, signal, timeoutMs: 180000 })).text; }
+    try { signal.throwIfAborted(); text = (await this.runner({ ...call, prompt, cwd, signal, timeoutMs: 180000 })).text; }
     finally { await removeTempDir(cwd).catch(() => {}); }
     signal.throwIfAborted();
     return { items: parseLessons(text, data.lessons.flatMap(item => [item.text, item.suggestedText || ''])), provider: call.provider, model: call.model };
   }
-  /** Stops the worker. A running job is queued again (it resumes after the restart); retries wait for the next start. */
-  async close() {
+  /**
+   * Stops the worker. A running job is queued again (it resumes after the restart); retries wait for the next start.
+   * Bounded: a CLI call that never settles cannot hold up the shutdown (the server then ends owned processes itself).
+   */
+  async close({ graceMs = 5000 } = {}) {
     this.closed = true;
     this.current?.controller.abort();
-    await this.working;
+    let timer;
+    await Promise.race([this.working, new Promise(resolve => { timer = setTimeout(resolve, graceMs); })]).finally(() => clearTimeout(timer));
   }
 }
 

@@ -32,6 +32,12 @@ const LESSONS = [
   { kind: 'gotcha', text: 'The review fails when a change has no test.', evidence: 'The first review asked for a test.' },
 ];
 const slot = () => ({ job: { controller: new AbortController() }, release() {} });
+/** A fake CLI call that runs until it is stopped, as runProvider does: one that starts already stopped ends at once. */
+const untilStopped = (call, { stopMs = 0, resolveWith } = {}) => new Promise((resolve, reject) => {
+  const stop = () => setTimeout(() => reject(new ProviderError('Generation was cancelled.', 'ABORTED')), stopMs);
+  resolveWith?.(resolve);
+  if (call.signal.aborted) stop(); else call.signal.addEventListener('abort', stop, { once: true });
+});
 
 /** A board on a disposable repository with project memory attached; the worker starts only when a test starts it. */
 async function world(t, { workflowMode = 'legacy', runner = async () => answer(LESSONS), claim = async () => slot(), dataDir } = {}) {
@@ -202,7 +208,7 @@ test('the CLI is the card’s executing CLI with its smallest model unless the o
 
 test('a restart resumes queued jobs and jobs that were running when the app stopped', { timeout: 60000 }, async t => {
   let release;
-  const w = await world(t, { runner: call => new Promise((resolve, reject) => { release = () => resolve(answer(LESSONS.slice(0, 1))); call.signal.addEventListener('abort', () => reject(new ProviderError('Generation was cancelled.', 'ABORTED')), { once: true }); }) });
+  const w = await world(t, { runner: call => untilStopped(call, { resolveWith: resolve => { release = () => resolve(answer(LESSONS.slice(0, 1))); } }) });
   const first = await w.merged('First card');
   w.lessons.start();
   await until(async () => (await w.jobOf(first.id))?.status === 'running' && release, 'running');
@@ -442,11 +448,12 @@ test('the model also sees the owner’s newest rejected lessons, so it does not 
 test('a run stopped three times, for the owner’s own CLI work or a restart, stops coming back and waits for Suggest again', { timeout: 60000 }, async t => {
   const controllers = [];
   const w = await world(t, { claim: async () => { const claimed = slot(); controllers.push(claimed.job.controller); return claimed; },
-    runner: call => new Promise((_, reject) => call.signal.addEventListener('abort', () => reject(new ProviderError('Generation was cancelled.', 'ABORTED')), { once: true })) });
+    runner: call => untilStopped(call) });
   const merged = await w.merged('Busy owner');
   w.lessons.start();
   for (let stop = 1; stop <= 3; stop++) {
-    await until(async () => controllers.length === stop && (await w.jobOf(merged.id))?.status === 'running', `run ${stop}`);
+    // Stopped once its CLI call has started (a stop before that is the next test).
+    await until(() => controllers.length === stop && w.calls.length === stop, `run ${stop}`);
     controllers.at(-1).abort('yield');
     await until(async () => (await w.jobOf(merged.id))?.status !== 'running', `stop ${stop}`);
     const job = await w.jobOf(merged.id);
@@ -458,6 +465,29 @@ test('a run stopped three times, for the owner’s own CLI work or a restart, st
   assert.equal(w.calls.length, 3, 'no fourth send on its own');
   await w.lessons.suggestAgain(merged.id, { expectedRevision: (await w.view()).revision });
   await until(() => w.calls.length === 4, 'Suggest again sends it once more');
+});
+
+test('a stop that lands before the CLI starts ends the run there: no CLI starts, and the job is queued again', { timeout: 60000 }, async t => {
+  // The slot is stopped as soon as it is taken, so the stop lands while the input is still being built.
+  const w = await world(t, { claim: async () => { const claimed = slot(); claimed.job.controller.abort('yield'); return claimed; },
+    // A CLI adapter that only notices a stop arriving after it started: it would never end on its own here.
+    runner: call => new Promise((_, reject) => call.signal.addEventListener('abort', () => reject(new ProviderError('Generation was cancelled.', 'ABORTED')), { once: true })) });
+  const merged = await w.merged('Stopped early');
+  w.lessons.start();
+  await until(async () => (await w.jobOf(merged.id))?.stops === 1, 'queued again after the stop');
+  assert.deepEqual([(await w.jobOf(merged.id)).status, w.calls.length], ['queued', 0]);
+});
+
+test('a CLI call that never ends cannot hold up a shutdown', { timeout: 60000 }, async t => {
+  let settle;
+  const w = await world(t, { runner: () => new Promise(resolve => { settle = resolve; }) }); // It ignores the stop.
+  await w.merged('Stuck call');
+  w.lessons.start();
+  await until(() => settle, 'the call started');
+  const started = Date.now();
+  await w.lessons.close({ graceMs: 200 });
+  assert.ok(Date.now() - started < 2000, 'close() returns within its bound');
+  settle({ text: '[]' }); // Nothing is left pending after the test.
 });
 
 test('deciding a lesson never conflicts with the worker’s job updates; only new suggestions change the revision', { timeout: 60000 }, async t => {
@@ -492,7 +522,7 @@ test('the owner’s own CLI work gets the slot as soon as a lessons run has stop
     let held = null, releasePicker = () => {};
     const runner = async call => {
       if (!call.prompt.startsWith('# Promptboard project memory')) return { text: 'Not a split.' };
-      return new Promise((_, reject) => { held = call; call.signal.addEventListener('abort', () => setTimeout(() => reject(new ProviderError('Generation was cancelled.', 'ABORTED')), stopMs), { once: true }); });
+      held = call; return untilStopped(call, { stopMs });
     };
     // An agent session counts as running, so a sign-in change is refused; a folder picker stays open until released.
     const app = await startTestServer(t, { port: 0, executor: { pendingCount: () => 1, activeCount: () => 1 }, detector: async () => [], runner,
@@ -527,7 +557,7 @@ test('HTTP routes: views and changes need the session token and the current revi
   const runner = async call => {
     if (!call.prompt.startsWith('# Promptboard project memory')) return { text: 'Not a split.' };
     if (held) return answer(LESSONS.slice(0, 2));
-    return new Promise((resolve, reject) => { held = call; call.signal.addEventListener('abort', () => reject(new ProviderError('Generation was cancelled.', 'ABORTED')), { once: true }); });
+    held = call; return untilStopped(call);
   };
   const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [], runner });
   const token = (await (await fetch(`${app.url}/api/session`)).json()).token;
