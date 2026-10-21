@@ -323,11 +323,10 @@ function parseBackupData(data) {
       }),
     };
   });
-  // Prerequisites point only at cards of the same project in the backup.
+  // Prerequisites are card IDs. One whose card was deleted before the export stays, as on the board: the card waits until it is cleared.
   for (const project of projects) {
-    const ids = new Set(project.tasks.map(task => task.id));
     for (const task of project.tasks) if (task.dependsOn !== undefined) {
-      try { task.dependsOn = prerequisiteIds(task.dependsOn, ids, task.id); } catch { throw new BoardError(`${project.name || 'A project'}: a card refers to a missing prerequisite.`, 'INVALID_BACKUP'); }
+      try { task.dependsOn = prerequisiteIds(task.dependsOn, { has: recordId }, task.id); } catch { throw new BoardError(`${project.name || 'A project'}: a card's prerequisites are not valid.`, 'INVALID_BACKUP'); }
     }
     const cards = new Map(project.tasks.map(task => [task.id, task]));
     if (project.tasks.some(task => prerequisiteLoop(cards, task.id))) throw new BoardError(`${project.name || 'A project'}: its cards' prerequisites form a loop.`, 'INVALID_BACKUP');

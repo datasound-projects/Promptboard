@@ -193,5 +193,19 @@ test('a backup whose prerequisites form a loop is refused at import', async () =
   const card = (id, number, dependsOn) => ({ id, number, title: id, prompt: 'x', labelIds: [], column: 'todo', dependsOn, createdAt: 1, updatedAt: 1 });
   const backup = tasks => ({ kind: 'promptboard-backup', version: 10, base: { version: 1, resources: [] }, projects: [{ id: 'p1', name: 'P', nextTaskNumber: 4, labels: [], tasks }] });
   assert.throws(() => parseBackup(backup([card('a', 1, ['c']), card('b', 2, ['a']), card('c', 3, ['b'])])), error => error.code === 'INVALID_BACKUP' && /prerequisites form a loop/.test(error.message));
+  for (const dependsOn of [['a'], ['../b'], 'b']) assert.throws(() => parseBackup(backup([card('a', 1, dependsOn)])), error => error.code === 'INVALID_BACKUP' && /prerequisites are not valid/.test(error.message));
   assert.deepEqual(parseBackup(backup([card('a', 1, []), card('b', 2, ['a']), card('c', 3, ['a', 'b'])])).projects[0].tasks.map(task => task.dependsOn), [[], ['a'], ['a', 'b']]);
+});
+
+test('a backup made after a prerequisite card was deleted restores, and its dependent still waits for the deleted card', async t => {
+  const source = new Board({ dataDir: await temp(t, 'pb-lc-deleted-') });
+  const project = await source.createProject({ name: 'Shop', workflowMode: 'pipeline' });
+  const [first, second] = await source.createOriginTasks(project.id, { originProjectId: 'origin1', tasks: [
+    { originTaskId: 'a', title: 'Schema', prompt: 'Add the schema' }, { originTaskId: 'b', title: 'API', prompt: 'Add the API', dependsOnOrigin: ['a'] }] });
+  await source.deleteTask(first.taskId, { expectedRevision: 1 });
+  const target = new Board({ dataDir: await temp(t, 'pb-lc-deleted-import-') });
+  await target.importBackup(await source.exportBackup());
+  const card = (await target.state()).projects[0].tasks.find(task => task.id === second.taskId);
+  assert.deepEqual(card.dependsOn, [first.taskId]);
+  await assert.rejects(target.transition(card.id, { column: 'executing', expectedRevision: card.revision }), error => error.code === 'PREREQUISITES_PENDING' && /a prerequisite card that was deleted/.test(error.message));
 });
