@@ -596,6 +596,10 @@ process.exit(2);
   await w.board.updateTaskEvidence(task.id, current => { current.evidence.pullRequest.state = 'OPEN'; });
   const checked = await w.delivery.pullRequestStatus(task.id);
   assert.deepEqual([checked.column, checked.evidence.pullRequest.state, checked.completion.at], ['done', 'MERGED', done.completion.at]);
+  // So is a card that was completed as needing no changes before its pull request merged.
+  await w.board.store.update(state => { const card = state.projects[0].tasks.find(item => item.id === task.id); card.completion = { ...card.completion, kind: 'no_changes' }; card.evidence.pullRequest.state = 'OPEN'; });
+  const noChanges = await w.delivery.pullRequestStatus(task.id);
+  assert.deepEqual([noChanges.completion.kind, noChanges.evidence.pullRequest.state], ['no_changes', 'MERGED']);
 });
 
 test('the destination column alone decides what runs: skipped stages never run, a drop never runs twice, cards stay independent', { skip, timeout: 60000 }, async t => {
