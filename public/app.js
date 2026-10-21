@@ -1698,7 +1698,7 @@ function renderBoard() {
   const confirming = [...columns.querySelectorAll('.kanban-card:has(.kanban-confirm)')].map(item => item.dataset.id);
   const confirmationFocus = document.activeElement?.closest('.kanban-confirm') ? document.activeElement.textContent : null;
   const scroll = new Map(columns.dataset.projectId === project?.id ? [...columns.querySelectorAll('.kanban-cards')].map(list => [list.dataset.column, list.scrollTop]) : []);
-  columns.replaceChildren(...(project ? projectColumnsOf(project).map(column => renderColumn(column, tasks.filter(task => task.column === column.id))) : []));
+  columns.replaceChildren(...(project ? projectColumnsOf(project).map(column => renderColumn(column, tasks.filter(task => task.column === column.id))) : []), ...projectLane(project));
   columns.dataset.projectId = project?.id || '';
   for (const id of confirming) {
     const item = cardElement(id), card = tasks.find(task => task.id === id);
@@ -3790,13 +3790,21 @@ function workspaceMenuFor(project, card) {
   }
   return box;
 }
+// Project files: one request adapter for the sidebar's files and the Project card's explorer (project-explorer.js).
+async function fileRequest(path, signal, options = {}) {
+  const { response, data } = await api(path, { ...options, signal });
+  if (!response.ok) throw Object.assign(new Error(data.error || 'The project file request failed.'), { code: data.code });
+  return data;
+}
+/** The lane after Done: a linked project's Project card, never a column or a card (docs/project-explorer.md). */
+let projectExplorer = null;
+function projectLane(project) {
+  projectExplorer ??= window.PromptboardExplorer?.create({ request: fileRequest, remote: () => Boolean(remoteSession) }) || null;
+  return project?.repository && projectExplorer ? [projectExplorer.lane(project)] : [];
+}
 function renderWorkspace(current) {
   const projects = board?.projects || [];
-  workspaceFiles ??= window.PromptboardFiles?.create({ request: async (path, signal, options = {}) => {
-    const { response, data } = await api(path, { ...options, signal });
-    if (!response.ok) throw Object.assign(new Error(data.error || 'The project file request failed.'), { code: data.code });
-    return data;
-  } }) || null;
+  workspaceFiles ??= window.PromptboardFiles?.create({ request: fileRequest }) || null;
   workspaceFiles?.sync(projects);
   workspaceFiles?.setVisible(currentPage() === 'kanban');
   if (workspaceMenu && !projects.some(project => project.id === workspaceMenu.id)) workspaceMenu = null;

@@ -33,7 +33,8 @@ import { PipelineActions } from './pipeline-actions.mjs';
 import { PipelineNotifications, NotificationError } from './pipeline-notifications.mjs';
 import { notificationRoute } from './pipeline-notifications-http.mjs';
 import { RepositoryPipelineError } from './pipeline-repository.mjs';
-import { inspectWorkspace, saveWorkspaceFile, WorkspaceFileError } from './workspace-files.mjs';
+import { createWorkspaceEntry, inspectWorkspace, saveWorkspaceFile, WorkspaceFileError } from './workspace-files.mjs';
+import { projectStatus } from './project-explorer.mjs';
 import { proposeWorkspaceFile, validateFileProposalRequest } from './workspace-file-ai.mjs';
 import { OriginError, OriginStore, originRoute } from './origin.mjs';
 import { ContextStore, contextRoute } from './origin-context.mjs';
@@ -68,6 +69,8 @@ const assets = new Map([
   ['/compose-batch.js', ['compose-batch.js', 'text/javascript; charset=utf-8']],
   ['/dock.js', ['dock.js', 'text/javascript; charset=utf-8']],
   ['/schedules.js', ['schedules.js', 'text/javascript; charset=utf-8']],
+  ['/project.html', ['project.html', 'text/html; charset=utf-8']], // The project explorer in its own window.
+  ['/project-explorer.js', ['project-explorer.js', 'text/javascript; charset=utf-8']],
 ]);
 // Pinned terminal assets, served from the installed packages by exact path only (no CDN,
 // no directory browsing). Missing files (no npm install) return 404 and the dock falls back.
@@ -175,6 +178,9 @@ async function boardRoute(board, req, res, pathname, searchParams, origin, promp
   const expected = () => Number(searchParams.get('expectedRevision'));
   if (kind === 'projects') {
     if (method === 'PUT' && action === 'file') return send(res, 200, await saveWorkspaceFile(board, id, await body(4 * 1024 * 1024)));
+    // Project explorer: a new empty file or folder (never over an existing one), and the checkout's Git status.
+    if (method === 'POST' && action === 'files') return send(res, 200, await createWorkspaceEntry(board, id, await body()));
+    if (method === 'GET' && action === 'git-status') return send(res, 200, await projectStatus(board, id));
     if (method === 'GET' && ['files', 'file'].includes(action)) return send(res, 200, await inspectWorkspace(board, id, {
       path: searchParams.get('path') || '', workspace: searchParams.get('workspace') || '',
       offset: searchParams.get('offset') || '0', version: searchParams.get('version') || '', file: action === 'file',
