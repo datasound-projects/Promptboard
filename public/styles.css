@@ -2805,9 +2805,9 @@ button.origin-context-badge { cursor: pointer; }
 .lessons-dialog h3 { margin: 18px 0 8px; color: var(--ink); font-size: 14px; }
 .lessons-dialog h4.lessons-group { margin: 12px 0 6px; color: var(--muted); font-size: 12px; font-weight: 600; }
 .lessons-setting { display: grid; gap: 4px; padding: 12px 14px; border: 1px solid var(--divider); border-radius: 10px; background: var(--surface-2); }
-.lessons-pending { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.lessons-pending { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; margin: 0; padding: 0; list-style: none; }
 .lessons-pending li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 12px; padding: 6px 0; border-bottom: 1px solid var(--divider); }
-.lessons-card-link { overflow: hidden; max-width: 100%; text-overflow: ellipsis; }
+.lessons-card-link { overflow: hidden; min-width: 0; max-width: 100%; text-overflow: ellipsis; }
 .lessons-pending li > .lessons-list { flex-basis: 100%; }
 .lessons-count { color: var(--subtle); font-size: 12px; }
 .lessons-more { margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--divider); }

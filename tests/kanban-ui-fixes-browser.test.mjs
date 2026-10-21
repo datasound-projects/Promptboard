@@ -279,3 +279,22 @@ test('a dialog close button never covers its eyebrow text at 390 px', { skip: !c
     await browser.eval(`document.querySelector('#${dialog}').close();`);
   }
 });
+
+test('Project memory fits a phone without sideways scrolling for an ordinary card title', { skip: !chrome, timeout: 120000 }, async t => {
+  const { app, browser } = await open(t, { detector: async () => [{ id: 'claude', available: true }], authAdapter: { installed: async () => true, status: async () => ({ state: 'signed-in' }) },
+    runner: async () => ({ text: JSON.stringify([{ kind: 'command', text: 'Run npm test first.', evidence: 'It passed.' }]) }) }, { width: 390, height: 844 });
+  const project = await linked(app, 'Shop', { workflowMode: 'pipeline' });
+  const card = await app.board.createTask({ projectId: project.id, title: 'Add pagination to the orders table in the admin dashboard', prompt: 'p' });
+  await app.board.completeTask(card.id, { kind: 'merged', details: { targetBranch: 'main', commits: 1 } });
+  for (const end = Date.now() + 15000; (await app.board.lessons.view(project.id)).jobs[0]?.status !== 'done';) {
+    if (Date.now() > end) assert.fail('The suggestion did not finish.');
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  await browser.goto(`${app.url}/#/kanban`); await browser.until(`document.querySelector('#lessons-summary')?.textContent.includes('new')`, 'memory row');
+  await browser.eval(`document.querySelector('#lessons-open').click();`); await browser.until(`document.querySelector('#lessons-dialog')?.open && document.querySelector('.lessons-card-link')`, 'dialog');
+  for (const theme of ['light', 'dark']) {
+    await browser.eval(`document.documentElement.dataset.theme = ${JSON.stringify(theme)};`);
+    assert.equal(await browser.layout(`const dialog = document.querySelector('#lessons-dialog'), link = document.querySelector('.lessons-card-link').getBoundingClientRect(), box = dialog.getBoundingClientRect();
+      return dialog.scrollWidth <= dialog.clientWidth && link.right <= box.right;`), true, theme);
+  }
+});
