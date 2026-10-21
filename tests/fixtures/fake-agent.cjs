@@ -58,6 +58,9 @@ if (prompt.includes('USAGE') && provider === 'claude') {
   const line = (id, input, read, write, output) => JSON.stringify({ type: 'assistant', message: { id, model: 'claude-test-model', usage: { input_tokens: input, cache_read_input_tokens: read, cache_creation_input_tokens: write, output_tokens: output } } });
   // The same message appears twice (streamed blocks): it must count once.
   writeFileSync(transcript, [line('m1', 10, 1000, 200, 50), line('m1', 10, 1000, 200, 50), line('m2', 5, 1200, 0, 70), JSON.stringify({ type: 'user', message: { content: 'secret text' } })].join('\n') + '\n');
+  // Claude Code runs its status line command through the shell with the session's cost on stdin.
+  const statusLine = JSON.parse(flag('--settings')).statusLine?.command;
+  if (statusLine) spawnSync('/bin/sh', ['-c', statusLine], { input: JSON.stringify({ session_id: flag('--resume') || flag('--session-id'), cost: { total_cost_usd: 0.42 } }) });
 }
 if (prompt.includes('USAGE') && provider === 'codex') {
   const d = new Date();

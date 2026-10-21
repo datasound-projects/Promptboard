@@ -15,9 +15,11 @@ import { taskPriority } from './task-priority.mjs';
 import { taskLabels, taskLabelIds, labelRevision } from './task-labels.mjs';
 import { assignTaskNumbers, allocateTaskNumber, validateTaskNumbers } from './task-numbers.mjs';
 import { branchExists, commitExists, git, ignoredFiles, initRepository, listWorktrees, repositoryIdentity, validateRepository } from './git.mjs';
+import { nestedRepositoryProblem } from './sandbox.mjs';
 import { ADAPTERS, resolveConfig, validateResumeId } from './agents.mjs';
 import { validateEffort } from './providers.mjs';
 import { Delivery } from './delivery.mjs';
+import { LivePreviews, previewSettings } from './live-preview.mjs';
 import { clonePath, ensureClone, fastForward, fetchAndCompare, originRepository, viewRepository } from './github.mjs';
 import { externalIssueSource } from './external-source.mjs';
 import { enteredName, nameKey } from './projects.mjs';
@@ -31,6 +33,7 @@ import { PipelineAutomations } from './pipeline-automations.mjs';
 import { PipelineActions } from './pipeline-actions.mjs';
 import { NativeMessageScheduler } from './native-message-scheduler.mjs';
 import { readRepositoryPipeline, resolveRepositoryPipeline, RepositoryPipelineError } from './pipeline-repository.mjs';
+import { backupSchedules, exportSchedules } from './schedules.mjs';
 
 export const COLUMNS = Object.freeze([
   { id: 'todo', title: 'To Do', agent: false },
@@ -172,7 +175,7 @@ export function columnStage(project, columnId) {
 export const runStage = run => run?.stageKind || run?.stage;
 // Stage-engine outcomes. `next` tells Autopilot (and the board view) what follows; nothing moves by itself.
 // A run in one of these has not shown a sign of its session yet (src/supervisor.mjs sets them before the first event, or when a long prompt still waits for one).
-const STARTUP_LIFECYCLES = new Set(['waiting-for-first-event', 'no-events-yet', 'workspace-trusted', 'initial-input-not-ready']);
+export const STARTUP_LIFECYCLES = new Set(['waiting-for-first-event', 'no-events-yet', 'workspace-trusted', 'initial-input-not-ready']);
 const OUTCOME_STATUSES = new Set(['working', 'verifying', 'succeeded', 'changes_required', 'failed']);
 const time = value => Number.isFinite(value) ? value : Date.now();
 
@@ -297,12 +300,14 @@ function parseBackupData(data) {
       workflow: v2 && project.workflow && typeof project.workflow === 'object' ? project.workflow : v2 && project.automation?.autoRun === true ? { executing: { policy: 'start' } } : null,
       // Imported test commands never run until the user confirms them.
       testCommands: v2 && Array.isArray(project.testCommands) && project.testCommands.length ? project.testCommands.slice(0, 20) : null,
+      preview: v2 ? previewSettings(project.preview) : null, // Like test commands, it runs only once the import is confirmed.
       // The execution policy and Autopilot route also wait for confirmation; Autopilot always comes back off.
       execution: pipeline && project.execution && Object.keys(project.execution).length ? normalizeExecutionPolicy(project.execution) : null,
       autopilot: v2 && project.autopilot ? autopilotSettings(project.autopilot, { workflowMode: pipeline ? 'pipeline' : 'legacy', pipeline }) : null,
       // The user's timeline notes. Malformed entries are dropped; system events are rebuilt from the board.
       timelineNotes: v2 && Array.isArray(project.timelineNotes) ? project.timelineNotes.slice(0, 500).flatMap(note => note && typeof note.title === 'string' && note.title.trim() && Number.isFinite(note.at)
         ? [{ id: typeof note.id === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(note.id) ? note.id : randomUUID(), title: note.title.trim().slice(0, 120), text: typeof note.text === 'string' ? note.text.slice(0, 2000) : '', at: note.at, taskId: typeof note.taskId === 'string' ? note.taskId : null, createdAt: time(note.createdAt) }] : []) : [],
+      schedules: v2 ? backupSchedules(project.schedules, labels) : [], // They come back switched off (schedules.mjs).
       tasks: cards.map((card, cardIndex) => {
         const cardLabel = `${label}, card ${cardIndex + 1}`;
         if (!card || typeof card !== 'object') throw new BoardError(`${cardLabel} is not valid.`, 'INVALID_BACKUP');
@@ -465,7 +470,7 @@ export function effectiveWorkflow(project, globalAgent = null, state = null, tas
     const explicit = execution.kind !== 'custom' || Object.values(execution.sources).some(source => source !== 'default');
     return [column.id, { ...settings, kind: execution.kind, completion: execution.completion,
       ...(explicit ? { interaction: execution.interaction, filesystem: execution.filesystem } : {}), ...(execution.stage ? { stageEngine: true } : {}),
-      ...(project.execution?.workspaceTrust === 'task_workspaces' ? { trustWorkspace: true } : {}) }];
+      ...(project.execution?.workspaceTrust === 'task_workspaces' ? { trustWorkspace: true } : {}), ...(project.execution?.sandbox === 'docker' ? { sandbox: 'docker' } : {}) }];
   }));
   const global = state ? profileDefaults(state, state.settings?.agentProfileId, globalAgent || {}) : globalAgent;
   const projectAgent = state ? profileDefaults(state, project?.agentProfileId, project?.agentDefaults || {}) : project?.agentDefaults;
@@ -607,6 +612,7 @@ export class Board {
     this.recoveryPromise = null;
     this.startupStallMs = 120000; // An autonomous run with no session sign after this long is reported (PERMISSION_REQUIRED).
     this.delivery = new Delivery(this);
+    this.previews = new LivePreviews(this); // Cards' dev servers: runtime only, never stored.
     this.automationJournal = new PipelineJournal(dataDir, { onLeaseLost: key => this.#automationLeaseLost(key) });
     this.messageScheduler = null;
     this.automations = new PipelineAutomations({ journal: this.automationJournal, actions: automationActions,
@@ -615,6 +621,7 @@ export class Board {
     this.deferredPipelineStarts = new Map();
     this.automationsStopping = false;
     this.instance = randomUUID(); // With the state revision, names one exact board view of this process.
+    this.lessons = null; // Project memory (src/lessons.mjs), set by the server: merged cards queue lesson suggestions there.
   }
 
   /** Serialize work per key (task or repository) inside this process. */
@@ -715,7 +722,8 @@ export class Board {
       baseRevision: state.base?.revision || 0,
       projects: state.projects.map(project => ({ ...project, columns: projectColumns(project), transitions: projectTransitions(project), effectiveWorkflow: effectiveWorkflow(project, state.settings.defaultAgent, state),
         ...(project.workflowMode === 'pipeline' ? { tasks: project.tasks.map(task => ({ ...task, pipelineAgent: effectiveWorkflow(project, state.settings.defaultAgent, state, task)[task.column] })) } : {}) })),
-      execution: this.executor?.describe ? await this.executor.describe() : { available: Boolean(this.executor) }, recovery: this.store.recovery };
+      execution: this.executor?.describe ? await this.executor.describe() : { available: Boolean(this.executor) }, recovery: this.store.recovery,
+      previews: this.previews.list() };
   }
 
   /** Base metadata is fetched separately; board polling never includes library document bodies. */
@@ -883,6 +891,7 @@ export class Board {
       state.sessions = state.sessions.filter(session => session.projectId !== id);
     });
     await this.#removeRunFolders(removed);
+    await this.lessons?.remove(id).catch(() => {}); // Its project memory goes with it.
   }
 
   /** Validate a repository path without saving it. */
@@ -1104,8 +1113,8 @@ export class Board {
     });
   }
 
-  /** Start (confirmed), pause, resume, stop, or skip the current card. The engine does the work. */
-  async controlAutopilot(id, { action, confirm }) {
+  /** Start (confirmed), pause, resume, stop, or skip the current card. The engine does the work. `by` names who started it in the log. */
+  async controlAutopilot(id, { action, confirm, by = 'you' }) {
     const state = await this.state(), project = this.#project(state, id);
     if (project.workflowMode === 'pipeline' && (action === 'start' || action === 'resume')) {
       if (action === 'start' && confirm !== true) throw new BoardError('Confirm what Autopilot will do before you start it.', 'CONFIRMATION_REQUIRED');
@@ -1132,7 +1141,7 @@ export class Board {
       const ap = current.autopilot;
       if (!ap) throw new BoardError('Save the Autopilot settings first.', 'AUTOPILOT_EMPTY');
       const log = text => { ap.log = [...(ap.log || []), { at: Date.now(), text: clip(text, 500) }].slice(-200); };
-      if (action === 'start') Object.assign(ap, { status: 'running', current: null, done: [], reason: '', startedAt: Date.now() }), log('Autopilot started by you.');
+      if (action === 'start') Object.assign(ap, { status: 'running', current: null, done: [], reason: '', startedAt: Date.now() }), log(`Autopilot started by ${by}.`);
       else if (action === 'pause') { if (ap.status !== 'running') throw conflict('Autopilot is not running.', 'AUTOPILOT_NOT_RUNNING'); ap.status = 'paused'; ap.reason = 'Paused by you.'; log('Paused by you.'); }
       else if (action === 'resume') { if (ap.status !== 'paused') throw conflict('Autopilot is not paused.', 'AUTOPILOT_NOT_PAUSED'); ap.status = 'running'; ap.reason = ''; if (ap.current) ap.current.step = 'resume'; log('Resumed by you.'); }
       else if (action === 'skip') {
@@ -1153,6 +1162,19 @@ export class Board {
       if (!project.autopilot) return null;
       change(project.autopilot, text => { project.autopilot.log = [...(project.autopilot.log || []), { at: Date.now(), text: clip(text, 500) }].slice(-200); }, project);
       return project.autopilot;
+    });
+  }
+
+  /**
+   * One project write for scheduled cards (schedules.mjs owns their rules). A settings change passes the project's
+   * `expectedRevision`, which is checked and bumped; the scheduler's own bookkeeping passes null and leaves it, as creating
+   * a card does. `change(project, createTask)` may create cards through the normal card path, in the same write.
+   */
+  writeSchedules(id, expectedRevision, change) {
+    return this.store.update(state => {
+      const project = this.#project(state, id);
+      if (expectedRevision !== null) { checkRevision(project, expectedRevision, 'This project'); project.revision++; }
+      return change(project, input => this.#createTask(state, { ...input, projectId: id }));
     });
   }
 
@@ -1288,7 +1310,8 @@ export class Board {
     if (project.workflowMode !== 'pipeline') throw conflict('Switch this board to a column pipeline in Columns first.', 'PIPELINE_REQUIRED');
     const typed = this.#withoutPolicyOverrides(withSeededKinds(project.pipeline));
     const saved = await this.#setPipeline(id, { pipeline: typed, expectedRevision });
-    await this.setExecutionPolicy(id, { policy: { interaction: 'autonomous', filesystem: 'workspace_write', completion: 'automatic', maxRework: 2, mergeMethod: 'squash', workspaceTrust: 'task_workspaces' }, expectedRevision: saved.revision });
+    // Where agents run (Docker mode) is the owner's own choice; the preset keeps it.
+    await this.setExecutionPolicy(id, { policy: { interaction: 'autonomous', filesystem: 'workspace_write', completion: 'automatic', maxRework: 2, mergeMethod: 'squash', workspaceTrust: 'task_workspaces', ...(project.execution?.sandbox ? { sandbox: project.execution.sandbox } : {}) }, expectedRevision: saved.revision });
     return this.store.update(state => {
       const current = this.#project(state, id);
       const previous = current.autopilot || {};
@@ -1911,6 +1934,17 @@ export class Board {
     });
   }
 
+  /** The project's live preview command, checked by LivePreviews.setSettings; null removes it. */
+  async setPreview(id, { preview, expectedRevision }) {
+    return this.store.update(state => {
+      const project = this.#project(state, id);
+      checkRevision(project, expectedRevision, 'This project');
+      project.preview = preview;
+      project.revision++;
+      return project;
+    });
+  }
+
   /** Save completion, optionally without merging; this method never starts task work. */
   /**
    * Whether `completeTask` would accept the card now. A merge asks first, so a refused completion never leaves the
@@ -1925,7 +1959,7 @@ export class Board {
   mergeOwner(id) { const job = this.automationMoves.get(id); return job && !job.blocked ? job.key : null; }
 
   async completeTask(id, { kind, details, transitionId, owner = null }) {
-    return this.store.update(state => {
+    const saved = await this.store.update(state => {
       const { project, task } = this.#task(state, id);
       this.#requireAutomationsStopped(task, { owner });
       if (this.#activeRun(state, id)) throw conflict('This card has an active run.', 'RUN_ACTIVE');
@@ -1940,6 +1974,9 @@ export class Board {
       task.revision++;
       return task;
     });
+    // Every merge (and every merged pull request) ends here: it only queues one lessons job, never waits for it or fails.
+    if (kind === 'merged' || kind === 'pull_request') this.lessons?.queue(id).catch(() => {});
+    return saved;
   }
 
   /** Save same-task stage output. Testing agents do not self-certify: configured commands decide. */
@@ -2021,6 +2058,7 @@ export class Board {
           project.baseRevision = (project.baseRevision || 0) + 1;
           draft.base.revision++;
         }
+        if (pending.preview) project.preview = previewSettings(pending.preview);
         if (pending.testCommands) project.testCommands = pending.testCommands.filter(item => Array.isArray(item?.argv) && item.argv.length && item.argv.every(arg => typeof arg === 'string' && arg.length <= 1000 && !arg.includes('\0'))).slice(0, 20).map(item => ({ label: String(item.label || item.argv.join(' ')).slice(0, 80), argv: item.argv.slice(0, 50), timeoutSec: Number.isInteger(item.timeoutSec) && item.timeoutSec >= 1 && item.timeoutSec <= 3600 ? item.timeoutSec : 600 }));
       }
       project.pendingImport = null;
@@ -2289,6 +2327,7 @@ export class Board {
       const { task } = this.#task(await this.state(), id);
       this.#requireAutomationsStopped(task);
       checkRevision(task, expectedRevision, 'This card');
+      await this.previews.stop(id); // Also when the worktree is kept: the card is gone.
       let revision = expectedRevision;
       if (task.workspace && !keepFiles) revision = (await this.removeTaskWorktree(id)).revision;
       let removed = [];
@@ -2368,6 +2407,7 @@ export class Board {
     const state = await this.state();
     const base = await this.base.export({ includeContent: includeBaseContent });
     if ((await this.state()).base.revision !== state.base.revision) throw conflict('Base changed while the backup was being prepared. Export it again.', 'BASE_REVISION_CONFLICT');
+    const memory = await this.lessons?.backup() || {}; // Approved lessons and their settings (src/lessons.mjs).
     return { application: 'Promptboard', kind: 'promptboard-backup', version: BACKUP_VERSION, exportedAt: new Date().toISOString(),
       base, baseGlobal: backupBaseScopes(state.settings.pendingBaseImport || state.settings),
       projects: state.projects.map(project => ({ id: project.id, name: project.name, createdAt: project.createdAt, nextTaskNumber: project.nextTaskNumber, labels: taskLabels(project.labels),
@@ -2375,8 +2415,11 @@ export class Board {
         ...backupBaseScopes({ ...project.pendingImport, ...project, ...(project.baseBinding ? {} : project.pendingImport?.baseBinding ? { baseBinding: project.pendingImport.baseBinding } : {}) }),
         repository: project.repository ? { path: project.repository.path } : null, targetBranch: project.targetBranch ? { name: project.targetBranch.name } : null,
         agentDefaults: project.agentDefaults || null, workflow: project.workflow || {}, testCommands: project.testCommands || [], timelineNotes: project.timelineNotes || [], columnLayout: project.columnLayout || [],
+        preview: project.preview || null,
+        ...(memory[project.id] ? { lessons: memory[project.id] } : {}),
         ...(project.workflowMode === 'pipeline' && (project.execution || project.pendingImport?.execution) ? { execution: project.execution || project.pendingImport.execution } : {}),
         ...(project.autopilot?.route || project.pendingImport?.autopilot ? { autopilot: project.autopilot?.route ? { route: project.autopilot.route, finish: project.autopilot.finish, maxRework: project.autopilot.maxRework } : project.pendingImport.autopilot } : {}),
+        ...(project.schedules?.length ? { schedules: exportSchedules(project.schedules) } : {}),
         // Workspaces and runs are machine-specific and are not exported.
         tasks: project.tasks.map(task => ({ id: task.id, number: task.number, title: task.title, prompt: task.prompt, priority: taskPriority(task.priority), labelIds: taskLabelIds(task.labelIds, project.labels), source: task.source, ...(task.externalSource === undefined ? {} : { externalSource: externalIssueSource(task.externalSource) }),
           ...(validOrigin(task.originSource) ? { originSource: originSourceOf(task.originSource) } : {}), ...(task.dependsOn?.length ? { dependsOn: [...task.dependsOn] } : {}), checksOutdated: task.checksOutdated,
@@ -2399,8 +2442,12 @@ export class Board {
     this.#importRefusal(await this.state(), replace);
     const preparedBase = parsed.base ? await this.base.prepareImport(parsed.base, { reuseIdentical: true }) : null;
     // A backup that is not restored leaves none of the Base revision files written for it.
-    try { return await this.#restoreBackup(data, parsed, preparedBase, replace, originProjects); }
+    let restored;
+    try { restored = await this.#restoreBackup(data, parsed, preparedBase, replace, originProjects); }
     catch (error) { if (preparedBase) await this.base.discardPreparedImport(preparedBase, error); throw error; }
+    // Project memory keeps its own files: approved lessons and settings come back with their projects.
+    await this.lessons?.restore(data.projects).catch(() => {});
+    return restored;
   }
 
   async #restoreBackup(data, parsed, preparedBase, replace, originProjects) {
@@ -2440,8 +2487,10 @@ export class Board {
         }
         if (incoming.columnLayout) project.columnLayout = incoming.columnLayout;
         project.timelineNotes = incoming.timelineNotes.map(note => ({ ...note, taskId: project.tasks.some(task => task.id === note.taskId) ? note.taskId : null }));
-        if (incoming.repositoryPath || incoming.targetBranch || incoming.workflow || incoming.testCommands || incoming.agentDefaults || incoming.execution || incoming.autopilot || incoming.baseBinding || incoming.baseColumns || incoming.agentProfileId) {
+        if (incoming.schedules.length) project.schedules = incoming.schedules;
+        if (incoming.repositoryPath || incoming.targetBranch || incoming.workflow || incoming.testCommands || incoming.preview || incoming.agentDefaults || incoming.execution || incoming.autopilot || incoming.baseBinding || incoming.baseColumns || incoming.agentProfileId) {
           project.pendingImport = { repositoryPath: incoming.repositoryPath, targetBranch: incoming.targetBranch, workflow: incoming.workflow, testCommands: incoming.testCommands };
+          if (incoming.preview) project.pendingImport.preview = incoming.preview;
           if (incoming.agentDefaults) project.pendingImport.agentDefaults = incoming.agentDefaults;
           if (incoming.execution) project.pendingImport.execution = incoming.execution;
           if (incoming.autopilot) project.pendingImport.autopilot = incoming.autopilot;
@@ -2589,6 +2638,7 @@ export class Board {
   async restoreTaskWorktree(taskId) {
     const { task } = this.#task(await this.state(), taskId);
     if (task.workspace?.status !== 'ready') throw conflict('This task has no worktree to restore.', 'NOTHING_TO_RESTORE');
+    await this.previews.stop(taskId); // Its folder was deleted under it.
     return this.ensureTaskWorktree(taskId, { recover: true });
   }
 
@@ -2599,6 +2649,8 @@ export class Board {
   removeTaskWorktree(taskId, { deleteIgnored = false } = {}) {
     return this.#locked(`task:${taskId}`, async () => {
       const { task } = this.#task(await this.state(), taskId);
+      // A card's dev server stops first, also when the removal is refused: the card is merging or leaving its folder.
+      await this.previews.stop(taskId);
       this.#requireAutomationsStopped(task);
       const workspace = task.workspace;
       if (!workspace) return null;
@@ -2623,6 +2675,8 @@ export class Board {
         return forget();
       }
       if (!registered || registered.branch !== workspace.branch) throw new BoardError('Git does not list this worktree for the task branch, so nothing was removed.', 'WORKTREE_NOT_OWNED', 409);
+      const nested = await nestedRepositoryProblem(await this.state(), taskId, workspace.path); // Docker mode (src/sandbox.mjs).
+      if (nested) throw new BoardError(nested, 'NESTED_REPOSITORY', 409);
       const status = await git(['status', '--porcelain', '--untracked-files=all'], { cwd: workspace.path });
       if (status.trim()) throw new BoardError('The task worktree has uncommitted changes. Commit or move them first; Promptboard never discards files.', 'WORKTREE_DIRTY', 409);
       // Git deletes the files it ignores (.env, local databases, build output) with the worktree: never without a yes.
@@ -3635,7 +3689,8 @@ export class Board {
     const previous = saved && state.runs.find(item => item.id === saved.currentRunId);
     const resume = saved?.nativeSessionId && saved.provider === config.provider && previous?.promptRevision === (task.contentRevision ?? 1)
       && ['suspended', 'orphaned', 'exited'].includes(saved.status) && previous.config.pipeline === true
-      && !previous.stageKind; // A typed stage's own session is never continued by a custom column; it starts fresh.
+      && !previous.stageKind // A typed stage's own session is never continued by a custom column; it starts fresh.
+      && (previous.config.sandbox || '') === (config.sandbox || ''); // A conversation in Docker keeps its history there, not on this computer.
     const nativeSessionId = resume ? validateResumeId(saved.nativeSessionId) : null;
     if (requireResume && !resume) throw conflict('This task has no unchanged native conversation to resume.', 'SESSION_NOT_RESUMABLE');
     const workspace = await this.ensureTaskWorktree(taskId);

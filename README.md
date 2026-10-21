@@ -110,13 +110,17 @@ Each card gets its own Git branch and worktree. When a card enters a column, a f
 | Merge | Promptboard merges the reviewed, tested commit. | The target branch has it. |
 
 - **Autopilot.** Runs your queue in order. A card starts only after its prerequisites are merged, so each task builds on the code before it.
+- **Scheduled cards.** Recurring cards land in To Do on a repeat, for example a nightly dependency update or a weekly docs or security sweep, and can run through Autopilot ([Schedules](docs/schedules.md)).
 - **Every agent knows its task.** It gets the card's exact text, its place in the plan ("task 2 of 3"), and what its prerequisites did. It never gets another agent's conversation.
 - **Rework.** Blocking findings and failing tests send the card back with the details. Rework stops when the same problem keeps coming back.
 - **Safe merges.** Squash or fast-forward, only if the target hasn't moved. Otherwise the work is tested again. Conflicts go to a resolver agent, then review and tests again. Nothing is pushed unless you open a pull request.
 - **Your rules.** Per board or column: CLI and model, ask or autonomous, read-only or workspace access, manual or automatic completion.
 - **Live terminals.** Watch every agent and type into it. Pause and resume keep its session.
 - **Run the result.** When every card is done, the board shows where the project is and the commands to start it, with Open in Finder and Open in Terminal. The project ⋯ menu copies its path any time and opens the project, or a task's worktree, in your code editor (**Open in IDE**: VS Code, Cursor, Zed, TRAE, Devin Desktop/Windsurf, Sublime Text, JetBrains IDEs, or any editor you add by path).
+- **Project card.** After Done, the project's folder, branch, latest commit and last merged card. **Open project** browses and edits the files where merged work lands, like a code editor, and **Pop out** opens it in its own window. See [Project explorer](docs/project-explorer.md).
+- **Live preview.** For web projects, **Start preview** in a card's Details runs the project's dev server in the card's worktree and gives you a link, so you can click-test the change before it merges ([Live preview](docs/live-preview.md)).
 - **Coordinator.** A read-only overview of progress, running agents and blockers. Ask it questions; answers cite their sources.
+- **Project memory.** After each merged card, one short run with a small model suggests lessons: commands that worked, conventions, gotchas and failed approaches. You approve each one; approved lessons go to every new agent of the project. Switch it off per project. See [Project memory](docs/project-memory.md).
 - **GitHub.** Sign in with the GitHub CLI, search your personal and organization repositories, and clone one (or connect a clone you already have). Fetch and fast-forward only; Promptboard never sees a token. See [GitHub](docs/github.md).
 - **Also:** custom columns with their own instructions, column actions (script, webhook, notification), a file browser, a timeline, labels and priorities, and board backups.
 
@@ -146,8 +150,10 @@ Each card gets its own Git branch and worktree. When a card enters a column, a f
 
 - **CLIs** (top bar): connect, sign in and check each CLI.
 - **Usage**: tokens, tool calls and cost estimates from your CLIs' local records.
+- **Insights** (top bar): per project, how often cards needed rework by agent, model and template, time in each column, tokens and reported price per merged card, and the cards whose review or tests failed most. No model is asked. See [Insights](docs/insights.md).
 - **Settings**: theme, start page, default agents, how many agents run at once, terminal and notifications.
 - **Remote access (iPhone)**: open Promptboard in Safari on your phone through Tailscale or Twingate after pairing it once. Everything keeps running on the computer. See [Remote access](docs/remote-access.md).
+- **Docker sandbox**: run a project's card agents (Claude Code, Codex) in a container that sees only the card's workspace. See [Docker sandbox](docs/docker-sandbox.md).
 - **Command line**: `node bin/ste.mjs --provider claude < request.txt` writes a prompt without the app. Run `--help` for all options.
 
 ## Supported CLIs
@@ -177,7 +183,8 @@ Agents run through each CLI's own sign-in and plan. Promptboard has no account o
 ## Docs
 
 - [Kanban execution](docs/kanban-execution.md): stages, rework, merge and error codes · [GitHub](docs/github.md) · [Remote access](docs/remote-access.md)
-- [Origin](docs/origin.md) · [Research](docs/origin-research.md) · [Project Context](docs/origin-project-context.md) · [Shared projects](docs/shared-projects.md) · [Coordinator](docs/coordinator.md)
+- [Scheduled cards](docs/schedules.md) · [Insights](docs/insights.md) · [Docker sandbox](docs/docker-sandbox.md) · [Live preview](docs/live-preview.md) · [Project explorer](docs/project-explorer.md)
+- [Origin](docs/origin.md) · [Research](docs/origin-research.md) · [Project Context](docs/origin-project-context.md) · [Shared projects](docs/shared-projects.md) · [Coordinator](docs/coordinator.md) · [Project memory](docs/project-memory.md)
 - [Compose context](docs/compose-context.md) · [Prompt checks](docs/verification.md)
 - [Base delivery](docs/base-delivery.md) · [CLI adapters](docs/cli-adapters.md) · [Session persistence](docs/session-persistence.md)
 - [Changelog](CHANGELOG.md) · [Release verification](RELEASE-VERIFICATION.md) · [All docs](docs/)

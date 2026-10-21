@@ -204,8 +204,10 @@ export function resolvePipelineStrategy(config, columnId, { profileId = null, ag
 
 /** The project-wide execution policy (Kanban settings). Missing fields use EXECUTION_DEFAULTS. */
 export function normalizeExecutionPolicy(input = {}) {
-  keys(input, ['interaction', 'filesystem', 'completion', 'maxRework', 'mergeMethod', 'workspaceTrust'], 'Execution policy');
+  keys(input, ['interaction', 'filesystem', 'completion', 'maxRework', 'mergeMethod', 'workspaceTrust', 'sandbox'], 'Execution policy');
   const result = {};
+  // docker: every card agent runs in a container that sees only its own worktree (src/sandbox.mjs). Absent: on this computer.
+  if (input.sandbox != null) result.sandbox = choice(input.sandbox, ['docker'], 'place to run agents');
   // task_workspaces: answer a CLI's positively identified folder-trust menu for Promptboard's own task worktrees.
   if (input.workspaceTrust != null) result.workspaceTrust = choice(input.workspaceTrust, ['ask', 'task_workspaces'], 'workspace trust');
   if (input.mergeMethod != null) result.mergeMethod = choice(input.mergeMethod, ['squash', 'fast_forward'], 'merge method');

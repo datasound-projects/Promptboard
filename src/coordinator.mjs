@@ -32,9 +32,10 @@ const RECONCILE_MS = 5000; // ponytail: at most one Git read per project every 5
 const LIVE = ['queued', 'running', 'waiting_for_input'];
 const ID = /^[A-Za-z0-9_-]{1,100}$/, POSITIONAL = /^(?:move|restart|done):[A-Za-z0-9_-]+:\d{1,3}$/;
 const sha = text => createHash('sha256').update(text).digest('hex');
-// Local folders in event details, run reasons and agent excerpts ("fast-forward in /Users/me/app") keep only their last name.
-const LOCAL_PATH = /(^|[\s(“"'`])(?:(?:\/[^\s/"'`()”]+){2,}\/?|[A-Za-z]:\\[^\s"'`()”]*)/g;
-const noPaths = text => String(text || '').replace(LOCAL_PATH, (match, lead) => `${lead}…/${match.slice(lead.length).split(/[\\/]/).filter(Boolean).pop() || ''}`);
+// Local folders in event details, run reasons and agent excerpts ("fast-forward in /Users/me/app", "--cwd=/Users/me/app",
+// "file:///Users/me/app") keep only their last name.
+const LOCAL_PATH = /(^|[\s(“"'`=]|file:\/\/)(?:(?:\/[^\s/"'`()”]+){2,}\/?|[A-Za-z]:\\[^\s"'`()”]*)/g;
+export const noPaths = text => String(text || '').replace(LOCAL_PATH, (match, lead) => `${lead}…/${match.slice(lead.length).split(/[\\/]/).filter(Boolean).pop() || ''}`);
 const clip = (text, max) => { const value = String(text ?? '').replace(/\s+/g, ' ').trim(); return value.length > max ? `${value.slice(0, max - 1)}…` : value; };
 // A reason quoted inside a sentence that ends with its own period.
 const clause = (text, max) => clip(text, max).replace(/[.\s]+$/, '');

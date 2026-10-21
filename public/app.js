@@ -1683,6 +1683,7 @@ function renderBoard() {
   $('#view-timeline').disabled = !project;
   for (const id of ['#autopilot-open', '#columns-open', '#board-left', '#board-right', '#card-new']) $(id).hidden = timelineView;
   $('#agents-open').hidden = timelineView || project?.workflowMode === 'pipeline';
+  $('#schedules-open').hidden = timelineView; $('#schedules-open').disabled = !project; // Scheduled cards (public/schedules.js).
   $('#columns-open').disabled = !project;
   // Missing terminal support never blocks the board or the prompt editor; it only disables runs.
   $('#execution-status').hidden = !board || board.execution?.available !== false || !board.execution.setupMessage;
@@ -1697,7 +1698,7 @@ function renderBoard() {
   const confirming = [...columns.querySelectorAll('.kanban-card:has(.kanban-confirm)')].map(item => item.dataset.id);
   const confirmationFocus = document.activeElement?.closest('.kanban-confirm') ? document.activeElement.textContent : null;
   const scroll = new Map(columns.dataset.projectId === project?.id ? [...columns.querySelectorAll('.kanban-cards')].map(list => [list.dataset.column, list.scrollTop]) : []);
-  columns.replaceChildren(...(project ? projectColumnsOf(project).map(column => renderColumn(column, tasks.filter(task => task.column === column.id))) : []));
+  columns.replaceChildren(...(project ? projectColumnsOf(project).map(column => renderColumn(column, tasks.filter(task => task.column === column.id))) : []), ...projectLane(project));
   columns.dataset.projectId = project?.id || '';
   for (const id of confirming) {
     const item = cardElement(id), card = tasks.find(task => task.id === id);
@@ -1725,6 +1726,7 @@ function renderBoard() {
   renderRunPanel(project, timelineView);
   if (timelineView) { $('#autopilot-bar').hidden = true; refreshTimeline(project); }
   coordinatorView?.sync(project, board?.revision, !timelineView && currentPage() === 'kanban'); // Read only while it can be seen.
+  window.PromptboardLessonsView?.sync(project, board?.revision);
   updateBoardScroll();
   window.PromptboardDock?.sync();
   const verifying = tasks.find(task => task.evidence?.tests?.status === 'running');
@@ -1812,14 +1814,7 @@ function renderColumn(column, tasks) {
 
 // Done: a drop zone, then the most recently completed cards in a compact form.
 const DONE_PREVIEW = 5;
-const relativeTime = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
-function timeAgo(at) {
-  const seconds = (at - Date.now()) / 1000;
-  for (const [unit, size] of [['year', 31536000], ['month', 2592000], ['week', 604800], ['day', 86400], ['hour', 3600], ['minute', 60]]) {
-    if (Math.abs(seconds) >= size) return relativeTime.format(Math.round(seconds / size), unit);
-  }
-  return 'just now';
-}
+function timeAgo(at) { return window.PromptboardDom.ago(at); } // Shared with the project explorer's own window.
 function renderDoneList(tasks) {
   const zone = document.createElement('li');
   zone.className = 'kanban-done-drop';
@@ -2197,6 +2192,7 @@ function renderCard(card, index, count) {
   const actions = document.createElement('div');
   actions.className = 'kanban-actions';
   actions.append(toggle);
+  const preview = previewView?.cardButton(card); if (preview) actions.prepend(preview); // Shown while the card's preview runs.
   const details = [card.source ? `Prompt source: ${sourceSummary(card.source)}` : 'Written by you'];
   if (card.workspace) details.push(`Branch ${card.workspace.branch}${card.workspace.status === 'ready' ? '' : ` (${card.workspace.status})`}`);
   const pullRequest = card.evidence?.pullRequest;
@@ -2211,6 +2207,9 @@ function renderCard(card, index, count) {
     tag.textContent = ap.current?.taskId === card.id ? 'Autopilot · now' : `Autopilot · #${waiting.indexOf(card.id) + 1}`;
     tags.push(tag);
   }
+  if (card.scheduleId) tags.push(Object.assign(document.createElement('span'), { className: 'schedule-tag', textContent: 'Scheduled' }));
+  // Docker mode: this card's agent runs in a container that sees only its workspace (docs/docker-sandbox.md).
+  if (run && RUN_LIVE.includes(run.status) && run.config?.sandbox === 'docker') tags.push(Object.assign(document.createElement('span'), { className: 'sandbox-tag', textContent: 'In Docker' }));
   const meta = paragraph(details.join(' · '), 'kanban-meta');
   meta.title = meta.textContent;
   const context = document.createElement('details'); context.className = 'card-workspace';
@@ -2699,7 +2698,7 @@ function agentStateText(run) {
   const state = agentState(run);
   return state === 'inactive' && run?.status ? `Inactive · ${run.status.replaceAll('_', ' ')}` : AGENT_STATE_TEXT[state];
 }
-function agentModel(run) { return `${providerName(run.config?.provider)} · ${run.config?.model || 'CLI default model'}${run.config?.effort ? ` · ${run.config.effort}` : ''}`; }
+function agentModel(run) { return `${providerName(run.config?.provider)} · ${run.config?.model || 'CLI default model'}${run.config?.effort ? ` · ${run.config.effort}` : ''}${run.config?.sandbox === 'docker' ? ' · In Docker' : ''}`; }
 function agentActivity(run) {
   if (run?.lifecycle === 'suspending' && RUN_LIVE.includes(run.status)) return 'Pausing the agent; waiting for its process to exit…';
   if (run?.lifecycle === 'initial-input-not-ready' && RUN_LIVE.includes(run.status)) return run.waitingReason;
@@ -3038,7 +3037,7 @@ function readAgentFields(root) {
   const permissionMode = value('permissionMode');
   return { provider: value('provider'), model: (value('model') === '__custom__' ? value('model-custom') : value('model')).trim(), effort: value('effort'), ...(permissionMode && permissionMode !== 'plan' ? { permissionMode } : {}) };
 }
-const agentText = agent => agent?.provider ? `${providerName(agent.provider)} · ${agent.model || 'CLI default model'}${agent.effort ? ` · ${agent.effort}` : ''}` : '';
+const agentText = agent => agent?.provider ? `${providerName(agent.provider)} · ${agent.model || 'CLI default model'}${agent.effort ? ` · ${agent.effort}` : ''}${agent.sandbox === 'docker' ? ' · In Docker' : ''}` : '';
 
 function locationFact(label, value) {
   const row = document.createElement('div'); row.className = 'location-fact';
@@ -3247,11 +3246,13 @@ async function openTaskDetails(taskId) {
   const prerequisites = taskPrerequisites(card, project);
   const nodes = [
     section('Status', paragraph(`${status.text}. Task text revision ${card.contentRevision ?? 1}.${status.flag ? ' Review the prompt before you run an agent on it.' : ''}`)),
+    ...(window.PromptboardLessonsView?.taskSection(card, section) || []), // A merged card's suggested lessons (public/lessons.js).
     ...(prerequisites ? [section('Prerequisites', paragraph('These cards must be done before this one starts. Nothing is merged for you.', 'note'), prerequisites)] : []),
     ...(card.originSource?.originTaskId ? [section('From Origin', paragraph(`${card.originSource.key || 'An Origin task'}. Its design context is in the prompt below; change the task in Origin.`, 'note'),
       detailActions(detailButton('Open in Origin', () => { $('#task-dialog').close(); openOrigin(card.originSource.originProjectId, { collection: 'items', id: card.originSource.originTaskId }); }, 'text-button')))] : []),
     ...(card.source?.promptId ? [section('From a saved prompt', paragraph(`Made from revision ${card.source.promptRevision} of a saved project prompt. Newer revisions reach this card only when you update it.`, 'note'),
       detailActions(detailButton('Open the saved prompt in Compose', () => { $('#task-dialog').close(); void projectsView?.openPrompt(card.source.projectId, card.source.promptId); }, 'text-button')))] : []),
+    ...(card.scheduleId && schedulesView ? [section('Scheduled', schedulesView.detail(card, project))] : []),
     ...(coordinatorView ? [section('Coordinator', detailActions(detailButton('Ask Coordinator about this card', () => { $('#task-dialog').close(); if (projectView() !== 'board') setProjectView('board'); coordinatorView.askAbout({ kind: 'task', id: card.id }); }, 'text-button')))] : []),
     ...(card.prompt?.trim() ? [section('Original prompt', pre(card.prompt))] : []),
     section('Branch and worktree', taskLocation(card, project)),
@@ -3314,6 +3315,7 @@ async function openTaskDetails(taskId) {
   const delivery = document.createElement('div');
   delivery.className = 'task-delivery';
   nodes.splice(3, 0, delivery);
+  if (card.workspace?.status === 'ready' && previewView) nodes.splice(nodes.indexOf(delivery), 0, previewView.section(card, section)); // Try the change before it merges.
   // Everyday facts and actions stay in view; the technical sections wait behind one collapsed "Advanced".
   const advanced = document.createElement('details'); advanced.className = 'task-advanced'; advanced.open = keepAdvanced;
   advanced.append(Object.assign(document.createElement('summary'), { textContent: 'Advanced' }));
@@ -3787,13 +3789,21 @@ function workspaceMenuFor(project, card) {
   }
   return box;
 }
+// Project files: one request adapter for the sidebar's files and the Project card's explorer (project-explorer.js).
+async function fileRequest(path, signal, options = {}) {
+  const { response, data } = await api(path, { ...options, signal });
+  if (!response.ok) throw Object.assign(new Error(data.error || 'The project file request failed.'), { code: data.code });
+  return data;
+}
+/** The lane after Done: a linked project's Project card, never a column or a card (docs/project-explorer.md). */
+let projectExplorer = null;
+function projectLane(project) {
+  projectExplorer ??= window.PromptboardExplorer?.create({ request: fileRequest, remote: () => Boolean(remoteSession) }) || null;
+  return project?.repository && projectExplorer ? [projectExplorer.lane(project)] : [];
+}
 function renderWorkspace(current) {
   const projects = board?.projects || [];
-  workspaceFiles ??= window.PromptboardFiles?.create({ request: async (path, signal, options = {}) => {
-    const { response, data } = await api(path, { ...options, signal });
-    if (!response.ok) throw Object.assign(new Error(data.error || 'The project file request failed.'), { code: data.code });
-    return data;
-  } }) || null;
+  workspaceFiles ??= window.PromptboardFiles?.create({ request: fileRequest }) || null;
   workspaceFiles?.sync(projects);
   workspaceFiles?.setVisible(currentPage() === 'kanban');
   if (workspaceMenu && !projects.some(project => project.id === workspaceMenu.id)) workspaceMenu = null;
@@ -3887,7 +3897,7 @@ function renderRepository(project) {
   if (pending) {
     const automatic = Object.entries(pending.workflow || {}).filter(([, settings]) => settings?.policy === 'start').map(([stage]) => columnTitle(stage));
     const parts = [pending.repositoryPath && `repository ${pending.repositoryPath}`, pending.targetBranch && `target branch ${pending.targetBranch}`,
-      pending.agentDefaults && `project agent ${agentText(pending.agentDefaults)}`, pending.workflow && `workflow settings${automatic.length ? ` (automatic runs in ${automatic.join(' and ')})` : ''}`, pending.testCommands?.length && `${plural(pending.testCommands.length, 'test command')}`].filter(Boolean);
+      pending.agentDefaults && `project agent ${agentText(pending.agentDefaults)}`, pending.workflow && `workflow settings${automatic.length ? ` (automatic runs in ${automatic.join(' and ')})` : ''}`, pending.testCommands?.length && `${plural(pending.testCommands.length, 'test command')}`, pending.preview && 'a preview command'].filter(Boolean);
     $('#import-pending-text').textContent = `The imported backup suggests ${parts.join(', ')}. Nothing is applied until you confirm.`;
   }
 }
@@ -5052,9 +5062,10 @@ const stepByStep = policy => (policy.interaction || 'ask') === 'ask' && (policy.
 const EXECUTION_CHOICES = {
   interaction: [['ask', 'Ask for approval'], ['autonomous', 'Autonomous: never pause for approval']],
   filesystem: [['read_only', 'Read only'], ['workspace_write', 'Write in the task workspace'], ['full', 'Full access']],
+  sandbox: [['docker', 'Yes: only the card’s workspace']],
   completion: [['manual', 'Manual: you complete each stage'], ['automatic', 'Automatic when the turn is done and its checks pass']],
 };
-const EXECUTION_DEFAULT_TEXT = { interaction: 'Ask for approval', filesystem: 'Write in the task workspace', completion: 'Manual' };
+const EXECUTION_DEFAULT_TEXT = { interaction: 'Ask for approval', filesystem: 'Write in the task workspace', sandbox: 'No, on this computer', completion: 'Manual' };
 const testCommandsText = project => (project?.testCommands || []).map(item => item.argv.map(arg => /[\s"']/.test(arg) ? JSON.stringify(arg) : arg).join(' ')).join('\n');
 
 /** "How it runs": one choice between hands-off and step by step, the test command, and the detailed policy under Advanced (column pipelines only). */
@@ -5139,7 +5150,9 @@ function renderExecutionPolicy() {
   };
   updateWarning();
   const grid = document.createElement('div'); grid.className = 'execution-grid';
-  grid.append(select('interaction', 'Agent questions'), select('filesystem', 'Workspace access'), select('completion', 'Stage completion'),
+  const docker = select('sandbox', 'Run agents in Docker');
+  docker.append(Object.assign(document.createElement('small'), { textContent: 'Claude Code and Codex only. Set Docker up first in Settings → Docker sandbox.' }));
+  grid.append(select('interaction', 'Agent questions'), select('filesystem', 'Workspace access'), docker, select('completion', 'Stage completion'),
     field('Pause when a problem comes back (times, 0–5)', rework), field('Merge method', merge), field('CLI folder-trust question', trust));
   const repository = $('#columns-repository-actions'); repository.hidden = !columnsDraft.pipeline;
   nodes.push(columnsSection('advanced', 'Advanced', paragraph('Every column uses these unless it sets its own. Planning and Code Review are always read-only. Saving starts nothing.', 'note'), grid, allLabel, warning, repository));
@@ -6199,6 +6212,19 @@ projectsView = window.PromptboardProjects?.create({ api, announce, getResult: ()
 coordinatorView = window.PromptboardCoordinator?.create({ api, announce, project: () => currentProject(), runs: () => board?.runs || [],
   openTask: taskId => void openTaskDetails(taskId), composeSettings: () => settings(),
   copy: text => navigator.clipboard.writeText(text).then(() => announce('Commit ID copied.'), () => announce(`Commit ${text}`)) }) || null;
+// Schedules: recurring To Do cards of the open project. Its button sits in the board actions; nothing runs until a schedule's time.
+const schedulesView = window.PromptboardSchedules?.create({ api, announce, project: () => currentProject(), acceptBoard: next => { acceptBoard(next); renderBoard(); } }) || null;
+// Insights: a read-only dialog from the top bar. A card in it opens that card's details on its Kanban board.
+window.PromptboardInsights?.create({ api, ensureBoard: loadBoard, projects: () => board?.projects || [], currentProject,
+  openTask: (projectId, taskId) => { if (currentProject()?.id !== projectId) selectProject(projectId); location.hash = '#/kanban'; setTimeout(() => void openTaskDetails(taskId), 0); } });
+// Live preview: a card's dev server in its worktree, started from its Details; its board card links to it while it runs.
+const previewView = window.PromptboardPreview?.create({ api, boardCall, announce, remote: () => Boolean(remoteSession), project: () => currentProject(),
+  previews: () => board?.previews || [], showRunning: running => { if (board) { board.previews = running; renderBoard(); } }, openDetails: taskId => void openTaskDetails(taskId) }) || null;
+// Project memory: lessons from merged cards, reviewed in task details and the Project memory dialog (public/lessons.js).
+window.PromptboardLessonsView = window.PromptboardLessons?.create({ api, announce, project: () => currentProject(), projects: () => board?.projects || [], openTask: taskId => void openTaskDetails(taskId),
+  openKanban: (projectId, then) => { setSelectedProject(projectId); location.hash = '#/kanban'; setTimeout(then, 0); } }) || null;
+// Settings → Docker sandbox: Docker's status, the image build, and Claude Code's token for containers.
+window.PromptboardSandbox?.create({ api, announce });
 // Start page applies only when the URL contains no explicit route.
 if (!location.hash && uiPref('startPage') !== 'compose') location.hash = `#/${uiPref('startPage')}`;
 showPage();

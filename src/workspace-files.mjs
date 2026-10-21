@@ -1,6 +1,6 @@
 /** Bounded file access within explicitly linked project folders/worktrees. */
 import { constants } from 'node:fs';
-import { access, lstat, open, opendir, realpath, rename, unlink } from 'node:fs/promises';
+import { access, lstat, mkdir, open, opendir, realpath, rename, unlink } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { git, listWorktrees } from './git.mjs';
@@ -62,7 +62,7 @@ async function context(board, projectId, workspace) {
     if (await realpath(common) !== project.repository.commonDir) fail('This folder belongs to another repository.', 'FILE_WORKSPACE_UNAVAILABLE', 409);
     root = join(task.workspace.path, relative(repositoryRoot, selected)); scope = scopes.find(s => s.id === workspace);
   }
-  return { root, scopes, project: { id: project.id, name: project.name }, workspace: scope };
+  return { root, repositoryRoot, target: project.targetBranch?.name || '', scopes, project: { id: project.id, name: project.name }, workspace: scope };
 }
 
 /** Filesystem and Git failures while resolving or reading a path, as viewer errors instead of server errors. */
@@ -85,6 +85,7 @@ export async function inspectWorkspace(board, projectId, { path = '', workspace 
       const entries = [], directory = await opendir(item.path);
       let truncated = false;
       for await (const entry of directory) {
+        if (SAVE_TEMP.test(entry.name)) continue;
         if (entries.length === FILE_LIMITS.entries) { truncated = true; break; }
         const kind = entry.isSymbolicLink() ? 'link' : entry.isDirectory() ? 'directory' : entry.isFile() ? 'file' : 'unsupported';
         const blocked = protectedName(entry.name) || /[\\:\x00-\x1f\x7f]/.test(entry.name) || ['link', 'unsupported'].includes(kind);
@@ -126,6 +127,8 @@ export function validateFileText(text) {
 }
 
 const saves = new Map();
+/** A save's own temporary file, which lives only until its rename: listings and Git status leave it out. */
+export const SAVE_TEMP = /^\.promptboard-save-[0-9a-f-]{36}\.tmp$/;
 /** Optimistic conflict checking, serialized saves and atomic replacement; never create files. */
 export async function saveWorkspaceFile(board, projectId, value, { signal } = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) fail('Provide a file edit.', 'FILE_TEXT_INVALID');
@@ -164,4 +167,38 @@ export async function saveWorkspaceFile(board, projectId, value, { signal } = {}
   });
   saves.set(lock, pending);
   try { return await pending; } finally { if (saves.get(lock) === pending) saves.delete(lock); }
+}
+
+/** The project checkout with the viewer's custody checks, including the root itself (no link in its place), for Git status. */
+export async function workspaceRoot(board, projectId) {
+  try { const ctx = await context(board, projectId, ''); await target(ctx.root, []); return ctx; } catch (error) { unavailable(error); }
+}
+
+/** A new empty file or folder in the project checkout. It never replaces anything: an existing name is refused. */
+export async function createWorkspaceEntry(board, projectId, value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) fail('Choose a name for the new file or folder.', 'FILE_PATH_INVALID');
+  const { path, kind, scopeVersion } = value;
+  if (!['file', 'directory'].includes(kind)) fail('Choose a file or a folder.', 'FILE_KIND_INVALID');
+  if (!/^[a-f0-9]{64}$/.test(scopeVersion || '')) fail('Refresh the project files before adding to them.', 'FILE_VERSION_INVALID');
+  const parts = parsePath(path), name = parts.at(-1);
+  // Names Windows cannot hold are refused on every system, so the project still checks out there: its reserved characters,
+  // a trailing dot or space (dropped), and device names, also with an extension or a space before it (NUL.txt, CON .txt, COM¹).
+  if (!name || /[<>"|?*]|[. ]$/.test(name) || /^(?:con|prn|aux|nul|conin\$|conout\$|com[0-9¹²³]|lpt[0-9¹²³])(?:[ .].*)?$/i.test(name)) {
+    fail('Choose another name. A name cannot use < > " | ? *, end with a dot or a space, or be a reserved name such as CON or NUL.', 'FILE_PATH_INVALID');
+  }
+  try {
+    const ctx = await context(board, projectId, '');
+    if (createHash('sha256').update(ctx.root).digest('hex') !== scopeVersion) fail('The project folder changed. Refresh the files before adding to them.', 'FILE_CONFLICT', 409);
+    const parent = await target(ctx.root, parts.slice(0, -1));
+    if (!parent.info.isDirectory()) fail('This folder is unavailable.', 'FILE_NOT_FOUND', 404);
+    const full = join(parent.path, name);
+    if (kind === 'directory') await mkdir(full);
+    else await (await open(full, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW || 0), 0o666)).close();
+    if (!same(parent.info, (await target(ctx.root, parts.slice(0, -1))).info)) fail('The folder changed while adding to it. Check the project folder.', 'FILE_CHANGED', 409);
+    return { path, kind, created: true };
+  } catch (error) {
+    if (error.code === 'EEXIST') fail('A file or folder with this name already exists.', 'FILE_EXISTS', 409);
+    if (error instanceof WorkspaceFileError || ['ENOENT', 'ENOTDIR'].includes(error.code)) unavailable(error);
+    fail('The file or folder could not be created. Check that you can write to this folder, or choose a shorter name.', 'FILE_CREATE_FAILED', 409);
+  }
 }

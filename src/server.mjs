@@ -33,7 +33,8 @@ import { PipelineActions } from './pipeline-actions.mjs';
 import { PipelineNotifications, NotificationError } from './pipeline-notifications.mjs';
 import { notificationRoute } from './pipeline-notifications-http.mjs';
 import { RepositoryPipelineError } from './pipeline-repository.mjs';
-import { inspectWorkspace, saveWorkspaceFile, WorkspaceFileError } from './workspace-files.mjs';
+import { createWorkspaceEntry, inspectWorkspace, saveWorkspaceFile, WorkspaceFileError } from './workspace-files.mjs';
+import { projectStatus } from './project-explorer.mjs';
 import { proposeWorkspaceFile, validateFileProposalRequest } from './workspace-file-ai.mjs';
 import { OriginError, OriginStore, originRoute } from './origin.mjs';
 import { ContextStore, contextRoute } from './origin-context.mjs';
@@ -42,6 +43,10 @@ import { streamResearch } from './research-cli.mjs';
 import { PromptStore, createBoardProject, nameTaken, projectsRoute } from './projects.mjs';
 import { Coordinator, CoordinatorError, coordinatorRoute } from './coordinator.mjs';
 import { BatchError, ComposeBatches, batchRoute } from './compose-batch.mjs';
+import { Schedules, scheduleRoute } from './schedules.mjs';
+import { projectInsights } from './insights.mjs';
+import { Lessons, LessonsError, lessonsRoute } from './lessons.mjs';
+import { Sandbox, sandboxRoute } from './sandbox.mjs';
 
 const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
 const assets = new Map([
@@ -62,8 +67,15 @@ const assets = new Map([
   ['/origin-research.js', ['origin-research.js', 'text/javascript; charset=utf-8']],
   ['/projects.js', ['projects.js', 'text/javascript; charset=utf-8']],
   ['/coordinator.js', ['coordinator.js', 'text/javascript; charset=utf-8']],
+  ['/insights.js', ['insights.js', 'text/javascript; charset=utf-8']],
   ['/compose-batch.js', ['compose-batch.js', 'text/javascript; charset=utf-8']],
+  ['/live-preview.js', ['live-preview.js', 'text/javascript; charset=utf-8']],
   ['/dock.js', ['dock.js', 'text/javascript; charset=utf-8']],
+  ['/schedules.js', ['schedules.js', 'text/javascript; charset=utf-8']],
+  ['/project.html', ['project.html', 'text/html; charset=utf-8']], // The project explorer in its own window.
+  ['/project-explorer.js', ['project-explorer.js', 'text/javascript; charset=utf-8']],
+  ['/lessons.js', ['lessons.js', 'text/javascript; charset=utf-8']],
+  ['/sandbox.js', ['sandbox.js', 'text/javascript; charset=utf-8']],
 ]);
 // Pinned terminal assets, served from the installed packages by exact path only (no CDN,
 // no directory browsing). Missing files (no npm install) return 404 and the dock falls back.
@@ -110,7 +122,7 @@ export async function generate(request, { runner = runProvider, signal, catalogR
 // Map internal codes to HTTP statuses. Message text always comes from fixed strings.
 const STATUS = { ABORTED: 499, TIMEOUT: 504, BUSY: 409, AUTH_IN_PROGRESS: 409, NOT_INSTALLED: 409, UNSUPPORTED: 400, INVALID_PROVIDER: 400, INVALID_MODEL: 400, INVALID_EFFORT: 400, INVALID_INPUT: 400 };
 // Domain errors whose messages are fixed, user-facing strings.
-const EXPOSED = [AgentError, BatchError, BaseDeliveryError, BaseError, BoardError, CoordinatorError, DeliveryError, GitError, GitHubError, NotificationError, OriginError, RepositoryPipelineError, ResearchError, StoreError, WorkspaceFileError];
+const EXPOSED = [AgentError, BatchError, BaseDeliveryError, BaseError, BoardError, CoordinatorError, DeliveryError, GitError, GitHubError, LessonsError, NotificationError, OriginError, RepositoryPipelineError, ResearchError, StoreError, WorkspaceFileError];
 /** The one error-to-HTTP mapping. Unexpected errors get the route's fallback text, never internal details. */
 function failureBody(error, fallback, unknown = { status: 502, code: 'UNKNOWN' }) {
   if (EXPOSED.some(Type => error instanceof Type)) return { status: error.status || 500, body: { error: error.message, code: error.code || 'INVALID_REQUEST' } };
@@ -130,7 +142,7 @@ const TASK_BODY_LIMIT = 8 * 1024 * 1024;
 const BOARD_BODY_LIMIT = 48 * 1024 * 1024;
 
 /** Kanban routes. IDs come from the URL; every filesystem path is resolved on the server. */
-async function boardRoute(board, req, res, pathname, searchParams, origin) {
+async function boardRoute(board, req, res, pathname, searchParams, origin, prompts) {
   const method = req.method;
   const match = pathname.match(/^\/api\/(projects|tasks|runs)\/([A-Za-z0-9_-]{1,100})(?:\/([a-z-]+))?$/);
   const body = async (limit = TASK_BODY_LIMIT) => { const value = await jsonBody(req, limit); if (!value || typeof value !== 'object' || Array.isArray(value)) throw Object.assign(new Error('Send a JSON object.'), { status: 400 }); return value; };
@@ -164,11 +176,16 @@ async function boardRoute(board, req, res, pathname, searchParams, origin) {
   const note = pathname.match(/^\/api\/projects\/([A-Za-z0-9_-]{1,100})\/timeline\/([A-Za-z0-9_-]{1,100})$/);
   if (note && method === 'PATCH') return send(res, 200, { note: await board.updateTimelineNote(note[1], note[2], await body()) });
   if (note && method === 'DELETE') return send(res, 200, { deleted: await board.deleteTimelineNote(note[1], note[2]) ?? true });
+  const schedule = pathname.match(/^\/api\/projects\/([A-Za-z0-9_-]{1,100})\/schedules(?:\/([A-Za-z0-9_-]{1,100})(\/run)?)?$/);
+  if (schedule) return scheduleRoute(board.schedules, { method, projectId: schedule[1], scheduleId: schedule[2], run: Boolean(schedule[3]), body, json: data => send(res, 200, data), view, searchParams });
   if (!match) return false;
   const [, kind, id, action = ''] = match;
   const expected = () => Number(searchParams.get('expectedRevision'));
   if (kind === 'projects') {
     if (method === 'PUT' && action === 'file') return send(res, 200, await saveWorkspaceFile(board, id, await body(4 * 1024 * 1024)));
+    // Project explorer: a new empty file or folder (never over an existing one), and the checkout's Git status.
+    if (method === 'POST' && action === 'files') return send(res, 200, await createWorkspaceEntry(board, id, await body()));
+    if (method === 'GET' && action === 'git-status') return send(res, 200, await projectStatus(board, id));
     if (method === 'GET' && ['files', 'file'].includes(action)) return send(res, 200, await inspectWorkspace(board, id, {
       path: searchParams.get('path') || '', workspace: searchParams.get('workspace') || '',
       offset: searchParams.get('offset') || '0', version: searchParams.get('version') || '', file: action === 'file',
@@ -198,8 +215,10 @@ async function boardRoute(board, req, res, pathname, searchParams, origin) {
     }
     if (method === 'PATCH' && action === 'workflow') return view({ project: await board.setWorkflow(id, await body()) });
     if (method === 'PATCH' && action === 'tests') return view({ project: await board.delivery.setTestCommands(id, await body()) });
+    if (method === 'PATCH' && action === 'preview') return view({ project: await board.previews.setSettings(id, await body()) });
     if (method === 'POST' && action === 'target-branch') return view({ project: await board.setTargetBranch(id, await body()) });
     if (method === 'GET' && action === 'timeline') return send(res, 200, { events: await board.timeline(id) });
+    if (method === 'GET' && action === 'insights') return send(res, 200, { insights: await projectInsights({ board, origin, prompts }, id, searchParams.get('days')) });
     if (method === 'POST' && action === 'timeline') return send(res, 200, { note: await board.addTimelineNote(id, await body()) });
     if (method === 'POST' && action === 'github') return view({ project: await board.connectGitHub(id, await body()) });
     if (method === 'GET' && action === 'github-remote') return view({ repository: await board.githubRemote(id) });
@@ -267,6 +286,10 @@ async function boardRoute(board, req, res, pathname, searchParams, origin) {
     if (method === 'POST' && action === 'runs') return view({ run: await board.requestRun(id, await body()) });
     if (method === 'POST' && action === 'resume') return view({ run: await board.resumeTask(id, await body(128 * 1024)) });
     if (method === 'DELETE' && action === 'worktree') return view({ task: await board.removeTaskWorktree(id, { deleteIgnored: searchParams.get('deleteIgnored') === '1' }) });
+    // Live preview: the card's dev server in its worktree, on this computer (starting and stopping are local-only).
+    if (method === 'GET' && action === 'preview') return send(res, 200, await board.previews.status(id));
+    if (method === 'POST' && action === 'preview') return send(res, 200, await board.previews.start(id, await body()));
+    if (method === 'DELETE' && action === 'preview') { await board.previews.stop(id); return send(res, 200, await board.previews.status(id)); }
     // Review, testing, merge, and completion (PB-04). Every change needs an explicit confirm flag.
     const delivery = board.delivery;
     if (method === 'GET' && action === 'revision') return send(res, 200, { revision: await delivery.revision(id) });
@@ -337,7 +360,10 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
   const usage = usageReader || new UsageDashboard({ dataDir });
   const notifications = new PipelineNotifications();
   const board = new Board({ dataDir, ...(projectsDir ? { projectsDir } : {}), automationActions: new PipelineActions({ notifier: (message, options) => notifications.deliver(message, options) }) });
-  board.executor = executor === 'auto' ? new Supervisor({ board, dataDir }) : executor;
+  // Docker mode for card agents: one per data folder. Containers a crash left behind are removed before any run starts.
+  const sandbox = new Sandbox({ dataDir });
+  void sandbox.sweep();
+  board.executor = executor === 'auto' ? new Supervisor({ board, dataDir, sandbox }) : executor;
   board.folderPicker = folderPicker;
   board.projectOpener = projectOpener; // Opens a project's folder, a terminal or index.html (tests pass a fake).
   // Code editors on this computer: found where they install, or added by hand; the last one used is remembered.
@@ -347,6 +373,9 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
   // Autopilot runs only for projects where the user started it; otherwise each tick does nothing.
   const autopilot = new Autopilot(board);
   if (board.executor) autopilot.start();
+  // Scheduled cards land in To Do while the app runs; agents start on them only where the owner chose Autopilot.
+  board.schedules = new Schedules(board);
+  board.schedules.start();
   const token = randomBytes(32).toString('hex');
   const catalogAbort = new AbortController();
   const catalogs = new Map(), lookups = new Map();
@@ -377,6 +406,9 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
     // Changing sign-in under a running agent session would break it.
     if (kind === 'auth' && (board.executor?.pendingCount?.() ?? board.executor?.activeCount?.()) > 0) throw Object.assign(new ProviderError('Agent sessions are running. Stop them before you change sign-in.', 'RUNS_ACTIVE'), { status: 409 });
     if (kind === 'auth' && batches.activeCount() > 0) throw Object.assign(new ProviderError('Compose Batch is running. Wait for it or cancel it before you change sign-in.', 'RUNS_ACTIVE'), { status: 409 });
+    // Project memory runs in the background: the owner's own CLI work, once allowed, stops it (it is queued again) and
+    // gets the slot as soon as that run has stopped (src/lessons.mjs), never a BUSY refusal.
+    if (busy?.kind === 'lessons' && kind !== 'lessons') { busy.controller.abort('yield'); await busy.done; }
     if (busy) {
       throw Object.assign(new ProviderError(busy.kind === 'auth' ? 'A sign-in change is in progress. Finish or cancel it first.' : 'A prompt is already in progress. Wait or cancel that prompt.', busy.kind === 'auth' ? 'AUTH_IN_PROGRESS' : 'BUSY'), { status: 409 });
     }
@@ -386,7 +418,8 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
     const job = busy;
     return { job, release: () => {
       const free = () => { if (busy === job) busy = null; release(); if (job.kind === 'auth') board.executor?.wake?.(); };
-      if (!job.controller.signal.aborted || closing) { free(); return; }
+      // The lessons worker releases only after its own CLI call has settled, so it waits for no unrelated work.
+      if (!job.controller.signal.aborted || closing || job.kind === 'lessons') { free(); return; }
       // The UI can finish cancelling before provider pipes have closed. Keep the
       // slot until tracked cleanup settles; a broken injected adapter is bounded.
       let timer;
@@ -412,6 +445,9 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
   const research = new ResearchStore(dataDir); // Creates nothing on disk until a chat is saved.
   const prompts = new PromptStore(dataDir);
   const coordinator = new Coordinator({ dataDir, board, origin });
+  // Project memory: a merged card queues one lessons job (Board.completeTask); the worker starts once the app listens.
+  const lessons = new Lessons({ dataDir, board, claim, runner: call => track(runner(call)) });
+  board.lessons = lessons;
   // Compose Batch has its own bounded pool beside the one-job slot: each task is one tracked Compose run.
   const batches = new ComposeBatches({ dataDir, origin, board, track, call: input => track(runner(input)), authBusy: () => busy?.kind === 'auth', ...(batchTimeoutMs ? { timeoutMs: batchTimeoutMs } : {}),
     generate: (request, options) => generate(request, { runner: call => track(runner(call)), catalogReader: provider => getCatalog(provider, { maxAgeMs: Infinity }), ...options }) });
@@ -480,6 +516,10 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
     if (/^\/api\/coordinator(?:\/|$)/.test(pathname)) {
       try { return await coordinatorRoute({ coordinator, runner, track, claim, req, res, pathname, jsonBody, send }); }
       catch (error) { return sendFailure(res, error, 'The Coordinator request failed. Project data is unchanged.', { status: 500, code: 'COORDINATOR_FAILED' }); }
+    }
+    if (/^\/api\/sandbox(?:\/|$)/.test(pathname)) {
+      try { return await sandboxRoute({ sandbox, req, res, pathname, jsonBody, send }); }
+      catch (error) { return sendFailure(res, error, 'The Docker sandbox request failed. Nothing was changed.', { status: 500, code: 'SANDBOX_FAILED' }); }
     }
     if (/^\/api\/shared-projects(?:\/|$)/.test(pathname)) {
       try { return await projectsRoute({ origin, board, prompts, req, res, pathname, jsonBody, send }); }
@@ -701,8 +741,12 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
       finally { res.off('close', abort); claimed?.release(); }
       return;
     }
+    if (/^\/api\/(?:projects|tasks)\/[A-Za-z0-9_-]{1,100}\/lessons(?:\/|$)/.test(pathname)) {
+      try { return await lessonsRoute({ lessons, req, res, pathname, jsonBody, send }); }
+      catch (error) { return sendFailure(res, error, 'The project memory request failed. Nothing was changed.', { status: 500, code: 'LESSONS_FAILED' }); }
+    }
     if (/^\/api\/(board|projects|tasks|runs|github)(\/|$)/.test(pathname) || pathname === '/api/repository/validate' || pathname === '/api/folder/choose' || pathname === '/api/settings') {
-      try { if ((await track(boardRoute(board, req, res, pathname, requestUrl.searchParams, origin))) !== false) return; }
+      try { if ((await track(boardRoute(board, req, res, pathname, requestUrl.searchParams, origin, prompts))) !== false) return; }
       // Board, store, and Git errors carry fixed messages; raw Git output is never returned.
       catch (error) { return sendFailure(res, error, 'The board request failed.', { status: 500, code: 'BOARD_FAILED' }); }
       return send(res, 404, { error: 'This route does not exist.' });
@@ -727,10 +771,11 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
       server.once('error', reject);
       server.listen(port, '127.0.0.1', resolve);
     });
-  } catch (error) { autopilot.stop(); await lock.release(); throw error; }
+  } catch (error) { autopilot.stop(); board.schedules.stop(); await lock.release(); throw error; }
   await lock.setPort(server.address().port);
   // Remote access stays off unless it was turned on; a listener that cannot start is reported in Settings.
   remoteAccess = await new RemoteAccess({ dataDir, localPort: server.address().port, handle: (req, res, who) => handle(req, res, who) }).load();
+  lessons.start(); // Queued lessons jobs, also those a restart interrupted, run now (one at a time, through the job slot).
   let closed;
   // Idempotent and bounded: stop accepting, cancel owned work, close sockets, then
   // SIGKILL any owned CLI process group that is still alive.
@@ -747,12 +792,14 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
     usage.close?.();
     server.closeIdleConnections();
     // Agent sessions: stop owned process groups, record runs as interrupted, end streams.
-    const automations = board.shutdownAutomations();
+    const automations = board.shutdownAutomations(), lessonsClosed = lessons.close();
     const agents = board.executor?.shutdown ? board.executor.shutdown(Math.min(3000, graceMs)) : null;
     autopilot.stop();
+    board.schedules.stop();
     board.githubLogin.cancel('The app stopped.');
     board.delivery.stopAllTests();
-    const settle = Promise.allSettled([...tasks, ...lookups.values(), busy?.done, automations, agents, batchesClosed].filter(Boolean));
+    board.previews.stopAll();
+    const settle = Promise.allSettled([...tasks, ...lookups.values(), busy?.done, automations, agents, batchesClosed, lessonsClosed].filter(Boolean));
     // An accepted shutdown must keep Node alive even when a broken adapter has
     // no remaining handles. Observe cleanup or reach this bounded terminal state.
     let cleanupTimer;

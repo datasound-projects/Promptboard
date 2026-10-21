@@ -13,14 +13,16 @@ import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { ADAPTERS, AgentError, buildSession, composeMessage, interpretEvent, resolveConfig } from './agents.mjs';
 import { CLAUDE_ERRORS, cliEnv, FAILURE_MESSAGES, killPidGroup, resolveExecutable, trackPid, untrackPid } from './providers.mjs';
-import { addClaudeRecord, addCodexRecord, claudeTranscript, findCodexRollout, newUsage, readNewLines, usageSummary } from './usage.mjs';
+import { addClaudeRecord, addCodexRecord, claudeTranscript, findCodexRollout, newUsage, readNewLines, reportedCost, usageSummary } from './usage.mjs';
 import { prepareBase } from './base-context.mjs';
 import { BaseDeliveryError, checkBaseRevocations } from './base-resolver.mjs';
 import { SessionActivity } from './session-activity.mjs';
 import { TerminalInputObservation } from './terminal-input-observation.mjs';
 import { supportsWorkspaceTrust, TRUST_KEYS, WorkspaceTrust } from './workspace-trust.mjs';
 import { nativeMessageInputReadiness, sendOwnedNativeMessage } from './native-message-input.mjs';
+import { Sandbox } from './sandbox.mjs';
 import { untilStopped } from './native-message-common.mjs';
+import { lessonsPrompt } from './lessons.mjs';
 
 const RING_BYTES = 1024 * 1024; // Live scrollback kept per run for reconnects.
 const LOG_BYTES = 20 * 1024 * 1024; // Output log file cap per run.
@@ -67,13 +69,14 @@ export async function loadPty(requireFrom = import.meta.url) {
 
 export class Supervisor {
   #nativeMessageOwners = new WeakSet();
-  constructor({ board, dataDir, ptyLoader = loadPty, resolver = resolveExecutable, nodePath = process.execPath, basePreparer = prepareBase }) {
+  constructor({ board, dataDir, ptyLoader = loadPty, resolver = resolveExecutable, nodePath = process.execPath, basePreparer = prepareBase, sandbox = new Sandbox({ dataDir }) }) {
     this.board = board;
     this.dataDir = dataDir;
     this.ptyLoader = ptyLoader;
     this.resolver = resolver;
     this.nodePath = nodePath;
     this.basePreparer = basePreparer;
+    this.sandbox = sandbox; // Docker mode (src/sandbox.mjs).
     this.preparing = new Map();
     this.authBusy = () => false; // Set by the server: true while a CLI sign-in change runs.
     this.sessions = new Map(); // runId -> session
@@ -236,37 +239,44 @@ export class Supervisor {
     const planDir = planRunId && join(this.dataDir, 'runs', planRunId);
     const plan = planRunId ? await readFile(join(planDir, 'approved-plan.md'), 'utf8').catch(() => run.planSha256 ? null : readFile(join(planDir, 'plan.md'), 'utf8')).catch(() => null) : null;
     if (planRunId && (plan === null || (run.planSha256 && createHash('sha256').update(plan).digest('hex') !== run.planSha256))) throw new AgentError('The approved plan is missing or changed after it was approved. Run Planning again.', 'PLAN_UNAVAILABLE');
+    // Approved project lessons go to every new conversation; a resumed one already has them.
+    const lessons = run.resumeFrom ? '' : await lessonsPrompt(this.dataDir, run.projectId);
     // Custom pipeline columns send the task envelope; legacy stages and typed columns send stage instructions with a handoff.
     const message = run.config.pipeline && !run.stageKind
-      ? [run.resumeFrom ? continuation || '' : firstPrompt, (!run.resumeFrom || run.baseChanged) ? baseDelivery.sections : ''].filter(Boolean).join('\n\n')
-      : run.resumeFrom ? continuation || '' : composeMessage(run.stageKind || run.stage, task.prompt, plan, run.config.instructions || '', extra || '', baseDelivery.sections);
+      ? [run.resumeFrom ? continuation || '' : firstPrompt, lessons, (!run.resumeFrom || run.baseChanged) ? baseDelivery.sections : ''].filter(Boolean).join('\n\n')
+      : run.resumeFrom ? continuation || '' : composeMessage(run.stageKind || run.stage, task.prompt, plan, run.config.instructions || '', extra || '', baseDelivery.sections, lessons);
     // Stage instructions, the exact task text, and the plan are stored with the run.
     await writeFile(join(runDir, 'prompt.md'), message, { mode: 0o600 });
     await writeFile(join(runDir, 'task-prompt.txt'), task.prompt, { mode: 0o600 });
     const eventsFile = join(runDir, 'events.jsonl');
     await writeFile(eventsFile, '', { mode: 0o600 });
     const sessionId = run.resumeFrom?.nativeSessionId || randomUUID();
+    const sandboxed = run.config.sandbox === 'docker'; // Hooks and the status line then run with the image's own node.
     const built = await buildSession({ provider: run.config.provider, stage: run.stageKind || run.stage, config: run.config, message, runDir, eventsFile, sessionId,
-      resumeId: run.resumeFrom?.nativeSessionId || null, workspacePath: run.workspacePath, nodePath: this.nodePath, baseDelivery });
+      resumeId: run.resumeFrom?.nativeSessionId || null, workspacePath: run.workspacePath, nodePath: sandboxed ? 'node' : this.nodePath, baseDelivery });
     // Cancellation can arrive during CLI discovery or session preparation.
     if ((await this.board.run(runId)).status !== 'queued') { this.#endPending(runId); return; }
     signal.throwIfAborted();
     const currentBase = (await this.board.state()).base;
     checkBaseRevocations(run.baseManifest, currentBase?.resources || [], currentBase?.approvedRoots || []);
     const supplied = { ...baseDelivery.manifest, acceptedAt: run.baseManifest?.acceptedAt, deliveryState: 'supplied', suppliedAt: Date.now() };
+    // Docker mode: the terminal runs the docker client, which runs the CLI in a container (checked first, never a fallback).
+    const launch = sandboxed ? await this.sandbox.prepare({ run, runs: state.runs, runDir, built, signal })
+      : { command: executable.command, args: [...executable.prefix, ...built.args], env: built.env };
     signal.throwIfAborted();
     const log = createWriteStream(join(runDir, 'output.log'), { flags: 'a', mode: 0o600 });
     log.on('error', () => {});
     let proc;
     try {
-      proc = pty.spawn(executable.command, [...executable.prefix, ...built.args], {
-        name: 'xterm-256color', cols: 120, rows: 32, cwd: run.workspacePath, env: cliEnv(built.env),
+      proc = pty.spawn(launch.command, launch.args, {
+        name: 'xterm-256color', cols: 120, rows: 32, cwd: run.workspacePath, env: cliEnv(launch.env),
       });
     } catch (error) { log.destroy(); throw error; }
     trackPid(proc.pid);
     const session = { runId, taskId: run.taskId, stage: run.stage, stageKind: run.stageKind || null, provider: run.config.provider, proc, seq: 0, ring: [], ringBytes: 0,
       subscribers: new Set(), log, logBytes: 0, eventsFile, eventsOffset: 0, runDir, paste: built.paste, turns: 0, status: 'running', startedAt: Date.now(), sessionId,
-      pipeline: run.config.pipeline === true, inputEpoch: 0, resumeNativeId: run.resumeFrom?.nativeSessionId, baseCleanup: baseDelivery.cleanup, baseManifest: supplied };
+      pipeline: run.config.pipeline === true, inputEpoch: 0, resumeNativeId: run.resumeFrom?.nativeSessionId, baseCleanup: baseDelivery.cleanup, baseManifest: supplied,
+      sandboxed, codexHome: launch.codexHome };
     if (session.pipeline) {
       session.activity = new SessionActivity(session.provider);
       session.terminalInput = new TerminalInputObservation();
@@ -547,7 +557,7 @@ export class Supervisor {
     if (session.usage) return;
     let path = null;
     if (session.provider === 'claude') path = claudeTranscript(event.transcriptPath, session.sessionId);
-    else if (session.provider === 'codex' && event.sessionId) path = await findCodexRollout(event.sessionId, session.startedAt);
+    else if (session.provider === 'codex' && event.sessionId) path = await findCodexRollout(event.sessionId, session.startedAt, session.codexHome || undefined);
     if (path) session.usage = { tail: { path, offset: 0 }, acc: newUsage(session.provider === 'claude' ? 'claude-transcript' : 'codex-rollout'), last: '' };
   }
 
@@ -559,6 +569,9 @@ export class Supervisor {
       const { usage } = session;
       for (const record of await readNewLines(usage.tail)) (session.provider === 'claude' ? addClaudeRecord : addCodexRecord)(usage.acc, record);
       const summary = usageSummary(usage.acc);
+      // Claude Code's own price estimate, from its status line, rides on the usage so Insights never reads run files.
+      const costUSD = session.provider === 'claude' ? await reportedCost(join(session.runDir, 'usage-status.json'), session.sessionId) : null;
+      if (costUSD !== null) summary.costUSD = costUSD;
       const key = JSON.stringify({ ...summary, updatedAt: 0 });
       if (key === usage.last || (!summary.inputTokens && !summary.outputTokens)) return;
       usage.last = key;
@@ -621,6 +634,7 @@ export class Supervisor {
     session.initialSubmitPending = false;
     session.terminalInput?.close();
     if (!session.proc) return;
+    if (session.sandboxed) this.sandbox.remove(session.runId); // The terminal holds only the docker client.
     killPidGroup(session.proc.pid, 'SIGTERM');
     clearTimeout(session.killTimer);
     session.killTimer = setTimeout(() => { if (session.proc) killPidGroup(session.proc.pid, 'SIGKILL'); }, 3000);
@@ -1005,6 +1019,7 @@ export class Supervisor {
     for (const { runId } of this.queue.splice(0)) { await this.board.updateRun(runId, { status: 'interrupted', reason: 'The app stopped before this run started.' }).catch(() => {}); this.#endPending(runId); }
     const live = [...this.sessions.values()].filter(session => session.proc);
     for (const session of live) killPidGroup(session.proc.pid, 'SIGTERM');
+    const swept = this.sandbox?.sweep();
     const deadline = Date.now() + graceMs;
     while (live.some(session => session.proc) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
     for (const session of live) if (session.proc) killPidGroup(session.proc.pid, 'SIGKILL');
@@ -1015,5 +1030,6 @@ export class Supervisor {
       session.subscribers.clear();
     }
     for (const session of this.sessions.values()) clearTimeout(session.lingerTimer);
+    await swept;
   }
 }
