@@ -401,7 +401,7 @@ test('backups: export round-trips, import validates, asks before replacing, and 
   assert.deepEqual(project.workflow, {});
   assert.equal(project.effectiveWorkflow.executing.policy, 'start', 'The default; imported settings wait.');
   await click(fresh, fresh.$('#import-confirm'));
-  assert.equal(fresh.$('#repo-message').textContent, 'This folder does not exist.');
+  assert.equal(fresh.$('#repo-message').textContent, 'This folder does not exist. Link the project to its code on this computer, then confirm again.');
   await click(fresh, fresh.$('#import-dismiss'));
   assert.equal(fresh.$('#import-pending').hidden, true);
   assert.deepEqual((await serverBoard(fresh)).runs, []);
