@@ -443,7 +443,8 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
 .kanban-project-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 14px; padding: 0 20px 18px; }
 .kanban-project-form .inline-error { flex-basis: 100%; margin: 0; }
 .kanban-form-actions { display: flex; gap: 8px; }
-.kanban-detail { margin: 0 20px 18px; }
+.kanban-detail { margin: 0 0 16px; }
+.kanban-detail > p:last-child { margin-bottom: 0; }
 .kanban-count { color: var(--subtle); font: 12px var(--mono); }
 .kanban-cards { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 14px; list-style: none; background: var(--surface-2); }
 .kanban-cards:empty { display: none; }
@@ -521,7 +522,6 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
   .verification-status, .verification-report, .lint-review, .output-meta { padding-left: 16px; padding-right: 16px; }
   #prompt-output { padding: 18px 16px; }
   .kanban-project-form { padding: 0 16px 16px; }
-  .kanban-detail { margin: 0 16px 16px; }
   .kanban-cards { padding: 10px; }
   .kanban-repo { padding: 0 16px 16px; }
 }
@@ -595,7 +595,6 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
 .kanban-more .kanban-delete:hover { text-decoration: underline; text-underline-offset: 3px; }
 /* Project settings collapse to one summary line. */
 .project-summary { min-width: 0; overflow: hidden; color: var(--muted); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
-.kanban-projects.collapsed .kanban-detail { margin-top: 2px; }
 .kanban-card.pending { opacity: .6; outline: 1px dashed var(--line-strong); }
 .kanban-card.rejected { outline: 2px solid var(--ink); animation: pb-shake .3s ease-in-out 2; }
 @keyframes pb-shake { 50% { transform: translateX(3px); } }
@@ -960,7 +959,6 @@ body:has(#kanban-view:not([hidden]) #dock:not([hidden]):not([data-state="max"]))
 .project-agent-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .context-agent { max-width: 360px; padding: 5px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-2); font-size: 12px; text-align: left; overflow-wrap: anywhere; }
 .project-context .collapse-toggle { width: auto; height: auto; }
-.kanban-projects.collapsed:has(#project-detail[hidden]) { display: none; }
 .kanban-projects { box-shadow: none; margin-bottom: 10px; }
 #project-agent-panel, .project-context .project-location:not([hidden]) { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
 .project-agent-actions { flex-wrap: wrap; }
@@ -1005,7 +1003,6 @@ body:has(#kanban-view:not([hidden]) #dock:not([hidden]):not([data-state="max"]))
 #project-settings .toolbar-value { margin: 3px 0; overflow: hidden; color: var(--ink); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 #project-settings .field-label { font-size: 11.5px; }
 #project-settings .kanban-project-form, #project-settings .kanban-repo { padding: 12px 0 0; border-top: 1px solid var(--line); }
-#project-settings .kanban-detail { margin: 10px 0; }
 #project-settings .project-backup { padding: 11px 0; }
 #project-settings .project-backup > summary { color: var(--subtle); font-size: 11.5px; }
 .project-backup-actions { display: flex; gap: 6px; margin: 10px 0; }

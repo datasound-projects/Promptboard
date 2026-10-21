@@ -107,3 +107,34 @@ test('the Agents, Columns and Autopilot dialogs never save over a change saved m
   assert.deepEqual([current.workflow.planning.policy, current.testCommands.map(item => item.argv.join(' '))], ['manual', ['node --test']]);
   assert.deepEqual(exceptions(browser), []);
 });
+
+// Visible: painted inside the viewport, with no hidden ancestor (a closed drawer is visibility: hidden).
+const shown = text => `return [...document.querySelectorAll('body *')].filter(node => !node.children.length && node.textContent.includes(${JSON.stringify(text)})).some(node => {
+  for (let item = node; item; item = item.parentElement) { const style = getComputedStyle(item); if (style.visibility === 'hidden' || style.display === 'none') return false; }
+  const r = node.getBoundingClientRect(); return r.width > 0 && r.right > 0 && r.left < innerWidth && r.bottom > 0 && r.top < innerHeight;
+});`;
+
+test('board feedback shows on the board on a phone and with the sidebar collapsed', { skip: !chrome, timeout: 90000 }, async t => {
+  const { app, browser } = await open(t, {}, { width: 390, height: 844 });
+  const project = await app.board.createProject({ name: 'Not linked' });
+  const card = await app.board.createTask({ projectId: project.id, title: 'Waits', prompt: 'w' });
+  await browser.goto(`${app.url}/#/kanban`); await browser.until(`document.querySelector('[data-id="${card.id}"]')`, 'card');
+  const refuse = `const item = document.querySelector('[data-id="${card.id}"]'); if (item.querySelector('.kanban-more').hidden) item.querySelector('.kanban-more-toggle').click();
+    const select = item.querySelector('.kanban-move-to'); select.value = [...select.options].find(option => option.value).value; select.dispatchEvent(new Event('change'));`;
+  for (const [width, height] of [[390, 844], [1440, 900]]) for (const theme of ['light', 'dark']) {
+    await browser.resize(width, height);
+    await browser.eval(`document.documentElement.dataset.theme = ${JSON.stringify(theme)}; showProjectDetail();
+      if (innerWidth > 730 && document.documentElement.dataset.sidebar !== 'collapsed') document.querySelector('#menu-toggle').click();`);
+    await browser.eval(refuse);
+    await browser.until(`/stayed in To Do/.test(document.querySelector('#project-detail').textContent)`, 'refused');
+    assert.equal(await browser.layout(shown('stayed in To Do')), true, `${width}/${theme}: the reason is on screen`);
+    assert.equal(await browser.layout(`return document.documentElement.scrollWidth <= innerWidth;`), true, `${width}/${theme}: no sideways scroll`);
+  }
+  // Feedback for an action in the phone drawer closes the drawer, so the board shows it.
+  await browser.resize(390, 844);
+  await browser.eval(`showProjectDetail(); if (!document.querySelector('#sidebar').classList.contains('open')) document.querySelector('#menu-toggle').click();`);
+  await browser.until(`document.querySelector('#sidebar').classList.contains('open')`, 'drawer open');
+  await browser.eval(`showBoardError(new Error('Shown on the board.'));`);
+  assert.equal(await browser.layout(shown('Shown on the board.')), true);
+  assert.deepEqual(exceptions(browser), []);
+});

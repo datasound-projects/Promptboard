@@ -1548,7 +1548,7 @@ async function boardCall(method, path, body, timeoutMs = 60000) {
     if (data.code === 'REVISION_CONFLICT' || data.code === 'NOT_FOUND') await loadBoard();
     throw error;
   }
-  setBoardWarning('');
+  setBoardWarning(''); showProjectDetail(); // A change that went through replaces the feedback about an earlier one.
   renderBoard();
   return data;
 }
@@ -2615,10 +2615,17 @@ function projectNameError(name, exceptId = null) {
   return '';
 }
 
+/** Board feedback (a refused move, a failed action, a confirmation) shows above the board, whatever the sidebar does. */
 function showProjectDetail(...nodes) {
   $('#project-detail').replaceChildren(...nodes);
   $('#project-detail').hidden = nodes.length === 0;
-  if (nodes.length) setProjectCollapsed(false, false);
+  // On a phone, the open project drawer would cover it.
+  if (nodes.length && isMobile() && currentPage() === 'kanban' && $('#sidebar').classList.contains('open')) {
+    const inside = $('#sidebar').contains(document.activeElement);
+    setSidebar(false);
+    if (inside) $('#menu-toggle').focus();
+  }
+  fitBoardHeight();
 }
 
 // The sidebar project list is the one place to pick, create, rename and delete projects.
