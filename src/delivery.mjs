@@ -547,15 +547,15 @@ Use "passed" only when every command you list exited with 0 and the change works
       const remotes = lines(await git(['remote'], { cwd: ws.path }).catch(() => ''));
       const remote = remotes.includes('origin') ? 'origin' : remotes.length === 1 ? remotes[0] : null;
       if (!remote) throw fail(remotes.length ? `This repository has several remotes (${remotes.join(', ')}) and none is called origin. Promptboard pushes only to origin or a single remote.` : 'This repository has no remote. Add one (git remote add origin <url>), then try again.', 'NO_REMOTE');
-      await gh(['--version'], ws.path).catch(error => { throw error.missing ? fail('Install the GitHub CLI (gh) and run gh auth login, then try again.', 'GH_MISSING') : fail('The GitHub CLI did not start.', 'GH_FAILED'); });
+      await gh(['--version'], { cwd: ws.path }).catch(error => { throw error.missing ? fail('Install the GitHub CLI (gh) and run gh auth login, then try again.', 'GH_MISSING') : fail('The GitHub CLI did not start.', 'GH_FAILED'); });
       await git(['push', '--set-upstream', remote, `refs/heads/${ws.branch}:refs/heads/${ws.branch}`], { cwd: ws.path, timeoutMs: 180000 })
         .catch(() => { throw fail(`Git could not push ${ws.branch} to ${remote}. Check your access to the remote, or whether the branch there has different commits. Nothing was forced.`, 'PUSH_FAILED'); });
-      let pr = await gh(['pr', 'view', ws.branch, '--json', 'url,number,state'], ws.path).then(JSON.parse).catch(() => null);
+      let pr = await gh(['pr', 'view', ws.branch, '--json', 'url,number,state'], { cwd: ws.path }).then(JSON.parse).catch(() => null);
       if (!pr || pr.state !== 'OPEN') {
-        const out = await gh(['pr', 'create', '--base', target, '--head', ws.branch, '--title', title.trim(), '--body', body], ws.path)
+        const out = await gh(['pr', 'create', '--base', target, '--head', ws.branch, '--title', title.trim(), '--body', body], { cwd: ws.path })
           .catch(error => { throw fail(/base/i.test(error.stderr || '') ? `GitHub could not use ${target} as the base branch. Push ${target} to ${remote} first.` : /auth|login/i.test(error.stderr || '') ? 'The GitHub CLI is not signed in. Run gh auth login, then try again.' : 'The GitHub CLI could not create the pull request. Run gh pr create in the task worktree to see why.', 'PR_FAILED'); });
         const url = lines(out).reverse().find(line => /^https?:\/\//.test(line)) || '';
-        pr = await gh(['pr', 'view', url || ws.branch, '--json', 'url,number,state'], ws.path).then(JSON.parse).catch(() => ({ url, number: null, state: 'OPEN' }));
+        pr = await gh(['pr', 'view', url || ws.branch, '--json', 'url,number,state'], { cwd: ws.path }).then(JSON.parse).catch(() => ({ url, number: null, state: 'OPEN' }));
       }
       return this.board.updateTaskEvidence(taskId, task => {
         task.evidence = { ...(task.evidence || {}), pullRequest: { url: pr.url, number: pr.number, state: pr.state, remote, branch: ws.branch, base: target, taskCommit: rev.taskCommit, at: Date.now() } };
@@ -568,7 +568,7 @@ Use "passed" only when every command you list exited with 0 and the change works
     const { task, ws } = await this.#context(taskId);
     const known = task.evidence?.pullRequest;
     if (!known?.url) throw fail('This task has no pull request yet.', 'NO_PULL_REQUEST');
-    const pr = await gh(['pr', 'view', known.url, '--json', 'url,number,state,mergedAt'], ws.path).then(JSON.parse)
+    const pr = await gh(['pr', 'view', known.url, '--json', 'url,number,state,mergedAt'], { cwd: ws.path }).then(JSON.parse)
       .catch(error => { throw error.missing ? fail('Install the GitHub CLI (gh) to check the pull request.', 'GH_MISSING') : fail('The GitHub CLI could not read the pull request. Check gh auth status.', 'GH_FAILED'); });
     const updated = await this.board.updateTaskEvidence(taskId, current => { current.evidence.pullRequest = { ...current.evidence.pullRequest, state: pr.state, checkedAt: Date.now() }; });
     if (pr.state !== 'MERGED') return updated;

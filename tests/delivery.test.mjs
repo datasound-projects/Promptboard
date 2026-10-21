@@ -461,6 +461,9 @@ const fs = require('fs'); const a = process.argv.slice(2); const file = ${JSON.s
 fs.appendFileSync(file + '.log', JSON.stringify(a) + '\\n');
 const read = () => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } };
 if (a[0] === '--version') { console.log('gh version 2.0.0'); process.exit(0); }
+// Like the real gh: the repository is the one whose Git remote the working folder has.
+let origin = ''; try { origin = require('child_process').execFileSync('git', ['config', '--get', 'remote.origin.url'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch {}
+if (origin !== ${JSON.stringify(w.remote)}) { console.error('could not determine the repository of ' + process.cwd()); process.exit(1); }
 if (a[0] === 'pr' && a[1] === 'view') { const s = read(); if (!s) { console.error('no pull requests found'); process.exit(1); } console.log(JSON.stringify(s)); process.exit(0); }
 if (a[0] === 'pr' && a[1] === 'create') { const s = { url: 'https://github.com/example/repo/pull/7', number: 7, state: 'OPEN' }; fs.writeFileSync(file, JSON.stringify(s)); console.log(s.url); process.exit(0); }
 process.exit(2);
