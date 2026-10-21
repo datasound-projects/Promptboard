@@ -256,7 +256,7 @@ export class ComposeBatches {
 
   // ---- Origin and Kanban, as read now ----
   async #record(originId) {
-    const record = await this.origin.read(originId);
+    const record = await this.origin.read(originId, { report: false });
     return record && !record.damaged ? record : null;
   }
   /** Whether each task still says in Origin what it said when its prompt was made. Rebuilt only after Origin or the task changes. */

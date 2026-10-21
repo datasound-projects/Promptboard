@@ -746,3 +746,20 @@ test('a blueprint this version cannot read is left out of the project list inste
   assert.deepEqual(store.unreadable, [newer.id]);
   assert.equal(await readFile(path, 'utf8'), text, 'the file is not changed');
 });
+
+test('a blueprint restored from its backup is still reported on its page after Compose Batch, a copy or a Kanban route read it first', async t => {
+  const app = await startTestServer(t, { port: 0, executor: null, detector: async () => [] });
+  const { token } = (await api(app, '/api/session')).data;
+  const id = (await api(app, '/api/origin/projects', { method: 'POST', token, body: { name: 'Notice Me' } })).data.project.id;
+  const saved = await api(app, `/api/origin/projects/${id}`, { method: 'PUT', token, body: { expectedRevision: 1, blueprint: sample() } });
+  assert.equal((await api(app, '/api/compose/batches', { method: 'POST', token, body: { originId: id, expectedRevision: saved.data.revision, itemIds: ['i1'], defaults: { provider: 'codex' } } })).status, 200);
+  await api(app, `/api/origin/projects/${id}`, { method: 'PUT', token, body: { expectedRevision: saved.data.revision, blueprint: { ...sample(), idea: 'latest edit' } } });
+  const post = (action, body) => () => api(app, `/api/origin/projects/${id}/${action}`, { method: 'POST', token, body });
+  const readers = { batch: () => api(app, `/api/compose/batches/${id}`, { token }), copy: () => api(app, '/api/origin/projects', { method: 'POST', token, body: { name: 'Copy shape', start: { from: id } } }),
+    handoff: post('handoff', { expectedRevision: 0, itemIds: ['i1'] }), status: post('context-status', { expectedRevision: 0 }), update: post('update-context', { expectedRevision: 0 }), link: post('link', { expectedRevision: 0, kanbanProjectId: null }) };
+  for (const [name, read] of Object.entries(readers)) {
+    await writeFile(join(app.board.store.dir, 'origin', blueprintFileName(id)), '{"schema": "promptb'); // Damaged on disk; the backup is the previous save.
+    assert.ok([200, 409].includes((await read()).status), name);
+    assert.equal((await api(app, `/api/origin/projects/${id}`, { token })).data.recovery?.restoredFromBackup, true, `${name} took the restore notice`);
+  }
+});

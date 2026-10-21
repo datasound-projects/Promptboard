@@ -196,7 +196,7 @@ export class OriginStore {
 
   list() { return this.#serial(() => this.#list()); }
 
-  /** `report: false` (Project Context) leaves a pending recovery notice for the project's own page. */
+  /** `report: false` (every reader but the project's own page) leaves a pending recovery notice for that page. */
   read(originId, { report = true } = {}) {
     try { validId(originId); } catch (error) { return Promise.reject(error); }
     return this.#serial(async () => {
@@ -465,7 +465,7 @@ export function loopFrom(items, ids) {
  * card are added only when asked, and a card deleted in Kanban is recreated only when asked. Nothing starts.
  */
 async function handoff({ origin, board, originId, input }) {
-  const record = await origin.read(originId);
+  const record = await origin.read(originId, { report: false });
   if (!record || record.damaged) throw new OriginError('This Origin project no longer exists. Choose another project.', 'NOT_FOUND', 404);
   if (record.revision !== input.expectedRevision) throw new OriginError('The blueprint has newer changes. Let it save, then send again.', 'ORIGIN_REVISION_CONFLICT', 409);
   const destination = record.kanbanProjectId ? (await board.state()).projects.find(project => project.id === record.kanbanProjectId) : null;
@@ -532,7 +532,7 @@ const todoOf = project => (project.workflowMode === 'pipeline' ? project.pipelin
  * the snapshot), so unrelated edits and diagram moves change nothing. Kanban progress is only read.
  */
 async function contextStatus({ origin, board, originId, input }) {
-  const record = await origin.read(originId);
+  const record = await origin.read(originId, { report: false });
   if (!record || record.damaged) throw new OriginError('This Origin project no longer exists. Choose another project.', 'NOT_FOUND', 404);
   if (record.revision !== input.expectedRevision) throw new OriginError('The blueprint has newer changes. Let it save, then check again.', 'ORIGIN_REVISION_CONFLICT', 409);
   const projects = (await board.state()).projects, tasks = [];
@@ -559,7 +559,7 @@ async function contextStatus({ origin, board, originId, input }) {
  * confirm. Earlier snapshots stay for history.
  */
 async function updateContext({ origin, board, originId, input }) {
-  const record = await origin.read(originId);
+  const record = await origin.read(originId, { report: false });
   if (!record || record.damaged) throw new OriginError('This Origin project no longer exists. Choose another project.', 'NOT_FOUND', 404);
   if (record.revision !== input.expectedRevision) throw new OriginError('The blueprint has newer changes. Let it save, then review again.', 'ORIGIN_REVISION_CONFLICT', 409);
   const item = record.blueprint.items.find(entry => entry.id === input.itemId);
@@ -612,7 +612,7 @@ async function startBlueprint(origin, start) {
     return Model.structureTemplate(saved.blueprint, randomUUID);
   }
   if (start && typeof start === 'object' && !Array.isArray(start) && typeof start.from === 'string') {
-    const source = await origin.read(start.from);
+    const source = await origin.read(start.from, { report: false });
     if (!source || source.damaged) throw new OriginError('The project to copy the structure from no longer exists. Choose another one.', 'NOT_FOUND', 404);
     return Model.structureTemplate(source.blueprint, randomUUID);
   }
@@ -683,7 +683,7 @@ export async function originRoute({ origin, contexts, research, board, prompts, 
   }
   if (action === 'link' && req.method === 'POST') {
     const input = await body();
-    const record = await origin.read(originId);
+    const record = await origin.read(originId, { report: false });
     if (!record || record.damaged) throw new OriginError('This Origin project no longer exists. Choose another project.', 'NOT_FOUND', 404);
     if (input.createKanban === true) {
       // Checked before anything is created; the new board takes this project's ID when it is free.
@@ -715,7 +715,7 @@ export async function originRoute({ origin, contexts, research, board, prompts, 
   }
   if (action === 'delete' && req.method === 'POST') {
     const input = await body();
-    const record = await origin.read(originId);
+    const record = await origin.read(originId, { report: false });
     if (!record) throw new OriginError('This Origin project no longer exists.', 'NOT_FOUND', 404);
     if (record.revision !== input.expectedRevision) throw new OriginError('This project changed in another window. Reload it first.', 'ORIGIN_REVISION_CONFLICT', 409);
     let kanbanDeleted = false;
