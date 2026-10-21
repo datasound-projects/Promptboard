@@ -308,7 +308,7 @@ function parseBackupData(data) {
       repositoryPath: v2 && typeof project.repository?.path === 'string' ? project.repository.path.slice(0, 4096) : null,
       targetBranch: v2 && typeof project.targetBranch?.name === 'string' ? project.targetBranch.name.slice(0, 255) : null,
       // Imported workflow settings (including legacy automation) are kept for confirmation only, validated like saved ones.
-      workflow: importedWorkflow(v2 && project.workflow && typeof project.workflow === 'object' ? project.workflow : v2 && project.automation?.autoRun === true ? { executing: { policy: 'start' } } : null),
+      ...importedWorkflow(v2 && project.workflow && typeof project.workflow === 'object' ? project.workflow : v2 && project.automation?.autoRun === true ? { executing: { policy: 'start' } } : null),
       // Imported test commands never run until the user confirms them.
       testCommands: v2 && Array.isArray(project.testCommands) ? importedTestCommands(project.testCommands) : null,
       preview: v2 ? previewSettings(project.preview) : null, // Like test commands, it runs only once the import is confirmed.
@@ -416,9 +416,11 @@ function autopilotSettings(value, project) {
   } catch { return null; }
 }
 // A backup's workflow and test commands keep only the fields the board uses, so no unchecked value is ever stored.
-// Settings this version cannot use, or none at all, leave nothing to confirm.
+// None left means nothing to confirm. A stage this version cannot use is left out alone, and the import result names its project.
 function importedWorkflow(value) {
-  try { const workflow = value ? normalizeWorkflow(value) : null; return workflow && Object.keys(workflow).length ? workflow : null; } catch { return null; }
+  const workflow = {}; let leftOut = false;
+  for (const stage of WORKFLOW_STAGES) if (value?.[stage]) { try { Object.assign(workflow, normalizeWorkflow({ [stage]: value[stage] })); } catch { leftOut = true; } }
+  return { workflow: Object.keys(workflow).length ? workflow : null, ...(leftOut ? { workflowLeftOut: true } : {}) };
 }
 function importedTestCommands(list) {
   const commands = list.filter(item => Array.isArray(item?.argv) && item.argv.length && item.argv.every(arg => typeof arg === 'string' && arg.length <= 1000 && !arg.includes('\0'))).slice(0, 20)
@@ -2499,10 +2501,11 @@ export class Board {
       if (preparedBase) this.base.publishPreparedImport(state, preparedBase);
       if (parsed.baseGlobal && Object.keys(parsed.baseGlobal).length) state.settings.pendingBaseImport = parsed.baseGlobal;
       else delete state.settings.pendingBaseImport;
-      const names = [];
+      const names = [], workflowLeftOut = [];
       state.projects = parsed.projects.map(incoming => {
         const project = newProject({ ...incoming, name: freeName(incoming, originProjects, names) });
         names.push(project.name);
+        if (incoming.workflowLeftOut) workflowLeftOut.push(project.name);
         project.tasks = incoming.tasks.map(task => ({ ...newTask(task), ...backupBaseScopes(task, true),
           ...(incoming.pipeline ? normalizePipelineTaskSelection(incoming.pipeline, { profileId: task.profileId, agentOverride: task.agentOverride }) : {}) }));
         if (incoming.pipeline) {
@@ -2531,7 +2534,7 @@ export class Board {
       });
       state.runs = [];
       state.sessions = [];
-      return { projects: state.projects.length, cards: state.projects.reduce((sum, project) => sum + project.tasks.length, 0) };
+      return { projects: state.projects.length, cards: state.projects.reduce((sum, project) => sum + project.tasks.length, 0), ...(workflowLeftOut.length ? { workflowLeftOut } : {}) };
     });
   }
 
