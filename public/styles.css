@@ -2769,3 +2769,49 @@ button.origin-context-badge { cursor: pointer; }
 .preview-card.is-starting svg { animation: preview-pulse 1.2s ease-in-out infinite alternate; }
 @keyframes preview-pulse { to { opacity: .35; } }
 @media (prefers-reduced-motion: reduce) { .preview-card.is-starting svg { animation: none; } }
+/* Project memory: suggested lessons in task details, the Project memory dialog, and the Origin Project Context panel */
+.lessons-card { display: grid; gap: 8px; }
+.lessons-card:focus { outline: none; }
+.lessons-card .note, .lessons-dialog .note { margin: 0; }
+.lessons-working { display: flex; align-items: center; gap: 8px; }
+.lessons-working::before { content: ""; width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--sash); animation: lessons-pulse 1.2s ease-in-out infinite; }
+@keyframes lessons-pulse { 50% { opacity: .3; } }
+@media (prefers-reduced-motion: reduce) { .lessons-working::before { animation: none; } }
+.lessons-lead { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.lessons-list { display: grid; gap: 8px; }
+.lesson { display: grid; gap: 4px; min-width: 0; padding: 10px 12px; border: 1px solid var(--divider); border-left: 2px solid var(--sheen); border-radius: 10px; background: var(--surface-2); }
+.lesson[data-status="approved"] { border-left-color: var(--line-strong); background: transparent; }
+.lesson-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.lesson-kind, .lesson-badge { padding: 1px 7px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font: 600 10.5px var(--mono); letter-spacing: .4px; text-transform: uppercase; }
+.lesson-badge { border-style: dashed; font-weight: 500; }
+.lesson-text { margin: 0; color: var(--ink); font-size: 13.5px; line-height: 1.5; overflow-wrap: anywhere; }
+.lesson-evidence { margin: 0; color: var(--subtle); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.lesson .lesson-actions { margin-top: 2px; align-items: center; }
+.lesson-links { display: flex; flex-wrap: wrap; gap: 14px; }
+.lesson-links .text-button { padding: 0; font-size: 12px; }
+.lessons-dialog .lesson[data-status="approved"] { padding: 8px 0 8px 12px; border-width: 0 0 0 2px; border-radius: 0; }
+.lesson select, .lesson-edit, .lessons-more-fields input, .lessons-more-fields select { width: 100%; min-width: 0; padding: 7px 9px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; font-size: 13px; }
+.lesson-edit { resize: vertical; line-height: 1.5; }
+.lessons-dialog { max-width: 640px; }
+.lessons-dialog h3 { margin: 18px 0 8px; color: var(--ink); font-size: 14px; }
+.lessons-dialog h4.lessons-group { margin: 12px 0 6px; color: var(--muted); font-size: 12px; font-weight: 600; }
+.lessons-setting { display: grid; gap: 4px; padding: 12px 14px; border: 1px solid var(--divider); border-radius: 10px; background: var(--surface-2); }
+.lessons-pending { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.lessons-pending li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 12px; padding: 6px 0; border-bottom: 1px solid var(--divider); }
+.lessons-card-link { overflow: hidden; max-width: 100%; text-overflow: ellipsis; }
+.lessons-pending li > .lessons-list { flex-basis: 100%; }
+.lessons-count { color: var(--subtle); font-size: 12px; }
+.lessons-more { margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--divider); }
+.lessons-more summary { color: var(--muted); font-size: 13px; cursor: pointer; }
+.lessons-more[open] summary { margin-bottom: 8px; }
+.lessons-more-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 10px 0; }
+.lessons-more-fields .field-label { display: grid; gap: 4px; }
+.lessons-more-fields input:disabled { opacity: .6; }
+.lessons-context { margin: 0 0 14px; padding: 10px 12px; border: 1px solid var(--divider); border-radius: 12px; background: var(--og-glass-2); }
+.lessons-context summary { color: var(--ink); font-size: 13px; font-weight: 600; cursor: pointer; }
+.lessons-context-body { display: grid; gap: 6px; margin-top: 8px; }
+.lessons-context .lessons-group { margin: 6px 0 0; color: var(--muted); font-size: 12px; font-weight: 600; }
+.lessons-context-list { margin: 0; padding-left: 18px; color: var(--text); font-size: 12.5px; line-height: 1.55; }
+.lessons-context-list li { overflow-wrap: anywhere; }
+.lessons-context .origin-link { justify-self: start; }
+@media (max-width: 520px) { .lessons-more-fields { grid-template-columns: minmax(0, 1fr); } }

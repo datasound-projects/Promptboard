@@ -620,6 +620,7 @@ export class Board {
     this.deferredPipelineStarts = new Map();
     this.automationsStopping = false;
     this.instance = randomUUID(); // With the state revision, names one exact board view of this process.
+    this.lessons = null; // Project memory (src/lessons.mjs), set by the server: merged cards queue lesson suggestions there.
   }
 
   /** Serialize work per key (task or repository) inside this process. */
@@ -889,6 +890,7 @@ export class Board {
       state.sessions = state.sessions.filter(session => session.projectId !== id);
     });
     await this.#removeRunFolders(removed);
+    await this.lessons?.remove(id).catch(() => {}); // Its project memory goes with it.
   }
 
   /** Validate a repository path without saving it. */
@@ -1955,7 +1957,7 @@ export class Board {
   mergeOwner(id) { const job = this.automationMoves.get(id); return job && !job.blocked ? job.key : null; }
 
   async completeTask(id, { kind, details, transitionId, owner = null }) {
-    return this.store.update(state => {
+    const saved = await this.store.update(state => {
       const { project, task } = this.#task(state, id);
       this.#requireAutomationsStopped(task, { owner });
       if (this.#activeRun(state, id)) throw conflict('This card has an active run.', 'RUN_ACTIVE');
@@ -1970,6 +1972,9 @@ export class Board {
       task.revision++;
       return task;
     });
+    // Every merge (and every merged pull request) ends here: it only queues one lessons job, never waits for it or fails.
+    if (kind === 'merged' || kind === 'pull_request') this.lessons?.queue(id).catch(() => {});
+    return saved;
   }
 
   /** Save same-task stage output. Testing agents do not self-certify: configured commands decide. */
@@ -2400,6 +2405,7 @@ export class Board {
     const state = await this.state();
     const base = await this.base.export({ includeContent: includeBaseContent });
     if ((await this.state()).base.revision !== state.base.revision) throw conflict('Base changed while the backup was being prepared. Export it again.', 'BASE_REVISION_CONFLICT');
+    const memory = await this.lessons?.backup() || {}; // Approved lessons and their settings (src/lessons.mjs).
     return { application: 'Promptboard', kind: 'promptboard-backup', version: BACKUP_VERSION, exportedAt: new Date().toISOString(),
       base, baseGlobal: backupBaseScopes(state.settings.pendingBaseImport || state.settings),
       projects: state.projects.map(project => ({ id: project.id, name: project.name, createdAt: project.createdAt, nextTaskNumber: project.nextTaskNumber, labels: taskLabels(project.labels),
@@ -2408,6 +2414,7 @@ export class Board {
         repository: project.repository ? { path: project.repository.path } : null, targetBranch: project.targetBranch ? { name: project.targetBranch.name } : null,
         agentDefaults: project.agentDefaults || null, workflow: project.workflow || {}, testCommands: project.testCommands || [], timelineNotes: project.timelineNotes || [], columnLayout: project.columnLayout || [],
         preview: project.preview || null,
+        ...(memory[project.id] ? { lessons: memory[project.id] } : {}),
         ...(project.workflowMode === 'pipeline' && (project.execution || project.pendingImport?.execution) ? { execution: project.execution || project.pendingImport.execution } : {}),
         ...(project.autopilot?.route || project.pendingImport?.autopilot ? { autopilot: project.autopilot?.route ? { route: project.autopilot.route, finish: project.autopilot.finish, maxRework: project.autopilot.maxRework } : project.pendingImport.autopilot } : {}),
         ...(project.schedules?.length ? { schedules: exportSchedules(project.schedules) } : {}),
@@ -2433,8 +2440,12 @@ export class Board {
     this.#importRefusal(await this.state(), replace);
     const preparedBase = parsed.base ? await this.base.prepareImport(parsed.base, { reuseIdentical: true }) : null;
     // A backup that is not restored leaves none of the Base revision files written for it.
-    try { return await this.#restoreBackup(data, parsed, preparedBase, replace, originProjects); }
+    let restored;
+    try { restored = await this.#restoreBackup(data, parsed, preparedBase, replace, originProjects); }
     catch (error) { if (preparedBase) await this.base.discardPreparedImport(preparedBase, error); throw error; }
+    // Project memory keeps its own files: approved lessons and settings come back with their projects.
+    await this.lessons?.restore(data.projects).catch(() => {});
+    return restored;
   }
 
   async #restoreBackup(data, parsed, preparedBase, replace, originProjects) {

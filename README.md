@@ -120,6 +120,7 @@ Each card gets its own Git branch and worktree. When a card enters a column, a f
 - **Project card.** After Done, the project's folder, branch, latest commit and last merged card. **Open project** browses and edits the files where merged work lands, like a code editor, and **Pop out** opens it in its own window. See [Project explorer](docs/project-explorer.md).
 - **Live preview.** For web projects, **Start preview** in a card's Details runs the project's dev server in the card's worktree and gives you a link, so you can click-test the change before it merges ([Live preview](docs/live-preview.md)).
 - **Coordinator.** A read-only overview of progress, running agents and blockers. Ask it questions; answers cite their sources.
+- **Project memory.** After each merged card, one short run with a small model suggests lessons: commands that worked, conventions, gotchas and failed approaches. You approve each one; approved lessons go to every new agent of the project. Switch it off per project. See [Project memory](docs/project-memory.md).
 - **GitHub.** Sign in with the GitHub CLI, search your personal and organization repositories, and clone one (or connect a clone you already have). Fetch and fast-forward only; Promptboard never sees a token. See [GitHub](docs/github.md).
 - **Also:** custom columns with their own instructions, column actions (script, webhook, notification), a file browser, a timeline, labels and priorities, and board backups.
 
@@ -181,7 +182,7 @@ Agents run through each CLI's own sign-in and plan. Promptboard has no account o
 ## Docs
 
 - [Kanban execution](docs/kanban-execution.md): stages, rework, merge and error codes · [GitHub](docs/github.md) · [Remote access](docs/remote-access.md)
-- [Origin](docs/origin.md) · [Research](docs/origin-research.md) · [Project Context](docs/origin-project-context.md) · [Shared projects](docs/shared-projects.md) · [Coordinator](docs/coordinator.md)
+- [Origin](docs/origin.md) · [Research](docs/origin-research.md) · [Project Context](docs/origin-project-context.md) · [Shared projects](docs/shared-projects.md) · [Coordinator](docs/coordinator.md) · [Project memory](docs/project-memory.md)
 - [Compose context](docs/compose-context.md) · [Prompt checks](docs/verification.md)
 - [Base delivery](docs/base-delivery.md) · [CLI adapters](docs/cli-adapters.md) · [Session persistence](docs/session-persistence.md)
 - [Changelog](CHANGELOG.md) · [Release verification](RELEASE-VERIFICATION.md) · [All docs](docs/)

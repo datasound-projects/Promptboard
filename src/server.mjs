@@ -45,6 +45,7 @@ import { Coordinator, CoordinatorError, coordinatorRoute } from './coordinator.m
 import { BatchError, ComposeBatches, batchRoute } from './compose-batch.mjs';
 import { Schedules, scheduleRoute } from './schedules.mjs';
 import { projectInsights } from './insights.mjs';
+import { Lessons, LessonsError, lessonsRoute } from './lessons.mjs';
 
 const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
 const assets = new Map([
@@ -72,6 +73,7 @@ const assets = new Map([
   ['/schedules.js', ['schedules.js', 'text/javascript; charset=utf-8']],
   ['/project.html', ['project.html', 'text/html; charset=utf-8']], // The project explorer in its own window.
   ['/project-explorer.js', ['project-explorer.js', 'text/javascript; charset=utf-8']],
+  ['/lessons.js', ['lessons.js', 'text/javascript; charset=utf-8']],
 ]);
 // Pinned terminal assets, served from the installed packages by exact path only (no CDN,
 // no directory browsing). Missing files (no npm install) return 404 and the dock falls back.
@@ -118,7 +120,7 @@ export async function generate(request, { runner = runProvider, signal, catalogR
 // Map internal codes to HTTP statuses. Message text always comes from fixed strings.
 const STATUS = { ABORTED: 499, TIMEOUT: 504, BUSY: 409, AUTH_IN_PROGRESS: 409, NOT_INSTALLED: 409, UNSUPPORTED: 400, INVALID_PROVIDER: 400, INVALID_MODEL: 400, INVALID_EFFORT: 400, INVALID_INPUT: 400 };
 // Domain errors whose messages are fixed, user-facing strings.
-const EXPOSED = [AgentError, BatchError, BaseDeliveryError, BaseError, BoardError, CoordinatorError, DeliveryError, GitError, GitHubError, NotificationError, OriginError, RepositoryPipelineError, ResearchError, StoreError, WorkspaceFileError];
+const EXPOSED = [AgentError, BatchError, BaseDeliveryError, BaseError, BoardError, CoordinatorError, DeliveryError, GitError, GitHubError, LessonsError, NotificationError, OriginError, RepositoryPipelineError, ResearchError, StoreError, WorkspaceFileError];
 /** The one error-to-HTTP mapping. Unexpected errors get the route's fallback text, never internal details. */
 function failureBody(error, fallback, unknown = { status: 502, code: 'UNKNOWN' }) {
   if (EXPOSED.some(Type => error instanceof Type)) return { status: error.status || 500, body: { error: error.message, code: error.code || 'INVALID_REQUEST' } };
@@ -394,6 +396,8 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
   const authStates = new Map(); // Last read per provider, shown while another CLI job runs.
   const invalidate = provider => { catalogs.delete(provider); authStates.delete(provider); };
   const claim = async (kind, provider) => {
+    // Project memory runs in the background: the owner's own CLI work stops it (it is queued again) instead of waiting for it.
+    if (busy?.kind === 'lessons' && kind !== 'lessons') busy.controller.abort('yield');
     // A just-cancelled generation may still be stopping its CLI. Wait briefly for it.
     if (busy?.controller.signal.aborted) await Promise.race([busy.done, new Promise(resolve => setTimeout(resolve, 5000).unref())]);
     // Changing sign-in under a running agent session would break it.
@@ -434,6 +438,9 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
   const research = new ResearchStore(dataDir); // Creates nothing on disk until a chat is saved.
   const prompts = new PromptStore(dataDir);
   const coordinator = new Coordinator({ dataDir, board, origin });
+  // Project memory: a merged card queues one lessons job (Board.completeTask); the worker starts once the app listens.
+  const lessons = new Lessons({ dataDir, board, claim, runner: call => track(runner(call)) });
+  board.lessons = lessons;
   // Compose Batch has its own bounded pool beside the one-job slot: each task is one tracked Compose run.
   const batches = new ComposeBatches({ dataDir, origin, board, track, call: input => track(runner(input)), authBusy: () => busy?.kind === 'auth', ...(batchTimeoutMs ? { timeoutMs: batchTimeoutMs } : {}),
     generate: (request, options) => generate(request, { runner: call => track(runner(call)), catalogReader: provider => getCatalog(provider, { maxAgeMs: Infinity }), ...options }) });
@@ -723,6 +730,10 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
       finally { res.off('close', abort); claimed?.release(); }
       return;
     }
+    if (/^\/api\/(?:projects|tasks)\/[A-Za-z0-9_-]{1,100}\/lessons(?:\/|$)/.test(pathname)) {
+      try { return await lessonsRoute({ lessons, req, res, pathname, jsonBody, send }); }
+      catch (error) { return sendFailure(res, error, 'The project memory request failed. Nothing was changed.', { status: 500, code: 'LESSONS_FAILED' }); }
+    }
     if (/^\/api\/(board|projects|tasks|runs|github)(\/|$)/.test(pathname) || pathname === '/api/repository/validate' || pathname === '/api/folder/choose' || pathname === '/api/settings') {
       try { if ((await track(boardRoute(board, req, res, pathname, requestUrl.searchParams, origin, prompts))) !== false) return; }
       // Board, store, and Git errors carry fixed messages; raw Git output is never returned.
@@ -753,6 +764,7 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
   await lock.setPort(server.address().port);
   // Remote access stays off unless it was turned on; a listener that cannot start is reported in Settings.
   remoteAccess = await new RemoteAccess({ dataDir, localPort: server.address().port, handle: (req, res, who) => handle(req, res, who) }).load();
+  lessons.start(); // Queued lessons jobs, also those a restart interrupted, run now (one at a time, through the job slot).
   let closed;
   // Idempotent and bounded: stop accepting, cancel owned work, close sockets, then
   // SIGKILL any owned CLI process group that is still alive.
@@ -769,14 +781,14 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
     usage.close?.();
     server.closeIdleConnections();
     // Agent sessions: stop owned process groups, record runs as interrupted, end streams.
-    const automations = board.shutdownAutomations();
+    const automations = board.shutdownAutomations(), lessonsClosed = lessons.close();
     const agents = board.executor?.shutdown ? board.executor.shutdown(Math.min(3000, graceMs)) : null;
     autopilot.stop();
     board.schedules.stop();
     board.githubLogin.cancel('The app stopped.');
     board.delivery.stopAllTests();
     board.previews.stopAll();
-    const settle = Promise.allSettled([...tasks, ...lookups.values(), busy?.done, automations, agents, batchesClosed].filter(Boolean));
+    const settle = Promise.allSettled([...tasks, ...lookups.values(), busy?.done, automations, agents, batchesClosed, lessonsClosed].filter(Boolean));
     // An accepted shutdown must keep Node alive even when a broken adapter has
     // no remaining handles. Observe cleanup or reach this bounded terminal state.
     let cleanupTimer;

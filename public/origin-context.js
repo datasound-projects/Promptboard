@@ -226,6 +226,9 @@ window.PromptboardOriginContext = (() => {
       const all = current(), cut = all.length > PREVIEW_CHARS ? all.lastIndexOf('\n', PREVIEW_CHARS) + 1 || PREVIEW_CHARS : all.length;
       // A very long document is previewed in part so the page stays responsive; the saved file is complete.
       if (cut < all.length) body.append(el('p', 'origin-callout', `The preview shows the first ${count(cut, 'character')} of ${count(all.length, 'character')}. The saved document is complete: use Edit or Download .md for the rest.`));
+      // The linked board's approved lessons (public/lessons.js), shown beside the document and never written into it.
+      const lessons = window.PromptboardLessonsView?.contextPanel(host.project(), app.projects());
+      if (lessons) body.append(lessons);
       const shown = preview(all.slice(0, cut)); shown.id = 'origin-context-preview';
       body.append(shown);
     }
