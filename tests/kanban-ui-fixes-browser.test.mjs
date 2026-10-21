@@ -222,3 +222,21 @@ test('the sidebar project menu keeps keyboard focus: Escape closes it, Delete…
   assert.equal(await browser.layout(`return !${row}.querySelector('.workspace-menu') && document.activeElement === ${toggle};`), true, 'Escape in Rename returns to ⋯');
   assert.equal((await app.board.state()).projects[0].name, 'Beta');
 });
+
+test('"Keep running" in the dock\'s stop prompt returns focus to Stop…', { skip: process.platform === 'win32' || !chrome ? 'Chrome is not installed or the platform has no PTY support in this test.' : false, timeout: 120000 }, async t => {
+  const bin = await realpath(await mkdtemp(join(tmpdir(), 'pb-kanban-ui-bin-'))); t.after(() => rm(bin, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  await writeFile(join(bin, 'claude'), `#!${process.execPath}\nrequire(${JSON.stringify(fake)});\n`); await chmod(join(bin, 'claude'), 0o755);
+  const oldPath = process.env.PATH; process.env.PATH = `${bin}:${oldPath}`; t.after(() => { process.env.PATH = oldPath; });
+  const { app, browser } = await open(t, { executor: 'auto' });
+  const project = await linked(app, 'Dock');
+  const card = await app.board.createTask({ projectId: project.id, title: 'Live', prompt: 'Say hello.' });
+  await app.board.moveTask(card.id, { column: 'executing', expectedRevision: card.revision });
+  await browser.goto(`${app.url}/#/kanban`); await browser.until(`document.querySelector('[data-column="executing"] .kanban-start')`, 'start');
+  await browser.eval(`document.querySelector('[data-column="executing"] .kanban-start').click();`);
+  await browser.until(`window.promptboardDock.sessions.size === 1 && !document.querySelector('#dock-stop').hidden`, 'live session', 30000);
+  await browser.eval(`document.querySelector('#dock-stop').focus();`); await enter(browser);
+  await browser.until(`document.activeElement.textContent === 'Stop this agent'`, 'stop prompt');
+  await browser.eval(`[...document.querySelectorAll('#dock-stop-prompt button')].find(button => button.textContent === 'Keep running').focus();`); await enter(browser);
+  assert.equal(await browser.layout(`return document.querySelector('#dock-stop-prompt').hidden && document.activeElement.id;`, 'dock-stop'), 'dock-stop');
+  assert.equal((await app.board.state()).runs.filter(run => run.status === 'cancelled').length, 0);
+});
