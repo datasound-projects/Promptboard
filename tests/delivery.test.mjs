@@ -328,6 +328,29 @@ test('a merge never overwrites a file Git ignores in the target checkout (the ow
   assert.deepEqual([await readFile(join(w.root, '.env'), 'utf8'), await readFile(join(w.root, '.env.mine'), 'utf8')], ['API_KEY=changeme\n', 'API_KEY=the-owners-secret\n']);
 });
 
+test('a target branch the owner is rebasing (HEAD detached) counts as checked out: the merge is refused and the rebase can finish', { skip, timeout: 60000 }, async t => {
+  const w = await world(t);
+  await writeFile(join(w.root, 'feature.txt'), 'A\n'); git(w.root, 'commit', '-qam', 'A');
+  const task = await w.task('Card', 'x');
+  await writeFile(join(await w.workspace(task.id), 'task.txt'), 'task\n');
+  await w.delivery.commit(task.id, { message: 'task', confirm: true });
+  // The owner rebases trunk onto another branch; the rebase stops on a conflict.
+  git(w.root, 'branch', 'upstream', 'HEAD~1');
+  const side = join(await temp(t, 'pb-del-side-'), 'side');
+  git(w.root, 'worktree', 'add', '-q', side, 'upstream');
+  await writeFile(join(side, 'feature.txt'), 'B\n'); git(side, 'commit', '-qam', 'B');
+  assert.throws(() => execFileSync('git', ['rebase', 'upstream'], { cwd: w.root, stdio: 'pipe', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null' } }));
+  const before = git(w.root, 'rev-parse', 'trunk');
+  const preview = await mergeEvidence(w, task.id);
+  assert.deepEqual([preview.eligible, preview.targetCheckout?.path], [false, w.root]);
+  assert.match(preview.problems.join(' '), new RegExp(`trunk is being rebased in ${w.root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\. Finish or abort the rebase there first\\.`));
+  await assert.rejects(w.delivery.merge(task.id, { confirm: true, taskCommit: preview.taskCommit, targetCommit: preview.targetCommit }), { code: 'MERGE_NOT_ELIGIBLE' });
+  assert.equal(git(w.root, 'rev-parse', 'trunk'), before, 'trunk did not move under the rebase');
+  await writeFile(join(w.root, 'feature.txt'), 'A+B\n'); git(w.root, 'add', 'feature.txt');
+  execFileSync('git', ['rebase', '--continue'], { cwd: w.root, stdio: 'pipe', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_EDITOR: 'true' } });
+  assert.equal(git(w.root, 'branch', '--show-current'), 'trunk');
+});
+
 test('Done: verified no-change completion, final until Reopen, optional ownership-checked cleanup', { skip, timeout: 60000 }, async t => {
   const w = await world(t);
   const task = await w.task('Nothing to do', 'Check whether a change is needed.');

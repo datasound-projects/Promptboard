@@ -10,7 +10,7 @@ import { spawn } from 'node:child_process';
 import { gh } from './github.mjs';
 import { createWriteStream, existsSync } from 'node:fs';
 import { access, constants, lstat, mkdir, open, readlink } from 'node:fs/promises';
-import { delimiter, dirname, join } from 'node:path';
+import { delimiter, dirname, join, resolve } from 'node:path';
 import { git, headBranch, ignoredFiles, lines, listWorktrees, untrackedInTheWay } from './git.mjs';
 import { nestedRepositoryProblem } from './sandbox.mjs';
 import { killPidGroup, trackPid, untrackPid } from './providers.mjs';
@@ -375,8 +375,16 @@ export class Delivery {
 
   /** Where the target branch is checked out, if anywhere, and whether that checkout is clean. */
   async #targetCheckout(root, target) {
-    const entry = (await listWorktrees(root)).find(item => item.branch === target) || null;
-    if (!entry) return null;
+    const worktrees = await listWorktrees(root);
+    const entry = worktrees.find(item => item.branch === target) || null;
+    if (!entry) {
+      // A rebase detaches HEAD, so Git lists no branch there; it still owns the branch and moves it when it finishes.
+      for (const item of worktrees.filter(item => !item.branch)) {
+        const names = lines(await git(['rev-parse', '--git-path', 'rebase-merge/head-name', '--git-path', 'rebase-apply/head-name'], { cwd: item.path }).catch(() => ''));
+        for (const name of names) if ((await readRegular(resolve(item.path, name)))?.toString('utf8').trim() === `refs/heads/${target}`) return { path: item.path, clean: false, rebasing: true };
+      }
+      return null;
+    }
     const tracked = lines(await git(['status', '--porcelain', '--untracked-files=no'], { cwd: entry.path }));
     return { path: entry.path, clean: tracked.length === 0, changes: tracked.slice(0, 50) };
   }
@@ -400,7 +408,8 @@ export class Delivery {
     if (review?.status !== 'accepted' || review.taskCommit !== rev.taskCommit) problems.push(review?.status === 'accepted' ? 'The accepted review is for an older task commit. Review again.' : 'An accepted code review for the current commit is required.');
     if (review?.verdict !== 'no_issues' || review?.findings?.length) problems.push('The code review detected issues or has no clear verdict. Resolve them and review again before merging.');
     if (tests?.status !== 'passed' || tests.taskCommit !== rev.taskCommit || tests.targetCommit !== rev.targetCommit) problems.push(tests?.status === 'passed' ? 'The passing tests are for older commits. Run tests again.' : 'Passing tests for the current commits are required.');
-    if (checkout && !checkout.clean) problems.push(`The checkout of ${target} at ${checkout.path} has uncommitted changes. Promptboard will not merge into it.`);
+    if (checkout?.rebasing) problems.push(`${target} is being rebased in ${checkout.path}. Finish or abort the rebase there first.`);
+    else if (checkout && !checkout.clean) problems.push(`The checkout of ${target} at ${checkout.path} has uncommitted changes. Promptboard will not merge into it.`);
     return { sourceBranch: ws.branch, targetBranch: target, taskCommit: rev.taskCommit, targetCommit: rev.targetCommit, commits, files, fastForward,
       targetCheckout: checkout ? { path: checkout.path, clean: checkout.clean } : null, merging: rev.merging, conflicts: rev.conflicts, unresolved: rev.unresolved, eligible: problems.length === 0, problems };
   }
