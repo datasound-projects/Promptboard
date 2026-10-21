@@ -16,6 +16,7 @@ home folder or system files. It is **off by default** and works with **Claude Co
    Details ends with "In Docker".
 
 The setting belongs to the project and travels with a board backup. Hands-off keeps it. There is no per-card switch.
+It exists on column boards (every new project); older stage boards keep running their agents on this computer.
 A conversation stays where it started, because its history is kept there: **Resume** continues it in the same place,
 and after you change the setting, a card moving to its next column starts a fresh conversation in the new place.
 
