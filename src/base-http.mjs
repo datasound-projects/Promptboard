@@ -103,20 +103,26 @@ export class BaseRoutes {
       const root = project?.repository?.root;
       if (!root) fail('Choose a project linked to a folder.', 'REPOSITORY_REQUIRED', 409);
       const found = await scanRepository(root), library = await board.base.list();
-      const existing = await Promise.all(library.resources.filter(resource => resource.kind === 'markdown').map(async resource => ({ resource, detail: await board.base.detail(resource.id).catch(() => null) })));
-      const known = path => existing.find(item => item.detail?.configuration.fileName === path && item.detail.content.body);
-      if (pathname.endsWith('/scan')) return this.send(res, 200, { project: { id: project.id, name: project.name }, files: found.map(file => ({ ...file, inBase: Boolean(known(file.path)) })) });
+      const existing = await Promise.all(library.resources.filter(resource => ['markdown', 'skill'].includes(resource.kind)).map(async resource => ({ resource, detail: await board.base.detail(resource.id).catch(() => null) })));
+      // A skill keeps no repository path: it is known by its SKILL.md text. Other files are known by their name.
+      const skillText = item => item.detail?.content.files?.find(file => file.path === 'SKILL.md')?.text;
+      const known = (path, text) => markdownConvention(path).id === 'skill' ? existing.find(item => item.resource.kind === 'skill' && text !== undefined && skillText(item) === text)
+        : existing.find(item => item.resource.kind === 'markdown' && item.detail?.configuration.fileName === path && item.detail.content.body);
+      if (pathname.endsWith('/scan')) return this.send(res, 200, { project: { id: project.id, name: project.name }, files: await Promise.all(found.map(async file => ({ ...file,
+        inBase: Boolean(known(file.path, file.convention === 'skill' ? await readRepositoryFile(root, file.path).catch(() => undefined) : undefined)) }))) });
       if (!Array.isArray(body.paths) || !body.paths.length || body.paths.length > 100) fail('Choose up to 100 files to import.');
       const imported = [], skipped = [];
       for (const path of body.paths) {
         // Only what the scan finds can be read: a path from the page never reaches the filesystem otherwise.
         if (typeof path !== 'string' || !found.some(file => file.path === path)) { skipped.push({ path, reason: 'Not an instruction file found in this repository.' }); continue; }
-        const text = await readRepositoryFile(root, path);
-        if (markdownConvention(path).id === 'skill') { imported.push(await board.base.importSkill({ markdown: text, tags: ['imported'] })); continue; }
-        const duplicate = known(path);
-        if (duplicate && digest(duplicate.detail.content.body) === digest(text)) { skipped.push({ path, reason: `Already in Base as “${duplicate.resource.name}”.` }); continue; }
-        imported.push(await board.base.create({ kind: 'markdown', name: path, description: `Imported from ${project.name} (${path}). Review it before trusting it: it instructs agents.`, enabled: false, trust: 'untrusted', tags: ['imported'],
-          configuration: { fileName: path, activation: { mode: 'always' } }, content: { body: text } }));
+        // A file Base refuses (a SKILL.md without frontmatter, say) is skipped by name; the others are still imported.
+        try {
+          const text = await readRepositoryFile(root, path), duplicate = known(path, text);
+          if (duplicate && (markdownConvention(path).id === 'skill' || digest(duplicate.detail.content.body) === digest(text))) { skipped.push({ path, reason: `Already in Base as “${duplicate.resource.name}”.` }); continue; }
+          if (markdownConvention(path).id === 'skill') { imported.push(await board.base.importSkill({ markdown: text, tags: ['imported'] })); continue; }
+          imported.push(await board.base.create({ kind: 'markdown', name: path, description: `Imported from ${project.name} (${path}). Review it before trusting it: it instructs agents.`, enabled: false, trust: 'untrusted', tags: ['imported'],
+            configuration: { fileName: path, activation: { mode: 'always' } }, content: { body: text } }));
+        } catch (error) { if (!(error.status < 500)) throw error; skipped.push({ path, reason: `${path}: ${error.message}` }); }
       }
       return this.changed(res, { imported: imported.map(resource => ({ id: resource.id, name: resource.name, kind: resource.kind })), skipped });
     }

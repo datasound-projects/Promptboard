@@ -200,6 +200,28 @@ test('repository instruction files are found read-only, imported once, and writt
   assert.equal((await deployToRepository(repo, '.github/instructions/api.instructions.md', '---\napplyTo: "**/*.ts"\n---\n', { confirm: true, hash })).written, true, 'a new file in a new folder');
 });
 
+test('a repository’s skill already in Base is skipped, and a file Base refuses is reported by name while the others import', async t => {
+  const repo = await temp(t);
+  const git = (...args) => execFileSync('git', args, { cwd: repo, env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } });
+  await mkdir(join(repo, 'skills', 'deploy'), { recursive: true }); await mkdir(join(repo, 'docs'), { recursive: true });
+  await writeFile(join(repo, 'skills', 'deploy', 'SKILL.md'), '---\nname: deploy\ndescription: Deploy the app\n---\n\nRun ./deploy.sh\n');
+  await writeFile(join(repo, 'docs', 'SKILL.md'), 'No frontmatter.\n'); await writeFile(join(repo, 'CLAUDE.md'), '# Rules\n');
+  git('init', '-q', '-b', 'main'); git('add', '.'); git('-c', 'user.email=t@e', '-c', 'user.name=T', 'commit', '-q', '-m', 'init');
+  const app = await startTestServer(t, { port: 0, executor: null });
+  const token = (await (await fetch(`${app.url}/api/session`)).json()).token;
+  const call = (path, method = 'GET', body) => fetch(`${app.url}${path}`, { method, headers: { 'X-STE-Token': token, ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) }).then(async r => ({ status: r.status, json: await r.json() }));
+  const project = await app.board.createProject({ name: 'Shop' });
+  await app.board.linkRepository(project.id, { path: repo, expectedRevision: 1 });
+  assert.equal((await call('/api/base/markdown/import', 'POST', { projectId: project.id, paths: ['skills/deploy/SKILL.md'] })).json.imported.length, 1);
+  assert.equal((await call('/api/base/markdown/scan', 'POST', { projectId: project.id })).json.files.find(file => file.path === 'skills/deploy/SKILL.md').inBase, true);
+  const again = await call('/api/base/markdown/import', 'POST', { projectId: project.id, paths: ['skills/deploy/SKILL.md', 'docs/SKILL.md', 'CLAUDE.md'] });
+  assert.equal(again.status, 200);
+  assert.deepEqual(again.json.imported.map(resource => resource.name), ['CLAUDE.md']);
+  assert.deepEqual(again.json.skipped.map(entry => entry.path), ['skills/deploy/SKILL.md', 'docs/SKILL.md']);
+  assert.deepEqual([again.json.skipped[0].reason, /^docs\/SKILL\.md: SKILL\.md needs a YAML frontmatter/.test(again.json.skipped[1].reason)], ['Already in Base as “deploy”.', true]);
+  assert.equal((await call('/api/base')).json.resources.filter(resource => resource.kind === 'skill').length, 1);
+});
+
 test('Base routes: import a repository’s files and an MCP configuration, deploy a trusted file, give a project its own version', async t => {
   const repo = await temp(t);
   const git = (...args) => execFileSync('git', args, { cwd: repo, env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } });
