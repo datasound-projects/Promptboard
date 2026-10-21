@@ -13,6 +13,7 @@ import { defaultPipelineConfig, normalizeExecutionPolicy } from '../src/pipeline
 import { containerSession, conversationHome, dockerRunArgs, Sandbox } from '../src/sandbox.mjs';
 import { startServer } from '../src/server.mjs';
 import { Supervisor } from '../src/supervisor.mjs';
+import { customPipelineConfig } from './helpers/pipeline.mjs';
 
 const skip = process.platform === 'win32'; // Docker mode runs on macOS and Linux only.
 const fakeAgent = fileURLToPath(new URL('./fixtures/fake-agent.cjs', import.meta.url));
@@ -329,4 +330,23 @@ test('in Docker a Planning card gets a read-only worktree, and Workspace trust s
   assert.ok(values(args, '-v').includes(`${run.workspacePath}:${run.workspacePath}:ro`), 'The worktree is read-only for Planning.');
   assert.ok(values(args, '-v').filter(mount => mount.includes('.git')).every(mount => mount.endsWith(':ro')), 'So is all Git data.');
   assert.deepEqual(args.slice(args.indexOf('--sandbox'), args.indexOf('--sandbox') + 4), ['--sandbox', 'danger-full-access', '--ask-for-approval', 'never']);
+});
+
+test('a paused conversation continues only where it started: after Docker mode is turned on, the next column starts fresh in Docker', { skip, timeout: 120000 }, async t => {
+  const docker = await fakes(t), w = await boxed(t);
+  await docker.setState({ images: [w.image] });
+  const config = customPipelineConfig();
+  for (const column of config.columns.filter(item => item.role === 'active')) column.strategy.agentOverride = 'codex';
+  await w.board.setExecutionPolicy(w.project.id, { policy: {}, expectedRevision: (await w.now()).revision });
+  await w.board.setPipeline(w.project.id, { pipeline: config, expectedRevision: (await w.now()).revision });
+  const first = await w.start('Moves into Docker', 'Change the cart.');
+  await until(async () => (await w.run(first.id)).turnComplete, 'first turn on this computer');
+  assert.deepEqual(runCalls(await docker.calls()), [], 'Docker mode was off.');
+  await w.board.pauseRun(first.id, { confirm: true });
+  await w.board.setExecutionPolicy(w.project.id, { policy: { sandbox: 'docker' }, expectedRevision: (await w.now()).revision });
+  const task = (await w.now()).tasks.find(item => item.id === first.taskId);
+  const next = (await w.board.transition(task.id, { column: 'code_review', expectedRevision: task.revision })).run;
+  assert.equal(next.resumeFrom, undefined, 'The conversation kept on this computer is not resumed in Docker.');
+  await until(async () => runCalls(await docker.calls()).length === 1, 'a fresh run in Docker');
+  assert.ok(!runCalls(await docker.calls())[0].args.includes('resume'));
 });
