@@ -3384,10 +3384,12 @@ function workflowPreview(stage, settings) {
   return manual ? `Moving a card here only moves it. Start ${columnTitle(stage)} from the card.` : `Moving a card here starts it: ${what}.`;
 }
 
+let workflowRevision = null; // The project revision the Agents dialog shows: a save never replaces a newer one.
 function openWorkflowDialog(focusStage = null) {
   if (currentProject()?.workflowMode === 'pipeline') { openColumns(); if (focusStage) { columnsDraft.selected = focusStage; renderColumns(); } return; }
   const project = currentProject();
   if (!project) return;
+  workflowRevision = project.revision;
   $('#workflow-dialog-project').textContent = `${project.name} · WORKFLOW`;
   const stages = [];
   const customAgents = (project.columnLayout || []).filter(entry => entry.custom && entry.agent?.enabled);
@@ -3489,9 +3491,9 @@ async function saveWorkflow(event) {
   const workflow = Object.fromEntries([...$('#workflow-stages').querySelectorAll('.workflow-stage[data-stage]')].map(box => [box.dataset.stage, readWorkflowStage(box)]));
   const lines = ($('#test-commands')?.value || '').split('\n').map(line => line.trim()).filter(Boolean);
   try {
-    await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/workflow`, { workflow, agentDefaults: readAgentFields($('#workflow-stages .workflow-defaults')) || {}, expectedRevision: project.revision });
+    const saved = await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/workflow`, { workflow, agentDefaults: readAgentFields($('#workflow-stages .workflow-defaults')) || {}, expectedRevision: workflowRevision });
     const changed = JSON.stringify(lines) !== JSON.stringify((project.testCommands || []).map(item => item.argv.map(arg => /[\s"']/.test(arg) ? JSON.stringify(arg) : arg).join(' ')));
-    if (changed) await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/tests`, { commands: lines.map(command => ({ command })), expectedRevision: currentProject().revision });
+    if (changed) await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/tests`, { commands: lines.map(command => ({ command })), expectedRevision: saved.project.revision });
   } catch (error) { $('#workflow-error').textContent = error.message; $('#workflow-error').hidden = false; return; }
   $('#workflow-dialog').close();
   announce(`Workflow settings saved for “${project.name}”. They apply to future runs.`);
@@ -4518,7 +4520,7 @@ async function addAutopilotInstructions(project, route) {
     if (existing?.type === 'send_message') Object.assign(existing, { enabled: true, mode: 'deferred' });
     else column.automations.onEnter.push({ name: existing ? `Autopilot instruction ${Date.now()}` : 'Autopilot instruction', type: 'send_message', mode: 'deferred', enabled: true, message });
   }
-  await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/pipeline`, { pipeline, expectedRevision: project.revision });
+  return boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/pipeline`, { pipeline, expectedRevision: project.revision });
 }
 
 async function autopilotCall(action, extra = {}) {
@@ -4770,6 +4772,7 @@ function openAutopilot({ first = [] } = {}) {
   const queued = (saved?.queue || []).filter(id => todo.some(task => task.id === id) && !lead.includes(id));
   const order = [...lead, ...queued, ...todo.map(task => task.id).filter(id => !queued.includes(id) && !lead.includes(id))];
   autopilotDraft = {
+    revision: project.revision,
     route: saved?.route?.some(stage => stages.includes(stage)) ? stages.filter(stage => saved.route.includes(stage)) : [...stages], finish: saved?.finish === 'pull_request' ? 'pull_request' : 'merge', maxRework: saved?.maxRework ?? 2,
     // A saved empty queue (for example right after the Full Autopilot preset) starts nothing, so To Do is offered again.
     order, included: new Set(lead.length ? lead : saved?.queue?.length ? queued : order), routes: { ...(saved?.routes || {}) },
@@ -4832,8 +4835,12 @@ function renderAutopilotDialog() {
     if (missing.length) {
       const add = detailButton('Add default instructions', async () => {
         add.disabled = true;
-        try { await addAutopilotInstructions(project, draft.route); renderAutopilotDialog(); announce('Default instructions added to the columns. You can change them in Columns.'); }
-        catch (error) { $('#autopilot-error').textContent = error.message; $('#autopilot-error').hidden = false; add.disabled = false; }
+        try {
+          // This change of its own keeps the draft current; a draft that was already older stays older.
+          const current = draft.revision === project.revision, { project: saved } = await addAutopilotInstructions(project, draft.route);
+          if (current) draft.revision = saved.revision;
+          renderAutopilotDialog(); announce('Default instructions added to the columns. You can change them in Columns.');
+        } catch (error) { $('#autopilot-error').textContent = error.message; $('#autopilot-error').hidden = false; add.disabled = false; }
       }, 'secondary-button');
       add.id = 'autopilot-add-instructions'; add.disabled = running;
       instructions.append(add);
@@ -4912,8 +4919,8 @@ async function saveAutopilot(start) {
   const queue = draft.order.filter(id => draft.included.has(id));
   const routes = Object.fromEntries(Object.entries(draft.routes).filter(([id]) => queue.includes(id)));
   try {
-    await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/autopilot`, pipelineBoard(project) ? { route: draft.route, queue, expectedRevision: project.revision }
-      : { route: draft.route, finish: draft.route.includes('merge') ? draft.finish : 'merge', maxRework: draft.maxRework, queue, routes, expectedRevision: project.revision });
+    await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/autopilot`, pipelineBoard(project) ? { route: draft.route, queue, expectedRevision: draft.revision }
+      : { route: draft.route, finish: draft.route.includes('merge') ? draft.finish : 'merge', maxRework: draft.maxRework, queue, routes, expectedRevision: draft.revision });
     if (start) await boardCall('POST', `/api/projects/${encodeURIComponent(project.id)}/autopilot`, { action: 'start', confirm: true });
   } catch (error) { showError(error.message); return false; }
   $('#autopilot-dialog').close();
@@ -5528,7 +5535,7 @@ async function saveColumns(event) {
   save.disabled = true; form.setAttribute('aria-busy', 'true');
   const columns = columnsDraft.list.map(entry => entry.custom ? entry : { id: entry.id, ...(entry.title && entry.title !== builtinTitle(entry.id) ? { title: entry.title } : {}), ...(entry.color && entry.color !== BUILTIN_DEFAULT_COLORS[entry.id] ? { color: entry.color } : {}), ...(entry.hidden ? { hidden: true } : {}) });
   try {
-    if (!columnsDraft.pipeline) await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/columns`, { columns, expectedRevision: project.revision });
+    if (!columnsDraft.pipeline) await boardCall('PATCH', `/api/projects/${encodeURIComponent(project.id)}/columns`, { columns, expectedRevision: columnsDraft.revision });
     else {
       // Only what changed is saved: structure (needs paused agents), then permissions, then test commands.
       const fresh = () => board?.projects.find(item => item.id === project.id);
