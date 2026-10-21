@@ -129,7 +129,11 @@ packages pinned (through build arguments) to the versions installed on this comp
 that is not installed here is left out. The tag is `promptboard-sandbox:<hash of the Dockerfile and the versions>`, so a
 CLI update asks for a new build, which keeps the container's CLI in step with the one on this computer. After a
 successful build, Promptboard's older `promptboard-sandbox` images are removed (an image a container still uses is
-kept). The image is about 1.5 GB.
+kept). The image is about 1.5 GB, including its base `node:22-bookworm-slim` (about 350 MB), which Docker keeps as an
+image of its own after the build; Promptboard never removes images it did not make. To free that space when you no
+longer use Docker mode, run `docker image rm promptboard-sandbox:<tag> node:22-bookworm-slim` (`docker image ls`
+shows the tag). Colima's virtual disk does not shrink by itself: `colima ssh -- sudo fstrim -av` then gives the freed
+space back to macOS.
 
 Under **More** you can name an image of your own (for example one with Python or Go for your tests). It needs Node.js,
 Git, `sh` and the CLIs you use on its PATH; Promptboard then does not build or remove anything.
