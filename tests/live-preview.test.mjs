@@ -195,7 +195,8 @@ test('setup runs only when node_modules is missing, an install failure says so, 
   // A card branch without node_modules in .gitignore would add every dependency to its changes.
   const unignored = await card('No gitignore');
   const tree = (await task(unignored)).workspace.path;
-  git(tree, 'rm', '-q', '.gitignore'); git(tree, 'commit', '-q', '-m', 'Drop the ignore file');
+  // -f: on Windows the board's checkout has CRLF line ends, which this Git (without the system config) sees as a change.
+  git(tree, 'rm', '-q', '-f', '.gitignore'); git(tree, 'commit', '-q', '-m', 'Drop the ignore file');
   await configure('node server.js quiet', [`node setup.js '${log}'`]);
   await board.previews.start(unignored, { confirm: true });
   const refused = await settled(unignored);
