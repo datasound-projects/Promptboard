@@ -525,7 +525,7 @@ dialog p { color: var(--muted); font-size: 14px; line-height: 1.7; }
   .kanban-cards { padding: 10px; }
   .kanban-repo { padding: 0 16px 16px; }
 }
-@media (max-width: 760px) {
+@media (max-width: 820px) {
   .help-pill { justify-content: center; width: 34px; padding: 0; }
   .help-pill #cli-status-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
 }
@@ -2572,11 +2572,15 @@ button.origin-context-badge { cursor: pointer; }
   .autopilot-up, .autopilot-down { min-width: 44px; min-height: 44px; }
   #origin-research-input { min-height: 44px; }
   .icon-button, .page-nav a, .secondary-button, .copy-button, #kanban-view #card-new, .text-button, .detail-actions button, .view-switch button, .dock-tab, .kanban-card .kanban-more-toggle, .origin-primary, .origin-ghost, .origin-pill, .origin-link-pill, .origin-blueprint-chip, .origin-menu-item, select, input:not([type="checkbox"], [type="radio"], [type="range"], [role="switch"]) { min-height: 44px; }
-  /* Top bar icons keep their widths: one row from 401 px has no room for four 44 px icons beside the page links (400 px and narrower wraps). */
+  /* Top bar icons keep their widths: one row from 431 px has no room for five 44 px icons beside the page links (430 px and narrower wraps). */
   .icon-button:not(.topbar *), .text-button, .kanban-card .kanban-more-toggle, .origin-ghost, .origin-link, .origin-blueprint-chip { min-width: 44px; }
 }
 
 /* Insights: one dialog from the top bar. The bars are plain CSS; the numbers beside them carry the meaning. */
+/* With the Insights icon the bar is fuller: where a font runs wider than measured, the CLI label shortens with an ellipsis instead of pushing the bar off screen. */
+.topbar-actions { min-width: 0; }
+.help-pill { min-width: 0; overflow: hidden; }
+.help-pill #cli-status-label { overflow: hidden; text-overflow: ellipsis; }
 .insights-dialog { width: min(760px, calc(100vw - 24px)); max-width: 760px; }
 .insights-dialog h2 { margin-bottom: 12px; }
 .insights-controls { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 10px 16px; }

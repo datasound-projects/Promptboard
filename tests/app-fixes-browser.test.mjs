@@ -289,6 +289,16 @@ test('the shell fits phones and tablets: a wrapping top bar, the drawer above Or
           && bar.filter(node => !node.matches('a')).every(node => ${wide} || (node.getBoundingClientRect().width === 44 && node.getBoundingClientRect().height === 44));`), true, `${name} at ${width} px`);
     }
   }
+  // One row with the brand: around the CLI label's breakpoint, the longest labels it shows (at start, and when the app is down) never push the theme toggle into the bar's padding or off screen.
+  await page('#/kanban', 'kanban');
+  for (const width of [761, 768, 790, 800, 820, 821, 840]) {
+    await browser.resize(width, 800);
+    for (const label of ['Checking your CLIs', 'Server unavailable']) {
+      assert.equal(await browser.layout(`document.querySelector('#cli-status-label').textContent = ${JSON.stringify(label)};
+        const root = document.documentElement, bar = document.querySelector('.topbar'), end = bar.getBoundingClientRect().right - parseFloat(getComputedStyle(bar).paddingRight);
+        return root.scrollWidth <= root.clientWidth && bar.scrollWidth <= bar.clientWidth && document.querySelector('#theme-toggle').getBoundingClientRect().right <= end + 0.5;`), true, `${label} at ${width} px`);
+    }
+  }
   // A tablet: the long Origin project name and its Kanban chip wrap instead of widening the page.
   await browser.resize(1024, 800);
   await page('#/origin', 'origin');
