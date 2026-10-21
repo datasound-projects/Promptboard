@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Board } from '../src/board.mjs';
+import { Board, ROUTE_STAGES } from '../src/board.mjs';
 import { Autopilot } from '../src/autopilot.mjs';
 import { Schedules, nextFire, normalizeCadence } from '../src/schedules.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
@@ -13,16 +13,15 @@ import { startTestServer } from './helpers/test-server.mjs';
 process.env.TZ = 'Europe/Warsaw';
 const at = (year, month, day, hours = 0, minutes = 0) => new Date(year, month - 1, day, hours, minutes).getTime();
 const iso = ms => new Date(ms).toISOString();
-const FULL_ROUTE = ['planning', 'executing', 'code_review', 'testing', 'merge'];
 
-async function world(t, start = at(2026, 10, 21, 12)) {
+async function world(t, start = at(2026, 10, 21, 12), workflowMode = 'legacy') {
   const dataDir = await mkdtemp(join(tmpdir(), 'pb-schedules-'));
   t.after(() => rm(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const board = new Board({ dataDir });
   let now = start;
   const clock = { now: () => now, setTimer: () => null, clearTimer: () => {} };
   const schedules = new Schedules(board, clock);
-  const project = await board.createProject({ name: 'Shop' });
+  const project = await board.createProject({ name: 'Shop', workflowMode });
   const read = async () => (await board.state()).projects.find(item => item.id === project.id);
   const add = async (input = {}) => schedules.create(project.id, { title: 'Update dependencies', prompt: 'Update the dependencies.', cadence: { kind: 'daily', time: '02:00' }, expectedRevision: (await read()).revision, ...input });
   // A linked repository and an executor, as Autopilot needs them; no agent runs in these tests.
@@ -188,8 +187,9 @@ test('Run with Autopilot: an idle Autopilot starts for the card, a running one g
   w.set(at(2026, 10, 22, 2, 1)); await w.schedules.tick();
   let project = await w.read();
   const first = project.tasks[0];
-  assert.deepEqual([project.autopilot.status, project.autopilot.queue, project.autopilot.done, project.autopilot.route], ['running', [first.id], [], FULL_ROUTE]);
+  assert.deepEqual([project.autopilot.status, project.autopilot.queue, project.autopilot.done, project.autopilot.route], ['running', [first.id], [], ROUTE_STAGES]);
   assert.deepEqual(project.schedules[0].lastAutopilot, { at: w.now, ok: true, text: 'Autopilot started' });
+  assert.equal(project.autopilot.log.at(-1).text, 'Autopilot started by the schedule “Update dependencies”.', 'the log says who started it');
   // Running: Autopilot is on another card and has finished one. The new card joins the end; nothing else changes.
   const other = await w.board.createTask({ projectId: w.project.id, title: 'Other', prompt: 'Other work.' });
   await w.board.updateAutopilot(w.project.id, ap => { ap.queue = [first.id, other.id]; ap.done = [first.id]; ap.current = { taskId: other.id, stage: 'executing', step: 'running' }; });
@@ -211,7 +211,7 @@ test('Run with Autopilot: an idle Autopilot starts for the card, a running one g
   // A start that Autopilot's own checks refuse is reported on the schedule; the card stays in To Do.
   await w.board.controlAutopilot(w.project.id, { action: 'stop' });
   w.board.executor = null;
-  await w.board.completeTask(third.id, { kind: 'no_changes', details: {} });
+  for (const id of [third.id, other.id]) await w.board.completeTask(id, { kind: 'no_changes', details: {} }); // Nothing is left waiting in the stopped queue.
   await w.schedules.runNow(w.project.id, schedule.id);
   project = await w.read();
   assert.deepEqual([project.autopilot.status, project.schedules[0].lastAutopilot.ok, project.schedules[0].lastAutopilot.text], ['off', false, 'Autopilot did not start: Agent execution is not available']);
@@ -231,6 +231,65 @@ test('a card queued after Autopilot read the board keeps it running instead of f
   await w.board.updateAutopilot(w.project.id, ap => { ap.queue = [...ap.queue, late.id]; });
   await autopilot.next(stale);
   assert.equal((await w.read()).autopilot.status, 'running', 'the queued card is still ahead, so the next step starts it');
+});
+
+test('an Autopilot queue the owner saved and did not start is kept: the scheduled card waits in To Do and the schedule says why', async t => {
+  const w = await world(t);
+  await w.link();
+  const mine = await w.board.createTask({ projectId: w.project.id, title: 'Mine', prompt: 'The owner’s own card.' });
+  await w.board.setAutopilot(w.project.id, { route: ['executing'], queue: [mine.id], routes: { [mine.id]: ['executing', 'code_review'] }, expectedRevision: (await w.read()).revision });
+  const schedule = await w.add({ autopilot: true, confirmAutopilot: true });
+  w.set(at(2026, 10, 22, 2, 1)); await w.schedules.tick();
+  let project = await w.read();
+  const waiting = project.tasks.find(task => task.scheduleId);
+  assert.deepEqual([project.autopilot.status, project.autopilot.queue, project.autopilot.routes, waiting.column], ['off', [mine.id], { [mine.id]: ['executing', 'code_review'] }, 'todo'], 'the owner’s queue and routes are untouched, and nothing started');
+  assert.deepEqual(project.schedules[0].lastAutopilot, { at: w.now, ok: false, text: 'Autopilot has a queue you saved, so the card waits in To Do. Start Autopilot yourself' });
+  // Once the owner's card is no longer waiting, a scheduled card starts Autopilot for itself again.
+  await w.board.completeTask(mine.id, { kind: 'no_changes', details: {} });
+  const next = await w.schedules.runNow(w.project.id, schedule.id);
+  project = await w.read();
+  assert.deepEqual([project.autopilot.status, project.autopilot.queue], ['running', [next.id]]);
+});
+
+test('on a column board, an idle Autopilot starts for the scheduled card with the board’s active columns, and a running one gets it at the end of its queue', async t => {
+  const w = await world(t, at(2026, 10, 21, 12), 'pipeline');
+  await w.link();
+  await w.add({ autopilot: true, confirmAutopilot: true });
+  w.set(at(2026, 10, 22, 2, 1)); await w.schedules.tick();
+  let project = await w.read();
+  const columns = project.pipeline.columns, todo = columns.find(column => column.role === 'todo').id;
+  const first = project.tasks.find(task => task.scheduleId);
+  assert.equal(first.column, todo);
+  assert.deepEqual([project.autopilot.status, project.autopilot.queue, project.autopilot.route], ['running', [first.id], columns.filter(column => column.role === 'active').map(column => column.id)]);
+  assert.deepEqual([project.schedules[0].lastAutopilot.text, project.autopilot.log.at(-1).text], ['Autopilot started', 'Autopilot started by the schedule “Update dependencies”.']);
+  await w.board.completeTask(first.id, { kind: 'no_changes', details: {} });
+  w.set(at(2026, 10, 23, 2, 1)); await w.schedules.tick();
+  project = await w.read();
+  const second = project.tasks.find(task => task.scheduleId && task.id !== first.id);
+  assert.deepEqual([project.autopilot.status, project.autopilot.queue, project.schedules[0].lastAutopilot.text], ['running', [first.id, second.id], 'Added to the Autopilot queue']);
+});
+
+test('two hand-offs at the same time both reach Autopilot: the first starts it, the second joins its queue', async t => {
+  const w = await world(t);
+  await w.link();
+  const nightly = await w.add({ autopilot: true, confirmAutopilot: true });
+  const docs = await w.add({ title: 'Docs sweep', autopilot: true, confirmAutopilot: true });
+  const [a, b] = await Promise.all([w.schedules.runNow(w.project.id, nightly.id), w.schedules.runNow(w.project.id, docs.id)]);
+  const project = await w.read();
+  assert.deepEqual([project.autopilot.status, project.autopilot.queue], ['running', [a.id, b.id]]);
+  assert.deepEqual(project.schedules.map(item => item.lastAutopilot.text), ['Autopilot started', 'Added to the Autopilot queue']);
+});
+
+test('a card made just before the app stopped says on its schedule that it was not handed to Autopilot', async t => {
+  const w = await world(t);
+  await w.link();
+  const schedule = await w.add({ autopilot: true, confirmAutopilot: true });
+  w.board.updateAutopilot = () => new Promise(() => {}); // The app stops during the hand-off.
+  void w.schedules.runNow(w.project.id, schedule.id);
+  for (let n = 0; n < 200 && !(await w.read()).tasks.length; n++) await new Promise(resolve => setTimeout(resolve, 5));
+  const restarted = new Board({ dataDir: w.board.dataDir }); // The next start reads what was saved.
+  const [saved] = (await new Schedules(restarted, w.clock).list(w.project.id)).schedules, [card] = (await restarted.state()).projects[0].tasks;
+  assert.deepEqual([card.column, saved.lastTaskId, saved.lastAutopilot], ['todo', card.id, { at: w.now, ok: false, text: 'Not handed to Autopilot (Promptboard stopped first), so the card waits in To Do' }]);
 });
 
 test('schedule changes are checked: the project revision, the fields, and at most 50 per project', async t => {

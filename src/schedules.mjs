@@ -9,6 +9,9 @@
  * each new card to Autopilot through its own checked operations. See docs/schedules.md.
  */
 import { randomUUID } from 'node:crypto';
+// board.mjs imports this module too. Each side uses the other's exports only inside functions, so either may load first.
+import { ROUTE_STAGES } from './board.mjs';
+import { serial } from './durable.mjs';
 import { taskPriority } from './task-priority.mjs';
 import { taskLabelIds } from './task-labels.mjs';
 
@@ -17,8 +20,6 @@ const PROMPT_LIMIT = 20000;
 const MAX_WAIT = 60000;
 const LATE_MS = 2 * 60000; // A card made later than this after its time says when it was due.
 const DAY = 86400000;
-// What the Autopilot dialog offers on a stage board that never saved a route (board.mjs ROUTE_STAGES).
-const FULL_ROUTE = ['planning', 'executing', 'code_review', 'testing', 'merge'];
 const ID = /^[A-Za-z0-9_-]{1,100}$/;
 
 const fail = (message, code = 'INVALID_SCHEDULE', status = 400) => { throw Object.assign(new Error(message), { code, status }); };
@@ -113,6 +114,7 @@ const doneColumn = project => (project.workflowMode === 'pipeline' ? project.pip
 const openCard = (project, taskId) => { const task = taskId && project.tasks.find(item => item.id === taskId); return task && task.column !== doneColumn(project) ? task : null; };
 
 export class Schedules {
+  #handOffs = serial();
   constructor(board, { now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout } = {}) {
     Object.assign(this, { board, now, setTimer, clearTimer, timer: null, stopped: true, busy: false, again: false });
   }
@@ -214,7 +216,10 @@ export class Schedules {
           labelIds: schedule.labelIds.filter(id => project.labels.some(label => label.id === id)) });
         Object.assign(task, { scheduleId: schedule.id, scheduledFor: slot ?? now });
         Object.assign(schedule, { lastFiredAt: now, lastTaskId: task.id });
-        delete schedule.lastSkip; delete schedule.lastAutopilot;
+        delete schedule.lastSkip;
+        // The hand-off replaces this note with its result at once; it stays only when the app stops before the hand-off.
+        if (schedule.autopilot) schedule.lastAutopilot = { at: now, ok: false, text: 'Not handed to Autopilot (Promptboard stopped first), so the card waits in To Do' };
+        else delete schedule.lastAutopilot;
         return { task: { id: task.id, number: task.number, title: task.title }, autopilot: schedule.autopilot };
       } catch (error) {
         if (manual) throw error;
@@ -222,13 +227,15 @@ export class Schedules {
         return null;
       }
     });
-    if (made?.autopilot) await this.#handOff(projectId, scheduleId, made.task);
+    // One hand-off at a time: a second one waits and then finds Autopilot running, instead of racing its start.
+    if (made?.autopilot) await this.#handOffs(() => this.#handOff(projectId, scheduleId, made.task));
     return made?.task || null;
   }
 
   /**
    * The owner's Autopilot choice for a new card: join a running queue (Autopilot's own rules still decide when it runs),
-   * start Autopilot for this card when it is off or finished, or leave the card in To Do when the owner paused it.
+   * start Autopilot for this card when it is off or finished, or leave the card in To Do when the owner paused it or
+   * saved a queue of their own.
    */
   async #handOff(projectId, scheduleId, task) {
     let note;
@@ -240,7 +247,7 @@ export class Schedules {
       });
       if (ap?.status === 'running') note = { ok: true, text: 'Added to the Autopilot queue' };
       else if (ap?.status === 'paused') note = { ok: false, text: 'Autopilot is paused, so the card waits in To Do' };
-      else { await this.#startAutopilot(projectId, task); note = { ok: true, text: 'Autopilot started' }; }
+      else note = await this.#startAutopilot(projectId, task);
     } catch (error) { note = { ok: false, text: `Autopilot did not start: ${clip(error.message).replace(/[.\s]+$/, '')}` }; }
     await this.board.writeSchedules(projectId, null, project => {
       const schedule = (project.schedules || []).find(item => item.id === scheduleId);
@@ -248,13 +255,20 @@ export class Schedules {
     }).catch(() => {});
   }
 
-  /** The Autopilot dialog's Start, with its checks: its saved steps (or the dialog's default) and a queue of this one card. */
+  /**
+   * The Autopilot dialog's Start, with its checks: its saved steps (or the dialog's default) and a queue of this one card.
+   * A queue the owner saved, with cards still waiting in To Do, is theirs: it is never replaced or started for them.
+   */
   async #startAutopilot(projectId, task) {
     const project = await this.#project(projectId), saved = project.autopilot, pipeline = project.workflowMode === 'pipeline';
-    const route = saved?.route?.length ? saved.route : pipeline ? project.pipeline.columns.filter(column => column.role === 'active').map(column => column.id) : FULL_ROUTE;
+    const todo = pipeline ? project.pipeline.columns.find(column => column.role === 'todo').id : 'todo', done = new Set(saved?.done || []);
+    if ((saved?.queue || []).some(id => !done.has(id) && project.tasks.find(item => item.id === id)?.column === todo))
+      return { ok: false, text: 'Autopilot has a queue you saved, so the card waits in To Do. Start Autopilot yourself' };
+    const route = saved?.route?.length ? saved.route : pipeline ? project.pipeline.columns.filter(column => column.role === 'active').map(column => column.id) : ROUTE_STAGES;
     await this.board.setAutopilot(projectId, pipeline ? { route, queue: [task.id], expectedRevision: project.revision }
       : { route, finish: route.includes('merge') ? saved?.finish || 'merge' : 'merge', maxRework: saved?.maxRework ?? 2, queue: [task.id], routes: {}, expectedRevision: project.revision });
-    await this.board.controlAutopilot(projectId, { action: 'start', confirm: true });
+    await this.board.controlAutopilot(projectId, { action: 'start', confirm: true, by: `the schedule “${task.title}”` });
+    return { ok: true, text: 'Autopilot started' };
   }
 }
 
