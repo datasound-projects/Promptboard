@@ -183,6 +183,7 @@ Agents run through each CLI's own sign-in and plan. Promptboard has no account o
 ## Docs
 
 - [Kanban execution](docs/kanban-execution.md): stages, rework, merge and error codes · [GitHub](docs/github.md) · [Remote access](docs/remote-access.md)
+- [Scheduled cards](docs/schedules.md) · [Insights](docs/insights.md) · [Docker sandbox](docs/docker-sandbox.md) · [Live preview](docs/live-preview.md) · [Project explorer](docs/project-explorer.md)
 - [Origin](docs/origin.md) · [Research](docs/origin-research.md) · [Project Context](docs/origin-project-context.md) · [Shared projects](docs/shared-projects.md) · [Coordinator](docs/coordinator.md) · [Project memory](docs/project-memory.md)
 - [Compose context](docs/compose-context.md) · [Prompt checks](docs/verification.md)
 - [Base delivery](docs/base-delivery.md) · [CLI adapters](docs/cli-adapters.md) · [Session persistence](docs/session-persistence.md)
