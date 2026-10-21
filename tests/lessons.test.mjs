@@ -16,7 +16,9 @@ import { Supervisor } from '../src/supervisor.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
 import { customPipelineConfig } from './helpers/pipeline.mjs';
 
-const ptySkip = process.platform === 'win32'; // Simulated CLIs run through PTYs, as in the other agent-run tests.
+// Simulated CLIs (a fake gh, the fake agent in a PTY) are shebang scripts, which Windows does not run; the merge flows that
+// use them skip there, as the other Git merge tests do. Everything else runs on every platform.
+const shellSkip = process.platform === 'win32';
 const fake = fileURLToPath(new URL('./fixtures/fake-agent.cjs', import.meta.url));
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } }).trim();
 async function temp(t, prefix) { const dir = await realpath(await mkdtemp(join(tmpdir(), prefix))); t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })); return dir; }
@@ -61,9 +63,16 @@ async function world(t, { workflowMode = 'legacy', runner = async () => answer(L
     });
     return { id: created.id, taskCommit, targetCommit, file, branch: ws.branch };
   };
+  /** A card completed as merged through Board.completeTask, as every merge path ends; no Git needed. */
+  const merged = async title => {
+    const created = await board.createTask({ projectId: project.id, title, prompt: `Change ${title}.` });
+    await board.completeTask(created.id, { kind: 'merged', details: { targetBranch: 'trunk', commits: 1 } });
+    await until(() => jobOf(created.id), 'the merge queued its job'); // Queued after the merge returns, never awaited by it.
+    return { id: created.id };
+  };
   const view = () => lessons.view(project.id);
   const jobOf = async id => (await view()).jobs.find(job => job.taskId === id);
-  return { root, dataDir, board, lessons, project, current, card, ready, view, jobOf, calls, claims, retries };
+  return { root, dataDir, board, lessons, project, current, card, ready, merged, view, jobOf, calls, claims, retries };
 }
 /** A fake gh on PATH whose `pr view` answers `state`. */
 async function fakeGh(t, state) {
@@ -73,7 +82,7 @@ async function fakeGh(t, state) {
   const old = process.env.PATH; process.env.PATH = `${bin}${delimiter}${old}`; t.after(() => { process.env.PATH = old; });
 }
 
-test('every merge path queues one lessons job: Merge, Merge now, automatic merges on legacy and typed boards, and a merged pull request', { skip: process.platform === 'win32', timeout: 120000 }, async t => {
+test('every merge path queues one lessons job: Merge, Merge now, automatic merges on legacy and typed boards, and a merged pull request', { skip: shellSkip, timeout: 120000 }, async t => {
   const w = await world(t);
   // Merge (the route, and legacy Autopilot): Delivery.merge.
   const direct = await w.ready('Direct merge');
@@ -97,6 +106,7 @@ test('every merge path queues one lessons job: Merge, Merge now, automatic merge
   const engine = await typed.ready('Typed merge', 'testing');
   assert.equal((await typed.board.transition(engine.id, { column: 'merge', expectedRevision: (await typed.card(engine.id)).revision, decision: 'start' })).merged, true);
   for (const [scope, id] of [[w, direct.id], [w, button.id], [w, automatic.id], [w, proposal.id], [typed, engine.id]]) {
+    await until(() => scope.jobOf(id), 'queued after the merge returned');
     const jobs = JSON.parse(await readFile(fileOf(scope.dataDir, scope.project.id), 'utf8')).jobs.filter(job => job.taskId === id);
     assert.deepEqual(jobs.map(job => [job.status, job.trigger, job.completedAt]), [['queued', 'merge', (await scope.card(id)).completion.at]], `one queued job for ${(await scope.card(id)).title}`);
   }
@@ -110,7 +120,7 @@ test('every merge path queues one lessons job: Merge, Merge now, automatic merge
   }
 });
 
-test('completions without a merge queue nothing: no code changes, Done without merging, an open pull request, and memory switched off', { skip: process.platform === 'win32', timeout: 60000 }, async t => {
+test('completions without a merge queue nothing: no code changes, Done without merging, an open pull request, and memory switched off', { skip: shellSkip, timeout: 60000 }, async t => {
   const w = await world(t);
   const empty = await w.board.createTask({ projectId: w.project.id, title: 'Nothing to change', prompt: 'Check the README.' });
   await w.board.ensureTaskWorktree(empty.id);
@@ -123,18 +133,20 @@ test('completions without a merge queue nothing: no code changes, Done without m
   await fakeGh(t, { url: 'https://github.com/acme/shop/pull/8', number: 8, state: 'OPEN' });
   await w.board.advanceFlows();
   assert.equal((await w.card(open.id)).column, 'merge');
+  await new Promise(resolve => setTimeout(resolve, 100)); // A queued job would be written by now.
   assert.deepEqual((await w.view()).jobs, []);
   // Off: a merge queues nothing. A click on Suggest lessons still asks once.
   await w.lessons.setSettings(w.project.id, { enabled: false, expectedRevision: (await w.view()).revision });
   const off = await w.ready('Merged while off');
   await w.board.mergeNow(off.id);
+  await new Promise(resolve => setTimeout(resolve, 100));
   assert.deepEqual((await w.view()).jobs, []);
   await w.lessons.suggestAgain(off.id, { expectedRevision: (await w.view()).revision });
   assert.deepEqual((await w.view()).jobs.map(job => [job.taskId, job.trigger, job.status]), [[off.id, 'owner', 'queued']]);
   await assert.rejects(w.lessons.suggestAgain(empty.id, { expectedRevision: (await w.view()).revision }), { code: 'NOT_MERGED' });
 });
 
-test('the worker takes the shared job slot, waits while it is busy, and then runs once with the card’s CLI and its smallest model, without local paths or secrets', { skip: process.platform === 'win32', timeout: 60000 }, async t => {
+test('the worker takes the shared job slot, waits while it is busy, and then runs once with the card’s CLI and its smallest model, without local paths or secrets', { skip: shellSkip, timeout: 60000 }, async t => {
   let busy = true;
   const w = await world(t, { claim: async () => { if (busy) throw Object.assign(new ProviderError('A prompt is already in progress. Wait or cancel that prompt.', 'BUSY'), { status: 409 }); return slot(); } });
   const merged = await w.ready('Checkout flow');
@@ -175,19 +187,17 @@ test('the CLI is the card’s executing CLI with its smallest model unless the o
   assert.throws(() => choiceFor(none, task, [{ ...runs[1], config: { provider: 'agy' } }]), { code: 'PROVIDER_UNSUPPORTED', message: /Antigravity CLI cannot run without tools/ });
 });
 
-test('a restart resumes queued jobs and jobs that were running when the app stopped', { skip: process.platform === 'win32', timeout: 60000 }, async t => {
+test('a restart resumes queued jobs and jobs that were running when the app stopped', { timeout: 60000 }, async t => {
   let release;
   const w = await world(t, { runner: call => new Promise((resolve, reject) => { release = () => resolve(answer(LESSONS.slice(0, 1))); call.signal.addEventListener('abort', () => reject(new ProviderError('Generation was cancelled.', 'ABORTED')), { once: true }); }) });
-  const first = await w.ready('First card');
-  await w.board.mergeNow(first.id);
+  const first = await w.merged('First card');
   w.lessons.start();
   await until(async () => (await w.jobOf(first.id))?.status === 'running' && release, 'running');
   // The app stops: the run is cancelled and the job is queued again.
   await w.lessons.close();
   assert.equal((await w.jobOf(first.id)).status, 'queued');
   // A crash leaves a job marked running; the next start queues it again too.
-  const second = await w.ready('Second card');
-  await w.board.mergeNow(second.id);
+  const second = await w.merged('Second card');
   const saved = JSON.parse(await readFile(fileOf(w.dataDir, w.project.id), 'utf8'));
   saved.jobs.find(job => job.taskId === second.id).status = 'running';
   await writeFile(fileOf(w.dataDir, w.project.id), JSON.stringify(saved));
@@ -200,11 +210,10 @@ test('a restart resumes queued jobs and jobs that were running when the app stop
   assert.deepEqual((await restarted.view(w.project.id)).lessons.map(lesson => lesson.text).sort(), ['Lesson from the first card.', 'Lesson from the second card.']);
 });
 
-test('a failed suggestion records a plain reason and is never retried on its own; Suggest again runs it once more', { skip: process.platform === 'win32', timeout: 60000 }, async t => {
+test('a failed suggestion records a plain reason and is never retried on its own; Suggest again runs it once more', { timeout: 60000 }, async t => {
   const replies = [() => { throw Object.assign(new ProviderError(FAILURE_MESSAGES.AUTH_REQUIRED, 'AUTH_REQUIRED'), { details: 'raw CLI output with a token' }); }, () => ({ text: 'I think the code looks fine.' }), () => ({ text: '[]' })];
   const w = await world(t, { runner: async () => replies.shift()() });
-  const merged = await w.ready('Login page');
-  await w.board.mergeNow(merged.id);
+  const merged = await w.merged('Login page');
   w.lessons.start();
   await until(async () => (await w.jobOf(merged.id))?.status === 'failed', 'failed');
   assert.equal((await w.jobOf(merged.id)).reason, FAILURE_MESSAGES.AUTH_REQUIRED);
@@ -243,10 +252,9 @@ test('answers are validated: at most six lessons of known kinds and lengths, no 
   assert.deepEqual(parseLessons(JSON.stringify([{ kind: 'gotcha', text: 'Build in /Users/me/work/shop first; token=abc123 is in .env', evidence: '' }]))[0].text, 'Build in …/shop first; token=[redacted] is in .env');
 });
 
-test('the owner approves, edits and rejects lessons on the current revision; caps drop the oldest suggestions and rejections, never approved lessons', { skip: process.platform === 'win32', timeout: 60000 }, async t => {
+test('the owner approves, edits and rejects lessons on the current revision; caps drop the oldest suggestions and rejections, never approved lessons', { timeout: 60000 }, async t => {
   const w = await world(t);
-  const merged = await w.ready('Search page');
-  await w.board.mergeNow(merged.id);
+  const merged = await w.merged('Search page');
   w.lessons.start();
   await until(async () => (await w.jobOf(merged.id))?.status === 'done', 'suggested');
   let view = await w.view();
@@ -306,7 +314,7 @@ test('approved lessons reach the prompt as one bounded section, newest first and
   assert.equal(await lessonsPrompt(dataDir, '../p1'), '');
 });
 
-test('a new agent run receives the approved lessons in its first message; a project without lessons gets none', { skip: ptySkip, timeout: 60000 }, async t => {
+test('a new agent run receives the approved lessons in its first message; a project without lessons gets none', { skip: shellSkip, timeout: 60000 }, async t => {
   const bin = await temp(t, 'pb-lessons-bin-');
   await writeFile(join(bin, 'claude'), `#!${process.execPath}\nrequire(${JSON.stringify(fake)});\n`); await chmod(join(bin, 'claude'), 0o755);
   const old = process.env.PATH; process.env.PATH = `${bin}${delimiter}${old}`;
@@ -337,10 +345,9 @@ test('a new agent run receives the approved lessons in its first message; a proj
   assert.doesNotMatch(custom, /node --test/, 'only this project’s lessons');
 });
 
-test('a backup carries approved lessons and settings, never suggestions or jobs, and the import restores them', { skip: process.platform === 'win32', timeout: 60000 }, async t => {
+test('a backup carries approved lessons and settings, never suggestions or jobs, and the import restores them', { timeout: 60000 }, async t => {
   const w = await world(t);
-  const merged = await w.ready('Profile page');
-  await w.board.mergeNow(merged.id);
+  const merged = await w.merged('Profile page');
   w.lessons.start();
   await until(async () => (await w.jobOf(merged.id))?.status === 'done', 'suggested');
   const [first] = (await w.view()).lessons;
@@ -368,7 +375,7 @@ test('a backup carries approved lessons and settings, never suggestions or jobs,
   assert.deepEqual((await restored.view(w.project.id)).lessons.map(lesson => lesson.text), ['Keep me.']);
 });
 
-test('HTTP routes: views and changes need the session token and the current revision, unknown projects are refused, owner work takes the slot first, and deleting a project removes its memory', { skip: process.platform === 'win32', timeout: 60000 }, async t => {
+test('HTTP routes: views and changes need the session token and the current revision, unknown projects are refused, owner work takes the slot first, and deleting a project removes its memory', { timeout: 60000 }, async t => {
   let held = null;
   const runner = async call => {
     if (!call.prompt.startsWith('# Promptboard project memory')) return { text: 'Not a split.' };
