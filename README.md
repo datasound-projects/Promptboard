@@ -116,6 +116,7 @@ Each card gets its own Git branch and worktree. When a card enters a column, a f
 - **Your rules.** Per board or column: CLI and model, ask or autonomous, read-only or workspace access, manual or automatic completion.
 - **Live terminals.** Watch every agent and type into it. Pause and resume keep its session.
 - **Run the result.** When every card is done, the board shows where the project is and the commands to start it, with Open in Finder and Open in Terminal. The project ⋯ menu copies its path any time and opens the project, or a task's worktree, in your code editor (**Open in IDE**: VS Code, Cursor, Zed, TRAE, Devin Desktop/Windsurf, Sublime Text, JetBrains IDEs, or any editor you add by path).
+- **Live preview.** For web projects, **Start preview** in a card's Details runs the project's dev server in the card's worktree and gives you a link, so you can click-test the change before it merges ([Live preview](docs/live-preview.md)).
 - **Coordinator.** A read-only overview of progress, running agents and blockers. Ask it questions; answers cite their sources.
 - **GitHub.** Sign in with the GitHub CLI, search your personal and organization repositories, and clone one (or connect a clone you already have). Fetch and fast-forward only; Promptboard never sees a token. See [GitHub](docs/github.md).
 - **Also:** custom columns with their own instructions, column actions (script, webhook, notification), a file browser, a timeline, labels and priorities, and board backups.
