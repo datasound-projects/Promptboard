@@ -253,7 +253,8 @@ export class RemoteAccess {
     const host = String(hostHeader || '').toLowerCase();
     const { method, port, bind } = this.settings;
     const names = new Set([`127.0.0.1:${port}`, `localhost:${port}`]); // A reverse proxy on this computer; pairing is still required.
-    if (method === 'tailscale' && this.tailscale?.state?.name) for (const suffix of ['', ':443', ':8443']) names.add(`${this.tailscale.state.name}${suffix}`);
+    const tailscale = method === 'tailscale' ? this.tailscale?.state : null; // Also the port Serve forwards from, when it is not 443 or 8443.
+    if (tailscale?.name) for (const suffix of ['', ':443', ':8443', ...(tailscale.serving ? [`:${tailscale.servePort}`] : [])]) names.add(`${tailscale.name}${suffix}`);
     if (method === 'twingate') { for (const name of [this.settings.host, bind].filter(Boolean)) { names.add(`${name}:${port}`); names.add(name); } }
     return names.has(host);
   }

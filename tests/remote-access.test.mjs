@@ -445,3 +445,18 @@ test('a change that cannot be saved is undone and reported plainly: pairing, rev
   const restarted = await make(); t.after(() => restarted.close());
   assert.deepEqual([restarted.settings.method, restarted.sessions.length], ['twingate', 1]);
 });
+
+test('Tailscale Serve on another HTTPS port (443 and 8443 are taken): the address Settings shows is let through to pairing', async t => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'pb-remote-ts-port-')); t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const port = await freePort();
+  // As Settings tells the user to do then: tailscale serve --bg --https=10000 http://127.0.0.1:<port>
+  const serve = { Web: { 'mac.tail1234.ts.net:443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:3000' } } }, 'mac.tail1234.ts.net:8443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:3001' } } },
+    'mac.tail1234.ts.net:10000': { Handlers: { '/': { Proxy: `http://127.0.0.1:${port}` } } } } };
+  const cli = { run: async args => JSON.stringify(args[0] === 'status' ? { BackendState: 'Running', Self: { DNSName: 'mac.tail1234.ts.net.', Online: true }, CertDomains: ['mac.tail1234.ts.net'] } : serve) };
+  const access = await new RemoteAccess({ dataDir, localPort: 1, handle: (req, res) => { res.writeHead(200); res.end('app'); }, cli }).load(); t.after(() => access.close());
+  assert.equal((await access.configure({ method: 'tailscale', port })).url, 'https://mac.tail1234.ts.net:10000');
+  // Tailscale Serve keeps the browser's Host header, port included.
+  const opened = await request(port, '/', { host: 'mac.tail1234.ts.net:10000' });
+  assert.deepEqual([opened.status, opened.headers.location], [302, '/remote'], opened.body);
+  assert.equal((await request(port, '/', { host: 'mac.tail1234.ts.net:10001' })).status, 403, 'another port of that name is still refused');
+});
