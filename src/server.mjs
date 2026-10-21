@@ -531,7 +531,7 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
     }
     if (/^\/api\/origin(?:\/|$)/.test(pathname)) {
       const route = /^\/api\/origin\/projects\/[^/]+\/document(?:\/|$)/.test(pathname) ? contextRoute : originRoute;
-      try { return await route({ origin, contexts, research, board, prompts, req, res, pathname, jsonBody, send }); }
+      try { return await route({ origin, contexts, research, batches, board, prompts, req, res, pathname, jsonBody, send }); }
       catch (error) { return sendFailure(res, error, 'The blueprint request failed. Board, Compose and Base data are unchanged.', { status: 500, code: 'ORIGIN_FAILED' }); }
     }
     if (req.method === 'GET' && pathname === '/api/models') {

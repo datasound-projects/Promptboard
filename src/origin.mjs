@@ -621,7 +621,7 @@ async function startBlueprint(origin, start) {
   throw new OriginError('Choose how the project starts: a blueprint from the library, the general structure, blank, a saved blueprint or another project’s structure.', 'INVALID_INPUT');
 }
 
-export async function originRoute({ origin, contexts, research, board, prompts, req, res, pathname, jsonBody, send }) {
+export async function originRoute({ origin, contexts, research, batches, board, prompts, req, res, pathname, jsonBody, send }) {
   const kanban = async () => (await board.state()).projects, services = { origin, board };
   const named = value => (typeof value === 'string' ? value.trim() : '');
   const body = async () => {
@@ -720,6 +720,7 @@ export async function originRoute({ origin, contexts, research, board, prompts, 
     const record = await origin.read(originId, { report: false });
     if (!record) throw new OriginError('This Origin project no longer exists.', 'NOT_FOUND', 404);
     if (record.revision !== input.expectedRevision) throw new OriginError('This project changed in another window. Reload it first.', 'ORIGIN_REVISION_CONFLICT', 409);
+    if (batches?.running(originId)) throw new OriginError('Compose Batch is working on tasks of this project. Cancel them there first; nothing was deleted.', 'TASK_RUNNING', 409);
     let kanbanDeleted = false;
     if (input.deleteKanban === true) {
       if (!record.kanbanProjectId) throw new OriginError('This Origin project has no linked Kanban project.', 'NOT_LINKED', 409);
@@ -733,6 +734,7 @@ export async function originRoute({ origin, contexts, research, board, prompts, 
     await origin.remove(originId, { expectedRevision: record.revision });
     await contexts?.archive(originId).catch(() => {}); // Kept in origin/deleted/; Base copies stay usable.
     await research?.archive(originId).catch(() => {}); // So a project created later under this ID starts without them.
+    await batches?.archive(originId).catch(() => {});
     return send(res, 200, { deleted: true, kanbanDeleted });
   }
   return send(res, 404, { error: 'This Origin route does not exist.' });
