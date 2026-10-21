@@ -651,7 +651,11 @@ export class Supervisor {
     // Read the last lifecycle events (for example a final Stop) and usage before the session closes.
     await this.#readEvents(session).catch(() => {});
     await this.#readUsage(session).catch(() => {});
-    untrackPid(session.proc.pid);
+    const pid = session.proc.pid;
+    // A child the CLI left in its process group (a background server that ignores SIGHUP) ends with it. POSIX only, and
+    // only the group: the exited CLI's own PID may already belong to another process. Windows keeps its behaviour.
+    if (process.platform !== 'win32' && pid > 0) try { process.kill(-pid, 'SIGTERM'); setTimeout(() => { try { process.kill(-pid, 'SIGKILL'); } catch {} }, 3000).unref(); } catch {}
+    untrackPid(pid);
     session.proc = null;
     try { await session.baseCleanup?.(); } catch { /* Continue closing the owned session even if a temporary file cannot be removed. */ }
     clearTimeout(session.killTimer);

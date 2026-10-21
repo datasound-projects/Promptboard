@@ -727,6 +727,15 @@ test('Stop and Pause can be retried after the final status of an exited agent co
   }
 });
 
+test('a child the CLI leaves in its process group ends when the CLI exits on its own', { skip }, async t => {
+  const w = await world(t), card = await w.task('Background child', 'Start the server. BACKGROUND_CHILD EXIT_NOW');
+  const run = await w.board.requestRun(card.id, { stage: 'executing', consent: true, config: { provider: 'claude' } });
+  await until(async () => (await w.run(run.id)).status === 'interrupted', 'natural exit');
+  const { child } = (await w.reports()).find(item => item.child);
+  t.after(() => { try { process.kill(child, 'SIGKILL'); } catch {} });
+  await until(() => !alive(child), 'the child ended with its CLI');
+});
+
 test('planning captures a plan outside the worktree, cannot implement, and approval is tied to the task text', { skip }, async t => {
   const w = await world(t);
   const task = await w.task('Plan it', 'Add a WRITE_FILE feature.', 'planning');
