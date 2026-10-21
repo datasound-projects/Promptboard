@@ -614,8 +614,8 @@ Use "passed" only when every command you list exited with 0 and the change works
     const pr = await gh(['pr', 'view', known.url, '--json', 'url,number,state,mergedAt'], { cwd: ws.path }).then(JSON.parse)
       .catch(error => { throw error.missing ? fail('Install the GitHub CLI (gh) to check the pull request.', 'GH_MISSING') : fail('The GitHub CLI could not read the pull request. Check gh auth status.', 'GH_FAILED'); });
     // Complete before recording MERGED: a card that cannot complete yet (an active run) keeps its pull request OPEN
-    // here, so the minute poll and the Check button try again.
-    if (pr.state === 'MERGED') await this.board.completeTask(taskId, { kind: 'pull_request', details: { url: pr.url, number: pr.number, base: known.base, mergedAt: pr.mergedAt || null } });
+    // here, so the minute poll and the Check button try again. A card already completed by a merge only records it.
+    if (pr.state === 'MERGED' && !['merged', 'pull_request'].includes(task.completion?.kind)) await this.board.completeTask(taskId, { kind: 'pull_request', details: { url: pr.url, number: pr.number, base: known.base, mergedAt: pr.mergedAt || null } });
     return this.board.updateTaskEvidence(taskId, current => { current.evidence.pullRequest = { ...current.evidence.pullRequest, state: pr.state, checkedAt: Date.now() }; });
   }
 
