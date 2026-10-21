@@ -480,7 +480,7 @@ test('Testing and Merge agents: test commands in context, conflicts left for the
   assert.equal(git(w.remote, 'rev-parse', 'trunk'), git(w.remote, 'rev-parse', 'trunk'), 'Nothing is pushed.');
 });
 
-test('pull request: pushes the task branch without force, opens it with gh, and a merged pull request completes the task', { skip, timeout: 60000 }, async t => {
+test('pull request: pushes the task branch without force, opens it with gh, and a merged pull request completes the task, also once a run that was active at the check ends', { skip, timeout: 60000 }, async t => {
   const w = await world(t);
   const bin = await temp(t, 'pb-gh-bin-');
   const stateFile = join(bin, 'pr.json');
@@ -521,6 +521,15 @@ process.exit(2);
   await writeFile(stateFile, JSON.stringify({ url: 'https://github.com/example/repo/pull/7', number: 7, state: 'MERGED', mergedAt: '2026-09-29T12:00:00Z' }));
   // A card in Merge with an open pull request is checked by the board itself; once merged it moves to Done.
   await w.board.store.update(state => { state.projects[0].tasks.find(item => item.id === task.id).column = 'merge'; });
+  // An agent still works on the card at that check: the card cannot complete yet, so the pull request stays open
+  // here and the next check (a minute later) completes the card once the run has ended.
+  const run = await w.board.requestRun(task.id, { stage: 'merge', consent: true, config: { provider: 'claude' } });
+  await until(async () => (await w.board.run(run.id)).status === 'waiting_for_input', 'merge turn');
+  await w.board.advanceFlows();
+  const waiting = await w.current(task.id);
+  assert.deepEqual([waiting.column, waiting.evidence.pullRequest.state], ['merge', 'OPEN']);
+  await w.supervisor.confirm(run.id);
+  w.board.prChecks.clear();
   await w.board.advanceFlows();
   const done = await w.current(task.id);
   assert.equal(done.column, 'done');
