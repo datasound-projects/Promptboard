@@ -497,6 +497,21 @@ test('a backup keeps validated workflow settings and test commands only: deeply 
   assert.equal((await board.state()).projects[0].pendingImport, null);
 });
 
+test('a backup made while imported settings wait for confirmation keeps them', async t => {
+  const source = new Board({ dataDir: await temp(t, 'pb-pending-') }); await source.createProject({ name: 'Shop' });
+  const backup = await source.exportBackup();
+  Object.assign(backup.projects[0], { repository: { path: '/some/where/shop' }, targetBranch: { name: 'main' }, agentDefaults: { provider: 'codex', model: '', effort: '' },
+    workflow: { executing: { policy: 'manual', instructions: 'Be careful' } }, testCommands: [{ label: 'Unit', argv: ['npm', 'test'], timeoutSec: 60 }], preview: { argv: ['npm', 'run', 'dev'], setup: [] } });
+  const board = new Board({ dataDir: await temp(t, 'pb-pending-import-') });
+  await board.importBackup(backup);
+  const again = await board.exportBackup();
+  for (const key of ['repository', 'targetBranch', 'workflow', 'testCommands', 'preview']) assert.deepEqual(again.projects[0][key], backup.projects[0][key], key);
+  assert.equal(again.projects[0].agentDefaults.provider, 'codex');
+  const restored = new Board({ dataDir: await temp(t, 'pb-pending-again-') });
+  await restored.importBackup(again);
+  assert.deepEqual((await restored.state()).projects[0].pendingImport, (await board.state()).projects[0].pendingImport);
+});
+
 test('board HTTP routes need the page token, resolve paths on the server, and never start agents', { skip: process.platform === 'win32' }, async t => {
   const dataDir = await temp(t, 'pb-data-');
   const root = await repo(t);
