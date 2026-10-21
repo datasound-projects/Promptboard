@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { ResearchStore, scopeOf, settingsOf } from '../src/origin-research.mjs';
+import { ResearchStore, scopeOf, settingsOf, summary } from '../src/origin-research.mjs';
 import { startTestServer } from './helpers/test-server.mjs';
 
 async function folder(t) { const dir = await mkdtemp(join(tmpdir(), 'pb-research-')); t.after(() => rm(dir, { recursive: true, force: true })); return dir; }
@@ -272,6 +272,18 @@ test('at the suggestion cap a chat drops decided suggestions before the ones sti
   const updated = await store.update('p1', chat.id, value => { value.proposals.push(...Array.from({ length: 5 }, (_, n) => proposal(1000 + n, 'pending'))); });
   assert.equal(updated.proposals.length, 300);
   assert.equal(updated.proposals.filter(entry => entry.status === 'pending').length, 15, 'every open suggestion is kept');
+});
+
+test('a chat over its message cap drops the suggestions of the messages it drops, so none waits or is applied unseen', async t => {
+  const dir = await folder(t), store = new ResearchStore(dir);
+  const chat = await store.create('p1', { provider: 'claude' });
+  const message = n => ({ id: `m${n}`, role: n % 2 ? 'assistant' : 'user', text: `Message ${n}`, at: n });
+  const proposal = (n, messageId) => ({ id: `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`, messageId, status: 'pending', title: `S${n}`, target: { kind: 'idea' }, value: '' });
+  await store.update('p1', chat.id, value => { value.messages.push(...Array.from({ length: 400 }, (_, n) => message(n))); value.proposals.push(proposal(1, 'm1'), proposal(3, 'm3')); });
+  const updated = await store.update('p1', chat.id, value => { value.messages.push(message(400), message(401)); value.proposals.push(proposal(401, 'm401')); });
+  assert.deepEqual([updated.messages.length, updated.messages[0].id], [400, 'm2']);
+  assert.deepEqual(updated.proposals.map(entry => entry.messageId), ['m3', 'm401']);
+  assert.equal(summary(updated).pending, 2);
 });
 
 test('deleting a chat while it researches stops its CLI first; the stream ends without an error', async t => {
