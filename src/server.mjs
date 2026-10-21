@@ -780,6 +780,7 @@ export async function startServer({ batchTimeoutMs, port = 4318, runner = runPro
   // Idempotent and bounded: stop accepting, cancel owned work, close sockets, then
   // SIGKILL any owned CLI process group that is still alive.
   const close = ({ graceMs = 4000 } = {}) => closed ??= (async () => {
+    await lock.markStopping(); // First: once the port stops answering, a restart must not take the data folder yet.
     closing = true;
     await remoteAccess?.shutdown();
     notifications.close();
