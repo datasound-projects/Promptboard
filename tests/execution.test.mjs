@@ -907,7 +907,7 @@ test('a CLI that exits while its start is being saved leaves no event poll runni
 async function fakeLaunch(t) {
   const dataDir = await temp(t, 'pb-data-');
   const spawned = {};
-  const pty = { spawn(command, args, options) { Object.assign(spawned, { command, args, options }); spawned.proc = { pid: 2147483000, onData() {}, onExit(cb) { this.exit = cb; }, write() {}, resize() {} }; return spawned.proc; } };
+  const pty = { spawn(command, args, options) { Object.assign(spawned, { command, args, options }); spawned.proc = { pid: 2147483000, onData(cb) { this.data = cb; }, onExit(cb) { this.exit = cb; }, write() {}, resize() {} }; return spawned.proc; } };
   const run = { id: 'r1', status: 'queued', taskId: 't1', artifactsDir: 'runs/r1', stage: 'executing', workspacePath: dataDir,
     config: { provider: 'claude', permissionMode: 'acceptEdits' }, baseManifest: { resources: [] } };
   const board = { state: async () => ({ settings: { maxConcurrentRuns: 1 }, base: { resources: [], approvedRoots: [] }, sessions: [] }),
@@ -928,6 +928,21 @@ test('shutdown ends a terminal stream for good: a process that exits later write
   assert.equal(run.status, 'interrupted'); assert.equal(seen.at(-1), 'end');
   spawned.proc.exit({ exitCode: null, signal: 9 }); await session.exited;
   assert.deepEqual(seen.slice(seen.indexOf('end')), ['end'], 'An HTTP response written after end() raises an uncaught error.');
+});
+
+test('the output log ends with one limit marker, also when the output reaches the limit exactly', async t => {
+  const marker = '\n[Promptboard: output log limit reached]\n', chunk = `${'y'.repeat(4095)}\n`;
+  for (const first of ['', 'z']) {
+    const { run, session, spawned } = await fakeLaunch(t);
+    if (first) spawned.proc.data(first);
+    for (let i = 0; i < 5120; i++) spawned.proc.data(chunk); // 20 MiB, the limit.
+    for (let i = 0; i < 3; i++) spawned.proc.data('more output\n');
+    spawned.proc.exit({ exitCode: 0 }); await session.exited;
+    const log = await readFile(join(run.workspacePath, run.artifactsDir, 'output.log'), 'utf8');
+    assert.equal(log.split(marker).length, 2, `one marker (${first ? 'past' : 'at'} the limit)`);
+    assert.ok(log.endsWith(marker), 'Nothing is logged after the marker.');
+    assert.ok(Buffer.byteLength(log) <= 20 * 1024 * 1024 + marker.length);
+  }
 });
 
 test('an agent terminal never inherits the session identity or message credential of an agent session that started Promptboard', async t => {

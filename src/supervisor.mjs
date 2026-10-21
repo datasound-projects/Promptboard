@@ -443,10 +443,10 @@ export class Supervisor {
       if (title !== undefined && !CODEX_ASKS.test(title)) this.#inputReady(session, 'terminal-title');
     }
     this.#push(session, { data });
-    if (session.logBytes < LOG_BYTES) {
-      const chunk = session.logBytes + Buffer.byteLength(data) > LOG_BYTES ? '\n[Promptboard: output log limit reached]\n' : data;
-      session.logBytes += Buffer.byteLength(chunk);
-      session.log.write(chunk);
+    // The first chunk past the limit is replaced by the marker, once; nothing is logged after it.
+    if (session.logBytes <= LOG_BYTES) {
+      session.logBytes += Buffer.byteLength(data);
+      session.log.write(session.logBytes > LOG_BYTES ? '\n[Promptboard: output log limit reached]\n' : data);
     }
   }
 
