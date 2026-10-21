@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -298,6 +298,34 @@ test('merge safety: dirty target checkout, advanced target, conflict-safe branch
   assert.equal(done.completion.method, 'fast-forward of the branch reference');
   assert.equal(git(w.root, 'rev-parse', 'trunk'), preview.taskCommit);
   assert.equal(git(w.root, 'branch', '--show-current'), 'elsewhere', 'No checkout was switched.');
+});
+
+/** The evidence a merge needs, for the task's current commits: an accepted review without findings and passing tests. */
+async function mergeEvidence(w, id) {
+  const rev = await w.delivery.revision(id);
+  await w.board.updateTaskEvidence(id, task => { task.evidence = { review: { status: 'accepted', verdict: 'no_issues', findings: [], parsed: true, taskCommit: rev.taskCommit }, tests: { status: 'passed', id: 'tests-1', taskCommit: rev.taskCommit, targetCommit: rev.targetCommit, results: [] } }; });
+  return w.delivery.mergePreview(id);
+}
+
+test('a merge never overwrites a file Git ignores in the target checkout (the owner\'s .env): the refusal names it, and the merge works once it is moved', { skip, timeout: 60000 }, async t => {
+  const w = await world(t);
+  await writeFile(join(w.root, '.gitignore'), '.env*\n'); git(w.root, 'add', '.gitignore'); git(w.root, 'commit', '-qm', 'ignore .env');
+  await writeFile(join(w.root, '.env'), 'API_KEY=the-owners-secret\n');
+  const task = await w.task('Ship an example env file', 'x');
+  // The task starts tracking a .env of its own (an example), so the merged commit has a file where the owner's is.
+  await writeFile(join(await w.workspace(task.id), '.gitignore'), '');
+  await writeFile(join(await w.workspace(task.id), '.env'), 'API_KEY=changeme\n');
+  await w.delivery.commit(task.id, { message: 'Track an example .env', confirm: true });
+  const preview = await mergeEvidence(w, task.id);
+  assert.equal(preview.eligible, true, preview.problems.join(' '));
+  const merge = () => w.delivery.merge(task.id, { confirm: true, taskCommit: preview.taskCommit, targetCommit: preview.targetCommit });
+  await assert.rejects(merge(), { code: 'MERGE_FAILED', message: `The merge would overwrite files in ${w.root} that Git does not track: .env. Promptboard does not replace them: move or rename them, then merge again. Nothing was changed.` });
+  assert.equal(await readFile(join(w.root, '.env'), 'utf8'), 'API_KEY=the-owners-secret\n', 'The owner\'s file is untouched.');
+  assert.equal(git(w.root, 'rev-parse', 'trunk'), preview.targetCommit);
+  // Moved aside (still an ignored file), it no longer collides: the merge goes through and keeps it.
+  await rename(join(w.root, '.env'), join(w.root, '.env.mine'));
+  assert.equal((await merge()).column, 'done');
+  assert.deepEqual([await readFile(join(w.root, '.env'), 'utf8'), await readFile(join(w.root, '.env.mine'), 'utf8')], ['API_KEY=changeme\n', 'API_KEY=the-owners-secret\n']);
 });
 
 test('Done: verified no-change completion, final until Reopen, optional ownership-checked cleanup', { skip, timeout: 60000 }, async t => {

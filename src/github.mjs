@@ -9,7 +9,7 @@
 import { execFile } from 'node:child_process';
 import { mkdir, realpath, stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import { git, headBranch } from './git.mjs';
+import { git, headBranch, untrackedInTheWay } from './git.mjs';
 import { commandOnPath, forgetCommand, trackPid, untrackPid } from './providers.mjs';
 
 export class GitHubError extends Error {
@@ -208,7 +208,11 @@ export async function fastForward(path, branch) {
   if (current === branch) {
     const dirty = (await git(['status', '--porcelain'], { cwd: path })).trim();
     if (dirty) throw fail(`The clone has uncommitted changes on ${branch}. Promptboard does not discard them.`, 'UNCOMMITTED_CHANGES');
-    await git(['merge', '--ff-only', `refs/remotes/origin/${branch}`], { cwd: path, timeoutMs: 60000 });
+    // Never over an ignored file of the person's (a local .env): Git's default would replace it.
+    await git(['merge', '--ff-only', '--no-overwrite-ignore', `refs/remotes/origin/${branch}`], { cwd: path, timeoutMs: 60000 }).catch(error => {
+      const files = untrackedInTheWay(error.stderr);
+      throw files.length ? fail(`Updating ${branch} would overwrite files in the clone that Git does not track: ${files.slice(0, 10).join(', ')}${files.length > 10 ? ` and ${files.length - 10} more` : ''}. Promptboard does not replace them: move or rename them, then update again.`, 'UNTRACKED_FILES') : error;
+    });
   } else {
     // Without a leading +, this refspec only fast-forwards.
     await git(['fetch', '.', `refs/remotes/origin/${branch}:refs/heads/${branch}`], { cwd: path, timeoutMs: 60000 });

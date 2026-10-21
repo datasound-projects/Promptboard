@@ -61,6 +61,9 @@ export async function git(args, { cwd, config = [], timeoutMs = 20000 } = {}) {
 
 export const lines = text => text.split('\n').map(line => line.trimEnd()).filter(Boolean);
 
+/** The files Git lists when a merge stops because it would overwrite untracked (or, with --no-overwrite-ignore, ignored) files. */
+export const untrackedInTheWay = stderr => lines(/untracked working tree files would be overwritten by \w+:\r?\n((?:\t.*\r?\n?)+)/.exec(String(stderr || ''))?.[1] || '').map(line => line.trim());
+
 /**
  * The branch checked out in `cwd` ('' when detached or unreadable). The full ref is read: a short name comes back
  * as "heads/main" when a tag is also called main.

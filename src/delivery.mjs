@@ -11,7 +11,7 @@ import { gh } from './github.mjs';
 import { createWriteStream, existsSync } from 'node:fs';
 import { access, constants, mkdir, readFile } from 'node:fs/promises';
 import { delimiter, dirname, join } from 'node:path';
-import { git, headBranch, ignoredFiles, lines, listWorktrees } from './git.mjs';
+import { git, headBranch, ignoredFiles, lines, listWorktrees, untrackedInTheWay } from './git.mjs';
 import { nestedRepositoryProblem } from './sandbox.mjs';
 import { killPidGroup, trackPid, untrackPid } from './providers.mjs';
 
@@ -424,9 +424,14 @@ export class Delivery {
       };
       let method;
       if (preview.targetCheckout) {
-        // Fast-forward the checkout that has the target branch; never switch branches anywhere.
-        await git(['merge', '--ff-only', '--no-edit', merged], { cwd: preview.targetCheckout.path, timeoutMs: 120000 })
-          .catch(async error => { throw await refused(`Git refused the fast-forward in the target checkout (${error.message}). Nothing was changed.`); });
+        // Fast-forward the checkout that has the target branch; never switch branches anywhere. By default Git
+        // overwrites ignored files (the owner's .env) with tracked ones; --no-overwrite-ignore refuses instead.
+        await git(['merge', '--ff-only', '--no-overwrite-ignore', '--no-edit', merged], { cwd: preview.targetCheckout.path, timeoutMs: 120000 })
+          .catch(async error => {
+            const files = untrackedInTheWay(error.stderr);
+            throw await refused(files.length ? `The merge would overwrite files in ${preview.targetCheckout.path} that Git does not track: ${files.slice(0, 10).join(', ')}${files.length > 10 ? ` and ${files.length - 10} more` : ''}. Promptboard does not replace them: move or rename them, then merge again. Nothing was changed.`
+              : `Git refused the fast-forward in the target checkout (${error.message}). Nothing was changed.`);
+          });
         method = `${squash ? 'squash commit, ' : ''}fast-forward in ${preview.targetCheckout.path}`;
       } else {
         // Not checked out anywhere. Compare-and-swap: the ref moves only if it still has the previewed value.
