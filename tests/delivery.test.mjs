@@ -835,6 +835,16 @@ test('the commit preview shows a new symlink as a link and never reads through i
   assert.ok(!preview.diff.includes('PRIVATE KEY'), 'Nothing outside the worktree was read.');
 });
 
+test('a renamed or deleted target branch is named as such in the card details, the merge preview and a move', { skip, timeout: 60000 }, async t => {
+  const w = await world(t);
+  const task = await w.task('Card', 'x');
+  git(w.root, 'branch', '-m', 'trunk', 'main');
+  const gone = { code: 'TARGET_BRANCH_NOT_FOUND', message: 'The target branch trunk no longer exists. Choose the target branch again.' };
+  await assert.rejects(w.delivery.revision(task.id), gone);
+  await assert.rejects(w.delivery.mergePreview(task.id), gone);
+  await assert.rejects(w.move(task.id, 'code_review'), gone);
+});
+
 test('on Windows, npm and npx test commands start through Node without a shell; other commands start as written', () => {
   const win = { platform: 'win32', execPath: 'C:/node/node.exe', exists: () => true };
   const [node, cli, ...rest] = startArgv(['npm', 'test', '--', '--grep', 'a & b'], win);

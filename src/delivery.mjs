@@ -175,7 +175,9 @@ export class Delivery {
     const branch = await headBranch(ws.path);
     const status = lines(await git(['status', '--porcelain', '--untracked-files=all'], { cwd: ws.path }));
     const ignored = await ignoredFiles(ws.path); // Shown before anything removes the worktree with them.
-    const targetCommit = await this.#rev(ws.path, `refs/heads/${target}`);
+    // Git itself works here (HEAD was read), so a failed lookup means the branch was renamed or deleted.
+    const targetCommit = await this.#rev(ws.path, `refs/heads/${target}`)
+      .catch(error => { throw error.code === 'GIT_FAILED' ? fail(`The target branch ${target} no longer exists. Choose the target branch again.`, 'TARGET_BRANCH_NOT_FOUND') : error; });
     const ahead = Number(lines(await git(['rev-list', '--count', `${targetCommit}..${head}`], { cwd: ws.path }))[0] || 0);
     return { taskCommit: head, branch, branchOk: branch === ws.branch, clean: status.length === 0, changes: status.slice(0, 200), ignored: ignored.slice(0, 50), targetBranch: target, targetCommit, ahead, promptRevision: task.contentRevision ?? 1, ...(await this.#mergeState(ws.path)) };
   }
