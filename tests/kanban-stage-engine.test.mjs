@@ -429,6 +429,18 @@ test('an Enter on an empty prompt after a finished turn still lets the stage com
   });
 });
 
+test('Codex: text typed into its question and the Enter that answers it leave no draft for a later Enter', { skip, timeout: 120000 }, async t => {
+  const w = await world(t, { agents: { executing: 'codex' } });
+  const card = await w.board.createTask({ projectId: w.project.id, title: 'Question', prompt: 'Change it. CODEX_QUESTION EMPTY_ENTER_IGNORED' });
+  const run = (await w.go(card.id, 'executing')).run;
+  await until(async () => (await w.board.run(run.id)).activity?.permissionPending, 'question');
+  w.supervisor.input(run.id, 'Yes, WRITE_FILE:feature.txt'); w.supervisor.input(run.id, '\r'); // The answer, in the question's own field.
+  await w.finished(run.id);
+  w.supervisor.input(run.id, '\r');
+  await w.board.setExecutionPolicy(w.project.id, { policy: { completion: 'automatic' }, expectedRevision: (await w.projectNow()).revision });
+  assert.equal((await w.outcome(card.id, 'succeeded')).runId, run.id);
+});
+
 test('a diff with a terminal control character reaches each typed Code Review CLI exactly', { skip, timeout: 120000 }, async t => {
   for (const provider of ['claude', 'codex', 'gemini']) await t.test(provider, async t => {
     const w = await world(t, { agents: { code_review: provider } }), received = join(w.state, 'received-prompt.txt'), old = process.env.FAKE_AGENT_PROMPT_FILE;
