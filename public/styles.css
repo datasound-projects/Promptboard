@@ -348,7 +348,7 @@ kbd { font: 11px/1.4 var(--mono); padding: 1px 5px; border: 1px solid var(--line
 .secondary-button:hover:enabled, .reload-button:hover:enabled, .detail-actions button:hover:enabled { background: var(--surface-2); border-color: var(--ink); }
 .secondary-button:disabled, .reload-button:disabled { opacity: .5; }
 .secondary-button svg { width: 15px; height: 15px; }
-.connection-detail { margin-top: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); color: var(--muted); font-size: 13px; line-height: 1.6; }
+.connection-detail { margin-top: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); color: var(--muted); font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
 .connection-detail p { margin: 0 0 8px; }
 .connection-detail .auth-code { display: inline-block; padding: 6px 10px; font: 600 16px var(--mono); letter-spacing: 2px; }
 .detail-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }

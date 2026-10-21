@@ -494,8 +494,10 @@ test('imported settings are accepted on another computer once the project is lin
 
 test('a backup keeps validated workflow settings and test commands only: deeply nested JSON never reaches the board', async t => {
   const board = new Board({ dataDir: await temp(t, 'pb-deep-') }), deep = JSON.parse('['.repeat(5000) + ']'.repeat(5000));
-  await board.importBackup({ kind: 'promptboard-backup', version: 2, projects: [{ id: 'p1', name: 'Deep', tasks: [{ id: 't1', title: 'Card', prompt: 'Do it', column: 'todo' }],
-    workflow: { executing: { policy: 'start', x: deep }, x: deep }, testCommands: [{ label: 'Unit', argv: ['npm', 'test'], x: deep }, { argv: deep }, { label: deep, argv: ['node', '-v'] }] }] });
+  // A stage this version cannot use (here an unknown policy) is left out alone, and the result says for which project.
+  const result = await board.importBackup({ kind: 'promptboard-backup', version: 2, projects: [{ id: 'p1', name: 'Deep', tasks: [{ id: 't1', title: 'Card', prompt: 'Do it', column: 'todo' }],
+    workflow: { executing: { policy: 'start', x: deep }, planning: { policy: 'whenever' }, x: deep }, testCommands: [{ label: 'Unit', argv: ['npm', 'test'], x: deep }, { argv: deep }, { label: deep, argv: ['node', '-v'] }] }] });
+  assert.deepEqual(result, { projects: 1, cards: 1, workflowLeftOut: ['Deep'] });
   let project = (await board.state()).projects[0];
   const commands = [{ label: 'Unit', argv: ['npm', 'test'], timeoutSec: 600 }, { label: 'node -v', argv: ['node', '-v'], timeoutSec: 600 }];
   assert.deepEqual([project.pendingImport.workflow, project.pendingImport.testCommands], [{ executing: { policy: 'start', instructions: '' } }, commands]);
@@ -508,7 +510,7 @@ test('a backup keeps validated workflow settings and test commands only: deeply 
   const plain = await board.exportBackup();
   assert.deepEqual(plain.projects[0].workflow, project.workflow);
   plain.projects[0].workflow = {}; plain.projects[0].testCommands = [];
-  await board.importBackup(plain, { replace: true });
+  assert.deepEqual(await board.importBackup(plain, { replace: true }), { projects: 1, cards: 1 });
   assert.equal((await board.state()).projects[0].pendingImport, null);
 });
 
@@ -533,7 +535,7 @@ test('replacing the board by import waits until column automations stop, as dele
   const card = await board.createTask({ projectId: project.id, title: 'Card', prompt: 'Do it' });
   const backup = await board.exportBackup(), before = structuredClone(await board.state());
   board.automationMoves.set(card.id, {}); // A column script of this card is still running.
-  await assert.rejects(board.importBackup({ ...backup, projects: [] }, { replace: true }), { code: 'AUTOMATIONS_ACTIVE', status: 409 });
+  await assert.rejects(board.importBackup({ ...backup, projects: [] }, { replace: true }), { code: 'AUTOMATIONS_ACTIVE', status: 409, message: 'Stop the running column automations before you replace the board with a backup.' });
   assert.deepEqual(await board.state(), before, 'nothing was imported');
   board.automationMoves.delete(card.id);
   await board.importBackup({ ...backup, projects: [] }, { replace: true });

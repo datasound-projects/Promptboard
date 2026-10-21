@@ -388,11 +388,11 @@ test('backups: export round-trips, import validates, asks before replacing, and 
   assert.equal(exported.projects[0].tasks[0].prompt, exact);
   // A version 2 backup with a repository path and automation waits for confirmation.
   exported.projects[0].repository = { path: '/nowhere/repo' };
-  exported.projects[0].workflow = { executing: { policy: 'start' } };
+  exported.projects[0].workflow = { executing: { policy: 'start' }, planning: { policy: 'whenever' } };
   const fresh = await setup(t);
   await goTo(fresh, '#/kanban');
   await importFile(fresh, JSON.stringify(exported));
-  assert.match(fresh.$('#project-detail').textContent, /Backup imported: 2 projects, 1 card\. No agent runs were started\. Imported repository paths and workflow settings wait for your confirmation/);
+  assert.match(fresh.$('#project-detail').textContent, /Backup imported: 2 projects, 1 card\. No agent runs were started\. Imported repository paths and workflow settings wait for your confirmation\. Some workflow settings do not work in this version and were left out \(One\)\./);
   fresh.pick('p1');
   assert.equal(fresh.$('#import-pending').hidden, false);
   assert.match(fresh.$('#import-pending-text').textContent, /repository \/nowhere\/repo, workflow settings \(automatic runs in Executing\)/);

@@ -4038,11 +4038,12 @@ async function importBoard() {
   if (!['kanban-backup', 'promptboard-backup'].includes(data?.kind)) { failed('The file is not a Promptboard or Kanban backup.'); return; }
   const counts = boardCounts(Array.isArray(data.projects) ? data.projects : [], data.kind === 'kanban-backup' ? 'cards' : 'tasks');
   const replace = async confirmed => {
-    try { await boardCall('POST', '/api/board/import', { backup: data, replace: confirmed }, 120000); }
+    let imported;
+    try { ({ imported } = await boardCall('POST', '/api/board/import', { backup: data, replace: confirmed }, 120000)); }
     catch (error) { failed(error.message); return; }
     setSelectedProject(board.projects.find(project => project.id === data.selectedProjectId)?.id || board.projects[0]?.id || '');
     renderBoard();
-    const message = `Backup imported: ${boardCounts(board.projects)}. No agent runs were started.${board.projects.some(project => project.pendingImport) ? ' Imported repository paths and workflow settings wait for your confirmation.' : ''}`;
+    const message = `Backup imported: ${boardCounts(board.projects)}. No agent runs were started.${board.projects.some(project => project.pendingImport) ? ' Imported repository paths and workflow settings wait for your confirmation.' : ''}${imported?.workflowLeftOut?.length ? ` Some workflow settings do not work in this version and were left out (${imported.workflowLeftOut.join(', ')}).` : ''}`;
     showProjectDetail(paragraph(message));
     announce(message);
   };
