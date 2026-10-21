@@ -3750,7 +3750,15 @@ function pollTests(taskId) {
 // which board is shown; runs belong to the server and continue in every project.
 // Each entry has a ⋯ menu: rename (inline) and delete (inline confirm). Repository and workflow live in Project settings.
 let workspaceMenu = null; // { id, mode: 'menu' | 'rename' | 'delete' | 'editors' | 'editor-add', draft, error, taskId }
-function setWorkspaceMenu(value) { workspaceMenu = value; renderWorkspace(currentProject()); }
+function setWorkspaceMenu(value) {
+  const id = value?.id || workspaceMenu?.id;
+  workspaceMenu = value; renderWorkspace(currentProject());
+  // The row was rebuilt. Focus lost with it goes into the menu (Keep, in a delete confirmation) or back to its ⋯ button.
+  const row = document.activeElement === document.body && id && [...$('#workspace-list').children].find(item => item.dataset.projectId === id);
+  if (!row) return;
+  const controls = [...row.querySelectorAll('.workspace-menu :is(button, input, select)')];
+  (value ? (value.mode === 'delete' ? controls.at(-1) : controls[0]) : row.querySelector('.workspace-menu-toggle'))?.focus();
+}
 async function renameFromSidebar(project, name) {
   const error = projectNameError(name.trim(), project.id);
   if (error) { setWorkspaceMenu({ ...workspaceMenu, error }); return; }
@@ -3759,7 +3767,7 @@ async function renameFromSidebar(project, name) {
   setWorkspaceMenu(null);
   announce(`Renamed “${project.name}” to “${name.trim()}”.`);
 }
-function workspaceMenuFor(project, card) {
+function workspaceMenuFor(project) {
   const box = document.createElement('div');
   box.className = 'workspace-menu';
   box.id = `workspace-menu-${project.id}`;
@@ -3770,7 +3778,6 @@ function workspaceMenuFor(project, card) {
     const input = document.createElement('input');
     input.type = 'text'; input.maxLength = 80; input.value = workspaceMenu.draft ?? project.name; input.setAttribute('aria-label', `New name for ${project.name}`);
     input.addEventListener('input', () => { workspaceMenu.draft = input.value; });
-    input.addEventListener('keydown', event => { if (event.key === 'Escape') { event.stopPropagation(); setWorkspaceMenu(null); card.focus(); } });
     form.addEventListener('submit', event => { event.preventDefault(); renameFromSidebar(project, input.value); });
     const save = document.createElement('button'); save.type = 'submit'; save.textContent = 'Save'; save.className = 'danger';
     form.append(input, detailActions(save, detailButton('Cancel', () => setWorkspaceMenu(null))));
@@ -3863,7 +3870,11 @@ function renderWorkspace(current) {
     toggle.setAttribute('aria-controls', `workspace-menu-${project.id}`);
     item.append(button, toggle);
     if (project.repository && workspaceFiles) item.append(workspaceFiles.mount(project));
-    if (open) { item.classList.add('menu-open'); item.append(workspaceMenuFor(project, button)); }
+    if (open) {
+      item.classList.add('menu-open'); item.append(workspaceMenuFor(project));
+      // Escape closes the menu, from its ⋯ button or from inside it.
+      item.addEventListener('keydown', event => { if (event.key === 'Escape' && event.target.closest('.workspace-menu-toggle, .workspace-menu')) { event.stopPropagation(); setWorkspaceMenu(null); } });
+    }
     return item;
   }), 'data-project-id');
 }

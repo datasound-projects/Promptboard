@@ -199,3 +199,26 @@ test('closing a card or details dialog returns focus to the card after a backgro
   await escape(browser);
   assert.equal(await browser.layout(`return !document.querySelector('#task-dialog').open && document.activeElement.closest('.kanban-card')?.dataset.id === ${JSON.stringify(one.id)};`), true, 'the card keeps focus');
 });
+
+test('the sidebar project menu keeps keyboard focus: Escape closes it, Delete… and Keep land on a control', { skip: !chrome, timeout: 90000 }, async t => {
+  const { app, browser } = await open(t);
+  const project = await app.board.createProject({ name: 'Beta' });
+  await browser.goto(`${app.url}/#/kanban`); await browser.until(`document.querySelector('.workspace-menu-toggle')`, 'sidebar');
+  const row = `document.querySelector('#workspace-list [data-project-id="${project.id}"]')`, toggle = `${row}.querySelector('.workspace-menu-toggle')`;
+  const item = label => `[...${row}.querySelectorAll('.workspace-menu button')].find(button => button.textContent === ${JSON.stringify(label)})`;
+  await browser.eval(`${toggle}.focus();`); await enter(browser);
+  await browser.until(`${row}.querySelector('.workspace-menu[role="menu"]')`, 'menu open');
+  await escape(browser);
+  assert.equal(await browser.layout(`return !${row}.querySelector('.workspace-menu') && document.activeElement === ${toggle};`), true, 'Escape closes the menu and returns to ⋯');
+  await enter(browser); await browser.until(`${item('Delete…')}`, 'menu open again');
+  await browser.eval(`${item('Delete…')}.focus();`); await enter(browser);
+  assert.equal(await browser.layout(`return document.activeElement === ${item('Keep')};`), true, 'Delete… focuses Keep');
+  await enter(browser);
+  assert.equal(await browser.layout(`return !${row}.querySelector('.workspace-menu') && document.activeElement === ${toggle};`), true, 'Keep returns to ⋯');
+  await enter(browser); await browser.until(`${item('Rename')}`, 'menu open a third time');
+  await browser.eval(`${item('Rename')}.focus();`); await enter(browser);
+  await browser.until(`document.activeElement === ${row}.querySelector('.workspace-rename input')`, 'rename field');
+  await escape(browser);
+  assert.equal(await browser.layout(`return !${row}.querySelector('.workspace-menu') && document.activeElement === ${toggle};`), true, 'Escape in Rename returns to ⋯');
+  assert.equal((await app.board.state()).projects[0].name, 'Beta');
+});
